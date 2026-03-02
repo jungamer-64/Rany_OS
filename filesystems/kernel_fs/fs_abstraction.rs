@@ -30,11 +30,13 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll};
-use spin::RwLock;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::task::{Context, Poll, Waker};
+use spin::{Mutex, RwLock};
 
 // ============================================================================
 // Re-exports from VFS
@@ -609,7 +611,7 @@ pub struct AsyncReadFuture<'a> {
     inode: Arc<dyn Inode>,
     position: u64,
     buf: &'a mut [u8],
-    completed: bool,
+    state: ReadFutureState,
 }
 
 impl<'a> AsyncReadFuture<'a> {
@@ -619,27 +621,102 @@ impl<'a> AsyncReadFuture<'a> {
             inode: handle.inode.clone(),
             position: handle.position,
             buf,
-            completed: false,
+            state: ReadFutureState::Init,
         }
+    }
+}
+
+enum ReadFutureState {
+    Init,
+    Pending(Arc<ReadTaskState>),
+    Finished,
+}
+
+struct ReadCompletion {
+    result: FsResult<usize>,
+    data: Vec<u8>,
+}
+
+struct ReadTaskState {
+    completed: AtomicBool,
+    completion: Mutex<Option<ReadCompletion>>,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl ReadTaskState {
+    fn new() -> Self {
+        Self {
+            completed: AtomicBool::new(false),
+            completion: Mutex::new(None),
+            waker: Mutex::new(None),
+        }
+    }
+
+    fn complete(&self, result: FsResult<usize>, data: Vec<u8>) {
+        *self.completion.lock() = Some(ReadCompletion { result, data });
+        self.completed.store(true, Ordering::Release);
+        if let Some(waker) = self.waker.lock().take() {
+            waker.wake();
+        }
+    }
+
+    fn take_completion(&self) -> Option<ReadCompletion> {
+        if !self.completed.load(Ordering::Acquire) {
+            return None;
+        }
+        self.completion.lock().take()
     }
 }
 
 impl<'a> Future for AsyncReadFuture<'a> {
     type Output = FsResult<usize>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
 
-        if this.completed {
-            return Poll::Ready(Err(FsError::InvalidArgument));
+        match &mut this.state {
+            ReadFutureState::Init => {
+                if !async_runtime_available() {
+                    this.state = ReadFutureState::Finished;
+                    return Poll::Ready(this.inode.read(this.position, this.buf));
+                }
+
+                let shared = Arc::new(ReadTaskState::new());
+                register_waker(&shared.waker, cx.waker());
+
+                let inode = this.inode.clone();
+                let position = this.position;
+                let len = this.buf.len();
+                let shared_for_task = shared.clone();
+                crate::task::spawn(async move {
+                    let mut data = vec![0u8; len];
+                    let result = inode.read(position, &mut data);
+                    shared_for_task.complete(result, data);
+                });
+
+                this.state = ReadFutureState::Pending(shared);
+                Poll::Pending
+            }
+            ReadFutureState::Pending(shared) => {
+                if let Some(completion) = shared.take_completion() {
+                    this.state = ReadFutureState::Finished;
+                    return match completion.result {
+                        Ok(bytes) => {
+                            let copy_len = bytes.min(this.buf.len()).min(completion.data.len());
+                            if copy_len > 0 {
+                                this.buf[..copy_len].copy_from_slice(&completion.data[..copy_len]);
+                            }
+                            Poll::Ready(Ok(copy_len))
+                        }
+                        Err(e) => Poll::Ready(Err(e)),
+                    };
+                }
+
+                register_waker(&shared.waker, cx.waker());
+                Poll::Pending
+            }
+            ReadFutureState::Finished => Poll::Ready(Err(FsError::InvalidArgument)),
         }
-
-        // For now, synchronous implementation
-        // Real implementation would use async block device
-        this.completed = true;
-        let position = this.position;
-        let result = this.inode.read(position, this.buf);
-        Poll::Ready(result)
     }
 }
 
@@ -648,7 +725,7 @@ pub struct AsyncWriteFuture<'a> {
     inode: Arc<dyn Inode>,
     position: u64,
     buf: &'a [u8],
-    completed: bool,
+    state: WriteFutureState,
 }
 
 impl<'a> AsyncWriteFuture<'a> {
@@ -658,26 +735,102 @@ impl<'a> AsyncWriteFuture<'a> {
             inode: handle.inode.clone(),
             position: handle.position,
             buf,
-            completed: false,
+            state: WriteFutureState::Init,
         }
+    }
+}
+
+enum WriteFutureState {
+    Init,
+    Pending(Arc<WriteTaskState>),
+    Finished,
+}
+
+struct WriteTaskState {
+    completed: AtomicBool,
+    result: Mutex<Option<FsResult<usize>>>,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl WriteTaskState {
+    fn new() -> Self {
+        Self {
+            completed: AtomicBool::new(false),
+            result: Mutex::new(None),
+            waker: Mutex::new(None),
+        }
+    }
+
+    fn complete(&self, result: FsResult<usize>) {
+        *self.result.lock() = Some(result);
+        self.completed.store(true, Ordering::Release);
+        if let Some(waker) = self.waker.lock().take() {
+            waker.wake();
+        }
+    }
+
+    fn take_result(&self) -> Option<FsResult<usize>> {
+        if !self.completed.load(Ordering::Acquire) {
+            return None;
+        }
+        self.result.lock().take()
     }
 }
 
 impl<'a> Future for AsyncWriteFuture<'a> {
     type Output = FsResult<usize>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
 
-        if this.completed {
-            return Poll::Ready(Err(FsError::InvalidArgument));
+        match &mut this.state {
+            WriteFutureState::Init => {
+                if !async_runtime_available() {
+                    this.state = WriteFutureState::Finished;
+                    return Poll::Ready(this.inode.write(this.position, this.buf));
+                }
+
+                let shared = Arc::new(WriteTaskState::new());
+                register_waker(&shared.waker, cx.waker());
+
+                let inode = this.inode.clone();
+                let position = this.position;
+                let data = this.buf.to_vec();
+                let shared_for_task = shared.clone();
+                crate::task::spawn(async move {
+                    shared_for_task.complete(inode.write(position, &data));
+                });
+
+                this.state = WriteFutureState::Pending(shared);
+                Poll::Pending
+            }
+            WriteFutureState::Pending(shared) => {
+                if let Some(result) = shared.take_result() {
+                    this.state = WriteFutureState::Finished;
+                    return Poll::Ready(result);
+                }
+
+                register_waker(&shared.waker, cx.waker());
+                Poll::Pending
+            }
+            WriteFutureState::Finished => Poll::Ready(Err(FsError::InvalidArgument)),
         }
-
-        this.completed = true;
-        let position = this.position;
-        let result = this.inode.write(position, this.buf);
-        Poll::Ready(result)
     }
+}
+
+fn register_waker(slot: &Mutex<Option<Waker>>, waker: &Waker) {
+    let mut guard = slot.lock();
+    let replace = match guard.as_ref() {
+        Some(existing) => !existing.will_wake(waker),
+        None => true,
+    };
+    if replace {
+        *guard = Some(waker.clone());
+    }
+}
+
+fn async_runtime_available() -> bool {
+    !crate::task::executor_manager().all_stats().is_empty()
 }
 
 // ============================================================================

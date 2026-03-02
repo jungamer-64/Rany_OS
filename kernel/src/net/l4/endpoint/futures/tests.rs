@@ -9,7 +9,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-// Simple test that verifies SendFuture writes into socket buffer
+// Simple test that verifies SendFuture writes into endpoint buffer
 // and is woken when the DataReady event is processed successfully
 #[cfg_attr(test, test_case)]
 pub fn test_sendfuture_wakes_on_send() {
@@ -26,12 +26,12 @@ pub fn test_sendfuture_wakes_on_send() {
         }
     }
 
-    // Create socket and set local/remote
+    // Create endpoint and set local/remote
     let sock = create_tcp_endpoint();
     let fd = sock.fd();
     let local = EndpointAddr::new([127, 0, 0, 1], 12345);
     let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
         inner.remote_addr = Some(remote);
@@ -72,7 +72,7 @@ pub fn test_sendfuture_wakes_on_send() {
     let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
     let res = handler.handle_event(NetworkEvent::DataReady {
         fd,
-        socket_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
+        endpoint_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
     });
     // Should either succeed or ask for retry; for our test transmit succeeds so Success
     assert!(matches!(res, crate::net::l4::endpoint::handler::EventHandleResult::Success));
@@ -107,12 +107,12 @@ pub fn test_sendfuture_wakes_on_send_v6() {
         }
     }
 
-    // Create socket and set IPv6 local/remote (remote uses multicast so no NDP needed)
+    // Create endpoint and set IPv6 local/remote (remote uses multicast so no NDP needed)
     let sock = create_tcp_endpoint();
     let fd = sock.fd();
     let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
     let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::ALL_NODES_LINK_LOCAL.octets(), 80);
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
         inner.remote_addr = Some(remote);
@@ -153,7 +153,7 @@ pub fn test_sendfuture_wakes_on_send_v6() {
     let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
     let res = handler.handle_event(NetworkEvent::DataReady {
         fd,
-        socket_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
+        endpoint_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
     });
 
     assert!(matches!(res, crate::net::l4::endpoint::handler::EventHandleResult::Success));
@@ -167,7 +167,7 @@ pub fn test_sendfuture_wakes_on_send_v6() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_recv_packet_zero_copy_via_owned_socket() {
+pub fn test_recv_packet_zero_copy_via_owned_endpoint() {
     init_endpoint_manager();
 
     // Initialize stack (some operations rely on stack state)
@@ -177,13 +177,13 @@ pub fn test_recv_packet_zero_copy_via_owned_socket() {
     let _fd = sock.fd();
     let local = EndpointAddr::new([127, 0, 0, 1], 12345);
     let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
         inner.remote_addr = Some(remote);
     }
 
-    // Create TCB and attach a TcpStream to the socket
+    // Create TCB and attach a TcpStream to the endpoint
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
     use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
@@ -197,7 +197,7 @@ pub fn test_recv_packet_zero_copy_via_owned_socket() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
         let _ = inner.transition_to(EndpointState::Connected);
@@ -246,7 +246,7 @@ pub fn test_recv_packet_zero_copy_via_owned_socket() {
 
 
 #[cfg_attr(test, test_case)]
-pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
+pub fn test_recv_packet_zero_copy_via_owned_endpoint_v6() {
     init_endpoint_manager();
 
     // Initialize stack (some operations rely on stack state)
@@ -256,13 +256,13 @@ pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
     let _fd = sock.fd();
     let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
     let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
         inner.remote_addr = Some(remote);
     }
 
-    // Create TCB and attach a TcpStream to the socket (IPv6)
+    // Create TCB and attach a TcpStream to the endpoint (IPv6)
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
     use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, TcpStream};
@@ -276,7 +276,7 @@ pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
         let _ = inner.transition_to(EndpointState::Connected);
@@ -332,13 +332,13 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     let _fd = sock.fd();
     let local = EndpointAddr::new([127, 0, 0, 1], 12345);
     let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
         inner.remote_addr = Some(remote);
     }
 
-    // Create TCB and attach a TcpStream to the socket
+    // Create TCB and attach a TcpStream to the endpoint
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
     use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
@@ -352,7 +352,7 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
         let _ = inner.transition_to(EndpointState::Connected);
@@ -422,13 +422,13 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     let _fd = sock.fd();
     let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
     let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
         inner.remote_addr = Some(remote);
     }
 
-    // Create TCB and attach a TcpStream to the socket (IPv6)
+    // Create TCB and attach a TcpStream to the endpoint (IPv6)
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
     use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, TcpStream};
@@ -442,7 +442,7 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
         let _ = inner.transition_to(EndpointState::Connected);
@@ -506,14 +506,14 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
 pub fn test_udp_packet_stream_delivered() {
     init_endpoint_manager();
 
-    // Use a UdpProcessor instance and bind a socket to a port
+    // Use a UdpProcessor instance and bind a endpoint to a port
     let proc = crate::net::l4::udp::UdpProcessor::new();
     let port = 40000u16;
     let u = proc.bind_with_token(port, None).expect("bind failed");
 
     // Create an OwnedEndpoint and attach the UdpEndpoint instance to its inner state
     let sock = create_udp_endpoint();
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(EndpointAddr::new([127, 0, 0, 1], port));
         inner.udp_socket = Some(u.clone());
@@ -528,7 +528,7 @@ pub fn test_udp_packet_stream_delivered() {
     packet.set_len(len);
 
     let packet_data = alloc::vec::Vec::from(packet.data());
-    let res = proc.process_with_packet(&packet_data, src_ip, dst_ip, packet);
+    let res = proc.process_with_packet(&packet_data, src_ip, dst_ip, packet, 255);
     assert_eq!(res, crate::net::l4::udp::UdpResult::Delivered);
 
     // Get stream wrapper and receive the packet
@@ -553,7 +553,7 @@ pub fn test_udp_packet_stream_delivered() {
     let mut fut = stream.next_packet();
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
     match pinned.as_mut().poll(&mut cx2) {
-        Poll::Ready(Some((addr, pkt))) => {
+        Poll::Ready(Some((addr, _ttl, pkt))) => {
             assert_eq!(pkt.data(), b"hello");
             assert_eq!(addr.port, 12345);
         }

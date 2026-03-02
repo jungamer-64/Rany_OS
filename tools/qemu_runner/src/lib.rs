@@ -267,6 +267,19 @@ fn profile_needs_driver_domain_assets(profile: &str) -> bool {
     matches!(profile, "driver_domain" | "pr-required" | "nightly-required")
 }
 
+fn profile_needs_iommu(profile: &str) -> bool {
+    matches!(
+        profile,
+        "boot-smoke"
+            | "storage"
+            | "driver_domain"
+            | "iommu"
+            | "pr-required"
+            | "nightly-required"
+            | "step9-heavy"
+    )
+}
+
 fn copy_file_if_exists(
     src: &Path,
     dst: &Path,
@@ -814,7 +827,7 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
             .arg("virtio-blk-pci,drive=storage0");
     }
 
-    if matches!(config.profile.as_str(), "iommu" | "driver_domain") {
+    if profile_needs_iommu(&config.profile) {
         qemu_cmd.arg("-device").arg("intel-iommu,intremap=on,caching-mode=on,device-iotlb=on");
     }
 

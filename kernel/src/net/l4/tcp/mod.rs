@@ -148,6 +148,9 @@ impl core::fmt::Display for EndpointAddr {
     }
 }
 
+/// Backward-compatible alias used by legacy tests.
+pub type SocketAddr = EndpointAddr;
+
 // ============================================================================
 // TCP接続状態
 // ============================================================================

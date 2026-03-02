@@ -29,7 +29,7 @@ pub enum NetworkEvent {
     /// 送信データ準備完了 - プロトコルスタックに送信を要求
     DataReady {
         fd: EndpointFd,
-        socket_type: EndpointType,
+        endpoint_type: EndpointType,
     },
     /// TX 資源が解放された（デバイスが送信可能になった）
     TxAvailable,

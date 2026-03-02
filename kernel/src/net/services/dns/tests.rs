@@ -1,4 +1,5 @@
 use super::*;
+use alloc::vec;
 use crate::sync::set_panicking;
 
 #[cfg_attr(test, test_case)]

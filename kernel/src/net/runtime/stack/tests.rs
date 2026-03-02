@@ -289,3 +289,79 @@ pub fn test_redirect_cache_expiry() {
     cache.set_time(REDIRECT_CACHE_TTL + 1);
     assert!(cache.get(dst).is_none());
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_redirect_cache_cleanup() {
+    test_redirect_cache_expiry();
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_redirect_cache_eviction() {
+    let mut cache = RedirectCache::new();
+    cache.set_time(0);
+
+    for i in 0..REDIRECT_CACHE_SIZE {
+        let dst = Ipv4Address::new([10, 0, 1, i as u8]);
+        let gw = Ipv4Address::new([192, 168, 1, i as u8]);
+        cache.insert(dst, gw);
+    }
+    assert_eq!(cache.map.len(), REDIRECT_CACHE_SIZE);
+
+    let oldest = Ipv4Address::new([10, 0, 1, 0]);
+    let new_dst = Ipv4Address::new([10, 0, 1, 250]);
+    let new_gw = Ipv4Address::new([192, 168, 1, 250]);
+    cache.insert(new_dst, new_gw);
+
+    assert_eq!(cache.map.len(), REDIRECT_CACHE_SIZE);
+    assert!(cache.get(oldest).is_none());
+    assert_eq!(cache.get(new_dst), Some(new_gw));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_redirect_cache_reuses_expired_slot_before_oldest() {
+    let mut cache = RedirectCache::new();
+    let expired_dst = Ipv4Address::new([10, 0, 2, 1]);
+    cache.set_time(0);
+    cache.insert(expired_dst, Ipv4Address::new([192, 168, 2, 1]));
+
+    cache.set_time(REDIRECT_CACHE_TTL);
+    for i in 1..REDIRECT_CACHE_SIZE {
+        let dst = Ipv4Address::new([10, 0, 2, i as u8]);
+        let gw = Ipv4Address::new([192, 168, 2, i as u8]);
+        cache.insert(dst, gw);
+    }
+    assert_eq!(cache.map.len(), REDIRECT_CACHE_SIZE);
+
+    cache.set_time(REDIRECT_CACHE_TTL + 1);
+    assert!(cache.get(expired_dst).is_none());
+    assert_eq!(cache.map.len(), REDIRECT_CACHE_SIZE - 1);
+
+    let new_dst = Ipv4Address::new([10, 0, 2, 250]);
+    let new_gw = Ipv4Address::new([192, 168, 2, 250]);
+    cache.insert(new_dst, new_gw);
+
+    assert_eq!(cache.map.len(), REDIRECT_CACHE_SIZE);
+    assert_eq!(cache.get(new_dst), Some(new_gw));
+    let retained = Ipv4Address::new([10, 0, 2, 2]);
+    assert!(cache.get(retained).is_some());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ndp_pending_queue_drain_for_preserves_order() {
+    let mut queue = NdpPendingQueue::new();
+    let src = Ipv6Address::LOOPBACK;
+    let target = Ipv6Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    let other = Ipv6Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+
+    queue.enqueue(src, target, &[1], 1);
+    queue.enqueue(src, other, &[9], 2);
+    queue.enqueue(src, target, &[2], 3);
+
+    let drained = queue.drain_for(&target);
+    assert_eq!(drained.len(), 2);
+    assert_eq!(drained[0].icmpv6_data, alloc::vec![1]);
+    assert_eq!(drained[1].icmpv6_data, alloc::vec![2]);
+
+    assert_eq!(queue.packets.len(), 1);
+    assert_eq!(queue.packets[0].dst, other);
+}

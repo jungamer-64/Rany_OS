@@ -35,10 +35,11 @@ pub mod window_scale;
 
 // Re-exports: types
 pub use types::{
-    EndpointAddr, EndpointError, EndpointFd,
+    EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
 };
 
 // Re-exports: event
+pub use event::NetworkEvent;
 
 // Re-exports: inner
 
@@ -54,11 +55,12 @@ pub use manager::{
     init_endpoint_manager, is_endpoint_manager_initialized, endpoint_manager,
 };
 
-// Re-exports: socket
+// Re-exports: endpoint
 pub use endpoint_core::{
-    OwnedEndpoint, create_tcp_server, create_tcp_endpoint, create_udp_endpoint, create_raw_endpoint,
+    OwnedEndpoint, create_raw_endpoint, create_tcp_endpoint, create_tcp_server, create_udp_endpoint,
 };
-
+/// Backward-compatible module alias for legacy references.
+pub use endpoint_core as socket;
 // Re-exports: futures
 
 // Re-exports: handler

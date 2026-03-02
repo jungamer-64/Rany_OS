@@ -32,7 +32,7 @@ use core::ops::Deref;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use super::fs_abstraction::{DirEntry, FileAttr, FileMode, FsError, FsResult, OpenFlags};
+use super::fs_abstraction::{DirEntry, FileAttr, FileMode, FsError, FsResult, Inode, OpenFlags};
 use super::memfs::{MemoryFs, MemoryInode};
 
 // ============================================================================
@@ -252,10 +252,19 @@ impl<T: Unpin> Future for ImmediateFuture<T> {
     }
 }
 
+fn wrap_memory_inode(inode: Arc<dyn Inode>) -> FsResult<Arc<dyn AsyncInode>> {
+    if inode.as_any().downcast_ref::<MemoryInode>().is_none() {
+        return Err(FsError::NotSupported);
+    }
+
+    // Safety: runtime type check above guarantees the trait object points to MemoryInode.
+    let mem_inode = unsafe { Arc::from_raw(Arc::into_raw(inode) as *const MemoryInode) };
+    Ok(Arc::new(AsyncMemoryInode::new(mem_inode)) as Arc<dyn AsyncInode>)
+}
+
 // AsyncInode trait implementation for AsyncMemoryInode
 impl AsyncInode for AsyncMemoryInode {
     fn getattr_async(&self) -> Pin<Box<dyn Future<Output = FsResult<FileAttr>> + Send + '_>> {
-        use super::fs_abstraction::Inode;
         let result = self.inner.getattr();
         Box::pin(ImmediateFuture::new(result))
     }
@@ -264,16 +273,7 @@ impl AsyncInode for AsyncMemoryInode {
         &self,
         name: &str,
     ) -> Pin<Box<dyn Future<Output = FsResult<Arc<dyn AsyncInode>>> + Send + '_>> {
-        use super::fs_abstraction::Inode;
-        let result = self.inner.lookup(name);
-        let wrapped = result.map(|inode| {
-            // downcast to MemoryInode if possible
-            let mem_inode = unsafe {
-                // Safety: We know this is a MemoryInode from our MemoryFs
-                Arc::from_raw(Arc::into_raw(inode) as *const MemoryInode)
-            };
-            Arc::new(AsyncMemoryInode::new(mem_inode)) as Arc<dyn AsyncInode>
-        });
+        let wrapped = self.inner.lookup(name).and_then(wrap_memory_inode);
         Box::pin(ImmediateFuture::new(wrapped))
     }
 
@@ -281,7 +281,6 @@ impl AsyncInode for AsyncMemoryInode {
         &self,
         offset: u64,
     ) -> Pin<Box<dyn Future<Output = FsResult<Vec<DirEntry>>> + Send + '_>> {
-        use super::fs_abstraction::Inode;
         let result = self.inner.readdir(offset);
         Box::pin(ImmediateFuture::new(result))
     }
@@ -291,7 +290,6 @@ impl AsyncInode for AsyncMemoryInode {
         offset: u64,
         buf: &'a mut [u8],
     ) -> Pin<Box<dyn Future<Output = FsResult<usize>> + Send + 'a>> {
-        use super::fs_abstraction::Inode;
         // 同期的に読み取り、結果を即座に返す
         let result = self.inner.read(offset, buf);
         Box::pin(ImmediateFuture::new(result))
@@ -302,7 +300,6 @@ impl AsyncInode for AsyncMemoryInode {
         offset: u64,
         buf: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = FsResult<usize>> + Send + 'a>> {
-        use super::fs_abstraction::Inode;
         let result = self.inner.write(offset, buf);
         Box::pin(ImmediateFuture::new(result))
     }
@@ -332,7 +329,6 @@ impl AsyncInode for AsyncMemoryInode {
         }
         
         // ページ境界をまたぐ場合は従来のコピー
-        use super::fs_abstraction::Inode;
         let mut buf = vec![0u8; len];
         let result = self.inner.read(offset, &mut buf).map(|n| {
             buf.truncate(n);
@@ -347,14 +343,7 @@ impl AsyncInode for AsyncMemoryInode {
         mode: FileMode,
         flags: OpenFlags,
     ) -> Pin<Box<dyn Future<Output = FsResult<Arc<dyn AsyncInode>>> + Send + '_>> {
-        use super::fs_abstraction::Inode;
-        let result = self.inner.create(name, mode, flags);
-        let wrapped = result.map(|inode| {
-            let mem_inode = unsafe {
-                Arc::from_raw(Arc::into_raw(inode) as *const MemoryInode)
-            };
-            Arc::new(AsyncMemoryInode::new(mem_inode)) as Arc<dyn AsyncInode>
-        });
+        let wrapped = self.inner.create(name, mode, flags).and_then(wrap_memory_inode);
         Box::pin(ImmediateFuture::new(wrapped))
     }
 
@@ -363,25 +352,16 @@ impl AsyncInode for AsyncMemoryInode {
         name: &str,
         mode: FileMode,
     ) -> Pin<Box<dyn Future<Output = FsResult<Arc<dyn AsyncInode>>> + Send + '_>> {
-        use super::fs_abstraction::Inode;
-        let result = self.inner.mkdir(name, mode);
-        let wrapped = result.map(|inode| {
-            let mem_inode = unsafe {
-                Arc::from_raw(Arc::into_raw(inode) as *const MemoryInode)
-            };
-            Arc::new(AsyncMemoryInode::new(mem_inode)) as Arc<dyn AsyncInode>
-        });
+        let wrapped = self.inner.mkdir(name, mode).and_then(wrap_memory_inode);
         Box::pin(ImmediateFuture::new(wrapped))
     }
 
     fn unlink_async(&self, name: &str) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>> {
-        use super::fs_abstraction::Inode;
         let result = self.inner.unlink(name);
         Box::pin(ImmediateFuture::new(result))
     }
 
     fn rmdir_async(&self, name: &str) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>> {
-        use super::fs_abstraction::Inode;
         let result = self.inner.rmdir(name);
         Box::pin(ImmediateFuture::new(result))
     }
@@ -390,32 +370,31 @@ impl AsyncInode for AsyncMemoryInode {
         &self,
         size: u64,
     ) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>> {
-        use super::fs_abstraction::Inode;
         let result = self.inner.truncate(size);
         Box::pin(ImmediateFuture::new(result))
     }
 
     fn rename_async(
         &self,
-        _old_name: &str,
-        _new_name: &str,
+        old_name: &str,
+        new_name: &str,
     ) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>> {
-        // TODO: Implement when Inode::rename is added
-        Box::pin(ImmediateFuture::new(Err(FsError::NotSupported)))
+        let target_dir: Arc<dyn Inode> = self.inner.clone();
+        let result = self.inner.rename(old_name, &target_dir, new_name);
+        Box::pin(ImmediateFuture::new(result))
     }
 
     fn symlink_async(
         &self,
-        _name: &str,
-        _target: &str,
+        name: &str,
+        target: &str,
     ) -> Pin<Box<dyn Future<Output = FsResult<Arc<dyn AsyncInode>>> + Send + '_>> {
-        // TODO: Implement when Inode::symlink is added
-        Box::pin(ImmediateFuture::new(Err(FsError::NotSupported)))
+        let wrapped = self.inner.symlink(name, target).and_then(wrap_memory_inode);
+        Box::pin(ImmediateFuture::new(wrapped))
     }
 
     fn readlink_async(&self) -> Pin<Box<dyn Future<Output = FsResult<String>> + Send + '_>> {
-        // TODO: Implement when Inode::readlink is added
-        Box::pin(ImmediateFuture::new(Err(FsError::NotSupported)))
+        Box::pin(ImmediateFuture::new(self.inner.readlink()))
     }
 }
 
@@ -439,13 +418,8 @@ impl AsyncMemoryFs {
         &self,
     ) -> Pin<Box<dyn Future<Output = FsResult<Arc<dyn AsyncInode>>> + Send + '_>> {
         use super::fs_abstraction::FileSystem;
-        let result = self.inner.root().map(|inode| {
-            let mem_inode = unsafe {
-                Arc::from_raw(Arc::into_raw(inode) as *const MemoryInode)
-            };
-            Arc::new(AsyncMemoryInode::new(mem_inode)) as Arc<dyn AsyncInode>
-        });
-        Box::pin(ImmediateFuture::new(result))
+        let wrapped = self.inner.root().and_then(wrap_memory_inode);
+        Box::pin(ImmediateFuture::new(wrapped))
     }
 
     /// ファイルシステム名を取得
@@ -465,10 +439,7 @@ use super::memfs::resolve_path as sync_resolve_path;
 pub async fn resolve_path_async(path: &str, cwd: &str) -> FsResult<Arc<dyn AsyncInode>> {
     // 同期版を呼び出し、結果をラップ
     let inode = sync_resolve_path(path, cwd)?;
-    let mem_inode = unsafe {
-        Arc::from_raw(Arc::into_raw(inode) as *const MemoryInode)
-    };
-    Ok(Arc::new(AsyncMemoryInode::new(mem_inode)) as Arc<dyn AsyncInode>)
+    wrap_memory_inode(inode)
 }
 
 /// ディレクトリの内容を非同期に一覧表示
@@ -611,4 +582,3 @@ fn split_path_async(path: &str, cwd: &str) -> (String, String) {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
-

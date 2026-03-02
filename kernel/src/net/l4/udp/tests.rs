@@ -65,24 +65,29 @@ pub fn test_udp_packet() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_udp_socket_poisoned_methods_return_defaults() {
+pub fn test_udp_endpoint_poisoned_methods_return_defaults() {
     use crate::sync::set_panicking;
 
-    let socket = UdpEndpoint::new(12345);
+    let endpoint = UdpEndpoint::new(12345);
 
     // Poison the inner lock
     set_panicking(true);
-    if let Ok(_g) = socket.inner.lock() {
+    if let Ok(_g) = endpoint.inner.lock() {
         // drop marks as poisoned
     }
     set_panicking(false);
 
-    assert_eq!(socket.local_port(), 0);
-    assert!(socket.is_closed());
-    assert_eq!(socket.rx_queue_len(), 0);
+    assert_eq!(endpoint.local_port(), 0);
+    assert!(endpoint.is_closed());
+    assert_eq!(endpoint.rx_queue_len(), 0);
 
     // Close should be a no-op
-    socket.close();
+    endpoint.close();
+}
+
+// Legacy compatibility wrapper referenced by qemu test exports.
+pub fn test_udp_socket_poisoned_methods_return_defaults() {
+    test_udp_endpoint_poisoned_methods_return_defaults();
 }
 
 #[cfg_attr(test, test_case)]
@@ -117,7 +122,7 @@ pub fn test_bind_with_token_reclaim() {
         other => panic!("expected ReclamationBusy, got {:?}", other),
     }
 
-    // Now unbind the socket (target releases resource)
+    // Now unbind the endpoint (target releases resource)
     {
         let _target_guard = set_current_subject(target);
         crate::net::runtime::stack::unbind_udp(40000);
@@ -146,16 +151,16 @@ pub fn test_udp_recv_future_poisoned_returns_closed() {
 
     fn noop_waker() -> Waker { unsafe { Waker::from_raw(noop_raw_waker()) } }
 
-    let socket = UdpEndpoint::new(54321);
+    let endpoint = UdpEndpoint::new(54321);
 
     // Poison the inner lock
     set_panicking(true);
-    if let Ok(_g) = socket.inner.lock() {
+    if let Ok(_g) = endpoint.inner.lock() {
         // drop marks as poisoned
     }
     set_panicking(false);
 
-    let mut fut = socket.recv();
+    let mut fut = endpoint.recv();
     let w = noop_waker();
     let mut cx = Context::from_waker(&w);
 
@@ -168,7 +173,7 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
 
     let proc = UdpProcessor::new();
 
-    // Poison the socket table lock
+    // Poison the endpoint table lock
     set_panicking(true);
     if let Ok(_g) = proc.endpoints().endpoints.lock() {
         // drop marks as poisoned
@@ -184,7 +189,7 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
     let mut buffer = [0u8; 64];
     let len = UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x").unwrap();
 
-    let res = proc.process(&buffer[..len], src_ip, dst_ip);
+    let res = proc.process(&buffer[..len], src_ip, dst_ip, 64);
     assert_eq!(res, UdpResult::NoEndpoint);
 
     let stats = proc.endpoints().stats();
@@ -192,7 +197,7 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
+pub fn test_udp_endpoint_multiple_waiters_woken_on_deliver() {
     use core::pin::Pin;
     use core::ptr::addr_of_mut;
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -219,9 +224,9 @@ pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
         unsafe { Waker::from_raw(RawWaker::new(counter as *const _ as *const (), &VTABLE)) }
     }
 
-    let socket = UdpEndpoint::new(54322);
-    let mut fut1 = socket.recv();
-    let mut fut2 = socket.recv();
+    let endpoint = UdpEndpoint::new(54322);
+    let mut fut1 = endpoint.recv();
+    let mut fut2 = endpoint.recv();
 
     let wake_count = AtomicUsize::new(0);
     let waker = counting_waker(&wake_count);
@@ -241,7 +246,7 @@ pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
     packet.data_mut().copy_from_slice(b"abc");
 
     let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
-    socket.deliver(src, 255, packet);
+    endpoint.deliver(src, 255, packet);
 
     assert_eq!(wake_count.load(Ordering::SeqCst), 2);
 
@@ -254,6 +259,10 @@ pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
     }
 
     assert!(matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending));
+}
+
+pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
+    test_udp_endpoint_multiple_waiters_woken_on_deliver();
 }
 
 #[cfg_attr(test, test_case)]
@@ -277,9 +286,9 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
     }
 
     let proc = UdpProcessor::new();
-    let socket = proc
+    let endpoint = proc
         .bind_with_token(10000, None)
-        .expect("bind udp socket for zero-copy enqueue test");
+        .expect("bind udp endpoint for zero-copy enqueue test");
 
     let src_ip = Ipv4Address::from_octets(10, 0, 0, 1);
     let dst_ip = Ipv4Address::from_octets(10, 0, 0, 2);
@@ -327,7 +336,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         assert_eq!(proc.process(&buf[..len], src_ip, dst_ip, 255), UdpResult::Delivered);
     }
 
-    let mut fut = socket.recv();
+    let mut fut = endpoint.recv();
     let waker = noop_waker();
     let mut cx = Context::from_waker(&waker);
     match Pin::new(&mut fut).poll(&mut cx) {

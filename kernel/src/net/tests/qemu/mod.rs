@@ -188,7 +188,7 @@ pub fn udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
     let Some(len) = udp::UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x") else {
         return false;
     };
-    matches!(proc.process(&buffer[..len], src_ip, dst_ip), udp::UdpResult::NoEndpoint | udp::UdpResult::ChecksumError)
+    matches!(proc.process(&buffer[..len], src_ip, dst_ip, 64), udp::UdpResult::NoEndpoint | udp::UdpResult::ChecksumError)
 }
 
 pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
