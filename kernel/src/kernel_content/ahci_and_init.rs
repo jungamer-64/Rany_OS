@@ -448,6 +448,16 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "Memory management initialized");
     io::log::early_print("[DEBUG] after memory init info!\n");
 
+    // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
+    // メモリ管理が初期化されたので、ページテーブル操作が可能になった。
+    // スタックオーバーフローを即座にPage Faultで検出するため、
+    // スタック最下位ページをアンマップする。
+    {
+        let stack_bottom = unsafe { &raw const KERNEL_STACK as usize };
+        crate::panic_handler::setup_stack_guard(stack_bottom, core::mem::size_of_val(unsafe { &KERNEL_STACK }));
+        info!(target: "init", "BSP stack guard page installed at {:#x}", stack_bottom);
+    }
+
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
     // ISRが有効になる前にリソースを確保し、ISR内での初期化（デッドロックリスク）を防ぐ
     info!(target: "init", "Initializing Interrupt Waker Registry (Pre-allocation)");

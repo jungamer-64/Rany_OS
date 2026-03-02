@@ -205,9 +205,9 @@ struct KernelStack([u8; 4096 * 128]);
 /// status byte of `DEFAULT_SECURITY_MONITOR`, causing undefined behaviour in
 /// the subsequent `security::init()` call.
 ///
-/// **TODO:** install a guard page (Present=0) at the bottom of the stack
-/// after `memory::init()` to turn future overflows into a page fault instead
-/// of silent corruption.
+/// A guard page (Present=0) is installed at the bottom of this stack
+/// immediately after `memory::init()` completes (see `kmain_inner`),
+/// so future overflows trigger a Page Fault instead of silent corruption.
 #[unsafe(link_section = ".bss")]
 static mut KERNEL_STACK: KernelStack = KernelStack([0; 4096 * 128]);
 
