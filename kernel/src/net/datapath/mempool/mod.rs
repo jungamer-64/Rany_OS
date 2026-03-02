@@ -186,9 +186,95 @@ enum PacketRefKind {
     },
 }
 
+/// パケットの事前解析済みメタデータ
+///
+/// プロトコルスタックの各層で解析済みオフセットをキャッシュし、
+/// 後続の層で再解析を回避することで CPU サイクルを削減する。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PacketMeta {
+    /// Ethernet ヘッダ長（0 = 未解析）
+    pub l2_len: u8,
+    /// IP ヘッダ長（0 = 未解析）
+    pub l3_len: u8,
+    /// L4 ヘッダ長（0 = 未解析）
+    pub l4_len: u8,
+    /// L4 プロトコル番号（6=TCP, 17=UDP, 1=ICMP, 0=未解析）
+    pub l4_proto: u8,
+    /// RSS / フローハッシュ（0 = 未計算）
+    pub flow_hash: u32,
+    /// チェックサム検証済みフラグ（ビットフィールド）
+    /// bit0: IP checksum verified, bit1: L4 checksum verified
+    pub csum_flags: u8,
+    /// パケット種別ヒント
+    pub pkt_type: PacketType,
+}
+
+/// パケット種別
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PacketType {
+    #[default]
+    Unknown = 0,
+    Unicast = 1,
+    Multicast = 2,
+    Broadcast = 3,
+}
+
+impl PacketMeta {
+    /// IP チェックサム検証済みか
+    #[inline]
+    pub fn ip_csum_verified(&self) -> bool {
+        self.csum_flags & 0x01 != 0
+    }
+
+    /// L4 チェックサム検証済みか
+    #[inline]
+    pub fn l4_csum_verified(&self) -> bool {
+        self.csum_flags & 0x02 != 0
+    }
+
+    /// IP チェックサム検証済みフラグを設定
+    #[inline]
+    pub fn set_ip_csum_verified(&mut self) {
+        self.csum_flags |= 0x01;
+    }
+
+    /// L4 チェックサム検証済みフラグを設定
+    #[inline]
+    pub fn set_l4_csum_verified(&mut self) {
+        self.csum_flags |= 0x02;
+    }
+
+    /// ヘッダ合計サイズ（L2+L3+L4）を取得
+    #[inline]
+    pub fn header_len(&self) -> usize {
+        self.l2_len as usize + self.l3_len as usize + self.l4_len as usize
+    }
+
+    /// L3 ペイロードのオフセットを取得
+    #[inline]
+    pub fn l3_offset(&self) -> usize {
+        self.l2_len as usize
+    }
+
+    /// L4 ペイロードのオフセットを取得
+    #[inline]
+    pub fn l4_offset(&self) -> usize {
+        self.l2_len as usize + self.l3_len as usize
+    }
+
+    /// ペイロードのオフセットを取得
+    #[inline]
+    pub fn payload_offset(&self) -> usize {
+        self.header_len()
+    }
+}
+
 #[derive(Debug)]
 pub struct PacketRef {
     kind: PacketRefKind,
+    /// 事前解析済みメタデータ（ゼロコスト: スタック上に保持）
+    meta_cache: PacketMeta,
 }
 
 impl PacketRef {
@@ -198,10 +284,43 @@ impl PacketRef {
         Self {
             kind: PacketRefKind::Pooled {
                 buffer,
+            pool,
+            offset: 0,
+            len,
+        },
+        meta_cache: PacketMeta::default(),
+    }
+}
+
+    /// 事前解析済みメタデータへの参照を取得
+    #[inline]
+    pub fn meta(&self) -> &PacketMeta {
+        &self.meta_cache
+    }
+
+    /// 事前解析済みメタデータへの可変参照を取得
+    #[inline]
+    pub fn meta_mut(&mut self) -> &mut PacketMeta {
+        &mut self.meta_cache
+    }
+
+    /// メタデータを設定
+    #[inline]
+    pub fn set_meta(&mut self, meta: PacketMeta) {
+        self.meta_cache = meta;
+    }
+
+    /// Create new PacketRef (internal) from pooled buffer — kept for back compat
+    fn _new_pooled_inner(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> Self {
+        let len = unsafe { buffer.as_ref().len() };
+        Self {
+            kind: PacketRefKind::Pooled {
+                buffer,
                 pool,
                 offset: 0,
                 len,
             },
+            meta_cache: PacketMeta::default(),
         }
     }
 
@@ -215,6 +334,7 @@ impl PacketRef {
                 offset: 0,
                 len: 0,
             },
+            meta_cache: PacketMeta::default(),
         }
     }
 
@@ -236,6 +356,7 @@ impl PacketRef {
                 offset: 0,
                 len: 0,
             },
+            meta_cache: PacketMeta::default(),
         })
     }
 
@@ -398,6 +519,7 @@ impl PacketRef {
                         offset: *offset,
                         len: *len,
                     },
+                    meta_cache: self.meta_cache,
                 }
             },
             PacketRefKind::Dma { buf, offset, len } => Self {
@@ -406,6 +528,7 @@ impl PacketRef {
                     offset: *offset,
                     len: *len,
                 },
+                meta_cache: self.meta_cache,
             },
             #[cfg(any(test, feature = "qemu-test-export"))]
             PacketRefKind::BorrowedTest { ptr, cap, offset, len } => Self {
@@ -415,6 +538,7 @@ impl PacketRef {
                     offset: *offset,
                     len: *len,
                 },
+                meta_cache: self.meta_cache,
             },
         }
     }
@@ -501,6 +625,7 @@ impl Clone for PacketRef {
     fn clone(&self) -> Self {
         Self {
             kind: self.kind.clone(),
+            meta_cache: self.meta_cache,
         }
     }
 }
@@ -742,6 +867,9 @@ pub struct MempoolStats {
 
 /// コアローカルなメモリプールキャッシュ
 /// 設計書 4.3: コアごとの独立性
+///
+/// 最適化: キャッシュが空のとき、親プールから `BATCH_REFILL_COUNT` 個を
+/// 一括で取得し、ロック取得回数を償却する。
 #[derive(Debug)]
 pub struct PerCoreMempoolCache {
     /// ローカルキャッシュ
@@ -751,6 +879,9 @@ pub struct PerCoreMempoolCache {
     /// 親プール
     parent: &'static Mempool,
 }
+
+/// バッチリフィル時に親プールから一度に取得するバッファ数
+const BATCH_REFILL_COUNT: usize = 16;
 
 impl PerCoreMempoolCache {
     /// 新しいキャッシュを作成
@@ -762,33 +893,61 @@ impl PerCoreMempoolCache {
         }
     }
 
+    /// ローカルバッファを初期化して PacketRef を返す
+    #[inline]
+    unsafe fn init_buffer_for_alloc(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> PacketRef {
+        // Security: Zero-out previously used portion to prevent
+        // Information Disclosure (RFC 4963, RFC 6274).
+        let prev_len = buffer.as_ref().meta.len.load(Ordering::Acquire);
+        if prev_len > 0 {
+            core::ptr::write_bytes(
+                buffer.as_ref().data.as_ptr() as *mut u8,
+                0,
+                prev_len.min(DEFAULT_BUFFER_SIZE),
+            );
+        }
+
+        buffer.as_ref().meta.len.store(0, Ordering::Release);
+        buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
+        PacketRef::new(buffer, pool)
+    }
+
     /// バッファを割り当て（ローカルキャッシュから優先）
+    ///
+    /// キャッシュが空の場合、親プールから最大 `BATCH_REFILL_COUNT` 個を
+    /// 一括取得してキャッシュを補充し、ロック取得コストを償却する。
     pub fn alloc(&'static self) -> Option<PacketRef> {
         // まずローカルキャッシュから試みる
         if let Ok(mut cache) = self.local_cache.lock() {
             if let Some(buffer) = cache.pop() {
-                unsafe {
-                    // Security: Zero-out previously used portion to prevent
-                    // Information Disclosure (RFC 4963, RFC 6274).
-                    let prev_len = buffer.as_ref().meta.len.load(Ordering::Acquire);
-                    if prev_len > 0 {
-                        core::ptr::write_bytes(
-                            buffer.as_ref().data.as_ptr() as *mut u8,
-                            0,
-                            prev_len.min(DEFAULT_BUFFER_SIZE),
-                        );
-                    }
+                return Some(unsafe { Self::init_buffer_for_alloc(buffer, self.parent) });
+            }
 
-                    buffer.as_ref().meta.len.store(0, Ordering::Release);
-                    buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
+            // キャッシュが空 → 親プールからバッチリフィル
+            let refill_count = BATCH_REFILL_COUNT.min(self.cache_capacity);
+            if let Ok(mut free_list) = self.parent.free_list.lock() {
+                let available = free_list.len().min(refill_count);
+                if available > 0 {
+                    // 末尾から一括取得（Vec::split_off は O(n) だが n は小さい）
+                    let split_at = free_list.len() - available;
+                    let refilled: Vec<NonNull<PacketBuffer>> = free_list.split_off(split_at);
+                    // 最初の1つを返却用、残りをキャッシュに積む
+                    let mut iter = refilled.into_iter();
+                    let first = iter.next();
+                    for buf in iter {
+                        cache.push(buf);
+                    }
+                    if let Some(buffer) = first {
+                        self.parent.alloc_count.fetch_add(1, Ordering::Relaxed);
+                        return Some(unsafe { Self::init_buffer_for_alloc(buffer, self.parent) });
+                    }
                 }
-                return Some(PacketRef::new(buffer, self.parent));
             }
         } else {
             log::error!("[NET] LocalCache lock poisoned (alloc) - falling back to parent pool");
         }
 
-        // キャッシュが空なら親プールから取得
+        // フォールバック: 親プールの通常 alloc
         self.parent.alloc()
     }
 

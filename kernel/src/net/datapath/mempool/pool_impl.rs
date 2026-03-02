@@ -80,6 +80,140 @@ impl PacketPool {
             }
         }
     }
+
+    /// Allocate multiple buffers at once (batch allocation)
+    ///
+    /// 一度のロック取得で最大 `count` 個のバッファを取得する。
+    /// 返り値の Vec は実際に取得できた分のみ含む。
+    pub fn alloc_batch(&self, count: usize) -> Vec<Vec<u8>> {
+        match self.buffers.lock() {
+            Ok(mut buffers) => {
+                let to_take = count.min(buffers.len());
+                let split_at = buffers.len() - to_take;
+                buffers.split_off(split_at)
+            }
+            Err(_) => {
+                log::error!("[NET] PacketPool buffers lock poisoned (alloc_batch)");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Return multiple buffers at once (batch free)
+    ///
+    /// 一度のロック取得で複数バッファを返却する。
+    pub fn free_batch(&self, batch: Vec<Vec<u8>>) {
+        match self.buffers.lock() {
+            Ok(mut buffers) => {
+                for mut buffer in batch {
+                    // Security: Zero out buffer content
+                    unsafe {
+                        let cap = buffer.capacity();
+                        let ptr = buffer.as_mut_ptr();
+                        core::ptr::write_bytes(ptr, 0, cap);
+                    }
+
+                    if buffer.capacity() != self.buffer_size {
+                        buffer = Vec::with_capacity(self.buffer_size);
+                    } else {
+                        buffer.clear();
+                    }
+
+                    if buffers.len() < self.capacity {
+                        buffers.push(buffer);
+                    }
+                }
+            }
+            Err(_) => log::error!("[NET] PacketPool buffers lock poisoned (free_batch)"),
+        }
+    }
+}
+
+// ============================================================================
+// Per-Core TX Buffer Cache
+// ============================================================================
+
+/// コアローカルな TX バッファキャッシュ
+///
+/// `PacketPool` の alloc/free 時のロック競合を排除するため、
+/// 各 CPU コアに独立したキャッシュを持たせる。
+/// ExoRust ガイドライン: Per-Core Cache を活用しロックフリー割り当てを実現
+pub struct PerCoreTxCache {
+    /// CPU ごとのバッファキャッシュ
+    caches: Vec<spin::Mutex<Vec<Vec<u8>>>>,
+    /// キャッシュあたりの最大バッファ数
+    per_core_capacity: usize,
+    /// 親プール
+    parent: &'static PacketPool,
+    /// バッチリフィル数
+    refill_count: usize,
+}
+
+/// Per-Core TX キャッシュのデフォルトサイズ
+const TX_PER_CORE_CACHE_SIZE: usize = 8;
+/// Per-Core TX バッチリフィル数
+const TX_BATCH_REFILL: usize = 4;
+
+impl PerCoreTxCache {
+    /// 新しい Per-Core TX キャッシュを作成
+    pub fn new(parent: &'static PacketPool, cpu_count: usize) -> Self {
+        let count = cpu_count.max(1);
+        let mut caches = Vec::with_capacity(count);
+        for _ in 0..count {
+            caches.push(spin::Mutex::new(Vec::with_capacity(TX_PER_CORE_CACHE_SIZE)));
+        }
+        Self {
+            caches,
+            per_core_capacity: TX_PER_CORE_CACHE_SIZE,
+            parent,
+            refill_count: TX_BATCH_REFILL,
+        }
+    }
+
+    /// バッファを割り当て（ローカルキャッシュ優先）
+    pub fn alloc(&self) -> Option<Vec<u8>> {
+        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+        let idx = cpu_id % self.caches.len();
+
+        let mut cache = self.caches[idx].lock();
+        if let Some(buf) = cache.pop() {
+            return Some(buf);
+        }
+
+        // キャッシュ空 → 親プールからバッチリフィル
+        let refilled = self.parent.alloc_batch(self.refill_count);
+        let mut iter = refilled.into_iter();
+        let first = iter.next();
+        for buf in iter {
+            if cache.len() < self.per_core_capacity {
+                cache.push(buf);
+            }
+        }
+        first
+    }
+
+    /// バッファを返却（ローカルキャッシュ優先）
+    pub fn free(&self, mut buffer: Vec<u8>) {
+        // Security: Zero out buffer content
+        unsafe {
+            let cap = buffer.capacity();
+            let ptr = buffer.as_mut_ptr();
+            core::ptr::write_bytes(ptr, 0, cap);
+        }
+        buffer.clear();
+
+        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+        let idx = cpu_id % self.caches.len();
+
+        let mut cache = self.caches[idx].lock();
+        if cache.len() < self.per_core_capacity {
+            cache.push(buffer);
+        } else {
+            // キャッシュ満杯 → 親に返却
+            drop(cache);
+            self.parent.free(buffer);
+        }
+    }
 }
 
 // ============================================================================

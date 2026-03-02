@@ -211,12 +211,16 @@ impl PerCpuBatchProcessor {
         None
     }
 
-    /// 全CPUのキューを強制フラッシュ（非ブロッキング）
+    /// 全CPUのキューを強制フラッシュ（非ブロッキング・ゼロアロケーション）
     ///
     /// 他のCPUがロック保持中のキューはスキップし、
     /// 待機によるスループット低下を回避する。
-    pub fn flush_all(&self) -> Vec<PacketBatch> {
-        let mut batches = Vec::new();
+    ///
+    /// 固定配列を使用し、ホットパスでのヒープ割り当てを回避。
+    pub fn flush_all(&self) -> ([Option<PacketBatch>; MAX_CPUS], usize) {
+        const NONE: Option<PacketBatch> = None;
+        let mut batches = [NONE; MAX_CPUS];
+        let mut count = 0;
         for queue_lock in &self.queues {
             // try_lock で非ブロッキング取得—他CPUが使用中ならスキップ
             if let Some(mut queue) = queue_lock.try_lock() {
@@ -224,11 +228,14 @@ impl PerCpuBatchProcessor {
                     self.total_flushes.fetch_add(1, Ordering::Relaxed);
                     self.total_packets
                         .fetch_add(batch.len() as u64, Ordering::Relaxed);
-                    batches.push(batch);
+                    if count < MAX_CPUS {
+                        batches[count] = Some(batch);
+                        count += 1;
+                    }
                 }
             }
         }
-        batches
+        (batches, count)
     }
 
     /// 特定CPUのキューをフラッシュ
@@ -244,11 +251,14 @@ impl PerCpuBatchProcessor {
         batch
     }
 
-    /// タイムアウトチェック（全CPU、非ブロッキング）
+    /// タイムアウトチェック（全CPU、非ブロッキング・ゼロアロケーション）
     ///
     /// 他のCPUがロック保持中のキューはスキップする。
-    pub fn check_timeouts(&self, current_tsc: u64, tsc_freq_mhz: u64) -> Vec<PacketBatch> {
-        let mut batches = Vec::new();
+    /// 固定配列を使用し、ホットパスでのヒープ割り当てを回避。
+    pub fn check_timeouts(&self, current_tsc: u64, tsc_freq_mhz: u64) -> ([Option<PacketBatch>; MAX_CPUS], usize) {
+        const NONE: Option<PacketBatch> = None;
+        let mut batches = [NONE; MAX_CPUS];
+        let mut count = 0;
         for queue_lock in &self.queues {
             // try_lock で非ブロッキング取得
             if let Some(mut queue) = queue_lock.try_lock() {
@@ -257,11 +267,14 @@ impl PerCpuBatchProcessor {
                     self.timeout_flushes.fetch_add(1, Ordering::Relaxed);
                     self.total_packets
                         .fetch_add(batch.len() as u64, Ordering::Relaxed);
-                    batches.push(batch);
+                    if count < MAX_CPUS {
+                        batches[count] = Some(batch);
+                        count += 1;
+                    }
                 }
             }
         }
-        batches
+        (batches, count)
     }
 
     /// 統計情報

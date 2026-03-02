@@ -80,7 +80,102 @@ impl PacketBatch {
     pub fn clear(&mut self) {
         self.packets.clear();
     }
+
+    /// パケットスライスへの参照を取得
+    #[inline]
+    pub fn as_slice(&self) -> &[PacketRef] {
+        &self.packets
+    }
+
+    /// プリフェッチ付きイテレータを返す
+    ///
+    /// 次パケットのデータをCPUキャッシュにプリフェッチしながら
+    /// 現在のパケットを処理する。L1d への読み込み要求を先行発行し、
+    /// キャッシュミスによるストールを削減。
+    pub fn iter_prefetch(&self) -> PrefetchIterator<'_> {
+        // 最初のパケットをプリフェッチ
+        if let Some(first) = self.packets.first() {
+            let ptr = first.data().as_ptr();
+            prefetch_l1(ptr);
+        }
+        PrefetchIterator {
+            packets: &self.packets,
+            index: 0,
+        }
+    }
 }
+
+/// CPU キャッシュプリフェッチ (L1d, read)
+///
+/// x86 `PREFETCHT0` — 全キャッシュレベルにロード。
+/// no_std 環境で安全に使用可能。アドレスが無効でも fault しない。
+#[inline(always)]
+pub fn prefetch_l1(ptr: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::x86_64::_mm_prefetch(ptr as *const i8, core::arch::x86_64::_MM_HINT_T0);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = ptr;
+    }
+}
+
+/// CPU キャッシュプリフェッチ (L2, read)
+///
+/// x86 `PREFETCHT1` — L2 以上にロード。
+#[inline(always)]
+pub fn prefetch_l2(ptr: *const u8) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::x86_64::_mm_prefetch(ptr as *const i8, core::arch::x86_64::_MM_HINT_T1);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = ptr;
+    }
+}
+
+/// プリフェッチ付きバッチイテレータ
+///
+/// 現在のパケットを返すとき、2つ先のパケットデータをプリフェッチする。
+/// これにより次のイテレーションでキャッシュヒットする確率を大幅に向上させる。
+pub struct PrefetchIterator<'a> {
+    packets: &'a [PacketRef],
+    index: usize,
+}
+
+impl<'a> Iterator for PrefetchIterator<'a> {
+    type Item = &'a PacketRef;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.packets.len() {
+            return None;
+        }
+
+        let current = &self.packets[self.index];
+
+        // 2つ先のパケット（look-ahead=2）をプリフェッチ
+        let prefetch_idx = self.index + 2;
+        if prefetch_idx < self.packets.len() {
+            let future_pkt = &self.packets[prefetch_idx];
+            let ptr = future_pkt.data().as_ptr();
+            prefetch_l1(ptr);
+        }
+
+        self.index += 1;
+        Some(current)
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.packets.len() - self.index;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a> ExactSizeIterator for PrefetchIterator<'a> {}
 
 impl Default for PacketBatch {
     fn default() -> Self {
