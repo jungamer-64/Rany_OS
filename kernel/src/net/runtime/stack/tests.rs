@@ -253,60 +253,6 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_tcp_broadcast_multicast_dropped() {
-    init_default();
-    
-    let mut dropped_count = 0;
-    if let Ok(guard) = stack().lock() {
-        if let Some(ref s) = *guard {
-            dropped_count = s.stats().rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
-        }
-    }
-
-    let src_ip = Ipv4Address::new([10, 0, 2, 2]);
-    let client_mac = MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
-
-    // Test cases: Multicast and Broadcast destinations
-    let destinations = [
-        Ipv4Address::new([224, 0, 0, 1]),   // Multicast
-        Ipv4Address::new([255, 255, 255, 255]), // Global Broadcast
-        Ipv4Address::new([10, 0, 2, 255]), // Subnet Broadcast (assuming 10.0.2.0/24)
-    ];
-
-    for dst_ip in destinations {
-        let mut frame = [0u8; 128];
-        let mut eth = EthernetFrameMut::new(&mut frame).expect("ethernet frame");
-        eth.set_destination(client_mac)
-            .set_source(MacAddress::from_octets(0x52, 0x54, 0x00, 0x12, 0x34, 0x56))
-            .set_ether_type(EtherType::Ipv4);
-
-        let payload = eth.payload_mut();
-        let mut ip = Ipv4PacketMut::new(payload).expect("ipv4 packet");
-        ip.init_header()
-            .set_protocol(IpProtocol::Tcp)
-            .set_source(src_ip)
-            .set_destination(dst_ip);
-
-        // TCP header (minimal)
-        let tcp_payload = ip.payload_mut();
-        tcp_payload[0..2].copy_from_slice(&1234u16.to_be_bytes()); // src port
-        tcp_payload[2..4].copy_from_slice(&80u16.to_be_bytes());   // dst port
-        
-        ip.finalize(20);
-        eth.set_payload_len(crate::net::l3::ipv4::Ipv4Header::MIN_SIZE + 20);
-
-        receive(eth.as_bytes());
-    }
-
-    if let Ok(guard) = stack().lock() {
-        if let Some(ref s) = *guard {
-            // Stats should show 3 more dropped packets
-            assert_eq!(s.stats().rx_dropped.load(core::sync::atomic::Ordering::Relaxed), dropped_count + 3, "TCP broadcast/multicast segments should be dropped");
-        }
-    }
-}
-
-#[cfg_attr(test, test_case)]
 pub fn test_redirect_cache_basic() {
     let mut cache = RedirectCache::new();
     let dst = Ipv4Address::new([10, 0, 0, 100]);

@@ -1429,6 +1429,48 @@ pub fn sync_drain_tx_queue() {
     }
 }
 
+/// NETWORK_EVENT_QUEUEに溜まったイベントを同期的にドレインし処理する。
+///
+/// asyncエグゼキュータが起動する前の同期ポーリングコンテキスト（初期化時ping等）で使用する。
+/// 通常はasyncイベントループが`EventWaitFuture`でイベントを消費するが、
+/// エグゼキュータ未起動時にはイベントがキューに滞留する。
+/// この関数がARP応答等のIngressPacketイベントを同期的に処理する。
+pub fn sync_process_network_events() {
+    use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
+    use crate::net::l4::endpoint::handler::NetworkEventHandler;
+
+    let events = event_queue().drain_all();
+    if events.is_empty() {
+        return;
+    }
+
+    log::debug!("[NET-SYNC] processing {} queued network events synchronously", events.len());
+
+    let handler = NetworkEventHandler::new();
+
+    if let Ok(mut stack_guard) = stack::NETWORK_STACK.lock() {
+        if let Some(ref mut stack) = *stack_guard {
+            for event in events {
+                match &event {
+                    NetworkEvent::IngressPacket { .. } => {
+                        log::trace!("[NET-SYNC] processing IngressPacket event");
+                    }
+                    other => {
+                        log::trace!("[NET-SYNC] processing {:?} event", core::mem::discriminant(other));
+                    }
+                }
+                handler.handle_event_with_stack(event, stack);
+            }
+        }
+    } else {
+        log::warn!("[NET-SYNC] NETWORK_STACK lock poisoned; re-enqueuing events");
+        // スタックロックが取れない場合はイベントを再エンキューする
+        for event in events {
+            crate::net::l4::endpoint::event::send_event_ignore(event);
+        }
+    }
+}
+
 // ============================================================================
 // Shell API Integration
 
