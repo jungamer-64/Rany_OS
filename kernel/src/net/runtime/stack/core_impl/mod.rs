@@ -340,7 +340,7 @@ impl NetworkStack {
                 IpProtocol::Udp => {
                     // Security Fix: Process UDP through the endpoint stack
                     // Use process_udp_data instead of self.udp.process
-                    self.process_udp_data(payload, src, dst);
+                    self.process_udp_data(payload, src, dst, packet.ttl());
                 }
                 _ => {
                     self.stats.record_dropped();
@@ -499,11 +499,11 @@ impl NetworkStack {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
                 self.process_icmpv6_data(payload, src, dst, src_mac, hop_limit, current_time);
             }
-            Ipv6ProcessResult::Tcp(payload, src, dst) => {
+            Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
                 self.process_tcp_data_v6(payload, src, dst, current_time);
             }
-            Ipv6ProcessResult::Udp(payload, src, dst) => {
-                self.process_udp_data_v6(payload, src, dst);
+            Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
+                self.process_udp_data_v6(payload, src, dst, hop_limit);
             }
             Ipv6ProcessResult::Dropped => {
                 self.stats.record_dropped();

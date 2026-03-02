@@ -258,8 +258,8 @@ impl UdpAddr {
 pub(crate) struct UdpSocketInner {
     /// Local port
     local_port: u16,
-    /// Receive queue (zero-copy PacketRef)
-    rx_packet_queue: VecDeque<(UdpAddr, PacketRef)>,
+    /// Receive queue (zero-copy PacketRef + source addr + IP TTL/HopLimit)
+    rx_packet_queue: VecDeque<(UdpAddr, u8, PacketRef)>,
     /// Total bytes in receive queue
     rx_queue_bytes: usize,
     /// Wakers for async receive
@@ -336,7 +336,7 @@ impl UdpSocket {
     }
 
     /// Deliver a packet to this socket (called by the network stack)
-    pub fn deliver(&self, src: UdpAddr, packet: PacketRef) {
+    pub fn deliver(&self, src: UdpAddr, ttl: u8, packet: PacketRef) {
         match self.inner.lock() {
             Ok(mut inner) => {
                 if inner.closed {
@@ -346,7 +346,7 @@ impl UdpSocket {
                 let pkt_len = packet.len();
                 if inner.rx_packet_queue.len() < 64 && inner.rx_queue_bytes + pkt_len <= MAX_UDP_RX_QUEUE_BYTES {
                     inner.rx_queue_bytes += pkt_len;
-                    inner.rx_packet_queue.push_back((src, packet));
+                    inner.rx_packet_queue.push_back((src, ttl, packet));
 
                     for waker in inner.wakers.drain(..) {
                         waker.wake();
@@ -441,7 +441,7 @@ pub struct UdpRecvFuture {
 }
 
 impl Future for UdpRecvFuture {
-    type Output = Option<(UdpAddr, PacketRef)>;
+    type Output = Option<(UdpAddr, u8, PacketRef)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.socket.lock() {
@@ -450,9 +450,9 @@ impl Future for UdpRecvFuture {
                     return Poll::Ready(None);
                 }
 
-                if let Some((addr, packet)) = inner.rx_packet_queue.pop_front() {
+                if let Some((addr, ttl, packet)) = inner.rx_packet_queue.pop_front() {
                     inner.rx_queue_bytes = inner.rx_queue_bytes.saturating_sub(packet.len());
-                    Poll::Ready(Some((addr, packet)))
+                    Poll::Ready(Some((addr, ttl, packet)))
                 } else {
                     inner.wakers.push(cx.waker().clone());
                     Poll::Pending

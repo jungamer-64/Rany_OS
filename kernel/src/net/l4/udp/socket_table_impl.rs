@@ -159,34 +159,12 @@ impl UdpSocketTable {
     }
 
     /// Deliver a packet to the appropriate socket
-    pub fn deliver(&self, src: UdpAddr, dst_port: u16, packet: PacketRef) -> bool {
-        if let Some(socket) = self.find(dst_port) {
-            match socket.lock() {
-                Ok(mut inner) => {
-                    if inner.closed {
-                        self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-                        return false;
-                    }
-
-                    let packet_len = packet.len();
-                    if inner.rx_packet_queue.len() < 64 && inner.rx_queue_bytes + packet_len <= MAX_UDP_RX_QUEUE_BYTES {
-                        inner.rx_queue_bytes += packet_len;
-                        inner.rx_packet_queue.push_back((src, packet));
-                        for waker in inner.wakers.drain(..) {
-                            waker.wake();
-                        }
-                        self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
-                        true
-                    } else {
-                        self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-                        false
-                    }
-                }
-                Err(_) => {
-                    self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-                    false
-                }
-            }
+    pub fn deliver(&self, src: UdpAddr, dst_port: u16, ttl: u8, packet: PacketRef) -> bool {
+        if let Some(inner) = self.find(dst_port) {
+            let socket = crate::net::l4::udp::UdpSocket { inner };
+            socket.deliver(src, ttl, packet);
+            self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
+            true
         } else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             false

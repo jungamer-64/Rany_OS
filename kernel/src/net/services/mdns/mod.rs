@@ -175,30 +175,19 @@ impl MdnsService {
 
         loop {
             // パケット受信を待機
-            if let Some((src, packet)) = socket.recv().await {
+            if let Some((src, ttl, packet)) = socket.recv().await {
                 let now = crate::task::timer::current_tick() / 1000;
                 
-                // Security: Since UDP socket.recv() doesn't currently provide the IP TTL,
-                // we MUST verify that the source IP is on the local subnet to prevent
-                // spoofing/amplification attacks from outside the local link (RFC 6762 Section 11).
-                let mut is_local = false;
-                if let Ok(guard) = crate::net::runtime::stack::stack().lock() {
-                    if let Some(stack) = &*guard {
-                        let config = stack.config();
-                        if config.ipv4.address.apply_mask(config.ipv4.subnet_mask) == src.ip.apply_mask(config.ipv4.subnet_mask) {
-                            is_local = true;
-                        }
-                    }
-                }
-                
-                if !is_local && !src.ip.is_loopback() {
-                    log::warn!("[NET] mDNS: Ignoring packet from non-local source {} (mitigating missing TTL check)", src.ip);
+                // Security: RFC 6762 Section 11 - Multicast DNS implementations MUST silently 
+                // discard any Multicast DNS queries that arrive with an IP TTL (or Hop Limit) 
+                // other than 255.
+                if ttl != 255 && !src.ip.is_loopback() {
+                    log::warn!("[NET] mDNS: Ignoring packet with TTL {} (RFC 6762 Section 11 mandate)", ttl);
                     continue;
                 }
 
                 // 受信パケットを処理
-                // mDNSパケットは通常TTL=255だが、上記でローカルサブネット検証を行ったため255とする。
-                let result = self.process_packet(packet.data(), src.ip, 255, now);
+                let result = self.process_packet(packet.data(), src.ip, ttl, now);
                 
                 match result {
                     MdnsResult::SendResponse { name, ip, ttl } => {

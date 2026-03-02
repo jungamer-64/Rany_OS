@@ -897,10 +897,10 @@ impl Ipv6Stats {
 pub enum Ipv6ProcessResult<'a> {
     /// ICMPv6 payload with addresses and hop limit
     Icmpv6(&'a [u8], Ipv6Address, Ipv6Address, u8),
-    /// TCP payload with addresses
-    Tcp(&'a [u8], Ipv6Address, Ipv6Address),
-    /// UDP payload with addresses
-    Udp(&'a [u8], Ipv6Address, Ipv6Address),
+    /// TCP payload with addresses and hop limit
+    Tcp(&'a [u8], Ipv6Address, Ipv6Address, u8),
+    /// UDP payload with addresses and hop limit
+    Udp(&'a [u8], Ipv6Address, Ipv6Address, u8),
     /// Packet dropped (not for us, malformed, etc.)
     Dropped,
     /// Processing error

@@ -85,10 +85,10 @@ impl NetworkStack {
     }
 
     /// Process UDP data (for reassembled packets)
-    pub fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+    pub fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, ttl: u8) {
         // For reassembled packets, we don't have a PacketRef for zero-copy
         // Use the non-zero-copy path
-        let result = self.udp.process(data, src_ip, dst_ip);
+        let result = self.udp.process(data, src_ip, dst_ip, ttl);
 
         match result {
             UdpResult::Delivered => {}
@@ -180,6 +180,7 @@ impl NetworkStack {
         data: &[u8],
         src: crate::net::l3::ipv6::Ipv6Address,
         dst: crate::net::l3::ipv6::Ipv6Address,
+        hop_limit: u8,
     ) {
         use crate::net::l3::ipv4::IpProtocol;
         use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
@@ -237,7 +238,7 @@ impl NetworkStack {
             if payload.len() <= buf.len() {
                 buf[..payload.len()].copy_from_slice(payload);
                 pkt_ref.set_len(payload.len());
-                if self.udp.sockets().deliver(src_addr, dst_port, pkt_ref) {
+                if self.udp.sockets().deliver(src_addr, dst_port, hop_limit, pkt_ref) {
                     self.stats.record_rx(data.len());
                 } else {
                     self.stats.record_dropped();

@@ -49,7 +49,7 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet
-    pub fn process(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) -> UdpResult {
+    pub fn process(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, ttl: u8) -> UdpResult {
         use core::sync::atomic::Ordering;
 
         let packet = match UdpPacket::parse(data) {
@@ -78,7 +78,7 @@ impl UdpProcessor {
             let src = UdpAddr::new(src_ip, packet.src_port());
             let dst_port = packet.dst_port();
 
-            if self.sockets.deliver(src, dst_port, pkt_ref) {
+            if self.sockets.deliver(src, dst_port, ttl, pkt_ref) {
                 UdpResult::Delivered
             } else {
                 UdpResult::NoSocket
@@ -90,7 +90,7 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet with an existing PacketRef (zero-copy)
-    pub fn process_with_packet(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, mut packet: PacketRef) -> UdpResult {
+    pub fn process_with_packet(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, mut packet: PacketRef, ttl: u8) -> UdpResult {
         use core::sync::atomic::Ordering;
 
         let packet_view = match UdpPacket::parse(data) {
@@ -118,7 +118,7 @@ impl UdpProcessor {
         let src = UdpAddr::new(src_ip, packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
-        if self.sockets.deliver(src, dst_port, packet) {
+        if self.sockets.deliver(src, dst_port, ttl, packet) {
             UdpResult::Delivered
         } else {
             UdpResult::NoSocket
