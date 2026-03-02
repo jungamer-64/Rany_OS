@@ -410,6 +410,10 @@ impl UdpEndpoint {
 
     /// Send a datagram to the specified address (async-friendly, non-blocking)
     /// 
+    /// The send request is posted to the async event queue instead of synchronously
+    /// locking the global network stack. This avoids lock contention and potential
+    /// deadlocks when called from async contexts (e.g., within DHCP, mDNS, DNS tasks).
+    /// 
     /// Returns the number of bytes sent, or an error.
     pub fn send_to(&self, data: &[u8], dst: UdpAddr) -> Result<usize, NetworkError> {
         let local_port = match self.inner.lock() {
@@ -422,11 +426,11 @@ impl UdpEndpoint {
             Err(_) => return Err(NetworkError::LockPoisoned),
         };
 
-        // Send via network stack using existing send_udp
+        // Send via async event queue to avoid synchronous NETWORK_STACK lock
         let dst_ip = dst.ip;
         let dst_port = dst.port;
         
-        if crate::net::runtime::stack::send_udp(local_port, dst_ip, dst_port, data) {
+        if crate::net::runtime::stack::send_udp_async(local_port, dst_ip, dst_port, data) {
             Ok(data.len())
         } else {
             Err(NetworkError::TransmitFailed)

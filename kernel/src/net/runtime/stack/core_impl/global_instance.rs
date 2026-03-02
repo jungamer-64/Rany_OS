@@ -79,6 +79,23 @@ pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) 
     }
 }
 
+/// Send a UDP datagram via the async event queue (non-blocking).
+///
+/// Instead of synchronously acquiring the NETWORK_STACK lock, the send request
+/// is posted to the `NetworkEventQueue` and processed by the `network_event_task`.
+/// This avoids lock contention and potential deadlocks when called from async contexts.
+pub fn send_udp_async(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
+            src_port,
+            dst_ip: *dst_ip.as_bytes(),
+            dst_port,
+            data: Vec::from(data),
+        },
+    );
+    true
+}
+
 /// Like `send_udp` but routes the datagram on a specific logical interface.
 /// The interface argument is currently ignored but provided as an extension
 /// point for future multi‑NIC behaviour.
@@ -113,6 +130,26 @@ pub fn send_udp_v6(src_port: u16, src_ip: crate::net::l3::ipv6::Ipv6Address, dst
             false
         }
     }
+}
+
+/// Send a UDP datagram over IPv6 via the async event queue (non-blocking).
+pub fn send_udp_v6_async(
+    src_port: u16,
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_port: u16,
+    data: &[u8],
+) -> bool {
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::RawUdpV6Send {
+            src_port,
+            src_ip: src_ip.octets(),
+            dst_ip: dst_ip.octets(),
+            dst_port,
+            data: Vec::from(data),
+        },
+    );
+    true
 }
 
 /// IPv6 variant that allows specifying an interface (currently ignored)
@@ -191,6 +228,34 @@ pub fn send_tcp_v6(src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net
     }
 }
 
+/// Send a TCP segment (IPv4) via the async event queue (non-blocking).
+pub fn send_tcp_async(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::RawTcpSend {
+            src_ip: *src_ip.as_bytes(),
+            dst_ip: *dst_ip.as_bytes(),
+            segment: Vec::from(tcp_segment),
+        },
+    );
+    true
+}
+
+/// Send a TCP segment over IPv6 via the async event queue (non-blocking).
+pub fn send_tcp_v6_async(
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    tcp_segment: &[u8],
+) -> bool {
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::RawTcpV6Send {
+            src_ip: src_ip.octets(),
+            dst_ip: dst_ip.octets(),
+            segment: Vec::from(tcp_segment),
+        },
+    );
+    true
+}
+
 /// Bind a UDP socket
 pub fn bind_udp(port: u16) -> Option<UdpEndpoint> {
     match NETWORK_STACK.lock() {
@@ -212,6 +277,30 @@ pub fn process_timeouts(_current_time: u64) {
         }
         Err(_) => {
             log::error!("[NET] Global Stack poisoned - process_timeouts failed");
+        }
+    }
+}
+
+/// 非同期タイムアウト処理タスク
+///
+/// 定期的に`process_timeouts()`を実行する常駐タスク。
+/// TCPリトランスミッション、Keep-Alive、TIME_WAIT、ARP期限切れ等の
+/// タイマー処理を非同期コンテキストで実行する。
+pub async fn async_timeout_task() {
+    log::info!("[NET] async_timeout_task started");
+    loop {
+        // 100msごとにタイムアウトを処理
+        crate::task::sleep_ms(100).await;
+
+        match NETWORK_STACK.lock() {
+            Ok(mut guard) => {
+                if let Some(ref mut stack) = *guard {
+                    stack.process_timeouts();
+                }
+            }
+            Err(_) => {
+                log::error!("[NET] Global Stack poisoned - async timeout processing failed");
+            }
         }
     }
 }

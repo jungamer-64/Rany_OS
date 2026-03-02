@@ -723,7 +723,7 @@ impl NetworkStack {
         // 1. An ICMP error message.
         if original_packet.len() >= 20 {
             let proto = original_packet[9];
-            if proto == IpProtocol::Icmp as u8 && original_packet.len() >= 20 + 1 {
+            if proto == u8::from(IpProtocol::Icmp) && original_packet.len() >= 20 + 1 {
                 let icmp_type = original_packet[20];
                 match IcmpType::from(icmp_type) {
                     IcmpType::DestinationUnreachable
@@ -756,7 +756,7 @@ impl NetworkStack {
         }
 
         // 5. A packet whose source address is not a single host (e.g. 0.0.0.0, broadcast, etc.)
-        if dst_ip.is_unspecified() || dst_ip.is_broadcast() || dst_ip.is_multicast() {
+        if dst_ip.is_any() || dst_ip.is_broadcast() || dst_ip.is_multicast() {
             return;
         }
 
@@ -807,7 +807,7 @@ impl NetworkStack {
                 // Build ICMP packet (Type 3: Destination Unreachable)
                 if let Some(len) = IcmpProcessor::build_dest_unreachable(ip_payload, code, original_packet) {
                     ip_packet.finalize(len);
-                    let total_len = EthernetFrameMut::HEADER_SIZE + ip_packet.total_len();
+                    let total_len = EthernetHeader::SIZE + ip_packet.total_len();
                     
                     if let Some(ref transmit) = self.transmit_fn {
                         transmit(None, &buffer[..total_len]);

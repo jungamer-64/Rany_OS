@@ -28,6 +28,9 @@ pub(crate) fn spawn_kernel_tasks(
     crate::net::l4::endpoint::handler::init_network_event_handler();
     executor.spawn(crate::task::Task::new(crate::net::l4::endpoint::tcp_rx::network_event_task()));
 
+    // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)
+    executor.spawn(crate::task::Task::new(crate::net::runtime::stack::async_timeout_task()));
+
     // ドメイン1を作成：ユーザーアプリケーション
     let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))
         .expect("create_domain failed");

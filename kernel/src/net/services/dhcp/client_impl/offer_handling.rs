@@ -156,7 +156,7 @@ impl DhcpClient {
                 self.last_declined.store(declined_ip.to_u32(), Ordering::SeqCst);
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
-                crate::net::runtime::stack::send_udp(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..len])
+                crate::net::runtime::stack::send_udp_async(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..len])
             }
             Err(_) => false,
         }
@@ -237,7 +237,7 @@ impl DhcpClient {
 
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         match self.build_release(&mut buf, 0) {
-            Ok(len) => crate::net::runtime::stack::send_udp(DHCP_CLIENT_PORT, lease.server_ip, DHCP_SERVER_PORT, &buf[..len]),
+            Ok(len) => crate::net::runtime::stack::send_udp_async(DHCP_CLIENT_PORT, lease.server_ip, DHCP_SERVER_PORT, &buf[..len]),
             Err(_) => false,
         }
     }
@@ -267,7 +267,7 @@ impl DhcpClient {
     fn send_discover_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
-        Ok(crate::net::runtime::stack::send_udp(
+        Ok(crate::net::runtime::stack::send_udp_async(
             DHCP_CLIENT_PORT,
             Ipv4Address::new([255, 255, 255, 255]),
             DHCP_SERVER_PORT,
@@ -296,7 +296,7 @@ impl DhcpClient {
         let len = self.build_request(&mut buf, current_tick)?;
         let state = self.state();
         let dst = self.request_destination_for_state(state);
-        Ok(crate::net::runtime::stack::send_udp(
+        Ok(crate::net::runtime::stack::send_udp_async(
             DHCP_CLIENT_PORT,
             dst,
             DHCP_SERVER_PORT,

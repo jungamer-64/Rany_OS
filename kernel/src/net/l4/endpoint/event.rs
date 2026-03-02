@@ -60,6 +60,38 @@ pub enum NetworkEvent {
         fd: EndpointFd,
         priority: u8,
     },
+    /// Raw UDP送信（ソケット非経由・スタック直接）
+    RawUdpSend {
+        src_port: u16,
+        dst_ip: [u8; 4],
+        dst_port: u16,
+        data: Vec<u8>,
+    },
+    /// Raw TCP送信（ソケット非経由・スタック直接）
+    RawTcpSend {
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        segment: Vec<u8>,
+    },
+    /// Raw UDP IPv6送信
+    RawUdpV6Send {
+        src_port: u16,
+        src_ip: [u8; 16],
+        dst_ip: [u8; 16],
+        dst_port: u16,
+        data: Vec<u8>,
+    },
+    /// Raw TCP IPv6送信
+    RawTcpV6Send {
+        src_ip: [u8; 16],
+        dst_ip: [u8; 16],
+        segment: Vec<u8>,
+    },
+    /// ICMP Echo Request（非同期ping）
+    IcmpEchoRequest {
+        target: [u8; 4],
+        sequence: u16,
+    },
 }
 
 /// イベントキュー（ロックフリーリングバッファ）

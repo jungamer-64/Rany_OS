@@ -1155,12 +1155,34 @@ impl TcpControlBlock {
 
     /// Update our advertised receive window
     pub fn update_rcv_wnd(&mut self, available_buffer: u32) {
-        self.options.rcv_wnd_scaled = available_buffer;
+        // SWS Avoidance: RFC 1122 Section 4.2.3.3
+        // The receiver SHOULD NOT update the window if the update is less than 
+        // min(MSS, 1/2*RCV.WND).  Here RCV.WND is the total receive buffer size.
+        
+        let old_wnd = self.options.rcv_wnd_scaled;
+        let mss = self.congestion.mss as u32;
+        let total_buffer = self.rx.recv_queue_limit_bytes as u32;
+        
+        // If the window is shrinking, we MUST update it immediately to avoid 
+        // buffer overflow and maintain correctness.
+        if available_buffer < old_wnd {
+            self.options.rcv_wnd_scaled = available_buffer;
+        } else {
+            // Window is growing or staying the same. Apply SWS avoidance.
+            let increment = available_buffer - old_wnd;
+            let threshold = core::cmp::min(mss, total_buffer / 2);
+            
+            if increment >= threshold || available_buffer == total_buffer || old_wnd == 0 {
+                self.options.rcv_wnd_scaled = available_buffer;
+            }
+            // Else: Keep old_wnd to avoid Silly Window Syndrome
+        }
+
         // Calculate the 16-bit window field (scaled down)
         if self.options.wscale_enabled {
-            self.seq.rcv_wnd = (available_buffer >> self.options.snd_wscale).min(65535) as u16;
+            self.seq.rcv_wnd = (self.options.rcv_wnd_scaled >> self.options.snd_wscale).min(65535) as u16;
         } else {
-            self.seq.rcv_wnd = available_buffer.min(65535) as u16;
+            self.seq.rcv_wnd = self.options.rcv_wnd_scaled.min(65535) as u16;
         }
     }
 

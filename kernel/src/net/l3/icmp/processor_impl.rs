@@ -20,7 +20,7 @@ impl IcmpProcessor {
 
     /// Check rate limit for a given IP (Token Bucket)
     /// Returns true if allowed, false if dropped.
-    fn check_rate_limit(&mut self, src_ip: Ipv4Address, current_time: u64) -> bool {
+    pub(crate) fn check_rate_limit(&mut self, src_ip: Ipv4Address, current_time: u64) -> bool {
         // Global rate limit: Add 1 token per 10ms (100 pkts/sec), max 100 tokens.
         let elapsed_global = current_time.saturating_sub(self.global_last_time);
         let new_global_tokens = (elapsed_global / 10) as u32;

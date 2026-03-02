@@ -106,6 +106,44 @@ impl NetworkEventHandler {
             NetworkEvent::SendTo { fd, data, remote } => self.handle_send_to(fd, remote, data),
             NetworkEvent::SetNoDelay { fd, nodelay } => self.handle_set_nodelay(fd, nodelay),
             NetworkEvent::SetPriority { fd, priority } => self.handle_set_priority(fd, priority),
+            NetworkEvent::RawUdpSend { src_port, dst_ip, dst_port, data } => {
+                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                if crate::net::runtime::stack::send_udp(src_port, dst, dst_port, &data) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawTcpSend { src_ip, dst_ip, segment } => {
+                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
+                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                if crate::net::runtime::stack::send_tcp(src, dst, &segment) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawUdpV6Send { src_port, src_ip, dst_ip, dst_port, data } => {
+                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                if crate::net::runtime::stack::send_udp_v6(src_port, src, dst, dst_port, &data) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawTcpV6Send { src_ip, dst_ip, segment } => {
+                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                if crate::net::runtime::stack::send_tcp_v6(src, dst, &segment) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::IcmpEchoRequest { target, sequence } => {
+                self.handle_icmp_echo_request(target, sequence)
+            }
         }
     }
 
@@ -160,7 +198,7 @@ impl NetworkEventHandler {
                                 super::tcp_rx::process_tcp_segment(src_ip.octets(), dst_ip.octets(), payload);
                             }
                             crate::net::l3::ipv4::IpProtocol::Udp => {
-                                self.handle_udp_ingress_with_stack(src_ip.octets(), dst_ip.octets(), payload, stack);
+                                self.handle_udp_ingress_with_stack(src_ip.octets(), dst_ip.octets(), payload, stack, &data, current_time);
                             }
                             crate::net::l3::ipv4::IpProtocol::Icmp => {
                                 stack.process_icmp_data(payload, src_ip, dst_ip, packet.ttl(), current_time);
@@ -208,6 +246,48 @@ impl NetworkEventHandler {
             }
             NetworkEvent::SendTo { fd, data, remote } => {
                 self.handle_send_to_with_stack(fd, remote, data, stack)
+            }
+            NetworkEvent::RawUdpSend { src_port, dst_ip, dst_port, data } => {
+                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                if stack.send_udp_raw(src_port, dst, dst_port, &data) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawTcpSend { src_ip, dst_ip, segment } => {
+                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
+                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                if stack.send_tcp(src, dst, &segment) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawUdpV6Send { src_port, src_ip, dst_ip, dst_port, data } => {
+                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                if stack.send_udp_v6_raw(src_port, src, dst, dst_port, &data) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawTcpV6Send { src_ip, dst_ip, segment } => {
+                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                if stack.send_tcp_v6_raw(src, dst, &segment) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::IcmpEchoRequest { target, sequence } => {
+                let target_ip = crate::net::l3::ipv4::Ipv4Address::new(target);
+                match stack.send_icmp_echo_request(target_ip, sequence) {
+                    Ok(_send_time) => EventHandleResult::Success,
+                    Err(_) => EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
+                }
             }
             // その他のイベントはスタック非依存または個別ロックで対応
             other => self.handle_event(other),
@@ -318,8 +398,8 @@ impl NetworkEventHandler {
             use crate::net::l3::ipv4::Ipv4Address;
             use crate::net::l3::icmp::DestUnreachCode;
             
-            let src_v4 = Ipv4Address::from(src_ip);
-            let dst_v4 = Ipv4Address::from(dst_ip);
+            let src_v4 = Ipv4Address::new(src_ip);
+            let dst_v4 = Ipv4Address::new(dst_ip);
             
             // Only send if it wasn't broadcast/multicast (RFC 1122)
             if !dst_v4.is_broadcast() && !dst_v4.is_multicast() {
@@ -996,6 +1076,14 @@ impl NetworkEventHandler {
             Ok(())
         } else {
             Err(EndpointError::ResourceExhausted)
+        }
+    }
+
+    /// ICMP Echo Requestイベント処理（スタックロックを取得して送信）
+    fn handle_icmp_echo_request(&self, target: [u8; 4], sequence: u16) -> EventHandleResult {
+        match crate::net::runtime::bridge::send_real_icmp_echo(target, sequence) {
+            Ok(_ts) => EventHandleResult::Success,
+            Err(_e) => EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
         }
     }
 }

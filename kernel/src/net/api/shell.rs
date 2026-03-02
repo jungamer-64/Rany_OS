@@ -147,6 +147,21 @@ pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
         .map_err(String::from)
 }
 
+/// 非同期ICMP Echo送信
+///
+/// ICMP Echoリクエストをイベントキュー経由で送信する。
+/// エグゼキュータが起動しているasyncコンテキストから呼び出す。
+/// 応答を待機するには別途ICMP応答のリスニング機構が必要。
+pub fn send_icmp_echo_async(target: [u8; 4], seq: u16) -> bool {
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoRequest {
+            target,
+            sequence: seq,
+        },
+    );
+    true
+}
+
 pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
     let snapshots = tcb_table().list_connections();
     if snapshots.is_empty() {
@@ -288,7 +303,7 @@ pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
     } else {
         Ipv4Address::new(server_ip)
     };
-    stack::send_udp(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..total_len])
+    stack::send_udp_async(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..total_len])
 }
 
 pub fn dhcp_release() {
