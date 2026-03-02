@@ -489,7 +489,8 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // スタック最下位ページをアンマップする。
     {
         let stack_bottom = unsafe { &raw const KERNEL_STACK as usize };
-        crate::panic_handler::setup_stack_guard(stack_bottom, core::mem::size_of_val(unsafe { &KERNEL_STACK }));
+        const STACK_SIZE: usize = 4096 * 128;
+        crate::panic_handler::setup_stack_guard(stack_bottom, STACK_SIZE);
         info!(target: "init", "BSP stack guard page installed at {:#x}", stack_bottom);
     }
 
