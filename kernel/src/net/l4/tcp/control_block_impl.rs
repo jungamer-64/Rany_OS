@@ -931,10 +931,10 @@ impl TcpControlBlock {
     pub fn on_loss(&mut self) {
         let mss = self.congestion.mss as u32;
         
-        // ssthresh = max(cwnd / 2, 2*MSS)
-        self.congestion.ssthresh = (self.congestion.cwnd / 2).max(2 * mss);
+        // RFC 5681: ssthresh = max(FlightSize / 2, 2*MSS)
+        self.congestion.ssthresh = (self.tx.outstanding_bytes / 2).max(2 * mss);
         
-        // cwnd = 1 MSS (slow start)
+        // cwnd = 1 MSS (slow start after loss)
         self.congestion.cwnd = mss;
         
         // Exit recovery if in it
