@@ -181,15 +181,67 @@ impl ProcFs {
 
     /// /proc 直下のシステムファイルを登録する
     fn add_system_files(&self) {
-        self.add_file("version", || read_sysfs_text("/sys/system/version"));
-        self.add_file("uptime", || read_sysfs_text("/sys/system/uptime"));
-        self.add_file("meminfo", || read_sysfs_text("/sys/system/meminfo"));
-        self.add_file("cpuinfo", || read_sysfs_text("/sys/system/cpuinfo"));
-        self.add_file("stat", || read_sysfs_text("/sys/system/stat"));
-        self.add_file("loadavg", || read_sysfs_text("/sys/system/loadavg"));
-        self.add_file("filesystems", || read_sysfs_text("/sys/system/filesystems"));
-        self.add_file("mounts", || read_sysfs_text("/sys/system/mounts"));
-        self.add_file("cmdline", || read_sysfs_text("/sys/system/cmdline"));
+        use crate::system_info as si;
+        self.add_file("version", || {
+            Ok(alloc::format!(
+                "ExoRust Kernel {} ({}) (gcc version 12.0.0)\n",
+                si::kernel_version(),
+                si::arch_name()
+            ))
+        });
+        self.add_file("uptime", || {
+            let ticks = si::uptime_ticks();
+            let secs = ticks / 1000;
+            let frac = (ticks % 1000) / 10;
+            let idle_secs = secs * 9 / 10;
+            let idle_frac = frac * 9 / 10;
+            Ok(alloc::format!("{}.{:02} {}.{:02}\n", secs, frac, idle_secs, idle_frac))
+        });
+        self.add_file("meminfo", || {
+            let total_kb = si::memory_total_kb();
+            let free_kb = si::memory_free_kb();
+            let available_kb = free_kb + (free_kb / 4);
+            let used_kb = total_kb.saturating_sub(free_kb);
+            Ok(alloc::format!(
+                "MemTotal:       {:8} kB\nMemFree:        {:8} kB\nMemAvailable:   {:8} kB\nBuffers:        {:8} kB\nCached:         {:8} kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n",
+                total_kb, free_kb, available_kb, used_kb / 8, used_kb / 4
+            ))
+        });
+        self.add_file("cpuinfo", || {
+            let count = si::cpu_count();
+            let vendor = si::cpu_vendor();
+            let model = si::cpu_model();
+            let mut info = String::new();
+            for id in 0..count {
+                use core::fmt::Write;
+                let _ = write!(info,
+                    "processor\t: {}\nvendor_id\t: {}\ncpu family\t: 6\nmodel name\t: {}\ncpu MHz\t\t: 3000.000\ncache size\t: 8192 KB\nsiblings\t: {}\ncore id\t\t: {}\ncpu cores\t: {}\n\n",
+                    id, vendor, model, count, id, count
+                );
+            }
+            Ok(info)
+        });
+        self.add_file("stat", || {
+            let timer = si::timer_ticks();
+            let ctx = si::context_switch_count();
+            let boot = si::boot_time_secs();
+            let domains = crate::domain_system::list_domain_snapshots().len() as u64;
+            let cpu_count = si::cpu_count();
+            let mut out = String::new();
+            use core::fmt::Write;
+            let _ = write!(out, "cpu  {} 0 {} 0 0 0 {} 0 0 0\n", timer / 10, timer / 5, timer / 20);
+            for i in 0..cpu_count {
+                let _ = write!(out, "cpu{} {} 0 {} 0 0 0 {} 0 0 0\n",
+                    i, timer / (10 * cpu_count as u64), timer / (5 * cpu_count as u64), timer / (20 * cpu_count as u64));
+            }
+            let _ = write!(out, "intr {}\nctxt {}\nbtime {}\nprocesses {}\nprocs_running 1\nprocs_blocked 0\n",
+                timer, ctx, boot, domains);
+            Ok(out)
+        });
+        self.add_file("loadavg", || Ok(String::from("0.00 0.00 0.00 1/1 1\n")));
+        self.add_file("filesystems", || Ok(String::from("nodev\ttmpfs\n")));
+        self.add_file("mounts", || Ok(String::from("")));
+        self.add_file("cmdline", || Ok(String::from("console=ttyS0\n")));
     }
 
     /// 静的エントリを初期化
@@ -214,17 +266,21 @@ impl ProcFs {
 
         let hostname_inode = self.allocate_inode();
         let hostname_entry =
-            ProcEntry::file(hostname_inode, "hostname", || read_sysfs_text("/sys/system/kernel/hostname"));
+            ProcEntry::file(hostname_inode, "hostname", || Ok(String::from("exorust\n")));
         kernel_entry.add_child(hostname_entry);
 
         let ostype_inode = self.allocate_inode();
         let ostype_entry =
-            ProcEntry::file(ostype_inode, "ostype", || read_sysfs_text("/sys/system/kernel/ostype"));
+            ProcEntry::file(ostype_inode, "ostype", || {
+                Ok(alloc::format!("{}\n", crate::system_info::kernel_name()))
+            });
         kernel_entry.add_child(ostype_entry);
 
         let version_inode = self.allocate_inode();
         let version_entry =
-            ProcEntry::file(version_inode, "version", || read_sysfs_text("/sys/system/kernel/version"));
+            ProcEntry::file(version_inode, "version", || {
+                Ok(alloc::format!("#1 SMP ExoRust {}\n", crate::system_info::kernel_version()))
+            });
         kernel_entry.add_child(version_entry);
 
         let mut root = self.root.write();
@@ -235,17 +291,26 @@ impl ProcFs {
 
     /// net エントリを追加
     fn add_net_entries(&self) {
-        let net_files: &[(&str, &str)] = &[
-            ("dev", "/sys/system/net/dev"),
-            ("tcp", "/sys/system/net/tcp"),
-            ("udp", "/sys/system/net/udp"),
-            ("arp", "/sys/system/net/arp"),
+        let net_generators: &[(&str, fn() -> Result<String, ProcError>)] = &[
+            ("dev", || {
+                let mut out = String::from(
+                    "Inter-|   Receive                                                |  Transmit\n\
+                     face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n");
+                out.push_str("    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n");
+                out.push_str("  eth0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n");
+                Ok(out)
+            }),
+            ("tcp", || Ok(String::from(
+                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"))),
+            ("udp", || Ok(String::from(
+                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"))),
+            ("arp", || Ok(String::from(
+                "IP address       HW type     Flags       HW address            Mask     Device\n"))),
         ];
 
-        for &(name, sysfs_path) in net_files {
+        for &(name, gen_fn) in net_generators {
             let inode = self.allocate_inode();
-            let path = sysfs_path.to_string();
-            let entry = ProcEntry::file(inode, name, move || read_sysfs_text(&path));
+            let entry = ProcEntry::file(inode, name, gen_fn);
             let mut root = self.root.write();
             if let Some(net_dir) = root.children.get_mut("net") {
                 net_dir.add_child(entry);
