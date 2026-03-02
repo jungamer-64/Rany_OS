@@ -191,7 +191,7 @@ impl AhciPort {
             header.set_ctba(
                 self.command_tables[slot.as_usize()]
                     .as_ref()
-                    .unwrap()
+                    .ok_or(AhciError::InternalError)?
                     .device_address(),
             );
         }
@@ -261,7 +261,7 @@ impl AhciPort {
             header.set_ctba(
                 self.command_tables[slot.as_usize()]
                     .as_ref()
-                    .unwrap()
+                    .ok_or(AhciError::InternalError)?
                     .device_address(),
             );
         }
@@ -326,7 +326,7 @@ impl AhciPort {
             header.set_ctba(
                 self.command_tables[slot.as_usize()]
                     .as_ref()
-                    .unwrap()
+                    .ok_or(AhciError::InternalError)?
                     .device_address(),
             );
         }
@@ -377,7 +377,7 @@ impl AhciPort {
             header.set_ctba(
                 self.command_tables[slot.as_usize()]
                     .as_ref()
-                    .unwrap()
+                    .ok_or(AhciError::InternalError)?
                     .device_address(),
             );
         }
@@ -421,7 +421,7 @@ impl AhciPort {
             header.set_ctba(
                 self.command_tables[slot.as_usize()]
                     .as_ref()
-                    .unwrap()
+                    .ok_or(AhciError::InternalError)?
                     .device_address(),
             );
         }

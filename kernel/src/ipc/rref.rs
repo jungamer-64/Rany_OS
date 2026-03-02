@@ -150,6 +150,8 @@ impl<T> RRef<T> {
             return Err(AccessError::Poisoned);
         }
         if self.owner == requester {
+            // SAFETY: ポイズニングチェックとオーナーチェックを通過済み。
+            // self.ptrはExchange Heapから割り当てられた有効なNonNullポインタ。
             Ok(unsafe { self.ptr.as_ref() })
         } else {
             Err(AccessError::NotOwner)
@@ -164,6 +166,9 @@ impl<T> RRef<T> {
             return Err(AccessError::Poisoned);
         }
         if self.owner == requester {
+            // SAFETY: ポイズニングチェックとオーナーチェックを通過済み。
+            // self.ptrはExchange Heapから割り当てられた有効なNonNullポインタ。
+            // 可変参照は排他的所有権で保証される。
             Ok(unsafe { self.ptr.as_mut() })
         } else {
             Err(AccessError::NotOwner)

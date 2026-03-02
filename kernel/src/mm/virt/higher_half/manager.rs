@@ -159,6 +159,8 @@ pub fn flush_tlb() {
 /// CR3を設定
 #[inline]
 pub unsafe fn set_cr3(pml4_phys: PhysAddr) {
+    // SAFETY: 呼び出し元がPML4テーブルの物理アドレスの有効性を保証する。
+    // CR3操作はSPL設計でRing 0アクセスが保証される。
     unsafe {
         core::arch::asm!("mov cr3, {}", in(reg) pml4_phys.as_u64(), options(nostack, preserves_flags));
     }

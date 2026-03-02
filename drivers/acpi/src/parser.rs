@@ -103,8 +103,8 @@ impl AcpiParser {
         }
 
         self.info = Some(info);
-        // 直前で Some(info) を設定したため、unwrap は必ず成功する。
-        Ok(self.info.as_ref().unwrap())
+        // SAFETY: 直前で Some(info) を設定したため、as_ref() は必ず Some を返す
+        Ok(self.info.as_ref().expect("info was just set to Some"))
     }
 
     /// Dispatch a single ACPI table to its appropriate parser.

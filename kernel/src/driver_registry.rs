@@ -528,6 +528,7 @@ extern "C" fn kapi_free_dma(handle: *const AbiDmaBuffer) -> i32 {
         return AbiErrorCode::InvalidParam as i32;
     }
 
+    // SAFETY: handleの非nullチェック済み。DMAバッファハンドルはFramework層が割り当てた有効なポインタ。
     let h = unsafe { &*handle };
     let buf = kernel_api::DmaBuffer::new(h.phys_addr, h.virt_addr as usize as *mut u8, h.size);
     kernel_api::services::kernel().free_dma(buf);
@@ -581,6 +582,7 @@ extern "C" fn kapi_heap_alloc(size: usize) -> *mut u8 {
         Err(_) => return core::ptr::null_mut(),
     };
 
+    // SAFETY: Layout検証済み。グローバルアロケータに委譲。
     unsafe { alloc::alloc::alloc(layout) }
 }
 
@@ -596,6 +598,7 @@ extern "C" fn kapi_heap_dealloc(ptr: *mut u8, size: usize) {
         Err(_) => return,
     };
 
+    // SAFETY: ptrは非null検証済み。layoutはkapi_heap_allocと同一のアライメントで構築。
     unsafe { alloc::alloc::dealloc(ptr, layout) }
 }
 
