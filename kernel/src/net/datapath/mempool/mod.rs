@@ -638,10 +638,18 @@ impl Mempool {
         }?;
 
         unsafe {
-            // Security: Zero-out the buffer to prevent Information Disclosure
-            // from previous packets (RFC 4963, RFC 6274).
-            // We zero the entire data area before reuse.
-            core::ptr::write_bytes(buffer.as_ref().data.as_ptr() as *mut u8, 0, DEFAULT_BUFFER_SIZE);
+            // Security: Zero-out previously used portion to prevent Information
+            // Disclosure from previous packets (RFC 4963, RFC 6274).
+            // Optimization: only clear the range that was actually written
+            // (tracked by meta.len) instead of the entire buffer.
+            let prev_len = buffer.as_ref().meta.len.load(Ordering::Acquire);
+            if prev_len > 0 {
+                core::ptr::write_bytes(
+                    buffer.as_ref().data.as_ptr() as *mut u8,
+                    0,
+                    prev_len.min(DEFAULT_BUFFER_SIZE),
+                );
+            }
 
             // 初期化
             buffer.as_ref().meta.len.store(0, Ordering::Release);
@@ -760,8 +768,16 @@ impl PerCoreMempoolCache {
         if let Ok(mut cache) = self.local_cache.lock() {
             if let Some(buffer) = cache.pop() {
                 unsafe {
-                    // Security: Zero-out the buffer to prevent Information Disclosure
-                    core::ptr::write_bytes(buffer.as_ref().data.as_ptr() as *mut u8, 0, DEFAULT_BUFFER_SIZE);
+                    // Security: Zero-out previously used portion to prevent
+                    // Information Disclosure (RFC 4963, RFC 6274).
+                    let prev_len = buffer.as_ref().meta.len.load(Ordering::Acquire);
+                    if prev_len > 0 {
+                        core::ptr::write_bytes(
+                            buffer.as_ref().data.as_ptr() as *mut u8,
+                            0,
+                            prev_len.min(DEFAULT_BUFFER_SIZE),
+                        );
+                    }
 
                     buffer.as_ref().meta.len.store(0, Ordering::Release);
                     buffer.as_ref().meta.ref_count.store(1, Ordering::Release);

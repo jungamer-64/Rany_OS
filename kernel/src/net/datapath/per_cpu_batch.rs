@@ -197,8 +197,8 @@ impl PerCpuBatchProcessor {
 
         queue.push(packet);
 
-        // キューが閾値（半分）に達したら早期フラッシュ
-        if queue.len() >= PER_CPU_BATCH_CAPACITY / 2 {
+        // キューが閾値（75%）に達したら早期フラッシュ
+        if queue.len() >= (PER_CPU_BATCH_CAPACITY * 3) / 4 {
             let batch = queue.flush();
             if let Some(ref b) = batch {
                 self.total_flushes.fetch_add(1, Ordering::Relaxed);
@@ -211,16 +211,21 @@ impl PerCpuBatchProcessor {
         None
     }
 
-    /// 全CPUのキューを強制フラッシュ
+    /// 全CPUのキューを強制フラッシュ（非ブロッキング）
+    ///
+    /// 他のCPUがロック保持中のキューはスキップし、
+    /// 待機によるスループット低下を回避する。
     pub fn flush_all(&self) -> Vec<PacketBatch> {
         let mut batches = Vec::new();
         for queue_lock in &self.queues {
-            let mut queue = queue_lock.lock();
-            if let Some(batch) = queue.flush() {
-                self.total_flushes.fetch_add(1, Ordering::Relaxed);
-                self.total_packets
-                    .fetch_add(batch.len() as u64, Ordering::Relaxed);
-                batches.push(batch);
+            // try_lock で非ブロッキング取得—他CPUが使用中ならスキップ
+            if let Some(mut queue) = queue_lock.try_lock() {
+                if let Some(batch) = queue.flush() {
+                    self.total_flushes.fetch_add(1, Ordering::Relaxed);
+                    self.total_packets
+                        .fetch_add(batch.len() as u64, Ordering::Relaxed);
+                    batches.push(batch);
+                }
             }
         }
         batches
@@ -239,17 +244,21 @@ impl PerCpuBatchProcessor {
         batch
     }
 
-    /// タイムアウトチェック（全CPU）
+    /// タイムアウトチェック（全CPU、非ブロッキング）
+    ///
+    /// 他のCPUがロック保持中のキューはスキップする。
     pub fn check_timeouts(&self, current_tsc: u64, tsc_freq_mhz: u64) -> Vec<PacketBatch> {
         let mut batches = Vec::new();
         for queue_lock in &self.queues {
-            let mut queue = queue_lock.lock();
-            if let Some(batch) = queue.flush_if_timeout(current_tsc, tsc_freq_mhz) {
-                self.total_flushes.fetch_add(1, Ordering::Relaxed);
-                self.timeout_flushes.fetch_add(1, Ordering::Relaxed);
-                self.total_packets
-                    .fetch_add(batch.len() as u64, Ordering::Relaxed);
-                batches.push(batch);
+            // try_lock で非ブロッキング取得
+            if let Some(mut queue) = queue_lock.try_lock() {
+                if let Some(batch) = queue.flush_if_timeout(current_tsc, tsc_freq_mhz) {
+                    self.total_flushes.fetch_add(1, Ordering::Relaxed);
+                    self.timeout_flushes.fetch_add(1, Ordering::Relaxed);
+                    self.total_packets
+                        .fetch_add(batch.len() as u64, Ordering::Relaxed);
+                    batches.push(batch);
+                }
             }
         }
         batches

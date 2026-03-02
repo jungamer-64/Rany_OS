@@ -122,24 +122,34 @@ impl PacketBuffer {
 }
 
 // ============================================================================
-// Ring Buffer (Lock-free)
+// Ring Buffer (Lock-free SPSC)
 // ============================================================================
 
-/// ロックフリーリングバッファ
+/// ロックフリー SPSC リングバッファ
+///
+/// 単一プロデューサ・単一コンシューマ設計。
+/// `push`/`pop` は `&self` で呼び出し可能 — 外部ロック不要。
+/// ISR(プロデューサ) → Executor(コンシューマ) のような
+/// 2段階Wake方式に最適。
 pub struct RingBuffer<T> {
-    buffer: Vec<Option<T>>,
+    buffer: alloc::vec::Vec<core::cell::UnsafeCell<Option<T>>>,
     head: AtomicU32,
     tail: AtomicU32,
     capacity: u32,
 }
 
+// SAFETY: SPSC設計により、headはコンシューマのみ、tailはプロデューサのみが更新する。
+// UnsafeCellへのアクセスはhead/tailで排他的に制御される。
+unsafe impl<T: Send> Send for RingBuffer<T> {}
+unsafe impl<T: Send> Sync for RingBuffer<T> {}
+
 impl<T> RingBuffer<T> {
     /// 新しいリングバッファを作成
     pub fn new(capacity: usize) -> Self {
         let capacity = capacity.next_power_of_two() as u32;
-        let mut buffer = Vec::with_capacity(capacity as usize);
+        let mut buffer = alloc::vec::Vec::with_capacity(capacity as usize);
         for _ in 0..capacity {
-            buffer.push(None);
+            buffer.push(core::cell::UnsafeCell::new(None));
         }
 
         Self {
@@ -150,31 +160,43 @@ impl<T> RingBuffer<T> {
         }
     }
 
-    /// アイテムを追加
-    pub fn push(&mut self, item: T) -> Result<(), T> {
-        let head = self.head.load(Ordering::Acquire);
-        let tail = self.tail.load(Ordering::Acquire);
-
+    /// アイテムを追加（プロデューサ側、&selfで呼び出し可能）
+    ///
+    /// # Safety contract
+    /// SPSC: 同時に1つのプロデューサのみが `push` を呼び出すこと。
+    pub fn push(&self, item: T) -> Result<(), T> {
+        let tail = self.tail.load(Ordering::Relaxed);
         let next_tail = (tail + 1) & (self.capacity - 1);
+        let head = self.head.load(Ordering::Acquire);
+
         if next_tail == head {
             return Err(item); // Full
         }
 
-        self.buffer[tail as usize] = Some(item);
+        // SAFETY: tailはプロデューサのみが更新し、headとの間のスロットは
+        // プロデューサが排他的に書き込み可能。
+        unsafe {
+            *self.buffer[tail as usize].get() = Some(item);
+        }
         self.tail.store(next_tail, Ordering::Release);
         Ok(())
     }
 
-    /// アイテムを取得
-    pub fn pop(&mut self) -> Option<T> {
-        let head = self.head.load(Ordering::Acquire);
+    /// アイテムを取得（コンシューマ側、&selfで呼び出し可能）
+    ///
+    /// # Safety contract
+    /// SPSC: 同時に1つのコンシューマのみが `pop` を呼び出すこと。
+    pub fn pop(&self) -> Option<T> {
+        let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
         if head == tail {
             return None; // Empty
         }
 
-        let item = self.buffer[head as usize].take();
+        // SAFETY: headはコンシューマのみが更新し、現在のスロットは
+        // コンシューマが排他的に読み取り可能。
+        let item = unsafe { (*self.buffer[head as usize].get()).take() };
         let next_head = (head + 1) & (self.capacity - 1);
         self.head.store(next_head, Ordering::Release);
         item
@@ -746,7 +768,7 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_ring_buffer() {
-        let mut ring: RingBuffer<u32> = RingBuffer::new(4);
+        let ring: RingBuffer<u32> = RingBuffer::new(4);
         assert!(ring.is_empty());
 
         ring.push(1).unwrap();

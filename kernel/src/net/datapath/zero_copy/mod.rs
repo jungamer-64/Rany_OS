@@ -670,9 +670,12 @@ impl Drop for ZeroCopyBuffer {
 // Scatter-Gather List
 // ============================================================================
 
-/// Scatter-Gatherエントリ
+/// DMA Scatter-Gatherエントリ（物理/IOVAアドレス専用）
+///
+/// `scatter_gather::SgEntry`（仮想アドレスベース）との混同を避けるため、
+/// DMA固有の名前を使用。
 #[derive(Debug, Clone, Copy)]
-pub struct SgEntry {
+pub struct DmaSgEntry {
     /// DMAアドレス
     pub addr: u64,
     /// 長さ
@@ -721,11 +724,11 @@ impl SgList {
         self.total_len
     }
 
-    /// DMAドライバに渡すためのSgEntry配列を生成
-    pub fn entries(&self) -> Vec<SgEntry> {
+    /// DMAドライバに渡すためのDmaSgEntry配列を生成
+    pub fn entries(&self) -> Vec<DmaSgEntry> {
         self.buffers
             .iter()
-            .map(|buf| SgEntry {
+            .map(|buf| DmaSgEntry {
                 addr: buf.dma_addr(),
                 len: buf.len() as u32,
             })

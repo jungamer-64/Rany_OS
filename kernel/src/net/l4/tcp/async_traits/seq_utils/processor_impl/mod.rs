@@ -1040,9 +1040,9 @@ impl TcpProcessor {
         ack: bool,
         ack_num: u32,
         seq_num: u32,
-        _header_len: usize,
+        header_len: usize,
         payload: &[u8],
-        _packet_opt: Option<PacketRef>,
+        packet_opt: Option<PacketRef>,
         _options_data: Option<&[u8]>,
     ) -> TcpProcessResult {
         // ACK acknowledging our SYN (snd_una + 1)

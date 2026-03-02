@@ -16,8 +16,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::checksum_offload::internet_checksum;
 
-/// キャッシュエントリの最大数
+/// キャッシュエントリの最大数（2-way × 32セット = 64エントリ合計）
 const HEADER_CACHE_SIZE: usize = 64;
+
+/// アソシエイティビティ（ウェイ数）
+const HEADER_CACHE_WAYS: usize = 2;
+
+/// セット数
+const HEADER_CACHE_SETS: usize = HEADER_CACHE_SIZE / HEADER_CACHE_WAYS;
 
 /// ヘッダテンプレートの最大バイト数 (Ethernet:14 + IPv4:20 + TCP:60 = 94)
 const MAX_HEADER_TEMPLATE_SIZE: usize = 128;
@@ -280,8 +286,9 @@ impl CachedHeader {
 
 /// ヘッダキャッシュ
 ///
-/// ダイレクトマップ方式（コネクションIDでインデックス算出）。
-/// コリジョン時はLRU的に上書き。
+/// 2-wayセットアソシエイティブ方式 (32セット × 2ウェイ)。
+/// ダイレクトマップと比較してハッシュ衝突時のエヴィクション率を大幅に低減。
+/// 同一セット内ではLRU（last_access比較）で犠牲エントリを選択する。
 pub struct HeaderCache {
     entries: [CachedHeader; HEADER_CACHE_SIZE],
     /// キャッシュヒット数
@@ -304,41 +311,75 @@ impl HeaderCache {
         }
     }
 
-    /// コネクション用のキャッシュエントリを検索
-    pub fn lookup(&mut self, conn_id: ConnId, current_tsc: u64) -> Option<&mut CachedHeader> {
-        let idx = (conn_id.hash() as usize) % HEADER_CACHE_SIZE;
-        let entry = &mut self.entries[idx];
-
-        if entry.valid && entry.conn_id == conn_id {
-            self.hits.fetch_add(1, Ordering::Relaxed);
-            entry.last_access = current_tsc;
-            Some(entry)
-        } else {
-            self.misses.fetch_add(1, Ordering::Relaxed);
-            None
-        }
+    /// セットの開始インデックスを計算
+    #[inline]
+    fn set_base(conn_id: ConnId) -> usize {
+        ((conn_id.hash() as usize) % HEADER_CACHE_SETS) * HEADER_CACHE_WAYS
     }
 
-    /// エントリを挿入（既存エントリは上書き）
-    pub fn insert(&mut self, conn_id: ConnId) -> &mut CachedHeader {
-        let idx = (conn_id.hash() as usize) % HEADER_CACHE_SIZE;
-        let entry = &mut self.entries[idx];
+    /// コネクション用のキャッシュエントリを検索（2-way）
+    pub fn lookup(&mut self, conn_id: ConnId, current_tsc: u64) -> Option<&mut CachedHeader> {
+        let base = Self::set_base(conn_id);
 
-        if entry.valid && entry.conn_id != conn_id {
+        for way in 0..HEADER_CACHE_WAYS {
+            let idx = base + way;
+            if self.entries[idx].valid && self.entries[idx].conn_id == conn_id {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                self.entries[idx].last_access = current_tsc;
+                return Some(&mut self.entries[idx]);
+            }
+        }
+
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    /// エントリを挿入（2-way LRU選択）
+    ///
+    /// 空きウェイがあればそこに挿入。なければLRU（最古アクセス）を犠牲にする。
+    pub fn insert(&mut self, conn_id: ConnId) -> &mut CachedHeader {
+        let base = Self::set_base(conn_id);
+
+        // まず空きウェイを探す
+        for way in 0..HEADER_CACHE_WAYS {
+            let idx = base + way;
+            if !self.entries[idx].valid {
+                self.entries[idx] = CachedHeader::empty();
+                self.entries[idx].conn_id = conn_id;
+                return &mut self.entries[idx];
+            }
+        }
+
+        // 空きなし → LRU犠牲を選択（last_accessが最小のウェイ）
+        let mut victim_way = 0;
+        let mut min_access = self.entries[base].last_access;
+        for way in 1..HEADER_CACHE_WAYS {
+            let idx = base + way;
+            if self.entries[idx].last_access < min_access {
+                min_access = self.entries[idx].last_access;
+                victim_way = way;
+            }
+        }
+
+        let victim_idx = base + victim_way;
+        if self.entries[victim_idx].valid && self.entries[victim_idx].conn_id != conn_id {
             self.evictions.fetch_add(1, Ordering::Relaxed);
         }
 
-        *entry = CachedHeader::empty();
-        entry.conn_id = conn_id;
-        entry
+        self.entries[victim_idx] = CachedHeader::empty();
+        self.entries[victim_idx].conn_id = conn_id;
+        &mut self.entries[victim_idx]
     }
 
-    /// エントリを無効化
+    /// エントリを無効化（2-way検索）
     pub fn invalidate(&mut self, conn_id: ConnId) {
-        let idx = (conn_id.hash() as usize) % HEADER_CACHE_SIZE;
-        let entry = &mut self.entries[idx];
-        if entry.valid && entry.conn_id == conn_id {
-            entry.invalidate();
+        let base = Self::set_base(conn_id);
+        for way in 0..HEADER_CACHE_WAYS {
+            let idx = base + way;
+            if self.entries[idx].valid && self.entries[idx].conn_id == conn_id {
+                self.entries[idx].invalidate();
+                return;
+            }
         }
     }
 
