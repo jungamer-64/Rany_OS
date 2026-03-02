@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::demo::DemoResult;
-use crate::net::l4::endpoint::{OwnedSocket, SocketAddr, SocketError, create_tcp_server};
+use crate::net::l4::endpoint::{OwnedEndpoint, EndpointAddr, EndpointError, create_tcp_server};
 
 /// Echo server statistics
 pub struct EchoStats {
@@ -89,14 +89,14 @@ impl Default for EchoConfig {
 // ============================================================================
 
 /// Run the real async TCP echo server
-/// This uses the actual network stack with OwnedSocket and async/await
+/// This uses the actual network stack with OwnedEndpoint and async/await
 pub async fn run_echo_server() {
     run_echo_server_on_port(8080).await
 }
 
 /// Run the async TCP echo server on specified port
 pub async fn run_echo_server_on_port(port: u16) {
-    let addr = SocketAddr::new([0, 0, 0, 0], port); // 0.0.0.0:port
+    let addr = EndpointAddr::new([0, 0, 0, 0], port); // 0.0.0.0:port
 
     // 1. Create server socket (Bind + Listen)
     let server = match create_tcp_server(addr, 128) {
@@ -134,7 +134,7 @@ pub async fn run_echo_server_on_port(port: u16) {
                     // For now, we handle inline (single-threaded)
                     handle_echo_client(client_socket).await;
                 }
-                Err(SocketError::Timeout) => {
+                Err(EndpointError::Timeout) => {
                     // No pending connections, yield and try again
                     // In real async runtime, this would be handled by the Future
                     continue;
@@ -152,7 +152,7 @@ pub async fn run_echo_server_on_port(port: u16) {
 }
 
 /// Handle a single echo client connection
-async fn handle_echo_client(socket: OwnedSocket) {
+async fn handle_echo_client(socket: OwnedEndpoint) {
     let client_fd = socket.fd();
     log::info!("Echo Client {}: Handler started", client_fd.raw());
 
@@ -193,7 +193,7 @@ async fn handle_echo_client(socket: OwnedSocket) {
                     }
                 }
             }
-            Err(SocketError::Timeout) => {
+            Err(EndpointError::Timeout) => {
                 // No data available, continue waiting
                 continue;
             }
@@ -211,7 +211,7 @@ async fn handle_echo_client(socket: OwnedSocket) {
         client_fd.raw(),
         STATS.active_connections.load(Ordering::Relaxed)
     );
-    // OwnedSocket is dropped here, automatically sending FIN and closing
+    // OwnedEndpoint is dropped here, automatically sending FIN and closing
 }
 
 /// Stop the echo server
