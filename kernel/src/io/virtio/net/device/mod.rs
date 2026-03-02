@@ -203,6 +203,14 @@ impl VirtioNetDevice {
         self.tx_queues.get(0)
     }
 
+    /// Return the IOMMU device identifier, if assigned.
+    ///
+    /// Used by the bridge layer to allocate DMA buffers with correct IOMMU
+    /// mappings when submitting TX via the IoScheduler path.
+    pub fn iommu_device_id(&self) -> Option<IommuDeviceId> {
+        self.iommu_device_id
+    }
+
     /// Bind this VirtIO device to a logical network interface identifier.
     pub fn set_net_if_id(&mut self, if_id: crate::net::runtime::manager::NetIfId) {
         self.net_if_id = Some(if_id);

@@ -18,7 +18,12 @@ use crate::net::obs::{
 };
 use crate::io::virtio::{
     VirtioNetDevice, bind_virtio_net_interface, with_virtio_net, with_virtio_net_at_index,
+    VIRTIO_NET_IOCTL_TX,
 };
+use crate::io::io_scheduler::{
+    DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority, hybrid_coordinator,
+};
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -721,8 +726,95 @@ fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
     }
 }
 
-/// Background TX worker: drains TX_QUEUE and performs actual device submits
+/// IoScheduler 経由で VirtIO-Net にパケットを非同期送信する。
+///
+/// 1. VirtIO デバイスから IOMMU デバイスIDを取得
+/// 2. CoherentDmaBuffer を割り当て（IOMMU 自動マッピング付き）
+/// 3. データをコピーし IoScheduler 経由でサブミット
+/// 4. IoFuture の完了を await（バッファは完了まで生存）
+///
+/// IoScheduler にデバイスが未登録または DMA 割り当て失敗時は `Err` を返す。
+async fn submit_tx_via_io_scheduler(device_index: u8, data: &[u8]) -> Result<usize, &'static str> {
+    use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
+
+    log::info!("[IO-TX] submit_tx_via_io_scheduler: enter, dev={}, len={}", device_index, data.len());
+
+    // IOMMU デバイスIDを取得（デバイスコールバック内で Clone して返す）
+    let iommu_dev: Option<IommuDeviceId> = with_virtio_net_at_index(device_index, |dev| {
+        dev.iommu_device_id()
+    }).flatten();
+
+    log::info!("[IO-TX] iommu_dev={:?}", iommu_dev.is_some());
+
+    // IoScheduler にデバイス登録済みか確認（PollHandler の存在で判定）
+    if crate::io::virtio::get_poll_handler(device_index).is_none() {
+        log::warn!("[IO-TX] PollHandler not registered for dev={}", device_index);
+        return Err("IoScheduler: device not registered");
+    }
+
+    // DMA バッファ割り当て
+    let mut buffer = match iommu_dev {
+        Some(ref dev_id) => CoherentDmaBuffer::new_for_device(
+            data.len(),
+            DmaMemoryAttributes::MMIO,
+            dev_id,
+        ),
+        None => CoherentDmaBuffer::new(
+            data.len(),
+            DmaMemoryAttributes::MMIO,
+        ),
+    }.ok_or("IoScheduler: DMA buffer allocation failed")?;
+
+    log::info!("[IO-TX] DMA buffer allocated: iova=0x{:x}, len={}", buffer.device_addr(), data.len());
+
+    // ペイロードを DMA バッファにコピー
+    {
+        let dst = unsafe { buffer.as_mut_slice() };
+        dst[..data.len()].copy_from_slice(data);
+    }
+    buffer.prepare_for_device();
+
+    let handle = DmaBufHandle {
+        iova: buffer.device_addr(),
+        len: data.len(),
+    };
+
+    let device = IoDeviceId::VirtioNet { index: device_index };
+    let command = IoCommand::Ioctl {
+        code: VIRTIO_NET_IOCTL_TX,
+        buf: handle,
+    };
+
+    // IoScheduler 経由でサブミット → IoFuture を await
+    log::info!("[IO-TX] submitting IoCommand::Ioctl(TX) to IoScheduler");
+    let io_future = hybrid_coordinator().submit_io_command(device, command, IoPriority::Normal);
+    log::info!("[IO-TX] IoFuture created, awaiting completion...");
+    match io_future.await {
+        Ok(bytes) => {
+            log::info!("[IO-TX] IoFuture completed OK, bytes={}", bytes);
+            // buffer はここで Drop（IOMMU unmap を含む）
+            Ok(bytes)
+        }
+        Err(e) => {
+            log::warn!("[IO-TX] IoFuture completed with error: {:?}", e);
+            Err("IoScheduler: TX submission failed")
+        }
+    }
+}
+
+/// Resolve the VirtIO device index for a given interface (or default to 0).
+fn resolve_virtio_index(if_id: Option<NetIfId>) -> u8 {
+    if_id
+        .and_then(lookup_virtio_index_for_interface)
+        .unwrap_or(0)
+}
+
+/// Background TX worker: drains TX_QUEUE and performs actual device submits.
+///
+/// IoScheduler 経路が利用可能な場合は非同期で送信し、完了を await する。
+/// IoScheduler 未登録またはDMA割り当て失敗時はレガシー経路（submit_tx）にフォールバックする。
 async fn tx_worker_task() {
+    log::info!("[TX-WORKER] tx_worker_task started");
     loop {
         // Drain any pending entries without awaiting
         let mut drained = tx_queue_drain_all();
@@ -733,16 +825,28 @@ async fn tx_worker_task() {
             drained = tx_queue_drain_all();
         }
 
+        log::info!("[TX-WORKER] drained {} TX requests", drained.len());
+
         for req in drained.into_iter() {
-            // Attempt to submit on the appropriate device/interface
-            let sent = if let Some(if_id) = req.if_id {
-                send_packet_on_interface(if_id, &req.data)
-            } else {
-                // Generic device: use with_virtio_net to pick default
-                let result = with_virtio_net(|device| transmit_packet(device, &req.data));
-                match result {
-                    Some(Ok(())) => true,
-                    _ => false,
+            let device_index = resolve_virtio_index(req.if_id);
+
+            log::info!("[TX-WORKER] processing req: dev={}, len={}", device_index, req.data.len());
+
+            // Try IoScheduler path first
+            let sent = match submit_tx_via_io_scheduler(device_index, &req.data).await {
+                Ok(bytes) => {
+                    log::info!("[TX-WORKER] IoScheduler path succeeded, bytes={}", bytes);
+                    true
+                }
+                Err(reason) => {
+                    log::warn!("[TX-WORKER] IoScheduler path failed: {}, fallback to legacy", reason);
+                    // Fallback to legacy path
+                    if let Some(if_id) = req.if_id {
+                        send_packet_on_interface(if_id, &req.data)
+                    } else {
+                        let result = with_virtio_net(|device| transmit_packet(device, &req.data));
+                        matches!(result, Some(Ok(())))
+                    }
                 }
             };
 
@@ -1223,6 +1327,11 @@ pub fn init_bridge() -> Result<(), &'static str> {
             log::warn!("[NET BRIDGE] failed to register primary vnet0 in NetworkManager: {:?}", err);
         }
     }
+
+    // Register VirtIO-Net device (index 0) with IoScheduler for adaptive
+    // polling/interrupt switching and completion tracking.
+    crate::io::virtio::register_virtio_net_with_io_scheduler(0);
+    log::info!("[NET BRIDGE] VirtIO-Net registered with IoScheduler");
 
     // Set transmit callback
     match stack::stack().lock() {

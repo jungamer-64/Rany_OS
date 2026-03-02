@@ -3,6 +3,7 @@ use crate::sync::set_panicking;
 
 #[cfg_attr(test, test_case)]
 pub fn test_primary_server_poisoned_returns_none() {
+    eprintln!("[TEST] Running test_primary_server_poisoned_returns_none...");
     let client = DnsClient::new(100);
     {
         let mut s = client.ipv4_servers.lock().unwrap();

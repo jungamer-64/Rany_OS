@@ -2,6 +2,7 @@ use super::*;
 
 #[cfg_attr(test, test_case)]
 pub fn test_ipv4_address() {
+    eprintln!("[TEST] Running test_ipv4_address...");
     let addr = Ipv4Address::from_octets(192, 168, 1, 1);
     assert!(addr.is_private());
     assert!(!addr.is_loopback());
