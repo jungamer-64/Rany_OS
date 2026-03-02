@@ -112,7 +112,7 @@ impl NetworkEventHandler {
                 }
                 EventHandleResult::Success
             }
-            NetworkEvent::DataReady { fd, socket_type } => self.handle_data_ready(fd, socket_type),
+            NetworkEvent::DataReady { fd, endpoint_type } => self.handle_data_ready(fd, endpoint_type),
             NetworkEvent::TxAvailable => self.handle_tx_available(),
             NetworkEvent::Connect { fd, local, remote } => self.handle_connect(fd, local, remote),
             NetworkEvent::Listen { fd, local, backlog } => self.handle_listen(fd, local, backlog),
@@ -261,8 +261,8 @@ impl NetworkEventHandler {
                 }
                 EventHandleResult::Success
             }
-            NetworkEvent::DataReady { fd, socket_type } => {
-                if socket_type == EndpointType::Tcp {
+            NetworkEvent::DataReady { fd, endpoint_type } => {
+                if endpoint_type == EndpointType::Tcp {
                     self.handle_tcp_data_ready_with_stack(fd, stack)
                 } else {
                     EventHandleResult::Success
@@ -739,7 +739,7 @@ impl NetworkEventHandler {
                 if socket.send_buffer_len() > 0 {
                     super::event::send_event_ignore(super::event::NetworkEvent::DataReady {
                         fd: socket.fd(),
-                        socket_type: socket.socket_type(),
+                        endpoint_type: socket.socket_type(),
                     });
                 }
             });

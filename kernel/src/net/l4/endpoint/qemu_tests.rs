@@ -249,7 +249,7 @@ pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
     let handler = handler::NetworkEventHandler::new();
     let _ = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::DataReady {
         fd,
-        socket_type: super::types::EndpointType::Tcp,
+        endpoint_type: super::types::EndpointType::Tcp,
     });
     true
 }

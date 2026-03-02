@@ -137,7 +137,7 @@ impl Future for SendFuture {
         if wrote > 0 {
             let _ = super::event::send_event(super::event::NetworkEvent::DataReady {
                 fd: this.endpoint.fd(),
-                socket_type: this.endpoint.socket_type(),
+                endpoint_type: this.endpoint.socket_type(),
             });
 
             // If we've written all the user's data, complete the future
@@ -446,7 +446,7 @@ pub mod qemu_tests {
                 let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
                 let _ = handler.handle_event(NetworkEvent::DataReady {
                     fd,
-                    socket_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
+                    endpoint_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
                 });
 
                 match pinned.as_mut().poll(&mut cx) {

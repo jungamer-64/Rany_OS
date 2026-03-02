@@ -26,28 +26,28 @@ use super::types::{
 pub struct Endpoint {
     /// ファイルディスクリプタ
     fd: EndpointFd,
-    /// ソケットタイプ（不変）
-    socket_type: EndpointType,
+    /// エンドポイントタイプ（不変）
+    endpoint_type: EndpointType,
     /// 内部状態（Arc<PoisonLock>で保護 — 設計書 8.4準拠）
     inner: Arc<PoisonLock<EndpointInner>>,
 }
 
 impl Endpoint {
-    /// 新規ソケット作成
-    pub fn new(socket_type: EndpointType) -> Self {
+    /// 新規エンドポイント作成
+    pub fn new(endpoint_type: EndpointType) -> Self {
         let fd = EndpointFd::from_raw(NEXT_FD.fetch_add(1, Ordering::Relaxed));
         Self {
             fd,
-            socket_type,
+            endpoint_type,
             inner: Arc::new(PoisonLock::new(EndpointInner::new())),
         }
     }
 
-    /// 指定FDでソケット作成（Accept用）
-    pub fn new_with_fd(socket_type: EndpointType, fd: EndpointFd) -> Self {
+    /// 指定FDでエンドポイント作成（Accept用）
+    pub fn new_with_fd(endpoint_type: EndpointType, fd: EndpointFd) -> Self {
         Self {
             fd,
-            socket_type,
+            endpoint_type,
             inner: Arc::new(PoisonLock::new(EndpointInner::new())),
         }
     }
@@ -61,7 +61,7 @@ impl Endpoint {
     /// ソケットタイプ取得
     #[inline(always)]
     pub const fn socket_type(&self) -> EndpointType {
-        self.socket_type
+        self.endpoint_type
     }
 
     /// Backward-compatible alias for legacy tests.
@@ -144,7 +144,7 @@ impl Endpoint {
     ///
     /// 【設計書】POSIXのlisten()ではなく、start_listening()を使用
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
-        if self.socket_type != EndpointType::Tcp {
+        if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
         }
 
@@ -189,7 +189,7 @@ impl Endpoint {
     /// 【設計書】POSIXのaccept()ではなく、next_incoming()を使用
     /// Acceptキューから接続を取得、空の場合はTimeoutを返す
     pub fn next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr)> {
-        if self.socket_type != EndpointType::Tcp {
+        if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
         }
 
@@ -254,7 +254,7 @@ impl Endpoint {
         stream: TcpStream,
         remote_addr: EndpointAddr,
     ) -> EndpointResult<Endpoint> {
-        if self.socket_type != EndpointType::Tcp {
+        if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
         }
 
@@ -292,7 +292,7 @@ impl Endpoint {
         if len > 0 {
             send_event(NetworkEvent::DataReady {
                 fd: self.fd,
-                socket_type: self.socket_type,
+                endpoint_type: self.endpoint_type,
             })?;
         }
 
@@ -317,7 +317,7 @@ impl Endpoint {
 
     /// UDP送信
     pub fn send_to(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
-        if self.socket_type != EndpointType::Udp {
+        if self.endpoint_type != EndpointType::Udp {
             return Err(EndpointError::InvalidArgument);
         }
 
@@ -341,7 +341,7 @@ impl Endpoint {
 
     /// UDP受信
     pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr)> {
-        if self.socket_type != EndpointType::Udp {
+        if self.endpoint_type != EndpointType::Udp {
             return Err(EndpointError::InvalidArgument);
         }
 
@@ -444,7 +444,7 @@ impl Endpoint {
 
     /// TCP_NODELAY (Nagleアルゴリズム無効化) を設定
     pub fn set_nodelay(&self, nodelay: bool) -> EndpointResult<()> {
-        if self.socket_type != EndpointType::Tcp {
+        if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
         }
 
@@ -479,7 +479,7 @@ impl Clone for Endpoint {
     fn clone(&self) -> Self {
         Self {
             fd: self.fd,
-            socket_type: self.socket_type,
+            endpoint_type: self.endpoint_type,
             inner: Arc::clone(&self.inner),
         }
     }
