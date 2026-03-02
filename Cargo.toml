@@ -32,7 +32,6 @@ members = [
     "drivers/ide",
     "drivers/time",
     "drivers/example_abi",
-    "drivers/driver_cell_probe",
     # Apps
     "apps",
     "libs/boot_proto",
