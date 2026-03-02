@@ -6,7 +6,7 @@ impl UdpEndpointTable {
     /// Create a new UDP socket table
     pub const fn new() -> Self {
         UdpEndpointTable {
-            sockets: PoisonLock::new(BTreeMap::new()),
+            endpoints: PoisonLock::new(BTreeMap::new()),
             stats: UdpStats {
                 rx_datagrams: core::sync::atomic::AtomicU64::new(0),
                 tx_datagrams: core::sync::atomic::AtomicU64::new(0),

@@ -14,7 +14,7 @@ pub struct UdpEndpointSnapshot {
 
 pub struct UdpProcessor {
     /// Socket table
-    sockets: UdpEndpointTable,
+    endpoints: UdpEndpointTable,
 }
 
 /// Result of UDP processing
@@ -34,12 +34,12 @@ impl UdpProcessor {
     /// Create a new UDP processor
     pub fn new() -> Self {
         UdpProcessor {
-            sockets: UdpEndpointTable::new(),
+            endpoints: UdpEndpointTable::new(),
         }
     }
 
     /// Get socket table
-    pub fn sockets(&self) -> &UdpEndpointTable {
+    pub fn endpoints(&self) -> &UdpEndpointTable {
         &self.endpoints
     }
 

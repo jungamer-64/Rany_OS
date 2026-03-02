@@ -188,7 +188,7 @@ impl NetworkEventHandler {
                                 stack.process_tcp_data_v6(payload, src, dst, current_time);
                             }
                             IpProtocol::Udp => {
-                                stack.process_udp_data_v6(payload, src, dst);
+                                stack.process_udp_data_v6(payload, src, dst, packet.hop_limit());
                             }
                             IpProtocol::Icmpv6 => {
                                 stack.process_icmpv6_data(payload, src, dst, crate::net::l2::ethernet::MacAddress::ZERO, packet.hop_limit(), current_time);

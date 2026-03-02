@@ -26,7 +26,7 @@ impl RecvFuture {
     /// 新規作成
     pub fn new(endpoint: Endpoint, size: usize) -> Self {
         Self {
-            socket,
+            endpoint,
             buffer: alloc::vec![0u8; size],
         }
     }
@@ -79,7 +79,7 @@ impl SendFuture {
     /// 新規作成
     pub fn new(endpoint: Endpoint, data: Vec<u8>) -> Self {
         Self {
-            socket,
+            endpoint,
             data,
             offset: 0,
         }
@@ -161,7 +161,7 @@ impl SendToFuture {
     /// 新規作成
     pub fn new(endpoint: Endpoint, data: Vec<u8>, addr: EndpointAddr) -> Self {
         Self {
-            socket,
+            endpoint,
             data,
             addr,
         }
@@ -192,7 +192,7 @@ pub struct AcceptFuture {
 impl AcceptFuture {
     /// 新規作成
     pub fn new(endpoint: Endpoint) -> Self {
-        Self { socket }
+        Self { endpoint }
     }
 }
 
@@ -201,7 +201,7 @@ impl Future for AcceptFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.endpoint.next_incoming() {
-            Ok((socket, addr)) => Poll::Ready(Ok((OwnedEndpoint::from_socket(socket), addr))),
+            Ok(( ep, addr)) => Poll::Ready(Ok((OwnedEndpoint::from_endpoint(ep), addr))),
             Err(EndpointError::Timeout) => {
                 // Wakerを登録してPending
                 self.endpoint.register_accept_waker(cx.waker().clone());
@@ -222,7 +222,7 @@ impl RecvFromFuture {
     /// 新規作成
     pub fn new(endpoint: Endpoint, size: usize) -> Self {
         Self {
-            socket,
+            endpoint,
             buffer: alloc::vec![0u8; size],
         }
     }
@@ -296,18 +296,18 @@ impl TcpPacketStream {
 
 /// UDPゼロコピー用の小さなストリームラッパー（使いやすいヘルパ）
 pub struct UdpPacketStream {
-    socket: crate::net::l4::udp::UdpEndpoint,
+    ep: crate::net::l4::udp::UdpEndpoint,
 }
 
 impl UdpPacketStream {
     /// 新規作成
-    pub fn new(socket: crate::net::l4::udp::UdpEndpoint) -> Self {
-        Self { socket }
+    pub fn new(ep: crate::net::l4::udp::UdpEndpoint) -> Self {
+        Self { ep }
     }
 
     /// 次のパケットを受信するFutureを返す
     pub fn next_packet(&self) -> crate::net::l4::udp::UdpRecvFuture {
-        self.endpoint.recv()
+        self.ep.recv()
     }
 }
 
@@ -318,37 +318,37 @@ impl UdpPacketStream {
 impl OwnedEndpoint {
     /// 非同期受信
     pub fn recv_async(&self, size: usize) -> Option<RecvFuture> {
-        self.socket().map(|s| RecvFuture::new(s.clone(), size))
+        self.endpoint().map(|s| RecvFuture::new(s.clone(), size))
     }
 
     /// 非同期送信
     pub fn send_async(&self, data: Vec<u8>) -> Option<SendFuture> {
-        self.socket().map(|s| SendFuture::new(s.clone(), data))
+        self.endpoint().map(|s| SendFuture::new(s.clone(), data))
     }
 
     /// 非同期UDP送信
     pub fn send_to_async(&self, data: Vec<u8>, addr: EndpointAddr) -> Option<SendToFuture> {
-        self.socket().map(|s| SendToFuture::new(s.clone(), data, addr))
+        self.endpoint().map(|s| SendToFuture::new(s.clone(), data, addr))
     }
 
     /// 非同期接続受け入れ
     pub fn accept_async(&self) -> Option<AcceptFuture> {
-        self.socket().map(|s| AcceptFuture::new(s.clone()))
+        self.endpoint().map(|s| AcceptFuture::new(s.clone()))
     }
 
     /// 非同期UDP受信
     pub fn recv_from_async(&self, size: usize) -> Option<RecvFromFuture> {
-        self.socket().map(|s| RecvFromFuture::new(s.clone(), size))
+        self.endpoint().map(|s| RecvFromFuture::new(s.clone(), size))
     }
 
     /// TCPのゼロコピーストリームを取得（`TcpStream`をクローンして返す）
     pub fn tcp_stream(&self) -> Option<TcpStream> {
-        self.socket().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).tcp_stream.clone())
+        self.endpoint().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).tcp_stream.clone())
     }
 
     /// 非同期ゼロコピー受信（TCP向け） - 成功すると `PacketRef` を返す
     pub fn recv_packet_async(&self) -> Option<RecvPacketFuture> {
-        self.socket().and_then(|s| {
+        self.endpoint().and_then(|s| {
             s.inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -360,10 +360,10 @@ impl OwnedEndpoint {
 
     /// UDPのゼロコピー受信ヘルパ（内部UDPソケットが設定されている場合にのみ利用可能）
     pub fn recv_packet_from_udp(&self) -> Option<crate::net::l4::udp::UdpRecvFuture> {
-        if self.socket().map(|s| s.socket_type()) != Some(super::types::EndpointType::Udp) {
+        if self.endpoint().map(|s| s.socket_type()) != Some(super::types::EndpointType::Udp) {
             return None;
         }
-        self.socket().and_then(|s| {
+        self.endpoint().and_then(|s| {
             // Clone the optional UdpEndpoint from the inner state and produce a future
             let opt = s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp_socket.clone();
             opt.map(|u| u.recv())
@@ -377,7 +377,7 @@ impl OwnedEndpoint {
 
     /// UDP向けゼロコピー受信のストリームラッパーを取得（内部UDPソケットが設定されている場合）
     pub fn udp_packet_stream(&self) -> Option<UdpPacketStream> {
-        self.socket().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp_socket.clone()).map(|u| UdpPacketStream::new(u))
+        self.endpoint().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp_socket.clone()).map(|u| UdpPacketStream::new(u))
     }
 }
 

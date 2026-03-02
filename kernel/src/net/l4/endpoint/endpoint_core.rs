@@ -490,21 +490,21 @@ pub struct OwnedEndpoint {
 
 impl OwnedEndpoint {
     /// 新規OwnedEndpoint作成
-    pub fn new(socket_type: EndpointType) -> Self {
-        let socket = Endpoint::new(socket_type);
+    pub fn new(ep_type: EndpointType) -> Self {
+        let ep = Endpoint::new(ep_type);
         // EndpointManagerに登録
         if let Some(ref manager) = *ENDPOINT_MANAGER.read() {
-            manager.register(socket.clone());
+            manager.register(ep.clone());
         }
         Self {
-            endpoint: Some(socket),
+            endpoint: Some(ep),
         }
     }
 
     /// 既存ソケットからOwnedEndpoint作成
-    pub fn from_socket(endpoint: Endpoint) -> Self {
+    pub fn from_endpoint(endpoint: Endpoint) -> Self {
         Self {
-            endpoint: Some(socket),
+            endpoint: Some(endpoint),
         }
     }
 
@@ -522,7 +522,7 @@ impl OwnedEndpoint {
     }
 
     /// 内部ソケットへの可変参照
-    pub fn endpoint_mut(&mut self) -> Option<&mut Socket> {
+    pub fn endpoint_mut(&mut self) -> Option<&mut Endpoint> {
         self.endpoint.as_mut()
     }
 
@@ -560,12 +560,12 @@ impl OwnedEndpoint {
 
     /// 次の接続を取得（推奨API）
     pub fn next_incoming(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr)> {
-        let (socket, addr) = self
-            .socket
+        let (ep, addr) = self
+            .endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
             .next_incoming()?;
-        Ok((OwnedEndpoint::from_socket(socket), addr))
+        Ok((OwnedEndpoint::from_endpoint(ep), addr))
     }
 
 
@@ -618,12 +618,12 @@ impl OwnedEndpoint {
 impl Drop for OwnedEndpoint {
     fn drop(&mut self) {
         if let Some(ref ep) = self.endpoint {
-            // ソケットクローズ
-            let _ = socket.close();
+            // エンドポイントクローズ
+            let _ = ep.close();
 
             // EndpointManagerから登録解除
             if let Some(ref manager) = *ENDPOINT_MANAGER.read() {
-                manager.unregister(socket.fd());
+                manager.unregister(ep.fd());
             }
         }
     }
@@ -645,12 +645,12 @@ pub fn create_tcp_endpoint() -> OwnedEndpoint {
 pub fn create_tcp_endpoint_with_algorithm(
     algorithm: super::congestion::CongestionAlgorithm,
 ) -> OwnedEndpoint {
-    let socket = OwnedEndpoint::new(EndpointType::Tcp);
-    if let Some(inner_socket) = endpoint_ref.endpoint() {
-        let mut inner = inner_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+    let ep = OwnedEndpoint::new(EndpointType::Tcp);
+    if let Some(inner_ep) = ep.endpoint() {
+        let mut inner = inner_ep.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.congestion_algorithm = Some(algorithm);
     }
-    socket
+    ep
 }
 
 /// UDPソケット作成
@@ -667,27 +667,27 @@ pub fn create_raw_endpoint() -> OwnedEndpoint {
 ///
 /// 【設計書】POSIXソケットAPIを模倣しない
 pub fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<OwnedEndpoint> {
-    let socket = create_tcp_endpoint();
-    socket.set_local_addr(addr)?;
-    socket.start_listening(backlog)?;
-    Ok(socket)
+    let ep = create_tcp_endpoint();
+    ep.set_local_addr(addr)?;
+    ep.start_listening(backlog)?;
+    Ok(ep)
 }
 
 /// TCP接続（推奨API）
 ///
 /// 【設計書】POSIXソケットAPIを模倣しない
 pub fn open_tcp_connection(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
-    let socket = create_tcp_endpoint();
-    socket.open_connection(addr)?;
-    Ok(socket)
+    let ep = create_tcp_endpoint();
+    ep.open_connection(addr)?;
+    Ok(ep)
 }
 
 
-/// UDPソケット作成とローカルアドレス設定（推奨API）
-pub fn create_udp_endpoint(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
-    let socket = create_udp_endpoint();
-    socket.set_local_addr(addr)?;
-    Ok(socket)
+/// UDPエンドポイント作成とローカルアドレス設定（推奨API）
+pub fn create_udp_endpoint_bound(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
+    let ep = create_udp_endpoint();
+    ep.set_local_addr(addr)?;
+    Ok(ep)
 }
 
 

@@ -517,7 +517,7 @@ impl NetworkStack {
 
     /// List all UDP sockets (for debugging/statistics)
     pub fn list_udp_endpoints(&self) -> Vec<crate::net::l4::udp::UdpEndpointSnapshot> {
-        self.udp.sockets().list_endpoints()
+        self.udp.endpoints().list_endpoints()
     }
 
     /// Get configuration (for shell commands)

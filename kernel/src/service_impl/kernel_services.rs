@@ -149,23 +149,23 @@ impl KernelServices for ExoKernel {
     // ========================================================================
 
     fn net_create_endpoint(&self) -> Result<TcpEndpoint, KapiError> {
-        use crate::net::l4::endpoint::create_tcp_socket;
+        use crate::net::l4::endpoint::create_tcp_endpoint;
 
-        let owned = create_tcp_socket();
+        let owned = create_tcp_endpoint();
         let fd = owned.fd();
 
-        // Detach from OwnedSocket so it remains registered in SocketManager
+        // Detach from OwnedEndpoint so it remains registered in EndpointManager
         // and doesn't close on drop.
         let _ = owned.into_inner();
 
         Ok(TcpEndpoint::new(fd.raw() as u64))
     }
     fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> Result<(), KapiError> {
-        use crate::net::l4::endpoint::{SocketFd, socket_manager};
+        use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
-        let fd = SocketFd::from_raw(endpoint.id() as u32);
+        let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
-        if let Some(mgr_lock) = socket_manager() {
+        if let Some(mgr_lock) = endpoint_manager() {
             let guard = mgr_lock.read();
             if let Some(mgr) = guard.as_ref() {
                 if mgr.unregister(fd).is_some() {
@@ -179,11 +179,11 @@ impl KernelServices for ExoKernel {
 
     fn net_recv_packet(&self, endpoint: TcpEndpoint) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
         Box::pin(async move {
-            use crate::net::l4::endpoint::{SocketFd, socket_manager};
+            use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
-            let fd = SocketFd::from_raw(endpoint.id() as u32);
+            let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
-            if let Some(mgr_lock) = socket_manager() {
+            if let Some(mgr_lock) = endpoint_manager() {
                 let guard = mgr_lock.read();
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
@@ -207,11 +207,11 @@ impl KernelServices for ExoKernel {
 
     fn net_send_packet(&self, endpoint: TcpEndpoint, packet: Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         Box::pin(async move {
-            use crate::net::l4::endpoint::{SocketFd, socket_manager};
+            use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
-            let fd = SocketFd::from_raw(endpoint.id() as u32);
+            let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
-            if let Some(mgr_lock) = socket_manager() {
+            if let Some(mgr_lock) = endpoint_manager() {
                 let guard = mgr_lock.read();
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
@@ -235,9 +235,9 @@ impl KernelServices for ExoKernel {
     }
 
     fn net_create_raw_socket(&self) -> Result<RawSocketHandle, KapiError> {
-        use crate::net::l4::endpoint::create_raw_socket;
+        use crate::net::l4::endpoint::create_raw_endpoint;
 
-        let owned = create_raw_socket();
+        let owned = create_raw_endpoint();
         let fd = owned.fd();
 
         // Detach so it remains registered
@@ -247,11 +247,11 @@ impl KernelServices for ExoKernel {
     }
 
     fn net_close_raw_socket(&self, endpoint: RawSocketHandle) -> Result<(), KapiError> {
-        use crate::net::l4::endpoint::{SocketFd, socket_manager};
+        use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
-        let fd = SocketFd::from_raw(endpoint.id() as u32);
+        let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
-        if let Some(mgr_lock) = socket_manager() {
+        if let Some(mgr_lock) = endpoint_manager() {
             let guard = mgr_lock.read();
             if let Some(mgr) = guard.as_ref() {
                 if mgr.unregister(fd).is_some() {
@@ -265,11 +265,11 @@ impl KernelServices for ExoKernel {
 
     fn net_recv_raw(&self, endpoint: RawSocketHandle) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
         Box::pin(async move {
-            use crate::net::l4::endpoint::{SocketFd, socket_manager};
+            use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
-            let fd = SocketFd::from_raw(endpoint.id() as u32);
+            let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
-            if let Some(mgr_lock) = socket_manager() {
+            if let Some(mgr_lock) = endpoint_manager() {
                 let guard = mgr_lock.read();
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
@@ -292,11 +292,11 @@ impl KernelServices for ExoKernel {
 
     fn net_send_raw(&self, endpoint: RawSocketHandle, packet: Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         Box::pin(async move {
-            use crate::net::l4::endpoint::{SocketFd, socket_manager};
+            use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
-            let fd = SocketFd::from_raw(endpoint.id() as u32);
+            let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
-            if let Some(mgr_lock) = socket_manager() {
+            if let Some(mgr_lock) = endpoint_manager() {
                 let guard = mgr_lock.read();
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {

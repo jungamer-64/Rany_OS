@@ -437,14 +437,14 @@ impl UdpEndpoint {
 
 /// Future for receiving UDP datagrams
 pub struct UdpRecvFuture {
-    socket: Arc<PoisonLock<UdpEndpointInner>>,
+    endpoint: Arc<PoisonLock<UdpEndpointInner>>,
 }
 
 impl Future for UdpRecvFuture {
     type Output = Option<(UdpAddr, u8, PacketRef)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.socket.lock() {
+        match self.endpoint.lock() {
             Ok(mut inner) => {
                 if inner.closed {
                     return Poll::Ready(None);
@@ -472,7 +472,7 @@ const MAX_UDP_ENDPOINTS: usize = 1024;
 /// UDP socket table
 pub struct UdpEndpointTable {
     /// Sockets indexed by local port
-    sockets: PoisonLock<alloc::collections::BTreeMap<u16, Arc<PoisonLock<UdpEndpointInner>>>>,
+    endpoints: PoisonLock<alloc::collections::BTreeMap<u16, Arc<PoisonLock<UdpEndpointInner>>>>,
     /// Statistics
     stats: UdpStats,
 }

@@ -31,7 +31,7 @@ impl EndpointManager {
     /// 新規マネージャ作成
     pub const fn new() -> Self {
         Self {
-            sockets: RwLock::new(BTreeMap::new()),
+            endpoints: RwLock::new(BTreeMap::new()),
             tcp_ports: RwLock::new(BTreeMap::new()),
             udp_ports: RwLock::new(BTreeMap::new()),
             next_ephemeral_port: AtomicU32::new(EPHEMERAL_PORT_START as u32),
@@ -68,14 +68,14 @@ impl EndpointManager {
 
     /// ソケット登録
     pub fn register(&self, endpoint: Endpoint) {
-        self.endpoints.write().insert(socket.fd(), socket);
+        self.endpoints.write().insert(endpoint.fd(), endpoint);
     }
 
     /// ソケット登録解除
     pub fn unregister(&self, fd: EndpointFd) -> Option<Endpoint> {
-        let socket = self.endpoints.write().remove(&fd);
+        let removed = self.endpoints.write().remove(&fd);
 
-        if let Some(ref s) = socket {
+        if let Some(ref s) = removed {
             // ポートの解放
             if let Some(addr) = s.local_addr() {
                 match s.socket_type() {
@@ -90,7 +90,7 @@ impl EndpointManager {
             }
         }
 
-        socket
+        removed
     }
 
     /// ソケット取得（読み取りロック）
@@ -136,8 +136,8 @@ impl EndpointManager {
     where
         F: FnMut(&Endpoint),
     {
-        for socket in self.endpoints.read().values() {
-            f(socket);
+        for ep in self.endpoints.read().values() {
+            f(ep);
         }
     }
 

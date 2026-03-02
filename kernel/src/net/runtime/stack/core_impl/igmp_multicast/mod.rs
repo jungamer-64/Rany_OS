@@ -238,7 +238,7 @@ impl NetworkStack {
             if payload.len() <= buf.len() {
                 buf[..payload.len()].copy_from_slice(payload);
                 pkt_ref.set_len(payload.len());
-                if self.udp.sockets().deliver(src_addr, dst_port, hop_limit, pkt_ref) {
+                if self.udp.endpoints().deliver(src_addr, dst_port, hop_limit, pkt_ref) {
                     self.stats.record_rx(data.len());
                 } else {
                     self.stats.record_dropped();
@@ -499,7 +499,7 @@ impl NetworkStack {
 
     /// Process UDP packet
     pub fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
-        let result = self.udp.process_with_packet(data, src_ip, dst_ip, _packet);
+        let result = self.udp.process_with_packet(data, src_ip, dst_ip, _packet, 64);
 
         match result {
             UdpResult::Delivered => {}

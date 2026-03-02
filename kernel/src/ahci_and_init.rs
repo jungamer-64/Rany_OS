@@ -132,7 +132,7 @@ pub(crate) fn init_network_subsystem() {
         .lock()
         .map(|guard| guard.is_some())
         .unwrap_or(false);
-    let socket_manager_initialized = crate::net::l4::endpoint::is_socket_manager_initialized();
+    let endpoint_manager_initialized = crate::net::l4::endpoint::is_endpoint_manager_initialized();
     info!(target: "init", "Net Bridge initialized: {}", bridge_initialized);
     info!(
         target: "init",
@@ -142,7 +142,7 @@ pub(crate) fn init_network_subsystem() {
     info!(
         target: "init",
         "Socket manager initialized: {}",
-        socket_manager_initialized
+        endpoint_manager_initialized
     );
 
     if bridge_initialized {
@@ -160,8 +160,8 @@ pub(crate) fn init_network_subsystem() {
         );
     }
 
-    if !crate::net::l4::endpoint::is_socket_manager_initialized() {
-        crate::net::l4::endpoint::init_socket_manager();
+    if !crate::net::l4::endpoint::is_endpoint_manager_initialized() {
+        crate::net::l4::endpoint::init_endpoint_manager();
         info!(target: "init", "Socket manager initialized");
     } else {
         info!(
