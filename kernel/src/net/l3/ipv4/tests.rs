@@ -288,3 +288,32 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
         panic!("Reassembled packet could not be parsed");
     }
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_ipv4_id_generation_unpredictability() {
+    let mut proc = Ipv4Processor::new(Ipv4Config {
+        address: Ipv4Address::new([10, 0, 0, 1]),
+        gateway: None,
+        dns: None,
+    });
+
+    let dst1 = Ipv4Address::new([192, 168, 1, 1]);
+    let dst2 = Ipv4Address::new([192, 168, 1, 2]);
+
+    let id1_a = proc.next_id(dst1);
+    let id1_b = proc.next_id(dst1);
+    let id2_a = proc.next_id(dst2);
+
+    // Verify IDs are different
+    assert_ne!(id1_a, id1_b);
+    assert_ne!(id1_a, id2_a);
+
+    // In our new secure implementation, the difference between consecutive IDs
+    // for the same destination should not be a constant small increment (like 1 or 2).
+    // It's technically possible but very unlikely to be 1 or 2 due to the hash.
+    let diff = id1_b.wrapping_sub(id1_a);
+    // Since we're using a hash, any diff is possible, but it shouldn't be 
+    // consistently small across many calls.
+    // This is a weak test but it confirms the code runs and produces non-obvious output.
+    assert!(diff > 2 || diff == 0); // Very basic check
+}
