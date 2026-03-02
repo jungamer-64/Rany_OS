@@ -149,14 +149,6 @@ pub enum ProcError {
     InvalidArgument,
 }
 
-fn read_sysinfo_str(f: fn() -> alloc::string::String) -> Result<String, ProcError> {
-    Ok(f())
-}
-
-fn read_sysinfo_static(val: &'static str) -> Result<String, ProcError> {
-    Ok(alloc::format!("{}\n", val))
-}
-
 /// procfs ファイルシステム
 pub struct ProcFs {
     /// ルートエントリ
