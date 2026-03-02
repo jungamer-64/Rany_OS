@@ -700,6 +700,11 @@ impl VirtioNetDevice {
         &self,
         rxq: &NetVirtQueue,
     ) -> Result<bool, VirtioNetError> {
+        // キューに空きディスクリプタがなければ、PacketRef割り当てを回避する
+        if rxq.available_descriptors() == 0 {
+            return Ok(false);
+        }
+
         let packet = match crate::net::datapath::mempool::alloc_packet() {
             Some(p) => p,
             None => return Ok(false),
@@ -730,7 +735,8 @@ impl VirtioNetDevice {
                 if let (Some(iova), Some(device_id)) = (iommu_iova, &self.iommu_device_id) {
                     let _ = unmap_for_device(device_id, iova, iommu_map_len);
                 }
-                log::warn!("[VIRTIO-NET] failed to post PacketRef rx buffer: {:?}", e);
+                // QueueFullはリフィル時に正常に発生するため、traceレベルで記録
+                log::trace!("[VIRTIO-NET] failed to post PacketRef rx buffer: {:?}", e);
                 Ok(false)
             }
         }
@@ -745,6 +751,11 @@ impl VirtioNetDevice {
         &self,
         rxq: &NetVirtQueue,
     ) -> Result<bool, VirtioNetError> {
+        // キューに空きディスクリプタがなければ、バッファ割り当てを回避する
+        if rxq.available_descriptors() == 0 {
+            return Ok(false);
+        }
+
         let mut vbuf = match VirtioNetRxDmaBuffer::new() {
             Some(v) => v,
             None => {
@@ -787,7 +798,7 @@ impl VirtioNetDevice {
                 if let (Some(iova), Some(device_id)) = (iommu_iova, &self.iommu_device_id) {
                     let _ = unmap_for_device(device_id, iova, iommu_map_len);
                 }
-                log::warn!("[VIRTIO-NET] failed to add rx buffer: {:?}", e);
+                log::trace!("[VIRTIO-NET] failed to add rx buffer: {:?}", e);
                 Ok(false)
             }
         }
