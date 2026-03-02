@@ -22,6 +22,10 @@ use crate::io::virtio::{
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use alloc::collections::VecDeque;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use spin::RwLock;
 
@@ -50,6 +54,86 @@ static BATCH_PROCESSOR: BatchProcessor = BatchProcessor::new(BatchConfig {
     min_pps_threshold: 1000,
     adaptive_batching: true,
 });
+
+// ============================================================================
+// Transmit Queue (async worker)
+// ============================================================================
+
+/// Capacity for transmit queue
+const TX_QUEUE_CAPACITY: usize = 1024;
+
+/// Transmit request queued by the stack's transmit callback
+struct TransmitRequest {
+    if_id: Option<NetIfId>,
+    data: Vec<u8>,
+}
+
+/// Global TX queue for decoupling stack -> device transmit (prevents deadlocks)
+static TX_QUEUE: PoisonLock<VecDeque<TransmitRequest>> = PoisonLock::new(VecDeque::new());
+static TX_QUEUE_WAKER: PoisonLock<Option<Waker>> = PoisonLock::new(None);
+static TX_QUEUE_HAS_EVENTS: AtomicBool = AtomicBool::new(false);
+
+/// Enqueue a transmit request (called from stack's transmit_fn)
+fn enqueue_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    let req = TransmitRequest { if_id, data: data.to_vec() };
+    let Ok(mut q) = TX_QUEUE.lock() else { return false; };
+    if q.len() >= TX_QUEUE_CAPACITY {
+        return false;
+    }
+    q.push_back(req);
+    TX_QUEUE_HAS_EVENTS.store(true, Ordering::Release);
+
+    if let Ok(mut w) = TX_QUEUE_WAKER.lock() {
+        if let Some(waker) = w.take() {
+            waker.wake();
+        }
+    }
+
+    true
+}
+
+/// Pop a transmit request (non-blocking)
+fn tx_queue_recv() -> Option<TransmitRequest> {
+    let Ok(mut q) = TX_QUEUE.lock() else { return None; };
+    let r = q.pop_front();
+    if q.is_empty() {
+        TX_QUEUE_HAS_EVENTS.store(false, Ordering::Release);
+    }
+    r
+}
+
+/// Drain all queued transmit requests
+fn tx_queue_drain_all() -> Vec<TransmitRequest> {
+    let Ok(mut q) = TX_QUEUE.lock() else { return Vec::new(); };
+    TX_QUEUE_HAS_EVENTS.store(false, Ordering::Release);
+    q.drain(..).collect()
+}
+
+/// Future that resolves when a TX request is available
+pub struct TxEventWaitFuture;
+
+impl Future for TxEventWaitFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // If there are items, return immediately
+        if TX_QUEUE_HAS_EVENTS.load(Ordering::Acquire) {
+            return Poll::Ready(());
+        }
+
+        // Register waker
+        if let Ok(mut w) = TX_QUEUE_WAKER.lock() {
+            *w = Some(cx.waker().clone());
+        }
+
+        // Re-check
+        if TX_QUEUE_HAS_EVENTS.load(Ordering::Acquire) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
 
 /// Per-interface bridge stats (transitional; stack path is still single-instance).
 static BRIDGE_IF_STATS: RwLock<BTreeMap<NetIfId, BridgeInterfaceStats>> =
@@ -411,11 +495,18 @@ fn nat_translate_in_icmp(
     } else if icmp_type == 3 || icmp_type == 11 || icmp_type == 12 {
         // Destination Unreachable, Time Exceeded, Parameter Problem
         // These contain the original IP header + 8 bytes of payload.
-        if icmp_payload.len() < 8 + 20 + 8 {
+        if icmp_payload.len() < 8 + 20 {
             return None;
         }
 
         let inner_ip_header_off = 8;
+        let ihl = (icmp_payload[inner_ip_header_off] & 0x0F) as usize;
+        let inner_ip_header_len = ihl * 4;
+
+        if inner_ip_header_len < 20 || icmp_payload.len() < inner_ip_header_off + inner_ip_header_len + 8 {
+            return None;
+        }
+
         let inner_ip_header = &icmp_payload[inner_ip_header_off..inner_ip_header_off + 20];
         let inner_proto = inner_ip_header[9];
         // Note: inner_src is not used after switching to direct port lookup
@@ -432,7 +523,7 @@ fn nat_translate_in_icmp(
             inner_ip_header[19],
         );
 
-        let inner_payload_off = inner_ip_header_off + 20;
+        let inner_payload_off = inner_ip_header_off + inner_ip_header_len;
         let inner_src_port =
             u16::from_be_bytes([icmp_payload[inner_payload_off], icmp_payload[inner_payload_off + 1]]);
         let inner_dst_port = u16::from_be_bytes([
@@ -613,38 +704,56 @@ fn set_primary_bridge_if_for_virtio(if_id: NetIfId, virtio_index: u8) {
 /// argument is an optional interface identifier; if the stack supplies `None`
 /// the bridge will fall back to the legacy ``primary_bridge_if`` behaviour.
 fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    // 非同期化: スタックからの送信要求はTXキューへエンキューして即時戻す。
+    // これによりデバイスロックを保持したまま同期送信が行われる経路を回避する。
     if let Some(if_id) = if_id.or_else(primary_bridge_if) {
-        return send_packet_on_interface(if_id, data);
+        return enqueue_transmit(Some(if_id), data);
     }
 
-    // VirtIO-Netデバイスが利用可能か確認
-    let result = with_virtio_net(|device| {
-        // 簡単な同期送信を試みる
-        // 実際にはsend_asyncを使用するが、ここではシンプルな実装
-        transmit_packet(device, data)
-    });
+    // No specific interface: enqueue for generic device
+    if enqueue_transmit(None, data) {
+        true
+    } else {
+        // Queue full or error
+        counters::global().record_error();
+        trace::push_event(NetLayer::Driver, NetEventKind::Error, "virtio transmit enqueue failed");
+        false
+    }
+}
 
-    match result {
-        Some(Ok(())) => {
-            TX_PACKETS.fetch_add(1, Ordering::Relaxed);
-            counters::global().record_tx(data.len());
-            trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio transmit");
-            if let Some(if_id) = if_id.or_else(primary_bridge_if) {
-                record_bridge_if_tx(if_id);
+/// Background TX worker: drains TX_QUEUE and performs actual device submits
+async fn tx_worker_task() {
+    loop {
+        // Drain any pending entries without awaiting
+        let mut drained = tx_queue_drain_all();
+        if drained.is_empty() {
+            // Wait for new events
+            TxEventWaitFuture.await;
+            // After being awakened, continue to drain
+            drained = tx_queue_drain_all();
+        }
+
+        for req in drained.into_iter() {
+            // Attempt to submit on the appropriate device/interface
+            let sent = if let Some(if_id) = req.if_id {
+                send_packet_on_interface(if_id, &req.data)
+            } else {
+                // Generic device: use with_virtio_net to pick default
+                let result = with_virtio_net(|device| transmit_packet(device, &req.data));
+                match result {
+                    Some(Ok(())) => true,
+                    _ => false,
+                }
+            };
+
+            if sent {
+                TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+                counters::global().record_tx(req.data.len());
+                trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio async tx");
+            } else {
+                counters::global().record_error();
+                trace::push_event(NetLayer::Driver, NetEventKind::Error, "virtio async tx failed");
             }
-            true
-        }
-        Some(Err(_)) => {
-            log::info!("[NET BRIDGE] Transmit error");
-            counters::global().record_error();
-            trace::push_event(NetLayer::Driver, NetEventKind::Error, "virtio transmit error");
-            false
-        }
-        None => {
-            // VirtIO-Netが初期化されていない場合はデバッグ出力
-            #[cfg(debug_assertions)]
-            log::info!("[NET BRIDGE] VirtIO-Net not initialized");
-            false
         }
     }
 }
@@ -1120,6 +1229,8 @@ pub fn init_bridge() -> Result<(), &'static str> {
         Ok(mut guard) => {
             if let Some(ref mut stack) = *guard {
                 stack.set_transmit_fn(virtio_transmit);
+                // Spawn background TX worker to process enqueued transmit requests
+                crate::task::per_core_executor::spawn(tx_worker_task());
             }
         }
         Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),

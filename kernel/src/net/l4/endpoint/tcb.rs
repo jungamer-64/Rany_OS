@@ -8,7 +8,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use spin::RwLock;
 
 use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
@@ -366,6 +366,10 @@ pub struct TcbTable {
     seq_counter: AtomicU32,
     /// 現在のtick（再送タイマー用）
     pub current_tick: AtomicU64,
+    /// 現在のTCBエントリ合計数
+    total_count: AtomicUsize,
+    /// 現在のSynReceived状態のエントリ数
+    syn_recv_count: AtomicUsize,
 }
 
 /// 最大TCBエントリ数 (DoS防止) — 全シャード合計
@@ -389,6 +393,8 @@ impl TcbTable {
             shards: [EMPTY_SHARD; TCB_SHARD_COUNT],
             seq_counter: AtomicU32::new(0),
             current_tick: AtomicU64::new(0),
+            total_count: AtomicUsize::new(0),
+            syn_recv_count: AtomicUsize::new(0),
         }
     }
 
@@ -511,16 +517,7 @@ impl TcbTable {
         /// 1回の掃除で各シャードから削除するエントリの最大数
         const MAX_SCAVENGE_PER_SHARD: usize = 8;
 
-        // まず全シャードの Read ロックで SYN_RECEIVED 数を概算
-        let mut total_syn_recv: usize = 0;
-        for shard in &self.shards {
-            let guard = shard.read();
-            total_syn_recv += guard.values()
-                .filter(|e| e.state == TcpConnectionState::SynReceived)
-                .count();
-        }
-
-        if total_syn_recv < MAX_SYN_RECEIVED_ENTRIES / 2 {
+        if self.syn_recv_count.load(Ordering::Relaxed) < MAX_SYN_RECEIVED_ENTRIES / 2 {
             return;
         }
 
@@ -545,7 +542,12 @@ impl TcbTable {
 
             for i in 0..remove_count {
                 if let Some(key) = to_remove[i] {
-                    entries.remove(&key);
+                    if let Some(entry) = entries.remove(&key) {
+                        self.total_count.fetch_sub(1, Ordering::Relaxed);
+                        if entry.state == TcpConnectionState::SynReceived {
+                            self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
+                        }
+                    }
                 }
             }
         }
@@ -562,25 +564,30 @@ impl TcbTable {
     /// - `Ok(())` : 成功
     /// - `Err(&'static str)` : テーブル満杯などのエラー
     pub fn insert(&self, entry: TcpControlBlockEntry) -> Result<(), &'static str> {
-        // 全シャード合計数で制限チェック（概算: 正確さよりパフォーマンス優先）
-        let total_count: usize = self.shards.iter().map(|s| s.read().len()).sum();
-        if total_count >= MAX_TCB_ENTRIES {
+        // 全シャード合計数で制限チェック
+        if self.total_count.load(Ordering::Relaxed) >= MAX_TCB_ENTRIES {
             return Err("TCB table full");
         }
 
         // SYN-RECV制限 (SYN Flood攻撃対策)
         if entry.state == TcpConnectionState::SynReceived {
-            let syn_recv_count: usize = self.shards.iter()
-                .map(|s| s.read().values().filter(|e| e.state == TcpConnectionState::SynReceived).count())
-                .sum();
-            if syn_recv_count >= MAX_SYN_RECEIVED_ENTRIES {
+            if self.syn_recv_count.load(Ordering::Relaxed) >= MAX_SYN_RECEIVED_ENTRIES {
                 return Err("Too many SYN-RECV connections");
             }
         }
 
         let idx = shard_index(&entry.local, &entry.remote);
         let key = (entry.local, entry.remote);
-        self.shards[idx].write().insert(key, entry);
+        let mut shard = self.shards[idx].write();
+        
+        // すでに存在するかチェック
+        let is_syn_recv = entry.state == TcpConnectionState::SynReceived;
+        if shard.insert(key, entry).is_none() {
+            self.total_count.fetch_add(1, Ordering::Relaxed);
+            if is_syn_recv {
+                self.syn_recv_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         Ok(())
     }
 
@@ -598,7 +605,19 @@ impl TcbTable {
         let idx = shard_index(&local, &remote);
         let mut shard = self.shards[idx].write();
         if let Some(entry) = shard.get_mut(&(local, remote)) {
+            let old_state = entry.state;
             f(entry);
+            let new_state = entry.state;
+            
+            // 状態が変化した場合、SynReceivedカウンタを更新
+            if old_state != new_state {
+                if old_state == TcpConnectionState::SynReceived {
+                    self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
+                }
+                if new_state == TcpConnectionState::SynReceived {
+                    self.syn_recv_count.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             true
         } else {
             false
@@ -608,7 +627,16 @@ impl TcbTable {
     /// 接続削除
     pub fn remove(&self, local: SocketAddr, remote: SocketAddr) -> Option<TcpControlBlockEntry> {
         let idx = shard_index(&local, &remote);
-        self.shards[idx].write().remove(&(local, remote))
+        let mut shard = self.shards[idx].write();
+        if let Some(entry) = shard.remove(&(local, remote)) {
+            self.total_count.fetch_sub(1, Ordering::Relaxed);
+            if entry.state == TcpConnectionState::SynReceived {
+                self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
+            }
+            Some(entry)
+        } else {
+            None
+        }
     }
 
     /// FDで接続検索（全シャードを探索）
@@ -628,7 +656,13 @@ impl TcbTable {
             let mut guard = shard.write();
             let key = guard.iter().find(|(_, e)| e.fd == fd).map(|(k, _)| *k);
             if let Some(k) = key {
-                return guard.remove(&k);
+                if let Some(entry) = guard.remove(&k) {
+                    self.total_count.fetch_sub(1, Ordering::Relaxed);
+                    if entry.state == TcpConnectionState::SynReceived {
+                        self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    return Some(entry);
+                }
             }
         }
         None
@@ -671,7 +705,7 @@ impl TcbTable {
 
     /// アクティブな接続数を取得
     pub fn connection_count(&self) -> usize {
-        self.shards.iter().map(|s| s.read().len()).sum()
+        self.total_count.load(Ordering::Relaxed)
     }
 }
 

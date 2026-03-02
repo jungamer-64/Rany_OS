@@ -40,16 +40,10 @@ pub fn receive(data: &[u8]) {
         packet.data_mut()[..len].copy_from_slice(&data[..len]);
         packet.set_len(len);
 
-        match NETWORK_STACK.lock() {
-            Ok(mut guard) => {
-                if let Some(ref mut stack) = *guard {
-                    stack.receive(packet);
-                }
-            }
-            Err(_) => {
-                log::error!("[NET] Global Stack poisoned - dropping packet");
-            }
-        }
+        // 非同期経路へオフロードして即時戻す（割り込み/ポーリングコンテキストでのロック取得を回避）
+        crate::net::l4::endpoint::event::send_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet },
+        );
     } else {
         // Drop packet due to OOM
         // Ideally record stats
@@ -58,16 +52,12 @@ pub fn receive(data: &[u8]) {
 
 /// Process a batch of received packets
 pub fn receive_batch(batch: PacketBatch) {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.receive_batch(batch);
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - dropping batch");
-            // batch is dropped here, packets returned to pool
-        }
+    // Offload each packet in the batch to the async event queue to avoid
+    // taking the global stack lock in interrupt/polling contexts.
+    for pkt in batch.into_iter() {
+        crate::net::l4::endpoint::event::send_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet: pkt },
+        );
     }
 }
 

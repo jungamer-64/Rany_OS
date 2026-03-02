@@ -9,7 +9,6 @@ impl DnsClient {
             ipv4_servers: PoisonLock::new(Vec::new()),
             ipv6_servers: PoisonLock::new(Vec::new()),
             cache: PoisonLock::new(DnsCache::new(tick_rate)),
-            next_id: AtomicU16::new(1),
             stats: DnsStats::new(),
             pending_ids: PoisonLock::new(BTreeMap::new()),
         }

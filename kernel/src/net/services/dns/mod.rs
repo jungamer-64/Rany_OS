@@ -11,7 +11,7 @@ use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
@@ -325,8 +325,6 @@ pub struct DnsClient {
     ipv6_servers: PoisonLock<Vec<Ipv6Address>>,
     /// DNSキャッシュ
     cache: PoisonLock<DnsCache>,
-    /// 次のトランザクションID
-    next_id: AtomicU16,
     /// 統計情報
     stats: DnsStats,
     /// 保留中クエリのトランザクションIDセット (Security: RFC 5452 - キャッシュポイズニング防止)
