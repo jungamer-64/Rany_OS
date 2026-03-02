@@ -25,7 +25,7 @@ use vfs::{FsStats, VfsError, VfsResult};
 
 use crate::bitmap::Bitmap;
 use crate::error::NsError;
-use crate::inode::NsInodeOps;
+use crate::inode::{NsInode, NsInodeOps};
 use crate::layout::{NsLayout, SuperBlock, SUPERBLOCK_MAGIC};
 use crate::ondisk::{DiskInode, InodeKind, INODE_SIZE, ROOT_INODE_NUM};
 
@@ -69,6 +69,8 @@ pub struct NvmeNamespaceFs {
     block_bm: PoisonLock<Bitmap>,
     /// Inode ビットマップ
     inode_bm: PoisonLock<Bitmap>,
+    /// 自己参照（root() で Arc<Self> を復元するため）
+    self_ref: PoisonLock<Option<alloc::sync::Weak<Self>>>,
 }
 
 impl NvmeNamespaceFs {
@@ -170,12 +172,21 @@ impl NvmeNamespaceFs {
             bs,
         )?;
 
-        Ok(Arc::new(Self {
+        let fs = Arc::new(Self {
             dev,
             sb: PoisonLock::new(sb),
             block_bm: PoisonLock::new(block_bm),
             inode_bm: PoisonLock::new(inode_bm),
-        }))
+            self_ref: PoisonLock::new(None),
+        });
+
+        // 自己参照を設定（Weak で循環参照を回避）
+        {
+            let mut sr = fs.self_ref.lock().map_err(|_| NsError::IoError)?;
+            *sr = Some(Arc::downgrade(&fs));
+        }
+
+        Ok(fs)
     }
 
     // ========================================================================
@@ -396,21 +407,18 @@ impl vfs::ExtendedFileSystem for NvmeNamespaceFs {
     }
 
     fn root(&self) -> VfsResult<Arc<dyn vfs::Inode>> {
-        let _disk = self.read_inode(ROOT_INODE_NUM).map_err(VfsError::from)?;
-        // self は Arc<NvmeNamespaceFs> の中にいるはずだが、ここでは
-        // NsInodeOps トレイトオブジェクトとして Arc を作り直す必要がある。
-        // 呼び出し側が Arc<NvmeNamespaceFs> を保持している前提で、
-        // ここでは簡易的に NsInode を構築。
-        //
-        // NOTE: 本来は self の Arc を取得すべきだが、ExtendedFileSystem の
-        // &self シグネチャではそれが不可能。mount() が返す Arc<Self> を
-        // 内部フィールドに保持する方法もあるが、循環参照を避けるために
-        // Weak を使う設計が望ましい。ここでは「準備」段階として
-        // ダミーの NsInodeOps 実装は行わず、制約を文書化する。
-        //
-        // 実用時は `Arc::clone(&self_arc)` を NsInode に渡す設計に
-        // 移行する。
-        Err(VfsError::NotSupported)
+        let disk = self.read_inode(ROOT_INODE_NUM).map_err(VfsError::from)?;
+
+        // Weak 参照から Arc<Self> を復元
+        let sr = self.self_ref.lock().map_err(|_| VfsError::IoError)?;
+        let weak = sr.as_ref().ok_or(VfsError::IoError)?;
+        let fs_arc = weak.upgrade().ok_or(VfsError::IoError)?;
+
+        // NvmeNamespaceFs は NsInodeOps を実装しているため、
+        // Arc<NvmeNamespaceFs> を Arc<dyn NsInodeOps> にアップキャスト
+        let ops: Arc<dyn NsInodeOps> = fs_arc;
+        let inode = NsInode::new(ROOT_INODE_NUM, disk, ops);
+        Ok(Arc::new(inode))
     }
 
     fn statfs(&self) -> VfsResult<vfs::FsStats> {

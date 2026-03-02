@@ -13,7 +13,9 @@ use spin::Mutex;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 
 // Kernel-local modules
+pub mod block_io;
 pub mod driver;
+pub mod ns_mount;
 pub mod scheduler;
 
 // ============================================================================
@@ -57,3 +59,7 @@ pub use nvme_driver::defs::SglDescriptor;
 
 // Scheduler integration (kernel-local)
 pub use scheduler::{NvmePollHandler, register_with_io_scheduler};
+
+// NVMe Namespace FS integration
+pub use block_io::NvmeBlockIoAdapter;
+pub use ns_mount::{mount_nvme_ns_fs, unmount_nvme_ns_fs, nvme_ns_fs};

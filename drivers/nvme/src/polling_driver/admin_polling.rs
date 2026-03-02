@@ -295,6 +295,11 @@ impl NvmePollingDriver {
         self.max_transfer_size
     }
 
+    /// 名前空間の総ブロック数を取得
+    pub fn namespace_total_blocks(&self) -> u64 {
+        self.namespace_total_blocks
+    }
+
     /// 統計を収集
     pub fn collect_stats(&self) -> NvmeDriverStats {
         let mut stats = NvmeDriverStats::default();

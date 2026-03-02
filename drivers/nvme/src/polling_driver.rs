@@ -84,6 +84,8 @@ pub struct NvmePollingDriver {
     pub max_queue_depth: u16,
     /// 名前空間の論理ブロックサイズ（バイト）
     namespace_block_size: u32,
+    /// 名前空間の総ブロック数（nsze）
+    namespace_total_blocks: u64,
     /// アロケートされたI/Oキュー数
     allocated_sq_count: u16,
     allocated_cq_count: u16,
@@ -130,6 +132,7 @@ impl NvmePollingDriver {
             max_transfer_size: MAX_TRANSFER_SIZE,
             max_queue_depth: DEFAULT_QUEUE_DEPTH,
             namespace_block_size: 512,
+            namespace_total_blocks: 0,
             allocated_sq_count: 0,
             allocated_cq_count: 0,
             active: AtomicBool::new(false),
@@ -268,12 +271,13 @@ impl NvmePollingDriver {
             log::warn!("[NVME] Identify Controller failed: {}", err);
         }
 
-        // Identify Namespaceでブロックサイズを取得
+        // Identify Namespaceでブロックサイズと総ブロック数を取得
         if let Ok(ns) = self.identify_namespace(self.nsid) {
             let block_size = ns.block_size() as u32;
             if block_size != 0 {
                 self.namespace_block_size = block_size;
             }
+            self.namespace_total_blocks = ns.nsze;
         }
     }
 
