@@ -418,7 +418,8 @@ fn nat_translate_in_icmp(
         let inner_ip_header_off = 8;
         let inner_ip_header = &icmp_payload[inner_ip_header_off..inner_ip_header_off + 20];
         let inner_proto = inner_ip_header[9];
-        let inner_src = Ipv4Address::from_octets(
+        // Note: inner_src is not used after switching to direct port lookup
+        let _inner_src = Ipv4Address::from_octets(
             inner_ip_header[12],
             inner_ip_header[13],
             inner_ip_header[14],
@@ -439,12 +440,11 @@ fn nat_translate_in_icmp(
             icmp_payload[inner_payload_off + 3],
         ]);
 
-        // Look up by original outgoing 5-tuple
+        // Security Optimization: Use direct lookup by external port (inner_src_port)
+        // instead of linear search to prevent CPU exhaustion DoS.
         let table = NAT_TABLE.read();
-        for (&_ext_port, entry) in table.iter() {
+        if let Some(entry) = table.get(&inner_src_port) {
             if u8::from(entry.protocol) == inner_proto
-                && entry.internal_addr == inner_src
-                && entry.internal_port == inner_src_port
                 && entry.remote_addr == inner_dst
                 && entry.remote_port == inner_dst_port
             {

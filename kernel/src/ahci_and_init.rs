@@ -488,14 +488,10 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // スタックオーバーフローを即座にPage Faultで検出するため、
     // スタック最下位ページ（inner guard）をアンマップする。
     // これにより使用可能スタックは STACK_SIZE - 4096 バイトになる。
+    // アライメント・サイズ検証は setup_stack_guard 内部で実施。
     {
         let stack_base = unsafe { &raw const KERNEL_STACK as usize };
         const STACK_SIZE: usize = 4096 * 128; // 512 KiB
-        debug_assert!(
-            stack_base % 4096 == 0,
-            "KERNEL_STACK must be page-aligned (got {:#x})",
-            stack_base
-        );
         crate::panic_handler::setup_stack_guard(stack_base, STACK_SIZE);
         let guard_end = stack_base + 4096;
         let stack_top = stack_base + STACK_SIZE;

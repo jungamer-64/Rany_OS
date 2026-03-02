@@ -786,4 +786,14 @@ impl TcpProcessor {
         }
         false
     }
+
+    /// 接続を削除
+    pub fn remove_connection(&mut self, local: SocketAddr, remote: SocketAddr) {
+        self.connections.remove(&(local, remote));
+    }
+
+    /// リスナーを削除
+    pub fn remove_listener(&mut self, local: SocketAddr) {
+        self.listeners.remove(&local);
+    }
 }

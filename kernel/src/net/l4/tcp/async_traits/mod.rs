@@ -245,6 +245,22 @@ impl Clone for TcpStream {
     }
 }
 
+impl Drop for TcpStream {
+    fn drop(&mut self) {
+        // Automatically unbind the connection when the last stream handle is dropped.
+        // The TcpProcessor holds one reference (count=1), so if strong_count is 2,
+        // this is the last external handle.
+        if Arc::strong_count(&self.tcb) == 2 {
+            if let Ok(tcb) = self.tcb.lock() {
+                let local = tcb.local_addr();
+                if let Some(remote) = tcb.remote_addr() {
+                    crate::net::runtime::stack::unbind_tcp(local, remote);
+                }
+            }
+        }
+    }
+}
+
 impl AsyncRead for TcpStream {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -502,6 +518,14 @@ impl TcpListener {
             }
             Err(_) => log::error!("[NET] TCP Backlog poisoned - cannot push connection"),
         }
+    }
+}
+
+impl Drop for TcpListener {
+    fn drop(&mut self) {
+        // Automatically unbind the listener when the handle is dropped.
+        // This prevents port leakage and DoS vulnerabilities.
+        crate::net::runtime::stack::unbind_tcp_listener(self.local_addr);
     }
 }
 

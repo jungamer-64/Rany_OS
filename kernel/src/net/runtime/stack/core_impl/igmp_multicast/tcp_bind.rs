@@ -290,6 +290,16 @@ impl NetworkStack {
         self.udp.unbind(port);
     }
 
+    /// TCP接続を解除
+    pub fn unbind_tcp(&mut self, local: TcpSocketAddr, remote: TcpSocketAddr) {
+        self.tcp.remove_connection(local, remote);
+    }
+
+    /// TCPリスナーを解除
+    pub fn unbind_tcp_listener(&mut self, local: TcpSocketAddr) {
+        self.tcp.remove_listener(local);
+    }
+
     // ========================================================================
     // Multicast Group Management (IGMP)
     // ========================================================================

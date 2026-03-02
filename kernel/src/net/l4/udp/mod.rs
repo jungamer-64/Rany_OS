@@ -283,6 +283,20 @@ impl Clone for UdpSocket {
     }
 }
 
+impl Drop for UdpSocket {
+    fn drop(&mut self) {
+        // Automatically unbind the port when the last socket handle is dropped.
+        // The global table holds one reference (count=1), so if strong_count is 2,
+        // this is the last external handle.
+        if Arc::strong_count(&self.inner) == 2 {
+            let port = self.local_port();
+            if port != 0 {
+                crate::net::runtime::stack::unbind_udp(port);
+            }
+        }
+    }
+}
+
 impl UdpSocket {
     /// Create a new UDP socket bound to a port
     pub fn new(local_port: u16) -> Self {

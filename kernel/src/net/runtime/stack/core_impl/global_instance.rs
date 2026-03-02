@@ -260,6 +260,30 @@ pub fn unbind_udp(port: u16) {
     }
 }
 
+/// Unbind a TCP connection
+pub fn unbind_tcp(local: TcpSocketAddr, remote: TcpSocketAddr) {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.unbind_tcp(local, remote);
+            }
+        }
+        Err(_) => log::error!("[NET] Global Stack poisoned - unbind_tcp failed"),
+    }
+}
+
+/// Unbind a TCP listener
+pub fn unbind_tcp_listener(local: TcpSocketAddr) {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.unbind_tcp_listener(local);
+            }
+        }
+        Err(_) => log::error!("[NET] Global Stack poisoned - unbind_tcp_listener failed"),
+    }
+}
+
 /// Bind a TCP listener
 pub fn bind_tcp(addr: TcpSocketAddr) -> Result<TcpListener, TcpError> {
     match NETWORK_STACK.lock() {
