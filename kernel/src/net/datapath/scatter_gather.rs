@@ -14,6 +14,8 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use super::checksum_offload::internet_checksum;
+
 /// Scatter-Gather エントリ（1つの連続バッファ領域を表す）
 #[derive(Debug, Clone, Copy)]
 pub struct SgEntry {
@@ -284,7 +286,7 @@ impl SgTxBuilder {
         self.ip_hdr_len = 20;
 
         // IPv4 header checksum
-        let cksum = ip_checksum(&hdr[..20]);
+        let cksum = internet_checksum(&hdr[..20]);
         hdr[10..12].copy_from_slice(&cksum.to_be_bytes());
     }
 
@@ -408,21 +410,7 @@ pub static SG_STATS: SgStats = SgStats::new();
 // ============================================================================
 // ユーティリティ
 // ============================================================================
-
-/// IPv4 ヘッダチェックサム計算
-fn ip_checksum(header: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-    let mut i = 0;
-    while i + 1 < header.len() {
-        let word = u16::from_be_bytes([header[i], header[i + 1]]);
-        sum += word as u32;
-        i += 2;
-    }
-    while sum >> 16 != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-    !(sum as u16)
-}
+// ip_checksum は checksum_offload::internet_checksum に統合済み
 
 #[cfg(test)]
 mod tests {

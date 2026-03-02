@@ -228,19 +228,15 @@ impl<'a> TcpOptionParser<'a> {
                 tcp_option_kind::WINDOW_SCALE => {
                     // Kind(1) + Length(1) + ShiftCount(1) = 3 bytes
                     if self.pos + 3 <= self.data.len() && self.data[self.pos + 1] == 3 {
-                        return Some(self.data[self.pos + 2]);
+                        let scale = self.data[self.pos + 2];
+                        return Some(scale);
                     }
-                    self.pos += 3;
+                    if !self.skip_generic_option() {
+                        break;
+                    }
                 }
                 _ => {
-                    // 可変長オプション
-                    if self.pos + 1 < self.data.len() {
-                        let len = self.data[self.pos + 1] as usize;
-                        if len < 2 || self.pos + len > self.data.len() {
-                            break;
-                        }
-                        self.pos += len;
-                    } else {
+                    if !self.skip_generic_option() {
                         break;
                     }
                 }
@@ -267,17 +263,12 @@ impl<'a> TcpOptionParser<'a> {
                             u16::from_be_bytes([self.data[self.pos + 2], self.data[self.pos + 3]]);
                         return Some(mss);
                     }
-                    self.pos += 4;
+                    if !self.skip_generic_option() {
+                        break;
+                    }
                 }
                 _ => {
-                    // 可変長オプション
-                    if self.pos + 1 < self.data.len() {
-                        let len = self.data[self.pos + 1] as usize;
-                        if len < 2 || self.pos + len > self.data.len() {
-                            break;
-                        }
-                        self.pos += len;
-                    } else {
+                    if !self.skip_generic_option() {
                         break;
                     }
                 }
@@ -302,16 +293,12 @@ impl<'a> TcpOptionParser<'a> {
                     if self.pos + 2 <= self.data.len() && self.data[self.pos + 1] == 2 {
                         return true;
                     }
-                    self.pos += 2;
+                    if !self.skip_generic_option() {
+                        break;
+                    }
                 }
                 _ => {
-                    if self.pos + 1 < self.data.len() {
-                        let len = self.data[self.pos + 1] as usize;
-                        if len < 2 || self.pos + len > self.data.len() {
-                            break;
-                        }
-                        self.pos += len;
-                    } else {
+                    if !self.skip_generic_option() {
                         break;
                     }
                 }
@@ -349,16 +336,12 @@ impl<'a> TcpOptionParser<'a> {
                         ]);
                         return Some((ts_val, ts_ecr));
                     }
-                    self.pos += 10;
+                    if !self.skip_generic_option() {
+                        break;
+                    }
                 }
                 _ => {
-                    if self.pos + 1 < self.data.len() {
-                        let len = self.data[self.pos + 1] as usize;
-                        if len < 2 || self.pos + len > self.data.len() {
-                            break;
-                        }
-                        self.pos += len;
-                    } else {
+                    if !self.skip_generic_option() {
                         break;
                     }
                 }

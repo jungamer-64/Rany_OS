@@ -933,17 +933,6 @@ impl TcpProcessor {
             }
             TcpState::SynReceived => {
                 // ACK (completing 3-way handshake) or data segment
-                // オプションバイトを所有型にコピーし、packet_optのムーブ後もアクセス可能にする
-                let options_owned: Option<alloc::vec::Vec<u8>> = if header_len > 20 && packet_opt.is_some() {
-                    let pkt = packet_opt.as_ref().unwrap();
-                    if pkt.len() >= header_len {
-                        Some(pkt.data()[20..header_len].to_vec())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
                 self.handle_syn_received_segment(
                     tcb,
                     tcb_arc,
@@ -953,7 +942,7 @@ impl TcpProcessor {
                     header_len,
                     payload,
                     packet_opt,
-                    options_owned.as_deref(),
+                    None,
                 )
             }
             TcpState::Established => {
@@ -1051,33 +1040,17 @@ impl TcpProcessor {
         ack: bool,
         ack_num: u32,
         seq_num: u32,
-        header_len: usize,
+        _header_len: usize,
         payload: &[u8],
-        packet_opt: Option<PacketRef>,
-        options_data: Option<&[u8]>,
+        _packet_opt: Option<PacketRef>,
+        _options_data: Option<&[u8]>,
     ) -> TcpProcessResult {
         // ACK acknowledging our SYN (snd_una + 1)
         if ack && ack_num == tcb.snd_una().wrapping_add(1) {
-            // Parse options if this segment has them (some stacks send data + options in the final ACK)
-            if let Some(data) = options_data {
-                use crate::net::l4::endpoint::window_scale::TcpOptionParser;
-                let mut parser = TcpOptionParser::new(data);
-                
-                if let Some(peer_mss) = parser.find_mss() {
-                    let mss = peer_mss.max(536);
-                    tcb.set_mss(mss);
-                }
-                if let Some(peer_wscale) = parser.find_window_scale() {
-                    tcb.set_peer_wscale(peer_wscale.min(14));
-                }
-                if parser.find_sack_permitted() {
-                    tcb.set_sack_enabled(true);
-                }
-                if let Some((ts_val, _ts_ecr)) = parser.find_timestamps() {
-                    tcb.set_timestamps_enabled(true);
-                    tcb.update_timestamps(ts_val);
-                }
-            }
+            // RFC 7323 / 1122: Options like Window Scale, MSS, and SACK-Permitted
+            // MUST only be processed in SYN segments. The 3rd ACK of a 3-way handshake
+            // is not a SYN segment, so any such options here MUST be ignored.
+            // Timestamps and SACK blocks are already handled in the caller (process_segment).
 
             tcb.set_snd_una(ack_num);
             tcb.set_snd_nxt(ack_num);

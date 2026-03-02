@@ -66,9 +66,14 @@ impl GroTable {
         None
     }
 
-    /// タイムアウトしたセグメントをフラッシュ
-    pub fn flush_aged(&mut self, current_tsc: u64) -> Vec<GroSegment> {
-        let mut flushed = Vec::new();
+    /// タイムアウトしたセグメントをフラッシュ（ゼロアロケーション版）
+    ///
+    /// 固定配列を使用し、動的メモリ割り当てを回避する。
+    /// 戻り値は `(配列, 有効エントリ数)` のタプル。
+    pub fn flush_aged(&mut self, current_tsc: u64) -> ([Option<GroSegment>; GRO_TABLE_SIZE], usize) {
+        const NONE: Option<GroSegment> = None;
+        let mut flushed = [NONE; GRO_TABLE_SIZE];
+        let mut flushed_count = 0;
 
         for slot in self.segments.iter_mut() {
             let should_flush = slot
@@ -79,12 +84,13 @@ impl GroTable {
             if should_flush {
                 if let Some(seg) = slot.take() {
                     self.count -= 1;
-                    flushed.push(seg);
+                    flushed[flushed_count] = Some(seg);
+                    flushed_count += 1;
                 }
             }
         }
 
-        flushed
+        (flushed, flushed_count)
     }
 
     pub(super) fn take_segment(&mut self, flow_hash: u32) -> Option<GroSegment> {
@@ -314,7 +320,7 @@ impl TsoEngine {
         output[16..20].copy_from_slice(&self.template.dst_ip);
 
         // IPv4 header checksum
-        let ip_cksum = Self::ip_checksum(&output[..ip_hdr_len]);
+        let ip_cksum = internet_checksum(&output[..ip_hdr_len]);
         output[10..12].copy_from_slice(&ip_cksum.to_be_bytes());
 
         // --- TCP Header (20 bytes) ---
@@ -377,21 +383,7 @@ impl TsoEngine {
         (self.total_len + self.mss as u32 - 1) / self.mss as u32
     }
 
-    /// IPv4ヘッダチェックサム計算
-    fn ip_checksum(header: &[u8]) -> u16 {
-        let mut sum: u32 = 0;
-        let mut i = 0;
-        while i + 1 < header.len() {
-            let word = u16::from_be_bytes([header[i], header[i + 1]]);
-            sum += word as u32;
-            i += 2;
-        }
-        // Fold carry
-        while sum >> 16 != 0 {
-            sum = (sum & 0xFFFF) + (sum >> 16);
-        }
-        !(sum as u16)
-    }
+    /// IPv4ヘッダチェックサム計算 — checksum_offload::internet_checksum に統合済み
 
     /// TCPチェックサム計算 (疑似ヘッダ含む)
     fn tcp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], tcp_data: &[u8], tcp_len: u16) -> u16 {

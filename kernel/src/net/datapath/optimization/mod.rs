@@ -19,6 +19,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use crate::sync::PoisonLock;
 
 use super::mempool::PacketRef;
+use super::checksum_offload::internet_checksum;
 
 
 
