@@ -241,12 +241,12 @@ pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
     packet.data_mut().copy_from_slice(b"abc");
 
     let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
-    socket.deliver(src, packet);
+    socket.deliver(src, 255, packet);
 
     assert_eq!(wake_count.load(Ordering::SeqCst), 2);
 
     match Pin::new(&mut fut1).poll(&mut cx) {
-        Poll::Ready(Some((addr, packet))) => {
+        Poll::Ready(Some((addr, _ttl, packet))) => {
             assert_eq!(addr, src);
             assert_eq!(packet.data(), b"abc");
         }
@@ -310,7 +310,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         packet.data_mut().copy_from_slice(payload);
 
         assert_eq!(
-            proc.process_with_packet(&buf[..len], src_ip, dst_ip, packet),
+            proc.process_with_packet(&buf[..len], src_ip, dst_ip, packet, 255),
             UdpResult::Delivered
         );
     }
@@ -324,14 +324,14 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
             Some(_) => {}
         }
 
-        assert_eq!(proc.process(&buf[..len], src_ip, dst_ip), UdpResult::Delivered);
+        assert_eq!(proc.process(&buf[..len], src_ip, dst_ip, 255), UdpResult::Delivered);
     }
 
     let mut fut = socket.recv();
     let waker = noop_waker();
     let mut cx = Context::from_waker(&waker);
     match Pin::new(&mut fut).poll(&mut cx) {
-        Poll::Ready(Some((addr, packet))) => {
+        Poll::Ready(Some((addr, _ttl, packet))) => {
             assert_eq!(addr, UdpAddr::new(src_ip, 1234));
             assert_eq!(packet.data(), payload);
         }
