@@ -518,12 +518,12 @@ kernel/src/net/services/ntp/        — socket変数名
 
 ### Phase 2（中期・中優先度）
 
-3. **socket命名のリファクタリング**: `UdpSocket` → `UdpEndpoint`等の統一（39箇所）
+1. **socket命名のリファクタリング**: `UdpSocket` → `UdpEndpoint`等の統一（39箇所）
 2. **NVMeドライバunsafe削減**: Framework抽象化レイヤーの強化
 
 ### Phase 3（長期・低優先度）
 
-5. **panic!の更なる削減**: 残存80箇所のResult化
+1. **panic!の更なる削減**: 残存80箇所のResult化
 2. **ドライバunsafe封じ込め強化**: レジスタアクセスの型安全ラッパー拡充
 
 ---
