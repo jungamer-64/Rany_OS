@@ -580,14 +580,14 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             // graphics::show_boot_splash(); // Disabled by user request
             // info!(target: "init", "Boot splash displayed");
 
-            // QEMU full-boot driver_cell runtime profile does not require an interactive
+            // QEMU full-boot driver_domain runtime profile does not require an interactive
             // framebuffer console and may stall in console init under qemu-test-export.
             let skip_text_console_init = {
                 #[cfg(feature = "qemu-test-export")]
                 {
                     kernel_cmdline(boot_info, phys_mem_offset)
                         .and_then(|cmdline| util::get_cmdline_option(cmdline, "run_integration"))
-                        .map(|profile| profile == "driver_cell")
+                        .map(|profile| profile == "driver_domain")
                         .unwrap_or(false)
                 }
                 #[cfg(not(feature = "qemu-test-export"))]
@@ -599,7 +599,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             if skip_text_console_init {
                 info!(
                     target: "init",
-                    "Skipping text console init for qemu-test-export driver_cell profile"
+                    "Skipping text console init for qemu-test-export driver_domain profile"
                 );
             } else {
                 // Initialize Text Console driver
@@ -679,7 +679,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     security::mpk::init();
     info!(target: "init", "MPK/PKU security initialized");
 
-    // 2.8.5. セルローダー / ライブアップデート / DriverCell の基盤初期化
+    // 2.8.5. セルローダー / ライブアップデート / DriverDomain の基盤初期化
     io::log::early_print("[DEBUG] Before early loader init\n");
     info!(target: "init", "Initializing cell loader (early)");
     io::log::early_print("[DEBUG] early loader: before init_kernel_cell\n");
@@ -694,10 +694,10 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     io::log::early_print("[DEBUG] early loader: before set_active_cores\n");
     loader::live_update::set_active_cores(1);
     io::log::early_print("[DEBUG] early loader: after set_active_cores\n");
-    io::log::early_print("[DEBUG] early loader: before driver_cell::init\n");
-    crate::driver_cell::init();
-    io::log::early_print("[DEBUG] early loader: after driver_cell::init\n");
-    info!(target: "init", "Cell loader/live update/DriverCell initialized");
+    io::log::early_print("[DEBUG] early loader: before driver_domain::init\n");
+    crate::driver_domain::init();
+    io::log::early_print("[DEBUG] early loader: after driver_domain::init\n");
+    info!(target: "init", "Cell loader/live update/DriverDomain initialized");
     io::log::early_print("[DEBUG] After early loader init\n");
 
     // 2.9. Initramfs からドライバ Cells をロード

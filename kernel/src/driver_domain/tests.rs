@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/driver_cell/tests.rs - DriverCell QEMU test exports
+// kernel/src/driver_domain/tests.rs - DriverDomain QEMU test exports
 // ============================================================================
 
 #![allow(dead_code)]
@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::fault::{FaultKind, RestartPolicy};
-use super::stats::DriverCellStats;
+use super::stats::DriverDomainStats;
 use super::*;
 
 #[cfg(feature = "qemu-test-export")]
@@ -88,63 +88,63 @@ fn fixture_variant(path: &str) -> Option<u8> {
     }
 }
 
-pub fn driver_cell_state_default_is_created_smoke() -> bool {
-    let state = DriverCellState::Created;
-    matches!(state, DriverCellState::Created)
+pub fn driver_domain_state_default_is_created_smoke() -> bool {
+    let state = DriverDomainState::Created;
+    matches!(state, DriverDomainState::Created)
 }
 
-pub fn driver_cell_state_transitions_are_valid_smoke() -> bool {
-    let mut state = DriverCellState::Created;
-    if !matches!(state, DriverCellState::Created) {
+pub fn driver_domain_state_transitions_are_valid_smoke() -> bool {
+    let mut state = DriverDomainState::Created;
+    if !matches!(state, DriverDomainState::Created) {
         return false;
     }
 
-    state = DriverCellState::Loaded;
-    if !matches!(state, DriverCellState::Loaded) {
+    state = DriverDomainState::Loaded;
+    if !matches!(state, DriverDomainState::Loaded) {
         return false;
     }
 
-    state = DriverCellState::Running;
-    if !matches!(state, DriverCellState::Running) {
+    state = DriverDomainState::Running;
+    if !matches!(state, DriverDomainState::Running) {
         return false;
     }
 
-    state = DriverCellState::Stopped;
-    if !matches!(state, DriverCellState::Stopped) {
+    state = DriverDomainState::Stopped;
+    if !matches!(state, DriverDomainState::Stopped) {
         return false;
     }
 
-    state = DriverCellState::Unloaded;
-    matches!(state, DriverCellState::Unloaded)
+    state = DriverDomainState::Unloaded;
+    matches!(state, DriverDomainState::Unloaded)
 }
 
-pub fn driver_cell_state_faulted_smoke() -> bool {
-    let state = DriverCellState::Faulted;
-    matches!(state, DriverCellState::Faulted)
+pub fn driver_domain_state_faulted_smoke() -> bool {
+    let state = DriverDomainState::Faulted;
+    matches!(state, DriverDomainState::Faulted)
 }
 
-pub fn driver_cell_id_equality_smoke() -> bool {
-    let id1 = DriverCellId(1);
-    let id2 = DriverCellId(1);
-    let id3 = DriverCellId(2);
+pub fn driver_domain_id_equality_smoke() -> bool {
+    let id1 = DriverDomainId(1);
+    let id2 = DriverDomainId(1);
+    let id3 = DriverDomainId(2);
 
     id1 == id2 && id1 != id3
 }
 
-pub fn driver_cell_id_ordering_smoke() -> bool {
-    let id1 = DriverCellId(1);
-    let id2 = DriverCellId(2);
-    let id3 = DriverCellId(3);
+pub fn driver_domain_id_ordering_smoke() -> bool {
+    let id1 = DriverDomainId(1);
+    let id2 = DriverDomainId(2);
+    let id3 = DriverDomainId(3);
 
     id1 < id2 && id2 < id3
 }
 
-pub fn driver_cell_restart_policy_never_smoke() -> bool {
+pub fn driver_domain_restart_policy_never_smoke() -> bool {
     let policy = RestartPolicy::Never;
     matches!(policy, RestartPolicy::Never)
 }
 
-pub fn driver_cell_restart_policy_on_panic_defaults_smoke() -> bool {
+pub fn driver_domain_restart_policy_on_panic_defaults_smoke() -> bool {
     let policy = RestartPolicy::OnPanic {
         max_retries: 3,
         backoff_ms: 100,
@@ -159,7 +159,7 @@ pub fn driver_cell_restart_policy_on_panic_defaults_smoke() -> bool {
     )
 }
 
-pub fn driver_cell_restart_policy_always_smoke() -> bool {
+pub fn driver_domain_restart_policy_always_smoke() -> bool {
     let policy = RestartPolicy::Always {
         max_retries: 5,
         backoff_ms: 200,
@@ -174,7 +174,7 @@ pub fn driver_cell_restart_policy_always_smoke() -> bool {
     )
 }
 
-pub fn driver_cell_fault_kind_variants_smoke() -> bool {
+pub fn driver_domain_fault_kind_variants_smoke() -> bool {
     let kinds = [
         FaultKind::Panic(String::from("panic")),
         FaultKind::InitFailed(String::from("init")),
@@ -201,7 +201,7 @@ pub fn driver_cell_fault_kind_variants_smoke() -> bool {
     true
 }
 
-pub fn driver_cell_restart_policy_retry_boundary_smoke() -> bool {
+pub fn driver_domain_restart_policy_retry_boundary_smoke() -> bool {
     let policy = RestartPolicy::on_panic(3, 100);
     policy.should_restart(FaultKind::Panic(String::from("x")), 1)
         && policy.should_restart(FaultKind::Panic(String::from("x")), 3)
@@ -209,13 +209,13 @@ pub fn driver_cell_restart_policy_retry_boundary_smoke() -> bool {
         && !policy.should_restart(FaultKind::Timeout, 1)
 }
 
-pub fn driver_cell_restart_policy_backoff_cap_smoke() -> bool {
+pub fn driver_domain_restart_policy_backoff_cap_smoke() -> bool {
     let policy = RestartPolicy::always(10, 10_000);
     policy.backoff_for_attempt(0) == 10_000 && policy.backoff_for_attempt(10) == 30_000
 }
 
-pub fn driver_cell_stats_initial_values_smoke() -> bool {
-    let stats = DriverCellStats::new();
+pub fn driver_domain_stats_initial_values_smoke() -> bool {
+    let stats = DriverDomainStats::new();
     stats.load_duration_ticks == 0
         && stats.load_timestamp == 0
         && stats.start_count == 0
@@ -227,77 +227,77 @@ pub fn driver_cell_stats_initial_values_smoke() -> bool {
         && stats.max_uptime_ticks == 0
 }
 
-pub fn driver_cell_stats_default_smoke() -> bool {
-    let stats: DriverCellStats = Default::default();
+pub fn driver_domain_stats_default_smoke() -> bool {
+    let stats: DriverDomainStats = Default::default();
     stats.start_count == 0
 }
 
-pub fn driver_cell_stats_record_start_smoke() -> bool {
-    let mut stats = DriverCellStats::new();
+pub fn driver_domain_stats_record_start_smoke() -> bool {
+    let mut stats = DriverDomainStats::new();
     stats.record_start();
     stats.record_start();
     stats.start_count == 2
 }
 
-pub fn driver_cell_stats_record_stop_smoke() -> bool {
-    let mut stats = DriverCellStats::new();
+pub fn driver_domain_stats_record_stop_smoke() -> bool {
+    let mut stats = DriverDomainStats::new();
     stats.record_stop();
     stats.stop_count == 1
 }
 
-pub fn driver_cell_stats_record_fault_smoke() -> bool {
-    let mut stats = DriverCellStats::new();
+pub fn driver_domain_stats_record_fault_smoke() -> bool {
+    let mut stats = DriverDomainStats::new();
     stats.record_fault();
     stats.record_fault();
     stats.fault_count == 2
 }
 
-pub fn driver_cell_stats_record_restart_smoke() -> bool {
-    let mut stats = DriverCellStats::new();
+pub fn driver_domain_stats_record_restart_smoke() -> bool {
+    let mut stats = DriverDomainStats::new();
     stats.record_restart();
     stats.restart_count == 1
 }
 
-pub fn driver_cell_stats_record_hot_swap_smoke() -> bool {
-    let mut stats = DriverCellStats::new();
+pub fn driver_domain_stats_record_hot_swap_smoke() -> bool {
+    let mut stats = DriverDomainStats::new();
     stats.record_hot_swap();
     stats.record_hot_swap();
     stats.record_hot_swap();
     stats.hot_swap_count == 3
 }
 
-pub fn driver_cell_error_not_found_smoke() -> bool {
-    let err = DriverCellError::NotFound(DriverCellId(42));
-    matches!(err, DriverCellError::NotFound(id) if id == DriverCellId(42))
+pub fn driver_domain_error_not_found_smoke() -> bool {
+    let err = DriverDomainError::NotFound(DriverDomainId(42));
+    matches!(err, DriverDomainError::NotFound(id) if id == DriverDomainId(42))
 }
 
-pub fn driver_cell_error_invalid_state_smoke() -> bool {
-    let err = DriverCellError::InvalidStateTransition {
-        from: DriverCellState::Loaded,
-        to: DriverCellState::Running,
+pub fn driver_domain_error_invalid_state_smoke() -> bool {
+    let err = DriverDomainError::InvalidStateTransition {
+        from: DriverDomainState::Loaded,
+        to: DriverDomainState::Running,
     };
 
     matches!(
         err,
-        DriverCellError::InvalidStateTransition {
-            from: DriverCellState::Loaded,
-            to: DriverCellState::Running
+        DriverDomainError::InvalidStateTransition {
+            from: DriverDomainState::Loaded,
+            to: DriverDomainState::Running
         }
     )
 }
 
-pub fn driver_cell_global_stats_new_smoke() -> bool {
-    use super::stats::GlobalDriverCellStats;
+pub fn driver_domain_global_stats_new_smoke() -> bool {
+    use super::stats::GlobalDriverDomainStats;
 
-    let stats = GlobalDriverCellStats::new();
+    let stats = GlobalDriverDomainStats::new();
     let summary = stats.summary();
     summary.total_created == 0 && summary.total_unloaded == 0 && summary.total_faults == 0
 }
 
-pub fn driver_cell_global_stats_tracking_smoke() -> bool {
-    use super::stats::GlobalDriverCellStats;
+pub fn driver_domain_global_stats_tracking_smoke() -> bool {
+    use super::stats::GlobalDriverDomainStats;
 
-    let stats = GlobalDriverCellStats::new();
+    let stats = GlobalDriverDomainStats::new();
     stats.on_created();
     stats.on_created();
     stats.on_fault();
@@ -309,14 +309,14 @@ pub fn driver_cell_global_stats_tracking_smoke() -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 #[derive(Debug, Clone, Copy)]
-pub struct DriverCellRuntimeSuiteSummary {
+pub struct DriverDomainRuntimeSuiteSummary {
     pub passed: u32,
     pub failed: u32,
     pub blocked: u32,
 }
 
 #[cfg(feature = "qemu-test-export")]
-impl DriverCellRuntimeSuiteSummary {
+impl DriverDomainRuntimeSuiteSummary {
     pub const fn new() -> Self {
         Self {
             passed: 0,
@@ -350,14 +350,14 @@ impl RuntimeCaseError {
 
 #[cfg(feature = "qemu-test-export")]
 struct RuntimeContext {
-    driver_cell_id: DriverCellId,
+    driver_domain_id: DriverDomainId,
     v1_cell: Vec<u8>,
     v2_cell: Vec<u8>,
 }
 
 #[cfg(feature = "qemu-test-export")]
-pub fn run_driver_cell_runtime_suite() -> DriverCellRuntimeSuiteSummary {
-    let mut summary = DriverCellRuntimeSuiteSummary::new();
+pub fn run_driver_domain_runtime_suite() -> DriverDomainRuntimeSuiteSummary {
+    let mut summary = DriverDomainRuntimeSuiteSummary::new();
     runtime_log_line("[driver-cell-runtime] start");
     let old_aslr = crate::loader::elf::is_aslr_enabled();
     crate::loader::elf::set_aslr_enabled(false);
@@ -413,13 +413,13 @@ pub fn run_driver_cell_runtime_suite() -> DriverCellRuntimeSuiteSummary {
 #[cfg(feature = "qemu-test-export")]
 fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
     runtime_log_line("[driver-cell-runtime] preflight: begin");
-    let manager = driver_cell_manager();
-    let running_cells = manager.cells_by_state(DriverCellState::Running);
-    let driver_cell_id = match running_cells.as_slice() {
+    let manager = driver_domain_manager();
+    let running_cells = manager.cells_by_state(DriverDomainState::Running);
+    let driver_domain_id = match running_cells.as_slice() {
         [id] => *id,
         [] => {
             return Err(RuntimeCaseError::failed(
-                "no Running DriverCell found (expected driver_cell_probe from initramfs)",
+                "no Running DriverDomain found (expected driver_cell_probe from initramfs)",
             ));
         }
         many => {
@@ -429,13 +429,13 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
             )));
         }
     };
-    runtime_log_line("[driver-cell-runtime] preflight: selected running DriverCell");
+    runtime_log_line("[driver-cell-runtime] preflight: selected running DriverDomain");
 
     let (state, hot_swap_state, loader_cell_id) = manager
-        .with_cell(driver_cell_id, |cell| (cell.state, cell.hot_swap_state, cell.cell_id))
-        .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect DriverCell: {}", e)))?;
+        .with_cell(driver_domain_id, |cell| (cell.state, cell.hot_swap_state, cell.cell_id))
+        .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect DriverDomain: {}", e)))?;
 
-    if state != DriverCellState::Running {
+    if state != DriverDomainState::Running {
         return Err(RuntimeCaseError::failed(format!(
             "driver_cell_probe is not Running (state={})",
             state
@@ -466,7 +466,7 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
     runtime_log_line("[driver-cell-runtime] preflight: tick progressed");
 
     Ok(RuntimeContext {
-        driver_cell_id,
+        driver_domain_id,
         v1_cell,
         v2_cell,
     })
@@ -474,12 +474,12 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_update_to_validating(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
-    ensure_running_idle(ctx.driver_cell_id)?;
-    let result = super::hot_swap::hot_swap(ctx.driver_cell_id, &ctx.v2_cell)
+    ensure_running_idle(ctx.driver_domain_id)?;
+    let result = super::hot_swap::hot_swap(ctx.driver_domain_id, &ctx.v2_cell)
         .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
     poll_runtime();
 
-    let health = super::hot_swap::health_status(ctx.driver_cell_id)
+    let health = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
     if health.hot_swap_state != HotSwapState::Validating {
         return Err(RuntimeCaseError::failed(format!(
@@ -503,7 +503,7 @@ fn case_update_to_validating(ctx: &mut RuntimeContext) -> Result<(), RuntimeCase
 
 #[cfg(feature = "qemu-test-export")]
 fn case_manual_rollback(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
-    let before = super::hot_swap::health_status(ctx.driver_cell_id)
+    let before = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
     if before.hot_swap_state != HotSwapState::Validating {
         return Err(RuntimeCaseError::failed(
@@ -515,11 +515,11 @@ fn case_manual_rollback(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError
         .ok_or_else(|| RuntimeCaseError::failed("current loader CellId missing"))?
         .as_u64();
 
-    super::hot_swap::rollback(ctx.driver_cell_id)
+    super::hot_swap::rollback(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("rollback failed: {}", e)))?;
     poll_runtime();
 
-    let after = super::hot_swap::health_status(ctx.driver_cell_id)
+    let after = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
     if after.hot_swap_state != HotSwapState::Idle {
         return Err(RuntimeCaseError::failed(format!(
@@ -547,16 +547,16 @@ fn case_manual_rollback(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError
 
 #[cfg(feature = "qemu-test-export")]
 fn case_manual_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
-    ensure_running_idle(ctx.driver_cell_id)?;
-    let update = super::hot_swap::hot_swap(ctx.driver_cell_id, &ctx.v2_cell)
+    ensure_running_idle(ctx.driver_domain_id)?;
+    let update = super::hot_swap::hot_swap(ctx.driver_domain_id, &ctx.v2_cell)
         .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
     poll_runtime();
 
-    super::hot_swap::commit(ctx.driver_cell_id)
+    super::hot_swap::commit(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("commit failed: {}", e)))?;
     poll_runtime();
 
-    let after = super::hot_swap::health_status(ctx.driver_cell_id)
+    let after = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
     if after.hot_swap_state != HotSwapState::Idle {
         return Err(RuntimeCaseError::failed(format!(
@@ -580,12 +580,12 @@ fn case_manual_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> 
 
 #[cfg(feature = "qemu-test-export")]
 fn case_auto_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
-    ensure_running_idle(ctx.driver_cell_id)?;
-    let update = super::hot_swap::hot_swap(ctx.driver_cell_id, &ctx.v1_cell)
+    ensure_running_idle(ctx.driver_domain_id)?;
+    let update = super::hot_swap::hot_swap(ctx.driver_domain_id, &ctx.v1_cell)
         .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v1) failed: {}", e)))?;
     poll_runtime();
 
-    let validating = super::hot_swap::health_status(ctx.driver_cell_id)
+    let validating = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
     let deadline = validating
         .validation_deadline_tick
@@ -598,7 +598,7 @@ fn case_auto_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
     }
     poll_runtime();
 
-    let after = super::hot_swap::health_status(ctx.driver_cell_id)
+    let after = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
     if after.hot_swap_state != HotSwapState::Idle {
         return Err(RuntimeCaseError::failed(format!(
@@ -622,9 +622,9 @@ fn case_auto_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
-    ensure_running_idle(ctx.driver_cell_id)?;
+    ensure_running_idle(ctx.driver_domain_id)?;
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: hot_swap begin");
-    let update = super::hot_swap::hot_swap(ctx.driver_cell_id, &ctx.v2_cell)
+    let update = super::hot_swap::hot_swap(ctx.driver_domain_id, &ctx.v2_cell)
         .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: hot_swap done");
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime begin");
@@ -632,13 +632,13 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime done");
 
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: read stats begin");
-    let (restart_before, fault_before) = driver_cell_manager()
-        .with_cell(ctx.driver_cell_id, |cell| (cell.stats.restart_count, cell.stats.fault_count))
+    let (restart_before, fault_before) = driver_domain_manager()
+        .with_cell(ctx.driver_domain_id, |cell| (cell.stats.restart_count, cell.stats.fault_count))
         .map_err(|e| RuntimeCaseError::failed(format!("failed to read stats: {}", e)))?;
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: read stats done");
 
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: inject panic begin");
-    let outcome = super::fault::inject_test_fault(ctx.driver_cell_id, super::fault::TestFaultKind::Panic)
+    let outcome = super::fault::inject_test_fault(ctx.driver_domain_id, super::fault::TestFaultKind::Panic)
         .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: inject panic done");
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime2 begin");
@@ -652,8 +652,8 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
         )));
     }
 
-    let (restart_after, fault_after) = driver_cell_manager()
-        .with_cell(ctx.driver_cell_id, |cell| (cell.stats.restart_count, cell.stats.fault_count))
+    let (restart_after, fault_after) = driver_domain_manager()
+        .with_cell(ctx.driver_domain_id, |cell| (cell.stats.restart_count, cell.stats.fault_count))
         .map_err(|e| RuntimeCaseError::failed(format!("failed to read stats: {}", e)))?;
     if restart_after != restart_before {
         return Err(RuntimeCaseError::failed(
@@ -666,7 +666,7 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
         ));
     }
 
-    let after = super::hot_swap::health_status(ctx.driver_cell_id)
+    let after = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
     if after.hot_swap_state != HotSwapState::Idle {
         return Err(RuntimeCaseError::failed(format!(
@@ -695,12 +695,12 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
 
 #[cfg(feature = "qemu-test-export")]
 fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
-    ensure_running_idle(ctx.driver_cell_id)?;
-    let restart_before = driver_cell_manager()
-        .with_cell(ctx.driver_cell_id, |cell| cell.stats.restart_count)
+    ensure_running_idle(ctx.driver_domain_id)?;
+    let restart_before = driver_domain_manager()
+        .with_cell(ctx.driver_domain_id, |cell| cell.stats.restart_count)
         .map_err(|e| RuntimeCaseError::failed(format!("failed to read restart_count: {}", e)))?;
 
-    let outcome = super::fault::inject_test_fault(ctx.driver_cell_id, super::fault::TestFaultKind::Panic)
+    let outcome = super::fault::inject_test_fault(ctx.driver_domain_id, super::fault::TestFaultKind::Panic)
         .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
     poll_runtime();
 
@@ -711,8 +711,8 @@ fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseEr
         )));
     }
 
-    let (restart_after, state_after, hot_swap_after) = driver_cell_manager()
-        .with_cell(ctx.driver_cell_id, |cell| {
+    let (restart_after, state_after, hot_swap_after) = driver_domain_manager()
+        .with_cell(ctx.driver_domain_id, |cell| {
             (cell.stats.restart_count, cell.state, cell.hot_swap_state)
         })
         .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect post-restart state: {}", e)))?;
@@ -722,9 +722,9 @@ fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseEr
             "restart_count did not increase in Idle panic path",
         ));
     }
-    if state_after != DriverCellState::Running {
+    if state_after != DriverDomainState::Running {
         return Err(RuntimeCaseError::failed(format!(
-            "DriverCell did not return to Running (state={})",
+            "DriverDomain did not return to Running (state={})",
             state_after
         )));
     }
@@ -740,15 +740,15 @@ fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseEr
 
 #[cfg(feature = "qemu-test-export")]
 fn case_unload(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
-    super::lifecycle::unload(ctx.driver_cell_id)
+    super::lifecycle::unload(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("unload failed after restart: {}", e)))?;
     poll_runtime();
 
-    match driver_cell_manager().with_cell(ctx.driver_cell_id, |_| ()) {
-        Err(DriverCellError::NotFound(_)) => {}
+    match driver_domain_manager().with_cell(ctx.driver_domain_id, |_| ()) {
+        Err(DriverDomainError::NotFound(_)) => {}
         Ok(()) => {
             return Err(RuntimeCaseError::failed(
-                "DriverCell still exists after unload",
+                "DriverDomain still exists after unload",
             ));
         }
         Err(e) => {
@@ -763,11 +763,11 @@ fn case_unload(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn ensure_running_idle(id: DriverCellId) -> Result<(), RuntimeCaseError> {
-    let (state, hot_swap_state) = driver_cell_manager()
+fn ensure_running_idle(id: DriverDomainId) -> Result<(), RuntimeCaseError> {
+    let (state, hot_swap_state) = driver_domain_manager()
         .with_cell(id, |cell| (cell.state, cell.hot_swap_state))
-        .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect DriverCell state: {}", e)))?;
-    if state != DriverCellState::Running {
+        .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect DriverDomain state: {}", e)))?;
+    if state != DriverDomainState::Running {
         return Err(RuntimeCaseError::failed(format!(
             "expected Running state, got {}",
             state
@@ -878,7 +878,7 @@ fn wait_for_tick(target: u64, max_stagnant_loops: usize) -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 fn run_case(
-    summary: &mut DriverCellRuntimeSuiteSummary,
+    summary: &mut DriverDomainRuntimeSuiteSummary,
     name: &str,
     result: Result<(), RuntimeCaseError>,
 ) {
@@ -913,7 +913,7 @@ fn log_case(name: &str, status: &str, detail: &str) {
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn log_summary(summary: &DriverCellRuntimeSuiteSummary) {
+fn log_summary(summary: &DriverDomainRuntimeSuiteSummary) {
     runtime_log_line(&format!(
         "[driver-cell-runtime] summary pass={} fail={} blocked={}",
         summary.passed,

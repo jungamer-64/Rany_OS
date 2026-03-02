@@ -1,7 +1,7 @@
 // ============================================================================
-// kernel/src/driver_cell/fault.rs - 障害分離と自動復旧
+// kernel/src/driver_domain/fault.rs - 障害分離と自動復旧
 // ============================================================================
-//! # ドライバセル障害管理
+//! # ドライバドメイン障害管理
 //!
 //! 設計書 8: フォールトアイソレーションと回復メカニズム
 //! 設計書 8.1: スタックアンワインドとリソース回収
@@ -32,7 +32,7 @@ use alloc::string::String;
 
 use crate::domain_system::DomainId;
 
-use super::{DriverCellError, DriverCellId, DriverCellState, HotSwapState, driver_cell_manager};
+use super::{DriverDomainError, DriverDomainId, DriverDomainState, HotSwapState, driver_domain_manager};
 
 // ============================================================================
 // Restart Policy
@@ -194,11 +194,11 @@ impl FaultRecord {
 /// 2. Exchange Heap上のRRefリソースを回収
 /// 3. RestartPolicyに基づき自動復旧を試みる
 pub fn handle_fault(
-    id: DriverCellId,
+    id: DriverDomainId,
     fault_kind: FaultKind,
-) -> Result<FaultAction, DriverCellError> {
+) -> Result<FaultAction, DriverDomainError> {
     crate::io::log::early_print("[DCF] handle_fault: enter\n");
-    let manager = driver_cell_manager();
+    let manager = driver_domain_manager();
 
     // 障害情報を記録
     let (restart_policy, consecutive, domain_id, hot_swap_state, cell_id) = manager.with_cell_mut(id, |cell| {
@@ -208,7 +208,7 @@ pub fn handle_fault(
         let record = FaultRecord::new(fault_kind.clone(), consecutive);
         cell.fault_history.push(record);
 
-        cell.transition_to(DriverCellState::Faulted);
+        cell.transition_to(DriverDomainState::Faulted);
         cell.stats.record_fault();
 
         (
@@ -225,7 +225,7 @@ pub fn handle_fault(
     crate::io::log::early_print("[DCF] handle_fault: recorded\n");
 
     log::info!(
-        "[DriverCell] Fault in '{}': {} (consecutive: {})\n",
+        "[DriverDomain] Fault in '{}': {} (consecutive: {})\n",
         name,
         fault_kind,
         consecutive
@@ -236,7 +236,7 @@ pub fn handle_fault(
         crate::io::log::early_print("[DCF] handle_fault: domain panic begin\n");
         crate::domain_system::handle_domain_panic(
             did,
-            format!("DriverCell fault: {}", fault_kind),
+            format!("DriverDomain fault: {}", fault_kind),
         );
         crate::io::log::early_print("[DCF] handle_fault: domain panic done\n");
     }
@@ -265,7 +265,7 @@ pub fn handle_fault(
             }
             Err(e) => {
                 crate::io::log::early_print("[DCF] handle_fault: rollback err\n");
-                log::warn!("[DriverCell] Validation rollback failed: {}\n", e);
+                log::warn!("[DriverDomain] Validation rollback failed: {}\n", e);
                 return Ok(FaultAction::RollbackFailed(format!("{}", e)));
             }
         }
@@ -276,7 +276,7 @@ pub fn handle_fault(
         let backoff = restart_policy.backoff_for_attempt(consecutive.saturating_sub(1));
 
         log::info!(
-            "[DriverCell] Scheduling restart for '{}' (attempt {}, backoff {}ms)\n",
+            "[DriverDomain] Scheduling restart for '{}' (attempt {}, backoff {}ms)\n",
             name,
             consecutive,
             backoff
@@ -299,7 +299,7 @@ pub fn handle_fault(
             Err(e) => {
                 super::stats::global_stats().on_restart_failed();
                 log::warn!(
-                    "[DriverCell] Restart failed for '{}': {}\n",
+                    "[DriverDomain] Restart failed for '{}': {}\n",
                     name,
                     e
                 );
@@ -308,7 +308,7 @@ pub fn handle_fault(
         }
     } else {
         log::info!(
-            "[DriverCell] No restart for '{}' (policy: {:?}, faults: {})\n",
+            "[DriverDomain] No restart for '{}' (policy: {:?}, faults: {})\n",
             name,
             restart_policy,
             consecutive
@@ -319,11 +319,11 @@ pub fn handle_fault(
 
 /// パニックハンドラからDriverCellの障害を通知
 ///
-/// パニックハンドラ → Domain → DriverCell の連携
+/// パニックハンドラ → Domain → DriverDomain の連携
 pub fn notify_domain_panic(domain_id: DomainId, message: String) {
     if let Err(e) = notify_domain_panic_inner(domain_id, message) {
         log::error!(
-            "[DriverCell] Failed to handle fault for domain {}: {}\n",
+            "[DriverDomain] Failed to handle fault for domain {}: {}\n",
             domain_id,
             e
         );
@@ -333,8 +333,8 @@ pub fn notify_domain_panic(domain_id: DomainId, message: String) {
 fn notify_domain_panic_inner(
     domain_id: DomainId,
     message: String,
-) -> Result<Option<FaultAction>, DriverCellError> {
-    let manager = driver_cell_manager();
+) -> Result<Option<FaultAction>, DriverDomainError> {
+    let manager = driver_domain_manager();
 
     // DomainIDからDriverCellを検索
     if let Some(cell_id) = manager.find_by_domain(domain_id) {
@@ -346,8 +346,8 @@ fn notify_domain_panic_inner(
 }
 
 /// DriverCellの全ドライバを停止（障害処理用）
-fn stop_drivers_for_cell(id: DriverCellId) {
-    let manager = driver_cell_manager();
+fn stop_drivers_for_cell(id: DriverDomainId) {
+    let manager = driver_domain_manager();
     let handles = match manager.with_cell(id, |cell| cell.driver_handles.clone()) {
         Ok(h) => h,
         Err(_) => return,
@@ -357,7 +357,7 @@ fn stop_drivers_for_cell(id: DriverCellId) {
     for handle in &handles {
         if let Err(e) = registry.stop(*handle) {
             log::warn!(
-                "[DriverCell] Force stop driver {:?} failed: {}\n",
+                "[DriverDomain] Force stop driver {:?} failed: {}\n",
                 handle.index(),
                 e
             );
@@ -372,11 +372,11 @@ fn stop_drivers_for_cell(id: DriverCellId) {
 /// 2. Domainの状態をリセット
 /// 3. CellのエントリポイントからドライバをRe-register
 /// 4. probe + start
-fn attempt_restart(id: DriverCellId) -> Result<(), DriverCellError> {
-    let manager = driver_cell_manager();
+fn attempt_restart(id: DriverDomainId) -> Result<(), DriverDomainError> {
+    let manager = driver_domain_manager();
 
     manager.with_cell_mut(id, |cell| {
-        cell.transition_to(DriverCellState::Restarting);
+        cell.transition_to(DriverDomainState::Restarting);
     })?;
 
     // 古いドライバをunregister
@@ -384,7 +384,7 @@ fn attempt_restart(id: DriverCellId) -> Result<(), DriverCellError> {
     for handle in &old_handles {
         if let Err(e) = crate::loader::unload_driver(*handle) {
             log::warn!(
-                "[DriverCell] Failed to unload driver handle {:?} during restart: {}\n",
+                "[DriverDomain] Failed to unload driver handle {:?} during restart: {}\n",
                 handle.index(),
                 e
             );
@@ -404,7 +404,7 @@ fn attempt_restart(id: DriverCellId) -> Result<(), DriverCellError> {
 
     // セルからドライバを再登録
     let cell_id = manager.with_cell(id, |cell| cell.cell_id)?;
-    let cell_id = cell_id.ok_or(DriverCellError::LoadFailed(
+    let cell_id = cell_id.ok_or(DriverDomainError::LoadFailed(
         "No cell loaded for restart".into(),
     ))?;
 
@@ -413,9 +413,9 @@ fn attempt_restart(id: DriverCellId) -> Result<(), DriverCellError> {
         Err(e) => {
             let msg = format!("{}", e);
             manager.with_cell_mut(id, |cell| {
-                cell.transition_to(DriverCellState::Faulted);
+                cell.transition_to(DriverDomainState::Faulted);
             }).ok();
-            return Err(DriverCellError::DriverInitFailed(msg));
+            return Err(DriverDomainError::DriverInitFailed(msg));
         }
     };
 
@@ -424,9 +424,9 @@ fn attempt_restart(id: DriverCellId) -> Result<(), DriverCellError> {
     if let Err(e) = registry.probe_and_start(handle) {
         let msg = format!("{}", e);
         manager.with_cell_mut(id, |cell| {
-            cell.transition_to(DriverCellState::Faulted);
+            cell.transition_to(DriverDomainState::Faulted);
         }).ok();
-        return Err(DriverCellError::DriverInitFailed(msg));
+        return Err(DriverDomainError::DriverInitFailed(msg));
     }
 
     // DomainをRunningに
@@ -437,12 +437,12 @@ fn attempt_restart(id: DriverCellId) -> Result<(), DriverCellError> {
     // DriverCellをRunningに
     manager.with_cell_mut(id, |cell| {
         cell.add_driver_handle(handle);
-        cell.transition_to(DriverCellState::Running);
+        cell.transition_to(DriverDomainState::Running);
         cell.stats.record_restart();
     })?;
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
-    log::info!("[DriverCell] Restarted: {}\n", name);
+    log::info!("[DriverDomain] Restarted: {}\n", name);
 
     Ok(())
 }
@@ -541,7 +541,7 @@ impl core::fmt::Display for TestFaultKind {
 pub struct TestFaultOutcome {
     pub requested_kind: TestFaultKind,
     pub action: FaultAction,
-    pub driver_cell_state_after: DriverCellState,
+    pub driver_domain_state_after: DriverDomainState,
     pub hot_swap_state_after: HotSwapState,
     pub consecutive_faults_after: u32,
     pub last_health_failure_after: Option<String>,
@@ -553,11 +553,11 @@ pub struct TestFaultOutcome {
 /// 将来のqemu-suite自動化で再利用する。
 #[cfg(feature = "qemu-test-export")]
 pub fn inject_test_fault(
-    id: DriverCellId,
+    id: DriverDomainId,
     kind: TestFaultKind,
-) -> Result<TestFaultOutcome, DriverCellError> {
+) -> Result<TestFaultOutcome, DriverDomainError> {
     crate::io::log::early_print("[DCF] inject_test_fault: enter\n");
-    let manager = driver_cell_manager();
+    let manager = driver_domain_manager();
     let domain_id = manager.with_cell(id, |cell| cell.domain_id)?;
     crate::io::log::early_print("[DCF] inject_test_fault: got domain\n");
 
@@ -599,7 +599,7 @@ pub fn inject_test_fault(
         )?,
     };
 
-    let (driver_cell_state_after, hot_swap_state_after, consecutive_faults_after, last_health_failure_after) =
+    let (driver_domain_state_after, hot_swap_state_after, consecutive_faults_after, last_health_failure_after) =
         manager.with_cell(id, |cell| {
             (
                 cell.state,
@@ -613,7 +613,7 @@ pub fn inject_test_fault(
     Ok(TestFaultOutcome {
         requested_kind: kind,
         action,
-        driver_cell_state_after,
+        driver_domain_state_after,
         hot_swap_state_after,
         consecutive_faults_after,
         last_health_failure_after,

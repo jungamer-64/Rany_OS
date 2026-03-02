@@ -329,11 +329,11 @@ destination.package = "qemu-tests"
 destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
 
 [[case]]
-id = "driver_cell.runtime_suite"
-source = "kernel/src/driver_cell/tests.rs"
+id = "driver_domain.runtime_suite"
+source = "kernel/src/driver_domain/tests.rs"
 classification = "qemu_fullboot"
 reason = "runtime profile dispatched inside full-boot kernel"
-profiles = ["driver_cell", "pr-required", "nightly-required"]
+profiles = ["driver_domain", "pr-required", "nightly-required"]
 destination.kind = "qemu-fullboot"
 destination.package = "qemu-tests"
 destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"

@@ -1,7 +1,7 @@
 // ============================================================================
-// kernel/src/driver_cell/hot_swap.rs - DriverCell ホットスワップ
+// kernel/src/driver_domain/hot_swap.rs - DriverDomain ホットスワップ
 // ============================================================================
-//! # ドライバセルのホットスワップ（ライブアップデート）
+//! # ドライバドメインのホットスワップ（ライブアップデート）
 //!
 //! 設計書 3.5: リアルタイムアップデート
 //! 設計書 3.5.1: セルのホットスワップ
@@ -26,7 +26,7 @@ use alloc::string::String;
 
 use crate::loader::CellId;
 
-use super::{DriverCellError, DriverCellId, DriverCellSnapshot, DriverCellState, driver_cell_manager};
+use super::{DriverDomainError, DriverDomainId, DriverDomainSnapshot, DriverDomainState, driver_domain_manager};
 
 // ============================================================================
 // Hot Swap State
@@ -81,9 +81,9 @@ pub struct HotSwapResult {
 
 #[derive(Debug, Clone)]
 pub struct CellHealthStatus {
-    pub driver_cell_id: DriverCellId,
+    pub driver_domain_id: DriverDomainId,
     pub loader_cell_id: Option<CellId>,
-    pub state: DriverCellState,
+    pub state: DriverDomainState,
     pub hot_swap_state: HotSwapState,
     pub validation_deadline_tick: Option<u64>,
     pub health_failed: bool,
@@ -107,34 +107,34 @@ pub struct CellHealthStatus {
 /// # Returns
 /// 成功時は `HotSwapResult` を返す
 pub fn hot_swap(
-    id: DriverCellId,
+    id: DriverDomainId,
     new_elf_data: &[u8],
-) -> Result<HotSwapResult, DriverCellError> {
-    let manager = driver_cell_manager();
+) -> Result<HotSwapResult, DriverDomainError> {
+    let manager = driver_domain_manager();
     let start_tick = crate::task::timer::current_tick();
 
     // 状態チェック: Runningのみホットスワップ可能
     let old_cell_id = manager.with_cell(id, |cell| {
-        if cell.state != DriverCellState::Running {
-            return Err(DriverCellError::InvalidStateTransition {
+        if cell.state != DriverDomainState::Running {
+            return Err(DriverDomainError::InvalidStateTransition {
                 from: cell.state,
-                to: DriverCellState::Updating,
+                to: DriverDomainState::Updating,
             });
         }
-        cell.cell_id.ok_or(DriverCellError::LoadFailed(
+        cell.cell_id.ok_or(DriverDomainError::LoadFailed(
             "No cell loaded".into(),
         ))
     })??;
 
     // Updating状態に遷移
     manager.with_cell_mut(id, |cell| {
-        cell.transition_to(DriverCellState::Updating);
+        cell.transition_to(DriverDomainState::Updating);
         cell.hot_swap_state = HotSwapState::Loading;
     })?;
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
     log::info!(
-        "[DriverCell] Hot-swap starting for '{}' (old cell={:?})\n",
+        "[DriverDomain] Hot-swap starting for '{}' (old cell={:?})\n",
         name,
         old_cell_id.as_u64()
     );
@@ -168,14 +168,14 @@ pub fn hot_swap(
 
             // Running状態に復帰
             manager.with_cell_mut(id, |cell| {
-                cell.transition_to(DriverCellState::Running);
+                cell.transition_to(DriverDomainState::Running);
                 cell.hot_swap_state = HotSwapState::Validating;
                 cell.stats.record_hot_swap();
             })?;
             super::stats::global_stats().on_hot_swap();
 
             log::info!(
-                "[DriverCell] Hot-swap completed for '{}': cell {:?} -> {:?} ({}ms)\n",
+                "[DriverDomain] Hot-swap completed for '{}': cell {:?} -> {:?} ({}ms)\n",
                 name,
                 old_cell_id.as_u64(),
                 new_cell_id_u64,
@@ -192,7 +192,7 @@ pub fn hot_swap(
         Err(e) => {
             let msg = format!("LiveUpdate failed: {}", e);
             log::error!(
-                "[DriverCell] Hot-swap failed for '{}': {}\n",
+                "[DriverDomain] Hot-swap failed for '{}': {}\n",
                 name,
                 msg
             );
@@ -201,10 +201,10 @@ pub fn hot_swap(
             manager.with_cell_mut(id, |cell| {
                 cell.hot_swap_state = HotSwapState::Error;
                 cell.validation_deadline_tick = None;
-                cell.transition_to(DriverCellState::Running);
+                cell.transition_to(DriverDomainState::Running);
             })?;
 
-            Err(DriverCellError::HotSwapFailed(msg))
+            Err(DriverDomainError::HotSwapFailed(msg))
         }
     }
 }
@@ -215,10 +215,10 @@ pub fn hot_swap(
 /// 既存のDriverHandleは有効なまま（vtableが新コードを指している）。
 /// CellEntryのregistered_driversを新セルに付け替える。
 fn update_driver_handles_after_swap(
-    id: DriverCellId,
+    id: DriverDomainId,
     new_cell_id: CellId,
-) -> Result<(), DriverCellError> {
-    let manager = driver_cell_manager();
+) -> Result<(), DriverDomainError> {
+    let manager = driver_domain_manager();
 
     let handles = manager.with_cell(id, |cell| cell.driver_handles.clone())?;
 
@@ -240,19 +240,19 @@ fn update_driver_handles_after_swap(
 ///
 /// 検証フェーズで問題が発見された場合に呼び出す。
 /// LiveUpdateManagerのrollback()を使用して旧バージョンに復帰する。
-pub fn rollback(id: DriverCellId) -> Result<(), DriverCellError> {
-    let manager = driver_cell_manager();
+pub fn rollback(id: DriverDomainId) -> Result<(), DriverDomainError> {
+    let manager = driver_domain_manager();
 
     let (hot_swap_state, current_cell_id) =
         manager.with_cell(id, |cell| (cell.hot_swap_state, cell.cell_id))?;
 
     if hot_swap_state != HotSwapState::Validating && hot_swap_state != HotSwapState::Error {
-        return Err(DriverCellError::HotSwapFailed(
+        return Err(DriverDomainError::HotSwapFailed(
             "No active hot-swap to rollback".into(),
         ));
     }
 
-    let current_cell_id = current_cell_id.ok_or(DriverCellError::HotSwapFailed(
+    let current_cell_id = current_cell_id.ok_or(DriverDomainError::HotSwapFailed(
         "No current cell for rollback".into(),
     ))?;
 
@@ -267,7 +267,7 @@ pub fn rollback(id: DriverCellId) -> Result<(), DriverCellError> {
             manager.with_cell_mut(id, |cell| {
                 cell.hot_swap_state = HotSwapState::Error;
             }).ok();
-            return Err(DriverCellError::HotSwapFailed(format!(
+            return Err(DriverDomainError::HotSwapFailed(format!(
                 "Rollback failed: {}",
                 e
             )));
@@ -279,9 +279,9 @@ pub fn rollback(id: DriverCellId) -> Result<(), DriverCellError> {
         cell.hot_swap_state = HotSwapState::Idle;
         cell.validation_deadline_tick = None;
         // Successful rollback restores the previously known-good cell, so the
-        // DriverCell should return to Running even when the trigger fault
+        // DriverDomain should return to Running even when the trigger fault
         // temporarily moved state to Faulted.
-        cell.transition_to(DriverCellState::Running);
+        cell.transition_to(DriverDomainState::Running);
     })?;
 
     if let Some(crate::loader::live_update::CompletedUpdateOutcome::RolledBack { reason, .. }) =
@@ -293,31 +293,31 @@ pub fn rollback(id: DriverCellId) -> Result<(), DriverCellError> {
     }
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
-    log::info!("[DriverCell] Hot-swap rolled back for '{}'\n", name);
+    log::info!("[DriverDomain] Hot-swap rolled back for '{}'\n", name);
 
     Ok(())
 }
 
 /// ホットスワップをコミット（猶予期間前の明示コミット）
-pub fn commit(id: DriverCellId) -> Result<(), DriverCellError> {
-    let manager = driver_cell_manager();
+pub fn commit(id: DriverDomainId) -> Result<(), DriverDomainError> {
+    let manager = driver_domain_manager();
     let (hot_swap_state, current_cell_id) = manager.with_cell(id, |cell| {
         (cell.hot_swap_state, cell.cell_id)
     })?;
 
     if hot_swap_state != HotSwapState::Validating {
-        return Err(DriverCellError::HotSwapFailed(format!(
+        return Err(DriverDomainError::HotSwapFailed(format!(
             "No validating hot-swap to commit (state={})",
             hot_swap_state
         )));
     }
-    let current_cell_id = current_cell_id.ok_or(DriverCellError::HotSwapFailed(
+    let current_cell_id = current_cell_id.ok_or(DriverDomainError::HotSwapFailed(
         "No current cell for commit".into(),
     ))?;
 
     let live_update = crate::loader::live_update_manager();
     if let Err(e) = live_update.commit_for_cell(current_cell_id.as_u64()) {
-        return Err(DriverCellError::HotSwapFailed(format!(
+        return Err(DriverDomainError::HotSwapFailed(format!(
             "Commit failed: {}",
             e
         )));
@@ -331,20 +331,20 @@ pub fn commit(id: DriverCellId) -> Result<(), DriverCellError> {
     })?;
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
-    log::info!("[DriverCell] Hot-swap committed for '{}'\n", name);
+    log::info!("[DriverDomain] Hot-swap committed for '{}'\n", name);
 
     Ok(())
 }
 
 /// ホットスワップの状態を確認
-pub fn hot_swap_status(id: DriverCellId) -> Result<HotSwapState, DriverCellError> {
-    driver_cell_manager().with_cell(id, |cell| cell.hot_swap_state)
+pub fn hot_swap_status(id: DriverDomainId) -> Result<HotSwapState, DriverDomainError> {
+    driver_domain_manager().with_cell(id, |cell| cell.hot_swap_state)
 }
 
-pub fn health_status(id: DriverCellId) -> Result<CellHealthStatus, DriverCellError> {
-    let manager = driver_cell_manager();
+pub fn health_status(id: DriverDomainId) -> Result<CellHealthStatus, DriverDomainError> {
+    let manager = driver_domain_manager();
     let snap = manager.with_cell(id, |cell| CellHealthStatus {
-        driver_cell_id: cell.id,
+        driver_domain_id: cell.id,
         loader_cell_id: cell.cell_id,
         state: cell.state,
         hot_swap_state: cell.hot_swap_state,
@@ -367,7 +367,7 @@ pub fn health_status(id: DriverCellId) -> Result<CellHealthStatus, DriverCellErr
 
 /// Quiescent point から呼ばれる検証猶予ウィンドウの監視
 pub fn poll_validation_windows() {
-    let manager = driver_cell_manager();
+    let manager = driver_domain_manager();
     let snapshots = manager.list_snapshots();
     for snap in snapshots {
         if snap.hot_swap_state != HotSwapState::Validating {
@@ -377,23 +377,23 @@ pub fn poll_validation_windows() {
     }
 }
 
-fn poll_one_validation(snap: &DriverCellSnapshot) {
+fn poll_one_validation(snap: &DriverDomainSnapshot) {
     let Some(current_cell_id) = snap.cell_id else {
         return;
     };
     let live_update = crate::loader::live_update::live_update_manager();
 
     // カーネル観測型ヘルスチェック
-    if snap.state != DriverCellState::Running {
+    if snap.state != DriverDomainState::Running {
         let _ = live_update.mark_health_failure(
             current_cell_id.as_u64(),
-            format!("DriverCell state is {}", snap.state),
+            format!("DriverDomain state is {}", snap.state),
         );
     }
     if snap.driver_count == 0 {
         let _ = live_update.mark_health_failure(
             current_cell_id.as_u64(),
-            "DriverCell lost all registered drivers",
+            "DriverDomain lost all registered drivers",
         );
     }
     if crate::loader::with_registry(|r| r.get(current_cell_id).is_none()) {
@@ -404,7 +404,7 @@ fn poll_one_validation(snap: &DriverCellSnapshot) {
     }
 
     if let Some(pending) = live_update.pending_status(current_cell_id.as_u64()) {
-        driver_cell_manager()
+        driver_domain_manager()
             .with_cell_mut(snap.id, |cell| {
                 cell.validation_deadline_tick = Some(pending.deadline_tick);
                 if pending.health_failed && cell.last_health_failure.is_none() {
@@ -426,7 +426,7 @@ fn poll_one_validation(snap: &DriverCellSnapshot) {
     if let Some(outcome) = live_update.take_recent_outcome_for_cell(current_cell_id.as_u64()) {
         match outcome {
             crate::loader::live_update::CompletedUpdateOutcome::Committed { .. } => {
-                driver_cell_manager()
+                driver_domain_manager()
                     .with_cell_mut(snap.id, |cell| {
                         cell.hot_swap_state = HotSwapState::Idle;
                         cell.validation_deadline_tick = None;
@@ -439,13 +439,13 @@ fn poll_one_validation(snap: &DriverCellSnapshot) {
                 reason,
                 ..
             } => {
-                driver_cell_manager()
+                driver_domain_manager()
                     .with_cell_mut(snap.id, |cell| {
                         cell.cell_id = Some(CellId::from_u64(old_cell_id));
                         cell.hot_swap_state = HotSwapState::Idle;
                         cell.validation_deadline_tick = None;
                         cell.last_health_failure = reason;
-                        cell.transition_to(DriverCellState::Running);
+                        cell.transition_to(DriverDomainState::Running);
                     })
                     .ok();
             }

@@ -15,9 +15,9 @@
 //!
 //! The archive ends with two consecutive zero-filled 512-byte blocks.
 
-use crate::driver_cell;
-use crate::driver_cell::lifecycle::DriverCellConfig;
-use crate::driver_cell::RestartPolicy;
+use crate::driver_domain;
+use crate::driver_domain::lifecycle::DriverDomainConfig;
+use crate::driver_domain::RestartPolicy;
 use alloc::string::String;
 use alloc::vec::Vec;
 use boot_proto::InitramfsModule;
@@ -214,7 +214,7 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
             crate::io::log::early_print("[INITRAMFS] fixture cache begin ");
             crate::io::log::early_print(&entry.name);
             crate::io::log::early_print("\n");
-            crate::driver_cell::qemu_tests::cache_runtime_fixture_cell(&entry.name, entry.data);
+            crate::driver_domain::qemu_tests::cache_runtime_fixture_cell(&entry.name, entry.data);
             crate::io::log::early_print("[INITRAMFS] fixture cache done ");
             crate::io::log::early_print(&entry.name);
             crate::io::log::early_print("\n");
@@ -232,15 +232,15 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
             // Extract driver name without path and extension
             let driver_name = extract_driver_name(&entry.name);
 
-            let config = DriverCellConfig::new(driver_name.clone())
+            let config = DriverDomainConfig::new(driver_name.clone())
                 .with_restart_policy(RestartPolicy::on_panic(3, 100))
                 .with_capabilities(crate::security::CapabilitySet::empty())
                 .with_unsafe_allowed();
 
-            match driver_cell::lifecycle::create_and_start(&config, entry.data) {
-                Ok((driver_cell_id, handles)) => {
-                    let loader_cell_id = driver_cell::driver_cell_manager()
-                        .with_cell(driver_cell_id, |c| c.cell_id)
+            match driver_domain::lifecycle::create_and_start(&config, entry.data) {
+                Ok((driver_domain_id, handles)) => {
+                    let loader_cell_id = driver_domain::driver_domain_manager()
+                        .with_cell(driver_domain_id, |c| c.cell_id)
                         .ok()
                         .flatten()
                         .map(|c| c.as_u64());
@@ -248,7 +248,7 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
                         target: "initramfs",
                         "Loaded driver cell '{}' as dcell={} loader_cell={:?} handles={}",
                         driver_name,
-                        driver_cell_id.as_u64(),
+                        driver_domain_id.as_u64(),
                         loader_cell_id,
                         handles.len()
                     );

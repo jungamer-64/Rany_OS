@@ -225,7 +225,11 @@ impl TcpControlBlock {
 
     #[inline]
     pub fn set_snd_wnd(&mut self, wnd: u16) {
-        self.seq.snd_wnd = wnd;
+        if self.options.wscale_enabled {
+            self.seq.snd_wnd = (wnd as u32) << self.options.rcv_wscale;
+        } else {
+            self.seq.snd_wnd = wnd as u32;
+        }
     }
 
     #[inline]
@@ -245,7 +249,7 @@ impl TcpControlBlock {
 
     #[inline]
     pub fn send_capacity_bytes(&self) -> usize {
-        core::cmp::min(self.congestion.cwnd, self.seq.snd_wnd as u32)
+        core::cmp::min(self.congestion.cwnd, self.seq.snd_wnd)
             .saturating_sub(self.tx.outstanding_bytes.saturating_add(self.tx.send_buffer_bytes))
             as usize
     }

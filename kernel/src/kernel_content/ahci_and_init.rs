@@ -594,7 +594,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     register_kernel_symbols();
     loader::live_update::init();
     loader::live_update::set_active_cores(1);
-    crate::driver_cell::init();
+    crate::driver_domain::init();
     info!(target: "init", "Cell loader/live update/DriverCell initialized");
 
     // 2.9. Initramfs からドライバ Cells をロード

@@ -32,7 +32,7 @@ pub mod interrupts;
 pub mod io;
 mod ipc;
 mod loader;
-mod driver_cell;
+mod driver_domain;
 mod memory;
 mod mm;
 mod net;
@@ -361,7 +361,7 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     #[cfg(feature = "qemu-test-export")]
     {
         // full-boot test profiles prioritize deterministic runtime execution.
-        // ACPI reclaim can be deferred without affecting the DriverCell suite.
+        // ACPI reclaim can be deferred without affecting the DriverDomain suite.
         info!(target: "init", "Skipping ACPI reclaim in qemu-test-export profile");
     }
     #[cfg(not(feature = "qemu-test-export"))]

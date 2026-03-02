@@ -285,11 +285,11 @@ struct TcpSeqState {
     snd_nxt: u32,
     /// 未確認の最古のシーケンス番号
     snd_una: u32,
-    /// 送信ウィンドウサイズ
-    snd_wnd: u16,
+    /// 送信ウィンドウサイズ (scaled)
+    snd_wnd: u32,
     /// 受信シーケンス番号（次に期待するバイト）
     rcv_nxt: u32,
-    /// 受信ウィンドウサイズ
+    /// 受信ウィンドウサイズ (16-bit field for header)
     rcv_wnd: u16,
 }
 

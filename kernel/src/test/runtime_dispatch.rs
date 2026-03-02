@@ -46,7 +46,7 @@ pub enum RuntimeTier {
 pub enum RuntimeGroup {
     Boot,
     Storage,
-    DriverCell,
+    DriverDomain,
     Iommu,
     Step9Heavy,
 }
@@ -82,7 +82,7 @@ fn is_known_profile(profile: &str) -> bool {
         || str_eq(profile, "step9-heavy")
         || str_eq(profile, "boot-smoke")
         || str_eq(profile, "storage")
-        || str_eq(profile, "driver_cell")
+        || str_eq(profile, "driver_domain")
         || str_eq(profile, "iommu")
 }
 
@@ -142,22 +142,22 @@ fn iommu_integration_suite() -> RuntimeTestResult {
     }
 }
 
-fn driver_cell_runtime_suite() -> RuntimeTestResult {
+fn driver_domain_runtime_suite() -> RuntimeTestResult {
     #[cfg(feature = "qemu-test-export")]
     {
-        let summary = crate::driver_cell::qemu_tests::run_driver_cell_runtime_suite();
+        let summary = crate::driver_domain::qemu_tests::run_driver_domain_runtime_suite();
         if summary.failed > 0 {
-            return RuntimeTestResult::fail("driver_cell runtime failures");
+            return RuntimeTestResult::fail("driver_domain runtime failures");
         }
         if summary.blocked > 0 {
-            return RuntimeTestResult::blocked("driver_cell runtime blocked");
+            return RuntimeTestResult::blocked("driver_domain runtime blocked");
         }
         return RuntimeTestResult::pass();
     }
 
     #[cfg(not(feature = "qemu-test-export"))]
     {
-        RuntimeTestResult::blocked("driver_cell runtime requires qemu-test-export")
+        RuntimeTestResult::blocked("driver_domain runtime requires qemu-test-export")
     }
 }
 
@@ -199,10 +199,10 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::Iommu,
     },
     RuntimeTestCase {
-        id: "driver_cell.runtime_suite",
-        run: driver_cell_runtime_suite,
+        id: "driver_domain.runtime_suite",
+        run: driver_domain_runtime_suite,
         tier: RuntimeTier::PrRequired,
-        group: RuntimeGroup::DriverCell,
+        group: RuntimeGroup::DriverDomain,
     },
 ];
 
@@ -215,8 +215,8 @@ fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
         matches!(case.group, RuntimeGroup::Boot)
     } else if str_eq(profile, "storage") {
         matches!(case.group, RuntimeGroup::Storage)
-    } else if str_eq(profile, "driver_cell") {
-        matches!(case.group, RuntimeGroup::DriverCell)
+    } else if str_eq(profile, "driver_domain") {
+        matches!(case.group, RuntimeGroup::DriverDomain)
     } else if str_eq(profile, "iommu") {
         matches!(case.group, RuntimeGroup::Iommu)
     } else if str_eq(profile, "step9-heavy") {

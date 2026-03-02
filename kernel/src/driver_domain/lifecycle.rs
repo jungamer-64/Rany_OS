@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/driver_cell/lifecycle.rs - DriverCell ライフサイクル管理
+// kernel/src/driver_domain/lifecycle.rs - DriverDomain ライフサイクル管理
 // ============================================================================
 //! DriverCellのライフサイクル管理
 //!
@@ -30,7 +30,7 @@ use crate::security::CapabilitySet;
 
 use super::fault::RestartPolicy;
 use super::{
-    DriverCell, DriverCellError, DriverCellId, DriverCellState, driver_cell_manager,
+    DriverDomain, DriverDomainError, DriverDomainId, DriverDomainState, driver_domain_manager,
 };
 
 // ============================================================================
@@ -39,8 +39,8 @@ use super::{
 
 /// DriverCell作成時の設定
 #[derive(Debug, Clone)]
-pub struct DriverCellConfig {
-    /// ドライバセル名
+pub struct DriverDomainConfig {
+    /// ドライバドメイン名
     pub name: String,
     /// 再起動ポリシー
     pub restart_policy: RestartPolicy,
@@ -60,7 +60,7 @@ pub struct DriverCellConfig {
     pub numa_node: Option<usize>,
 }
 
-impl DriverCellConfig {
+impl DriverDomainConfig {
     /// デフォルト設定で作成
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -126,16 +126,16 @@ impl DriverCellConfig {
 /// DriverCellを作成（設定から）
 ///
 /// まだコードはロードされない。load()を呼ぶ必要がある。
-pub fn create(config: &DriverCellConfig) -> Result<DriverCellId, DriverCellError> {
-    let manager = driver_cell_manager();
+pub fn create(config: &DriverDomainConfig) -> Result<DriverDomainId, DriverDomainError> {
+    let manager = driver_domain_manager();
     let id = manager.allocate_id();
 
-    let cell = DriverCell::from_config(id, config);
+    let cell = DriverDomain::from_config(id, config);
     manager.register(cell)?;
     super::stats::global_stats().on_created();
 
     log::info!(
-        "[DriverCell] Created: {} (id={}, priority={:?}, restart={:?})\n",
+        "[DriverDomain] Created: {} (id={}, priority={:?}, restart={:?})\n",
         config.name,
         id,
         config.priority,
@@ -152,17 +152,17 @@ pub fn create(config: &DriverCellConfig) -> Result<DriverCellId, DriverCellError
 /// 3. リソースクォータを設定
 /// 4. NUMAアフィニティを設定
 pub fn load(
-    id: DriverCellId,
+    id: DriverDomainId,
     elf_data: &[u8],
-) -> Result<(CellId, DomainId), DriverCellError> {
-    let manager = driver_cell_manager();
+) -> Result<(CellId, DomainId), DriverDomainError> {
+    let manager = driver_domain_manager();
 
     // 状態チェック
     let (name, allow_unsafe) = manager.with_cell(id, |cell| {
-        if cell.state != DriverCellState::Created && cell.state != DriverCellState::Stopped {
-            return Err(DriverCellError::InvalidStateTransition {
+        if cell.state != DriverDomainState::Created && cell.state != DriverDomainState::Stopped {
+            return Err(DriverDomainError::InvalidStateTransition {
                 from: cell.state,
-                to: DriverCellState::Loading,
+                to: DriverDomainState::Loading,
             });
         }
         Ok((cell.name.clone(), cell.allow_unsafe))
@@ -170,7 +170,7 @@ pub fn load(
 
     // Loading状態に遷移
     manager.with_cell_mut(id, |cell| {
-        cell.transition_to(DriverCellState::Loading);
+        cell.transition_to(DriverDomainState::Loading);
     })?;
 
     // 1. ELFをCellとしてロード
@@ -179,9 +179,9 @@ pub fn load(
         Err(e) => {
             let msg = format!("{}", e);
             manager.with_cell_mut(id, |cell| {
-                cell.transition_to(DriverCellState::Faulted);
+                cell.transition_to(DriverDomainState::Faulted);
             }).ok();
-            return Err(DriverCellError::LoadFailed(msg));
+            return Err(DriverDomainError::LoadFailed(msg));
         }
     };
 
@@ -194,9 +194,9 @@ pub fn load(
             let _ = crate::loader::unload_cell(cell_id);
             let msg = format!("{}", e);
             manager.with_cell_mut(id, |cell| {
-                cell.transition_to(DriverCellState::Faulted);
+                cell.transition_to(DriverDomainState::Faulted);
             }).ok();
-            return Err(DriverCellError::DomainCreationFailed(msg));
+            return Err(DriverDomainError::DomainCreationFailed(msg));
         }
     };
 
@@ -230,12 +230,12 @@ pub fn load(
     manager.with_cell_mut(id, |cell| {
         cell.set_cell_id(cell_id);
         cell.set_domain_id(domain_id);
-        cell.transition_to(DriverCellState::Loaded);
+        cell.transition_to(DriverDomainState::Loaded);
         cell.stats.record_load();
     })?;
 
     log::info!(
-        "[DriverCell] Loaded: {} (cell={:?}, domain={})\n",
+        "[DriverDomain] Loaded: {} (cell={:?}, domain={})\n",
         name,
         cell_id.as_u64(),
         domain_id
@@ -252,25 +252,25 @@ pub fn load(
 /// 4. DomainをRunning状態に遷移
 ///
 /// 全ての操作はDomainProxyを経由し、パニック時は安全に捕捉される。
-pub fn start(id: DriverCellId) -> Result<Vec<DriverHandle>, DriverCellError> {
-    let manager = driver_cell_manager();
+pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError> {
+    let manager = driver_domain_manager();
 
     // 状態チェック
     let cell_id = manager.with_cell(id, |cell| {
-        if cell.state != DriverCellState::Loaded && cell.state != DriverCellState::Stopped {
-            return Err(DriverCellError::InvalidStateTransition {
+        if cell.state != DriverDomainState::Loaded && cell.state != DriverDomainState::Stopped {
+            return Err(DriverDomainError::InvalidStateTransition {
                 from: cell.state,
-                to: DriverCellState::Starting,
+                to: DriverDomainState::Starting,
             });
         }
-        cell.cell_id.ok_or(DriverCellError::LoadFailed(
+        cell.cell_id.ok_or(DriverDomainError::LoadFailed(
             "Cell not loaded".into(),
         ))
     })??;
 
     // Starting状態に遷移
     manager.with_cell_mut(id, |cell| {
-        cell.transition_to(DriverCellState::Starting);
+        cell.transition_to(DriverDomainState::Starting);
     })?;
 
     // ドライバをCellから登録
@@ -280,9 +280,9 @@ pub fn start(id: DriverCellId) -> Result<Vec<DriverHandle>, DriverCellError> {
         Err(e) => {
             let msg = format!("{}", e);
             manager.with_cell_mut(id, |cell| {
-                cell.transition_to(DriverCellState::Faulted);
+                cell.transition_to(DriverDomainState::Faulted);
             }).ok();
-            return Err(DriverCellError::DriverInitFailed(msg));
+            return Err(DriverDomainError::DriverInitFailed(msg));
         }
     };
     crate::io::log::early_print("[DCELL] start: register_driver_from_cell done\n");
@@ -293,9 +293,9 @@ pub fn start(id: DriverCellId) -> Result<Vec<DriverHandle>, DriverCellError> {
     if let Err(e) = registry.probe_and_start(handle) {
         let msg = format!("{}", e);
         manager.with_cell_mut(id, |cell| {
-            cell.transition_to(DriverCellState::Faulted);
+            cell.transition_to(DriverDomainState::Faulted);
         }).ok();
-        return Err(DriverCellError::DriverInitFailed(msg));
+        return Err(DriverDomainError::DriverInitFailed(msg));
     }
     crate::io::log::early_print("[DCELL] start: probe_and_start done\n");
 
@@ -310,14 +310,14 @@ pub fn start(id: DriverCellId) -> Result<Vec<DriverHandle>, DriverCellError> {
     // DriverCellをRunning状態に
     manager.with_cell_mut(id, |cell| {
         cell.add_driver_handle(handle);
-        cell.transition_to(DriverCellState::Running);
+        cell.transition_to(DriverDomainState::Running);
         cell.reset_fault_count();
         cell.stats.record_start();
     })?;
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
     log::info!(
-        "[DriverCell] Started: {} (driver={:?})\n",
+        "[DriverDomain] Started: {} (driver={:?})\n",
         name,
         handle.index()
     );
@@ -330,15 +330,15 @@ pub fn start(id: DriverCellId) -> Result<Vec<DriverHandle>, DriverCellError> {
 /// 1. 全ドライバをstop
 /// 2. DomainをStopped状態に
 /// 3. DriverCellをStopped状態に
-pub fn stop(id: DriverCellId) -> Result<(), DriverCellError> {
-    let manager = driver_cell_manager();
+pub fn stop(id: DriverDomainId) -> Result<(), DriverDomainError> {
+    let manager = driver_domain_manager();
 
     // 状態チェック
     let (driver_handles, domain_id) = manager.with_cell(id, |cell| {
         if !cell.state.can_stop() {
-            return Err(DriverCellError::InvalidStateTransition {
+            return Err(DriverDomainError::InvalidStateTransition {
                 from: cell.state,
-                to: DriverCellState::Stopping,
+                to: DriverDomainState::Stopping,
             });
         }
         Ok((cell.driver_handles.clone(), cell.domain_id))
@@ -346,7 +346,7 @@ pub fn stop(id: DriverCellId) -> Result<(), DriverCellError> {
 
     // Stopping状態に遷移
     manager.with_cell_mut(id, |cell| {
-        cell.transition_to(DriverCellState::Stopping);
+        cell.transition_to(DriverDomainState::Stopping);
     })?;
 
     // 全ドライバを停止
@@ -354,7 +354,7 @@ pub fn stop(id: DriverCellId) -> Result<(), DriverCellError> {
     for handle in &driver_handles {
         if let Err(e) = registry.stop(*handle) {
             log::warn!(
-                "[DriverCell] Failed to stop driver {:?}: {}\n",
+                "[DriverDomain] Failed to stop driver {:?}: {}\n",
                 handle.index(),
                 e
             );
@@ -368,12 +368,12 @@ pub fn stop(id: DriverCellId) -> Result<(), DriverCellError> {
 
     // Stopped状態に遷移
     manager.with_cell_mut(id, |cell| {
-        cell.transition_to(DriverCellState::Stopped);
+        cell.transition_to(DriverDomainState::Stopped);
         cell.stats.record_stop();
     })?;
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
-    log::info!("[DriverCell] Stopped: {}\n", name);
+    log::info!("[DriverDomain] Stopped: {}\n", name);
 
     Ok(())
 }
@@ -384,9 +384,9 @@ pub fn stop(id: DriverCellId) -> Result<(), DriverCellError> {
 /// 2. ドライバをunregister
 /// 3. Cellをアンロード（Epoch-based Reclamation）
 /// 4. Domainを終了
-/// 5. DriverCellManagerから削除
-pub fn unload(id: DriverCellId) -> Result<(), DriverCellError> {
-    let manager = driver_cell_manager();
+/// 5. DriverDomainManagerから削除
+pub fn unload(id: DriverDomainId) -> Result<(), DriverDomainError> {
+    let manager = driver_domain_manager();
 
     // まず停止（Running/Starting/Faultedなら）
     let state = manager.with_cell(id, |cell| cell.state)?;
@@ -407,7 +407,7 @@ pub fn unload(id: DriverCellId) -> Result<(), DriverCellError> {
     for handle in &driver_handles {
         if let Err(e) = crate::loader::unload_driver(*handle) {
             log::warn!(
-                "[DriverCell] Failed to unload driver {:?}: {}\n",
+                "[DriverDomain] Failed to unload driver {:?}: {}\n",
                 handle.index(),
                 e
             );
@@ -418,7 +418,7 @@ pub fn unload(id: DriverCellId) -> Result<(), DriverCellError> {
     if let Some(cid) = cell_id {
         if let Err(e) = crate::loader::unload_cell(cid) {
             log::warn!(
-                "[DriverCell] Failed to unload cell {:?}: {}\n",
+                "[DriverDomain] Failed to unload cell {:?}: {}\n",
                 cid.as_u64(),
                 e
             );
@@ -429,7 +429,7 @@ pub fn unload(id: DriverCellId) -> Result<(), DriverCellError> {
     if let Some(did) = domain_id {
         if let Err(e) = crate::domain_system::terminate_domain(did) {
             log::warn!(
-                "[DriverCell] Failed to terminate domain {}: {}\n",
+                "[DriverDomain] Failed to terminate domain {}: {}\n",
                 did,
                 e
             );
@@ -438,13 +438,13 @@ pub fn unload(id: DriverCellId) -> Result<(), DriverCellError> {
 
     // ManagerからDriverCellを削除
     manager.with_cell_mut(id, |cell| {
-        cell.transition_to(DriverCellState::Unloaded);
+        cell.transition_to(DriverDomainState::Unloaded);
     })?;
     manager.remove(id)?;
     super::stats::global_stats().on_unloaded();
 
     log::info!(
-        "[DriverCell] Unloaded: {} (id={})\n",
+        "[DriverDomain] Unloaded: {} (id={})\n",
         name,
         id
     );
@@ -454,19 +454,19 @@ pub fn unload(id: DriverCellId) -> Result<(), DriverCellError> {
 
 /// ELFデータからDriverCellを作成し、ロード→開始まで一括で行う
 ///
-/// 最も一般的な使用パターン。設定に基づいてドライバセルを
+/// 最も一般的な使用パターン。設定に基づいてドライバドメインを
 /// 完全にセットアップする。
 pub fn create_and_start(
-    config: &DriverCellConfig,
+    config: &DriverDomainConfig,
     elf_data: &[u8],
-) -> Result<(DriverCellId, Vec<DriverHandle>), DriverCellError> {
+) -> Result<(DriverDomainId, Vec<DriverHandle>), DriverDomainError> {
     // 1. 作成
     let id = create(config)?;
 
     // 2. ロード
     if let Err(e) = load(id, elf_data) {
         // ロールバック
-        let _ = driver_cell_manager().remove(id);
+        let _ = driver_domain_manager().remove(id);
         return Err(e);
     }
 
@@ -481,13 +481,13 @@ pub fn create_and_start(
     }
 }
 
-/// よく使うデフォルト設定で DriverCell を作成して開始する簡易API
+/// よく使うデフォルト設定で DriverDomain を作成して開始する簡易API
 pub fn create_and_start_default(
     name: &str,
     elf_data: &[u8],
     allow_unsafe: bool,
-) -> Result<(DriverCellId, Vec<DriverHandle>), DriverCellError> {
-    let mut config = DriverCellConfig::new(name)
+) -> Result<(DriverDomainId, Vec<DriverHandle>), DriverDomainError> {
+    let mut config = DriverDomainConfig::new(name)
         .with_restart_policy(RestartPolicy::on_panic(3, 100))
         .with_capabilities(CapabilitySet::empty());
     if allow_unsafe {
@@ -498,25 +498,25 @@ pub fn create_and_start_default(
 
 /// 全DriverCellを停止
 pub fn stop_all() {
-    let manager = driver_cell_manager();
-    let running = manager.cells_by_state(DriverCellState::Running);
+    let manager = driver_domain_manager();
+    let running = manager.cells_by_state(DriverDomainState::Running);
 
     for id in running {
         if let Err(e) = stop(id) {
-            log::warn!("[DriverCell] Failed to stop {}: {}\n", id, e);
+            log::warn!("[DriverDomain] Failed to stop {}: {}\n", id, e);
         }
     }
 }
 
 /// 全DriverCellをアンロード
 pub fn unload_all() {
-    let manager = driver_cell_manager();
+    let manager = driver_domain_manager();
     let snapshots = manager.list_snapshots();
 
     for snap in snapshots {
-        if snap.state != DriverCellState::Unloaded {
+        if snap.state != DriverDomainState::Unloaded {
             if let Err(e) = unload(snap.id) {
-                log::warn!("[DriverCell] Failed to unload {}: {}\n", snap.id, e);
+                log::warn!("[DriverDomain] Failed to unload {}: {}\n", snap.id, e);
             }
         }
     }

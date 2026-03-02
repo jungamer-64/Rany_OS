@@ -1,7 +1,7 @@
 // ============================================================================
-// kernel/src/driver_cell/stats.rs - DriverCell 統計情報
+// kernel/src/driver_domain/stats.rs - DriverDomain 統計情報
 // ============================================================================
-//! # ドライバセル統計トラッキング
+//! # ドライバドメイン統計トラッキング
 //!
 //! DriverCellのパフォーマンスとヘルス状態を追跡する統計情報。
 //! 構造化ログと組み合わせて、システム可観測性を向上させる。
@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// DriverCellの統計情報
 #[derive(Debug, Clone)]
-pub struct DriverCellStats {
+pub struct DriverDomainStats {
     /// ロードにかかった時間（TSCティック）
     pub load_duration_ticks: u64,
     /// ロード時刻（TSCティック）
@@ -45,7 +45,7 @@ pub struct DriverCellStats {
     current_uptime_start: u64,
 }
 
-impl DriverCellStats {
+impl DriverDomainStats {
     /// 新しい統計情報を作成
     pub fn new() -> Self {
         Self {
@@ -178,7 +178,7 @@ impl DriverCellStats {
     }
 }
 
-impl Default for DriverCellStats {
+impl Default for DriverDomainStats {
     fn default() -> Self {
         Self::new()
     }
@@ -189,7 +189,7 @@ impl Default for DriverCellStats {
 // ============================================================================
 
 /// グローバルDriverCell統計（アトミック）
-pub struct GlobalDriverCellStats {
+pub struct GlobalDriverDomainStats {
     /// 累計作成数
     pub total_created: AtomicU64,
     /// 累計アンロード数
@@ -204,7 +204,7 @@ pub struct GlobalDriverCellStats {
     pub total_restarts_failed: AtomicU64,
 }
 
-impl GlobalDriverCellStats {
+impl GlobalDriverDomainStats {
     /// 新しいグローバル統計を作成
     pub const fn new() -> Self {
         Self {
@@ -272,9 +272,9 @@ pub struct GlobalStatsSummary {
 }
 
 /// グローバル統計インスタンス
-static GLOBAL_STATS: GlobalDriverCellStats = GlobalDriverCellStats::new();
+static GLOBAL_STATS: GlobalDriverDomainStats = GlobalDriverDomainStats::new();
 
 /// グローバル統計にアクセス
-pub fn global_stats() -> &'static GlobalDriverCellStats {
+pub fn global_stats() -> &'static GlobalDriverDomainStats {
     &GLOBAL_STATS
 }

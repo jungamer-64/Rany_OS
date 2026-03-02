@@ -118,18 +118,18 @@ impl ExoShell {
     driver.load(path)     - Load driver from ELF file
     driver.unload(id)     - Unload driver by ID
 
-  cell.* - DriverCell / Live Update
-    cell.list()                  - List DriverCells (structured)
-    cell.info(id_or_name)        - DriverCell + loader/live-update details
+  cell.* - DriverDomain / Live Update
+    cell.list()                  - List DriverDomains (structured)
+    cell.info(id_or_name)        - DriverDomain + loader/live-update details
     cell.graph()                 - Loaded cell dependency graph
     cell.inspect_artifact(path)  - Inspect Type ID dependencies in .cell/ELF
     cell.epoch_status()          - Epoch/validation status
     cell.wait_quiescent(epoch)   - Wait for quiescent state (admin)
-    cell.load(path, opts?)       - Create and start DriverCell from artifact
-    cell.swap(id_or_name, path)  - Hot-swap DriverCell with new artifact
+    cell.load(path, opts?)       - Create and start DriverDomain from artifact
+    cell.swap(id_or_name, path)  - Hot-swap DriverDomain with new artifact
     cell.commit(id_or_name)      - Commit validation window
     cell.rollback(id_or_name)    - Roll back validation window
-    cell.unload(id_or_name)      - Unload DriverCell
+    cell.unload(id_or_name)      - Unload DriverDomain
 
 [Method Chaining]
   fs.entries("/").filter("|e| e.size > 1024").map("|e| e.name")

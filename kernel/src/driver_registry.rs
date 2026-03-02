@@ -491,7 +491,7 @@ extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
     crate::io::log::early_print("[KAPI] log utf8 ok\n");
 
     // Avoid potential logger reentrancy/lock issues while DriverExports init runs
-    // during early DriverCell startup. Keep output visible via serial early logger.
+    // during early DriverDomain startup. Keep output visible via serial early logger.
     match level {
         2 => crate::io::log::early_print("[KAPI][ERR] "),
         1 => crate::io::log::early_print("[KAPI][WRN] "),

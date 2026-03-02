@@ -28,7 +28,7 @@ fn base_config(profile: &str) -> RunConfig {
         480
     } else if profile == "nightly-required" {
         300
-    } else if profile == "driver_cell" {
+    } else if profile == "driver_domain" {
         240
     } else {
         120
@@ -65,7 +65,7 @@ fn fullboot_pr_required() {
     let only_profile = std::env::var("QEMU_TEST_PROFILE_ONLY").ok();
     let mut ran_any = false;
     // Keep PR-required set deterministic in current qemu_no_if fullboot runs.
-    for profile in ["boot-smoke", "storage", "driver_cell", "iommu"] {
+    for profile in ["boot-smoke", "storage", "driver_domain", "iommu"] {
         if let Some(only) = only_profile.as_deref() {
             if only != profile {
                 continue;

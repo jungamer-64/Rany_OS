@@ -9,7 +9,7 @@
 //! Exokernelではデバイスは Capability ベースのハンドルで直接操作されます。
 //!
 //! ## 移行先
-//! - `DevFs` → `DriverCellManager` (`crate::driver_cell`)
+//! - `DevFs` → `DriverDomainManager` (`crate::driver_domain`)
 //! - `DeviceOps` trait → ドライバセルのトレイトインターフェース
 //! - `/dev/null`, `/dev/zero` → ユーザー空間ライブラリ
 

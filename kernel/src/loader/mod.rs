@@ -179,7 +179,7 @@ impl CellRegistry {
         // Live-update shadow loads can register a second cell with the same logical
         // name before the swap commit. During this staging phase we don't need to
         // mutate the global symbol table yet; touching it has been a hot crash point
-        // in the driver_cell runtime path, while per-cell exports remain available
+        // in the driver_domain runtime path, while per-cell exports remain available
         // via `entry.exports`.
         let is_shadow_staging =
             entry.name.starts_with("update-")

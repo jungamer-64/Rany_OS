@@ -503,7 +503,7 @@ pub mod loader;
     feature = "full_mm_tests",
     feature = "qemu-test-export"
 ))]
-pub mod driver_cell;
+pub mod driver_domain;
 #[cfg(any(
     not(test),
     feature = "full_mm_tests",

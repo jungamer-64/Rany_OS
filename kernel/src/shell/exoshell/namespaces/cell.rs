@@ -10,12 +10,12 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::driver_cell;
+use crate::driver_domain;
 #[cfg(feature = "qemu-test-export")]
-use crate::driver_cell::fault::{self, TestFaultKind};
-use crate::driver_cell::hot_swap::{self, HotSwapState};
-use crate::driver_cell::lifecycle;
-use crate::driver_cell::{DriverCellId, DriverCellSnapshot};
+use crate::driver_domain::fault::{self, TestFaultKind};
+use crate::driver_domain::hot_swap::{self, HotSwapState};
+use crate::driver_domain::lifecycle;
+use crate::driver_domain::{DriverDomainId, DriverDomainSnapshot};
 use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_MODULE};
 use crate::security::CapabilitySet;
 use crate::shell::exoshell::types::ExoValue;
@@ -104,28 +104,28 @@ impl CellNamespace {
         }
     }
 
-    fn resolve_driver_cell_id(arg: &ExoValue<'static>) -> Result<DriverCellId, String> {
+    fn resolve_driver_domain_id(arg: &ExoValue<'static>) -> Result<DriverDomainId, String> {
         match arg {
-            ExoValue::Int(n) if *n >= 0 => Ok(DriverCellId::new(*n as u64)),
+            ExoValue::Int(n) if *n >= 0 => Ok(DriverDomainId::new(*n as u64)),
             ExoValue::String(s) => {
                 if let Ok(id) = s.parse::<u64>() {
-                    Ok(DriverCellId::new(id))
+                    Ok(DriverDomainId::new(id))
                 } else {
-                    Err(String::from("Expected driver_cell_id (int or numeric string)"))
+                    Err(String::from("Expected driver_domain_id (int or numeric string)"))
                 }
             }
-            _ => Err(String::from("Expected driver_cell_id (int or numeric string)")),
+            _ => Err(String::from("Expected driver_domain_id (int or numeric string)")),
         }
     }
 
-    fn resolve_driver_cell_ref(args: &[ExoValue<'static>]) -> Result<DriverCellId, ExoValue<'static>> {
+    fn resolve_driver_domain_ref(args: &[ExoValue<'static>]) -> Result<DriverDomainId, ExoValue<'static>> {
         let Some(first) = args.first() else {
             return Err(ExoValue::Error(String::from(
                 "Missing driver cell target (id or name)",
             )));
         };
 
-        if let Ok(id) = Self::resolve_driver_cell_id(first) {
+        if let Ok(id) = Self::resolve_driver_domain_id(first) {
             return Ok(id);
         }
 
@@ -135,12 +135,12 @@ impl CellNamespace {
             )));
         };
 
-        driver_cell::driver_cell_manager()
+        driver_domain::driver_domain_manager()
             .find_by_name(name.as_ref())
             .ok_or_else(|| ExoValue::Error(format!("DriverCell '{}' not found", name)))
     }
 
-    fn driver_cell_stats_map(stats: &crate::driver_cell::stats::DriverCellStats) -> ExoValue<'static> {
+    fn driver_domain_stats_map(stats: &crate::driver_domain::stats::DriverDomainStats) -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         Self::map_insert(&mut map, "start_count", Self::vint_u64(stats.start_count as u64));
         Self::map_insert(&mut map, "stop_count", Self::vint_u64(stats.stop_count as u64));
@@ -150,10 +150,10 @@ impl CellNamespace {
         ExoValue::Map(map)
     }
 
-    fn driver_cell_snapshot_to_map(snap: &DriverCellSnapshot) -> ExoValue<'static> {
+    fn driver_domain_snapshot_to_map(snap: &DriverDomainSnapshot) -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         Self::map_insert(&mut map, "id", Self::vint_u64(snap.id.as_u64()));
-        Self::map_insert(&mut map, "driver_cell_id", Self::vint_u64(snap.id.as_u64()));
+        Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(snap.id.as_u64()));
         Self::map_insert(&mut map, "name", Self::vstr(snap.name.clone()));
         Self::map_insert(&mut map, "state", Self::vstr(format!("{}", snap.state)));
         Self::map_insert(
@@ -206,7 +206,7 @@ impl CellNamespace {
             "last_health_failure",
             Self::opt_string(snap.last_health_failure.clone()),
         );
-        Self::map_insert(&mut map, "stats", Self::driver_cell_stats_map(&snap.stats));
+        Self::map_insert(&mut map, "stats", Self::driver_domain_stats_map(&snap.stats));
         ExoValue::Map(map)
     }
 
@@ -362,11 +362,11 @@ impl CellNamespace {
         ExoValue::Map(map)
     }
 
-    fn health_status_map(id: DriverCellId) -> ExoValue<'static> {
+    fn health_status_map(id: DriverDomainId) -> ExoValue<'static> {
         match hot_swap::health_status(id) {
             Ok(h) => {
                 let mut map = BTreeMap::new();
-                Self::map_insert(&mut map, "driver_cell_id", Self::vint_u64(h.driver_cell_id.as_u64()));
+                Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(h.driver_domain_id.as_u64()));
                 Self::map_insert(&mut map, "state", Self::vstr(format!("{}", h.state)));
                 Self::map_insert(
                     &mut map,
@@ -416,12 +416,12 @@ impl CellNamespace {
     }
 
     fn dispatch_list() -> ExoValue<'static> {
-        let cells = driver_cell::driver_cell_manager().list_snapshots();
+        let cells = driver_domain::driver_domain_manager().list_snapshots();
         let list = cells
             .into_iter()
             .map(|snap| {
                 let mut map = BTreeMap::new();
-                Self::map_insert(&mut map, "driver_cell_id", Self::vint_u64(snap.id.as_u64()));
+                Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(snap.id.as_u64()));
                 Self::map_insert(&mut map, "name", Self::vstr(snap.name));
                 Self::map_insert(&mut map, "state", Self::vstr(format!("{}", snap.state)));
                 Self::map_insert(
@@ -452,12 +452,12 @@ impl CellNamespace {
     }
 
     fn dispatch_info(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let id = match Self::resolve_driver_cell_ref(args) {
+        let id = match Self::resolve_driver_domain_ref(args) {
             Ok(id) => id,
             Err(e) => return e,
         };
 
-        let manager = driver_cell::driver_cell_manager();
+        let manager = driver_domain::driver_domain_manager();
         let snap = match manager.with_cell(id, |cell| cell.snapshot()) {
             Ok(s) => s,
             Err(e) => return ExoValue::Error(format!("DriverCell {} not found: {}", id.as_u64(), e)),
@@ -492,7 +492,7 @@ impl CellNamespace {
         );
 
         let mut out = BTreeMap::new();
-        Self::map_insert(&mut out, "driver_cell", Self::driver_cell_snapshot_to_map(&snap));
+        Self::map_insert(&mut out, "driver_domain", Self::driver_domain_snapshot_to_map(&snap));
         Self::map_insert(&mut out, "loader_cell", loader_cell.unwrap_or(ExoValue::Nil));
         Self::map_insert(&mut out, "live_update", ExoValue::Map(live_update));
         Self::map_insert(&mut out, "epoch_hint", ExoValue::Map(epoch_hint));
@@ -500,7 +500,7 @@ impl CellNamespace {
     }
 
     fn dispatch_graph() -> ExoValue<'static> {
-        let manager = driver_cell::driver_cell_manager();
+        let manager = driver_domain::driver_domain_manager();
         let (nodes, edges, node_count, edge_count) = crate::loader::with_registry(|r| {
             let mut nodes = Vec::new();
             let mut edges = Vec::new();
@@ -538,7 +538,7 @@ impl CellNamespace {
                 Self::map_insert(&mut node, "pkey", Self::opt_u64(cell.pkey.map(|p| p as u64)));
                 Self::map_insert(
                     &mut node,
-                    "driver_cell_id",
+                    "driver_domain_id",
                     manager
                         .find_by_cell(cell.id)
                         .map(|id| Self::vint_u64(id.as_u64()))
@@ -564,7 +564,7 @@ impl CellNamespace {
         Self::map_insert(&mut stats, "edge_count", Self::vint_usize(edge_count));
         Self::map_insert(
             &mut stats,
-            "driver_cell_count",
+            "driver_domain_count",
             Self::vint_usize(manager.count()),
         );
 
@@ -700,7 +700,7 @@ impl CellNamespace {
         Self::map_insert(&mut epoch, "active_cores", Self::vint_usize(stats.active_cores));
 
         let mut validating_cells = Vec::new();
-        for snap in driver_cell::driver_cell_manager().list_snapshots() {
+        for snap in driver_domain::driver_domain_manager().list_snapshots() {
             if snap.hot_swap_state != HotSwapState::Validating {
                 continue;
             }
@@ -708,7 +708,7 @@ impl CellNamespace {
                 .map(|h| h.health_failed)
                 .unwrap_or(false);
             let mut m = BTreeMap::new();
-            Self::map_insert(&mut m, "driver_cell_id", Self::vint_u64(snap.id.as_u64()));
+            Self::map_insert(&mut m, "driver_domain_id", Self::vint_u64(snap.id.as_u64()));
             Self::map_insert(&mut m, "name", Self::vstr(snap.name));
             Self::map_insert(
                 &mut m,
@@ -783,7 +783,7 @@ impl CellNamespace {
             return ExoValue::Error(String::from("Failed to infer cell name from path; specify opts.name"));
         }
 
-        if driver_cell::driver_cell_manager().find_by_name(&name).is_some() {
+        if driver_domain::driver_domain_manager().find_by_name(&name).is_some() {
             return ExoValue::Error(format!("DriverCell '{}' already exists", name));
         }
 
@@ -798,7 +798,7 @@ impl CellNamespace {
         };
 
         match lifecycle::create_and_start_default(&name, &content, allow_unsafe) {
-            Ok((driver_cell_id, handles)) => {
+            Ok((driver_domain_id, handles)) => {
                 let handle_list = handles
                     .iter()
                     .map(|h| ExoValue::Int(core::cmp::min(h.index() as u64, i64::MAX as u64) as i64))
@@ -807,8 +807,8 @@ impl CellNamespace {
                 Self::map_insert(&mut map, "success", ExoValue::Bool(true));
                 Self::map_insert(
                     &mut map,
-                    "driver_cell_id",
-                    Self::vint_u64(driver_cell_id.as_u64()),
+                    "driver_domain_id",
+                    Self::vint_u64(driver_domain_id.as_u64()),
                 );
                 Self::map_insert(&mut map, "driver_handles", ExoValue::Array(handle_list));
                 Self::map_insert(&mut map, "name", Self::vstr(name.clone()));
@@ -818,7 +818,7 @@ impl CellNamespace {
                     Self::vstr(format!(
                         "DriverCell '{}' loaded and started (id={})",
                         name,
-                        driver_cell_id.as_u64()
+                        driver_domain_id.as_u64()
                     )),
                 );
                 ExoValue::Map(map)
@@ -832,7 +832,7 @@ impl CellNamespace {
             return e;
         }
 
-        let id = match Self::resolve_driver_cell_ref(args) {
+        let id = match Self::resolve_driver_domain_ref(args) {
             Ok(id) => id,
             Err(e) => return e,
         };
@@ -855,7 +855,7 @@ impl CellNamespace {
             Ok(result) => {
                 let mut map = BTreeMap::new();
                 Self::map_insert(&mut map, "success", ExoValue::Bool(true));
-                Self::map_insert(&mut map, "driver_cell_id", Self::vint_u64(id.as_u64()));
+                Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(id.as_u64()));
                 Self::map_insert(
                     &mut map,
                     "old_loader_cell_id",
@@ -896,7 +896,7 @@ impl CellNamespace {
         if let Err(e) = Self::require_cap(caps, CAP_SYS_MODULE, "cell.unload") {
             return e;
         }
-        let id = match Self::resolve_driver_cell_ref(args) {
+        let id = match Self::resolve_driver_domain_ref(args) {
             Ok(id) => id,
             Err(e) => return e,
         };
@@ -904,7 +904,7 @@ impl CellNamespace {
             Ok(()) => {
                 let mut map = BTreeMap::new();
                 Self::map_insert(&mut map, "success", ExoValue::Bool(true));
-                Self::map_insert(&mut map, "driver_cell_id", Self::vint_u64(id.as_u64()));
+                Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(id.as_u64()));
                 Self::map_insert(
                     &mut map,
                     "message",
@@ -920,7 +920,7 @@ impl CellNamespace {
         if let Err(e) = Self::require_cap(caps, CAP_SYS_ADMIN, "cell.rollback") {
             return e;
         }
-        let id = match Self::resolve_driver_cell_ref(args) {
+        let id = match Self::resolve_driver_domain_ref(args) {
             Ok(id) => id,
             Err(e) => return e,
         };
@@ -928,7 +928,7 @@ impl CellNamespace {
             Ok(()) => {
                 let mut map = BTreeMap::new();
                 Self::map_insert(&mut map, "success", ExoValue::Bool(true));
-                Self::map_insert(&mut map, "driver_cell_id", Self::vint_u64(id.as_u64()));
+                Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(id.as_u64()));
                 Self::map_insert(
                     &mut map,
                     "message",
@@ -944,7 +944,7 @@ impl CellNamespace {
         if let Err(e) = Self::require_cap(caps, CAP_SYS_ADMIN, "cell.commit") {
             return e;
         }
-        let id = match Self::resolve_driver_cell_ref(args) {
+        let id = match Self::resolve_driver_domain_ref(args) {
             Ok(id) => id,
             Err(e) => return e,
         };
@@ -952,7 +952,7 @@ impl CellNamespace {
             Ok(()) => {
                 let mut map = BTreeMap::new();
                 Self::map_insert(&mut map, "success", ExoValue::Bool(true));
-                Self::map_insert(&mut map, "driver_cell_id", Self::vint_u64(id.as_u64()));
+                Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(id.as_u64()));
                 Self::map_insert(
                     &mut map,
                     "message",
@@ -969,7 +969,7 @@ impl CellNamespace {
         if let Err(e) = Self::require_cap(caps, CAP_SYS_ADMIN, "cell.debug_fault") {
             return e;
         }
-        let id = match Self::resolve_driver_cell_ref(args) {
+        let id = match Self::resolve_driver_domain_ref(args) {
             Ok(id) => id,
             Err(e) => return e,
         };
@@ -998,7 +998,7 @@ impl CellNamespace {
 
                 let mut map = BTreeMap::new();
                 Self::map_insert(&mut map, "success", ExoValue::Bool(true));
-                Self::map_insert(&mut map, "driver_cell_id", Self::vint_u64(id.as_u64()));
+                Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(id.as_u64()));
                 Self::map_insert(
                     &mut map,
                     "requested_kind",
@@ -1007,8 +1007,8 @@ impl CellNamespace {
                 Self::map_insert(&mut map, "action", Self::vstr(format!("{}", outcome.action)));
                 Self::map_insert(
                     &mut map,
-                    "driver_cell_state_after",
-                    Self::vstr(format!("{}", outcome.driver_cell_state_after)),
+                    "driver_domain_state_after",
+                    Self::vstr(format!("{}", outcome.driver_domain_state_after)),
                 );
                 Self::map_insert(
                     &mut map,
@@ -1070,7 +1070,7 @@ impl ShellNamespace for CellNamespace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::driver_cell::lifecycle::DriverCellConfig;
+    use crate::driver_domain::lifecycle::DriverDomainConfig;
     use futures::executor::block_on;
 
     #[test_case]
@@ -1080,32 +1080,32 @@ mod tests {
     }
 
     #[test_case]
-    fn test_resolve_driver_cell_id_numeric() {
+    fn test_resolve_driver_domain_id_numeric() {
         let v = ExoValue::Int(42);
-        let id = CellNamespace::resolve_driver_cell_id(&v).unwrap();
+        let id = CellNamespace::resolve_driver_domain_id(&v).unwrap();
         assert_eq!(id.as_u64(), 42);
     }
 
     #[test_case]
-    fn test_resolve_driver_cell_ref_name_not_found() {
-        let args = [CellNamespace::vstr("definitely_missing_driver_cell_name")];
-        let res = CellNamespace::resolve_driver_cell_ref(&args);
+    fn test_resolve_driver_domain_ref_name_not_found() {
+        let args = [CellNamespace::vstr("definitely_missing_driver_domain_name")];
+        let res = CellNamespace::resolve_driver_domain_ref(&args);
         assert!(matches!(res, Err(ExoValue::Error(_))));
     }
 
     #[test_case]
-    fn test_resolve_driver_cell_ref_name_exists() {
+    fn test_resolve_driver_domain_ref_name_exists() {
         let name = "cell_ns_test_exists";
-        if let Some(existing) = crate::driver_cell::driver_cell_manager().find_by_name(name) {
-            let _ = crate::driver_cell::driver_cell_manager().remove(existing);
+        if let Some(existing) = crate::driver_domain::driver_domain_manager().find_by_name(name) {
+            let _ = crate::driver_domain::driver_domain_manager().remove(existing);
         }
 
-        let id = crate::driver_cell::lifecycle::create(&DriverCellConfig::new(name)).unwrap();
+        let id = crate::driver_domain::lifecycle::create(&DriverDomainConfig::new(name)).unwrap();
         let args = [CellNamespace::vstr(name)];
-        let resolved = CellNamespace::resolve_driver_cell_ref(&args).unwrap();
+        let resolved = CellNamespace::resolve_driver_domain_ref(&args).unwrap();
         assert_eq!(resolved.as_u64(), id.as_u64());
 
-        let _ = crate::driver_cell::driver_cell_manager().remove(id);
+        let _ = crate::driver_domain::driver_domain_manager().remove(id);
     }
 
     #[test_case]

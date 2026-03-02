@@ -303,7 +303,7 @@ fn try_handle_domain_panic(domain_id: u64, message: &str) -> bool {
 
     let id = DomainId::new(domain_id);
     let sas_domain_id = crate::sas::DomainId::new(domain_id);
-    let driver_cell_domain_id = crate::domain_system::DomainId::new(domain_id);
+    let target_domain_id = crate::domain_system::DomainId::new(domain_id);
 
     // 【設計書 8.4】ドメインが所有する全オブジェクトをポイズニング
     let poisoned_count = crate::sas::poison_domain_objects(sas_domain_id);
@@ -311,12 +311,12 @@ fn try_handle_domain_panic(domain_id: u64, message: &str) -> bool {
         crate::io::log::early_print("[PanicHandler] Poisoned objects owned by domain\n");
     }
 
-    if crate::driver_cell::driver_cell_manager()
-        .find_by_domain(driver_cell_domain_id)
+    if crate::driver_domain::driver_domain_manager()
+        .find_by_domain(target_domain_id)
         .is_some()
     {
-        crate::driver_cell::fault::notify_domain_panic(
-            driver_cell_domain_id,
+        crate::driver_domain::fault::notify_domain_panic(
+            target_domain_id,
             alloc::string::String::from(message),
         );
         return true;

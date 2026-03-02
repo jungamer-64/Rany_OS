@@ -1,14 +1,14 @@
 // ============================================================================
-// kernel/src/driver_cell/mod.rs - Driver Cell: 統一ドライバ隔離モデル
+// kernel/src/driver_domain/mod.rs - Driver Domain: 統一ドライバ隔離モデル
 // ============================================================================
-//! # Driver Cell (ドライバセル)
+//! # Driver Domain (ドライバドメイン)
 //!
 //! 設計書 3.1: 「セル (Cell)」モデルによるモジュール化
 //! 設計書 8: フォールトアイソレーションと回復メカニズム
 //!
 //! ## 概要
 //!
-//! `DriverCell` は、以下の3つの概念を統合する実行時抽象です:
+//! `DriverDomain` は、以下の3つの概念を統合する実行時抽象です:
 //!
 //! 1. **Cell** (ローダーレベル) - ELFバイナリとしてロードされたコード
 //! 2. **Domain** (実行時管理) - リソースクォータ、ケイパビリティ、状態追跡
@@ -16,7 +16,7 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────┐
-//! │                    DriverCell                           │
+//! │                    DriverDomain                           │
 //! │                                                         │
 //! │  ┌──────────────┐  ┌───────────┐  ┌────────────────┐   │
 //! │  │ Cell (ELF)   │  │  Domain   │  │  Driver(s)     │   │
@@ -89,18 +89,18 @@ use crate::sync::PoisonLock;
 
 pub use fault::{FaultRecord, RestartPolicy};
 pub use hot_swap::HotSwapState;
-pub use lifecycle::DriverCellConfig;
-pub use stats::DriverCellStats;
+pub use lifecycle::DriverDomainConfig;
+pub use stats::DriverDomainStats;
 
 // ============================================================================
-// DriverCell ID
+// DriverDomain ID
 // ============================================================================
 
 /// DriverCellを一意に識別するID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DriverCellId(u64);
+pub struct DriverDomainId(u64);
 
-impl DriverCellId {
+impl DriverDomainId {
     /// 新しいIDを作成
     pub const fn new(id: u64) -> Self {
         Self(id)
@@ -112,19 +112,19 @@ impl DriverCellId {
     }
 }
 
-impl core::fmt::Display for DriverCellId {
+impl core::fmt::Display for DriverDomainId {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "DriverCell({})", self.0)
+        write!(f, "DriverDomain({})", self.0)
     }
 }
 
 // ============================================================================
-// DriverCell State
+// DriverDomain State
 // ============================================================================
 
 /// DriverCellのライフサイクル状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DriverCellState {
+pub enum DriverDomainState {
     /// 作成済み（未ロード）
     Created,
     /// コードをロード中
@@ -149,17 +149,17 @@ pub enum DriverCellState {
     Unloaded,
 }
 
-impl DriverCellState {
+impl DriverDomainState {
     /// 実行中かどうか
     pub fn is_running(&self) -> bool {
-        matches!(self, DriverCellState::Running)
+        matches!(self, DriverDomainState::Running)
     }
 
     /// アクティブ（リソースを保持）かどうか
     pub fn is_active(&self) -> bool {
         !matches!(
             self,
-            DriverCellState::Created | DriverCellState::Unloaded
+            DriverDomainState::Created | DriverDomainState::Unloaded
         )
     }
 
@@ -167,9 +167,9 @@ impl DriverCellState {
     pub fn can_stop(&self) -> bool {
         matches!(
             self,
-            DriverCellState::Running
-                | DriverCellState::Starting
-                | DriverCellState::Faulted
+            DriverDomainState::Running
+                | DriverDomainState::Starting
+                | DriverDomainState::Faulted
         )
     }
 
@@ -177,12 +177,12 @@ impl DriverCellState {
     pub fn can_restart(&self) -> bool {
         matches!(
             self,
-            DriverCellState::Stopped | DriverCellState::Faulted
+            DriverDomainState::Stopped | DriverDomainState::Faulted
         )
     }
 }
 
-impl core::fmt::Display for DriverCellState {
+impl core::fmt::Display for DriverDomainState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Created => write!(f, "Created"),
@@ -201,21 +201,21 @@ impl core::fmt::Display for DriverCellState {
 }
 
 // ============================================================================
-// DriverCell - 統合ドライバ隔離モデル
+// DriverDomain - 統合ドライバ隔離モデル
 // ============================================================================
 
-/// DriverCell: Cell + Domain + Driver の統合抽象
+/// DriverDomain: Cell + Domain + Driver の統合抽象
 ///
 /// 設計書 3.1: セル(Cell)モデルの完全な実装
 /// - コードの分離（Cell/ELFロード）
 /// - 実行時の分離（Domain/リソース管理）
 /// - デバイスインターフェース（Driver/ライフサイクル）
 /// - 障害分離（Proxy/PoisonLock/Exchange Heap）
-pub struct DriverCell {
+pub struct DriverDomain {
     // === 識別情報 ===
     /// DriverCellの一意なID
-    pub id: DriverCellId,
-    /// ドライバセル名
+    pub id: DriverDomainId,
+    /// ドライバドメイン名
     pub name: String,
 
     // === コンポーネントID ===
@@ -228,9 +228,9 @@ pub struct DriverCell {
 
     // === 状態管理 ===
     /// 現在の状態
-    pub state: DriverCellState,
+    pub state: DriverDomainState,
     /// 前回の状態（遷移追跡用）
-    previous_state: Option<DriverCellState>,
+    previous_state: Option<DriverDomainState>,
 
     // === ポリシー・設定 ===
     /// 再起動ポリシー
@@ -266,7 +266,7 @@ pub struct DriverCell {
 
     // === 統計情報 ===
     /// 統計データ
-    pub stats: DriverCellStats,
+    pub stats: DriverDomainStats,
 
     // === NUMAアフィニティ ===
     /// NUMAノード（任意）
@@ -276,16 +276,16 @@ pub struct DriverCell {
     pub created_at: u64,
 }
 
-impl DriverCell {
+impl DriverDomain {
     /// 新しいDriverCellを作成
-    pub fn new(id: DriverCellId, name: String) -> Self {
+    pub fn new(id: DriverDomainId, name: String) -> Self {
         Self {
             id,
             name,
             cell_id: None,
             domain_id: None,
             driver_handles: Vec::new(),
-            state: DriverCellState::Created,
+            state: DriverDomainState::Created,
             previous_state: None,
             restart_policy: RestartPolicy::default(),
             priority: DomainPriority::Normal,
@@ -299,14 +299,14 @@ impl DriverCell {
             hot_swap_state: HotSwapState::Idle,
             validation_deadline_tick: None,
             last_health_failure: None,
-            stats: DriverCellStats::new(),
+            stats: DriverDomainStats::new(),
             numa_node: None,
             created_at: crate::task::timer::current_tick(),
         }
     }
 
     /// 設定から作成
-    pub fn from_config(id: DriverCellId, config: &DriverCellConfig) -> Self {
+    pub fn from_config(id: DriverDomainId, config: &DriverDomainConfig) -> Self {
         let mut cell = Self::new(id, config.name.clone());
         cell.restart_policy = config.restart_policy;
         cell.priority = config.priority;
@@ -320,12 +320,12 @@ impl DriverCell {
     }
 
     /// 状態を遷移
-    fn transition_to(&mut self, new_state: DriverCellState) {
+    fn transition_to(&mut self, new_state: DriverDomainState) {
         self.previous_state = Some(self.state);
         let old = self.state;
         self.state = new_state;
         log::info!(
-            "[DriverCell] {} state: {} -> {}\n",
+            "[DriverDomain] {} state: {} -> {}\n",
             self.name,
             old,
             new_state
@@ -360,8 +360,8 @@ impl DriverCell {
     }
 
     /// スナップショットを取得（軽量コピー）
-    pub fn snapshot(&self) -> DriverCellSnapshot {
-        DriverCellSnapshot {
+    pub fn snapshot(&self) -> DriverDomainSnapshot {
+        DriverDomainSnapshot {
             id: self.id,
             name: self.name.clone(),
             state: self.state,
@@ -384,9 +384,9 @@ impl DriverCell {
     }
 }
 
-impl core::fmt::Debug for DriverCell {
+impl core::fmt::Debug for DriverDomain {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("DriverCell")
+        f.debug_struct("DriverDomain")
             .field("id", &self.id)
             .field("name", &self.name)
             .field("state", &self.state)
@@ -400,15 +400,15 @@ impl core::fmt::Debug for DriverCell {
 }
 
 // ============================================================================
-// DriverCell Snapshot
+// DriverDomain Snapshot
 // ============================================================================
 
 /// DriverCellの軽量スナップショット（外部公開用）
 #[derive(Debug, Clone)]
-pub struct DriverCellSnapshot {
-    pub id: DriverCellId,
+pub struct DriverDomainSnapshot {
+    pub id: DriverDomainId,
     pub name: String,
-    pub state: DriverCellState,
+    pub state: DriverDomainState,
     pub cell_id: Option<CellId>,
     pub domain_id: Option<DomainId>,
     pub driver_count: usize,
@@ -420,28 +420,28 @@ pub struct DriverCellSnapshot {
     pub memory_limit_bytes: u64,
     pub numa_node: Option<usize>,
     pub created_at: u64,
-    pub stats: DriverCellStats,
+    pub stats: DriverDomainStats,
     pub hot_swap_state: HotSwapState,
     pub validation_deadline_tick: Option<u64>,
     pub last_health_failure: Option<String>,
 }
 
 // ============================================================================
-// DriverCellManager - グローバル管理
+// DriverDomainManager - グローバル管理
 // ============================================================================
 
 /// DriverCell管理システム
 ///
-/// 全てのドライバセルのライフサイクルを一元管理する。
+/// 全てのドライバドメインのライフサイクルを一元管理する。
 /// PoisonLockにより、パニック時の安全性を保証する。
-pub struct DriverCellManager {
+pub struct DriverDomainManager {
     /// 全DriverCellのマップ
-    cells: PoisonLock<BTreeMap<DriverCellId, DriverCell>>,
+    cells: PoisonLock<BTreeMap<DriverDomainId, DriverDomain>>,
     /// 次のID
     next_id: AtomicU64,
 }
 
-impl DriverCellManager {
+impl DriverDomainManager {
     /// 新しいManagerを作成
     pub const fn new() -> Self {
         Self {
@@ -451,24 +451,24 @@ impl DriverCellManager {
     }
 
     /// 新しいIDを生成
-    pub fn allocate_id(&self) -> DriverCellId {
-        DriverCellId::new(self.next_id.fetch_add(1, Ordering::Relaxed))
+    pub fn allocate_id(&self) -> DriverDomainId {
+        DriverDomainId::new(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
 
     /// DriverCellを登録
-    pub fn register(&self, cell: DriverCell) -> Result<DriverCellId, DriverCellError> {
+    pub fn register(&self, cell: DriverDomain) -> Result<DriverDomainId, DriverDomainError> {
         let id = cell.id;
         let mut cells = self.cells.lock().map_err(|_| {
-            log::error!("[DriverCellManager] Registry poisoned during register");
-            DriverCellError::RegistryPoisoned
+            log::error!("[DriverDomainManager] Registry poisoned during register");
+            DriverDomainError::RegistryPoisoned
         })?;
 
         if cells.contains_key(&id) {
-            return Err(DriverCellError::AlreadyExists(id));
+            return Err(DriverDomainError::AlreadyExists(id));
         }
 
         log::info!(
-            "[DriverCellManager] Registered: {} ({})\n",
+            "[DriverDomainManager] Registered: {} ({})\n",
             cell.name,
             id
         );
@@ -477,57 +477,57 @@ impl DriverCellManager {
     }
 
     /// DriverCellを取得（読み取り）
-    pub fn with_cell<F, R>(&self, id: DriverCellId, f: F) -> Result<R, DriverCellError>
+    pub fn with_cell<F, R>(&self, id: DriverDomainId, f: F) -> Result<R, DriverDomainError>
     where
-        F: FnOnce(&DriverCell) -> R,
+        F: FnOnce(&DriverDomain) -> R,
     {
         let cells = self.cells.lock().map_err(|_| {
-            log::error!("[DriverCellManager] Registry poisoned during read");
-            DriverCellError::RegistryPoisoned
+            log::error!("[DriverDomainManager] Registry poisoned during read");
+            DriverDomainError::RegistryPoisoned
         })?;
 
-        cells.get(&id).map(f).ok_or(DriverCellError::NotFound(id))
+        cells.get(&id).map(f).ok_or(DriverDomainError::NotFound(id))
     }
 
     /// DriverCellを変更
-    pub fn with_cell_mut<F, R>(&self, id: DriverCellId, f: F) -> Result<R, DriverCellError>
+    pub fn with_cell_mut<F, R>(&self, id: DriverDomainId, f: F) -> Result<R, DriverDomainError>
     where
-        F: FnOnce(&mut DriverCell) -> R,
+        F: FnOnce(&mut DriverDomain) -> R,
     {
         let mut cells = self.cells.lock().map_err(|_| {
-            log::error!("[DriverCellManager] Registry poisoned during write");
-            DriverCellError::RegistryPoisoned
+            log::error!("[DriverDomainManager] Registry poisoned during write");
+            DriverDomainError::RegistryPoisoned
         })?;
 
         cells
             .get_mut(&id)
             .map(f)
-            .ok_or(DriverCellError::NotFound(id))
+            .ok_or(DriverDomainError::NotFound(id))
     }
 
     /// DriverCellを削除
-    pub fn remove(&self, id: DriverCellId) -> Result<DriverCell, DriverCellError> {
+    pub fn remove(&self, id: DriverDomainId) -> Result<DriverDomain, DriverDomainError> {
         let mut cells = self.cells.lock().map_err(|_| {
-            log::error!("[DriverCellManager] Registry poisoned during remove");
-            DriverCellError::RegistryPoisoned
+            log::error!("[DriverDomainManager] Registry poisoned during remove");
+            DriverDomainError::RegistryPoisoned
         })?;
 
-        cells.remove(&id).ok_or(DriverCellError::NotFound(id))
+        cells.remove(&id).ok_or(DriverDomainError::NotFound(id))
     }
 
     /// 全DriverCellのスナップショットを取得
-    pub fn list_snapshots(&self) -> Vec<DriverCellSnapshot> {
+    pub fn list_snapshots(&self) -> Vec<DriverDomainSnapshot> {
         match self.cells.lock() {
             Ok(cells) => cells.values().map(|c| c.snapshot()).collect(),
             Err(_) => {
-                log::error!("[DriverCellManager] Registry poisoned (list_snapshots)");
+                log::error!("[DriverDomainManager] Registry poisoned (list_snapshots)");
                 Vec::new()
             }
         }
     }
 
     /// 特定の状態のDriverCellを列挙
-    pub fn cells_by_state(&self, state: DriverCellState) -> Vec<DriverCellId> {
+    pub fn cells_by_state(&self, state: DriverDomainState) -> Vec<DriverDomainId> {
         match self.cells.lock() {
             Ok(cells) => cells
                 .iter()
@@ -535,14 +535,14 @@ impl DriverCellManager {
                 .map(|(id, _)| *id)
                 .collect(),
             Err(_) => {
-                log::error!("[DriverCellManager] Registry poisoned (cells_by_state)");
+                log::error!("[DriverDomainManager] Registry poisoned (cells_by_state)");
                 Vec::new()
             }
         }
     }
 
     /// DomainIDからDriverCellを検索
-    pub fn find_by_domain(&self, domain_id: DomainId) -> Option<DriverCellId> {
+    pub fn find_by_domain(&self, domain_id: DomainId) -> Option<DriverDomainId> {
         match self.cells.lock() {
             Ok(cells) => cells
                 .iter()
@@ -553,7 +553,7 @@ impl DriverCellManager {
     }
 
     /// CellIDからDriverCellを検索
-    pub fn find_by_cell(&self, cell_id: CellId) -> Option<DriverCellId> {
+    pub fn find_by_cell(&self, cell_id: CellId) -> Option<DriverDomainId> {
         match self.cells.lock() {
             Ok(cells) => cells
                 .iter()
@@ -564,7 +564,7 @@ impl DriverCellManager {
     }
 
     /// DriverHandleからDriverCellを検索
-    pub fn find_by_driver_handle(&self, handle: DriverHandle) -> Option<DriverCellId> {
+    pub fn find_by_driver_handle(&self, handle: DriverHandle) -> Option<DriverDomainId> {
         match self.cells.lock() {
             Ok(cells) => cells
                 .iter()
@@ -575,7 +575,7 @@ impl DriverCellManager {
     }
 
     /// 名前からDriverCellを検索
-    pub fn find_by_name(&self, name: &str) -> Option<DriverCellId> {
+    pub fn find_by_name(&self, name: &str) -> Option<DriverDomainId> {
         crate::io::log::early_print("[DCELL-MGR] find_by_name enter locked=");
         crate::io::log::early_print(if self.cells.is_locked() { "1" } else { "0" });
         crate::io::log::early_print("\n");
@@ -624,7 +624,7 @@ impl DriverCellManager {
             Ok(cells) => {
                 cells
                     .values()
-                    .filter(|c| c.state == DriverCellState::Faulted)
+                    .filter(|c| c.state == DriverDomainState::Faulted)
                     .count()
             }
             Err(_) => 0,
@@ -638,15 +638,15 @@ impl DriverCellManager {
 
 /// DriverCell操作のエラー
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DriverCellError {
+pub enum DriverDomainError {
     /// DriverCellが見つからない
-    NotFound(DriverCellId),
+    NotFound(DriverDomainId),
     /// 既に存在する
-    AlreadyExists(DriverCellId),
+    AlreadyExists(DriverDomainId),
     /// 無効な状態遷移
     InvalidStateTransition {
-        from: DriverCellState,
-        to: DriverCellState,
+        from: DriverDomainState,
+        to: DriverDomainState,
     },
     /// レジストリが毒入れされた
     RegistryPoisoned,
@@ -673,15 +673,15 @@ pub enum DriverCellError {
     HasDependents,
 }
 
-impl core::fmt::Display for DriverCellError {
+impl core::fmt::Display for DriverDomainError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NotFound(id) => write!(f, "DriverCell not found: {}", id),
-            Self::AlreadyExists(id) => write!(f, "DriverCell already exists: {}", id),
+            Self::NotFound(id) => write!(f, "DriverDomain not found: {}", id),
+            Self::AlreadyExists(id) => write!(f, "DriverDomain already exists: {}", id),
             Self::InvalidStateTransition { from, to } => {
                 write!(f, "Invalid state transition: {} -> {}", from, to)
             }
-            Self::RegistryPoisoned => write!(f, "DriverCell registry poisoned"),
+            Self::RegistryPoisoned => write!(f, "DriverDomain registry poisoned"),
             Self::LoadFailed(msg) => write!(f, "Cell load failed: {}", msg),
             Self::DomainCreationFailed(msg) => write!(f, "Domain creation failed: {}", msg),
             Self::DriverInitFailed(msg) => write!(f, "Driver init failed: {}", msg),
@@ -706,14 +706,14 @@ impl core::fmt::Display for DriverCellError {
 // ============================================================================
 
 /// グローバルDriverCellマネージャ
-static DRIVER_CELL_MANAGER: DriverCellManager = DriverCellManager::new();
+static DRIVER_DOMAIN_MANAGER: DriverDomainManager = DriverDomainManager::new();
 
 /// グローバルマネージャへのアクセス
-pub fn driver_cell_manager() -> &'static DriverCellManager {
-    &DRIVER_CELL_MANAGER
+pub fn driver_domain_manager() -> &'static DriverDomainManager {
+    &DRIVER_DOMAIN_MANAGER
 }
 
 /// DriverCellサブシステムを初期化
 pub fn init() {
-    log::info!("[DriverCell] Subsystem initialized\n");
+    log::info!("[DriverDomain] Subsystem initialized\n");
 }

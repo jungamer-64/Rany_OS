@@ -263,8 +263,8 @@ fn profile_needs_storage_disk(profile: &str) -> bool {
     )
 }
 
-fn profile_needs_driver_cell_assets(profile: &str) -> bool {
-    matches!(profile, "driver_cell" | "pr-required" | "nightly-required")
+fn profile_needs_driver_domain_assets(profile: &str) -> bool {
+    matches!(profile, "driver_domain" | "pr-required" | "nightly-required")
 }
 
 fn copy_file_if_exists(
@@ -315,7 +315,7 @@ fn copy_cells_dir(src_dir: &Path, dst_dir: &Path) -> Result<usize, BuildError> {
     Ok(copied)
 }
 
-fn ensure_driver_cell_fixture_assets(root: &Path) -> Result<(), BuildError> {
+fn ensure_driver_domain_fixture_assets(root: &Path) -> Result<(), BuildError> {
     let initramfs_path = root.join("target").join("initramfs.tar");
     let cells_dir = root
         .join("target")
@@ -331,7 +331,7 @@ fn ensure_driver_cell_fixture_assets(root: &Path) -> Result<(), BuildError> {
 
     run_command(
         root,
-        "build driver_cell probe fixtures",
+        "build driver_domain probe fixtures",
         "bash",
         &["scripts/build_driver_cell_probe_fixtures.sh", "--profile", "release"],
     )?;
@@ -340,7 +340,7 @@ fn ensure_driver_cell_fixture_assets(root: &Path) -> Result<(), BuildError> {
         Ok(())
     } else {
         Err(BuildError::ArtifactMissing {
-            step: "build driver_cell probe fixtures",
+            step: "build driver_domain probe fixtures",
             path: initramfs_path,
         })
     }
@@ -538,9 +538,9 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         path: kernel_elf_path.clone(),
     })?;
     let kernel_fat_root = kernel_out_dir.join("fat_root");
-    let needs_driver_cell_assets = profile_needs_driver_cell_assets(&config.profile);
-    if needs_driver_cell_assets {
-        ensure_driver_cell_fixture_assets(&root)?;
+    let needs_driver_domain_assets = profile_needs_driver_domain_assets(&config.profile);
+    if needs_driver_domain_assets {
+        ensure_driver_domain_fixture_assets(&root)?;
     }
     let repo_root = workspace_root();
     let initramfs_src = {
@@ -549,7 +549,7 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         if primary.exists() { primary } else { fallback }
     };
     let initramfs_dst = boot_root.join("initramfs.tar");
-    let copied_initramfs = if needs_driver_cell_assets {
+    let copied_initramfs = if needs_driver_domain_assets {
         copy_file_if_exists(
             &initramfs_src,
             &initramfs_dst,
@@ -558,7 +558,7 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
     } else {
         false
     };
-    if needs_driver_cell_assets && !copied_initramfs {
+    if needs_driver_domain_assets && !copied_initramfs {
         return Err(BuildError::ArtifactMissing {
             step: "copy initramfs.tar into fullboot image",
             path: initramfs_src,
@@ -581,14 +581,14 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
             debug_cells
         }
     };
-    let copied_cells = if needs_driver_cell_assets {
+    let copied_cells = if needs_driver_domain_assets {
         copy_cells_dir(&cells_src, &boot_root.join("cells"))?
     } else {
         0
     };
-    if needs_driver_cell_assets && copied_cells == 0 {
+    if needs_driver_domain_assets && copied_cells == 0 {
         return Err(BuildError::ArtifactMissing {
-            step: "copy driver_cell assets into fullboot image",
+            step: "copy driver_domain assets into fullboot image",
             path: cells_src,
         });
     }
@@ -814,7 +814,7 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
             .arg("virtio-blk-pci,drive=storage0");
     }
 
-    if matches!(config.profile.as_str(), "iommu" | "driver_cell") {
+    if matches!(config.profile.as_str(), "iommu" | "driver_domain") {
         qemu_cmd.arg("-device").arg("intel-iommu,intremap=on,caching-mode=on,device-iotlb=on");
     }
 

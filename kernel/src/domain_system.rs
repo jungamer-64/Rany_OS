@@ -730,7 +730,7 @@ pub fn set_domain_numa(id: DomainId, node: usize) {
     }
 }
 
-/// Set capability set for a domain (DriverCell metadata integration hook)
+/// Set capability set for a domain (DriverDomain metadata integration hook)
 pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), &'static str> {
     match REGISTRY.lock() {
         Ok(mut guard) => {
