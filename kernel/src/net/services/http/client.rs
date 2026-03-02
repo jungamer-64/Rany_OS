@@ -5,7 +5,7 @@
 use alloc::string::String;
 use alloc::boxed::Box;
 
-use crate::net::l4::tcp::{TcpStream, SocketAddr, Ipv4Addr};
+use crate::net::l4::tcp::{TcpStream, EndpointAddr, Ipv4Addr};
 use crate::net::services::dns::resolve_ipv4;
 use super::types::{HttpRequest, HttpResponse};
 use super::parser::{HttpParser, HttpParseError};
@@ -98,7 +98,7 @@ impl HttpClient {
         );
 
         // 2. TCP接続確立
-        let remote_addr = SocketAddr::new(tcp_ip_addr, port);
+        let remote_addr = EndpointAddr::new(tcp_ip_addr, port);
 
         let mut stream = TcpStream::dial(remote_addr).await
             .map_err(|_| HttpClientError::ConnectionFailed)?;

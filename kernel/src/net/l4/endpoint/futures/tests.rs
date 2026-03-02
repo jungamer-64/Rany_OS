@@ -1,8 +1,8 @@
 use super::*;
-use crate::net::l4::endpoint::{create_tcp_socket, create_udp_socket, NetworkEvent};
-use crate::net::l4::endpoint::manager::init_socket_manager;
+use crate::net::l4::endpoint::{create_tcp_endpoint, create_udp_endpoint, NetworkEvent};
+use crate::net::l4::endpoint::manager::init_endpoint_manager;
 use crate::net::runtime::stack;
-use crate::net::l4::endpoint::SocketAddr;
+use crate::net::l4::endpoint::EndpointAddr;
 use crate::net::l4::endpoint::tcb::{TcpControlBlockEntry, TcpConnectionState};
 use core::future::Future;
 use core::pin::Pin;
@@ -13,7 +13,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 // and is woken when the DataReady event is processed successfully
 #[cfg_attr(test, test_case)]
 pub fn test_sendfuture_wakes_on_send() {
-    init_socket_manager();
+    init_endpoint_manager();
 
     // Initialize stack and set a dummy transmit function that always succeeds
     stack::init_default();
@@ -27,10 +27,10 @@ pub fn test_sendfuture_wakes_on_send() {
     }
 
     // Create socket and set local/remote
-    let sock = create_tcp_socket();
+    let sock = create_tcp_endpoint();
     let fd = sock.fd();
-    let local = SocketAddr::new([127, 0, 0, 1], 12345);
-    let remote = SocketAddr::new([127, 0, 0, 1], 80);
+    let local = EndpointAddr::new([127, 0, 0, 1], 12345);
+    let remote = EndpointAddr::new([127, 0, 0, 1], 80);
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
@@ -72,7 +72,7 @@ pub fn test_sendfuture_wakes_on_send() {
     let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
     let res = handler.handle_event(NetworkEvent::DataReady {
         fd,
-        socket_type: crate::net::l4::endpoint::types::SocketType::Tcp,
+        socket_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
     });
     // Should either succeed or ask for retry; for our test transmit succeeds so Success
     assert!(matches!(res, crate::net::l4::endpoint::handler::EventHandleResult::Success));
@@ -91,7 +91,7 @@ pub fn test_sendfuture_wakes_on_send() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_sendfuture_wakes_on_send_v6() {
-    init_socket_manager();
+    init_endpoint_manager();
 
     // Initialize stack with IPv6 enabled and set transmit to always succeed
     let mut cfg = crate::net::runtime::stack::NetworkConfig::default();
@@ -108,10 +108,10 @@ pub fn test_sendfuture_wakes_on_send_v6() {
     }
 
     // Create socket and set IPv6 local/remote (remote uses multicast so no NDP needed)
-    let sock = create_tcp_socket();
+    let sock = create_tcp_endpoint();
     let fd = sock.fd();
-    let local = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
-    let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::ALL_NODES_LINK_LOCAL.octets(), 80);
+    let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+    let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::ALL_NODES_LINK_LOCAL.octets(), 80);
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
@@ -153,7 +153,7 @@ pub fn test_sendfuture_wakes_on_send_v6() {
     let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
     let res = handler.handle_event(NetworkEvent::DataReady {
         fd,
-        socket_type: crate::net::l4::endpoint::types::SocketType::Tcp,
+        socket_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
     });
 
     assert!(matches!(res, crate::net::l4::endpoint::handler::EventHandleResult::Success));
@@ -168,15 +168,15 @@ pub fn test_sendfuture_wakes_on_send_v6() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_recv_packet_zero_copy_via_owned_socket() {
-    init_socket_manager();
+    init_endpoint_manager();
 
     // Initialize stack (some operations rely on stack state)
     stack::init_default();
 
-    let sock = create_tcp_socket();
+    let sock = create_tcp_endpoint();
     let _fd = sock.fd();
-    let local = SocketAddr::new([127, 0, 0, 1], 12345);
-    let remote = SocketAddr::new([127, 0, 0, 1], 80);
+    let local = EndpointAddr::new([127, 0, 0, 1], 12345);
+    let remote = EndpointAddr::new([127, 0, 0, 1], 80);
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
@@ -186,10 +186,10 @@ pub fn test_recv_packet_zero_copy_via_owned_socket() {
     // Create TCB and attach a TcpStream to the socket
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
-    use crate::net::l4::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
+    use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
 
-    let t_local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
-    let t_remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
+    let t_local = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
+    let t_remote = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
     tcb.set_remote_addr(t_remote);
@@ -200,7 +200,7 @@ pub fn test_recv_packet_zero_copy_via_owned_socket() {
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
-        let _ = inner.transition_to(SocketState::Connected);
+        let _ = inner.transition_to(EndpointState::Connected);
     }
 
     // Prepare a packet and push it into the TCB recv buffer
@@ -247,15 +247,15 @@ pub fn test_recv_packet_zero_copy_via_owned_socket() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
-    init_socket_manager();
+    init_endpoint_manager();
 
     // Initialize stack (some operations rely on stack state)
     stack::init_default();
 
-    let sock = create_tcp_socket();
+    let sock = create_tcp_endpoint();
     let _fd = sock.fd();
-    let local = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
-    let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
+    let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+    let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
@@ -265,10 +265,10 @@ pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
     // Create TCB and attach a TcpStream to the socket (IPv6)
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
-    use crate::net::l4::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, TcpStream};
+    use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, TcpStream};
 
-    let t_local = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 12345);
-    let t_remote = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
+    let t_local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 12345);
+    let t_remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
     tcb.set_remote_addr(t_remote);
@@ -279,7 +279,7 @@ pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
-        let _ = inner.transition_to(SocketState::Connected);
+        let _ = inner.transition_to(EndpointState::Connected);
     }
 
     // Prepare a packet and push it into the TCB recv buffer
@@ -325,13 +325,13 @@ pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_tcp_packet_stream_multiple_packets() {
-    init_socket_manager();
+    init_endpoint_manager();
     stack::init_default();
 
-    let sock = create_tcp_socket();
+    let sock = create_tcp_endpoint();
     let _fd = sock.fd();
-    let local = SocketAddr::new([127, 0, 0, 1], 12345);
-    let remote = SocketAddr::new([127, 0, 0, 1], 80);
+    let local = EndpointAddr::new([127, 0, 0, 1], 12345);
+    let remote = EndpointAddr::new([127, 0, 0, 1], 80);
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
@@ -341,10 +341,10 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     // Create TCB and attach a TcpStream to the socket
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
-    use crate::net::l4::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
+    use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
 
-    let t_local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
-    let t_remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
+    let t_local = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
+    let t_remote = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
     tcb.set_remote_addr(t_remote);
@@ -355,7 +355,7 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
-        let _ = inner.transition_to(SocketState::Connected);
+        let _ = inner.transition_to(EndpointState::Connected);
     }
 
     // Prepare two packets and push into TCB recv buffer
@@ -415,13 +415,13 @@ pub fn test_tcp_packet_stream_multiple_packets() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_tcp_packet_stream_multiple_packets_v6() {
-    init_socket_manager();
+    init_endpoint_manager();
     stack::init_default();
 
-    let sock = create_tcp_socket();
+    let sock = create_tcp_endpoint();
     let _fd = sock.fd();
-    let local = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
-    let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
+    let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+    let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
@@ -431,10 +431,10 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     // Create TCB and attach a TcpStream to the socket (IPv6)
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
-    use crate::net::l4::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, TcpStream};
+    use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, TcpStream};
 
-    let t_local = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 12345);
-    let t_remote = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
+    let t_local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 12345);
+    let t_remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
     tcb.set_remote_addr(t_remote);
@@ -445,7 +445,7 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
-        let _ = inner.transition_to(SocketState::Connected);
+        let _ = inner.transition_to(EndpointState::Connected);
     }
 
     // Prepare two packets and push into TCB recv buffer
@@ -504,20 +504,20 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
 }
 #[cfg_attr(test, test_case)]
 pub fn test_udp_packet_stream_delivered() {
-    init_socket_manager();
+    init_endpoint_manager();
 
     // Use a UdpProcessor instance and bind a socket to a port
     let proc = crate::net::l4::udp::UdpProcessor::new();
     let port = 40000u16;
     let u = proc.bind_with_token(port, None).expect("bind failed");
 
-    // Create an OwnedSocket and attach the UdpSocket instance to its inner state
-    let sock = create_udp_socket();
+    // Create an OwnedEndpoint and attach the UdpEndpoint instance to its inner state
+    let sock = create_udp_endpoint();
     if let Some(s) = sock.socket() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.local_addr = Some(SocketAddr::new([127, 0, 0, 1], port));
+        inner.local_addr = Some(EndpointAddr::new([127, 0, 0, 1], port));
         inner.udp_socket = Some(u.clone());
-        let _ = inner.transition_to(SocketState::Connected);
+        let _ = inner.transition_to(EndpointState::Connected);
     }
 
     // Build a UDP packet into a PacketRef and process it via the processor (zero-copy path)

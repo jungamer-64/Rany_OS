@@ -44,7 +44,7 @@ pub struct TcpConnectionInfo {
 
 /// UDP socket info for netstat.
 #[derive(Debug, Clone)]
-pub struct UdpSocketInfo {
+pub struct UdpEndpointInfo {
     pub local_addr: String,
     pub remote_addr: String,
 }
@@ -180,18 +180,18 @@ pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
     Some(connections)
 }
 
-pub fn get_udp_sockets() -> Option<Vec<UdpSocketInfo>> {
+pub fn get_udp_endpoints() -> Option<Vec<UdpEndpointInfo>> {
     match stack::stack().lock() {
         Ok(guard) => {
             if let Some(ref stack_guard) = guard.as_ref() {
-                let snapshots = stack_guard.list_udp_sockets();
+                let snapshots = stack_guard.list_udp_endpoints();
                 if snapshots.is_empty() {
                     return None;
                 }
                 return Some(
                     snapshots
                         .into_iter()
-                        .map(|snap| UdpSocketInfo {
+                        .map(|snap| UdpEndpointInfo {
                             local_addr: format!("*:{}", snap.local_port),
                             remote_addr: String::from("*:*"),
                         })
@@ -200,7 +200,7 @@ pub fn get_udp_sockets() -> Option<Vec<UdpSocketInfo>> {
             }
         }
         Err(_) => {
-            log::error!("[NET] Stack lock poisoned (get_udp_sockets)");
+            log::error!("[NET] Stack lock poisoned (get_udp_endpoints)");
         }
     }
     None

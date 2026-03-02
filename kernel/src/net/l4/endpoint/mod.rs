@@ -4,10 +4,10 @@
 //! # Endpoint Module - SPL/SAS Compliant Network Socket Implementation
 //!
 //! ## Design Philosophy
-//! - Fine-grained locking: Arc<Mutex<SocketInner>> for per-socket locking
-//! - RAII resource management: OwnedSocket for automatic close
+//! - Fine-grained locking: Arc<Mutex<EndpointInner>> for per-socket locking
+//! - RAII resource management: OwnedEndpoint for automatic close
 //! - O(1) buffer operations: VecDeque for FIFO efficiency
-//! - Read parallelization: RwLock for SocketManager concurrent reads
+//! - Read parallelization: RwLock for EndpointManager concurrent reads
 //! - State transition guards: Compile-time detection of invalid transitions
 //! - Event-driven: NetworkEvent for protocol stack coordination
 
@@ -22,7 +22,7 @@ pub mod manager;
 pub mod ooo_queue;
 pub mod retransmit;
 pub mod segment;
-pub mod socket;
+pub mod endpoint_core;
 pub mod tcb;
 pub mod tcp_rx;
 pub mod timer_wheel;
@@ -35,7 +35,7 @@ pub mod window_scale;
 
 // Re-exports: types
 pub use types::{
-    SocketAddr, SocketError, SocketFd, SocketResult, SocketState, SocketType,
+    EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType,
     seq_before, seq_leq, seq_after, seq_geq,
     conn_key_hash,
 };
@@ -54,12 +54,12 @@ pub use tcb::{TcpConnectionState, tcb_table};
 
 // Re-exports: manager
 pub use manager::{
-    init_socket_manager, is_socket_manager_initialized, socket_manager,
+    init_endpoint_manager, is_endpoint_manager_initialized, endpoint_manager,
 };
 
 // Re-exports: socket
-pub use socket::{
-    OwnedSocket, create_tcp_server, create_tcp_socket, create_udp_socket, create_raw_socket,
+pub use endpoint_core::{
+    OwnedEndpoint, create_tcp_server, create_tcp_endpoint, create_udp_endpoint, create_raw_endpoint,
 };
 
 // Re-exports: futures

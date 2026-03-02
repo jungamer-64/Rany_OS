@@ -4,7 +4,7 @@
 //! NTP (Network Time Protocol) / SNTP Client Implementation (RFC 4330)
 
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::l4::endpoint::{SocketAddr, SocketError, create_udp_socket};
+use crate::net::l4::endpoint::{EndpointAddr, EndpointError, create_udp_endpoint};
 use crate::time;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -111,11 +111,11 @@ impl NtpClient {
     }
 
     /// Perform a single time synchronization query (Sync)
-    pub async fn sync_time(&self) -> Result<u64, SocketError> {
-        let server_ip = self.server.ok_or(SocketError::InvalidArgument)?;
-        let remote = SocketAddr::new(server_ip.octets(), NTP_PORT);
+    pub async fn sync_time(&self) -> Result<u64, EndpointError> {
+        let server_ip = self.server.ok_or(EndpointError::InvalidArgument)?;
+        let remote = EndpointAddr::new(server_ip.octets(), NTP_PORT);
         
-        let socket = create_udp_socket();
+        let socket = create_udp_endpoint();
         
         let mut packet = [0u8; NtpHeader::SIZE];
         let req = NtpHeader::new_client_request();
@@ -129,18 +129,18 @@ impl NtpClient {
         socket.send_to(&packet, remote)?;
 
         // Async receive via futures module helper
-        let recv_fut = socket.recv_from_async(1024).ok_or(SocketError::Internal)?;
+        let recv_fut = socket.recv_from_async(1024).ok_or(EndpointError::Internal)?;
         let (data, _from) = recv_fut.await?;
 
         if data.len() < NtpHeader::SIZE {
-            return Err(SocketError::Internal);
+            return Err(EndpointError::Internal);
         }
 
         let resp = unsafe { &*(data.as_ptr() as *const NtpHeader) };
         
         // Validation (simplified)
         if resp.mode() != 4 { // Server response mode
-            return Err(SocketError::Internal);
+            return Err(EndpointError::Internal);
         }
 
         let transmit_ts = resp.transmit_timestamp;
@@ -159,7 +159,7 @@ impl NtpClient {
             return Ok(unix_time);
         }
 
-        Err(SocketError::Internal)
+        Err(EndpointError::Internal)
     }
 }
 

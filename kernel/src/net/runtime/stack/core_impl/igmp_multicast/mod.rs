@@ -4,14 +4,14 @@ mod tcp_bind;
 
 #[inline]
 fn tcp_ipv4_pair(
-    local: TcpSocketAddr,
-    remote: TcpSocketAddr,
+    local: TcpEndpointAddr,
+    remote: TcpEndpointAddr,
 ) -> Option<(crate::net::l4::tcp::Ipv4Addr, crate::net::l4::tcp::Ipv4Addr)> {
     Some((local.as_ipv4()?, remote.as_ipv4()?))
 }
 
 #[inline]
-fn tcp_is_native_v6_pair(local: TcpSocketAddr, remote: TcpSocketAddr) -> bool {
+fn tcp_is_native_v6_pair(local: TcpEndpointAddr, remote: TcpEndpointAddr) -> bool {
     local.is_ipv6()
         && remote.is_ipv6()
         && local.as_ipv4().is_none()
@@ -92,7 +92,7 @@ impl NetworkStack {
 
         match result {
             UdpResult::Delivered => {}
-            UdpResult::NoSocket => {
+            UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
@@ -503,7 +503,7 @@ impl NetworkStack {
 
         match result {
             UdpResult::Delivered => {}
-            UdpResult::NoSocket => {
+            UdpResult::NoEndpoint => {
                 // Could send ICMP port unreachable
                 self.stats.record_dropped();
             }
@@ -940,8 +940,8 @@ impl NetworkStack {
                     original_dst.as_bytes()[2],
                     original_dst.as_bytes()[3],
                 );
-                let local_addr = TcpSocketAddr::new(local_ip, src_port);
-                let remote_addr = TcpSocketAddr::new(remote_ip, dst_port);
+                let local_addr = TcpEndpointAddr::new(local_ip, src_port);
+                let remote_addr = TcpEndpointAddr::new(remote_ip, dst_port);
 
                 if !self.tcp.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
                     // Sequence number validation failed (prevents PMTU poisoning)
@@ -954,7 +954,7 @@ impl NetworkStack {
             }
             17 => { // UDP
                 // Check if we have a socket bound to the source port
-                if !self.udp.has_socket(src_port) {
+                if !self.udp.has_endpoint(src_port) {
                     return;
                 }
             }
@@ -1146,18 +1146,18 @@ impl NetworkStack {
     }
 
     /// Connect to a remote TCP address
-    pub fn connect_tcp(&mut self, mut local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Result<TcpStream, TcpError> {
+    pub fn connect_tcp(&mut self, mut local_addr: TcpEndpointAddr, remote_addr: TcpEndpointAddr) -> Result<TcpStream, TcpError> {
         // Resolve local source address when unspecified.
         if local_addr.is_ipv4() {
             if local_addr.as_ipv4() == Some(crate::net::l4::tcp::Ipv4Addr::UNSPECIFIED) {
                 let [a, b, c, d] = self.config.ipv4.address.octets();
-                local_addr = TcpSocketAddr::new(crate::net::l4::tcp::Ipv4Addr::new(a, b, c, d), local_addr.port());
+                local_addr = TcpEndpointAddr::new(crate::net::l4::tcp::Ipv4Addr::new(a, b, c, d), local_addr.port());
             }
         } else if local_addr.as_ipv6().is_unspecified() {
             if let Some(ipv6_cfg) = self.config.ipv6 {
                 let src_v6 = ipv6_cfg.global.unwrap_or(ipv6_cfg.link_local);
                 if !src_v6.is_unspecified() {
-                    local_addr = TcpSocketAddr::new_v6(src_v6, local_addr.port());
+                    local_addr = TcpEndpointAddr::new_v6(src_v6, local_addr.port());
                 }
             }
         }
@@ -1169,12 +1169,12 @@ impl NetworkStack {
                 return Err(TcpError::BufferFull); // Or a better error for port exhaustion
             }
             local_addr = if local_addr.is_ipv4() {
-                TcpSocketAddr::new(
+                TcpEndpointAddr::new(
                     local_addr.as_ipv4().unwrap_or(crate::net::l4::tcp::Ipv4Addr::UNSPECIFIED),
                     port,
                 )
             } else {
-                TcpSocketAddr::new_v6(local_addr.as_ipv6(), port)
+                TcpEndpointAddr::new_v6(local_addr.as_ipv6(), port)
             };
         }
 
@@ -1237,8 +1237,8 @@ mod family_guard_tests {
 
     #[cfg_attr(test, test_case)]
     fn tcp_ipv4_pair_rejects_mixed_family() {
-        let local = TcpSocketAddr::new(crate::net::l4::tcp::Ipv4Addr::LOCALHOST, 1234);
-        let remote = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
+        let local = TcpEndpointAddr::new(crate::net::l4::tcp::Ipv4Addr::LOCALHOST, 1234);
+        let remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
         assert!(tcp_ipv4_pair(local, remote).is_none());
         assert!(!tcp_is_native_v6_pair(local, remote));
     }

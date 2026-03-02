@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 use crate::sync::PoisonLock;
 
-use super::types::{SocketAddr, SocketFd, SocketType};
+use super::types::{EndpointAddr, EndpointFd, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
 
 /// ネットワークイベント種別
@@ -25,39 +25,39 @@ pub enum NetworkEvent {
     ReassembledPacket { data: Vec<u8> },
     /// 送信データ準備完了 - プロトコルスタックに送信を要求
     DataReady {
-        fd: SocketFd,
-        socket_type: SocketType,
+        fd: EndpointFd,
+        socket_type: EndpointType,
     },
     /// TX 資源が解放された（デバイスが送信可能になった）
     TxAvailable,
     /// 接続要求 - TCPハンドシェイク開始
     Connect {
-        fd: SocketFd,
-        local: SocketAddr,
-        remote: SocketAddr,
+        fd: EndpointFd,
+        local: EndpointAddr,
+        remote: EndpointAddr,
     },
     /// リッスン開始
     Listen {
-        fd: SocketFd,
-        local: SocketAddr,
+        fd: EndpointFd,
+        local: EndpointAddr,
         backlog: u32,
     },
     /// ソケットクローズ
-    Close { fd: SocketFd },
+    Close { fd: EndpointFd },
     /// UDP送信
     SendTo {
-        fd: SocketFd,
+        fd: EndpointFd,
         data: Vec<u8>,
-        remote: SocketAddr,
+        remote: EndpointAddr,
     },
     /// TCP_NODELAY 設定
     SetNoDelay {
-        fd: SocketFd,
+        fd: EndpointFd,
         nodelay: bool,
     },
     /// QoS 優先度設定
     SetPriority {
-        fd: SocketFd,
+        fd: EndpointFd,
         priority: u8,
     },
 }
@@ -178,14 +178,14 @@ pub fn event_queue() -> &'static NetworkEventQueue {
 }
 
 /// イベント送信ヘルパー（バックプレッシャー対応）
-use super::types::SocketError;
+use super::types::EndpointError;
 
 #[inline]
-pub fn send_event(event: NetworkEvent) -> Result<(), SocketError> {
+pub fn send_event(event: NetworkEvent) -> Result<(), EndpointError> {
     if NETWORK_EVENT_QUEUE.send(event) {
         Ok(())
     } else {
-        Err(SocketError::ResourceExhausted)
+        Err(EndpointError::ResourceExhausted)
     }
 }
 

@@ -8,10 +8,10 @@
 use alloc::vec::Vec;
 
 use super::event::NetworkEvent;
-use super::manager::SOCKET_MANAGER;
+use super::manager::ENDPOINT_MANAGER;
 use super::segment::TcpSegmentBuilder;
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
-use super::types::{SocketAddr, SocketError, SocketFd, SocketResult, SocketType};
+use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::{EtherType, MacAddress};
 use crate::net::l3::ipv4::Ipv4Address;
@@ -24,20 +24,20 @@ pub enum EventHandleResult {
     /// 着信パケット - プロトコルスタックへのオフロード
     IngressPacket { packet: PacketRef },
     /// ソケットが見つからない
-    SocketNotFound(SocketFd),
+    SocketNotFound(EndpointFd),
     /// プロトコルエラー
-    ProtocolError(SocketError),
+    ProtocolError(EndpointError),
     /// 再試行が必要
     Retry,
 }
 
 #[inline]
-fn endpoint_ipv4_pair(local: SocketAddr, remote: SocketAddr) -> Option<([u8; 4], [u8; 4])> {
+fn endpoint_ipv4_pair(local: EndpointAddr, remote: EndpointAddr) -> Option<([u8; 4], [u8; 4])> {
     Some((local.as_ipv4()?, remote.as_ipv4()?))
 }
 
 #[inline]
-fn endpoint_is_native_v6_pair(local: SocketAddr, remote: SocketAddr) -> bool {
+fn endpoint_is_native_v6_pair(local: EndpointAddr, remote: EndpointAddr) -> bool {
     local.is_ipv6()
         && remote.is_ipv6()
         && local.as_ipv4().is_none()
@@ -46,9 +46,9 @@ fn endpoint_is_native_v6_pair(local: SocketAddr, remote: SocketAddr) -> bool {
 
 fn apply_tcp_checksum_for_addrs(
     segment: &mut [u8],
-    local: SocketAddr,
-    remote: SocketAddr,
-) -> SocketResult<()> {
+    local: EndpointAddr,
+    remote: EndpointAddr,
+) -> EndpointResult<()> {
     if let Some((lv4, rv4)) = endpoint_ipv4_pair(local, remote) {
         TcpSegmentBuilder::calculate_checksum(segment, lv4, rv4);
         return Ok(());
@@ -67,7 +67,7 @@ fn apply_tcp_checksum_for_addrs(
         local,
         remote
     );
-    Err(SocketError::InvalidArgument)
+    Err(EndpointError::InvalidArgument)
 }
 
 /// ネットワークイベントハンドラ
@@ -200,7 +200,7 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::DataReady { fd, socket_type } => {
-                if socket_type == SocketType::Tcp {
+                if socket_type == EndpointType::Tcp {
                     self.handle_tcp_data_ready_with_stack(fd, stack)
                 } else {
                     EventHandleResult::Success
@@ -301,10 +301,10 @@ impl NetworkEventHandler {
         let dst_port = u16::from_be_bytes([payload[2], payload[3]]);
         let data = &payload[8..];
 
-        let remote = SocketAddr::new(src_ip, src_port);
+        let remote = EndpointAddr::new(src_ip, src_port);
 
-        if let Some(ref mgr) = *SOCKET_MANAGER.read() {
-            if let Some(socket) = mgr.find_by_port(SocketType::Udp, dst_port) {
+        if let Some(ref mgr) = *ENDPOINT_MANAGER.read() {
+            if let Some(socket) = mgr.find_by_port(EndpointType::Udp, dst_port) {
                 socket.push_packet(remote, data.to_vec());
             }
         }
@@ -315,10 +315,10 @@ impl NetworkEventHandler {
     /// DataReadyイベント処理 (TCP)
     fn handle_tcp_data_ready_with_stack(
         &self, 
-        fd: SocketFd, 
+        fd: EndpointFd, 
         stack: &mut crate::net::runtime::stack::NetworkStack
     ) -> EventHandleResult {
-        let manager = SOCKET_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read();
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -334,11 +334,11 @@ impl NetworkEventHandler {
             }
             let local = match inner.local_addr {
                 Some(addr) => addr,
-                None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+                None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
             };
             let remote = match inner.remote_addr {
                 Some(addr) => addr,
-                None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+                None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
             };
             (
                 inner.send_buffer.iter().copied().collect::<Vec<u8>>(),
@@ -351,14 +351,14 @@ impl NetworkEventHandler {
         let (seq, ack, window) = match tcb_table().lookup(local, remote) {
             Some(tcb) => {
                 if tcb.state != TcpConnectionState::Established {
-                    return EventHandleResult::ProtocolError(SocketError::NotConnected);
+                    return EventHandleResult::ProtocolError(EndpointError::NotConnected);
                 }
                 if tcb.should_delay_send(data.len()) {
                     return EventHandleResult::Success;
                 }
                 (tcb.snd_nxt, tcb.rcv_nxt, tcb.rcv_wnd)
             }
-            None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+            None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
         };
 
         let mut segment = TcpSegmentBuilder::new(local.port(), remote.port())
@@ -400,12 +400,12 @@ impl NetworkEventHandler {
     /// SendToイベント処理 (UDP)
     fn handle_send_to_with_stack(
         &self,
-        fd: SocketFd,
-        remote: SocketAddr,
+        fd: EndpointFd,
+        remote: EndpointAddr,
         data: Vec<u8>,
         stack: &mut crate::net::runtime::stack::NetworkStack
     ) -> EventHandleResult {
-        let manager = SOCKET_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read();
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -416,7 +416,7 @@ impl NetworkEventHandler {
 
         let local_port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
         if local_port == 0 {
-            return EventHandleResult::ProtocolError(SocketError::NotConnected);
+            return EventHandleResult::ProtocolError(EndpointError::NotConnected);
         }
 
         let sent = if let (Some(dst_v4), Some(_src_v4)) = (remote.as_ipv4(), socket.local_addr().and_then(|a| a.as_ipv4())) {
@@ -437,8 +437,8 @@ impl NetworkEventHandler {
     }
 
     /// SetPriorityイベント処理
-    fn handle_set_priority(&self, fd: SocketFd, priority: u8) -> EventHandleResult {
-        let manager = SOCKET_MANAGER.read();
+    fn handle_set_priority(&self, fd: EndpointFd, priority: u8) -> EventHandleResult {
+        let manager = ENDPOINT_MANAGER.read();
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -469,8 +469,8 @@ impl NetworkEventHandler {
     }
 
     /// SetNoDelayイベント処理
-    fn handle_set_nodelay(&self, fd: SocketFd, nodelay: bool) -> EventHandleResult {
-        let manager = SOCKET_MANAGER.read();
+    fn handle_set_nodelay(&self, fd: EndpointFd, nodelay: bool) -> EventHandleResult {
+        let manager = ENDPOINT_MANAGER.read();
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -502,8 +502,8 @@ impl NetworkEventHandler {
 
     /// DataReadyイベント処理
     /// 送信バッファにデータがあるのでTCPで送信
-    fn handle_data_ready(&self, fd: SocketFd, _socket_type: SocketType) -> EventHandleResult {
-        let manager = SOCKET_MANAGER.read();
+    fn handle_data_ready(&self, fd: EndpointFd, _socket_type: EndpointType) -> EventHandleResult {
+        let manager = ENDPOINT_MANAGER.read();
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -520,11 +520,11 @@ impl NetworkEventHandler {
             }
             let local = match inner.local_addr {
                 Some(addr) => addr,
-                None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+                None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
             };
             let remote = match inner.remote_addr {
                 Some(addr) => addr,
-                None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+                None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
             };
             (
                 inner.send_buffer.iter().copied().collect::<Vec<u8>>(),
@@ -538,7 +538,7 @@ impl NetworkEventHandler {
         let (seq, ack, window) = match tcb_table().lookup(local, remote) {
             Some(tcb) => {
                 if tcb.state != TcpConnectionState::Established {
-                    return EventHandleResult::ProtocolError(SocketError::NotConnected);
+                    return EventHandleResult::ProtocolError(EndpointError::NotConnected);
                 }
 
                 // Nagle's algorithm (RFC 896): Delay sending if data is small and there is outstanding data
@@ -549,7 +549,7 @@ impl NetworkEventHandler {
 
                 (tcb.snd_nxt, tcb.rcv_nxt, tcb.rcv_wnd)
             }
-            None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+            None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
         };
 
         // TCPセグメントを構築
@@ -594,17 +594,17 @@ impl NetworkEventHandler {
 
                 EventHandleResult::Success
             }
-            Err(SocketError::ResourceExhausted) => {
+            Err(EndpointError::ResourceExhausted) => {
                 // デバイスまたは ARP 等で送信できない -> 再試行
                 EventHandleResult::Retry
             }
-            Err(SocketError::InvalidArgument) => {
+            Err(EndpointError::InvalidArgument) => {
                 log::info!("TCP: Failed to send data: InvalidArgument (family mismatch)");
-                EventHandleResult::ProtocolError(SocketError::InvalidArgument)
+                EventHandleResult::ProtocolError(EndpointError::InvalidArgument)
             }
             Err(e) => {
                 log::info!("TCP: Failed to send data: {:?}", e);
-                EventHandleResult::ProtocolError(SocketError::Internal)
+                EventHandleResult::ProtocolError(EndpointError::Internal)
             }
         }
     }
@@ -612,7 +612,7 @@ impl NetworkEventHandler {
     /// TX 資源解放通知処理
     fn handle_tx_available(&self) -> EventHandleResult {
         // 送信待ちのソケットに DataReady イベントを再送して再試行を促す
-        if let Some(ref mgr) = *SOCKET_MANAGER.read() {
+        if let Some(ref mgr) = *ENDPOINT_MANAGER.read() {
             mgr.for_each(|socket| {
                 if socket.send_buffer_len() > 0 {
                     super::event::send_event_ignore(super::event::NetworkEvent::DataReady {
@@ -630,11 +630,11 @@ impl NetworkEventHandler {
     /// TCPハンドシェイクを開始（SYN送信）
     fn handle_connect(
         &self,
-        fd: SocketFd,
-        local: SocketAddr,
-        remote: SocketAddr,
+        fd: EndpointFd,
+        local: EndpointAddr,
+        remote: EndpointAddr,
     ) -> EventHandleResult {
-        let manager = SOCKET_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read();
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -645,7 +645,7 @@ impl NetworkEventHandler {
 
         // ローカルポートが未割り当ての場合はエフェメラルポートを割り当て
         let local_port = if local.port() == 0 {
-            mgr.allocate_ephemeral_port(SocketType::Tcp)
+            mgr.allocate_ephemeral_port(EndpointType::Tcp)
                 .unwrap_or(49152)
         } else {
             local.port()
@@ -691,8 +691,8 @@ impl NetworkEventHandler {
         if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
-                SocketError::InvalidArgument => SocketError::InvalidArgument,
-                _ => SocketError::Internal,
+                EndpointError::InvalidArgument => EndpointError::InvalidArgument,
+                _ => EndpointError::Internal,
             });
         }
 
@@ -717,19 +717,19 @@ impl NetworkEventHandler {
     /// TCPセグメント送信（IPスタック経由）
     fn send_tcp_segment(
         &self,
-        src: SocketAddr,
-        dst: SocketAddr,
+        src: EndpointAddr,
+        dst: EndpointAddr,
         segment: Vec<u8>,
-    ) -> SocketResult<()> {
+    ) -> EndpointResult<()> {
         if endpoint_ipv4_pair(src, dst).is_none() && !endpoint_is_native_v6_pair(src, dst) {
-            return Err(SocketError::InvalidArgument);
+            return Err(EndpointError::InvalidArgument);
         }
         // Delegate to the module-level `send_tcp_segment` which is IPv4/IPv6-aware.
         // This centralizes IP family handling and ARP/NDP queuing logic.
         if super::segment::send_tcp_segment(src, dst, segment) {
             Ok(())
         } else {
-            Err(SocketError::ResourceExhausted)
+            Err(EndpointError::ResourceExhausted)
         }
     }
 
@@ -738,8 +738,8 @@ impl NetworkEventHandler {
 
     /// Listenイベント処理
     /// サーバーソケットを設定
-    fn handle_listen(&self, fd: SocketFd, local: SocketAddr, backlog: u32) -> EventHandleResult {
-        let manager = SOCKET_MANAGER.read();
+    fn handle_listen(&self, fd: EndpointFd, local: EndpointAddr, backlog: u32) -> EventHandleResult {
+        let manager = ENDPOINT_MANAGER.read();
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -758,7 +758,7 @@ impl NetworkEventHandler {
         let mut tcb = TcpControlBlockEntry::new(
             fd,
             local,
-            SocketAddr::new([0, 0, 0, 0], 0), // リモートは未定
+            EndpointAddr::new([0, 0, 0, 0], 0), // リモートは未定
         );
         tcb.state = TcpConnectionState::Listen;
         // backlog値を保存（接続要求キューの最大サイズ）
@@ -778,8 +778,8 @@ impl NetworkEventHandler {
 
     /// Closeイベント処理
     /// 接続を終了
-    fn handle_close(&self, fd: SocketFd) -> EventHandleResult {
-        let manager = SOCKET_MANAGER.read();
+    fn handle_close(&self, fd: EndpointFd) -> EventHandleResult {
+        let manager = ENDPOINT_MANAGER.read();
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -793,7 +793,7 @@ impl NetworkEventHandler {
             Some(addr) => addr,
             None => {
                 log::info!("TCP: Close failed - no local address");
-                return EventHandleResult::ProtocolError(SocketError::Internal);
+                return EventHandleResult::ProtocolError(EndpointError::Internal);
             }
         };
         let remote = match inner.remote_addr {
@@ -838,8 +838,8 @@ impl NetworkEventHandler {
                 if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN: {:?}", e);
                     return EventHandleResult::ProtocolError(match e {
-                        SocketError::InvalidArgument => SocketError::InvalidArgument,
-                        _ => SocketError::Internal,
+                        EndpointError::InvalidArgument => EndpointError::InvalidArgument,
+                        _ => EndpointError::Internal,
                     });
                 }
 
@@ -886,8 +886,8 @@ impl NetworkEventHandler {
 
     /// SendToイベント処理
     /// UDPパケットを送信
-    fn handle_send_to(&self, fd: SocketFd, remote: SocketAddr, data: Vec<u8>) -> EventHandleResult {
-        let manager = SOCKET_MANAGER.read();
+    fn handle_send_to(&self, fd: EndpointFd, remote: EndpointAddr, data: Vec<u8>) -> EventHandleResult {
+        let manager = ENDPOINT_MANAGER.read();
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -902,9 +902,9 @@ impl NetworkEventHandler {
             None => {
                 // ローカルアドレスが未設定の場合はエフェメラルポートを使用
                 let port = mgr
-                    .allocate_ephemeral_port(SocketType::Udp)
+                    .allocate_ephemeral_port(EndpointType::Udp)
                     .unwrap_or(49152);
-                SocketAddr::new([0, 0, 0, 0], port)
+                EndpointAddr::new([0, 0, 0, 0], port)
             }
         };
 
@@ -940,8 +940,8 @@ impl NetworkEventHandler {
             if let Err(e) = self.send_udp_packet(local, remote, udp_packet) {
                 log::info!("UDP: Failed to send packet: {:?}", e);
                 return EventHandleResult::ProtocolError(match e {
-                    SocketError::InvalidArgument => SocketError::InvalidArgument,
-                    _ => SocketError::Internal,
+                    EndpointError::InvalidArgument => EndpointError::InvalidArgument,
+                    _ => EndpointError::Internal,
                 });
             }
 
@@ -954,30 +954,30 @@ impl NetworkEventHandler {
 
             EventHandleResult::Success
         } else {
-            EventHandleResult::ProtocolError(SocketError::InvalidStateTransition)
+            EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition)
         }
     }
 
     /// UDPパケット送信（IPスタック経由）
     fn send_udp_packet(
         &self,
-        src: SocketAddr,
-        dst: SocketAddr,
+        src: EndpointAddr,
+        dst: EndpointAddr,
         packet: Vec<u8>,
-    ) -> SocketResult<()> {
+    ) -> EndpointResult<()> {
         // The `packet` contains a UDP header followed by payload. Extract payload.
         if packet.len() < 8 {
-            return Err(SocketError::InvalidArgument);
+            return Err(EndpointError::InvalidArgument);
         }
 
         let payload = &packet[8..];
-        let (_, dst_v4) = endpoint_ipv4_pair(src, dst).ok_or(SocketError::InvalidArgument)?;
+        let (_, dst_v4) = endpoint_ipv4_pair(src, dst).ok_or(EndpointError::InvalidArgument)?;
         let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
 
         if crate::net::runtime::stack::send_udp(src.port(), dst_ip, dst.port(), payload) {
             Ok(())
         } else {
-            Err(SocketError::ResourceExhausted)
+            Err(EndpointError::ResourceExhausted)
         }
     }
 }
@@ -993,21 +993,21 @@ impl Default for NetworkEventHandler {
 pub mod tests {
     use super::*;
     use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
-    use crate::net::l4::endpoint::manager::init_socket_manager;
-    use crate::net::l4::endpoint::{create_tcp_socket, create_udp_socket, SocketAddr, SocketState};
+    use crate::net::l4::endpoint::manager::init_endpoint_manager;
+    use crate::net::l4::endpoint::{create_tcp_endpoint, create_udp_endpoint, EndpointAddr, EndpointState};
     use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
 
     #[cfg_attr(test, test_case)]
     pub fn test_handle_tx_available_requeues_dataready() {
-        init_socket_manager();
+        init_endpoint_manager();
 
-        let sock = create_tcp_socket();
+        let sock = create_tcp_endpoint();
         let fd = sock.fd();
 
         // Set local and remote so handler proceeds
-        let local = SocketAddr::new([127, 0, 0, 1], 12345);
-        let remote = SocketAddr::new([127, 0, 0, 1], 80);
-        if let Some(s) = sock.socket() {
+        let local = EndpointAddr::new([127, 0, 0, 1], 12345);
+        let remote = EndpointAddr::new([127, 0, 0, 1], 80);
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
@@ -1031,21 +1031,21 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_handle_data_ready_retry_when_no_device() {
-        init_socket_manager();
+        init_endpoint_manager();
 
-        let sock = create_tcp_socket();
+        let sock = create_tcp_endpoint();
         let fd = sock.fd();
 
         // Set local and remote so handler proceeds
-        let local = SocketAddr::new([127, 0, 0, 1], 12345);
-        let remote = SocketAddr::new([10, 0, 2, 2], 80); // likely ARP unresolved
-        if let Some(s) = sock.socket() {
+        let local = EndpointAddr::new([127, 0, 0, 1], 12345);
+        let remote = EndpointAddr::new([10, 0, 2, 2], 80); // likely ARP unresolved
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
             inner.send_buffer.extend(&[1, 2, 3, 4]);
-            let _ = inner.transition_to(SocketState::Bound);
-            let _ = inner.transition_to(SocketState::Connected);
+            let _ = inner.transition_to(EndpointState::Bound);
+            let _ = inner.transition_to(EndpointState::Connected);
         }
 
         let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
@@ -1053,7 +1053,7 @@ pub mod tests {
         let _ = tcb_table().insert(tcb);
 
         let handler = NetworkEventHandler::new();
-        let res = handler.handle_data_ready(fd, SocketType::Tcp);
+        let res = handler.handle_data_ready(fd, EndpointType::Tcp);
         // Depending on stack transport wiring in test env, this can be Retry (no device)
         // or Success (data drained by a configured transmit fn).
         assert!(matches!(res, EventHandleResult::Retry | EventHandleResult::Success));
@@ -1062,57 +1062,57 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_send_udp_packet_rejects_mixed_family() {
         let handler = NetworkEventHandler::new();
-        let local = SocketAddr::new([127, 0, 0, 1], 12345);
-        let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
+        let local = EndpointAddr::new([127, 0, 0, 1], 12345);
+        let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
 
         assert!(matches!(
             handler.send_udp_packet(local, remote, alloc::vec![0u8; 8]),
-            Err(SocketError::InvalidArgument)
+            Err(EndpointError::InvalidArgument)
         ));
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_handle_send_to_ipv6_remote_returns_invalid_argument() {
-        init_socket_manager();
-        let sock = create_udp_socket();
+        init_endpoint_manager();
+        let sock = create_udp_endpoint();
         let fd = sock.fd();
 
-        if let Some(s) = sock.socket() {
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            let local = SocketAddr::new([127, 0, 0, 1], 12345);
+            let local = EndpointAddr::new([127, 0, 0, 1], 12345);
             inner.local_addr = Some(local);
-            inner.udp_socket = Some(crate::net::l4::udp::UdpSocket::new(local.port()));
-            let _ = inner.transition_to(SocketState::Bound);
+            inner.udp_socket = Some(crate::net::l4::udp::UdpEndpoint::new(local.port()));
+            let _ = inner.transition_to(EndpointState::Bound);
         }
 
-        let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
+        let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
         let handler = NetworkEventHandler::new();
         let res = handler.handle_send_to(fd, remote, alloc::vec![1, 2, 3]);
         assert!(matches!(
             res,
-            EventHandleResult::ProtocolError(SocketError::InvalidArgument)
+            EventHandleResult::ProtocolError(EndpointError::InvalidArgument)
         ));
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_handle_send_to_ipv4_path_not_invalid_argument() {
-        init_socket_manager();
-        let sock = create_udp_socket();
+        init_endpoint_manager();
+        let sock = create_udp_endpoint();
         let fd = sock.fd();
 
-        if let Some(s) = sock.socket() {
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            let local = SocketAddr::new([127, 0, 0, 1], 12346);
+            let local = EndpointAddr::new([127, 0, 0, 1], 12346);
             inner.local_addr = Some(local);
-            inner.udp_socket = Some(crate::net::l4::udp::UdpSocket::new(local.port()));
-            let _ = inner.transition_to(SocketState::Bound);
+            inner.udp_socket = Some(crate::net::l4::udp::UdpEndpoint::new(local.port()));
+            let _ = inner.transition_to(EndpointState::Bound);
         }
 
         let handler = NetworkEventHandler::new();
-        let res = handler.handle_send_to(fd, SocketAddr::new([127, 0, 0, 1], 8081), alloc::vec![9]);
+        let res = handler.handle_send_to(fd, EndpointAddr::new([127, 0, 0, 1], 8081), alloc::vec![9]);
         assert!(!matches!(
             res,
-            EventHandleResult::ProtocolError(SocketError::InvalidArgument)
+            EventHandleResult::ProtocolError(EndpointError::InvalidArgument)
         ));
     }
 }
@@ -1134,21 +1134,21 @@ pub fn init_network_event_handler() {
 pub mod qemu_tests {
     use super::*;
     use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
-    use crate::net::l4::endpoint::manager::init_socket_manager;
-    use crate::net::l4::endpoint::{create_tcp_socket, SocketAddr, SocketState};
+    use crate::net::l4::endpoint::manager::init_endpoint_manager;
+    use crate::net::l4::endpoint::{create_tcp_endpoint, EndpointAddr, EndpointState};
     use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
 
     pub fn handle_tx_available_requeues_dataready_smoke() -> bool {
-        init_socket_manager();
+        init_endpoint_manager();
 
         while event_queue().recv().is_some() {}
 
-        let sock = create_tcp_socket();
+        let sock = create_tcp_endpoint();
         let fd = sock.fd();
 
-        let local = SocketAddr::new([127, 0, 0, 1], 12345);
-        let remote = SocketAddr::new([127, 0, 0, 1], 80);
-        if let Some(s) = sock.socket() {
+        let local = EndpointAddr::new([127, 0, 0, 1], 12345);
+        let remote = EndpointAddr::new([127, 0, 0, 1], 80);
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
@@ -1174,20 +1174,20 @@ pub mod qemu_tests {
     }
 
     pub fn handle_data_ready_retry_when_no_device_smoke() -> bool {
-        init_socket_manager();
+        init_endpoint_manager();
 
-        let sock = create_tcp_socket();
+        let sock = create_tcp_endpoint();
         let fd = sock.fd();
 
-        let local = SocketAddr::new([127, 0, 0, 1], 12345);
-        let remote = SocketAddr::new([10, 0, 2, 2], 80);
-        if let Some(s) = sock.socket() {
+        let local = EndpointAddr::new([127, 0, 0, 1], 12345);
+        let remote = EndpointAddr::new([10, 0, 2, 2], 80);
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
             inner.send_buffer.extend(&[1, 2, 3, 4]);
-            let _ = inner.transition_to(SocketState::Bound);
-            let _ = inner.transition_to(SocketState::Connected);
+            let _ = inner.transition_to(EndpointState::Bound);
+            let _ = inner.transition_to(EndpointState::Connected);
         }
 
         let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
@@ -1196,7 +1196,7 @@ pub mod qemu_tests {
 
         let handler = NetworkEventHandler::new();
         matches!(
-            handler.handle_data_ready(fd, SocketType::Tcp),
+            handler.handle_data_ready(fd, EndpointType::Tcp),
             EventHandleResult::Retry | EventHandleResult::Success
         )
     }

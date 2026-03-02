@@ -188,7 +188,7 @@ pub fn udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
     let Some(len) = udp::UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x") else {
         return false;
     };
-    matches!(proc.process(&buffer[..len], src_ip, dst_ip), udp::UdpResult::NoSocket | udp::UdpResult::ChecksumError)
+    matches!(proc.process(&buffer[..len], src_ip, dst_ip), udp::UdpResult::NoEndpoint | udp::UdpResult::ChecksumError)
 }
 
 pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
@@ -535,8 +535,8 @@ pub fn tcp_process_with_packet_zero_copy_smoke() -> bool {
     // Keep this as a deterministic TCP parser/dispatch smoke that exercises the
     // same processor path family (incoming segment processing) without PacketRef allocation.
     let mut processor = tcp::TcpProcessor::new();
-    let local = tcp::SocketAddr::new(tcp::Ipv4Addr::new(127, 0, 0, 1), 1000);
-    let remote = tcp::SocketAddr::new(tcp::Ipv4Addr::new(127, 0, 0, 1), 2000);
+    let local = tcp::EndpointAddr::new(tcp::Ipv4Addr::new(127, 0, 0, 1), 1000);
+    let remote = tcp::EndpointAddr::new(tcp::Ipv4Addr::new(127, 0, 0, 1), 2000);
     processor.listen(local);
 
     let mut seg = [0u8; 20];
@@ -573,7 +573,7 @@ pub fn tcp_send_buffer_bytes_decrement_on_flush_smoke() -> bool {
     // Heap-backed PacketRef allocation is not reliable in late-suite QEMU runs.
     // Validate the flush bookkeeping invariant directly: subtract on send attempt,
     // and restore on send failure, using the same saturating arithmetic as poll_flush().
-    let local = tcp::SocketAddr::new(tcp::Ipv4Addr::new(127, 0, 0, 1), 1001);
+    let local = tcp::EndpointAddr::new(tcp::Ipv4Addr::new(127, 0, 0, 1), 1001);
     let _tcb = tcp::TcpControlBlock::new(local);
     let mut queued_bytes = 120u32;
     let len = 120u32;
@@ -621,7 +621,7 @@ pub fn tcp_connect_timeout_expires_smoke() -> bool {
     // In QEMU kernel suite runs the precise timer can still be effectively zero,
     // so the host test's `now - timeout - 1` setup may saturate and never expire.
     // Keep a deterministic smoke for the timeout policy arithmetic and state target.
-    let local = tcp::SocketAddr::new(tcp::Ipv4Addr::LOCALHOST, 4001);
+    let local = tcp::EndpointAddr::new(tcp::Ipv4Addr::LOCALHOST, 4001);
     let mut tcb = tcp::TcpControlBlock::new(local);
     tcb.enter_syn_sent();
 

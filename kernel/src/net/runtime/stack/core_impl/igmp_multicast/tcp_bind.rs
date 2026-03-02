@@ -5,13 +5,13 @@ use crate::net::l4::tcp::TcpControlBlock;
 impl NetworkStack {
 
     /// Bind a TCP listener
-    pub fn bind_tcp(&mut self, addr: TcpSocketAddr) -> Result<TcpListener, TcpError> {
+    pub fn bind_tcp(&mut self, addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
         // Default: no token
         self.tcp.bind(addr, None)
     }
 
     /// Bind a TCP listener with a capability token
-    pub fn bind_tcp_with_token(&mut self, addr: TcpSocketAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
+    pub fn bind_tcp_with_token(&mut self, addr: TcpEndpointAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
         self.tcp.bind(addr, token)
     }
 
@@ -19,8 +19,8 @@ impl NetworkStack {
     #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
     pub fn insert_test_tcp_connection(
         &mut self,
-        local_addr: TcpSocketAddr,
-        remote_addr: TcpSocketAddr,
+        local_addr: TcpEndpointAddr,
+        remote_addr: TcpEndpointAddr,
         tcb: Arc<PoisonLock<TcpControlBlock>>,
     ) {
         self.tcp
@@ -165,7 +165,7 @@ impl NetworkStack {
     pub(in crate::net::runtime::stack::core_impl) fn build_tcp_packet_from_result(
         res: &TcpProcessResult,
         buffer: &mut [u8; MAX_PACKET_SIZE],
-    ) -> Option<(TcpSocketAddr, TcpSocketAddr, u32, usize)> {
+    ) -> Option<(TcpEndpointAddr, TcpEndpointAddr, u32, usize)> {
         if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, ref payload, ref options } = *res {
             let header_len = 20 + options.len();
             let total_len = header_len + payload.len();
@@ -276,12 +276,12 @@ impl NetworkStack {
     }
 
     /// Bind a UDP socket (uses token-based API)
-    pub fn bind_udp(&mut self, port: u16) -> Option<UdpSocket> {
+    pub fn bind_udp(&mut self, port: u16) -> Option<UdpEndpoint> {
         self.udp.bind_with_token(port, None).ok()
     }
 
     /// Bind a UDP socket and associate it with an optional capability token
-    pub fn bind_udp_with_token(&mut self, port: u16, token: Option<u64>) -> Option<UdpSocket> {
+    pub fn bind_udp_with_token(&mut self, port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
         self.udp.bind_with_token(port, token).ok()
     }
 
@@ -291,12 +291,12 @@ impl NetworkStack {
     }
 
     /// TCP接続を解除
-    pub fn unbind_tcp(&mut self, local: TcpSocketAddr, remote: TcpSocketAddr) {
+    pub fn unbind_tcp(&mut self, local: TcpEndpointAddr, remote: TcpEndpointAddr) {
         self.tcp.remove_connection(local, remote);
     }
 
     /// TCPリスナーを解除
-    pub fn unbind_tcp_listener(&mut self, local: TcpSocketAddr) {
+    pub fn unbind_tcp_listener(&mut self, local: TcpEndpointAddr) {
         self.tcp.remove_listener(local);
     }
 
@@ -516,8 +516,8 @@ impl NetworkStack {
     }
 
     /// List all UDP sockets (for debugging/statistics)
-    pub fn list_udp_sockets(&self) -> Vec<crate::net::l4::udp::UdpSocketSnapshot> {
-        self.udp.sockets().list_sockets()
+    pub fn list_udp_endpoints(&self) -> Vec<crate::net::l4::udp::UdpEndpointSnapshot> {
+        self.udp.sockets().list_endpoints()
     }
 
     /// Get configuration (for shell commands)

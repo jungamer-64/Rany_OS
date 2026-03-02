@@ -24,10 +24,10 @@ use crate::net::datapath::mempool::{PacketPool, PacketRef};
 use crate::net::datapath::optimization::PacketBatch;
 use crate::net::l4::tcp::{
     TcpError, TcpListener, TcpProcessor, TcpProcessResult, TcpStream,
-    SocketAddr as TcpSocketAddr, TcpHeader,
+    EndpointAddr as TcpEndpointAddr, TcpHeader,
 };
 
-use crate::net::l4::udp::{UdpProcessor, UdpResult, UdpSocket};
+use crate::net::l4::udp::{UdpProcessor, UdpResult, UdpEndpoint};
 use crate::net::runtime::timeouts::{TimeoutWheel, TimerKind};
 use crate::net::obs::{
     counters,

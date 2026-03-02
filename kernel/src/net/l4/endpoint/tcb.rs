@@ -14,7 +14,7 @@ use spin::RwLock;
 use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
 use super::flow_control::FlowController;
 use super::retransmit::check_retransmit_timeouts;
-use super::types::{SocketAddr, SocketFd, seq_after, conn_key_hash};
+use super::types::{EndpointAddr, EndpointFd, seq_after, conn_key_hash};
 use super::window_scale::WindowScaleOption;
 
 /// TCPフラグ
@@ -47,11 +47,11 @@ pub enum TcpConnectionState {
 #[derive(Debug, Clone)]
 pub struct TcpControlBlockEntry {
     /// ソケットFD
-    pub fd: SocketFd,
+    pub fd: EndpointFd,
     /// ローカルアドレス
-    pub local: SocketAddr,
+    pub local: EndpointAddr,
     /// リモートアドレス
-    pub remote: SocketAddr,
+    pub remote: EndpointAddr,
     /// 現在の状態
     pub state: TcpConnectionState,
     /// 送信シーケンス番号（次に送信するバイト）
@@ -102,15 +102,15 @@ pub struct TcpControlBlockEntry {
 
 impl TcpControlBlockEntry {
     /// 新規作成（デフォルト: NewReno）
-    pub fn new(fd: SocketFd, local: SocketAddr, remote: SocketAddr) -> Self {
+    pub fn new(fd: EndpointFd, local: EndpointAddr, remote: EndpointAddr) -> Self {
         Self::with_algorithm(fd, local, remote, CongestionAlgorithm::NewReno)
     }
 
     /// アルゴリズム指定で新規作成
     pub fn with_algorithm(
-        fd: SocketFd,
-        local: SocketAddr,
-        remote: SocketAddr,
+        fd: EndpointFd,
+        local: EndpointAddr,
+        remote: EndpointAddr,
         algorithm: CongestionAlgorithm,
     ) -> Self {
         Self {
@@ -361,7 +361,7 @@ const TCB_SHARD_MASK: usize = TCB_SHARD_COUNT - 1;
 /// シャードインデックスは (local, remote) の FNV-1a ハッシュで決定。
 pub struct TcbTable {
     /// シャード化されたエントリテーブル
-    shards: [RwLock<BTreeMap<(SocketAddr, SocketAddr), TcpControlBlockEntry>>; TCB_SHARD_COUNT],
+    shards: [RwLock<BTreeMap<(EndpointAddr, EndpointAddr), TcpControlBlockEntry>>; TCB_SHARD_COUNT],
     /// シーケンス番号カウンタ
     seq_counter: AtomicU32,
     /// 現在のtick（再送タイマー用）
@@ -379,7 +379,7 @@ const MAX_SYN_RECEIVED_ENTRIES: usize = 1024;
 
 /// 接続キーからシャードインデックスを算出
 #[inline(always)]
-fn shard_index(local: &SocketAddr, remote: &SocketAddr) -> usize {
+fn shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
     (conn_key_hash(local, remote) as usize) & TCB_SHARD_MASK
 }
 
@@ -387,7 +387,7 @@ impl TcbTable {
     /// 新規作成
     pub const fn new() -> Self {
         // const context で配列を初期化
-        const EMPTY_SHARD: RwLock<BTreeMap<(SocketAddr, SocketAddr), TcpControlBlockEntry>> =
+        const EMPTY_SHARD: RwLock<BTreeMap<(EndpointAddr, EndpointAddr), TcpControlBlockEntry>> =
             RwLock::new(BTreeMap::new());
         Self {
             shards: [EMPTY_SHARD; TCB_SHARD_COUNT],
@@ -403,7 +403,7 @@ impl TcbTable {
     /// 以前の実装はRDTSCのみに依存しており予測可能でしたが、
     /// この実装は暗号論的に安全な乱数（generate_random）と
     /// 5-tuple情報を組み合わせることで、シーケンス番号予測攻撃を防ぎます。
-    pub fn generate_isn(&self, local: SocketAddr, remote: SocketAddr) -> u32 {
+    pub fn generate_isn(&self, local: EndpointAddr, remote: EndpointAddr) -> u32 {
         // 暗号論的に安全な乱数を取得
         let random_bytes = crate::net::security::tls::generate_random();
         
@@ -418,9 +418,9 @@ impl TcbTable {
         }
 
         // アドレスとポートを混合 (RFC 6528)
-        let mix_addr = |h: &mut u32, addr: SocketAddr| {
+        let mix_addr = |h: &mut u32, addr: EndpointAddr| {
             match addr {
-                SocketAddr::V4 { ip, port } => {
+                EndpointAddr::V4 { ip, port } => {
                     // ip is a [u8;4] array so iterate directly
                     for &byte in &ip {
                         *h ^= byte as u32;
@@ -431,7 +431,7 @@ impl TcbTable {
                         *h = h.wrapping_mul(FNV_PRIME);
                     }
                 }
-                SocketAddr::V6 { ip, port } => {
+                EndpointAddr::V6 { ip, port } => {
                     // ip is a [u8;16]
                     for &byte in &ip {
                         *h ^= byte as u32;
@@ -485,7 +485,7 @@ impl TcbTable {
 
         for shard in &self.shards {
             let mut entries = shard.write();
-            let mut to_remove: Vec<(SocketAddr, SocketAddr)> = Vec::new();
+            let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
 
             for (key, entry) in entries.iter() {
                 if entry.state == TcpConnectionState::TimeWait
@@ -525,7 +525,7 @@ impl TcbTable {
         for shard in &self.shards {
             let mut entries = shard.write();
 
-            let mut to_remove: [Option<(SocketAddr, SocketAddr)>; 8] = [None; 8];
+            let mut to_remove: [Option<(EndpointAddr, EndpointAddr)>; 8] = [None; 8];
             let mut remove_count = 0;
 
             for (key, entry) in entries.iter() {
@@ -592,13 +592,13 @@ impl TcbTable {
     }
 
     /// 接続取得
-    pub fn get(&self, local: SocketAddr, remote: SocketAddr) -> Option<TcpControlBlockEntry> {
+    pub fn get(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlockEntry> {
         let idx = shard_index(&local, &remote);
         self.shards[idx].read().get(&(local, remote)).cloned()
     }
 
     /// 接続更新
-    pub fn update<F>(&self, local: SocketAddr, remote: SocketAddr, f: F) -> bool
+    pub fn update<F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> bool
     where
         F: FnOnce(&mut TcpControlBlockEntry),
     {
@@ -625,7 +625,7 @@ impl TcbTable {
     }
 
     /// 接続削除
-    pub fn remove(&self, local: SocketAddr, remote: SocketAddr) -> Option<TcpControlBlockEntry> {
+    pub fn remove(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlockEntry> {
         let idx = shard_index(&local, &remote);
         let mut shard = self.shards[idx].write();
         if let Some(entry) = shard.remove(&(local, remote)) {
@@ -640,7 +640,7 @@ impl TcbTable {
     }
 
     /// FDで接続検索（全シャードを探索）
-    pub fn find_by_fd(&self, fd: SocketFd) -> Option<TcpControlBlockEntry> {
+    pub fn find_by_fd(&self, fd: EndpointFd) -> Option<TcpControlBlockEntry> {
         for shard in &self.shards {
             let guard = shard.read();
             if let Some(entry) = guard.values().find(|e| e.fd == fd) {
@@ -651,7 +651,7 @@ impl TcbTable {
     }
 
     /// FDで接続削除（全シャードを探索）
-    pub fn remove_by_fd(&self, fd: SocketFd) -> Option<TcpControlBlockEntry> {
+    pub fn remove_by_fd(&self, fd: EndpointFd) -> Option<TcpControlBlockEntry> {
         for shard in &self.shards {
             let mut guard = shard.write();
             let key = guard.iter().find(|(_, e)| e.fd == fd).map(|(k, _)| *k);
@@ -669,13 +669,13 @@ impl TcbTable {
     }
 
     /// 接続参照取得（イミュータブル）
-    pub fn lookup(&self, local: SocketAddr, remote: SocketAddr) -> Option<TcpControlBlockEntry> {
+    pub fn lookup(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlockEntry> {
         let idx = shard_index(&local, &remote);
         self.shards[idx].read().get(&(local, remote)).cloned()
     }
 
     /// 接続参照取得して更新（クロージャ版）
-    pub fn lookup_mut<R, F>(&self, local: SocketAddr, remote: SocketAddr, f: F) -> Option<R>
+    pub fn lookup_mut<R, F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> Option<R>
     where
         F: FnOnce(&mut TcpControlBlockEntry) -> R,
     {
@@ -713,9 +713,9 @@ impl TcbTable {
 #[derive(Debug, Clone)]
 pub struct TcpConnectionSnapshot {
     /// ローカルアドレス
-    pub local: SocketAddr,
+    pub local: EndpointAddr,
     /// リモートアドレス
-    pub remote: SocketAddr,
+    pub remote: EndpointAddr,
     /// 接続状態
     pub state: TcpConnectionState,
     /// 送信シーケンス番号
@@ -759,9 +759,9 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_control_block_entry() {
-        let fd = SocketFd::from_raw(1);
-        let local = SocketAddr::new([192, 168, 1, 1], 12345);
-        let remote = SocketAddr::new([192, 168, 1, 2], 80);
+        let fd = EndpointFd::from_raw(1);
+        let local = EndpointAddr::new([192, 168, 1, 1], 12345);
+        let remote = EndpointAddr::new([192, 168, 1, 2], 80);
 
         let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
         assert_eq!(tcb.state, TcpConnectionState::Closed);
@@ -805,9 +805,9 @@ pub mod qemu_tests {
     }
 
     pub fn tcp_control_block_entry_smoke() -> bool {
-        let fd = SocketFd::from_raw(1);
-        let local = SocketAddr::new([192, 168, 1, 1], 12345);
-        let remote = SocketAddr::new([192, 168, 1, 2], 80);
+        let fd = EndpointFd::from_raw(1);
+        let local = EndpointAddr::new([192, 168, 1, 1], 12345);
+        let remote = EndpointAddr::new([192, 168, 1, 2], 80);
 
         let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
         if tcb.state != TcpConnectionState::Closed || tcb.snd_nxt != 0 || tcb.snd_una != 0 {

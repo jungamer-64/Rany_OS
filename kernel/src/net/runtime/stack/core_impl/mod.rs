@@ -612,9 +612,9 @@ impl NetworkStack {
                                     let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
                                     let seq_num = u32::from_be_bytes([transport_data[4], transport_data[5], transport_data[6], transport_data[7]]);
 
-                                    use crate::net::l4::tcp::SocketAddr as TcpSocketAddr;
-                                    let local_addr = TcpSocketAddr::new_v6(quoted_src, src_port);
-                                    let remote_addr = TcpSocketAddr::new_v6(dst, dst_port);
+                                    use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
+                                    let local_addr = TcpEndpointAddr::new_v6(quoted_src, src_port);
+                                    let remote_addr = TcpEndpointAddr::new_v6(dst, dst_port);
 
                                     if !self.tcp.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
                                         log::warn!("[NET] ICMPv6: PMTU error for {} rejected due to invalid TCP seq", dst);
@@ -625,7 +625,7 @@ impl NetworkStack {
                             IpProtocol::Udp => {
                                 if transport_data.len() >= 4 {
                                     let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
-                                    if !self.udp.has_socket(src_port) {
+                                    if !self.udp.has_endpoint(src_port) {
                                         log::warn!("[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})", dst, src_port);
                                         return;
                                     }

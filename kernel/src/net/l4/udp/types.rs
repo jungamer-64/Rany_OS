@@ -3,7 +3,7 @@ use super::*;
 
 /// UDP socket snapshot for monitoring
 #[derive(Debug, Clone)]
-pub struct UdpSocketSnapshot {
+pub struct UdpEndpointSnapshot {
     /// Local port
     pub local_port: u16,
     /// Number of pending datagrams in receive queue
@@ -14,7 +14,7 @@ pub struct UdpSocketSnapshot {
 
 pub struct UdpProcessor {
     /// Socket table
-    sockets: UdpSocketTable,
+    sockets: UdpEndpointTable,
 }
 
 /// Result of UDP processing
@@ -23,7 +23,7 @@ pub enum UdpResult {
     /// Delivered to socket
     Delivered,
     /// No socket for this port
-    NoSocket,
+    NoEndpoint,
     /// Checksum error
     ChecksumError,
     /// Invalid packet
@@ -34,18 +34,18 @@ impl UdpProcessor {
     /// Create a new UDP processor
     pub fn new() -> Self {
         UdpProcessor {
-            sockets: UdpSocketTable::new(),
+            sockets: UdpEndpointTable::new(),
         }
     }
 
     /// Get socket table
-    pub fn sockets(&self) -> &UdpSocketTable {
-        &self.sockets
+    pub fn sockets(&self) -> &UdpEndpointTable {
+        &self.endpoints
     }
 
     /// Check if a socket exists on the given port
-    pub fn has_socket(&self, port: u16) -> bool {
-        self.sockets.find(port).is_some()
+    pub fn has_endpoint(&self, port: u16) -> bool {
+        self.endpoints.find(port).is_some()
     }
 
     /// Process an incoming UDP packet
@@ -59,7 +59,7 @@ impl UdpProcessor {
 
         // Verify checksum
         if !packet.verify_checksum(src_ip, dst_ip) {
-            self.sockets
+            self.endpoints
                 .stats
                 .checksum_errors
                 .fetch_add(1, Ordering::Relaxed);
@@ -78,14 +78,14 @@ impl UdpProcessor {
             let src = UdpAddr::new(src_ip, packet.src_port());
             let dst_port = packet.dst_port();
 
-            if self.sockets.deliver(src, dst_port, ttl, pkt_ref) {
+            if self.endpoints.deliver(src, dst_port, ttl, pkt_ref) {
                 UdpResult::Delivered
             } else {
-                UdpResult::NoSocket
+                UdpResult::NoEndpoint
             }
         } else {
             // Buffer exhaustion fallback
-            UdpResult::NoSocket
+            UdpResult::NoEndpoint
         }
     }
 
@@ -99,7 +99,7 @@ impl UdpProcessor {
         };
 
         if !packet_view.verify_checksum(src_ip, dst_ip) {
-            self.sockets
+            self.endpoints
                 .stats
                 .checksum_errors
                 .fetch_add(1, Ordering::Relaxed);
@@ -118,17 +118,17 @@ impl UdpProcessor {
         let src = UdpAddr::new(src_ip, packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
-        if self.sockets.deliver(src, dst_port, ttl, packet) {
+        if self.endpoints.deliver(src, dst_port, ttl, packet) {
             UdpResult::Delivered
         } else {
-            UdpResult::NoSocket
+            UdpResult::NoEndpoint
         }
     }
 
     // Legacy `bind` removed; use `bind_with_token(port, None)` instead.
 
     /// Bind to a port with a capability token
-    pub fn bind_with_token(&self, port: u16, token: Option<u64>) -> Result<UdpSocket, NetworkError> {
+    pub fn bind_with_token(&self, port: u16, token: Option<u64>) -> Result<UdpEndpoint, NetworkError> {
         if let Some(t) = token {
             // Token present - validate ownership and capability
             let caller_domain = crate::task::context::current_subject().domain;
@@ -136,12 +136,12 @@ impl UdpProcessor {
                  return Err(NetworkError::PermissionDenied);
             }
         }
-        self.sockets.bind_with_token(port, token).ok_or(NetworkError::PortInUse)
+        self.endpoints.bind_with_token(port, token).ok_or(NetworkError::PortInUse)
     }
 
     /// Unbind a socket
     pub fn unbind(&self, port: u16) {
-        self.sockets.unbind(port)
+        self.endpoints.unbind(port)
     }
 
     /// Build a UDP packet for transmission

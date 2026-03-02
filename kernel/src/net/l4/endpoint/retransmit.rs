@@ -13,7 +13,7 @@ use spin::RwLock;
 use super::segment::send_tcp_segment;
 use super::tcb::tcb_table;
 use super::timer_wheel::TimingWheel;
-use super::types::{SocketAddr, conn_key_hash, seq_before as seq_before_fn, seq_leq as seq_leq_fn};
+use super::types::{EndpointAddr, conn_key_hash, seq_before as seq_before_fn, seq_leq as seq_leq_fn};
 
 /// 未確認セグメント（再送用）
 #[derive(Debug, Clone)]
@@ -225,13 +225,13 @@ const RETRANSMIT_SHARD_MASK: usize = RETRANSMIT_SHARD_COUNT - 1;
 
 /// シャードインデックスを算出
 #[inline(always)]
-fn retransmit_shard_index(local: &SocketAddr, remote: &SocketAddr) -> usize {
+fn retransmit_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
     (conn_key_hash(local, remote) as usize) & RETRANSMIT_SHARD_MASK
 }
 
 /// シャード化されたグローバル再送キューテーブル
-static RETRANSMIT_SHARDS: [RwLock<BTreeMap<(SocketAddr, SocketAddr), RetransmitQueue>>; RETRANSMIT_SHARD_COUNT] = {
-    const EMPTY: RwLock<BTreeMap<(SocketAddr, SocketAddr), RetransmitQueue>> =
+static RETRANSMIT_SHARDS: [RwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>>; RETRANSMIT_SHARD_COUNT] = {
+    const EMPTY: RwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>> =
         RwLock::new(BTreeMap::new());
     [EMPTY; RETRANSMIT_SHARD_COUNT]
 };
@@ -250,21 +250,21 @@ pub fn init_timer_wheel() {
 }
 
 /// タイミングホイールにタイマーを登録する内部ヘルパー
-fn schedule_retransmit_timer(local: SocketAddr, remote: SocketAddr, deadline: u64) {
+fn schedule_retransmit_timer(local: EndpointAddr, remote: EndpointAddr, deadline: u64) {
     if let Some(ref mut tw) = *TIMER_WHEEL.lock() {
         tw.reschedule(local, remote, deadline);
     }
 }
 
 /// タイミングホイールからタイマーをキャンセルする内部ヘルパー
-fn cancel_retransmit_timer(local: &SocketAddr, remote: &SocketAddr) {
+fn cancel_retransmit_timer(local: &EndpointAddr, remote: &EndpointAddr) {
     if let Some(ref mut tw) = *TIMER_WHEEL.lock() {
         tw.cancel(local, remote);
     }
 }
 
 /// 再送キュー取得または作成
-pub fn get_or_create_retransmit_queue(local: SocketAddr, remote: SocketAddr) -> bool {
+pub fn get_or_create_retransmit_queue(local: EndpointAddr, remote: EndpointAddr) -> bool {
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx].write();
     if !queues.contains_key(&(local, remote)) {
@@ -276,7 +276,7 @@ pub fn get_or_create_retransmit_queue(local: SocketAddr, remote: SocketAddr) -> 
 }
 
 /// 再送キューにセグメント追加
-pub fn retransmit_queue_push(local: SocketAddr, remote: SocketAddr, seq: u32, data: Vec<u8>) {
+pub fn retransmit_queue_push(local: EndpointAddr, remote: EndpointAddr, seq: u32, data: Vec<u8>) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx].write();
@@ -292,7 +292,7 @@ pub fn retransmit_queue_push(local: SocketAddr, remote: SocketAddr, seq: u32, da
 }
 
 /// ACK受信時の再送キュー更新
-pub fn retransmit_queue_ack(local: SocketAddr, remote: SocketAddr, ack_num: u32) {
+pub fn retransmit_queue_ack(local: EndpointAddr, remote: EndpointAddr, ack_num: u32) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx].write();
@@ -310,7 +310,7 @@ pub fn retransmit_queue_ack(local: SocketAddr, remote: SocketAddr, ack_num: u32)
 }
 
 /// SACKオプションで通知された領域を再送キューから取り除く
-pub fn retransmit_queue_process_sack(local: SocketAddr, remote: SocketAddr, blocks: &[(u32, u32)]) {
+pub fn retransmit_queue_process_sack(local: EndpointAddr, remote: EndpointAddr, blocks: &[(u32, u32)]) {
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx].write();
     if let Some(queue) = queues.get_mut(&(local, remote)) {
@@ -340,7 +340,7 @@ pub fn retransmit_queue_process_sack(local: SocketAddr, remote: SocketAddr, bloc
 }
 
 /// 再送キュー削除
-pub fn retransmit_queue_remove(local: SocketAddr, remote: SocketAddr) {
+pub fn retransmit_queue_remove(local: EndpointAddr, remote: EndpointAddr) {
     let idx = retransmit_shard_index(&local, &remote);
     RETRANSMIT_SHARDS[idx].write().remove(&(local, remote));
     cancel_retransmit_timer(&local, &remote);
@@ -355,7 +355,7 @@ pub fn check_retransmit_timeouts() {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
 
     // タイミングホイールから満了した接続を取得
-    let expired: Vec<(SocketAddr, SocketAddr)> = {
+    let expired: Vec<(EndpointAddr, EndpointAddr)> = {
         let mut tw_guard = TIMER_WHEEL.lock();
         if let Some(ref mut tw) = *tw_guard {
             tw.advance(current_tick)
@@ -509,9 +509,9 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_retransmit_queue_process_sack() {
-        use super::SocketAddr;
-        let local = SocketAddr::new([192,168,0,1], 10000);
-        let remote = SocketAddr::new([192,168,0,2], 20000);
+        use super::EndpointAddr;
+        let local = EndpointAddr::new([192,168,0,1], 10000);
+        let remote = EndpointAddr::new([192,168,0,2], 20000);
 
         // 再送キュー作成とセグメント追加
         get_or_create_retransmit_queue(local, remote);
@@ -624,8 +624,8 @@ pub mod qemu_tests {
     }
 
     pub fn retransmit_queue_process_sack_smoke() -> bool {
-        let local = SocketAddr::new([192, 168, 0, 1], 10000);
-        let remote = SocketAddr::new([192, 168, 0, 2], 20000);
+        let local = EndpointAddr::new([192, 168, 0, 1], 10000);
+        let remote = EndpointAddr::new([192, 168, 0, 2], 20000);
 
         retransmit_queue_remove(local, remote);
 

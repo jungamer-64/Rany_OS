@@ -175,24 +175,24 @@ pub fn flow_control_probe_timing_smoke() -> bool {
 }
 
 pub fn futures_sendfuture_wakes_on_send_smoke() -> bool {
-    let sock = crate::net::l4::endpoint::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
     if let Some(s) = sock.socket() {
         let Ok(mut inner) = s.inner().lock() else { return false; };
-        inner.local_addr = Some(super::types::SocketAddr::new([127, 0, 0, 1], 30001));
-        inner.remote_addr = Some(super::types::SocketAddr::new([127, 0, 0, 1], 80));
-        let _ = inner.transition_to(super::types::SocketState::Connected);
+        inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 30001));
+        inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
+        let _ = inner.transition_to(super::types::EndpointState::Connected);
     }
 
     sock.send_async(alloc::vec![1u8, 2, 3, 4]).is_some()
 }
 
 pub fn futures_recv_packet_zero_copy_via_owned_socket_smoke() -> bool {
-    let sock = crate::net::l4::endpoint::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
     sock.socket().is_some()
 }
 
 pub fn futures_tcp_packet_stream_multiple_packets_smoke() -> bool {
-    let sock = crate::net::l4::endpoint::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
     sock.tcp_packet_stream().is_none()
 }
 
@@ -202,15 +202,15 @@ pub fn futures_udp_packet_stream_delivered_smoke() -> bool {
 }
 
 pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
-    crate::net::l4::endpoint::manager::init_socket_manager();
+    crate::net::l4::endpoint::manager::init_endpoint_manager();
 
-    let sock = crate::net::l4::endpoint::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
     let fd = sock.fd();
 
     if let Some(s) = sock.socket() {
         let Ok(mut inner) = s.inner().lock() else { return false; };
-        inner.local_addr = Some(super::types::SocketAddr::new([127, 0, 0, 1], 12345));
-        inner.remote_addr = Some(super::types::SocketAddr::new([127, 0, 0, 1], 80));
+        inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
+        inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
         inner.send_buffer.extend(&[1, 2, 3]);
     }
 
@@ -234,22 +234,22 @@ pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
 }
 
 pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
-    crate::net::l4::endpoint::manager::init_socket_manager();
+    crate::net::l4::endpoint::manager::init_endpoint_manager();
 
-    let sock = crate::net::l4::endpoint::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
     let fd = sock.fd();
 
     if let Some(s) = sock.socket() {
         let Ok(mut inner) = s.inner().lock() else { return false; };
-        inner.local_addr = Some(super::types::SocketAddr::new([127, 0, 0, 1], 12345));
-        inner.remote_addr = Some(super::types::SocketAddr::new([10, 0, 2, 2], 80));
+        inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
+        inner.remote_addr = Some(super::types::EndpointAddr::new([10, 0, 2, 2], 80));
         inner.send_buffer.extend(&[1, 2, 3, 4]);
     }
 
     let handler = handler::NetworkEventHandler::new();
     let _ = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::DataReady {
         fd,
-        socket_type: super::types::SocketType::Tcp,
+        socket_type: super::types::EndpointType::Tcp,
     });
     true
 }

@@ -21,7 +21,7 @@ impl TcpProcessor {
     }
 
     /// Generate a SYN Cookie (RFC 4987)
-    fn generate_syncookie(&self, local: SocketAddr, remote: SocketAddr, client_isn: u32, mss_idx: u8) -> u32 {
+    fn generate_syncookie(&self, local: EndpointAddr, remote: EndpointAddr, client_isn: u32, mss_idx: u8) -> u32 {
         use crate::net::security::tls::crypto::hmac::hmac_sha256;
         
         let mut data = [0u8; 40];
@@ -49,7 +49,7 @@ impl TcpProcessor {
     }
 
     /// Verify a SYN Cookie and return MSS if valid
-    fn verify_syncookie(&self, local: SocketAddr, remote: SocketAddr, ack_num: u32, seq_num: u32) -> Option<u16> {
+    fn verify_syncookie(&self, local: EndpointAddr, remote: EndpointAddr, ack_num: u32, seq_num: u32) -> Option<u16> {
         use crate::net::security::tls::crypto::hmac::hmac_sha256;
         
         let cookie = ack_num.wrapping_sub(1);
@@ -97,14 +97,14 @@ impl TcpProcessor {
     }
 
     /// Start listening on a local address
-    pub fn listen(&mut self, local_addr: SocketAddr) {
+    pub fn listen(&mut self, local_addr: EndpointAddr) {
         let mut tcb = TcpControlBlock::new(local_addr);
         tcb.enter_listen();
         self.listeners.insert(local_addr, Arc::new(PoisonLock::new(tcb)));
     }
     
     /// Bind to a specific port
-    pub fn bind(&mut self, addr: SocketAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
+    pub fn bind(&mut self, addr: EndpointAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
         let port = addr.port();
         
         // Security: Check for privileged ports (< 1024)
@@ -181,7 +181,7 @@ impl TcpProcessor {
     }
 
     /// Allocate a unique ephemeral port using source port randomization
-    pub fn allocate_ephemeral_port(&self, _local: &SocketAddr, _remote: &SocketAddr) -> u16 {
+    pub fn allocate_ephemeral_port(&self, _local: &EndpointAddr, _remote: &EndpointAddr) -> u16 {
         // Use cryptographically secure random number to determine start port
         let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         let seed = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
@@ -206,8 +206,8 @@ impl TcpProcessor {
     /// Initiate a connection to a remote address
     pub fn connect(
         &mut self,
-        local_addr: SocketAddr,
-        remote_addr: SocketAddr,
+        local_addr: EndpointAddr,
+        remote_addr: EndpointAddr,
     ) -> Result<TcpStream, TcpError> {
         if self.connections.len() >= Self::DEFAULT_MAX_CONNECTIONS {
             return Err(TcpError::BufferFull);
@@ -236,8 +236,8 @@ impl TcpProcessor {
     #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
     pub fn insert_test_connection(
         &mut self,
-        local_addr: SocketAddr,
-        remote_addr: SocketAddr,
+        local_addr: EndpointAddr,
+        remote_addr: EndpointAddr,
         tcb: Arc<PoisonLock<TcpControlBlock>>,
     ) {
         self.connections.insert((local_addr, remote_addr), tcb);
@@ -272,7 +272,7 @@ impl TcpProcessor {
         }
 
         // Convert to internal address types
-        let remote_addr = SocketAddr::new(
+        let remote_addr = EndpointAddr::new(
             Ipv4Addr::new(
                 src_ip.as_bytes()[0],
                 src_ip.as_bytes()[1],
@@ -282,7 +282,7 @@ impl TcpProcessor {
             src_port,
         );
 
-        let local_addr = SocketAddr::new(
+        let local_addr = EndpointAddr::new(
             Ipv4Addr::new(
                 dst_ip.as_bytes()[0],
                 dst_ip.as_bytes()[1],
@@ -350,7 +350,7 @@ impl TcpProcessor {
         TcpProcessResult::None
     }
 
-    /// IPv6 variant of `process` — accepts IPv6 source/destination and uses `SocketAddr::V6` keys.
+    /// IPv6 variant of `process` — accepts IPv6 source/destination and uses `EndpointAddr::V6` keys.
     pub fn process_v6(
         &mut self,
         data: &[u8],
@@ -384,9 +384,9 @@ impl TcpProcessor {
             return TcpProcessResult::None;
         }
 
-        // Convert to internal address types (SocketAddr::V6)
-        let remote_addr = SocketAddr::new_v6(src_ip, src_port);
-        let local_addr = SocketAddr::new_v6(dst_ip, dst_port);
+        // Convert to internal address types (EndpointAddr::V6)
+        let remote_addr = EndpointAddr::new_v6(src_ip, src_port);
+        let local_addr = EndpointAddr::new_v6(dst_ip, dst_port);
 
         // Extract payload
         let payload = if data.len() > header_len {
@@ -448,8 +448,8 @@ impl TcpProcessor {
 
     pub(super) fn handle_incoming_syn(
         &mut self,
-        local_addr: SocketAddr,
-        remote_addr: SocketAddr,
+        local_addr: EndpointAddr,
+        remote_addr: EndpointAddr,
         seq_num: u32,
         flags: u16,
         _window: u16,
@@ -462,12 +462,12 @@ impl TcpProcessor {
 
             // Prefer IPv4 wildcard when the packet address is IPv4-mapped.
             if local_addr.as_ipv4().is_some() {
-                let wildcard_v4 = SocketAddr::new(Ipv4Addr::UNSPECIFIED, port);
+                let wildcard_v4 = EndpointAddr::new(Ipv4Addr::UNSPECIFIED, port);
                 if self.listeners.contains_key(&wildcard_v4) {
                     wildcard_v4
                 } else {
                     let wildcard_v6 =
-                        SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED, port);
+                        EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED, port);
                     if self.listeners.contains_key(&wildcard_v6) {
                         wildcard_v6
                     } else {
@@ -476,7 +476,7 @@ impl TcpProcessor {
                 }
             } else {
                 let wildcard_v6 =
-                    SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED, port);
+                    EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED, port);
                 if self.listeners.contains_key(&wildcard_v6) {
                     wildcard_v6
                 } else {
@@ -633,7 +633,7 @@ impl TcpProcessor {
         }
 
         // Convert to internal address types
-        let remote_addr = SocketAddr::new(
+        let remote_addr = EndpointAddr::new(
             Ipv4Addr::new(
                 src_ip.as_bytes()[0],
                 src_ip.as_bytes()[1],
@@ -643,7 +643,7 @@ impl TcpProcessor {
             src_port,
         );
 
-        let local_addr = SocketAddr::new(
+        let local_addr = EndpointAddr::new(
             Ipv4Addr::new(
                 dst_ip.as_bytes()[0],
                 dst_ip.as_bytes()[1],
@@ -714,8 +714,8 @@ impl TcpProcessor {
         }
 
         // Convert to internal address types
-        let remote_addr = SocketAddr::new_v6(src_ip, src_port);
-        let local_addr = SocketAddr::new_v6(dst_ip, dst_port);
+        let remote_addr = EndpointAddr::new_v6(src_ip, src_port);
+        let local_addr = EndpointAddr::new_v6(dst_ip, dst_port);
 
         // Extract payload
         let payload = if data.len() > header_len { &data[header_len..] } else { &[] };

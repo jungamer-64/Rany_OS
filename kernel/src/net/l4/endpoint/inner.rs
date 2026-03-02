@@ -1,7 +1,7 @@
 // ============================================================================
 // kernel/src/net/endpoint/inner.rs
 // ============================================================================
-//! # SocketInner - 細粒度ロック用の内部状態
+//! # EndpointInner - 細粒度ロック用の内部状態
 //!
 //! ソケットの可変状態（Mutex保護対象）
 
@@ -9,19 +9,19 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::net::l4::tcp::{TcpListener as TcpListenerImpl, TcpStream};
-use crate::net::l4::udp::UdpSocket as RawUdpSocket;
+use crate::net::l4::udp::UdpEndpoint as RawUdpSocket;
 
 use super::congestion::CongestionAlgorithm;
-use super::types::{AcceptedConnection, SocketAddr, SocketError, SocketResult, SocketState};
+use super::types::{AcceptedConnection, EndpointAddr, EndpointError, EndpointResult, EndpointState};
 
 /// ソケットの可変状態（Mutex保護対象）
-pub struct SocketInner {
+pub struct EndpointInner {
     /// 現在の状態
-    pub state: SocketState,
+    pub state: EndpointState,
     /// ローカルアドレス
-    pub local_addr: Option<SocketAddr>,
+    pub local_addr: Option<EndpointAddr>,
     /// リモートアドレス
-    pub remote_addr: Option<SocketAddr>,
+    pub remote_addr: Option<EndpointAddr>,
     /// 受信バッファ（VecDeque: O(1) FIFO）
     pub recv_buffer: VecDeque<u8>,
     /// 送信バッファ（VecDeque: O(1) FIFO）
@@ -37,13 +37,13 @@ pub struct SocketInner {
     /// UDPソケット
     pub udp_socket: Option<RawUdpSocket>,
     /// 保留中のパケット（UDP用）
-    pub pending_packets: VecDeque<(SocketAddr, Vec<u8>)>,
+    pub pending_packets: VecDeque<(EndpointAddr, Vec<u8>)>,
     /// Acceptキュー: ハンドシェイク完了済みの接続（Listeningソケット用）
     pub accept_queue: VecDeque<AcceptedConnection>,
     /// Acceptキューのバックログサイズ
     pub accept_backlog: usize,
     /// エラー状態
-    pub last_error: Option<SocketError>,
+    pub last_error: Option<EndpointError>,
     /// 受信待ちWaker（非同期通知用）
     pub recv_waker: Option<core::task::Waker>,
     /// 送信待ちWaker（非同期通知用）
@@ -62,7 +62,7 @@ pub struct SocketInner {
     pub priority: u8,
 }
 
-impl SocketInner {
+impl EndpointInner {
     /// デフォルトバッファサイズ
     pub const DEFAULT_BUFFER_SIZE: usize = 8192;
     /// 最大バッファサイズ
@@ -73,7 +73,7 @@ impl SocketInner {
     /// 新規作成
     pub fn new() -> Self {
         Self {
-            state: SocketState::Created,
+            state: EndpointState::Created,
             local_addr: None,
             remote_addr: None,
             recv_buffer: VecDeque::with_capacity(Self::DEFAULT_BUFFER_SIZE),
@@ -112,28 +112,28 @@ impl SocketInner {
 
     /// 状態遷移（ガード付き）
     #[inline]
-    pub fn transition_to(&mut self, new_state: SocketState) -> SocketResult<()> {
+    pub fn transition_to(&mut self, new_state: EndpointState) -> EndpointResult<()> {
         let valid = match (self.state, new_state) {
             // Created からの遷移
-            (SocketState::Created, SocketState::Bound) => true,
-            (SocketState::Created, SocketState::Connecting) => true,
-            (SocketState::Created, SocketState::Closed) => true,
+            (EndpointState::Created, EndpointState::Bound) => true,
+            (EndpointState::Created, EndpointState::Connecting) => true,
+            (EndpointState::Created, EndpointState::Closed) => true,
             // Bound からの遷移
-            (SocketState::Bound, SocketState::Listening) => true,
-            (SocketState::Bound, SocketState::Connecting) => true,
-            (SocketState::Bound, SocketState::Connected) => true, // UDP
-            (SocketState::Bound, SocketState::Closed) => true,
+            (EndpointState::Bound, EndpointState::Listening) => true,
+            (EndpointState::Bound, EndpointState::Connecting) => true,
+            (EndpointState::Bound, EndpointState::Connected) => true, // UDP
+            (EndpointState::Bound, EndpointState::Closed) => true,
             // Listening からの遷移
-            (SocketState::Listening, SocketState::Closing) => true,
-            (SocketState::Listening, SocketState::Closed) => true,
+            (EndpointState::Listening, EndpointState::Closing) => true,
+            (EndpointState::Listening, EndpointState::Closed) => true,
             // Connecting からの遷移
-            (SocketState::Connecting, SocketState::Connected) => true,
-            (SocketState::Connecting, SocketState::Closed) => true,
+            (EndpointState::Connecting, EndpointState::Connected) => true,
+            (EndpointState::Connecting, EndpointState::Closed) => true,
             // Connected からの遷移
-            (SocketState::Connected, SocketState::Closing) => true,
-            (SocketState::Connected, SocketState::Closed) => true,
+            (EndpointState::Connected, EndpointState::Closing) => true,
+            (EndpointState::Connected, EndpointState::Closed) => true,
             // Closing からの遷移
-            (SocketState::Closing, SocketState::Closed) => true,
+            (EndpointState::Closing, EndpointState::Closed) => true,
             // 同じ状態への遷移は許可
             (s1, s2) if s1 == s2 => true,
             _ => false,
@@ -143,7 +143,7 @@ impl SocketInner {
             self.state = new_state;
             Ok(())
         } else {
-            Err(SocketError::InvalidStateTransition)
+            Err(EndpointError::InvalidStateTransition)
         }
     }
 
@@ -163,13 +163,13 @@ impl SocketInner {
 
     /// 送信バッファにデータ追加
     #[inline]
-    pub fn send_to_buffer(&mut self, data: &[u8]) -> SocketResult<usize> {
+    pub fn send_to_buffer(&mut self, data: &[u8]) -> EndpointResult<usize> {
         let available = self
             .send_buffer_limit
             .saturating_sub(self.send_buffer.len());
 
         if available == 0 {
-            return Err(SocketError::BufferFull);
+            return Err(EndpointError::BufferFull);
         }
 
         let len = data.len().min(available);
@@ -201,7 +201,7 @@ impl SocketInner {
     }
 }
 
-impl Default for SocketInner {
+impl Default for EndpointInner {
     fn default() -> Self {
         Self::new()
     }
@@ -217,23 +217,23 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_socket_state_transitions() {
-        let mut inner = SocketInner::new();
+        let mut inner = EndpointInner::new();
 
         // Created -> Bound
-        assert!(inner.transition_to(SocketState::Bound).is_ok());
-        assert_eq!(inner.state, SocketState::Bound);
+        assert!(inner.transition_to(EndpointState::Bound).is_ok());
+        assert_eq!(inner.state, EndpointState::Bound);
 
         // Bound -> Listening
-        assert!(inner.transition_to(SocketState::Listening).is_ok());
-        assert_eq!(inner.state, SocketState::Listening);
+        assert!(inner.transition_to(EndpointState::Listening).is_ok());
+        assert_eq!(inner.state, EndpointState::Listening);
 
         // Invalid: Listening -> Connected
-        assert!(inner.transition_to(SocketState::Connected).is_err());
+        assert!(inner.transition_to(EndpointState::Connected).is_err());
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_vecdeque_buffer() {
-        let mut inner = SocketInner::new();
+        let mut inner = EndpointInner::new();
 
         // データ追加
         inner.push_recv_data(&[1, 2, 3, 4, 5]);
@@ -254,21 +254,21 @@ pub mod qemu_tests {
     use super::*;
 
     pub fn socket_state_transitions_smoke() -> bool {
-        let mut inner = SocketInner::new();
+        let mut inner = EndpointInner::new();
 
-        if inner.transition_to(SocketState::Bound).is_err() || inner.state != SocketState::Bound {
+        if inner.transition_to(EndpointState::Bound).is_err() || inner.state != EndpointState::Bound {
             return false;
         }
 
-        if inner.transition_to(SocketState::Listening).is_err() || inner.state != SocketState::Listening {
+        if inner.transition_to(EndpointState::Listening).is_err() || inner.state != EndpointState::Listening {
             return false;
         }
 
-        inner.transition_to(SocketState::Connected).is_err()
+        inner.transition_to(EndpointState::Connected).is_err()
     }
 
     pub fn vecdeque_buffer_smoke() -> bool {
-        let mut inner = SocketInner::new();
+        let mut inner = EndpointInner::new();
         inner.push_recv_data(&[1, 2, 3, 4, 5]);
         if inner.recv_buffer.len() != 5 {
             return false;

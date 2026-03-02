@@ -1,7 +1,7 @@
 // ============================================================================
 // kernel/src/net/endpoint/manager.rs
 // ============================================================================
-//! # SocketManager - RwLockによる読み取り並列化
+//! # EndpointManager - RwLockによる読み取り並列化
 //!
 //! ソケット管理マネージャ
 
@@ -9,25 +9,25 @@ use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::RwLock;
 
-use super::socket::Socket;
-use super::types::{SocketError, SocketFd, SocketResult, SocketType};
+use super::endpoint_core::Endpoint;
+use super::types::{EndpointError, EndpointFd, EndpointResult, EndpointType};
 
 /// エフェメラルポート範囲
 const EPHEMERAL_PORT_START: u16 = 49152;
 const EPHEMERAL_PORT_END: u16 = 65535;
 
 /// ソケット管理（RwLockで読み取り並列化）
-pub struct SocketManager {
+pub struct EndpointManager {
     /// ソケットテーブル
-    sockets: RwLock<BTreeMap<SocketFd, Socket>>,
+    endpoints: RwLock<BTreeMap<EndpointFd, Endpoint>>,
     /// 使用中ポート（プロトコル別）
-    tcp_ports: RwLock<BTreeMap<u16, SocketFd>>,
-    udp_ports: RwLock<BTreeMap<u16, SocketFd>>,
+    tcp_ports: RwLock<BTreeMap<u16, EndpointFd>>,
+    udp_ports: RwLock<BTreeMap<u16, EndpointFd>>,
     /// 次のエフェメラルポート
     next_ephemeral_port: AtomicU32,
 }
 
-impl SocketManager {
+impl EndpointManager {
     /// 新規マネージャ作成
     pub const fn new() -> Self {
         Self {
@@ -39,10 +39,10 @@ impl SocketManager {
     }
 
     /// エフェメラルポート割り当て（ランダム化）
-    pub fn allocate_ephemeral_port(&self, socket_type: SocketType) -> Option<u16> {
+    pub fn allocate_ephemeral_port(&self, socket_type: EndpointType) -> Option<u16> {
         let ports = match socket_type {
-            SocketType::Tcp => &self.tcp_ports,
-            SocketType::Udp => &self.udp_ports,
+            EndpointType::Tcp => &self.tcp_ports,
+            EndpointType::Udp => &self.udp_ports,
             _ => return Some(0),
         };
 
@@ -67,22 +67,22 @@ impl SocketManager {
     }
 
     /// ソケット登録
-    pub fn register(&self, socket: Socket) {
-        self.sockets.write().insert(socket.fd(), socket);
+    pub fn register(&self, endpoint: Endpoint) {
+        self.endpoints.write().insert(socket.fd(), socket);
     }
 
     /// ソケット登録解除
-    pub fn unregister(&self, fd: SocketFd) -> Option<Socket> {
-        let socket = self.sockets.write().remove(&fd);
+    pub fn unregister(&self, fd: EndpointFd) -> Option<Endpoint> {
+        let socket = self.endpoints.write().remove(&fd);
 
         if let Some(ref s) = socket {
             // ポートの解放
             if let Some(addr) = s.local_addr() {
                 match s.socket_type() {
-                    SocketType::Tcp => {
+                    EndpointType::Tcp => {
                         self.tcp_ports.write().remove(&addr.port());
                     }
-                    SocketType::Udp => {
+                    EndpointType::Udp => {
                         self.udp_ports.write().remove(&addr.port());
                     }
                     _ => {}
@@ -94,31 +94,31 @@ impl SocketManager {
     }
 
     /// ソケット取得（読み取りロック）
-    pub fn get(&self, fd: SocketFd) -> Option<Socket> {
-        self.sockets.read().get(&fd).cloned()
+    pub fn get(&self, fd: EndpointFd) -> Option<Endpoint> {
+        self.endpoints.read().get(&fd).cloned()
     }
 
     /// ポートバインド
-    pub fn bind_port(&self, socket_type: SocketType, port: u16, fd: SocketFd) -> SocketResult<()> {
+    pub fn bind_port(&self, socket_type: EndpointType, port: u16, fd: EndpointFd) -> EndpointResult<()> {
         let ports = match socket_type {
-            SocketType::Tcp => &self.tcp_ports,
-            SocketType::Udp => &self.udp_ports,
+            EndpointType::Tcp => &self.tcp_ports,
+            EndpointType::Udp => &self.udp_ports,
             _ => return Ok(()),
         };
 
         let mut guard = ports.write();
         if guard.contains_key(&port) {
-            return Err(SocketError::PortInUse);
+            return Err(EndpointError::PortInUse);
         }
         guard.insert(port, fd);
         Ok(())
     }
 
     /// ポートでソケット検索
-    pub fn find_by_port(&self, socket_type: SocketType, port: u16) -> Option<Socket> {
+    pub fn find_by_port(&self, socket_type: EndpointType, port: u16) -> Option<Endpoint> {
         let ports = match socket_type {
-            SocketType::Tcp => &self.tcp_ports,
-            SocketType::Udp => &self.udp_ports,
+            EndpointType::Tcp => &self.tcp_ports,
+            EndpointType::Udp => &self.udp_ports,
             _ => return None,
         };
 
@@ -127,47 +127,47 @@ impl SocketManager {
     }
 
     /// 登録ソケット数
-    pub fn socket_count(&self) -> usize {
-        self.sockets.read().len()
+    pub fn endpoint_count(&self) -> usize {
+        self.endpoints.read().len()
     }
 
     /// 全ソケット処理（イテレーション）
     pub fn for_each<F>(&self, mut f: F)
     where
-        F: FnMut(&Socket),
+        F: FnMut(&Endpoint),
     {
-        for socket in self.sockets.read().values() {
+        for socket in self.endpoints.read().values() {
             f(socket);
         }
     }
 
     /// 次のソケットFD生成（内部用）
-    pub fn generate_fd(&self) -> SocketFd {
+    pub fn generate_fd(&self) -> EndpointFd {
         static FD_COUNTER: AtomicU32 = AtomicU32::new(1);
-        SocketFd::from_raw(FD_COUNTER.fetch_add(1, Ordering::Relaxed))
+        EndpointFd::from_raw(FD_COUNTER.fetch_add(1, Ordering::Relaxed))
     }
 }
 
-impl Default for SocketManager {
+impl Default for EndpointManager {
     fn default() -> Self {
         Self::new()
     }
 }
 
 /// グローバルソケットマネージャ（RwLock）
-pub static SOCKET_MANAGER: RwLock<Option<SocketManager>> = RwLock::new(None);
+pub static ENDPOINT_MANAGER: RwLock<Option<EndpointManager>> = RwLock::new(None);
 
 /// ソケットマネージャ初期化
-pub fn init_socket_manager() {
-    *SOCKET_MANAGER.write() = Some(SocketManager::new());
+pub fn init_endpoint_manager() {
+    *ENDPOINT_MANAGER.write() = Some(EndpointManager::new());
 }
 
 /// ソケットマネージャが初期化済みかを返す
-pub fn is_socket_manager_initialized() -> bool {
-    SOCKET_MANAGER.read().is_some()
+pub fn is_endpoint_manager_initialized() -> bool {
+    ENDPOINT_MANAGER.read().is_some()
 }
 
 /// ソケットマネージャ取得
-pub fn socket_manager() -> Option<&'static RwLock<Option<SocketManager>>> {
-    Some(&SOCKET_MANAGER)
+pub fn endpoint_manager() -> Option<&'static RwLock<Option<EndpointManager>>> {
+    Some(&ENDPOINT_MANAGER)
 }

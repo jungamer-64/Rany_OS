@@ -16,7 +16,7 @@ fn get_isn_secret() -> &'static [u8; 32] {
     })
 }
 
-pub(crate) fn generate_initial_seq(local: SocketAddr, remote: Option<SocketAddr>) -> u32 {
+pub(crate) fn generate_initial_seq(local: EndpointAddr, remote: Option<EndpointAddr>) -> u32 {
     use crate::net::security::tls::crypto::hmac::hmac_sha256;
 
     // RFC 6528: ISN = M + F(localip, localport, remoteip, remoteport, secret)
@@ -57,8 +57,8 @@ pub(crate) fn generate_initial_seq(local: SocketAddr, remote: Option<SocketAddr>
 
 /// TCPセグメントを構築して送信。戻り値は送信成功かどうか（ARP未解決等で失敗することがある）
 pub(crate) fn send_tcp_packet(
-    local: SocketAddr,
-    remote: SocketAddr,
+    local: EndpointAddr,
+    remote: EndpointAddr,
     seq: u32,
     ack: u32,
     flags: u16,
@@ -224,14 +224,14 @@ pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::
 }
 
 /// SYNパケットを送信
-pub(crate) fn send_syn_packet(local: SocketAddr, remote: SocketAddr, seq: u32) -> bool {
+pub(crate) fn send_syn_packet(local: EndpointAddr, remote: EndpointAddr, seq: u32) -> bool {
     send_tcp_packet(local, remote, seq, 0, TcpHeader::FLAG_SYN, 65535, &[])
 }
 
 /// SYNパケットをオプション付きで送信 (MSS, Window Scale, SACK Permitted, Timestamps)
 pub(crate) fn send_syn_packet_with_options(
-    local: SocketAddr,
-    remote: SocketAddr,
+    local: EndpointAddr,
+    remote: EndpointAddr,
     seq: u32,
     mss: u16,
     window_scale: u8,
@@ -256,8 +256,8 @@ pub(crate) fn send_syn_packet_with_options(
 
 /// SYN-ACKパケットをオプション付きで送信
 pub(crate) fn send_syn_ack_packet_with_options(
-    local: SocketAddr,
-    remote: SocketAddr,
+    local: EndpointAddr,
+    remote: EndpointAddr,
     seq: u32,
     ack: u32,
     mss: u16,
@@ -292,8 +292,8 @@ pub(crate) fn send_syn_ack_packet_with_options(
 
 /// TCPセグメントをオプション付きで構築して送信
 pub(crate) fn send_tcp_packet_with_options(
-    local: SocketAddr,
-    remote: SocketAddr,
+    local: EndpointAddr,
+    remote: EndpointAddr,
     seq: u32,
     ack: u32,
     flags: u16,
@@ -352,7 +352,7 @@ pub(crate) fn send_tcp_packet_with_options(
 }
 
 /// SYN-ACKパケットを送信
-pub(crate) fn send_syn_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) -> bool {
+pub(crate) fn send_syn_ack_packet(local: EndpointAddr, remote: EndpointAddr, seq: u32, ack: u32) -> bool {
     send_tcp_packet(
         local,
         remote,
@@ -365,12 +365,12 @@ pub(crate) fn send_syn_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u3
 }
 
 /// ACKパケットを送信
-pub(crate) fn send_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32, window: u16) -> bool {
+pub(crate) fn send_ack_packet(local: EndpointAddr, remote: EndpointAddr, seq: u32, ack: u32, window: u16) -> bool {
     send_tcp_packet(local, remote, seq, ack, TcpHeader::FLAG_ACK, window, &[])
 }
 
 /// FINパケットを送信
-pub(crate) fn send_fin_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) -> bool {
+pub(crate) fn send_fin_packet(local: EndpointAddr, remote: EndpointAddr, seq: u32, ack: u32) -> bool {
     send_tcp_packet(
         local,
         remote,
@@ -384,8 +384,8 @@ pub(crate) fn send_fin_packet(local: SocketAddr, remote: SocketAddr, seq: u32, a
 
 /// データパケットを送信（PSH+ACK）
 pub(crate) fn send_data_packet(
-    local: SocketAddr,
-    remote: SocketAddr,
+    local: EndpointAddr,
+    remote: EndpointAddr,
     seq: u32,
     ack: u32,
     window: u16,
@@ -661,7 +661,7 @@ pub(crate) fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_heade
     let flags = data_offset_flags & 0x003F;
 
     // ソケットアドレスを構築
-    let src_addr = SocketAddr::new(
+    let src_addr = EndpointAddr::new(
         Ipv4Addr::new(
             ip_header.src_addr[0],
             ip_header.src_addr[1],
@@ -671,7 +671,7 @@ pub(crate) fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_heade
         src_port,
     );
 
-    let dst_addr = SocketAddr::new(
+    let dst_addr = EndpointAddr::new(
         Ipv4Addr::new(
             ip_header.dst_addr[0],
             ip_header.dst_addr[1],
@@ -723,8 +723,8 @@ use crate::net::l3::ipv4::Ipv4Address;
 pub enum TcpProcessResult {
     None,
     SendPacket {
-        local: SocketAddr,
-        remote: SocketAddr,
+        local: EndpointAddr,
+        remote: EndpointAddr,
         seq: u32,
         ack: u32,
         flags: u16,
@@ -737,9 +737,9 @@ pub enum TcpProcessResult {
 /// TCP segment processor for the network stack
 pub struct TcpProcessor {
     /// TCP connections indexed by (local_addr, remote_addr) tuple
-    pub(crate) connections: BTreeMap<(SocketAddr, SocketAddr), Arc<PoisonLock<TcpControlBlock>>>,
+    pub(crate) connections: BTreeMap<(EndpointAddr, EndpointAddr), Arc<PoisonLock<TcpControlBlock>>>,
     /// Listening sockets indexed by local address
-    listeners: BTreeMap<SocketAddr, Arc<PoisonLock<TcpControlBlock>>>,
+    listeners: BTreeMap<EndpointAddr, Arc<PoisonLock<TcpControlBlock>>>,
     /// Count of semi-open connections (SYN-RECEIVED state) for DoS protection
     semi_open_count: usize,
     /// Secret key for SYN Cookies
@@ -748,7 +748,7 @@ pub struct TcpProcessor {
 
 impl TcpProcessor {
     /// Check if a connection or listener exists for the given flow
-    pub fn has_connection_or_listener(&self, local: SocketAddr, remote: SocketAddr) -> bool {
+    pub fn has_connection_or_listener(&self, local: EndpointAddr, remote: EndpointAddr) -> bool {
         if self.connections.contains_key(&(local, remote)) {
             return true;
         }
@@ -762,7 +762,7 @@ impl TcpProcessor {
     /// 
     /// オフパス攻撃者による PMTU 毒入れ攻撃を防ぐため、引用されたパケットの
     /// シーケンス番号が現在の送信ウィンドウ内にあることを確認します。
-    pub fn validate_icmp_sequence(&self, local: SocketAddr, remote: SocketAddr, seq: u32) -> bool {
+    pub fn validate_icmp_sequence(&self, local: EndpointAddr, remote: EndpointAddr, seq: u32) -> bool {
         if let Some(conn) = self.connections.get(&(local, remote)) {
             if let Ok(tcb) = conn.lock() {
                 // 接続が確立済み（または終了処理中）であることを確認
@@ -788,12 +788,12 @@ impl TcpProcessor {
     }
 
     /// 接続を削除
-    pub fn remove_connection(&mut self, local: SocketAddr, remote: SocketAddr) {
+    pub fn remove_connection(&mut self, local: EndpointAddr, remote: EndpointAddr) {
         self.connections.remove(&(local, remote));
     }
 
     /// リスナーを削除
-    pub fn remove_listener(&mut self, local: SocketAddr) {
+    pub fn remove_listener(&mut self, local: EndpointAddr) {
         self.listeners.remove(&local);
     }
 }

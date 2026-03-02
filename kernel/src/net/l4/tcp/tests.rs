@@ -11,19 +11,19 @@ pub fn test_ipv4_addr() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_socket_addr() {
-    let addr = SocketAddr::new(Ipv4Addr::LOCALHOST, 8080);
+    let addr = EndpointAddr::new(Ipv4Addr::LOCALHOST, 8080);
     assert_eq!(format!("{}", addr), "127.0.0.1:8080");
 }
 
 #[cfg_attr(test, test_case)]
 pub fn test_tcp_state() {
-    let tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
+    let tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0));
     assert_eq!(tcb.state(), TcpState::Closed);
 }
 
 #[cfg_attr(test, test_case)]
 pub fn test_send_capacity_respects_scaled_window() {
-    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
+    let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0));
     tcb.enter_established();
     // peer advertised window = 100 with scale factor 4 -> effective 1600
     tcb.seq.snd_wnd = 100;
@@ -52,8 +52,8 @@ pub fn test_process_with_packet_zero_copy() {
     let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let mut processor = TcpProcessor::new();
-    let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 1000);
-    let remote = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 2000);
+    let local = EndpointAddr::new(Ipv4Addr::new(127, 0, 0, 1), 1000);
+    let remote = EndpointAddr::new(Ipv4Addr::new(127, 0, 0, 1), 2000);
 
     // Create TCB and register connection
     let mut tcb = TcpControlBlock::new(local);
@@ -108,8 +108,8 @@ pub fn test_copy_fallback_queues_payload_and_keeps_connection_alive() {
     let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let mut processor = TcpProcessor::new();
-    let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3000);
-    let remote = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 4000);
+    let local = EndpointAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3000);
+    let remote = EndpointAddr::new(Ipv4Addr::new(127, 0, 0, 1), 4000);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
@@ -168,8 +168,8 @@ pub fn test_recv_copy_fallback_overflow_sends_rst_and_closes() {
     let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let mut processor = TcpProcessor::new();
-    let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3100);
-    let remote = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 4100);
+    let local = EndpointAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3100);
+    let remote = EndpointAddr::new(Ipv4Addr::new(127, 0, 0, 1), 4100);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
@@ -219,8 +219,8 @@ pub fn test_recv_copy_fallback_overflow_sends_rst_and_closes() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_poll_read_consumes_recv_copy_fallback_queue_with_remainder() {
-    let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3200);
-    let remote = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 4200);
+    let local = EndpointAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3200);
+    let remote = EndpointAddr::new(Ipv4Addr::new(127, 0, 0, 1), 4200);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
@@ -279,7 +279,7 @@ pub fn test_poll_read_consumes_recv_copy_fallback_queue_with_remainder() {
 #[cfg_attr(test, test_case)]
 pub fn test_can_send_respects_cwnd_bytes() {
     let _ = crate::net::datapath::mempool::init_net_mempool(2);
-    let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 1000);
+    let local = EndpointAddr::new(Ipv4Addr::new(127, 0, 0, 1), 1000);
     let mut tcb = TcpControlBlock::new(local);
     tcb.enter_established();
     tcb.set_cwnd_for_test(100);
@@ -296,8 +296,8 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
     // Initialize a small mempool for tests
     let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
-    let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 1001);
-    let remote = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 2001);
+    let local = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 1001);
+    let remote = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 2001);
 
     // Create TCB and wrap in Arc<PoisonLock>
     let mut tcb = TcpControlBlock::new(local);
@@ -357,8 +357,8 @@ pub fn test_three_way_handshake() {
     let mut client = TcpProcessor::new();
     let mut server = TcpProcessor::new();
 
-    let client_addr = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 2000);
-    let server_addr = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 1000);
+    let client_addr = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 2000);
+    let server_addr = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 1000);
 
     // Server binds (creates a listener with backlog)
     let listener = server.bind(server_addr, None).expect("bind");
@@ -475,8 +475,8 @@ pub fn test_three_way_handshake_v6() {
     let mut client = TcpProcessor::new();
     let mut server = TcpProcessor::new();
 
-    let client_addr = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 3000);
-    let server_addr = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 4000);
+    let client_addr = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 3000);
+    let server_addr = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 4000);
 
     let listener = server.bind(server_addr, None).expect("bind v6");
 
@@ -581,8 +581,8 @@ pub fn test_retransmit_on_timeout() {
     let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let mut proc = TcpProcessor::new();
-    let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 1000);
-    let remote = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 2000);
+    let local = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 1000);
+    let remote = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 2000);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
@@ -614,7 +614,7 @@ pub fn test_connect_future_wakes_on_established() {
     static WAKE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     // Create a TCB in SynSent state
-    let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 4000);
+    let local = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 4000);
     let mut tcb = TcpControlBlock::new(local);
     tcb.enter_syn_sent();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
@@ -662,8 +662,8 @@ pub fn test_connect_future_wakes_on_established() {
 pub fn test_record_sent_packet_updates_tcb() {
     // Create processor and register a connection
     let mut proc = TcpProcessor::new();
-    let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 7000);
-    let remote = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 8000);
+    let local = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 7000);
+    let remote = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 8000);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
@@ -689,7 +689,7 @@ pub fn test_record_sent_packet_updates_tcb() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_ack_segments_removes_unacked_and_reduces_outstanding() {
-    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9000));
+    let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST, 9000));
     tcb.enter_established();
 
     // Add an unacked segment (also updates outstanding_bytes)
@@ -704,7 +704,7 @@ pub fn test_ack_segments_removes_unacked_and_reduces_outstanding() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_ack_segments_partial_ack_keeps_later_segments_and_updates_outstanding() {
-    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9002));
+    let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST, 9002));
     tcb.enter_established();
 
     tcb.queue_unacked(10, vec![1, 2, 3, 4], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
@@ -724,7 +724,7 @@ pub fn test_ack_segments_partial_ack_keeps_later_segments_and_updates_outstandin
 
 #[cfg_attr(test, test_case)]
 pub fn test_ack_segments_partial_within_segment_trims_retransmit_entry() {
-    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9003));
+    let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST, 9003));
     tcb.enter_established();
 
     tcb.queue_unacked(100, vec![1, 2, 3, 4], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
@@ -749,7 +749,7 @@ pub fn test_ack_segments_partial_within_segment_trims_retransmit_entry() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_ack_segments_partial_trims_syn_then_payload() {
-    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9004));
+    let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST, 9004));
     tcb.enter_established();
 
     tcb.queue_unacked(100, vec![10, 11, 12], 0, TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK);
@@ -770,7 +770,7 @@ pub fn test_ack_segments_partial_trims_syn_then_payload() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_ack_segments_partial_trims_payload_but_keeps_fin() {
-    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9005));
+    let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST, 9005));
     tcb.enter_established();
 
     tcb.queue_unacked(200, vec![1, 2, 3], 0, TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK);
@@ -791,7 +791,7 @@ pub fn test_ack_segments_partial_trims_payload_but_keeps_fin() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_unacked_sequence_space_accounts_for_syn_and_fin() {
-    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9001));
+    let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST, 9001));
     tcb.enter_established();
 
     // SYN consumes one sequence number even with empty payload.
@@ -816,7 +816,7 @@ pub fn test_accept_future_returns_on_push_connection() {
     use core::task::Poll;
 
     let mut server = TcpProcessor::new();
-    let server_addr = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 5000);
+    let server_addr = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 5000);
     let listener = server.bind(server_addr, None).expect("bind");
 
     // Create AcceptFuture manually
@@ -841,8 +841,8 @@ pub fn test_accept_future_returns_on_push_connection() {
     }
 
     // Prepare a TcpStream and push into backlog
-    let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 5000);
-    let remote = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 6000);
+    let local = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 5000);
+    let remote = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 6000);
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
     tcb.enter_established();
@@ -867,7 +867,7 @@ pub fn test_connect_timeout_expires() {
     use core::task::Poll;
 
     let now = crate::task::timer::current_tick();
-    let local = SocketAddr::new(Ipv4Addr::LOCALHOST, 4001);
+    let local = EndpointAddr::new(Ipv4Addr::LOCALHOST, 4001);
     let mut tcb = TcpControlBlock::new(local);
     tcb.enter_syn_sent();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));

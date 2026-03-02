@@ -1,9 +1,9 @@
 // ============================================================================
 // kernel/src/net/endpoint/socket.rs
 // ============================================================================
-//! # Socket - Arc<PoisonLock<SocketInner>>ラッパー
+//! # Socket - Arc<PoisonLock<EndpointInner>>ラッパー
 //!
-//! Socket, OwnedSocket, および関連ヘルパー関数
+//! Socket, OwnedEndpoint, および関連ヘルパー関数
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -16,113 +16,113 @@ use crate::net::l4::tcp::{
 };
 
 use super::event::{NetworkEvent, send_event, send_event_ignore};
-use super::inner::SocketInner;
-use super::manager::SOCKET_MANAGER;
+use super::inner::EndpointInner;
+use super::manager::ENDPOINT_MANAGER;
 use super::types::{
-    NEXT_FD, SocketAddr, SocketError, SocketFd, SocketResult, SocketState, SocketType,
+    NEXT_FD, EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType,
 };
 
 /// ソケット構造体（細粒度ロック対応）
-pub struct Socket {
+pub struct Endpoint {
     /// ファイルディスクリプタ
-    fd: SocketFd,
+    fd: EndpointFd,
     /// ソケットタイプ（不変）
-    socket_type: SocketType,
+    socket_type: EndpointType,
     /// 内部状態（Arc<PoisonLock>で保護 — 設計書 8.4準拠）
-    inner: Arc<PoisonLock<SocketInner>>,
+    inner: Arc<PoisonLock<EndpointInner>>,
 }
 
-impl Socket {
+impl Endpoint {
     /// 新規ソケット作成
-    pub fn new(socket_type: SocketType) -> Self {
-        let fd = SocketFd::from_raw(NEXT_FD.fetch_add(1, Ordering::Relaxed));
+    pub fn new(socket_type: EndpointType) -> Self {
+        let fd = EndpointFd::from_raw(NEXT_FD.fetch_add(1, Ordering::Relaxed));
         Self {
             fd,
             socket_type,
-            inner: Arc::new(PoisonLock::new(SocketInner::new())),
+            inner: Arc::new(PoisonLock::new(EndpointInner::new())),
         }
     }
 
     /// 指定FDでソケット作成（Accept用）
-    pub fn new_with_fd(socket_type: SocketType, fd: SocketFd) -> Self {
+    pub fn new_with_fd(socket_type: EndpointType, fd: EndpointFd) -> Self {
         Self {
             fd,
             socket_type,
-            inner: Arc::new(PoisonLock::new(SocketInner::new())),
+            inner: Arc::new(PoisonLock::new(EndpointInner::new())),
         }
     }
 
     /// ファイルディスクリプタ取得
     #[inline(always)]
-    pub const fn fd(&self) -> SocketFd {
+    pub const fn fd(&self) -> EndpointFd {
         self.fd
     }
 
     /// ソケットタイプ取得
     #[inline(always)]
-    pub const fn socket_type(&self) -> SocketType {
+    pub const fn socket_type(&self) -> EndpointType {
         self.socket_type
     }
 
     /// 現在の状態取得
     #[inline]
-    pub fn state(&self) -> SocketState {
+    pub fn state(&self) -> EndpointState {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).state
     }
 
     /// ローカルアドレス取得
     #[inline]
-    pub fn local_addr(&self) -> Option<SocketAddr> {
+    pub fn local_addr(&self) -> Option<EndpointAddr> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).local_addr
     }
 
     /// リモートアドレス取得
     #[inline]
-    pub fn remote_addr(&self) -> Option<SocketAddr> {
+    pub fn remote_addr(&self) -> Option<EndpointAddr> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).remote_addr
     }
 
     /// 内部状態への参照取得（高度な操作用）
     #[inline]
-    pub fn inner(&self) -> &Arc<PoisonLock<SocketInner>> {
+    pub fn inner(&self) -> &Arc<PoisonLock<EndpointInner>> {
         &self.inner
     }
 
     /// ローカルアドレスを設定（推奨API）
     ///
     /// 【設計書】POSIXのbind()ではなく、set_local_addr()を使用
-    pub fn set_local_addr(&self, addr: SocketAddr) -> SocketResult<()> {
+    pub fn set_local_addr(&self, addr: EndpointAddr) -> EndpointResult<()> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if !inner.state.can_bind() {
-            return Err(SocketError::AlreadyBound);
+            return Err(EndpointError::AlreadyBound);
         }
 
-        // ポートの重複チェックはSocketManagerで行う
+        // ポートの重複チェックはEndpointManagerで行う
         inner.local_addr = Some(addr);
-        inner.transition_to(SocketState::Bound)
+        inner.transition_to(EndpointState::Bound)
     }
 
 
     /// リモートアドレスへ接続を開始（推奨API）
     ///
     /// 【設計書】POSIXのconnect()ではなく、open_connection()を使用
-    pub fn open_connection(&self, addr: SocketAddr) -> SocketResult<()> {
+    pub fn open_connection(&self, addr: EndpointAddr) -> EndpointResult<()> {
         let local_addr;
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             if !inner.state.can_connect() {
-                return Err(SocketError::AlreadyConnected);
+                return Err(EndpointError::AlreadyConnected);
             }
 
             // ローカルアドレスが未設定ならエフェメラルポートを割り当て
             local_addr = inner.local_addr.unwrap_or_else(|| {
-                SocketAddr::new([0, 0, 0, 0], 0) // 後でマネージャが割り当て
+                EndpointAddr::new([0, 0, 0, 0], 0) // 後でマネージャが割り当て
             });
 
             inner.remote_addr = Some(addr);
-            inner.transition_to(SocketState::Connecting)?;
+            inner.transition_to(EndpointState::Connecting)?;
         }
 
         // TCPスタックに接続イベントを送信（バックプレッシャー対応）
@@ -137,9 +137,9 @@ impl Socket {
     /// リッスンモードを開始（推奨API）
     ///
     /// 【設計書】POSIXのlisten()ではなく、start_listening()を使用
-    pub fn start_listening(&self, backlog: u32) -> SocketResult<()> {
-        if self.socket_type != SocketType::Tcp {
-            return Err(SocketError::InvalidArgument);
+    pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
+        if self.socket_type != EndpointType::Tcp {
+            return Err(EndpointError::InvalidArgument);
         }
 
         let local_addr;
@@ -147,26 +147,26 @@ impl Socket {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             if !inner.state.can_listen() {
-                return Err(SocketError::InvalidStateTransition);
+                return Err(EndpointError::InvalidStateTransition);
             }
 
-            local_addr = inner.local_addr.ok_or(SocketError::InvalidArgument)?;
+            local_addr = inner.local_addr.ok_or(EndpointError::InvalidArgument)?;
 
-            // TCPリスナー作成 - tcp.rs の SocketAddr 型に変換 (IPv4/IPv6 対応)
+            // TCPリスナー作成 - tcp.rs の EndpointAddr 型に変換 (IPv4/IPv6 対応)
             let tcp_addr = if local_addr.is_ipv6() {
                 let v6 = crate::net::l3::ipv6::Ipv6Address::new(local_addr.as_ipv6());
-                crate::net::l4::tcp::SocketAddr::new_v6(v6, local_addr.port())
+                crate::net::l4::tcp::EndpointAddr::new_v6(v6, local_addr.port())
             } else if let Some(v4) = local_addr.as_ipv4() {
-                crate::net::l4::tcp::SocketAddr::new(
+                crate::net::l4::tcp::EndpointAddr::new(
                     crate::net::l4::tcp::Ipv4Addr::new(v4[0], v4[1], v4[2], v4[3]),
                     local_addr.port(),
                 )
             } else {
-                return Err(SocketError::InvalidArgument);
+                return Err(EndpointError::InvalidArgument);
             };
-            let listener = TcpListenerImpl::bind(tcp_addr).map_err(|_| SocketError::AddressInUse)?;
+            let listener = TcpListenerImpl::bind(tcp_addr).map_err(|_| EndpointError::AddressInUse)?;
             inner.tcp_listener = Some(listener);
-            inner.transition_to(SocketState::Listening)?;
+            inner.transition_to(EndpointState::Listening)?;
         }
 
         // ネットワークスタックにリッスンイベントを送信（バックプレッシャー対応）
@@ -182,32 +182,32 @@ impl Socket {
     ///
     /// 【設計書】POSIXのaccept()ではなく、next_incoming()を使用
     /// Acceptキューから接続を取得、空の場合はTimeoutを返す
-    pub fn next_incoming(&self) -> SocketResult<(Socket, SocketAddr)> {
-        if self.socket_type != SocketType::Tcp {
-            return Err(SocketError::InvalidArgument);
+    pub fn next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr)> {
+        if self.socket_type != EndpointType::Tcp {
+            return Err(EndpointError::InvalidArgument);
         }
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
-        if inner.state != SocketState::Listening {
-            return Err(SocketError::InvalidStateTransition);
+        if inner.state != EndpointState::Listening {
+            return Err(EndpointError::InvalidStateTransition);
         }
 
         // Acceptキューから接続を取得
         if let Some(conn) = inner.accept_queue.pop_front() {
             // 新しいソケットを作成
-            let new_socket = Socket::new_with_fd(SocketType::Tcp, conn.fd);
+            let new_socket = Endpoint::new_with_fd(EndpointType::Tcp, conn.fd);
             {
                 let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 new_inner.tcp_nodelay = inner.tcp_nodelay; // 設定を引き継ぐ
                 new_inner.priority = inner.priority; // 優先度を引き継ぐ
-                let _ = new_inner.transition_to(SocketState::Connected);
+                let _ = new_inner.transition_to(EndpointState::Connected);
             }
 
             // ソケットマネージャに登録
-            if let Some(ref mgr) = *SOCKET_MANAGER.read() {
+            if let Some(ref mgr) = *ENDPOINT_MANAGER.read() {
                 mgr.register(new_socket.clone());
             }
 
@@ -220,7 +220,7 @@ impl Socket {
         }
 
         // キューが空の場合はPending（Timeout）を返す
-        Err(SocketError::Timeout)
+        Err(EndpointError::Timeout)
     }
 
 
@@ -246,37 +246,37 @@ impl Socket {
     pub fn accept_from_backlog(
         &self,
         stream: TcpStream,
-        remote_addr: SocketAddr,
-    ) -> SocketResult<Socket> {
-        if self.socket_type != SocketType::Tcp {
-            return Err(SocketError::InvalidArgument);
+        remote_addr: EndpointAddr,
+    ) -> EndpointResult<Endpoint> {
+        if self.socket_type != EndpointType::Tcp {
+            return Err(EndpointError::InvalidArgument);
         }
 
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
-        if inner.state != SocketState::Listening {
-            return Err(SocketError::InvalidStateTransition);
+        if inner.state != EndpointState::Listening {
+            return Err(EndpointError::InvalidStateTransition);
         }
 
-        let new_socket = Socket::new(SocketType::Tcp);
+        let new_socket = Endpoint::new(EndpointType::Tcp);
         {
             let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
             new_inner.local_addr = inner.local_addr;
             new_inner.remote_addr = Some(remote_addr);
             new_inner.tcp_stream = Some(stream);
-            let _ = new_inner.transition_to(SocketState::Connected);
+            let _ = new_inner.transition_to(EndpointState::Connected);
         }
 
         Ok(new_socket)
     }
 
     /// データ送信
-    pub fn send(&self, data: &[u8]) -> SocketResult<usize> {
+    pub fn send(&self, data: &[u8]) -> EndpointResult<usize> {
         let len = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             if !inner.state.can_send() {
-                return Err(SocketError::NotConnected);
+                return Err(EndpointError::NotConnected);
             }
 
             inner.send_to_buffer(data)?
@@ -294,32 +294,32 @@ impl Socket {
     }
 
     /// データ受信
-    pub fn recv(&self, buf: &mut [u8]) -> SocketResult<usize> {
+    pub fn recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if !inner.state.can_receive() {
-            return Err(SocketError::NotConnected);
+            return Err(EndpointError::NotConnected);
         }
 
         let len = inner.recv_from_buffer(buf);
         if len > 0 {
             Ok(len)
         } else {
-            Err(SocketError::Timeout)
+            Err(EndpointError::Timeout)
         }
     }
 
     /// UDP送信
-    pub fn send_to(&self, data: &[u8], addr: SocketAddr) -> SocketResult<usize> {
-        if self.socket_type != SocketType::Udp {
-            return Err(SocketError::InvalidArgument);
+    pub fn send_to(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
+        if self.socket_type != EndpointType::Udp {
+            return Err(EndpointError::InvalidArgument);
         }
 
         {
             let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
-            if !matches!(inner.state, SocketState::Bound | SocketState::Connected) {
-                return Err(SocketError::NotConnected);
+            if !matches!(inner.state, EndpointState::Bound | EndpointState::Connected) {
+                return Err(EndpointError::NotConnected);
             }
         }
 
@@ -334,9 +334,9 @@ impl Socket {
     }
 
     /// UDP受信
-    pub fn recv_from(&self, buf: &mut [u8]) -> SocketResult<(usize, SocketAddr)> {
-        if self.socket_type != SocketType::Udp {
-            return Err(SocketError::InvalidArgument);
+    pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr)> {
+        if self.socket_type != EndpointType::Udp {
+            return Err(EndpointError::InvalidArgument);
         }
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -346,7 +346,7 @@ impl Socket {
             buf[..len].copy_from_slice(&data[..len]);
             Ok((len, addr))
         } else {
-            Err(SocketError::Timeout)
+            Err(EndpointError::Timeout)
         }
     }
 
@@ -368,7 +368,7 @@ impl Socket {
 
     /// UDPパケット追加（内部用）
     /// プロトコルスタックから呼ばれる
-    pub fn push_packet(&self, addr: SocketAddr, data: Vec<u8>) {
+    pub fn push_packet(&self, addr: EndpointAddr, data: Vec<u8>) {
         let waker = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.pending_packets.push_back((addr, data));
@@ -383,7 +383,7 @@ impl Socket {
     }
 
     /// クローズ
-    pub fn close(&self) -> SocketResult<()> {
+    pub fn close(&self) -> EndpointResult<()> {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -409,7 +409,7 @@ impl Socket {
                 waker.wake();
             }
 
-            inner.transition_to(SocketState::Closed)?;
+            inner.transition_to(EndpointState::Closed)?;
         }
 
         // ネットワークスタックにクローズを通知（エラーは無視 - クローズは必ず進める）
@@ -437,9 +437,9 @@ impl Socket {
     }
 
     /// TCP_NODELAY (Nagleアルゴリズム無効化) を設定
-    pub fn set_nodelay(&self, nodelay: bool) -> SocketResult<()> {
-        if self.socket_type != SocketType::Tcp {
-            return Err(SocketError::InvalidArgument);
+    pub fn set_nodelay(&self, nodelay: bool) -> EndpointResult<()> {
+        if self.socket_type != EndpointType::Tcp {
+            return Err(EndpointError::InvalidArgument);
         }
 
         {
@@ -455,7 +455,7 @@ impl Socket {
     }
 
     /// QoS優先度 (DSCP) を設定
-    pub fn set_priority(&self, priority: u8) -> SocketResult<()> {
+    pub fn set_priority(&self, priority: u8) -> EndpointResult<()> {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.priority = priority & 0x3F; // DSCPは6ビット
@@ -469,7 +469,7 @@ impl Socket {
     }
 }
 
-impl Clone for Socket {
+impl Clone for Endpoint {
     fn clone(&self) -> Self {
         Self {
             fd: self.fd,
@@ -480,149 +480,149 @@ impl Clone for Socket {
 }
 
 // =====================================================
-// OwnedSocket - RAII リソース管理
+// OwnedEndpoint - RAII リソース管理
 // =====================================================
 
 /// RAII管理されるソケット（Drop時に自動クローズ）
-pub struct OwnedSocket {
-    socket: Option<Socket>,
+pub struct OwnedEndpoint {
+    endpoint: Option<Endpoint>,
 }
 
-impl OwnedSocket {
-    /// 新規OwnedSocket作成
-    pub fn new(socket_type: SocketType) -> Self {
-        let socket = Socket::new(socket_type);
-        // SocketManagerに登録
-        if let Some(ref manager) = *SOCKET_MANAGER.read() {
+impl OwnedEndpoint {
+    /// 新規OwnedEndpoint作成
+    pub fn new(socket_type: EndpointType) -> Self {
+        let socket = Endpoint::new(socket_type);
+        // EndpointManagerに登録
+        if let Some(ref manager) = *ENDPOINT_MANAGER.read() {
             manager.register(socket.clone());
         }
         Self {
-            socket: Some(socket),
+            endpoint: Some(socket),
         }
     }
 
-    /// 既存ソケットからOwnedSocket作成
-    pub fn from_socket(socket: Socket) -> Self {
+    /// 既存ソケットからOwnedEndpoint作成
+    pub fn from_socket(endpoint: Endpoint) -> Self {
         Self {
-            socket: Some(socket),
+            endpoint: Some(socket),
         }
     }
 
     /// ファイルディスクリプタ取得
-    pub fn fd(&self) -> SocketFd {
-        self.socket
+    pub fn fd(&self) -> EndpointFd {
+        self.endpoint
             .as_ref()
             .map(|s| s.fd())
-            .unwrap_or(SocketFd::INVALID)
+            .unwrap_or(EndpointFd::INVALID)
     }
 
     /// 内部ソケットへの参照
-    pub fn socket(&self) -> Option<&Socket> {
-        self.socket.as_ref()
+    pub fn endpoint(&self) -> Option<&Endpoint> {
+        self.endpoint.as_ref()
     }
 
     /// 内部ソケットへの可変参照
-    pub fn socket_mut(&mut self) -> Option<&mut Socket> {
-        self.socket.as_mut()
+    pub fn endpoint_mut(&mut self) -> Option<&mut Socket> {
+        self.endpoint.as_mut()
     }
 
     /// ソケットを取り出し（所有権移動、Dropしなくなる）
-    pub fn into_inner(mut self) -> Option<Socket> {
-        self.socket.take()
+    pub fn into_inner(mut self) -> Option<Endpoint> {
+        self.endpoint.take()
     }
 
     /// ローカルアドレスを設定（推奨API）
-    pub fn set_local_addr(&self, addr: SocketAddr) -> SocketResult<()> {
-        self.socket
+    pub fn set_local_addr(&self, addr: EndpointAddr) -> EndpointResult<()> {
+        self.endpoint
             .as_ref()
-            .ok_or(SocketError::NotFound)?
+            .ok_or(EndpointError::NotFound)?
             .set_local_addr(addr)
     }
 
 
     /// リモートアドレスへ接続を開始（推奨API）
-    pub fn open_connection(&self, addr: SocketAddr) -> SocketResult<()> {
-        self.socket
+    pub fn open_connection(&self, addr: EndpointAddr) -> EndpointResult<()> {
+        self.endpoint
             .as_ref()
-            .ok_or(SocketError::NotFound)?
+            .ok_or(EndpointError::NotFound)?
             .open_connection(addr)
     }
 
 
     /// リッスンモードを開始（推奨API）
-    pub fn start_listening(&self, backlog: u32) -> SocketResult<()> {
-        self.socket
+    pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
+        self.endpoint
             .as_ref()
-            .ok_or(SocketError::NotFound)?
+            .ok_or(EndpointError::NotFound)?
             .start_listening(backlog)
     }
 
 
     /// 次の接続を取得（推奨API）
-    pub fn next_incoming(&self) -> SocketResult<(OwnedSocket, SocketAddr)> {
+    pub fn next_incoming(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr)> {
         let (socket, addr) = self
             .socket
             .as_ref()
-            .ok_or(SocketError::NotFound)?
+            .ok_or(EndpointError::NotFound)?
             .next_incoming()?;
-        Ok((OwnedSocket::from_socket(socket), addr))
+        Ok((OwnedEndpoint::from_socket(socket), addr))
     }
 
 
     /// 送信
-    pub fn send(&self, data: &[u8]) -> SocketResult<usize> {
-        self.socket
+    pub fn send(&self, data: &[u8]) -> EndpointResult<usize> {
+        self.endpoint
             .as_ref()
-            .ok_or(SocketError::NotFound)?
+            .ok_or(EndpointError::NotFound)?
             .send(data)
     }
 
     /// 受信
-    pub fn recv(&self, buf: &mut [u8]) -> SocketResult<usize> {
-        self.socket.as_ref().ok_or(SocketError::NotFound)?.recv(buf)
+    pub fn recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
+        self.endpoint.as_ref().ok_or(EndpointError::NotFound)?.recv(buf)
     }
 
     /// UDP送信
-    pub fn send_to(&self, data: &[u8], addr: SocketAddr) -> SocketResult<usize> {
-        self.socket
+    pub fn send_to(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
+        self.endpoint
             .as_ref()
-            .ok_or(SocketError::NotFound)?
+            .ok_or(EndpointError::NotFound)?
             .send_to(data, addr)
     }
 
     /// UDP受信
-    pub fn recv_from(&self, buf: &mut [u8]) -> SocketResult<(usize, SocketAddr)> {
-        self.socket
+    pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr)> {
+        self.endpoint
             .as_ref()
-            .ok_or(SocketError::NotFound)?
+            .ok_or(EndpointError::NotFound)?
             .recv_from(buf)
     }
 
     /// TCP_NODELAY設定
-    pub fn set_nodelay(&self, nodelay: bool) -> SocketResult<()> {
-        self.socket
+    pub fn set_nodelay(&self, nodelay: bool) -> EndpointResult<()> {
+        self.endpoint
             .as_ref()
-            .ok_or(SocketError::NotFound)?
+            .ok_or(EndpointError::NotFound)?
             .set_nodelay(nodelay)
     }
 
     /// QoS優先度設定
-    pub fn set_priority(&self, priority: u8) -> SocketResult<()> {
-        self.socket
+    pub fn set_priority(&self, priority: u8) -> EndpointResult<()> {
+        self.endpoint
             .as_ref()
-            .ok_or(SocketError::NotFound)?
+            .ok_or(EndpointError::NotFound)?
             .set_priority(priority)
     }
 }
 
-impl Drop for OwnedSocket {
+impl Drop for OwnedEndpoint {
     fn drop(&mut self) {
-        if let Some(ref socket) = self.socket {
+        if let Some(ref ep) = self.endpoint {
             // ソケットクローズ
             let _ = socket.close();
 
-            // SocketManagerから登録解除
-            if let Some(ref manager) = *SOCKET_MANAGER.read() {
+            // EndpointManagerから登録解除
+            if let Some(ref manager) = *ENDPOINT_MANAGER.read() {
                 manager.unregister(socket.fd());
             }
         }
@@ -630,23 +630,23 @@ impl Drop for OwnedSocket {
 }
 
 // =====================================================
-// 便利関数 - OwnedSocket API
+// 便利関数 - OwnedEndpoint API
 // =====================================================
 
 /// TCPソケット作成
-pub fn create_tcp_socket() -> OwnedSocket {
-    OwnedSocket::new(SocketType::Tcp)
+pub fn create_tcp_endpoint() -> OwnedEndpoint {
+    OwnedEndpoint::new(EndpointType::Tcp)
 }
 
 /// TCPソケット作成（輻輳制御アルゴリズム指定）
 ///
 /// デフォルトはNewReno。CUBIC/BBRを使用する場合はこちらを利用。
 /// アルゴリズムは接続開始時にTCBに反映される。
-pub fn create_tcp_socket_with_algorithm(
+pub fn create_tcp_endpoint_with_algorithm(
     algorithm: super::congestion::CongestionAlgorithm,
-) -> OwnedSocket {
-    let socket = OwnedSocket::new(SocketType::Tcp);
-    if let Some(inner_socket) = socket.socket() {
+) -> OwnedEndpoint {
+    let socket = OwnedEndpoint::new(EndpointType::Tcp);
+    if let Some(inner_socket) = endpoint_ref.endpoint() {
         let mut inner = inner_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.congestion_algorithm = Some(algorithm);
     }
@@ -654,20 +654,20 @@ pub fn create_tcp_socket_with_algorithm(
 }
 
 /// UDPソケット作成
-pub fn create_udp_socket() -> OwnedSocket {
-    OwnedSocket::new(SocketType::Udp)
+pub fn create_udp_endpoint() -> OwnedEndpoint {
+    OwnedEndpoint::new(EndpointType::Udp)
 }
 
 /// RAWソケット作成
-pub fn create_raw_socket() -> OwnedSocket {
-    OwnedSocket::new(SocketType::Raw)
+pub fn create_raw_endpoint() -> OwnedEndpoint {
+    OwnedEndpoint::new(EndpointType::Raw)
 }
 
 /// TCPサーバー作成（推奨API）
 ///
 /// 【設計書】POSIXソケットAPIを模倣しない
-pub fn create_tcp_server(addr: SocketAddr, backlog: u32) -> SocketResult<OwnedSocket> {
-    let socket = create_tcp_socket();
+pub fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<OwnedEndpoint> {
+    let socket = create_tcp_endpoint();
     socket.set_local_addr(addr)?;
     socket.start_listening(backlog)?;
     Ok(socket)
@@ -676,16 +676,16 @@ pub fn create_tcp_server(addr: SocketAddr, backlog: u32) -> SocketResult<OwnedSo
 /// TCP接続（推奨API）
 ///
 /// 【設計書】POSIXソケットAPIを模倣しない
-pub fn open_tcp_connection(addr: SocketAddr) -> SocketResult<OwnedSocket> {
-    let socket = create_tcp_socket();
+pub fn open_tcp_connection(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
+    let socket = create_tcp_endpoint();
     socket.open_connection(addr)?;
     Ok(socket)
 }
 
 
 /// UDPソケット作成とローカルアドレス設定（推奨API）
-pub fn create_udp_endpoint(addr: SocketAddr) -> SocketResult<OwnedSocket> {
-    let socket = create_udp_socket();
+pub fn create_udp_endpoint(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
+    let socket = create_udp_endpoint();
     socket.set_local_addr(addr)?;
     Ok(socket)
 }
@@ -701,9 +701,9 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_owned_socket_raii() {
-        // OwnedSocketはスコープ終了時に自動クローズ
+        // OwnedEndpointはスコープ終了時に自動クローズ
         {
-            let _socket = OwnedSocket::new(SocketType::Tcp);
+            let _socket = OwnedEndpoint::new(EndpointType::Tcp);
             // スコープ終了時にDropが呼ばれる
         }
         // ソケットは自動的にクローズされている
@@ -717,7 +717,7 @@ pub mod qemu_tests {
 
     pub fn owned_socket_raii_smoke() -> bool {
         {
-            let _socket = OwnedSocket::new(SocketType::Tcp);
+            let _socket = OwnedEndpoint::new(EndpointType::Tcp);
         }
         true
     }

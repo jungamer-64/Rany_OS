@@ -8,16 +8,16 @@
 
 use super::event::{event_queue, NetworkEvent};
 use super::handler::{EventHandleResult, NetworkEventHandler};
-use super::manager::SOCKET_MANAGER;
+use super::manager::ENDPOINT_MANAGER;
 use super::ooo_queue;
 use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment};
-use super::socket::Socket;
+use super::endpoint_core::Endpoint;
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
 use super::types::{
-    AcceptedConnection, SocketAddr, SocketError, SocketFd, SocketState, SocketType,
+    AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
     seq_before,
 };
 use super::window_scale::TcpOptionParser;
@@ -140,8 +140,8 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     let _window = u16::from_be_bytes([segment[14], segment[15]]);
     let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
 
-    let remote = SocketAddr::new(src_ip, src_port);
-    let local = SocketAddr::new(dst_ip, dst_port);
+    let remote = EndpointAddr::new(src_ip, src_port);
+    let local = EndpointAddr::new(dst_ip, dst_port);
 
     // TCBを検索
     if let Some(tcb) = tcb_table().get(local, remote) {
@@ -385,8 +385,8 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
 
 /// 新規接続処理（SYN受信 - サーバー側）
 fn process_tcp_new_connection(
-    local: SocketAddr,
-    remote: SocketAddr,
+    local: EndpointAddr,
+    remote: EndpointAddr,
     flags: u8,
     seq_num: u32,
     segment: &[u8],
@@ -409,12 +409,12 @@ fn process_tcp_new_connection(
     };
 
     // リッスン中のソケットを探す
-    let manager = SOCKET_MANAGER.read();
+    let manager = ENDPOINT_MANAGER.read();
     let Some(ref mgr) = *manager else {
         return;
     };
 
-    let socket = mgr.find_by_port(SocketType::Tcp, local.port());
+    let socket = mgr.find_by_port(EndpointType::Tcp, local.port());
     let Some(socket) = socket else {
         // リッスン中のソケットがない → RST送信
         let mut rst = TcpSegmentBuilder::new(local.port(), remote.port())
@@ -438,7 +438,7 @@ fn process_tcp_new_connection(
     };
 
     let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-    if inner.state != SocketState::Listening {
+    if inner.state != EndpointState::Listening {
         return;
     }
     let nodelay = inner.tcp_nodelay; // 設定を取得
@@ -524,7 +524,7 @@ fn handle_rst_received(tcb: TcpControlBlockEntry, seq_num: u32) {
         // ソケットにエラー通知
         if let Some(socket) = get_socket_by_fd(tcb.fd) {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.last_error = Some(SocketError::ConnectionRefused);
+            inner.last_error = Some(EndpointError::ConnectionRefused);
             if let Some(waker) = inner.connect_waker.take() {
                 waker.wake();
             }
@@ -607,7 +607,7 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
 
 /// Accept用の新規ソケットを作成
 fn create_accepted_socket(tcb: &TcpControlBlockEntry) -> Option<AcceptedConnection> {
-    let manager = SOCKET_MANAGER.read();
+    let manager = ENDPOINT_MANAGER.read();
     let mgr = manager.as_ref()?;
 
     // 新しいFDを割り当て
@@ -634,18 +634,18 @@ fn create_accepted_socket(tcb: &TcpControlBlockEntry) -> Option<AcceptedConnecti
 
 /// Listeningソケットを探してAcceptキューに追加
 fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
-    let manager = SOCKET_MANAGER.read();
+    let manager = ENDPOINT_MANAGER.read();
     let Some(ref mgr) = *manager else {
         return false;
     };
 
     // ローカルポートでリッスン中のソケットを検索
     // find_by_portを使用
-    if let Some(socket) = mgr.find_by_port(SocketType::Tcp, local_port) {
+    if let Some(socket) = mgr.find_by_port(EndpointType::Tcp, local_port) {
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         // Listening状態でなければスキップ
-        if inner.state != SocketState::Listening {
+        if inner.state != EndpointState::Listening {
             return false;
         }
 
@@ -851,8 +851,8 @@ fn handle_urgent_received(tcb: TcpControlBlockEntry, seq_num: u32, urgent_ptr: u
 }
 
 /// ソケットにurgent data到着を通知
-fn notify_socket_urgent(fd: SocketFd) {
-    let manager = SOCKET_MANAGER.read();
+fn notify_socket_urgent(fd: EndpointFd) {
+    let manager = ENDPOINT_MANAGER.read();
     let Some(ref mgr) = *manager else {
         return;
     };
@@ -869,15 +869,15 @@ fn notify_socket_urgent(fd: SocketFd) {
 }
 
 /// ソケットに接続完了を通知
-fn notify_socket_connected(fd: SocketFd) {
-    let manager = SOCKET_MANAGER.read();
+fn notify_socket_connected(fd: EndpointFd) {
+    let manager = ENDPOINT_MANAGER.read();
     let Some(ref mgr) = *manager else {
         return;
     };
 
     if let Some(socket) = mgr.get(fd) {
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-        let _ = inner.transition_to(SocketState::Connected);
+        let _ = inner.transition_to(EndpointState::Connected);
         if let Some(waker) = inner.connect_waker.take() {
             waker.wake();
         }
@@ -885,8 +885,8 @@ fn notify_socket_connected(fd: SocketFd) {
 }
 
 /// FDでソケット取得
-fn get_socket_by_fd(fd: SocketFd) -> Option<Socket> {
-    let manager = SOCKET_MANAGER.read();
+fn get_socket_by_fd(fd: EndpointFd) -> Option<Endpoint> {
+    let manager = ENDPOINT_MANAGER.read();
     let mgr = manager.as_ref()?;
     mgr.get(fd)
 }

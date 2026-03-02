@@ -108,7 +108,7 @@ impl DhcpV6Client {
                     
                     // ここでは UdpAddr::ip() は IPv4 互換を想定しているため、
                     // 真の IPv6 アドレスを取得するには Datapath からの情報を利用するか、
-                    // UdpSocket::recv() が IPv6 対応している必要がある。
+                    // UdpEndpoint::recv() が IPv6 対応している必要がある。
                     
                     // TODO: UdpAddr の IPv6 対応を確認
                     // 現状は handle_packet 内で src を利用しているが、

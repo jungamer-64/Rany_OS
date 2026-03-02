@@ -192,7 +192,7 @@ pub fn send_tcp_v6(src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net
 }
 
 /// Bind a UDP socket
-pub fn bind_udp(port: u16) -> Option<UdpSocket> {
+pub fn bind_udp(port: u16) -> Option<UdpEndpoint> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => guard.as_mut().and_then(|s| s.bind_udp(port)),
         Err(_) => {
@@ -217,7 +217,7 @@ pub fn process_timeouts(_current_time: u64) {
 }
 
 /// Bind a UDP socket and associate it with an optional capability token
-pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpSocket> {
+pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => guard.as_mut().and_then(|s| s.bind_udp_with_token(port, token)),
         Err(_) => {
@@ -251,7 +251,7 @@ pub fn unbind_udp(port: u16) {
 }
 
 /// Unbind a TCP connection
-pub fn unbind_tcp(local: TcpSocketAddr, remote: TcpSocketAddr) {
+pub fn unbind_tcp(local: TcpEndpointAddr, remote: TcpEndpointAddr) {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
@@ -263,7 +263,7 @@ pub fn unbind_tcp(local: TcpSocketAddr, remote: TcpSocketAddr) {
 }
 
 /// Unbind a TCP listener
-pub fn unbind_tcp_listener(local: TcpSocketAddr) {
+pub fn unbind_tcp_listener(local: TcpEndpointAddr) {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
@@ -275,7 +275,7 @@ pub fn unbind_tcp_listener(local: TcpSocketAddr) {
 }
 
 /// Bind a TCP listener
-pub fn bind_tcp(addr: TcpSocketAddr) -> Result<TcpListener, TcpError> {
+pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
@@ -292,7 +292,7 @@ pub fn bind_tcp(addr: TcpSocketAddr) -> Result<TcpListener, TcpError> {
 }
 
 /// Bind a TCP listener with a capability token
-pub fn bind_tcp_with_token(addr: TcpSocketAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
+pub fn bind_tcp_with_token(addr: TcpEndpointAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
@@ -309,7 +309,7 @@ pub fn bind_tcp_with_token(addr: TcpSocketAddr, token: Option<u64>) -> Result<Tc
 }
 
 /// Connect to a remote TCP address
-pub fn connect_tcp(local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Result<TcpStream, TcpError> {
+pub fn connect_tcp(local_addr: TcpEndpointAddr, remote_addr: TcpEndpointAddr) -> Result<TcpStream, TcpError> {
      match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {

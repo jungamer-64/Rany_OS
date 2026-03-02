@@ -23,7 +23,7 @@ extern crate alloc;
 /// UDP header
 mod types;
 pub use types::*;
-mod socket_table_impl;
+mod endpoint_table_impl;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 #[derive(Debug, Clone, Copy)]
@@ -238,7 +238,7 @@ impl<'a> UdpPacketMut<'a> {
     }
 }
 
-/// UDP socket address
+/// UDP endpoint address
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UdpAddr {
     /// IP address
@@ -254,8 +254,8 @@ impl UdpAddr {
     }
 }
 
-/// UDP socket state
-pub(crate) struct UdpSocketInner {
+/// UDP endpoint state
+pub(crate) struct UdpEndpointInner {
     /// Local port
     local_port: u16,
     /// Receive queue (zero-copy PacketRef + source addr + IP TTL/HopLimit)
@@ -264,28 +264,28 @@ pub(crate) struct UdpSocketInner {
     rx_queue_bytes: usize,
     /// Wakers for async receive
     wakers: Vec<Waker>,
-    /// Is socket closed
+    /// Is endpoint closed
     closed: bool,
     /// Optional associated grant token id used to authorize this binding
     token: Option<u64>,
 }
 
-/// Maximum UDP receive queue size in bytes (e.g., 256 KB per socket)
+/// Maximum UDP receive queue size in bytes (e.g., 256 KB per endpoint)
 const MAX_UDP_RX_QUEUE_BYTES: usize = 256 * 1024;
-/// UDP socket (async)
-pub struct UdpSocket {
-    inner: Arc<PoisonLock<UdpSocketInner>>,
+/// UDP endpoint (async)
+pub struct UdpEndpoint {
+    inner: Arc<PoisonLock<UdpEndpointInner>>,
 }
 
-impl Clone for UdpSocket {
+impl Clone for UdpEndpoint {
     fn clone(&self) -> Self {
-        UdpSocket { inner: self.inner.clone() }
+        UdpEndpoint { inner: self.inner.clone() }
     }
 }
 
-impl Drop for UdpSocket {
+impl Drop for UdpEndpoint {
     fn drop(&mut self) {
-        // Automatically unbind the port when the last socket handle is dropped.
+        // Automatically unbind the port when the last endpoint handle is dropped.
         // The global table holds one reference (count=1), so if strong_count is 2,
         // this is the last external handle.
         if Arc::strong_count(&self.inner) == 2 {
@@ -297,16 +297,16 @@ impl Drop for UdpSocket {
     }
 }
 
-impl UdpSocket {
-    /// Create a new UDP socket bound to a port
+impl UdpEndpoint {
+    /// Create a new UDP endpoint bound to a port
     pub fn new(local_port: u16) -> Self {
         Self::new_with_token(local_port, None)
     }
 
-    /// Create a new UDP socket bound to a port and associated with an optional capability token
+    /// Create a new UDP endpoint bound to a port and associated with an optional capability token
     pub fn new_with_token(local_port: u16, token: Option<u64>) -> Self {
-        UdpSocket {
-            inner: Arc::new(PoisonLock::new(UdpSocketInner {
+        UdpEndpoint {
+            inner: Arc::new(PoisonLock::new(UdpEndpointInner {
                 local_port,
                 rx_packet_queue: VecDeque::with_capacity(64),
                 rx_queue_bytes: 0,
@@ -322,7 +322,7 @@ impl UdpSocket {
         match self.inner.lock() {
             Ok(g) => g.local_port,
             Err(_) => {
-                log::error!("[NET] UDP Socket poisoned (local_port)");
+                log::error!("[NET] UDP Endpoint poisoned (local_port)");
                 0
             }
         }
@@ -331,7 +331,7 @@ impl UdpSocket {
     /// Receive a datagram (async, zero-copy)
     pub fn recv(&self) -> UdpRecvFuture {
         UdpRecvFuture {
-            socket: self.inner.clone(),
+            endpoint: self.inner.clone(),
         }
     }
 
@@ -355,7 +355,7 @@ impl UdpSocket {
                     log::warn!("[NET] UDP socket queue full, dropping packet (len={}, queue_bytes={})", pkt_len, inner.rx_queue_bytes);
                 }
             }
-            Err(_) => log::error!("[NET] UDP Socket poisoned during deliver - dropping packet"),
+            Err(_) => log::error!("[NET] UDP Endpoint poisoned during deliver - dropping packet"),
         }
     }
 
@@ -370,7 +370,7 @@ impl UdpSocket {
                     waker.wake();
                 }
             }
-            Err(_) => log::error!("[NET] UDP Socket poisoned during close - no-op"),
+            Err(_) => log::error!("[NET] UDP Endpoint poisoned during close - no-op"),
         }
     }
 
@@ -379,7 +379,7 @@ impl UdpSocket {
         match self.inner.lock() {
             Ok(g) => g.closed,
             Err(_) => {
-                log::error!("[NET] UDP Socket poisoned (is_closed)");
+                log::error!("[NET] UDP Endpoint poisoned (is_closed)");
                 true
             }
         }
@@ -402,7 +402,7 @@ impl UdpSocket {
         match self.inner.lock() {
             Ok(g) => g.rx_packet_queue.len(),
             Err(_) => {
-                log::error!("[NET] UDP Socket poisoned (rx_queue_len)");
+                log::error!("[NET] UDP Endpoint poisoned (rx_queue_len)");
                 0
             }
         }
@@ -437,7 +437,7 @@ impl UdpSocket {
 
 /// Future for receiving UDP datagrams
 pub struct UdpRecvFuture {
-    socket: Arc<PoisonLock<UdpSocketInner>>,
+    socket: Arc<PoisonLock<UdpEndpointInner>>,
 }
 
 impl Future for UdpRecvFuture {
@@ -459,7 +459,7 @@ impl Future for UdpRecvFuture {
                 }
             }
             Err(_) => {
-                log::error!("[NET] UDP Socket poisoned in recv future - returning closed");
+                log::error!("[NET] UDP Endpoint poisoned in recv future - returning closed");
                 Poll::Ready(None)
             }
         }
@@ -467,12 +467,12 @@ impl Future for UdpRecvFuture {
 }
 
 /// Maximum UDP sockets
-const MAX_UDP_SOCKETS: usize = 1024;
+const MAX_UDP_ENDPOINTS: usize = 1024;
 
 /// UDP socket table
-pub struct UdpSocketTable {
+pub struct UdpEndpointTable {
     /// Sockets indexed by local port
-    sockets: PoisonLock<alloc::collections::BTreeMap<u16, Arc<PoisonLock<UdpSocketInner>>>>,
+    sockets: PoisonLock<alloc::collections::BTreeMap<u16, Arc<PoisonLock<UdpEndpointInner>>>>,
     /// Statistics
     stats: UdpStats,
 }

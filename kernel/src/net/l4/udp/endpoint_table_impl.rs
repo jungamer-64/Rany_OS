@@ -2,10 +2,10 @@ use super::*;
 use alloc::collections::BTreeMap;
 use core::sync::atomic::Ordering;
 
-impl UdpSocketTable {
+impl UdpEndpointTable {
     /// Create a new UDP socket table
     pub const fn new() -> Self {
-        UdpSocketTable {
+        UdpEndpointTable {
             sockets: PoisonLock::new(BTreeMap::new()),
             stats: UdpStats {
                 rx_datagrams: core::sync::atomic::AtomicU64::new(0),
@@ -17,7 +17,7 @@ impl UdpSocketTable {
     }
 
     /// 1024..65535 の範囲からランダムな未使用ポートを選択する
-    fn find_available_port(&self, sockets: &BTreeMap<u16, Arc<PoisonLock<UdpSocketInner>>>) -> Option<u16> {
+    fn find_available_port(&self, sockets: &BTreeMap<u16, Arc<PoisonLock<UdpEndpointInner>>>) -> Option<u16> {
         // 暗号論的に安全な乱数から開始ポートを決定 (Source Port Randomization)
         let random_bytes = crate::net::security::tls::generate_random();
         let seed = u16::from_le_bytes([random_bytes[0], random_bytes[1]]);
@@ -40,12 +40,12 @@ impl UdpSocketTable {
 
     /// Bind a socket to a port and associate it with an optional capability token.
     /// If `port` is 0, an available ephemeral port will be automatically assigned.
-    pub fn bind_with_token(&self, mut port: u16, token: Option<u64>) -> Option<UdpSocket> {
-        match self.sockets.lock() {
+    pub fn bind_with_token(&self, mut port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
+        match self.endpoints.lock() {
             Ok(mut sockets) => {
                 // Check table size limit
-                if sockets.len() >= MAX_UDP_SOCKETS {
-                    log::warn!("[NET] UDP: Socket table full");
+                if sockets.len() >= MAX_UDP_ENDPOINTS {
+                    log::warn!("[NET] UDP: Endpoint table full");
                     return None;
                 }
 
@@ -94,7 +94,7 @@ impl UdpSocketTable {
                     }
                 }
 
-                let inner = Arc::new(PoisonLock::new(UdpSocketInner {
+                let inner = Arc::new(PoisonLock::new(UdpEndpointInner {
                     local_port: port,
                     rx_packet_queue: VecDeque::with_capacity(64),
                     rx_queue_bytes: 0,
@@ -104,7 +104,7 @@ impl UdpSocketTable {
                 }));
 
                 sockets.insert(port, inner.clone());
-                Some(UdpSocket { inner })
+                Some(UdpEndpoint { inner })
             }
             Err(_) => {
                 log::error!("[NET] UDP Table poisoned during bind");
@@ -118,7 +118,7 @@ impl UdpSocketTable {
 
     /// Unbind a socket from a port
     pub fn unbind(&self, port: u16) {
-        match self.sockets.lock() {
+        match self.endpoints.lock() {
             Ok(mut sockets) => {
                 if let Some(inner) = sockets.remove(&port) {
                     match inner.lock() {
@@ -127,7 +127,7 @@ impl UdpSocketTable {
                                 let _ = crate::security::capability::manager().decrement_in_flight(t);
                             }
                         }
-                        Err(_) => log::error!("[NET] UDP Socket poisoned during unbind"),
+                        Err(_) => log::error!("[NET] UDP Endpoint poisoned during unbind"),
                     }
                 }
             }
@@ -136,8 +136,8 @@ impl UdpSocketTable {
     }
 
     /// Find a socket by port
-    pub(crate) fn find(&self, port: u16) -> Option<Arc<PoisonLock<UdpSocketInner>>> {
-        match self.sockets.lock() {
+    pub(crate) fn find(&self, port: u16) -> Option<Arc<PoisonLock<UdpEndpointInner>>> {
+        match self.endpoints.lock() {
             Ok(sockets) => {
                 if let Some(inner) = sockets.get(&port) {
                     match inner.lock() {
@@ -146,7 +146,7 @@ impl UdpSocketTable {
                                 return Some(inner.clone());
                             }
                         }
-                        Err(_) => log::error!("[NET] UDP Socket poisoned during find"),
+                        Err(_) => log::error!("[NET] UDP Endpoint poisoned during find"),
                     }
                 }
                 None
@@ -161,7 +161,7 @@ impl UdpSocketTable {
     /// Deliver a packet to the appropriate socket
     pub fn deliver(&self, src: UdpAddr, dst_port: u16, ttl: u8, packet: PacketRef) -> bool {
         if let Some(inner) = self.find(dst_port) {
-            let socket = crate::net::l4::udp::UdpSocket { inner };
+            let socket = crate::net::l4::udp::UdpEndpoint { inner };
             socket.deliver(src, ttl, packet);
             self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
             true
@@ -172,15 +172,15 @@ impl UdpSocketTable {
     }
 
     /// List all bound UDP sockets
-    pub fn list_sockets(&self) -> alloc::vec::Vec<UdpSocketSnapshot> {
+    pub fn list_endpoints(&self) -> alloc::vec::Vec<UdpEndpointSnapshot> {
         let mut result = alloc::vec::Vec::new();
-        match self.sockets.lock() {
+        match self.endpoints.lock() {
             Ok(sockets) => {
                 for (port, inner) in sockets.iter() {
                     match inner.lock() {
                         Ok(socket) => {
                             if !socket.closed {
-                                result.push(UdpSocketSnapshot {
+                                result.push(UdpEndpointSnapshot {
                                     local_port: *port,
                                     rx_queue_len: socket.rx_packet_queue.len(),
                                 });
@@ -190,14 +190,14 @@ impl UdpSocketTable {
                     }
                 }
             }
-            Err(_) => log::error!("[NET] UDP Table poisoned (list_sockets)"),
+            Err(_) => log::error!("[NET] UDP Table poisoned (list_endpoints)"),
         }
         result
     }
 
     /// Get number of bound sockets
-    pub fn socket_count(&self) -> usize {
-        match self.sockets.lock() {
+    pub fn endpoint_count(&self) -> usize {
+        match self.endpoints.lock() {
             Ok(sockets) => sockets.len(),
             Err(_) => 0,
         }

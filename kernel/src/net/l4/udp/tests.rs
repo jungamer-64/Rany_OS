@@ -68,7 +68,7 @@ pub fn test_udp_packet() {
 pub fn test_udp_socket_poisoned_methods_return_defaults() {
     use crate::sync::set_panicking;
 
-    let socket = UdpSocket::new(12345);
+    let socket = UdpEndpoint::new(12345);
 
     // Poison the inner lock
     set_panicking(true);
@@ -146,7 +146,7 @@ pub fn test_udp_recv_future_poisoned_returns_closed() {
 
     fn noop_waker() -> Waker { unsafe { Waker::from_raw(noop_raw_waker()) } }
 
-    let socket = UdpSocket::new(54321);
+    let socket = UdpEndpoint::new(54321);
 
     // Poison the inner lock
     set_panicking(true);
@@ -178,14 +178,14 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
     // Bind should fail (token-aware API returns Err on failure)
     assert!(proc.bind_with_token(10000, None).is_err());
 
-    // Build a packet and process - should be NoSocket and stats increment rx_dropped
+    // Build a packet and process - should be NoEndpoint and stats increment rx_dropped
     let src_ip = Ipv4Address::from_octets(1, 2, 3, 4);
     let dst_ip = Ipv4Address::from_octets(1, 2, 3, 4);
     let mut buffer = [0u8; 64];
     let len = UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x").unwrap();
 
     let res = proc.process(&buffer[..len], src_ip, dst_ip);
-    assert_eq!(res, UdpResult::NoSocket);
+    assert_eq!(res, UdpResult::NoEndpoint);
 
     let stats = proc.sockets().stats();
     assert_eq!(stats.2, 1); // rx_dropped == 1
@@ -219,7 +219,7 @@ pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
         unsafe { Waker::from_raw(RawWaker::new(counter as *const _ as *const (), &VTABLE)) }
     }
 
-    let socket = UdpSocket::new(54322);
+    let socket = UdpEndpoint::new(54322);
     let mut fut1 = socket.recv();
     let mut fut2 = socket.recv();
 

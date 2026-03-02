@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::net::datapath::mempool::{PacketRef, alloc_packet};
 use crate::sync::PoisonLock;
-use super::types::{SocketAddr, conn_key_hash, seq_before};
+use super::types::{EndpointAddr, conn_key_hash, seq_before};
 
 /// OOOセグメントの最大保持数（接続あたり）
 const MAX_OOO_SEGMENTS: usize = 16;
@@ -223,7 +223,7 @@ impl SackBlocks {
 }
 
 /// 接続キー
-type ConnKey = (SocketAddr, SocketAddr);
+type ConnKey = (EndpointAddr, EndpointAddr);
 
 /// シャード数
 const OOO_SHARD_COUNT: usize = 16;
@@ -231,7 +231,7 @@ const OOO_SHARD_MASK: usize = OOO_SHARD_COUNT - 1;
 
 /// シャードインデックスを算出
 #[inline(always)]
-fn ooo_shard_index(local: &SocketAddr, remote: &SocketAddr) -> usize {
+fn ooo_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
     (conn_key_hash(local, remote) as usize) & OOO_SHARD_MASK
 }
 
@@ -257,8 +257,8 @@ pub fn init_ooo_queues() {
 
 /// OOOセグメントを挿入
 pub fn insert_ooo_segment(
-    local: SocketAddr,
-    remote: SocketAddr,
+    local: EndpointAddr,
+    remote: EndpointAddr,
     seq: u32,
     data: &[u8],
 ) {
@@ -297,8 +297,8 @@ pub fn insert_ooo_segment(
 
 /// OOOキューから連続データをクロージャにプッシュしてドレイン
 pub fn drain_ooo_contiguous<F>(
-    local: SocketAddr,
-    remote: SocketAddr,
+    local: EndpointAddr,
+    remote: EndpointAddr,
     mut rcv_nxt: u32,
     f: F,
 ) -> u32
@@ -327,8 +327,8 @@ where
 
 /// SACKブロックを取得
 pub fn get_sack_blocks(
-    local: SocketAddr,
-    remote: SocketAddr,
+    local: EndpointAddr,
+    remote: EndpointAddr,
 ) -> SackBlocks {
     let idx = ooo_shard_index(&local, &remote);
     let Ok(guard) = OOO_SHARDS[idx].lock() else {
@@ -346,7 +346,7 @@ pub fn get_sack_blocks(
 }
 
 /// 接続のOOOキューを削除
-pub fn remove_ooo_queue(local: SocketAddr, remote: SocketAddr) {
+pub fn remove_ooo_queue(local: EndpointAddr, remote: EndpointAddr) {
     let idx = ooo_shard_index(&local, &remote);
     let Ok(mut guard) = OOO_SHARDS[idx].lock() else { return };
     if let Some(queues) = guard.as_mut() {

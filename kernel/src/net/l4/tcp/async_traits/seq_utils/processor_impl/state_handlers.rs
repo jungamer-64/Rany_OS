@@ -67,7 +67,7 @@ impl TcpProcessor {
     }
 
     /// Close a connection (initiate active close)
-    pub fn close(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr) {
+    pub fn close(&mut self, local_addr: EndpointAddr, remote_addr: EndpointAddr) {
         if let Some(tcb_lock) = self.connections.get(&(local_addr, remote_addr)) {
             if let Ok(mut tcb) = tcb_lock.lock() {
                 match tcb.state() {
@@ -306,7 +306,7 @@ impl TcpProcessor {
     /// Mark that a retransmit for a given (local, remote, seq) has been sent.
     /// Updates the corresponding unacked segment's sent_time and retransmit counters
     /// and applies RTO backoff.
-    pub fn mark_retransmit_sent(&mut self, local: SocketAddr, remote: SocketAddr, seq: u32, current_time: u64) {
+    pub fn mark_retransmit_sent(&mut self, local: EndpointAddr, remote: EndpointAddr, seq: u32, current_time: u64) {
         if let Some(tcb_lock) = self.connections.get(&(local, remote)).cloned() {
             if let Ok(mut tcb) = tcb_lock.lock() {
                 if tcb.touch_unacked_segment_for_retransmit(seq, current_time) {
@@ -320,7 +320,7 @@ impl TcpProcessor {
 
     /// Record that a TCP segment was actually sent on the wire for a connection.
     /// This updates TCB state (snd_nxt) and queues the data for potential retransmit.
-    pub fn record_sent_packet(&mut self, local: SocketAddr, remote: SocketAddr, seq: u32, flags: u16, payload: &[u8], current_time: u64) {
+    pub fn record_sent_packet(&mut self, local: EndpointAddr, remote: EndpointAddr, seq: u32, flags: u16, payload: &[u8], current_time: u64) {
         if let Some(tcb_lock) = self.connections.get(&(local, remote)).cloned() {
             if let Ok(mut tcb) = tcb_lock.lock() {
                 // Determine how many sequence numbers are consumed.

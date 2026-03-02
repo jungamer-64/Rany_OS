@@ -2,7 +2,7 @@ use super::*;
 
 
 impl TcpControlBlock {
-    pub fn new(local_addr: SocketAddr) -> Self {
+    pub fn new(local_addr: EndpointAddr) -> Self {
         let now = crate::task::timer::current_tick();
         
         // Generate a cryptographically secure random Initial Sequence Number (ISN).
@@ -44,17 +44,17 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    pub fn local_addr(&self) -> SocketAddr {
+    pub fn local_addr(&self) -> EndpointAddr {
         self.endpoints.local_addr
     }
 
     #[inline]
-    pub fn remote_addr(&self) -> Option<SocketAddr> {
+    pub fn remote_addr(&self) -> Option<EndpointAddr> {
         self.endpoints.remote_addr
     }
 
     #[inline]
-    pub fn set_remote_addr(&mut self, remote: SocketAddr) {
+    pub fn set_remote_addr(&mut self, remote: EndpointAddr) {
         self.endpoints.remote_addr = Some(remote);
     }
 

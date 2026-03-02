@@ -18,7 +18,7 @@
 //! - Linux kernel: `net/core/timer_defs.h`
 
 use alloc::vec::Vec;
-use super::types::SocketAddr;
+use super::types::EndpointAddr;
 
 /// ホイールのスロット数（2のべき乗）
 ///
@@ -31,8 +31,8 @@ const WHEEL_MASK: usize = WHEEL_SLOTS - 1;
 #[derive(Debug, Clone)]
 pub struct TimerEntry {
     /// 接続キー
-    pub local: SocketAddr,
-    pub remote: SocketAddr,
+    pub local: EndpointAddr,
+    pub remote: EndpointAddr,
     /// タイマー満了tick
     pub deadline: u64,
 }
@@ -62,7 +62,7 @@ impl TimingWheel {
     /// タイマーを登録する
     ///
     /// `deadline`: タイマーが満了するtick値
-    pub fn schedule(&mut self, local: SocketAddr, remote: SocketAddr, deadline: u64) {
+    pub fn schedule(&mut self, local: EndpointAddr, remote: EndpointAddr, deadline: u64) {
         let slot = (deadline as usize) & WHEEL_MASK;
         self.slots[slot].push(TimerEntry {
             local,
@@ -72,14 +72,14 @@ impl TimingWheel {
     }
 
     /// 指定された接続のタイマーをキャンセルする
-    pub fn cancel(&mut self, local: &SocketAddr, remote: &SocketAddr) {
+    pub fn cancel(&mut self, local: &EndpointAddr, remote: &EndpointAddr) {
         for slot in &mut self.slots {
             slot.retain(|entry| &entry.local != local || &entry.remote != remote);
         }
     }
 
     /// 指定された接続のタイマーを再スケジュール（既存があれば差し替え）
-    pub fn reschedule(&mut self, local: SocketAddr, remote: SocketAddr, new_deadline: u64) {
+    pub fn reschedule(&mut self, local: EndpointAddr, remote: EndpointAddr, new_deadline: u64) {
         self.cancel(&local, &remote);
         self.schedule(local, remote, new_deadline);
     }
@@ -88,7 +88,7 @@ impl TimingWheel {
     ///
     /// 返されたタイマーの `deadline <= current_tick` であることが保証される。
     /// 同じスロットに配置されていても deadline が未来のものはスロットに残す。
-    pub fn advance(&mut self, current_tick: u64) -> Vec<(SocketAddr, SocketAddr)> {
+    pub fn advance(&mut self, current_tick: u64) -> Vec<(EndpointAddr, EndpointAddr)> {
         let mut expired = Vec::new();
 
         // last_tick+1 から current_tick までの各スロットを検査
@@ -145,8 +145,8 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_timing_wheel_basic() {
         let mut wheel = TimingWheel::new();
-        let local = SocketAddr::new([10, 0, 0, 1], 1000);
-        let remote = SocketAddr::new([10, 0, 0, 2], 2000);
+        let local = EndpointAddr::new([10, 0, 0, 1], 1000);
+        let remote = EndpointAddr::new([10, 0, 0, 2], 2000);
 
         // deadline=100 でスケジュール
         wheel.schedule(local, remote, 100);
@@ -168,8 +168,8 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_timing_wheel_cancel() {
         let mut wheel = TimingWheel::new();
-        let local = SocketAddr::new([10, 0, 0, 1], 1000);
-        let remote = SocketAddr::new([10, 0, 0, 2], 2000);
+        let local = EndpointAddr::new([10, 0, 0, 1], 1000);
+        let remote = EndpointAddr::new([10, 0, 0, 2], 2000);
 
         wheel.schedule(local, remote, 200);
         assert_eq!(wheel.len(), 1);
@@ -181,8 +181,8 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_timing_wheel_reschedule() {
         let mut wheel = TimingWheel::new();
-        let local = SocketAddr::new([10, 0, 0, 1], 1000);
-        let remote = SocketAddr::new([10, 0, 0, 2], 2000);
+        let local = EndpointAddr::new([10, 0, 0, 1], 1000);
+        let remote = EndpointAddr::new([10, 0, 0, 2], 2000);
 
         wheel.schedule(local, remote, 100);
         wheel.reschedule(local, remote, 300);
@@ -200,10 +200,10 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_timing_wheel_multiple() {
         let mut wheel = TimingWheel::new();
-        let a = SocketAddr::new([10, 0, 0, 1], 1000);
-        let b = SocketAddr::new([10, 0, 0, 2], 2000);
-        let c = SocketAddr::new([10, 0, 0, 3], 3000);
-        let d = SocketAddr::new([10, 0, 0, 4], 4000);
+        let a = EndpointAddr::new([10, 0, 0, 1], 1000);
+        let b = EndpointAddr::new([10, 0, 0, 2], 2000);
+        let c = EndpointAddr::new([10, 0, 0, 3], 3000);
+        let d = EndpointAddr::new([10, 0, 0, 4], 4000);
 
         wheel.schedule(a, b, 50);
         wheel.schedule(c, d, 150);
@@ -225,8 +225,8 @@ pub mod qemu_tests {
 
     pub fn timing_wheel_basic_smoke() -> bool {
         let mut wheel = TimingWheel::new();
-        let local = SocketAddr::new([10, 0, 0, 1], 1000);
-        let remote = SocketAddr::new([10, 0, 0, 2], 2000);
+        let local = EndpointAddr::new([10, 0, 0, 1], 1000);
+        let remote = EndpointAddr::new([10, 0, 0, 2], 2000);
 
         wheel.schedule(local, remote, 100);
         if wheel.len() != 1 { return false; }
@@ -242,8 +242,8 @@ pub mod qemu_tests {
 
     pub fn timing_wheel_cancel_smoke() -> bool {
         let mut wheel = TimingWheel::new();
-        let local = SocketAddr::new([10, 0, 0, 1], 1000);
-        let remote = SocketAddr::new([10, 0, 0, 2], 2000);
+        let local = EndpointAddr::new([10, 0, 0, 1], 1000);
+        let remote = EndpointAddr::new([10, 0, 0, 2], 2000);
 
         wheel.schedule(local, remote, 200);
         wheel.cancel(&local, &remote);

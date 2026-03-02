@@ -71,9 +71,9 @@ impl TcpStream {
     /// 指定アドレスに接続（推奨API）
     ///
     /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
-    pub async fn dial(addr: SocketAddr) -> Result<Self, TcpError> {
+    pub async fn dial(addr: EndpointAddr) -> Result<Self, TcpError> {
         // ローカルポートの割り当て（0を指定して自動割り当て）とTCBの作成、初期SYNの送信は Global Stack に委譲
-        let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0);
+        let local_addr = EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0);
         
         let stream = crate::net::runtime::stack::connect_tcp(local_addr, addr)?;
         
@@ -86,18 +86,18 @@ impl TcpStream {
 
 
     /// ローカルアドレスを取得
-    pub fn local_addr(&self) -> SocketAddr {
+    pub fn local_addr(&self) -> EndpointAddr {
         match self.tcb.lock() {
             Ok(g) => g.local_addr(),
             Err(_) => {
                 log::error!("[NET] TCP TCB poisoned (local_addr)");
-                SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0)
+                EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0)
             }
         }
     }
 
     /// リモートアドレスを取得
-    pub fn peer_addr(&self) -> Option<SocketAddr> {
+    pub fn peer_addr(&self) -> Option<EndpointAddr> {
         match self.tcb.lock() {
             Ok(g) => g.remote_addr(),
             Err(_) => {
@@ -474,7 +474,7 @@ impl AsyncWrite for TcpStream {
 /// 【設計書】POSIXソケットAPIを模倣しない
 /// bind/listen/acceptの代わりにnew/incomingを使用
 pub struct TcpListener {
-    pub(super) local_addr: SocketAddr,
+    pub(super) local_addr: EndpointAddr,
     pub(super) backlog: Arc<PoisonLock<VecDeque<TcpStream>>>,
     pub(super) accept_waker: Arc<crate::sync::atomic_waker::AtomicWaker>,
 }
@@ -483,12 +483,12 @@ impl TcpListener {
     /// 指定アドレスで新しいリスナーを作成（推奨API）
     ///
     /// 【設計書】POSIXのbind()と同様の動作
-    pub fn bind(addr: SocketAddr) -> Result<Self, TcpError> {
+    pub fn bind(addr: EndpointAddr) -> Result<Self, TcpError> {
         crate::net::runtime::stack::bind_tcp(addr)
     }
 
     /// 指定アドレスとトークンで新しいリスナーを作成
-    pub fn bind_with_token(addr: SocketAddr, token: Option<u64>) -> Result<Self, TcpError> {
+    pub fn bind_with_token(addr: EndpointAddr, token: Option<u64>) -> Result<Self, TcpError> {
         crate::net::runtime::stack::bind_tcp_with_token(addr, token)
     }
 
@@ -496,20 +496,20 @@ impl TcpListener {
 
 
     /// ローカルアドレスを取得
-    pub fn local_addr(&self) -> SocketAddr {
+    pub fn local_addr(&self) -> EndpointAddr {
         self.local_addr
     }
 
     /// 次の接続を非同期で取得（推奨API）
     ///
     /// 【設計書】POSIXのaccept()ではなく、Futureベースの方式を採用
-    pub async fn next_connection(&self) -> Result<(TcpStream, SocketAddr), TcpError> {
+    pub async fn next_connection(&self) -> Result<(TcpStream, EndpointAddr), TcpError> {
         AcceptFuture { listener: self }.await
     }
 
 
     /// 新しい接続をバックログに追加（内部使用）
-    pub(crate) fn push_connection(&self, stream: TcpStream, _addr: SocketAddr) {
+    pub(crate) fn push_connection(&self, stream: TcpStream, _addr: EndpointAddr) {
         match self.backlog.lock() {
             Ok(mut backlog) => {
                 backlog.push_back(stream);
@@ -601,8 +601,8 @@ impl Future for ConnectTimeoutFuture {
 
 impl TcpStream {
     /// Connect with a timeout in microseconds
-    pub async fn dial_timeout(addr: SocketAddr, timeout_us: u64) -> Result<Self, TcpError> {
-        let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0);
+    pub async fn dial_timeout(addr: EndpointAddr, timeout_us: u64) -> Result<Self, TcpError> {
+        let local_addr = EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0);
         let stream = crate::net::runtime::stack::connect_tcp(local_addr, addr)?;
         let start = crate::time::precise_time_nanos() / 1000;
         let tcb = stream.tcb.clone();
@@ -661,7 +661,7 @@ pub(crate) struct AcceptFuture<'a> {
 }
 
 impl<'a> Future for AcceptFuture<'a> {
-    type Output = Result<(TcpStream, SocketAddr), TcpError>;
+    type Output = Result<(TcpStream, EndpointAddr), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.listener.backlog.lock() {
@@ -669,7 +669,7 @@ impl<'a> Future for AcceptFuture<'a> {
                 if let Some(stream) = backlog.pop_front() {
                     let addr = stream
                         .peer_addr()
-                        .unwrap_or(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
+                        .unwrap_or(EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0));
                     return Poll::Ready(Ok((stream, addr)));
                 }
 

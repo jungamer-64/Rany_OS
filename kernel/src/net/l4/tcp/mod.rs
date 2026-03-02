@@ -64,40 +64,40 @@ impl core::fmt::Display for Ipv4Addr {
 
 /// ソケットアドレス（IPv4 / IPv6 - unified）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum SocketAddr {
+pub enum EndpointAddr {
     V4 { ip: Ipv4Addr, port: u16 },
     V6 { ip: crate::net::l3::ipv6::Ipv6Address, port: u16 },
 }
 
-impl SocketAddr {
+impl EndpointAddr {
     /// Backwards-compatible constructor for IPv4
     pub const fn new(ip: Ipv4Addr, port: u16) -> Self {
-        SocketAddr::V4 { ip, port }
+        EndpointAddr::V4 { ip, port }
     }
 
     /// IPv6 constructor
     pub const fn new_v6(ip: crate::net::l3::ipv6::Ipv6Address, port: u16) -> Self {
-        SocketAddr::V6 { ip, port }
+        EndpointAddr::V6 { ip, port }
     }
 
     /// Return true if IPv4
     #[inline]
     pub fn is_ipv4(&self) -> bool {
-        matches!(self, SocketAddr::V4 { .. })
+        matches!(self, EndpointAddr::V4 { .. })
     }
 
     /// Return true if IPv6
     #[inline]
     pub fn is_ipv6(&self) -> bool {
-        matches!(self, SocketAddr::V6 { .. })
+        matches!(self, EndpointAddr::V6 { .. })
     }
 
     /// Return IPv4 addr when available (or None)
     #[inline]
     pub fn as_ipv4(&self) -> Option<Ipv4Addr> {
         match *self {
-            SocketAddr::V4 { ip, .. } => Some(ip),
-            SocketAddr::V6 { ip, .. } => {
+            EndpointAddr::V4 { ip, .. } => Some(ip),
+            EndpointAddr::V6 { ip, .. } => {
                 // map ::ffff:a.b.c.d -> a.b.c.d, otherwise None
                 let bytes = ip.octets();
                 if bytes[..10] == [0u8; 10] && bytes[10] == 0xff && bytes[11] == 0xff {
@@ -115,8 +115,8 @@ impl SocketAddr {
     #[inline]
     pub fn as_ipv6(&self) -> crate::net::l3::ipv6::Ipv6Address {
         match *self {
-            SocketAddr::V6 { ip, .. } => ip,
-            SocketAddr::V4 { ip, .. } => {
+            EndpointAddr::V6 { ip, .. } => ip,
+            EndpointAddr::V4 { ip, .. } => {
                 let mut b = [0u8; 16];
                 b[10] = 0xff;
                 b[11] = 0xff;
@@ -131,16 +131,16 @@ impl SocketAddr {
     #[inline]
     pub fn port(&self) -> u16 {
         match *self {
-            SocketAddr::V4 { port, .. } => port,
-            SocketAddr::V6 { port, .. } => port,
+            EndpointAddr::V4 { port, .. } => port,
+            EndpointAddr::V6 { port, .. } => port,
         }
     }}
 
-impl core::fmt::Display for SocketAddr {
+impl core::fmt::Display for EndpointAddr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
-            SocketAddr::V4 { ip, port } => write!(f, "{}:{}", ip, port),
-            SocketAddr::V6 { ip, port } => {
+            EndpointAddr::V4 { ip, port } => write!(f, "{}:{}", ip, port),
+            EndpointAddr::V6 { ip, port } => {
                 // Use bracketed IPv6 literal
                 write!(f, "[{}]:{}", ip, port)
             }
@@ -476,13 +476,13 @@ impl TcpTimerState {
 /// TCP接続のエンドポイント情報
 struct TcpEndpointMeta {
     /// ローカルアドレス
-    local_addr: SocketAddr,
+    local_addr: EndpointAddr,
     /// リモートアドレス
-    remote_addr: Option<SocketAddr>,
+    remote_addr: Option<EndpointAddr>,
 }
 
 impl TcpEndpointMeta {
-    fn new(local_addr: SocketAddr) -> Self {
+    fn new(local_addr: EndpointAddr) -> Self {
         Self {
             local_addr,
             remote_addr: None,
