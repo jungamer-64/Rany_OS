@@ -640,6 +640,30 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     fs::init_shell_fs();
     info!(target: "init", "Memory filesystem initialized");
 
+    // 3.7.1. NVMe Namespace FS のマウント（メインFS切替）
+    if io::nvme::with_driver(|_| ()).is_some() {
+        info!(target: "init", "NVMe driver detected — mounting NVMe Namespace FS...");
+        match io::nvme::mount_nvme_ns_fs() {
+            Ok(()) => {
+                info!(target: "init", "NVMe Namespace FS mounted successfully");
+                // MountTable に /nvme として登録
+                if let Some(fs_arc) = io::nvme::nvme_ns_fs() {
+                    let adapter = alloc::sync::Arc::new(
+                        fs::NvmeNsFileSystemAdapter::new(alloc::sync::Arc::clone(fs_arc)),
+                    );
+                    if let Err(e) = fs::mount_table().mount("/nvme", adapter) {
+                        warn!(target: "init", "NVMe NS FS mount table registration failed: {:?}", e);
+                    } else {
+                        info!(target: "init", "NVMe Namespace FS registered at /nvme");
+                    }
+                }
+            }
+            Err(e) => warn!(target: "init", "NVMe Namespace FS mount failed: {}", e),
+        }
+    } else {
+        debug!(target: "init", "No NVMe driver found, skipping NVMe NS FS");
+    }
+
     // 3.8. WAL/PMEM/GDB スタブ初期化
     info!(target: "init", "Initializing durability + debug subsystems");
     storage::init();

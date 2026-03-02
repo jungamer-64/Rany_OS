@@ -56,7 +56,7 @@ TCG=false
 VERBOSE=false
 RESET_VARS=false
 CPU_MODEL=""
-NVME_DEVICE=""
+NVME_DEVICE="1G"
 FEATURES=()
 QEMU_EXTRA_ARGS=()
 CARGO_RUNNER=false
@@ -130,6 +130,9 @@ while [[ $# -gt 0 ]]; do
         --nvme)
             NVME_DEVICE="$2"
             shift 2 ;;
+        --no-nvme)
+            NVME_DEVICE=""
+            shift ;;
         --features)
             IFS=',' read -ra FEATURES <<< "$2"
             shift 2 ;;
@@ -173,7 +176,8 @@ Hardware Emulation:
   --no-numa         Disable NUMA topology simulation
   --network         Enable VirtIO network device (hostfwd: tcp 5555->80, udp 5556->80) [default]
   --no-network      Disable VirtIO network device
-  --nvme SIZE       Add virtual NVMe device (e.g., "1G", "512M")
+  --nvme SIZE       Set virtual NVMe device size (default: "1G"; e.g., "512M")
+  --no-nvme         Disable virtual NVMe device
 
 Advanced:
   --features F1,F2  Cargo features for kernel (comma-separated)
