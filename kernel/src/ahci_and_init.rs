@@ -486,12 +486,23 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
     // メモリ管理が初期化されたので、ページテーブル操作が可能になった。
     // スタックオーバーフローを即座にPage Faultで検出するため、
-    // スタック最下位ページをアンマップする。
+    // スタック最下位ページ（inner guard）をアンマップする。
+    // これにより使用可能スタックは STACK_SIZE - 4096 バイトになる。
     {
-        let stack_bottom = unsafe { &raw const KERNEL_STACK as usize };
-        const STACK_SIZE: usize = 4096 * 128;
-        crate::panic_handler::setup_stack_guard(stack_bottom, STACK_SIZE);
-        info!(target: "init", "BSP stack guard page installed at {:#x}", stack_bottom);
+        let stack_base = unsafe { &raw const KERNEL_STACK as usize };
+        const STACK_SIZE: usize = 4096 * 128; // 512 KiB
+        debug_assert!(
+            stack_base % 4096 == 0,
+            "KERNEL_STACK must be page-aligned (got {:#x})",
+            stack_base
+        );
+        crate::panic_handler::setup_stack_guard(stack_base, STACK_SIZE);
+        let guard_end = stack_base + 4096;
+        let stack_top = stack_base + STACK_SIZE;
+        info!(target: "init",
+            "BSP stack guard page: [{:#x}..{:#x}) unmapped, usable stack: [{:#x}..{:#x}) ({} KiB)",
+            stack_base, guard_end, guard_end, stack_top, (stack_top - guard_end) / 1024
+        );
     }
 
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
