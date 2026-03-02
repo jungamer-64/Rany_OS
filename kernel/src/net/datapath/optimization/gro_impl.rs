@@ -530,6 +530,10 @@ pub fn init() {
 
     ADAPTIVE_COALESCING.call_once(|| AdaptiveCoalescing::new(InterruptCoalescing::default()));
 
+    // Per-CPU バッチプロセッサの初期化
+    let cpu_count = crate::smp::cpu_count().max(1) as usize;
+    super::super::per_cpu_batch::init(cpu_count);
+
     let _ = topology; // avoid unused warning
 }
 

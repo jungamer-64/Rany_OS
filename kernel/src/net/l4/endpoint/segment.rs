@@ -277,35 +277,11 @@ impl TcpSegmentBuilder {
         segment[16] = 0;
         segment[17] = 0;
 
-        // 疑似ヘッダ
-        let mut sum: u32 = 0;
-
-        // 送信元IP
-        sum += u16::from_be_bytes([src_ip[0], src_ip[1]]) as u32;
-        sum += u16::from_be_bytes([src_ip[2], src_ip[3]]) as u32;
-        // 宛先IP
-        sum += u16::from_be_bytes([dst_ip[0], dst_ip[1]]) as u32;
-        sum += u16::from_be_bytes([dst_ip[2], dst_ip[3]]) as u32;
-        // Protocol (TCP = 6) + TCPセグメント長
-        sum += 6u32;
-        sum += segment.len() as u32;
-
-        // TCPセグメント本体
-        let mut i = 0;
-        while i + 1 < segment.len() {
-            sum += u16::from_be_bytes([segment[i], segment[i + 1]]) as u32;
-            i += 2;
-        }
-        // 奇数長の場合
-        if i < segment.len() {
-            sum += (segment[i] as u32) << 8;
-        }
-
-        // 1の補数計算
-        while sum >> 16 != 0 {
-            sum = (sum & 0xFFFF) + (sum >> 16);
-        }
-        let checksum = !sum as u16;
+        use crate::net::l3::ipv4::{pseudo_header_checksum, data_checksum, Ipv4Address, IpProtocol};
+        let src = Ipv4Address::new(src_ip);
+        let dst = Ipv4Address::new(dst_ip);
+        let pseudo = pseudo_header_checksum(src, dst, IpProtocol::Tcp, segment.len() as u16);
+        let checksum = data_checksum(segment, pseudo);
 
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
@@ -326,8 +302,10 @@ impl TcpSegmentBuilder {
 
         let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
         let checksum = data_checksum(segment, pseudo);
-        let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
-        segment[16..18].copy_from_slice(&final_checksum.to_be_bytes());
+        
+        // RFC 8200: UDP over IPv6 MUST NOT have a zero checksum (it becomes 0xFFFF).
+        // For TCP, 0x0000 is a valid checksum result.
+        segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
 }
 

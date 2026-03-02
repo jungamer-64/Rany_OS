@@ -21,6 +21,9 @@ use crate::net::datapath::mempool::PacketRef;
 pub enum NetworkEvent {
     /// 着信パケット - プロトコルスタックへのオフロード
     IngressPacket { packet: PacketRef },
+    /// バッチ着信パケット - 複数パケットの一括通知
+    /// ロック取得を1回に削減し、イベントキュー競合を低減する
+    IngressBatch { packets: Vec<PacketRef> },
     /// 再組立てパケット - プロトコルスタックへのオフロード
     ReassembledPacket { data: Vec<u8> },
     /// 送信データ準備完了 - プロトコルスタックに送信を要求
@@ -225,4 +228,24 @@ pub fn send_event(event: NetworkEvent) -> Result<(), EndpointError> {
 #[inline]
 pub fn send_event_ignore(event: NetworkEvent) {
     let _ = NETWORK_EVENT_QUEUE.send(event);
+}
+
+/// バッチイベント送信（複数パケットを1回のロック取得で送信）
+///
+/// ロック取得を1回に削減し、高スループット受信パス向けの最適化。
+/// 各パケットを個別に `send_event_ignore` するより効率的。
+#[inline]
+pub fn send_batch_event(packets: Vec<PacketRef>) {
+    if packets.is_empty() {
+        return;
+    }
+    if packets.len() == 1 {
+        // 1パケットなら通常パスを使用（Vec のオーバーヘッド回避）
+        let mut packets = packets;
+        if let Some(p) = packets.pop() {
+            let _ = NETWORK_EVENT_QUEUE.send(NetworkEvent::IngressPacket { packet: p });
+        }
+        return;
+    }
+    let _ = NETWORK_EVENT_QUEUE.send(NetworkEvent::IngressBatch { packets });
 }

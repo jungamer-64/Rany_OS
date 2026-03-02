@@ -219,8 +219,10 @@ pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::
 
     let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
     let checksum = data_checksum(segment, pseudo);
-    let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
-    segment[16..18].copy_from_slice(&final_checksum.to_be_bytes());
+    
+    // RFC 8200: UDP over IPv6 MUST NOT have a zero checksum (it becomes 0xFFFF).
+    // For TCP, 0x0000 is a valid checksum result.
+    segment[16..18].copy_from_slice(&checksum.to_be_bytes());
 }
 
 /// SYNパケットを送信

@@ -13,7 +13,7 @@ use super::segment::TcpSegmentBuilder;
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
 use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::l2::ethernet::{EtherType, MacAddress};
+use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 
 /// イベント処理の結果
@@ -89,6 +89,20 @@ impl NetworkEventHandler {
     pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
         match event {
             NetworkEvent::IngressPacket { packet } => self.handle_ingress_packet(packet),
+            NetworkEvent::IngressBatch { packets } => {
+                // バッチ着信: スタックロックを1回取得して全パケットを処理
+                if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    if let Some(ref mut stack) = *stack_guard {
+                        for packet in packets {
+                            self.handle_event_with_stack(
+                                NetworkEvent::IngressPacket { packet },
+                                stack,
+                            );
+                        }
+                    }
+                }
+                EventHandleResult::Success
+            }
             NetworkEvent::ReassembledPacket { data } => {
                 if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
                     if let Some(ref mut stack) = *stack_guard {
@@ -181,6 +195,16 @@ impl NetworkEventHandler {
                     }
                     _ => EventHandleResult::Success,
                 }
+            }
+            NetworkEvent::IngressBatch { packets } => {
+                // バッチ着信: スタックロック保持中に全パケットを連続処理
+                for packet in packets {
+                    self.handle_event_with_stack(
+                        NetworkEvent::IngressPacket { packet },
+                        stack,
+                    );
+                }
+                EventHandleResult::Success
             }
             NetworkEvent::ReassembledPacket { data } => {
                 let current_time = stack.current_time();

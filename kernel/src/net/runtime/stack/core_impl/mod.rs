@@ -222,11 +222,15 @@ impl NetworkStack {
     }
 
     /// Process a batch of incoming packets
+    ///
+    /// バッチイベントとして一括送信し、イベントキューのロック取得を
+    /// 1回に削減することでハイスループット時のオーバーヘッドを低減する。
     pub fn receive_batch(&mut self, batch: PacketBatch) {
-        // Enqueue all packets in the batch to the asynchronous event queue.
-        for packet in batch {
-            self.receive(packet);
+        let packets: Vec<PacketRef> = batch.into_iter().collect();
+        if packets.is_empty() {
+            return;
         }
+        crate::net::l4::endpoint::event::send_batch_event(packets);
     }
 
     /// Process IPv4 packet
