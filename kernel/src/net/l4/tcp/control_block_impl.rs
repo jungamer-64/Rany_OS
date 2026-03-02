@@ -104,8 +104,9 @@ impl TcpControlBlock {
     }
 
     /// Enqueue an out-of-order segment
-    pub fn enqueue_ooo_payload(&mut self, mut seq: u32, packet: PacketRef) -> bool {
+    pub fn enqueue_ooo_payload(&mut self, mut seq: u32, mut packet: PacketRef) -> bool {
         let rcv_nxt = self.seq.rcv_nxt;
+        let mut data = packet.data();
 
         // 1. Acknowledge parts: skip data before rcv_nxt
         let diff = rcv_nxt.wrapping_sub(seq);
