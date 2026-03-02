@@ -266,8 +266,8 @@ impl NetworkStack {
                 );
             }
             Ipv4ProcessResult::Tcp(_payload, _src_ip, dst_ip) => {
-                // Security: TCP multicast is generally not allowed/supported (RFC 793 / RFC 1122)
-                if dst_ip.is_multicast() {
+                // Security: TCP multicast/broadcast is generally not allowed/supported (RFC 793 / RFC 1122)
+                if dst_ip.is_multicast() || dst_ip.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst_ip == self.config().ipv4.broadcast_address()) {
                     self.stats.record_dropped();
                     return;
                 }
@@ -281,6 +281,16 @@ impl NetworkStack {
                 // Security Fix: Offload reassembled packets to the asynchronous endpoint stack
                 // instead of processing them directly. This ensures fragmented packets are
                 // handled by the same stack as normal packets, preventing DoS and state bypass.
+                
+                // We perform basic filtering here as well
+                if let Some(packet) = Ipv4Packet::parse(&reassembled_data) {
+                    let dst = packet.destination();
+                    if packet.protocol() == IpProtocol::Tcp && (dst.is_multicast() || dst.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst == self.config().ipv4.broadcast_address())) {
+                        self.stats.record_dropped();
+                        return;
+                    }
+                }
+
                 crate::net::l4::endpoint::event::send_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket { data: reassembled_data }
                 );
@@ -307,14 +317,19 @@ impl NetworkStack {
             let dst = packet.destination();
             let payload = packet.payload();
 
-            // Security: Only process multicast packets if group is joined (RFC 1122)
-            if dst.is_multicast() && !self.is_multicast_allowed(dst) {
+            // Security: Only process multicast/broadcast packets if intended (RFC 1122)
+            if (dst.is_multicast() && !self.is_multicast_allowed(dst)) || dst.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst == self.config().ipv4.broadcast_address()) {
                 self.stats.record_dropped();
                 return;
             }
 
             match packet.protocol() {
                 IpProtocol::Tcp => {
+                    // Security Fix: TCP multicast/broadcast is not allowed
+                    if dst.is_multicast() || dst.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst == self.config().ipv4.broadcast_address()) {
+                        self.stats.record_dropped();
+                        return;
+                    }
                     // Security Fix: Process TCP through the endpoint stack
                     crate::net::l4::endpoint::tcp_rx::process_tcp_segment(src.octets(), dst.octets(), payload);
                 }

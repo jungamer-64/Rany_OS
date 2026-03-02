@@ -298,6 +298,12 @@ impl NetworkStack {
             let src_v4 = Ipv4Address::new([sbytes[12], sbytes[13], sbytes[14], sbytes[15]]);
             let dst_v4 = Ipv4Address::new([dbytes[12], dbytes[13], dbytes[14], dbytes[15]]);
 
+            // Security: TCP multicast/broadcast is not allowed (RFC 1122)
+            if dst_v4.is_multicast() || dst_v4.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst_v4 == self.config().ipv4.broadcast_address()) {
+                self.stats.record_dropped();
+                return;
+            }
+
             // Delegate to existing IPv4 TCP processor (non-zero-copy path)
             let res = self.tcp.process(data, src_v4, dst_v4, self.current_time());
 
@@ -1068,6 +1074,7 @@ impl NetworkStack {
                     .set_source(src_ip)
                     .set_destination(dst_ip)
                     .set_protocol(IpProtocol::Udp)
+                    .set_identification(self.ipv4.next_id(dst_ip))
                     .set_ttl(ttl);
 
                 let ip_payload = ip_packet.payload_mut();

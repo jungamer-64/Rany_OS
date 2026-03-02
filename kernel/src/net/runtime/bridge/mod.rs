@@ -1396,6 +1396,39 @@ pub fn flush_pending_batch() {
     }
 }
 
+/// TX_QUEUEに溜まったパケットを同期的にドレインし、VirtIOデバイスに直接サブミットする。
+///
+/// asyncエグゼキュータが起動する前の同期ポーリングコンテキスト（初期化時ping等）で使用する。
+/// `tx_worker_task`はasyncタスクなので、エグゼキュータ未起動時には動作しない。
+/// この関数がその役割を同期的に代行する。
+pub fn sync_drain_tx_queue() {
+    let drained = tx_queue_drain_all();
+    if drained.is_empty() {
+        return;
+    }
+
+    log::debug!("[TX-SYNC] draining {} TX requests synchronously", drained.len());
+
+    for req in drained.into_iter() {
+        let sent = if let Some(if_id) = req.if_id {
+            send_packet_on_interface(if_id, &req.data)
+        } else {
+            let result = with_virtio_net(|device| transmit_packet(device, &req.data));
+            matches!(result, Some(Ok(())))
+        };
+
+        if sent {
+            TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+            counters::global().record_tx(req.data.len());
+            trace::push_event(NetLayer::Driver, NetEventKind::Tx, "sync tx drain");
+        } else {
+            log::warn!("[TX-SYNC] failed to submit packet (len={})", req.data.len());
+            counters::global().record_error();
+            trace::push_event(NetLayer::Driver, NetEventKind::Error, "sync tx drain failed");
+        }
+    }
+}
+
 // ============================================================================
 // Shell API Integration
 

@@ -19,7 +19,7 @@ SIGNER_TOOL_DIR := tools/signer
 
 # --- 設定可能パラメータ (make run MEMORY=2048 SMP=8 ...) ---
 PROFILE         ?= debug
-MEMORY          ?= 1024
+MEMORY          ?= 4096
 SMP             ?= 4
 SERIAL          ?= stdio
 IOMMU           ?= 1
