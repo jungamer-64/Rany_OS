@@ -194,10 +194,22 @@ fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
 #[cfg(not(test))]
 #[repr(align(4096))]
 #[allow(dead_code)]
-struct KernelStack([u8; 4096 * 20]);
+struct KernelStack([u8; 4096 * 128]);
 
+/// Boot stack for the BSP (Bootstrap Processor).
+///
+/// 512 KiB (128 pages).  The previous 80 KiB (20 pages) was insufficient:
+/// during kernel initialization (ACPI parsing, IOMMU page-table setup, PCI
+/// enumeration, etc.) the combined stack depth exceeded the allocation and
+/// silently overwrote adjacent BSS variables — in particular the `spin::Once`
+/// status byte of `DEFAULT_SECURITY_MONITOR`, causing undefined behaviour in
+/// the subsequent `security::init()` call.
+///
+/// **TODO:** install a guard page (Present=0) at the bottom of the stack
+/// after `memory::init()` to turn future overflows into a page fault instead
+/// of silent corruption.
 #[unsafe(link_section = ".bss")]
-static mut KERNEL_STACK: KernelStack = KernelStack([0; 4096 * 20]);
+static mut KERNEL_STACK: KernelStack = KernelStack([0; 4096 * 128]);
 
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
@@ -206,7 +218,7 @@ pub extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
         "lea rsp, [rip + {stack} + {size}]",
         "jmp {kmain_inner}",
         stack = sym KERNEL_STACK,
-        size = const 4096 * 20,
+        size = const 4096 * 128,
         kmain_inner = sym kmain_inner,
     );
 }
