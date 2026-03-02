@@ -234,7 +234,7 @@ impl NetworkStack {
         let result = self.ipv4.process_with_time(data, current_time);
 
         match result {
-            Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl) => {
+            Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
                 // Security: Only process multicast ICMP if group is joined (except mandatory)
                 if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
                     self.stats.record_dropped();
@@ -250,10 +250,10 @@ impl NetworkStack {
                 p.advance(offset);
                 self.process_icmp(payload, src_ip, dst_ip, ttl, current_time, p);
             }
-            Ipv4ProcessResult::Igmp(payload, src_ip, ttl) => {
+            Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
                 self.process_igmp_data(payload, src_ip, ttl);
             }
-            Ipv4ProcessResult::Udp(_payload, _src_ip, dst_ip) => {
+            Ipv4ProcessResult::Udp(_payload, _src_ip, dst_ip, _orig) => {
                 // Security: Only process multicast UDP if group is joined (except mandatory)
                 if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
                     self.stats.record_dropped();
@@ -265,7 +265,7 @@ impl NetworkStack {
                     crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet: packet.clone() }
                 );
             }
-            Ipv4ProcessResult::Tcp(_payload, _src_ip, dst_ip) => {
+            Ipv4ProcessResult::Tcp(_payload, _src_ip, dst_ip, _orig) => {
                 // Security: TCP multicast/broadcast is generally not allowed/supported (RFC 793 / RFC 1122)
                 if dst_ip.is_multicast() || dst_ip.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst_ip == self.config().ipv4.broadcast_address()) {
                     self.stats.record_dropped();
@@ -340,7 +340,7 @@ impl NetworkStack {
                 IpProtocol::Udp => {
                     // Security Fix: Process UDP through the endpoint stack
                     // Use process_udp_data instead of self.udp.process
-                    self.process_udp_data(payload, src, dst, packet.ttl());
+                    self.process_udp_data(payload, src, dst, packet.ttl(), data, current_time);
                 }
                 _ => {
                     self.stats.record_dropped();
