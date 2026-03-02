@@ -334,19 +334,6 @@ impl Executor {
 
     /// メインループ
     pub fn run(&mut self) -> ! {
-        // One-time diagnostic: check global queue state at executor startup
-        let gq_len = GLOBAL_QUEUE.len();
-        let store0_count = PER_CORE_STORES[0].len();
-        if gq_len > 0 {
-            crate::io::log::early_print("[EXEC-DBG] GLOBAL_QUEUE has tasks\n");
-        } else {
-            crate::io::log::early_print("[EXEC-DBG] GLOBAL_QUEUE EMPTY at run() start!\n");
-        }
-        if store0_count > 0 {
-            crate::io::log::early_print("[EXEC-DBG] PER_CORE_STORES[0] has tasks\n");
-        } else {
-            crate::io::log::early_print("[EXEC-DBG] PER_CORE_STORES[0] EMPTY!\n");
-        }
         loop {
             // 0. Process pending interrupt events and deferred waker notifications (non-ISR)
             crate::interrupts::poll_timer_events();
@@ -560,11 +547,9 @@ impl Executor {
         while fetched < self.batch_size {
             if let Some(task_id) = GLOBAL_QUEUE.pop() {
                 if let Some(task) = self.find_task_in_stores(task_id, false) {
-                    crate::io::log::early_print("[EXEC-DBG] fetch_from_global: found task\n");
                     self.local_queue.push_back(task);
                     fetched += 1;
                 } else {
-                    crate::io::log::early_print("[EXEC-DBG] fetch_from_global: task NOT in stores!\n");
                     // Legacy TASK_STORE is deprecated; cache the task id for later processing.
                     self.local_cache.push_back(task_id);
                 }

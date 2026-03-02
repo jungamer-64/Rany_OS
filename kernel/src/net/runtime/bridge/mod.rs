@@ -737,14 +737,14 @@ fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
 async fn submit_tx_via_io_scheduler(device_index: u8, data: &[u8]) -> Result<usize, &'static str> {
     use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 
-    log::info!("[IO-TX] submit_tx_via_io_scheduler: enter, dev={}, len={}", device_index, data.len());
+    log::debug!("[IO-TX] submit_tx_via_io_scheduler: dev={}, len={}", device_index, data.len());
 
     // IOMMU デバイスIDを取得（デバイスコールバック内で Clone して返す）
     let iommu_dev: Option<IommuDeviceId> = with_virtio_net_at_index(device_index, |dev| {
         dev.iommu_device_id()
     }).flatten();
 
-    log::info!("[IO-TX] iommu_dev={:?}", iommu_dev.is_some());
+    log::debug!("[IO-TX] iommu_dev={:?}", iommu_dev.is_some());
 
     // IoScheduler にデバイス登録済みか確認（PollHandler の存在で判定）
     if crate::io::virtio::get_poll_handler(device_index).is_none() {
@@ -765,7 +765,7 @@ async fn submit_tx_via_io_scheduler(device_index: u8, data: &[u8]) -> Result<usi
         ),
     }.ok_or("IoScheduler: DMA buffer allocation failed")?;
 
-    log::info!("[IO-TX] DMA buffer allocated: iova=0x{:x}, len={}", buffer.device_addr(), data.len());
+    log::debug!("[IO-TX] DMA buffer allocated: iova=0x{:x}, len={}", buffer.device_addr(), data.len());
 
     // ペイロードを DMA バッファにコピー
     {
@@ -786,12 +786,12 @@ async fn submit_tx_via_io_scheduler(device_index: u8, data: &[u8]) -> Result<usi
     };
 
     // IoScheduler 経由でサブミット → IoFuture を await
-    log::info!("[IO-TX] submitting IoCommand::Ioctl(TX) to IoScheduler");
+    log::debug!("[IO-TX] submitting IoCommand::Ioctl(TX) to IoScheduler");
     let io_future = hybrid_coordinator().submit_io_command(device, command, IoPriority::Normal);
-    log::info!("[IO-TX] IoFuture created, awaiting completion...");
+    log::debug!("[IO-TX] IoFuture created, awaiting completion...");
     match io_future.await {
         Ok(bytes) => {
-            log::info!("[IO-TX] IoFuture completed OK, bytes={}", bytes);
+            log::debug!("[IO-TX] IoFuture completed OK, bytes={}", bytes);
             // buffer はここで Drop（IOMMU unmap を含む）
             Ok(bytes)
         }
@@ -825,17 +825,17 @@ async fn tx_worker_task() {
             drained = tx_queue_drain_all();
         }
 
-        log::info!("[TX-WORKER] drained {} TX requests", drained.len());
+        log::debug!("[TX-WORKER] drained {} TX requests", drained.len());
 
         for req in drained.into_iter() {
             let device_index = resolve_virtio_index(req.if_id);
 
-            log::info!("[TX-WORKER] processing req: dev={}, len={}", device_index, req.data.len());
+            log::debug!("[TX-WORKER] processing req: dev={}, len={}", device_index, req.data.len());
 
             // Try IoScheduler path first
             let sent = match submit_tx_via_io_scheduler(device_index, &req.data).await {
                 Ok(bytes) => {
-                    log::info!("[TX-WORKER] IoScheduler path succeeded, bytes={}", bytes);
+                    log::debug!("[TX-WORKER] IoScheduler path succeeded, bytes={}", bytes);
                     true
                 }
                 Err(reason) => {
@@ -1341,11 +1341,9 @@ pub fn init_bridge() -> Result<(), &'static str> {
                 // Spawn background TX worker to process enqueued transmit requests.
                 // Use the main Executor's global queue so the task is polled by the
                 // primary executor loop (task::Executor::run).
-                log::info!("[NET BRIDGE] Spawning tx_worker_task via Executor::spawn_global");
                 crate::task::Executor::spawn_global(crate::task::Task::new(tx_worker_task()));
-                log::info!("[NET BRIDGE] tx_worker_task spawned successfully");
             } else {
-                log::error!("[NET BRIDGE] Stack is None after init - tx_worker NOT spawned!");
+                log::warn!("[NET BRIDGE] Stack is None after init - tx_worker NOT spawned");
             }
         }
         Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),

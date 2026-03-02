@@ -33,6 +33,12 @@ impl HttpParser {
 
     /// 完全なレスポンスが受信されたか確認してパースする
     pub fn try_parse(&mut self) -> Result<Option<HttpResponse>, HttpParseError> {
+        // Security: Overall message size limit (including headers) to prevent DoS
+        const MAX_TOTAL_MESSAGE_SIZE: usize = 16 * 1024 * 1024; // 16MB
+        if self.buffer.len() > MAX_TOTAL_MESSAGE_SIZE {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
         // ヘッダの終わりを検索
         let header_end_idx = match self.find_header_end() {
             Some(idx) => idx,
@@ -64,7 +70,12 @@ impl HttpParser {
         let status_code_str = status_parts.next().ok_or(HttpParseError::InvalidFormat)?;
         let status_code: u16 = status_code_str.parse().map_err(|_| HttpParseError::InvalidFormat)?;
         
-        let reason_phrase = status_parts.next().unwrap_or("").trim().into();
+        // Security: Limit reason phrase length
+        let reason_phrase_raw = status_parts.next().unwrap_or("").trim();
+        if reason_phrase_raw.len() > 1024 {
+            return Err(HttpParseError::InvalidFormat);
+        }
+        let reason_phrase = reason_phrase_raw.into();
         
         // ヘッダ行のパース
         let mut headers = Vec::new();
@@ -76,14 +87,29 @@ impl HttpParser {
                 continue;
             }
             
+            // Security: Limit number of headers to prevent memory DoS / HashDoS
+            if headers.len() >= 100 {
+                return Err(HttpParseError::InvalidFormat);
+            }
+            
             let mut parts = line.splitn(2, ':');
             let name = parts.next().ok_or(HttpParseError::InvalidFormat)?.trim();
             let value = parts.next().ok_or(HttpParseError::InvalidFormat)?.trim();
             
+            // Security: Limit header name and value length
+            if name.len() > 256 || value.len() > 4096 {
+                return Err(HttpParseError::InvalidFormat);
+            }
+            
             headers.push(HttpHeader::new(name, value));
             
             if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = Some(value.parse::<usize>().map_err(|_| HttpParseError::InvalidFormat)?);
+                let len = value.parse::<usize>().map_err(|_| HttpParseError::InvalidFormat)?;
+                // Security: Limit content length to 10MB
+                if len > 10 * 1024 * 1024 {
+                    return Err(HttpParseError::InvalidFormat);
+                }
+                content_length = Some(len);
             } else if name.eq_ignore_ascii_case("Transfer-Encoding") && value.to_lowercase().contains("chunked") {
                 chunked = true;
             }
@@ -132,8 +158,17 @@ impl HttpParser {
     fn parse_chunked(&self, start_idx: usize) -> Result<(Vec<u8>, usize), HttpParseError> {
         let mut body = Vec::new();
         let mut current_pos = start_idx;
+        let mut chunk_count = 0;
+        const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10MB
+        const MAX_CHUNKS: usize = 1024;
 
         loop {
+            // Security: Limit number of chunks
+            chunk_count += 1;
+            if chunk_count > MAX_CHUNKS {
+                return Err(HttpParseError::InvalidFormat);
+            }
+
             // チャンクサイズの行を探す
             let line_end = self.find_line_end(current_pos);
             let end_idx = match line_end {
@@ -147,34 +182,38 @@ impl HttpParser {
             let hex_part = line_trim.split(';').next().unwrap_or(line_trim).trim();
             let chunk_size = usize::from_str_radix(hex_part, 16).map_err(|_| HttpParseError::InvalidFormat)?;
 
+            // Security: Check for integer overflow and body size limit
+            if chunk_size > MAX_BODY_SIZE || body.len() + chunk_size > MAX_BODY_SIZE {
+                return Err(HttpParseError::InvalidFormat);
+            }
+
             current_pos = end_idx + 2; // \r\n を飛ばす
 
             if chunk_size == 0 {
                 // 最後のチャンク (0\r\n\r\n)
                 if self.buffer.len() < current_pos + 2 {
-                    // まだ最後の \r\n が来ていない可能性（またはフッタがある可能性）
-                    // ここでは簡易的に \r\n があるか確認
                     return Ok((Vec::new(), 0)); 
                 }
-                // 実際にはフッタ（トレイラー）があるかもしれないが、ここでは無視
                 current_pos += 2; 
                 break;
             }
 
-            if self.buffer.len() < current_pos + chunk_size + 2 {
+            // Check if entire chunk + trailing CRLF is in buffer
+            let chunk_end = current_pos.checked_add(chunk_size).and_then(|c| c.checked_add(2));
+            let chunk_end_pos = match chunk_end {
+                Some(pos) => pos,
+                None => return Err(HttpParseError::InvalidFormat),
+            };
+
+            if self.buffer.len() < chunk_end_pos {
                 return Ok((Vec::new(), 0)); // データ不足
             }
 
             body.extend_from_slice(&self.buffer[current_pos..current_pos + chunk_size]);
-            current_pos += chunk_size + 2; // データ本体 + \r\n
+            current_pos = chunk_end_pos;
         }
 
-        // 成功した場合、(ボディ, 消費した全バイト数)
-        if current_pos == 0 {
-             Ok((Vec::new(), 0))
-        } else {
-             Ok((body, current_pos))
-        }
+        Ok((body, current_pos))
     }
 
     fn find_header_end(&self) -> Option<usize> {

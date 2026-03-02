@@ -146,7 +146,9 @@ impl CipherSuite {
             Self::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
             Self::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
             // TLS 1.2 ECDHE + CBC-SHA256 (前方秘匿性あり、SHA-256 MAC)
-            Self::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+            // Security: CBC suites are removed from defaults due to Lucky 13 vulnerability.
+            // AEAD suites (GCM/ChaCha20) are preferred and used by default.
+            // Self::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
             // Security: 以下はデフォルトから除外:
             // - TLS_ECDHE_RSA_WITH_AES_*_CBC_SHA (非SHA-1 MAC)
             // - TLS_RSA_WITH_* (前方秘匿性なし)

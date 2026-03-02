@@ -183,32 +183,38 @@ pub(crate) fn tls_verify_padding(data: &[u8]) -> Option<usize> {
         return None;
     }
 
-    let pad_byte = data[data.len() - 1];
-    let pad_len = pad_byte as usize + 1;
+    // TLS padding: all bytes in padding must have the same value as the last byte.
+    // Last byte value is (padding_length - 1).
+    let last_byte = data[data.len() - 1];
+    let pad_len = (last_byte as usize).wrapping_add(1);
 
-    // Security (POODLE mitigation): Do not early return. Always check up to 256 bytes
-    // in constant time to avoid leaking padding validity or length via timing.
-    let mut bad = 0u8;
+    // Security (Lucky13/POODLE mitigation):
+    // Use bitwise operations to avoid branching on secret padding data.
+    let mut bad = 0usize;
 
-    // Out of bounds padding length check (constant time flag)
-    let length_bad = if pad_len > data.len() || pad_len > 256 { 0xFF } else { 0 };
-    bad |= length_bad;
-
-    let max_check = data.len().min(256);
-    for i in 0..max_check {
-        let expected_pad = pad_byte;
-        let actual_byte = data[data.len() - 1 - i];
-
-        // Mask is 0xFF if i < pad_len, 0x00 otherwise
-        let is_padding_byte = if i < pad_len { 0xFF } else { 0x00 };
-        
-        // Only accumulate errors for actual padding bytes
-        bad |= (actual_byte ^ expected_pad) & is_padding_byte;
+    // Check if padding length is valid (1..=data.len() and <= 256 for TLS)
+    // We use bitwise OR to accumulate errors.
+    if pad_len > data.len() || pad_len > 256 {
+        bad |= 1;
     }
 
-    if bad != 0 {
-        None
-    } else {
+    // Always check the entire possible padding range (up to 256 bytes) to maintain constant time.
+    // We cap it to data.len() to avoid out-of-bounds, but for TLS records data.len()
+    // is usually > 256. If data.len() < 256, we check up to data.len().
+    let check_len = data.len().min(256);
+    
+    for i in 0..check_len {
+        let mask = if i < pad_len { 0xFF } else { 0x00 };
+        let actual_byte = data[data.len() - 1 - i];
+        bad |= ((actual_byte ^ last_byte) as usize) & mask;
+    }
+
+    // Constant-time check: if bad is 0, return Some(data.len() - pad_len), else None.
+    // Note: Option returning is still a branch, but we've mitigated the timing of the
+    // internal verification logic which is the primary leak in Lucky 13.
+    if bad == 0 {
         Some(data.len() - pad_len)
+    } else {
+        None
     }
 }
