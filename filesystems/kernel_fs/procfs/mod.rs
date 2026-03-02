@@ -150,7 +150,7 @@ pub enum ProcError {
 }
 
 fn read_sysfs_text(path: &str) -> Result<String, ProcError> {
-    match crate::fs::sysfs::read_file(path) {
+    match crate::system_info::read_file(path) {
         Some(Ok(bytes)) => String::from_utf8(bytes).map_err(|_| ProcError::NotReadable),
         Some(Err(_)) => Err(ProcError::NotFound),
         None => Err(ProcError::NotFound),

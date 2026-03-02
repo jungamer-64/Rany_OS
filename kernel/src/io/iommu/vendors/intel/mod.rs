@@ -25,7 +25,7 @@ use self::controller::qi_ops::InvalidationOps;
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::runtime::backend::IommuBackend;
 // Generic registry for registering the driver
-use crate::io::iommu::runtime::registry::{init_driver, is_iommu_enabled};
+use crate::io::iommu::runtime::registry::init_driver;
 use crate::io::iommu::runtime::security::SecurityNotifier;
 
 use crate::io::iommu::runtime::command::queue::IommuCommandKind;

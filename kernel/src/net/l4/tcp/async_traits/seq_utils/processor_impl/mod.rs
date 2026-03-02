@@ -217,7 +217,6 @@ impl TcpProcessor {
         tcb.set_remote_addr(remote_addr);
         tcb.enter_syn_sent();
         tcb.regenerate_isn();
-        let isn = tcb.snd_nxt();
 
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
 

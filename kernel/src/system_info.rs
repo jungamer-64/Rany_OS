@@ -1,17 +1,16 @@
 // ============================================================================
-// kernel/src/fs/sysfs.rs - Minimal sysfs support for /sys/cell and /sys/system
+// kernel/src/system_info.rs - System Information Provider
 // ============================================================================
 //!
-//! # ⚠ 非推奨 (POSIX Legacy)
+//! # システム情報プロバイダー
 //!
-//! sysfs はLinuxカーネルのデバイス/システム情報公開メカニズムです。
-//! `/sys/cell` でドメイン情報を提供する機能は有用ですが、ファイルシステム
-//! インターフェースではなく、ドメインAPIとして直接提供すべきです。
+//! ドメイン情報やシステムステータスを `/sys/` 仮想パス経由でシェルに提供する。
+//! 旧 `filesystems/kernel_fs/sysfs.rs` からの移行先。
 //!
-//! ## 移行先
-//! - `/sys/cell/*` → `domain_system::get_domain_stats()` + モニターAPI
-//! - `/sys/system/meminfo` → `mm::phys::get_memory_info()`
-//! - `/sys/system/cpuinfo` → `smp::get_cpu_info()`
+//! ## 設計
+//! - `/sys/cell/*` → `domain_system::get_domain_snapshot()` を利用
+//! - `/sys/system/*` → カーネル内部API（`memory`、`time`、`smp`等）を利用
+//! - ファイルシステム抽象化に依存せず、`DirEntry`/`FileAttr` のみ出力型として使用
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -22,6 +21,11 @@ use crate::fs::{DirEntry, FileAttr, FileMode, FileType};
 
 mod cpuinfo_gen;
 use cpuinfo_gen::*;
+
+// ============================================================================
+// Constants
+// ============================================================================
+
 const CELL_FIELDS: [&str; 15] = [
     "name",
     "state",
@@ -56,6 +60,10 @@ const SYSTEM_DIRS: [&str; 2] = ["kernel", "net"];
 const SYSTEM_KERNEL_FILES: [&str; 3] = ["hostname", "ostype", "version"];
 const SYSTEM_NET_FILES: [&str; 4] = ["dev", "tcp", "udp", "arp"];
 
+// ============================================================================
+// Path utilities
+// ============================================================================
+
 fn split_path(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
@@ -71,6 +79,16 @@ fn is_cell_path(comps: &[&str]) -> bool {
 fn is_system_path(comps: &[&str]) -> bool {
     comps.len() >= 2 && comps[0] == "sys" && comps[1] == "system"
 }
+
+/// `/sys/` パスかどうかを判定する
+pub fn is_sysfs_path(path: &str) -> bool {
+    let comps = split_path(path);
+    is_sys_path(&comps)
+}
+
+// ============================================================================
+// Domain helpers
+// ============================================================================
 
 fn parse_domain_id(comp: &str) -> Result<DomainId, &'static str> {
     let id = comp.parse::<u64>().map_err(|_| "Invalid domain id")?;
@@ -147,17 +165,11 @@ fn field_value(snapshot: &crate::domain_system::DomainSnapshot, field: &str) -> 
     }
 }
 
+// ============================================================================
+// System info helpers
+// ============================================================================
+
 fn system_file_value(field: &str) -> Option<String> {
-    #[cfg(feature = "legacy-posix")]
-    let proc_filesystems = "nodev\tproc\n";
-    #[cfg(not(feature = "legacy-posix"))]
-    let proc_filesystems = "";
-
-    #[cfg(feature = "legacy-posix")]
-    let proc_mounts = "proc /proc proc rw,nosuid,nodev,noexec 0 0\n";
-    #[cfg(not(feature = "legacy-posix"))]
-    let proc_mounts = "";
-
     match field {
         "version" => Some(format!(
             "ExoRust Kernel {} ({}) (gcc version 12.0.0)\n",
@@ -179,16 +191,10 @@ fn system_file_value(field: &str) -> Option<String> {
         "cpuinfo" => Some(generate_cpuinfo()),
         "stat" => Some(generate_stat()),
         "loadavg" => Some(String::from("0.00 0.00 0.00 1/1 1\n")),
-        "filesystems" => Some(format!(
-            "{}nodev\tdevfs\n\
-             \text2\n\
-             nodev\ttmpfs\n",
-            proc_filesystems
+        "filesystems" => Some(String::from(
+            "nodev\ttmpfs\n",
         )),
-        "mounts" => Some(format!(
-            "{}devfs /dev devfs rw,nosuid 0 0\n",
-            proc_mounts
-        )),
+        "mounts" => Some(String::from("")),
         "cmdline" => Some(String::from("console=ttyS0\n")),
         _ => None,
     }
@@ -227,6 +233,10 @@ fn system_net_value(field: &str) -> Option<String> {
     }
 }
 
+// ============================================================================
+// Inode / FileAttr helpers
+// ============================================================================
+
 fn ino_for(path: &str) -> u64 {
     let mut hash = 14695981039346656037u64;
     for b in path.as_bytes() {
@@ -259,10 +269,9 @@ fn file_attr(path: &str, file_type: FileType, size: u64) -> FileAttr {
     }
 }
 
-pub fn is_sysfs_path(path: &str) -> bool {
-    let comps = split_path(path);
-    is_sys_path(&comps)
-}
+// ============================================================================
+// Cell directory listing
+// ============================================================================
 
 fn list_cell_directory(comps: &[&str]) -> Option<Result<Vec<DirEntry>, &'static str>> {
     match comps.len() {
@@ -300,6 +309,10 @@ fn list_cell_directory(comps: &[&str]) -> Option<Result<Vec<DirEntry>, &'static 
         _ => Some(Err("Not a directory")),
     }
 }
+
+// ============================================================================
+// System directory listing
+// ============================================================================
 
 fn list_system_directory(comps: &[&str]) -> Option<Result<Vec<DirEntry>, &'static str>> {
     match comps.len() {
@@ -352,6 +365,12 @@ fn list_system_directory(comps: &[&str]) -> Option<Result<Vec<DirEntry>, &'stati
     }
 }
 
+// ============================================================================
+// Public API: list_directory
+// ============================================================================
+
+/// `/sys/` 配下のディレクトリ一覧を返す。
+/// パスが `/sys/` でない場合は `None` を返す（他のハンドラへフォールスルー）。
 pub fn list_directory(path: &str) -> Option<Result<Vec<DirEntry>, &'static str>> {
     let comps = split_path(path);
     if !is_sys_path(&comps) {
@@ -381,6 +400,10 @@ pub fn list_directory(path: &str) -> Option<Result<Vec<DirEntry>, &'static str>>
     Some(Err("Not found"))
 }
 
+// ============================================================================
+// Internal read helpers
+// ============================================================================
+
 /// systemグループ(kernel/net)に属するファイル値を解決する
 fn resolve_system_group_value(group: &str, leaf: &str) -> Option<String> {
     match group {
@@ -388,15 +411,6 @@ fn resolve_system_group_value(group: &str, leaf: &str) -> Option<String> {
         "net" => system_net_value(leaf),
         _ => None,
     }
-}
-
-/// セルドメインIDを検証し、ドメインの存在を確認する
-fn validate_cell_domain(comps: &[&str]) -> Result<(), &'static str> {
-    let id = parse_domain_id(comps[2])?;
-    if get_domain_snapshot(id).is_none() {
-        return Err("Not found");
-    }
-    Ok(())
 }
 
 /// セルドメインのフィールド値を取得する
@@ -437,12 +451,42 @@ fn read_system_file(comps: &[&str]) -> Result<Vec<u8>, &'static str> {
     Err("Not found")
 }
 
+// ============================================================================
+// Public API: read_file
+// ============================================================================
+
+/// `/sys/` 配下のファイル内容を読み取る。
+/// パスが `/sys/` でない場合は `None` を返す。
+pub fn read_file(path: &str) -> Option<Result<Vec<u8>, &'static str>> {
+    let comps = split_path(path);
+    if !is_sys_path(&comps) {
+        return None;
+    }
+    if comps.len() == 1 {
+        return Some(Err("Is a directory"));
+    }
+    if is_cell_path(&comps) {
+        return Some(read_cell_file(&comps));
+    }
+    if is_system_path(&comps) {
+        return Some(read_system_file(&comps));
+    }
+    Some(Err("Not found"))
+}
+
+// ============================================================================
+// Internal stat helpers
+// ============================================================================
+
 /// stat_file: セルパスのファイル属性取得
 fn stat_cell_path(path: &str, comps: &[&str]) -> Result<FileAttr, &'static str> {
     match comps.len() {
         2 => Ok(file_attr(path, FileType::Directory, 0)),
         3 => {
-            validate_cell_domain(comps)?;
+            let id = parse_domain_id(comps[2])?;
+            if get_domain_snapshot(id).is_none() {
+                return Err("Not found");
+            }
             Ok(file_attr(path, FileType::Directory, 0))
         }
         4 => {
@@ -474,23 +518,12 @@ fn stat_system_path(path: &str, comps: &[&str]) -> Result<FileAttr, &'static str
     }
 }
 
-pub fn read_file(path: &str) -> Option<Result<Vec<u8>, &'static str>> {
-    let comps = split_path(path);
-    if !is_sys_path(&comps) {
-        return None;
-    }
-    if comps.len() == 1 {
-        return Some(Err("Is a directory"));
-    }
-    if is_cell_path(&comps) {
-        return Some(read_cell_file(&comps));
-    }
-    if is_system_path(&comps) {
-        return Some(read_system_file(&comps));
-    }
-    Some(Err("Not found"))
-}
+// ============================================================================
+// Public API: stat_file
+// ============================================================================
 
+/// `/sys/` 配下のファイル属性を返す。
+/// パスが `/sys/` でない場合は `None` を返す。
 pub fn stat_file(path: &str) -> Option<Result<FileAttr, &'static str>> {
     let comps = split_path(path);
     if !is_sys_path(&comps) {
@@ -508,7 +541,9 @@ pub fn stat_file(path: &str) -> Option<Result<FileAttr, &'static str>> {
     Some(Err("Not found"))
 }
 
-// --- /sys/system content helpers ---
+// ============================================================================
+// Meminfo helper
+// ============================================================================
 
 fn generate_meminfo() -> String {
     let total_kb = crate::memory::total_memory_kb();

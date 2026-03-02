@@ -1,7 +1,11 @@
+// ============================================================================
+// kernel/src/system_info/cpuinfo_gen.rs - CPU/stat info generators
+// ============================================================================
+//! sysfs/cpuinfo_gen.rs から移行した CPU・統計情報生成ヘルパー。
+
 use crate::domain_system::list_domain_snapshots;
 use alloc::string::String;
 use core::sync::atomic::Ordering;
-
 
 pub(crate) fn generate_cpuinfo() -> String {
     let cpu_count = crate::smp::cpu_count();

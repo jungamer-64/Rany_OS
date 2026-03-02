@@ -2,7 +2,6 @@
 // kernel/src/net/services/http/parser.rs
 // ============================================================================
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use super::types::{HttpResponse, HttpVersion, HttpHeader};
 use core::str;

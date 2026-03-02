@@ -356,7 +356,7 @@ impl ShellServices for ExoKernel {
     }
 
     fn list_directory(&self, path: &str) -> Result<alloc::vec::Vec<KapiDirEntry>, &'static str> {
-        if let Some(result) = crate::fs::sysfs::list_directory(path) {
+        if let Some(result) = crate::system_info::list_directory(path) {
             return result.map(|entries| {
                 entries
                     .into_iter()
@@ -421,7 +421,7 @@ impl ShellServices for ExoKernel {
     }
 
     fn read_file(&self, path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
-        if let Some(result) = crate::fs::sysfs::read_file(path) {
+        if let Some(result) = crate::system_info::read_file(path) {
             return result;
         }
         crate::fs::read_file_content(path, "/").map_err(|_| "Failed to read file")
@@ -434,7 +434,7 @@ impl ShellServices for ExoKernel {
         // Use async_memfs's Bytes type internally for zero-copy semantics
         use crate::fs::async_memfs::Bytes;
 
-        if let Some(result) = crate::fs::sysfs::read_file(path) {
+        if let Some(result) = crate::system_info::read_file(path) {
             let content = result?;
             let bytes = Bytes::from(content);
             return Ok(bytes.into_inner());
@@ -449,14 +449,14 @@ impl ShellServices for ExoKernel {
     }
 
     fn write_file(&self, path: &str, data: &[u8]) -> Result<(), &'static str> {
-        if crate::fs::sysfs::is_sysfs_path(path) {
+        if crate::system_info::is_sysfs_path(path) {
             return Err("sysfs is read-only");
         }
         crate::fs::write_file_content(path, "/", data).map_err(|_| "Failed to write file")
     }
 
     fn stat_file(&self, path: &str) -> Result<kernel_api::shell::FileAttributes, &'static str> {
-        if let Some(result) = crate::fs::sysfs::stat_file(path) {
+        if let Some(result) = crate::system_info::stat_file(path) {
             return result.map(|attr| {
                 let file_type = match attr.file_type {
                     crate::fs::FileType::Directory => kernel_api::shell::FileType::Directory,
@@ -498,21 +498,21 @@ impl ShellServices for ExoKernel {
     }
 
     fn make_directory(&self, path: &str) -> Result<(), &'static str> {
-        if crate::fs::sysfs::is_sysfs_path(path) {
+        if crate::system_info::is_sysfs_path(path) {
             return Err("sysfs is read-only");
         }
         crate::fs::make_directory(path, "/").map_err(|_| "Failed to create directory")
     }
 
     fn remove_file(&self, path: &str) -> Result<(), &'static str> {
-        if crate::fs::sysfs::is_sysfs_path(path) {
+        if crate::system_info::is_sysfs_path(path) {
             return Err("sysfs is read-only");
         }
         crate::fs::remove_file(path, "/").map_err(|_| "Failed to remove file")
     }
 
     fn remove_directory(&self, path: &str) -> Result<(), &'static str> {
-        if crate::fs::sysfs::is_sysfs_path(path) {
+        if crate::system_info::is_sysfs_path(path) {
             return Err("sysfs is read-only");
         }
         crate::fs::remove_directory(path, "/").map_err(|_| "Failed to remove directory")

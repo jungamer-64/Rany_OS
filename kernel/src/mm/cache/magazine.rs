@@ -14,7 +14,6 @@
 #![allow(dead_code)]
 
 use core::mem::MaybeUninit;
-use alloc::vec;
 
 // ============================================================================
 // Magazine<T, N> - Generic Per-CPU Cache

@@ -23,7 +23,6 @@
 #![allow(dead_code)]
 
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 
 /// 型のハッシュ値（64ビット）

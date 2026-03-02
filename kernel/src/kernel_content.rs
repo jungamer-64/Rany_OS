@@ -54,6 +54,7 @@ mod vga;
 // Phase 4: High-Performance & Advanced Features
 mod console;
 mod diag;
+mod system_info;
 
 
 // Phase 5: Extended Features & System Integration

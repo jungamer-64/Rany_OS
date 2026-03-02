@@ -6,7 +6,7 @@ use alloc::collections::BTreeMap;
 use spin::RwLock;
 
 use crate::io::io_scheduler::{
-    DeviceId, DeviceOps, IoRequestId, IoResult, PollHandler, hybrid_coordinator,
+    DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator,
 };
 
 // ============================================================================

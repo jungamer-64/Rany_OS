@@ -407,7 +407,7 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 - NET core stack residual（監視）: `none`。
 - NET peripheral required 実行対象（67件）: dhcp(v4+v6) + dns + mdns + igmp + driver_bridge。
 - NET peripheral residual（監視）: `none`。
-- Storage/FS required 実行対象（59件）: async_ops + async_memfs + cache(core+block) + devfs + ext2 + fs_abstraction + memfs + page + page_cluster_buffer + procfs（full-boot runtime では `posix-compat` 有効）。
+- Storage/FS required 実行対象: async_ops + async_memfs + cache(core+block) + fs_abstraction + memfs + page + page_cluster_buffer + procfs（full-boot runtime では `posix-compat` 有効）。
 - Storage/FS residual（監視）: `none`。
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、residual 監視へ戻す（pasid_table 3件は required 維持）。
 - IOMMU Wave5 canonical 5件運用は fix-forward 方針を維持（不安定時も即 rollback せず、required 上で安定化修正）。

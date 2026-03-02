@@ -25,8 +25,6 @@ pub mod fs_abstraction;
 
 pub mod async_ops;
 pub mod cache;
-pub mod devfs;
-pub mod ext2;
 pub mod fat32_adapter;
 pub mod page_cluster_buffer;
 
@@ -50,7 +48,6 @@ pub use page_cluster_buffer::PageClusterBufferAllocator;
 pub mod memfs;
 pub mod async_memfs;
 pub mod page;
-pub mod sysfs;
 #[cfg(feature = "legacy-posix")]
 pub mod procfs;
 #[cfg(feature = "qemu-test-export")]
@@ -77,13 +74,6 @@ pub use async_ops::{
 pub use block::{BlockDevice, BlockRequest, RequestType};
 #[allow(unused_imports)]
 pub use cache::{CacheStats, CachedPage, PageCache, page_cache, init_page_cache};
-#[allow(unused_imports)]
-pub use devfs::{
-    ConsoleDevice, DevEntry, DevError, DevFileHandle, DevFs, DevInode, DeviceNumber, DeviceOps,
-    DeviceType, FullDevice, NullDevice, RandomDevice, ZeroDevice, devfs,
-};
-#[allow(unused_imports)]
-pub use ext2::Ext2FileSystem;
 #[allow(unused_imports)]
 #[allow(unused_imports)]
 pub use fs_abstraction::{

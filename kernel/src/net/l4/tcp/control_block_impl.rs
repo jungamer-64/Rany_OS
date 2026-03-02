@@ -89,7 +89,7 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    pub fn snd_wnd(&self) -> u16 {
+    pub fn snd_wnd(&self) -> u32 {
         self.seq.snd_wnd
     }
 
@@ -104,8 +104,7 @@ impl TcpControlBlock {
     }
 
     /// Enqueue an out-of-order segment
-    pub fn enqueue_ooo_payload(&mut self, mut seq: u32, mut packet: PacketRef) -> bool {
-        let mut data = packet.data();
+    pub fn enqueue_ooo_payload(&mut self, mut seq: u32, packet: PacketRef) -> bool {
         let rcv_nxt = self.seq.rcv_nxt;
 
         // 1. Acknowledge parts: skip data before rcv_nxt

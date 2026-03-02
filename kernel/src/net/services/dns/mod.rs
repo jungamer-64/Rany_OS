@@ -10,7 +10,6 @@
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 

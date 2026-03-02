@@ -533,7 +533,7 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
                     static __tls_end: u8;
                 }
 
-                let tls_start = &__tls_start as *const u8 as u64;
+                let _tls_start = &__tls_start as *const u8 as u64;
                 let tls_end = &__tls_end as *const u8 as u64;
 
                 let fs_base = tls_end;

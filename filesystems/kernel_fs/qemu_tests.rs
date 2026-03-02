@@ -1,6 +1,6 @@
 //! QEMU-exported Storage/FS deterministic checks.
-use super::{async_memfs, cache, devfs, memfs, page, page_cluster_buffer};
-use super::{async_ops, ext2, fs_abstraction};
+use super::{async_memfs, cache, memfs, page, page_cluster_buffer};
+use super::{async_ops, fs_abstraction};
 
 macro_rules! run_case {
     ($func:path) => {{
@@ -83,38 +83,6 @@ pub fn cache_block_block_cache_dirty_tracking_smoke() -> bool {
 
 pub fn cache_block_block_cache_flush_smoke() -> bool {
     run_case!(cache::cached_block_impl::block_cache_tests::test_block_cache_flush)
-}
-
-pub fn devfs_null_device_smoke() -> bool {
-    run_case!(devfs::tests::test_null_device)
-}
-
-pub fn devfs_zero_device_smoke() -> bool {
-    run_case!(devfs::tests::test_zero_device)
-}
-
-pub fn devfs_random_device_smoke() -> bool {
-    run_case!(devfs::tests::test_random_device)
-}
-
-pub fn devfs_dev_open_with_token_reclaim_smoke() -> bool {
-    run_case!(devfs::tests::test_dev_open_with_token_reclaim)
-}
-
-pub fn devfs_devfs_structure_smoke() -> bool {
-    run_case!(devfs::tests::test_devfs_structure)
-}
-
-pub fn devfs_find_block_device_by_number_smoke() -> bool {
-    run_case!(devfs::tests::test_find_block_device_by_number)
-}
-
-pub fn ext2_superblock_block_size_smoke() -> bool {
-    run_case!(ext2::tests::test_superblock_block_size)
-}
-
-pub fn ext2_inode_file_type_smoke() -> bool {
-    run_case!(ext2::tests::test_inode_file_type)
 }
 
 pub fn fs_abstraction_file_mode_smoke() -> bool {

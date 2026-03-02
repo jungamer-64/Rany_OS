@@ -66,38 +66,6 @@ pub fn storage_fs_cache_block_block_cache_flush_smoke() -> bool {
     crate::fs::qemu_tests::cache_block_block_cache_flush_smoke()
 }
 
-pub fn storage_fs_devfs_null_device_smoke() -> bool {
-    crate::fs::qemu_tests::devfs_null_device_smoke()
-}
-
-pub fn storage_fs_devfs_zero_device_smoke() -> bool {
-    crate::fs::qemu_tests::devfs_zero_device_smoke()
-}
-
-pub fn storage_fs_devfs_random_device_smoke() -> bool {
-    crate::fs::qemu_tests::devfs_random_device_smoke()
-}
-
-pub fn storage_fs_devfs_dev_open_with_token_reclaim_smoke() -> bool {
-    crate::fs::qemu_tests::devfs_dev_open_with_token_reclaim_smoke()
-}
-
-pub fn storage_fs_devfs_devfs_structure_smoke() -> bool {
-    crate::fs::qemu_tests::devfs_devfs_structure_smoke()
-}
-
-pub fn storage_fs_devfs_find_block_device_by_number_smoke() -> bool {
-    crate::fs::qemu_tests::devfs_find_block_device_by_number_smoke()
-}
-
-pub fn storage_fs_ext2_superblock_block_size_smoke() -> bool {
-    crate::fs::qemu_tests::ext2_superblock_block_size_smoke()
-}
-
-pub fn storage_fs_ext2_inode_file_type_smoke() -> bool {
-    crate::fs::qemu_tests::ext2_inode_file_type_smoke()
-}
-
 pub fn storage_fs_fs_abstraction_file_mode_smoke() -> bool {
     crate::fs::qemu_tests::fs_abstraction_file_mode_smoke()
 }

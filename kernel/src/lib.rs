@@ -510,6 +510,12 @@ pub mod driver_domain;
     feature = "qemu-test-export"
 ))]
 pub mod console;
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod system_info;
 
 #[cfg(not(feature = "full_mm_tests"))]
 #[cfg(any(test, feature = "bench"))]
