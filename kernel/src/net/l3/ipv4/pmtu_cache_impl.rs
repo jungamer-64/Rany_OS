@@ -751,30 +751,33 @@ impl Ipv4Processor {
 
     /// Get next packet ID (unpredictable per-destination to prevent Idle Scan and Traffic Analysis)
     pub fn next_id(&mut self, dst: Ipv4Address) -> u16 {
-        // RFC 6864 recommendation: increment the global counter by 1 or more.
-        // To avoid predictable IDs while remaining efficient, we use a simple
-        // LCG-based increment seeded by our secret.
-        let mut rand_state = self.next_id as u32 ^ self.id_secret;
-        rand_state = rand_state.wrapping_mul(1103515245).wrapping_add(12345);
-        let increment = ((rand_state >> 16) & 0xFF) as u16 + 1;
+        // RFC 6864/7739 compliant secure ID generation.
+        // We use a keyed hash (FNV-1a) mixing the destination, our boot secret, 
+        // and a global counter to produce an unpredictable ID sequence.
         
-        self.next_id = self.next_id.wrapping_add(increment);
+        // Increment global counter
+        self.next_id = self.next_id.wrapping_add(1);
         
-        // Compute per-destination scrambling using FNV-1a of (dst, secret)
         let mut hash: u32 = 0x811c9dc5;
         const FNV_PRIME: u32 = 0x01000193;
         
+        // Mix in destination address
         for &byte in &dst.octets() {
             hash ^= byte as u32;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
         
+        // Mix in the secret (per-boot)
         hash ^= self.id_secret;
         hash = hash.wrapping_mul(FNV_PRIME);
         
-        // Mix the global counter with the per-destination hash
+        // Mix in the counter
+        hash ^= self.next_id as u32;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        
+        // Final folding to 16 bits
         let scramble = (hash ^ (hash >> 16)) as u16;
-        self.next_id.wrapping_add(scramble)
+        scramble
     }
 
     /// Build an IP packet for transmission

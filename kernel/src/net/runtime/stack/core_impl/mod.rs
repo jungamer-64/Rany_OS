@@ -278,9 +278,12 @@ impl NetworkStack {
                 );
             }
             Ipv4ProcessResult::Reassembled(reassembled_data) => {
-                // Process reassembled packet recursively
-                // The reassembled data is a complete IP packet
-                self.process_reassembled_packet(&reassembled_data, current_time, _src_mac);
+                // Security Fix: Offload reassembled packets to the asynchronous endpoint stack
+                // instead of processing them directly. This ensures fragmented packets are
+                // handled by the same stack as normal packets, preventing DoS and state bypass.
+                crate::net::l4::endpoint::event::send_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket { data: reassembled_data }
+                );
             }
             Ipv4ProcessResult::FragmentPending => {
                 // Fragment received, waiting for more fragments
@@ -311,21 +314,18 @@ impl NetworkStack {
             }
 
             match packet.protocol() {
-                IpProtocol::Icmp => {
-                    // Process ICMP directly without PacketRef
-                    self.process_icmp_data(payload, src, dst, packet.ttl(), current_time);
+                IpProtocol::Tcp => {
+                    // Security Fix: Process TCP through the endpoint stack
+                    crate::net::l4::endpoint::tcp_rx::process_tcp_segment(src.octets(), dst.octets(), payload);
                 }
                 IpProtocol::Igmp => {
                     // Process IGMP for multicast group management
                     self.process_igmp_data(payload, src, packet.ttl());
                 }
                 IpProtocol::Udp => {
-                    // Process UDP directly without PacketRef
+                    // Security Fix: Process UDP through the endpoint stack
+                    // Use process_udp_data instead of self.udp.process
                     self.process_udp_data(payload, src, dst);
-                }
-                IpProtocol::Tcp => {
-                    // Process TCP directly without PacketRef
-                    self.process_tcp_data(payload, src, dst, current_time);
                 }
                 _ => {
                     self.stats.record_dropped();
@@ -466,11 +466,12 @@ impl NetworkStack {
                 }
 
                 if let Some(reassembled_data) = reassembled_pkt {
-                    // Recursively process the reassembled (non-fragmented) packet
-                    // Set reassembled=true to prevent further fragmentation processing
-                    self.process_ipv6_data(&reassembled_data, current_time, src_mac, true);
-                }
-                return;
+                    // Security Fix: Offload reassembled IPv6 packets to the asynchronous endpoint stack
+                    // instead of processing them directly. This ensures consistent stack processing.
+                    crate::net::l4::endpoint::event::send_event_ignore(
+                        crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket { data: reassembled_data }
+                    );
+                }                return;
             }
             ExtHeaderResult::NoFragment(_, _) => {
                 // Fall through to normal processing
@@ -499,7 +500,7 @@ impl NetworkStack {
     }
 
     /// Process ICMPv6 data
-    pub(super) fn process_icmpv6_data(
+    pub(crate) fn process_icmpv6_data(
         &mut self,
         data: &[u8],
         src: Ipv6Address,

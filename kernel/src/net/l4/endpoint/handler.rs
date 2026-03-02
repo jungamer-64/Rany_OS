@@ -89,6 +89,15 @@ impl NetworkEventHandler {
     pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
         match event {
             NetworkEvent::IngressPacket { packet } => self.handle_ingress_packet(packet),
+            NetworkEvent::ReassembledPacket { data } => {
+                if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    if let Some(ref mut stack) = *stack_guard {
+                        let current_time = stack.current_time();
+                        stack.process_reassembled_packet(&data, current_time, crate::net::l2::ethernet::MacAddress::ZERO);
+                    }
+                }
+                EventHandleResult::Success
+            }
             NetworkEvent::DataReady { fd, socket_type } => self.handle_data_ready(fd, socket_type),
             NetworkEvent::TxAvailable => self.handle_tx_available(),
             NetworkEvent::Connect { fd, local, remote } => self.handle_connect(fd, local, remote),
@@ -134,6 +143,61 @@ impl NetworkEventHandler {
                     }
                     _ => EventHandleResult::Success,
                 }
+            }
+            NetworkEvent::ReassembledPacket { data } => {
+                let current_time = stack.current_time();
+                
+                // Determine if it's IPv4 or IPv6
+                if data.len() >= 20 && (data[0] >> 4) == 4 {
+                    // IPv4
+                    if let Some(packet) = crate::net::l3::ipv4::Ipv4Packet::parse(&data) {
+                        let src_ip = packet.source();
+                        let dst_ip = packet.destination();
+                        let payload = packet.payload();
+                        
+                        match packet.protocol() {
+                            crate::net::l3::ipv4::IpProtocol::Tcp => {
+                                super::tcp_rx::process_tcp_segment(src_ip.octets(), dst_ip.octets(), payload);
+                            }
+                            crate::net::l3::ipv4::IpProtocol::Udp => {
+                                self.handle_udp_ingress_with_stack(src_ip.octets(), dst_ip.octets(), payload, stack);
+                            }
+                            crate::net::l3::ipv4::IpProtocol::Icmp => {
+                                stack.process_icmp_data(payload, src_ip, dst_ip, packet.ttl(), current_time);
+                            }
+                            crate::net::l3::ipv4::IpProtocol::Igmp => {
+                                stack.process_igmp_data(payload, src_ip, packet.ttl());
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if data.len() >= 40 && (data[0] >> 4) == 6 {
+                    // IPv6
+                    if let Some(packet) = crate::net::l3::ipv6::Ipv6Packet::parse(&data) {
+                        let src = packet.source();
+                        let dst = packet.destination();
+                        let payload = packet.payload();
+                        
+                        // Note: For IPv6, we'd ideally have process_tcp_data_v6 in endpoint too.
+                        // For now, delegate back to stack for IPv6 as it's less fragmented (pun intended)
+                        // but this is where we'd unify IPv6 as well.
+                        use crate::net::l3::ipv4::IpProtocol;
+                        match packet.next_header() {
+                            IpProtocol::Tcp => {
+                                // super::tcp_rx::process_tcp_segment_v6(src, dst, payload); // TODO
+                                stack.process_tcp_data_v6(payload, src, dst, current_time);
+                            }
+                            IpProtocol::Udp => {
+                                stack.process_udp_data_v6(payload, src, dst);
+                            }
+                            IpProtocol::Icmpv6 => {
+                                stack.process_icmpv6_data(payload, src, dst, crate::net::l2::ethernet::MacAddress::ZERO, packet.hop_limit(), current_time);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                EventHandleResult::Success
             }
             NetworkEvent::DataReady { fd, socket_type } => {
                 if socket_type == SocketType::Tcp {

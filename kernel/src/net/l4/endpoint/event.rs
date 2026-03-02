@@ -21,6 +21,8 @@ use crate::net::datapath::mempool::PacketRef;
 pub enum NetworkEvent {
     /// 着信パケット - プロトコルスタックへのオフロード
     IngressPacket { packet: PacketRef },
+    /// 再組立てパケット - プロトコルスタックへのオフロード
+    ReassembledPacket { data: Vec<u8> },
     /// 送信データ準備完了 - プロトコルスタックに送信を要求
     DataReady {
         fd: SocketFd,

@@ -175,7 +175,7 @@ impl NetworkStack {
     ///
     /// IPv6擬似ヘッダーでチェックサムを検証し、ポート番号ベースで
     /// 既存のUDPソケットにデータグラムを配送する。
-    pub(super) fn process_udp_data_v6(
+    pub(crate) fn process_udp_data_v6(
         &mut self,
         data: &[u8],
         src: crate::net::l3::ipv6::Ipv6Address,
@@ -255,7 +255,7 @@ impl NetworkStack {
     /// IPv6擬似ヘッダーでチェックサムを検証する。
     /// 現在のTCPプロセッサはIPv4専用のため、検証後にログ記録のみ行う。
     /// 将来のデュアルスタック対応でフル処理を実装予定。
-    pub(super) fn process_tcp_data_v6(
+    pub(crate) fn process_tcp_data_v6(
         &mut self,
         data: &[u8],
         src: crate::net::l3::ipv6::Ipv6Address,
