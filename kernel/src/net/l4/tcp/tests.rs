@@ -361,7 +361,7 @@ pub fn test_three_way_handshake() {
     let server_addr = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 1000);
 
     // Server binds (creates a listener with backlog)
-    let listener = server.bind(server_addr).expect("bind");
+    let listener = server.bind(server_addr, None).expect("bind");
 
     // Client initiates connection (sets up a SynSent TCB)
     let _client_stream = client.connect(client_addr, server_addr).expect("connect");
@@ -478,7 +478,7 @@ pub fn test_three_way_handshake_v6() {
     let client_addr = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 3000);
     let server_addr = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 4000);
 
-    let listener = server.bind(server_addr).expect("bind v6");
+    let listener = server.bind(server_addr, None).expect("bind v6");
 
     let _client_stream = client.connect(client_addr, server_addr).expect("connect v6");
 
@@ -817,7 +817,7 @@ pub fn test_accept_future_returns_on_push_connection() {
 
     let mut server = TcpProcessor::new();
     let server_addr = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 5000);
-    let listener = server.bind(server_addr).expect("bind");
+    let listener = server.bind(server_addr, None).expect("bind");
 
     // Create AcceptFuture manually
     let mut fut = AcceptFuture { listener: &listener };

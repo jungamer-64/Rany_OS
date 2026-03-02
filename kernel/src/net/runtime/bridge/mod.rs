@@ -1338,8 +1338,10 @@ pub fn init_bridge() -> Result<(), &'static str> {
         Ok(mut guard) => {
             if let Some(ref mut stack) = *guard {
                 stack.set_transmit_fn(virtio_transmit);
-                // Spawn background TX worker to process enqueued transmit requests
-                crate::task::per_core_executor::spawn(tx_worker_task());
+                // Spawn background TX worker to process enqueued transmit requests.
+                // Use the main Executor's global queue so the task is polled by the
+                // primary executor loop (task::Executor::run).
+                crate::task::Executor::spawn_global(crate::task::Task::new(tx_worker_task()));
             }
         }
         Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),

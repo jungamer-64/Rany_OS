@@ -632,6 +632,7 @@ mod tests {
 
     #[test_case]
     fn test_tsc_timer() {
+        eprintln!("[TEST] Running test_tsc_timer...");
         let timer = TscTimer::new();
         let elapsed = timer.elapsed_ns();
         assert!(elapsed >= 0);

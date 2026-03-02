@@ -294,7 +294,8 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
 pub fn test_ipv4_id_generation_unpredictability() {
     let mut proc = Ipv4Processor::new(Ipv4Config {
         address: Ipv4Address::new([10, 0, 0, 1]),
-        gateway: None,
+        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+        gateway: Ipv4Address::ANY,
         dns: None,
     });
 

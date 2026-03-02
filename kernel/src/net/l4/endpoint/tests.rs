@@ -131,7 +131,7 @@ pub mod tests {
         if let Some(conn) = inner.accept_queue.pop_front() {
             let new_socket = Socket::new_with_fd(SocketType::Tcp, conn.fd);
             {
-                let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
+                let mut new_inner = new_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 new_inner.tcp_nodelay = inner.tcp_nodelay; // 設定を引き継ぐ

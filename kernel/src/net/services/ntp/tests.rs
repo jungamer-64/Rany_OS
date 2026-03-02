@@ -6,8 +6,8 @@ pub fn test_ntp_timestamp_to_unix() {
     // Unix: 1735689600
     // NTP: 1735689600 + 2208988800 = 3944678400
     let ntp = NtpTimestamp {
-        seconds: 3944678400,
-        fraction: 0,
+        seconds: 3944678400u32.to_be_bytes(),
+        fraction: [0; 4],
     };
     assert_eq!(ntp.to_unix_seconds(), 1735689600);
 }
