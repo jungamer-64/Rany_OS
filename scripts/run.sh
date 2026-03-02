@@ -37,8 +37,8 @@ SIGNER_TOOL_DIR="$TOOLS_DIR/signer"
 # --- Defaults ---
 PROFILE="debug"
 CARGO_ARGS_COMMON=()
-MEMORY=1024
-SMP=4
+MEMORY=4096
+SMP=8
 SERIAL="stdio"
 GDB_DEBUG=false
 CLEAN=false
