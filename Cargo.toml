@@ -17,6 +17,7 @@ members = [
     "libs/sync",
     # Filesystems
     "filesystems/fat32",
+    "filesystems/nvme_ns",
     # Drivers
     "drivers/pci",
     "drivers/ahci",
@@ -53,6 +54,7 @@ default-members = [
     "libs/graphic_types",
     "filesystems/vfs",
     "filesystems/fat32",
+    "filesystems/nvme_ns",
     "drivers/pci",
     "drivers/ahci",
     "drivers/usb",

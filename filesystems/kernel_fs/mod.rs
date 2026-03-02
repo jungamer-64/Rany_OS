@@ -26,6 +26,7 @@ pub mod fs_abstraction;
 pub mod async_ops;
 pub mod cache;
 pub mod fat32_adapter;
+pub mod nvme_ns_adapter;
 pub mod page_cluster_buffer;
 
 // ============================================================================
@@ -104,3 +105,5 @@ pub use async_memfs::{
 };
 #[allow(unused_imports)]
 pub use page::{Page, PagedContent, PAGE_SIZE, PAGE_SHIFT, PAGE_MASK, new_zero_page};
+#[allow(unused_imports)]
+pub use nvme_ns_adapter::{NvmeNsFileSystemAdapter, NvmeNsInodeAdapter};

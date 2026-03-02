@@ -88,7 +88,7 @@ pub struct DiskInode {
     /// 拡張属性ブロック (将来用)
     pub xattr_block: u64,
     /// 予約領域
-    _reserved: [u8; 12],
+    _reserved: [u8; 64],
 }
 
 const _: () = assert!(mem::size_of::<DiskInode>() == INODE_SIZE);
@@ -157,7 +157,7 @@ impl DiskInode {
     /// `bytes` は少なくとも INODE_SIZE バイト長でなければならない。
     pub unsafe fn from_bytes(bytes: &[u8]) -> &Self {
         assert!(bytes.len() >= INODE_SIZE);
-        &*(bytes.as_ptr() as *const Self)
+        unsafe { &*(bytes.as_ptr() as *const Self) }
     }
 
     /// 可変バイト配列から復元
@@ -166,7 +166,7 @@ impl DiskInode {
     /// `bytes` は少なくとも INODE_SIZE バイト長でなければならない。
     pub unsafe fn from_bytes_mut(bytes: &mut [u8]) -> &mut Self {
         assert!(bytes.len() >= INODE_SIZE);
-        &mut *(bytes.as_mut_ptr() as *mut Self)
+        unsafe { &mut *(bytes.as_mut_ptr() as *mut Self) }
     }
 }
 

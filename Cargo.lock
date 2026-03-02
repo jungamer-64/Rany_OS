@@ -631,6 +631,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvme_ns"
+version = "0.1.0"
+dependencies = [
+ "exorust_sync",
+ "hashbrown",
+ "log",
+ "vfs",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -758,6 +768,7 @@ dependencies = [
  "kernel_api",
  "log",
  "nvme_driver",
+ "nvme_ns",
  "once_cell",
  "pci_driver",
  "rtc_driver",

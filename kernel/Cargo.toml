@@ -48,6 +48,7 @@ time_driver = { path = "../drivers/time" }
 
 # Filesystems
 fat32 = { path = "../filesystems/fat32" }
+nvme_ns = { path = "../filesystems/nvme_ns" }
 vfs = { path = "../filesystems/vfs" }
 
 # ブートローダーAPI（ExoLoader Protocol）

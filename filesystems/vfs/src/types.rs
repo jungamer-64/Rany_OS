@@ -406,7 +406,7 @@ pub struct DirEntry {
 impl DirEntry {
     /// 新しいディレクトリエントリを作成
     #[must_use]
-    pub fn new(name: String, ino: InodeNum, file_type: FileType) -> Self {
+    pub const fn new(name: String, ino: InodeNum, file_type: FileType) -> Self {
         Self {
             name,
             ino,
