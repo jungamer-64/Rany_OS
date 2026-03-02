@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Durable write-ahead log (WAL) manager.
 
 use alloc::boxed::Box;

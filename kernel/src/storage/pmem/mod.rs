@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Persistent memory helpers (`clwb` + `sfence`) and simple region allocator.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
