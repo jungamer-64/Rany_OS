@@ -122,25 +122,18 @@ impl DhcpV6Client {
 
             // 応答待機
             match task::with_timeout(socket.recv(), 1000).await {
-                TimeoutResult::Completed(Some((_src, _ttl, packet))) => {
-                    // src.ip は UdpAddr 内では Ipv4Address なので、src_ipv6 を取得する必要があるが、
-                    // 現状の UdpAddr 実装を確認する必要がある。
-                    // とりあえず handle_packet を呼び出し、内部で適切な処理を行う。
-                    // 実際には IPv6 パケットからソースアドレスを取得する必要がある。
-                    
-                    // ここでは UdpAddr::ip() は IPv4 互換を想定しているため、
-                    // 真の IPv6 アドレスを取得するには Datapath からの情報を利用するか、
-                    // UdpEndpoint::recv() が IPv6 対応している必要がある。
-                    
-                    // TODO: UdpAddr の IPv6 対応を確認
-                    // 現状は handle_packet 内で src を利用しているが、
-                    // socket.recv() が UdpAddr (IPv4) を返す場合、適切に変換が必要。
-                    
-                    // 便宜上、src が IPv4Mapped であれば変換、そうでなければデフォルトを使用
-                    let src_v6 = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]); // fallback
+                TimeoutResult::Completed(Some((src, _ttl, packet))) => {
+                    // Get the actual source IPv6 address from UdpAddr (RFC 8415 compliant)
+                    let src_v6 = match src {
+                        crate::net::l4::udp::UdpAddr::V6 { ip, .. } => ip,
+                        crate::net::l4::udp::UdpAddr::V4 { .. } => {
+                            // Fallback to loopback if somehow received on IPv4 (should not happen for DHCPv6)
+                            Ipv6Address::LOOPBACK
+                        }
+                    };
                     
                     if self.handle_packet(packet.data(), src_v6) {
-                        log::info!("[NET] DHCPv6 packet handled");
+                        log::info!("[NET] DHCPv6 packet handled from {}", src_v6);
                     }
                 }
                 _ => {}

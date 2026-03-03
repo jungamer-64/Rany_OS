@@ -189,79 +189,45 @@ impl NetworkStack {
         dst: crate::net::l4::udp::UdpAddr,
         data: &[u8],
     ) -> Result<(), crate::net::types::NetworkError> {
-        let config = self.config.clone();
-        let current_time = self.current_time();
-
-        // Use configured IP if source is ANY
-        let src_ip = if src.ip.is_any() {
-            config.ipv4.address
-        } else {
-            src.ip
-        };
-        let dst_ip = dst.ip;
-
-        // Resolve MAC address
-        let dst_mac = self.resolve_mac(dst_ip, &config, current_time)
-            .ok_or(crate::net::types::NetworkError::ArpResolutionPending)?;
-
-        // Try zero-copy first
-        if let Some(result) = self.try_send_udp_zero_copy(
-            &config, src_ip, src.port, dst_ip, dst_mac, dst.port, data,
-        ) {
-            return result;
-        }
-
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-
-        // Build Ethernet frame
-        let mut frame = EthernetFrameMut::new(&mut buffer)
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        use crate::net::l4::udp::UdpAddr;
         
-        frame
-            .set_destination(dst_mac)
-            .set_source(config.mac)
-            .set_ether_type(EtherType::Ipv4);
+        match (src, dst) {
+            (UdpAddr::V4 { ip: s_ip, port: s_port }, UdpAddr::V4 { ip: d_ip, port: d_port }) => {
+                let config = self.config.clone();
+                let current_time = self.current_time();
 
-        let eth_payload = frame.payload_mut();
+                // Use configured IP if source is ANY
+                let src_ip = if s_ip.is_any() {
+                    config.ipv4.address
+                } else {
+                    s_ip
+                };
 
-        // Build IP packet
-        let mut ip_packet = Ipv4PacketMut::new(eth_payload)
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        
-        ip_packet
-            .init_header()
-            .set_source(src_ip)
-            .set_destination(dst_ip)
-            .set_protocol(IpProtocol::Udp)
-            .set_ttl(64);
+                // Resolve MAC address
+                let dst_mac = self.resolve_mac(d_ip, &config, current_time)
+                    .ok_or(crate::net::types::NetworkError::ArpResolutionPending)?;
 
-        let ip_payload = ip_packet.payload_mut();
-        
-        // Build UDP datagram
-        let udp_len = crate::net::l4::udp::UdpHeader::SIZE + data.len();
-        if ip_payload.len() < udp_len {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        }
+                // Try zero-copy first
+                if let Some(result) = self.try_send_udp_zero_copy(
+                    &config, src_ip, s_port, d_ip, dst_mac, d_port, data,
+                ) {
+                    return result;
+                }
 
-        // UDP Header
-        ip_payload[0..2].copy_from_slice(&src.port.to_be_bytes());
-        ip_payload[2..4].copy_from_slice(&dst.port.to_be_bytes());
-        ip_payload[4..6].copy_from_slice(&(udp_len as u16).to_be_bytes());
-        ip_payload[6..8].fill(0); // Checksum (optional for UDP over IPv4)
-        
-        // UDP Payload
-        ip_payload[8..8 + data.len()].copy_from_slice(data);
-        
-        // Finalize IP packet
-        ip_packet.finalize(udp_len);
-
-        let ip_len = ip_packet.total_len();
-        frame.set_payload_len(ip_len);
-
-        if self.transmit(frame.as_bytes()) {
-            Ok(())
-        } else {
-            Err(crate::net::types::NetworkError::TransmitFailed)
+                if self.send_udp_raw_with_src_ttl(src_ip, s_port, d_ip, d_port, data, 64) {
+                    Ok(())
+                } else {
+                    Err(crate::net::types::NetworkError::TransmitFailed)
+                }
+            }
+            (UdpAddr::V6 { ip: s_ip, port: s_port }, UdpAddr::V6 { ip: d_ip, port: d_port }) => {
+                if self.send_udp_v6_raw(s_port, s_ip, d_ip, d_port, data) {
+                    Ok(())
+                } else {
+                    Err(crate::net::types::NetworkError::TransmitFailed)
+                }
+            }
+            _ => Err(crate::net::types::NetworkError::InvalidAddress),
         }
     }
 }

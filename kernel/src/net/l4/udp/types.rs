@@ -48,7 +48,7 @@ impl UdpProcessor {
         self.endpoints.find(port).is_some()
     }
 
-    /// Process an incoming UDP packet
+    /// Process an incoming UDP packet (IPv4)
     pub fn process(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, ttl: u8) -> UdpResult {
         use core::sync::atomic::Ordering;
 
@@ -57,7 +57,7 @@ impl UdpProcessor {
             None => return UdpResult::Invalid,
         };
 
-        // Verify checksum
+        // Verify checksum (optional for IPv4)
         if !packet.verify_checksum(src_ip, dst_ip) {
             self.endpoints
                 .stats
@@ -89,7 +89,47 @@ impl UdpProcessor {
         }
     }
 
-    /// Process an incoming UDP packet with an existing PacketRef (zero-copy)
+    /// Process an incoming UDP packet (IPv6, mandatory checksum)
+    pub fn process_v6(&self, data: &[u8], src_ip: Ipv6Address, dst_ip: Ipv6Address, ttl: u8) -> UdpResult {
+        use core::sync::atomic::Ordering;
+
+        let packet = match UdpPacket::parse(data) {
+            Some(p) => p,
+            None => return UdpResult::Invalid,
+        };
+
+        // Verify checksum (mandatory for IPv6 per RFC 8200)
+        if !packet.verify_checksum_v6(src_ip, dst_ip) {
+            self.endpoints
+                .stats
+                .checksum_errors
+                .fetch_add(1, Ordering::Relaxed);
+            return UdpResult::ChecksumError;
+        }
+
+        let payload = packet.payload();
+        if let Some(mut pkt_ref) = crate::net::datapath::mempool::alloc_packet() {
+            let buf = pkt_ref.data_mut();
+            if payload.len() > buf.len() {
+                return UdpResult::Invalid;
+            }
+            buf[..payload.len()].copy_from_slice(payload);
+            pkt_ref.set_len(payload.len());
+            
+            let src = UdpAddr::new_v6(src_ip, packet.src_port());
+            let dst_port = packet.dst_port();
+
+            if self.endpoints.deliver(src, dst_port, ttl, pkt_ref) {
+                UdpResult::Delivered
+            } else {
+                UdpResult::NoEndpoint
+            }
+        } else {
+            UdpResult::NoEndpoint
+        }
+    }
+
+    /// Process an incoming UDP packet with an existing PacketRef (zero-copy, IPv4)
     pub fn process_with_packet(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, mut packet: PacketRef, ttl: u8) -> UdpResult {
         use core::sync::atomic::Ordering;
 
@@ -116,6 +156,42 @@ impl UdpProcessor {
         packet.set_len(payload_len);
 
         let src = UdpAddr::new(src_ip, packet_view.src_port());
+        let dst_port = packet_view.dst_port();
+
+        if self.endpoints.deliver(src, dst_port, ttl, packet) {
+            UdpResult::Delivered
+        } else {
+            UdpResult::NoEndpoint
+        }
+    }
+
+    /// Process an incoming UDP packet with an existing PacketRef (zero-copy, IPv6)
+    pub fn process_with_packet_v6(&self, data: &[u8], src_ip: Ipv6Address, dst_ip: Ipv6Address, mut packet: PacketRef, ttl: u8) -> UdpResult {
+        use core::sync::atomic::Ordering;
+
+        let packet_view = match UdpPacket::parse(data) {
+            Some(p) => p,
+            None => return UdpResult::Invalid,
+        };
+
+        if !packet_view.verify_checksum_v6(src_ip, dst_ip) {
+            self.endpoints
+                .stats
+                .checksum_errors
+                .fetch_add(1, Ordering::Relaxed);
+            return UdpResult::ChecksumError;
+        }
+
+        let payload_len = packet_view.payload().len();
+        if packet.len() < UdpHeader::SIZE + payload_len {
+            return UdpResult::Invalid;
+        }
+
+        // Advance PacketRef to skip UDP header
+        packet.advance(UdpHeader::SIZE);
+        packet.set_len(payload_len);
+
+        let src = UdpAddr::new_v6(src_ip, packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
         if self.endpoints.deliver(src, dst_port, ttl, packet) {

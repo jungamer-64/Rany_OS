@@ -197,6 +197,7 @@ impl NetworkStack {
     ///
     /// IPv6擬似ヘッダーでチェックサムを検証し、ポート番号ベースで
     /// 既存のUDPソケットにデータグラムを配送する。
+    /// Process UDP data over IPv6
     pub(crate) fn process_udp_data_v6(
         &mut self,
         data: &[u8],
@@ -204,72 +205,19 @@ impl NetworkStack {
         dst: crate::net::l3::ipv6::Ipv6Address,
         hop_limit: u8,
     ) {
-        use crate::net::l3::ipv4::IpProtocol;
-        use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
-        use crate::net::l3::ipv4::data_checksum;
+        use crate::net::l4::udp::UdpResult;
 
-        // UDPヘッダー最小長チェック (8 bytes)
-        if data.len() < 8 {
-            self.stats.record_rx_error();
-            return;
-        }
-
-        let src_port = u16::from_be_bytes([data[0], data[1]]);
-        let dst_port = u16::from_be_bytes([data[2], data[3]]);
-        let udp_length = u16::from_be_bytes([data[4], data[5]]);
-        let checksum = u16::from_be_bytes([data[6], data[7]]);
-
-        if udp_length < 8 || udp_length as usize > data.len() {
-            self.stats.record_rx_error();
-            return;
-        }
-
-        // RFC 8200: UDP over IPv6ではチェックサム0は許可されない
-        if checksum == 0 {
-            self.stats.record_rx_error();
-            return;
-        }
-
-        // IPv6擬似ヘッダーでチェックサム検証
-        let pseudo = ipv6_pseudo_header_checksum(
-            &src, &dst, IpProtocol::Udp, udp_length as u32,
-        );
-        let verify = data_checksum(&data[..udp_length as usize], pseudo);
-        if verify != 0 {
-            self.stats.record_rx_error();
-            return;
-        }
-
-        // ペイロード抽出
-        let payload_end = core::cmp::min(udp_length as usize, data.len());
-        if payload_end <= 8 {
-            // ペイロードなし — 有効だがデータなし
-            return;
-        }
-        let payload = &data[8..payload_end];
-
-        // 既存のUDPソケットテーブルにポートベースで配送
-        // src IPはIPv4マッピング不可のため0.0.0.0を使用（ソケット側で区別可能）
-        let src_addr = crate::net::l4::udp::UdpAddr::new(
-            Ipv4Address::new([0, 0, 0, 0]),
-            src_port,
-        );
-        
-        if let Some(mut pkt_ref) = crate::net::datapath::mempool::alloc_packet() {
-            let buf = pkt_ref.data_mut();
-            if payload.len() <= buf.len() {
-                buf[..payload.len()].copy_from_slice(payload);
-                pkt_ref.set_len(payload.len());
-                if self.udp.endpoints().deliver(src_addr, dst_port, hop_limit, pkt_ref) {
-                    self.stats.record_rx(data.len());
-                } else {
-                    self.stats.record_dropped();
-                }
-            } else {
+        // Use UdpProcessor to handle the packet correctly (RFC 8200 compliant)
+        match self.udp.process_v6(data, src, dst, hop_limit) {
+            UdpResult::Delivered => {
+                self.stats.record_rx(data.len());
+            }
+            UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
             }
-        } else {
-            self.stats.record_dropped();
+            UdpResult::ChecksumError | UdpResult::Invalid => {
+                self.stats.record_rx_error();
+            }
         }
     }
 

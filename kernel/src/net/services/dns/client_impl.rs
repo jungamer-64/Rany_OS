@@ -119,13 +119,13 @@ impl DnsClient {
             return None;
         }
 
-        // 応答待ち受け (タイムアドアウト付き)
+        // 応答待ち受け (タイムアウト付き)
         let mut attempt = 0;
         loop {
             match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
                 TimeoutResult::Completed(Some((src, _ttl, packet))) => {
                     // Security: Verify source IP and port match the server we queried (RFC 5452)
-                    if src.ip != server || src.port != DNS_PORT {
+                    if src.ip_v4() != Some(server) || src.port() != DNS_PORT {
                         log::warn!("[NET] DNS: Ignoring response from unexpected source {:?}", src);
                         continue;
                     }

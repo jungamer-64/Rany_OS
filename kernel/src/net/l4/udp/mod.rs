@@ -8,6 +8,7 @@
 
 
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
+use crate::net::l3::ipv6::{Ipv6Address, ipv6_checksum};
 use crate::sync::PoisonLock;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -132,11 +133,11 @@ impl<'a> UdpPacket<'a> {
         &self.data[..length]
     }
 
-    /// Verify checksum
+    /// Verify checksum for IPv4 (RFC 768)
     pub fn verify_checksum(&self, src_ip: Ipv4Address, dst_ip: Ipv4Address) -> bool {
         let checksum = self.header().checksum();
 
-        // Checksum of 0 means no checksum
+        // Checksum of 0 means no checksum (optional in IPv4)
         if checksum == 0 {
             return true;
         }
@@ -147,6 +148,23 @@ impl<'a> UdpPacket<'a> {
         // Include the checksum in the data for verification
         let actual_checksum = data_checksum(&self.data[..length as usize], pseudo);
         actual_checksum == 0
+    }
+
+    /// Verify checksum for IPv6 (RFC 8200 - Mandatory)
+    pub fn verify_checksum_v6(&self, src_ip: Ipv6Address, dst_ip: Ipv6Address) -> bool {
+        let checksum = self.header().checksum();
+
+        // RFC 8200 Section 8.1: Checksum 0 is forbidden for IPv6 UDP
+        if checksum == 0 {
+            return false;
+        }
+
+        let length = self.header().length();
+        if length as usize > self.data.len() {
+            return false;
+        }
+
+        ipv6_checksum(&src_ip, &dst_ip, IpProtocol::Udp, &self.data[..length as usize]) == 0
     }
 }
 
@@ -210,7 +228,7 @@ impl<'a> UdpPacketMut<'a> {
         self.payload_len = len.min(self.buffer.len() - UdpHeader::SIZE).min(max_udp);
     }
 
-    /// Finalize the packet (compute checksum)
+    /// Finalize the packet for IPv4 (compute checksum)
     pub fn finalize(&mut self, src_ip: Ipv4Address, dst_ip: Ipv4Address) -> usize {
         let total_len = (UdpHeader::SIZE + self.payload_len) as u16;
 
@@ -232,6 +250,27 @@ impl<'a> UdpPacketMut<'a> {
         total_len as usize
     }
 
+    /// Finalize the packet for IPv6 (compute mandatory checksum)
+    pub fn finalize_v6(&mut self, src_ip: Ipv6Address, dst_ip: Ipv6Address) -> usize {
+        let total_len = (UdpHeader::SIZE + self.payload_len) as u16;
+
+        if let Some(h) = self.header_mut() {
+            h.set_length(total_len);
+            h.set_checksum(0);
+        }
+
+        // Calculate checksum with IPv6 pseudo-header (mandatory per RFC 8200)
+        let checksum = ipv6_checksum(&src_ip, &dst_ip, IpProtocol::Udp, &self.buffer[..total_len as usize]);
+
+        // In IPv6, a checksum of 0 is transmitted as 0xFFFF.
+        let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+        if let Some(h) = self.header_mut() {
+            h.set_checksum(final_checksum);
+        }
+
+        total_len as usize
+    }
+
     /// Get packet as bytes
     pub fn as_bytes(&self) -> &[u8] {
         &self.buffer[..UdpHeader::SIZE + self.payload_len]
@@ -240,17 +279,46 @@ impl<'a> UdpPacketMut<'a> {
 
 /// UDP endpoint address
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct UdpAddr {
-    /// IP address
-    pub ip: Ipv4Address,
-    /// Port number
-    pub port: u16,
+pub enum UdpAddr {
+    /// IPv4 address + port
+    V4 { ip: Ipv4Address, port: u16 },
+    /// IPv6 address + port
+    V6 { ip: Ipv6Address, port: u16 },
 }
 
 impl UdpAddr {
-    /// Create a new UDP address
+    /// Create a new IPv4 UDP address
     pub const fn new(ip: Ipv4Address, port: u16) -> Self {
-        UdpAddr { ip, port }
+        UdpAddr::V4 { ip, port }
+    }
+
+    /// Create a new IPv6 UDP address
+    pub const fn new_v6(ip: Ipv6Address, port: u16) -> Self {
+        UdpAddr::V6 { ip, port }
+    }
+
+    /// Get port
+    pub fn port(&self) -> u16 {
+        match *self {
+            UdpAddr::V4 { port, .. } => port,
+            UdpAddr::V6 { port, .. } => port,
+        }
+    }
+
+    /// Get IPv4 address if available
+    pub fn ip_v4(&self) -> Option<Ipv4Address> {
+        match *self {
+            UdpAddr::V4 { ip, .. } => Some(ip),
+            _ => None,
+        }
+    }
+
+    /// Get IPv6 address if available
+    pub fn ip_v6(&self) -> Option<Ipv6Address> {
+        match *self {
+            UdpAddr::V6 { ip, .. } => Some(ip),
+            _ => None,
+        }
     }
 }
 
@@ -427,13 +495,21 @@ impl UdpEndpoint {
         };
 
         // Send via async event queue to avoid synchronous NETWORK_STACK lock
-        let dst_ip = dst.ip;
-        let dst_port = dst.port;
-        
-        if crate::net::runtime::stack::send_udp_async(local_port, dst_ip, dst_port, data) {
-            Ok(data.len())
-        } else {
-            Err(NetworkError::TransmitFailed)
+        match dst {
+            UdpAddr::V4 { ip, port } => {
+                if crate::net::runtime::stack::send_udp_async(local_port, ip, port, data) {
+                    Ok(data.len())
+                } else {
+                    Err(NetworkError::TransmitFailed)
+                }
+            }
+            UdpAddr::V6 { ip, port } => {
+                if crate::net::runtime::stack::send_udp_v6_async(local_port, Ipv6Address::UNSPECIFIED, ip, port, data) {
+                    Ok(data.len())
+                } else {
+                    Err(NetworkError::TransmitFailed)
+                }
+            }
         }
     }
 }

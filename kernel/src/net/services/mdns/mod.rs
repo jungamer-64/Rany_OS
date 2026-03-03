@@ -181,13 +181,19 @@ impl MdnsService {
                 // Security: RFC 6762 Section 11 - Multicast DNS implementations MUST silently 
                 // discard any Multicast DNS queries that arrive with an IP TTL (or Hop Limit) 
                 // other than 255.
-                if ttl != 255 && !src.ip.is_loopback() {
+                let is_loopback = match src {
+                    UdpAddr::V4 { ip, .. } => ip.is_loopback(),
+                    UdpAddr::V6 { ip, .. } => ip.is_loopback(),
+                };
+
+                if ttl != 255 && !is_loopback {
                     log::warn!("[NET] mDNS: Ignoring packet with TTL {} (RFC 6762 Section 11 mandate)", ttl);
                     continue;
                 }
 
                 // 受信パケットを処理
-                let result = self.process_packet(packet.data(), src.ip, ttl, now);
+                let src_ip = src.ip_v4().unwrap_or(Ipv4Address::ANY);
+                let result = self.process_packet(packet.data(), src_ip, ttl, now);
                 
                 match result {
                     MdnsResult::SendResponse { name, ip, ttl } => {

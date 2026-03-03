@@ -65,6 +65,51 @@ pub fn test_udp_packet() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_udp_packet_v6() {
+    let mut buffer = [0u8; 128];
+
+    let src_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let dst_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+
+    let mut packet_mut = UdpPacketMut::new(&mut buffer).unwrap();
+    packet_mut
+        .set_src_port(12345)
+        .set_dst_port(53)
+        .write_payload(b"hello v6");
+    let len = packet_mut.finalize_v6(src_ip, dst_ip);
+
+    assert_eq!(len, UdpHeader::SIZE + 8);
+
+    let packet = UdpPacket::parse(&buffer[..len]).unwrap();
+    assert_eq!(packet.src_port(), 12345);
+    assert_eq!(packet.dst_port(), 53);
+    assert_eq!(packet.payload(), b"hello v6");
+    
+    // Checksum must be non-zero for IPv6 (transmitted as 0xFFFF if calculated as 0)
+    assert!(packet.header().checksum() != 0);
+    assert!(packet.verify_checksum_v6(src_ip, dst_ip));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_udp_v6_checksum_mandatory() {
+    let mut buffer = [0u8; 128];
+    let src_ip = Ipv6Address::LOOPBACK;
+    let dst_ip = Ipv6Address::LOOPBACK;
+
+    let mut packet_mut = UdpPacketMut::new(&mut buffer).unwrap();
+    packet_mut.set_src_port(1234).set_dst_port(5678).write_payload(b"test");
+    let len = packet_mut.finalize_v6(src_ip, dst_ip);
+
+    // Manually zero out the checksum
+    buffer[6] = 0;
+    buffer[7] = 0;
+
+    let packet = UdpPacket::parse(&buffer[..len]).unwrap();
+    // Should fail because checksum 0 is forbidden for IPv6 per RFC 8200
+    assert!(!packet.verify_checksum_v6(src_ip, dst_ip));
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_udp_endpoint_poisoned_methods_return_defaults() {
     use crate::sync::set_panicking;
 
