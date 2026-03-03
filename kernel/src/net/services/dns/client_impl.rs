@@ -92,7 +92,7 @@ impl DnsClient {
         None
     }
 
-    /// 非同期でIPアドレスを解決
+    /// 非同期でIPアドレスを解決 (IPv4)
     pub async fn resolve_ipv4(&self, name: &str) -> Option<Ipv4Address> {
         let tick = crate::task::timer::current_tick();
         
@@ -102,58 +102,135 @@ impl DnsClient {
         }
 
         // 2. キャッシュになければネットワーククエリを実行
-        let server = self.primary_ipv4_server()?;
+        let records = self.query_internal(name, DnsQueryType::A).await.ok()?;
         
-        // エフェメラルポートでソケットをバインド
-        let socket = crate::net::runtime::stack::bind_udp(0)?;
-
-        let mut buffer = [0u8; 512];
-        let query_len = match self.build_query(&mut buffer, name, DnsQueryType::A) {
-            Ok(len) => len,
-            Err(_) => return None,
-        };
-
-        // クエリ送信
-        let dest = UdpAddr::new(server, DNS_PORT);
-        if socket.send_to(&buffer[..query_len], dest).is_err() {
-            return None;
+        for record in records {
+            if let DnsRecordData::A(ip) = record.data {
+                return Some(ip);
+            }
         }
+        None
+    }
 
-        // 応答待ち受け (タイムアウト付き)
-        let mut attempt = 0;
-        loop {
-            match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
-                TimeoutResult::Completed(Some((src, _ttl, packet))) => {
-                    // Security: Verify source IP and port match the server we queried (RFC 5452)
-                    if src.ip_v4() != Some(server) || src.port() != DNS_PORT {
-                        log::warn!("[NET] DNS: Ignoring response from unexpected source {:?}", src);
-                        continue;
-                    }
-
-                    // 応答をパース
-                    if let Ok(records) = self.parse_response(packet.data(), tick) {
-                        // Aレコードを探す
-                        for record in records {
-                            if let DnsRecordData::A(ip) = record.data {
-                                return Some(ip);
-                            }
+    /// 非同期でIPアドレスを解決 (IPv6)
+    pub async fn resolve_ipv6(&self, name: &str) -> Option<Ipv6Address> {
+        let tick = crate::task::timer::current_tick();
+        
+        // 1. まずキャッシュをチェック
+        match self.cache.lock() {
+            Ok(cache) => {
+                if let Some(entry) = cache.lookup(name, tick) {
+                    for record in &entry.records {
+                        if let DnsRecordData::AAAA(ip) = &record.data {
+                            self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                            return Some(*ip);
                         }
                     }
                 }
-                TimeoutResult::TimedOut | TimeoutResult::Completed(None) => {
-                    attempt += 1;
-                    if attempt >= DNS_MAX_RETRIES {
+            }
+            Err(_) => {}
+        }
+
+        // 2. キャッシュになければネットワーククエリを実行
+        let records = self.query_internal(name, DnsQueryType::AAAA).await.ok()?;
+        
+        for record in records {
+            if let DnsRecordData::AAAA(ip) = record.data {
+                return Some(ip);
+            }
+        }
+        None
+    }
+
+    /// Internal DNS query logic with UDP-to-TCP fallback (RFC 7766)
+    async fn query_internal(&self, name: &str, qtype: DnsQueryType) -> Result<Vec<DnsRecord>, &'static str> {
+        let tick = crate::task::timer::current_tick();
+        let server = self.primary_ipv4_server().ok_or("No DNS server configured")?;
+        
+        // Try UDP first
+        let socket = crate::net::runtime::stack::bind_udp(0).ok_or("Failed to bind UDP")?;
+        let mut buffer = [0u8; 512];
+        let query_len = self.build_query(&mut buffer, name, qtype)?;
+
+        let dest = UdpAddr::new(server, DNS_PORT);
+        if socket.send_to(&buffer[..query_len], dest).is_err() {
+            return Err("UDP send failed");
+        }
+
+        let mut attempt = 0;
+        let mut udp_response = None;
+        
+        while attempt < DNS_MAX_RETRIES {
+            match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
+                TimeoutResult::Completed(Some((src, _ttl, packet))) => {
+                    // Security: Verify source (RFC 5452)
+                    if src.ip_v4() == Some(server) && src.port() == DNS_PORT {
+                        udp_response = Some(packet.data().to_vec());
                         break;
                     }
-                    // 再送
-                    if socket.send_to(&buffer[..query_len], dest).is_err() {
-                        break;
+                }
+                _ => {
+                    attempt += 1;
+                    if attempt < DNS_MAX_RETRIES {
+                        let _ = socket.send_to(&buffer[..query_len], dest);
                     }
                 }
             }
         }
 
-        None
+        if let Some(data) = udp_response {
+            // Check for truncation (RFC 7766)
+            if self.needs_tcp_fallback(&data) {
+                log::info!("[NET] DNS: UDP response truncated, retrying with TCP (RFC 7766 fallback)");
+                return self.query_tcp(server, name, qtype).await;
+            }
+            
+            return self.parse_response(&data, tick).map_err(|_| "Parse error");
+        }
+
+        Err("DNS query timed out")
+    }
+
+    /// DNS query over TCP (RFC 7766)
+    async fn query_tcp(&self, server: Ipv4Address, name: &str, qtype: DnsQueryType) -> Result<Vec<DnsRecord>, &'static str> {
+        use crate::net::l4::endpoint::types::EndpointAddr;
+        let dest = EndpointAddr::new(server.octets(), DNS_PORT);
+        
+        let mut stream = crate::net::l4::tcp::TcpStream::dial(dest).await
+            .map_err(|_| "TCP connection failed")?;
+        
+        let mut buffer = [0u8; 1024];
+        let query_len = self.build_tcp_query(&mut buffer, name, qtype)?;
+        
+        stream.write(&buffer[..query_len]).await.map_err(|_| "TCP write failed")?;
+        
+        // Read 2-byte length prefix
+        let mut len_buf = [0u8; 2];
+        let mut len_read = 0;
+        while len_read < 2 {
+            let n = stream.read(&mut len_buf[len_read..]).await.map_err(|_| "TCP read failed")?;
+            if n == 0 { break; }
+            len_read += n;
+        }
+        if len_read != 2 { return Err("TCP read length prefix failed (connection closed or incomplete)"); }
+        
+        let msg_len = u16::from_be_bytes(len_buf) as usize;
+        if msg_len > 65535 { return Err("TCP message too long"); }
+        
+        let mut msg_data = alloc::vec![0u8; msg_len];
+        let mut total_read = 0;
+        while total_read < msg_len {
+            let n = stream.read(&mut msg_data[total_read..]).await.map_err(|_| "TCP read message failed")?;
+            if n == 0 { break; }
+            total_read += n;
+        }
+        
+        if total_read != msg_len {
+            return Err("TCP read incomplete message");
+        }
+        
+        let tick = crate::task::timer::current_tick();
+        self.parse_response(&msg_data, tick).map_err(|_| "Parse error")
     }
 
     /// 期限切れキャッシュエントリをクリーンアップ

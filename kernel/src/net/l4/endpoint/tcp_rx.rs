@@ -150,6 +150,106 @@ fn verify_tcp_checksum(segment: &[u8], src_ip: [u8; 4], dst_ip: [u8; 4]) -> bool
     (sum as u16) == 0xFFFF
 }
 
+/// TCPチェックサム検証（IPv6疑似ヘッダ込み）
+fn verify_tcp_checksum_v6(
+    segment: &[u8],
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+) -> bool {
+    if segment.len() < 20 {
+        return false;
+    }
+
+    use crate::net::l3::ipv4::{IpProtocol, data_checksum};
+    use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
+
+    let pseudo = ipv6_pseudo_header_checksum(
+        &src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32,
+    );
+    let verify = data_checksum(segment, pseudo);
+    verify == 0
+}
+
+/// IPv6 TCPセグメント受信処理
+///
+/// IPv6パケットから抽出されたTCPセグメントを、エンドポイント層の
+/// 完全なTCP状態マシン（Fast Path、Delayed ACK、OOOキュー等）で処理する。
+/// `process_tcp_segment` (IPv4) と同等の機能をIPv6上で提供する。
+pub fn process_tcp_segment_v6(
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    segment: &[u8],
+) {
+    if segment.len() < 20 {
+        return; // 最小ヘッダサイズ未満
+    }
+
+    // Security: チェックサム検証 (RFC 8200 / RFC 793)
+    // HWチェックサム検証済みの場合はソフトウェア検証をスキップ
+    if !crate::net::runtime::bridge::rx_csum_hw_verified() {
+        if !verify_tcp_checksum_v6(segment, src_ip, dst_ip) {
+            log::warn!("[TCP] IPv6 Checksum verification failed, dropping segment");
+            return;
+        }
+    }
+
+    // TCPヘッダ解析
+    let src_port = u16::from_be_bytes([segment[0], segment[1]]);
+    let dst_port = u16::from_be_bytes([segment[2], segment[3]]);
+    let seq_num = u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]);
+    let ack_num = u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]);
+    let data_off_flags = u16::from_be_bytes([segment[12], segment[13]]);
+    let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
+    let flags = (data_off_flags & 0x003F) as u8;
+    let _window = u16::from_be_bytes([segment[14], segment[15]]);
+    let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
+
+    let remote = EndpointAddr::new_v6(src_ip.octets(), src_port);
+    let local = EndpointAddr::new_v6(dst_ip.octets(), dst_port);
+
+    // TCBを検索
+    if let Some(tcb) = tcb_table().get(local, remote) {
+        // RFC 793 Step 1: Check sequence number acceptability
+        let payload_len = if segment.len() > data_offset { segment.len() - data_offset } else { 0 };
+        if !is_acceptable_sequence(&tcb, seq_num, payload_len) {
+            let is_rst = (flags & tcp_flags::RST) != 0;
+            if !is_rst {
+                send_challenge_ack(&tcb);
+            }
+            return;
+        }
+
+        // TCP Fast Path (ESTABLISHED状態の高速受信処理)
+        if tcb.state == TcpConnectionState::Established
+            && seq_num == tcb.rcv_nxt
+            && flags == tcp_flags::ACK
+            && payload_len > 0
+        {
+            if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
+                FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        // PSH|ACK もファストパス対象
+        if tcb.state == TcpConnectionState::Established
+            && seq_num == tcb.rcv_nxt
+            && (flags == (tcp_flags::ACK | tcp_flags::PSH))
+            && payload_len > 0
+        {
+            if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
+                FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+
+        SLOW_PATH_HITS.fetch_add(1, Ordering::Relaxed);
+        process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
+    } else {
+        // 新規接続要求の可能性（LISTENソケット検索）
+        process_tcp_new_connection(local, remote, flags, seq_num, segment, data_offset);
+    }
+}
+
 /// TCPセグメント受信処理
 /// プロトコルスタック（ipv4.rs）から呼ばれる
 pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {

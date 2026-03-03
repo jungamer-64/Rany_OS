@@ -318,7 +318,7 @@ impl NetworkStack {
                 self.process_icmpv6_data(payload, src, dst, src_mac, hop_limit, current_time);
             }
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
-                self.process_tcp_data_v6(payload, src, dst, current_time);
+                crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6(src, dst, payload);
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
                 self.process_udp_data_v6(payload, src, dst, hop_limit);

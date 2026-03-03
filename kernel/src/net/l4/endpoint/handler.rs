@@ -251,8 +251,7 @@ impl NetworkEventHandler {
                         use crate::net::l3::ipv4::IpProtocol;
                         match packet.next_header() {
                             IpProtocol::Tcp => {
-                                // super::tcp_rx::process_tcp_segment_v6(src, dst, payload); // TODO
-                                stack.process_tcp_data_v6(payload, src, dst, current_time);
+                                super::tcp_rx::process_tcp_segment_v6(src, dst, payload);
                             }
                             IpProtocol::Udp => {
                                 stack.process_udp_data_v6(payload, src, dst, packet.hop_limit());
@@ -380,24 +379,11 @@ impl NetworkEventHandler {
         EventHandleResult::Success
     }
 
-    /// IPv6パケットの処理 (Stub)
-    fn handle_ipv6_ingress(
-        &self, 
-        _data: &[u8], 
-        _packet: PacketRef
-    ) -> EventHandleResult {
-        EventHandleResult::Success
-    }
-
-    /// ARPパケットの処理 (NetworkStack側で処理するため未使用)
-    fn handle_arp_ingress(&self, _data: &[u8], _src_mac: MacAddress) -> EventHandleResult {
-        EventHandleResult::Success
-    }
-
-    /// ICMPパケットの処理 (NetworkStack側で処理するため未使用)
-    fn handle_icmp_ingress(&self, _data: &[u8], _src_ip: Ipv4Address, _dst_ip: Ipv4Address, _ttl: u8) -> EventHandleResult {
-        EventHandleResult::Success
-    }
+    // IPv6パケットの処理は handle_event_with_stack 内で
+    // stack.process_ipv6_data() 経由で処理されるため、
+    // 個別のメソッドは不要。
+    //
+    // ARP/ICMPパケットの処理も同様にNetworkStack側で処理される。
 
     /// UDPパケットの処理
     fn handle_udp_ingress_with_stack(
@@ -743,7 +729,8 @@ impl NetworkEventHandler {
 
     /// TX 資源解放通知処理
     fn handle_tx_available(&self) -> EventHandleResult {
-        // 送信待ちのソケットに DataReady イベントを再送して再試行を促す
+        // 送信待ちのソケットに DataReady イベントを再送して再試行を促す（TCP）
+        // また、イベントキュー満杯で待機していた UDP ソケットの send_waker も起床させる
         if let Some(ref mgr) = *ENDPOINT_MANAGER.read() {
             mgr.for_each(|socket| {
                 if socket.send_buffer_len() > 0 {
@@ -751,6 +738,14 @@ impl NetworkEventHandler {
                         fd: socket.fd(),
                         endpoint_type: socket.socket_type(),
                     });
+                } else {
+                    // TCPバッファが空でも send_waker が設定されている場合（UDP の ResourceExhausted 待ち）
+                    // はここで直接起床させる。TCP の SendFuture も安全に再ポーリング可能。
+                    let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(w) = inner.send_waker.take() {
+                        drop(inner); // ロック解放後に wake（デッドロック回避）
+                        w.wake();
+                    }
                 }
             });
         }
@@ -1103,15 +1098,30 @@ impl NetworkEventHandler {
         }
 
         let payload = &packet[8..];
-        let (_, dst_v4) = endpoint_ipv4_pair(src, dst).ok_or(EndpointError::InvalidArgument)?;
-        let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
 
-        // 非同期イベントキュー経由で送信（ロック競合回避）
-        if crate::net::runtime::stack::send_udp_async(src.port(), dst_ip, dst.port(), payload) {
-            Ok(())
-        } else {
-            Err(EndpointError::ResourceExhausted)
+        // IPv4パス
+        if let Some((_, dst_v4)) = endpoint_ipv4_pair(src, dst) {
+            let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
+            // 非同期イベントキュー経由で送信（ロック競合回避）
+            if crate::net::runtime::stack::send_udp_async(src.port(), dst_ip, dst.port(), payload) {
+                return Ok(());
+            } else {
+                return Err(EndpointError::ResourceExhausted);
+            }
         }
+
+        // IPv6パス
+        if endpoint_is_native_v6_pair(src, dst) {
+            let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(src.as_ipv6());
+            let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(dst.as_ipv6());
+            if crate::net::runtime::stack::send_udp_v6(src.port(), src_v6, dst_v6, dst.port(), payload) {
+                return Ok(());
+            } else {
+                return Err(EndpointError::ResourceExhausted);
+            }
+        }
+
+        Err(EndpointError::InvalidArgument)
     }
 
     /// ICMP Echo Requestイベント処理（スタックロックを取得して送信）

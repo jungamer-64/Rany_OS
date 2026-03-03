@@ -53,13 +53,18 @@ impl TcpProcessor {
         tcb: &mut TcpControlBlock,
         current_time: u64,
     ) -> TcpProcessResult {
-        // RFC 793: Wait for 2*MSL (Maximum Segment Lifetime) then move to Closed
+        // RFC 793 / 9293: Wait for 2*MSL (Maximum Segment Lifetime) then move to Closed
         // MSL = 120 seconds, 2*MSL = 240 seconds = 240,000 milliseconds
         const TWO_MSL_MS: u64 = 240_000;
         if current_time.saturating_sub(tcb.time_wait_entered_at()) >= TWO_MSL_MS {
             tcb.close_and_wake();
+            return TcpProcessResult::None;
         }
-        TcpProcessResult::None
+
+        // RFC 9293 Section 3.10.7.4: "Any segment received in the TIME-WAIT state MUST be acknowledged.
+        // This re-acknowledges the peer's FIN and restarts the 2MSL timer."
+        tcb.enter_time_wait(current_time);
+        Self::make_ack_result(tcb)
     }
 
     /// Check if seq1 is after seq2 (handling wrap-around)

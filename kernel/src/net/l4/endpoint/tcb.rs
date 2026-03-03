@@ -472,10 +472,10 @@ impl TcbTable {
     /// TIME_WAIT状態の期限切れエントリを掃除する
     /// 
     /// 2MSL（Maximum Segment Lifetime）の待機時間を経過した接続を完全に削除する。
-    /// 2MSLは通常30秒〜120秒。ここでは60秒（60,000 tick）とする。
+    /// RFC 793 では 2MSL = 4分（240秒）を推奨。
     fn scavenge_time_wait(&self, current_tick: u64) {
-        /// TIME_WAIT のタイムアウト閾値（tick ≒ ms）
-        const TIME_WAIT_TIMEOUT_TICKS: u64 = 60_000;
+        /// TIME_WAIT のタイムアウト閾値 (240秒, RFC 793)
+        const TIME_WAIT_TIMEOUT_TICKS: u64 = 240_000;
         /// 1回の掃除で各シャードから削除するエントリの最大数
         const MAX_SCAVENGE_PER_SHARD: usize = 16;
 

@@ -325,11 +325,41 @@ impl TcpProcessor {
 
         // Check if this is for a listening socket
         let options = if header_len > 20 { Some(&data[20..header_len]) } else { None };
-        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, flags, window, options) {
+        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, ack_num, flags, window, options) {
             return result;
         }
 
-        // No matching connection or listener - ignore or send RST
+        // No matching connection or listener - RFC 9293 Section 3.10.7.1 (CLOSED state)
+        if flags & TcpHeader::FLAG_RST == 0 {
+            if flags & TcpHeader::FLAG_ACK != 0 {
+                // <SEQ=SEG.ACK><CTL=RST>
+                return TcpProcessResult::SendPacket {
+                    local: local_addr,
+                    remote: remote_addr,
+                    seq: ack_num,
+                    ack: 0,
+                    flags: TcpHeader::FLAG_RST,
+                    window: 0,
+                    payload: Vec::new(),
+                    options: Vec::new(),
+                };
+            } else {
+                // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+                let seg_len = if (flags & TcpHeader::FLAG_SYN != 0) || (flags & TcpHeader::FLAG_FIN != 0) { 1 } else { 0 };
+                let ack = seq_num.wrapping_add(seg_len as u32).wrapping_add(payload.len() as u32);
+                return TcpProcessResult::SendPacket {
+                    local: local_addr,
+                    remote: remote_addr,
+                    seq: 0,
+                    ack,
+                    flags: TcpHeader::FLAG_RST | TcpHeader::FLAG_ACK,
+                    window: 0,
+                    payload: Vec::new(),
+                    options: Vec::new(),
+                };
+            }
+        }
+
         TcpProcessResult::None
     }
 
@@ -421,11 +451,41 @@ impl TcpProcessor {
 
         // Check if this is for a listening socket
         let options = if header_len > 20 { Some(&data[20..header_len]) } else { None };
-        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, flags, window, options) {
+        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, ack_num, flags, window, options) {
             return result;
         }
 
-        // No matching connection or listener - ignore or send RST
+        // No matching connection or listener - RFC 9293 Section 3.10.7.1 (CLOSED state)
+        if flags & TcpHeader::FLAG_RST == 0 {
+            if flags & TcpHeader::FLAG_ACK != 0 {
+                // <SEQ=SEG.ACK><CTL=RST>
+                return TcpProcessResult::SendPacket {
+                    local: local_addr,
+                    remote: remote_addr,
+                    seq: ack_num,
+                    ack: 0,
+                    flags: TcpHeader::FLAG_RST,
+                    window: 0,
+                    payload: Vec::new(),
+                    options: Vec::new(),
+                };
+            } else {
+                // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+                let seg_len = if (flags & TcpHeader::FLAG_SYN != 0) || (flags & TcpHeader::FLAG_FIN != 0) { 1 } else { 0 };
+                let ack = seq_num.wrapping_add(seg_len as u32).wrapping_add(payload.len() as u32);
+                return TcpProcessResult::SendPacket {
+                    local: local_addr,
+                    remote: remote_addr,
+                    seq: 0,
+                    ack,
+                    flags: TcpHeader::FLAG_RST | TcpHeader::FLAG_ACK,
+                    window: 0,
+                    payload: Vec::new(),
+                    options: Vec::new(),
+                };
+            }
+        }
+
         TcpProcessResult::None
     }
 
@@ -434,6 +494,7 @@ impl TcpProcessor {
         local_addr: EndpointAddr,
         remote_addr: EndpointAddr,
         seq_num: u32,
+        ack_num: u32,
         flags: u16,
         _window: u16,
         options_data: Option<&[u8]>,
@@ -470,8 +531,38 @@ impl TcpProcessor {
 
         let listener_lock = self.listeners.get(&listener_addr)?;
         let listener = listener_lock.lock().ok()?;
-        if !listener.is_listen() || flags & TcpHeader::FLAG_SYN == 0 {
+        if !listener.is_listen() {
             return None;
+        }
+
+        // RFC 9293 Section 3.10.7.3 (The LISTEN State)
+        
+        // First, check for an RST:
+        // "An incoming RST should be ignored. Return."
+        if flags & TcpHeader::FLAG_RST != 0 {
+            return Some(TcpProcessResult::None);
+        }
+
+        // Second, check for an ACK:
+        // "Any acknowledgment is bad if it arrives on a connection still in the LISTEN state.
+        // An acceptable reset segment should be formed for any arriving ACK-bearing segment."
+        if flags & TcpHeader::FLAG_ACK != 0 {
+            return Some(TcpProcessResult::SendPacket {
+                local: local_addr,
+                remote: remote_addr,
+                seq: ack_num,
+                ack: 0,
+                flags: TcpHeader::FLAG_RST,
+                window: 0,
+                payload: Vec::new(),
+                options: Vec::new(),
+            });
+        }
+
+        // Third, check for a SYN:
+        if flags & TcpHeader::FLAG_SYN == 0 {
+            // "Any other segments or control bits should be ignored. Return."
+            return Some(TcpProcessResult::None);
         }
 
         // Check total connection limit (SYN flood protection)
@@ -749,11 +840,11 @@ impl TcpProcessor {
 
 
 
-    /// Check if an incoming segment is acceptable according to RFC 793 Step 1
+    /// Check if an incoming segment is acceptable according to RFC 793 / 9293 Step 1
     pub(crate) fn is_acceptable_sequence(tcb: &TcpControlBlock, seq_num: u32, payload_len: usize) -> bool {
         let rcv_nxt = tcb.rcv_nxt();
         let rcv_wnd = tcb.get_effective_rcv_wnd();
-        
+
         if payload_len == 0 {
             if rcv_wnd == 0 {
                 seq_num == rcv_nxt
@@ -767,15 +858,23 @@ impl TcpProcessor {
                 // Data received but window is 0 - not acceptable
                 false
             } else {
-                // rcv_nxt <= seq_num < rcv_nxt + rcv_wnd OR
-                // rcv_nxt <= seq_num + payload_len - 1 < rcv_nxt + rcv_wnd
-                let diff_start = seq_num.wrapping_sub(rcv_nxt);
-                let diff_end = seq_num.wrapping_add(payload_len as u32).wrapping_sub(1).wrapping_sub(rcv_nxt);
-                diff_start < rcv_wnd || diff_end < rcv_wnd
+                // RFC 9293: "If the segment overlaps at all with the receive window, it is acceptable."
+                // Overlap exists if NOT (Entirely before OR Entirely after)
+                // Entirely before: SEG.SEQ + SEG.LEN <= RCV.NXT
+                // Entirely after: SEG.SEQ >= RCV.NXT + RCV.WND
+
+                let rcv_end = rcv_nxt.wrapping_add(rcv_wnd);
+                let seg_end = seq_num.wrapping_add(payload_len as u32);
+
+                // (seg_end <= rcv_nxt)
+                let entirely_before = (seg_end.wrapping_sub(rcv_nxt) as i32) <= 0;
+                // (seq_num >= rcv_end)
+                let entirely_after = (seq_num.wrapping_sub(rcv_end) as i32) >= 0;
+
+                !entirely_before && !entirely_after
             }
         }
     }
-
     /// Process a TCP segment for an existing connection
     pub(super) fn process_segment(
         &mut self,
@@ -846,7 +945,21 @@ impl TcpProcessor {
 
         // Security (RFC 5961): RST sequence number validation
         if rst {
-            if seq_num == tcb.rcv_nxt() {
+            let is_acceptable = if tcb.state() == TcpState::SynSent {
+                // RFC 9293 Section 3.10.7.3 (SYN-SENT STATE):
+                // If ACK bit is set, RST is valid if it acknowledges the SYN.
+                // If ACK bit is not set, RST is valid if its sequence number is in the window.
+                if ack {
+                    ack_num == tcb.snd_una().wrapping_add(1)
+                } else {
+                    // In SYN-SENT, we accept any RST as we don't have a known rcv_nxt yet.
+                    true
+                }
+            } else {
+                seq_num == tcb.rcv_nxt()
+            };
+
+            if is_acceptable {
                 // Exact match: accept RST and close
                 let local = tcb.local_addr();
                 if let Some(remote) = tcb.remote_addr() {
@@ -857,13 +970,14 @@ impl TcpProcessor {
                     self.connections.remove(&(local, remote));
                 }
                 return TcpProcessResult::None;
-            } else if (seq_num.wrapping_sub(tcb.rcv_nxt()) as i32) >= 0
+            } else if tcb.state() != TcpState::SynSent
+                && (seq_num.wrapping_sub(tcb.rcv_nxt()) as i32) >= 0
                 && (seq_num.wrapping_sub(tcb.rcv_nxt().wrapping_add(tcb.get_effective_rcv_wnd())) as i32) < 0
             {
-                // Within window but not exact match: send challenge ACK
+                // RFC 5961: Within window but not exact match: send challenge ACK
                 return Self::make_ack_result(tcb);
             } else {
-                // Outside window: ignore
+                // Outside window or invalid in SYN-SENT: ignore
                 return TcpProcessResult::None;
             }
         }

@@ -382,7 +382,7 @@ impl Default for KeepaliveTimer {
 // ============================================================================
 
 /// MSL (Maximum Segment Lifetime)
-const MSL_MS: u64 = 60_000; // 60秒 (RFC 793)
+const MSL_MS: u64 = 120_000; // 120秒 (RFC 793)
 
 /// TIME_WAIT (2MSL) タイマー
 ///

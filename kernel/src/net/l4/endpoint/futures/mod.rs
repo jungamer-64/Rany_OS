@@ -171,14 +171,17 @@ impl SendToFuture {
 impl Future for SendToFuture {
     type Output = EndpointResult<usize>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         // UDPは現在バッファリングせず即座にイベントキューへ
-        // TODO: イベントキューが満杯の場合のWaker登録（現在はポーリングに依存）
         match this.endpoint.send_to(&this.data, this.addr) {
             Ok(len) => Poll::Ready(Ok(len)),
-            Err(EndpointError::ResourceExhausted) => Poll::Pending,
+            Err(EndpointError::ResourceExhausted) => {
+                // イベントキューが満杯: Wakerを登録し TxAvailable 発生時に再ポーリングされるようにする
+                this.endpoint.register_send_waker(cx.waker().clone());
+                Poll::Pending
+            }
             Err(e) => Poll::Ready(Err(e)),
         }
     }

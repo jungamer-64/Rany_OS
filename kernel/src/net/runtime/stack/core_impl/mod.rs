@@ -156,10 +156,35 @@ impl NetworkStack {
         }
     }
 
-    fn trigger_dhcpv4_request(&mut self, _broadcast: bool) {
-        // Implementation of sending DHCPREQUEST
-        // For brevity in this turn, we'll assume a helper exists or add it.
-        // The DhcpClient already has build_request().
+    fn trigger_dhcpv4_request(&mut self, broadcast: bool) {
+        let mut buffer = [0u8; 576];
+        let now = self.current_time();
+        
+        let client_opt = crate::net::services::dhcp::DHCP_CLIENT.lock();
+        if let Ok(guard) = client_opt {
+            if let Some(ref client) = *guard {
+                if let Ok(len) = client.build_request(&mut buffer, now) {
+                    let dst_ip = if broadcast {
+                        Ipv4Address::BROADCAST
+                    } else if let Some(lease) = client.lease() {
+                        lease.server_ip
+                    } else {
+                        Ipv4Address::BROADCAST
+                    };
+                    
+                    // DHCP uses source port 68, destination port 67
+                    // Note: We use 0.0.0.0 as source IP if not bound yet, 
+                    // or current IP for renewal as per RFC 2131.
+                    let src_ip = if broadcast {
+                        Ipv4Address::ANY
+                    } else {
+                        self.config.ipv4.address
+                    };
+
+                    self.send_udp_raw_with_src_ttl(src_ip, 68, dst_ip, 67, &buffer[..len], 64);
+                }
+            }
+        }
     }
 
     /// Perform DHCPv6 maintenance
