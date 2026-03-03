@@ -5,11 +5,12 @@
 //!
 //! NetworkEvent, NetworkEventQueue, EventWaitFuture
 
-use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
 use core::future::Future;
+use core::mem::MaybeUninit;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 use crate::sync::PoisonLock;
 
@@ -343,61 +344,181 @@ pub enum NetworkEvent {
     },
 }
 
-/// イベントキュー（ロックフリーリングバッファ）
-pub struct NetworkEventQueue {
-    events: PoisonLock<VecDeque<NetworkEvent>>,
-    /// イベント待ちWaker
-    waker: PoisonLock<Option<core::task::Waker>>,
-    /// イベントあり通知フラグ
-    has_events: AtomicBool,
+// ============================================================================
+// ロックフリー有界 MPSC イベントキュー
+// ============================================================================
+
+/// リングバッファスロット状態
+const SLOT_EMPTY: u8 = 0;
+const SLOT_FULL: u8 = 1;
+
+/// リングバッファスロット
+///
+/// 各スロットはアトミック状態フラグとイベントデータを保持する。
+/// プロデューサーが CAS で書き込み位置を確保した後、
+/// データ書き込み完了時に `state` を `FULL` に設定する。
+struct EventSlot {
+    /// スロット状態: EMPTY(0) または FULL(1)
+    state: AtomicU8,
+    /// イベントデータ（MaybeUninit で未初期化スロットを安全に表現）
+    data: UnsafeCell<MaybeUninit<NetworkEvent>>,
 }
 
+// SAFETY: EventSlot は以下の理由で Send+Sync:
+// - state は AtomicU8（本質的にスレッドセーフ）
+// - data は状態遷移が排他的アクセスを保証:
+//   - プロデューサー: CAS で書き込み位置を確保後にのみ書き込み
+//   - コンシューマー: state == FULL の場合のみ読み出し、その後 EMPTY にリセット
+unsafe impl Send for EventSlot {}
+unsafe impl Sync for EventSlot {}
+
+impl EventSlot {
+    /// 空のスロットを作成（const fn で静的初期化対応）
+    const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(SLOT_EMPTY),
+            data: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+}
+
+/// ロックフリー有界 MPSC イベントキュー
+///
+/// 複数のプロデューサー（ISR, ドライバ, プロトコル層）から
+/// 単一のコンシューマー（network_event_task）への
+/// イベント配信をロックフリーで実現する。
+///
+/// ## 設計
+///
+/// - 固定サイズリングバッファ（256スロット、2のべき乗でビットマスク高速化）
+/// - CAS ベースのプロデューサー位置管理（MPSC 対応）
+/// - 単一コンシューマーによる順序保証付き読み出し
+/// - `AtomicWaker` による ISR-safe タスク起床
+/// - 全操作がロック取得なしで完了（ISR コンテキストから安全に呼び出し可能）
+///
+/// ## メモリ安全性
+///
+/// プロデューサーは `write_pos` を CAS で確保し、排他的にスロットへ書き込む。
+/// コンシューマーは `read_pos` を単独で管理し、`state == FULL` のスロットのみ読み出す。
+/// スロット状態遷移（EMPTY → FULL → EMPTY）が排他的アクセスを保証する。
+pub struct NetworkEventQueue {
+    /// リングバッファスロット
+    slots: [EventSlot; Self::CAPACITY],
+    /// プロデューサー書き込み位置（単調増加、CAS で更新）
+    write_pos: AtomicUsize,
+    /// コンシューマー読み出し位置（単調増加、コンシューマーのみ更新）
+    read_pos: AtomicUsize,
+    /// ISR-safe Waker（ロックフリー状態機械ベース）
+    waker: crate::sync::atomic_waker::AtomicWaker,
+}
+
+// SAFETY: NetworkEventQueue の各フィールドは Send+Sync
+// - slots: EventSlot は Send+Sync（上記参照）
+// - write_pos, read_pos: AtomicUsize（本質的にスレッドセーフ）
+// - waker: AtomicWaker（Send+Sync 実装済み）
+unsafe impl Send for NetworkEventQueue {}
+unsafe impl Sync for NetworkEventQueue {}
+
 impl NetworkEventQueue {
-    /// キュー容量
+    /// キュー容量（2のべき乗で高速なインデックス計算）
     const CAPACITY: usize = 256;
 
     /// 新規作成
     pub const fn new() -> Self {
         Self {
-            events: PoisonLock::new(VecDeque::new()),
-            waker: PoisonLock::new(None),
-            has_events: AtomicBool::new(false),
+            slots: [const { EventSlot::new() }; Self::CAPACITY],
+            write_pos: AtomicUsize::new(0),
+            read_pos: AtomicUsize::new(0),
+            waker: crate::sync::atomic_waker::AtomicWaker::new(),
         }
     }
 
-    /// イベント送信（ソケット層から呼ばれる）
+    /// イベント送信（プロデューサー側 — ISR コンテキストから安全に呼び出し可能）
+    ///
+    /// CAS ベースでスロットを確保し、ロック取得なしでイベントを書き込む。
+    /// キュー満杯時は `false` を返す（バックプレッシャー）。
     pub fn send(&self, event: NetworkEvent) -> bool {
-        let Ok(mut events) = self.events.lock() else { return false; };
-        if events.len() >= Self::CAPACITY {
-            return false; // バックプレッシャー
-        }
-        events.push_back(event);
-        self.has_events.store(true, Ordering::Release);
+        loop {
+            let write = self.write_pos.load(Ordering::Relaxed);
+            let read = self.read_pos.load(Ordering::Acquire);
 
-        // 待機中のネットワークタスクを起こす
-        if let Ok(mut waker_guard) = self.waker.lock() {
-            if let Some(waker) = waker_guard.take() {
-                waker.wake();
+            // キュー満杯チェック
+            if write.wrapping_sub(read) >= Self::CAPACITY {
+                return false; // バックプレッシャー
             }
+
+            // 書き込み位置を CAS で確保
+            if self
+                .write_pos
+                .compare_exchange_weak(
+                    write,
+                    write.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                let idx = write & (Self::CAPACITY - 1); // ビットマスクで高速インデックス
+                let slot = &self.slots[idx];
+
+                // データ書き込み
+                // SAFETY: CAS で排他的書き込み権を獲得済み。
+                // 他のプロデューサーは異なるスロットに書き込む。
+                unsafe {
+                    (*slot.data.get()).write(event);
+                }
+
+                // スロットを FULL にマーク
+                // Release: データ書き込みが先に完了することを保証
+                slot.state.store(SLOT_FULL, Ordering::Release);
+
+                // コンシューマータスクを起床（AtomicWaker — ロックフリー）
+                self.waker.wake();
+
+                return true;
+            }
+
+            // CAS 失敗 — 他のプロデューサーが先にスロットを確保。リトライ
+            core::hint::spin_loop();
         }
-        true
     }
 
-    /// イベント受信（ネットワークタスクから呼ばれる）
+    /// イベント受信（コンシューマー側 — network_event_task 専用）
+    ///
+    /// 単一コンシューマー前提。ロック取得なしで次のイベントを読み出す。
+    /// プロデューサーがスロットに書き込み中（CAS 成功 → state 更新前）の
+    /// 場合は `None` を返し、次のポーリングで再試行する。
     pub fn recv(&self) -> Option<NetworkEvent> {
-        let Ok(mut events) = self.events.lock() else { return None; };
-        let event = events.pop_front();
-        if events.is_empty() {
-            self.has_events.store(false, Ordering::Release);
+        let read = self.read_pos.load(Ordering::Relaxed);
+        let idx = read & (Self::CAPACITY - 1);
+        let slot = &self.slots[idx];
+
+        // スロットにデータがあるかチェック
+        // Acquire: プロデューサーのデータ書き込みを可視化
+        if slot.state.load(Ordering::Acquire) != SLOT_FULL {
+            return None;
         }
-        event
+
+        // データ読み出し
+        // SAFETY: 単一コンシューマーかつ state == FULL で排他的読み出し権を保持
+        let event = unsafe { (*slot.data.get()).assume_init_read() };
+
+        // スロットを EMPTY にリセット
+        slot.state.store(SLOT_EMPTY, Ordering::Release);
+
+        // 読み出し位置を進める
+        self.read_pos.store(read.wrapping_add(1), Ordering::Release);
+
+        Some(event)
     }
 
     /// 全イベント取得（バッチ処理用）
     pub fn drain_all(&self) -> Vec<NetworkEvent> {
-        let Ok(mut events) = self.events.lock() else { return Vec::new(); };
-        self.has_events.store(false, Ordering::Release);
-        events.drain(..).collect()
+        let mut events = Vec::new();
+        while let Some(event) = self.recv() {
+            events.push(event);
+        }
+        events
     }
 
     /// イベント待ち（非同期）
@@ -405,15 +526,19 @@ impl NetworkEventQueue {
         EventWaitFuture { queue: self }
     }
 
-    /// イベントがあるか
+    /// イベントがあるか（高速チェック）
     #[inline]
     pub fn has_events(&self) -> bool {
-        self.has_events.load(Ordering::Acquire)
+        let read = self.read_pos.load(Ordering::Relaxed);
+        let idx = read & (Self::CAPACITY - 1);
+        self.slots[idx].state.load(Ordering::Acquire) == SLOT_FULL
     }
 
-    /// キュー内イベント数
+    /// キュー内イベント数（概算 — 並行操作中は正確でない場合がある）
     pub fn len(&self) -> usize {
-        self.events.lock().map(|g| g.len()).unwrap_or(0)
+        let write = self.write_pos.load(Ordering::Relaxed);
+        let read = self.read_pos.load(Ordering::Relaxed);
+        write.wrapping_sub(read)
     }
 
     /// キューが空か
@@ -436,12 +561,10 @@ impl<'a> Future for EventWaitFuture<'a> {
             return Poll::Ready(event);
         }
 
-        // Wakerを登録
-        if let Ok(mut w) = self.queue.waker.lock() {
-            *w = Some(cx.waker().clone());
-        }
+        // AtomicWaker に Waker を登録（ロックフリー）
+        self.queue.waker.register(cx.waker());
 
-        // 再度チェック（Waker登録中にイベントが来た可能性）
+        // 再度チェック（Waker 登録中にイベントが来た可能性）
         if let Some(event) = self.queue.recv() {
             Poll::Ready(event)
         } else {

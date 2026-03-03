@@ -86,33 +86,32 @@ impl NetworkEventHandler {
     }
 
     /// イベントを処理
-    #[allow(deprecated)]
+    ///
+    /// スタックロックの取得を1回に集約し、全イベントを`handle_event_with_stack()`に
+    /// 委譲する。ロック取得に失敗した場合のみ、スタック非依存のフォールバックパスへ。
     pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
+        // 最適パス: スタックロックを1回取得し、handle_event_with_stack() に委譲
+        // これにより、各イベントが個別にロックを取得する非効率なパターンを排除する
+        if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
+            if let Some(ref mut stack) = *stack_guard {
+                return self.handle_event_with_stack(event, stack);
+            }
+        }
+
+        // フォールバック: スタック未初期化またはロック取得失敗時
+        // スタック非依存のイベントのみ処理する（ロック再取得を完全に回避）
+        self.handle_event_stackless(event)
+    }
+
+    /// スタックロックなしで処理可能なイベントのみを処理するフォールバックパス
+    ///
+    /// スタック依存のイベントはエラーを返すか、結果スロットにエラーを書き込んで
+    /// Wakerを起床する。これにより、非同期Futureがデッドロックせずに完了する。
+    fn handle_event_stackless(&self, event: NetworkEvent) -> EventHandleResult {
         match event {
-            NetworkEvent::IngressPacket { packet } => self.handle_ingress_packet(packet),
-            NetworkEvent::IngressBatch { packets } => {
-                // バッチ着信: スタックロックを1回取得して全パケットを処理
-                if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    if let Some(ref mut stack) = *stack_guard {
-                        for packet in packets {
-                            self.handle_event_with_stack(
-                                NetworkEvent::IngressPacket { packet },
-                                stack,
-                            );
-                        }
-                    }
-                }
-                EventHandleResult::Success
-            }
-            NetworkEvent::ReassembledPacket { data } => {
-                if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    if let Some(ref mut stack) = *stack_guard {
-                        let current_time = stack.current_time();
-                        stack.process_reassembled_packet(&data, current_time, crate::net::l2::ethernet::MacAddress::ZERO);
-                    }
-                }
-                EventHandleResult::Success
-            }
+            // ============================================================
+            // スタック非依存のイベント（そのまま処理可能）
+            // ============================================================
             NetworkEvent::DataReady { fd, endpoint_type } => self.handle_data_ready(fd, endpoint_type),
             NetworkEvent::TxAvailable => self.handle_tx_available(),
             NetworkEvent::Connect { fd, local, remote } => self.handle_connect(fd, local, remote),
@@ -121,607 +120,158 @@ impl NetworkEventHandler {
             NetworkEvent::SendTo { fd, data, remote } => self.handle_send_to(fd, remote, data),
             NetworkEvent::SetNoDelay { fd, nodelay } => self.handle_set_nodelay(fd, nodelay),
             NetworkEvent::SetPriority { fd, priority } => self.handle_set_priority(fd, priority),
-            NetworkEvent::RawUdpSend { src_port, dst_ip, dst_port, data, ttl } => {
-                // スタックロックを直接取得して送信（deprecated global API を回避）
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let src_ip = stack.config().ipv4.address;
-                            let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                            if stack.send_udp_raw_with_src_ttl(src_ip, src_port, dst, dst_port, &data, ttl) {
-                                EventHandleResult::Success
-                            } else {
-                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                            }
-                        } else {
-                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                        }
-                    }
-                    Err(_) => {
-                        log::error!("[NET] Stack poisoned in RawUdpSend handler");
-                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                    }
-                }
-            }
-            NetworkEvent::RawTcpSend { src_ip, dst_ip, segment } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                            let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                            if stack.send_tcp(src, dst, &segment) {
-                                EventHandleResult::Success
-                            } else {
-                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                            }
-                        } else {
-                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                        }
-                    }
-                    Err(_) => {
-                        log::error!("[NET] Stack poisoned in RawTcpSend handler");
-                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                    }
-                }
-            }
-            NetworkEvent::RawUdpV6Send { src_port, src_ip, dst_ip, dst_port, data, ttl } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                            let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                            if stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl) {
-                                EventHandleResult::Success
-                            } else {
-                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                            }
-                        } else {
-                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                        }
-                    }
-                    Err(_) => {
-                        log::error!("[NET] Stack poisoned in RawUdpV6Send handler");
-                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                    }
-                }
-            }
-            NetworkEvent::RawTcpV6Send { src_ip, dst_ip, segment } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                            let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                            if stack.send_tcp_v6_raw(src, dst, &segment) {
-                                EventHandleResult::Success
-                            } else {
-                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                            }
-                        } else {
-                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                        }
-                    }
-                    Err(_) => {
-                        log::error!("[NET] Stack poisoned in RawTcpV6Send handler");
-                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                    }
-                }
-            }
-            NetworkEvent::IcmpEchoRequest { target, sequence } => {
-                self.handle_icmp_echo_request(target, sequence)
-            }
             NetworkEvent::IcmpEchoReply { source, sequence, rtt_us } => {
-                // ICMP応答をFutureレジストリに通知
                 crate::net::l4::endpoint::futures::notify_icmp_echo_reply(source, sequence, rtt_us);
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpBind { local, result_slot, waker } => {
-                // 非同期TCP bind: スタックロックを取得してbindを実行
-                let result = match crate::net::runtime::stack::bind_tcp(local) {
-                    Ok(_listener) => {
-                        // TcpListenerはbind_tcp内でグローバルテーブルに登録済み
-                        Ok(())
-                    }
-                    Err(e) => Err(EndpointError::from_tcp_error(e)),
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncUdpBind { port, result_slot, waker } => {
-                // 非同期UDP bind: スタックロックを取得してbindを実行
-                let success = crate::net::runtime::stack::bind_udp(port).is_some();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::ArpResolveRequest { target_ip } => {
-                // 非同期ARP解決: スタックロックを取得してARP要求を送信
-                let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
-                if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    if let Some(ref mut stack) = *stack_guard {
-                        let current_time = stack.current_time();
-                        // キャッシュ確認（レース条件で既に解決済みの場合）
-                        if let Some(mac) = stack.arp.resolve(ip, current_time) {
-                            crate::net::l2::arp::notify_arp_resolved(target_ip, *mac.as_bytes());
-                        } else {
-                            // ARP要求送信
-                            stack.send_arp_request(ip);
-                        }
-                    }
-                }
-                EventHandleResult::Success
-            }
             NetworkEvent::ArpResolved { ip, mac } => {
-                // ARP解決完了通知をウェイターレジストリに伝播
                 crate::net::l2::arp::notify_arp_resolved(ip, mac);
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpConnect { local, remote, result_slot, waker } => {
-                // 非同期TCP connect: スタックロックを取得してconnectを実行
-                let result = match crate::net::runtime::stack::connect_tcp(local, remote) {
-                    Ok(_stream) => Ok(()),
-                    Err(e) => Err(EndpointError::from_tcp_error(e)),
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncMulticastJoin { group, result_slot, waker } => {
-                let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
-                let success = crate::net::runtime::stack::join_multicast_group(ip).is_ok();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncMulticastLeave { group, result_slot, waker } => {
-                let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
-                let success = crate::net::runtime::stack::leave_multicast_group(ip).is_ok();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncUnbindUdp { port, result_slot, waker } => {
-                crate::net::runtime::stack::unbind_udp(port);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncUnbindTcp { local, remote, result_slot, waker } => {
-                crate::net::runtime::stack::unbind_tcp(local, remote);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncUnbindTcpListener { local, result_slot, waker } => {
-                crate::net::runtime::stack::unbind_tcp_listener(local);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncTcpBindWithToken { local, token, result_slot, waker } => {
-                let result = match crate::net::runtime::stack::bind_tcp_with_token(local, token) {
-                    Ok(_listener) => Ok(()),
-                    Err(e) => Err(EndpointError::from_tcp_error(e)),
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncUdpBindWithToken { port, token, result_slot, waker } => {
-                let success = crate::net::runtime::stack::bind_udp_with_token(port, token).is_some();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncApplyIpv6Address { addr, result_slot, waker } => {
-                let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(addr);
-                crate::net::runtime::stack::apply_ipv6_global_address(ipv6);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncProcessTimeouts => {
-                crate::net::runtime::stack::process_timeouts(0);
-                // ICMP Echo待ちの期限切れエントリをクリーンアップ
-                crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
-                // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
-                crate::net::l2::arp::cleanup_arp_waiters();
-                EventHandleResult::Success
-            }
-            NetworkEvent::RawUdpSendOn { if_id, src_port, dst_ip, dst_port, data, ttl } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                            let src_ip = stack.config().ipv4.address;
-                            let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                            if stack.send_udp_raw_on_with_src_ttl(net_if, src_ip, src_port, dst, dst_port, &data, ttl) {
-                                EventHandleResult::Success
-                            } else {
-                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                            }
-                        } else {
-                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                        }
-                    }
-                    Err(_) => {
-                        log::error!("[NET] Stack poisoned in RawUdpSendOn handler");
-                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                    }
-                }
-            }
-            NetworkEvent::RawTcpSendOn { if_id: _, src_ip, dst_ip, segment } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                            let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                            // interface not yet used
-                            if stack.send_tcp(src, dst, &segment) {
-                                EventHandleResult::Success
-                            } else {
-                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                            }
-                        } else {
-                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                        }
-                    }
-                    Err(_) => {
-                        log::error!("[NET] Stack poisoned in RawTcpSendOn handler");
-                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                    }
-                }
-            }
-            NetworkEvent::RawUdpV6SendOn { if_id, src_port, src_ip, dst_ip, dst_port, data, ttl } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                            let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                            let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                            if stack.send_udp_v6_raw_on_with_ttl(net_if, src_port, src, dst, dst_port, &data, ttl) {
-                                EventHandleResult::Success
-                            } else {
-                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                            }
-                        } else {
-                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                        }
-                    }
-                    Err(_) => {
-                        log::error!("[NET] Stack poisoned in RawUdpV6SendOn handler");
-                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-                    }
-                }
-            }
-            NetworkEvent::AsyncTcpConnectStream { local, remote, result_slot, waker } => {
-                // 非同期TCP connect（TcpStreamを返す完全非同期版）
-                let result = crate::net::runtime::stack::connect_tcp(local, remote);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncTcpBindListener { local, result_slot, waker } => {
-                // 非同期TCP bind（TcpListenerを返す完全非同期版）
-                let result = crate::net::runtime::stack::bind_tcp(local);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncTcpBindListenerWithToken { local, token, result_slot, waker } => {
-                // 非同期TCP bind with token（TcpListenerを返す完全非同期版）
-                let result = crate::net::runtime::stack::bind_tcp_with_token(local, token);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncUdpBindEndpoint { port, result_slot, waker } => {
-                // 非同期UDP bind（UdpEndpointを返す完全非同期版）
-                let result = crate::net::runtime::stack::bind_udp(port);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncUdpBindEndpointWithToken { port, token, result_slot, waker } => {
-                // 非同期UDP bind with token（UdpEndpointを返す完全非同期版）
-                let result = crate::net::runtime::stack::bind_udp_with_token(port, token);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
 
-            // ================================================================
-            // NAT forwarding events
-            // ================================================================
-            NetworkEvent::NatIcmpTimeExceeded { src_ip, original_ip_header } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                            stack.send_icmp_time_exceeded(
-                                src,
-                                crate::net::l3::icmp::TimeExceededCode::TtlExceeded,
-                                &original_ip_header,
-                            );
-                        }
-                    }
-                    Err(_) => log::error!("[NET] Stack poisoned in NatIcmpTimeExceeded handler"),
-                }
-                EventHandleResult::Success
-            }
-            NetworkEvent::NatForwardUdp { if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                            let s = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                            let d = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                            stack.send_udp_raw_on_with_src_ttl(net_if, s, src_port, d, dst_port, &payload, ttl);
-                        }
-                    }
-                    Err(_) => log::error!("[NET] Stack poisoned in NatForwardUdp handler"),
-                }
-                EventHandleResult::Success
-            }
-            NetworkEvent::NatForwardTcp { src_ip, dst_ip, segment, ttl } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let s = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                            let d = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                            stack.send_tcp_with_ttl(s, d, &segment, ttl);
-                        }
-                    }
-                    Err(_) => log::error!("[NET] Stack poisoned in NatForwardTcp handler"),
-                }
-                EventHandleResult::Success
-            }
-
-            // ================================================================
-            // Async utility events
-            // ================================================================
-            NetworkEvent::AsyncIcmpEcho { target, sequence, result_slot, waker } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let target_ip = crate::net::l3::ipv4::Ipv4Address::new(target);
-                            let result = stack.send_icmp_echo_request(target_ip, sequence)
-                                .map_err(|_| ());
-                            if let Ok(mut slot) = result_slot.lock() {
-                                *slot = Some(result);
-                            }
-                        } else {
-                            if let Ok(mut slot) = result_slot.lock() {
-                                *slot = Some(Err(()));
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        log::error!("[NET] Stack poisoned in AsyncIcmpEcho handler");
-                        if let Ok(mut slot) = result_slot.lock() {
-                            *slot = Some(Err(()));
-                        }
-                    }
+            // ============================================================
+            // 非同期Futureイベント: スタック不可時はエラーで完了（デッドロック防止）
+            // ============================================================
+            NetworkEvent::AsyncTcpBind { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(Err(EndpointError::ResourceExhausted));
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncArpProbe { target_ip } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
-                            stack.send_arp_probe(ip);
-                        }
-                    }
-                    Err(_) => log::error!("[NET] Stack poisoned in AsyncArpProbe handler"),
-                }
+            NetworkEvent::AsyncUdpBind { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(false); }
+                waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncArpResolveCheck { target_ip, requester_mac, result_slot, waker } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
-                            let now = stack.current_time();
-                            let result = stack.arp_resolve(ip, now).map(|mac| {
-                                let req_mac = MacAddress::new(requester_mac);
-                                mac != req_mac && !mac.is_broadcast()
-                            });
-                            if let Ok(mut slot) = result_slot.lock() {
-                                *slot = Some(result);
-                            }
-                        } else {
-                            if let Ok(mut slot) = result_slot.lock() {
-                                *slot = Some(None);
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        if let Ok(mut slot) = result_slot.lock() {
-                            *slot = Some(None);
-                        }
-                    }
+            NetworkEvent::AsyncTcpConnect { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(Err(EndpointError::ResourceExhausted));
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpApplyLease { ip, subnet, gateway, dns, hostname } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let lease = crate::net::services::dhcp::DhcpLease {
-                                ip_address: crate::net::l3::ipv4::Ipv4Address::new(ip),
-                                subnet_mask: crate::net::l3::ipv4::Ipv4Address::new(subnet),
-                                gateway: Some(crate::net::l3::ipv4::Ipv4Address::new(gateway)),
-                                dns_servers: alloc::vec![crate::net::l3::ipv4::Ipv4Address::new(dns)],
-                                server_ip: crate::net::l3::ipv4::Ipv4Address::ANY,
-                                lease_time: 0,
-                                t1: 0,
-                                t2: 0,
-                                hostname: if hostname.is_empty() { None } else { Some(hostname) },
-                                domain_name: None,
-                                obtained_at: crate::task::timer::current_tick(),
-                            };
-                            stack.apply_dhcp_v4_lease(&lease);
-                        }
-                    }
-                    Err(_) => log::error!("[NET] Stack poisoned in AsyncDhcpApplyLease handler"),
+            NetworkEvent::AsyncTcpConnectStream { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(Err(crate::net::l4::tcp::TcpError::InvalidState));
                 }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpBindListener { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(Err(crate::net::l4::tcp::TcpError::InvalidState));
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpBindListenerWithToken { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(Err(crate::net::l4::tcp::TcpError::InvalidState));
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBindEndpoint { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(None); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBindEndpointWithToken { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(None); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncMulticastJoin { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(false); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncMulticastLeave { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(false); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUnbindUdp { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(false); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUnbindTcp { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(false); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUnbindTcpListener { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(false); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpBindWithToken { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(Err(EndpointError::ResourceExhausted));
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBindWithToken { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(false); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncApplyIpv6Address { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(false); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncIcmpEcho { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(Err(())); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncArpResolveCheck { result_slot, waker, .. } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(None); }
+                waker.wake();
                 EventHandleResult::Success
             }
             NetworkEvent::AsyncGetLinkLocal { result_slot, waker } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(guard) => {
-                        let result = guard.as_ref().and_then(|s| {
-                            s.config().ipv6.map(|c| c.link_local.octets())
-                        });
-                        if let Ok(mut slot) = result_slot.lock() {
-                            *slot = Some(result);
-                        }
-                    }
-                    Err(_) => {
-                        if let Ok(mut slot) = result_slot.lock() {
-                            *slot = Some(None);
-                        }
-                    }
-                }
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(None); }
                 waker.wake();
                 EventHandleResult::Success
             }
-
-            // ================================================================
-            // Async config/stats query events
-            // ================================================================
             NetworkEvent::AsyncGetConfig { result_slot, waker } => {
-                let result = match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(guard) => guard.as_ref().map(|s| {
-                        let cfg = s.config();
-                        crate::net::api::config::NetworkConfigSnapshot {
-                            ip: *cfg.ipv4.address.as_bytes(),
-                            netmask: *cfg.ipv4.subnet_mask.as_bytes(),
-                            gateway: *cfg.ipv4.gateway.as_bytes(),
-                            mac: *cfg.mac.as_bytes(),
-                        }
-                    }),
-                    Err(_) => None,
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(None); }
                 waker.wake();
                 EventHandleResult::Success
             }
             NetworkEvent::AsyncGetStats { result_slot, waker } => {
-                let result = match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(guard) => guard.as_ref().map(|s| {
-                        let stats = s.stats();
-                        crate::net::api::config::NetworkStatsSnapshot {
-                            rx_packets: stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed),
-                            tx_packets: stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed),
-                            rx_bytes: stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed),
-                            tx_bytes: stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed),
-                            rx_errors: stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed),
-                            rx_dropped: stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed),
-                        }
-                    }),
-                    Err(_) => None,
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(None); }
                 waker.wake();
                 EventHandleResult::Success
             }
             NetworkEvent::AsyncGetArpCache { result_slot, waker } => {
-                let entries = match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(guard) => match guard.as_ref() {
-                        Some(stack) => {
-                            stack.arp_cache().iter().map(|(ip, mac)| {
-                                crate::net::api::connections::ArpCacheEntry {
-                                    ip: *ip.as_bytes(),
-                                    mac: *mac.as_bytes(),
-                                    complete: true,
-                                }
-                            }).collect()
-                        }
-                        None => Vec::new(),
-                    },
-                    Err(_) => Vec::new(),
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(entries);
-                }
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(Vec::new()); }
                 waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncArpInsert { ip, mac } => {
-                match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(mut guard) => {
-                        if let Some(ref mut stack) = *guard {
-                            let now = crate::time::get_uptime_ms();
-                            let ipv4 = crate::net::l3::ipv4::Ipv4Address::new(ip);
-                            let mac_addr = MacAddress::new(mac);
-                            stack.arp_cache_insert(ipv4, mac_addr, now);
-                        }
-                    }
-                    Err(_) => log::error!("[NET] Stack poisoned in AsyncArpInsert handler"),
-                }
                 EventHandleResult::Success
             }
             NetworkEvent::AsyncGetUdpEndpoints { result_slot, waker } => {
-                let result = match crate::net::runtime::stack::NETWORK_STACK.lock() {
-                    Ok(guard) => match guard.as_ref() {
-                        Some(stack) => {
-                            let snapshots = stack.list_udp_endpoints();
-                            snapshots.into_iter().map(|snap| {
-                                crate::net::api::connections::UdpEndpointInfo {
-                                    local_addr: alloc::format!("*:{}", snap.local_port),
-                                    remote_addr: alloc::string::String::from("*:*"),
-                                }
-                            }).collect()
-                        }
-                        None => Vec::new(),
-                    },
-                    Err(_) => Vec::new(),
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(Vec::new()); }
                 waker.wake();
                 EventHandleResult::Success
+            }
+            NetworkEvent::AsyncProcessTimeouts => {
+                // タイムアウト処理はスタックなしではスキップ
+                crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
+                crate::net::l2::arp::cleanup_arp_waiters();
+                EventHandleResult::Success
+            }
+
+            // ============================================================
+            // スタック依存だがFuture結果不要のイベント: ドロップ（ログのみ）
+            // ============================================================
+            _ => {
+                log::warn!("[NET] Event dropped: stack unavailable (stackless fallback)");
+                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
             }
         }
     }
@@ -1187,8 +737,8 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
 
-            // その他のイベントはスタック非依存または個別ロックで対応
-            other => self.handle_event(other),
+            // その他のイベントはスタック非依存（再帰的ロック取得を回避）
+            other => self.handle_event_stackless(other),
         }
     }
 

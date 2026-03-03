@@ -492,13 +492,17 @@ impl UdpEndpoint {
     /// Note: This affects the underlying network stack to ensure packets are received.
     /// 同期版: NETWORK_STACKロックを取得する。asyncコンテキストでは
     /// `join_multicast_group_async()`の使用を推奨。
+    #[deprecated(note = "use join_multicast_group_async() instead")]
     pub fn join_multicast_group(&self, group: Ipv4Address) -> Result<(), crate::net::l3::igmp::IgmpError> {
+        #[allow(deprecated)]
         crate::net::runtime::stack::join_multicast_group(group)
     }
 
     /// Leave a multicast group for this socket.
     /// 同期版: asyncコンテキストでは`leave_multicast_group_async()`の使用を推奨。
+    #[deprecated(note = "use leave_multicast_group_async() instead")]
     pub fn leave_multicast_group(&self, group: Ipv4Address) -> Result<(), crate::net::l3::igmp::IgmpError> {
+        #[allow(deprecated)]
         crate::net::runtime::stack::leave_multicast_group(group)
     }
 

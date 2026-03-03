@@ -183,6 +183,7 @@ pub fn bind_udp(port: u16) -> Option<UdpEndpoint> {
 }
 
 /// Process retransmission timeouts on the global network stack
+#[deprecated(note = "use async_timeout_task() instead")]
 pub fn process_timeouts(_current_time: u64) {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -233,6 +234,7 @@ pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpEndpoint>
 }
 
 /// Apply IPv6 global address obtained via DHCPv6
+#[deprecated(note = "use apply_ipv6_global_address_async() instead")]
 pub fn apply_ipv6_global_address(addr: crate::net::l3::ipv6::Ipv6Address) {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -350,6 +352,7 @@ pub fn connect_tcp(local_addr: TcpEndpointAddr, remote_addr: TcpEndpointAddr) ->
 /// let group = Ipv4Address::new([224, 0, 0, 251]); // mDNS group
 /// join_multicast_group(group).expect("Failed to join multicast group");
 /// ```
+#[deprecated(note = "use join_multicast_async() instead")]
 pub fn join_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -367,6 +370,7 @@ pub fn join_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
 }
 
 /// Leave a multicast group
+#[deprecated(note = "use leave_multicast_async() instead")]
 pub fn leave_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
