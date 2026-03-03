@@ -222,12 +222,21 @@ impl NetworkStack {
 
     /// Update configuration
     pub fn set_config(&mut self, config: NetworkConfig) {
+        let old_ip = self.config.ipv4.address;
+        let new_ip = config.ipv4.address;
+
         // Update all processors
         self.ethernet.set_local_mac(config.mac);
         self.ipv4.set_config(config.ipv4.clone());
         self.arp.set_local(config.mac, config.ipv4.address);
 
         self.config = config;
+
+        // RFC 2131 Section 4.4.1: Send Gratuitous ARP when IP address is assigned or changed.
+        // This updates the ARP cache of other hosts on the network.
+        if new_ip != Ipv4Address::ANY && new_ip != old_ip {
+            self.send_arp_request(new_ip);
+        }
     }
 
     /// Get statistics

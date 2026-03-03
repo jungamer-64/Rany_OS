@@ -243,9 +243,9 @@ struct TcpCongestionState {
 impl TcpCongestionState {
     fn new() -> Self {
         Self {
-            cwnd: 10 * 1460, // 初期値: 10 MSS (RFC 6928)
+            cwnd: 10 * 536, // 初期値: 10 MSS (RFC 6928 compliance with default MSS)
             ssthresh: 65535,
-            mss: 1460, // Ethernet MTU - IP/TCP headers
+            mss: 536, // RFC 1122 Section 4.2.2.6: Default send MSS is 536 if not negotiated.
             dup_ack_count: 0,
             last_ack: 0,
             in_recovery: false,
@@ -407,6 +407,18 @@ impl Drop for TcpControlBlock {
         if ooo_count > 0 {
             GLOBAL_OOO_COUNT.fetch_sub(ooo_count, Ordering::Relaxed);
         }
+    }
+}
+
+impl core::fmt::Debug for TcpControlBlock {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TcpControlBlock")
+            .field("endpoints", &"...")
+            .field("state", &self.state)
+            .field("snd_nxt", &self.seq.snd_nxt)
+            .field("snd_una", &self.seq.snd_una)
+            .field("rcv_nxt", &self.seq.rcv_nxt)
+            .finish()
     }
 }
 

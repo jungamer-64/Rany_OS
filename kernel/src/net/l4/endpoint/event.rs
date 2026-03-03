@@ -211,6 +211,39 @@ pub enum NetworkEvent {
         dst_port: u16,
         data: Vec<u8>,
     },
+    /// 非同期TCP connect（TcpStreamを返す完全非同期版）
+    AsyncTcpConnectStream {
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<crate::net::l4::tcp::TcpStream, crate::net::l4::tcp::TcpError>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期TCP bind（TcpListenerを返す完全非同期版）
+    AsyncTcpBindListener {
+        local: EndpointAddr,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期TCP bind with token（TcpListenerを返す完全非同期版）
+    AsyncTcpBindListenerWithToken {
+        local: EndpointAddr,
+        token: Option<u64>,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期UDP bind（UdpEndpointを返す完全非同期版）
+    AsyncUdpBindEndpoint {
+        port: u16,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::l4::udp::UdpEndpoint>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期UDP bind with token（UdpEndpointを返す完全非同期版）
+    AsyncUdpBindEndpointWithToken {
+        port: u16,
+        token: Option<u64>,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::l4::udp::UdpEndpoint>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
 }
 
 /// イベントキュー（ロックフリーリングバッファ）

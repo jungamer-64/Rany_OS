@@ -386,9 +386,25 @@ impl DhcpClient {
 
     // --- check_timeout helper: common retry-or-transition pattern ---
     pub(super) fn check_retry_or_transition(&self, elapsed_secs: u64, max_retry_state: DhcpState) -> bool {
-        if elapsed_secs > Self::RETRY_INTERVAL_SECS {
-            let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
-            if retry >= Self::MAX_RETRIES {
+        let retry = self.retry_count.load(Ordering::SeqCst);
+        
+        // RFC 2131: Exponential backoff (1, 2, 4, 8, 16, 32, 64 seconds)
+        // We use a base interval of 4s * 2^retry, clamped at 64s.
+        // We add a small amount of jitter to avoid synchronization (RFC 2131 recommendation).
+        let base_interval = (4u64 << core::cmp::min(retry, 4)).min(64);
+        
+        // Add jitter ±1s using pseudo-randomness from available source
+        let jitter = if retry > 0 {
+            let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
+            (rnd % 3) - 1 // -1, 0, or 1
+        } else {
+            0
+        };
+        let interval = (base_interval as i64 + jitter).max(1) as u64;
+
+        if elapsed_secs >= interval {
+            let actual_retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
+            if actual_retry >= Self::MAX_RETRIES {
                 self.transition_state(max_retry_state);
                 self.retry_count.store(0, Ordering::SeqCst);
             }

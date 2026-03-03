@@ -322,6 +322,17 @@ impl UdpAddr {
     }
 }
 
+impl core::fmt::Debug for UdpEndpointInner {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UdpEndpointInner")
+            .field("local_port", &self.local_port)
+            .field("rx_queue_bytes", &self.rx_queue_bytes)
+            .field("closed", &self.closed)
+            .field("token", &self.token)
+            .finish()
+    }
+}
+
 /// UDP endpoint state
 pub(crate) struct UdpEndpointInner {
     /// Local port
@@ -341,6 +352,7 @@ pub(crate) struct UdpEndpointInner {
 /// Maximum UDP receive queue size in bytes (e.g., 256 KB per endpoint)
 const MAX_UDP_RX_QUEUE_BYTES: usize = 256 * 1024;
 /// UDP endpoint (async)
+#[derive(Debug)]
 pub struct UdpEndpoint {
     inner: Arc<PoisonLock<UdpEndpointInner>>,
 }
@@ -356,10 +368,17 @@ impl Drop for UdpEndpoint {
         // Automatically unbind the port when the last endpoint handle is dropped.
         // The global table holds one reference (count=1), so if strong_count is 2,
         // this is the last external handle.
+        // イベントキュー経由で非同期unbindを送信（Drop内では同期ロックを回避）
         if Arc::strong_count(&self.inner) == 2 {
             let port = self.local_port();
             if port != 0 {
-                crate::net::runtime::stack::unbind_udp(port);
+                crate::net::l4::endpoint::event::send_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindUdp {
+                        port,
+                        result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
+                        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+                    },
+                );
             }
         }
     }

@@ -13,6 +13,7 @@ pub fn test_network_stack_creation() {
 }
 
 #[cfg_attr(test, test_case)]
+#[allow(deprecated)]
 pub fn test_network_stack_poisoned_runtime_apis_fail() {
     use crate::sync::set_panicking;
 
@@ -26,12 +27,14 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
     set_panicking(false);
 
     // Runtime APIs should fail conservatively when the global lock is poisoned
+    // NOTE: These intentionally test the deprecated sync APIs for graceful failure.
     assert!(!send_udp(1234, Ipv4Address::LOOPBACK, 80, &[0x1, 0x2]));
     assert!(!send_tcp(Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, &[]));
     assert!(bind_udp(1234).is_none());
 }
 
 #[cfg_attr(test, test_case)]
+#[allow(deprecated)]
 pub fn test_send_udp_fallback_zero_copy() {
     // Initialize stack and set transmit function to always succeed
     init_default();

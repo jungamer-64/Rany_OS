@@ -110,7 +110,7 @@ impl DhcpV6Client {
 
     /// DHCPv6 クライアントのメインループ（非同期）
     pub async fn run(&self) -> Result<(), &'static str> {
-        let socket = crate::net::runtime::stack::bind_udp(DHCPV6_CLIENT_PORT).ok_or("Failed to bind DHCPv6 socket")?;
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(DHCPV6_CLIENT_PORT).await.ok_or("Failed to bind DHCPv6 socket")?;
 
         log::info!("[NET] DHCPv6 client task started");
 
@@ -489,9 +489,18 @@ impl DhcpV6Client {
                     }
                 }
                 DhcpV6State::SolicitSent => {
-                    // Retransmit logic
+                    // Retransmit logic (RFC 8415 Section 15: Exponential backoff)
+                    let retry = self.retry_count.load(Ordering::SeqCst);
+                    // IRT = 1s, MRT = 120s
+                    let base_interval = (1u64 << core::cmp::min(retry, 7)).min(120);
+                    let jitter = if retry > 0 {
+                        let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
+                        (rnd % 3) - 1 // -1, 0, or 1
+                    } else { 0 };
+                    let interval = (base_interval as i64 + jitter).max(1) as u64;
+
                     let elapsed_secs = (current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst))) / tick_rate;
-                    if elapsed_secs >= Self::RETRANS_INTERVAL_SECS {
+                    if elapsed_secs >= interval {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
                             // Give up, go back to Init (will retry later)
@@ -508,9 +517,17 @@ impl DhcpV6Client {
                     }
                 }
                 DhcpV6State::Requesting => {
-                    // Retransmit REQUEST (unicast to server if known)
+                    // Retransmit REQUEST (RFC 8415 Section 15: IRT = 1s, MRT = 30s)
+                    let retry = self.retry_count.load(Ordering::SeqCst);
+                    let base_interval = (1u64 << core::cmp::min(retry, 5)).min(30);
+                    let jitter = if retry > 0 {
+                        let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
+                        (rnd % 3) - 1 // -1, 0, or 1
+                    } else { 0 };
+                    let interval = (base_interval as i64 + jitter).max(1) as u64;
+
                     let elapsed_secs = (current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst))) / tick_rate;
-                    if elapsed_secs >= Self::RETRANS_INTERVAL_SECS {
+                    if elapsed_secs >= interval {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
                             // Give up and return to Init
@@ -538,13 +555,22 @@ impl DhcpV6Client {
                             // start renewal
                             *s = DhcpV6State::Renewing;
                             self.state_time.store(current_tick, Ordering::SeqCst);
+                            self.retry_count.store(0, Ordering::SeqCst); // Reset for Renewing
                         }
                     }
                 }
                 DhcpV6State::Renewing => {
-                    // Attempt to renew the current lease by sending a REQUEST.
+                    // Attempt to renew (RFC 8415 Section 15: IRT = 10s, MRT = 600s)
+                    let retry = self.retry_count.load(Ordering::SeqCst);
+                    let base_interval = (10u64 << core::cmp::min(retry, 6)).min(600);
+                    let jitter = if retry > 0 {
+                        let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
+                        (rnd % 5) - 2 // ±2s jitter for larger intervals
+                    } else { 0 };
+                    let interval = (base_interval as i64 + jitter).max(1) as u64;
+
                     let elapsed_secs = (current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst))) / tick_rate;
-                    if elapsed_secs >= Self::RETRANS_INTERVAL_SECS {
+                    if elapsed_secs >= interval {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
                             // Escalate to rebinding (multicast) if renew fails
@@ -572,9 +598,17 @@ impl DhcpV6Client {
                     }
                 }
                 DhcpV6State::Rebinding => {
-                    // Rebinding uses multicast to any available server/relay.
+                    // Rebinding (RFC 8415 Section 15: IRT = 10s, MRT = 600s)
+                    let retry = self.retry_count.load(Ordering::SeqCst);
+                    let base_interval = (10u64 << core::cmp::min(retry, 6)).min(600);
+                    let jitter = if retry > 0 {
+                        let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
+                        (rnd % 5) - 2 // ±2s
+                    } else { 0 };
+                    let interval = (base_interval as i64 + jitter).max(1) as u64;
+
                     let elapsed_secs = (current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst))) / tick_rate;
-                    if elapsed_secs >= Self::RETRANS_INTERVAL_SECS {
+                    if elapsed_secs >= interval {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
                             // Give up and return to Init (clear lease)

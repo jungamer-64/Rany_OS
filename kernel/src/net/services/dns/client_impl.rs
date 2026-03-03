@@ -148,7 +148,7 @@ impl DnsClient {
         let server = self.primary_ipv4_server().ok_or("No DNS server configured")?;
         
         // Try UDP first
-        let socket = crate::net::runtime::stack::bind_udp(0).ok_or("Failed to bind UDP")?;
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(0).await.ok_or("Failed to bind UDP")?;
         let mut buffer = [0u8; 512];
         let query_len = self.build_query(&mut buffer, name, qtype)?;
 

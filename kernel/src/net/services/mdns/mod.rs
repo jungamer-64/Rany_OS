@@ -166,7 +166,7 @@ impl MdnsService {
 
     /// mDNSサービスのメインループ（非同期）
     pub async fn run(&mut self) -> Result<(), &'static str> {
-        let socket = crate::net::runtime::stack::bind_udp(MDNS_PORT).ok_or("Failed to bind mDNS socket")?;
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(MDNS_PORT).await.ok_or("Failed to bind mDNS socket")?;
         
         // mDNSマルチキャストグループに参加
         socket.join_multicast_group(MDNS_MULTICAST_GROUP).map_err(|_| "Failed to join mDNS multicast group")?;

@@ -55,7 +55,7 @@ async fn run_net_poller() {
 /// 各接続をspawn_globalで独立タスクとして起動し、
 /// acceptループがブロックされないようにする。
 async fn run_service() {
-    let listener = match TcpListener::bind(EndpointAddr::new([0, 0, 0, 0], 80)) {
+    let listener = match TcpListener::bind(EndpointAddr::new([0, 0, 0, 0], 80)).await {
         Ok(listener) => {
             log::info!("[HOST-HTTP] listening on 0.0.0.0:80");
             listener

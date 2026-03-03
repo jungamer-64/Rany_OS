@@ -126,7 +126,7 @@ impl TcpControlBlockEntry {
             congestion: CongestionControllerVariant::from_algorithm(algorithm),
             window_scale: WindowScaleOption::default_enabled(),
             flow_control: FlowController::new(),
-            mss: 1460, // Default MSS
+            mss: 536, // Default MSS (RFC 1122 compliant)
             snd_up: 0,
             snd_urg: false,
             rcv_up: 0,

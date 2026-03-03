@@ -19,7 +19,7 @@ mod variant_impl;
 pub mod variant_tests {
     pub use super::default_and_tests::variant_tests::variant_tests::*;
 }
-pub const DEFAULT_MSS: u32 = 1460;
+pub const DEFAULT_MSS: u32 = 536;
 
 /// 初期ウィンドウサイズ (RFC 6928: 10 MSS)
 pub const INITIAL_WINDOW: u32 = 10;

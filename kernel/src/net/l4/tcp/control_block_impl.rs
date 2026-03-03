@@ -1158,12 +1158,12 @@ impl TcpControlBlock {
         self.options.rcv_wnd_scaled
     }
 
-    /// Set peer's window scale factor (from SYN/SYN-ACK option)
+    /// Set peer's MSS (Maximum Segment Size) from SYN/SYN-ACK option
     #[inline]
     pub fn set_mss(&mut self, mss: u16) {
         self.congestion.mss = mss;
-        // Also update initial cwnd if we're still in slow start
-        if self.congestion.cwnd == 10 * 1460 {
+        // Also update initial cwnd if we're still using the default initial window
+        if self.congestion.cwnd == 10 * 536 {
             self.congestion.cwnd = 10 * mss as u32;
         }
     }

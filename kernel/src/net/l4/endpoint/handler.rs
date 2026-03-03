@@ -72,13 +72,11 @@ fn apply_tcp_checksum_for_addrs(
 
 /// ネットワークイベントハンドラ
 /// プロトコルスタック（TCP/UDP）と連携する
-#[allow(deprecated)]
 pub struct NetworkEventHandler {
     /// ソケットマネージャへの参照を使用
     _marker: core::marker::PhantomData<()>,
 }
 
-#[allow(deprecated)]
 impl NetworkEventHandler {
     /// 新規ハンドラ作成
     pub fn new() -> Self {
@@ -123,38 +121,87 @@ impl NetworkEventHandler {
             NetworkEvent::SetNoDelay { fd, nodelay } => self.handle_set_nodelay(fd, nodelay),
             NetworkEvent::SetPriority { fd, priority } => self.handle_set_priority(fd, priority),
             NetworkEvent::RawUdpSend { src_port, dst_ip, dst_port, data } => {
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                if crate::net::runtime::stack::send_udp(src_port, dst, dst_port, &data) {
-                    EventHandleResult::Success
-                } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                // スタックロックを直接取得して送信（deprecated global API を回避）
+                match crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    Ok(mut guard) => {
+                        if let Some(ref mut stack) = *guard {
+                            let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                            if stack.send_udp_raw(src_port, dst, dst_port, &data) {
+                                EventHandleResult::Success
+                            } else {
+                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                            }
+                        } else {
+                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("[NET] Stack poisoned in RawUdpSend handler");
+                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    }
                 }
             }
             NetworkEvent::RawTcpSend { src_ip, dst_ip, segment } => {
-                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                if crate::net::runtime::stack::send_tcp(src, dst, &segment) {
-                    EventHandleResult::Success
-                } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                match crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    Ok(mut guard) => {
+                        if let Some(ref mut stack) = *guard {
+                            let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
+                            let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                            if stack.send_tcp(src, dst, &segment) {
+                                EventHandleResult::Success
+                            } else {
+                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                            }
+                        } else {
+                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("[NET] Stack poisoned in RawTcpSend handler");
+                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    }
                 }
             }
             NetworkEvent::RawUdpV6Send { src_port, src_ip, dst_ip, dst_port, data } => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                if crate::net::runtime::stack::send_udp_v6(src_port, src, dst, dst_port, &data) {
-                    EventHandleResult::Success
-                } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                match crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    Ok(mut guard) => {
+                        if let Some(ref mut stack) = *guard {
+                            let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                            let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                            if stack.send_udp_v6_raw(src_port, src, dst, dst_port, &data) {
+                                EventHandleResult::Success
+                            } else {
+                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                            }
+                        } else {
+                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("[NET] Stack poisoned in RawUdpV6Send handler");
+                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    }
                 }
             }
             NetworkEvent::RawTcpV6Send { src_ip, dst_ip, segment } => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                if crate::net::runtime::stack::send_tcp_v6(src, dst, &segment) {
-                    EventHandleResult::Success
-                } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                match crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    Ok(mut guard) => {
+                        if let Some(ref mut stack) = *guard {
+                            let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                            let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                            if stack.send_tcp_v6_raw(src, dst, &segment) {
+                                EventHandleResult::Success
+                            } else {
+                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                            }
+                        } else {
+                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("[NET] Stack poisoned in RawTcpV6Send handler");
+                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    }
                 }
             }
             NetworkEvent::IcmpEchoRequest { target, sequence } => {
@@ -302,33 +349,114 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::RawUdpSendOn { if_id, src_port, dst_ip, dst_port, data } => {
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                if crate::net::runtime::stack::send_udp_on(net_if, src_port, dst, dst_port, &data) {
-                    EventHandleResult::Success
-                } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                match crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    Ok(mut guard) => {
+                        if let Some(ref mut stack) = *guard {
+                            let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                            let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                            if stack.send_udp_raw_on(net_if, src_port, dst, dst_port, &data) {
+                                EventHandleResult::Success
+                            } else {
+                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                            }
+                        } else {
+                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("[NET] Stack poisoned in RawUdpSendOn handler");
+                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    }
                 }
             }
             NetworkEvent::RawTcpSendOn { if_id, src_ip, dst_ip, segment } => {
-                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                if crate::net::runtime::stack::send_tcp_on(net_if, src, dst, &segment) {
-                    EventHandleResult::Success
-                } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                match crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    Ok(mut guard) => {
+                        if let Some(ref mut stack) = *guard {
+                            let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
+                            let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                            // interface not yet used
+                            if stack.send_tcp(src, dst, &segment) {
+                                EventHandleResult::Success
+                            } else {
+                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                            }
+                        } else {
+                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("[NET] Stack poisoned in RawTcpSendOn handler");
+                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    }
                 }
             }
             NetworkEvent::RawUdpV6SendOn { if_id, src_port, src_ip, dst_ip, dst_port, data } => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                if crate::net::runtime::stack::send_udp_v6_on(net_if, src_port, src, dst, dst_port, &data) {
-                    EventHandleResult::Success
-                } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                match crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    Ok(mut guard) => {
+                        if let Some(ref mut stack) = *guard {
+                            let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                            let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                            let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                            if stack.send_udp_v6_raw_on(net_if, src_port, src, dst, dst_port, &data) {
+                                EventHandleResult::Success
+                            } else {
+                                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                            }
+                        } else {
+                            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("[NET] Stack poisoned in RawUdpV6SendOn handler");
+                        EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    }
                 }
+            }
+            NetworkEvent::AsyncTcpConnectStream { local, remote, result_slot, waker } => {
+                // 非同期TCP connect（TcpStreamを返す完全非同期版）
+                let result = crate::net::runtime::stack::connect_tcp(local, remote);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpBindListener { local, result_slot, waker } => {
+                // 非同期TCP bind（TcpListenerを返す完全非同期版）
+                let result = crate::net::runtime::stack::bind_tcp(local);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpBindListenerWithToken { local, token, result_slot, waker } => {
+                // 非同期TCP bind with token（TcpListenerを返す完全非同期版）
+                let result = crate::net::runtime::stack::bind_tcp_with_token(local, token);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBindEndpoint { port, result_slot, waker } => {
+                // 非同期UDP bind（UdpEndpointを返す完全非同期版）
+                let result = crate::net::runtime::stack::bind_udp(port);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBindEndpointWithToken { port, token, result_slot, waker } => {
+                // 非同期UDP bind with token（UdpEndpointを返す完全非同期版）
+                let result = crate::net::runtime::stack::bind_udp_with_token(port, token);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
             }
         }
     }
@@ -1441,7 +1569,8 @@ impl NetworkEventHandler {
         if endpoint_is_native_v6_pair(src, dst) {
             let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(src.as_ipv6());
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(dst.as_ipv6());
-            if crate::net::runtime::stack::send_udp_v6(src.port(), src_v6, dst_v6, dst.port(), payload) {
+            // 非同期イベントキュー経由で送信（ロック競合回避）
+            if crate::net::runtime::stack::send_udp_v6_async(src.port(), src_v6, dst_v6, dst.port(), payload) {
                 return Ok(());
             } else {
                 return Err(EndpointError::ResourceExhausted);
