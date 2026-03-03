@@ -60,6 +60,9 @@ impl DhcpV6Client {
     pub const RETRANS_INTERVAL_SECS: u64 = 4;
 
     /// スタック設定からリンクローカルIPv6アドレスを取得（短時間ロック）
+    ///
+    /// NOTE: この関数は短期間のロック取得のみ行うため、デッドロックリスクは低い。
+    /// 将来的には AsyncGetLinkLocal イベント経由の async 版に移行する。
     fn get_link_local(&self) -> Option<Ipv6Address> {
         match crate::net::runtime::stack::stack().lock() {
             Ok(guard) => guard.as_ref().and_then(|s| s.config().ipv6.map(|c| c.link_local)),
@@ -451,8 +454,14 @@ impl DhcpV6Client {
                     *sd = Some(src);
                 }
 
-                // Apply IPv6 address to the running NetworkStack
-                crate::net::runtime::stack::apply_ipv6_global_address(lease.addr);
+                // Apply IPv6 address to the running NetworkStack (fire-and-forget via event queue)
+                crate::net::l4::endpoint::event::send_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::AsyncApplyIpv6Address {
+                        addr: lease.addr.octets(),
+                        result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
+                        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+                    },
+                );
 
                 if let Ok(mut st) = self.state.lock() {
                     *st = DhcpV6State::Bound;

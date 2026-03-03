@@ -171,8 +171,10 @@ impl MdnsService {
 
         // Security (RFC 6762 Section 11): mDNS packets MUST have IP TTL 255.
         socket.set_ttl(255);
-        // mDNSマルチキャストグループに参加
-        socket.join_multicast_group(MDNS_MULTICAST_GROUP).map_err(|_| "Failed to join mDNS multicast group")?;
+        // mDNSマルチキャストグループに参加（非同期・イベントキュー経由）
+        if !socket.join_multicast_group_async(MDNS_MULTICAST_GROUP).await {
+            return Err("Failed to join mDNS multicast group");
+        }
         
         log::info!("[NET] mDNS service task started (hostname: {}.local)", self.hostname);
 

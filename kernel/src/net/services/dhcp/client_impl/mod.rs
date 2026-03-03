@@ -51,12 +51,17 @@ impl DhcpClient {
                     match self.process_response(packet.data(), now) {
                         Ok(DhcpResponseResult::Ack(lease)) => {
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
-                            // リースをスタックに適用
-                            if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-                                if let Some(ref mut stack) = *guard {
-                                    stack.apply_dhcp_v4_lease(&lease);
-                                }
-                            }
+                            // リースをイベントキュー経由でスタックに適用（デッドロック回避）
+                            let hostname_bytes = lease.hostname.clone().unwrap_or_default();
+                            crate::net::l4::endpoint::event::send_event_ignore(
+                                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpApplyLease {
+                                    ip: *lease.ip_address.as_bytes(),
+                                    subnet: *lease.subnet_mask.as_bytes(),
+                                    gateway: lease.gateway.map(|a| *a.as_bytes()).unwrap_or([0, 0, 0, 0]),
+                                    dns: lease.dns_servers.first().map(|a| *a.as_bytes()).unwrap_or([0, 0, 0, 0]),
+                                    hostname: hostname_bytes,
+                                },
+                            );
                             // mDNS のローカル IP を更新
                             if let Ok(mut guard) = crate::net::services::mdns::service().lock() {
                                 if let Some(ref mut mdns) = *guard {

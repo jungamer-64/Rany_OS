@@ -538,18 +538,29 @@ impl NetworkStack {
                 let local = TcpEndpointAddr::new(original_src.octets(), src_port);
                 let remote = TcpEndpointAddr::new(original_dst.octets(), dst_port);
 
-                if !self.tcp.validate_icmp_sequence(local, remote, seq_num) {
-                    log::warn!("[NET] ICMP: error for {} rejected due to invalid TCP seq {}", original_dst, seq_num);
-                    return;
+                // 1. 旧スタックの検証と通知
+                let mut old_stack_valid = false;
+                if self.tcp.validate_icmp_sequence(local, remote, seq_num) {
+                    old_stack_valid = true;
+                    if icmp_type == IcmpType::SourceQuench {
+                        self.tcp.handle_source_quench(local, remote);
+                    } else if icmp_type == IcmpType::DestinationUnreachable {
+                        self.tcp.handle_icmp_error(local, remote, icmp_type, code);
+                    }
                 }
 
-                if icmp_type == IcmpType::SourceQuench {
-                    self.tcp.handle_source_quench(local, remote);
+                // 2. 新エンドポイントスタック (l4/endpoint) の検証と通知
+                let tcb_table = crate::net::l4::endpoint::tcb_table();
+                if tcb_table.validate_icmp_sequence(local, remote, seq_num) {
+                    if icmp_type == IcmpType::SourceQuench {
+                        // handle_source_quench in endpoint
+                        crate::net::l4::endpoint::tcp_rx::handle_source_quench(local, remote);
+                    } else if icmp_type == IcmpType::DestinationUnreachable {
+                        crate::net::l4::endpoint::tcp_rx::handle_icmp_error(local, remote, icmp_type, code);
+                    }
+                } else if !old_stack_valid {
+                    log::warn!("[NET] ICMP: error for {} rejected due to invalid TCP seq {} (RFC 5927)", original_dst, seq_num);
                     return;
-                }
-                
-                if icmp_type == IcmpType::DestinationUnreachable {
-                    self.tcp.handle_icmp_error(local, remote, icmp_type, code);
                 }
             }
             17 => { // UDP

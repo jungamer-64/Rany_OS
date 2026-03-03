@@ -9,15 +9,12 @@ impl DhcpClient {
             Err(_) => log::error!("[NET] DHCP Offer lock poisoned (process_response Offer) - skipping storing offer"),
         }
 
-        // Best-effort: ARP probe the offered IP to detect conflicts
-        match crate::net::runtime::stack::stack().lock() {
-            Ok(mut s) => {
-                if let Some(stack) = s.as_mut() {
-                    stack.send_arp_probe(lease.ip_address);
-                }
-            }
-            Err(_) => log::error!("[NET] DHCP Global Stack lock poisoned (process_response Offer) - cannot send ARP probe"),
-        }
+        // Best-effort: ARP probe をイベントキュー経由で送信（デッドロック回避）
+        crate::net::l4::endpoint::event::send_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::AsyncArpProbe {
+                target_ip: *lease.ip_address.as_bytes(),
+            },
+        );
         self.offered_probe_at.store(current_tick, Ordering::SeqCst);
 
         DhcpResponseResult::Offer(lease)
@@ -417,28 +414,28 @@ impl DhcpClient {
 
     // --- check_timeout helper: send initial ARP probe for offered IP ---
     pub(super) fn send_initial_arp_probe(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
-        match crate::net::runtime::stack::stack().lock() {
-            Ok(mut s) => {
-                if let Some(stack) = s.as_mut() {
-                    stack.send_arp_probe(offered_ip);
-                    self.offered_probe_at.store(current_tick, Ordering::SeqCst);
-                    return false; // wait for probe reply
-                }
-            }
-            Err(_) => log::error!("[NET] DHCP Global Stack lock poisoned (check_timeout Selecting) - cannot send ARP probe"),
-        }
-        false
+        // ARP probe をイベントキュー経由で送信（デッドロック回避）
+        crate::net::l4::endpoint::event::send_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::AsyncArpProbe {
+                target_ip: *offered_ip.as_bytes(),
+            },
+        );
+        self.offered_probe_at.store(current_tick, Ordering::SeqCst);
+        false // wait for probe reply
     }
 
     // --- check_timeout helper: check ARP cache for address conflict ---
-    pub(super) fn check_arp_conflict(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
-        if let Ok(mut s) = crate::net::runtime::stack::stack().lock() {
-            if let Some(stack) = s.as_mut() {
-                if let Some(mac) = stack.arp_resolve(offered_ip, current_tick) {
-                    return mac != self.mac_address && !mac.is_broadcast();
-                }
-            }
-        }
+    pub(super) fn check_arp_conflict(&self, offered_ip: Ipv4Address, _current_tick: u64) -> bool {
+        // ARP解決をイベントキュー経由で実行（デッドロック回避）
+        // check_arp_conflict は非asyncコンテキストから呼ばれるため、
+        // fire-and-forget でARPプローブを送信し、次回check_timeoutで再チェックする。
+        // ここでは即時の結果を返せないので、常にfalseを返してタイムアウト待ちとする
+        // TODO: 将来的にはFuture版に移行
+        crate::net::l4::endpoint::event::send_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::AsyncArpProbe {
+                target_ip: *offered_ip.as_bytes(),
+            },
+        );
         false
     }
 

@@ -58,7 +58,7 @@ const DELAYED_ACK_TIMEOUT_MS: u64 = 200;
 const DELAYED_ACK_SEGMENTS: u8 = 2;
 
 /// RFC 7323準拠のTCPタイムスタンプ生成
-fn generate_tcp_timestamp() -> u32 {
+pub(crate) fn generate_tcp_timestamp() -> u32 {
     let ms = tcb_table().get_current_tick();
     (ms / 10) as u32
 }
@@ -385,6 +385,15 @@ fn try_fast_path(
         entry.rcv_nxt = new_rcv_nxt;
         // Delayed ACK: セグメントカウンタをインクリメント
         entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
+
+        // RFC 7323: タイムスタンプ更新 (Fast Path)
+        if entry.ts_enabled && data_offset > 20 {
+            let mut parser = TcpOptionParser::new(&segment[20..data_offset]);
+            if let Some((peer_ts_val, _)) = parser.find_timestamps() {
+                entry.ts_ecr = peer_ts_val;
+                entry.ts_val = generate_tcp_timestamp();
+            }
+        }
     });
 
     // Delayed ACK 判定:
@@ -536,11 +545,15 @@ fn handle_established_segment(
         // Timestamp
         if tcb.ts_enabled {
             if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
-                tcb_table().update(tcb.local, tcb.remote, |entry| {
-                    entry.ts_ecr = peer_ts_val; // 次のACKのTSecrに使用
-                    // 自分のTSvalを更新
-                    entry.ts_val = generate_tcp_timestamp();
-                });
+                // RFC 7323 Section 5.3: Only update TS.Recent if SEG.SEQ <= Last.ACK.sent
+                // 簡略化して in-order セグメントの場合のみ更新する。
+                if seq_num == tcb.rcv_nxt {
+                    tcb_table().update(tcb.local, tcb.remote, |entry| {
+                        entry.ts_ecr = peer_ts_val; // 次のACKのTSecrに使用
+                        // 自分のTSvalを更新
+                        entry.ts_val = generate_tcp_timestamp();
+                    });
+                }
             }
         }
     }
@@ -585,6 +598,38 @@ fn process_tcp_with_tcb(
     segment: &[u8],
     data_offset: usize,
 ) {
+    let payload_len = segment.len().saturating_sub(data_offset);
+
+    // RFC 7323 Section 5.8: PAWS (Protection Against Wrapped Sequence numbers)
+    // タイムスタンプオプションが有効な場合、PAWSチェックを行う。
+    if tcb.ts_enabled {
+        let options = &segment[20..data_offset];
+        let mut parser = TcpOptionParser::new(options);
+        if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
+            // RFC 7323: SEG.TSval < TS.Recent ならば古いセグメントとみなして破棄
+            // (ただし RST 以外。また 24日以上の経過によるラップアラウンドは考慮外)
+            if (flags & tcp_flags::RST) == 0 && peer_ts_val < tcb.ts_ecr {
+                log::warn!(
+                    "[TCP] PAWS check failed (TSval {} < TSrecent {}) for {} - dropping segment (RFC 7323)",
+                    peer_ts_val, tcb.ts_ecr, tcb.remote
+                );
+                send_challenge_ack(&tcb);
+                return;
+            }
+        }
+    }
+
+    // RFC 793 / 9293 Section 3.10.7.1: 受信セグメントのシーケンス番号妥当性を検証
+    // SYN-SENT状態以外では、セグメントがウィンドウ内にあることを確認する必要がある。
+    if tcb.state != TcpConnectionState::SynSent && !is_acceptable_sequence(&tcb, seq_num, payload_len) {
+        log::warn!(
+            "[TCP] Incoming segment out of window (seq={}, len={}) for connection to {}, sending Challenge ACK",
+            seq_num, payload_len, tcb.remote
+        );
+        send_challenge_ack(&tcb);
+        return;
+    }
+
     // RFC 5961 Section 4.2: SYN bit in synchronized state
     // 確立済みの接続に対してSYNを受信した場合、ブラインドリセット攻撃を防ぐため
     // RSTではなくチャレンジACKを送信して生存確認を行う。
@@ -625,9 +670,9 @@ fn process_tcp_with_tcb(
         }
         TcpConnectionState::TimeWait => {
             // RFC 793 / 9293 Section 3.10.7.4:
-            // "Any segment received in the TIME-WAIT state MUST be acknowledged. 
+            // "Any segment received in the TIME-WAIT state MUST be acknowledged.
             // This re-acknowledges the peer's FIN and restarts the 2MSL timer."
-            
+
             // TCBを更新して最終送信時刻をリセット（2MSLタイマーの再起動）
             tcb_table().update(tcb.local, tcb.remote, |entry| {
                 entry.last_send_tick = tcb_table().get_current_tick();
@@ -640,6 +685,57 @@ fn process_tcp_with_tcb(
     }
 }
 
+/// Handle ICMP Source Quench (RFC 1122 Section 4.2.3.9)
+pub fn handle_source_quench(local: EndpointAddr, remote: EndpointAddr) {
+    tcb_table().update(local, remote, |entry| {
+        entry.on_source_quench();
+    });
+}
+
+/// Handle ICMP Error (RFC 1122 Section 4.2.3.9)
+pub fn handle_icmp_error(local: EndpointAddr, remote: EndpointAddr, icmp_type: crate::net::l3::icmp::IcmpType, code: u8) {
+    use crate::net::l3::icmp::{IcmpType, DestUnreachCode};
+
+    let error = if icmp_type == IcmpType::DestinationUnreachable {
+        match DestUnreachCode::from(code) {
+            DestUnreachCode::PortUnreachable => EndpointError::ConnectionRefused,
+            DestUnreachCode::HostUnreachable => EndpointError::HostUnreachable,
+            DestUnreachCode::NetworkUnreachable => EndpointError::NetworkUnreachable,
+            _ => return, // Ignore other errors for now
+        }
+    } else {
+        return;
+    };
+
+    let mut should_close = false;
+    let mut fd = None;
+
+    tcb_table().update(local, remote, |entry| {
+        // RFC 1122: For SYN-SENT state, certain errors mean the connection 
+        // attempt failed (e.g. Port Unreachable = Connection Refused).
+        if entry.state == TcpConnectionState::SynSent {
+            should_close = true;
+            fd = Some(entry.fd);
+        }
+
+        // Notify the user of the error (RFC 1122 requirement)
+        entry.on_icmp_error(error);
+    });
+
+    if should_close {
+        log::info!("[TCP] Connection failed due to ICMP error ({:?}) in SYN-SENT", error);
+        if let Some(f) = fd {
+            if let Some(socket) = get_socket_by_fd(f) {
+                let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                inner.last_error = Some(error);
+                if let Some(waker) = inner.connect_waker.take() {
+                    waker.wake();
+                }
+            }
+        }
+        tcb_table().remove(local, remote);
+    }
+}
 /// SYN-ACK受信処理（クライアント側3ウェイハンドシェイク）
 fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32, segment: &[u8], data_offset: usize) {
     // ACK番号を検証
@@ -841,7 +937,7 @@ fn process_tcp_new_connection(
         .syn()
         .ack_flag()
         .window(65535)
-        .syn_options(1460, 7); // MSS + Window Scale + SACK Permitted
+        .syn_options(1460, 7, Some(generate_tcp_timestamp())); // MSS + Window Scale + SACK Permitted + TS
 
     // TSopt付きSYN-ACK (RFC 7323 Section 3.2)
     if let Some((peer_ts_val, _)) = peer_ts {

@@ -120,6 +120,10 @@ pub enum EndpointError {
     AddressInUse,
     /// 接続拒否
     ConnectionRefused,
+    /// ネットワーク到達不能 (RFC 1122)
+    NetworkUnreachable,
+    /// ホスト到達不能 (RFC 1122)
+    HostUnreachable,
     /// タイムアウト
     Timeout,
     /// 操作中断
@@ -146,6 +150,8 @@ impl core::fmt::Display for EndpointError {
             Self::NotConnected => write!(f, "Not connected"),
             Self::AddressInUse => write!(f, "Address in use"),
             Self::ConnectionRefused => write!(f, "Connection refused"),
+            Self::NetworkUnreachable => write!(f, "Network unreachable"),
+            Self::HostUnreachable => write!(f, "Host unreachable"),
             Self::Timeout => write!(f, "Operation timed out"),
             Self::Interrupted => write!(f, "Operation interrupted"),
             Self::BufferFull => write!(f, "Buffer full"),

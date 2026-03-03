@@ -14,7 +14,7 @@ use spin::RwLock;
 use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
 use super::flow_control::FlowController;
 use super::retransmit::check_retransmit_timeouts;
-use super::types::{EndpointAddr, EndpointFd, seq_after, conn_key_hash};
+use super::types::{EndpointAddr, EndpointFd, EndpointError, seq_after, conn_key_hash};
 use super::window_scale::WindowScaleOption;
 
 /// TCPフラグ
@@ -95,6 +95,8 @@ pub struct TcpControlBlockEntry {
     /// ファストパスでデータを受信するたびにインクリメントされ、
     /// DELAYED_ACK_SEGMENTS (2) に達するか、タイムアウトでACK送信後にリセット。
     pub delayed_ack_pending: u8,
+    /// 保留中のエラー (RFC 1122: ICMPエラー等を次回の操作で返すために保持)
+    pub pending_error: Option<EndpointError>,
 }
 
 impl TcpControlBlockEntry {
@@ -138,6 +140,7 @@ impl TcpControlBlockEntry {
             nagle_enabled: true, // デフォルトで有効
             priority: 0,
             delayed_ack_pending: 0,
+            pending_error: None,
         }
     }
 
@@ -362,6 +365,21 @@ impl TcpControlBlockEntry {
     /// Clear receive urgent mode after processing
     pub fn clear_recv_urgent(&mut self) {
         self.rcv_urg = false;
+    }
+
+    /// Handle ICMP Source Quench (RFC 1122 Section 4.2.3.9)
+    pub fn on_source_quench(&mut self) {
+        // Reduce amount of data in flight by reducing congestion window.
+        // Similar to Fast Retransmit (RFC 5681).
+        // TCB level quench just informs congestion controller.
+        self.congestion.on_timeout(self.last_send_tick);
+    }
+
+    /// Handle ICMP Error (RFC 1122 Section 4.2.3.9)
+    pub fn on_icmp_error(&mut self, error: EndpointError) {
+        // RFC 1122: "A TCP SHOULD notify the user of the error, but it SHOULD NOT
+        // close the connection." (except for SYN-SENT)
+        self.pending_error = Some(error);
     }
 }
 
@@ -802,6 +820,39 @@ impl TcbTable {
     /// アクティブな接続数を取得
     pub fn connection_count(&self) -> usize {
         self.total_count.load(Ordering::Relaxed)
+    }
+
+    /// ICMPエラーメッセージに含まれるシーケンス番号が妥当か検証（RFC 5927）
+    ///
+    /// オフパス攻撃者による PMTU 毒入れ攻撃を防ぐため、引用されたパケットの
+    /// シーケンス番号が現在の送信ウィンドウ内にあることを確認します。
+    pub fn validate_icmp_sequence(&self, local: EndpointAddr, remote: EndpointAddr, seq: u32) -> bool {
+        if let Some(tcb) = self.get(local, remote) {
+            // RFC 5927 Section 4.1: "The TCP sequence number should be checked
+            // to see if it's within the current window"
+
+            // For SYN-SENT, the sequence must be exactly the ISN
+            if tcb.state == TcpConnectionState::SynSent {
+                return seq == tcb.snd_una;
+            }
+
+            // 接続が確立済み（または終了処理中）であることを確認
+            match tcb.state {
+                TcpConnectionState::Closed | TcpConnectionState::Listen => return false,
+                _ => {}
+            }
+
+            // 送信済みで未確認の範囲 [SND.UNA, SND.NXT] に seq が含まれるかチェック
+            let una = tcb.snd_una;
+            let nxt = tcb.snd_nxt;
+
+            // una <= seq <= nxt (wrapping handling)
+            let diff_una = seq.wrapping_sub(una);
+            let diff_nxt = nxt.wrapping_sub(una);
+
+            return diff_una <= diff_nxt;
+        }
+        false
     }
 
     /// ESTABLISHED状態の全接続に対してクロージャを実行

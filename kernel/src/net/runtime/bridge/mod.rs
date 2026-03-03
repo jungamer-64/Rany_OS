@@ -768,47 +768,37 @@ pub fn process_received_packet_zero_copy_for_interface(
 
                                 let ttl = ip_pkt.ttl();
                                 if ttl <= 1 {
-                                    let original_ip = ip_pkt.as_bytes();
-                                    let _ = stack::stack().lock().and_then(|mut g| {
-                                        if let Some(ref mut s) = *g {
-                                            Ok(s.send_icmp_time_exceeded(
-                                                src,
-                                                crate::net::l3::icmp::TimeExceededCode::TtlExceeded,
-                                                original_ip,
-                                            ))
-                                        } else {
-                                            Ok(false)
-                                        }
-                                    });
+                                    // TTL切れ: イベントキュー経由でICMP Time Exceeded送信（デッドロック回避）
+                                    let original_ip_header = Vec::from(ip_pkt.as_bytes());
+                                    crate::net::l4::endpoint::event::send_event_ignore(
+                                        crate::net::l4::endpoint::event::NetworkEvent::NatIcmpTimeExceeded {
+                                            src_ip: *src.as_bytes(),
+                                            original_ip_header,
+                                        },
+                                    );
                                 } else {
                                     let next_ttl = ttl - 1;
-                                    // build new packet via stack send API
+                                    // イベントキュー経由でNAT転送（デッドロック回避）
                                     match proto {
                                         crate::net::l3::ipv4::IpProtocol::Udp => {
                                             if let Some(udp) = crate::net::l4::udp::UdpPacket::parse(transport) {
-                                                let payload = udp.payload();
+                                                let payload = Vec::from(udp.payload());
                                                 let src_port = _new_port;
                                                 let dst_port = udp.dst_port();
-                                                // send via stack
-                                                let _ = stack::stack().lock().and_then(|mut g| {
-                                                    if let Some(ref mut s) = *g {
-                                                        Ok(s.send_udp_raw_on_with_src_ttl(
-                                                            route.if_id,
-                                                            _new_src,
-                                                            src_port,
-                                                            dst,
-                                                            dst_port,
-                                                            payload,
-                                                            next_ttl,
-                                                        ))
-                                                    } else {
-                                                        Ok(false)
-                                                    }
-                                                });
+                                                crate::net::l4::endpoint::event::send_event_ignore(
+                                                    crate::net::l4::endpoint::event::NetworkEvent::NatForwardUdp {
+                                                        if_id: route.if_id.0,
+                                                        src_ip: *_new_src.as_bytes(),
+                                                        src_port,
+                                                        dst_ip: *dst.as_bytes(),
+                                                        dst_port,
+                                                        payload,
+                                                        ttl: next_ttl,
+                                                    },
+                                                );
                                             }
                                         }
                                         crate::net::l3::ipv4::IpProtocol::Tcp => {
-                                            // entire segment including header
                                             let mut nat_segment = Vec::from(transport);
                                             if _new_port != 0 && nat_segment.len() >= 18 {
                                                 nat_segment[0..2].copy_from_slice(&_new_port.to_be_bytes());
@@ -819,13 +809,14 @@ pub fn process_received_packet_zero_copy_for_interface(
                                                     crate::net::l3::ipv4::IpProtocol::Tcp,
                                                 );
                                             }
-                                            let _ = stack::stack().lock().and_then(|mut g| {
-                                                if let Some(ref mut s) = *g {
-                                                    Ok(s.send_tcp_with_ttl(_new_src, dst, &nat_segment, next_ttl))
-                                                } else {
-                                                    Ok(false)
-                                                }
-                                            });
+                                            crate::net::l4::endpoint::event::send_event_ignore(
+                                                crate::net::l4::endpoint::event::NetworkEvent::NatForwardTcp {
+                                                    src_ip: *_new_src.as_bytes(),
+                                                    dst_ip: *dst.as_bytes(),
+                                                    segment: nat_segment,
+                                                    ttl: next_ttl,
+                                                },
+                                            );
                                         }
                                         _ => {}
                                     }

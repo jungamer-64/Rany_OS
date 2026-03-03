@@ -100,48 +100,6 @@ pub fn send_udp_async(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &
     true
 }
 
-/// Like `send_udp` but routes the datagram on a specific logical interface.
-/// The interface argument is currently ignored but provided as an extension
-/// point for future multi‑NIC behaviour.
-/// 
-/// **非推奨**: asyncコンテキストでは`send_udp_on_async()`を使用してください。
-#[deprecated(note = "asyncコンテキストではsend_udp_on_async()を使用してください")]
-pub fn send_udp_on(if_id: super::NetIfId, src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.send_udp_raw_on(if_id, src_port, dst_ip, dst_port, data)
-            } else {
-                false
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - send_udp_on failed");
-            false
-        }
-    }
-}
-
-/// Send a UDP datagram over IPv6
-/// 
-/// **非推奨**: asyncコンテキストでは`send_udp_v6_async()`を使用してください。
-#[deprecated(note = "asyncコンテキストではsend_udp_v6_async()を使用してください")]
-pub fn send_udp_v6(src_port: u16, src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address, dst_port: u16, data: &[u8]) -> bool {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.send_udp_v6_raw(src_port, src_ip, dst_ip, dst_port, data)
-            } else {
-                false
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - send_udp_v6 failed");
-            false
-        }
-    }
-}
-
 /// Send a UDP datagram over IPv6 via the async event queue (non-blocking).
 pub fn send_udp_v6_async(
     src_port: u16,
@@ -164,33 +122,6 @@ pub fn send_udp_v6_async(
     true
 }
 
-/// IPv6 variant that allows specifying an interface (currently ignored)
-/// 
-/// **非推奨**: asyncコンテキストでは`send_udp_v6_on_async()`を使用してください。
-#[deprecated(note = "asyncコンテキストではsend_udp_v6_on_async()を使用してください")]
-pub fn send_udp_v6_on(
-    if_id: super::NetIfId,
-    src_port: u16,
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_port: u16,
-    data: &[u8],
-) -> bool {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.send_udp_v6_raw_on(if_id, src_port, src_ip, dst_ip, dst_port, data)
-            } else {
-                false
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - send_udp_v6_on failed");
-            false
-        }
-    }
-}
-
 /// Send a TCP segment (IPv4)
 /// 
 /// **非推奨**: asyncコンテキストでは`send_tcp_async()`を使用してください。
@@ -206,47 +137,6 @@ pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) ->
         }
         Err(_) => {
             log::error!("[NET] Global Stack poisoned - send_tcp failed");
-            false
-        }
-    }
-}
-
-/// TCP send helper that specifies an output interface (currently ignored)
-/// 
-/// **非推奨**: asyncコンテキストでは`send_tcp_on_async()`を使用してください。
-#[deprecated(note = "asyncコンテキストではsend_tcp_on_async()を使用してください")]
-pub fn send_tcp_on(_if_id: super::NetIfId, src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                // interface not yet used
-                stack.send_tcp(src_ip, dst_ip, tcp_segment)
-            } else {
-                false
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - send_tcp_on failed");
-            false
-        }
-    }
-}
-
-/// Send a TCP segment over IPv6
-/// 
-/// **非推奨**: asyncコンテキストでは`send_tcp_v6_async()`を使用してください。
-#[deprecated(note = "asyncコンテキストではsend_tcp_v6_async()を使用してください")]
-pub fn send_tcp_v6(src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address, tcp_segment: &[u8]) -> bool {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.send_tcp_v6_raw(src_ip, dst_ip, tcp_segment)
-            } else {
-                false
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - send_tcp_v6 failed");
             false
         }
     }
@@ -490,20 +380,6 @@ pub fn leave_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
             log::error!("[NET] Global Stack poisoned - leave_multicast_group failed");
             Err(IgmpError::NotMember)
         }
-    }
-}
-
-/// Check if this host is a member of a multicast group
-pub fn is_multicast_member(group: Ipv4Address) -> bool {
-    match NETWORK_STACK.lock() {
-        Ok(guard) => {
-            if let Some(ref s) = *guard {
-                s.is_multicast_member(group)
-            } else {
-                false
-            }
-        }
-        Err(_) => false,
     }
 }
 

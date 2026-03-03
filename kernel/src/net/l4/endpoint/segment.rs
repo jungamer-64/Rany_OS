@@ -200,15 +200,20 @@ impl TcpSegmentBuilder {
     }
 
     /// SYN/SYN-ACK用の標準オプションセットを追加
-    /// MSS + Window Scale + SACK Permitted + NOP (4バイト境界パディング)
-    pub fn syn_options(self, mss: u16, window_scale: u8) -> Self {
-        // MSS(4) + WS(3) + SACK(2) + NOP(1) = 10 bytes → 次の4バイト境界は12
-        // 12バイトにするにはNOP 2個追加
-        self.mss(mss)
+    /// MSS + Window Scale + SACK Permitted + Timestamp + NOP (4バイト境界パディング)
+    pub fn syn_options(self, mss: u16, window_scale: u8, ts_val: Option<u32>) -> Self {
+        // MSS(4) + WS(3) + SACK(2) + TS(10) + NOP(1) = 20 bytes → 4バイト境界
+        let mut builder = self.mss(mss)
             .window_scale(window_scale)
-            .sack_permitted()
-            .nop()
-            .nop()
+            .sack_permitted();
+        
+        if let Some(val) = ts_val {
+            builder = builder.timestamp(val, 0);
+        } else {
+            // パディングして境界を合わせる (TSがない場合)
+            builder = builder.nop().nop().nop();
+        }
+        builder
     }
 
     /// オプション長をパディングして4バイト境界に揃える
@@ -418,10 +423,10 @@ pub mod tests {
             .seq(1000)
             .syn()
             .window(65535)
-            .syn_options(1460, 7) // MSS=1460, WS=7, SACK
+            .syn_options(1460, 7, None) // MSS=1460, WS=7, SACK
             .build();
 
-        // ヘッダ20バイト + オプション12バイト = 32バイト
+        // ヘッダ20バイト + オプション12バイト = 32バイト (MSS:4, WS:3, SACK:2, NOP:3)
         assert_eq!(segment.len(), 32);
 
         // Data Offset = 8 (32バイト / 4 = 8)
@@ -444,9 +449,10 @@ pub mod tests {
         assert_eq!(segment[27], 4);  // Kind
         assert_eq!(segment[28], 2);  // Length
 
-        // NOP padding (Kind=1)
+        // NOP padding (Kind=1) x 3
         assert_eq!(segment[29], 1);  // NOP
         assert_eq!(segment[30], 1);  // NOP
+        assert_eq!(segment[31], 1);  // NOP
     }
 
     #[cfg_attr(test, test_case)]
@@ -555,7 +561,7 @@ pub mod qemu_tests {
             .seq(1000)
             .syn()
             .window(65535)
-            .syn_options(1460, 7)
+            .syn_options(1460, 7, None)
             .build();
 
         if segment.len() != 32 {
@@ -581,7 +587,7 @@ pub mod qemu_tests {
             return false;
         }
 
-        segment[29] == 1 && segment[30] == 1
+        segment[29] == 1 && segment[30] == 1 && segment[31] == 1
     }
 
     pub fn tcp_message_length_field_for_checksum_smoke() -> bool {
