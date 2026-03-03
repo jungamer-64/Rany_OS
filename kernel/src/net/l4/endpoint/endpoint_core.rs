@@ -11,9 +11,7 @@ use core::sync::atomic::Ordering;
 
 use crate::sync::poison_lock::PoisonLock;
 
-use crate::net::l4::tcp::{
-    TcpListener as TcpListenerImpl, TcpStream,
-};
+use crate::net::l4::tcp::TcpStream;
 
 use super::event::{NetworkEvent, send_event, send_event_ignore};
 use super::inner::EndpointInner;
@@ -159,8 +157,12 @@ impl Endpoint {
             local_addr = inner.local_addr.ok_or(EndpointError::InvalidArgument)?;
 
             // TCPリスナー - EndpointAddr は同一型のためそのまま使用
+            // NOTE: start_listening()は同期関数のため、非同期bind_tcp_listener_async
+            // ではなく同期版bind_tcpを使用する。将来的にstart_listening自体を非同期化する際に移行予定。
             let tcp_addr = local_addr;
-            let listener = TcpListenerImpl::bind(tcp_addr).map_err(|_| EndpointError::AddressInUse)?;
+            #[allow(deprecated)]
+            let listener = crate::net::runtime::stack::bind_tcp(tcp_addr)
+                .map_err(|_| EndpointError::AddressInUse)?;
             inner.ensure_tcp().listener = Some(listener);
             inner.transition_to(EndpointState::Listening)?;
         }

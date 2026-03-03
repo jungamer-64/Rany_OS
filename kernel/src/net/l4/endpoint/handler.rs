@@ -369,7 +369,7 @@ impl NetworkEventHandler {
                     }
                 }
             }
-            NetworkEvent::RawTcpSendOn { if_id, src_ip, dst_ip, segment } => {
+            NetworkEvent::RawTcpSendOn { if_id: _, src_ip, dst_ip, segment } => {
                 match crate::net::runtime::stack::NETWORK_STACK.lock() {
                     Ok(mut guard) => {
                         if let Some(ref mut stack) = *guard {
