@@ -99,6 +99,30 @@ pub enum TimeExceededCode {
     FragmentReassemblyExceeded = 1,
 }
 
+impl From<u8> for DestUnreachCode {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => DestUnreachCode::NetworkUnreachable,
+            1 => DestUnreachCode::HostUnreachable,
+            2 => DestUnreachCode::ProtocolUnreachable,
+            3 => DestUnreachCode::PortUnreachable,
+            4 => DestUnreachCode::FragmentationNeeded,
+            5 => DestUnreachCode::SourceRouteFailed,
+            _ => DestUnreachCode::HostUnreachable, // Default to host unreachable
+        }
+    }
+}
+
+impl From<u8> for TimeExceededCode {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => TimeExceededCode::TtlExceeded,
+            1 => TimeExceededCode::FragmentReassemblyExceeded,
+            _ => TimeExceededCode::TtlExceeded,
+        }
+    }
+}
+
 /// ICMP Redirect codes (RFC 792)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]

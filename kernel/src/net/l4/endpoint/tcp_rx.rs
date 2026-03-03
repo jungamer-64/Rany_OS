@@ -709,7 +709,7 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
     notify_socket_connected(tcb.fd);
 }
 
-/// 新規接続処理（SYN受信 - サーバー側）
+/// 新規接続処理（SYN受信 - サーバー側、またはCLOSED状態へのセグメント受信）
 fn process_tcp_new_connection(
     local: EndpointAddr,
     remote: EndpointAddr,
@@ -719,50 +719,62 @@ fn process_tcp_new_connection(
     data_offset: usize,
 ) {
     let is_syn = (flags & tcp_flags::SYN) != 0;
+    let is_ack = (flags & tcp_flags::ACK) != 0;
+    let is_rst = (flags & tcp_flags::RST) != 0;
 
-    if !is_syn {
-        // SYN以外の新規接続は無視（またはRST送信）
+    // RFC 793: If the connection does not exist (CLOSED) then a reset is sent 
+    // in response to any incoming segment except another reset.
+    if is_rst {
         return;
     }
 
-    // SYNのTCPオプションを解析（TSopt / SACK-Permitted 検出）
-    let (peer_ts, sack_permitted) = if data_offset > 20 && data_offset <= segment.len() {
-        let options = &segment[20..data_offset];
-        let mut parser = TcpOptionParser::new(options);
-        (parser.find_timestamps(), parser.find_sack_permitted())
-    } else {
-        (None, false)
-    };
-
     // リッスン中のソケットを探す
     let manager = ENDPOINT_MANAGER.read();
-    let Some(ref mgr) = *manager else {
+    let mgr = if let Some(ref m) = *manager {
+        m
+    } else {
         return;
     };
 
     let socket = mgr.find_by_port(EndpointType::Tcp, local.port());
-    let Some(socket) = socket else {
-        // リッスン中のソケットがない → RST送信
-        let mut rst = TcpSegmentBuilder::new(local.port(), remote.port())
-            .seq(0)
-            .ack(seq_num.wrapping_add(1))
-            .rst()
-            .ack_flag()
-            .window(0)
-            .build();
-    if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-        TcpSegmentBuilder::calculate_checksum(&mut rst, lv4, rv4);
-    } else {
-        TcpSegmentBuilder::calculate_checksum_v6(
-            &mut rst,
-            crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
-            crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
-        );
-    }
+    
+    // リッスン中のソケットがない場合、または SYN 以外を受信した場合
+    if socket.is_none() || !is_syn {
+        // RFC 793 / RFC 9293 Section 3.10.7.1:
+        // If the segment has an ACK field, the reset takes its sequence number 
+        // from the ACK field of the segment, otherwise the reset has sequence 
+        // number zero and the ACK field is set to the sum of the sequence 
+        // number and segment length of the incoming segment.
+        
+        let mut builder = TcpSegmentBuilder::new(local.port(), remote.port()).rst();
+        
+        if is_ack {
+            // <SEQ=SEG.ACK><CTL=RST>
+            let ack_num = u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]);
+            builder = builder.seq(ack_num);
+        } else {
+            // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+            let payload_len = if segment.len() > data_offset { segment.len() - data_offset } else { 0 };
+            let seg_len = if is_syn || ((flags & tcp_flags::FIN) != 0) { 1 } else { 0 };
+            let ack = seq_num.wrapping_add(seg_len as u32).wrapping_add(payload_len as u32);
+            builder = builder.seq(0).ack(ack).ack_flag();
+        }
+
+        let mut rst = builder.build();
+        if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
+            TcpSegmentBuilder::calculate_checksum(&mut rst, lv4, rv4);
+        } else {
+            TcpSegmentBuilder::calculate_checksum_v6(
+                &mut rst,
+                crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
+                crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
+            );
+        }
         send_tcp_segment(local, remote, rst);
         return;
-    };
+    }
 
+    let socket = socket.unwrap();
     let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
     if inner.state != EndpointState::Listening {
         return;
@@ -770,6 +782,15 @@ fn process_tcp_new_connection(
     let nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を取得
     let priority = inner.priority;
     drop(inner);
+
+    // TCPオプション解析 (Timestamps / SACK Permitted)
+    let (peer_ts, sack_permitted) = if data_offset > 20 && data_offset <= segment.len() {
+        let options = &segment[20..data_offset];
+        let mut parser = TcpOptionParser::new(options);
+        (parser.find_timestamps(), parser.find_sack_permitted())
+    } else {
+        (None, false)
+    };
 
     // TCB作成
     let isn = tcb_table().generate_isn(local, remote);

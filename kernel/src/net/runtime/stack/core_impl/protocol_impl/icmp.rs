@@ -119,7 +119,7 @@ impl NetworkStack {
         }
 
         // 4. A packet whose source address is not a single host (e.g. 0.0.0.0, broadcast, etc.)
-        if dst_ip.is_any() || dst_ip.is_broadcast() || dst_ip.is_multicast() {
+        if dst_ip.is_any() || dst_ip.is_broadcast() || dst_ip.is_multicast() || dst_ip.is_martian() {
             return false;
         }
 
@@ -484,13 +484,12 @@ impl NetworkStack {
     /// used for that path.
     pub(crate) fn handle_icmp_error(&mut self, data: &[u8], icmp_type: IcmpType, code: u8, current_time: u64) {
         // Support ICMP errors (RFC 792/1122/1191):
-        // - Destination Unreachable (Fragmentation Needed for PMTUD)
+        // - Destination Unreachable (Fragmentation Needed for PMTUD, Port Unreachable for transport)
         // - Source Quench (Flow control)
         match icmp_type {
             IcmpType::DestinationUnreachable => {
-                if code != DestUnreachCode::FragmentationNeeded as u8 {
-                    return;
-                }
+                // Allow all DestinationUnreachable codes to be processed for transport notification
+                // RFC 1122 Section 4.2.3.9 requires TCP to notify the user.
             }
             IcmpType::SourceQuench => {
                 // Proceed to handle
@@ -548,6 +547,10 @@ impl NetworkStack {
                     self.tcp.handle_source_quench(local, remote);
                     return;
                 }
+                
+                if icmp_type == IcmpType::DestinationUnreachable {
+                    self.tcp.handle_icmp_error(local, remote, icmp_type, code);
+                }
             }
             17 => { // UDP
                 if !self.udp.has_endpoint(src_port) { return; }
@@ -558,7 +561,7 @@ impl NetworkStack {
         }
 
         // PMTUD specific handling
-        if icmp_type == IcmpType::DestinationUnreachable {
+        if icmp_type == IcmpType::DestinationUnreachable && code == DestUnreachCode::FragmentationNeeded as u8 {
             let next_hop_mtu = u16::from_be_bytes([data[6], data[7]]);
             let mtu = if next_hop_mtu == 0 { 576u16 } else { next_hop_mtu };
             self.ipv4.update_pmtu(original_dst, mtu, current_time);

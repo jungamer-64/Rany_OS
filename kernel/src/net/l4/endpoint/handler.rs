@@ -72,11 +72,13 @@ fn apply_tcp_checksum_for_addrs(
 
 /// ネットワークイベントハンドラ
 /// プロトコルスタック（TCP/UDP）と連携する
+#[allow(deprecated)]
 pub struct NetworkEventHandler {
     /// ソケットマネージャへの参照を使用
     _marker: core::marker::PhantomData<()>,
 }
 
+#[allow(deprecated)]
 impl NetworkEventHandler {
     /// 新規ハンドラ作成
     pub fn new() -> Self {
@@ -238,6 +240,95 @@ impl NetworkEventHandler {
                 }
                 waker.wake();
                 EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUnbindUdp { port, result_slot, waker } => {
+                crate::net::runtime::stack::unbind_udp(port);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(true);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUnbindTcp { local, remote, result_slot, waker } => {
+                crate::net::runtime::stack::unbind_tcp(local, remote);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(true);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUnbindTcpListener { local, result_slot, waker } => {
+                crate::net::runtime::stack::unbind_tcp_listener(local);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(true);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpBindWithToken { local, token, result_slot, waker } => {
+                let result = match crate::net::runtime::stack::bind_tcp_with_token(local, token) {
+                    Ok(_listener) => Ok(()),
+                    Err(e) => Err(EndpointError::from_tcp_error(e)),
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBindWithToken { port, token, result_slot, waker } => {
+                let success = crate::net::runtime::stack::bind_udp_with_token(port, token).is_some();
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(success);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncApplyIpv6Address { addr, result_slot, waker } => {
+                let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(addr);
+                crate::net::runtime::stack::apply_ipv6_global_address(ipv6);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(true);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncProcessTimeouts => {
+                crate::net::runtime::stack::process_timeouts(0);
+                // ICMP Echo待ちの期限切れエントリをクリーンアップ
+                crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
+                // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
+                crate::net::l2::arp::cleanup_arp_waiters();
+                EventHandleResult::Success
+            }
+            NetworkEvent::RawUdpSendOn { if_id, src_port, dst_ip, dst_port, data } => {
+                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                if crate::net::runtime::stack::send_udp_on(net_if, src_port, dst, dst_port, &data) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawTcpSendOn { if_id, src_ip, dst_ip, segment } => {
+                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
+                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                if crate::net::runtime::stack::send_tcp_on(net_if, src, dst, &segment) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawUdpV6SendOn { if_id, src_port, src_ip, dst_ip, dst_port, data } => {
+                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                if crate::net::runtime::stack::send_udp_v6_on(net_if, src_port, src, dst, dst_port, &data) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
             }
         }
     }
@@ -463,6 +554,95 @@ impl NetworkEventHandler {
                 }
                 waker.wake();
                 EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUnbindUdp { port, result_slot, waker } => {
+                stack.unbind_udp(port);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(true);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUnbindTcp { local, remote, result_slot, waker } => {
+                stack.unbind_tcp(local, remote);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(true);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUnbindTcpListener { local, result_slot, waker } => {
+                stack.unbind_tcp_listener(local);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(true);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpBindWithToken { local, token, result_slot, waker } => {
+                let result = stack.bind_tcp_with_token(local, token)
+                    .map(|_| ())
+                    .map_err(|e| EndpointError::from_tcp_error(e));
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBindWithToken { port, token, result_slot, waker } => {
+                let success = stack.bind_udp_with_token(port, token).is_some();
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(success);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncApplyIpv6Address { addr, result_slot, waker } => {
+                let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(addr);
+                stack.apply_ipv6_global_address(ipv6);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(true);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncProcessTimeouts => {
+                stack.process_timeouts();
+                // ICMP Echo待ちの期限切れエントリをクリーンアップ
+                crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
+                // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
+                crate::net::l2::arp::cleanup_arp_waiters();
+                EventHandleResult::Success
+            }
+            NetworkEvent::RawUdpSendOn { if_id, src_port, dst_ip, dst_port, data } => {
+                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                if stack.send_udp_raw_on(net_if, src_port, dst, dst_port, &data) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawTcpSendOn { if_id, src_ip, dst_ip, segment } => {
+                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
+                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                // interface ignored in current implementation
+                let _ = if_id;
+                if stack.send_tcp(src, dst, &segment) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawUdpV6SendOn { if_id, src_port, src_ip, dst_ip, dst_port, data } => {
+                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                if stack.send_udp_v6_raw_on(net_if, src_port, src, dst, dst_port, &data) {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
             }
             // その他のイベントはスタック非依存または個別ロックで対応
             other => self.handle_event(other),

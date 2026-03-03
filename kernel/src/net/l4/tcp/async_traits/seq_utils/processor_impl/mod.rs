@@ -901,7 +901,7 @@ impl TcpProcessor {
 
         // RFC 793 Step 1: Check sequence number acceptability
         let payload_len = payload.len();
-        if !Self::is_acceptable_sequence(tcb, seq_num, payload_len) {
+        if tcb.state() != TcpState::SynSent && !Self::is_acceptable_sequence(tcb, seq_num, payload_len) {
             // If the segment is not acceptable and RST is not set, send an ACK
             if !rst {
                 return Self::make_ack_result(tcb);
@@ -1076,14 +1076,35 @@ impl TcpProcessor {
             }
         }
 
+        // RFC 9293 Section 3.10.7.3: First, check the ACK bit
+        if ack {
+            // ISS = snd_una. Ack must be between ISS and snd_nxt.
+            // Note: In SYN-SENT, snd_nxt should be ISS + 1 after sending SYN.
+            if ack_num <= tcb.snd_una() || ack_num > tcb.snd_nxt() {
+                log::warn!("[TCP] SYN-SENT: Invalid ACK {} (ISS={}, SND.NXT={}), sending RST", ack_num, tcb.snd_una(), tcb.snd_nxt());
+                return TcpProcessResult::SendPacket {
+                    local: tcb.local_addr(),
+                    remote: tcb.remote_addr().unwrap_or(EndpointAddr::new([0,0,0,0], 0)),
+                    seq: ack_num,
+                    ack: 0,
+                    flags: TcpHeader::FLAG_RST,
+                    window: 0,
+                    payload: Vec::new(),
+                    options: Vec::new(),
+                };
+            }
+        }
+
         // Waiting for SYN-ACK
         // Accept ACK that acknowledges the initial SYN (snd_una + 1)
-        if syn && ack && ack_num == tcb.snd_una().wrapping_add(1) {
+        if syn && ack {
+            // Both SYN and ACK are set and ACK is acceptable (checked above)
+            
             // Apply MSS (defaulting to 536 as per RFC 1122 if not provided)
             tcb.set_mss(peer_mss_val.unwrap_or(536));
 
             tcb.set_snd_una(ack_num);
-            tcb.set_snd_nxt(ack_num);
+            // snd_nxt is already isn + 1, so this is correct.
             tcb.set_rcv_nxt(seq_num.wrapping_add(1));
             tcb.enter_established();
             // Wake connect waker
@@ -1106,7 +1127,7 @@ impl TcpProcessor {
             TcpProcessResult::SendPacket {
                 local: tcb.local_addr(),
                 remote,
-                seq: tcb.snd_nxt(),
+                seq: tcb.snd_una(), // Use ISS for SYN-ACK in simultaneous open
                 ack: tcb.rcv_nxt(),
                 flags,
                 window: tcb.rcv_wnd(),

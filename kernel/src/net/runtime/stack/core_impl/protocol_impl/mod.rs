@@ -391,14 +391,20 @@ impl NetworkStack {
     }
 
     /// Process UDP packet
-    pub fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
-        let result = self.udp.process_with_packet(data, src_ip, dst_ip, _packet, 64);
+    pub fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, packet: PacketRef) {
+        let result = self.udp.process_with_packet(data, src_ip, dst_ip, packet.clone(), 64);
 
         match result {
             UdpResult::Delivered => {}
             UdpResult::NoEndpoint => {
-                // Could send ICMP port unreachable
                 self.stats.record_dropped();
+
+                // RFC 1122: Send ICMP Port Unreachable
+                // Only send if it wasn't broadcast/multicast
+                if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
+                    let current_time = self.current_time();
+                    self.send_icmp_error(src_ip, DestUnreachCode::PortUnreachable, packet.data(), current_time);
+                }
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
                 self.stats.record_rx_error();
@@ -531,8 +537,13 @@ impl NetworkStack {
         
         // Construct and send SYN manually to avoid deadlock on NETWORK_STACK lock
         {
-            let mut buffer = [0u8; 64]; 
-            let header_len = 20;
+            let mut options = Vec::new();
+            if let Ok(mut tcb) = stream.tcb.lock() {
+                options = tcb.build_options(TcpHeader::FLAG_SYN);
+            }
+
+            let mut buffer = [0u8; 128]; // Enough for header + max options
+            let header_len = 20 + options.len();
             let total_len = header_len; 
             
             // Construct TCP header
@@ -540,12 +551,17 @@ impl NetworkStack {
             buffer[2..4].copy_from_slice(&remote_addr.port().to_be_bytes());
             buffer[4..8].copy_from_slice(&initial_seq.to_be_bytes());
             buffer[8..12].fill(0);
-            let flags = 0x02u16; // SYN
-            let offset_flags = (5 << 12) | flags;
+            
+            let data_offset = (header_len / 4) as u16;
+            let offset_flags = (data_offset << 12) | TcpHeader::FLAG_SYN;
             buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
             buffer[14..16].copy_from_slice(&65535u16.to_be_bytes());
             buffer[16..18].fill(0);
             buffer[18..20].fill(0);
+            
+            if !options.is_empty() {
+                buffer[20..header_len].copy_from_slice(&options);
+            }
             
             // Calculate checksum and send (using the resolved local_addr)
             let sent = if let Some((local_v4, remote_v4)) = tcp_ipv4_pair(local_addr, remote_addr) {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::l3::icmp::IcmpType;
 
 
 /// 初期シーケンス番号生成
@@ -753,28 +754,34 @@ impl TcpProcessor {
     }
 
     /// ICMPエラーメッセージに含まれるシーケンス番号が妥当か検証（RFC 5927）
-    /// 
+    ///
     /// オフパス攻撃者による PMTU 毒入れ攻撃を防ぐため、引用されたパケットの
     /// シーケンス番号が現在の送信ウィンドウ内にあることを確認します。
     pub fn validate_icmp_sequence(&self, local: EndpointAddr, remote: EndpointAddr, seq: u32) -> bool {
         if let Some(conn) = self.connections.get(&(local, remote)) {
             if let Ok(tcb) = conn.lock() {
+                // RFC 5927 Section 4.1: "The TCP sequence number should be checked 
+                // to see if it's within the current window"
+
+                // For SYN-SENT, the sequence must be exactly the ISN
+                if tcb.state == TcpState::SynSent {
+                    return seq == tcb.seq.snd_una;
+                }
+
                 // 接続が確立済み（または終了処理中）であることを確認
                 match tcb.state {
-                    TcpState::SynSent | TcpState::Closed | TcpState::Listen => return false,
+                    TcpState::Closed | TcpState::Listen => return false,
                     _ => {}
                 }
 
                 // 送信済みで未確認の範囲 [SND.UNA, SND.NXT] に seq が含まれるかチェック
                 let una = tcb.seq.snd_una;
                 let nxt = tcb.seq.snd_nxt;
-                
+
                 // una <= seq <= nxt (wrapping handling)
-                // RFC 5927 Section 4.1: "The TCP sequence number should be checked 
-                // to see if it's within the current window"
                 let diff_una = seq.wrapping_sub(una);
                 let diff_nxt = nxt.wrapping_sub(una);
-                
+
                 return diff_una <= diff_nxt;
             }
         }
@@ -795,6 +802,15 @@ impl TcpProcessor {
         }
     }
 
+    /// Handle ICMP Error (RFC 1122 Section 4.2.3.9)
+    pub fn handle_icmp_error(&self, local: EndpointAddr, remote: EndpointAddr, icmp_type: IcmpType, code: u8) {
+        if let Some(conn) = self.connections.get(&(local, remote)) {
+            if let Ok(mut tcb) = conn.lock() {
+                // Notify the TCB of the ICMP error
+                tcb.on_icmp_error(icmp_type, code);
+            }
+        }
+    }
     /// リスナーを削除
     pub fn remove_listener(&mut self, local: EndpointAddr) {
         self.listeners.remove(&local);

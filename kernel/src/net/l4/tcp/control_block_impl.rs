@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::l3::icmp::{IcmpType, DestUnreachCode};
 
 
 impl TcpControlBlock {
@@ -947,6 +948,37 @@ impl TcpControlBlock {
         // Similar to Fast Retransmit (RFC 5681).
         self.congestion.ssthresh = (self.tx.outstanding_bytes / 2).max(2 * mss);
         self.congestion.cwnd = self.congestion.ssthresh;
+    }
+
+    /// Handle ICMP Error (RFC 1122 Section 4.2.3.9)
+    pub fn on_icmp_error(&mut self, icmp_type: IcmpType, code: u8) {
+        // RFC 1122: "A TCP SHOULD notify the user of the error, but it SHOULD NOT 
+        // close the connection."
+        
+        // However, for SYN-SENT state, certain errors mean the connection 
+        // attempt failed (e.g. Port Unreachable = Connection Refused).
+        if self.state == TcpState::SynSent {
+            if icmp_type == IcmpType::DestinationUnreachable {
+                match DestUnreachCode::from(code) {
+                    DestUnreachCode::PortUnreachable => {
+                        log::info!("[TCP] Connection refused by remote host (ICMP Port Unreachable)");
+                        self.close_and_wake();
+                        return;
+                    }
+                    DestUnreachCode::HostUnreachable | DestUnreachCode::NetworkUnreachable => {
+                        log::info!("[TCP] Connection failed: Network/Host unreachable");
+                        self.close_and_wake();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // For established connections, we just log it for now.
+        // In a more complete implementation, we would store the error to be 
+        // returned by the next read/write operation.
+        log::info!("[TCP] Received ICMP error (Type {:?}, Code {}) for established connection", icmp_type, code);
     }
 
     /// Check if sending should be delayed (Nagle's algorithm + Sender SWS avoidance)

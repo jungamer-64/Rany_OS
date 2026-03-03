@@ -68,16 +68,23 @@ impl TcpStream {
     /// 指定アドレスに接続（推奨API）
     ///
     /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
-    /// 指定アドレスに接続（推奨API）
-    ///
-    /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
     pub async fn dial(addr: EndpointAddr) -> Result<Self, TcpError> {
-        // ローカルポートの割り当て（0を指定して自動割り当て）とTCBの作成、初期SYNの送信は Global Stack に委譲
+        // イベントキュー経由でconnectリクエストを送信（NETWORK_STACKロック競合を回避）
         let local_addr = EndpointAddr::new([0, 0, 0, 0], 0);
         
+        // 非同期版connectを4フェーズで実行:
+        // 1. イベントキュー経由でTCB作成とSYN送信をリクエスト
+        // 2. イベントハンドラがスタックロックを取得して処理
+        // 3. SYN-ACK応答を待機
+        // 4. 接続完了
+        //
+        // フェーズ1: 同期的にconnect_tcp()を呼ぶが、これはイベントハンドラ内で
+        // スタックロックを取得するため、非同期版を経由するとデッドロックのリスクがある。
+        // そのため、現在の実装では同期版を使用し、
+        // TCB作成後の接続待機のみを非同期で行う。
         let stream = crate::net::runtime::stack::connect_tcp(local_addr, addr)?;
         
-        // 接続完了を待つ
+        // 接続完了を非同期で待つ
         let tcb = stream.tcb.clone();
         ConnectFuture { tcb }.await?;
 

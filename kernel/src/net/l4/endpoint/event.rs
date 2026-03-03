@@ -146,6 +146,71 @@ pub enum NetworkEvent {
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
+    /// 非同期UDP unbind（イベントキュー経由・ロック競合回避）
+    AsyncUnbindUdp {
+        port: u16,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期TCP unbind（イベントキュー経由・ロック競合回避）
+    AsyncUnbindTcp {
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期TCPリスナー unbind（イベントキュー経由・ロック競合回避）
+    AsyncUnbindTcpListener {
+        local: EndpointAddr,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期TCP bind with token（イベントキュー経由・ロック競合回避）
+    AsyncTcpBindWithToken {
+        local: EndpointAddr,
+        token: Option<u64>,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期UDP bind with token（イベントキュー経由・ロック競合回避）
+    AsyncUdpBindWithToken {
+        port: u16,
+        token: Option<u64>,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期IPv6グローバルアドレス適用
+    AsyncApplyIpv6Address {
+        addr: [u8; 16],
+        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期タイムアウト処理リクエスト
+    AsyncProcessTimeouts,
+    /// インターフェース指定UDP送信（非同期版）
+    RawUdpSendOn {
+        if_id: u16,
+        src_port: u16,
+        dst_ip: [u8; 4],
+        dst_port: u16,
+        data: Vec<u8>,
+    },
+    /// インターフェース指定TCP送信（非同期版）
+    RawTcpSendOn {
+        if_id: u16,
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        segment: Vec<u8>,
+    },
+    /// インターフェース指定IPv6 UDP送信（非同期版）
+    RawUdpV6SendOn {
+        if_id: u16,
+        src_port: u16,
+        src_ip: [u8; 16],
+        dst_ip: [u8; 16],
+        dst_port: u16,
+        data: Vec<u8>,
+    },
 }
 
 /// イベントキュー（ロックフリーリングバッファ）
