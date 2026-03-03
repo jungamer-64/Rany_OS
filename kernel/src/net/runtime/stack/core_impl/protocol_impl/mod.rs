@@ -1,3 +1,11 @@
+// ============================================================================
+// Protocol-specific NetworkStack impl methods
+// ============================================================================
+//! Contains protocol-level `impl NetworkStack` methods broken into sub-files:
+//!   - `tcp_bind.rs` — TCP listener binding and segment send helpers
+//!   - (this file)    — IGMP leave, ARP, ICMP, UDP raw send, TCP/UDP
+//!                      data processing, MAC resolution helpers
+
 use super::*;
 
 mod tcp_bind;
@@ -51,7 +59,7 @@ impl NetworkStack {
                 // Build IGMP leave into IPv4 payload.
                 let ip_payload = ip_pkt.payload_mut();
                 if ip_payload.len() >= 8 {
-                    if let Some(len) = crate::net::l2::igmp::IgmpProcessor::build_leave(group_addr, ip_payload) {
+                    if let Some(len) = crate::net::l3::igmp::IgmpProcessor::build_leave(group_addr, ip_payload) {
                         let total_len = (20 + len) as u16;
                         ip_pkt.set_total_length(total_len).update_checksum();
 

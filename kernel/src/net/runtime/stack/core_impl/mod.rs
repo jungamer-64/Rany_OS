@@ -4,7 +4,8 @@ use super::NetIfId;
 
 mod global_instance;
 pub use global_instance::*;
-mod igmp_multicast;
+/// Protocol-specific NetworkStack impl methods (IGMP, ARP, ICMP, TCP bind, UDP raw).
+mod protocol_impl;
 impl NetworkStack {
     /// Create a new network stack with configuration
     ///
@@ -207,7 +208,7 @@ impl NetworkStack {
 
     /// Check if an IPv4 multicast group is allowed (joined or mandatory)
     fn is_multicast_allowed(&self, group: Ipv4Address) -> bool {
-        use crate::net::l2::igmp::ALL_HOSTS_GROUP;
+        use crate::net::l3::igmp::ALL_HOSTS_GROUP;
         group == ALL_HOSTS_GROUP || self.igmp.is_member(group)
     }
 
@@ -1240,7 +1241,7 @@ impl NetworkStack {
                 // Build IGMP message into IPv4 payload.
                 let ip_payload = ip_pkt.payload_mut();
                 if ip_payload.len() >= 8 {
-                    if let Some(len) = crate::net::l2::igmp::IgmpProcessor::build_report(group_addr, ip_payload) {
+                    if let Some(len) = crate::net::l3::igmp::IgmpProcessor::build_report(group_addr, ip_payload) {
                         let total_len = (20 + len) as u16;
                         ip_pkt.set_total_length(total_len).update_checksum();
 

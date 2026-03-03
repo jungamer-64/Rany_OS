@@ -347,7 +347,7 @@ impl NetworkStack {
     }
 
     /// Get list of joined multicast groups
-    pub fn multicast_groups(&self) -> &[crate::net::l2::igmp::MulticastGroup] {
+    pub fn multicast_groups(&self) -> &[crate::net::l3::igmp::MulticastGroup] {
         self.igmp.joined_groups()
     }
 
