@@ -104,12 +104,38 @@ fn main() -> Status {
     let cmdline_data = load_and_merge_cmdline(image_handle, entry_cmdline);
 
     // ============================================================
+    // SECURE BOOT: UEFI State Detection
+    // ============================================================
+    let sb_info = secure_boot::detect_secure_boot_state();
+    let shim_info = shim_mok::detect_shim_mok();
+    info!(
+        "Boot environment: {} / {}",
+        secure_boot::get_secure_boot_status_string(&sb_info),
+        shim_mok::get_shim_mok_status_string(&shim_info)
+    );
+
+    // ============================================================
     // SECURE BOOT: Ed25519 Signature Verification
     // ============================================================
     let kernel_elf_data = match verify_and_split_signed_kernel(&signed_kernel_data) {
         Ok(data) => data,
         Err(status) => return status,
     };
+
+    // ============================================================
+    // SECURE BOOT: Boot Chain Integrity (dbx + policy enforcement)
+    // ============================================================
+    let kernel_sha256 = secure_boot::sha256(kernel_elf_data);
+    match secure_boot::verify_boot_chain_integrity(&sb_info, kernel_elf_data) {
+        Ok(()) => info!("Boot chain integrity: PASSED"),
+        Err(status) => {
+            error!("Boot chain integrity check FAILED - system halted");
+            boot::stall(Duration::from_micros(10_000_000));
+            return status;
+        }
+    }
+    // dbx_check_passed: true if we reached this point without a revocation halt
+    let dbx_check_passed = sb_info.dbx_present;
 
     // 1.3 TPM 2.0 Measured Boot
     let tpm_result = tpm::perform_measured_boot(
@@ -202,6 +228,10 @@ fn main() -> Status {
 
     // Populate all hardware detection fields
     populate_boot_info_detections(boot_info, hhdm_start);
+
+    // Record kernel SHA-256 and dbx check result in boot_info for kernel attestation
+    boot_info.secure_boot.kernel_sha256 = kernel_sha256;
+    boot_info.secure_boot.dbx_check_passed = dbx_check_passed;
 
     // 6.8. Boot recovery state management
     let mut boot_logger = handle_boot_recovery(boot_info);

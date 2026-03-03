@@ -5,7 +5,7 @@
 
 use graphic_types::FramebufferInfo;
 
-pub const EXO_BOOT_INFO_VERSION: u64 = 2;
+pub const EXO_BOOT_INFO_VERSION: u64 = 3;
 
 /// Boot information passed from ExoLoader (UEFI) to the Kernel.
 ///
@@ -423,8 +423,12 @@ pub struct SecureBootInfo {
     pub deployed_mode: bool,
     /// Vendor keys are present
     pub vendor_keys: bool,
+    /// dbx revocation check passed (kernel not in forbidden list)
+    pub dbx_check_passed: bool,
     /// Reserved for alignment
-    pub _reserved: [u8; 7],
+    pub _reserved: [u8; 6],
+    /// SHA-256 hash of the loaded kernel ELF image (set by bootloader)
+    pub kernel_sha256: [u8; 32],
 }
 
 impl Default for SecureBootInfo {
@@ -439,7 +443,9 @@ impl Default for SecureBootInfo {
             audit_mode: false,
             deployed_mode: false,
             vendor_keys: false,
-            _reserved: [0; 7],
+            dbx_check_passed: false,
+            _reserved: [0; 6],
+            kernel_sha256: [0u8; 32],
         }
     }
 }

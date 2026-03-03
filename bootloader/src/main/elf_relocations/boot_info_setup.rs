@@ -68,7 +68,10 @@ pub(crate) fn populate_secure_boot_info(boot_info: &mut boot_proto::ExoBootInfo)
         audit_mode: sb_info.audit_mode,
         deployed_mode: sb_info.deployed_mode,
         vendor_keys: sb_info.vendor_keys,
-        _reserved: [0; 7],
+        // These two fields are filled later in main() after kernel verification
+        dbx_check_passed: false,
+        _reserved: [0; 6],
+        kernel_sha256: [0u8; 32],
     };
     info!("{}", secure_boot::get_secure_boot_status_string(&sb_info));
 }

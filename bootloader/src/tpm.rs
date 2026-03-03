@@ -182,7 +182,11 @@ pub fn perform_measured_boot(
     .is_ok()
     {
         result.kernel_measured = true;
-        info!("TPM: Kernel measured to PCR[{}]", PCR_KERNEL);
+        let h = compute_sha256_preview(kernel_data);
+        info!(
+            "TPM: Kernel measured to PCR[{}] (SHA-256: {:02x}{:02x}{:02x}{:02x}...{:02x}{:02x})",
+            PCR_KERNEL, h[0], h[1], h[2], h[3], h[30], h[31]
+        );
     }
 
     // Measure initramfs if present
@@ -310,20 +314,13 @@ fn extend_pcr(
     }
 }
 
-/// Compute SHA-256 hash (for logging purposes)
-/// Note: The actual hashing is done by the TPM via HashLogExtendEvent
+/// Compute SHA-256 hash of `data` via the software implementation in
+/// `secure_boot::sha256`.  Used to log the pre-image digest before
+/// extending it into a PCR so that operators can reproduce the PCR value.
+///
+/// The actual PCR extend uses the TPM's own hash engine via
+/// `HashLogExtendEvent`; this function is for **audit / logging only**.
 #[allow(dead_code)]
 pub fn compute_sha256_preview(data: &[u8]) -> [u8; 32] {
-    // Simple preview hash - just XOR first 32 bytes for display
-    // Real hash is computed by TPM firmware
-    let mut hash = [0u8; 32];
-    for (i, &byte) in data.iter().take(32).enumerate() {
-        hash[i] = byte;
-    }
-    // XOR with length to differentiate
-    let len_bytes = (data.len() as u64).to_le_bytes();
-    for (i, &byte) in len_bytes.iter().enumerate() {
-        hash[i] ^= byte;
-    }
-    hash
+    super::secure_boot::sha256(data)
 }
