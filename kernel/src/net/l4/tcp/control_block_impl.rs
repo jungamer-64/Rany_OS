@@ -1400,6 +1400,7 @@ impl TcpControlBlock {
     pub fn build_options(&mut self, flags: u16) -> Vec<u8> {
         let mut opts = Vec::new();
         let syn = flags & crate::net::l4::tcp::TcpHeader::FLAG_SYN != 0;
+        let ack = flags & crate::net::l4::tcp::TcpHeader::FLAG_ACK != 0;
 
         // MSS (Maximum Segment Size) - Only in SYN
         if syn {
@@ -1410,20 +1411,24 @@ impl TcpControlBlock {
         }
 
         // Window Scale - Only in SYN
-        if syn && self.options.wscale_enabled {
+        // RFC 7323: To use window scaling, it MUST be sent in the initial SYN.
+        // In SYN-ACK, only send it if it was received in the SYN (wscale_enabled).
+        if syn && (!ack || self.options.wscale_enabled) {
             opts.push(3); // Kind
             opts.push(3); // Length
-            opts.push(self.options.rcv_wscale);
+            opts.push(self.options.snd_wscale); // Our scale factor
         }
 
         // SACK Permitted - Only in SYN
-        if syn {
+        // RFC 2018: Similar negotiation as Window Scale
+        if syn && (!ack || self.options.sack_enabled) {
             opts.push(4); // Kind
             opts.push(2); // Length
         }
 
         // Timestamps (RFC 7323)
-        if self.options.ts_enabled {
+        // Only in SYN or if negotiated (ts_enabled)
+        if (syn && !ack) || self.options.ts_enabled {
             opts.push(8);  // Kind
             opts.push(10); // Length
             let ts_val = self.get_ts_val().to_be_bytes();

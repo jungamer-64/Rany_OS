@@ -11,7 +11,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use super::endpoint_core::{OwnedEndpoint, Endpoint};
-use super::types::{EndpointAddr, EndpointError, EndpointResult, EndpointState};
+use super::types::{EndpointAddr, EndpointError, EndpointResult, EndpointState, EndpointType};
 
 use crate::net::l4::tcp::TcpStream;
 use crate::net::datapath::mempool::PacketRef;
@@ -381,6 +381,262 @@ impl OwnedEndpoint {
     /// UDP向けゼロコピー受信のストリームラッパーを取得（内部UDPソケットが設定されている場合）
     pub fn udp_packet_stream(&self) -> Option<UdpPacketStream> {
         self.endpoint().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp().and_then(|u| u.socket.clone())).map(|u| UdpPacketStream::new(u))
+    }
+}
+
+// ============================================================================
+// 非同期 open_connection Future
+// ============================================================================
+
+/// 非同期接続開始Future
+///
+/// `Endpoint::open_connection_async()` から返される。
+/// イベントキュー経由で接続イベントを送出し、接続完了をWakerで通知する。
+pub struct OpenConnectionFuture {
+    endpoint: Endpoint,
+    remote: EndpointAddr,
+    phase: OpenConnectionPhase,
+}
+
+enum OpenConnectionPhase {
+    /// 初回poll: イベント送信
+    Init,
+    /// SYN送信済み: 接続完了待ち
+    WaitingEstablished,
+}
+
+impl OpenConnectionFuture {
+    /// 新規作成
+    pub fn new(endpoint: Endpoint, remote: EndpointAddr) -> Self {
+        Self {
+            endpoint,
+            remote,
+            phase: OpenConnectionPhase::Init,
+        }
+    }
+}
+
+impl Future for OpenConnectionFuture {
+    type Output = EndpointResult<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        match this.phase {
+            OpenConnectionPhase::Init => {
+                // ローカルアドレスを取得（未設定は0で自動割当）
+                let local_addr;
+                {
+                    let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                    if !inner.state.can_connect() {
+                        return Poll::Ready(Err(EndpointError::AlreadyConnected));
+                    }
+                    local_addr = inner.local_addr.unwrap_or_else(|| {
+                        EndpointAddr::new([0, 0, 0, 0], 0)
+                    });
+                    inner.remote_addr = Some(this.remote);
+                    if let Err(e) = inner.transition_to(EndpointState::Connecting) {
+                        return Poll::Ready(Err(e));
+                    }
+                    // Wakerを登録
+                    inner.connect_waker = Some(cx.waker().clone());
+                }
+
+                // イベントキュー経由でConnect送信（ロック競合回避）
+                if let Err(e) = super::event::send_event(super::event::NetworkEvent::Connect {
+                    fd: this.endpoint.fd(),
+                    local: local_addr,
+                    remote: this.remote,
+                }) {
+                    return Poll::Ready(Err(e));
+                }
+
+                this.phase = OpenConnectionPhase::WaitingEstablished;
+                Poll::Pending
+            }
+            OpenConnectionPhase::WaitingEstablished => {
+                let inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                match inner.state {
+                    EndpointState::Connected => Poll::Ready(Ok(())),
+                    EndpointState::Closed | EndpointState::Closing => {
+                        Poll::Ready(Err(EndpointError::ConnectionRefused))
+                    }
+                    EndpointState::Connecting => {
+                        // まだ接続中: Wakerを再登録
+                        drop(inner);
+                        let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                        inner.connect_waker = Some(cx.waker().clone());
+                        Poll::Pending
+                    }
+                    _ => Poll::Ready(Err(EndpointError::InvalidStateTransition)),
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 非同期 start_listening Future
+// ============================================================================
+
+/// 非同期リッスン開始Future
+///
+/// `Endpoint::start_listening_async()` から返される。
+/// イベントキュー経由でbind_tcpを実行し、Listenモードに遷移する。
+pub struct StartListeningFuture {
+    endpoint: Endpoint,
+    backlog: u32,
+    phase: StartListeningPhase,
+}
+
+enum StartListeningPhase {
+    /// 初回poll: 非同期bindFutureを作成
+    Init,
+    /// bind完了待ち
+    WaitingBind {
+        bind_future: crate::net::runtime::stack::TcpBindListenerFuture,
+    },
+}
+
+impl StartListeningFuture {
+    /// 新規作成
+    pub fn new(endpoint: Endpoint, backlog: u32) -> Self {
+        Self {
+            endpoint,
+            backlog,
+            phase: StartListeningPhase::Init,
+        }
+    }
+}
+
+impl Future for StartListeningFuture {
+    type Output = EndpointResult<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        loop {
+            match &mut this.phase {
+                StartListeningPhase::Init => {
+                    // ソケット状態チェック
+                    let local_addr;
+                    {
+                        let inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                        if this.endpoint.socket_type() != EndpointType::Tcp {
+                            return Poll::Ready(Err(EndpointError::InvalidArgument));
+                        }
+                        if !inner.state.can_listen() {
+                            return Poll::Ready(Err(EndpointError::InvalidStateTransition));
+                        }
+                        local_addr = match inner.local_addr {
+                            Some(addr) => addr,
+                            None => return Poll::Ready(Err(EndpointError::InvalidArgument)),
+                        };
+                    }
+
+                    // 非同期bind_tcp_listener_asyncを開始
+                    let bind_future = crate::net::runtime::stack::bind_tcp_listener_async(local_addr);
+                    this.phase = StartListeningPhase::WaitingBind { bind_future };
+                    // fallthrough to poll bind_future
+                }
+                StartListeningPhase::WaitingBind { bind_future } => {
+                    // bind Futureをポーリング
+                    let pinned = unsafe { Pin::new_unchecked(bind_future) };
+                    match pinned.poll(cx) {
+                        Poll::Ready(Ok(listener)) => {
+                            // bind成功: EndpointInnerにリスナーを設定
+                            let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                            inner.ensure_tcp().listener = Some(listener);
+                            if let Err(e) = inner.transition_to(EndpointState::Listening) {
+                                return Poll::Ready(Err(e));
+                            }
+                            let local_addr = inner.local_addr.unwrap();
+                            drop(inner);
+
+                            // Listenイベントを送信
+                            let _ = super::event::send_event(super::event::NetworkEvent::Listen {
+                                fd: this.endpoint.fd(),
+                                local: local_addr,
+                                backlog: this.backlog,
+                            });
+
+                            return Poll::Ready(Ok(()));
+                        }
+                        Poll::Ready(Err(e)) => {
+                            return Poll::Ready(Err(EndpointError::from_tcp_error(e)));
+                        }
+                        Poll::Pending => {
+                            return Poll::Pending;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 非同期 close Future
+// ============================================================================
+
+/// 非同期クローズFuture
+///
+/// `Endpoint::close_async()` から返される。
+/// エンドポイントの状態をクリーンアップし、Closeイベントを送出する。
+pub struct CloseAsyncFuture {
+    endpoint: Endpoint,
+    done: bool,
+}
+
+impl CloseAsyncFuture {
+    /// 新規作成
+    pub fn new(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            done: false,
+        }
+    }
+}
+
+impl Future for CloseAsyncFuture {
+    type Output = EndpointResult<()>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if this.done {
+            return Poll::Ready(Ok(()));
+        }
+
+        // 内部状態クリーンアップ
+        {
+            let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+
+            inner.clear_protocol();
+            inner.recv_buffer.clear();
+            inner.send_buffer.clear();
+
+            // 待機中のタスクを起こす
+            if let Some(waker) = inner.recv_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = inner.send_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = inner.connect_waker.take() {
+                waker.wake();
+            }
+
+            let _ = inner.transition_to(EndpointState::Closed);
+        }
+
+        // イベントキュー経由でCloseを送出（ロック競合回避）
+        super::event::send_event_ignore(super::event::NetworkEvent::Close {
+            fd: this.endpoint.fd(),
+        });
+
+        this.done = true;
+        Poll::Ready(Ok(()))
     }
 }
 

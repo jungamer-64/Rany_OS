@@ -472,6 +472,24 @@ impl NetworkStack {
                 }
             }
 
+            Icmpv6Result::DestinationUnreachable { code, quoted_src, quoted_dst, .. } => {
+                log::warn!(
+                    "ICMPv6: Destination Unreachable (code={}) src={} dst={}",
+                    code, quoted_src, quoted_dst
+                );
+            }
+            Icmpv6Result::TimeExceeded { code, quoted_src, quoted_dst, .. } => {
+                log::warn!(
+                    "ICMPv6: Time Exceeded (code={}) src={} dst={}",
+                    code, quoted_src, quoted_dst
+                );
+            }
+            Icmpv6Result::ParameterProblem { code, pointer, quoted_src, quoted_dst, .. } => {
+                log::warn!(
+                    "ICMPv6: Parameter Problem (code={}, pointer={}) src={} dst={}",
+                    code, pointer, quoted_src, quoted_dst
+                );
+            }
             Icmpv6Result::Dropped | Icmpv6Result::Error => {}
         }
     }

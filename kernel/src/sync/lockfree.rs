@@ -34,6 +34,10 @@ mod mpsc;
 mod seqlock;
 mod spsc;
 
+#[cfg(test)]
+#[path = "lockfree/tests.rs"]
+mod tests;
+
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     pub use super::mpmc::qemu_tests::*;

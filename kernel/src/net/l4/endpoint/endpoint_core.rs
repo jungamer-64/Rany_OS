@@ -461,6 +461,60 @@ impl Endpoint {
             priority: priority & 0x3F,
         })
     }
+
+    // =====================================================
+    // 非同期API（Async-First設計準拠）
+    // =====================================================
+
+    /// 非同期接続開始（推奨API）
+    ///
+    /// イベントキュー経由でTCPハンドシェイクを開始し、
+    /// 接続完了をFutureで待機する。NETWORK_STACKロックの
+    /// 同期取得を完全に回避する。
+    ///
+    /// # 使用例
+    /// ```ignore
+    /// let endpoint = create_tcp_endpoint();
+    /// endpoint.open_connection_async(addr).await?;
+    /// ```
+    pub fn open_connection_async(
+        &self,
+        addr: EndpointAddr,
+    ) -> super::futures::OpenConnectionFuture {
+        super::futures::OpenConnectionFuture::new(self.clone(), addr)
+    }
+
+    /// 非同期リッスン開始（推奨API）
+    ///
+    /// イベントキュー経由で非同期にTCPリスナーをbindし、
+    /// Listenモードに遷移する。NETWORK_STACKロックの
+    /// 同期取得を完全に回避する。
+    ///
+    /// # 使用例
+    /// ```ignore
+    /// let endpoint = create_tcp_endpoint();
+    /// endpoint.set_local_addr(addr)?;
+    /// endpoint.start_listening_async(128).await?;
+    /// ```
+    pub fn start_listening_async(
+        &self,
+        backlog: u32,
+    ) -> super::futures::StartListeningFuture {
+        super::futures::StartListeningFuture::new(self.clone(), backlog)
+    }
+
+    /// 非同期クローズ（推奨API）
+    ///
+    /// エンドポイントの状態をクリーンアップし、
+    /// イベントキュー経由でCloseを送出する。
+    ///
+    /// # 使用例
+    /// ```ignore
+    /// endpoint.close_async().await?;
+    /// ```
+    pub fn close_async(&self) -> super::futures::CloseAsyncFuture {
+        super::futures::CloseAsyncFuture::new(self.clone())
+    }
 }
 
 impl Clone for Endpoint {
@@ -610,6 +664,41 @@ impl OwnedEndpoint {
             .ok_or(EndpointError::NotFound)?
             .set_priority(priority)
     }
+
+    // =====================================================
+    // 非同期API（Async-First設計準拠）
+    // =====================================================
+
+    /// 非同期接続開始（推奨API）
+    ///
+    /// NETWORK_STACKロックの同期取得を完全に回避する。
+    pub fn open_connection_async(
+        &self,
+        addr: EndpointAddr,
+    ) -> Option<super::futures::OpenConnectionFuture> {
+        self.endpoint
+            .as_ref()
+            .map(|ep| ep.open_connection_async(addr))
+    }
+
+    /// 非同期リッスン開始（推奨API）
+    ///
+    /// NETWORK_STACKロックの同期取得を完全に回避する。
+    pub fn start_listening_async(
+        &self,
+        backlog: u32,
+    ) -> Option<super::futures::StartListeningFuture> {
+        self.endpoint
+            .as_ref()
+            .map(|ep| ep.start_listening_async(backlog))
+    }
+
+    /// 非同期クローズ（推奨API）
+    pub fn close_async(&self) -> Option<super::futures::CloseAsyncFuture> {
+        self.endpoint
+            .as_ref()
+            .map(|ep| ep.close_async())
+    }
 }
 
 impl Drop for OwnedEndpoint {
@@ -684,6 +773,86 @@ pub fn open_tcp_connection(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> 
 pub fn create_udp_endpoint_bound(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
     let ep = create_udp_endpoint();
     ep.set_local_addr(addr)?;
+    Ok(ep)
+}
+
+
+// =====================================================
+// 非同期便利関数 - Async-First API
+// =====================================================
+
+/// 非同期TCPサーバー作成（推奨API）
+///
+/// イベントキュー経由でbind/listenを非同期に実行する。
+/// NETWORK_STACKロックの同期取得を完全に回避し、
+/// asyncタスクからの安全な使用を保証する。
+///
+/// # 使用例
+/// ```ignore
+/// let server = create_tcp_server_async(addr, 128).await?;
+/// loop {
+///     let result = server.accept_async().unwrap().await;
+/// }
+/// ```
+pub async fn create_tcp_server_async(
+    addr: EndpointAddr,
+    backlog: u32,
+) -> EndpointResult<OwnedEndpoint> {
+    let ep = create_tcp_endpoint();
+    ep.set_local_addr(addr)?;
+    let fut = ep
+        .start_listening_async(backlog)
+        .ok_or(EndpointError::NotFound)?;
+    fut.await?;
+    Ok(ep)
+}
+
+/// 非同期TCP接続（推奨API）
+///
+/// イベントキュー経由で接続を非同期に開始する。
+/// SYN送信とハンドシェイク完了をFutureで非同期に待機し、
+/// NETWORK_STACKロックの同期取得を完全に回避する。
+///
+/// # 使用例
+/// ```ignore
+/// let conn = open_tcp_connection_async(addr).await?;
+/// ```
+pub async fn open_tcp_connection_async(
+    addr: EndpointAddr,
+) -> EndpointResult<OwnedEndpoint> {
+    let ep = create_tcp_endpoint();
+    let fut = ep
+        .open_connection_async(addr)
+        .ok_or(EndpointError::NotFound)?;
+    fut.await?;
+    Ok(ep)
+}
+
+/// 非同期UDPエンドポイント作成とバインド（推奨API）
+///
+/// ローカルアドレスを設定し、UDPソケットを非同期でbindする。
+/// NETWORK_STACKロックの同期取得を完全に回避する。
+///
+/// # 使用例
+/// ```ignore
+/// let udp = create_udp_endpoint_bound_async(addr).await?;
+/// ```
+pub async fn create_udp_endpoint_bound_async(
+    addr: EndpointAddr,
+) -> EndpointResult<OwnedEndpoint> {
+    let ep = create_udp_endpoint();
+    ep.set_local_addr(addr)?;
+
+    // UDPソケットを非同期でbind（イベントキュー経由）
+    let udp_bind_future =
+        crate::net::runtime::stack::bind_udp_endpoint_async(addr.port());
+    if let Some(udp_ep) = udp_bind_future.await {
+        if let Some(inner_ep) = ep.endpoint() {
+            let mut inner = inner_ep.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.ensure_udp().socket = Some(udp_ep);
+        }
+    }
+
     Ok(ep)
 }
 

@@ -610,6 +610,8 @@ pub mod tests;
 const EXT_HEADER_HOP_BY_HOP: u8 = 0;
 const EXT_HEADER_ROUTING: u8 = 43;
 const EXT_HEADER_FRAGMENT: u8 = 44;
+const EXT_HEADER_ESP: u8 = 50;
+const EXT_HEADER_AUTH: u8 = 51;
 const EXT_HEADER_DESTINATION: u8 = 60;
 const EXT_HEADER_NO_NEXT: u8 = 59;
 
@@ -652,6 +654,19 @@ pub fn skip_extension_headers<'a>(
 
                 let ext_next = data[0];
                 let ext_len = (data[1] as usize + 1) * 8; // length in 8-byte units + first 8 bytes
+                if data.len() < ext_len {
+                    return (next_header, data);
+                }
+                next_header = IpProtocol::from(ext_next);
+                data = &data[ext_len..];
+            }
+            EXT_HEADER_AUTH => {
+                // RFC 4302 Authentication Header
+                if data.len() < 2 {
+                    return (next_header, data);
+                }
+                let ext_next = data[0];
+                let ext_len = (data[1] as usize + 2) * 4; // length in 4-byte units - 2
                 if data.len() < ext_len {
                     return (next_header, data);
                 }
@@ -723,6 +738,18 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
                 next_header = ext_next;
                 data = &data[ext_len..];
             }
+            EXT_HEADER_AUTH => {
+                if data.len() < 8 {
+                    return false;
+                }
+                let ext_next = data[0];
+                let ext_len = (data[1] as usize + 2) * 4;
+                if data.len() < ext_len {
+                    return false;
+                }
+                next_header = ext_next;
+                data = &data[ext_len..];
+            }
             EXT_HEADER_FRAGMENT => {
                 // RFC 8200: A packet must not contain more than one Fragment header.
                 return false;
@@ -730,12 +757,21 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
             EXT_HEADER_NO_NEXT => {
                 return true;
             }
-            _ => {
-                // Upper-layer protocol found — chain is complete.
-                // Note: For some protocols (like TCP/UDP), we might want to check 
-                // if at least the ports are present, but RFC 7112 simply requires 
-                // the entire chain to be present.
+            EXT_HEADER_ESP => {
+                // RFC 7112: ESP terminates the header chain for parsing purposes.
                 return true;
+            }
+            _ => {
+                // Upper-layer protocol found. 
+                // RFC 7112: The first fragment MUST contain the entire IPv6 header chain,
+                // up to and including the first upper-layer header.
+                let min_len = match next_header {
+                    6 => 20,  // TCP: 20 bytes
+                    17 => 8,  // UDP: 8 bytes
+                    58 => 8,  // ICMPv6: 8 bytes
+                    _ => 0,
+                };
+                return data.len() >= min_len;
             }
         }
     }

@@ -210,6 +210,41 @@ pub enum Icmpv6Result {
         /// Quoted portion of the original packet for validation (ports/seq)
         quoted_packet: Vec<u8>,
     },
+    /// Destination Unreachable received
+    DestinationUnreachable {
+        /// Unreachable code (0-6)
+        code: u8,
+        /// Original source
+        quoted_src: Ipv6Address,
+        /// Original destination
+        quoted_dst: Ipv6Address,
+        /// Quoted portion of original packet
+        quoted_packet: Vec<u8>,
+    },
+    /// Time Exceeded received (Hop limit exceeded or fragment reassembly timeout)
+    TimeExceeded {
+        /// Code (0=hop limit, 1=reassembly timeout)
+        code: u8,
+        /// Original source
+        quoted_src: Ipv6Address,
+        /// Original destination
+        quoted_dst: Ipv6Address,
+        /// Quoted portion of original packet
+        quoted_packet: Vec<u8>,
+    },
+    /// Parameter Problem received
+    ParameterProblem {
+        /// Code
+        code: u8,
+        /// Offset where error was detected
+        pointer: u32,
+        /// Original source
+        quoted_src: Ipv6Address,
+        /// Original destination
+        quoted_dst: Ipv6Address,
+        /// Quoted portion of original packet
+        quoted_packet: Vec<u8>,
+    },
     /// Packet dropped (unknown type, checksum error, etc.)
     Dropped,
     /// Processing error
@@ -347,8 +382,39 @@ impl Icmpv6Processor {
                 self.stats.rx_echo_replies.fetch_add(1, Ordering::Relaxed);
                 self.handle_echo_reply(data, src)
             }
+            Icmpv6Type::DestinationUnreachable => {
+                self.handle_quoted_error(data, |code, arg, src, dst, packet| {
+                    Icmpv6Result::DestinationUnreachable {
+                        code,
+                        quoted_src: src,
+                        quoted_dst: dst,
+                        quoted_packet: packet,
+                    }
+                })
+            }
             Icmpv6Type::PacketTooBig => {
                 self.handle_packet_too_big(data)
+            }
+            Icmpv6Type::TimeExceeded => {
+                self.handle_quoted_error(data, |code, arg, src, dst, packet| {
+                    Icmpv6Result::TimeExceeded {
+                        code,
+                        quoted_src: src,
+                        quoted_dst: dst,
+                        quoted_packet: packet,
+                    }
+                })
+            }
+            Icmpv6Type::ParameterProblem => {
+                self.handle_quoted_error(data, |code, arg, src, dst, packet| {
+                    Icmpv6Result::ParameterProblem {
+                        code,
+                        pointer: arg,
+                        quoted_src: src,
+                        quoted_dst: dst,
+                        quoted_packet: packet,
+                    }
+                })
             }
             // NDP messages → delegate
             Icmpv6Type::RouterSolicitation
@@ -422,44 +488,52 @@ impl Icmpv6Processor {
         }
     }
 
-    /// Handle Packet Too Big (Path MTU Discovery)
-    fn handle_packet_too_big(&self, data: &[u8]) -> Icmpv6Result {
+    /// Helper to extract info from quoted packets in ICMPv6 error messages (RFC 4443)
+    fn handle_quoted_error<F>(&self, data: &[u8], f: F) -> Icmpv6Result
+    where
+        F: FnOnce(u8, u32, Ipv6Address, Ipv6Address, Vec<u8>) -> Icmpv6Result,
+    {
         if data.len() < 8 {
             return Icmpv6Result::Error;
         }
 
-        let mtu = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let code = data[1];
+        let arg = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
 
-        // Extract original source and destination IP from the invoking packet (RFC 4443)
         // Invoking packet starts at offset 8.
-        // Invoking IPv6 header source is at offset 8 within invoking packet -> total offset 16.
-        // Invoking IPv6 header destination is at offset 24 within invoking packet -> total offset 32.
-        if data.len() >= 32 + 16 {
-            let src_bytes = &data[16..16 + 16];
-            let dst_bytes = &data[32..32 + 16];
-            
+        // IPv6 fixed header: source at +8, dest at +24.
+        // So total offsets: source at 16, dest at 32.
+        if data.len() >= 48 {
+            let src_bytes = &data[16..32];
+            let dst_bytes = &data[32..48];
+
             let mut src_arr = [0u8; 16];
             src_arr.copy_from_slice(src_bytes);
             let quoted_src = Ipv6Address::new(src_arr);
-            
+
             let mut dst_arr = [0u8; 16];
             dst_arr.copy_from_slice(dst_bytes);
             let quoted_dst = Ipv6Address::new(dst_arr);
 
-            // Quoted packet portion starts at offset 8 (IPv6 header + extension headers + upper layer)
+            // Quoted portion starts after the ICMPv6 header (offset 8)
             let quoted_packet = data[8..].to_vec();
-            
-            Icmpv6Result::PacketTooBig { 
-                quoted_src,
-                dst: quoted_dst, 
-                mtu,
-                quoted_packet,
-            }
+
+            f(code, arg, quoted_src, quoted_dst, quoted_packet)
         } else {
-            // Not enough data to extract destination, but we still have the MTU.
-            // However, without destination we can't reliably update PMTU cache.
-            Icmpv6Result::Error
+            Icmpv6Result::Dropped
         }
+    }
+
+    /// Handle Packet Too Big (Path MTU Discovery)
+    fn handle_packet_too_big(&self, data: &[u8]) -> Icmpv6Result {
+        self.handle_quoted_error(data, |_, mtu, src, dst, packet| {
+            Icmpv6Result::PacketTooBig {
+                quoted_src: src,
+                dst,
+                mtu,
+                quoted_packet: packet,
+            }
+        })
     }
 
 }

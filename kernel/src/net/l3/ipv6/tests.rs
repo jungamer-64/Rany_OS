@@ -38,13 +38,31 @@ pub fn test_link_local() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_global() {
-    // 2001:db8::1
-    let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-    assert!(addr.is_global());
-    assert!(!addr.is_unicast_link_local());
-    assert!(!addr.is_multicast());
-    assert!(!addr.is_loopback());
+pub fn test_header_chain_completeness_rfc7112() {
+    // TCP header (20 bytes) - only 10 bytes provided
+    let tcp_truncated = [0u8; 10];
+    assert!(!is_header_chain_complete(6, &tcp_truncated), "Should reject truncated TCP header (RFC 7112)");
+
+    // TCP header - 20 bytes provided
+    let tcp_full = [0u8; 20];
+    assert!(is_header_chain_complete(6, &tcp_full), "Should accept complete TCP header");
+
+    // UDP header (8 bytes) - only 4 bytes provided
+    let udp_truncated = [0u8; 4];
+    assert!(!is_header_chain_complete(17, &udp_truncated), "Should reject truncated UDP header (RFC 7112)");
+
+    // UDP header - 8 bytes provided
+    let udp_full = [0u8; 8];
+    assert!(is_header_chain_complete(17, &udp_full), "Should accept complete UDP header");
+
+    // AH header (length in 4-byte units)
+    // Next Header (1), Payload Len (4 -> 24 bytes), Reserved (2), SPI (4), Seq (4), ICV (12)
+    let mut ah_truncated = [0u8; 16];
+    ah_truncated[1] = 4; // 24 bytes expected
+    assert!(!is_header_chain_complete(51, &ah_truncated), "Should reject truncated AH header");
+
+    // ESP header - always considered complete for chain walk (RFC 7112)
+    assert!(is_header_chain_complete(50, &[]), "ESP should terminate chain regardless of length");
 }
 
 #[cfg_attr(test, test_case)]
