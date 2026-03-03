@@ -647,8 +647,9 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    fn retain_unacked_after_ack_and_count_removed(&mut self, ack_num: u32) -> u32 {
+    fn retain_unacked_after_ack_and_count_removed(&mut self, ack_num: u32, current_time: u64) -> (u32, Option<u64>) {
         let mut removed = 0u32;
+        let mut rtt_sample = None;
         let mut old_queue = core::mem::take(&mut self.timers.unacked_segments);
         let mut kept = VecDeque::with_capacity(old_queue.len());
 
@@ -657,7 +658,13 @@ impl TcpControlBlock {
 
             // Fully acknowledged: drop segment entirely.
             if !TcpProcessor::seq_after(end_seq, ack_num) {
-                removed = removed.saturating_add(Self::unacked_seq_space_len(&seg));
+                let seq_len = Self::unacked_seq_space_len(&seg);
+                removed = removed.saturating_add(seq_len);
+
+                // Karn's Algorithm: Only take RTT sample if segment was NOT retransmitted.
+                if seg.retransmit_count == 0 {
+                    rtt_sample = Some(current_time.saturating_sub(seg.sent_time));
+                }
                 continue;
             }
 
@@ -666,13 +673,15 @@ impl TcpControlBlock {
                 removed = removed.saturating_add(Self::trim_unacked_segment_prefix_to_ack(
                     &mut seg, ack_num,
                 ));
+                // Note: Partial ACKs don't provide a clean RTT sample for the whole segment,
+                // so we don't update rtt_sample here.
             }
 
             kept.push_back(seg);
         }
 
         self.timers.unacked_segments = kept;
-        removed
+        (removed, rtt_sample)
     }
 
     #[inline]
@@ -842,10 +851,16 @@ impl TcpControlBlock {
     }
 
     /// Remove acknowledged segments from retransmission queue
-    pub fn ack_segments(&mut self, ack_num: u32) {
+    pub fn ack_segments(&mut self, ack_num: u32, current_time: u64) {
         // Remove all segments with seq + len <= ack_num and count removed sequence-space bytes.
-        let removed = self.retain_unacked_after_ack_and_count_removed(ack_num);
+        let (removed, rtt_sample) = self.retain_unacked_after_ack_and_count_removed(ack_num, current_time);
         self.tx.outstanding_bytes = self.tx.outstanding_bytes.saturating_sub(removed);
+
+        if let Some(rtt) = rtt_sample {
+            if rtt > 0 {
+                self.update_rto(rtt);
+            }
+        }
 
         // Reset retransmit count on successful ACK
         if self.unacked_queue_is_empty() {

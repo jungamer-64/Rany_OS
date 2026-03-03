@@ -942,6 +942,12 @@ impl TcpProcessor {
                 }
                 return TcpProcessResult::None;
             }
+            // RFC 7323 RTT measurement from Timestamps
+            if let Some(ecr) = ts_ecr {
+                if let Some(rtt_sample) = tcb.measure_rtt_from_ts(ecr, current_time as u32) {
+                    tcb.update_rto(rtt_sample);
+                }
+            }
             // Update TS.Recent and prepare TS.EchoReply
             tcb.process_ts_option(v, ts_ecr.unwrap_or(0), current_time, seq_num);
         }
@@ -1018,7 +1024,7 @@ impl TcpProcessor {
                 } else {
                     None
                 };
-                Self::handle_syn_sent_segment(tcb, syn, ack, seq_num, ack_num, options)
+                Self::handle_syn_sent_segment(tcb, syn, ack, seq_num, ack_num, options, current_time)
             }
             TcpState::SynReceived => {
                 // ACK (completing 3-way handshake) or data segment
@@ -1032,10 +1038,13 @@ impl TcpProcessor {
                     payload,
                     packet_opt,
                     None,
+                    flags,
+                    window,
+                    current_time,
                 )
             }
             TcpState::Established => {
-                Self::handle_established_segment(tcb, ack, ack_num, fin, seq_num, payload, header_len, packet_opt)
+                Self::handle_established_segment(tcb, ack, ack_num, fin, seq_num, payload, header_len, packet_opt, flags, window, current_time)
             }
             TcpState::FinWait1 => Self::handle_fin_wait1_segment(tcb, ack, ack_num, fin, current_time),
             TcpState::FinWait2 => Self::handle_fin_wait2_segment(tcb, fin, current_time),
@@ -1053,6 +1062,7 @@ impl TcpProcessor {
         seq_num: u32,
         ack_num: u32,
         options_data: Option<&[u8]>,
+        current_time: u64,
     ) -> TcpProcessResult {
         // Parse options (MSS / WSCALE / SACK / TS) if present in any SYN segment
         let mut peer_mss_val = None;
@@ -1108,6 +1118,9 @@ impl TcpProcessor {
             tcb.set_mss(peer_mss_val.unwrap_or(536));
 
             tcb.set_snd_una(ack_num);
+            // Remove SYN from retransmit queue and update RTO
+            tcb.ack_segments(ack_num, current_time);
+
             // snd_nxt is already isn + 1, so this is correct.
             tcb.set_rcv_nxt(seq_num.wrapping_add(1));
             tcb.enter_established();
@@ -1155,6 +1168,9 @@ impl TcpProcessor {
         payload: &[u8],
         packet_opt: Option<PacketRef>,
         _options_data: Option<&[u8]>,
+        flags: u16,
+        window: u16,
+        current_time: u64,
     ) -> TcpProcessResult {
         // ACK acknowledging our SYN (snd_una + 1)
         if ack && ack_num == tcb.snd_una().wrapping_add(1) {
@@ -1185,6 +1201,9 @@ impl TcpProcessor {
                     payload,
                     header_len,
                     packet_opt,
+                    flags,
+                    window,
+                    current_time,
                 );
             }
         }
@@ -1209,11 +1228,14 @@ impl TcpProcessor {
         payload: &[u8],
         header_len: usize,
         packet_opt: Option<PacketRef>,
+        flags: u16,
+        window: u16,
+        current_time: u64,
     ) -> TcpProcessResult {
         let payload_len = payload.len();
         
         // Step 5: Process ACK (updates snd_una)
-        let ack_result = Self::handle_established_ack(tcb, ack, ack_num);
+        let ack_result = Self::handle_established_ack(tcb, ack, ack_num, payload_len, flags, window, current_time);
         
         // Step 7/8: Process Data/FIN (updates rcv_nxt)
         let data_result = if payload_len > 0 || fin {
@@ -1243,6 +1265,10 @@ impl TcpProcessor {
         tcb: &mut TcpControlBlock,
         ack: bool,
         ack_num: u32,
+        payload_len: usize,
+        flags: u16,
+        window: u16,
+        current_time: u64,
     ) -> TcpProcessResult {
         // Security: RFC 793 validation - only accept ACKs for data actually sent
         if ack && Self::seq_after(ack_num, tcb.snd_una()) && !Self::seq_after(ack_num, tcb.snd_nxt()) {
@@ -1251,8 +1277,8 @@ impl TcpProcessor {
             tcb.set_last_ack(ack_num);
             tcb.set_snd_una(ack_num);
 
-            // Remove acknowledged segments from retransmit queue
-            tcb.ack_segments(ack_num);
+            // Remove acknowledged segments from retransmit queue and update RTO (RFC 6298)
+            tcb.ack_segments(ack_num, current_time);
 
             // Congestion control: update cwnd on new ACK
             tcb.on_new_ack(bytes_acked);
@@ -1260,8 +1286,22 @@ impl TcpProcessor {
             tcb.wake_write_waiter();
             TcpProcessResult::None
         } else if ack && ack_num == tcb.snd_una() && tcb.outstanding_bytes() > 0 {
-            // Duplicate ACK - same ack_num but we have outstanding data
-            Self::try_fast_retransmit(tcb)
+            // Duplicate ACK detection (RFC 5681)
+            // An acknowledgment is considered a "duplicate" if:
+            // (a) the receiver of the ACK has outstanding data
+            // (b) the incoming segment contains no data
+            // (c) the SYN and FIN bits are both off
+            // (d) the acknowledgment number is equal to the greatest acknowledgment received (snd_una)
+            // (e) the advertised window in the incoming segment equals the advertised window in the last segment
+            
+            let no_data = payload_len == 0;
+            let syn_fin_off = (flags & (TcpHeader::FLAG_SYN | TcpHeader::FLAG_FIN)) == 0;
+            let window_unchanged = window == tcb.rcv_wnd(); // Note: tcb.rcv_wnd() stores the last advertised window
+
+            if no_data && syn_fin_off && window_unchanged {
+                return Self::try_fast_retransmit(tcb);
+            }
+            TcpProcessResult::None
         } else if ack && Self::seq_after(ack_num, tcb.snd_nxt()) {
             // RFC 793: SEG.ACK > SND.NXT, send ACK
             Self::make_ack_result(tcb)
