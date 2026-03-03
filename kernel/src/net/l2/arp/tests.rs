@@ -39,7 +39,7 @@ pub fn test_arp_packet() {
 #[cfg_attr(test, test_case)]
 pub fn test_processor_ignores_unrequested_reply() {
     // reply from 10.0.0.5 should not populate cache when we never asked
-    let proc = ArpProcessor::new(
+    let processor = ArpProcessor::new(
         MacAddress::from_octets(0, 0, 0, 0, 0, 1),
         Ipv4Address::from_octets(10, 0, 0, 1),
     );
@@ -51,7 +51,7 @@ pub fn test_processor_ignores_unrequested_reply() {
         .unwrap();
     packet.init_reply(sender_mac, sender_ip, MacAddress::BROADCAST, Ipv4Address::ANY);
 
-    let res = proc.process(&buf, 12345, sender_mac);
+    let res = processor.process(&buf, 12345, sender_mac);
     assert_eq!(res, ArpResult::Ignored);
-    assert!(proc.cache().lookup(sender_ip, 12345).is_none());
+    assert!(processor.cache().lookup(sender_ip, 12345).is_none());
 }

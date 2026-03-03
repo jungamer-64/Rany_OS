@@ -3,7 +3,7 @@
 //
 // ## 概要
 //
-// Demand Paging（遅延ページ割り当て）の実装。mmap()やbrk()で確保された
+// Demand Paging（遅延ページ割り当て）の実装。map_region/brkで確保された
 // 仮想アドレス空間に対して、実際のアクセスが発生するまで物理ページの
 // 割り当てを遅延させる。
 //
@@ -741,4 +741,3 @@ pub fn demand_debug_info() {
 
 #[cfg(test)]
 mod tests;
-

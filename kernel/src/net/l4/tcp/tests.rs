@@ -580,7 +580,7 @@ pub fn test_three_way_handshake_v6() {
 pub fn test_retransmit_on_timeout() {
     let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
-    let mut proc = TcpProcessor::new();
+    let mut processor = TcpProcessor::new();
     let local = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 1000);
     let remote = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 2000);
 
@@ -592,9 +592,9 @@ pub fn test_retransmit_on_timeout() {
     tcb.set_rto_for_test(1); // small RTO
 
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    proc.connections.insert((local, remote), tcb_arc.clone());
+    processor.connections.insert((local, remote), tcb_arc.clone());
 
-    let res = proc.check_retransmissions(2); // current_time > sent_time + rto
+    let res = processor.check_retransmissions(2); // current_time > sent_time + rto
     assert_eq!(res.len(), 1);
     if let TcpProcessResult::SendPacket { seq, payload, .. } = &res[0] {
         assert_eq!(*seq, 1);
@@ -661,7 +661,7 @@ pub fn test_connect_future_wakes_on_established() {
 #[cfg_attr(test, test_case)]
 pub fn test_record_sent_packet_updates_tcb() {
     // Create processor and register a connection
-    let mut proc = TcpProcessor::new();
+    let mut processor = TcpProcessor::new();
     let local = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 7000);
     let remote = EndpointAddr::new(Ipv4Addr::new(127,0,0,1), 8000);
 
@@ -669,14 +669,14 @@ pub fn test_record_sent_packet_updates_tcb() {
     tcb.set_remote_addr(remote);
     tcb.enter_established();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    proc.connections.insert((local, remote), tcb_arc.clone());
+    processor.connections.insert((local, remote), tcb_arc.clone());
 
     // Simulate sending a data segment (length 4)
     let seq = 100u32;
     let payload = [1u8, 2, 3, 4];
     let now = 123456u64;
 
-    proc.record_sent_packet(local, remote, seq, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK, &payload, now);
+    processor.record_sent_packet(local, remote, seq, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK, &payload, now);
 
     if let Ok(g) = tcb_arc.lock() {
         assert_eq!(g.outstanding_bytes(), 4);

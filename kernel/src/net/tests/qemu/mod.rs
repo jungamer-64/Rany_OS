@@ -181,14 +181,14 @@ pub fn udp_udp_recv_future_poisoned_returns_closed_smoke() -> bool {
 }
 
 pub fn udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
-    let proc = udp::UdpProcessor::new();
+    let processor = udp::UdpProcessor::new();
     let src_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(1, 2, 3, 4);
     let dst_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(1, 2, 3, 4);
     let mut buffer = [0u8; 64];
     let Some(len) = udp::UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x") else {
         return false;
     };
-    matches!(proc.process(&buffer[..len], src_ip, dst_ip, 64), udp::UdpResult::NoEndpoint | udp::UdpResult::ChecksumError)
+    matches!(processor.process(&buffer[..len], src_ip, dst_ip, 64), udp::UdpResult::NoEndpoint | udp::UdpResult::ChecksumError)
 }
 
 pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {

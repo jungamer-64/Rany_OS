@@ -343,7 +343,7 @@ impl OwnedEndpoint {
 
     /// TCPのゼロコピーストリームを取得（`TcpStream`をクローンして返す）
     pub fn tcp_stream(&self) -> Option<TcpStream> {
-        self.endpoint().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).tcp_stream.clone())
+        self.endpoint().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).tcp().and_then(|t| t.stream.clone()))
     }
 
     /// 非同期ゼロコピー受信（TCP向け） - 成功すると `PacketRef` を返す
@@ -352,8 +352,8 @@ impl OwnedEndpoint {
             s.inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .tcp_stream
-                .clone()
+                .tcp()
+                .and_then(|t| t.stream.clone())
                 .map(|stream| RecvPacketFuture::new(stream))
         })
     }
@@ -365,7 +365,7 @@ impl OwnedEndpoint {
         }
         self.endpoint().and_then(|s| {
             // Clone the optional UdpEndpoint from the inner state and produce a future
-            let opt = s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp_socket.clone();
+            let opt = s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp().and_then(|u| u.socket.clone());
             opt.map(|u| u.recv())
         })
     }
@@ -377,7 +377,7 @@ impl OwnedEndpoint {
 
     /// UDP向けゼロコピー受信のストリームラッパーを取得（内部UDPソケットが設定されている場合）
     pub fn udp_packet_stream(&self) -> Option<UdpPacketStream> {
-        self.endpoint().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp_socket.clone()).map(|u| UdpPacketStream::new(u))
+        self.endpoint().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp().and_then(|u| u.socket.clone())).map(|u| UdpPacketStream::new(u))
     }
 }
 
@@ -566,9 +566,9 @@ pub mod qemu_tests {
     pub fn udp_packet_stream_delivered_smoke() -> bool {
         init_endpoint_manager();
 
-        let proc = crate::net::l4::udp::UdpProcessor::new();
+        let processor = crate::net::l4::udp::UdpProcessor::new();
         let port = 40000u16;
-        let Ok(u) = proc.bind_with_token(port, None) else {
+        let Ok(u) = processor.bind_with_token(port, None) else {
             return false;
         };
 

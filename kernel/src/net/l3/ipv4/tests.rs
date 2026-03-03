@@ -292,7 +292,7 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_ipv4_id_generation_unpredictability() {
-    let mut proc = Ipv4Processor::new(Ipv4Config {
+    let mut processor = Ipv4Processor::new(Ipv4Config {
         address: Ipv4Address::new([10, 0, 0, 1]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: Ipv4Address::ANY,
@@ -302,9 +302,9 @@ pub fn test_ipv4_id_generation_unpredictability() {
     let dst1 = Ipv4Address::new([192, 168, 1, 1]);
     let dst2 = Ipv4Address::new([192, 168, 1, 2]);
 
-    let id1_a = proc.next_id(dst1);
-    let id1_b = proc.next_id(dst1);
-    let id2_a = proc.next_id(dst2);
+    let id1_a = processor.next_id(dst1);
+    let id1_b = processor.next_id(dst1);
+    let id2_a = processor.next_id(dst2);
 
     // Verify IDs are different
     assert_ne!(id1_a, id1_b);

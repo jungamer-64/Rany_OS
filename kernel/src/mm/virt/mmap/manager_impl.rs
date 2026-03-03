@@ -54,7 +54,7 @@ impl MappingManager {
     /// 物理メモリを割り当てて仮想アドレスにマップ (SAS統合版)
     ///
     /// Buddy Allocatorから物理フレームを割り当て、ページテーブルにマップする。
-    /// これにより、mmap()が実際のページテーブル操作と統合される。
+    /// これにより、マッピングAPIが実際のページテーブル操作と統合される。
     pub fn map_with_physical_alloc(
         &self,
         addr: Option<MappedAddress>,

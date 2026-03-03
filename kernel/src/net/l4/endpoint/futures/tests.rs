@@ -199,7 +199,7 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint() {
 
     if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.tcp_stream = Some(stream.clone());
+        inner.ensure_tcp().stream = Some(stream.clone());
         let _ = inner.transition_to(EndpointState::Connected);
     }
 
@@ -278,7 +278,7 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint_v6() {
 
     if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.tcp_stream = Some(stream.clone());
+        inner.ensure_tcp().stream = Some(stream.clone());
         let _ = inner.transition_to(EndpointState::Connected);
     }
 
@@ -354,7 +354,7 @@ pub fn test_tcp_packet_stream_multiple_packets() {
 
     if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.tcp_stream = Some(stream.clone());
+        inner.ensure_tcp().stream = Some(stream.clone());
         let _ = inner.transition_to(EndpointState::Connected);
     }
 
@@ -444,7 +444,7 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
 
     if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.tcp_stream = Some(stream.clone());
+        inner.ensure_tcp().stream = Some(stream.clone());
         let _ = inner.transition_to(EndpointState::Connected);
     }
 
@@ -507,16 +507,16 @@ pub fn test_udp_packet_stream_delivered() {
     init_endpoint_manager();
 
     // Use a UdpProcessor instance and bind a endpoint to a port
-    let proc = crate::net::l4::udp::UdpProcessor::new();
+    let processor = crate::net::l4::udp::UdpProcessor::new();
     let port = 40000u16;
-    let u = proc.bind_with_token(port, None).expect("bind failed");
+    let u = processor.bind_with_token(port, None).expect("bind failed");
 
     // Create an OwnedEndpoint and attach the UdpEndpoint instance to its inner state
     let sock = create_udp_endpoint();
     if let Some(s) = sock.endpoint() {
         let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(EndpointAddr::new([127, 0, 0, 1], port));
-        inner.udp_socket = Some(u.clone());
+        inner.ensure_udp().socket = Some(u.clone());
         let _ = inner.transition_to(EndpointState::Connected);
     }
 
@@ -528,7 +528,7 @@ pub fn test_udp_packet_stream_delivered() {
     packet.set_len(len);
 
     let packet_data = alloc::vec::Vec::from(packet.data());
-    let res = proc.process_with_packet(&packet_data, src_ip, dst_ip, packet, 255);
+    let res = processor.process_with_packet(&packet_data, src_ip, dst_ip, packet, 255);
     assert_eq!(res, crate::net::l4::udp::UdpResult::Delivered);
 
     // Get stream wrapper and receive the packet

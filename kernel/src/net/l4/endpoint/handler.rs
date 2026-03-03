@@ -778,7 +778,7 @@ impl NetworkEventHandler {
         let (congestion_algo, nodelay, priority) = {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local_addr);
-            (inner.congestion_algorithm, inner.tcp_nodelay, inner.priority)
+            (inner.tcp().and_then(|t| t.congestion_algorithm), inner.tcp().map_or(false, |t| t.nodelay), inner.priority)
         };
 
         // TCB（TCP Control Block）を作成
@@ -1030,7 +1030,7 @@ impl NetworkEventHandler {
             }
         };
 
-        if inner.udp_socket.is_some() {
+        if inner.udp().map_or(false, |u| u.socket.is_some()) {
             // UDPパケットを構築
             // UDPヘッダ: src_port(2) + dst_port(2) + length(2) + checksum(2) = 8バイト
             let udp_len = 8 + data.len();
@@ -1211,7 +1211,7 @@ pub mod tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             let local = EndpointAddr::new([127, 0, 0, 1], 12345);
             inner.local_addr = Some(local);
-            inner.udp_socket = Some(crate::net::l4::udp::UdpEndpoint::new(local.port()));
+            inner.ensure_udp().socket = Some(crate::net::l4::udp::UdpEndpoint::new(local.port()));
             let _ = inner.transition_to(EndpointState::Bound);
         }
 
@@ -1234,7 +1234,7 @@ pub mod tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             let local = EndpointAddr::new([127, 0, 0, 1], 12346);
             inner.local_addr = Some(local);
-            inner.udp_socket = Some(crate::net::l4::udp::UdpEndpoint::new(local.port()));
+            inner.ensure_udp().socket = Some(crate::net::l4::udp::UdpEndpoint::new(local.port()));
             let _ = inner.transition_to(EndpointState::Bound);
         }
 

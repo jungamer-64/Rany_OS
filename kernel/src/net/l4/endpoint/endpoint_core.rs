@@ -161,7 +161,7 @@ impl Endpoint {
             // TCPリスナー - EndpointAddr は同一型のためそのまま使用
             let tcp_addr = local_addr;
             let listener = TcpListenerImpl::bind(tcp_addr).map_err(|_| EndpointError::AddressInUse)?;
-            inner.tcp_listener = Some(listener);
+            inner.ensure_tcp().listener = Some(listener);
             inner.transition_to(EndpointState::Listening)?;
         }
 
@@ -190,14 +190,14 @@ impl Endpoint {
         }
 
         // Acceptキューから接続を取得
-        if let Some(conn) = inner.accept_queue.pop_front() {
+        if let Some(conn) = inner.tcp_mut().and_then(|t| t.accept_queue.pop_front()) {
             // 新しいソケットを作成
             let new_socket = Endpoint::new_with_fd(EndpointType::Tcp, conn.fd);
             {
                 let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
-                new_inner.tcp_nodelay = inner.tcp_nodelay; // 設定を引き継ぐ
+                new_inner.ensure_tcp().nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を引き継ぐ
                 new_inner.priority = inner.priority; // 優先度を引き継ぐ
                 let _ = new_inner.transition_to(EndpointState::Connected);
             }
@@ -259,7 +259,7 @@ impl Endpoint {
             let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
             new_inner.local_addr = inner.local_addr;
             new_inner.remote_addr = Some(remote_addr);
-            new_inner.tcp_stream = Some(stream);
+            new_inner.ensure_tcp().stream = Some(stream);
             let _ = new_inner.transition_to(EndpointState::Connected);
         }
 
@@ -337,7 +337,7 @@ impl Endpoint {
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
-        if let Some((addr, data)) = inner.pending_packets.pop_front() {
+        if let Some((addr, data)) = inner.udp_mut().and_then(|u| u.pending_packets.pop_front()) {
             let len = buf.len().min(data.len());
             buf[..len].copy_from_slice(&data[..len]);
             Ok((len, addr))
@@ -367,7 +367,7 @@ impl Endpoint {
     pub fn push_packet(&self, addr: EndpointAddr, data: Vec<u8>) {
         let waker = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.pending_packets.push_back((addr, data));
+            inner.ensure_udp().pending_packets.push_back((addr, data));
             // 待機中のタスクを起こす準備
             inner.recv_waker.take()
         };
@@ -383,12 +383,8 @@ impl Endpoint {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
-            // TCPストリームのクリーンアップ
-            inner.tcp_stream = None;
-
-            // リスナーのクリーンアップ
-            inner.tcp_listener = None;
-            inner.udp_socket = None;
+            // プロトコル状態のクリーンアップ
+            inner.clear_protocol();
 
             // バッファクリア
             inner.recv_buffer.clear();
@@ -440,7 +436,7 @@ impl Endpoint {
 
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.tcp_nodelay = nodelay;
+            inner.ensure_tcp().nodelay = nodelay;
         }
 
         // ネットワークスタックに通知（接続済みの場合、TCBに反映させる）
@@ -652,7 +648,7 @@ pub fn create_tcp_endpoint_with_algorithm(
     let ep = OwnedEndpoint::new(EndpointType::Tcp);
     if let Some(inner_ep) = ep.endpoint() {
         let mut inner = inner_ep.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.congestion_algorithm = Some(algorithm);
+        inner.ensure_tcp().congestion_algorithm = Some(algorithm);
     }
     ep
 }

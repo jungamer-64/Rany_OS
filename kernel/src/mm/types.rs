@@ -311,7 +311,7 @@ impl From<u8> for NumaNodeId {
 }
 
 // ============================================================================
-// Mmap/Common Address Types
+// Mapping/Common Address Types
 // ============================================================================
 
 /// マッピングアドレス (Newtype)
@@ -920,5 +920,4 @@ impl<T, const N: usize> core::ops::IndexMut<usize> for FixedVec<T, N> {
         self.get_mut(index).expect("FixedVec index out of bounds")
     }
 }
-
 

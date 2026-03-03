@@ -1,121 +1,40 @@
-# Legacy POSIX Implementation Removal & Migration Plan
+# Legacy Interface Migration Status (Completed)
 
-This document outlines the strategy for removing legacy POSIX-compatible implementations (`Process`, `Signal`, `ProcFS`) that conflict with the ExoRust (SAS/SPL/Async-First) architecture.
+更新日: 2026-03-03
 
-## 1. Objective
+この文書は、互換インターフェース撤廃後の最終状態を記録する。
 
-To transition the kernel codebase from a traditional POSIX-like process model to the ExoRust Domain/Cell/Task model, eliminating unnecessary overhead and complexity associated with legacy support.
+## 1. 現在の運用方針
 
-## 2. Strategy: "Isolate, Substitute, Delete"
+- 管理と観測の入口は ExoShell の `domain.*` と `sys.*` のみ。
+- ディレクトリベース管理層は提供しない。
+- 旧互換 feature gate は廃止済み。
+- 互換 syscall 風ラッパは提供しない。
 
-We will adopt a strategy that prioritizes isolation into a compatibility layer to prevent `cfg` scattering.
+## 2. 主要な撤廃項目
 
-### Phase 0: Visualization & Baseline (Immediate Action)
-*   **Action:** Search and document all usages of `ProcessId`, `procfs`, `signal`, `fork`, `exec`.
-*   **Outcome:** `docs/legacy_usage_baseline.md`. Use this to design the "Narrow Traits" between Core and Compat.
+- `/proc` 互換層を削除。
+- IPC 互換ラッパ（`pipe2`, `mkfifo`, `shmget`, `shmat`, `shm_open` など）を削除。
+- VM 公開 API 名を非POSIX命名へ統一。
 
-### Phase 1: Isolation & Dependency Inversion
-**Goal:** Isolate legacy definitions into `compat` module with **one-way dependency** (Compat depends on Core).
+| 旧公開名 | 現在の公開名 |
+|---|---|
+| `mmap` | `map_anonymous_region` / `map_file_region` |
+| `munmap` | `unmap_region` |
+| `mprotect` | `protect_region` |
+| `msync` | `sync_region` |
 
-1.  **Dependency Direction:**
-    *   **Core:** Defines traits (e.g., `ProcessLike`, `ProcView`) and logic (Executor, MM). Does **not** know about `ProcessId` or `Signal` structs.
-    *   **Compat:** Implements Core traits using legacy logic.
-2.  **Single Gating Point:**
-    *   `kernel/src/compat/mod.rs` is the **only** place with `#[cfg(feature = "posix-compat")]`.
-    *   Internal files in `compat/` do not use `cfg`. Linker includes/excludes them based on the module gate.
-3.  **Move & Re-export:**
-    *   Move `process.rs`, `signal.rs`, `procfs` (process parts) to `kernel/src/compat/posix/`.
+## 3. 運用上の移行先
 
-### Phase 2: Shim Restrictions & Observation Schema
-**Goal:** Establish `DomainId` as truth and `/sys/cell` as observation.
+- ドメイン一覧: `domain.list()`
+- ドメイン詳細: `domain.info(id)`
+- ドメイン停止: `domain.kill(id)`
 
-1.  **Hardened Shim:**
-    *   `ProcessId` -> `pub(crate)` inside `compat`.
-    *   Conversion: One-way `From<ProcessId> for DomainId`.
-    *   **Safety:** CI check to ban `ProcessId` usage outside `compat`.
-2.  **ProcFS Split & New Schema:**
-    *   `procfs::pid` -> `compat/posix`.
-    *   `/sys/cell` Schema Definition (core, read-only):
-        *   `name`, `state`, `tasks`, `task_ids`
-        *   `memory_kb`, `memory_bytes`, `rrefs`
-        *   `runtime_ticks`, `context_switches`, `created_at`
-        *   `numa_node`, `dependencies`, `dependents`
-        *   `panic_message`, `last_error`
-    *   This schema must work even when `posix-compat` is OFF.
+## 4. CI・再導入防止
 
-    *   `/proc/<pid>` replacement scope (initial):
+- `scripts/check-no-posix-apis.sh` を標準ガードとして使用。
+- 旧識別子の再導入は CI で fail させる。
 
-        | Legacy path | Core replacement | Notes |
-        |---|---|---|
-        | `/proc/<pid>/status` | `/sys/cell/<id>/{name,state,tasks,task_ids,memory_kb,rrefs,last_error,panic_message}` | Multi-field read via sysfs |
-        | `/proc/<pid>/stat` | `/sys/cell/<id>/{runtime_ticks,context_switches,created_at}` | Timing counters |
-        | `/proc/<pid>/cmdline` | none (compat only) | Keep in compat until a Domain-aware equivalent exists |
-        | `/proc/<pid>/maps` | none (compat only) | Depends on per-process address space |
-        | `/proc/<pid>/fd` | none (compat only) | Depends on per-process FD table |
-        | `/proc/<pid>/exe` | none (compat only) | Process semantic |
-        | `/proc/<pid>/mem` | none (compat only) | Process semantic |
+## 5. 補足
 
-    *   `/sys/system` Schema Definition (core, read-only):
-        *   `version`, `uptime`, `meminfo`, `cpuinfo`, `stat`, `loadavg`
-        *   `filesystems`, `mounts`, `cmdline`
-        *   `kernel/hostname`, `kernel/ostype`, `kernel/version`
-        *   `net/dev`, `net/tcp`, `net/udp`, `net/arp`
-    *   `posix-compat` ON: `/proc` の system/net 系は `/sys/system` への read-only facade として実装し、出力のズレを防ぐ。
-    *   Global `/proc` replacement scope (initial):
-
-        | Legacy path | Core replacement | Notes |
-        |---|---|---|
-        | `/proc/version` | `/sys/system/version` | Keep text format for compat |
-        | `/proc/uptime` | `/sys/system/uptime` | Same units/format |
-        | `/proc/meminfo` | `/sys/system/meminfo` | Same keys as legacy |
-        | `/proc/cpuinfo` | `/sys/system/cpuinfo` | Same layout as legacy |
-        | `/proc/stat` | `/sys/system/stat` | Same layout as legacy |
-        | `/proc/loadavg` | `/sys/system/loadavg` | Same layout as legacy |
-        | `/proc/filesystems` | `/sys/system/filesystems` | Same layout as legacy |
-        | `/proc/mounts` | `/sys/system/mounts` | Same layout as legacy |
-        | `/proc/cmdline` | `/sys/system/cmdline` | Same layout as legacy |
-        | `/proc/sys/kernel/hostname` | `/sys/system/kernel/hostname` | Core is read-only; compat may allow writes |
-        | `/proc/sys/kernel/ostype` | `/sys/system/kernel/ostype` | Read-only |
-        | `/proc/sys/kernel/version` | `/sys/system/kernel/version` | Read-only |
-        | `/proc/net/dev` | `/sys/system/net/dev` | Same layout as legacy |
-        | `/proc/net/tcp` | `/sys/system/net/tcp` | Same layout as legacy |
-        | `/proc/net/udp` | `/sys/system/net/udp` | Same layout as legacy |
-        | `/proc/net/arp` | `/sys/system/net/arp` | Same layout as legacy |
-
-### Phase 3: Signal & AddressSpace Redefinition
-**Goal:** Replace internal logic with ExoRust primitives.
-
-1.  **Signals -> Events:**
-    *   Requirements Breakdown:
-        *   **TaskCancel** (Future cancellation)
-        *   **DomainStop** (Management)
-        *   **FaultNotify** (Error propagation)
-    *   Replace `signal.rs` logic with these specific mechanisms.
-2.  **AddressSpace Split:**
-    *   `GlobalMappings` (SAS Core)
-    *   `ProtectionView` (Security: MPK/Guard)
-    *   `LegacyProcessAddressSpace` (Compat: CR3/ASID)
-    *   Migration steps (shim-first):
-        *   Introduce `AddressSpaceOps` for core MM paths (map/unmap/protect/scan).
-        *   Move `fork()` / `exec_reset()` into `LegacyProcessAddressSpace` under compat.
-        *   Wire `task::process` to call compat address-space ops only when `posix-compat` is ON.
-        *   Replace ProcessId-driven MM callsites with DomainId/TaskContext handles.
-
-### Phase 4: Deprecation & Cleanup
-**Goal:** Disable legacy support.
-
-1.  **Default OFF:** Switch `posix-compat` to disabled.
-2.  **Acceptance:**
-    *   Build passes.
-    *   `/sys/cell` observes system state.
-    *   Cancel/Stop works.
-3.  **Removal:** Delete `kernel/src/compat/posix/`.
-
-## 4. Acceptance Criteria
-
-*   [ ] Kernel builds with `default-features = false`.
-*   [ ] `ProcessId` usage is physically impossible or strictly banned outside `compat`.
-*   [ ] `compat` module depends on Core traits; Core does not depend on Compat types.
-*   [ ] `/sys/cell` provides observability without `procfs`.
-*   [ ] Task cancellation and Domain stopping work without standard signals.
-*   [ ] Memory protection (MPK, Guard pages) functions without Process Address Space logic.
+本リポジトリは one-shot の破壊的移行を完了しており、互換期間は設けない。

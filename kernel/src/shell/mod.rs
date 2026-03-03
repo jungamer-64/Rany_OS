@@ -35,6 +35,6 @@ pub mod session;
 // has been removed in favor of ExoShell.
 //
 // If you need classic shell commands, use ExoShell's alias feature:
-//   ls, cd, pwd, cat, mkdir, rm, ps, ifconfig, ping, etc.
+//   ls, cd, pwd, cat, mkdir, rm, ifconfig, ping, etc.
 // are still available as convenience aliases.
 // ============================================================================

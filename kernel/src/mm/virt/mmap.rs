@@ -1,15 +1,15 @@
-//! メモリマップ (mmap) - メモリマップドI/O
+//! メモリマッピング - メモリマップドI/O
 //!
 //! ExoRust SAS アーキテクチャにおけるメモリマッピング
 //! ファイルやデバイスを直接メモリにマップ
 //!
 //! # ⚠ 非推奨 (POSIX Legacy)
 //!
-//! POSIX `mmap()` はプロセスごとのアドレス空間を前提としており、
+//! POSIX のメモリマップAPIはプロセスごとのアドレス空間を前提としており、
 //! SAS（Single Address Space）アーキテクチャと矛盾します。
 //!
 //! ## 移行先
-//! - `mmap()` → SASリニアマッピング + `sas::MemoryRegion`
+//! - 旧 `mmap` 相当 → SASリニアマッピング + `sas::MemoryRegion`
 //! - ファイルマップ → `ZeroCopyBlockDevice` + ページキャッシュ
 //! - 匿名マップ → `mm::phys::frame_allocator` 直接利用
 //! - デバイスマップ → `alloc_dma_buffer()` (IOMMU経由)

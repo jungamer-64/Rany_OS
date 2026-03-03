@@ -172,10 +172,10 @@ pub fn test_multicast_mac() {
 #[cfg_attr(test, test_case)]
 pub fn test_resolve_multicast() {
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-    let proc = NdpProcessor::new(Ipv6Address::LOOPBACK, mac);
+    let processor = NdpProcessor::new(Ipv6Address::LOOPBACK, mac);
 
     let mcast = Ipv6Address::ALL_NODES_LINK_LOCAL;
-    let resolved = proc.resolve(&mcast).unwrap();
+    let resolved = processor.resolve(&mcast).unwrap();
     assert_eq!(resolved, [0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
 }
 
@@ -183,7 +183,7 @@ pub fn test_resolve_multicast() {
 pub fn test_ns_processing() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
-    let mut proc = NdpProcessor::new(our_ip, our_mac);
+    let mut processor = NdpProcessor::new(our_ip, our_mac);
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -192,7 +192,7 @@ pub fn test_ns_processing() {
     // Build an NS targeting our address
     let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &sender_mac);
 
-    let result = proc.process(
+    let result = processor.process(
         Icmpv6Type::NeighborSolicitation,
         &ns,
         sender_ip,
@@ -212,7 +212,7 @@ pub fn test_ns_processing() {
     }
 
     // Sender should be learned in our cache
-    let entry = proc.cache().lookup(&sender_ip).unwrap();
+    let entry = processor.cache().lookup(&sender_ip).unwrap();
     assert_eq!(entry.mac, sender_mac);
     assert_eq!(entry.state, NeighborState::Reachable);
 }
@@ -221,7 +221,7 @@ pub fn test_ns_processing() {
 pub fn test_ndp_spoofing_detection() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
-    let mut proc = NdpProcessor::new(our_ip, our_mac);
+    let mut processor = NdpProcessor::new(our_ip, our_mac);
 
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let dst = our_ip.solicited_node();
@@ -233,7 +233,7 @@ pub fn test_ndp_spoofing_detection() {
     
     let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &slla_mac);
 
-    let result = proc.process(
+    let result = processor.process(
         Icmpv6Type::NeighborSolicitation,
         &ns,
         sender_ip,
@@ -246,14 +246,14 @@ pub fn test_ndp_spoofing_detection() {
     assert!(matches!(result, NdpResult::Error));
     
     // Cache should NOT be updated
-    assert!(proc.cache().lookup(&sender_ip).is_none());
+    assert!(processor.cache().lookup(&sender_ip).is_none());
 }
 
 #[cfg_attr(test, test_case)]
 pub fn test_na_multicast_target_rejection() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
-    let mut proc = NdpProcessor::new(our_ip, our_mac);
+    let mut processor = NdpProcessor::new(our_ip, our_mac);
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -262,7 +262,7 @@ pub fn test_na_multicast_target_rejection() {
     let mcast_target = Ipv6Address::ALL_NODES_LINK_LOCAL;
     let na = NdpProcessor::build_na(&sender_ip, &our_ip, &mcast_target, &sender_mac, true);
 
-    let result = proc.process(
+    let result = processor.process(
         Icmpv6Type::NeighborAdvertisement,
         &na,
         sender_ip,
@@ -275,5 +275,5 @@ pub fn test_na_multicast_target_rejection() {
     assert!(matches!(result, NdpResult::Error));
     
     // Cache should NOT be updated with multicast address
-    assert!(proc.cache().lookup(&mcast_target).is_none());
+    assert!(processor.cache().lookup(&mcast_target).is_none());
 }

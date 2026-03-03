@@ -11,7 +11,7 @@ impl ProcessAddressSpace {
             regions: RwLock::new(BTreeMap::new()),
             vma_list: VmaList::new(),
             heap_end: AtomicU64::new(DEFAULT_HEAP_START),
-            mmap_hint: AtomicU64::new(DEFAULT_MMAP_BASE),
+            mapping_hint: AtomicU64::new(DEFAULT_MAPPING_BASE),
             stack_top: AtomicU64::new(DEFAULT_STACK_TOP),
             memcg_id: MemcgId::ROOT,
             mapped_pages: AtomicU64::new(0),
@@ -127,11 +127,11 @@ impl ProcessAddressSpace {
     }
     
     // ========================================================================
-    // Memory Mapping API (mmap/munmap/mprotect)
+    // Memory Mapping API (map/unmap/protect)
     // ========================================================================
     
-    /// メモリをマッピング（mmapの実装）
-    pub fn mmap(
+    /// メモリ領域をマッピング
+    pub fn map_region(
         &self,
         addr_hint: Option<VirtAddr>,
         size: u64,
@@ -155,16 +155,16 @@ impl ProcessAddressSpace {
             }
             addr
         } else {
-            // mmap領域から割り当て
+            // マッピング領域から割り当て
             loop {
-                let hint = self.mmap_hint.load(Ordering::Acquire);
+                let hint = self.mapping_hint.load(Ordering::Acquire);
                 let next_hint = hint.checked_add(aligned_size).ok_or(AddressSpaceError::OutOfMemory)?;
                 
                 if next_hint > USER_SPACE_END {
                     return Err(AddressSpaceError::OutOfMemory);
                 }
                 
-                if self.mmap_hint.compare_exchange_weak(hint, next_hint, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+                if self.mapping_hint.compare_exchange_weak(hint, next_hint, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
                     break hint;
                 }
             }
@@ -183,8 +183,8 @@ impl ProcessAddressSpace {
         Ok(start)
     }
     
-    /// メモリのマッピングを解除（munmapの実装）
-    pub fn munmap(&self, addr: VirtAddr, size: u64) -> Result<(), AddressSpaceError> {
+    /// メモリ領域のマッピングを解除
+    pub fn unmap_region(&self, addr: VirtAddr, size: u64) -> Result<(), AddressSpaceError> {
         if size == 0 {
             return Err(AddressSpaceError::InvalidSize);
         }
@@ -195,7 +195,7 @@ impl ProcessAddressSpace {
         self.remove_region(start_key)
     }
     
-    /// mprotectで必要な領域分割を行い、新領域を登録する
+    /// 保護属性更新で必要な領域分割を行い、新領域を登録する
     pub(super) fn split_and_reinsert_regions(
         &self,
         regions: &mut alloc::collections::BTreeMap<u64, Box<MemoryRegion>>,
@@ -223,8 +223,8 @@ impl ProcessAddressSpace {
         }
     }
 
-    /// メモリ保護を変更（mprotectの実装）
-    pub fn mprotect(&self, addr: VirtAddr, size: u64, prot: Protection) -> Result<(), AddressSpaceError> {
+    /// メモリ保護を変更
+    pub fn protect_region(&self, addr: VirtAddr, size: u64, prot: Protection) -> Result<(), AddressSpaceError> {
         let start_key = self.find_region(addr)
             .ok_or(AddressSpaceError::RegionNotFound)?;
         
@@ -274,7 +274,7 @@ impl ProcessAddressSpace {
         let current = self.heap_end.load(Ordering::Acquire);
         
         // 脆弱性修正: ヒープ終了アドレスがユーザー空間内かチェック
-        if new_brk < DEFAULT_HEAP_START || new_brk > DEFAULT_MMAP_BASE {
+        if new_brk < DEFAULT_HEAP_START || new_brk > DEFAULT_MAPPING_BASE {
             return Err(AddressSpaceError::InvalidRange);
         }
 
@@ -390,7 +390,7 @@ impl ProcessAddressSpace {
         // ヒープとスタック境界をコピー
         child.heap_end.store(self.heap_end.load(Ordering::Acquire), Ordering::Release);
         child.stack_top.store(self.stack_top.load(Ordering::Acquire), Ordering::Release);
-        child.mmap_hint.store(self.mmap_hint.load(Ordering::Acquire), Ordering::Release);
+        child.mapping_hint.store(self.mapping_hint.load(Ordering::Acquire), Ordering::Release);
         
         Ok(child)
     }
@@ -427,7 +427,7 @@ impl ProcessAddressSpace {
         
         // 境界をリセット
         self.heap_end.store(DEFAULT_HEAP_START, Ordering::Release);
-        self.mmap_hint.store(DEFAULT_MMAP_BASE, Ordering::Release);
+        self.mapping_hint.store(DEFAULT_MAPPING_BASE, Ordering::Release);
         self.stack_top.store(DEFAULT_STACK_TOP, Ordering::Release);
         self.mapped_pages.store(0, Ordering::Release);
         
@@ -549,7 +549,7 @@ impl ProcessAddressSpace {
 
             // スキャン対象外の領域（カーネル、デバイスなど）はスキップ
             match region.region_type {
-                RegionType::Data | RegionType::Stack | RegionType::Heap | RegionType::Bss | RegionType::Mmap => {} // OK
+                RegionType::Data | RegionType::Stack | RegionType::Heap | RegionType::Bss | RegionType::Mapping => {} // OK
                 _ => {
                     if current_addr < region.end {
                         current_addr = region.end;

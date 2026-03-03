@@ -171,17 +171,17 @@ pub fn test_udp_recv_future_poisoned_returns_closed() {
 pub fn test_udp_processor_poisoned_bind_and_process() {
     use crate::sync::set_panicking;
 
-    let proc = UdpProcessor::new();
+    let processor = UdpProcessor::new();
 
     // Poison the endpoint table lock
     set_panicking(true);
-    if let Ok(_g) = proc.endpoints().endpoints.lock() {
+    if let Ok(_g) = processor.endpoints().endpoints.lock() {
         // drop marks as poisoned
     }
     set_panicking(false);
 
     // Bind should fail (token-aware API returns Err on failure)
-    assert!(proc.bind_with_token(10000, None).is_err());
+    assert!(processor.bind_with_token(10000, None).is_err());
 
     // Build a packet and process - should be NoEndpoint and stats increment rx_dropped
     let src_ip = Ipv4Address::from_octets(1, 2, 3, 4);
@@ -189,10 +189,10 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
     let mut buffer = [0u8; 64];
     let len = UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x").unwrap();
 
-    let res = proc.process(&buffer[..len], src_ip, dst_ip, 64);
+    let res = processor.process(&buffer[..len], src_ip, dst_ip, 64);
     assert_eq!(res, UdpResult::NoEndpoint);
 
-    let stats = proc.endpoints().stats();
+    let stats = processor.endpoints().stats();
     assert_eq!(stats.2, 1); // rx_dropped == 1
 }
 
@@ -285,8 +285,8 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) }
     }
 
-    let proc = UdpProcessor::new();
-    let endpoint = proc
+    let processor = UdpProcessor::new();
+    let endpoint = processor
         .bind_with_token(10000, None)
         .expect("bind udp endpoint for zero-copy enqueue test");
 
@@ -319,7 +319,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         packet.data_mut().copy_from_slice(payload);
 
         assert_eq!(
-            proc.process_with_packet(&buf[..len], src_ip, dst_ip, packet, 255),
+            processor.process_with_packet(&buf[..len], src_ip, dst_ip, packet, 255),
             UdpResult::Delivered
         );
     }
@@ -333,7 +333,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
             Some(_) => {}
         }
 
-        assert_eq!(proc.process(&buf[..len], src_ip, dst_ip, 255), UdpResult::Delivered);
+        assert_eq!(processor.process(&buf[..len], src_ip, dst_ip, 255), UdpResult::Delivered);
     }
 
     let mut fut = endpoint.recv();

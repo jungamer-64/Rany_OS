@@ -1688,7 +1688,7 @@ pub mod task {
         pub fn add_task_to_domain(_domain_id: DomainId, _task_id: u64) {}
     }
 
-    // Task context counters used by procfs tests
+    // Task context counters used by legacy management tests
     pub mod context {
         use core::sync::atomic::AtomicU64;
         pub static CONTEXT_SWITCH_COUNT: AtomicU64 = AtomicU64::new(0);

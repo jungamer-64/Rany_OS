@@ -441,7 +441,7 @@ fn process_tcp_new_connection(
     if inner.state != EndpointState::Listening {
         return;
     }
-    let nodelay = inner.tcp_nodelay; // 設定を取得
+    let nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を取得
     let priority = inner.priority;
     drop(inner);
 
@@ -650,13 +650,17 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
         }
 
         // バックログがいっぱいでないか確認
-        if inner.accept_queue.len() >= inner.accept_backlog {
+        let tcp = match inner.tcp_mut() {
+            Some(t) => t,
+            None => return false,
+        };
+        if tcp.accept_queue.len() >= tcp.accept_backlog {
             log::info!("TCP: Accept queue full for port {}", local_port);
             return false;
         }
 
         // Acceptキューに追加
-        inner.accept_queue.push_back(conn);
+        tcp.accept_queue.push_back(conn);
 
         // Accept待ちのWakerを起こす
         if let Some(waker) = inner.accept_waker.take() {
@@ -665,7 +669,7 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
 
         log::info!(
             "TCP: Pushed to accept queue (queue_len={})",
-            inner.accept_queue.len()
+            inner.tcp().map_or(0, |t| t.accept_queue.len())
         );
 
         return true;

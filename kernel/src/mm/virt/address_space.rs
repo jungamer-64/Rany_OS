@@ -72,8 +72,8 @@ pub const DEFAULT_HEAP_START: u64 = 0x0000_1000_0000_0000;
 /// デフォルトのスタックトップ
 pub const DEFAULT_STACK_TOP: u64 = 0x0000_7FFF_FFFF_0000;
 
-/// デフォルトのmmap領域開始
-pub const DEFAULT_MMAP_BASE: u64 = 0x0000_2000_0000_0000;
+/// デフォルトのマッピング領域開始
+pub const DEFAULT_MAPPING_BASE: u64 = 0x0000_2000_0000_0000;
 
 /// ページサイズ
 const PAGE_SIZE: u64 = 4096;
@@ -107,8 +107,8 @@ pub enum RegionType {
     Heap,
     /// スタック
     Stack,
-    /// mmap領域
-    Mmap,
+    /// マッピング領域
+    Mapping,
     /// 共有メモリ
     Shared,
     /// ファイルマッピング
@@ -330,8 +330,8 @@ pub struct ProcessAddressSpace {
     vma_list: VmaList,
     /// ヒープ境界（brk）
     heap_end: AtomicU64,
-    /// mmap領域の次の割り当てアドレス
-    mmap_hint: AtomicU64,
+    /// マッピング領域の次の割り当てアドレス
+    mapping_hint: AtomicU64,
     /// スタック領域
     stack_top: AtomicU64,
     /// memcg ID

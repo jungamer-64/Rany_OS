@@ -84,7 +84,7 @@ pub mod tests {
 
         {
             let mut inner = listen_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.accept_queue.push_back(conn);
+            inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
         // accept成功
@@ -122,7 +122,7 @@ pub mod tests {
 
         {
             let mut inner = listen_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.accept_queue.push_back(conn);
+            inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
         // accept成功 (IPv6)
@@ -141,13 +141,13 @@ pub mod tests {
             return None;
         }
 
-        if let Some(conn) = inner.accept_queue.pop_front() {
+        if let Some(conn) = inner.tcp_mut().and_then(|t| t.accept_queue.pop_front()) {
             let new_endpoint = Endpoint::new_with_fd(EndpointType::Tcp, conn.fd);
             {
                 let mut new_inner = new_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
-                new_inner.tcp_nodelay = inner.tcp_nodelay; // 設定を引き継ぐ
+                new_inner.ensure_tcp().nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を引き継ぐ
                 let _ = new_inner.transition_to(EndpointState::Connected);
             }
             return Some((new_endpoint, conn.remote_addr));
@@ -178,7 +178,7 @@ pub mod tests {
 
             {
             let mut inner = listen_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.accept_queue.push_back(conn);
+            inner.ensure_tcp().accept_queue.push_back(conn);
             }
 
             // Accept
@@ -186,7 +186,7 @@ pub mod tests {
 
             // 設定が引き継がれているか確認
             let inner = new_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            assert!(inner.tcp_nodelay);
+            assert!(inner.tcp().map_or(false, |t| t.nodelay));
             }
 
             #[cfg_attr(test, test_case)]
@@ -229,7 +229,7 @@ pub mod tests {
         {
             let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(EndpointAddr::new([0, 0, 0, 0], 9000));
-            inner.accept_backlog = 2; // 小さいバックログ
+            inner.ensure_tcp().accept_backlog = 2; // 小さいバックログ
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Listening);
         }
@@ -243,14 +243,14 @@ pub mod tests {
             let conn = AcceptedConnection::new(fd, local, remote, tcb);
 
             let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            if inner.accept_queue.len() < inner.accept_backlog {
-                inner.accept_queue.push_back(conn);
+            if inner.tcp().map_or(true, |t| t.accept_queue.len() < t.accept_backlog) {
+                inner.ensure_tcp().accept_queue.push_back(conn);
             }
         }
 
         // バックログ上限で制限される
         let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(inner.accept_queue.len(), 2);
+        assert_eq!(inner.tcp().map_or(0, |t| t.accept_queue.len()), 2);
     }
 
     #[cfg_attr(test, test_case)]
@@ -266,7 +266,7 @@ pub mod tests {
         if let Some(s) = sock.endpoint() {
             let inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(inner.local_addr.unwrap(), local);
-            assert!(inner.tcp_listener.is_some());
+            assert!(inner.tcp().map_or(false, |t| t.listener.is_some()));
         } else {
             panic!("endpoint not found");
         }
