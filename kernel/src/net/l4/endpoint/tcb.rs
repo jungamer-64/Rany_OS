@@ -28,20 +28,11 @@ pub mod tcp_flags {
 }
 
 /// TCP接続状態
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TcpConnectionState {
-    Closed,
-    Listen,
-    SynSent,
-    SynReceived,
-    Established,
-    FinWait1,
-    FinWait2,
-    CloseWait,
-    Closing,
-    LastAck,
-    TimeWait,
-}
+///
+/// `crate::net::l4::tcp::TcpState` の統一エイリアス。
+/// 以前は独立した列挙型として定義されていたが、
+/// tcp/mod.rs の `TcpState` と完全に同一のため統合。
+pub use crate::net::l4::tcp::TcpState as TcpConnectionState;
 
 /// TCP制御ブロック（RFC 5681/7323準拠）
 #[derive(Debug, Clone)]
