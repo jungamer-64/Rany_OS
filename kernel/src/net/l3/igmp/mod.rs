@@ -478,7 +478,7 @@ pub fn compute_igmp_checksum(data: &[u8]) -> u16 {
 // Multicast MAC Address Conversion
 // ============================================================================
 
-use super::ethernet::MacAddress;
+use crate::net::l2::ethernet::MacAddress;
 
 /// Convert IPv4 multicast address to Ethernet multicast MAC address
 /// 
