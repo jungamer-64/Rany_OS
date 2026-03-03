@@ -806,10 +806,10 @@ impl TcpControlBlock {
             self.timers.rttvar = Some(rtt_sample >> 1);
         }
 
-        // RTO = SRTT + max(G, 4 * RTTVAR) where G is clock granularity
+        // RTO = SRTT + max(G, 4 * RTTVAR) where G is clock granularity (assume 1ms)
         let srtt = self.timers.srtt.unwrap_or(rtt_sample);
         let rttvar = self.timers.rttvar.unwrap_or(rtt_sample / 2);
-        self.timers.rto = (srtt + 4 * rttvar).clamp(MIN_RTO, MAX_RTO);
+        self.timers.rto = (srtt + core::cmp::max(1, 4 * rttvar)).clamp(MIN_RTO, MAX_RTO);
     }
 
     /// Backoff RTO on retransmission timeout

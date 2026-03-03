@@ -712,7 +712,7 @@ pub fn test_ack_segments_partial_ack_keeps_later_segments_and_updates_outstandin
     assert_eq!(tcb.outstanding_bytes(), 7);
 
     // ACK only the first segment
-    tcb.ack_segments(14);
+    tcb.ack_segments(14, 0);
     assert_eq!(tcb.oldest_unacked_seq(), Some(14));
     assert_eq!(tcb.outstanding_bytes(), 3);
 

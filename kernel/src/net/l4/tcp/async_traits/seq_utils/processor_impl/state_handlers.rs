@@ -147,16 +147,24 @@ impl TcpProcessor {
     /// Returns a vector of `TcpProcessResult::SendPacket` items for timed-out segments.
     pub fn check_retransmissions(&mut self, current_time: u64) -> Vec<TcpProcessResult> {
         let mut results: Vec<TcpProcessResult> = Vec::new();
+        let mut timed_out_connections = Vec::new();
 
-        for (_key, tcb_arc) in self.connections.iter() {
+        for (key, tcb_arc) in self.connections.iter() {
             if let Ok(mut tcb) = tcb_arc.lock() {
                 if tcb.check_retransmit_timeout(current_time) {
+                    // RFC 1122: Check if maximum retransmission threshold reached
+                    // Standard TCP typically uses 15, but for this OS we use 10.
+                    if tcb.timers.retransmit_count >= 10 {
+                        log::info!("[TCP] Connection timed out after {} retransmissions", tcb.timers.retransmit_count);
+                        timed_out_connections.push(*key);
+                        continue;
+                    }
+
                     // Scope the mutable borrow of oldest segment
                     let packet_data = tcb.touch_oldest_unacked_for_retransmit(current_time);
 
                     if let Some((seq, payload)) = packet_data {
                         tcb.backoff_rto();
-                        tcb.bump_retransmit_count_counter();
                         
                         // RFC 5681: On RTO, go back to slow start
                         tcb.on_loss();
@@ -177,6 +185,15 @@ impl TcpProcessor {
                             });
                         }
                     }
+                }
+            }
+        }
+
+        // Close and remove connections that reached retransmit limit
+        for key in timed_out_connections {
+            if let Some(tcb_lock) = self.connections.remove(&key) {
+                if let Ok(mut tcb) = tcb_lock.lock() {
+                    tcb.close_and_wake();
                 }
             }
         }

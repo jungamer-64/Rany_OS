@@ -290,7 +290,8 @@ impl TcpProcessor {
         }
 
         // Check if this is an ACK completing a SYN Cookie handshake
-        if flags == TcpHeader::FLAG_ACK {
+        // RFC 793/9293: The 3rd ACK of a 3-way handshake may also contain data.
+        if (flags & (TcpHeader::FLAG_ACK | TcpHeader::FLAG_SYN | TcpHeader::FLAG_RST)) == TcpHeader::FLAG_ACK {
             if let Some(mss) = self.verify_syncookie(local_addr, remote_addr, ack_num, seq_num) {
                 log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote_addr);
 
@@ -418,7 +419,8 @@ impl TcpProcessor {
         }
 
         // Check if this is an ACK completing a SYN Cookie handshake
-        if flags == TcpHeader::FLAG_ACK {
+        // RFC 793/9293: The 3rd ACK of a 3-way handshake may also contain data.
+        if (flags & (TcpHeader::FLAG_ACK | TcpHeader::FLAG_SYN | TcpHeader::FLAG_RST)) == TcpHeader::FLAG_ACK {
             if let Some(mss) = self.verify_syncookie(local_addr, remote_addr, ack_num, seq_num) {
                 log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote_addr);
 
