@@ -487,10 +487,21 @@ pub enum NdpResult {
         our_mac: [u8; 6],
         solicited: bool,
     },
+    /// Send a Neighbor Advertisement to all-nodes multicast (for DAD defense, RFC 4862)
+    SendNeighborAdvertisementMulticast {
+        target: Ipv6Address,
+        our_mac: [u8; 6],
+    },
     /// Neighbor info learned (from NA or NS source)
     NeighborUpdated {
         ip: Ipv6Address,
         mac: [u8; 6],
+    },
+    /// Send a Neighbor Solicitation (e.g. for DAD)
+    SendNeighborSolicitation {
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        target: Ipv6Address,
     },
     /// Router Advertisement received (prefix/gateway info)
     RouterAdvertisement {

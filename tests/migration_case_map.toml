@@ -329,11 +329,31 @@ destination.package = "qemu-tests"
 destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
 
 [[case]]
+id = "iommu.integration_suite"
+source = "kernel/src/test/integration.rs"
+classification = "qemu_fullboot"
+reason = "runtime profile dispatched inside full-boot kernel"
+profiles = ["iommu", "pr-required", "nightly-required"]
+destination.kind = "qemu-fullboot"
+destination.package = "qemu-tests"
+destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
+
+[[case]]
 id = "driver_domain.runtime_suite"
 source = "kernel/src/driver_domain/tests.rs"
 classification = "qemu_fullboot"
 reason = "runtime profile dispatched inside full-boot kernel"
 profiles = ["driver_domain", "pr-required", "nightly-required"]
+destination.kind = "qemu-fullboot"
+destination.package = "qemu-tests"
+destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
+
+[[case]]
+id = "network.runtime_suite"
+source = "kernel/src/qemu_tests/network_runtime_suite.rs"
+classification = "qemu_fullboot"
+reason = "runtime profile dispatched inside full-boot kernel"
+profiles = ["network", "pr-required", "nightly-required"]
 destination.kind = "qemu-fullboot"
 destination.package = "qemu-tests"
 destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"

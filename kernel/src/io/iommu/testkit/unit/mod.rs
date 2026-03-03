@@ -775,7 +775,8 @@ fn test_cmdqueue_map_unmap_with_domain() {
         while !(map_done && unmap_done) {
             eprintln!("[test][CQ] worker loop attempt {}", attempts);
             let processed = worker_cq.process_once(|k| match k {
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegion { .. } => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegion { .. }
+                | crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegionDevice { .. } => {
                     eprintln!("[test][CQ] handling MapRegion");
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => {
@@ -785,8 +786,8 @@ fn test_cmdqueue_map_unmap_with_domain() {
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegionDevice { .. } => Err(()),
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegion { .. } => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegion { .. }
+                | crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegionDevice { .. } => {
                     eprintln!("[test][CQ] handling UnmapRegion");
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => {
@@ -796,7 +797,6 @@ fn test_cmdqueue_map_unmap_with_domain() {
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
                 crate::io::iommu::runtime::command::queue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => Ok(0),
@@ -909,35 +909,47 @@ fn test_map_for_device_async_and_unmap() {
                         .expect("cq present")
                         .process_once(|k| {
                             match k {
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegion { .. } => {
-                    match worker_ctrl.handle_command_queue_entry(&k) {
-                        Ok(0) => { map_done = true; Ok(0) },
-                        Ok(_) => Ok(0),
-                        Err(_) => Err(()),
-                    }
-                }
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegionDevice { .. } => Err(()),
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegion { .. } => {
-                    match worker_ctrl.handle_command_queue_entry(&k) {
-                        Ok(0) => { unmap_done = true; Ok(0) },
-                        Ok(_) => Ok(0),
-                        Err(_) => Err(()),
-                    }
-                }
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
-                    match worker_ctrl.handle_command_queue_entry(&k) {
-                        Ok(_) => Ok(0),
-                        Err(_) => Err(()),
-                    }
-                }
-                crate::io::iommu::runtime::command::queue::IommuCommandKind::InvalidateIotlbGlobal => {
-                    match worker_ctrl.handle_command_queue_entry(&k) {
-                        Ok(_) => Ok(0),
-                        Err(_) => Err(()),
-                    }
-                }
-            }
+                                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegion { .. }
+                                | crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegionDevice { .. } => {
+                                    match worker_ctrl.handle_command_queue_entry(&k) {
+                                        Ok(0) => {
+                                            map_done = true;
+                                            Ok(0)
+                                        }
+                                        Ok(_) => {
+                                            map_done = true;
+                                            Ok(0)
+                                        }
+                                        Err(_) => Err(()),
+                                    }
+                                }
+                                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegion { .. }
+                                | crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegionDevice { .. } => {
+                                    match worker_ctrl.handle_command_queue_entry(&k) {
+                                        Ok(0) => {
+                                            unmap_done = true;
+                                            Ok(0)
+                                        }
+                                        Ok(_) => {
+                                            unmap_done = true;
+                                            Ok(0)
+                                        }
+                                        Err(_) => Err(()),
+                                    }
+                                }
+                                crate::io::iommu::runtime::command::queue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
+                                    match worker_ctrl.handle_command_queue_entry(&k) {
+                                        Ok(_) => Ok(0),
+                                        Err(_) => Err(()),
+                                    }
+                                }
+                                crate::io::iommu::runtime::command::queue::IommuCommandKind::InvalidateIotlbGlobal => {
+                                    match worker_ctrl.handle_command_queue_entry(&k) {
+                                        Ok(_) => Ok(0),
+                                        Err(_) => Err(()),
+                                    }
+                                }
+                            }
                         });
 
                 if processed > 0 { /* continue */ }

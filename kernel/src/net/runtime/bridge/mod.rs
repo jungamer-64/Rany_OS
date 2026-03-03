@@ -1308,7 +1308,15 @@ pub fn get_real_stats_for_interface(if_id: NetIfId) -> Option<NetworkStatsSnapsh
     get_real_stats()
 }
 
-/// Send ICMP echo via real NetworkStack
+/// Send ICMP echo via real NetworkStack (非推奨: ping_async を使用してください)
+///
+/// この関数はIRQ無効化 + 同期ロックを使用するため、デッドロックリスクがある。
+/// 新規コードでは `crate::net::api::icmp::ping_async()` または
+/// `IcmpEchoFuture` を使用すること。
+///
+/// 初期化時のブートストラップping（sync_drain_tx_queue前提）では
+/// 引き続き使用可能。
+#[deprecated(note = "use crate::net::api::icmp::ping_async() or IcmpEchoFuture instead")]
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
     // Avoid IRQ re-entry deadlock: RX IRQ path also touches the global stack lock.
     x86_64::instructions::interrupts::without_interrupts(|| {

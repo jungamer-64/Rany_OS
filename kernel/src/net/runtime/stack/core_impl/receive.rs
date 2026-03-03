@@ -101,6 +101,11 @@ impl NetworkStack {
                 // Fragment received, waiting for more fragments
                 // Nothing to do here
             }
+            Ipv4ProcessResult::ReassemblyTimeout(src, header_data) => {
+                // RFC 792: Send ICMP Time Exceeded (Fragment Reassembly Time Exceeded)
+                log::info!("IPv4: Reassembly timeout for {} - sending ICMP Time Exceeded", src);
+                self.send_icmp_time_exceeded(src, crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded, &header_data);
+            }
             Ipv4ProcessResult::Dropped => {
                 self.stats.record_dropped();
             }
@@ -225,108 +230,37 @@ impl NetworkStack {
     // =========================================================================
 
     /// Process IPv6 packet data
-    pub fn process_ipv6_data(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress, reassembled: bool) {
+    pub fn process_ipv6_data(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress, _reassembled: bool) {
         let ipv6 = match self.ipv6 {
-            Some(ref ipv6) => ipv6,
+            Some(ref mut ipv6) => ipv6,
             None => return,
         };
 
-        // Security: Minimum length and version check (RFC 8200)
-        if data.len() < 40 || (data[0] >> 4) != 6 {
-            self.stats.record_header_error();
-            return;
-        }
-
-        // Check for fragment header before normal processing
-        use crate::net::l3::ipv6::{skip_extension_headers_fraginfo, ExtHeaderResult};
-        match skip_extension_headers_fraginfo(data) {
-            ExtHeaderResult::Fragment {
-                unfragmentable,
-                frag_header,
-                frag_payload,
-            } => {
-                // Security (RFC 8200): A packet must not contain more than one Fragment header.
-                // If this packet was already reassembled, it must not contain another Fragment header.
-                if reassembled {
-                    log::warn!("[NET-IPV6] Dropping packet with nested Fragment header");
-                    self.stats.record_dropped();
-                    return;
-                }
-
-                // Extract dst from fixed header at offset 24
-                let dst = crate::net::l3::ipv6::Ipv6Address::new([
-                    data[24], data[25], data[26], data[27], data[28], data[29], data[30], data[31],
-                    data[32], data[33], data[34], data[35], data[36], data[37], data[38], data[39],
-                ]);
-
-                // Security: Check if the packet is for us before adding to reassembly buffer (DoS prevention)
-                if !ipv6.is_for_us(&dst) {
-                    self.stats.record_dropped();
-                    return;
-                }
-
-                // Extract src from fixed header at offset 8
-                let src = crate::net::l3::ipv6::Ipv6Address::new([
-                    data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
-                    data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
-                ]);
-
-                let (reassembled_pkt, expired) = self.ipv6_fragment_reassembler.process_fragment(
-                    src,
-                    dst,
-                    unfragmentable,
-                    &frag_header,
-                    frag_payload,
-                    current_time,
-                );
-
-                // Handle expired fragments by sending ICMPv6 Time Exceeded
-                for (exp_src, exp_dst, unfrag) in expired {
-                    // RFC 8200: Send Fragment Reassembly Time Exceeded
-                    // code 1 = fragment reassembly time exceeded
-                    
-                    // Security: RFC 4443 compliance check (e.g. no errors for multicast)
-                    if !self.should_send_icmp_v6_error(&unfrag, exp_src, false) {
-                        continue;
-                    }
-
-                    // Security: Rate limit ICMPv6 error messages (RFC 4443)
-                    if let Some(ref icmpv6) = self.icmpv6 {
-                        if !icmpv6.check_tx_rate_limit(current_time) {
-                            continue;
-                        }
-                    }
-
-                    let time_exceeded = crate::net::l3::icmpv6::Icmpv6EchoBuilder::build_time_exceeded(
-                        &exp_dst, &exp_src, 1, &unfrag
-                    );
-                    self.send_ipv6_icmpv6(&exp_dst, &exp_src, &time_exceeded);
-                }
-
-                if let Some(reassembled_data) = reassembled_pkt {
-                    // Security Fix: Offload reassembled IPv6 packets to the asynchronous endpoint stack
-                    // instead of processing them directly. This ensures consistent stack processing.
-                    crate::net::l4::endpoint::event::send_event_ignore(
-                        crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket { data: reassembled_data }
-                    );
-                }                return;
-            }
-            ExtHeaderResult::NoFragment(_, _) => {
-                // Fall through to normal processing
-            }
-        }
-
-        let result = ipv6.process(data);
+        // All fragmentation/extension header handling is now encapsulated in Ipv6Processor::process
+        let result = ipv6.process(data, current_time);
 
         match result {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
                 self.process_icmpv6_data(payload, src, dst, src_mac, hop_limit, current_time);
             }
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
+                // Security Fix: TCP through endpoint stack
                 crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6(src, dst, payload);
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
                 self.process_udp_data_v6(payload, src, dst, hop_limit, data);
+            }
+            Ipv6ProcessResult::Reassembled(reassembled_data) => {
+                // Security Fix: Offload reassembled IPv6 packets to the asynchronous endpoint stack
+                crate::net::l4::endpoint::event::send_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket { data: reassembled_data }
+                );
+            }
+            Ipv6ProcessResult::FragmentPending => {}
+            Ipv6ProcessResult::ReassemblyTimeout(src, _dst, unfragmentable) => {
+                // RFC 8200: Send ICMPv6 Time Exceeded (Fragment Reassembly Time Exceeded)
+                log::info!("IPv6: Reassembly timeout for {} - sending ICMPv6 Time Exceeded", src);
+                self.send_icmpv6_time_exceeded(src, 1, &unfragmentable);
             }
             Ipv6ProcessResult::Dropped => {
                 self.stats.record_dropped();
@@ -540,6 +474,30 @@ impl NetworkStack {
                     log::info!("NDP: Sent NA for {} to {}", target, na_dst);
                 }
             }
+            NdpResult::SendNeighborAdvertisementMulticast {
+                target,
+                our_mac,
+            } => {
+                // Get our link-local address
+                if let Some(ref ipv6) = self.ipv6 {
+                    let our_addr = ipv6.config().link_local;
+                    let mcast_dst = Ipv6Address::ALL_NODES_LINK_LOCAL;
+                    let na_msg = NdpProcessor::build_na(
+                        &our_addr,
+                        &mcast_dst,
+                        &target,
+                        &our_mac,
+                        false, // solicited = false for multicast defense
+                    );
+                    self.send_ipv6_icmpv6(&our_addr, &mcast_dst, &na_msg);
+                    log::info!("NDP: Sent Multicast NA for {} to defend address (DAD)", target);
+                }
+            }
+            NdpResult::SendNeighborSolicitation { src, dst, target } => {
+                let ns_msg = NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes());
+                self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
+                log::info!("NDP: Sent NS from {} to {} for target {}", src, dst, target);
+            }
             NdpResult::NeighborUpdated { ip, mac } => {
                 log::info!(
                     "NDP: Neighbor {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -578,6 +536,19 @@ impl NetworkStack {
                                         "SLAAC: Configured global address {} from prefix {}",
                                         global_addr, prefix
                                     );
+                                    
+                                    // Initiate Duplicate Address Detection (RFC 4862)
+                                    if let Some(ref mut ndp_proc) = self.ndp {
+                                        let dad_res = ndp_proc.initiate_dad(&global_addr);
+                                        match dad_res {
+                                            NdpResult::SendNeighborSolicitation { src, dst, target } => {
+                                                let ns_msg = NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes());
+                                                self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
+                                                log::info!("NDP: Sent DAD NS for target {}", target);
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                 }
                             }
                             if let Some(ref mut ndp) = self.ndp {

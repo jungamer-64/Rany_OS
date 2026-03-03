@@ -38,6 +38,19 @@ pub fn test_link_local() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_global() {
+    // 2001:db8::1 (documentation global unicast prefix)
+    let addr = Ipv6Address::new([
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    ]);
+    assert!(!addr.is_unspecified());
+    assert!(!addr.is_loopback());
+    assert!(!addr.is_multicast());
+    assert!(!addr.is_link_local());
+    assert!(addr.is_global());
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_header_chain_completeness_rfc7112() {
     // TCP header (20 bytes) - only 10 bytes provided
     let tcp_truncated = [0u8; 10];

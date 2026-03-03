@@ -71,7 +71,7 @@ pub fn test_fragment_reassembly_simple() {
     let h1_data = crate::util::struct_as_bytes(&header1);
 
     let result = reassembler.process_fragment(&header1, h1_data, &payload1, 0);
-    assert!(result.is_none()); // Not complete yet
+    assert!(result.0.is_none()); // Not complete yet
 
     // Second fragment (offset 8, last fragment)
     let header2 = Ipv4Header {
@@ -90,9 +90,9 @@ pub fn test_fragment_reassembly_simple() {
     let h2_data = crate::util::struct_as_bytes(&header2);
 
     let result = reassembler.process_fragment(&header2, h2_data, &payload2, 0);
-    assert!(result.is_some()); // Complete!
+    assert!(result.0.is_some()); // Complete!
 
-    let reassembled = result.unwrap();
+    let reassembled = result.0.unwrap();
     // Check payload in reassembled packet
     assert!(reassembled.len() >= 36); // 20 header + 16 payload
 }
@@ -184,7 +184,7 @@ pub fn test_fragment_overlap_detection() {
     let p1 = [0u8; 8];
     let h1_data = crate::util::struct_as_bytes(&hdr1);
     let result = reassembler.process_fragment(&hdr1, h1_data, &p1, 0);
-    assert!(result.is_none());
+    assert!(result.0.is_none());
 
     // second fragment overlaps first (offset 0)
     let hdr2 = Ipv4Header { flags_fragment: [0x00, 0x00], ..hdr1 };
@@ -193,7 +193,7 @@ pub fn test_fragment_overlap_detection() {
     let h2_data = crate::util::struct_as_bytes(&hdr2);
     let result2 = reassembler.process_fragment(&hdr2, h2_data, &p2, 0);
     // reassembler should drop buffer and return None
-    assert!(result2.is_none());
+    assert!(result2.0.is_none());
     // buffer map should be empty now
     assert_eq!(reassembler.active_buffers(), 0);
 }
@@ -253,7 +253,7 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
     let payload1 = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
 
     let result = reassembler.process_fragment(&header1, &h1_full, &payload1, 0);
-    assert!(result.is_none());
+    assert!(result.0.is_none());
 
     // Second fragment (offset 8, last fragment)
     let header2 = Ipv4Header {
@@ -272,9 +272,9 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
     let h2_data = crate::util::struct_as_bytes(&header2);
 
     let result = reassembler.process_fragment(&header2, h2_data, &payload2, 0);
-    assert!(result.is_some());
+    assert!(result.0.is_some());
 
-    let reassembled = result.unwrap();
+    let reassembled = result.0.unwrap();
     
     // Parse the reassembled packet
     if let Some(packet) = Ipv4Packet::parse(&reassembled) {

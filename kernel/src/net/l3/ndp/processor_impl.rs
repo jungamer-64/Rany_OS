@@ -139,11 +139,21 @@ impl NdpProcessor {
         }
 
         // Respond with Neighbor Advertisement
-        NdpResult::SendNeighborAdvertisement {
-            dst: src,
-            target,
-            our_mac: self.our_mac,
-            solicited: !src.is_unspecified(),
+        if src.is_unspecified() {
+            // RFC 4862 Section 5.4.3: Defense against DAD probe.
+            // MUST send to all-nodes multicast address.
+            log::info!("[NET-NDP] Received DAD probe for our address {} - defending (RFC 4862)", target);
+            NdpResult::SendNeighborAdvertisementMulticast {
+                target,
+                our_mac: self.our_mac,
+            }
+        } else {
+            NdpResult::SendNeighborAdvertisement {
+                dst: src,
+                target,
+                our_mac: self.our_mac,
+                solicited: true, // If it's not unspecified, it's a regular NS (usually)
+            }
         }
     }
 
@@ -451,6 +461,17 @@ impl NdpProcessor {
         // Build NS targeting the solicited-node multicast address
         let sn_mcast = target.solicited_node();
         Self::build_ns(&self.our_link_local, &sn_mcast, target, &self.our_mac)
+    }
+
+    /// Initiate Duplicate Address Detection (DAD) for a new address (RFC 4862)
+    pub fn initiate_dad(&self, target: &Ipv6Address) -> NdpResult {
+        log::info!("[NET-NDP] Initiating DAD for address {} (RFC 4862)", target);
+        let mcast_dst = target.solicited_node();
+        NdpResult::SendNeighborSolicitation {
+            src: Ipv6Address::UNSPECIFIED,
+            dst: mcast_dst,
+            target: *target,
+        }
     }
 
     /// Run periodic maintenance (expire entries + NUD timer processing)

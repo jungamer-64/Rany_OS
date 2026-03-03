@@ -952,6 +952,12 @@ pub enum Ipv6ProcessResult<'a> {
     Tcp(&'a [u8], Ipv6Address, Ipv6Address, u8),
     /// UDP payload with addresses and hop limit
     Udp(&'a [u8], Ipv6Address, Ipv6Address, u8),
+    /// Reassembled packet (owned data from fragment reassembly)
+    Reassembled(Vec<u8>),
+    /// Fragment received, reassembly in progress
+    FragmentPending,
+    /// Reassembly timeout (src, dst, unfragmentable_part for ICMPv6)
+    ReassemblyTimeout(Ipv6Address, Ipv6Address, Vec<u8>),
     /// Packet dropped (not for us, malformed, etc.)
     Dropped,
     /// Processing error
@@ -968,6 +974,10 @@ pub struct Ipv6Processor {
     config: Ipv6Config,
     /// Statistics
     stats: Ipv6Stats,
+    /// Fragment reassembly state (RFC 8200)
+    reassembler: Ipv6FragmentReassembler,
+    /// Path MTU cache (RFC 8201)
+    pmtu_cache: Ipv6PmtuCache,
 }
 
 // ============================================================================

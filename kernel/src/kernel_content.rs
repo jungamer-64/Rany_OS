@@ -36,6 +36,8 @@ mod driver_domain;
 mod memory;
 mod mm;
 mod net;
+#[cfg(feature = "qemu-test-export")]
+mod qemu_tests;
 mod panic_handler;
 mod power;
 mod sas;

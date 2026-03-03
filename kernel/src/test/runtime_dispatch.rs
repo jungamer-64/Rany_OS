@@ -48,12 +48,13 @@ pub enum RuntimeGroup {
     Storage,
     DriverDomain,
     Iommu,
+    Network,
     Step9Heavy,
 }
 
 pub struct RuntimeTestCase {
     pub id: &'static str,
-    pub run: fn() -> RuntimeTestResult,
+    pub run: fn(Option<&str>) -> RuntimeTestResult,
     pub tier: RuntimeTier,
     pub group: RuntimeGroup,
 }
@@ -84,6 +85,7 @@ fn is_known_profile(profile: &str) -> bool {
         || str_eq(profile, "storage")
         || str_eq(profile, "driver_domain")
         || str_eq(profile, "iommu")
+        || str_eq(profile, "network")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,23 +109,23 @@ impl RuntimeRunSummary {
     }
 }
 
-fn boot_smoke_cmdline_dispatch() -> RuntimeTestResult {
+fn boot_smoke_cmdline_dispatch(_case_filter: Option<&str>) -> RuntimeTestResult {
     RuntimeTestResult::pass()
 }
 
-fn nightly_smoke_cmdline_dispatch() -> RuntimeTestResult {
+fn nightly_smoke_cmdline_dispatch(_case_filter: Option<&str>) -> RuntimeTestResult {
     RuntimeTestResult::pass()
 }
 
-fn nightly_powercut_replay_smoke() -> RuntimeTestResult {
+fn nightly_powercut_replay_smoke(_case_filter: Option<&str>) -> RuntimeTestResult {
     RuntimeTestResult::pass()
 }
 
-fn nightly_dual_transport_kgdb_smoke() -> RuntimeTestResult {
+fn nightly_dual_transport_kgdb_smoke(_case_filter: Option<&str>) -> RuntimeTestResult {
     RuntimeTestResult::pass()
 }
 
-fn storage_integration_suite() -> RuntimeTestResult {
+fn storage_integration_suite(_case_filter: Option<&str>) -> RuntimeTestResult {
     let (_passed, failed) = crate::test::integration::run_all_integration_tests();
     if failed == 0 {
         RuntimeTestResult::pass()
@@ -132,7 +134,7 @@ fn storage_integration_suite() -> RuntimeTestResult {
     }
 }
 
-fn iommu_integration_suite() -> RuntimeTestResult {
+fn iommu_integration_suite(_case_filter: Option<&str>) -> RuntimeTestResult {
     let suite = crate::test::integration::test_iommu();
     suite.print_summary();
     if suite.failed() == 0 {
@@ -142,7 +144,27 @@ fn iommu_integration_suite() -> RuntimeTestResult {
     }
 }
 
-fn driver_domain_runtime_suite() -> RuntimeTestResult {
+fn network_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        let summary = crate::qemu_tests::run_network_runtime_suite(case_filter);
+        if summary.failed > 0 {
+            return RuntimeTestResult::fail("network runtime failures");
+        }
+        if summary.blocked > 0 {
+            return RuntimeTestResult::blocked("network runtime blocked");
+        }
+        return RuntimeTestResult::pass();
+    }
+
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        let _ = case_filter;
+        RuntimeTestResult::blocked("network runtime requires qemu-test-export")
+    }
+}
+
+fn driver_domain_runtime_suite(_case_filter: Option<&str>) -> RuntimeTestResult {
     #[cfg(feature = "qemu-test-export")]
     {
         let summary = crate::driver_domain::qemu_tests::run_driver_domain_runtime_suite();
@@ -199,6 +221,12 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::Iommu,
     },
     RuntimeTestCase {
+        id: "network.runtime_suite",
+        run: network_runtime_suite,
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Network,
+    },
+    RuntimeTestCase {
         id: "driver_domain.runtime_suite",
         run: driver_domain_runtime_suite,
         tier: RuntimeTier::PrRequired,
@@ -219,6 +247,8 @@ fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
         matches!(case.group, RuntimeGroup::DriverDomain)
     } else if str_eq(profile, "iommu") {
         matches!(case.group, RuntimeGroup::Iommu)
+    } else if str_eq(profile, "network") {
+        matches!(case.group, RuntimeGroup::Network)
     } else if str_eq(profile, "step9-heavy") {
         matches!(case.group, RuntimeGroup::Step9Heavy)
     } else {
@@ -271,14 +301,26 @@ pub fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
             continue;
         }
 
+        let pass_filter_to_inner = str_eq(profile, "network") && str_eq(case.id, "network.runtime_suite");
+
         if let Some(filter) = case_filter {
-            if !str_eq(case.id, filter) {
+            if !pass_filter_to_inner && !str_eq(case.id, filter) {
                 continue;
             }
         }
 
+        let nested_case_filter = if pass_filter_to_inner {
+            match case_filter {
+                Some(filter) if str_eq(filter, case.id) => None,
+                Some(filter) => Some(filter),
+                None => None,
+            }
+        } else {
+            None
+        };
+
         selected_any = true;
-        let result = (case.run)();
+        let result = (case.run)(nested_case_filter);
         log_case_result(case.id, result);
 
         match result.status {

@@ -24,7 +24,30 @@ impl NetworkStack {
                     *resolved_mac.as_bytes(),
                 );
             }
+            ArpResult::SendGratuitous => {
+                self.send_gratuitous_arp();
+            }
             ArpResult::Ignored | ArpResult::Invalid => {}
+        }
+    }
+
+    /// Send a gratuitous ARP to defend our address (RFC 5227)
+    pub(crate) fn send_gratuitous_arp(&mut self) {
+        let mut buffer = [0u8; 64];
+        let mac = self.mac_address();
+
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(MacAddress::BROADCAST)
+                .set_source(mac)
+                .set_ether_type(EtherType::Arp);
+
+            let payload = frame.payload_mut();
+            if let Some(len) = self.arp.build_gratuitous(payload) {
+                frame.set_payload_len(len);
+                frame.pad_to_minimum();
+                self.transmit(frame.as_bytes());
+            }
         }
     }
 

@@ -31,6 +31,42 @@ impl NetworkStack {
         );
     }
 
+    /// Send an ICMPv6 Time Exceeded error (RFC 4443).
+    pub fn send_icmpv6_time_exceeded(
+        &mut self,
+        dst_v6: Ipv6Address,
+        code: u8,
+        original_packet: &[u8],
+    ) -> bool {
+        if let Some(ref mut ipv6_proc) = self.ipv6 {
+            let our_addr = ipv6_proc.config().link_local;
+            
+            // Security: RFC 4443 compliance check (no errors for multicast etc)
+            if !self.should_send_icmp_v6_error(original_packet, dst_v6, false) {
+                return false;
+            }
+
+            // Security: Rate limit ICMPv6 error messages (RFC 4443)
+            let current_time = self.current_time();
+            if let Some(ref icmpv6) = self.icmpv6 {
+                if !icmpv6.check_tx_rate_limit(current_time) {
+                    return false;
+                }
+            }
+
+            let icmp_msg = crate::net::l3::icmpv6::Icmpv6EchoBuilder::build_time_exceeded(
+                &our_addr,
+                &dst_v6,
+                code,
+                original_packet
+            );
+            self.send_ipv6_icmpv6(&our_addr, &dst_v6, &icmp_msg);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Send an IPv6 packet containing ICMPv6 payload
     pub(crate) fn send_ipv6_icmpv6(&mut self, src: &Ipv6Address, dst: &Ipv6Address, icmpv6_data: &[u8]) {
         let config = self.config;

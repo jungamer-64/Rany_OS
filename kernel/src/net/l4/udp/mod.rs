@@ -8,7 +8,7 @@
 
 
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
-use crate::net::l3::ipv6::{Ipv6Address, ipv6_checksum};
+use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 use crate::sync::PoisonLock;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -20,6 +20,12 @@ use crate::net::datapath::mempool::PacketRef;
 use crate::net::types::NetworkError;
 
 extern crate alloc;
+
+#[inline]
+fn ipv6_checksum(src: &Ipv6Address, dst: &Ipv6Address, next_header: IpProtocol, data: &[u8]) -> u16 {
+    let pseudo = ipv6_pseudo_header_checksum(src, dst, next_header, data.len() as u32);
+    data_checksum(data, pseudo)
+}
 
 /// UDP header
 mod types;

@@ -388,6 +388,9 @@ python3 scripts/run_pure_tier.py --tier pr-required
 # 任意: QEMU実 required tier（full-boot）
 cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
+# 任意: network プロファイルのみ実行
+QEMU_TEST_PROFILE_ONLY=network cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
+
 # 任意: 夜間拡張 tier
 python3 scripts/run_pure_tier.py --tier nightly-required --include-ignored
 cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapture
@@ -401,6 +404,7 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 - `pending` / `kernel_runtime_pending` スイート運用は廃止。tier は `pr-required` / `nightly-required` に再編済み。
 - 移行棚卸しの真実源は `tests/migration_case_map.toml`。
 - `qemu-tests` の serial / QEMU stderr ログは `target/qemu-logs/` に出力される。
+- `fullboot_pr_required` の対象プロファイルは `boot-smoke`, `storage`, `driver_domain`, `iommu`, `network`。
 - NET endpoint required 実行対象（68件）: congestion(core/cubic/bbr/variant) + flow_control + futures + handler + inner + retransmit + segment + socket + tcb + core(tests.rs) + types + window_scale。
 - NET endpoint residual（監視）: `none`。
 - NET core stack required 実行対象（90件）: L2-L4中心（adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, ipv6, ndp, tcp）。

@@ -5,10 +5,19 @@
 //!
 //! `NetworkStack` からIPアドレス、MAC、サブネットマスク、ゲートウェイ、
 //! パケットカウンタなどを安全に読み取る関数を提供する。
+//!
+//! ## 非同期API（推奨）
+//! `get_network_config_async()` / `get_network_stats_async()` は
+//! イベントキュー経由でスタックにアクセスし、同期ロックを回避する。
 
+use core::future::Future;
+use core::pin::Pin;
 use core::sync::atomic::Ordering;
+use core::task::{Context, Poll};
+use alloc::sync::Arc;
 use crate::net::runtime::stack;
 use crate::sync::PoisonLock;
+use crate::sync::atomic_waker::AtomicWaker;
 
 /// Network configuration snapshot for shell commands.
 #[derive(Debug, Clone)]
@@ -40,6 +49,11 @@ static NETWORK_STATS: PoisonLock<NetworkStatsSnapshot> = PoisonLock::new(Network
     rx_dropped: 0,
 });
 
+/// 同期ネットワーク設定取得（非推奨：get_network_config_async を使用してください）
+///
+/// `stack().lock()` で同期ロックを取得するため、asyncコンテキストでの
+/// 使用はデッドロックリスクがある。
+#[deprecated(note = "use get_network_config_async() instead")]
 pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => guard.as_ref().map(|stack_guard| {
@@ -58,6 +72,8 @@ pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
     }
 }
 
+/// 同期ネットワーク統計取得（非推奨：get_network_stats_async を使用してください）
+#[deprecated(note = "use get_network_stats_async() instead")]
 pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -91,4 +107,127 @@ pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
         },
     };
     Some(stats)
+}
+
+// ============================================================================
+// 非同期API（推奨）
+// ============================================================================
+
+/// 非同期ネットワーク設定取得Future
+///
+/// イベントキュー経由でスタックにアクセスし、同期ロックを回避する。
+pub struct GetConfigFuture {
+    result_slot: Arc<PoisonLock<Option<Option<NetworkConfigSnapshot>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl GetConfigFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for GetConfigFuture {
+    type Output = Option<NetworkConfigSnapshot>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            // イベントキュー経由でconfig取得を要求
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetConfig {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        // 結果をチェック
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(result) = slot.as_ref() {
+                return Poll::Ready(result.clone());
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期ネットワーク設定取得（推奨API）
+///
+/// イベントキュー経由でスタックにアクセスするため、
+/// 同期ロック取得を完全に回避する。
+///
+/// # 使用例
+/// ```ignore
+/// let config = get_network_config_async().await;
+/// ```
+pub fn get_network_config_async() -> GetConfigFuture {
+    GetConfigFuture::new()
+}
+
+/// 非同期ネットワーク統計取得Future
+pub struct GetStatsFuture {
+    result_slot: Arc<PoisonLock<Option<Option<NetworkStatsSnapshot>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl GetStatsFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for GetStatsFuture {
+    type Output = Option<NetworkStatsSnapshot>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetStats {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(result) = slot.as_ref() {
+                return Poll::Ready(result.clone());
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期ネットワーク統計取得（推奨API）
+///
+/// # 使用例
+/// ```ignore
+/// let stats = get_network_stats_async().await;
+/// ```
+pub fn get_network_stats_async() -> GetStatsFuture {
+    GetStatsFuture::new()
 }

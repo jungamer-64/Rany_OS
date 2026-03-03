@@ -6,6 +6,12 @@ use crate::net::obs::{
 
 impl VirtioNetDevice {
 
+    /// 同期パケット送信（非推奨：send_async または send_zero_copy を使用してください）
+    ///
+    /// DMAバッファを同期的に割り当て、`notify()` 後に `process_tx_completions()` を
+    /// インラインで呼び出す。割り込みコンテキストから呼ばれるとデッドロックのリスクがある。
+    /// 初期化時のブートストラップ送信（エグゼキュータ起動前）では引き続き使用可能。
+    #[deprecated(note = "use send_async() or send_zero_copy() instead")]
     pub fn submit_tx(&self, data: &[u8]) -> Result<(), VirtioNetError> {
         let data_len = data.len();
         if data_len >= 14 {

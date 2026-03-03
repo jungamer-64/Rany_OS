@@ -439,22 +439,21 @@ impl FragmentReassembler {
 
     /// Process an incoming fragment
     ///
-    /// Returns Some(reassembled_packet) if reassembly is complete
-    /// Process an incoming IPv4 fragment
+    /// Returns (reassembled_packet, expired_buffers)
     pub fn process_fragment(
         &mut self,
         header: &Ipv4Header,
         header_data: &[u8],
         payload: &[u8],
         current_time: u64,
-    ) -> Option<Vec<u8>> {
+    ) -> (Option<Vec<u8>>, Vec<(Ipv4Address, Vec<u8>)>) {
         self.stats.fragments_received += 1;
 
         let key = FragmentKey::from_header(header);
         let src = header.source();
 
         // Evict expired buffers
-        self.evict_expired(current_time);
+        let expired = self.evict_expired(current_time);
 
         // Check if we need to create a new buffer
         if !self.buffers.contains_key(&key) {
@@ -468,7 +467,7 @@ impl FragmentReassembler {
                     self.buffers.remove(&oldest_key);
                 } else {
                     self.stats.dropped_limit += 1;
-                    return None;
+                    return (None, expired);
                 }
             }
 
@@ -481,14 +480,17 @@ impl FragmentReassembler {
                     src
                 );
                 self.stats.dropped_limit += 1;
-                return None;
+                return (None, expired);
             }
 
             self.buffers.insert(key, FragmentBuffer::new(current_time));
         }
 
         // Get the buffer and add fragment
-        let buffer = self.buffers.get_mut(&key)?;
+        let buffer = match self.buffers.get_mut(&key) {
+            Some(b) => b,
+            None => return (None, expired),
+        };
 
         // Capture first header for reassembly
         buffer.store_first_header_if_needed(header_data, header.fragment_offset());
@@ -497,7 +499,7 @@ impl FragmentReassembler {
             self.stats.dropped_invalid += 1;
             // Remove invalid buffer
             self.buffers.remove(&key);
-            return None;
+            return (None, expired);
         }
 
         // Check if reassembly is complete
@@ -509,25 +511,33 @@ impl FragmentReassembler {
                 self.stats.reassembled += 1;
             }
 
-            return result;
+            return (result, expired);
         }
 
-        None
+        (None, expired)
     }
 
     /// Evict expired reassembly buffers
-    pub(super) fn evict_expired(&mut self, current_time: u64) {
-        let expired_keys: Vec<_> = self
-            .buffers
-            .iter()
-            .filter(|(_, buf)| buf.is_expired(current_time))
-            .map(|(k, _)| *k)
-            .collect();
+    /// Returns a list of (src, first_header) for buffers that had the first fragment
+    pub(super) fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv4Address, Vec<u8>)> {
+        let mut expired_with_first = Vec::new();
+        let mut expired_keys = Vec::new();
+
+        for (key, buf) in self.buffers.iter() {
+            if buf.is_expired(current_time) {
+                if let Some(ref header) = buf.first_header {
+                    expired_with_first.push((key.src, header.clone()));
+                }
+                expired_keys.push(*key);
+            }
+        }
 
         for key in expired_keys {
             self.buffers.remove(&key);
             self.stats.timeouts += 1;
         }
+
+        expired_with_first
     }
 
     /// Get the number of active reassembly buffers
@@ -604,6 +614,8 @@ pub enum Ipv4ProcessResult<'a> {
     Reassembled(Vec<u8>),
     /// Fragment received, reassembly in progress
     FragmentPending,
+    /// Reassembly timeout (source address and first fragment's header for ICMP)
+    ReassemblyTimeout(Ipv4Address, Vec<u8>),
     /// Dropped
     Dropped,
     /// Error
@@ -726,9 +738,15 @@ impl Ipv4Processor {
             let header_len = header.header_len();
             let header_data = &data[..header_len];
             let payload = packet.payload();
-            if let Some(reassembled) = self.reassembler.process_fragment(header, header_data, payload, current_time) {
+            let (reassembled, expired) = self.reassembler.process_fragment(header, header_data, payload, current_time);
+            
+            if let Some(data) = reassembled {
                 // Reassembly complete - return the reassembled packet
-                return Ipv4ProcessResult::Reassembled(reassembled);
+                return Ipv4ProcessResult::Reassembled(data);
+            } else if !expired.is_empty() {
+                // Return the first expired buffer for ICMP processing
+                let (src, header_data) = expired[0].clone();
+                return Ipv4ProcessResult::ReassemblyTimeout(src, header_data);
             } else {
                 // Still waiting for more fragments
                 return Ipv4ProcessResult::FragmentPending;

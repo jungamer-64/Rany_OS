@@ -624,16 +624,20 @@ impl TcpControlBlock {
 
     #[inline]
     pub fn touch_oldest_unacked_for_retransmit(&mut self, current_time: u64) -> Option<(u32, Vec<u8>)> {
+        let ts_val = self.get_ts_val(); // Get new timestamp for retransmission
         let oldest = self.timers.unacked_segments.front_mut()?;
         oldest.sent_time = current_time;
+        oldest.ts_val = ts_val;
         oldest.retransmit_count = oldest.retransmit_count.saturating_add(1);
         Some((oldest.seq, oldest.data.clone()))
     }
 
     #[inline]
     pub fn touch_unacked_segment_for_retransmit(&mut self, seq: u32, current_time: u64) -> bool {
+        let ts_val = self.get_ts_val(); // Get new timestamp for retransmission
         if let Some(seg) = self.find_unacked_segment_mut_by_seq(seq) {
             seg.sent_time = current_time;
+            seg.ts_val = ts_val;
             seg.retransmit_count = seg.retransmit_count.saturating_add(1);
             return true;
         }
@@ -647,10 +651,12 @@ impl TcpControlBlock {
 
     #[inline]
     fn push_unacked_segment(&mut self, seq: u32, data: Vec<u8>, current_time: u64, flags: u16) {
+        let ts_val = self.options.ts_val; // Use the current timestamp that was placed in the header
         self.timers.unacked_segments.push_back(UnackedSegment {
             seq,
             data,
             sent_time: current_time,
+            ts_val,
             retransmit_count: 0,
             flags,
         });
@@ -672,7 +678,7 @@ impl TcpControlBlock {
                 removed = removed.saturating_add(seq_len);
 
                 // Karn's Algorithm: Only take RTT sample if segment was NOT retransmitted.
-                if seg.retransmit_count == 0 {
+                if seg.retransmit_count == 0 && rtt_sample.is_none() {
                     rtt_sample = Some(current_time.saturating_sub(seg.sent_time));
                 }
                 continue;
@@ -683,8 +689,6 @@ impl TcpControlBlock {
                 removed = removed.saturating_add(Self::trim_unacked_segment_prefix_to_ack(
                     &mut seg, ack_num,
                 ));
-                // Note: Partial ACKs don't provide a clean RTT sample for the whole segment,
-                // so we don't update rtt_sample here.
             }
 
             kept.push_back(seg);
@@ -711,14 +715,11 @@ impl TcpControlBlock {
         if acked == 0 {
             return 0;
         }
-
         let original_seq = seg.seq;
-        // Keep sent_time/retransmit_count as-is: the remaining suffix was sent at the same time
-        // and should still participate in timeout/backoff accounting as the oldest outstanding data.
         seg.seq = ack_num;
 
-        if (seg.flags & TcpHeader::FLAG_SYN) != 0 && acked > 0 {
-            seg.flags &= !TcpHeader::FLAG_SYN;
+        if (seg.flags & 0x02) != 0 && acked > 0 { // SYN
+            seg.flags &= !0x02;
             acked -= 1;
         }
 
@@ -728,13 +729,31 @@ impl TcpControlBlock {
             acked -= payload_trim as u32;
         }
 
-        if (seg.flags & TcpHeader::FLAG_FIN) != 0 && acked > 0 {
-            seg.flags &= !TcpHeader::FLAG_FIN;
+        if (seg.flags & 0x01) != 0 && acked > 0 { // FIN
+            seg.flags &= !0x01;
             acked -= 1;
         }
 
         debug_assert_eq!(acked, 0, "partial ACK trim exceeded segment sequence-space");
         ack_num.wrapping_sub(original_seq)
+    }
+
+    /// Remove acknowledged segments from retransmission queue
+    pub fn ack_segments(&mut self, ack_num: u32, current_time: u64) {
+        // Remove all segments with seq + len <= ack_num and count removed sequence-space bytes.
+        let (removed, rtt_sample) = self.retain_unacked_after_ack_and_count_removed(ack_num, current_time);
+        self.tx.outstanding_bytes = self.tx.outstanding_bytes.saturating_sub(removed);
+
+        if let Some(rtt) = rtt_sample {
+            if rtt > 0 {
+                self.update_rto(rtt);
+            }
+        }
+
+        // Reset retransmit count on successful ACK
+        if self.unacked_queue_is_empty() {
+            self.timers.retransmit_count = 0;
+        }
     }
 
     /// OOMによるパケットドロップを記録する
@@ -832,10 +851,10 @@ impl TcpControlBlock {
     #[inline]
     pub(crate) fn seq_space_len_for_len_flags(data_len: usize, flags: u16) -> u32 {
         let mut len = data_len as u32;
-        if flags & TcpHeader::FLAG_SYN != 0 {
+        if flags & 0x02 != 0 { // SYN
             len = len.saturating_add(1);
         }
-        if flags & TcpHeader::FLAG_FIN != 0 {
+        if flags & 0x01 != 0 { // FIN
             len = len.saturating_add(1);
         }
         len
@@ -858,24 +877,6 @@ impl TcpControlBlock {
 
         self.tx.outstanding_bytes = self.tx.outstanding_bytes.saturating_add(added);
         self.push_unacked_segment(seq, data, current_time, flags);
-    }
-
-    /// Remove acknowledged segments from retransmission queue
-    pub fn ack_segments(&mut self, ack_num: u32, current_time: u64) {
-        // Remove all segments with seq + len <= ack_num and count removed sequence-space bytes.
-        let (removed, rtt_sample) = self.retain_unacked_after_ack_and_count_removed(ack_num, current_time);
-        self.tx.outstanding_bytes = self.tx.outstanding_bytes.saturating_sub(removed);
-
-        if let Some(rtt) = rtt_sample {
-            if rtt > 0 {
-                self.update_rto(rtt);
-            }
-        }
-
-        // Reset retransmit count on successful ACK
-        if self.unacked_queue_is_empty() {
-            self.timers.retransmit_count = 0;
-        }
     }
 
     /// Check if retransmission timeout has occurred

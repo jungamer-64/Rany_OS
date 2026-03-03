@@ -274,6 +274,7 @@ fn profile_needs_iommu(profile: &str) -> bool {
             | "storage"
             | "driver_domain"
             | "iommu"
+            | "network"
             | "pr-required"
             | "nightly-required"
             | "step9-heavy"

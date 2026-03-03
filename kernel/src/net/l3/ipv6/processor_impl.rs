@@ -1,12 +1,15 @@
 use super::*;
+use crate::net::l3::ipv6::{Ipv6Packet, IPV6_HEADER_SIZE, skip_extension_headers_fraginfo, ExtHeaderResult};
 
 
 impl Ipv6Processor {
-    /// Create a new processor with config
+    /// Create a new IPv6 processor
     pub fn new(config: Ipv6Config) -> Self {
-        Self {
+        Ipv6Processor {
             config,
             stats: Ipv6Stats::default(),
+            reassembler: Ipv6FragmentReassembler::new(Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS),
+            pmtu_cache: Ipv6PmtuCache::new(Ipv6PmtuCache::DEFAULT_MAX_ENTRIES),
         }
     }
 
@@ -29,7 +32,7 @@ impl Ipv6Processor {
     }
 
     /// Process an incoming IPv6 packet
-    pub fn process<'a>(&self, data: &'a [u8]) -> Ipv6ProcessResult<'a> {
+    pub fn process<'a>(&mut self, data: &'a [u8], current_time: u64) -> Ipv6ProcessResult<'a> {
         // Parse the packet
         let packet = match Ipv6Packet::parse(data) {
             Some(p) => p,
@@ -66,17 +69,34 @@ impl Ipv6Processor {
             return Ipv6ProcessResult::Dropped;
         }
 
-        // Skip extension headers to find upper-layer protocol
-        let (final_protocol, upper_payload) = packet.skip_extension_headers();
+        // Walk extension headers with fragment awareness
+        match skip_extension_headers_fraginfo(data) {
+            ExtHeaderResult::NoFragment(final_protocol, upper_payload) => {
+                // Dispatch based on upper-layer protocol
+                match final_protocol {
+                    IpProtocol::Icmpv6 => Ipv6ProcessResult::Icmpv6(upper_payload, src, dst, packet.hop_limit()),
+                    IpProtocol::Tcp => Ipv6ProcessResult::Tcp(upper_payload, src, dst, packet.hop_limit()),
+                    IpProtocol::Udp => Ipv6ProcessResult::Udp(upper_payload, src, dst, packet.hop_limit()),
+                    _ => {
+                        self.stats.record_dropped();
+                        Ipv6ProcessResult::Dropped
+                    }
+                }
+            }
+            ExtHeaderResult::Fragment { unfragmentable, frag_header, frag_payload } => {
+                let (reassembled, expired) = self.reassembler.process_fragment(
+                    src, dst, unfragmentable, &frag_header, frag_payload, current_time
+                );
 
-        // Dispatch based on upper-layer protocol
-        match final_protocol {
-            IpProtocol::Icmpv6 => Ipv6ProcessResult::Icmpv6(upper_payload, src, dst, packet.hop_limit()),
-            IpProtocol::Tcp => Ipv6ProcessResult::Tcp(upper_payload, src, dst, packet.hop_limit()),
-            IpProtocol::Udp => Ipv6ProcessResult::Udp(upper_payload, src, dst, packet.hop_limit()),
-            _ => {
-                self.stats.record_dropped();
-                Ipv6ProcessResult::Dropped
+                if let Some(data) = reassembled {
+                    return Ipv6ProcessResult::Reassembled(data);
+                } else if !expired.is_empty() {
+                    // Return first expired buffer for ICMPv6 processing
+                    let (e_src, e_dst, e_unfrag) = expired[0].clone();
+                    return Ipv6ProcessResult::ReassemblyTimeout(e_src, e_dst, e_unfrag);
+                } else {
+                    return Ipv6ProcessResult::FragmentPending;
+                }
             }
         }
     }
@@ -151,26 +171,8 @@ pub fn ipv6_pseudo_header_checksum(
     sum += u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as u32;
     sum += u16::from_be_bytes([len_bytes[2], len_bytes[3]]) as u32;
 
-    // Next header (zero-padded to 32 bits)
+    // Next Header (padded to 32 bits)
     sum += u8::from(next_header) as u32;
 
     sum
 }
-
-/// Compute full checksum over pseudo-header + data
-///
-/// Uses the same folding algorithm as IPv4's data_checksum
-pub fn ipv6_checksum(
-    src: &Ipv6Address,
-    dst: &Ipv6Address,
-    next_header: IpProtocol,
-    data: &[u8],
-) -> u16 {
-    let pseudo = ipv6_pseudo_header_checksum(src, dst, next_header, data.len() as u32);
-    crate::net::l3::ipv4::data_checksum(data, pseudo)
-}
-
-// =====================================================
-// Tests
-// =====================================================
-

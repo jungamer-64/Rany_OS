@@ -9,6 +9,8 @@ mod wave8_net_tests;
 pub use wave8_net_tests::*;
 mod storage_fs_tests;
 pub use storage_fs_tests::*;
+mod network_runtime_suite;
+pub use network_runtime_suite::*;
 struct FixedBuf {
     buf: [u8; 96],
     len: usize,

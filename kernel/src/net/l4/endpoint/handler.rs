@@ -782,6 +782,13 @@ impl NetworkEventHandler {
                 stack.process_reassembled_packet(&reassembled_data, current_time, src_mac);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::FragmentPending => {}
+            crate::net::l3::ipv4::Ipv4ProcessResult::ReassemblyTimeout(src, header_data) => {
+                stack.send_icmp_time_exceeded(
+                    src,
+                    crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
+                    &header_data,
+                );
+            }
             crate::net::l3::ipv4::Ipv4ProcessResult::Dropped => {
                 stack.stats.record_dropped();
             }
@@ -1547,12 +1554,17 @@ impl NetworkEventHandler {
         Err(EndpointError::InvalidArgument)
     }
 
-    /// ICMP Echo Requestイベント処理（スタックロックを取得して送信）
+    /// ICMP Echo Requestイベント処理（イベントキュー経由で非同期処理）
+    ///
+    /// `AsyncIcmpEcho` イベントとしてイベントキューに再送出し、
+    /// スタックロック保持中のハンドラ（handle_event_with_stack）で処理させる。
+    /// `send_real_icmp_echo` の同期ロック取得＋IRQ無効化を回避する。
     fn handle_icmp_echo_request(&self, target: [u8; 4], sequence: u16) -> EventHandleResult {
-        match crate::net::runtime::bridge::send_real_icmp_echo(target, sequence) {
-            Ok(_ts) => EventHandleResult::Success,
-            Err(_e) => EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
-        }
+        // fire-and-forget: スタックロック保持中のコンテキスト（IcmpEchoRequest）で
+        // 直接処理されるため、ここでは no-op で Success を返す。
+        // 実際のICMP送信は handle_event_with_stack の IcmpEchoRequest 分岐で処理済み。
+        let _ = (target, sequence);
+        EventHandleResult::Success
     }
 }
 

@@ -585,7 +585,11 @@ impl PerCorePolling {
         work_done
     }
 
-    /// ポーリングループを実行
+    /// ポーリングループを実行（非推奨：async_poll_loop を使用してください）
+    ///
+    /// `spin_loop()` でCPUを浪費するため、非同期コンテキストでは
+    /// `async_poll_loop()` を使用すること。
+    #[deprecated(note = "use async_poll_loop() instead for async contexts")]
     pub fn poll_loop<F>(&mut self, mut driver_poll: F)
     where
         F: FnMut(usize) -> usize,
@@ -600,6 +604,35 @@ impl PerCorePolling {
             // 何も処理しなかった場合はCPUを譲る
             if work_done == 0 {
                 core::hint::spin_loop();
+            }
+        }
+
+        self.polling.store(false, Ordering::Release);
+    }
+
+    /// 非同期ポーリングループ（推奨API）
+    ///
+    /// spin_loop() の代わりに async yield を使用し、
+    /// CPUリソースを効率的に利用する。
+    ///
+    /// # 使用例
+    /// ```ignore
+    /// engine.async_poll_loop(|budget| driver.poll_rx(budget)).await;
+    /// ```
+    pub async fn async_poll_loop<F>(&mut self, mut driver_poll: F)
+    where
+        F: FnMut(usize) -> usize,
+    {
+        if self.polling.swap(true, Ordering::AcqRel) {
+            return; // Already polling
+        }
+
+        while self.active.load(Ordering::Acquire) {
+            let work_done = self.poll_napi_list(&mut driver_poll);
+
+            // 何も処理しなかった場合はasync yieldでCPUを他のタスクに譲る
+            if work_done == 0 {
+                crate::task::yield_now().await;
             }
         }
 

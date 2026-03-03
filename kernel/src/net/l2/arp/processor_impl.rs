@@ -108,6 +108,15 @@ impl ArpProcessor {
 
         match packet.operation() {
             ArpOperation::Request => {
+                // RFC 5227: Check for ARP probe (sender_ip is unspecified)
+                if sender_ip.is_any() {
+                    if target_ip == self.local_ip {
+                        log::info!("[NET-ARP] Received ARP probe for our IP {} - sending gratuitous ARP to defend (RFC 5227)", target_ip);
+                        return ArpResult::SendGratuitous;
+                    }
+                    return ArpResult::Ignored;
+                }
+
                 // Is this request for us?
                 if target_ip == self.local_ip {
                     ArpResult::SendReply {

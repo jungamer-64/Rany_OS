@@ -70,6 +70,8 @@ pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
     Some(connections)
 }
 
+/// 同期UDPエンドポイント一覧取得（非推奨：get_udp_endpoints_async を使用してください）
+#[deprecated(note = "use get_udp_endpoints_async() instead")]
 pub fn get_udp_endpoints() -> Option<Vec<UdpEndpointInfo>> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -96,6 +98,8 @@ pub fn get_udp_endpoints() -> Option<Vec<UdpEndpointInfo>> {
     None
 }
 
+/// 同期ARPキャッシュ取得（非推奨：get_arp_cache_async を使用してください）
+#[deprecated(note = "use get_arp_cache_async() instead")]
 pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -119,6 +123,8 @@ pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
     None
 }
 
+/// 同期ARPキャッシュ挿入（非推奨：arp_cache_insert_async を使用してください）
+#[deprecated(note = "use arp_cache_insert_async() instead")]
 pub fn arp_cache_insert(ip: Ipv4Address, mac: MacAddress) -> bool {
     if let Ok(mut guard) = stack::stack().lock() {
         if let Some(stack_ref) = guard.as_mut() {
@@ -128,4 +134,137 @@ pub fn arp_cache_insert(ip: Ipv4Address, mac: MacAddress) -> bool {
         }
     }
     false
+}
+
+// ============================================================================
+// 非同期API（推奨）
+// ============================================================================
+
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use alloc::sync::Arc;
+use crate::sync::PoisonLock;
+use crate::sync::atomic_waker::AtomicWaker;
+
+/// 非同期ARPキャッシュ取得Future
+pub struct GetArpCacheFuture {
+    result_slot: Arc<PoisonLock<Option<Vec<ArpCacheEntry>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl GetArpCacheFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for GetArpCacheFuture {
+    type Output = Vec<ArpCacheEntry>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetArpCache {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(entries) = slot.as_ref() {
+                return Poll::Ready(entries.clone());
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期ARPキャッシュ取得（推奨API）
+///
+/// イベントキュー経由でスタックにアクセスするため、
+/// 同期ロック取得を完全に回避する。
+///
+/// # 使用例
+/// ```ignore
+/// let entries = get_arp_cache_async().await;
+/// ```
+pub fn get_arp_cache_async() -> GetArpCacheFuture {
+    GetArpCacheFuture::new()
+}
+
+/// 非同期ARPキャッシュ挿入（推奨API）
+///
+/// イベントキュー経由でスタックにARP挿入イベントを送出する。
+pub fn arp_cache_insert_async(ip: Ipv4Address, mac: MacAddress) {
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncArpInsert {
+            ip: *ip.as_bytes(),
+            mac: *mac.as_bytes(),
+        },
+    );
+}
+
+/// 非同期UDPエンドポイント一覧取得Future
+pub struct GetUdpEndpointsFuture {
+    result_slot: Arc<PoisonLock<Option<Vec<UdpEndpointInfo>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl GetUdpEndpointsFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for GetUdpEndpointsFuture {
+    type Output = Vec<UdpEndpointInfo>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetUdpEndpoints {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(endpoints) = slot.as_ref() {
+                return Poll::Ready(endpoints.clone());
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期UDPエンドポイント一覧取得（推奨API）
+pub fn get_udp_endpoints_async() -> GetUdpEndpointsFuture {
+    GetUdpEndpointsFuture::new()
 }

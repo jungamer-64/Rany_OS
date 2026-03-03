@@ -1,4 +1,8 @@
 use super::*;
+use crate::sync::{
+    Backoff, BoundedChannel, LockFreeIndexStack, LockFreeIndexStackPushError, MpmcRingBuffer,
+    MpscRingBuffer, Seqlock, SpscRingBuffer,
+};
 
 pub fn spsc_basic_smoke() -> bool {
     let rb: SpscRingBuffer<u32, 8> = SpscRingBuffer::new();

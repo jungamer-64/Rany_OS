@@ -19,6 +19,7 @@ impl NetworkStack {
     pub fn new(config: NetworkConfig) -> Self {
         let mac = config.mac;
         let ip = config.ipv4.address;
+        let dad_link_local = config.ipv6.as_ref().map(|cfg| cfg.link_local);
 
         // Note: ipv4.clone() は Ipv4Config が小さい構造体のため
         // アセンブリでは memcpy やレジスタコピーに展開される
@@ -33,7 +34,7 @@ impl NetworkStack {
             (None, None, None)
         };
 
-        NetworkStack {
+        let mut stack = NetworkStack {
             ethernet: EthernetProcessor::new(mac),
             ipv4: Ipv4Processor::new(config.ipv4.clone()),
             ipv6: ipv6_proc,
@@ -47,7 +48,7 @@ impl NetworkStack {
             tx_pool: PacketPool::new(64, MAX_PACKET_SIZE),
             stats: NetworkStats::default(),
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
-            config: config,
+            config,
             transmit_fn: None,
             current_time: AtomicU64::new(0),
             redirect_cache: RedirectCache::new(),
@@ -56,7 +57,14 @@ impl NetworkStack {
                 Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS,
             ),
             ipv6_pmtu_cache: Ipv6PmtuCache::new(Ipv6PmtuCache::DEFAULT_MAX_ENTRIES),
+        };
+
+        // RFC 4862: Initiate DAD for link-local address upon interface startup
+        if let Some(ll) = dad_link_local {
+            stack.initiate_ipv6_dad(ll);
         }
+
+        stack
     }
 
     /// Create with default configuration
@@ -257,6 +265,18 @@ impl NetworkStack {
         }
         if let Some(ref mut ndp_proc) = self.ndp {
             ndp_proc.add_global_address(addr);
+        }
+        self.initiate_ipv6_dad(addr);
+    }
+
+    /// Initiate DAD for an IPv6 address
+    pub fn initiate_ipv6_dad(&mut self, addr: Ipv6Address) {
+        if let Some(ref mut ndp) = self.ndp {
+            let res = ndp.initiate_dad(&addr);
+            if let NdpResult::SendNeighborSolicitation { src, dst, target } = res {
+                let msg = NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes());
+                self.send_ipv6_icmpv6(&src, &dst, &msg);
+            }
         }
     }
 

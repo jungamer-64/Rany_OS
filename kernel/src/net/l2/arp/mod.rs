@@ -600,6 +600,8 @@ pub enum ArpResult {
         resolved_ip: Ipv4Address,
         resolved_mac: MacAddress,
     },
+    /// Need to send a Gratuitous ARP (for address defense, RFC 5227)
+    SendGratuitous,
     /// Packet was ignored
     Ignored,
     /// Invalid packet

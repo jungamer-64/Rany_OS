@@ -555,7 +555,7 @@ pub fn test_udp_packet_stream_delivered() {
     match pinned.as_mut().poll(&mut cx2) {
         Poll::Ready(Some((addr, _ttl, pkt))) => {
             assert_eq!(pkt.data(), b"hello");
-            assert_eq!(addr.port, 12345);
+            assert_eq!(addr.port(), 12345);
         }
         _ => panic!("Expected UDP packet"),
     }

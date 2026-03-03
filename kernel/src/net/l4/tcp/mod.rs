@@ -40,6 +40,7 @@ mod control_block_impl;
 /// `endpoint::types` 版 (raw `[u8; 4]` / `[u8; 16]`) に統一し、
 /// 変換コードの散在を解消する。
 pub use crate::net::l4::endpoint::types::EndpointAddr;
+pub use crate::net::types::Ipv4Addr;
 pub type SocketAddr = EndpointAddr;
 
 // ============================================================================
@@ -481,6 +482,8 @@ struct UnackedSegment {
     data: Vec<u8>,
     /// Timestamp when sent (tick)
     sent_time: u64,
+    /// TCP Timestamp value (RFC 7323)
+    ts_val: u32,
     /// Number of retransmissions
     retransmit_count: u8,
     /// Flags associated with the segment (SYN/FIN/PSH/etc)

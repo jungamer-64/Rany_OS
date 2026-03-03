@@ -15,19 +15,26 @@
 //! 全シンボルを再エクスポートする。新規コードは各サブモジュールを直接参照すること。
 
 // ── 再エクスポート: config ──────────────────────────────
+#[allow(deprecated)]
 pub use super::config::{
     NetworkConfigSnapshot, NetworkStatsSnapshot,
     get_network_config, get_network_stats,
+    get_network_config_async, get_network_stats_async,
+    GetConfigFuture, GetStatsFuture,
 };
 
 // ── 再エクスポート: connections ─────────────────────────
+#[allow(deprecated)]
 pub use super::connections::{
     TcpConnectionInfo, UdpEndpointInfo, ArpCacheEntry,
     get_tcp_connections, get_udp_endpoints, get_arp_cache, arp_cache_insert,
+    get_arp_cache_async, arp_cache_insert_async,
+    get_udp_endpoints_async,
 };
 
 // ── 再エクスポート: icmp ────────────────────────────────
-pub use super::icmp::{send_icmp_echo, send_icmp_echo_async};
+#[allow(deprecated)]
+pub use super::icmp::{send_icmp_echo, send_icmp_echo_async, ping_async, ping_async_with_timeout};
 
 // ── 再エクスポート: dhcp ────────────────────────────────
 pub use super::dhcp::{

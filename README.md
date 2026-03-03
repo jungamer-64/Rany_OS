@@ -229,6 +229,9 @@ python3 scripts/run_pure_tier.py --tier pr-required
 # 6. 任意: QEMU実 (full-boot, exoloader -> 実kernel)
 cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
+# 6-1. 任意: network プロファイルのみ実行
+QEMU_TEST_PROFILE_ONLY=network cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
+
 # 7. 任意: 夜間拡張 tier（ローカルで明示実行）
 python3 scripts/run_pure_tier.py --tier nightly-required --include-ignored
 cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapture
@@ -245,6 +248,7 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 * `pending` / `runtime_pending` スイートは廃止されました。
 * 旧 `qemu-suites/*` からの移行棚卸しは `tests/migration_case_map.toml` を参照してください。
 * `qemu-tests` 実行時のログは `target/qemu-logs/` に出力されます（serial / QEMU stderr）。
+* `fullboot_pr_required` の対象プロファイルは `boot-smoke`, `storage`, `driver_domain`, `iommu`, `network` です。
 * IOMMU residual canonical: `none`
 * 旧 `iommu_wave2_*` residual 名は compat alias として残置（required の正規導線は `iommu_wave5_*`）
 * IOMMU wave3 residual monitored smoke（required 未投入）: `none`
