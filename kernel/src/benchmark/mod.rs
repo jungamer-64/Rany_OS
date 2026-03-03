@@ -3,6 +3,12 @@
 //! This module provides comprehensive benchmarking capabilities for
 //! performance validation of the kernel components, targeting 10Gbps
 //! line rate verification (Design Doc Section 10).
+//!
+//! ## TSC計測
+//!
+//! TSC (`rdtsc` / `rdtscp`) の正規実装は `diag` モジュールにあります。
+//! 本モジュールはそれを再利用し、ベンチマーク固有のランナーと
+//! 事前定義ベンチマークスイートを提供します。
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
@@ -14,6 +20,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
+
+// TSC計測は diag モジュールの正規実装を使用（重複排除）
+use crate::diag::{rdtsc, rdtscp};
 
 /// Benchmark result
 #[derive(Debug, Clone)]
@@ -96,40 +105,6 @@ impl TscTimer {
 impl Default for TscTimer {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Read Time Stamp Counter
-#[inline]
-pub fn rdtsc() -> u64 {
-    unsafe {
-        let lo: u32;
-        let hi: u32;
-        core::arch::asm!(
-            "rdtsc",
-            out("eax") lo,
-            out("edx") hi,
-            options(nomem, nostack, preserves_flags)
-        );
-        ((hi as u64) << 32) | (lo as u64)
-    }
-}
-
-/// Read TSC with serialization (RDTSCP)
-#[inline]
-pub fn rdtscp() -> (u64, u32) {
-    unsafe {
-        let lo: u32;
-        let hi: u32;
-        let aux: u32;
-        core::arch::asm!(
-            "rdtscp",
-            out("eax") lo,
-            out("edx") hi,
-            out("ecx") aux,
-            options(nomem, nostack, preserves_flags)
-        );
-        (((hi as u64) << 32) | (lo as u64), aux)
     }
 }
 

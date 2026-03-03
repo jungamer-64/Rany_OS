@@ -1780,9 +1780,7 @@ pub mod task {
 
 // time shim removed
 
-
-
-pub mod pcid_support;
+// pcid_support shim は未使用のため削除。本来の PCID 実装は mm/sync/pcid.rs を参照。
 
 #[cfg(all(
     test,

@@ -523,12 +523,14 @@ macro_rules! trace_point {
 //   let stats = profiler().cpu.stats();
 
 // ============================================================================
-// Benchmark Framework
+// Micro-Benchmark Framework (diag固有)
 // ============================================================================
+// サイクル単位の低レベルベンチマーク。
+// ナノ秒単位のベンチマークスイートは `benchmark/` モジュールを使用してください。
 
-/// ベンチマーク結果
+/// マイクロベンチマーク結果（サイクル単位）
 #[derive(Debug, Clone)]
-pub struct BenchmarkResult {
+pub struct MicroBenchmarkResult {
     pub name: String,
     pub iterations: u64,
     pub total_cycles: u64,
@@ -537,12 +539,14 @@ pub struct BenchmarkResult {
     pub max_cycles: u64,
 }
 
-/// ベンチマークランナー
-pub struct BenchmarkRunner;
+/// マイクロベンチマークランナー（サイクル単位の低レベル計測）
+///
+/// ナノ秒単位でのベンチマークには `benchmark::BenchmarkRunner` を使用してください。
+pub struct MicroBenchmarkRunner;
 
-impl BenchmarkRunner {
-    /// ベンチマークを実行
-    pub fn run<F>(name: &str, iterations: u64, mut f: F) -> BenchmarkResult
+impl MicroBenchmarkRunner {
+    /// マイクロベンチマークを実行（サイクル単位）
+    pub fn run<F>(name: &str, iterations: u64, mut f: F) -> MicroBenchmarkResult
     where
         F: FnMut(),
     {
@@ -565,7 +569,7 @@ impl BenchmarkRunner {
             max = max.max(elapsed);
         }
 
-        BenchmarkResult {
+        MicroBenchmarkResult {
             name: String::from(name),
             iterations,
             total_cycles: total,

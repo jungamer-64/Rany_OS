@@ -42,14 +42,14 @@ mod sas;
 mod security;
 mod shell;
 mod smp;
-mod spectre;
+// spectre は security/spectre.rs に移動済み。security::spectre として参照する。
 mod sync;
 mod task;
 mod per_cpu;
 mod time;
 mod unwind;
 mod util;
-mod vga;
+// vga は graphics/vga.rs に移動済み。graphics::vga として参照する。
 
 // Phase 4: High-Performance & Advanced Features
 mod console;
@@ -72,7 +72,7 @@ mod test;
 mod application;
 mod benchmark;
 mod driver_registry;
-mod initramfs; // Dynamic Cell loading from TAR archive
+// initramfs は loader/initramfs.rs に移動済み。loader::initramfs として参照する。
 mod integration; // 旧称: userspace → SPL単一特権レベルを反映
 mod service_impl; // KernelServices implementation // Driver lifecycle management
 

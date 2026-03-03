@@ -37,6 +37,9 @@ pub mod global;
 pub mod mmio;
 pub mod packer;
 pub mod psf;
+/// VGAテキストモード出力（レガシーVGAバッファ 0xB8000）
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
+pub mod vga;
 
 // 既存のサブモジュール
 #[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]

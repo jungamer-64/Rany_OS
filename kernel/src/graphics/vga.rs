@@ -1,5 +1,8 @@
 // ============================================================================
-// src/vga.rs - VGA Text Mode Output (for logging)
+// src/graphics/vga.rs - VGA Text Mode Output (for logging)
+//
+// 以前は src/vga.rs にルートレベルで配置されていたが、
+// グラフィックス出力の一形態であるため graphics/ モジュール配下に移動。
 // ============================================================================
 #![allow(dead_code)]
 use core::fmt;

@@ -297,7 +297,7 @@ fn route_health(_req: &HttpRequest) -> HttpResponse {
 fn route_info(_req: &HttpRequest) -> HttpResponse {
     let domain_stats = crate::domain_system::get_domain_stats();
     let sas_stats = crate::sas::stats();
-    let spectre = crate::spectre::status_summary();
+    let spectre = crate::security::spectre::status_summary();
     
     let json = format!(r#"{{
     "kernel": {{

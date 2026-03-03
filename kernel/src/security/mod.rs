@@ -33,6 +33,7 @@ pub mod dma; // 新: DMA セキュリティ (設計書 9.2.3)
 pub mod mac;
 pub mod mpk; // 新: MPK/PKU セキュリティ (設計書 9.2.2)
 pub mod policy;
+pub mod spectre; // Spectre/Meltdown/SSBD緩和策 (設計書 9.2)
 pub mod static_capability; // 新: 静的ケイパビリティシステム
 
 // Re-export MPK API

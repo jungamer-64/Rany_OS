@@ -1,5 +1,8 @@
 // ============================================================================
-// kernel/src/initramfs.rs - Initramfs Loader
+// kernel/src/loader/initramfs.rs - Initramfs Loader
+//
+// 以前は kernel/src/initramfs.rs にルートレベルで配置されていたが、
+// セルローディングの一部であるため loader/ モジュール配下に移動。
 // ============================================================================
 //!
 //! # Initramfs Loader

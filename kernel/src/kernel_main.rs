@@ -409,7 +409,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
     // VGAバッファの初期化（ログ出力用）
     io::log::early_print("[BOOT] Initializing VGA...\n");
-    vga::init();
+    graphics::vga::init();
     io::log::early_print("[BOOT] VGA initialized\n");
 
     // ロギングシステムの初期化（最優先、ヒープ不要）
@@ -588,7 +588,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
     // 2.6. Spectre/Meltdown緩和策の初期化
     info!(target: "init", "Initializing Spectre mitigations");
-    spectre::init();
+    security::spectre::init();
     info!(target: "init", "Spectre mitigations initialized");
 
     // 2.7. セキュリティフレームワークの初期化
@@ -612,7 +612,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
     // 2.9. Initramfs からドライバ Cells をロード
     info!(target: "init", "Loading driver Cells from initramfs...");
-    let loaded_cells = initramfs::load_cells_from_initramfs(&boot_info.initramfs);
+    let loaded_cells = loader::initramfs::load_cells_from_initramfs(&boot_info.initramfs);
     if loaded_cells > 0 {
         info!(target: "init", "Loaded {} driver Cell(s) from initramfs", loaded_cells);
     } else {

@@ -9,35 +9,23 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 use alloc::format;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-use crate::domain::quota::{quota_manager, DomainPriority as QuotaPriority};
+use crate::domain::quota::quota_manager;
 
-/// ドメイン優先度（互換API）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-pub enum DomainPriority {
-    /// 低優先度 - OOM時に最初に終了対象
-    Low = 0,
-    /// 通常優先度
-    Normal = 1,
-    /// クリティカル - OOM対象外
-    Critical = 2,
-}
-
+// DomainPriority は domain::quota の正規定義を使用する。
+// 以前はローカルに3段階版(Low/Normal/Critical)を定義していたが、
+// domain::quota の4段階版(Low/Normal/High/Critical)に統一し、
+// 情報損失(High→Normal)を解消した。
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-impl From<QuotaPriority> for DomainPriority {
-    fn from(value: QuotaPriority) -> Self {
-        match value {
-            QuotaPriority::Low => DomainPriority::Low,
-            QuotaPriority::Normal | QuotaPriority::High => DomainPriority::Normal,
-            QuotaPriority::Critical => DomainPriority::Critical,
-        }
-    }
-}
+pub use crate::domain::quota::DomainPriority;
 
-impl Default for DomainPriority {
-    fn default() -> Self {
-        DomainPriority::Normal
-    }
+// テストビルド用フォールバック: domain モジュールが存在しない構成向け
+#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "qemu-test-export")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DomainPriority {
+    Low,
+    Normal,
+    High,
+    Critical,
 }
 
 /// ドメインメモリ情報（互換API）
@@ -164,7 +152,7 @@ impl OomKiller {
                     result.push(DomainMemoryInfo {
                         domain_id: snapshot.id.as_u64(),
                         name: snapshot.name,
-                        priority: DomainPriority::from(stats.priority),
+                        priority: stats.priority,
                         memory_usage: stats.memory_used,
                         last_activity: snapshot.created_at,
                     });
@@ -222,7 +210,8 @@ pub fn register_simple(domain_id: u64, name: &str, priority: DomainPriority, mem
 mod tests {
     use super::*;
     use alloc::string::String;
-    use crate::domain::quota::{DomainPriority as QuotaPriority, quota_manager};
+    use crate::domain::quota::DomainPriority;
+    use crate::domain::quota::quota_manager;
     use crate::domain_system::{
         create_domain, get_domain_snapshot, set_domain_priority, set_domain_resource_limits,
         terminate_domain,
@@ -234,8 +223,8 @@ mod tests {
         let normal =
             create_domain(String::from("oom_quota_normal")).expect("create_domain normal failed");
 
-        set_domain_priority(low, QuotaPriority::Low).expect("set low priority failed");
-        set_domain_priority(normal, QuotaPriority::Normal).expect("set normal priority failed");
+        set_domain_priority(low, DomainPriority::Low).expect("set low priority failed");
+        set_domain_priority(normal, DomainPriority::Normal).expect("set normal priority failed");
         set_domain_resource_limits(low, 100, u64::MAX, 0).expect("set low limits failed");
         set_domain_resource_limits(normal, 100, 2 * 1024 * 1024 * 1024, 0)
             .expect("set normal limits failed");

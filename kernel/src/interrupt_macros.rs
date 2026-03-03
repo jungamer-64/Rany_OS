@@ -2,6 +2,10 @@
 // Included into both the library crate and the binary crate with
 // `#[macro_use] mod interrupt_macros;` so `define_interrupt!` is available
 // to modules included by `main.rs` and to the library unit tests.
+//
+// NOTE: このファイルは `interrupts/` モジュールに移動するのが意味的には適切だが、
+// `#[macro_use]` による lib.rs でのクレートルート宣言が必要なため、ここに留置する。
+// 主な使用箇所: interrupts/exceptions.rs, interrupts/mod.rs
 
 #![allow(unused_macros)]
 
