@@ -81,18 +81,8 @@ impl NetworkStack {
         }
     }
 
-    /// Send ICMP error message (RFC 792 / RFC 1122)
-    ///
-    /// This method constructs and sends an ICMP error message in response to
-    /// an offending packet. It strictly follows RFC 1122/1812 rules to avoid
-    /// infinite error loops and broadcast storms.
-    pub fn send_icmp_error(
-        &mut self,
-        dst_ip: Ipv4Address,
-        code: DestUnreachCode,
-        original_packet: &[u8],
-        current_time: u64,
-    ) {
+    /// Check if an ICMP error message should be sent (RFC 1122 Section 3.2.2)
+    fn should_send_icmp_v4_error(&self, original_packet: &[u8], dst_ip: Ipv4Address) -> bool {
         let config = self.config.clone();
 
         // Security (RFC 1122 Section 3.2.2):
@@ -108,33 +98,47 @@ impl NetworkStack {
                     | IcmpType::Redirect
                     | IcmpType::TimeExceeded
                     | IcmpType::ParameterProblem => {
-                        return;
+                        return false;
                     }
                     _ => {}
                 }
             }
         }
 
-        // 2. A packet sent as a Link Layer broadcast or multicast.
-        // (Note: We assume the caller checked this or the packet reached us directly)
-        
-        // 3. A packet sent to an IP broadcast or multicast address.
+        // 2. A packet sent to an IP broadcast or multicast address.
         if let Some(ip) = Ipv4Packet::parse(original_packet) {
             let orig_dst = ip.destination();
             if orig_dst.is_broadcast() || orig_dst.is_multicast() || (config.ipv4.subnet_mask.as_bytes()[0] != 0 && orig_dst == config.ipv4.broadcast_address()) {
-                return;
+                return false;
             }
-        }
 
-        // 4. A packet that is not the first fragment.
-        if let Some(ip) = Ipv4Packet::parse(original_packet) {
+            // 3. A packet that is not the first fragment.
             if ip.header().fragment_offset() != 0 {
-                return;
+                return false;
             }
         }
 
-        // 5. A packet whose source address is not a single host (e.g. 0.0.0.0, broadcast, etc.)
+        // 4. A packet whose source address is not a single host (e.g. 0.0.0.0, broadcast, etc.)
         if dst_ip.is_any() || dst_ip.is_broadcast() || dst_ip.is_multicast() {
+            return false;
+        }
+
+        true
+    }
+
+    /// Send ICMP error message (RFC 792 / RFC 1122)
+    ///
+    /// This method constructs and sends an ICMP error message in response to
+    /// an offending packet. It strictly follows RFC 1122/1812 rules to avoid
+    /// infinite error loops and broadcast storms.
+    pub fn send_icmp_error(
+        &mut self,
+        dst_ip: Ipv4Address,
+        code: DestUnreachCode,
+        original_packet: &[u8],
+        current_time: u64,
+    ) {
+        if !self.should_send_icmp_v4_error(original_packet, dst_ip) {
             return;
         }
 
@@ -142,6 +146,8 @@ impl NetworkStack {
         if !self.icmp.check_rate_limit(dst_ip, current_time) {
             return;
         }
+
+        let config = self.config.clone();
 
         // Resolve MAC address for the original sender
         let dst_mac = if config.ipv4.is_local(&dst_ip) {
@@ -277,9 +283,18 @@ impl NetworkStack {
         code: crate::net::l3::icmp::TimeExceededCode,
         original_packet: &[u8],
     ) -> bool {
-        let config = self.config.clone();
         let current_time = self.current_time();
 
+        if !self.should_send_icmp_v4_error(original_packet, dst_ip) {
+            return false;
+        }
+
+        // Rate limiting
+        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+            return false;
+        }
+
+        let config = self.config.clone();
         let dst_mac = match self.resolve_mac(dst_ip, &config, current_time) {
             Some(mac) => mac,
             None => return false,
@@ -313,6 +328,149 @@ impl NetworkStack {
         }
 
         false
+    }
+
+    /// Send an ICMP Parameter Problem error (RFC 792).
+    pub fn send_icmp_parameter_problem(
+        &mut self,
+        dst_ip: Ipv4Address,
+        pointer: u8,
+        original_packet: &[u8],
+    ) -> bool {
+        let current_time = self.current_time();
+
+        if !self.should_send_icmp_v4_error(original_packet, dst_ip) {
+            return false;
+        }
+
+        // Rate limiting
+        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+            return false;
+        }
+
+        let config = self.config.clone();
+        let dst_mac = match self.resolve_mac(dst_ip, &config, current_time) {
+            Some(mac) => mac,
+            None => return false,
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(frame.payload_mut()) {
+                ip_packet
+                    .init_header()
+                    .set_source(config.ipv4.address)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Icmp)
+                    .set_ttl(64);
+
+                let ip_payload = ip_packet.payload_mut();
+                if let Some(icmp_len) =
+                    crate::net::l3::icmp::IcmpProcessor::build_parameter_problem(ip_payload, pointer, original_packet)
+                {
+                    ip_packet.finalize(icmp_len);
+                    let ip_len = ip_packet.total_len();
+                    frame.set_payload_len(ip_len);
+                    return self.transmit(frame.as_bytes());
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Send an ICMPv6 Destination Unreachable error (RFC 4443 Section 3.1).
+    pub fn send_icmpv6_error(
+        &mut self,
+        dst_v6: Ipv6Address,
+        code: u8,
+        original_packet: &[u8],
+    ) -> bool {
+        let current_time = self.current_time();
+
+        // Security: RFC 4443 compliance check (e.g. no errors for multicast)
+        if !self.should_send_icmp_v6_error(original_packet, dst_v6, false) {
+            return false;
+        }
+
+        // Rate limiting
+        if let Some(ref icmpv6) = self.icmpv6 {
+            if !icmpv6.check_tx_rate_limit(current_time) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        // Determine our source address for the error message
+        let mut src_v6 = None;
+        if let Some(ref ipv6) = self.ipv6 {
+            let config = ipv6.config();
+            // If the original packet was to our global address, use it as source
+            if let Some(global) = config.global {
+                src_v6 = Some(global);
+            } else {
+                src_v6 = Some(config.link_local);
+            }
+        }
+
+        let src_v6 = match src_v6 {
+            Some(s) => s,
+            None => return false,
+        };
+
+        // Build ICMPv6 Destination Unreachable (Type 1)
+        let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6EchoBuilder::build_dest_unreachable(
+            &src_v6, &dst_v6, code, original_packet
+        );
+
+        self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
+        true
+    }
+
+    /// Check if an ICMPv6 error message should be sent (RFC 4443 Section 2.4(e))
+    pub(crate) fn should_send_icmp_v6_error(&self, original_packet: &[u8], dst_ip: Ipv6Address, is_ptb: bool) -> bool {
+        // (e.1) An ICMPv6 error message.
+        // (e.2) An ICMPv6 redirect message.
+        if original_packet.len() >= 40 {
+            let next_header = original_packet[6];
+            use crate::net::l3::ipv6::skip_extension_headers;
+            let (final_proto, icmp_data) = skip_extension_headers(IpProtocol::from(next_header), &original_packet[40..]);
+            if final_proto == IpProtocol::Icmpv6 && icmp_data.len() >= 1 {
+                let icmp_type = icmp_data[0];
+                if icmp_type < 128 || icmp_type == 137 /* Redirect */ {
+                    return false;
+                }
+            }
+        }
+
+        // (e.3, e.4, e.5) A packet destined to a multicast address (with exceptions)
+        if original_packet.len() >= 40 {
+            let orig_dst = Ipv6Address::new([
+                original_packet[24], original_packet[25], original_packet[26], original_packet[27],
+                original_packet[28], original_packet[29], original_packet[30], original_packet[31],
+                original_packet[32], original_packet[33], original_packet[34], original_packet[35],
+                original_packet[36], original_packet[37], original_packet[38], original_packet[39],
+            ]);
+            if orig_dst.is_multicast() {
+                // Exception: Packet Too Big is allowed for multicast
+                if !is_ptb {
+                    return false;
+                }
+            }
+        }
+
+        // (e.6) A packet whose source address does not uniquely identify a single node.
+        if dst_ip.is_unspecified() || dst_ip.is_multicast() {
+            return false;
+        }
+
+        true
     }
 
     /// Handle ICMP error messages for Path MTU Discovery (RFC 1191)

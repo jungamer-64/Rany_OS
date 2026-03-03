@@ -659,10 +659,25 @@ pub fn skip_extension_headers<'a>(
                 data = &data[ext_len..];
             }
             EXT_HEADER_FRAGMENT => {
-                // Fragment header found. 
-                // We do NOT skip it here, because reassembly MUST happen before
-                // upper-layer processing. If we reach here, it means reassembly
-                // was bypassed or failed.
+                // Fragment header found.
+                // RFC 6946: Atomic Fragment (Offset=0, M=0)
+                // If it's an atomic fragment, skip it and continue processing the next header.
+                // This allows the datagram to be processed as if it did not include a Fragment Header.
+                if data.len() >= 8 {
+                    let off_and_flags = u16::from_be_bytes([data[2], data[3]]);
+                    let fragment_offset = off_and_flags >> 3;
+                    let more_fragments = (off_and_flags & 0x01) != 0;
+
+                    if fragment_offset == 0 && !more_fragments {
+                        let ext_next = data[0];
+                        next_header = IpProtocol::from(ext_next);
+                        data = &data[8..];
+                        continue;
+                    }
+                }
+
+                // Non-atomic fragment: reassembly MUST happen before upper-layer processing.
+                // If we reach here, it means reassembly was bypassed or failed.
                 return (next_header, data);
             }
             EXT_HEADER_NO_NEXT => {

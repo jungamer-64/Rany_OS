@@ -478,3 +478,114 @@ pub fn is_multicast_member(group: Ipv4Address) -> bool {
     }
 }
 
+// ============================================================================
+// 非同期 bind/connect API（イベントキュー経由・ロック競合回避）
+// ============================================================================
+
+/// 非同期TCP bind Future
+///
+/// `NetworkEventQueue`経由でbindリクエストを送信し、
+/// イベントハンドラ側でスタックロックを取得して処理する。
+/// 呼び出し元でのロック競合を回避する。
+pub struct TcpBindFuture {
+    result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), crate::net::l4::endpoint::types::EndpointError>>>>,
+    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    sent: bool,
+    addr: TcpEndpointAddr,
+}
+
+impl core::future::Future for TcpBindFuture {
+    type Output = Result<(), crate::net::l4::endpoint::types::EndpointError>;
+
+    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+        // 初回ポーリング時にイベントを送信
+        if !self.sent {
+            self.waker.register(cx.waker());
+            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBind {
+                local: self.addr,
+                result_slot: self.result_slot.clone(),
+                waker: self.waker.clone(),
+            };
+            if crate::net::l4::endpoint::event::send_event(event).is_err() {
+                return core::task::Poll::Ready(Err(
+                    crate::net::l4::endpoint::types::EndpointError::ResourceExhausted,
+                ));
+            }
+            self.sent = true;
+            return core::task::Poll::Pending;
+        }
+
+        // 結果を確認
+        self.waker.register(cx.waker());
+        if let Ok(slot) = self.result_slot.lock() {
+            if let Some(ref result) = *slot {
+                return core::task::Poll::Ready(result.clone());
+            }
+        }
+        core::task::Poll::Pending
+    }
+}
+
+/// 非同期TCP bind: イベントキュー経由でbindリクエストを送信
+///
+/// 同期版`bind_tcp()`と異なり、呼び出し元でNETWORK_STACKのロックを
+/// 取得しないため、ネットワークイベントタスクと同時に動作するasyncタスクから
+/// 安全に呼び出せる。
+pub fn bind_tcp_async(addr: TcpEndpointAddr) -> TcpBindFuture {
+    TcpBindFuture {
+        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        sent: false,
+        addr,
+    }
+}
+
+/// 非同期UDP bind Future
+pub struct UdpBindFuture {
+    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    sent: bool,
+    port: u16,
+}
+
+impl core::future::Future for UdpBindFuture {
+    type Output = bool;
+
+    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+        if !self.sent {
+            self.waker.register(cx.waker());
+            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
+                port: self.port,
+                result_slot: self.result_slot.clone(),
+                waker: self.waker.clone(),
+            };
+            if crate::net::l4::endpoint::event::send_event(event).is_err() {
+                return core::task::Poll::Ready(false);
+            }
+            self.sent = true;
+            return core::task::Poll::Pending;
+        }
+
+        self.waker.register(cx.waker());
+        if let Ok(slot) = self.result_slot.lock() {
+            if let Some(result) = *slot {
+                return core::task::Poll::Ready(result);
+            }
+        }
+        core::task::Poll::Pending
+    }
+}
+
+/// 非同期UDP bind: イベントキュー経由でbindリクエストを送信
+///
+/// 同期版`bind_udp()`と異なり、呼び出し元でNETWORK_STACKのロックを
+/// 取得しないため、ネットワークイベントタスクと同時に動作するasyncタスクから
+/// 安全に呼び出せる。
+pub fn bind_udp_async(port: u16) -> UdpBindFuture {
+    UdpBindFuture {
+        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        sent: false,
+        port,
+    }
+}

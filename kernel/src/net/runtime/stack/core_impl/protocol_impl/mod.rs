@@ -197,13 +197,13 @@ impl NetworkStack {
     ///
     /// IPv6擬似ヘッダーでチェックサムを検証し、ポート番号ベースで
     /// 既存のUDPソケットにデータグラムを配送する。
-    /// Process UDP data over IPv6
     pub(crate) fn process_udp_data_v6(
         &mut self,
         data: &[u8],
         src: crate::net::l3::ipv6::Ipv6Address,
         dst: crate::net::l3::ipv6::Ipv6Address,
         hop_limit: u8,
+        original_packet: &[u8],
     ) {
         use crate::net::l4::udp::UdpResult;
 
@@ -214,6 +214,9 @@ impl NetworkStack {
             }
             UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
+
+                // RFC 4443: Send ICMPv6 Port Unreachable (Type 1, Code 4)
+                self.send_icmpv6_error(src, 4, original_packet);
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
                 self.stats.record_rx_error();

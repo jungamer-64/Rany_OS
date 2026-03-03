@@ -285,6 +285,11 @@ impl NetworkStack {
                     // RFC 8200: Send Fragment Reassembly Time Exceeded
                     // code 1 = fragment reassembly time exceeded
                     
+                    // Security: RFC 4443 compliance check (e.g. no errors for multicast)
+                    if !self.should_send_icmp_v6_error(&unfrag, exp_src, false) {
+                        continue;
+                    }
+
                     // Security: Rate limit ICMPv6 error messages (RFC 4443)
                     if let Some(ref icmpv6) = self.icmpv6 {
                         if !icmpv6.check_tx_rate_limit(current_time) {
@@ -321,7 +326,7 @@ impl NetworkStack {
                 crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6(src, dst, payload);
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
-                self.process_udp_data_v6(payload, src, dst, hop_limit);
+                self.process_udp_data_v6(payload, src, dst, hop_limit, data);
             }
             Ipv6ProcessResult::Dropped => {
                 self.stats.record_dropped();

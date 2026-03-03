@@ -101,6 +101,20 @@ pub enum NetworkEvent {
         sequence: u16,
         rtt_us: u64,
     },
+    /// 非同期TCP bind（ロック競合回避）
+    AsyncTcpBind {
+        local: EndpointAddr,
+        /// Waker通知のための共有チャネル
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期UDP bind（ロック競合回避）
+    AsyncUdpBind {
+        port: u16,
+        /// 結果通知用の共有スロット
+        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
 }
 
 /// イベントキュー（ロックフリーリングバッファ）

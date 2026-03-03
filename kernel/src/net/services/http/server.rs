@@ -1,10 +1,16 @@
 use alloc::{format, vec::Vec};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::net::l4::tcp::{EndpointAddr, TcpListener, TcpStream};
 use crate::task::{self, Task, TimeoutResult};
 
 static HOST_HTTP_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// アクティブな同時接続数を追跡
+static ACTIVE_CONNECTIONS: AtomicU32 = AtomicU32::new(0);
+
+/// 同時接続数の上限
+const MAX_CONCURRENT_CONNECTIONS: u32 = 16;
 
 pub fn start_once(executor: &mut task::Executor) {
     if HOST_HTTP_SERVICE_STARTED.swap(true, Ordering::AcqRel) {
@@ -21,13 +27,33 @@ pub fn start_once(executor: &mut task::Executor) {
     }));
 }
 
+/// 【設計書準拠】適応的ポーリングをHTTPサービスに適用
+///
+/// 低負荷時は10msスリープで省電力、高負荷時は1msに短縮して
+/// レスポンスレイテンシを低減する。
 async fn run_net_poller() {
+    let mut consecutive_idle: u32 = 0;
     loop {
         crate::io::virtio::handle_all_virtio_net_interrupts();
-        task::sleep_ms(1).await;
+
+        let active = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
+        if active > 0 {
+            // アクティブ接続あり: 高頻度ポーリング
+            consecutive_idle = 0;
+            task::sleep_ms(1).await;
+        } else {
+            consecutive_idle = consecutive_idle.saturating_add(1);
+            // アイドル回数に応じてポーリング間隔を拡大（最大50ms）
+            let sleep_ms = core::cmp::min(5 + consecutive_idle, 50) as u64;
+            task::sleep_ms(sleep_ms).await;
+        }
     }
 }
 
+/// 【async-first 設計】接続を並行処理するHTTPサービスメインループ
+///
+/// 各接続をspawn_globalで独立タスクとして起動し、
+/// acceptループがブロックされないようにする。
 async fn run_service() {
     let listener = match TcpListener::bind(EndpointAddr::new([0, 0, 0, 0], 80)) {
         Ok(listener) => {
@@ -46,8 +72,23 @@ async fn run_service() {
                 task::yield_now().await;
             }
             TimeoutResult::Completed(Ok((client, peer))) => {
-                log::info!("[HOST-HTTP] accepted connection from {:?}", peer);
-                handle_client(client).await;
+                let active = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
+                if active >= MAX_CONCURRENT_CONNECTIONS {
+                    log::warn!("[HOST-HTTP] connection limit reached ({}), rejecting {:?}", active, peer);
+                    // 接続を閉じて次を受け付ける
+                    let mut rejected = client;
+                    let _ = rejected.shutdown().await;
+                    continue;
+                }
+
+                log::info!("[HOST-HTTP] accepted connection from {:?} (active: {})", peer, active + 1);
+
+                // 【設計書準拠】各接続を独立タスクとしてspawn（並行処理）
+                crate::task::Executor::spawn_global(Task::new(async move {
+                    ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+                    handle_client(client).await;
+                    ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+                }));
             }
             TimeoutResult::Completed(Err(err)) => {
                 log::warn!("[HOST-HTTP] accept error: {:?}", err);

@@ -512,6 +512,43 @@ impl UdpEndpoint {
             }
         }
     }
+
+    /// 【設計書 6.2準拠】非同期UDP送信 (async/await対応)
+    ///
+    /// `send_to` のFutureラッパー。async/await構文で利用できる。
+    /// イベントキューが満杯の場合は自動的にリトライする。
+    ///
+    /// # 使用例
+    /// ```ignore
+    /// let sent = socket.send_async(data, dst).await?;
+    /// ```
+    pub fn send_async<'a>(&'a self, data: &'a [u8], dst: UdpAddr) -> UdpSendFuture<'a> {
+        UdpSendFuture {
+            endpoint: self,
+            data,
+            dst,
+        }
+    }
+
+    /// 【設計書 6.2準拠】ゼロコピー非同期UDP送信
+    ///
+    /// PacketRefの所有権をスタックに移動して送信する。
+    /// コピーが発生しないため高スループットアプリケーションに推奨。
+    ///
+    /// # 使用例
+    /// ```ignore
+    /// let mut packet = mempool::alloc_packet().unwrap();
+    /// packet.data_mut()[..data.len()].copy_from_slice(data);
+    /// packet.set_len(data.len());
+    /// socket.send_zero_copy(packet, dst).await?;
+    /// ```
+    pub fn send_zero_copy(&self, packet: PacketRef, dst: UdpAddr) -> UdpSendZeroCopyFuture {
+        UdpSendZeroCopyFuture {
+            inner: self.inner.clone(),
+            packet: Some(packet),
+            dst,
+        }
+    }
 }
 
 
@@ -542,6 +579,121 @@ impl Future for UdpRecvFuture {
                 log::error!("[NET] UDP Endpoint poisoned in recv future - returning closed");
                 Poll::Ready(None)
             }
+        }
+    }
+}
+
+/// 【設計書 6.2準拠】非同期UDP送信Future
+///
+/// イベントキューが満杯の場合はバックプレッシャーを適用し、
+/// TxAvailableイベントで再ポーリングされるまで待機する。
+pub struct UdpSendFuture<'a> {
+    endpoint: &'a UdpEndpoint,
+    data: &'a [u8],
+    dst: UdpAddr,
+}
+
+impl<'a> Future for UdpSendFuture<'a> {
+    type Output = Result<usize, NetworkError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        // まずエンドポイントの状態を確認
+        let local_port = match this.endpoint.inner.lock() {
+            Ok(g) => {
+                if g.closed {
+                    return Poll::Ready(Err(NetworkError::ConnectionClosed));
+                }
+                g.local_port
+            }
+            Err(_) => return Poll::Ready(Err(NetworkError::LockPoisoned)),
+        };
+
+        // イベントキュー経由で非同期送信を試行
+        let sent = match this.dst {
+            UdpAddr::V4 { ip, port } => {
+                crate::net::runtime::stack::send_udp_async(local_port, ip, port, this.data)
+            }
+            UdpAddr::V6 { ip, port } => {
+                crate::net::runtime::stack::send_udp_v6_async(
+                    local_port,
+                    Ipv6Address::UNSPECIFIED,
+                    ip,
+                    port,
+                    this.data,
+                )
+            }
+        };
+
+        if sent {
+            Poll::Ready(Ok(this.data.len()))
+        } else {
+            // イベントキュー満杯: Wakerを登録して待機
+            if let Ok(mut inner) = this.endpoint.inner.lock() {
+                inner.wakers.push(cx.waker().clone());
+            }
+            Poll::Pending
+        }
+    }
+}
+
+/// 【設計書 6.2準拠】ゼロコピー非同期UDP送信Future
+///
+/// PacketRefの所有権をスタックに移動して送信する。
+/// データコピーが発生しないため高スループットに推奨。
+pub struct UdpSendZeroCopyFuture {
+    inner: Arc<PoisonLock<UdpEndpointInner>>,
+    packet: Option<PacketRef>,
+    dst: UdpAddr,
+}
+
+impl Future for UdpSendZeroCopyFuture {
+    type Output = Result<(), NetworkError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+
+        let local_port = match this.inner.lock() {
+            Ok(g) => {
+                if g.closed {
+                    return Poll::Ready(Err(NetworkError::ConnectionClosed));
+                }
+                g.local_port
+            }
+            Err(_) => return Poll::Ready(Err(NetworkError::LockPoisoned)),
+        };
+
+        if let Some(packet) = this.packet.take() {
+            let data = packet.data();
+            let sent = match this.dst {
+                UdpAddr::V4 { ip, port } => {
+                    crate::net::runtime::stack::send_udp_async(local_port, ip, port, data)
+                }
+                UdpAddr::V6 { ip, port } => {
+                    crate::net::runtime::stack::send_udp_v6_async(
+                        local_port,
+                        Ipv6Address::UNSPECIFIED,
+                        ip,
+                        port,
+                        data,
+                    )
+                }
+            };
+
+            if sent {
+                // パケット所有権解放（Drop時にプールに自動返却）
+                Poll::Ready(Ok(()))
+            } else {
+                // イベントキュー満杯: パケットを戻して待機
+                this.packet = Some(packet);
+                if let Ok(mut inner) = this.inner.lock() {
+                    inner.wakers.push(cx.waker().clone());
+                }
+                Poll::Pending
+            }
+        } else {
+            Poll::Ready(Err(NetworkError::TransmitFailed))
         }
     }
 }

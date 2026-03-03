@@ -38,6 +38,10 @@ impl NtpTimestamp {
         b
     }
 
+    pub fn is_equal(&self, other: &NtpTimestamp) -> bool {
+        self.seconds == other.seconds && self.fraction == other.fraction
+    }
+
     /// Convert to Unix time (seconds since 1970)
     pub fn to_unix_seconds(&self) -> u64 {
         let seconds_u32 = u32::from_be_bytes(self.seconds);
@@ -50,7 +54,7 @@ impl NtpTimestamp {
 }
 
 /// NTP Packet Header (48 bytes)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C, packed)]
 pub struct NtpHeader {
     /// LI(2 bits), VN(3 bits), Mode(3 bits)
@@ -74,22 +78,24 @@ impl NtpHeader {
         Self {
             // LI=0 (no warning), VN=4 (NTP v4), Mode=3 (Client)
             li_vn_mode: (0 << 6) | (4 << 3) | 3,
-            stratum: 0,
-            poll: 0,
-            precision: 0,
-            root_delay: [0; 4],
-            root_dispersion: [0; 4],
-            reference_id: [0; 4],
-            reference_timestamp: NtpTimestamp::default(),
-            origin_timestamp: NtpTimestamp::default(),
-            receive_timestamp: NtpTimestamp::default(),
-            transmit_timestamp: NtpTimestamp::default(),
+            ..Default::default()
         }
     }
 
     pub fn mode(&self) -> u8 { self.li_vn_mode & 0x07 }
     pub fn version(&self) -> u8 { (self.li_vn_mode >> 3) & 0x07 }
     pub fn leap_indicator(&self) -> u8 { (self.li_vn_mode >> 6) & 0x03 }
+
+    pub fn as_bytes(&self) -> &[u8; 48] {
+        unsafe { core::mem::transmute(self) }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<&Self> {
+        if bytes.len() < Self::SIZE {
+            return None;
+        }
+        Some(unsafe { &*(bytes.as_ptr() as *const Self) })
+    }
 }
 
 /// NTP Client State
@@ -117,28 +123,33 @@ impl NtpClient {
         
         let socket = create_udp_endpoint();
         
-        let mut packet = [0u8; NtpHeader::SIZE];
-        let req = NtpHeader::new_client_request();
-        // Set transmit timestamp to current rough uptime to help match response
-        // In real NTP this is more complex, but for SNTP client it's simpler.
-        unsafe {
-            let ptr = &req as *const NtpHeader as *const u8;
-            core::ptr::copy_nonoverlapping(ptr, packet.as_mut_ptr(), NtpHeader::SIZE);
-        }
+        let mut req = NtpHeader::new_client_request();
+        
+        // RFC 4330 Section 5: Set a unique transmit timestamp in the request.
+        // We use uptime nanoseconds as a nonce to prevent off-path spoofing.
+        let nonce = crate::task::timer::current_tick();
+        let seconds = (nonce / 1_000_000_000) as u32;
+        let fraction = (nonce % 1_000_000_000) as u32;
+        req.transmit_timestamp.seconds = seconds.to_be_bytes();
+        req.transmit_timestamp.fraction = fraction.to_be_bytes();
+        let sent_ts = req.transmit_timestamp;
 
-        socket.send_to(&packet, remote)?;
+        socket.send_to(req.as_bytes(), remote)?;
 
         // Async receive via futures module helper
         let recv_fut = socket.recv_from_async(1024).ok_or(EndpointError::Internal)?;
         let (data, _from) = recv_fut.await?;
 
-        if data.len() < NtpHeader::SIZE {
+        let resp = NtpHeader::from_bytes(&data).ok_or(EndpointError::Internal)?;
+        
+        // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
+        // in the response matches the transmit timestamp in the request.
+        if !resp.origin_timestamp.is_equal(&sent_ts) {
+            log::warn!("[NTP] Security: Originate timestamp mismatch! Dropping spoofed response.");
             return Err(EndpointError::Internal);
         }
 
-        let resp = unsafe { &*(data.as_ptr() as *const NtpHeader) };
-        
-        // Validation (simplified)
+        // Validation
         if resp.mode() != 4 { // Server response mode
             return Err(EndpointError::Internal);
         }

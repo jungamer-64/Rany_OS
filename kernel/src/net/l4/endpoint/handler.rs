@@ -163,6 +163,30 @@ impl NetworkEventHandler {
                 crate::net::l4::endpoint::futures::notify_icmp_echo_reply(source, sequence, rtt_us);
                 EventHandleResult::Success
             }
+            NetworkEvent::AsyncTcpBind { local, result_slot, waker } => {
+                // 非同期TCP bind: スタックロックを取得してbindを実行
+                let result = match crate::net::runtime::stack::bind_tcp(local) {
+                    Ok(_listener) => {
+                        // TcpListenerはbind_tcp内でグローバルテーブルに登録済み
+                        Ok(())
+                    }
+                    Err(e) => Err(EndpointError::from_tcp_error(e)),
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBind { port, result_slot, waker } => {
+                // 非同期UDP bind: スタックロックを取得してbindを実行
+                let success = crate::net::runtime::stack::bind_udp(port).is_some();
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(success);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
         }
     }
 
@@ -254,7 +278,7 @@ impl NetworkEventHandler {
                                 super::tcp_rx::process_tcp_segment_v6(src, dst, payload);
                             }
                             IpProtocol::Udp => {
-                                stack.process_udp_data_v6(payload, src, dst, packet.hop_limit());
+                                stack.process_udp_data_v6(payload, src, dst, packet.hop_limit(), &data);
                             }
                             IpProtocol::Icmpv6 => {
                                 stack.process_icmpv6_data(payload, src, dst, crate::net::l2::ethernet::MacAddress::ZERO, packet.hop_limit(), current_time);
@@ -320,6 +344,26 @@ impl NetworkEventHandler {
             NetworkEvent::IcmpEchoReply { source, sequence, rtt_us } => {
                 // ICMP応答をFutureレジストリに通知（スタックロック保持版）
                 crate::net::l4::endpoint::futures::notify_icmp_echo_reply(source, sequence, rtt_us);
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpBind { local, result_slot, waker } => {
+                // スタックロック保持版: 二重ロックを回避
+                let result = stack.bind_tcp(local)
+                    .map(|_| ())
+                    .map_err(|e| EndpointError::from_tcp_error(e));
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBind { port, result_slot, waker } => {
+                // スタックロック保持版: 二重ロックを回避
+                let success = stack.bind_udp(port).is_some();
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(success);
+                }
+                waker.wake();
                 EventHandleResult::Success
             }
             // その他のイベントはスタック非依存または個別ロックで対応

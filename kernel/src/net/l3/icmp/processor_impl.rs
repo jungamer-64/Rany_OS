@@ -179,7 +179,7 @@ impl IcmpProcessor {
         code: DestUnreachCode,
         original_packet: &[u8],
     ) -> Option<usize> {
-        if buffer.len() < IcmpHeader::SIZE + 4 + 8 {
+        if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
             return None;
         }
 
@@ -188,11 +188,20 @@ impl IcmpProcessor {
             .set_type(IcmpType::DestinationUnreachable)
             .set_code(code as u8);
 
-        // 4 bytes unused, then original IP header + 8 bytes
+        // 4 bytes unused, then original IP header + at least 8 bytes of data (RFC 1122)
         let payload = builder.payload_mut();
         payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
 
-        let copy_len = original_packet.len().min(payload.len() - 4).min(28);
+        // RFC 1122: Include the full IP header + at least 8 octets of the data.
+        let header_len = if !original_packet.is_empty() {
+            ((original_packet[0] & 0x0F) as usize) * 4
+        } else {
+            20
+        };
+        // RFC 1122 Section 3.2.2: include the Internet header and at least the first 8 octets.
+        // We try to include more if possible, but at least 28 (20+8) or header_len+8.
+        let min_required = header_len + 8;
+        let copy_len = original_packet.len().min(payload.len() - 4).min(min_required);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
         builder.set_payload_len(4 + copy_len);
@@ -205,7 +214,7 @@ impl IcmpProcessor {
         code: TimeExceededCode,
         original_packet: &[u8],
     ) -> Option<usize> {
-        if buffer.len() < IcmpHeader::SIZE + 4 + 8 {
+        if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
             return None;
         }
 
@@ -217,7 +226,47 @@ impl IcmpProcessor {
         let payload = builder.payload_mut();
         payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
 
-        let copy_len = original_packet.len().min(payload.len() - 4).min(28);
+        // RFC 1122: Include the full IP header + at least 8 octets of the data.
+        let header_len = if !original_packet.is_empty() {
+            ((original_packet[0] & 0x0F) as usize) * 4
+        } else {
+            20
+        };
+        let min_required = header_len + 8;
+        let copy_len = original_packet.len().min(payload.len() - 4).min(min_required);
+        payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
+
+        builder.set_payload_len(4 + copy_len);
+        Some(builder.finalize())
+    }
+
+    /// Build a parameter problem packet (RFC 792)
+    pub fn build_parameter_problem(
+        buffer: &mut [u8],
+        pointer: u8,
+        original_packet: &[u8],
+    ) -> Option<usize> {
+        if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
+            return None;
+        }
+
+        let mut builder = IcmpBuilder::new(buffer)?;
+        builder
+            .set_type(IcmpType::ParameterProblem)
+            .set_code(0);
+
+        let payload = builder.payload_mut();
+        payload[0] = pointer; // Pointer to the byte in the original header where the error was detected
+        payload[1..4].copy_from_slice(&[0, 0, 0]); // Unused
+
+        // RFC 1122: Include the full IP header + at least 8 octets of the data.
+        let header_len = if !original_packet.is_empty() {
+            ((original_packet[0] & 0x0F) as usize) * 4
+        } else {
+            20
+        };
+        let min_required = header_len + 8;
+        let copy_len = original_packet.len().min(payload.len() - 4).min(min_required);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
         builder.set_payload_len(4 + copy_len);

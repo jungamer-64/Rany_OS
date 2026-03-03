@@ -62,6 +62,14 @@ pub struct AtomicWaker {
 unsafe impl Send for AtomicWaker {}
 unsafe impl Sync for AtomicWaker {}
 
+impl core::fmt::Debug for AtomicWaker {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AtomicWaker")
+            .field("state", &self.state.load(core::sync::atomic::Ordering::Relaxed))
+            .finish()
+    }
+}
+
 impl AtomicWaker {
     /// Create a new lock-free atomic waker
     pub const fn new() -> Self {

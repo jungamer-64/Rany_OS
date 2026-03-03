@@ -157,6 +157,24 @@ impl core::fmt::Display for EndpointError {
     }
 }
 
+impl EndpointError {
+    /// TcpErrorからEndpointErrorへの変換
+    pub fn from_tcp_error(e: crate::net::l4::tcp::TcpError) -> Self {
+        use crate::net::l4::tcp::TcpError;
+        match e {
+            TcpError::ConnectionClosed => EndpointError::NotConnected,
+            TcpError::ConnectionRefused => EndpointError::ConnectionRefused,
+            TcpError::ConnectionReset => EndpointError::NotConnected,
+            TcpError::Timeout => EndpointError::Timeout,
+            TcpError::AddressInUse => EndpointError::AddressInUse,
+            TcpError::BufferFull => EndpointError::BufferFull,
+            TcpError::InvalidState => EndpointError::InvalidStateTransition,
+            TcpError::NetworkUnreachable => EndpointError::ResourceExhausted,
+            TcpError::PermissionDenied => EndpointError::Internal,
+        }
+    }
+}
+
 /// ソケット結果型
 pub type EndpointResult<T> = Result<T, EndpointError>;
 

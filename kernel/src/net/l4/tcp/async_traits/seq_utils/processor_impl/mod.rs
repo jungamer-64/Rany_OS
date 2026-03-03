@@ -621,13 +621,13 @@ impl TcpProcessor {
         tcb.set_rcv_wnd(65535);
 
         // Parse options for the initial TCB (SynReceived state)
+        let mut peer_mss_val = None;
         if let Some(data) = options_data {
             use crate::net::l4::endpoint::window_scale::TcpOptionParser;
             let mut parser = TcpOptionParser::new(data);
             
             if let Some(peer_mss) = parser.find_mss() {
-                // Security: Enforce minimum MSS of 536 to prevent Tinygram attacks
-                tcb.set_mss(peer_mss.max(536));
+                peer_mss_val = Some(peer_mss);
             }
             if let Some(peer_wscale) = parser.find_window_scale() {
                 tcb.set_peer_wscale(peer_wscale.min(14));
@@ -640,6 +640,10 @@ impl TcpProcessor {
                 tcb.update_timestamps(ts_val);
             }
         }
+
+        // RFC 1122 Section 4.2.2.6: If an MSS option is not received, 
+        // a default MSS of 536 is used.
+        tcb.set_mss(peer_mss_val.unwrap_or(536));
 
         tcb.enter_syn_received();
 
@@ -1046,39 +1050,37 @@ impl TcpProcessor {
         ack_num: u32,
         options_data: Option<&[u8]>,
     ) -> TcpProcessResult {
-        // Waiting for SYN-ACK
-        // Accept ACK that acknowledges the initial SYN (snd_una + 1)
-        if syn && ack && ack_num == tcb.snd_una().wrapping_add(1) {
-            // 解析 options (MSS / WSCALE / SACK / TS)
+        // Parse options (MSS / WSCALE / SACK / TS) if present in any SYN segment
+        let mut peer_mss_val = None;
+        if syn {
             if let Some(data) = options_data {
                 use crate::net::l4::endpoint::window_scale::TcpOptionParser;
                 let mut parser = TcpOptionParser::new(data);
                 
-                // MSS negotiation
                 if let Some(peer_mss) = parser.find_mss() {
-                    // Security: Enforce minimum MSS of 536 to prevent Tinygram attacks (RFC 879)
-                    let mss = peer_mss.max(536);
-                    tcb.set_mss(mss);
+                    peer_mss_val = Some(peer_mss);
                 }
                 
-                // Window Scale negotiation
                 if let Some(peer_wscale) = parser.find_window_scale() {
-                    // Security: RFC 7323 Section 2.3 - limit scale factor to 14
-                    let scale = peer_wscale.min(14);
-                    tcb.set_peer_wscale(scale);
+                    tcb.set_peer_wscale(peer_wscale.min(14));
                 }
                 
-                // SACK negotiation
                 if parser.find_sack_permitted() {
                     tcb.set_sack_enabled(true);
                 }
                 
-                // Timestamps negotiation
                 if let Some((ts_val, _ts_ecr)) = parser.find_timestamps() {
                     tcb.set_timestamps_enabled(true);
                     tcb.update_timestamps(ts_val);
                 }
             }
+        }
+
+        // Waiting for SYN-ACK
+        // Accept ACK that acknowledges the initial SYN (snd_una + 1)
+        if syn && ack && ack_num == tcb.snd_una().wrapping_add(1) {
+            // Apply MSS (defaulting to 536 as per RFC 1122 if not provided)
+            tcb.set_mss(peer_mss_val.unwrap_or(536));
 
             tcb.set_snd_una(ack_num);
             tcb.set_snd_nxt(ack_num);
@@ -1090,6 +1092,9 @@ impl TcpProcessor {
             Self::make_ack_result(tcb)
         } else if syn && !ack {
             // Simultaneous open
+            // Apply MSS even in simultaneous open
+            tcb.set_mss(peer_mss_val.unwrap_or(536));
+
             tcb.set_rcv_nxt(seq_num.wrapping_add(1));
             tcb.enter_syn_received();
             // Send SYN-ACK
