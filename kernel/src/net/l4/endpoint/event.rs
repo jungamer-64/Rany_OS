@@ -69,6 +69,7 @@ pub enum NetworkEvent {
         dst_ip: [u8; 4],
         dst_port: u16,
         data: Vec<u8>,
+        ttl: u8,
     },
     /// Raw TCP送信（ソケット非経由・スタック直接）
     RawTcpSend {
@@ -83,6 +84,7 @@ pub enum NetworkEvent {
         dst_ip: [u8; 16],
         dst_port: u16,
         data: Vec<u8>,
+        ttl: u8,
     },
     /// Raw TCP IPv6送信
     RawTcpV6Send {
@@ -194,6 +196,7 @@ pub enum NetworkEvent {
         dst_ip: [u8; 4],
         dst_port: u16,
         data: Vec<u8>,
+        ttl: u8,
     },
     /// インターフェース指定TCP送信（非同期版）
     RawTcpSendOn {
@@ -210,6 +213,7 @@ pub enum NetworkEvent {
         dst_ip: [u8; 16],
         dst_port: u16,
         data: Vec<u8>,
+        ttl: u8,
     },
     /// 非同期TCP connect（TcpStreamを返す完全非同期版）
     AsyncTcpConnectStream {

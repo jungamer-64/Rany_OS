@@ -623,6 +623,19 @@ fn process_tcp_with_tcb(
                 handle_final_ack(tcb, ack_num);
             }
         }
+        TcpConnectionState::TimeWait => {
+            // RFC 793 / 9293 Section 3.10.7.4:
+            // "Any segment received in the TIME-WAIT state MUST be acknowledged. 
+            // This re-acknowledges the peer's FIN and restarts the 2MSL timer."
+            
+            // TCBを更新して最終送信時刻をリセット（2MSLタイマーの再起動）
+            tcb_table().update(tcb.local, tcb.remote, |entry| {
+                entry.last_send_tick = tcb_table().get_current_tick();
+            });
+
+            // ACK送信
+            send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
+        }
         _ => {}
     }
 }
@@ -898,6 +911,15 @@ fn handle_rst_received(tcb: TcpControlBlockEntry, seq_num: u32) {
 
 /// ACK受信処理（データ確認応答 + 輻輳制御）
 fn handle_ack_received(tcb: TcpControlBlockEntry, ack_num: u32) {
+    // RFC 793 validation: SND.UNA < SEG.ACK =< SND.NXT
+    // ack_num > snd_nxt の場合、送信していないデータのACKなので不正。
+    let diff_nxt = ack_num.wrapping_sub(tcb.snd_nxt) as i32;
+    if diff_nxt > 0 {
+        log::warn!("[TCP] Received ACK for unsent data (ack={} > nxt={}), sending challenge ACK", ack_num, tcb.snd_nxt);
+        send_challenge_ack(&tcb);
+        return;
+    }
+
     // 現在時刻を取得（輻輳制御アルゴリズム用）
     let current_time_ms = tcb_table().get_current_tick();
 

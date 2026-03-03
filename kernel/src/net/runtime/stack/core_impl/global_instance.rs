@@ -87,13 +87,14 @@ pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) 
 /// Instead of synchronously acquiring the NETWORK_STACK lock, the send request
 /// is posted to the `NetworkEventQueue` and processed by the `network_event_task`.
 /// This avoids lock contention and potential deadlocks when called from async contexts.
-pub fn send_udp_async(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
+pub fn send_udp_async(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8], ttl: u8) -> bool {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
             src_port,
             dst_ip: *dst_ip.as_bytes(),
             dst_port,
             data: Vec::from(data),
+            ttl,
         },
     );
     true
@@ -148,6 +149,7 @@ pub fn send_udp_v6_async(
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_port: u16,
     data: &[u8],
+    ttl: u8,
 ) -> bool {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpV6Send {
@@ -156,6 +158,7 @@ pub fn send_udp_v6_async(
             dst_ip: dst_ip.octets(),
             dst_port,
             data: Vec::from(data),
+            ttl,
         },
     );
     true
@@ -278,6 +281,7 @@ pub fn send_tcp_v6_async(
 }
 
 /// Bind a UDP socket
+#[deprecated(note = "use bind_udp_endpoint_async() instead")]
 pub fn bind_udp(port: u16) -> Option<UdpEndpoint> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => guard.as_mut().and_then(|s| s.bind_udp(port)),
@@ -327,6 +331,7 @@ pub async fn async_timeout_task() {
 }
 
 /// Bind a UDP socket and associate it with an optional capability token
+#[deprecated(note = "use bind_udp_endpoint_with_token_async() instead")]
 pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => guard.as_mut().and_then(|s| s.bind_udp_with_token(port, token)),
@@ -349,6 +354,7 @@ pub fn apply_ipv6_global_address(addr: crate::net::l3::ipv6::Ipv6Address) {
     }
 }
 /// Unbind a UDP socket
+#[deprecated(note = "use unbind_udp_async() instead")]
 pub fn unbind_udp(port: u16) {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -361,6 +367,7 @@ pub fn unbind_udp(port: u16) {
 }
 
 /// Unbind a TCP connection
+#[deprecated(note = "use unbind_tcp_async() instead")]
 pub fn unbind_tcp(local: TcpEndpointAddr, remote: TcpEndpointAddr) {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -373,6 +380,7 @@ pub fn unbind_tcp(local: TcpEndpointAddr, remote: TcpEndpointAddr) {
 }
 
 /// Unbind a TCP listener
+#[deprecated(note = "use unbind_tcp_listener_async() instead")]
 pub fn unbind_tcp_listener(local: TcpEndpointAddr) {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -385,6 +393,7 @@ pub fn unbind_tcp_listener(local: TcpEndpointAddr) {
 }
 
 /// Bind a TCP listener
+#[deprecated(note = "use bind_tcp_listener_async() instead")]
 pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -402,6 +411,7 @@ pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
 }
 
 /// Bind a TCP listener with a capability token
+#[deprecated(note = "use bind_tcp_listener_async() instead")]
 pub fn bind_tcp_with_token(addr: TcpEndpointAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -419,6 +429,7 @@ pub fn bind_tcp_with_token(addr: TcpEndpointAddr, token: Option<u64>) -> Result<
 }
 
 /// Connect to a remote TCP address
+#[deprecated(note = "use connect_tcp_stream_async() instead")]
 pub fn connect_tcp(local_addr: TcpEndpointAddr, remote_addr: TcpEndpointAddr) -> Result<TcpStream, TcpError> {
      match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -1381,6 +1392,7 @@ pub fn send_udp_on_async(if_id: super::NetIfId, src_port: u16, dst_ip: Ipv4Addre
             dst_ip: *dst_ip.as_bytes(),
             dst_port,
             data: Vec::from(data),
+            ttl: 64,
         },
     );
     true
@@ -1416,6 +1428,7 @@ pub fn send_udp_v6_on_async(
             dst_ip: dst_ip.octets(),
             dst_port,
             data: Vec::from(data),
+            ttl: 64,
         },
     );
     true

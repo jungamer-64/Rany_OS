@@ -345,6 +345,8 @@ pub(crate) struct UdpEndpointInner {
     wakers: Vec<Waker>,
     /// Is endpoint closed
     closed: bool,
+    /// Default TTL for outgoing packets
+    pub(crate) ttl: u8,
     /// Optional associated grant token id used to authorize this binding
     token: Option<u64>,
 }
@@ -399,6 +401,7 @@ impl UdpEndpoint {
                 rx_queue_bytes: 0,
                 wakers: Vec::new(),
                 closed: false,
+                ttl: 64,
                 token,
             })),
         }
@@ -413,6 +416,18 @@ impl UdpEndpoint {
                 0
             }
         }
+    }
+
+    /// Set default TTL for outgoing packets
+    pub fn set_ttl(&self, ttl: u8) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.ttl = ttl;
+        }
+    }
+
+    /// Get default TTL for outgoing packets
+    pub fn ttl(&self) -> u8 {
+        self.inner.lock().map(|g| g.ttl).unwrap_or(64)
     }
 
     /// Receive a datagram (async, zero-copy)
@@ -521,12 +536,12 @@ impl UdpEndpoint {
     /// 
     /// Returns the number of bytes sent, or an error.
     pub fn send_to(&self, data: &[u8], dst: UdpAddr) -> Result<usize, NetworkError> {
-        let local_port = match self.inner.lock() {
+        let (local_port, ttl) = match self.inner.lock() {
             Ok(g) => {
                 if g.closed {
                     return Err(NetworkError::ConnectionClosed);
                 }
-                g.local_port
+                (g.local_port, g.ttl)
             }
             Err(_) => return Err(NetworkError::LockPoisoned),
         };
@@ -534,14 +549,14 @@ impl UdpEndpoint {
         // Send via async event queue to avoid synchronous NETWORK_STACK lock
         match dst {
             UdpAddr::V4 { ip, port } => {
-                if crate::net::runtime::stack::send_udp_async(local_port, ip, port, data) {
+                if crate::net::runtime::stack::send_udp_async(local_port, ip, port, data, ttl) {
                     Ok(data.len())
                 } else {
                     Err(NetworkError::TransmitFailed)
                 }
             }
             UdpAddr::V6 { ip, port } => {
-                if crate::net::runtime::stack::send_udp_v6_async(local_port, Ipv6Address::UNSPECIFIED, ip, port, data) {
+                if crate::net::runtime::stack::send_udp_v6_async(local_port, Ipv6Address::UNSPECIFIED, ip, port, data, ttl) {
                     Ok(data.len())
                 } else {
                     Err(NetworkError::TransmitFailed)
@@ -637,12 +652,12 @@ impl<'a> Future for UdpSendFuture<'a> {
         let this = unsafe { self.get_unchecked_mut() };
 
         // まずエンドポイントの状態を確認
-        let local_port = match this.endpoint.inner.lock() {
+        let (local_port, ttl) = match this.endpoint.inner.lock() {
             Ok(g) => {
                 if g.closed {
                     return Poll::Ready(Err(NetworkError::ConnectionClosed));
                 }
-                g.local_port
+                (g.local_port, g.ttl)
             }
             Err(_) => return Poll::Ready(Err(NetworkError::LockPoisoned)),
         };
@@ -650,7 +665,7 @@ impl<'a> Future for UdpSendFuture<'a> {
         // イベントキュー経由で非同期送信を試行
         let sent = match this.dst {
             UdpAddr::V4 { ip, port } => {
-                crate::net::runtime::stack::send_udp_async(local_port, ip, port, this.data)
+                crate::net::runtime::stack::send_udp_async(local_port, ip, port, this.data, ttl)
             }
             UdpAddr::V6 { ip, port } => {
                 crate::net::runtime::stack::send_udp_v6_async(
@@ -659,6 +674,7 @@ impl<'a> Future for UdpSendFuture<'a> {
                     ip,
                     port,
                     this.data,
+                    ttl,
                 )
             }
         };
@@ -691,12 +707,12 @@ impl Future for UdpSendZeroCopyFuture {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
 
-        let local_port = match this.inner.lock() {
+        let (local_port, ttl) = match this.inner.lock() {
             Ok(g) => {
                 if g.closed {
                     return Poll::Ready(Err(NetworkError::ConnectionClosed));
                 }
-                g.local_port
+                (g.local_port, g.ttl)
             }
             Err(_) => return Poll::Ready(Err(NetworkError::LockPoisoned)),
         };
@@ -705,7 +721,7 @@ impl Future for UdpSendZeroCopyFuture {
             let data = packet.data();
             let sent = match this.dst {
                 UdpAddr::V4 { ip, port } => {
-                    crate::net::runtime::stack::send_udp_async(local_port, ip, port, data)
+                    crate::net::runtime::stack::send_udp_async(local_port, ip, port, data, ttl)
                 }
                 UdpAddr::V6 { ip, port } => {
                     crate::net::runtime::stack::send_udp_v6_async(
@@ -714,6 +730,7 @@ impl Future for UdpSendZeroCopyFuture {
                         ip,
                         port,
                         data,
+                        ttl,
                     )
                 }
             };

@@ -150,6 +150,11 @@ impl NetworkStack {
 
     /// Send a UDP/IPv6 datagram (with NDP resolution)
     pub fn send_udp_v6_raw(&mut self, src_port: u16, src_ip: Ipv6Address, dst: Ipv6Address, dst_port: u16, data: &[u8]) -> bool {
+        self.send_udp_v6_raw_with_ttl(src_port, src_ip, dst, dst_port, data, 64)
+    }
+
+    /// Send a UDP/IPv6 datagram with explicit hop limit (TTL)
+    pub fn send_udp_v6_raw_with_ttl(&mut self, src_port: u16, src_ip: Ipv6Address, dst: Ipv6Address, dst_port: u16, data: &[u8], ttl: u8) -> bool {
         let config = self.config;
         let current_time = self.current_time.load(Ordering::Relaxed);
 
@@ -193,7 +198,7 @@ impl NetworkStack {
                 ip_packet.set_source(&src_ip);
                 ip_packet.set_destination(&dst);
                 ip_packet.set_next_header(IpProtocol::Udp);
-                ip_packet.set_hop_limit(64);
+                ip_packet.set_hop_limit(ttl);
 
                 // Build UDP header + payload into IPv6 payload area
                 let payload_buf = ip_packet.payload_mut();
@@ -269,7 +274,21 @@ impl NetworkStack {
         dst_port: u16,
         data: &[u8],
     ) -> bool {
-        self.send_udp_v6_raw(src_port, src_ip, dst_ip, dst_port, data)
+        self.send_udp_v6_raw_with_ttl(src_port, src_ip, dst_ip, dst_port, data, 64)
+    }
+
+    /// Transmit an IPv6 UDP datagram on a specific interface with explicit TTL
+    pub fn send_udp_v6_raw_on_with_ttl(
+        &mut self,
+        _if_id: super::NetIfId,
+        src_port: u16,
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
+        self.send_udp_v6_raw_with_ttl(src_port, src_ip, dst_ip, dst_port, data, ttl)
     }
 
     /// Send a TCP segment over IPv6 (with NDP resolution)

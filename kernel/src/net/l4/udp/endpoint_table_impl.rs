@@ -100,7 +100,8 @@ impl UdpEndpointTable {
                     rx_queue_bytes: 0,
                     wakers: Vec::new(),
                     closed: false,
-                    token,
+                    ttl: 64,
+                    token: None,
                 }));
 
                 sockets.insert(port, inner.clone());

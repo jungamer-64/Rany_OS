@@ -31,10 +31,15 @@ pub fn start_once(executor: &mut task::Executor) {
 ///
 /// 低負荷時は10msスリープで省電力、高負荷時は1msに短縮して
 /// レスポンスレイテンシを低減する。
+///
+/// VirtIO-Net割り込み処理はISR + network_event_task で非同期に
+/// 駆動されるため、ここでは yield / sleep でExecutorに制御を渡すのみ。
 async fn run_net_poller() {
     let mut consecutive_idle: u32 = 0;
     loop {
-        crate::io::virtio::handle_all_virtio_net_interrupts();
+        // ISR + network_event_taskが非同期にパケット処理を行うため
+        // 直接handle_all_virtio_net_interrupts()を呼ばずyieldで委ねる
+        task::yield_now().await;
 
         let active = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
         if active > 0 {
@@ -124,7 +129,7 @@ async fn read_request_with_timeout(client: &mut TcpStream) -> Result<Vec<u8>, &'
     for _ in 0..READ_TRIES {
         match task::with_timeout(client.read(&mut buffer), READ_TIMEOUT_MS).await {
             TimeoutResult::TimedOut => {
-                crate::io::virtio::handle_all_virtio_net_interrupts();
+                // ISR + network_event_taskが非同期にパケット処理するためyieldのみ
                 task::yield_now().await;
             }
             TimeoutResult::Completed(Err(_)) => return Err("socket recv error"),
@@ -154,7 +159,6 @@ async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &
                 if write_timeouts >= MAX_TIMEOUT_RETRIES {
                     return Err("socket write timeout");
                 }
-                crate::io::virtio::handle_all_virtio_net_interrupts();
                 task::yield_now().await;
                 continue;
             }
@@ -164,7 +168,8 @@ async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &
                 write_timeouts = 0;
                 log::info!("[HOST-HTTP] wrote {} bytes", written);
                 sent += written;
-                crate::io::virtio::handle_all_virtio_net_interrupts();
+                // yieldでExecutorに制御を渡し、ISR駆動のVirtIO処理を促進
+                task::yield_now().await;
             }
         }
     }
@@ -178,7 +183,6 @@ async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &
                 if flush_timeouts >= MAX_TIMEOUT_RETRIES {
                     return Err("socket flush timeout");
                 }
-                crate::io::virtio::handle_all_virtio_net_interrupts();
                 task::yield_now().await;
             }
             TimeoutResult::Completed(Err(_)) => return Err("socket flush error"),

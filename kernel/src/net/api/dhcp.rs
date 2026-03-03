@@ -111,7 +111,7 @@ pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
     } else {
         Ipv4Address::new(server_ip)
     };
-    stack::send_udp_async(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..total_len])
+    stack::send_udp_async(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..total_len], 64)
 }
 
 pub fn dhcp_release() {

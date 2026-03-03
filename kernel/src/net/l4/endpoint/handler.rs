@@ -86,6 +86,7 @@ impl NetworkEventHandler {
     }
 
     /// イベントを処理
+    #[allow(deprecated)]
     pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
         match event {
             NetworkEvent::IngressPacket { packet } => self.handle_ingress_packet(packet),
@@ -120,13 +121,14 @@ impl NetworkEventHandler {
             NetworkEvent::SendTo { fd, data, remote } => self.handle_send_to(fd, remote, data),
             NetworkEvent::SetNoDelay { fd, nodelay } => self.handle_set_nodelay(fd, nodelay),
             NetworkEvent::SetPriority { fd, priority } => self.handle_set_priority(fd, priority),
-            NetworkEvent::RawUdpSend { src_port, dst_ip, dst_port, data } => {
+            NetworkEvent::RawUdpSend { src_port, dst_ip, dst_port, data, ttl } => {
                 // スタックロックを直接取得して送信（deprecated global API を回避）
                 match crate::net::runtime::stack::NETWORK_STACK.lock() {
                     Ok(mut guard) => {
                         if let Some(ref mut stack) = *guard {
+                            let src_ip = stack.config().ipv4.address;
                             let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                            if stack.send_udp_raw(src_port, dst, dst_port, &data) {
+                            if stack.send_udp_raw_with_src_ttl(src_ip, src_port, dst, dst_port, &data, ttl) {
                                 EventHandleResult::Success
                             } else {
                                 EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
@@ -162,13 +164,13 @@ impl NetworkEventHandler {
                     }
                 }
             }
-            NetworkEvent::RawUdpV6Send { src_port, src_ip, dst_ip, dst_port, data } => {
+            NetworkEvent::RawUdpV6Send { src_port, src_ip, dst_ip, dst_port, data, ttl } => {
                 match crate::net::runtime::stack::NETWORK_STACK.lock() {
                     Ok(mut guard) => {
                         if let Some(ref mut stack) = *guard {
                             let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                             let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                            if stack.send_udp_v6_raw(src_port, src, dst, dst_port, &data) {
+                            if stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl) {
                                 EventHandleResult::Success
                             } else {
                                 EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
@@ -348,13 +350,14 @@ impl NetworkEventHandler {
                 crate::net::l2::arp::cleanup_arp_waiters();
                 EventHandleResult::Success
             }
-            NetworkEvent::RawUdpSendOn { if_id, src_port, dst_ip, dst_port, data } => {
+            NetworkEvent::RawUdpSendOn { if_id, src_port, dst_ip, dst_port, data, ttl } => {
                 match crate::net::runtime::stack::NETWORK_STACK.lock() {
                     Ok(mut guard) => {
                         if let Some(ref mut stack) = *guard {
                             let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                            let src_ip = stack.config().ipv4.address;
                             let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                            if stack.send_udp_raw_on(net_if, src_port, dst, dst_port, &data) {
+                            if stack.send_udp_raw_on_with_src_ttl(net_if, src_ip, src_port, dst, dst_port, &data, ttl) {
                                 EventHandleResult::Success
                             } else {
                                 EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
@@ -391,14 +394,14 @@ impl NetworkEventHandler {
                     }
                 }
             }
-            NetworkEvent::RawUdpV6SendOn { if_id, src_port, src_ip, dst_ip, dst_port, data } => {
+            NetworkEvent::RawUdpV6SendOn { if_id, src_port, src_ip, dst_ip, dst_port, data, ttl } => {
                 match crate::net::runtime::stack::NETWORK_STACK.lock() {
                     Ok(mut guard) => {
                         if let Some(ref mut stack) = *guard {
                             let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                             let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                             let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                            if stack.send_udp_v6_raw_on(net_if, src_port, src, dst, dst_port, &data) {
+                            if stack.send_udp_v6_raw_on_with_ttl(net_if, src_port, src, dst, dst_port, &data, ttl) {
                                 EventHandleResult::Success
                             } else {
                                 EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
@@ -570,9 +573,10 @@ impl NetworkEventHandler {
             NetworkEvent::SendTo { fd, data, remote } => {
                 self.handle_send_to_with_stack(fd, remote, data, stack)
             }
-            NetworkEvent::RawUdpSend { src_port, dst_ip, dst_port, data } => {
+            NetworkEvent::RawUdpSend { src_port, dst_ip, dst_port, data, ttl } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                if stack.send_udp_raw(src_port, dst, dst_port, &data) {
+                let src_ip = stack.config().ipv4.address;
+                if stack.send_udp_raw_with_src_ttl(src_ip, src_port, dst, dst_port, &data, ttl) {
                     EventHandleResult::Success
                 } else {
                     EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
@@ -587,10 +591,10 @@ impl NetworkEventHandler {
                     EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
                 }
             }
-            NetworkEvent::RawUdpV6Send { src_port, src_ip, dst_ip, dst_port, data } => {
+            NetworkEvent::RawUdpV6Send { src_port, src_ip, dst_ip, dst_port, data, ttl } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                if stack.send_udp_v6_raw(src_port, src, dst, dst_port, &data) {
+                if stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl) {
                     EventHandleResult::Success
                 } else {
                     EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
@@ -742,10 +746,11 @@ impl NetworkEventHandler {
                 crate::net::l2::arp::cleanup_arp_waiters();
                 EventHandleResult::Success
             }
-            NetworkEvent::RawUdpSendOn { if_id, src_port, dst_ip, dst_port, data } => {
+            NetworkEvent::RawUdpSendOn { if_id, src_port, dst_ip, dst_port, data, ttl } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                if stack.send_udp_raw_on(net_if, src_port, dst, dst_port, &data) {
+                let src_ip = stack.config().ipv4.address;
+                if stack.send_udp_raw_on_with_src_ttl(net_if, src_ip, src_port, dst, dst_port, &data, ttl) {
                     EventHandleResult::Success
                 } else {
                     EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
@@ -762,11 +767,11 @@ impl NetworkEventHandler {
                     EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
                 }
             }
-            NetworkEvent::RawUdpV6SendOn { if_id, src_port, src_ip, dst_ip, dst_port, data } => {
+            NetworkEvent::RawUdpV6SendOn { if_id, src_port, src_ip, dst_ip, dst_port, data, ttl } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                if stack.send_udp_v6_raw_on(net_if, src_port, src, dst, dst_port, &data) {
+                if stack.send_udp_v6_raw_on_with_ttl(net_if, src_port, src, dst, dst_port, &data, ttl) {
                     EventHandleResult::Success
                 } else {
                     EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
@@ -1519,7 +1524,8 @@ impl NetworkEventHandler {
             udp_packet.extend_from_slice(&data);
 
             // UDPパケット送信（IPスタック経由）
-            if let Err(e) = self.send_udp_packet(local, remote, udp_packet) {
+            let ttl = inner.udp().and_then(|u| u.socket.as_ref()).map(|s| s.ttl()).unwrap_or(64);
+            if let Err(e) = self.send_udp_packet(local, remote, udp_packet, ttl) {
                 log::info!("UDP: Failed to send packet: {:?}", e);
                 return EventHandleResult::ProtocolError(match e {
                     EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -1546,6 +1552,7 @@ impl NetworkEventHandler {
         src: EndpointAddr,
         dst: EndpointAddr,
         packet: Vec<u8>,
+        ttl: u8,
     ) -> EndpointResult<()> {
         // The `packet` contains a UDP header followed by payload. Extract payload.
         if packet.len() < 8 {
@@ -1558,7 +1565,7 @@ impl NetworkEventHandler {
         if let Some((_, dst_v4)) = endpoint_ipv4_pair(src, dst) {
             let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
             // 非同期イベントキュー経由で送信（ロック競合回避）
-            if crate::net::runtime::stack::send_udp_async(src.port(), dst_ip, dst.port(), payload) {
+            if crate::net::runtime::stack::send_udp_async(src.port(), dst_ip, dst.port(), payload, ttl) {
                 return Ok(());
             } else {
                 return Err(EndpointError::ResourceExhausted);
@@ -1570,7 +1577,7 @@ impl NetworkEventHandler {
             let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(src.as_ipv6());
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(dst.as_ipv6());
             // 非同期イベントキュー経由で送信（ロック競合回避）
-            if crate::net::runtime::stack::send_udp_v6_async(src.port(), src_v6, dst_v6, dst.port(), payload) {
+            if crate::net::runtime::stack::send_udp_v6_async(src.port(), src_v6, dst_v6, dst.port(), payload, ttl) {
                 return Ok(());
             } else {
                 return Err(EndpointError::ResourceExhausted);
@@ -1673,7 +1680,7 @@ pub mod tests {
         let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
 
         assert!(matches!(
-            handler.send_udp_packet(local, remote, alloc::vec![0u8; 8]),
+            handler.send_udp_packet(local, remote, alloc::vec![0u8; 8], 64),
             Err(EndpointError::InvalidArgument)
         ));
     }

@@ -78,6 +78,7 @@ impl DhcpV6Client {
             dst,
             DHCPV6_SERVER_PORT,
             data,
+            64,
         )
     }
 

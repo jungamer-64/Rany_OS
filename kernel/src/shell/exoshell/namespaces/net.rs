@@ -11,14 +11,15 @@ use alloc::vec::Vec;
 use super::{BoxFuture, ShellNamespace};
 use crate::security::capability::{CAP_NET_RAW, CAP_NET_BIND, manager};
 use crate::shell::exoshell::types::ExoValue;
-use crate::net::runtime::stack::bind_udp_with_token;
+use crate::net::runtime::stack::{bind_udp_endpoint_with_token_async, bind_udp_endpoint_async};
 use alloc::boxed::Box;
 
 /// ネットワーク名前空間
 pub struct NetNamespace;
 
 impl NetNamespace {
-    fn dispatch_open(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    /// 非同期版 open: イベントキュー経由で UDP bind を実行
+    async fn dispatch_open_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let port = match args.get(0) {
             Some(ExoValue::Int(n)) => *n as u16,
             Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
@@ -44,7 +45,7 @@ impl NetNamespace {
             .unwrap_or(0);
 
         if let Some(t) = token_opt {
-             match bind_udp_with_token(port, Some(t)) {
+            match bind_udp_endpoint_with_token_async(port, Some(t)).await {
                 Some(_) => ExoValue::Bool(true),
                 None => ExoValue::Error(String::from("open failed")),
             }
@@ -52,7 +53,7 @@ impl NetNamespace {
             if !manager().has_capability(domain_id, CAP_NET_BIND) {
                 return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
             }
-            match crate::net::runtime::stack::bind_udp(port) {
+            match bind_udp_endpoint_async(port).await {
                 Some(_) => ExoValue::Bool(true),
                 None => ExoValue::Error(String::from("open failed")),
             }
@@ -75,7 +76,8 @@ impl NetNamespace {
             "dhcp_last_declined" => Self::dhcp_last_declined(),
             "dhcp_last_released" => Self::dhcp_last_released(),
             "dhcp_renew" => Self::dhcp_renew(),
-            "open" => Self::dispatch_open(args),
+            // dispatch_open は非同期版に移行済みのため dispatch() からは呼ばない
+            "open" => ExoValue::Error(String::from("Use async call() interface for net.open")),
             _ => ExoValue::Error(format!("Unknown method 'net.{}'", method)),
         }
     }
@@ -422,7 +424,8 @@ impl NetNamespace {
         ExoValue::Array(results)
     }
 
-    fn handle_open(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    /// 非同期版 handle_open: イベントキュー経由で UDP bind を実行
+    async fn handle_open_async(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let port = match _args.get(0) {
             Some(ExoValue::Int(n)) => *n as u16,
             Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
@@ -448,7 +451,7 @@ impl NetNamespace {
             if !grants.iter().any(|g| g.id == t) {
                 return ExoValue::Error(String::from("Permission denied: token not owned"));
             }
-            match bind_udp_with_token(port, Some(t)) {
+            match bind_udp_endpoint_with_token_async(port, Some(t)).await {
                 Some(_) => ExoValue::Bool(true),
                 None => ExoValue::Error(String::from("open failed")),
             }
@@ -456,7 +459,7 @@ impl NetNamespace {
             if !manager().has_capability(domain_id, CAP_NET_BIND) {
                 return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
             }
-            match crate::net::runtime::stack::bind_udp(port) {
+            match bind_udp_endpoint_async(port).await {
                 Some(_) => ExoValue::Bool(true),
                 None => ExoValue::Error(String::from("open failed")),
             }
@@ -482,7 +485,7 @@ impl ShellNamespace for NetNamespace {
                 "arp" => Self::arp_cache(),
                 "dhcp_state" => Self::dhcp_state(),
                 "dhcp_renew" => Self::dhcp_renew(),
-                "open" => Self::handle_open(_args),
+                "open" => Self::handle_open_async(_args).await,
                 _ => ExoValue::Error(format!(
                     "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping, open, dhcp_state, dhcp_renew",
                     method

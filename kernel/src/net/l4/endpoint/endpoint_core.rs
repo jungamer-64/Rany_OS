@@ -138,9 +138,10 @@ impl Endpoint {
     }
 
 
-    /// リッスンモードを開始（推奨API）
+    /// リッスンモードを開始（非推奨：非同期APIを使用してください）
     ///
-    /// 【設計書】POSIXのlisten()ではなく、start_listening()を使用
+    /// 【設計書】POSIXのlisten()ではなく、start_listening_async()を使用
+    #[deprecated(note = "use start_listening_async() instead")]
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
@@ -600,7 +601,9 @@ impl OwnedEndpoint {
     }
 
 
-    /// リッスンモードを開始（推奨API）
+    /// リッスンモードを開始（非推奨：非同期APIを使用してください）
+    #[deprecated(note = "use Endpoint::start_listening_async() instead")]
+    #[allow(deprecated)]
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
         self.endpoint
             .as_ref()
@@ -749,12 +752,14 @@ pub fn create_raw_endpoint() -> OwnedEndpoint {
     OwnedEndpoint::new(EndpointType::Raw)
 }
 
-/// TCPサーバー作成（推奨API）
+/// TCPサーバー作成（非推奨：非同期版 create_tcp_server_async を使用してください）
 ///
 /// 【設計書】POSIXソケットAPIを模倣しない
+#[deprecated(note = "use create_tcp_server_async() instead")]
 pub fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<OwnedEndpoint> {
     let ep = create_tcp_endpoint();
     ep.set_local_addr(addr)?;
+    #[allow(deprecated)]
     ep.start_listening(backlog)?;
     Ok(ep)
 }

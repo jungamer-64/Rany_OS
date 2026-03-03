@@ -254,6 +254,7 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
+    #[allow(deprecated)]
     pub fn test_start_listening_v6() {
         // Ensure manager exists
         crate::net::l4::endpoint::manager::init_endpoint_manager();

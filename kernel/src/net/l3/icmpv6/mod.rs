@@ -383,7 +383,7 @@ impl Icmpv6Processor {
                 self.handle_echo_reply(data, src)
             }
             Icmpv6Type::DestinationUnreachable => {
-                self.handle_quoted_error(data, |code, arg, src, dst, packet| {
+                self.handle_quoted_error(data, |code, _arg, src, dst, packet| {
                     Icmpv6Result::DestinationUnreachable {
                         code,
                         quoted_src: src,
@@ -396,7 +396,7 @@ impl Icmpv6Processor {
                 self.handle_packet_too_big(data)
             }
             Icmpv6Type::TimeExceeded => {
-                self.handle_quoted_error(data, |code, arg, src, dst, packet| {
+                self.handle_quoted_error(data, |code, _arg, src, dst, packet| {
                     Icmpv6Result::TimeExceeded {
                         code,
                         quoted_src: src,
@@ -406,10 +406,10 @@ impl Icmpv6Processor {
                 })
             }
             Icmpv6Type::ParameterProblem => {
-                self.handle_quoted_error(data, |code, arg, src, dst, packet| {
+                self.handle_quoted_error(data, |code, _arg, src, dst, packet| {
                     Icmpv6Result::ParameterProblem {
                         code,
-                        pointer: arg,
+                        pointer: _arg,
                         quoted_src: src,
                         quoted_dst: dst,
                         quoted_packet: packet,

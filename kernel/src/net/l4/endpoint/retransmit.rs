@@ -28,6 +28,9 @@ pub struct UnackedSegment {
     pub retransmit_count: u8,
     /// RTOサンプル用フラグ（再送済みはRTTサンプルに使わない）
     pub is_retransmit: bool,
+    /// SACK（Selective ACK）済みフラグ (RFC 2018)
+    /// 受信側からSACKで通知されたが、累積ACKはまだ届いていない状態。
+    pub is_sacked: bool,
 }
 
 /// RTO（Retransmission Timeout）計算器
@@ -134,6 +137,7 @@ impl RetransmitQueue {
             send_tick: current_tick,
             retransmit_count: 0,
             is_retransmit: false,
+            is_sacked: false,
         });
     }
 
@@ -165,7 +169,8 @@ impl RetransmitQueue {
     /// タイムアウトチェック
     /// 再送が必要なセグメントがあるかチェック
     pub fn check_timeout(&self, current_tick: u64) -> Option<&UnackedSegment> {
-        self.unacked.front().filter(|seg| {
+        // SACK済みのセグメントは再送不要 (RFC 2018/6675)
+        self.unacked.iter().find(|seg| !seg.is_sacked).filter(|seg| {
             let elapsed = current_tick.saturating_sub(seg.send_tick);
             elapsed >= self.rto_calc.get_rto()
         })
@@ -174,7 +179,8 @@ impl RetransmitQueue {
     /// 再送処理
     /// 戻り値: 再送するセグメントデータ、Noneの場合は最大再送回数超過
     pub fn retransmit(&mut self, current_tick: u64) -> Option<Vec<u8>> {
-        if let Some(seg) = self.unacked.front_mut() {
+        // SACKされていない最古のセグメントを探す
+        if let Some(seg) = self.unacked.iter_mut().find(|s| !s.is_sacked) {
             if seg.retransmit_count >= self.max_retries {
                 // 最大再送回数超過
                 return None;
@@ -314,27 +320,20 @@ pub fn retransmit_queue_process_sack(local: EndpointAddr, remote: EndpointAddr, 
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx].write();
     if let Some(queue) = queues.get_mut(&(local, remote)) {
-        // フィルタしてSACKで完全に被覆されるセグメントを削除
-        let mut new_unacked = VecDeque::new();
-        while let Some(seg) = queue.unacked.pop_front() {
+        // RFC 2018: "The sender SHOULD NOT drop data that has been SACKed until the 
+        // data has been acknowledged by a cumulative acknowledgment."
+        // We mark is_sacked = true instead of removing the segment.
+        for seg in queue.unacked.iter_mut() {
             let seg_end = seg.seq.wrapping_add(seg.data.len() as u32);
-            let mut is_sacked = false;
             for &(l, r) in blocks {
                 // シーケンスレンジがブロック内に完全に含まれるか
-                let in_left = seg.seq.wrapping_sub(l) as i32 >= 0;
-                let in_right = r.wrapping_sub(seg_end) as i32 >= 0;
+                let in_left = (seg.seq.wrapping_sub(l) as i32) >= 0;
+                let in_right = (r.wrapping_sub(seg_end) as i32) >= 0;
                 if in_left && in_right {
-                    is_sacked = true;
+                    seg.is_sacked = true;
                     break;
                 }
             }
-            if !is_sacked {
-                new_unacked.push_back(seg);
-            }
-        }
-        queue.unacked = new_unacked;
-        if queue.is_empty() {
-            cancel_retransmit_timer(&local, &remote);
         }
     }
 }

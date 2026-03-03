@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::demo::DemoResult;
-use crate::net::l4::endpoint::{OwnedEndpoint, EndpointAddr, EndpointError, create_tcp_server};
+use crate::net::l4::endpoint::{OwnedEndpoint, EndpointAddr, EndpointError, create_tcp_server_async};
 
 /// Echo server statistics
 pub struct EchoStats {
@@ -98,8 +98,8 @@ pub async fn run_echo_server() {
 pub async fn run_echo_server_on_port(port: u16) {
     let addr = EndpointAddr::new([0, 0, 0, 0], port); // 0.0.0.0:port
 
-    // 1. Create server socket (Bind + Listen)
-    let server = match create_tcp_server(addr, 128) {
+    // 1. Create server socket (Bind + Listen) - async event-queue based
+    let server = match create_tcp_server_async(addr, 128).await {
         Ok(s) => s,
         Err(e) => {
             log::info!("Echo Server: Failed to bind on port {}: {:?}", port, e);
