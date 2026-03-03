@@ -474,12 +474,13 @@ impl PageTablePool {
         // Security: Unregister from DMA protection before deallocation.
         unregister_page_table(pt.phys);
 
-        // Use the matching dealloc function for allocate_zeroed_on_node
-        // Safety: `deallocate_on_node` is safe because PooledPt was created
-        // by `alloc_fresh` which returns a matching pointer and layout.
+        // Use the matching dealloc function for allocate_zeroed_on_node.
+        #[cfg(any(test, feature = "bench"))]
         unsafe {
             crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
         }
+        #[cfg(not(any(test, feature = "bench")))]
+        crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
     }
 
     // ========================================================================
