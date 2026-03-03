@@ -1,5 +1,5 @@
 // ============================================================================
-// src/mm/per_cpu.rs - Per-CPU Data using GsBase Register
+// src/per_cpu/mod.rs - Per-CPU Data using GsBase Register
 // 設計書 5.2: コアローカルな高速データアクセス
 //
 // GsBaseレジスタの活用:
