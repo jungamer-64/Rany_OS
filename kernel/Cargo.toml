@@ -103,7 +103,6 @@ verbose_logging = []
 serial = ["uart_16550"]
 stats = []
 mouse = []
-legacy-posix = []
 bench = ["std", "dep:criterion"]
 qemu-test-export = ["full_mm_tests"]
 

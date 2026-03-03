@@ -90,7 +90,7 @@ impl MappingFlags {
 
 /// マッピングエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MmapError {
+pub enum MappingError {
     /// 無効なアドレス
     InvalidAddress,
     /// 無効なサイズ
@@ -170,13 +170,13 @@ impl MemoryMapping {
         size: MappingSize,
         protection: Protection,
         flags: MappingFlags,
-    ) -> Result<Self, MmapError> {
+    ) -> Result<Self, MappingError> {
         let aligned_size = size.page_aligned();
 
         let mut memory = Vec::new();
         memory
             .try_reserve(aligned_size.as_usize())
-            .map_err(|_| MmapError::OutOfMemory)?;
+            .map_err(|_| MappingError::OutOfMemory)?;
 
         if flags.zero_init {
             memory.resize(aligned_size.as_usize(), 0);
@@ -207,9 +207,9 @@ impl MemoryMapping {
         flags: MappingFlags,
         path: &str,
         offset: MappingOffset,
-    ) -> Result<Self, MmapError> {
+    ) -> Result<Self, MappingError> {
         if !offset.is_page_aligned() {
-            return Err(MmapError::AlignmentError);
+            return Err(MappingError::AlignmentError);
         }
 
         let aligned_size = size.page_aligned();
@@ -218,7 +218,7 @@ impl MemoryMapping {
         let mut memory = Vec::new();
         memory
             .try_reserve(aligned_size.as_usize())
-            .map_err(|_| MmapError::OutOfMemory)?;
+            .map_err(|_| MappingError::OutOfMemory)?;
         memory.resize(aligned_size.as_usize(), 0);
 
         // ファイルからデータを読み込み
@@ -261,7 +261,7 @@ impl MemoryMapping {
         protection: Protection,
         device: &str,
         phys_addr: usize,
-    ) -> Result<Self, MmapError> {
+    ) -> Result<Self, MappingError> {
         Ok(Self {
             address,
             size: size.page_aligned(),
@@ -310,10 +310,10 @@ impl MemoryMapping {
     }
 
     /// 保護を変更
-    pub fn set_protection(&mut self, prot: Protection) -> Result<(), MmapError> {
+    pub fn set_protection(&mut self, prot: Protection) -> Result<(), MappingError> {
         // W^X チェック
         if prot.can_write() && prot.can_exec() {
-            return Err(MmapError::PermissionDenied);
+            return Err(MappingError::PermissionDenied);
         }
         self.protection = prot;
         Ok(())
@@ -331,12 +331,12 @@ impl MemoryMapping {
     }
 
     /// 指定オフセットを読み取り
-    pub fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, MmapError> {
+    pub fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, MappingError> {
         if !self.protection.can_read() {
-            return Err(MmapError::PermissionDenied);
+            return Err(MappingError::PermissionDenied);
         }
 
-        let mem = self.memory.as_ref().ok_or(MmapError::NotSupported)?;
+        let mem = self.memory.as_ref().ok_or(MappingError::NotSupported)?;
 
         if offset >= mem.len() {
             return Ok(0);
@@ -350,12 +350,12 @@ impl MemoryMapping {
     }
 
     /// 指定オフセットに書き込み
-    pub fn write(&mut self, offset: usize, data: &[u8]) -> Result<usize, MmapError> {
+    pub fn write(&mut self, offset: usize, data: &[u8]) -> Result<usize, MappingError> {
         if !self.protection.can_write() {
-            return Err(MmapError::PermissionDenied);
+            return Err(MappingError::PermissionDenied);
         }
 
-        let mem = self.memory.as_mut().ok_or(MmapError::NotSupported)?;
+        let mem = self.memory.as_mut().ok_or(MappingError::NotSupported)?;
 
         if offset >= mem.len() {
             return Ok(0);
@@ -380,7 +380,7 @@ impl MemoryMapping {
     }
 
     /// 同期 (ファイルマッピングの場合)
-    pub fn sync(&mut self) -> Result<(), MmapError> {
+    pub fn sync(&mut self) -> Result<(), MappingError> {
         if !self.is_dirty() {
             return Ok(());
         }
@@ -416,7 +416,7 @@ pub struct MappingInfo {
 }
 
 /// メモリマップマネージャー
-pub struct MmapManager {
+pub struct MappingManager {
     /// マッピング (アドレス順)
     mappings: spin::RwLock<BTreeMap<usize, Arc<spin::RwLock<MemoryMapping>>>>,
     /// 次の空きアドレス

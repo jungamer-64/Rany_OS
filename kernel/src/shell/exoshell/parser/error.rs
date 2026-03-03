@@ -59,7 +59,7 @@ impl Display for ParseError {
             ParseError::UnknownNamespace { name } => {
                 write!(
                     f,
-                    "未知の名前空間: '{}'\n有効な名前空間: fs, net, proc, cap, sys",
+                    "未知の名前空間: '{}'\n有効な名前空間: fs, net, domain, cap, sys",
                     name
                 )
             }

@@ -1,7 +1,7 @@
 use super::*;
 
 
-impl MmapManager {
+impl MappingManager {
     /// デフォルトのマッピング領域
     pub const DEFAULT_BASE: usize = 0x0000_7000_0000_0000;
     pub const DEFAULT_MAX: usize = 0x0000_7fff_ffff_ffff;
@@ -55,22 +55,22 @@ impl MmapManager {
     ///
     /// Buddy Allocatorから物理フレームを割り当て、ページテーブルにマップする。
     /// これにより、mmap()が実際のページテーブル操作と統合される。
-    pub fn mmap_with_physical_alloc(
+    pub fn map_with_physical_alloc(
         &self,
         addr: Option<MappedAddress>,
         size: MappingSize,
         protection: Protection,
         flags: MappingFlags,
-    ) -> Result<MappedAddress, MmapError> {
+    ) -> Result<MappedAddress, MappingError> {
         use crate::mm::virt::higher_half::PageFlags;
 use crate::mm::phys::frame_allocator::alloc_frame;
         use x86_64::PhysAddr;
 
         if size.as_usize() == 0 {
-            return Err(MmapError::InvalidSize);
+            return Err(MappingError::InvalidSize);
         }
 
-        let address = self.resolve_mmap_address(addr, size, &flags)?;
+        let address = self.resolve_mapping_address(addr, size, &flags)?;
         let aligned_size = size.page_aligned();
         let page_count = aligned_size.page_count();
         let pt_flags = Self::build_page_flags(&protection, address);
@@ -91,23 +91,23 @@ use crate::mm::phys::frame_allocator::alloc_frame;
     }
 
     /// Resolve the virtual address for a new mapping.
-    pub(super) fn resolve_mmap_address(
+    pub(super) fn resolve_mapping_address(
         &self,
         addr: Option<MappedAddress>,
         size: MappingSize,
         flags: &MappingFlags,
-    ) -> Result<MappedAddress, MmapError> {
+    ) -> Result<MappedAddress, MappingError> {
         if let Some(a) = addr {
             if flags.fixed && !a.is_page_aligned() {
-                return Err(MmapError::AlignmentError);
+                return Err(MappingError::AlignmentError);
             }
             if flags.fixed {
                 Ok(a)
             } else {
-                self.find_free_address(size).ok_or(MmapError::OutOfMemory)
+                self.find_free_address(size).ok_or(MappingError::OutOfMemory)
             }
         } else {
-            self.find_free_address(size).ok_or(MmapError::OutOfMemory)
+            self.find_free_address(size).ok_or(MappingError::OutOfMemory)
         }
     }
 
@@ -134,13 +134,13 @@ use crate::mm::phys::frame_allocator::alloc_frame;
         page_count: usize,
         pt_flags: crate::mm::virt::higher_half::PageFlags,
         flags: &MappingFlags,
-    ) -> Result<Vec<x86_64::structures::paging::PhysFrame>, MmapError> {
+    ) -> Result<Vec<x86_64::structures::paging::PhysFrame>, MappingError> {
         use crate::mm::phys::frame_allocator::alloc_frame;
         use x86_64::PhysAddr;
 
         let mut allocated_frames = Vec::new();
         for i in 0..page_count {
-            let frame = alloc_frame().ok_or(MmapError::OutOfMemory)?;
+            let frame = alloc_frame().ok_or(MappingError::OutOfMemory)?;
             let phys_addr = PhysAddr::new(frame.start_address().as_u64());
             let virt_addr = crate::mm::virt::higher_half::VirtAddr::new(
                 (address.as_usize() + i * MappingSize::PAGE_SIZE) as u64,
@@ -158,7 +158,7 @@ use crate::mm::phys::frame_allocator::alloc_frame;
                 for prev_frame in allocated_frames {
                     crate::mm::phys::frame_allocator::dealloc_frame(prev_frame);
                 }
-                return Err(MmapError::NoResources);
+                return Err(MappingError::NoResources);
             }
 
             allocated_frames.push(frame);
@@ -191,28 +191,28 @@ use crate::mm::phys::frame_allocator::alloc_frame;
     }
 
     /// 匿名マッピングを作成
-    pub fn mmap_anonymous(
+    pub fn map_anonymous(
         &self,
         addr: Option<MappedAddress>,
         size: MappingSize,
         protection: Protection,
         flags: MappingFlags,
-    ) -> Result<MappedAddress, MmapError> {
+    ) -> Result<MappedAddress, MappingError> {
         if size.as_usize() == 0 {
-            return Err(MmapError::InvalidSize);
+            return Err(MappingError::InvalidSize);
         }
 
         let address = if let Some(a) = addr {
             if flags.fixed {
                 if !a.is_page_aligned() {
-                    return Err(MmapError::AlignmentError);
+                    return Err(MappingError::AlignmentError);
                 }
                 a
             } else {
-                self.find_free_address(size).ok_or(MmapError::OutOfMemory)?
+                self.find_free_address(size).ok_or(MappingError::OutOfMemory)?
             }
         } else {
-            self.find_free_address(size).ok_or(MmapError::OutOfMemory)?
+            self.find_free_address(size).ok_or(MappingError::OutOfMemory)?
         };
 
         let mapping = MemoryMapping::anonymous(address, size, protection, flags)?;
@@ -228,7 +228,7 @@ use crate::mm::phys::frame_allocator::alloc_frame;
     }
 
     /// ファイルマッピングを作成
-    pub fn mmap_file(
+    pub fn map_file(
         &self,
         addr: Option<MappedAddress>,
         size: MappingSize,
@@ -236,22 +236,22 @@ use crate::mm::phys::frame_allocator::alloc_frame;
         flags: MappingFlags,
         path: &str,
         offset: MappingOffset,
-    ) -> Result<MappedAddress, MmapError> {
+    ) -> Result<MappedAddress, MappingError> {
         if size.as_usize() == 0 {
-            return Err(MmapError::InvalidSize);
+            return Err(MappingError::InvalidSize);
         }
 
         let address = if let Some(a) = addr {
             if flags.fixed {
                 if !a.is_page_aligned() {
-                    return Err(MmapError::AlignmentError);
+                    return Err(MappingError::AlignmentError);
                 }
                 a
             } else {
-                self.find_free_address(size).ok_or(MmapError::OutOfMemory)?
+                self.find_free_address(size).ok_or(MappingError::OutOfMemory)?
             }
         } else {
-            self.find_free_address(size).ok_or(MmapError::OutOfMemory)?
+            self.find_free_address(size).ok_or(MappingError::OutOfMemory)?
         };
 
         let mapping = MemoryMapping::file(address, size, protection, flags, path, offset)?;
@@ -267,13 +267,13 @@ use crate::mm::phys::frame_allocator::alloc_frame;
     }
 
     /// マッピングを解除
-    pub fn munmap(&self, addr: MappedAddress, _size: MappingSize) -> Result<(), MmapError> {
+    pub fn unmap(&self, addr: MappedAddress, _size: MappingSize) -> Result<(), MappingError> {
         let mut mappings = self.mappings.write();
 
         // 該当するマッピングを探す
         let mapping = mappings
             .remove(&addr.as_usize())
-            .ok_or(MmapError::NotMapped)?;
+            .ok_or(MappingError::NotMapped)?;
 
         let mapping_size = mapping.read().size().as_usize();
         self.total_unmapped
@@ -284,13 +284,13 @@ use crate::mm::phys::frame_allocator::alloc_frame;
 
     /// マッピングを解除し、物理フレームも解放する（SAS統合版）
     ///
-    /// `mmap_with_physical_alloc`で作成したマッピングを解除する際に使用。
+    /// `map_with_physical_alloc`で作成したマッピングを解除する際に使用。
     /// ページテーブルのマッピングを解除し、物理フレームをBuddy Allocatorに返却する。
-    pub fn munmap_with_physical_dealloc(
+    pub fn unmap_with_physical_dealloc(
         &self,
         addr: MappedAddress,
         size: MappingSize,
-    ) -> Result<(), MmapError> {
+    ) -> Result<(), MappingError> {
         use x86_64::structures::paging::PageSize;
 
         // マッピング情報を取得・削除
@@ -298,7 +298,7 @@ use crate::mm::phys::frame_allocator::alloc_frame;
             let mut mappings = self.mappings.write();
             mappings
                 .remove(&addr.as_usize())
-                .ok_or(MmapError::NotMapped)?
+                .ok_or(MappingError::NotMapped)?
         };
 
         let mapping_guard = mapping.read();
@@ -335,25 +335,25 @@ use crate::mm::phys::frame_allocator::alloc_frame;
     }
 
     /// 保護を変更
-    pub fn mprotect(
+    pub fn protect(
         &self,
         addr: MappedAddress,
         _size: MappingSize,
         protection: Protection,
-    ) -> Result<(), MmapError> {
+    ) -> Result<(), MappingError> {
         let mappings = self.mappings.read();
 
-        let mapping = mappings.get(&addr.as_usize()).ok_or(MmapError::NotMapped)?;
+        let mapping = mappings.get(&addr.as_usize()).ok_or(MappingError::NotMapped)?;
 
         let mut m = mapping.write();
         m.set_protection(protection)
     }
 
     /// 同期
-    pub fn msync(&self, addr: MappedAddress, _size: MappingSize) -> Result<(), MmapError> {
+    pub fn sync(&self, addr: MappedAddress, _size: MappingSize) -> Result<(), MappingError> {
         let mappings = self.mappings.read();
 
-        let mapping = mappings.get(&addr.as_usize()).ok_or(MmapError::NotMapped)?;
+        let mapping = mappings.get(&addr.as_usize()).ok_or(MappingError::NotMapped)?;
 
         let mut m = mapping.write();
         m.sync()
@@ -415,8 +415,8 @@ use crate::mm::phys::frame_allocator::alloc_frame;
     }
 
     /// 統計を取得
-    pub fn stats(&self) -> MmapStats {
-        MmapStats {
+    pub fn stats(&self) -> MappingStats {
+        MappingStats {
             total_mapped: self.total_mapped.load(Ordering::Relaxed),
             total_unmapped: self.total_unmapped.load(Ordering::Relaxed),
             active_mappings: self.mappings.read().len(),

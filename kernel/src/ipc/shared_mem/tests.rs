@@ -47,9 +47,10 @@ fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
 
 #[test_case]
 fn test_shared_memory_basic() {
-    let id = shmget(
+    let id = shm_manager().create(
         ShmKey::IPC_PRIVATE,
         ShmSize::new(4096),
+        ShmPermissions::default(),
         ShmFlags {
             create: true,
             ..Default::default()
@@ -57,7 +58,7 @@ fn test_shared_memory_basic() {
     )
     .unwrap();
 
-    let handle = shmat(id).unwrap();
+    let handle = shm_manager().attach(id).unwrap();
     assert!(handle.is_attached());
     assert_eq!(handle.size(), 4096);
 
@@ -73,9 +74,10 @@ fn test_shared_memory_basic() {
 #[test_case]
 fn test_named_shared_memory() {
     let name = "/test_shm";
-    let id = shm_open(
+    let id = shm_manager().create_named(
         name,
         ShmSize::new(8192),
+        ShmPermissions::default(),
         ShmFlags {
             create: true,
             exclusive: true,
@@ -84,10 +86,10 @@ fn test_named_shared_memory() {
     )
     .unwrap();
 
-    let handle = shmat(id).unwrap();
+    let handle = shm_manager().attach(id).unwrap();
     handle.write_at(0, b"Named SHM").unwrap();
 
-    let id2 = shm_open(name, ShmSize::new(0), ShmFlags::default()).unwrap();
+    let id2 = shm_manager().get_by_name(name).expect("named region must exist");
     assert_eq!(id, id2);
 }
 
@@ -128,9 +130,10 @@ fn test_shm_attach_with_token_reclaim() {
 
     // Caller creates the named shared memory
     let name = "/token_shm";
-    let id = shm_open(
+    let id = shm_manager().create_named(
         name,
         ShmSize::new(4096),
+        ShmPermissions::default(),
         ShmFlags {
             create: true,
             ..Default::default()
@@ -141,7 +144,7 @@ fn test_shm_attach_with_token_reclaim() {
     // Target attaches using token
     let handle = {
         let _target_guard = set_current_subject(target);
-        let handle = shmat_with_token(id, Some(token)).unwrap();
+        let handle = shm_manager().attach_with_token(id, Some(token)).unwrap();
         assert!(handle.is_attached());
         assert_eq!(manager().in_flight_count(token), 1);
         handle

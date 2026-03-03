@@ -25,9 +25,6 @@ pub use pipe::{
     pipe_manager,
     zero_copy_channel,
 };
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-#[allow(unused_imports)]
-pub use pipe::{mkfifo, pipe, pipe2};
 #[allow(unused_imports)]
 pub use proxy::{
     BasicProxy,
@@ -39,12 +36,7 @@ pub use proxy::{
     did_proxy_panic,
     record_proxy_panic,
 };
-pub use rref::{
-    DomainId,
-    RRef,
-    reclaim_domain_resources,
-};
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
+pub use rref::{DomainId, RRef, reclaim_domain_resources};
 #[allow(unused_imports)]
 pub use shared_mem::{
     SharedMemoryManager,
@@ -58,10 +50,4 @@ pub use shared_mem::{
     // ゼロコピー共有メモリ
     ZeroCopyRegion,
     shm_manager,
-    shm_open,
-    shm_unlink,
-    shmat,
-    shmctl_remove,
-    shmctl_stat,
-    shmget,
 };

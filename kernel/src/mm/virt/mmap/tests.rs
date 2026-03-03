@@ -1,8 +1,8 @@
 use super::*;
 
 #[test_case]
-fn test_anonymous_mmap() {
-    let addr = mmap(
+fn test_anonymous_region_map() {
+    let addr = map_anonymous_region(
         None,
         MappingSize::new(4096),
         Protection::READ_WRITE,
@@ -12,12 +12,12 @@ fn test_anonymous_mmap() {
 
     assert!(addr.is_page_aligned());
 
-    munmap(addr, MappingSize::new(4096)).unwrap();
+    unmap_region(addr, MappingSize::new(4096)).unwrap();
 }
 
 #[test_case]
 fn test_mapping_read_write() {
-    let addr = mmap(
+    let addr = map_anonymous_region(
         None,
         MappingSize::new(8192),
         Protection::READ_WRITE,
@@ -25,7 +25,7 @@ fn test_mapping_read_write() {
     )
     .unwrap();
 
-    let mapping = MMAP_MANAGER.get_mapping(addr).unwrap();
+    let mapping = MAPPING_MANAGER.get_mapping(addr).unwrap();
     {
         let mut m = mapping.write();
         m.write(0, b"Hello, mmap!").unwrap();

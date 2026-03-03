@@ -133,7 +133,7 @@ impl ExoShell {
 
 [Method Chaining]
   fs.entries("/").filter("|e| e.size > 1024").map("|e| e.name")
-  proc.list().filter("memory > 1024").sort("tasks", "desc")
+  domain.list().filter("memory > 1024").sort("tasks", "desc")
 
 [Array Methods]
   .filter(cond)    - Filter elements
@@ -152,7 +152,7 @@ impl ExoShell {
   _                         - Last result
 
 [Aliases (Unix compatibility)]
-  ls, cd, pwd, cat, mkdir, rm, ps, ifconfig, ping are also available
+  ls, cd, pwd, cat, mkdir, rm, ifconfig, ping are also available
 "#;
         ExoValue::String(Cow::Owned(help_text.to_string()))
     }
@@ -179,7 +179,7 @@ impl ExoShell {
             return completions;
         }
 
-        let namespaces = ["fs", "net", "proc", "cap", "sys", "driver", "cell"];
+        let namespaces = ["fs", "net", "domain", "cap", "sys", "driver", "cell"];
 
         if !input.contains('.') {
             return namespaces
@@ -202,7 +202,7 @@ impl ExoShell {
                 "entries", "read", "stat", "mkdir", "remove", "cd", "pwd", "write",
             ],
             "net" => &["config", "stats", "arp", "ping", "dhcp_state", "dhcp_renew"],
-            "proc" => &["list", "info"],
+            "domain" => &["list", "info", "kill"],
             "cap" => &["list", "grant", "revoke"],
             "sys" => &[
                 "info",

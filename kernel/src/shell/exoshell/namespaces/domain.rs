@@ -1,5 +1,5 @@
 // ============================================================================
-// src/shell/exoshell/namespaces/proc.rs - Domain Namespace
+// src/shell/exoshell/namespaces/domain.rs - Domain Namespace
 // ============================================================================
 
 use alloc::format;
@@ -12,9 +12,9 @@ use crate::shell::exoshell::types::*;
 use alloc::boxed::Box;
 
 /// ドメイン/タスク名前空間
-pub struct ProcNamespace;
+pub struct DomainNamespace;
 
-impl ProcNamespace {
+impl DomainNamespace {
     /// 実行中のタスク一覧
     pub fn list() -> ExoValue<'static> {
         let domains = kernel_api::services::kernel()
@@ -101,9 +101,9 @@ impl ProcNamespace {
     }
 }
 
-impl ShellNamespace for ProcNamespace {
+impl ShellNamespace for DomainNamespace {
     fn name(&self) -> &str {
-        "proc"
+        "domain"
     }
 
     fn call<'a>(
@@ -114,7 +114,7 @@ impl ShellNamespace for ProcNamespace {
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
-                "list" | "ps" => Self::list(),
+                "list" => Self::list(),
                 "info" => {
                     let id = args
                         .first()
@@ -136,7 +136,7 @@ impl ShellNamespace for ProcNamespace {
                     Self::terminate_with_caps(id, caps)
                 }
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'proc.{}'\nValid methods: list, info, kill",
+                    "Unknown method 'domain.{}'\nValid methods: list, info, kill",
                     method
                 )),
             }

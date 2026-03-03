@@ -70,10 +70,10 @@ jobs:
         retention-days: 7
 
   # ============================================================================
-  # Compat OFF Build Job
+  # Legacy Compat OFF Build Job
   # ============================================================================
   compat-off:
-    name: Build (posix-compat OFF)
+    name: Build (legacy compat OFF)
     runs-on: ubuntu-latest
 
     steps:
@@ -145,8 +145,8 @@ jobs:
       run: cargo clippy --target x86_64-exorust.json -- -D warnings
       continue-on-error: true  # no_std環境では一部警告が出る可能性
 
-    - name: ProcessId allowlist check
-      run: bash scripts/check-posix-compat.sh
+    - name: No POSIX compatibility surface
+      run: bash scripts/check-no-posix-apis.sh
 
     - name: Run syscall-boundary guard
       run: bash scripts/check-no-sys-symbol-boundary.sh

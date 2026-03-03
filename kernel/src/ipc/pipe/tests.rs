@@ -19,7 +19,7 @@ fn test_ring_buffer() {
 
 #[test_case]
 fn test_pipe_sync() {
-    let pipe = pipe();
+    let pipe = pipe_manager().create();
 
     let written = pipe.writer.write_sync(b"Test data").unwrap();
     assert!(written > 0);

@@ -120,36 +120,11 @@ impl FileHandleRegistry {
         self.handles.lock().remove(&id)
     }
 
-/// Return a list of handle IDs owned by `owner` (domain id).
-fn list_handles_by_owner(&self, owner: u64) -> alloc::vec::Vec<u64> {
-        let mut result = alloc::vec::Vec::new();
-        let handles = self.handles.lock();
-        for (id, entry) in handles.iter() {
-            if entry.owner == owner {
-                result.push(*id);
-            }
-        }
-        result
-    }
-
-    /// Get the registered path for a given handle id.
-    fn get_handle_path(&self, id: u64) -> Option<String> {
-        self.handles.lock().get(&id).map(|e| e.path.clone())
-    }
 }
 
 /// Global file handle registry
 static FILE_HANDLE_REGISTRY: FileHandleRegistry = FileHandleRegistry::new();
 static CHANNEL_REGISTRY: ChannelRegistry = ChannelRegistry::new();
-
-// Accessors for per-domain file handles (used by procfs)
-pub(crate) fn file_handles_for_owner(owner: u64) -> alloc::vec::Vec<u64> {
-    FILE_HANDLE_REGISTRY.list_handles_by_owner(owner)
-}
-
-pub(crate) fn file_handle_path(handle_id: u64) -> Option<String> {
-    FILE_HANDLE_REGISTRY.get_handle_path(handle_id)
-}
 
 // DMA registry stores heap allocated TypedDmaSlice instances keyed by
 // the virtual pointer to the buffer so we can free them later.

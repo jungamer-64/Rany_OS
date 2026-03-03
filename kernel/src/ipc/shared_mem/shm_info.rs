@@ -29,16 +29,6 @@ pub fn shm_manager() -> &'static SharedMemoryManager {
     &SHM_MANAGER
 }
 
-// --- System V IPC風 API ---
-
-fn create_or_get_by_key(key: ShmKey, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
-    if flags.create || key == ShmKey::IPC_PRIVATE {
-        SHM_MANAGER.create(key, size, ShmPermissions::default(), flags)
-    } else {
-        SHM_MANAGER.get_by_key(key).ok_or(ShmError::NotFound)
-    }
-}
-
 fn attach_region(id: ShmId, token: Option<u64>) -> Result<ShmHandle, ShmError> {
     SHM_MANAGER.attach_with_token(id, token)
 }
@@ -51,55 +41,9 @@ fn create_or_get_named(name: &str, size: ShmSize, flags: ShmFlags) -> Result<Shm
     }
 }
 
-fn remove_named(name: &str) -> Result<(), ShmError> {
-    let id = SHM_MANAGER.get_by_name(name).ok_or(ShmError::NotFound)?;
-    SHM_MANAGER.remove(id)
-}
-
-/// shmget() 相当
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn shmget(key: ShmKey, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
-    create_or_get_by_key(key, size, flags)
-}
-
-/// shmat() 相当 (従来互換: トークンなし)
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn shmat(id: ShmId) -> Result<ShmHandle, ShmError> {
-    attach_region(id, None)
-}
-
-/// shmat() with optional token: attach with a capability token id to register in-flight usage
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn shmat_with_token(id: ShmId, token: Option<u64>) -> Result<ShmHandle, ShmError> {
-    attach_region(id, token)
-}
-
-/// shmdt() 相当 (ShmHandle::detach を使用)
-
-/// shmctl() 相当 - 削除
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn shmctl_remove(id: ShmId) -> Result<(), ShmError> {
-    SHM_MANAGER.remove(id)
-}
-
-/// shmctl() 相当 - 情報取得
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn shmctl_stat(id: ShmId) -> Option<ShmInfo> {
-    SHM_MANAGER.info(id)
-}
-
-// --- POSIX 名前付き共有メモリ風 API ---
-
-/// shm_open() 相当
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn shm_open(name: &str, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
-    create_or_get_named(name, size, flags)
-}
-
-/// shm_unlink() 相当
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn shm_unlink(name: &str) -> Result<(), ShmError> {
-    remove_named(name)
+/// グローバル共有メモリマネージャーの統計を取得
+pub fn shared_memory_stats() -> ShmManagerStats {
+    shm_manager().stats()
 }
 
 // ============================================================================

@@ -363,7 +363,7 @@ impl KernelServices for ExoKernel {
             }
         }
 
-        // Register in file handle table (recording owner domain for /proc/<pid>/fd)
+        // Register in file handle table
         let handle_id = FILE_HANDLE_REGISTRY.register(FileHandleEntry {
             path: path_buf,
             mode,

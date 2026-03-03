@@ -526,7 +526,6 @@ impl ExoShell {
                     ExoValue::Error(String::from("Usage: rm <path>"))
                 }
             }
-            "ps" => ProcNamespace::list(),
             "ifconfig" => NetNamespace::config(),
             "arp" => NetNamespace::arp_cache(),
             "ping" => self.eval_ping(&parts).await,

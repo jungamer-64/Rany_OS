@@ -3,11 +3,10 @@
 //! ExoRust SAS (Single Address Space) アーキテクチャにおける
 //! 高速プロセス間通信の実装
 //!
-//! # ⚠ 非推奨 (POSIX Legacy)
+//! # 設計メモ
 //!
-//! System V共有メモリ（`shmget()`, `shmat()`, `IPC_PRIVATE`）はPOSIXモデルです。
 //! SASアーキテクチャでは全ドメインが単一アドレス空間を共有するため、
-//! 明示的な共有メモリセグメントは不要です。
+//! 共有メモリは互換レイヤではなく型安全な管理オブジェクトとして提供します。
 //!
 //! ## 移行先
 //! - `SharedMemoryRegion` → `Exchange Heap` + `RRef<T>` (`crate::sas`)

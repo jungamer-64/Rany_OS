@@ -3,15 +3,10 @@
 //! ExoRust Async-First アーキテクチャに基づくパイプ実装
 //! ゼロコピー転送と非同期I/Oをサポート
 //!
-//! # ⚠ 部分非推奨 (POSIX Legacy)
-//!
-//! `pipe()`, `pipe2()`, `mkfifo()` はPOSIXパイプAPI互換であり非推奨です。
-//! **`ZeroCopyChannel`/`zero_copy_channel()` はExokernel設計に適合しており推奨です。**
-//!
-//! ## 移行先
-//! - `pipe()` / `pipe2()` → `zero_copy_channel()` (`RRef<T>` ベースのゼロコピー通信)
-//! - `PipeReader` / `PipeWriter` → `ZeroCopySender` / `ZeroCopyReceiver`
-//! - `mkfifo()` → NamedPipeはCapabilityベースのサービス発見に置換
+//! ## 推奨API
+//! - `zero_copy_channel()` (`RRef<T>` ベースのゼロコピー通信)
+//! - `PipeReader` / `PipeWriter`
+//! - `PipeManager::create_named()` / `PipeManager::open_named()`
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
@@ -682,22 +677,4 @@ static PIPE_MANAGER: PipeManager = PipeManager::new();
 /// パイプマネージャーを取得
 pub fn pipe_manager() -> &'static PipeManager {
     &PIPE_MANAGER
-}
-
-/// パイプを作成 (pipe() システムコール相当)
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn pipe() -> Pipe {
-    PIPE_MANAGER.create()
-}
-
-/// オプション付きパイプを作成 (pipe2() システムコール相当)
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn pipe2(flags: PipeFlags) -> Pipe {
-    PIPE_MANAGER.create_with_options(PipeBufferSize::DEFAULT, flags)
-}
-
-/// 名前付きパイプを作成 (mkfifo() システムコール相当)
-#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
-pub fn mkfifo(name: &str) -> Result<NamedPipe, PipeError> {
-    PIPE_MANAGER.create_named(name)
 }

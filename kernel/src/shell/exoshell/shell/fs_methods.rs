@@ -120,12 +120,12 @@ impl ExoShell {
         }
     }
 
-    /// proc.* メソッド（構造化版）
-    pub(super) async fn eval_proc_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    /// domain.* メソッド（構造化版）
+    pub(super) async fn eval_domain_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
-            "list" | "ps" => ProcNamespace::list(),
+            "list" => DomainNamespace::list(),
             "info" => {
                 let id = args
                     .first()
@@ -134,15 +134,15 @@ impl ExoShell {
                         _ => None,
                     })
                     .unwrap_or(0);
-                ProcNamespace::info(id)
+                DomainNamespace::info(id)
             }
             _ => ExoValue::Error(
                 ParseError::UnknownMethod {
-                    namespace: String::from("proc"),
+                    namespace: String::from("domain"),
                     method: name.to_string(),
                 }
                 .to_string()
-                    + "\n有効なメソッド: list, ps, info",
+                    + "\n有効なメソッド: list, info",
             ),
         }
     }
