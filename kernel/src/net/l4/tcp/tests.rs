@@ -696,7 +696,8 @@ pub fn test_ack_segments_removes_unacked_and_reduces_outstanding() {
     tcb.queue_unacked(10, vec![1, 2, 3, 4], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
 
     // ACK that acknowledges the segment
-    tcb.ack_segments(14); // seq + len
+    tcb.ack_segments(14, 0);
+ // seq + len
 
     assert!(tcb.oldest_unacked_seq().is_none());
     assert_eq!(tcb.outstanding_bytes(), 0);
@@ -717,7 +718,7 @@ pub fn test_ack_segments_partial_ack_keeps_later_segments_and_updates_outstandin
     assert_eq!(tcb.outstanding_bytes(), 3);
 
     // ACK the remaining segment
-    tcb.ack_segments(17);
+    tcb.ack_segments(17, 0);
     assert!(tcb.oldest_unacked_seq().is_none());
     assert_eq!(tcb.outstanding_bytes(), 0);
 }
@@ -731,7 +732,7 @@ pub fn test_ack_segments_partial_within_segment_trims_retransmit_entry() {
     assert_eq!(tcb.outstanding_bytes(), 4);
 
     // Partial ACK for first 2 bytes of payload.
-    tcb.ack_segments(102);
+    tcb.ack_segments(102, 0);
     assert_eq!(tcb.outstanding_bytes(), 2);
     assert_eq!(tcb.oldest_unacked_seq(), Some(102));
 
@@ -742,13 +743,13 @@ pub fn test_ack_segments_partial_within_segment_trims_retransmit_entry() {
     assert_eq!(flags, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
     assert_eq!(payload, vec![3, 4]);
 
-    tcb.ack_segments(104);
+    tcb.ack_segments(104, 0);
     assert_eq!(tcb.outstanding_bytes(), 0);
     assert!(tcb.oldest_unacked_seq().is_none());
-}
+    }
 
-#[cfg_attr(test, test_case)]
-pub fn test_ack_segments_partial_trims_syn_then_payload() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_ack_segments_partial_trims_syn_then_payload() {
     let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST.octets(), 9004));
     tcb.enter_established();
 
@@ -756,7 +757,8 @@ pub fn test_ack_segments_partial_trims_syn_then_payload() {
     assert_eq!(tcb.outstanding_bytes(), 4); // SYN + 3 bytes
 
     // ACK only the SYN and first payload byte.
-    tcb.ack_segments(102);
+    tcb.ack_segments(102, 0);
+
     assert_eq!(tcb.outstanding_bytes(), 2);
     assert_eq!(tcb.oldest_unacked_seq(), Some(102));
 
@@ -777,7 +779,7 @@ pub fn test_ack_segments_partial_trims_payload_but_keeps_fin() {
     assert_eq!(tcb.outstanding_bytes(), 4); // 3 bytes + FIN
 
     // ACK first 2 payload bytes, FIN is still outstanding.
-    tcb.ack_segments(202);
+    tcb.ack_segments(202, 0);
     assert_eq!(tcb.outstanding_bytes(), 2); // remaining payload byte + FIN
     assert_eq!(tcb.oldest_unacked_seq(), Some(202));
 
@@ -797,14 +799,14 @@ pub fn test_unacked_sequence_space_accounts_for_syn_and_fin() {
     // SYN consumes one sequence number even with empty payload.
     tcb.queue_unacked(100, vec![], 0, TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK);
     assert_eq!(tcb.outstanding_bytes(), 1);
-    tcb.ack_segments(101);
+    tcb.ack_segments(101, 0);
     assert_eq!(tcb.outstanding_bytes(), 0);
     assert!(tcb.oldest_unacked_seq().is_none());
 
     // FIN also consumes one sequence number in addition to payload bytes.
     tcb.queue_unacked(200, vec![1, 2], 0, TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK);
     assert_eq!(tcb.outstanding_bytes(), 3);
-    tcb.ack_segments(203);
+    tcb.ack_segments(203, 0);
     assert_eq!(tcb.outstanding_bytes(), 0);
     assert!(tcb.oldest_unacked_seq().is_none());
 }
