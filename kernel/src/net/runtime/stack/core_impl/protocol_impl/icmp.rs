@@ -483,84 +483,47 @@ impl NetworkStack {
     /// 4-byte ICMP header). This value indicates the maximum MTU that should be
     /// used for that path.
     pub(crate) fn handle_icmp_error(&mut self, data: &[u8], icmp_type: IcmpType, code: u8, current_time: u64) {
-        // Only handle Destination Unreachable with Fragmentation Needed (RFC 1191)
-        if icmp_type != IcmpType::DestinationUnreachable {
-            return;
-        }
-        if code != DestUnreachCode::FragmentationNeeded as u8 {
-            return;
+        // Support ICMP errors (RFC 792/1122/1191):
+        // - Destination Unreachable (Fragmentation Needed for PMTUD)
+        // - Source Quench (Flow control)
+        match icmp_type {
+            IcmpType::DestinationUnreachable => {
+                if code != DestUnreachCode::FragmentationNeeded as u8 {
+                    return;
+                }
+            }
+            IcmpType::SourceQuench => {
+                // Proceed to handle
+            }
+            _ => return,
         }
 
-        // ICMP Destination Unreachable format:
+        // ICMP error format (RFC 792):
         // Bytes 0-3: ICMP header (type, code, checksum)
-        // Bytes 4-5: Unused (must be zero)
-        // Bytes 6-7: Next-Hop MTU (big-endian)
+        // Bytes 4-7: Contents depend on type (e.g. Next-Hop MTU for Type 3 Code 4)
         // Bytes 8+: Original IP header + first 8 bytes of payload
-        const NEXT_HOP_MTU_OFFSET: usize = 6;
-        if data.len() < NEXT_HOP_MTU_OFFSET + 2 {
-            return;
-        }
-
-        let next_hop_mtu = u16::from_be_bytes([data[NEXT_HOP_MTU_OFFSET], data[NEXT_HOP_MTU_OFFSET + 1]]);
-
-        // If Next-Hop MTU is 0, the router doesn't support RFC 1191
-        // Use a fallback plateau value (RFC 1191 recommends 576 as minimum)
-        let mtu = if next_hop_mtu == 0 {
-            576u16
-        } else {
-            next_hop_mtu
-        };
-
-        // Extract the original destination IP from the embedded IP header
-        // The original IP header starts at byte 8 of the ICMP message
-        const ORIGINAL_IP_OFFSET: usize = 8;
-        const IP_SRC_OFFSET: usize = 12; // Source IP starts at byte 12 of IP header
-        const IP_DST_OFFSET: usize = 16; // Destination IP starts at byte 16 of IP header
         
-        if data.len() < ORIGINAL_IP_OFFSET + IP_DST_OFFSET + 4 {
+        const ORIGINAL_IP_OFFSET: usize = 8;
+        if data.len() < ORIGINAL_IP_OFFSET + 20 {
             return;
         }
+
+        // Extract original source/destination from embedded IP header
+        let src_offset = ORIGINAL_IP_OFFSET + 12;
+        let dst_offset = ORIGINAL_IP_OFFSET + 16;
+        let original_src = Ipv4Address::from_octets(data[src_offset], data[src_offset+1], data[src_offset+2], data[src_offset+3]);
+        let original_dst = Ipv4Address::from_octets(data[dst_offset], data[dst_offset+1], data[dst_offset+2], data[dst_offset+3]);
 
         // Security check: Verify original source matches our address
-        let src_total_offset = ORIGINAL_IP_OFFSET + IP_SRC_OFFSET;
-        let original_src = Ipv4Address::from_octets(
-            data[src_total_offset],
-            data[src_total_offset + 1],
-            data[src_total_offset + 2],
-            data[src_total_offset + 3],
-        );
         if original_src != self.config.ipv4.address && !original_src.is_any() {
-            // Ignore redirects/errors for packets we didn't send
             return;
         }
 
-        let dst_total_offset = ORIGINAL_IP_OFFSET + IP_DST_OFFSET;
-        let original_dst = Ipv4Address::from_octets(
-            data[dst_total_offset],
-            data[dst_total_offset + 1],
-            data[dst_total_offset + 2],
-            data[dst_total_offset + 3],
-        );
-
-        // Security (RFC 1191 / RFC 5927): Verify that the ICMP payload corresponds
-        // to an active connection (ports/protocol match).
-        // This prevents off-path attackers from poisoning the PMTU cache.
-        
-        // Extract Protocol from inner IP header (byte 9)
-        const IP_PROTOCOL_OFFSET: usize = 9;
-        let protocol_offset = ORIGINAL_IP_OFFSET + IP_PROTOCOL_OFFSET;
-        if data.len() < protocol_offset + 1 {
-            return;
-        }
-        let protocol = data[protocol_offset];
-
-        // Calculate inner IP header length
-        // First byte of inner IP header contains Version + IHL
+        let protocol = data[ORIGINAL_IP_OFFSET + 9];
         let ihl = data[ORIGINAL_IP_OFFSET] & 0x0F;
         let ip_header_len = (ihl as usize) * 4;
         let transport_offset = ORIGINAL_IP_OFFSET + ip_header_len;
 
-        // Check if we have enough data for transport ports (at least 4 bytes)
         if data.len() < transport_offset + 4 {
             return;
         }
@@ -568,48 +531,38 @@ impl NetworkStack {
         let src_port = u16::from_be_bytes([data[transport_offset], data[transport_offset + 1]]);
         let dst_port = u16::from_be_bytes([data[transport_offset + 2], data[transport_offset + 3]]);
 
-        // Check against active sockets
-        // Note: 'original_src' is US, 'original_dst' is THEM.
-        // So for local lookup, we use 'original_src' as local IP.
+        // Protocol-specific handling and validation
         match protocol {
             6 => { // TCP
-                // TCP sequence number starts at byte 4 of the TCP header
-                if data.len() < transport_offset + 8 {
+                if data.len() < transport_offset + 8 { return; }
+                let seq_num = u32::from_be_bytes([data[transport_offset+4], data[transport_offset+5], data[transport_offset+6], data[transport_offset+7]]);
+                let local = TcpEndpointAddr::new(original_src.octets(), src_port);
+                let remote = TcpEndpointAddr::new(original_dst.octets(), dst_port);
+
+                if !self.tcp.validate_icmp_sequence(local, remote, seq_num) {
+                    log::warn!("[NET] ICMP: error for {} rejected due to invalid TCP seq {}", original_dst, seq_num);
                     return;
                 }
-                let seq_num = u32::from_be_bytes([
-                    data[transport_offset + 4],
-                    data[transport_offset + 5],
-                    data[transport_offset + 6],
-                    data[transport_offset + 7],
-                ]);
 
-                let local_addr = TcpEndpointAddr::new(original_src.octets(), src_port);
-                let remote_addr = TcpEndpointAddr::new(original_dst.octets(), dst_port);
-
-                if !self.tcp.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
-                    // Sequence number validation failed (prevents PMTU poisoning)
-                    log::warn!(
-                        "[NET] ICMP: PMTU error for {} rejected due to invalid TCP seq {}",
-                        original_dst, seq_num
-                    );
+                if icmp_type == IcmpType::SourceQuench {
+                    self.tcp.handle_source_quench(local, remote);
                     return;
                 }
             }
             17 => { // UDP
-                // Check if we have a socket bound to the source port
-                if !self.udp.has_endpoint(src_port) {
-                    return;
-                }
+                if !self.udp.has_endpoint(src_port) { return; }
+                // Source Quench for UDP: We don't have per-socket congestion control for UDP,
+                // but we could theoretically signal the application.
             }
-            _ => {
-                // Ignore errors for other protocols to be safe
-                return;
-            }
+            _ => return,
         }
 
-        // Update the PMTU cache
-        self.ipv4.update_pmtu(original_dst, mtu, current_time);
+        // PMTUD specific handling
+        if icmp_type == IcmpType::DestinationUnreachable {
+            let next_hop_mtu = u16::from_be_bytes([data[6], data[7]]);
+            let mtu = if next_hop_mtu == 0 { 576u16 } else { next_hop_mtu };
+            self.ipv4.update_pmtu(original_dst, mtu, current_time);
+        }
     }
 
     /// Handle ICMP Redirect message (RFC 792)

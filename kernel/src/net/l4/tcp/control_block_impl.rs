@@ -927,13 +927,24 @@ impl TcpControlBlock {
     /// More severe than fast retransmit - go back to slow start
     pub fn on_loss(&mut self) {
         let mss = self.congestion.mss as u32;
-        
+
         // RFC 5681: ssthresh = max(FlightSize / 2, 2*MSS)
         self.congestion.ssthresh = (self.tx.outstanding_bytes / 2).max(2 * mss);
-        
+
         // cwnd = 1 MSS (slow start after loss)
         self.congestion.cwnd = mss;
-        
+    }
+
+    /// Handle ICMP Source Quench (RFC 1122 Section 4.2.3.9)
+    pub fn on_source_quench(&mut self) {
+        let mss = self.congestion.mss as u32;
+
+        // Reduce amount of data in flight by reducing congestion window.
+        // Similar to Fast Retransmit (RFC 5681).
+        self.congestion.ssthresh = (self.tx.outstanding_bytes / 2).max(2 * mss);
+        self.congestion.cwnd = self.congestion.ssthresh;
+    }
+
         // Exit recovery if in it
         self.congestion.in_recovery = false;
         self.congestion.dup_ack_count = 0;

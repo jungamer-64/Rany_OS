@@ -121,6 +121,7 @@ impl IcmpProcessor {
                 }
             }
             IcmpType::DestinationUnreachable
+            | IcmpType::SourceQuench
             | IcmpType::TimeExceeded
             | IcmpType::ParameterProblem => {
                 self.stats.errors_rx += 1;

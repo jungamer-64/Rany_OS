@@ -786,6 +786,15 @@ impl TcpProcessor {
         self.connections.remove(&(local, remote));
     }
 
+    /// Handle ICMP Source Quench (RFC 1122)
+    pub fn handle_source_quench(&self, local: EndpointAddr, remote: EndpointAddr) {
+        if let Some(conn) = self.connections.get(&(local, remote)) {
+            if let Ok(mut tcb) = conn.lock() {
+                tcb.on_source_quench();
+            }
+        }
+    }
+
     /// リスナーを削除
     pub fn remove_listener(&mut self, local: EndpointAddr) {
         self.listeners.remove(&local);

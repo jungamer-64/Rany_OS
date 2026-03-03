@@ -88,9 +88,3 @@ where
 pub fn alloc_buffer() -> Option<ZeroCopyBuffer> {
     with_pool_manager(|mgr| mgr.default_pool().and_then(|pool| pool.alloc())).flatten()
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-

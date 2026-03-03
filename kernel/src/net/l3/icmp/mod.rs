@@ -19,6 +19,8 @@ pub enum IcmpType {
     EchoReply = 0,
     /// Destination Unreachable
     DestinationUnreachable = 3,
+    /// Source Quench
+    SourceQuench = 4,
     /// Redirect
     Redirect = 5,
     /// Echo Request (ping)
@@ -40,6 +42,7 @@ impl From<u8> for IcmpType {
         match value {
             0 => IcmpType::EchoReply,
             3 => IcmpType::DestinationUnreachable,
+            4 => IcmpType::SourceQuench,
             5 => IcmpType::Redirect,
             8 => IcmpType::EchoRequest,
             11 => IcmpType::TimeExceeded,
@@ -56,6 +59,7 @@ impl From<IcmpType> for u8 {
         match value {
             IcmpType::EchoReply => 0,
             IcmpType::DestinationUnreachable => 3,
+            IcmpType::SourceQuench => 4,
             IcmpType::Redirect => 5,
             IcmpType::EchoRequest => 8,
             IcmpType::TimeExceeded => 11,
