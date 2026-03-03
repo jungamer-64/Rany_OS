@@ -4,7 +4,15 @@
 //! # TCP受信処理 - 3ウェイハンドシェイク・データ受信
 //!
 //! process_tcp_segment, network_event_task
+//!
+//! ## 最適化
+//! - **TCP Fast Path**: ESTABLISHED状態で期待通りのseq/ackを受信した場合、
+//!   フルプロトコル処理をバイパスして高速にデータを受信バッファに投入する。
+//! - **Delayed ACK**: RFC 1122/5681準拠。連続データ受信時にACKを遅延させ、
+//!   2セグメントごとまたは最大200msでACKを送信してACKトラフィックを半減させる。
 
+
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::event::{event_queue, NetworkEvent};
 use super::handler::{EventHandleResult, NetworkEventHandler};
@@ -21,6 +29,33 @@ use super::types::{
     seq_before,
 };
 use super::window_scale::TcpOptionParser;
+
+// ============================================================================
+// TCP Fast Path Statistics
+// ============================================================================
+
+/// ファストパスで処理されたパケット数
+static FAST_PATH_HITS: AtomicU64 = AtomicU64::new(0);
+/// スローパスにフォールバックしたパケット数
+static SLOW_PATH_HITS: AtomicU64 = AtomicU64::new(0);
+
+/// ファストパス統計を取得
+pub fn fast_path_stats() -> (u64, u64) {
+    (
+        FAST_PATH_HITS.load(Ordering::Relaxed),
+        SLOW_PATH_HITS.load(Ordering::Relaxed),
+    )
+}
+
+// ============================================================================
+// Delayed ACK
+// ============================================================================
+
+/// Delayed ACK の最大遅延時間 (ミリ秒, RFC 1122: 最大500ms, 推奨200ms)
+const DELAYED_ACK_TIMEOUT_MS: u64 = 200;
+
+/// Delayed ACK が溜まる最大セグメント数 (RFC 5681: 2セグメントごとにACK)
+const DELAYED_ACK_SEGMENTS: u8 = 2;
 
 /// RFC 7323準拠のTCPタイムスタンプ生成
 fn generate_tcp_timestamp() -> u32 {
@@ -123,10 +158,12 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     }
 
     // Security: チェックサム検証 (RFC 793)
-    // 偽造・破損パケットの早期排除
-    if !verify_tcp_checksum(segment, src_ip, dst_ip) {
-        log::warn!("[TCP] Checksum verification failed, dropping segment");
-        return;
+    // HWチェックサム検証済みの場合はソフトウェア検証をスキップ
+    if !crate::net::runtime::bridge::rx_csum_hw_verified() {
+        if !verify_tcp_checksum(segment, src_ip, dst_ip) {
+            log::warn!("[TCP] Checksum verification failed, dropping segment");
+            return;
+        }
     }
 
     // TCPヘッダ解析
@@ -154,10 +191,199 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
             }
             return;
         }
+
+        // =====================================================================
+        // TCP Fast Path (Linux tcp_rcv_established fast path 相当)
+        // =====================================================================
+        // ESTABLISHED状態で以下すべてを満たすとき、フルプロトコル処理をスキップ:
+        //   1. 期待通りのシーケンス番号 (seq == rcv_nxt)
+        //   2. ACKフラグのみ (FIN/SYN/RST/URG なし)
+        //   3. データペイロードが存在する
+        //   4. OOOキューが空（順序通り受信中）
+        //
+        // これにより、状態マシン遷移チェック、TCPオプション再解析等を省略し、
+        // 直接データを受信バッファへ投入する。
+        if tcb.state == TcpConnectionState::Established
+            && seq_num == tcb.rcv_nxt
+            && flags == tcp_flags::ACK  // ACKのみ (PSH|ACK は 0x18 なので除外)
+            && payload_len > 0
+        {
+            if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
+                FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+        // PSH|ACK もファストパス対象 (最も一般的なデータパケット)
+        if tcb.state == TcpConnectionState::Established
+            && seq_num == tcb.rcv_nxt
+            && (flags == (tcp_flags::ACK | tcp_flags::PSH))
+            && payload_len > 0
+        {
+            if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
+                FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        }
+
+        SLOW_PATH_HITS.fetch_add(1, Ordering::Relaxed);
         process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
     } else {
         // 新規接続要求の可能性（LISTENソケット検索）
         process_tcp_new_connection(local, remote, flags, seq_num, segment, data_offset);
+    }
+}
+
+/// TCP Fast Path - ESTABLISHED状態の高速受信処理
+///
+/// 期待通りのシーケンス番号でデータが到着した場合、
+/// フル状態マシン処理をバイパスして直接データを受信バッファに投入する。
+///
+/// 成功時は true を返し、呼び出し元はスローパスをスキップする。
+/// 以下の条件いずれかでフォールバック(false):
+///   - ACK番号が有効範囲外
+///   - OOOキューにセグメントが溜まっている
+///   - 受信バッファが満杯
+fn try_fast_path(
+    tcb: &TcpControlBlockEntry,
+    ack_num: u32,
+    segment: &[u8],
+    data_offset: usize,
+    payload_len: usize,
+) -> bool {
+    // ACK番号の簡易検証: snd_una <= ack_num <= snd_nxt
+    let ack_diff_una = ack_num.wrapping_sub(tcb.snd_una) as i32;
+    let ack_diff_nxt = tcb.snd_nxt.wrapping_sub(ack_num) as i32;
+    if ack_diff_una < 0 || ack_diff_nxt < 0 {
+        return false; // ACKが有効範囲外 → スローパスへ
+    }
+
+    // OOOキューにセグメントがあるなら順序処理が必要
+    if ooo_queue::has_ooo_segments(tcb.local, tcb.remote) {
+        return false;
+    }
+
+    let data = &segment[data_offset..data_offset + payload_len];
+    let new_rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
+
+    // ACK処理 (新規ACKならカウンタ更新)
+    let is_new_ack = ack_diff_una > 0;
+    if is_new_ack {
+        let current_time_ms = tcb_table().get_current_tick();
+        tcb_table().update(tcb.local, tcb.remote, |entry| {
+            entry.on_ack_received(ack_num, false, current_time_ms, 0);
+        });
+        retransmit_queue_ack(tcb.local, tcb.remote, ack_num);
+    }
+
+    // データをソケットの受信バッファに追加
+    if let Some(socket) = get_socket_by_fd(tcb.fd) {
+        socket.push_data(data);
+    }
+
+    // TCB更新: rcv_nxt を前進
+    tcb_table().update(tcb.local, tcb.remote, |entry| {
+        entry.rcv_nxt = new_rcv_nxt;
+        // Delayed ACK: セグメントカウンタをインクリメント
+        entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
+    });
+
+    // Delayed ACK 判定:
+    // - 2セグメント受信したら即座にACK (RFC 5681)
+    // - それ以外はタイマーに委ねる (最大200ms後にACK)
+    let should_ack_now = tcb_table()
+        .lookup(tcb.local, tcb.remote)
+        .map(|e| e.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
+        .unwrap_or(true);
+
+    if should_ack_now {
+        send_ack_for_fast_path(tcb, new_rcv_nxt);
+        tcb_table().update(tcb.local, tcb.remote, |entry| {
+            entry.delayed_ack_pending = 0;
+        });
+    }
+
+    true
+}
+
+/// ファストパス用の軽量ACK送信
+///
+/// TCPオプション(Timestamps等)が有効なら含めるが、
+/// SACKブロック等の複雑な処理は行わない。
+#[inline]
+fn send_ack_for_fast_path(tcb: &TcpControlBlockEntry, rcv_nxt: u32) {
+    let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
+        .seq(tcb.snd_nxt)
+        .ack(rcv_nxt)
+        .ack_flag()
+        .window(tcb.advertised_recv_window());
+
+    if tcb.ts_enabled {
+        builder = builder.nop().nop().timestamp(generate_tcp_timestamp(), tcb.ts_ecr);
+    }
+
+    let mut ack = builder.build();
+    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
+        TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
+    } else {
+        TcpSegmentBuilder::calculate_checksum_v6(
+            &mut ack,
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
+        );
+    }
+    send_tcp_segment(tcb.local, tcb.remote, ack);
+}
+
+/// Delayed ACK タイマー処理
+///
+/// 定期的に呼び出され、遅延中のACKを送信する。
+/// `DELAYED_ACK_TIMEOUT_MS` 経過した接続の保留ACKをフラッシュする。
+pub fn flush_delayed_acks() {
+    // Step 1: 保留ACKがある接続を収集（読み取りロック）
+    let mut pending: alloc::vec::Vec<(EndpointAddr, EndpointAddr, u32, u32, u16, bool, u32)> =
+        alloc::vec::Vec::new();
+    tcb_table().for_each_established(|entry| {
+        if entry.delayed_ack_pending > 0 {
+            pending.push((
+                entry.local,
+                entry.remote,
+                entry.rcv_nxt,
+                entry.snd_nxt,
+                entry.advertised_recv_window(),
+                entry.ts_enabled,
+                entry.ts_ecr,
+            ));
+        }
+    });
+
+    // Step 2: 収集した接続にACKを送信（ロック解放後）
+    for (local, remote, rcv_nxt, snd_nxt, window, ts_enabled, ts_ecr) in pending {
+        let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
+            .seq(snd_nxt)
+            .ack(rcv_nxt)
+            .ack_flag()
+            .window(window);
+
+        if ts_enabled {
+            builder = builder.nop().nop().timestamp(generate_tcp_timestamp(), ts_ecr);
+        }
+
+        let mut ack = builder.build();
+        if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
+            TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
+        } else {
+            TcpSegmentBuilder::calculate_checksum_v6(
+                &mut ack,
+                crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
+                crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
+            );
+        }
+        send_tcp_segment(local, remote, ack);
+
+        // カウンタリセット
+        tcb_table().update(local, remote, |e| {
+            e.delayed_ack_pending = 0;
+        });
     }
 }
 

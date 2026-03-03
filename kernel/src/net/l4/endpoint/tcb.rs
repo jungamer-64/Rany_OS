@@ -89,6 +89,10 @@ pub struct TcpControlBlockEntry {
     pub nagle_enabled: bool,
     /// QoS priority (DSCP)
     pub priority: u8,
+    /// Delayed ACK: 保留中のACKセグメント数
+    /// ファストパスでデータを受信するたびにインクリメントされ、
+    /// DELAYED_ACK_SEGMENTS (2) に達するか、タイムアウトでACK送信後にリセット。
+    pub delayed_ack_pending: u8,
 }
 
 impl TcpControlBlockEntry {
@@ -130,6 +134,7 @@ impl TcpControlBlockEntry {
             ts_ecr: 0,
             nagle_enabled: true, // デフォルトで有効
             priority: 0,
+            delayed_ack_pending: 0,
         }
     }
 
@@ -697,6 +702,25 @@ impl TcbTable {
     /// アクティブな接続数を取得
     pub fn connection_count(&self) -> usize {
         self.total_count.load(Ordering::Relaxed)
+    }
+
+    /// ESTABLISHED状態の全接続に対してクロージャを実行
+    ///
+    /// Delayed ACKフラッシュ等の定期処理で使用。
+    /// ロック取得中にクロージャを呼ぶため、
+    /// クロージャ内でTcbTableのメソッドを呼ばないこと（デッドロック防止）。
+    pub fn for_each_established<F>(&self, mut f: F)
+    where
+        F: FnMut(&TcpControlBlockEntry),
+    {
+        for shard in &self.shards {
+            let guard = shard.read();
+            for entry in guard.values() {
+                if entry.state == TcpConnectionState::Established {
+                    f(entry);
+                }
+            }
+        }
     }
 }
 

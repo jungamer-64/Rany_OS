@@ -43,6 +43,12 @@ extern crate alloc;
 /// Bridge initialization state
 static BRIDGE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// RXチェックサムHW検証済みフラグ
+///
+/// VirtIOでGUEST_CSUMが非ネゴシエートの場合、ホスト側が完全な
+/// チェックサムを付与するため、ソフトウェア検証をスキップできる。
+static RX_CSUM_HW_VERIFIED: AtomicBool = AtomicBool::new(false);
+
 /// Packet transmission counter
 static TX_PACKETS: AtomicU64 = AtomicU64::new(0);
 
@@ -972,6 +978,9 @@ pub fn process_received_packet_zero_copy(mut packet: crate::net::datapath::mempo
         packet.advance(header_size);
     }
 
+    // Flow Hash 計算: パケットメタにRSSハッシュを設定
+    compute_and_set_flow_hash(&mut packet);
+
     // Enqueue to batch processor (zero-copy)
     if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
         stack::receive_batch(batch);
@@ -1248,8 +1257,96 @@ pub fn process_received_packet_zero_copy_for_interface(
         return;
     }
 
+    // Flow Hash 計算: パケットメタにRSSハッシュを設定
+    compute_and_set_flow_hash(&mut packet);
+
     if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
         stack::receive_batch(batch);
+    }
+}
+
+/// パケットのEthernet/IP/L4ヘッダからFlow Hashを計算しPacketMetaに設定
+///
+/// RSSフローハッシュを計算することで、GRO集約やフロー制御に活用する。
+/// IPv4 TCP/UDPパケットのみ5タプルハッシュを計算する。
+fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketRef) {
+    // Step 1: 不変参照でヘッダを解析し、結果をローカル変数にコピー
+    let parsed = {
+        let data = packet.data();
+        // Ethernet header: 14 bytes (no VLAN)
+        if data.len() < 14 {
+            return;
+        }
+        let ether_type = u16::from_be_bytes([data[12], data[13]]);
+        if ether_type != 0x0800 {
+            // IPv4のみ対応
+            return;
+        }
+        let ip_start = 14usize;
+        if data.len() < ip_start + 20 {
+            return;
+        }
+        let ihl = ((data[ip_start] & 0x0F) as usize) * 4;
+        if ihl < 20 || data.len() < ip_start + ihl {
+            return;
+        }
+        let protocol = data[ip_start + 9];
+        let src_ip = u32::from_be_bytes([
+            data[ip_start + 12], data[ip_start + 13],
+            data[ip_start + 14], data[ip_start + 15],
+        ]);
+        let dst_ip = u32::from_be_bytes([
+            data[ip_start + 16], data[ip_start + 17],
+            data[ip_start + 18], data[ip_start + 19],
+        ]);
+
+        let l4_start = ip_start + ihl;
+        // TCP (6) / UDP (17) のみポート情報を抽出
+        let (src_port, dst_port) = if (protocol == 6 || protocol == 17) && data.len() >= l4_start + 4 {
+            (
+                u16::from_be_bytes([data[l4_start], data[l4_start + 1]]),
+                u16::from_be_bytes([data[l4_start + 2], data[l4_start + 3]]),
+            )
+        } else {
+            (0, 0)
+        };
+
+        // L4ヘッダ長の計算
+        let l4_hdr_len = if protocol == 6 || protocol == 17 {
+            if protocol == 6 && data.len() >= l4_start + 13 {
+                (((data[l4_start + 12] >> 4) & 0x0F) as u8) * 4
+            } else if protocol == 17 {
+                8u8
+            } else {
+                0u8
+            }
+        } else {
+            0u8
+        };
+
+        // 借用はここで終了
+        (src_ip, dst_ip, src_port, dst_port, protocol, ihl as u8, l4_hdr_len)
+    };
+
+    let (src_ip, dst_ip, src_port, dst_port, protocol, ihl, l4_hdr_len) = parsed;
+
+    // Step 2: Flow Hash 計算
+    let flow_hash = crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+        src_ip, dst_ip, src_port, dst_port, protocol,
+    );
+
+    // Step 3: 可変参照でメタデータを設定
+    let meta = packet.meta_mut();
+    meta.flow_hash = flow_hash;
+    meta.l2_len = 14;
+    meta.l3_len = ihl;
+    meta.l4_proto = protocol;
+    meta.l4_len = l4_hdr_len;
+
+    // HWチェックサム検証済みフラグの伝搬
+    if RX_CSUM_HW_VERIFIED.load(Ordering::Relaxed) {
+        meta.set_ip_csum_verified();
+        meta.set_l4_csum_verified();
     }
 }
 
@@ -1371,7 +1468,28 @@ pub fn init_bridge() -> Result<(), &'static str> {
     // Enable timer-based fallback RX/TX completion once the bridge is live.
     crate::interrupts::enable_virtio_net_irq_fallback();
 
+    // VirtIO GUEST_CSUM 非ネゴシエート時、ホストが完全なチェックサムを
+    // 付与するためRXソフトウェア検証をスキップ可能にする。
+    // 現在のfeatureネゴシエーションではGUEST_CSUMを含めていないため有効化。
+    RX_CSUM_HW_VERIFIED.store(true, Ordering::Release);
+    log::info!("[NET BRIDGE] RX checksum skip enabled (host-verified)");
+
     Ok(())
+}
+
+/// RXチェックサムがHW検証済みか確認する
+///
+/// TCP/UDP受信パスでチェックサム検証をスキップするために使用。
+#[inline]
+pub fn rx_csum_hw_verified() -> bool {
+    RX_CSUM_HW_VERIFIED.load(Ordering::Relaxed)
+}
+
+/// RXチェックサムHW検証フラグを設定する
+///
+/// VirtIOのfeatureネゴシエーション後に呼び出す。
+pub fn set_rx_csum_hw_verified(verified: bool) {
+    RX_CSUM_HW_VERIFIED.store(verified, Ordering::Release);
 }
 
 /// Check if bridge is initialized

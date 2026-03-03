@@ -355,3 +355,21 @@ pub fn remove_ooo_queue(local: EndpointAddr, remote: EndpointAddr) {
         }
     }
 }
+
+/// 指定接続にOOOセグメントが存在するか確認
+///
+/// TCP Fast Path のガード条件に使用。
+/// OOOセグメントが存在する場合、ファストパスでは正しい順序
+/// のドレインができないため、スローパスへフォールバックする。
+#[inline]
+pub fn has_ooo_segments(local: EndpointAddr, remote: EndpointAddr) -> bool {
+    let idx = ooo_shard_index(&local, &remote);
+    let Ok(guard) = OOO_SHARDS[idx].lock() else {
+        return false; // ロック取得失敗 → 安全側でfalse
+    };
+    guard
+        .as_ref()
+        .and_then(|queues| queues.get(&(local, remote)))
+        .map(|q| !q.is_empty())
+        .unwrap_or(false)
+}
