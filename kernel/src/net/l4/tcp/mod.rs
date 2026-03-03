@@ -234,6 +234,8 @@ struct TcpCongestionState {
     dup_ack_count: u8,
     /// Last ACK number received
     last_ack: u32,
+    /// Last advertised window received from peer (for duplicate ACK detection)
+    last_snd_wnd: u16,
     /// Fast recovery state
     in_recovery: bool,
     /// Bytes acknowledged since last cwnd increase (for linear Congestion Avoidance)
@@ -250,6 +252,7 @@ impl TcpCongestionState {
             mss: 536, // RFC 1122 Section 4.2.2.6: Default send MSS is 536 if not negotiated.
             dup_ack_count: 0,
             last_ack: 0,
+            last_snd_wnd: 65535,
             in_recovery: false,
             bytes_acked_in_ca: 0,
             nagle_enabled: true, // Nagle's algorithm on by default

@@ -579,6 +579,16 @@ impl TcpControlBlock {
         self.congestion.last_ack = ack_num;
     }
 
+    #[inline]
+    pub fn last_snd_wnd(&self) -> u16 {
+        self.congestion.last_snd_wnd
+    }
+
+    #[inline]
+    pub fn set_last_snd_wnd(&mut self, wnd: u16) {
+        self.congestion.last_snd_wnd = wnd;
+    }
+
     #[cfg(any(test, feature = "qemu-test-export"))]
     #[inline]
     pub fn set_cwnd_for_test(&mut self, cwnd: u32) {
@@ -1018,8 +1028,9 @@ impl TcpControlBlock {
                         return;
                     }
                     DestUnreachCode::HostUnreachable | DestUnreachCode::NetworkUnreachable => {
-                        log::info!("[TCP] Connection failed: Network/Host unreachable");
-                        self.close_and_wake();
+                        // RFC 1122 Section 4.2.3.9: "it SHOULD NOT close the connection."
+                        // We just log it and wait for timeout or retry.
+                        log::info!("[TCP] Remote host/network unreachable (ICMP); keeping connection open");
                         return;
                     }
                     _ => {}
@@ -1265,7 +1276,7 @@ impl TcpControlBlock {
         
         let old_wnd = self.options.rcv_wnd_scaled;
         let mss = self.congestion.mss as u32;
-        let total_buffer = self.rx.recv_queue_limit_bytes as u32;
+        let total_buffer = self.rx.recv_buffer_limit_bytes as u32;
         
         // If the window is shrinking, we MUST update it immediately to avoid 
         // buffer overflow and maintain correctness.

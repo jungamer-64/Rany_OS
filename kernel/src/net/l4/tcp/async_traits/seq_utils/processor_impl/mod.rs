@@ -1285,6 +1285,7 @@ impl TcpProcessor {
             // Congestion control: update cwnd on new ACK
             tcb.on_new_ack(bytes_acked);
 
+            tcb.set_last_snd_wnd(window);
             tcb.wake_write_waiter();
             TcpProcessResult::None
         } else if ack && ack_num == tcb.snd_una() && tcb.outstanding_bytes() > 0 {
@@ -1298,16 +1299,21 @@ impl TcpProcessor {
             
             let no_data = payload_len == 0;
             let syn_fin_off = (flags & (TcpHeader::FLAG_SYN | TcpHeader::FLAG_FIN)) == 0;
-            let window_unchanged = window == tcb.rcv_wnd(); // Note: tcb.rcv_wnd() stores the last advertised window
+            let window_unchanged = window == tcb.last_snd_wnd();
 
             if no_data && syn_fin_off && window_unchanged {
-                return Self::try_fast_retransmit(tcb);
+                let res = Self::try_fast_retransmit(tcb);
+                tcb.set_last_snd_wnd(window);
+                return res;
             }
+            tcb.set_last_snd_wnd(window);
             TcpProcessResult::None
         } else if ack && Self::seq_after(ack_num, tcb.snd_nxt()) {
             // RFC 793: SEG.ACK > SND.NXT, send ACK
+            tcb.set_last_snd_wnd(window);
             Self::make_ack_result(tcb)
         } else {
+            tcb.set_last_snd_wnd(window);
             TcpProcessResult::None
         }
     }
