@@ -868,15 +868,16 @@ impl TcpControlBlock {
     /// Called when a new (non-duplicate) ACK is received
     ///
     /// Implements:
-    /// - Slow Start (cwnd < ssthresh): cwnd += mss
-    /// - Congestion Avoidance (cwnd >= ssthresh): cwnd += mss*mss/cwnd
-    pub fn on_new_ack(&mut self, _bytes_acked: u32) {
+    /// - Slow Start (cwnd < ssthresh): cwnd += bytes_acked (up to 1 MSS)
+    /// - Congestion Avoidance (cwnd >= ssthresh): cwnd += mss per RTT
+    pub fn on_new_ack(&mut self, bytes_acked: u32) {
         let mss = self.congestion.mss as u32;
         
         // Exit fast recovery on new ACK
         if self.congestion.in_recovery {
             self.congestion.in_recovery = false;
             self.congestion.cwnd = self.congestion.ssthresh;
+            self.congestion.bytes_acked_in_ca = 0;
         }
         
         // Reset dup ACK counter
@@ -884,13 +885,16 @@ impl TcpControlBlock {
         
         if self.congestion.cwnd < self.congestion.ssthresh {
             // Slow Start: exponential growth
-            // Increase cwnd by mss for each ACK (roughly doubles per RTT)
-            self.congestion.cwnd = self.congestion.cwnd.saturating_add(mss);
+            // RFC 5681: Increase cwnd by at most SMSS bytes for each ACK
+            self.congestion.cwnd = self.congestion.cwnd.saturating_add(bytes_acked.min(mss));
         } else if self.congestion.cwnd > 0 {
             // Congestion Avoidance: linear growth (AIMD - Additive Increase)
-            // cwnd += mss * mss / cwnd (approximately +1 MSS per RTT)
-            let increment = (mss as u64 * mss as u64 / self.congestion.cwnd as u64).max(1) as u32;
-            self.congestion.cwnd = self.congestion.cwnd.saturating_add(increment);
+            // RFC 5681: Increase cwnd by at most 1 MSS per RTT
+            self.congestion.bytes_acked_in_ca = self.congestion.bytes_acked_in_ca.saturating_add(bytes_acked);
+            if self.congestion.bytes_acked_in_ca >= self.congestion.cwnd {
+                self.congestion.bytes_acked_in_ca = self.congestion.bytes_acked_in_ca.saturating_sub(self.congestion.cwnd);
+                self.congestion.cwnd = self.congestion.cwnd.saturating_add(mss);
+            }
         }
     }
 

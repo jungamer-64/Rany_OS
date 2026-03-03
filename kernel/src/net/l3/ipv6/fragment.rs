@@ -216,6 +216,10 @@ impl Ipv6FragmentBuffer {
                 covered_hole_bytes += intersection_end - intersection_start;
             }
         }
+        if covered_hole_bytes == 0 {
+            // Duplicate fragment - ignore it but don't drop the datagram
+            return true;
+        }
         if covered_hole_bytes < payload_len {
             // Overlap detected with already received data
             return false;

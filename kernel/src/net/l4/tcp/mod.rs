@@ -236,6 +236,8 @@ struct TcpCongestionState {
     last_ack: u32,
     /// Fast recovery state
     in_recovery: bool,
+    /// Bytes acknowledged since last cwnd increase (for linear Congestion Avoidance)
+    bytes_acked_in_ca: u32,
     /// Nagle's algorithm enabled (delays small packets until ACK received)
     nagle_enabled: bool,
 }
@@ -249,6 +251,7 @@ impl TcpCongestionState {
             dup_ack_count: 0,
             last_ack: 0,
             in_recovery: false,
+            bytes_acked_in_ca: 0,
             nagle_enabled: true, // Nagle's algorithm on by default
         }
     }

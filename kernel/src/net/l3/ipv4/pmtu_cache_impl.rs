@@ -274,8 +274,14 @@ impl FragmentBuffer {
             }
         }
 
+        if covered_hole_bytes == 0 {
+            // Duplicate fragment - ignore it but don't drop the datagram
+            return true;
+        }
+
         if covered_hole_bytes < fragment_len as u32 {
-            // Overlap detected. RFC 5722 (for IPv6) and general security best practices
+            // Overlap detected (partially covers filled data and partially covers holes).
+            // RFC 5722 (for IPv6) and general security best practices
             // recommend discarding the entire datagram to prevent IDS evasion.
             log::warn!("[NET-IPV4] Overlapping fragment detected at offset {}, dropping datagram", fragment_offset);
             return false;

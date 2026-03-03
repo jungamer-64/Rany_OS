@@ -345,8 +345,10 @@ impl TcpProcessor {
                 };
             } else {
                 // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
-                let seg_len = if (flags & TcpHeader::FLAG_SYN != 0) || (flags & TcpHeader::FLAG_FIN != 0) { 1 } else { 0 };
-                let ack = seq_num.wrapping_add(seg_len as u32).wrapping_add(payload.len() as u32);
+                let mut seg_len = payload.len() as u32;
+                if flags & TcpHeader::FLAG_SYN != 0 { seg_len += 1; }
+                if flags & TcpHeader::FLAG_FIN != 0 { seg_len += 1; }
+                let ack = seq_num.wrapping_add(seg_len);
                 return TcpProcessResult::SendPacket {
                     local: local_addr,
                     remote: remote_addr,
@@ -471,8 +473,10 @@ impl TcpProcessor {
                 };
             } else {
                 // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
-                let seg_len = if (flags & TcpHeader::FLAG_SYN != 0) || (flags & TcpHeader::FLAG_FIN != 0) { 1 } else { 0 };
-                let ack = seq_num.wrapping_add(seg_len as u32).wrapping_add(payload.len() as u32);
+                let mut seg_len = payload.len() as u32;
+                if flags & TcpHeader::FLAG_SYN != 0 { seg_len += 1; }
+                if flags & TcpHeader::FLAG_FIN != 0 { seg_len += 1; }
+                let ack = seq_num.wrapping_add(seg_len);
                 return TcpProcessResult::SendPacket {
                     local: local_addr,
                     remote: remote_addr,
@@ -1207,13 +1211,31 @@ impl TcpProcessor {
         packet_opt: Option<PacketRef>,
     ) -> TcpProcessResult {
         let payload_len = payload.len();
-        let mut result = Self::handle_established_ack(tcb, ack, ack_num);
+        
+        // Step 5: Process ACK (updates snd_una)
+        let ack_result = Self::handle_established_ack(tcb, ack, ack_num);
+        
+        // Step 7/8: Process Data/FIN (updates rcv_nxt)
+        let data_result = if payload_len > 0 || fin {
+            Self::handle_established_data(tcb, seq_num, payload, header_len, packet_opt, payload_len, fin)
+        } else {
+            TcpProcessResult::None
+        };
 
-        if payload_len > 0 || fin {
-            result = Self::handle_established_data(tcb, seq_num, payload, header_len, packet_opt, payload_len, fin);
+        // Decide which result to return. If ack_result is special (e.g. Fast Retransmit), 
+        // return it with the updated rcv_nxt (since handle_established_data updated it).
+        match ack_result {
+            TcpProcessResult::SendPacket { local, remote, seq, ack: _, flags, window, payload, options } => {
+                // Return the ack_result packet but with the LATEST ack number
+                TcpProcessResult::SendPacket {
+                    local, remote, seq, 
+                    ack: tcb.rcv_nxt(), // Use the updated rcv_nxt
+                    flags, window, payload, options
+                }
+            }
+            TcpProcessResult::None => data_result,
+            _ => ack_result, // Use other special results like RST
         }
-
-        result
     }
 
     /// Process ACK in ESTABLISHED state (new ACK or duplicate ACK)
@@ -1240,6 +1262,9 @@ impl TcpProcessor {
         } else if ack && ack_num == tcb.snd_una() && tcb.outstanding_bytes() > 0 {
             // Duplicate ACK - same ack_num but we have outstanding data
             Self::try_fast_retransmit(tcb)
+        } else if ack && Self::seq_after(ack_num, tcb.snd_nxt()) {
+            // RFC 793: SEG.ACK > SND.NXT, send ACK
+            Self::make_ack_result(tcb)
         } else {
             TcpProcessResult::None
         }
