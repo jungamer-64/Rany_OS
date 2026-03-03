@@ -1,5 +1,6 @@
 #![allow(clippy::wildcard_imports)]
 use super::*;
+use crate::sync::PoisonLock;
 
 
 mod sg_io_future;
@@ -147,8 +148,10 @@ impl DirectBlockHandle {
     }
 
     /// Complete a DMA read by copying data from the slot to the user buffer
-    pub(super) fn complete_dma_read(slot: &Arc<Mutex<Option<(TypedDmaSlice<CpuOwned>, usize)>>>, dma_len: usize, buf: &mut [u8]) -> FsResult<usize> {
-        let mut guard = slot.lock();
+    pub(super) fn complete_dma_read(slot: &Arc<PoisonLock<Option<(TypedDmaSlice<CpuOwned>, usize)>>>, dma_len: usize, buf: &mut [u8]) -> FsResult<usize> {
+        let mut guard = slot
+            .lock()
+            .map_err(|_| FsError::IoError)?;
         let (data, bytes_received) = guard.take().ok_or(FsError::IoError)?;
         let bytes_received: usize = bytes_received;
         let copy_len = bytes_received.min(dma_len).min(buf.len());
@@ -177,7 +180,7 @@ impl DirectBlockHandle {
         let lba = self.start_block + block_offset;
         let canceled = Arc::new(AtomicBool::new(false));
         let mut cancel_guard = NvmeCancelGuard::new(canceled.clone());
-        let slot = Arc::new(Mutex::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
+        let slot = Arc::new(PoisonLock::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
         let slot_clone = slot.clone();
         let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
         let future = {
@@ -198,7 +201,14 @@ impl DirectBlockHandle {
                 return;
             }
             if let IoResult::Success(bytes) = result {
-                *slot_clone.lock() = Some((data, bytes));
+                match slot_clone.lock() {
+                    Ok(mut guard) => {
+                        *guard = Some((data, bytes));
+                    }
+                    Err(_poisoned) => {
+                        log::warn!("[kernel_fs] direct block read slot poisoned");
+                    }
+                }
             }
         });
         crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);

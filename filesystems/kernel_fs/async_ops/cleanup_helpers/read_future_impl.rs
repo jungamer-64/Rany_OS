@@ -1,5 +1,6 @@
 #![allow(clippy::wildcard_imports)]
 use super::*;
+use crate::sync::PoisonLock;
 
 
 mod flush_future_impl;
@@ -43,7 +44,7 @@ impl<'a> AsyncReadFuture<'a> {
 
         let canceled = Arc::new(AtomicBool::new(false));
         self.cancel_guard = Some(NvmeCancelGuard::new(canceled.clone()));
-        let slot = Arc::new(Mutex::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
+        let slot = Arc::new(PoisonLock::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
         let slot_clone = slot.clone();
         self.dma_result = Some(slot);
         self.dma_offset_in_block = Some(offset_in_block);
@@ -68,7 +69,14 @@ impl<'a> AsyncReadFuture<'a> {
                 return;
             }
             if let IoResult::Success(bytes) = result {
-                *slot_clone.lock() = Some((data, bytes));
+                match slot_clone.lock() {
+                    Ok(mut guard) => {
+                        *guard = Some((data, bytes));
+                    }
+                    Err(_poisoned) => {
+                        log::warn!("[kernel_fs] direct read completion slot poisoned");
+                    }
+                }
             }
         });
         crate::io::io_scheduler::io_scheduler()
@@ -89,7 +97,11 @@ impl<'a> AsyncReadFuture<'a> {
             Some(s) => s,
             None => return Poll::Ready(Err(FsError::IoError)),
         };
-        let (data, bytes_received) = slot.lock().take().ok_or(FsError::IoError)?;
+        let (data, bytes_received) = match slot.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(_poisoned) => return Poll::Ready(Err(FsError::IoError)),
+        }
+        .ok_or(FsError::IoError)?;
         let dma_len = self.dma_dma_len.take().ok_or(FsError::IoError)?;
         let offset_in_block = self.dma_offset_in_block.take().ok_or(FsError::IoError)?;
         let available = bytes_received.min(dma_len).min(data.len());

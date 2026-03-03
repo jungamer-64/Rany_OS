@@ -10,6 +10,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
+use crate::sync::PoisonLock;
 
 use crate::io::io_scheduler::{
     DeviceId, DeviceOps, DmaBufHandle, IoCommand, IoError, IoRequest, IoRequestId, IoResult, PollHandler,
@@ -25,7 +26,7 @@ pub struct AhciPollHandler {
     /// コントローラへの参照
     controller: Arc<Mutex<AhciController>>,
     /// 保留中リクエスト (IoRequestId -> (PortNumber, SlotNumber))
-    pending: Mutex<BTreeMap<IoRequestId, (PortNumber, SlotNumber)>>,
+    pending: PoisonLock<BTreeMap<IoRequestId, (PortNumber, SlotNumber)>>,
     /// 次のリクエストID
     next_request_id: AtomicU64,
 }
@@ -35,7 +36,7 @@ impl AhciPollHandler {
     pub fn new(controller: Arc<Mutex<AhciController>>) -> Self {
         Self {
             controller,
-            pending: Mutex::new(BTreeMap::new()),
+            pending: PoisonLock::new(BTreeMap::new()),
             next_request_id: AtomicU64::new(1),
         }
     }
@@ -47,7 +48,16 @@ impl AhciPollHandler {
 
     /// リクエストを追加
     pub fn add_pending(&self, id: IoRequestId, port: PortNumber, slot: SlotNumber) {
-        self.pending.lock().insert(id, (port, slot));
+        match self.pending.lock() {
+            Ok(mut pending) => {
+                pending.insert(id, (port, slot));
+            }
+            Err(poisoned) => {
+                log::warn!("[AHCI] pending queue lock poisoned; recovering");
+                let mut pending = poisoned.into_inner();
+                pending.insert(id, (port, slot));
+            }
+        }
     }
 
     /// コマンド完了をチェック
@@ -73,7 +83,13 @@ impl PollHandler for AhciPollHandler {
         let mut completed = Vec::new();
 
         {
-            let pending = self.pending.lock();
+            let pending = match self.pending.lock() {
+                Ok(pending) => pending,
+                Err(poisoned) => {
+                    log::warn!("[AHCI] pending queue lock poisoned during poll; recovering");
+                    poisoned.into_inner()
+                }
+            };
             for (&request_id, &(port, slot)) in pending.iter() {
                 if let Some(success) = self.check_completion(port, slot) {
                     // On completion, call port.finish_transfer to clean up and get transferred bytes
@@ -98,7 +114,13 @@ impl PollHandler for AhciPollHandler {
         }
 
         // 完了したリクエストを削除
-        let mut pending = self.pending.lock();
+        let mut pending = match self.pending.lock() {
+            Ok(pending) => pending,
+            Err(poisoned) => {
+                log::warn!("[AHCI] pending queue lock poisoned during cleanup; recovering");
+                poisoned.into_inner()
+            }
+        };
         for id in completed {
             pending.remove(&id);
         }

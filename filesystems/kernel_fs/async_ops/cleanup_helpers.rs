@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::PoisonLock;
 
 
 /// IOMMUマッピングを一括解放する
@@ -335,7 +336,7 @@ pub struct AsyncIoRequest {
     /// オフセット（バイト）
     pub offset: u64,
     /// データバッファ
-    pub buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    pub buffer: Option<Arc<PoisonLock<Vec<u8>>>>,
     /// バッファ内オフセット
     pub buf_offset: usize,
     /// 長さ
@@ -354,7 +355,7 @@ impl AsyncIoRequest {
         id: u64,
         io_type: AsyncIoType,
         offset: u64,
-        buffer: Option<Arc<Mutex<Vec<u8>>>>,
+        buffer: Option<Arc<PoisonLock<Vec<u8>>>>,
         length: usize,
     ) -> Self {
         Self {
@@ -371,12 +372,12 @@ impl AsyncIoRequest {
     }
 
     /// 読み取りリクエストを作成
-    pub fn read(id: u64, offset: u64, buffer: Arc<Mutex<Vec<u8>>>, length: usize) -> Self {
+    pub fn read(id: u64, offset: u64, buffer: Arc<PoisonLock<Vec<u8>>>, length: usize) -> Self {
         Self::new(id, AsyncIoType::Read, offset, Some(buffer), length)
     }
 
     /// 書き込みリクエストを作成
-    pub fn write(id: u64, offset: u64, buffer: Arc<Mutex<Vec<u8>>>, length: usize) -> Self {
+    pub fn write(id: u64, offset: u64, buffer: Arc<PoisonLock<Vec<u8>>>, length: usize) -> Self {
         Self::new(id, AsyncIoType::Write, offset, Some(buffer), length)
     }
 
@@ -553,7 +554,7 @@ pub struct AsyncReadFuture<'a> {
     io_future: Option<crate::io::io_scheduler::IoFuture>,
     dma_user_len: usize,
     cancel_guard: Option<NvmeCancelGuard>,
-    dma_result: Option<Arc<Mutex<Option<(TypedDmaSlice<CpuOwned>, usize)>>>>,
+    dma_result: Option<Arc<PoisonLock<Option<(TypedDmaSlice<CpuOwned>, usize)>>>>,
     dma_offset_in_block: Option<usize>,
     dma_dma_len: Option<usize>,
 }
