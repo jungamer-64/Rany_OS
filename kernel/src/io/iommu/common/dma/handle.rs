@@ -507,7 +507,7 @@ impl<T> DmaHandle<T> {
     /// # Security Warning
     ///
     /// Identity mapping bypasses IOMMU protection completely. This function is
-    /// only available in debug builds or when `unsafe_iommu_bypass` feature is enabled.
+    /// only available in debug builds.
     ///
     /// For production use, prefer `map_rref_for_device()` which uses proper
     /// IOVA allocation with IOMMU protection.
@@ -519,7 +519,7 @@ impl<T> DmaHandle<T> {
     ///
     /// # Errors
     /// Returns `MapError<T>` containing the original RRef on failure.
-    #[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
+    #[cfg(debug_assertions)]
     pub fn map_simple(
         rref: RRef<T>,
         domain_id: u16,
@@ -582,7 +582,7 @@ impl<T> DmaHandle<T> {
     }
 
     /// Identity mapping is DISABLED in production builds.
-    #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+    #[cfg(not(debug_assertions))]
     pub fn map_simple(
         rref: RRef<T>,
         _domain_id: u16,

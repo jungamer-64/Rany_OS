@@ -30,27 +30,10 @@ pub fn test_task_creation() -> TestResult {
 
 /// Test task scheduling
 pub fn test_task_scheduling() -> TestResult {
-    #[cfg(feature = "legacy-scheduler")]
-    {
-        // Verify scheduler is initialized
-        let scheduler = crate::task::scheduler::scheduler();
-
-        // Get initial stats
-        let stats = scheduler.stats();
-
-        // Stats should be accessible
-        if stats.context_switches < 0 {
-            return TestResult::Failed(String::from("Invalid context switch count"));
-        }
-
-        return TestResult::Passed;
-    }
-
-    #[cfg(not(feature = "legacy-scheduler"))]
-    {
-        // Legacy scheduler disabled; skip this test
-        return TestResult::Skipped(String::from("Legacy scheduler disabled; test skipped"));
-    }
+    // Verify preemption stats are readable as scheduler activity proxy
+    let preempt = crate::task::preemption_controller();
+    let _stats = preempt.stats();
+    TestResult::Passed
 }
 
 /// Test async sleep mechanism

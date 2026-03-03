@@ -177,14 +177,14 @@ fn linker_virt_to_phys(virt: u64) -> Option<u64> {
 }
 
 /// Identity mapping fallback gate (default: false).
-#[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
+#[cfg(debug_assertions)]
 static UNSAFE_ALLOW_IDENTITY_MAPPING: AtomicBool = AtomicBool::new(false);
 
 /// Global DMA mapping gate (device-scoped mappings remain allowed).
 static ALLOW_GLOBAL_MAPPINGS: AtomicBool = AtomicBool::new(cfg!(debug_assertions));
 
 /// Enable/disable identity mapping fallback.
-#[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
+#[cfg(debug_assertions)]
 pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
     if allowed {
         log::error!(
@@ -193,11 +193,6 @@ pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
              This should NEVER be enabled in production!"
         );
         log::error!("[IOMMU][SECURITY][TAINTED] TAINTED: IOMMU BYPASS ENABLED");
-        #[cfg(all(not(debug_assertions), feature = "unsafe_iommu_bypass"))]
-        log::error!(
-            "[IOMMU][SECURITY] You are using unsafe_iommu_bypass in a release build. \
-             This feature should only be used for hardware bring-up and debugging."
-        );
     } else {
         log::info!("[IOMMU][SECURITY] Identity mapping DISABLED - DMA protection restored");
     }
@@ -205,13 +200,13 @@ pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
 }
 
 /// Check whether identity mapping fallback is allowed.
-#[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
+#[cfg(debug_assertions)]
 pub fn is_unsafe_identity_mapping_allowed() -> bool {
     UNSAFE_ALLOW_IDENTITY_MAPPING.load(Ordering::Acquire)
 }
 
 /// Check whether identity mapping fallback is allowed.
-#[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+#[cfg(not(debug_assertions))]
 #[inline(always)]
 pub fn is_unsafe_identity_mapping_allowed() -> bool {
     false

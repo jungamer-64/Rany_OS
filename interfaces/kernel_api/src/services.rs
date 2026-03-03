@@ -124,22 +124,22 @@ pub trait KernelServices: Send + Sync {
         endpoint: TcpEndpoint,
         packet: crate::Packet,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
-    /// Create a raw (packet-oriented) socket
-    fn net_create_raw_socket(&self) -> KapiResult<crate::RawSocketHandle>;
+    /// Create a raw (packet-oriented) endpoint
+    fn net_create_raw_endpoint(&self) -> KapiResult<crate::RawEndpointHandle>;
 
-    /// Close a raw socket
-    fn net_close_raw_socket(&self, endpoint: crate::RawSocketHandle) -> KapiResult<()>;
+    /// Close a raw endpoint
+    fn net_close_raw_endpoint(&self, endpoint: crate::RawEndpointHandle) -> KapiResult<()>;
 
     /// Receive a raw packet (async)
     fn net_recv_raw(
         &self,
-        endpoint: crate::RawSocketHandle,
+        endpoint: crate::RawEndpointHandle,
     ) -> Pin<Box<dyn Future<Output = KapiResult<crate::Packet>> + Send>>;
 
     /// Send a raw packet (async)
     fn net_send_raw(
         &self,
-        endpoint: crate::RawSocketHandle,
+        endpoint: crate::RawEndpointHandle,
         packet: crate::Packet,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
     // ========================================================================

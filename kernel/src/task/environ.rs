@@ -340,33 +340,6 @@ pub fn init() {
     KERNEL_ENV.set_defaults();
 }
 
-// --- POSIX風 API ---
-
-/// getenv() 相当
-pub fn getenv(key: &str) -> Option<EnvValue> {
-    KERNEL_ENV.get(key)
-}
-
-/// setenv() 相当
-pub fn setenv(key: &str, value: &str) -> Result<(), EnvError> {
-    KERNEL_ENV.set(key, value)
-}
-
-/// unsetenv() 相当
-pub fn unsetenv(key: &str) -> Result<(), EnvError> {
-    KERNEL_ENV.unset(key)
-}
-
-/// putenv() 相当
-pub fn putenv(s: &str) -> Result<(), EnvError> {
-    KERNEL_ENV.parse_and_set(s)
-}
-
-/// environ 相当
-pub fn environ() -> Vec<String> {
-    KERNEL_ENV.to_strings()
-}
-
 /// 標準的な環境変数へのショートカット
 
 /// PATH を取得

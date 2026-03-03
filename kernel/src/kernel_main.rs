@@ -843,15 +843,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     }
     info!(target: "init", "Durability + kgdb subsystems initialized");
 
-    // 4. タスクスケジューラの初期化
-    io::log::early_print("[DEBUG] Before scheduler init\n");
-    info!(target: "init", "Initializing task scheduler");
-    #[cfg(feature = "legacy-scheduler")]
-    task::init_scheduler(0); // CPU 0
-    info!(target: "init", "Task scheduler initialized");
-    io::log::early_print("[DEBUG] After scheduler init\n");
-
-    // 4.5. Per-Core Executorの初期化（設計書 4.3）
+    // 4. Per-Core Executorの初期化（設計書 4.3）
     io::log::early_print("[DEBUG] Before executor init\n");
     info!(target: "init", "Initializing per-core executors");
     task::init_executors(1); // シングルコアで開始

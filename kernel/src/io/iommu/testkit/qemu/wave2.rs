@@ -603,7 +603,7 @@ pub fn wave2_isolation_decision_default_smoke() -> bool {
 }
 
 pub fn wave2_identity_mapping_disabled_by_default_smoke() -> bool {
-    #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+    #[cfg(not(debug_assertions))]
     {
         if crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
             return false;

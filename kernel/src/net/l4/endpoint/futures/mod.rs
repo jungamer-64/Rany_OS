@@ -617,7 +617,7 @@ pub mod qemu_tests {
         let fd = sock.fd();
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-        if let Some(s) = sock.socket() {
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
@@ -650,7 +650,7 @@ pub mod qemu_tests {
                 match pinned.as_mut().poll(&mut cx) {
                     Poll::Ready(Ok(n)) => n == expected.len(),
                     Poll::Pending => {
-                        if let Some(s) = sock.socket() {
+                        if let Some(s) = sock.endpoint() {
                             let inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
                             let staged: alloc::vec::Vec<u8> =
                                 inner.send_buffer.iter().copied().collect();
@@ -673,7 +673,7 @@ pub mod qemu_tests {
         let sock = create_tcp_endpoint();
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-        if let Some(s) = sock.socket() {
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
@@ -695,7 +695,7 @@ pub mod qemu_tests {
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
         let stream = TcpStream { tcb: tcb_arc.clone() };
 
-        if let Some(s) = sock.socket() {
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().stream = Some(stream.clone());
             let _ = inner.transition_to(EndpointState::Bound);
@@ -721,7 +721,7 @@ pub mod qemu_tests {
         let sock = create_tcp_endpoint();
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-        if let Some(s) = sock.socket() {
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
@@ -743,7 +743,7 @@ pub mod qemu_tests {
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
         let stream = TcpStream { tcb: tcb_arc.clone() };
 
-        if let Some(s) = sock.socket() {
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().stream = Some(stream.clone());
             let _ = inner.transition_to(EndpointState::Bound);
@@ -771,7 +771,7 @@ pub mod qemu_tests {
         };
 
         let sock = create_udp_endpoint();
-        if let Some(s) = sock.socket() {
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(EndpointAddr::new([127, 0, 0, 1], port));
             inner.ensure_udp().socket = Some(u.clone());

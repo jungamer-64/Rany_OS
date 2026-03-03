@@ -1580,8 +1580,8 @@ fn test_isolation_decision_default() {
 /// This ensures that IOVAs are always different from physical addresses.
 #[test_case]
 fn test_identity_mapping_disabled_by_default() {
-    // In release builds without unsafe_iommu_bypass, identity mapping should be disabled
-    #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+    // In non-debug builds, identity mapping should be disabled
+    #[cfg(not(debug_assertions))]
     {
         assert!(
             !crate::io::iommu::api::is_unsafe_identity_mapping_allowed(),

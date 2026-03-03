@@ -234,7 +234,7 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_create_raw_socket(&self) -> Result<RawSocketHandle, KapiError> {
+    fn net_create_raw_endpoint(&self) -> Result<RawEndpointHandle, KapiError> {
         use crate::net::l4::endpoint::create_raw_endpoint;
 
         let owned = create_raw_endpoint();
@@ -243,10 +243,10 @@ impl KernelServices for ExoKernel {
         // Detach so it remains registered
         let _ = owned.into_inner();
 
-        Ok(RawSocketHandle::new(fd.raw() as u64))
+        Ok(RawEndpointHandle::new(fd.raw() as u64))
     }
 
-    fn net_close_raw_socket(&self, endpoint: RawSocketHandle) -> Result<(), KapiError> {
+    fn net_close_raw_endpoint(&self, endpoint: RawEndpointHandle) -> Result<(), KapiError> {
         use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
         let fd = EndpointFd::from_raw(endpoint.id() as u32);
@@ -263,7 +263,7 @@ impl KernelServices for ExoKernel {
         Err(KapiError::InvalidHandle)
     }
 
-    fn net_recv_raw(&self, endpoint: RawSocketHandle) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
+    fn net_recv_raw(&self, endpoint: RawEndpointHandle) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
@@ -290,7 +290,7 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_send_raw(&self, endpoint: RawSocketHandle, packet: Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+    fn net_send_raw(&self, endpoint: RawEndpointHandle, packet: Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 

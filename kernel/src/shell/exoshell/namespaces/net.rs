@@ -18,11 +18,11 @@ use alloc::boxed::Box;
 pub struct NetNamespace;
 
 impl NetNamespace {
-    fn dispatch_bind(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    fn dispatch_open(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let port = match args.get(0) {
             Some(ExoValue::Int(n)) => *n as u16,
             Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
-            _ => return ExoValue::Error(String::from("bind(port[, token]) requires a port integer")),
+            _ => return ExoValue::Error(String::from("open(port[, token]) requires a port integer")),
         };
 
         if port == 0 {
@@ -46,7 +46,7 @@ impl NetNamespace {
         if let Some(t) = token_opt {
              match bind_udp_with_token(port, Some(t)) {
                 Some(_) => ExoValue::Bool(true),
-                None => ExoValue::Error(String::from("bind failed")),
+                None => ExoValue::Error(String::from("open failed")),
             }
         } else {
             if !manager().has_capability(domain_id, CAP_NET_BIND) {
@@ -54,7 +54,7 @@ impl NetNamespace {
             }
             match crate::net::runtime::stack::bind_udp(port) {
                 Some(_) => ExoValue::Bool(true),
-                None => ExoValue::Error(String::from("bind failed")),
+                None => ExoValue::Error(String::from("open failed")),
             }
         }
     }
@@ -75,7 +75,7 @@ impl NetNamespace {
             "dhcp_last_declined" => Self::dhcp_last_declined(),
             "dhcp_last_released" => Self::dhcp_last_released(),
             "dhcp_renew" => Self::dhcp_renew(),
-            "bind" => Self::dispatch_bind(args),
+            "open" => Self::dispatch_open(args),
             _ => ExoValue::Error(format!("Unknown method 'net.{}'", method)),
         }
     }
@@ -422,11 +422,11 @@ impl NetNamespace {
         ExoValue::Array(results)
     }
 
-    fn handle_bind(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    fn handle_open(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let port = match _args.get(0) {
             Some(ExoValue::Int(n)) => *n as u16,
             Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
-            _ => { return ExoValue::Error(String::from("bind(port[, token]) requires a port integer")); }
+            _ => { return ExoValue::Error(String::from("open(port[, token]) requires a port integer")); }
         };
         if port == 0 {
             return ExoValue::Error(String::from("Invalid port"));
@@ -450,7 +450,7 @@ impl NetNamespace {
             }
             match bind_udp_with_token(port, Some(t)) {
                 Some(_) => ExoValue::Bool(true),
-                None => ExoValue::Error(String::from("bind failed")),
+                None => ExoValue::Error(String::from("open failed")),
             }
         } else {
             if !manager().has_capability(domain_id, CAP_NET_BIND) {
@@ -458,7 +458,7 @@ impl NetNamespace {
             }
             match crate::net::runtime::stack::bind_udp(port) {
                 Some(_) => ExoValue::Bool(true),
-                None => ExoValue::Error(String::from("bind failed")),
+                None => ExoValue::Error(String::from("open failed")),
             }
         }
     }
@@ -482,9 +482,9 @@ impl ShellNamespace for NetNamespace {
                 "arp" => Self::arp_cache(),
                 "dhcp_state" => Self::dhcp_state(),
                 "dhcp_renew" => Self::dhcp_renew(),
-                "bind" => Self::handle_bind(_args),
+                "open" => Self::handle_open(_args),
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping, bind, dhcp_state, dhcp_renew",
+                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping, open, dhcp_state, dhcp_renew",
                     method
                 )),
             }

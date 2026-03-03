@@ -516,11 +516,6 @@ impl OwnedEndpoint {
         self.endpoint.as_ref()
     }
 
-    /// `endpoint()` 互換の旧API名
-    pub fn socket(&self) -> Option<&Endpoint> {
-        self.endpoint()
-    }
-
     /// 内部ソケットへの可変参照
     pub fn endpoint_mut(&mut self) -> Option<&mut Endpoint> {
         self.endpoint.as_mut()

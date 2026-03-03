@@ -211,7 +211,7 @@ pub fn net_endpoint_segment_tcp_message_length_field_for_checksum_smoke() -> boo
 }
 
 pub fn net_endpoint_socket_owned_socket_raii_smoke() -> bool {
-    crate::net::l4::endpoint::socket::qemu_tests::owned_socket_raii_smoke()
+    crate::net::l4::endpoint::qemu_tests::socket_owned_socket_raii_smoke()
 }
 
 pub fn net_endpoint_tcb_tcp_connection_state_smoke() -> bool {

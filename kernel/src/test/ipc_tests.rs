@@ -173,38 +173,36 @@ pub fn test_exchange_heap() -> TestResult {
 
 /// Test domain lifecycle
 pub fn test_domain_lifecycle() -> TestResult {
-    use crate::domain::lifecycle::{DomainLifecycle, DomainState};
+    use crate::domain_system::{DomainState, create_domain, set_domain_state, with_domain};
+    use crate::domain::lifecycle::terminate_domain;
 
-    let mut lifecycle = DomainLifecycle::new();
+    // ドメインを作成
+    let domain_id = match create_domain("test_lifecycle".into()) {
+        Ok(id) => id,
+        Err(_) => return TestResult::Failed(String::from("Failed to create domain")),
+    };
 
-    // Initial state should be Created
-    if lifecycle.state() != DomainState::Created {
-        return TestResult::Failed(String::from("Initial state should be Created"));
+    // Initial state should be Initializing
+    let state = with_domain(domain_id, |d| d.state);
+    if state != Some(DomainState::Initializing) {
+        return TestResult::Failed(String::from("Initial state should be Initializing"));
     }
 
-    // Transition to Initializing
-    if lifecycle.start_init().is_err() {
-        return TestResult::Failed(String::from("Failed to start initialization"));
-    }
-
-    if lifecycle.state() != DomainState::Initializing {
-        return TestResult::Failed(String::from("State should be Initializing"));
-    }
-
-    // Complete initialization
-    if lifecycle.complete_init().is_err() {
-        return TestResult::Failed(String::from("Failed to complete initialization"));
-    }
-
-    if lifecycle.state() != DomainState::Running {
+    // Transition to Running
+    set_domain_state(domain_id, DomainState::Running);
+    let state = with_domain(domain_id, |d| d.state);
+    if state != Some(DomainState::Running) {
         return TestResult::Failed(String::from("State should be Running"));
     }
 
-    // Stop domain
-    lifecycle.stop();
+    // Terminate domain
+    if terminate_domain(domain_id).is_err() {
+        return TestResult::Failed(String::from("Failed to terminate domain"));
+    }
 
-    if lifecycle.state() != DomainState::Stopped {
-        return TestResult::Failed(String::from("State should be Stopped"));
+    let state = with_domain(domain_id, |d| d.state);
+    if state != Some(DomainState::Terminated) {
+        return TestResult::Failed(String::from("State should be Terminated"));
     }
 
     TestResult::Passed

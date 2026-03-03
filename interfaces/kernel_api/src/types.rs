@@ -307,13 +307,13 @@ impl TcpEndpoint {
     }
 }
 
-/// Raw socket handle (for raw/packet-oriented sockets)
-pub struct RawSocketHandle {
+/// Raw endpoint handle (for packet-oriented raw endpoints)
+pub struct RawEndpointHandle {
     id: u64,
 }
 
-impl RawSocketHandle {
-    /// Create new raw socket handle (kernel-only)
+impl RawEndpointHandle {
+    /// Create new raw endpoint handle (kernel-only)
     pub const fn new(id: u64) -> Self {
         Self { id }
     }

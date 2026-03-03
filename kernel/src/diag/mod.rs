@@ -1,18 +1,25 @@
 // ============================================================================
-// src/diag/mod.rs - 診断・ベンチマークシステム
+// src/diag/mod.rs - 低レベル診断・ベンチマークシステム
 // ============================================================================
 //!
-//! # 診断・ベンチマークシステム
+//! # 低レベル診断・ベンチマークシステム
 //!
-//! カーネルのパフォーマンス測定、リソース監視、デバッグ支援機能を提供。
+//! カーネルの低レベルパフォーマンス測定およびデバッグ支援機能を提供。
 //!
-//! ## 機能
-//! - CPUサイクルカウンタ
-//! - メモリ使用量監視
-//! - I/Oスループット測定
-//! - レイテンシヒストグラム
-//! - トレースポイント
-//! - カーネルプロファイラ
+//! ## 責務（本モジュール固有）
+//! - TSCベースの時間計測 (`rdtsc`, `MeasureScope`)
+//! - 統計ヒストグラム (`Histogram`)
+//! - パフォーマンスカウンタ (`PerfStats`)
+//! - リソースモニタリング (`ResourceMonitor`)
+//! - トレースポイント / リングバッファ (`TraceBuffer`)
+//! - マイクロベンチマーク (`BenchmarkRunner`)
+//!
+//! ## 関連モジュール（可観測性ファミリー）
+//! - `profiler/` — サンプリングベースCPU/メモリ/I/Oプロファイリング
+//! - `monitor/` — システムスナップショット・ダッシュボード
+//!
+//! CPUプロファイリング機能は `profiler::CpuProfiler` に統合されており、
+//! 本モジュールには含まれません。
 
 #![allow(dead_code)]
 
@@ -504,85 +511,16 @@ macro_rules! trace_point {
 }
 
 // ============================================================================
-// CPU Profiler
+// CPU Profiler - profiler/ に委譲
 // ============================================================================
-
-/// プロファイルサンプル
-#[derive(Debug, Clone)]
-pub struct ProfileSample {
-    pub instruction_pointer: u64,
-    pub stack_trace: Vec<u64>,
-    pub timestamp: u64,
-    pub cpu: u32,
-}
-
-/// CPUプロファイラ
-pub struct CpuProfiler {
-    /// サンプル
-    samples: Mutex<Vec<ProfileSample>>,
-    /// 有効フラグ
-    enabled: AtomicBool,
-    /// サンプリングレート（サイクル）
-    sample_rate: AtomicU64,
-    /// サンプル数上限
-    max_samples: usize,
-}
-
-impl CpuProfiler {
-    pub fn new(max_samples: usize) -> Self {
-        Self {
-            samples: Mutex::new(Vec::with_capacity(max_samples)),
-            enabled: AtomicBool::new(false),
-            sample_rate: AtomicU64::new(10_000_000), // 約10ms相当
-            max_samples,
-        }
-    }
-
-    /// プロファイリング開始
-    pub fn start(&self) {
-        self.samples.lock().clear();
-        self.enabled.store(true, Ordering::Release);
-    }
-
-    /// プロファイリング停止
-    pub fn stop(&self) {
-        self.enabled.store(false, Ordering::Release);
-    }
-
-    /// サンプルを記録（タイマー割り込みから呼ばれる）
-    pub fn sample(&self, ip: u64, stack: &[u64], cpu: u32) {
-        if !self.enabled.load(Ordering::Acquire) {
-            return;
-        }
-
-        let sample = ProfileSample {
-            instruction_pointer: ip,
-            stack_trace: stack.to_vec(),
-            timestamp: rdtsc(),
-            cpu,
-        };
-
-        let mut samples = self.samples.lock();
-        if samples.len() < self.max_samples {
-            samples.push(sample);
-        }
-    }
-
-    /// サンプルを取得
-    pub fn samples(&self) -> Vec<ProfileSample> {
-        self.samples.lock().clone()
-    }
-
-    /// サンプリングレートを設定
-    pub fn set_sample_rate(&self, rate: u64) {
-        self.sample_rate.store(rate, Ordering::Relaxed);
-    }
-
-    /// サンプル数を取得
-    pub fn sample_count(&self) -> usize {
-        self.samples.lock().len()
-    }
-}
+// 旧 diag::CpuProfiler は profiler::CpuProfiler と責務が重複していたため削除。
+// CPUプロファイリングは `crate::profiler` モジュールを使用してください。
+//
+// 使用例:
+//   use crate::profiler::{profiler, ProfileMode};
+//   profiler().cpu.start(1000);
+//   profiler().cpu.record_sample();
+//   let stats = profiler().cpu.stats();
 
 // ============================================================================
 // Benchmark Framework
@@ -684,12 +622,12 @@ pub struct ThroughputResult {
 static PERF_STATS: Mutex<Option<PerfStats>> = Mutex::new(None);
 static RESOURCE_MONITOR: Mutex<Option<ResourceMonitor>> = Mutex::new(None);
 static TRACE_BUFFER: Mutex<Option<TraceBuffer>> = Mutex::new(None);
-static CPU_PROFILER: Mutex<Option<CpuProfiler>> = Mutex::new(None);
 
 /// 診断システムを初期化
+///
+/// CPUプロファイラは `profiler` モジュールが管理するため、ここでは初期化しない。
 pub fn init() {
     *PERF_STATS.lock() = Some(PerfStats::new());
     *RESOURCE_MONITOR.lock() = Some(ResourceMonitor::new(1000));
     *TRACE_BUFFER.lock() = Some(TraceBuffer::new(10000));
-    *CPU_PROFILER.lock() = Some(CpuProfiler::new(100000));
 }

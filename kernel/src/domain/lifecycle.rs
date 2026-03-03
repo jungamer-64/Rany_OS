@@ -3,6 +3,21 @@
 // 設計書 8: フォールトアイソレーションと回復メカニズム
 // 設計書 8.1: スタックアンワインドとリソース回収
 // ============================================================================
+//!
+//! # 責務
+//!
+//! このモジュールは、ドメイン境界でのタスクラッピングとライフサイクル操作を提供する。
+//! ドメインのコア管理（作成・レジストリ・状態遷移）は `crate::domain_system` が担当し、
+//! 本モジュールはその上に構築された高レベルライフサイクル操作を提供する。
+//!
+//! ## `domain_system` との関係
+//!
+//! - `terminate_domain()` → `domain_system::terminate_domain()` に委譲
+//! - `handle_domain_panic()` → `domain_system::handle_domain_panic()` に委譲
+//! - `spawn_domain_task()` — 本モジュール固有（ドメイン境界Future）
+//! - `restart_domain()` — 本モジュール固有（再起動ロジック）
+//! - `add_domain_dependency()` — 本モジュール固有（依存関係グラフ操作）
+//!
 #![allow(dead_code)]
 
 use crate::domain_system::{DomainId, DomainState, create_domain, set_domain_state, with_domain, with_domain_mut};
@@ -116,85 +131,19 @@ where
 
 /// ドメインを終了させる
 /// 設計書 8.1: リソース回収
+///
+/// `domain_system::terminate_domain()` に委譲し、エラー型を変換する。
 pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
-    // ドメインの存在確認
-    let domain_exists = with_domain(domain_id, |_| true).unwrap_or(false);
-    if !domain_exists {
-        return Err(DomainError::NotFound);
-    }
-
-    // 状態を終了中に変更
-    set_domain_state(domain_id, DomainState::Terminated);
-
-    // Exchange Heap上のリソースを回収
-    reclaim_domain_resources(domain_id);
-
-    // ドメインに属するタスクを停止
-    let tasks = with_domain(domain_id, |d| d.tasks.clone()).unwrap_or_default();
-    for task_id in tasks {
-        // タスクを停止状態に設定
-        // 注: 実際のタスク停止はスケジューラが次回処理時に行う
-        log::info!(
-            "[Domain {}] Stopping task {}\n",
-            domain_id.as_u64(),
-            task_id
-        );
-    }
-
-    // ドメインに依存する他のドメインに通知
-    let dependents = with_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
-    for dep_id in dependents {
-        log::info!(
-            "[Domain {}] Notifying dependent domain {} of termination\n",
-            domain_id.as_u64(),
-            dep_id.as_u64()
-        );
-        // 依存ドメインの状態を更新（依存先が停止したことを記録）
-        with_domain_mut(dep_id, |domain| {
-            domain.remove_dependency(domain_id);
-        });
-    }
-
-    Ok(())
+    crate::domain_system::terminate_domain(domain_id)
+        .map_err(|_| DomainError::NotFound)
 }
 
 /// ドメインがパニックした場合の処理
 /// カスタムパニックハンドラから呼ばれる
+///
+/// `domain_system::handle_domain_panic()` に委譲する。
 pub fn handle_domain_panic(domain_id: DomainId, message: String) {
-    // 状態を停止に変更
-    with_domain_mut(domain_id, |domain| {
-        domain.state = DomainState::Stopped;
-        domain.panic_message = Some(message.clone());
-    });
-
-    // リソースを回収
-    reclaim_domain_resources(domain_id);
-
-    // ログ出力
-    log::info!(
-        "[PANIC] Domain {} crashed: {}\n",
-        domain_id.as_u64(),
-        message
-    );
-
-    // 依存するドメインに通知
-    let dependents = with_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
-    for dep_id in dependents {
-        log::info!(
-            "[PANIC] Notifying dependent domain {} of panic\n",
-            dep_id.as_u64()
-        );
-        // 依存ドメインの状態を更新
-        with_domain_mut(dep_id, |domain| {
-            domain.remove_dependency(domain_id);
-            // パニック情報を伝播
-            domain.last_error = Some(alloc::format!(
-                "Dependency {} panicked: {}",
-                domain_id.as_u64(),
-                message
-            ));
-        });
-    }
+    crate::domain_system::handle_domain_panic(domain_id, message);
 }
 
 /// ドメインを再起動

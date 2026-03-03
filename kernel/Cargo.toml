@@ -120,13 +120,8 @@ buddy_freelist = []
 # immediate completion guarantees.
 async_unmap_default = []
 
-# Allow identity mapping (IOVA = physical address) in debug builds.
-# WARNING: This bypasses IOMMU protection completely. Only enable for
-# debugging early boot or hardware bring-up. Never use in production.
-unsafe_iommu_bypass = []
 apic = []
 task = []
-legacy-scheduler = []
 force_vga = []
 gimli_unwind = []
 

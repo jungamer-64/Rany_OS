@@ -1,6 +1,40 @@
 // ============================================================================
 // src/task/mod.rs - Task Definition and Executor
 // ============================================================================
+//!
+//! # Executor / Work-Stealing モジュール構成
+//!
+//! タスク実行に関連する複数のモジュールが存在する。それぞれの責務は以下の通り：
+//!
+//! ## `mod.rs`（本ファイル）
+//! タスクの核となる型定義（`TaskId`, `Task`）と Waker VTable。
+//! 他のサブモジュールはすべてここで `pub mod` 宣言され、
+//! 主要な型が `pub use` で再エクスポートされる。
+//!
+//! ## `timeout` (タイムアウトユーティリティ)
+//! `TimeoutFuture`, `with_timeout()`, `block_on()`, `spawn_with_timeout()`。
+//! 設計書 4.4 対応のタイマーベースyield。
+//!
+//! ## `executor` (プライマリExecutor)
+//! カーネル起動時に使用されるシンプルなExecutor。ロックフリーMPMCキューベースで、
+//! `Executor::new()` → `executor.spawn()` → `executor.run()` の流れで使用。
+//! `Executor::spawn_global()` でISRからのタスク投入も可能。
+//! **kmain_innerで使用される唯一のExecutorループ。**
+//!
+//! ## `per_core_executor` (Per-Core Executor)
+//! コアごとに独立したExecutorインスタンスを持つ、スケーラブルなアーキテクチャ。
+//! `ExecutorManager` が全コアのExecutorを管理し、`spawn()` APIで自動コア選択。
+//! `PoisonLock<VecDeque<T>>` ベースのWorkStealingQueue内包。
+//! SMPブートストラップ後に `init_executors()` で初期化。
+//!
+//! ## `work_stealing` (Global Injector Queue)
+//! グローバルなタスク注入キュー。`inject_global()` / `steal_from_global()` 。
+//! ※Per-Core用キューは `work_stealing_advanced` に移行済み。
+//!
+//! ## `work_stealing_advanced` (NUMA対応高性能スケジューラ)
+//! NUMA対応の3段階スティーリング、`WorkStealingDeque`、`PerCoreWorker`、
+//! `GlobalScheduler` を提供する Phase 4 の高度なスケジューラ実装。
+//!
 #![allow(dead_code)]
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -17,11 +51,9 @@ pub mod interrupt_waker;
 pub mod per_core_executor;
 pub mod preemption;
 pub mod io;
-#[cfg(feature = "legacy-scheduler")]
-pub mod scheduler; 
+pub mod timeout;
 pub mod timer;
 mod work_stealing;
-
 
 // Phase 4: Advanced Work-Stealing
 pub mod work_stealing_advanced;
@@ -38,8 +70,8 @@ pub use context::{
 };
 #[allow(unused_imports)]
 pub use environ::{
-    EnvError, EnvKey, EnvValue, Environment, environ, get_home, get_path, get_pwd, get_user,
-    getenv, kernel_env, putenv, set_pwd, setenv, unsetenv,
+    EnvError, EnvKey, EnvValue, Environment, get_home, get_path, get_pwd, get_user, get_term,
+    kernel_env, set_pwd,
 };
 pub use executor::Executor;
 #[allow(unused_imports)]
@@ -72,9 +104,6 @@ pub use preemption::{
     yield_now,
     yield_point,
 };
-#[allow(unused_imports)]
-#[cfg(feature = "legacy-scheduler")]
-pub use scheduler::{PerCpuScheduler, init_scheduler};
 pub use timer::{current_tick, sleep_ms};
 #[allow(unused_imports)]
 pub use work_stealing::{inject_global, steal_from_global};
@@ -87,174 +116,9 @@ pub use work_stealing_advanced::{
     init as init_work_stealing, schedule as ws_schedule, spawn as ws_spawn,
 };
 
-// ============================================================================
-// Timeout Support (設計書 4.4)
-// ============================================================================
-
-/// タイムアウト結果
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimeoutResult<T> {
-    /// 正常完了
-    Completed(T),
-    /// タイムアウト
-    TimedOut,
-}
-
-impl<T> TimeoutResult<T> {
-    /// 完了したか
-    pub fn is_completed(&self) -> bool {
-        matches!(self, TimeoutResult::Completed(_))
-    }
-
-    /// タイムアウトしたか
-    pub fn is_timed_out(&self) -> bool {
-        matches!(self, TimeoutResult::TimedOut)
-    }
-
-    /// 値を取得（タイムアウト時はNone）
-    pub fn ok(self) -> Option<T> {
-        match self {
-            TimeoutResult::Completed(v) => Some(v),
-            TimeoutResult::TimedOut => None,
-        }
-    }
-}
-
-/// タイムアウト付きFuture
-///
-/// 設計書 4.4: タイマーベースのyield
-pub struct TimeoutFuture<F: Future> {
-    inner: F,
-    deadline: u64,
-}
-
-impl<F: Future> TimeoutFuture<F> {
-    /// 新しいタイムアウト付きFutureを作成
-    pub fn new(future: F, timeout_ms: u64) -> Self {
-        Self {
-            inner: future,
-            deadline: current_tick() + timeout_ms,
-        }
-    }
-}
-
-impl<F: Future> Future for TimeoutFuture<F> {
-    type Output = TimeoutResult<F::Output>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: inner futureをpinするためにunsafeが必要
-        let this = unsafe { self.get_unchecked_mut() };
-
-        // タイムアウトチェック
-        if current_tick() >= this.deadline {
-            return Poll::Ready(TimeoutResult::TimedOut);
-        }
-
-        // 内部Futureをpoll
-        // SAFETY: selfがpinnedなので、innerもpinされている
-        let inner_pin = unsafe { Pin::new_unchecked(&mut this.inner) };
-        match inner_pin.poll(cx) {
-            Poll::Ready(result) => Poll::Ready(TimeoutResult::Completed(result)),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-/// タイムアウト付きでFutureを実行
-///
-/// # 例
-/// ```ignore
-/// let result = with_timeout(some_async_operation(), 1000).await;
-/// match result {
-///     TimeoutResult::Completed(value) => println!("Got: {:?}", value),
-///     TimeoutResult::TimedOut => println!("Operation timed out"),
-/// }
-/// ```
-pub fn with_timeout<F: Future>(future: F, timeout_ms: u64) -> TimeoutFuture<F> {
-    TimeoutFuture::new(future, timeout_ms)
-}
-
-/// Simple helper to synchronously run a `Future` to completion in tests or
-/// synchronous contexts. This creates a minimal local Waker that spins waiting
-/// to be notified. Intended for tests and transitional use only.
-pub fn block_on<F: Future>(future: F) -> F::Output {
-    use alloc::sync::Arc;
-    
-    use core::sync::atomic::{AtomicBool, Ordering};
-    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-    // Shared wake flag
-    let flag = Arc::new(AtomicBool::new(false));
-
-    unsafe fn clone_data(data: *const ()) -> RawWaker {
-        // Convert back to Arc and increment refcount
-        let arc = Arc::from_raw(data as *const AtomicBool);
-        let cloned = arc.clone();
-        // Re-leak the original Arc
-        let _ = Arc::into_raw(arc);
-        RawWaker::new(Arc::into_raw(cloned) as *const (), &VTABLE)
-    }
-
-    unsafe fn wake_data(data: *const ()) {
-        let arc = Arc::from_raw(data as *const AtomicBool);
-        arc.store(true, Ordering::SeqCst);
-        // Drop original Arc reference obtained from from_raw
-    }
-
-    unsafe fn wake_by_ref_data(data: *const ()) {
-        let arc = Arc::from_raw(data as *const AtomicBool);
-        arc.store(true, Ordering::SeqCst);
-        // Re-leak
-        let _ = Arc::into_raw(arc);
-    }
-
-    unsafe fn drop_data(data: *const ()) {
-        // Convert back to Arc and drop it so refcount decreases
-        let _arc = Arc::from_raw(data as *const AtomicBool);
-    }
-
-    const VTABLE: RawWakerVTable =
-        RawWakerVTable::new(clone_data, wake_data, wake_by_ref_data, drop_data);
-
-    // Build initial RawWaker
-    let raw = RawWaker::new(Arc::into_raw(flag.clone()) as *const (), &VTABLE);
-    let waker = unsafe { Waker::from_raw(raw) };
-    let mut cx = Context::from_waker(&waker);
-
-    let mut fut = Box::pin(future);
-
-    loop {
-        match fut.as_mut().poll(&mut cx) {
-            Poll::Ready(v) => return v,
-            Poll::Pending => {
-                // Wait until woken
-                while !flag.load(Ordering::SeqCst) {
-                    core::hint::spin_loop();
-                }
-                flag.store(false, Ordering::SeqCst);
-            }
-        }
-    }
-}
-
-/// タイムアウト付きタスクをスポーン
-///
-/// 設計書 4.4対応: タイムアウト後は自動的にキャンセル
-pub fn spawn_with_timeout<F>(future: F, timeout_ms: u64) -> TaskId
-where
-    F: Future<Output = ()> + Send + 'static,
-{
-    let task = Task::new(async move {
-        let result = with_timeout(future, timeout_ms).await;
-        if result.is_timed_out() {
-            log::info!("[TASK] Task timed out after {}ms\n", timeout_ms);
-        }
-    });
-
-    let task_id = task.id;
-    Executor::spawn_global(task);
-    task_id
-}
+// Timeout/block_on utilities re-exported from timeout.rs
+#[allow(unused_imports)]
+pub use timeout::{TimeoutFuture, TimeoutResult, block_on, spawn_with_timeout, with_timeout};
 
 /// タスクID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -84,8 +84,6 @@ pub use manager::{
 pub use endpoint_core::{
     OwnedEndpoint, create_raw_endpoint, create_tcp_endpoint, create_tcp_server, create_udp_endpoint,
 };
-/// Backward-compatible module alias for legacy references.
-pub use endpoint_core as socket;
 // Re-exports: futures
 
 // Re-exports: handler

@@ -4,8 +4,8 @@
 //! behavior aligned between `#[cfg_attr(test, test_case)]` and QEMU full-boot execution.
 
 use super::{
-    congestion, flow_control, futures, handler, inner, retransmit, segment, socket, tcb, tests,
-    types, window_scale,
+    congestion, endpoint_core, flow_control, futures, handler, inner, retransmit, segment, tcb,
+    tests, types, window_scale,
 };
 
 macro_rules! run_case {
@@ -176,7 +176,7 @@ pub fn flow_control_probe_timing_smoke() -> bool {
 
 pub fn futures_sendfuture_wakes_on_send_smoke() -> bool {
     let sock = crate::net::l4::endpoint::create_tcp_endpoint();
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let Ok(mut inner) = s.inner().lock() else { return false; };
         inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 30001));
         inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
@@ -188,7 +188,7 @@ pub fn futures_sendfuture_wakes_on_send_smoke() -> bool {
 
 pub fn futures_recv_packet_zero_copy_via_owned_socket_smoke() -> bool {
     let sock = crate::net::l4::endpoint::create_tcp_endpoint();
-    sock.socket().is_some()
+    sock.endpoint().is_some()
 }
 
 pub fn futures_tcp_packet_stream_multiple_packets_smoke() -> bool {
@@ -207,7 +207,7 @@ pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
     let sock = crate::net::l4::endpoint::create_tcp_endpoint();
     let fd = sock.fd();
 
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let Ok(mut inner) = s.inner().lock() else { return false; };
         inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
         inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
@@ -239,7 +239,7 @@ pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
     let sock = crate::net::l4::endpoint::create_tcp_endpoint();
     let fd = sock.fd();
 
-    if let Some(s) = sock.socket() {
+    if let Some(s) = sock.endpoint() {
         let Ok(mut inner) = s.inner().lock() else { return false; };
         inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
         inner.remote_addr = Some(super::types::EndpointAddr::new([10, 0, 2, 2], 80));
@@ -322,7 +322,7 @@ pub fn segment_tcp_message_length_field_for_checksum_smoke() -> bool {
 }
 
 pub fn socket_owned_socket_raii_smoke() -> bool {
-    run_case!(socket::tests::test_owned_socket_raii)
+    run_case!(endpoint_core::tests::test_owned_socket_raii)
 }
 
 pub fn tcb_tcp_connection_state_smoke() -> bool {

@@ -24,16 +24,8 @@ impl CpuCollector {
     /// Collect CPU usage percentage
     pub fn collect(&self) -> u8 {
         // In a real implementation, this would read from performance counters
-        // For now, estimate based on scheduler activity
-        #[cfg(feature = "legacy-scheduler")]
+        // For now, estimate based on preemption activity
         let switches = {
-            let scheduler = crate::task::scheduler::scheduler();
-            let stats = scheduler.stats();
-            stats.context_switches
-        };
-        #[cfg(not(feature = "legacy-scheduler"))]
-        let switches = {
-            // Fallback: use preemption stats as a proxy for context switches
             let preempt = crate::task::preemption_controller();
             let p = preempt.stats();
             p.forced_preemptions + p.voluntary_yields
@@ -167,15 +159,7 @@ impl TaskCollector {
     
     /// Collect task statistics
     pub fn collect(&self) -> super::TaskStats {
-        #[cfg(feature = "legacy-scheduler")]
         let context_switches = {
-            let scheduler = crate::task::scheduler::scheduler();
-            let stats = scheduler.stats();
-            stats.context_switches
-        };
-        #[cfg(not(feature = "legacy-scheduler"))]
-        let context_switches = {
-            // Fallback: use preemption stats as a proxy for context switches
             let preempt = crate::task::preemption_controller();
             let p = preempt.stats();
             p.forced_preemptions + p.voluntary_yields
@@ -195,8 +179,9 @@ impl TaskCollector {
     
     /// Calculate context switches per second
     pub fn switches_per_sec(&self, interval_ms: u64) -> u64 {
-        let scheduler = crate::task::scheduler::scheduler();
-        let current = scheduler.stats().context_switches;
+        let preempt = crate::task::preemption_controller();
+        let p = preempt.stats();
+        let current = p.forced_preemptions + p.voluntary_yields;
         let last = self.last_switches.swap(current, Ordering::Relaxed);
         
         if interval_ms == 0 || current < last {

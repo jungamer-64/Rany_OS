@@ -94,17 +94,9 @@ impl IommuUtils for IommuController {
                         return Err(IommuError::Timeout);
                     }
 
-                    // Yield to scheduler to avoid busy-looping
-                    #[cfg(feature = "legacy-scheduler")]
-                    {
-                        crate::task::scheduler::yield_current(_cpu_id);
-                    }
-                    #[cfg(not(feature = "legacy-scheduler"))]
-                    {
-                        // Legacy scheduler disabled -> best-effort cooperative yield
-                        crate::task::preemption::voluntary_yield();
-                        crate::task::preemption::yield_point();
-                    }
+                    // Best-effort cooperative yield to avoid busy-looping
+                    crate::task::preemption::voluntary_yield();
+                    crate::task::preemption::yield_point();
                 }
             }
             // If scheduler isn't available, fallthrough to busy-wait below

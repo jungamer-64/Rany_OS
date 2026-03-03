@@ -12,12 +12,11 @@ impl IommuDomain {
     /// Identity mapping bypasses IOMMU protection and should only be used
     /// for RMRR (Reserved Memory Region Reporting) regions or early boot.
     ///
-    /// This function is only available when:
-    /// - `feature = "unsafe_iommu_bypass"` is enabled, OR
-    /// - `debug_assertions` are enabled (debug builds)
+    /// This function is only available when `debug_assertions` are enabled
+    /// (debug builds).
     ///
     /// In production builds, use `map()` with explicit IOVA allocation instead.
-    #[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
+    #[cfg(debug_assertions)]
     pub fn map_identity(
         &self,
         phys: u64,
@@ -36,7 +35,7 @@ impl IommuDomain {
     ///
     /// This stub exists to provide a clear compile-time error when identity
     /// mapping is attempted in production builds without the bypass feature.
-    #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+    #[cfg(not(debug_assertions))]
     #[allow(unused_variables)]
     pub fn map_identity(
         &self,
@@ -46,7 +45,7 @@ impl IommuDomain {
         write: bool,
     ) -> Result<(), IommuError> {
         log::error!(
-            "[IOMMU][SECURITY] Identity mapping rejected - enable 'unsafe_iommu_bypass' feature"
+            "[IOMMU][SECURITY] Identity mapping rejected in non-debug build"
         );
         Err(IommuError::NotSupported)
     }

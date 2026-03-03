@@ -26,11 +26,15 @@ where
 }
 
 /// CPUプロファイラにアクセス
-pub fn with_profiler<F, R>(f: F) -> Option<R>
+///
+/// 旧 `diag::CpuProfiler` は `profiler::CpuProfiler` に統合されたため、
+/// この関数は非推奨です。代わりに `crate::profiler::profiler()` を使用してください。
+#[deprecated(note = "Use crate::profiler::profiler().cpu instead")]
+pub fn with_profiler<F, R>(_f: F) -> Option<R>
 where
-    F: FnOnce(&CpuProfiler) -> R,
+    F: FnOnce(&()) -> R,
 {
-    CPU_PROFILER.lock().as_ref().map(f)
+    None
 }
 
 /// 統計を記録

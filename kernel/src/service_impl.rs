@@ -31,7 +31,7 @@ use kernel_api::services::KernelServices;
 use kernel_api::{
     ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle,
     NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,
-    OpenMode, Packet, RawSocketHandle, TaskHandle, TcpEndpoint,
+    OpenMode, Packet, RawEndpointHandle, TaskHandle, TcpEndpoint,
 };
 use spin::Mutex;
 

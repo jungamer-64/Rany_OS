@@ -60,7 +60,7 @@ pub use services::{KernelServices, is_kernel_registered, kernel, register_kernel
 pub use time::{CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats};
 pub use types::{
     ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle, NvmeIoHandle,
-    NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest, OpenMode, Packet, RawSocketHandle,
+    NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest, OpenMode, Packet, RawEndpointHandle,
     SystemInfo, TaskHandle, TcpEndpoint,
 };
 

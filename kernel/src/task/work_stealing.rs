@@ -1,5 +1,22 @@
 // ============================================================================
-// src/task/work_stealing.rs - Lock-Free Work-Stealing Queue
+// src/task/work_stealing.rs - Lock-Free Global Injector Queue
+// ============================================================================
+//!
+//! # グローバルタスク注入キュー
+//!
+//! ロックフリー MPMC キューによるグローバルタスク注入。
+//! ISRや他のコアから `inject_global()` でタスクを注入し、
+//! Executor が `steal_from_global()` で取得する。
+//!
+//! ## 責務
+//! - グローバルな注入/取得キュー（`inject_global` / `steal_from_global`）
+//! - キュー統計（`global_queue_len`, `global_queue_stats`）
+//!
+//! ## 関連モジュール
+//! - `work_stealing_advanced/` — NUMA対応のPer-Coreスケジューラ
+//!   （旧 Per-Core WorkStealingQueue はそちらに移行済み）
+//! - `executor` — プライマリExecutorループ
+//!
 // 設計書 4.3: マルチコアスケーリングとShare-Nothingアーキテクチャ
 // ============================================================================
 #![allow(dead_code)]
@@ -7,34 +24,6 @@
 use super::Task;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-
-
-/// ワーカーのメタデータ
-/// NUMA優先スティーリングのためにCPUコアIDとNUMAノードIDを保持
-#[derive(Clone, Copy, Debug)]
-pub struct WorkerMetadata {
-    /// このワーカーが属するCPUコアID
-    pub core_id: u32,
-    /// このワーカーが属するNUMAノードID
-    pub numa_node: u32,
-}
-
-impl WorkerMetadata {
-    pub fn new(core_id: u32, numa_node: u32) -> Self {
-        Self { core_id, numa_node }
-    }
-}
-
-impl Default for WorkerMetadata {
-    fn default() -> Self {
-        Self {
-            core_id: 0,
-            numa_node: 0,
-        }
-    }
-}
-
-// WorkStealingQueue and per-core logic removed (migrated to work_stealing_advanced.rs)
 
 // ============================================================================
 // Lock-Free Global Injector Queue
@@ -203,6 +192,3 @@ pub fn global_queue_len() -> usize {
 pub fn global_queue_stats() -> (usize, usize, usize) {
     GLOBAL_INJECTOR.stats()
 }
-
-// Legacy code removed.
-
