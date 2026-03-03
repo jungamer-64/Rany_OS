@@ -115,6 +115,37 @@ pub enum NetworkEvent {
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
+    /// 非同期ARP解決リクエスト
+    ///
+    /// ARP要求を送信し、解決完了時にWakerで通知する。
+    /// ISR/ポーリングコンテキストからのロック取得を回避する。
+    ArpResolveRequest {
+        target_ip: [u8; 4],
+    },
+    /// ARP解決完了通知（ARPキャッシュ更新時に発火）
+    ArpResolved {
+        ip: [u8; 4],
+        mac: [u8; 6],
+    },
+    /// 非同期TCP connect（イベントキュー経由・ロック競合回避）
+    AsyncTcpConnect {
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期マルチキャストグループ参加
+    AsyncMulticastJoin {
+        group: [u8; 4],
+        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期マルチキャストグループ離脱
+    AsyncMulticastLeave {
+        group: [u8; 4],
+        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
 }
 
 /// イベントキュー（ロックフリーリングバッファ）

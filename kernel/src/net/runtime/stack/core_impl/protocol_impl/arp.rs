@@ -17,10 +17,14 @@ impl NetworkStack {
             } => {
                 self.send_arp_reply(target_mac, target_ip);
             }
-            ArpResult::CacheUpdated => {
-                // Cache was updated, check if we have pending sends
+            ArpResult::CacheUpdated { resolved_ip, resolved_mac } => {
+                // ARP解決完了をウェイターレジストリに通知（非同期ArpResolveFuture向け）
+                crate::net::l2::arp::notify_arp_resolved(
+                    *resolved_ip.as_bytes(),
+                    *resolved_mac.as_bytes(),
+                );
             }
-            ArpResult::Ignored | ArpResult::Invalid => {} // _ => {} // Unreachable pattern removed
+            ArpResult::Ignored | ArpResult::Invalid => {}
         }
     }
 

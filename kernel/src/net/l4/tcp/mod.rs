@@ -32,10 +32,6 @@ mod async_traits;
 pub use async_traits::*;
 mod control_block_impl;
 
-/// `Ipv4Addr` は `crate::net::types` に正規定義を移動。
-/// TCP層からの後方互換のために再エクスポート。
-pub use crate::net::types::Ipv4Addr;
-
 /// ソケットアドレス（統一定義）
 ///
 /// `crate::net::l4::endpoint::types::EndpointAddr` を正規定義とし、
@@ -185,6 +181,8 @@ struct TcpSeqState {
     snd_una: u32,
     /// 送信ウィンドウサイズ (scaled)
     snd_wnd: u32,
+    /// 最大送信ウィンドウサイズ (SWS回避用, RFC 1122)
+    max_snd_wnd: u32,
     /// 受信シーケンス番号（次に期待するバイト）
     rcv_nxt: u32,
     /// 受信ウィンドウサイズ (16-bit field for header)
@@ -197,6 +195,7 @@ impl TcpSeqState {
             snd_nxt: isn,
             snd_una: isn,
             snd_wnd: 65535,
+            max_snd_wnd: 65535,
             rcv_nxt: 0,
             rcv_wnd: 65535,
         }

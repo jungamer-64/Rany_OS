@@ -53,6 +53,8 @@ pub struct TcpControlBlockEntry {
     pub rcv_nxt: u32,
     /// 送信ウィンドウサイズ (legacy - 16bit)
     pub snd_wnd: u16,
+    /// 最大送信ウィンドウサイズ (SWS回避用, RFC 1122)
+    pub max_snd_wnd: u32,
     /// 受信ウィンドウサイズ (legacy - 16bit)
     pub rcv_wnd: u16,
     /// 再送回数
@@ -117,6 +119,7 @@ impl TcpControlBlockEntry {
             snd_una: 0,
             rcv_nxt: 0,
             snd_wnd: 65535,
+            max_snd_wnd: 65535,
             rcv_wnd: 65535,
             retransmit_count: 0,
             last_send_tick: 0,
@@ -153,29 +156,42 @@ impl TcpControlBlockEntry {
         !self.nagle_enabled
     }
 
-    /// 送信を遅延させるべきか判定 (Nagleアルゴリズム)
+    /// 送信を遅延させるべきか判定 (Nagleアルゴリズム + Sender SWS avoidance)
     /// 
-    /// 以下の条件のいずれかを満たす場合は送信する:
-    /// 1. NODELAYが有効 (Nagle無効)
-    /// 2. データサイズがMSS以上
-    /// 3. 未確認データ (outstanding data) がない
+    /// Following RFC 1122 Section 4.2.3.4 (Sender SWS Avoidance) and Section 4.2.3.2 (Nagle's).
     pub fn should_delay_send(&self, data_len: usize) -> bool {
-        if !self.nagle_enabled {
-            return false;
-        }
-
-        // MSS以上なら即座に送信
+        // --- 1. Maximum-sized segment can be sent ---
         if data_len >= self.mss as usize {
-            return false;
+            return false; // Send immediately
         }
 
-        // 未確認データがなければ即座に送信
-        if self.snd_nxt == self.snd_una {
-            return false;
+        // --- 2. Sender SWS Avoidance: Window is large enough ---
+        // "at least half of the maximum window size seen so far on this connection"
+        let sws_threshold = self.max_snd_wnd / 2;
+        let scaled_rwnd = self.window_scale.scale_snd_window(self.snd_wnd);
+        if scaled_rwnd >= sws_threshold && scaled_rwnd > 0 && data_len > 0 {
+            // Window is large enough to avoid SWS.
+        } else if self.is_outstanding() {
+            // SWS avoidance: Window is small and we already have data in flight.
+            return true; // Delay
         }
 
-        // 小さいパケットで未確認データがある場合は遅延させる
-        true
+        // --- 3. Nagle's Algorithm ---
+        if !self.nagle_enabled {
+            return false; // NODELAY enabled: send immediately
+        }
+
+        // If there is unacknowledged data, delay small segments
+        if self.is_outstanding() {
+            return true; // Delay
+        }
+
+        false // No outstanding data: send immediately
+    }
+
+    /// 未確認データがあるか確認
+    pub fn is_outstanding(&self) -> bool {
+        self.snd_nxt != self.snd_una
     }
 
     /// 初期シーケンス番号を設定
@@ -254,6 +270,9 @@ impl TcpControlBlockEntry {
         self.snd_wnd = window;
         let scaled = self.window_scale.scale_snd_window(window);
         self.flow_control.update_peer_window(scaled);
+        if scaled > self.max_snd_wnd {
+            self.max_snd_wnd = scaled;
+        }
     }
 
     /// 送信可能かどうか
@@ -462,10 +481,91 @@ impl TcbTable {
         // 100tickごとに再送チェック（パフォーマンス最適化）
         if tick % 100 == 0 {
             check_retransmit_timeouts();
+            // RFC 1122: ゼロウィンドウプローブの周期チェック
+            self.check_zero_window_probes(tick);
             // SYN flood対策: 定期的に古いSynReceivedエントリを掃除する
             self.scavenge_syn_received(tick);
             // TIME_WAIT対策: 定期的に期限切れのTIME_WAITエントリを掃除する
             self.scavenge_time_wait(tick);
+        }
+    }
+
+    /// ゼロウィンドウプローブの周期チェック
+    ///
+    /// 全ての確立済み接続をスキャンし、相手のウィンドウが0でデータ送信待ちがある場合、
+    /// 定期的に1バイトのプローブパケットを送信する。
+    fn check_zero_window_probes(&self, current_tick: u64) {
+        use super::segment::{TcpSegmentBuilder, send_tcp_segment};
+        use super::retransmit::retransmit_queue_push;
+        use super::manager::ENDPOINT_MANAGER;
+
+        for shard in &self.shards {
+            let mut entries = shard.write();
+            for (key, entry) in entries.iter_mut() {
+                if entry.state == TcpConnectionState::Established {
+                    // RFC 1122: Only explicitly probe if nothing is currently outstanding.
+                    // If something is in flight, it acts as a probe.
+                    if entry.is_outstanding() {
+                        continue;
+                    }
+
+                    if entry.flow_control.should_send_probe(current_tick) {
+                        // プローブ送信が必要。ソケットの送信バッファから1バイト取得。
+                        let manager = ENDPOINT_MANAGER.read();
+                        if let Some(ref mgr) = *manager {
+                            if let Some(socket) = mgr.get(entry.fd) {
+                                let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                                if !inner.send_buffer.is_empty() {
+                                    // 1バイト取得 (SWS回避ルールにより、通常は here に到達するのは snd_wnd=0 の時のみ)
+                                    let probe_byte = inner.send_buffer.pop_front().unwrap();
+                                    drop(inner); // ロックを早期解放
+                                    drop(manager);
+
+                                    let payload = alloc::vec![probe_byte];
+                                    let seq = entry.snd_nxt;
+
+                                    // セグメント構築 (ACKフラグ付きデータパケット)
+                                    let mut builder = TcpSegmentBuilder::new(key.0.port(), key.1.port())
+                                        .seq(seq)
+                                        .ack(entry.rcv_nxt)
+                                        .ack_flag()
+                                        .psh() // 通常データと同様にPSHを立てる
+                                        .window(entry.advertised_recv_window())
+                                        .data(payload.clone());
+                                    
+                                    if entry.ts_enabled {
+                                        let ts_val = (current_tick / 10) as u32;
+                                        builder = builder.nop().nop().timestamp(ts_val, entry.ts_ecr);
+                                    }
+
+                                    let mut segment = builder.build();
+                                    if let (Some(lv4), Some(rv4)) = (key.0.as_ipv4(), key.1.as_ipv4()) {
+                                        TcpSegmentBuilder::calculate_checksum(&mut segment, lv4, rv4);
+                                    } else {
+                                        TcpSegmentBuilder::calculate_checksum_v6(
+                                            &mut segment,
+                                            crate::net::l3::ipv6::Ipv6Address::new(key.0.as_ipv6()),
+                                            crate::net::l3::ipv6::Ipv6Address::new(key.1.as_ipv6()),
+                                        );
+                                    }
+
+                                    // 送信
+                                    if send_tcp_segment(key.0, key.1, segment) {
+                                        // 再送キューに追加（1バイト消費）
+                                        retransmit_queue_push(key.0, key.1, seq, payload);
+                                        entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
+                                        entry.flow_control.on_probe_sent(current_tick);
+                                    } else {
+                                        // 送信失敗（ARP未解決等）。バッファに戻す。
+                                        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                                        inner.send_buffer.push_front(probe_byte);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

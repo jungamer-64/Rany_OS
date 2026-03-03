@@ -305,6 +305,9 @@ pub async fn async_timeout_task() {
 
         // ICMP Echo待ちの期限切れエントリをクリーンアップ
         crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
+
+        // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
+        crate::net::l2::arp::cleanup_arp_waiters();
     }
 }
 
@@ -587,5 +590,166 @@ pub fn bind_udp_async(port: u16) -> UdpBindFuture {
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         sent: false,
         port,
+    }
+}
+
+// ============================================================================
+// 非同期 TCP connect API（イベントキュー経由・ロック競合回避）
+// ============================================================================
+
+/// 非同期TCP connect Future
+///
+/// `NetworkEventQueue`経由でconnectリクエストを送信し、
+/// イベントハンドラ側でスタックロックを取得して処理する。
+pub struct TcpConnectFuture {
+    result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), crate::net::l4::endpoint::types::EndpointError>>>>,
+    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    sent: bool,
+    local: TcpEndpointAddr,
+    remote: TcpEndpointAddr,
+}
+
+impl core::future::Future for TcpConnectFuture {
+    type Output = Result<(), crate::net::l4::endpoint::types::EndpointError>;
+
+    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+        if !self.sent {
+            self.waker.register(cx.waker());
+            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpConnect {
+                local: self.local,
+                remote: self.remote,
+                result_slot: self.result_slot.clone(),
+                waker: self.waker.clone(),
+            };
+            if crate::net::l4::endpoint::event::send_event(event).is_err() {
+                return core::task::Poll::Ready(Err(
+                    crate::net::l4::endpoint::types::EndpointError::ResourceExhausted,
+                ));
+            }
+            self.sent = true;
+            return core::task::Poll::Pending;
+        }
+
+        self.waker.register(cx.waker());
+        if let Ok(slot) = self.result_slot.lock() {
+            if let Some(ref result) = *slot {
+                return core::task::Poll::Ready(result.clone());
+            }
+        }
+        core::task::Poll::Pending
+    }
+}
+
+/// 非同期TCP connect: イベントキュー経由でconnectリクエストを送信
+///
+/// 同期版`connect_tcp()`と異なり、呼び出し元でNETWORK_STACKのロックを
+/// 取得しない。asyncタスクから安全に呼び出せる。
+pub fn connect_tcp_async(local: TcpEndpointAddr, remote: TcpEndpointAddr) -> TcpConnectFuture {
+    TcpConnectFuture {
+        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        sent: false,
+        local,
+        remote,
+    }
+}
+
+// ============================================================================
+// 非同期 Multicast API（イベントキュー経由・ロック競合回避）
+// ============================================================================
+
+/// 非同期マルチキャスト参加 Future
+pub struct MulticastJoinFuture {
+    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    sent: bool,
+    group: Ipv4Address,
+}
+
+impl core::future::Future for MulticastJoinFuture {
+    type Output = bool;
+
+    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+        if !self.sent {
+            self.waker.register(cx.waker());
+            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastJoin {
+                group: *self.group.as_bytes(),
+                result_slot: self.result_slot.clone(),
+                waker: self.waker.clone(),
+            };
+            if crate::net::l4::endpoint::event::send_event(event).is_err() {
+                return core::task::Poll::Ready(false);
+            }
+            self.sent = true;
+            return core::task::Poll::Pending;
+        }
+
+        self.waker.register(cx.waker());
+        if let Ok(slot) = self.result_slot.lock() {
+            if let Some(result) = *slot {
+                return core::task::Poll::Ready(result);
+            }
+        }
+        core::task::Poll::Pending
+    }
+}
+
+/// 非同期マルチキャスト離脱 Future
+pub struct MulticastLeaveFuture {
+    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    sent: bool,
+    group: Ipv4Address,
+}
+
+impl core::future::Future for MulticastLeaveFuture {
+    type Output = bool;
+
+    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+        if !self.sent {
+            self.waker.register(cx.waker());
+            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastLeave {
+                group: *self.group.as_bytes(),
+                result_slot: self.result_slot.clone(),
+                waker: self.waker.clone(),
+            };
+            if crate::net::l4::endpoint::event::send_event(event).is_err() {
+                return core::task::Poll::Ready(false);
+            }
+            self.sent = true;
+            return core::task::Poll::Pending;
+        }
+
+        self.waker.register(cx.waker());
+        if let Ok(slot) = self.result_slot.lock() {
+            if let Some(result) = *slot {
+                return core::task::Poll::Ready(result);
+            }
+        }
+        core::task::Poll::Pending
+    }
+}
+
+/// 非同期マルチキャスト参加: イベントキュー経由
+///
+/// 同期版`join_multicast_group()`と異なり、呼び出し元でロックを取得しない。
+pub fn join_multicast_async(group: Ipv4Address) -> MulticastJoinFuture {
+    MulticastJoinFuture {
+        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        sent: false,
+        group,
+    }
+}
+
+/// 非同期マルチキャスト離脱: イベントキュー経由
+///
+/// 同期版`leave_multicast_group()`と異なり、呼び出し元でロックを取得しない。
+pub fn leave_multicast_async(group: Ipv4Address) -> MulticastLeaveFuture {
+    MulticastLeaveFuture {
+        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        sent: false,
+        group,
     }
 }

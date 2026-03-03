@@ -382,15 +382,22 @@ impl AsyncWrite for TcpStream {
                 let current_time = crate::time::precise_time_nanos() / 1000;
                 let remote = tcb.remote_addr();
                 
-                // 送信バッファ内の全パケットを送信
+                // 送信バッファ内のパケットを送信（RFC 1122 Sender SWS avoidance + Nagle 遵守）
                 while let Some(packet) = tcb.dequeue_send_packet() {
+                    let data = packet.data();
+                    let len = data.len();
+
+                    // Check if we should delay sending this segment
+                    if tcb.should_delay_send(len) {
+                        tcb.requeue_send_packet_front(packet);
+                        break; // Stop sending for now
+                    }
+
                     let Some(remote) = remote else {
                         tcb.requeue_send_packet_front(packet);
                         break;
                     };
 
-                    let data = packet.data();
-                    let len = data.len();
                     let seq = tcb.snd_nxt();
 
                     let sent = send_data_packet(

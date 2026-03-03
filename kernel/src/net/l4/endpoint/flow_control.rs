@@ -199,13 +199,16 @@ impl FlowController {
             return false;
         }
 
-        if self.probe_count >= ZERO_WINDOW_PROBE_MAX_RETRIES {
-            return false;
-        }
+        // RFC 1122 Section 4.2.2.17: "A TCP MUST NOT close a connection because the 
+        // window is zero and the probe timer has expired."
+        // We continue probing indefinitely with maximum backoff.
 
         // インターバル確認 (tickをmsに換算 - 1tick = 1msと仮定)
-        let interval = ZERO_WINDOW_PROBE_INTERVAL_MS * (1 << min(self.probe_count, 6) as u64);
-        if current_tick - self.last_probe_tick >= interval {
+        // Exponential backoff: initial * 2^min(probes, 6)
+        let backoff_shift = min(self.probe_count, 6) as u64;
+        let interval = ZERO_WINDOW_PROBE_INTERVAL_MS * (1 << backoff_shift);
+        
+        if current_tick.saturating_sub(self.last_probe_tick) >= interval {
             return true;
         }
 

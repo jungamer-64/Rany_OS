@@ -234,13 +234,20 @@ impl TcpProcessor {
     }
 
     /// Process zero-window probes for connections with peer window = 0
-    /// Returns packets to send (ACK probes with seq = snd_una - 1)
+    /// Returns packets to send (ACK probes with seq = snd_nxt)
     pub fn process_zero_window_probes(&mut self, current_time: u64) -> Vec<TcpProcessResult> {
         let mut results = Vec::new();
-        let mut dead_connections = Vec::new();
 
-        for (key, tcb_lock) in self.connections.iter() {
+        for (_key, tcb_lock) in self.connections.iter() {
             if let Ok(mut tcb) = tcb_lock.lock() {
+                // RFC 1122: If we have outstanding data, that data acts as a zero-window probe
+                // via regular retransmissions. We only need to trigger an explicit 1-byte probe
+                // if the send window is zero, we have data to send, and nothing is currently
+                // in flight (outstanding_bytes == 0).
+                if tcb.tx.outstanding_bytes > 0 {
+                    continue;
+                }
+
                 match tcb.check_zero_window_probe(current_time) {
                     Some(true) => {
                         // Send zero-window probe: 1 byte of new data at seq = snd_nxt (RFC 1122)
@@ -264,6 +271,8 @@ impl TcpProcessor {
                                 let payload = vec![probe_byte];
 
                                 // Advance sequence number and queue for retransmission
+                                // Now outstanding_bytes will be > 0, and the retransmission timer
+                                // will handle further attempts for this specific byte until ACKed.
                                 tcb.queue_unacked(seq, payload.clone(), current_time, flags);
                                 tcb.advance_snd_nxt(1);
 
@@ -287,21 +296,7 @@ impl TcpProcessor {
                             }
                         }
                     }
-                    Some(false) => {
-                        // Too many probes — connection dead
-                        dead_connections.push(*key);
-                    }
-                    None => {}
-                }
-            }
-        }
-
-        // Mark dead connections as closed
-        for key in dead_connections {
-            if let Some(tcb_lock) = self.connections.get(&key) {
-                if let Ok(mut tcb) = tcb_lock.lock() {
-                    log::info!("[TCP] Zero-window probe timeout: {} -> {:?}", tcb.local_addr(), tcb.remote_addr());
-                    tcb.close_and_wake();
+                    _ => {}
                 }
             }
         }

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/arp.rs
+// kernel/src/net/l2/arp/mod.rs
 // ============================================================================
 //! ARP (Address Resolution Protocol) Implementation for ExoRust
 //!
@@ -13,6 +13,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// ARP hardware type
 pub(crate) mod processor_impl;
+mod resolve_future;
+pub use resolve_future::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -593,8 +595,11 @@ pub enum ArpResult {
         target_mac: MacAddress,
         target_ip: Ipv4Address,
     },
-    /// Cache was updated
-    CacheUpdated,
+    /// Cache was updated with a resolved IP → MAC mapping
+    CacheUpdated {
+        resolved_ip: Ipv4Address,
+        resolved_mac: MacAddress,
+    },
     /// Packet was ignored
     Ignored,
     /// Invalid packet

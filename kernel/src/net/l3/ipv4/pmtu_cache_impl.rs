@@ -164,8 +164,8 @@ impl FragmentBuffer {
     /// Maximum number of holes allowed in the reassembly buffer
     pub const MAX_HOLES: usize = 64;
 
-    /// Fragment timeout in milliseconds (RFC 791 recommends 15-60 seconds)
-    pub const TIMEOUT_MS: u64 = 30_000;
+    /// Fragment timeout in milliseconds (RFC 1122 recommends 60-120 seconds)
+    pub const TIMEOUT_MS: u64 = 60_000;
 
     /// Create a new fragment buffer
     pub fn new(timestamp: u64) -> Self {

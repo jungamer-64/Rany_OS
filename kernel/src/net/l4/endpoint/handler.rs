@@ -187,6 +187,58 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
+            NetworkEvent::ArpResolveRequest { target_ip } => {
+                // 非同期ARP解決: スタックロックを取得してARP要求を送信
+                let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
+                if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
+                    if let Some(ref mut stack) = *stack_guard {
+                        let current_time = stack.current_time();
+                        // キャッシュ確認（レース条件で既に解決済みの場合）
+                        if let Some(mac) = stack.arp.resolve(ip, current_time) {
+                            crate::net::l2::arp::notify_arp_resolved(target_ip, *mac.as_bytes());
+                        } else {
+                            // ARP要求送信
+                            stack.send_arp_request(ip);
+                        }
+                    }
+                }
+                EventHandleResult::Success
+            }
+            NetworkEvent::ArpResolved { ip, mac } => {
+                // ARP解決完了通知をウェイターレジストリに伝播
+                crate::net::l2::arp::notify_arp_resolved(ip, mac);
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpConnect { local, remote, result_slot, waker } => {
+                // 非同期TCP connect: スタックロックを取得してconnectを実行
+                let result = match crate::net::runtime::stack::connect_tcp(local, remote) {
+                    Ok(_stream) => Ok(()),
+                    Err(e) => Err(EndpointError::from_tcp_error(e)),
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncMulticastJoin { group, result_slot, waker } => {
+                let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
+                let success = crate::net::runtime::stack::join_multicast_group(ip).is_ok();
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(success);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncMulticastLeave { group, result_slot, waker } => {
+                let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
+                let success = crate::net::runtime::stack::leave_multicast_group(ip).is_ok();
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(success);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
         }
     }
 
@@ -360,6 +412,52 @@ impl NetworkEventHandler {
             NetworkEvent::AsyncUdpBind { port, result_slot, waker } => {
                 // スタックロック保持版: 二重ロックを回避
                 let success = stack.bind_udp(port).is_some();
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(success);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::ArpResolveRequest { target_ip } => {
+                // スタックロック保持版: ARP要求を送信
+                let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
+                let current_time = stack.current_time();
+                if let Some(mac) = stack.arp.resolve(ip, current_time) {
+                    // 既にキャッシュにある場合は即座に通知
+                    crate::net::l2::arp::notify_arp_resolved(target_ip, *mac.as_bytes());
+                } else {
+                    stack.send_arp_request(ip);
+                }
+                EventHandleResult::Success
+            }
+            NetworkEvent::ArpResolved { ip, mac } => {
+                // ARP解決完了をウェイターに通知
+                crate::net::l2::arp::notify_arp_resolved(ip, mac);
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpConnect { local, remote, result_slot, waker } => {
+                // スタックロック保持版: TCP接続を実行
+                let result = stack.connect_tcp(local, remote)
+                    .map(|_| ())
+                    .map_err(|e| EndpointError::from_tcp_error(e));
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncMulticastJoin { group, result_slot, waker } => {
+                let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
+                let success = stack.join_multicast_group(ip).is_ok();
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(success);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncMulticastLeave { group, result_slot, waker } => {
+                let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
+                let success = stack.leave_multicast_group(ip).is_ok();
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(success);
                 }
@@ -674,12 +772,9 @@ impl NetworkEventHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        // 送信バッファからデータを取得（drainは送信成功後に行う）
-        let (data, local, remote) = {
+        // TCP状態と送信可能量を取得
+        let (local, remote) = {
             let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-            if inner.send_buffer.is_empty() {
-                return EventHandleResult::Success;
-            }
             let local = match inner.local_addr {
                 Some(addr) => addr,
                 None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
@@ -688,87 +783,95 @@ impl NetworkEventHandler {
                 Some(addr) => addr,
                 None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
             };
-            (
-                inner.send_buffer.iter().copied().collect::<Vec<u8>>(),
-                local,
-                remote,
-            )
+            (local, remote)
         };
 
-        // TCBから seq/ack/window を取得（送信成功後に snd_nxt を更新）
-        let data_len = data.len() as u32;
-        let (seq, ack, window) = match tcb_table().lookup(local, remote) {
-            Some(tcb) => {
+        loop {
+            // 現在の送信可能データを決定 (MSS, Window, SWS考慮)
+            let send_params = tcb_table().lookup(local, remote).and_then(|tcb| {
                 if tcb.state != TcpConnectionState::Established {
-                    return EventHandleResult::ProtocolError(EndpointError::NotConnected);
+                    return None;
                 }
 
-                // Nagle's algorithm (RFC 896): Delay sending if data is small and there is outstanding data
-                if tcb.should_delay_send(data.len()) {
-                    log::debug!("TCP: Nagle algorithm delaying send for fd={}", fd.raw());
-                    return EventHandleResult::Success; // Delay until ACK received or more data added
+                let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                let buffer_len = inner.send_buffer.len();
+                if buffer_len == 0 {
+                    return None;
                 }
 
-                (tcb.snd_nxt, tcb.rcv_nxt, tcb.rcv_wnd)
+                // 1. Sender SWS Avoidance & Nagle チェック
+                if tcb.should_delay_send(buffer_len) {
+                    return None; 
+                }
+
+                // 2. 実効ウィンドウによる制限
+                let effective_wnd = tcb.effective_send_window();
+                if effective_wnd == 0 {
+                    return None;
+                }
+
+                // 3. 1セグメントあたりのサイズ決定 (min(buffer, window, MSS))
+                let mss = tcb.mss as usize;
+                let len = (buffer_len as u32).min(effective_wnd).min(mss as u32) as usize;
+                
+                if len == 0 {
+                    return None;
+                }
+
+                // データをコピー (本当はゼロコピーにしたいが、まずはRFC準拠を優先)
+                let data: Vec<u8> = inner.send_buffer.iter().take(len).copied().collect();
+                
+                Some((data, tcb.snd_nxt, tcb.rcv_nxt, tcb.advertised_recv_window()))
+            });
+
+            let Some((data, seq, ack, advertised_wnd)) = send_params else {
+                break;
+            };
+
+            let data_len = data.len() as u32;
+
+            // TCPセグメントを構築
+            let mut segment = TcpSegmentBuilder::new(local.port(), remote.port())
+                .seq(seq)
+                .ack(ack)
+                .psh()
+                .window(advertised_wnd)
+                .payload(&data)
+                .build();
+
+            if let Err(e) = apply_tcp_checksum_for_addrs(&mut segment, local, remote) {
+                return EventHandleResult::ProtocolError(e);
             }
-            None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
-        };
 
-        // TCPセグメントを構築
-        let mut segment = TcpSegmentBuilder::new(local.port(), remote.port())
-            .seq(seq)
-            .ack(ack)
-            .psh()
-            .window(window)
-            .payload(&data)
-            .build();
-
-        if let Err(e) = apply_tcp_checksum_for_addrs(&mut segment, local, remote) {
-            return EventHandleResult::ProtocolError(e);
-        }
-
-        // パケット送信を試みる
-        match self.send_tcp_segment(local, remote, segment) {
-            Ok(()) => {
-                // 送信成功: send_buffer から対応分を削除し、TCB を更新
-                {
-                    let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                    let drain_len = data.len();
-                    inner.send_buffer.drain(..drain_len);
-                    // 送信可能になったため、待ちタスクを起こす
-                    if let Some(w) = inner.send_waker.take() {
-                        w.wake();
+            // パケット送信を試みる
+            match self.send_tcp_segment(local, remote, segment) {
+                Ok(()) => {
+                    // 送信成功: send_buffer から削除し、TCB を更新
+                    {
+                        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                        inner.send_buffer.drain(..data.len());
+                        // 送信可能になったため、待ちタスクを起こす
+                        if let Some(w) = inner.send_waker.take() {
+                            w.wake();
+                        }
                     }
+
+                    // TCB 更新
+                    tcb_table().lookup_mut(local, remote, |tcb| {
+                        tcb.on_send(data_len);
+                        // 再送キューにも登録
+                        crate::net::l4::endpoint::retransmit::retransmit_queue_push(local, remote, tcb.snd_nxt, data);
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
+                    });
                 }
-
-                // TCB 更新（seq を予約）
-                tcb_table().lookup_mut(local, remote, |tcb| {
-                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
-                });
-
-                log::info!(
-                    "TCP: Sent {} bytes (seq={}, ack={}) fd={}",
-                    data.len(),
-                    seq,
-                    ack,
-                    fd.raw()
-                );
-
-                EventHandleResult::Success
-            }
-            Err(EndpointError::ResourceExhausted) => {
-                // デバイスまたは ARP 等で送信できない -> 再試行
-                EventHandleResult::Retry
-            }
-            Err(EndpointError::InvalidArgument) => {
-                log::info!("TCP: Failed to send data: InvalidArgument (family mismatch)");
-                EventHandleResult::ProtocolError(EndpointError::InvalidArgument)
-            }
-            Err(e) => {
-                log::info!("TCP: Failed to send data: {:?}", e);
-                EventHandleResult::ProtocolError(EndpointError::Internal)
+                Err(_) => {
+                    // 送信失敗 (ARP未解決等) -> 再試行
+                    return EventHandleResult::Retry;
+                }
             }
         }
+
+        EventHandleResult::Success
     }
 
     /// TX 資源解放通知処理

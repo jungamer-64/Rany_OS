@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/l2/arp/processor_impl.rs
+// ============================================================================
 use super::*;
 
 
@@ -117,7 +120,10 @@ impl ArpProcessor {
             }
             ArpOperation::Reply => {
                 if should_update {
-                    ArpResult::CacheUpdated
+                    ArpResult::CacheUpdated {
+                        resolved_ip: sender_ip,
+                        resolved_mac: sender_mac,
+                    }
                 } else {
                     ArpResult::Ignored
                 }

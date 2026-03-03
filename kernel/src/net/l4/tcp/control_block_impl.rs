@@ -222,10 +222,14 @@ impl TcpControlBlock {
 
     #[inline]
     pub fn set_snd_wnd(&mut self, wnd: u16) {
-        if self.options.wscale_enabled {
-            self.seq.snd_wnd = (wnd as u32) << self.options.rcv_wscale;
+        let new_wnd = if self.options.wscale_enabled {
+            (wnd as u32) << self.options.rcv_wscale
         } else {
-            self.seq.snd_wnd = wnd as u32;
+            wnd as u32
+        };
+        self.seq.snd_wnd = new_wnd;
+        if new_wnd > self.seq.max_snd_wnd {
+            self.seq.max_snd_wnd = new_wnd;
         }
     }
 
@@ -945,38 +949,38 @@ impl TcpControlBlock {
         self.congestion.cwnd = self.congestion.ssthresh;
     }
 
-        // Exit recovery if in it
-        self.congestion.in_recovery = false;
-        self.congestion.dup_ack_count = 0;
-    }
-
-    /// Check if sending should be delayed (Nagle's algorithm)
+    /// Check if sending should be delayed (Nagle's algorithm + Sender SWS avoidance)
     ///
-    /// Nagle's algorithm: If there is unacknowledged data AND data to send
-    /// is less than MSS, delay sending until either:
-    /// 1. All data is acknowledged (outstanding_bytes == 0)
-    /// 2. Enough data to fill MSS
-    ///
-    /// This reduces small packet overhead on interactive connections.
+    /// Following RFC 1122 Section 4.2.3.4 (Sender SWS Avoidance) and Section 4.2.3.2 (Nagle's).
     pub fn should_delay_send(&self, data_len: usize) -> bool {
-        if !self.congestion.nagle_enabled {
-            return false;
-        }
-        
-        // If data fills an MSS, send immediately
+        // --- 1. Maximum-sized segment can be sent ---
         if data_len >= self.congestion.mss as usize {
-            return false;
+            return false; // Send immediately
         }
-        
-        // If no outstanding data, send immediately
-        if self.tx.outstanding_bytes == 0 {
-            return false;
-        }
-        
-        // Small packet with outstanding data: delay
-        true
-    }
 
+        // --- 2. Sender SWS Avoidance: Window is large enough ---
+        // "at least half of the maximum window size seen so far on this connection"
+        let sws_threshold = self.seq.max_snd_wnd / 2;
+        if self.seq.snd_wnd >= sws_threshold && self.seq.snd_wnd > 0 && data_len > 0 {
+            // If the window is large enough to avoid SWS, we can potentially send.
+            // But we still need to check Nagle's algorithm.
+        } else if self.tx.outstanding_bytes > 0 {
+            // SWS avoidance: Window is small and we already have data in flight.
+            return true; // Delay
+        }
+
+        // --- 3. Nagle's Algorithm ---
+        if !self.congestion.nagle_enabled {
+            return false; // NODELAY enabled: send immediately
+        }
+
+        // If there is unacknowledged data, delay small segments
+        if self.tx.outstanding_bytes > 0 {
+            return true; // Delay
+        }
+
+        false // No outstanding data: send immediately
+    }
     /// Disable Nagle's algorithm (like TCP_NODELAY socket option)
     pub fn set_nodelay(&mut self, nodelay: bool) {
         self.congestion.nagle_enabled = !nodelay;
@@ -1065,7 +1069,6 @@ impl TcpControlBlock {
     ///
     /// Returns:
     /// - Some(true):  Send a probe (peer window is 0 and interval elapsed)
-    /// - Some(false): Too many probes — consider connection dead
     /// - None:        No action needed (non-zero window or interval not elapsed)
     pub fn check_zero_window_probe(&mut self, current_time: u64) -> Option<bool> {
         // Only probe in Established state when peer window is 0
@@ -1081,10 +1084,11 @@ impl TcpControlBlock {
             return None;
         }
 
-        // Peer window is zero
-        if self.timers.zwp_probes_sent >= Self::ZWP_MAX_PROBES {
-            return Some(false); // Connection dead
-        }
+        // Peer window is zero. 
+        // RFC 1122 Section 4.2.2.17: "A TCP MUST NOT close a connection because the 
+        // window is zero and the probe timer has expired."
+        // We continue probing indefinitely (or until a very high limit) but with 
+        // maximum backoff.
 
         // Exponential backoff: initial * 2^min(probes, 6)
         let backoff = 1u64 << core::cmp::min(self.timers.zwp_probes_sent, 6);
@@ -1093,6 +1097,10 @@ impl TcpControlBlock {
 
         if elapsed >= interval {
             self.timers.zwp_probes_sent = self.timers.zwp_probes_sent.saturating_add(1);
+            if self.timers.zwp_probes_sent > 100 {
+                 // Prevent overflow, keep it at a high but stable value
+                 self.timers.zwp_probes_sent = 100;
+            }
             self.timers.zwp_last_probe_time = current_time;
             Some(true) // Send probe
         } else {

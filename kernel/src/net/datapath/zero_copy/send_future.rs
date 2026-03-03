@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/datapath/zero_copy/send_future.rs
+// ============================================================================
 use super::*;
 
 
@@ -5,9 +8,38 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
     type Output = Result<(), &'static str>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(_buffer) = self.buffer.take() {
-            // 実際の送信処理はドライバに委譲
-            Poll::Ready(Ok(()))
+        if let Some(buffer) = self.buffer.take() {
+            // ZeroCopyBuffer → PacketRef に変換してドライバへ委譲
+            let data = buffer.as_slice();
+            if data.is_empty() {
+                return Poll::Ready(Ok(()));
+            }
+
+            // PacketRef を確保してデータをコピー（DMAバッファ経由のゼロコピー送信）
+            if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
+                let copy_len = data.len().min(packet.capacity());
+                packet.data_mut()[..copy_len].copy_from_slice(&data[..copy_len]);
+                packet.set_len(copy_len);
+
+                // VirtIO ゼロコピー送信を試行
+                match ZeroCopyWriter::enqueue_via_virtio(packet) {
+                    Ok(()) => {
+                        return Poll::Ready(Ok(()));
+                    }
+                    Err(_) => {
+                        // デバイス未初期化 or キュー満杯 → TX キューへフォールバック
+                        crate::net::l4::endpoint::event::send_event_ignore(
+                            crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
+                        );
+                        return Poll::Ready(Err("VirtIO enqueue failed, packet dropped"));
+                    }
+                }
+            } else {
+                // PacketRef 割り当て失敗: Waker を登録して TxAvailable で再試行
+                self.buffer = Some(buffer);
+                self.writer.waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
         } else {
             self.writer.waker = Some(cx.waker().clone());
             Poll::Pending
