@@ -21,7 +21,7 @@ pub(crate) fn spawn_kernel_tasks(executor: &mut task::Executor, console_availabl
     }
 
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
-    crate::net::runtime::host_http_service::start_once(executor);
+    crate::net::services::http::server::start_once(executor);
 
     // ドメイン1を作成：ユーザーアプリケーション
     let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))

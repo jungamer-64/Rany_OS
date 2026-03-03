@@ -22,7 +22,7 @@ pub(crate) fn spawn_kernel_tasks(
     }
 
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
-    crate::net::runtime::host_http_service::start_once(executor);
+    crate::net::services::http::server::start_once(executor);
 
     // Initialize network event handler and spawn the background task for async networking
     crate::net::l4::endpoint::handler::init_network_event_handler();
