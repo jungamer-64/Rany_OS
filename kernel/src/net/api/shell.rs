@@ -564,3 +564,18 @@ pub fn arp_cache_insert(ip: Ipv4Address, mac: MacAddress) -> bool {
 pub fn init_network_shell() {
     // no-op: runtime state is sourced from the actual network stack/DHCP clients.
 }
+
+// ============================================================================
+// Diagnostics (consolidated from former diag.rs)
+// ============================================================================
+
+use crate::net::obs::{NetSnapshot, NetTraceEvent, snapshot};
+
+pub fn network_snapshot() -> NetSnapshot {
+    snapshot()
+}
+
+pub fn network_recent_events(limit: usize) -> Vec<NetTraceEvent> {
+    let snap = snapshot();
+    snap.recent_events.into_iter().take(limit).collect()
+}
