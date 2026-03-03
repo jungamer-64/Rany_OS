@@ -393,7 +393,7 @@ impl IntelIommuDriver {
         if let Some(ref controller) = self.controller {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let iova = allocate_iova_for_device(&domain_arc, device, size)?;
+                    let iova = allocate_iova_for_device(controller, device, size)?;
                     return apply_mapping_sync(
                         controller, &domain_arc, iova, phys_addr.as_u64(), size, read, write,
                     );
@@ -410,7 +410,7 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let iova = allocate_iova_for_device(&domain_arc, device, size)?;
+                    let iova = allocate_iova_for_device(controller, device, size)?;
                     return apply_mapping_sync(
                         controller, &domain_arc, iova, phys_addr.as_u64(), size, read, write,
                     );
@@ -437,7 +437,7 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let iova = allocate_iova_for_device(&domain_arc, device, size)?;
+                    let iova = allocate_iova_for_device(controller, device, size)?;
                     return apply_mapping_async(
                         controller, &domain_arc, iova, phys_addr.as_u64(), size,
                     )

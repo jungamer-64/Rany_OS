@@ -370,8 +370,8 @@ pub fn test_storage() -> IntegrationTestSuite {
                     ))
                 }
             } else {
-                Ok(String::from(
-                    "IRQ disabled; mount skipped (virtio-blk device not initialized)",
+                Err(String::from(
+                    "IRQ disabled but virtio-blk device is not initialized",
                 ))
             };
         }
@@ -462,8 +462,39 @@ pub fn test_iommu() -> IntegrationTestSuite {
         // Test basic mapping through the public API
         let phys_addr = 0x2000_0000; // Assume this is safe in QEMU
         let size = 0x1000;
+        let virtio_blk = crate::io::pci::find_virtio_devices()
+            .into_iter()
+            .find(|dev| matches!(dev.device_id.0, 0x1001 | 0x1042));
+
+        if let Some(dev) = virtio_blk {
+            let device_id =
+                DeviceId::new(dev.segment, dev.bdf.bus(), dev.bdf.device(), dev.bdf.function());
+            return match unsafe {
+                crate::io::iommu::api::map_for_device(&device_id, PhysAddr::new(phys_addr), size)
+            } {
+                Ok(mapped_iova) => {
+                    let _ = crate::io::iommu::api::unmap_for_device(&device_id, mapped_iova, size);
+                    Ok(alloc::format!(
+                        "Successfully mapped/unmapped required virtio-blk {:04x}:{:02x}:{:02x}.{} at IOVA 0x{:x}",
+                        device_id.segment,
+                        device_id.bus,
+                        device_id.device,
+                        device_id.function,
+                        mapped_iova
+                    ))
+                }
+                Err(e) => Err(alloc::format!(
+                    "IOMMU mapping failed for required virtio-blk {:04x}:{:02x}:{:02x}.{}: {:?}",
+                    device_id.segment,
+                    device_id.bus,
+                    device_id.device,
+                    device_id.function,
+                    e
+                )),
+            };
+        }
+
         let candidates = [
-            DeviceId::new(0, 0, 2, 0),  // virtio-blk on storage profile
             DeviceId::new(0, 0, 31, 2), // AHCI
             DeviceId::new(0, 0, 0, 0),  // host bridge
         ];

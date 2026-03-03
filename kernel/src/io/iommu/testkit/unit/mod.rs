@@ -1038,6 +1038,85 @@ fn test_map_for_device_respects_dma_mask() {
     assert!(iova + 0x1000 - 1 <= 0xFFFF_FFFF);
     crate::io::iommu::api::unmap_for_device(&device, iova, 0x1000).expect("unmap");
 }
+
+#[test_case]
+fn test_map_unmap_for_device_does_not_leak_iova() {
+    use alloc::sync::Arc as AllocArc;
+
+    let controller = if let Some(registry) = get_iommu_registry() {
+        registry
+            .controllers
+            .get(0)
+            .cloned()
+            .expect("no IOMMU controller in registry")
+    } else {
+        let ctrl = IommuController::new(0x0, 0);
+        let arc_ctrl = AllocArc::new(ctrl);
+        let registry = IommuRegistry::new(
+            alloc::vec![arc_ctrl.clone()],
+            Vec::new(),
+            IommuConfig::default(),
+        );
+        init_registry(registry);
+        arc_ctrl
+    };
+
+    if get_iommu_driver().is_none() {
+        crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
+    }
+
+    let _ = controller.init_iova(0x1000, 0x1_0000_0000 - 0x1000);
+    let domain_id = controller
+        .create_domain(None, IommuDomainType::Translated)
+        .expect("create domain");
+
+    let device = DeviceId::new(0, 0, 2, 1);
+    match controller.device_domains.lock() {
+        Ok(mut dmap) => {
+            dmap.insert(device, domain_id);
+        }
+        Err(_) => {
+            panic!("device_domains poisoned");
+        }
+    }
+
+    struct MaskGuard(DeviceId);
+    impl Drop for MaskGuard {
+        fn drop(&mut self) {
+            crate::io::iommu::api::clear_device_dma_mask(self.0);
+        }
+    }
+
+    // Keep the usable IOVA window strictly 32-bit bounded, but large enough to
+    // avoid false failures from delayed quarantine reclamation.
+    let mask_limit = 0x001F_FFFF;
+    crate::io::iommu::api::register_device_dma_mask(device, mask_limit);
+    let _guard = MaskGuard(device);
+
+    for i in 0..64u64 {
+        let phys = x86_64::PhysAddr::new(0x2000_0000 + i * 0x1000);
+        let iova = match unsafe { crate::io::iommu::api::map_for_device(&device, phys, 0x1000) } {
+            Ok(v) => v,
+            Err(crate::io::iommu::types::IommuError::OutOfMemory)
+            | Err(crate::io::iommu::types::IommuError::OutOfIova) => {
+                let _ = controller.invalidate_iotlb_global_sync();
+                match unsafe { crate::io::iommu::api::map_for_device(&device, phys, 0x1000) } {
+                    Ok(v) => v,
+                    Err(e) => panic!("map iteration {} failed after global flush: {:?}", i, e),
+                }
+            }
+            Err(e) => panic!("map iteration {} failed: {:?}", i, e),
+        };
+        assert!(
+            iova + 0x1000 - 1 <= mask_limit,
+            "allocated IOVA 0x{:x} exceeded mask 0x{:x}",
+            iova,
+            mask_limit
+        );
+        crate::io::iommu::api::unmap_for_device(&device, iova, 0x1000)
+            .expect("unmap");
+    }
+}
 /*
 #[test_case]
 fn test_init_iommu_registers_drhd_and_rmrr_and_applies_rmrr() {

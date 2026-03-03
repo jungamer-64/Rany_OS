@@ -1,5 +1,10 @@
 use super::{AsyncFile, DirectBlockHandle, FileAttr, FsError, SeekFrom};
+use alloc::sync::Arc;
 use crate::io::dma::TypedSgList;
+use crate::io::io_scheduler::{
+    self, DeviceId as IoDeviceId, DeviceOps, IoCommand, IoError, IoMode, IoRequest, IoResult,
+    ModeThresholds,
+};
 use core::future::Future;
 use core::pin::Pin;
 use core::ptr;
@@ -50,6 +55,47 @@ fn poll_once<F: Future>(fut: Pin<&mut F>) -> Poll<F::Output> {
     let waker = noop_waker();
     let mut cx = Context::from_waker(&waker);
     fut.poll(&mut cx)
+}
+
+fn drive_with_io_scheduler<F: Future>(future: F) -> F::Output {
+    let mut fut = core::pin::pin!(future);
+    loop {
+        match poll_once(fut.as_mut()) {
+            Poll::Ready(out) => return out,
+            Poll::Pending => io_scheduler::hybrid_coordinator().tick(|| {}),
+        }
+    }
+}
+
+struct MockNvmeOps;
+
+impl DeviceOps for MockNvmeOps {
+    fn submit(&self, req: &IoRequest, _cpu_idx: usize) -> Result<(), IoError> {
+        let bytes = match req.command.as_ref() {
+            Some(IoCommand::BlockRead { bytes, .. }) | Some(IoCommand::BlockWrite { bytes, .. }) => {
+                *bytes
+            }
+            Some(IoCommand::Flush) | Some(IoCommand::Discard { .. }) | Some(IoCommand::Ioctl { .. }) => 0,
+            None => return Err(IoError::NotSupported),
+        };
+        io_scheduler::io_scheduler().complete_request(req.id, IoResult::Success(bytes));
+        Ok(())
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+
+fn install_mock_nvme_scheduler(namespace: u32) {
+    let device = IoDeviceId::Nvme {
+        controller: 0,
+        namespace,
+    };
+    let scheduler = io_scheduler::io_scheduler();
+    scheduler.register_device(device, ModeThresholds::default());
+    scheduler.register_device_ops(device, Arc::new(MockNvmeOps));
+    io_scheduler::hybrid_coordinator().set_global_mode(IoMode::Polling);
 }
 
 #[cfg_attr(test, test_case)]
@@ -122,4 +168,49 @@ pub fn test_direct_block_handle_flush_nonblocking_poll_shape() {
         Poll::Pending | Poll::Ready(Ok(())) | Poll::Ready(Err(FsError::IoError)) => {}
         Poll::Ready(other) => panic!("unexpected flush result: {:?}", other),
     }
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_direct_block_handle_success_paths_with_mock_scheduler() {
+    if !kernel_api::is_kernel_registered() {
+        return;
+    }
+
+    install_mock_nvme_scheduler(1);
+    let handle = DirectBlockHandle::new(1, 0, 16, 512);
+
+    let mut read_buf = [0u8; 512];
+    let read_n = drive_with_io_scheduler(handle.read_blocks(0, &mut read_buf))
+        .expect("read_blocks should succeed with mock scheduler");
+    assert_eq!(read_n, read_buf.len());
+
+    let write_buf = [0x5Au8; 512];
+    let write_n = drive_with_io_scheduler(handle.write_blocks(0, &write_buf))
+        .expect("write_blocks should succeed with mock scheduler");
+    assert_eq!(write_n, write_buf.len());
+
+    drive_with_io_scheduler(handle.flush()).expect("flush should succeed with mock scheduler");
+    drive_with_io_scheduler(handle.discard(0, 0))
+        .expect("discard fast path should succeed with mock scheduler");
+
+    let mut read_sg = TypedSgList::new();
+    read_sg
+        .add_buffer(512)
+        .expect("failed to allocate read SG buffer");
+    let read_sg = drive_with_io_scheduler(handle.read_blocks_sg_dma(0, read_sg))
+        .expect("read_blocks_sg_dma should succeed with mock scheduler");
+    assert_eq!(read_sg.len(), 1);
+
+    let mut write_sg = TypedSgList::new();
+    let write_idx = write_sg
+        .add_buffer(512)
+        .expect("failed to allocate write SG buffer");
+    write_sg
+        .buffer_mut(write_idx)
+        .expect("missing SG write buffer")
+        .as_mut_slice()
+        .fill(0xA5);
+    let write_sg = drive_with_io_scheduler(handle.write_blocks_sg_dma(0, write_sg))
+        .expect("write_blocks_sg_dma should succeed with mock scheduler");
+    assert_eq!(write_sg.len(), 1);
 }
