@@ -151,6 +151,13 @@ impl TcpProcessor {
 
         for (key, tcb_arc) in self.connections.iter() {
             if let Ok(mut tcb) = tcb_arc.lock() {
+                // 1. Check for delayed ACK timeout (RFC 1122)
+                if tcb.check_delayed_ack_timeout(current_time) {
+                    tcb.clear_delayed_ack();
+                    results.push(TcpProcessor::make_ack_result(&mut *tcb));
+                }
+
+                // 2. Check for retransmission timeout
                 if tcb.check_retransmit_timeout(current_time) {
                     // RFC 1122: Check if maximum retransmission threshold reached
                     // Standard TCP typically uses 15, but for this OS we use 10.
@@ -341,6 +348,9 @@ impl TcpProcessor {
     pub fn record_sent_packet(&mut self, local: EndpointAddr, remote: EndpointAddr, seq: u32, flags: u16, payload: &[u8], current_time: u64) {
         if let Some(tcb_lock) = self.connections.get(&(local, remote)).cloned() {
             if let Ok(mut tcb) = tcb_lock.lock() {
+                // Clear any pending delayed ACK since we are now sending an ACK (possibly with data)
+                tcb.clear_delayed_ack();
+
                 // Determine how many sequence numbers are consumed.
                 let consumed = TcpControlBlock::seq_space_len_for_len_flags(payload.len(), flags);
 

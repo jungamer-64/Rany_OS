@@ -1241,7 +1241,7 @@ impl TcpProcessor {
         
         // Step 7/8: Process Data/FIN (updates rcv_nxt)
         let data_result = if payload_len > 0 || fin {
-            Self::handle_established_data(tcb, seq_num, payload, header_len, packet_opt, payload_len, fin)
+            Self::handle_established_data(tcb, seq_num, payload, header_len, packet_opt, payload_len, fin, current_time)
         } else {
             TcpProcessResult::None
         };
@@ -1345,6 +1345,7 @@ impl TcpProcessor {
         packet_opt: Option<PacketRef>,
         payload_len: usize,
         fin: bool,
+        current_time: u64,
     ) -> TcpProcessResult {
         let rcv_nxt = tcb.rcv_nxt();
         let rcv_wnd = tcb.rcv_wnd() as u32;
@@ -1451,9 +1452,21 @@ impl TcpProcessor {
                 log::warn!("[TCP] Global OOO limit reached, dropping segment from future");
             }
         }
-        
-        // Both in-order and out-of-order: send ACK for expected seq
-        Self::make_ack_result(tcb)
+
+        // Both in-order and out-of-order segments require an ACK.
+        // For in-order data, we use delayed ACKs to improve efficiency (RFC 1122).
+        // Out-of-order data or segments that fill a hole ALWAYS trigger an immediate ACK.
+
+        if (seq_num.wrapping_sub(rcv_nxt) as i32) > 0 {
+            // Out-of-order: Immediate ACK
+            Self::make_ack_result(tcb)
+        } else if tcb.schedule_delayed_ack(current_time) {
+            // Second segment or delayed ACK timer expired: Immediate ACK
+            Self::make_ack_result(tcb)
+        } else {
+            // ACK delayed
+            TcpProcessResult::None
+        }
     }
 
     /// Enqueue in-order payload to receive buffer, preferring zero-copy

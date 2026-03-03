@@ -876,6 +876,39 @@ impl TcpControlBlock {
         }
     }
 
+    /// Schedule a delayed ACK (RFC 1122)
+    ///
+    /// Returns true if an immediate ACK should be sent (already had a pending ACK)
+    pub fn schedule_delayed_ack(&mut self, current_time: u64) -> bool {
+        if self.timers.ack_pending {
+            // "An ACK SHOULD be generated for at least every second full-sized segment"
+            // We just send it on the second segment of any size for simplicity.
+            self.timers.ack_pending = false;
+            self.timers.delayed_ack_timer = 0;
+            true
+        } else {
+            self.timers.ack_pending = true;
+            self.timers.delayed_ack_timer = current_time;
+            false
+        }
+    }
+
+    /// Check if delayed ACK timeout has occurred (usually 200ms)
+    pub fn check_delayed_ack_timeout(&self, current_time: u64) -> bool {
+        if self.timers.ack_pending {
+            let elapsed = current_time.saturating_sub(self.timers.delayed_ack_timer);
+            elapsed >= 200 // 200ms is the standard max delay
+        } else {
+            false
+        }
+    }
+
+    /// Clear pending delayed ACK (e.g. because we sent an ACK with data)
+    pub fn clear_delayed_ack(&mut self) {
+        self.timers.ack_pending = false;
+        self.timers.delayed_ack_timer = 0;
+    }
+
     // ========================================================================
     // Congestion Control (RFC 5681)
     // ========================================================================

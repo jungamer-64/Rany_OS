@@ -349,6 +349,12 @@ struct TcpTimerState {
     zwp_probes_sent: u8,
     /// Timestamp of last zero-window probe sent (milliseconds)
     zwp_last_probe_time: u64,
+
+    // Delayed ACK (RFC 1122)
+    /// Whether an ACK is pending (delayed ACK)
+    ack_pending: bool,
+    /// Timestamp when the first unacknowledged segment was received (milliseconds)
+    delayed_ack_timer: u64,
 }
 
 impl TcpTimerState {
@@ -369,6 +375,8 @@ impl TcpTimerState {
             time_wait_entered: 0,
             zwp_probes_sent: 0,
             zwp_last_probe_time: 0,
+            ack_pending: false,
+            delayed_ack_timer: 0,
         }
     }
 }
