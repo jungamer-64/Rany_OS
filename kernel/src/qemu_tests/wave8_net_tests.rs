@@ -281,8 +281,8 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
     stack::init(config);
 
-    let local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 1000);
-    let remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
+    let local = TcpSocketAddr::new([127, 0, 0, 1], 1000);
+    let remote = TcpSocketAddr::new([127, 0, 0, 1], 2000);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
@@ -387,8 +387,8 @@ pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
     config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
     stack::init(config);
 
-    let local = TcpSocketAddr::new_v6(Ipv6Address::LOOPBACK, 1000);
-    let remote = TcpSocketAddr::new_v6(Ipv6Address::LOOPBACK, 2000);
+    let local = TcpSocketAddr::new_v6(Ipv6Address::LOOPBACK.octets(), 1000);
+    let remote = TcpSocketAddr::new_v6(Ipv6Address::LOOPBACK.octets(), 2000);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);

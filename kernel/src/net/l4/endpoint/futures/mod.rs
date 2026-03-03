@@ -488,8 +488,8 @@ pub mod qemu_tests {
             TcpStream,
         };
 
-        let t_local = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
-        let t_remote = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
+        let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
+        let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
 
         let mut tcb = TcpControlBlock::new(t_local);
         tcb.set_remote_addr(t_remote);
@@ -499,7 +499,7 @@ pub mod qemu_tests {
 
         if let Some(s) = sock.socket() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.tcp_stream = Some(stream.clone());
+            inner.ensure_tcp().stream = Some(stream.clone());
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Connected);
         }
@@ -536,8 +536,8 @@ pub mod qemu_tests {
             TcpStream,
         };
 
-        let t_local = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
-        let t_remote = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
+        let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
+        let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
 
         let mut tcb = TcpControlBlock::new(t_local);
         tcb.set_remote_addr(t_remote);
@@ -547,7 +547,7 @@ pub mod qemu_tests {
 
         if let Some(s) = sock.socket() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.tcp_stream = Some(stream.clone());
+            inner.ensure_tcp().stream = Some(stream.clone());
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Connected);
         }
@@ -576,7 +576,7 @@ pub mod qemu_tests {
         if let Some(s) = sock.socket() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(EndpointAddr::new([127, 0, 0, 1], port));
-            inner.udp_socket = Some(u.clone());
+            inner.ensure_udp().socket = Some(u.clone());
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Connected);
         }

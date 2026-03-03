@@ -188,8 +188,8 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint() {
     use crate::sync::PoisonLock;
     use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
 
-    let t_local = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
-    let t_remote = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
+    let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
+    let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
     tcb.set_remote_addr(t_remote);
@@ -267,8 +267,8 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint_v6() {
     use crate::sync::PoisonLock;
     use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, TcpStream};
 
-    let t_local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 12345);
-    let t_remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
+    let t_local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+    let t_remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
     tcb.set_remote_addr(t_remote);
@@ -343,8 +343,8 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     use crate::sync::PoisonLock;
     use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
 
-    let t_local = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
-    let t_remote = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
+    let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
+    let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
     tcb.set_remote_addr(t_remote);
@@ -433,8 +433,8 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     use crate::sync::PoisonLock;
     use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, TcpStream};
 
-    let t_local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 12345);
-    let t_remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
+    let t_local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+    let t_remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
     tcb.set_remote_addr(t_remote);

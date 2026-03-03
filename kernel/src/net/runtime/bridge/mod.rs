@@ -1690,8 +1690,8 @@ pub(crate) mod tests {
         config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
         stack::init(config);
 
-        let local = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 1000);
-        let remote = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
+        let local = TcpEndpointAddr::new([127, 0, 0, 1], 1000);
+        let remote = TcpEndpointAddr::new([127, 0, 0, 1], 2000);
         let tcb_arc = match qemu_insert_established_tcb(local, remote) {
             Some(tcb) => tcb,
             None => return false,
@@ -1710,8 +1710,8 @@ pub(crate) mod tests {
         ]));
         stack::init(config);
 
-        let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 1000);
-        let remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 2000);
+        let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 1000);
+        let remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
         let tcb_arc = match qemu_insert_established_tcb(local, remote) {
             Some(tcb) => tcb,
             None => return false,
@@ -1820,8 +1820,8 @@ pub(crate) mod tests {
         stack::init(config);
 
         // Prepare a TCB and register it in the global stack
-        let local = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 1000);
-        let remote = TcpEndpointAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
+        let local = TcpEndpointAddr::new([127, 0, 0, 1], 1000);
+        let remote = TcpEndpointAddr::new([127, 0, 0, 1], 2000);
 
         let mut tcb = TcpControlBlock::new(local);
         tcb.set_remote_addr(remote);
@@ -2292,8 +2292,8 @@ pub(crate) mod tests {
         stack::init(config);
 
         // Prepare a TCB and register it in the global stack (IPv6)
-        let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 1000);
-        let remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 2000);
+        let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 1000);
+        let remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
 
         let mut tcb = TcpControlBlock::new(local);
         tcb.set_remote_addr(remote);

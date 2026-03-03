@@ -70,6 +70,7 @@ impl core::fmt::Display for Ipv4Addr {
 /// `endpoint::types` 版 (raw `[u8; 4]` / `[u8; 16]`) に統一し、
 /// 変換コードの散在を解消する。
 pub use crate::net::l4::endpoint::types::EndpointAddr;
+pub type SocketAddr = EndpointAddr;
 
 // ============================================================================
 // TCP接続状態

@@ -136,13 +136,23 @@ impl ExoShell {
                     .unwrap_or(0);
                 DomainNamespace::info(id)
             }
+            "kill" => {
+                let id = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n as u64),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                self.call_namespace("domain", "kill", &[ExoValue::Int(id as i64)]).await
+            }
             _ => ExoValue::Error(
                 ParseError::UnknownMethod {
                     namespace: String::from("domain"),
                     method: name.to_string(),
                 }
                 .to_string()
-                    + "\n有効なメソッド: list, info",
+                    + "\n有効なメソッド: list, info, kill",
             ),
         }
     }
