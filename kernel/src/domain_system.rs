@@ -38,7 +38,6 @@ use crate::domain::quota::{DomainPriority, DomainQuota, IoQuota, MemoryQuota, qu
 use crate::error::{DomainErrorKind, KernelError};
 use crate::security::CapabilitySet;
 use crate::sync::PoisonLock;
-use spin::Once;
 
 mod types;
 pub use types::*;

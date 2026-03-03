@@ -11,6 +11,14 @@ pub const EXO_BOOT_INFO_VERSION: u64 = 2;
 ///
 /// This struct must be `#[repr(C)]` to ensure ABI compatibility between
 /// the bootloader (uefi-rs app) and the kernel (ELF).
+///
+/// # ブートローダー → カーネル ハンドオフプロトコル
+///
+/// 1. ブートローダーが `ExoBootInfo` を物理メモリに割り当て、全フィールドを設定する
+/// 2. ポインタ型フィールド (`cmdline_ptr`, `initramfs.ptr`, `memory_map.entries`)
+///    は HHDM 仮想アドレス (`phys_mem_offset + phys_addr`) で格納する
+/// 3. ブートサービス終了後、CR3 を切り替え、`&ExoBootInfo` を RDI に渡してカーネルへジャンプ
+/// 4. カーネルは `version` フィールドを検証し、不一致時はパニックする
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ExoBootInfo {
@@ -86,6 +94,32 @@ pub struct ExoBootInfo {
     pub paging_levels: u64,
     /// LA57 enabled state (1 if CR4.LA57 is set, 0 otherwise).
     pub la57_enabled: u64,
+}
+
+impl ExoBootInfo {
+    /// プロトコルバージョンを検証する。不一致なら `false` を返す。
+    #[inline]
+    pub fn is_version_compatible(&self) -> bool {
+        self.version == EXO_BOOT_INFO_VERSION
+    }
+
+    /// カーネルコマンドラインを `&str` として取得する。
+    ///
+    /// ブートローダーは `cmdline_ptr` を HHDM 仮想アドレスで格納するため、
+    /// 直接ポインタとして解釈して安全にアクセスできる。
+    ///
+    /// # Safety
+    /// ブートローダーから渡された `cmdline_ptr` が有効な仮想アドレスであり、
+    /// `cmdline_len` バイト分のメモリが読み取り可能であることが前提。
+    pub unsafe fn cmdline(&self) -> Option<&str> {
+        if self.cmdline_len == 0 || self.cmdline_ptr == 0 {
+            return None;
+        }
+        let len = self.cmdline_len as usize;
+        let ptr = self.cmdline_ptr as *const u8;
+        let slice = unsafe { core::slice::from_raw_parts(ptr, len) };
+        core::str::from_utf8(slice).ok()
+    }
 }
 
 /// Initramfs module information.
