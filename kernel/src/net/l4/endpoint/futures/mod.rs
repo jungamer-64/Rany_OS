@@ -381,6 +381,204 @@ impl OwnedEndpoint {
     }
 }
 
+// ============================================================================
+// ICMP Echo 非同期Future
+// ============================================================================
+
+use alloc::collections::BTreeMap;
+use crate::sync::PoisonLock;
+
+/// ICMP Echo 応答の結果
+#[derive(Debug, Clone, Copy)]
+pub struct IcmpEchoResult {
+    /// 応答送信元IP
+    pub source: [u8; 4],
+    /// シーケンス番号
+    pub sequence: u16,
+    /// ラウンドトリップタイム（マイクロ秒）
+    pub rtt_us: u64,
+}
+
+/// ping待ちエントリ
+struct PingWaiter {
+    waker: Option<core::task::Waker>,
+    result: Option<IcmpEchoResult>,
+    start_tick: u64,
+    timeout_us: u64,
+}
+
+/// ICMP Echo応答をトラッキングするグローバルレジストリ
+///
+/// キー: (target_ip_u32, sequence) のペアでping待ちを一意に識別
+struct IcmpEchoRegistry {
+    waiters: BTreeMap<(u32, u16), PingWaiter>,
+}
+
+impl IcmpEchoRegistry {
+    const fn new() -> Self {
+        Self {
+            waiters: BTreeMap::new(),
+        }
+    }
+
+    /// 新しいping待ちを登録
+    fn register(&mut self, target: [u8; 4], sequence: u16, timeout_us: u64) {
+        let key = (u32::from_be_bytes(target), sequence);
+        let now = crate::task::timer::current_tick();
+        self.waiters.insert(key, PingWaiter {
+            waker: None,
+            result: None,
+            start_tick: now,
+            timeout_us,
+        });
+    }
+
+    /// wakerを設定
+    fn set_waker(&mut self, target: [u8; 4], sequence: u16, waker: core::task::Waker) {
+        let key = (u32::from_be_bytes(target), sequence);
+        if let Some(entry) = self.waiters.get_mut(&key) {
+            entry.waker = Some(waker);
+        }
+    }
+
+    /// 応答を通知
+    fn notify_reply(&mut self, source: [u8; 4], sequence: u16, rtt_us: u64) {
+        let key = (u32::from_be_bytes(source), sequence);
+        if let Some(entry) = self.waiters.get_mut(&key) {
+            entry.result = Some(IcmpEchoResult {
+                source,
+                sequence,
+                rtt_us,
+            });
+            if let Some(waker) = entry.waker.take() {
+                waker.wake();
+            }
+        }
+    }
+
+    /// 結果をポーリング
+    fn poll_result(&mut self, target: [u8; 4], sequence: u16) -> Poll<Result<IcmpEchoResult, EndpointError>> {
+        let key = (u32::from_be_bytes(target), sequence);
+        if let Some(entry) = self.waiters.get(&key) {
+            if let Some(result) = entry.result {
+                // 結果あり → 成功
+                self.waiters.remove(&key);
+                return Poll::Ready(Ok(result));
+            }
+            // タイムアウトチェック
+            let now = crate::task::timer::current_tick();
+            let elapsed = now.saturating_sub(entry.start_tick);
+            if elapsed > entry.timeout_us {
+                self.waiters.remove(&key);
+                return Poll::Ready(Err(EndpointError::Timeout));
+            }
+            Poll::Pending
+        } else {
+            Poll::Ready(Err(EndpointError::NotFound))
+        }
+    }
+
+    /// 期限切れエントリをクリーンアップ
+    fn cleanup_expired(&mut self) {
+        let now = crate::task::timer::current_tick();
+        self.waiters.retain(|_key, entry| {
+            let elapsed = now.saturating_sub(entry.start_tick);
+            elapsed <= entry.timeout_us
+        });
+    }
+}
+
+/// グローバルICMP Echoレジストリ
+static ICMP_ECHO_REGISTRY: PoisonLock<IcmpEchoRegistry> = PoisonLock::new(IcmpEchoRegistry::new());
+
+/// ICMP Echo応答を通知する（スタックのICMP処理から呼ばれる）
+pub fn notify_icmp_echo_reply(source: [u8; 4], sequence: u16, rtt_us: u64) {
+    if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
+        registry.notify_reply(source, sequence, rtt_us);
+    }
+}
+
+/// 期限切れのping待ちをクリーンアップ
+pub fn cleanup_icmp_echo_waiters() {
+    if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
+        registry.cleanup_expired();
+    }
+}
+
+/// 非同期ICMP Echo Future
+///
+/// `IcmpEchoFuture::new(target, sequence)` で ICMP Echo Request を送信し、
+/// `.await` で応答を待機する。タイムアウト付き。
+///
+/// # 使用例
+/// ```ignore
+/// let result = IcmpEchoFuture::new([8, 8, 8, 8], 1).await;
+/// match result {
+///     Ok(echo) => log::info!("ping RTT: {} us", echo.rtt_us),
+///     Err(e) => log::warn!("ping failed: {:?}", e),
+/// }
+/// ```
+pub struct IcmpEchoFuture {
+    target: [u8; 4],
+    sequence: u16,
+    sent: bool,
+    timeout_us: u64,
+}
+
+impl IcmpEchoFuture {
+    /// デフォルトタイムアウト（5秒）でFutureを作成
+    pub fn new(target: [u8; 4], sequence: u16) -> Self {
+        Self {
+            target,
+            sequence,
+            sent: false,
+            timeout_us: 5_000_000, // 5秒
+        }
+    }
+
+    /// カスタムタイムアウトでFutureを作成
+    pub fn with_timeout(target: [u8; 4], sequence: u16, timeout_us: u64) -> Self {
+        Self {
+            target,
+            sequence,
+            sent: false,
+            timeout_us,
+        }
+    }
+}
+
+impl Future for IcmpEchoFuture {
+    type Output = Result<IcmpEchoResult, EndpointError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        // 初回poll: Echo Requestを送信してレジストリに登録
+        if !this.sent {
+            // レジストリに事前登録
+            if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
+                registry.register(this.target, this.sequence, this.timeout_us);
+            }
+
+            // イベントキュー経由でICMP Echo Requestを送信
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoRequest {
+                    target: this.target,
+                    sequence: this.sequence,
+                },
+            );
+            this.sent = true;
+        }
+
+        // 結果をポーリング
+        if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
+            registry.set_waker(this.target, this.sequence, cx.waker().clone());
+            registry.poll_result(this.target, this.sequence)
+        } else {
+            Poll::Ready(Err(EndpointError::Internal))
+        }
+    }
+}
 
 
 // ==========================

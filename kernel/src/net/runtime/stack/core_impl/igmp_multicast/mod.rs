@@ -488,8 +488,20 @@ impl NetworkStack {
                 identifier,
                 sequence,
             } => {
-                // Could notify waiting pingers
-                let _ = (identifier, sequence);
+                // ICMP Echo応答を非同期Futureレジストリに通知
+                let _ = identifier;
+                crate::net::l4::endpoint::futures::notify_icmp_echo_reply(
+                    *src_ip.as_bytes(),
+                    sequence,
+                    0,
+                );
+                crate::net::l4::endpoint::event::send_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoReply {
+                        source: *src_ip.as_bytes(),
+                        sequence,
+                        rtt_us: 0,
+                    },
+                );
             }
             IcmpResult::Error { icmp_type, code } => {
                 // Handle ICMP errors for PMTUD (RFC 1191)

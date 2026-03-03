@@ -98,19 +98,20 @@ pub(crate) fn send_tcp_packet(
         segment[header_len..].copy_from_slice(payload);
     }
 
-    // チェックサム計算 + 送信 (IPv6対応)
+    // チェックサム計算 + 非同期イベントキュー経由で送信
+    // async コンテキストからの呼び出し時にスタックロック競合を回避
     match (local.as_ipv4(), remote.as_ipv4()) {
         (Some(src_v4), Some(dst_v4)) => {
             calculate_tcp_checksum(&mut segment, src_v4, dst_v4);
             let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
             let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
-            crate::net::runtime::stack::send_tcp(src_ip, dst_ip, &segment)
+            crate::net::runtime::stack::send_tcp_async(src_ip, dst_ip, &segment)
         }
         _ => {
             let src_v6 = local.as_ipv6();
             let dst_v6 = remote.as_ipv6();
             calculate_tcp_checksum_v6(&mut segment, crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6));
-            crate::net::runtime::stack::send_tcp_v6(crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6), &segment)
+            crate::net::runtime::stack::send_tcp_v6_async(crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6), &segment)
         }
     }
 }
@@ -336,19 +337,20 @@ pub(crate) fn send_tcp_packet_with_options(
         segment[header_len..].copy_from_slice(payload);
     }
 
-    // チェックサム計算 + 送信 (IPv6対応)
+    // チェックサム計算 + 非同期イベントキュー経由で送信
+    // async コンテキストからの呼び出し時にスタックロック競合を回避
     match (local.as_ipv4(), remote.as_ipv4()) {
         (Some(src_v4), Some(dst_v4)) => {
             calculate_tcp_checksum(&mut segment, src_v4, dst_v4);
             let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
             let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
-            crate::net::runtime::stack::send_tcp(src_ip, dst_ip, &segment)
+            crate::net::runtime::stack::send_tcp_async(src_ip, dst_ip, &segment)
         }
         _ => {
             let src_v6 = local.as_ipv6();
             let dst_v6 = remote.as_ipv6();
             calculate_tcp_checksum_v6(&mut segment, crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6));
-            crate::net::runtime::stack::send_tcp_v6(crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6), &segment)
+            crate::net::runtime::stack::send_tcp_v6_async(crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6), &segment)
         }
     }
 }

@@ -59,6 +59,28 @@ impl DhcpV6Client {
     pub const MAX_RETRIES: u32 = 4;
     pub const RETRANS_INTERVAL_SECS: u64 = 4;
 
+    /// スタック設定からリンクローカルIPv6アドレスを取得（短時間ロック）
+    fn get_link_local(&self) -> Option<Ipv6Address> {
+        match crate::net::runtime::stack::stack().lock() {
+            Ok(guard) => guard.as_ref().and_then(|s| s.config().ipv6.map(|c| c.link_local)),
+            Err(_) => {
+                log::error!("[NET] DHCPv6: Global Stack poisoned - cannot get link-local");
+                None
+            }
+        }
+    }
+
+    /// 非同期イベントキュー経由でUDPv6パケットを送信（ロック競合回避）
+    fn send_v6_async(&self, src: Ipv6Address, dst: Ipv6Address, data: &[u8]) -> bool {
+        crate::net::runtime::stack::send_udp_v6_async(
+            DHCPV6_CLIENT_PORT,
+            src,
+            dst,
+            DHCPV6_SERVER_PORT,
+            data,
+        )
+    }
+
     /// DUID-LL を生成（type=3, hwtype=1 + MAC）
     fn make_duid_ll(mac: &crate::net::l2::ethernet::MacAddress) -> Vec<u8> {
         let mut v = Vec::new();
@@ -410,22 +432,11 @@ impl DhcpV6Client {
                     self.state_time.store(now, Ordering::SeqCst);
                     self.retry_count.store(0, Ordering::SeqCst);
 
-                    // build and send REQUEST (selection)
+                    // build and send REQUEST (selection) via async event queue
                     let mut buf = [0u8; 256];
                     if let Ok(len) = self.build_request_from_advertise(&mut buf, now) {
-                        if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-                            if let Some(ref mut stack) = *guard {
-                                if let Some(ref ipv6_cfg) = stack.config().ipv6 {
-                                    let src_ip = ipv6_cfg.link_local;
-                                    let _ = stack.send_udp_v6_raw(
-                                        DHCPV6_CLIENT_PORT,
-                                        src_ip,
-                                        src,
-                                        DHCPV6_SERVER_PORT,
-                                        &buf[..len],
-                                    );
-                                }
-                            }
+                        if let Some(src_ip) = self.get_link_local() {
+                            self.send_v6_async(src_ip, src, &buf[..len]);
                         }
                     }
                     return true;
@@ -461,7 +472,13 @@ impl DhcpV6Client {
 
     /// Periodic timeout handler (called from NetworkStack periodic)
     /// tick_rate: how many milliseconds represent 1 second in current_time
+    ///
+    /// 非同期イベントキュー経由で送信（ロック競合回避）:
+    /// `get_link_local()` で短時間ロックのみ取得し、送信は `send_v6_async()` を使用する。
     pub fn check_timeout(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
+        // All-DHCP-Servers multicast address (ff02::2)
+        let all_dhcp_servers = crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
+
         match self.state.lock() {
             Ok(mut s) => match *s {
                 DhcpV6State::Init => {
@@ -469,25 +486,12 @@ impl DhcpV6Client {
                     let mut buf = [0u8; 256];
                     let len = self.build_solicit(&mut buf, current_tick)?;
 
-                    // Use link-local as source for SOLICIT
-                    if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-                        if let Some(ref mut stack) = *guard {
-                            if let Some(ref ipv6_cfg) = stack.config().ipv6 {
-                                let src = ipv6_cfg.link_local;
-                                let dst = crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]); // all DHCP servers/relay
-                                // Send via UDP/IPv6
-                                if stack.send_udp_v6_raw(
-                                    DHCPV6_CLIENT_PORT,
-                                    src,
-                                    dst,
-                                    DHCPV6_SERVER_PORT,
-                                    &buf[..len],
-                                ) {
-                                    *s = DhcpV6State::SolicitSent;
-                                    self.state_time.store(current_tick, Ordering::SeqCst);
-                                    self.retry_count.store(0, Ordering::SeqCst);
-                                }
-                            }
+                    // Use link-local as source for SOLICIT (async event queue)
+                    if let Some(src) = self.get_link_local() {
+                        if self.send_v6_async(src, all_dhcp_servers, &buf[..len]) {
+                            *s = DhcpV6State::SolicitSent;
+                            self.state_time.store(current_tick, Ordering::SeqCst);
+                            self.retry_count.store(0, Ordering::SeqCst);
                         }
                     }
                 }
@@ -500,23 +504,11 @@ impl DhcpV6Client {
                             // Give up, go back to Init (will retry later)
                             *s = DhcpV6State::Init;
                         } else {
-                            // retransmit SOLICIT
+                            // retransmit SOLICIT via async event queue
                             let mut buf = [0u8; 256];
                             let len = self.build_solicit(&mut buf, current_tick)?;
-                            if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-                                if let Some(ref mut stack) = *guard {
-                                    if let Some(ref ipv6_cfg) = stack.config().ipv6 {
-                                        let src = ipv6_cfg.link_local;
-                                        let dst = crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
-                                        let _ = stack.send_udp_v6_raw(
-                                            DHCPV6_CLIENT_PORT,
-                                            src,
-                                            dst,
-                                            DHCPV6_SERVER_PORT,
-                                            &buf[..len],
-                                        );
-                                    }
-                                }
+                            if let Some(src) = self.get_link_local() {
+                                self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -531,26 +523,15 @@ impl DhcpV6Client {
                             // Give up and return to Init
                             *s = DhcpV6State::Init;
                         } else {
-                            // rebuild Request (selection) and resend
+                            // rebuild Request (selection) and resend via async event queue
                             let mut buf = [0u8; 256];
                             let len = self.build_request_from_advertise(&mut buf, current_tick)?;
-                            if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-                                if let Some(ref mut stack) = *guard {
-                                    if let Some(ref ipv6_cfg) = stack.config().ipv6 {
-                                        let src = ipv6_cfg.link_local;
-                                        let dst = match self.server_addr.lock() {
-                                            Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
-                                            Err(_) => crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
-                                        };
-                                        let _ = stack.send_udp_v6_raw(
-                                            DHCPV6_CLIENT_PORT,
-                                            src,
-                                            dst,
-                                            DHCPV6_SERVER_PORT,
-                                            &buf[..len],
-                                        );
-                                    }
-                                }
+                            if let Some(src) = self.get_link_local() {
+                                let dst = match self.server_addr.lock() {
+                                    Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
+                                    Err(_) => all_dhcp_servers,
+                                };
+                                self.send_v6_async(src, dst, &buf[..len]);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -561,7 +542,7 @@ impl DhcpV6Client {
                     if let Some(lease) = self.lease() {
                         let elapsed_secs = (current_tick.saturating_sub(lease.obtained_at)) / tick_rate;
                         if elapsed_secs >= (lease.preferred_lifetime as u64) {
-                            // start renewal (not fully implemented here)
+                            // start renewal
                             *s = DhcpV6State::Renewing;
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -578,29 +559,16 @@ impl DhcpV6Client {
                             self.retry_count.store(0, Ordering::SeqCst);
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         } else {
-                            // Build and send REQUEST for the current lease
+                            // Build and send REQUEST for the current lease via async event queue
                             if let Some(lease) = self.lease() {
                                 let mut buf = [0u8; 512];
                                 let len = self.build_request(&mut buf, &lease, current_tick)?;
-                                if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-                                    if let Some(ref mut stack) = *guard {
-                                        if let Some(ref ipv6_cfg) = stack.config().ipv6 {
-                                            let src = ipv6_cfg.link_local;
-                                            // If we know the server IPv6 address, send unicast Renew there;
-                                            // otherwise fall back to multicast.
-                                            let dst = match self.server_addr.lock() {
-                                                Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
-                                                Err(_) => crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
-                                            };
-                                            let _ = stack.send_udp_v6_raw(
-                                                DHCPV6_CLIENT_PORT,
-                                                src,
-                                                dst,
-                                                DHCPV6_SERVER_PORT,
-                                                &buf[..len],
-                                            );
-                                        }
-                                    }
+                                if let Some(src) = self.get_link_local() {
+                                    let dst = match self.server_addr.lock() {
+                                        Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
+                                        Err(_) => all_dhcp_servers,
+                                    };
+                                    self.send_v6_async(src, dst, &buf[..len]);
                                 }
                                 self.state_time.store(current_tick, Ordering::SeqCst);
                             } else {
@@ -622,24 +590,12 @@ impl DhcpV6Client {
                                 *lg = None;
                             }
                         } else {
-                            // retransmit REQUEST (multicast)
+                            // retransmit REQUEST (multicast) via async event queue
                             if let Some(lease) = self.lease() {
                                 let mut buf = [0u8; 512];
                                 let len = self.build_request(&mut buf, &lease, current_tick)?;
-                                if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-                                    if let Some(ref mut stack) = *guard {
-                                        if let Some(ref ipv6_cfg) = stack.config().ipv6 {
-                                            let src = ipv6_cfg.link_local;
-                                            let dst = crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
-                                            let _ = stack.send_udp_v6_raw(
-                                                DHCPV6_CLIENT_PORT,
-                                                src,
-                                                dst,
-                                                DHCPV6_SERVER_PORT,
-                                                &buf[..len],
-                                            );
-                                        }
-                                    }
+                                if let Some(src) = self.get_link_local() {
+                                    self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
                                 }
                             } else {
                                 *s = DhcpV6State::Init;

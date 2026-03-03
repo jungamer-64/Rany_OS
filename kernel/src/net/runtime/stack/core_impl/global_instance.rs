@@ -302,6 +302,9 @@ pub async fn async_timeout_task() {
                 log::error!("[NET] Global Stack poisoned - async timeout processing failed");
             }
         }
+
+        // ICMP Echo待ちの期限切れエントリをクリーンアップ
+        crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
     }
 }
 

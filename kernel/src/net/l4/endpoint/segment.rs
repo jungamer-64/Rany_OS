@@ -310,41 +310,32 @@ impl TcpSegmentBuilder {
 }
 
 /// TCPセグメント送信（IP層に渡す） — IPv4/IPv6 デュアルスタック対応
+///
+/// 非同期イベントキュー経由で送信。スタックロックを直接取得せず、
+/// `network_event_task` が一括処理するため、async コンテキストからの
+/// 呼び出しでデッドロックを回避する。
 pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<u8>) -> bool {
     if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
         let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
         let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
 
-        // NetworkStack経由で送信
-        let stack = crate::net::runtime::stack::stack();
-        match stack.lock() {
-            Ok(mut guard) => {
-                if let Some(ref mut s) = *guard {
-                    if s.send_tcp(src_ip, dst_ip, &segment) {
-                        log::info!("TCP TX: {} -> {} ({} bytes)", local, remote, segment.len());
-                        return true;
-                    } else {
-                        log::info!("TCP TX failed (ARP pending?): {} -> {}", local, remote);
-                        return false;
-                    }
-                } else {
-                    log::info!("TCP TX: Network stack not initialized");
-                }
-            }
-            Err(_) => {
-                log::error!("[NET] Stack poisoned - dropping TCP segment");
-            }
+        // 非同期イベントキュー経由で送信（ロック競合回避）
+        let ok = crate::net::runtime::stack::send_tcp_async(src_ip, dst_ip, &segment);
+        if ok {
+            log::info!("TCP TX (async): {} -> {} ({} bytes)", local, remote, segment.len());
+        } else {
+            log::info!("TCP TX enqueue failed: {} -> {}", local, remote);
         }
-        return false;
+        return ok;
     }
 
     if endpoint_is_native_v6_pair(local, remote) {
         let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
         let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-        let ok = crate::net::runtime::stack::send_tcp_v6(src_v6, dst_v6, &segment);
+        let ok = crate::net::runtime::stack::send_tcp_v6_async(src_v6, dst_v6, &segment);
         if ok {
             log::info!(
-                "TCP TX (v6): [{}]:{} -> [{}]:{} ({} bytes)",
+                "TCP TX (v6 async): [{}]:{} -> [{}]:{} ({} bytes)",
                 src_v6,
                 local.port(),
                 dst_v6,
@@ -353,7 +344,7 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
             );
         } else {
             log::info!(
-                "TCP TX failed (NDP/queue?): [{}]:{} -> [{}]:{}",
+                "TCP TX enqueue failed (v6): [{}]:{} -> [{}]:{}",
                 src_v6,
                 local.port(),
                 dst_v6,

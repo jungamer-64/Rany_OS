@@ -158,6 +158,11 @@ impl NetworkEventHandler {
             NetworkEvent::IcmpEchoRequest { target, sequence } => {
                 self.handle_icmp_echo_request(target, sequence)
             }
+            NetworkEvent::IcmpEchoReply { source, sequence, rtt_us } => {
+                // ICMP応答をFutureレジストリに通知
+                crate::net::l4::endpoint::futures::notify_icmp_echo_reply(source, sequence, rtt_us);
+                EventHandleResult::Success
+            }
         }
     }
 
@@ -312,6 +317,11 @@ impl NetworkEventHandler {
                     Ok(_send_time) => EventHandleResult::Success,
                     Err(_) => EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
                 }
+            }
+            NetworkEvent::IcmpEchoReply { source, sequence, rtt_us } => {
+                // ICMP応答をFutureレジストリに通知（スタックロック保持版）
+                crate::net::l4::endpoint::futures::notify_icmp_echo_reply(source, sequence, rtt_us);
+                EventHandleResult::Success
             }
             // その他のイベントはスタック非依存または個別ロックで対応
             other => self.handle_event(other),
@@ -1080,7 +1090,7 @@ impl NetworkEventHandler {
         }
     }
 
-    /// UDPパケット送信（IPスタック経由）
+    /// UDPパケット送信（非同期イベントキュー経由）
     fn send_udp_packet(
         &self,
         src: EndpointAddr,
@@ -1096,7 +1106,8 @@ impl NetworkEventHandler {
         let (_, dst_v4) = endpoint_ipv4_pair(src, dst).ok_or(EndpointError::InvalidArgument)?;
         let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
 
-        if crate::net::runtime::stack::send_udp(src.port(), dst_ip, dst.port(), payload) {
+        // 非同期イベントキュー経由で送信（ロック競合回避）
+        if crate::net::runtime::stack::send_udp_async(src.port(), dst_ip, dst.port(), payload) {
             Ok(())
         } else {
             Err(EndpointError::ResourceExhausted)

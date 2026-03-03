@@ -95,6 +95,12 @@ pub enum NetworkEvent {
         target: [u8; 4],
         sequence: u16,
     },
+    /// 非同期 ICMP Echo 応答通知
+    IcmpEchoReply {
+        source: [u8; 4],
+        sequence: u16,
+        rtt_us: u64,
+    },
 }
 
 /// イベントキュー（ロックフリーリングバッファ）

@@ -392,7 +392,23 @@ impl NetworkStack {
                 self.send_icmp_echo_reply(src_ip, identifier, sequence, echo_data, current_time);
             }
             IcmpResult::EchoReplyReceived { identifier, sequence } => {
-                let _ = (identifier, sequence);
+                // ICMP Echo応答を非同期Futureレジストリに通知
+                let _ = identifier;
+                // RTTを概算（正確なタイムスタンプは別途管理が必要）
+                let rtt_us = 0; // イベントキュー側で計算
+                crate::net::l4::endpoint::futures::notify_icmp_echo_reply(
+                    *src_ip.as_bytes(),
+                    sequence,
+                    rtt_us,
+                );
+                // イベントキュー経由でも通知（ハンドラ層での処理用）
+                crate::net::l4::endpoint::event::send_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoReply {
+                        source: *src_ip.as_bytes(),
+                        sequence,
+                        rtt_us,
+                    },
+                );
             }
             IcmpResult::Error { icmp_type, code } => {
                 // Handle ICMP errors for PMTUD (RFC 1191)
