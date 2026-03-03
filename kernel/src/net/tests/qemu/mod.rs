@@ -4,8 +4,8 @@
 //! so host `#[test_case]` and QEMU full-boot runtime tests stay aligned.
 
 use crate::net::datapath::{adaptive_polling, mempool, zero_copy};
-use crate::net::l2::{arp, ethernet, igmp};
-use crate::net::l3::{icmp, icmpv6, ipv4, ipv6, ndp};
+use crate::net::l2::{arp, ethernet};
+use crate::net::l3::{icmp, icmpv6, igmp, ipv4, ipv6, ndp};
 use crate::net::l4::{tcp, udp};
 use crate::net::runtime::{bridge as driver_bridge, stack, timeouts as stack_timeouts};
 use crate::net::services::{dhcp, dns, mdns};
