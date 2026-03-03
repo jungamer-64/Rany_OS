@@ -24,12 +24,12 @@ pub(crate) fn generate_initial_seq(local: EndpointAddr, remote: Option<EndpointA
     
     let mut data = [0u8; 40];
     let local_v6 = local.as_ipv6();
-    data[0..16].copy_from_slice(local_v6.as_bytes());
+    data[0..16].copy_from_slice(&local_v6);
     data[16..18].copy_from_slice(&local.port().to_be_bytes());
     
     if let Some(r) = remote {
         let remote_v6 = r.as_ipv6();
-        data[18..34].copy_from_slice(remote_v6.as_bytes());
+        data[18..34].copy_from_slice(&remote_v6);
         data[34..36].copy_from_slice(&r.port().to_be_bytes());
     }
 
@@ -101,16 +101,16 @@ pub(crate) fn send_tcp_packet(
     // チェックサム計算 + 送信 (IPv6対応)
     match (local.as_ipv4(), remote.as_ipv4()) {
         (Some(src_v4), Some(dst_v4)) => {
-            calculate_tcp_checksum(&mut segment, src_v4.0, dst_v4.0);
-            let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4.0);
-            let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4.0);
+            calculate_tcp_checksum(&mut segment, src_v4, dst_v4);
+            let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
+            let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
             crate::net::runtime::stack::send_tcp(src_ip, dst_ip, &segment)
         }
         _ => {
             let src_v6 = local.as_ipv6();
             let dst_v6 = remote.as_ipv6();
-            calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
-            crate::net::runtime::stack::send_tcp_v6(src_v6, dst_v6, &segment)
+            calculate_tcp_checksum_v6(&mut segment, crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6));
+            crate::net::runtime::stack::send_tcp_v6(crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6), &segment)
         }
     }
 }
@@ -339,16 +339,16 @@ pub(crate) fn send_tcp_packet_with_options(
     // チェックサム計算 + 送信 (IPv6対応)
     match (local.as_ipv4(), remote.as_ipv4()) {
         (Some(src_v4), Some(dst_v4)) => {
-            calculate_tcp_checksum(&mut segment, src_v4.0, dst_v4.0);
-            let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4.0);
-            let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4.0);
+            calculate_tcp_checksum(&mut segment, src_v4, dst_v4);
+            let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
+            let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
             crate::net::runtime::stack::send_tcp(src_ip, dst_ip, &segment)
         }
         _ => {
             let src_v6 = local.as_ipv6();
             let dst_v6 = remote.as_ipv6();
-            calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
-            crate::net::runtime::stack::send_tcp_v6(src_v6, dst_v6, &segment)
+            calculate_tcp_checksum_v6(&mut segment, crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6));
+            crate::net::runtime::stack::send_tcp_v6(crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6), &segment)
         }
     }
 }
@@ -664,22 +664,12 @@ pub(crate) fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_heade
 
     // ソケットアドレスを構築
     let src_addr = EndpointAddr::new(
-        Ipv4Addr::new(
-            ip_header.src_addr[0],
-            ip_header.src_addr[1],
-            ip_header.src_addr[2],
-            ip_header.src_addr[3],
-        ),
+        ip_header.src_addr,
         src_port,
     );
 
     let dst_addr = EndpointAddr::new(
-        Ipv4Addr::new(
-            ip_header.dst_addr[0],
-            ip_header.dst_addr[1],
-            ip_header.dst_addr[2],
-            ip_header.dst_addr[3],
-        ),
+        ip_header.dst_addr,
         dst_port,
     );
 

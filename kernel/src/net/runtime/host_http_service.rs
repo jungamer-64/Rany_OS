@@ -1,7 +1,7 @@
 use alloc::{format, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::net::l4::tcp::{Ipv4Addr, EndpointAddr, TcpListener, TcpStream};
+use crate::net::l4::tcp::{EndpointAddr, TcpListener, TcpStream};
 use crate::task::{self, Task, TimeoutResult};
 
 static HOST_HTTP_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
@@ -29,7 +29,7 @@ async fn run_net_poller() {
 }
 
 async fn run_service() {
-    let listener = match TcpListener::bind(EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 80)) {
+    let listener = match TcpListener::bind(EndpointAddr::new([0, 0, 0, 0], 80)) {
         Ok(listener) => {
             log::info!("[HOST-HTTP] listening on 0.0.0.0:80");
             listener

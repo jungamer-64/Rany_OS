@@ -89,12 +89,12 @@ impl NetworkStack {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
             if let Some((local, remote, seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
                 let sent = if local.is_ipv6() && remote.is_ipv6() {
-                    let src_v6 = local.as_ipv6();
-                    let dst_v6 = remote.as_ipv6();
+                    let src_v6 = Ipv6Address::new(local.as_ipv6());
+                    let dst_v6 = Ipv6Address::new(remote.as_ipv6());
                     self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
                 } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-                    let src_ip_out = Ipv4Address::new(lv4.octets());
-                    let dst_ip_out = Ipv4Address::new(rv4.octets());
+                    let src_ip_out = Ipv4Address::new(lv4);
+                    let dst_ip_out = Ipv4Address::new(rv4);
                     self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
                 } else {
                     false
@@ -617,8 +617,8 @@ impl NetworkStack {
                                     let seq_num = u32::from_be_bytes([transport_data[4], transport_data[5], transport_data[6], transport_data[7]]);
 
                                     use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
-                                    let local_addr = TcpEndpointAddr::new_v6(quoted_src, src_port);
-                                    let remote_addr = TcpEndpointAddr::new_v6(dst, dst_port);
+                                    let local_addr = TcpEndpointAddr::new_v6(quoted_src.octets(), src_port);
+                                    let remote_addr = TcpEndpointAddr::new_v6(dst.octets(), dst_port);
 
                                     if !self.tcp.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
                                         log::warn!("[NET] ICMPv6: PMTU error for {} rejected due to invalid TCP seq", dst);

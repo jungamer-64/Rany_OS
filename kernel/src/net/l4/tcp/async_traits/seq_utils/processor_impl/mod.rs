@@ -27,9 +27,9 @@ impl TcpProcessor {
         let mut data = [0u8; 40];
         let local_v6 = local.as_ipv6();
         let remote_v6 = remote.as_ipv6();
-        data[0..16].copy_from_slice(local_v6.as_bytes());
+        data[0..16].copy_from_slice(&local_v6);
         data[16..18].copy_from_slice(&local.port().to_be_bytes());
-        data[18..34].copy_from_slice(remote_v6.as_bytes());
+        data[18..34].copy_from_slice(&remote_v6);
         data[34..36].copy_from_slice(&remote.port().to_be_bytes());
         
         let timestamp = (crate::task::timer::current_tick() / 64000) as u32;
@@ -70,9 +70,9 @@ impl TcpProcessor {
             let mut data = [0u8; 40];
             let local_v6 = local.as_ipv6();
             let remote_v6 = remote.as_ipv6();
-            data[0..16].copy_from_slice(local_v6.as_bytes());
+            data[0..16].copy_from_slice(&local_v6);
             data[16..18].copy_from_slice(&local.port().to_be_bytes());
-            data[18..34].copy_from_slice(remote_v6.as_bytes());
+            data[18..34].copy_from_slice(&remote_v6);
             data[34..36].copy_from_slice(&remote.port().to_be_bytes());
             data[36..40].copy_from_slice(&timestamp.to_be_bytes());
 
@@ -271,25 +271,9 @@ impl TcpProcessor {
         }
 
         // Convert to internal address types
-        let remote_addr = EndpointAddr::new(
-            Ipv4Addr::new(
-                src_ip.as_bytes()[0],
-                src_ip.as_bytes()[1],
-                src_ip.as_bytes()[2],
-                src_ip.as_bytes()[3],
-            ),
-            src_port,
-        );
+        let remote_addr = EndpointAddr::new(src_ip.octets(), src_port);
 
-        let local_addr = EndpointAddr::new(
-            Ipv4Addr::new(
-                dst_ip.as_bytes()[0],
-                dst_ip.as_bytes()[1],
-                dst_ip.as_bytes()[2],
-                dst_ip.as_bytes()[3],
-            ),
-            dst_port,
-        );
+        let local_addr = EndpointAddr::new(dst_ip.octets(), dst_port);
 
         // Extract payload
         let payload = if data.len() > header_len {
@@ -384,8 +368,8 @@ impl TcpProcessor {
         }
 
         // Convert to internal address types (EndpointAddr::V6)
-        let remote_addr = EndpointAddr::new_v6(src_ip, src_port);
-        let local_addr = EndpointAddr::new_v6(dst_ip, dst_port);
+        let remote_addr = EndpointAddr::new_v6(src_ip.octets(), src_port);
+        let local_addr = EndpointAddr::new_v6(dst_ip.octets(), dst_port);
 
         // Extract payload
         let payload = if data.len() > header_len {
@@ -461,12 +445,12 @@ impl TcpProcessor {
 
             // Prefer IPv4 wildcard when the packet address is IPv4-mapped.
             if local_addr.as_ipv4().is_some() {
-                let wildcard_v4 = EndpointAddr::new(Ipv4Addr::UNSPECIFIED, port);
+                let wildcard_v4 = EndpointAddr::new([0, 0, 0, 0], port);
                 if self.listeners.contains_key(&wildcard_v4) {
                     wildcard_v4
                 } else {
                     let wildcard_v6 =
-                        EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED, port);
+                        EndpointAddr::new_v6([0u8; 16], port);
                     if self.listeners.contains_key(&wildcard_v6) {
                         wildcard_v6
                     } else {
@@ -475,7 +459,7 @@ impl TcpProcessor {
                 }
             } else {
                 let wildcard_v6 =
-                    EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED, port);
+                    EndpointAddr::new_v6([0u8; 16], port);
                 if self.listeners.contains_key(&wildcard_v6) {
                     wildcard_v6
                 } else {
@@ -632,25 +616,9 @@ impl TcpProcessor {
         }
 
         // Convert to internal address types
-        let remote_addr = EndpointAddr::new(
-            Ipv4Addr::new(
-                src_ip.as_bytes()[0],
-                src_ip.as_bytes()[1],
-                src_ip.as_bytes()[2],
-                src_ip.as_bytes()[3],
-            ),
-            src_port,
-        );
+        let remote_addr = EndpointAddr::new(src_ip.octets(), src_port);
 
-        let local_addr = EndpointAddr::new(
-            Ipv4Addr::new(
-                dst_ip.as_bytes()[0],
-                dst_ip.as_bytes()[1],
-                dst_ip.as_bytes()[2],
-                dst_ip.as_bytes()[3],
-            ),
-            dst_port,
-        );
+        let local_addr = EndpointAddr::new(dst_ip.octets(), dst_port);
 
         // Extract payload
         let payload = if data.len() > header_len { &data[header_len..] } else { &[] };
@@ -713,8 +681,8 @@ impl TcpProcessor {
         }
 
         // Convert to internal address types
-        let remote_addr = EndpointAddr::new_v6(src_ip, src_port);
-        let local_addr = EndpointAddr::new_v6(dst_ip, dst_port);
+        let remote_addr = EndpointAddr::new_v6(src_ip.octets(), src_port);
+        let local_addr = EndpointAddr::new_v6(dst_ip.octets(), dst_port);
 
         // Extract payload
         let payload = if data.len() > header_len { &data[header_len..] } else { &[] };

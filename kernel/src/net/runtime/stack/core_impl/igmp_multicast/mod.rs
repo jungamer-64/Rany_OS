@@ -6,7 +6,7 @@ mod tcp_bind;
 fn tcp_ipv4_pair(
     local: TcpEndpointAddr,
     remote: TcpEndpointAddr,
-) -> Option<(crate::net::l4::tcp::Ipv4Addr, crate::net::l4::tcp::Ipv4Addr)> {
+) -> Option<([u8; 4], [u8; 4])> {
     Some((local.as_ipv4()?, remote.as_ipv4()?))
 }
 
@@ -159,12 +159,12 @@ impl NetworkStack {
                 };
                 crate::net::l4::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
-                    local_v4.octets(),
-                    remote_v4.octets(),
+                    local_v4,
+                    remote_v4,
                 );
 
-                let src_ip_out = Ipv4Address::new(local_v4.octets());
-                let dst_ip_out = Ipv4Address::new(remote_v4.octets());
+                let src_ip_out = Ipv4Address::new(local_v4);
+                let dst_ip_out = Ipv4Address::new(remote_v4);
                 let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
                 let now = self.current_time();
                 if sent {
@@ -353,12 +353,12 @@ impl NetworkStack {
                     };
                     crate::net::l4::tcp::calculate_tcp_checksum(
                         &mut buffer[..total_len],
-                        local_v4.octets(),
-                        remote_v4.octets(),
+                        local_v4,
+                        remote_v4,
                     );
 
-                    let src_ip_out = Ipv4Address::new(local_v4.octets());
-                    let dst_ip_out = Ipv4Address::new(remote_v4.octets());
+                    let src_ip_out = Ipv4Address::new(local_v4);
+                    let dst_ip_out = Ipv4Address::new(remote_v4);
 
                     let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
                     let now = self.current_time();
@@ -404,8 +404,8 @@ impl NetworkStack {
                 }
 
                 // IPv6 TCP checksum
-                let src_v6 = local.as_ipv6();
-                let dst_v6 = remote.as_ipv6();
+                let src_v6 = Ipv6Address::new(local.as_ipv6());
+                let dst_v6 = Ipv6Address::new(remote.as_ipv6());
                 let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::l3::ipv4::IpProtocol::Tcp, total_len as u32);
                 let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
                 let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
@@ -581,14 +581,14 @@ impl NetworkStack {
                 };
                 crate::net::l4::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
-                    local_v4.octets(),
-                    remote_v4.octets(),
+                    local_v4,
+                    remote_v4,
                 );
                 
                 // Send via IP
                 // Convert TcpIpv4Addr -> Ipv4Address
-                let src_ip_out = Ipv4Address::new(local_v4.octets());
-                let dst_ip_out = Ipv4Address::new(remote_v4.octets());
+                let src_ip_out = Ipv4Address::new(local_v4);
+                let dst_ip_out = Ipv4Address::new(remote_v4);
                 
                 // Send segment via IP
                 let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
@@ -1048,21 +1048,8 @@ impl NetworkStack {
                     data[transport_offset + 7],
                 ]);
 
-                use crate::net::l4::tcp::Ipv4Addr;
-                let local_ip = Ipv4Addr::new(
-                    original_src.as_bytes()[0],
-                    original_src.as_bytes()[1],
-                    original_src.as_bytes()[2],
-                    original_src.as_bytes()[3],
-                );
-                let remote_ip = Ipv4Addr::new(
-                    original_dst.as_bytes()[0],
-                    original_dst.as_bytes()[1],
-                    original_dst.as_bytes()[2],
-                    original_dst.as_bytes()[3],
-                );
-                let local_addr = TcpEndpointAddr::new(local_ip, src_port);
-                let remote_addr = TcpEndpointAddr::new(remote_ip, dst_port);
+                let local_addr = TcpEndpointAddr::new(original_src.octets(), src_port);
+                let remote_addr = TcpEndpointAddr::new(original_dst.octets(), dst_port);
 
                 if !self.tcp.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
                     // Sequence number validation failed (prevents PMTU poisoning)
@@ -1270,15 +1257,14 @@ impl NetworkStack {
     pub fn connect_tcp(&mut self, mut local_addr: TcpEndpointAddr, remote_addr: TcpEndpointAddr) -> Result<TcpStream, TcpError> {
         // Resolve local source address when unspecified.
         if local_addr.is_ipv4() {
-            if local_addr.as_ipv4() == Some(crate::net::l4::tcp::Ipv4Addr::UNSPECIFIED) {
-                let [a, b, c, d] = self.config.ipv4.address.octets();
-                local_addr = TcpEndpointAddr::new(crate::net::l4::tcp::Ipv4Addr::new(a, b, c, d), local_addr.port());
+            if local_addr.as_ipv4() == Some([0, 0, 0, 0]) {
+                local_addr = TcpEndpointAddr::new(self.config.ipv4.address.octets(), local_addr.port());
             }
-        } else if local_addr.as_ipv6().is_unspecified() {
+        } else if local_addr.as_ipv6() == [0u8; 16] {
             if let Some(ipv6_cfg) = self.config.ipv6 {
                 let src_v6 = ipv6_cfg.global.unwrap_or(ipv6_cfg.link_local);
                 if !src_v6.is_unspecified() {
-                    local_addr = TcpEndpointAddr::new_v6(src_v6, local_addr.port());
+                    local_addr = TcpEndpointAddr::new_v6(src_v6.octets(), local_addr.port());
                 }
             }
         }
@@ -1291,7 +1277,7 @@ impl NetworkStack {
             }
             local_addr = if local_addr.is_ipv4() {
                 TcpEndpointAddr::new(
-                    local_addr.as_ipv4().unwrap_or(crate::net::l4::tcp::Ipv4Addr::UNSPECIFIED),
+                    local_addr.as_ipv4().unwrap_or([0, 0, 0, 0]),
                     port,
                 )
             } else {
@@ -1326,13 +1312,13 @@ impl NetworkStack {
             let sent = if let Some((local_v4, remote_v4)) = tcp_ipv4_pair(local_addr, remote_addr) {
                 crate::net::l4::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
-                    local_v4.octets(),
-                    remote_v4.octets(),
+                    local_v4,
+                    remote_v4,
                 );
-                self.send_tcp(Ipv4Address::new(local_v4.octets()), Ipv4Address::new(remote_v4.octets()), &buffer[..total_len])
+                self.send_tcp(Ipv4Address::new(local_v4), Ipv4Address::new(remote_v4), &buffer[..total_len])
             } else if tcp_is_native_v6_pair(local_addr, remote_addr) {
-                let src_v6 = local_addr.as_ipv6();
-                let dst_v6 = remote_addr.as_ipv6();
+                let src_v6 = Ipv6Address::new(local_addr.as_ipv6());
+                let dst_v6 = Ipv6Address::new(remote_addr.as_ipv6());
                 let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::l3::ipv4::IpProtocol::Tcp, total_len as u32);
                 let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
                 let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
@@ -1358,8 +1344,8 @@ mod family_guard_tests {
 
     #[cfg_attr(test, test_case)]
     fn tcp_ipv4_pair_rejects_mixed_family() {
-        let local = TcpEndpointAddr::new(crate::net::l4::tcp::Ipv4Addr::LOCALHOST, 1234);
-        let remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
+        let local = TcpEndpointAddr::new([127, 0, 0, 1], 1234);
+        let remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
         assert!(tcp_ipv4_pair(local, remote).is_none());
         assert!(!tcp_is_native_v6_pair(local, remote));
     }

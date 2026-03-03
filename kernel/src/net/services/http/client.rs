@@ -5,7 +5,7 @@
 use alloc::string::String;
 use alloc::boxed::Box;
 
-use crate::net::l4::tcp::{TcpStream, EndpointAddr, Ipv4Addr};
+use crate::net::l4::tcp::{TcpStream, EndpointAddr};
 use crate::net::services::dns::resolve_ipv4;
 use super::types::{HttpRequest, HttpResponse};
 use super::parser::{HttpParser, HttpParseError};
@@ -89,16 +89,8 @@ impl HttpClient {
         let ip_addr = resolve_ipv4(&host).await
             .ok_or(HttpClientError::DnsResolutionFailed)?;
         
-        // `Ipv4Address` から `Ipv4Addr` に変換
-        let tcp_ip_addr = Ipv4Addr::new(
-            ip_addr.octets()[0],
-            ip_addr.octets()[1],
-            ip_addr.octets()[2],
-            ip_addr.octets()[3]
-        );
-
         // 2. TCP接続確立
-        let remote_addr = EndpointAddr::new(tcp_ip_addr, port);
+        let remote_addr = EndpointAddr::new(ip_addr.octets(), port);
 
         let mut stream = TcpStream::dial(remote_addr).await
             .map_err(|_| HttpClientError::ConnectionFailed)?;

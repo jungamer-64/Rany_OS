@@ -62,94 +62,14 @@ impl core::fmt::Display for Ipv4Addr {
     }
 }
 
-/// ソケットアドレス（IPv4 / IPv6 - unified）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum EndpointAddr {
-    V4 { ip: Ipv4Addr, port: u16 },
-    V6 { ip: crate::net::l3::ipv6::Ipv6Address, port: u16 },
-}
-
-impl EndpointAddr {
-    /// Backwards-compatible constructor for IPv4
-    pub const fn new(ip: Ipv4Addr, port: u16) -> Self {
-        EndpointAddr::V4 { ip, port }
-    }
-
-    /// IPv6 constructor
-    pub const fn new_v6(ip: crate::net::l3::ipv6::Ipv6Address, port: u16) -> Self {
-        EndpointAddr::V6 { ip, port }
-    }
-
-    /// Return true if IPv4
-    #[inline]
-    pub fn is_ipv4(&self) -> bool {
-        matches!(self, EndpointAddr::V4 { .. })
-    }
-
-    /// Return true if IPv6
-    #[inline]
-    pub fn is_ipv6(&self) -> bool {
-        matches!(self, EndpointAddr::V6 { .. })
-    }
-
-    /// Return IPv4 addr when available (or None)
-    #[inline]
-    pub fn as_ipv4(&self) -> Option<Ipv4Addr> {
-        match *self {
-            EndpointAddr::V4 { ip, .. } => Some(ip),
-            EndpointAddr::V6 { ip, .. } => {
-                // map ::ffff:a.b.c.d -> a.b.c.d, otherwise None
-                let bytes = ip.octets();
-                if bytes[..10] == [0u8; 10] && bytes[10] == 0xff && bytes[11] == 0xff {
-                    Some(Ipv4Addr::from_u32(u32::from_be_bytes([
-                        bytes[12], bytes[13], bytes[14], bytes[15],
-                    ])))
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    /// Return IPv6 bytes (for IPv4 returns mapped form)
-    #[inline]
-    pub fn as_ipv6(&self) -> crate::net::l3::ipv6::Ipv6Address {
-        match *self {
-            EndpointAddr::V6 { ip, .. } => ip,
-            EndpointAddr::V4 { ip, .. } => {
-                let mut b = [0u8; 16];
-                b[10] = 0xff;
-                b[11] = 0xff;
-                let oct = ip.octets();
-                b[12..16].copy_from_slice(&oct);
-                crate::net::l3::ipv6::Ipv6Address::new(b)
-            }
-        }
-    }
-
-    /// Return port
-    #[inline]
-    pub fn port(&self) -> u16 {
-        match *self {
-            EndpointAddr::V4 { port, .. } => port,
-            EndpointAddr::V6 { port, .. } => port,
-        }
-    }}
-
-impl core::fmt::Display for EndpointAddr {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match *self {
-            EndpointAddr::V4 { ip, port } => write!(f, "{}:{}", ip, port),
-            EndpointAddr::V6 { ip, port } => {
-                // Use bracketed IPv6 literal
-                write!(f, "[{}]:{}", ip, port)
-            }
-        }
-    }
-}
-
-/// Backward-compatible alias used by legacy tests.
-pub type SocketAddr = EndpointAddr;
+/// ソケットアドレス（統一定義）
+///
+/// `crate::net::l4::endpoint::types::EndpointAddr` を正規定義とし、
+/// TCP層からの後方互換のために再エクスポート。
+/// 以前は `Ipv4Addr` / `Ipv6Address` を内包する独自 enum を定義していたが、
+/// `endpoint::types` 版 (raw `[u8; 4]` / `[u8; 16]`) に統一し、
+/// 変換コードの散在を解消する。
+pub use crate::net::l4::endpoint::types::EndpointAddr;
 
 // ============================================================================
 // TCP接続状態

@@ -73,7 +73,7 @@ impl TcpStream {
     /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
     pub async fn dial(addr: EndpointAddr) -> Result<Self, TcpError> {
         // ローカルポートの割り当て（0を指定して自動割り当て）とTCBの作成、初期SYNの送信は Global Stack に委譲
-        let local_addr = EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0);
+        let local_addr = EndpointAddr::new([0, 0, 0, 0], 0);
         
         let stream = crate::net::runtime::stack::connect_tcp(local_addr, addr)?;
         
@@ -91,7 +91,7 @@ impl TcpStream {
             Ok(g) => g.local_addr(),
             Err(_) => {
                 log::error!("[NET] TCP TCB poisoned (local_addr)");
-                EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0)
+                EndpointAddr::new([0, 0, 0, 0], 0)
             }
         }
     }
@@ -602,7 +602,7 @@ impl Future for ConnectTimeoutFuture {
 impl TcpStream {
     /// Connect with a timeout in microseconds
     pub async fn dial_timeout(addr: EndpointAddr, timeout_us: u64) -> Result<Self, TcpError> {
-        let local_addr = EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0);
+        let local_addr = EndpointAddr::new([0, 0, 0, 0], 0);
         let stream = crate::net::runtime::stack::connect_tcp(local_addr, addr)?;
         let start = crate::time::precise_time_nanos() / 1000;
         let tcb = stream.tcb.clone();
@@ -669,7 +669,7 @@ impl<'a> Future for AcceptFuture<'a> {
                 if let Some(stream) = backlog.pop_front() {
                     let addr = stream
                         .peer_addr()
-                        .unwrap_or(EndpointAddr::new(Ipv4Addr::UNSPECIFIED, 0));
+                        .unwrap_or(EndpointAddr::new([0, 0, 0, 0], 0));
                     return Poll::Ready(Ok((stream, addr)));
                 }
 
