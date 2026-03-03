@@ -7,3 +7,4 @@ pub mod shrinker;       // Shrinker Framework
 pub mod workingset;     // Workingset Refault Detection
 pub mod zswap;          // ZSWAP - スワップ前メモリ圧縮キャッシュ
 pub mod async_swapout;  // 非同期スワップアウト
+pub mod oom_killer;     // OOM Killer（旧 memory/oom_killer.rs から移動）

@@ -1,5 +1,6 @@
-//! Storage durability utilities.
+//! Durability utilities (formerly `storage/`).
 //!
+//! This module provides data durability guarantees for persistent storage:
 //! - `wal`: write-ahead logging primitives
 //! - `pmem`: persistent memory flush/order helpers
 

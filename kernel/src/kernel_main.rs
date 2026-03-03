@@ -1,8 +1,14 @@
+// ============================================================================
+// kernel_main.rs - カーネルメインエントリポイント (kmain) とシステム初期化
+// ============================================================================
+// 旧名: ahci_and_init.rs
+// 責務: kmain_inner()、デバイス検出、ドライバ初期化、Executorループ
+// ============================================================================
 use super::*;
 
-
-/// Ensure a BAR region PTE is correct, mapping pages if needed.
 mod kernel_runtime;
+use self::kernel_runtime::*;
+
 pub(crate) fn ahci_ensure_mapping(
     virt_start: crate::mm::virt::higher_half::VirtAddr,
     phys_expected: crate::mm::virt::higher_half::PhysAddr,
@@ -17,11 +23,10 @@ pub(crate) fn ahci_ensure_mapping(
         }
         let page_size: u64 = 0x1000;
         let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
-        let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
-        let mut manager = unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+        
         let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
         match unsafe {
-            manager.map_range(
+            crate::mm::virt::higher_half::global_map_range(
                 crate::mm::virt::higher_half::VirtAddr::new(base_virt),
                 crate::mm::virt::higher_half::PhysAddr::new(base_phys),
                 map_size,
@@ -43,12 +48,16 @@ pub(crate) fn ahci_ensure_mapping(
                 crate::io::log::early_print_hex(base_phys);
                 crate::io::log::early_print(" err=");
                 let err_str = match e {
-                    crate::mm::virt::higher_half::MapError::FrameAllocationFailed => "FrameAllocationFailed",
+                    crate::mm::virt::higher_half::MapError::FrameAllocationFailed => {
+                        "FrameAllocationFailed"
+                    }
                     crate::mm::virt::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
                     crate::mm::virt::higher_half::MapError::NotMapped => "NotMapped",
                     crate::mm::virt::higher_half::MapError::InvalidAddress => "InvalidAddress",
                     crate::mm::virt::higher_half::MapError::AlignmentError => "AlignmentError",
-                    crate::mm::virt::higher_half::MapError::ParentEntryHugePage => "ParentEntryHugePage",
+                    crate::mm::virt::higher_half::MapError::ParentEntryHugePage => {
+                        "ParentEntryHugePage"
+                    }
                     crate::mm::virt::higher_half::MapError::HardwareError => "HardwareError",
                 };
                 crate::io::log::early_print(err_str);
@@ -104,6 +113,7 @@ pub(crate) fn init_hid_and_serial_drivers() {
     info!(target: "boot", "BOOT COMPLETE!");
 
     // Serial port
+    io::log::early_print("[DEBUG] Before Serial Driver\n");
     info!(target: "init", "Initializing serial port via DriverRegistry");
     {
         use io::serial::SerialDriver;
@@ -116,19 +126,19 @@ pub(crate) fn init_hid_and_serial_drivers() {
             info!(target: "init", "Serial driver initialized via DriverRegistry");
         }
     }
-    // serial driver done
+    io::log::early_print("[DEBUG] After Serial Driver\n");
 }
 
 /// Initialize the network subsystem, shell API, and VirtIO-Net driver.
 pub(crate) fn init_network_subsystem() {
-    io::log::early_print("[EPRINT] about to log 'Initializing network subsystem'\n");
+    io::log::early_print("[DEBUG] Network init\n");
     info!(target: "init", "Initializing network subsystem");
     let bridge_initialized = crate::net::runtime::bridge::is_initialized();
     let stack_initialized = crate::net::runtime::stack::stack()
         .lock()
         .map(|guard| guard.is_some())
         .unwrap_or(false);
-    let socket_manager_initialized = crate::net::l4::endpoint::is_socket_manager_initialized();
+    let endpoint_manager_initialized = crate::net::l4::endpoint::is_endpoint_manager_initialized();
     info!(target: "init", "Net Bridge initialized: {}", bridge_initialized);
     info!(
         target: "init",
@@ -138,7 +148,7 @@ pub(crate) fn init_network_subsystem() {
     info!(
         target: "init",
         "Socket manager initialized: {}",
-        socket_manager_initialized
+        endpoint_manager_initialized
     );
 
     if bridge_initialized {
@@ -156,8 +166,8 @@ pub(crate) fn init_network_subsystem() {
         );
     }
 
-    if !crate::net::l4::endpoint::is_socket_manager_initialized() {
-        crate::net::l4::endpoint::init_socket_manager();
+    if !crate::net::l4::endpoint::is_endpoint_manager_initialized() {
+        crate::net::l4::endpoint::init_endpoint_manager();
         info!(target: "init", "Socket manager initialized");
     } else {
         info!(
@@ -171,7 +181,6 @@ pub(crate) fn init_network_subsystem() {
     crate::net::l4::endpoint::retransmit::init_timer_wheel();
     info!(target: "init", "OOO queues and retransmit timer wheel initialized");
 
-    io::log::early_print("[EPRINT] about to log 'Initializing network shell API'\n");
     info!(target: "init", "Initializing network shell API");
     crate::net::api::shell::init_network_shell();
     info!(target: "init", "Network shell API initialized");
@@ -188,9 +197,6 @@ pub(crate) fn init_network_subsystem() {
             return;
         }
         // VirtIO-Net driver via DriverRegistry
-        io::log::early_print(
-            "[EPRINT] about to log 'Registering VirtIO-Net driver via DriverRegistry'\n",
-        );
         info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
         {
             use alloc::boxed::Box;
@@ -246,6 +252,11 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
             break;
         }
 
+        // 同期的にRX/TXキューをポーリングし、受信バッチをフラッシュする。
+        // handle_all_virtio_net_interrupts() はasyncワーカーにwakeするだけなので
+        // 同期コンテキストでは直接処理する poll_all_virtio_net_queues() を使用する。
+        // TX_QUEUEにエンキューされたパケットも同期的にデバイスへサブミットする。
+        // NETWORK_EVENT_QUEUEに溜まったイベント（ARP応答等）も同期的に処理する。
         for _ in 0..PUMP_ROUNDS_PER_ATTEMPT {
             crate::net::runtime::bridge::sync_drain_tx_queue();
             crate::io::virtio::poll_all_virtio_net_queues();
@@ -255,6 +266,36 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
     }
 
     Err(last_err)
+}
+
+fn kernel_cmdline<'a>(boot_info: &'a ExoBootInfo, phys_mem_offset: u64) -> Option<&'a str> {
+    if boot_info.cmdline_len == 0 {
+        return None;
+    }
+    let cmdline_addr = if boot_info.cmdline_ptr >= phys_mem_offset {
+        boot_info.cmdline_ptr
+    } else {
+        phys_mem_offset.checked_add(boot_info.cmdline_ptr)?
+    };
+    if cmdline_addr == 0 {
+        return None;
+    }
+    let cmdline_len = usize::try_from(boot_info.cmdline_len).ok()?;
+    let slice = unsafe { core::slice::from_raw_parts(cmdline_addr as *const u8, cmdline_len) };
+    core::str::from_utf8(slice).ok()
+}
+
+#[inline]
+fn parse_cmdline_bool(v: &str) -> bool {
+    matches!(v, "1" | "true" | "yes" | "on")
+}
+
+fn parse_cmdline_u64(v: &str) -> Option<u64> {
+    if let Some(rest) = v.strip_prefix("0x") {
+        u64::from_str_radix(rest, 16).ok()
+    } else {
+        v.parse::<u64>().ok()
+    }
 }
 
 /// Run integration tests if requested by build feature or kernel cmdline, then exit QEMU.
@@ -329,6 +370,7 @@ pub(crate) fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_m
 
 /// Scan PCI bus for USB xHCI controllers and initialize them.
 pub(crate) fn init_usb_controllers() {
+    io::log::early_print("[DEBUG] USB scan STARTING\n");
     info!(target: "init", "Scanning for USB xHCI controllers...");
 
     use alloc::boxed::Box;
@@ -372,7 +414,7 @@ pub(crate) fn init_usb_controllers() {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
+pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // Early serial output to confirm kernel loaded
     init_early_serial();
 
@@ -446,15 +488,33 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         numa_info,
         Some(boot_info),
     );
+    // debug hook: verify we returned from memory::init without crashing
     io::log::early_print("[DEBUG] after memory::init return\n");
+    memory::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
-    io::log::early_print("[DEBUG] after memory init info!\n");
+
+    // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
+    // メモリ管理が初期化されたので、ページテーブル操作が可能になった。
+    // スタックオーバーフローを即座にPage Faultで検出するため、
+    // スタック最下位ページ（inner guard）をアンマップする。
+    // これにより使用可能スタックは STACK_SIZE - 4096 バイトになる。
+    // アライメント・サイズ検証は setup_stack_guard 内部で実施。
+    {
+        let stack_base = &raw const KERNEL_STACK as usize;
+        const STACK_SIZE: usize = 4096 * 128; // 512 KiB
+        crate::panic_handler::setup_stack_guard(stack_base, STACK_SIZE);
+        let guard_end = stack_base + 4096;
+        let stack_top = stack_base + STACK_SIZE;
+        info!(target: "init",
+            "BSP stack guard page: [{:#x}..{:#x}) unmapped, usable stack: [{:#x}..{:#x}) ({} KiB)",
+            stack_base, guard_end, guard_end, stack_top, (stack_top - guard_end) / 1024
+        );
+    }
 
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
     // ISRが有効になる前にリソースを確保し、ISR内での初期化（デッドロックリスク）を防ぐ
     info!(target: "init", "Initializing Interrupt Waker Registry (Pre-allocation)");
     let _ = task::interrupt_waker::interrupt_waker_registry().stats();
-
 
     // 1.5. ACPI & IOMMU Initialization
     // Requires memory management for allocation
@@ -465,23 +525,26 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
     init_acpi_and_iommu(boot_info, phys_mem_offset);
 
-
+    // Debug: pinpoint crash location
+    io::log::early_print("[DEBUG] After huge_pages::init\n");
 
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
 
+    io::log::early_print("[DEBUG] After notify_heap_available\n");
+
     // Register kernel services (SPL契約の有効化)
     info!(target: "init", "Registering kernel services...");
 
-    // register kernel services
+    io::log::early_print("[DEBUG] Before register_kernel_services\n");
 
     unsafe {
         service_impl::register_kernel_services();
     }
 
-    // kernel services registered
+    io::log::early_print("[DEBUG] After register_kernel_services\n");
 
-    // about to log next info
+    io::log::early_print("[DEBUG] About to call info! macro\n");
 
     info!(target: "init", "Kernel services registered");
 
@@ -489,16 +552,29 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // use crate::shell::graphical::async_runtime as graphical_shell;
     // Moved below graphics initialization
 
-    // first info printed
+    io::log::early_print("[DEBUG] After first info! macro\n");
 
-    // second info will be printed
+    io::log::early_print("[DEBUG] Before second info! macro\n");
     info!(target: "init", "KernelServices registered");
-    // second info printed
+    io::log::early_print("[DEBUG] After second info! macro\n");
+
+    // qemu-test-export/full-boot profiles can run with interrupts disabled
+    // (`qemu_no_if=1`), so keep synchronous logging there to avoid async
+    // logger backpressure stalls before runtime profile dispatch.
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        io::log::early_print("[DEBUG] enabling async logging\n");
+        io::log::enable_async_logging();
+    }
+    #[cfg(feature = "qemu-test-export")]
+    {
+        io::log::early_print("[DEBUG] keeping synchronous logging in qemu-test-export\n");
+    }
 
     // グラフィックスフレームバッファの初期化（ExoLoader経由）
-    // preparing graphics init log
+    io::log::early_print("[DEBUG] Before graphics init info!\n");
     info!(target: "init", "Initializing graphics framebuffer...");
-    // graphics info logged
+    io::log::early_print("[DEBUG] After graphics init info!\n");
     let mut graphics_console_ready = false;
 
     #[cfg(not(any(test, feature = "bench")))]
@@ -510,12 +586,33 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             // graphics::show_boot_splash(); // Disabled by user request
             // info!(target: "init", "Boot splash displayed");
 
-            // Initialize Text Console driver
-            crate::io::log::early_print("[DEBUG] Before init_console()\n");
-            graphics::init_console();
-            crate::io::log::early_print("[DEBUG] After init_console()\n");
-            graphics_console_ready = true;
-            info!(target: "init", "Text Console driver initialized");
+            // QEMU full-boot driver_domain runtime profile does not require an interactive
+            // framebuffer console and may stall in console init under qemu-test-export.
+            let skip_text_console_init = {
+                #[cfg(feature = "qemu-test-export")]
+                {
+                    kernel_cmdline(boot_info, phys_mem_offset)
+                        .and_then(|cmdline| util::get_cmdline_option(cmdline, "run_integration"))
+                        .map(|profile| profile == "driver_domain")
+                        .unwrap_or(false)
+                }
+                #[cfg(not(feature = "qemu-test-export"))]
+                {
+                    false
+                }
+            };
+
+            if skip_text_console_init {
+                info!(
+                    target: "init",
+                    "Skipping text console init for qemu-test-export driver_domain profile"
+                );
+            } else {
+                // Initialize Text Console driver
+                graphics::init_console();
+                graphics_console_ready = true;
+                info!(target: "init", "Text Console driver initialized");
+            }
 
             // Initialize Graphical Shell (now that framebuffer is ready)
             // graphical_shell::init();
@@ -529,7 +626,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     }
 
     // アロケーションテスト（シンプル化）
-    // allocation tests (commented out below) begin
+    io::log::early_print("[DEBUG] Before Allocation Tests\n");
     /*
     debug!(target: "test", "Running allocation tests");
     {
@@ -560,11 +657,11 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     */
 
     // 2. ドメイン管理システムの初期化
-    // before domain system initialization
+    io::log::early_print("[DEBUG] Before domain_system::init\n");
     info!(target: "init", "Initializing domain system");
     domain_system::init();
     info!(target: "init", "Domain system initialized");
-    // after domain system initialization
+    io::log::early_print("[DEBUG] After domain_system::init\n");
     // Check buddy heap integrity for early detection of corruption
     crate::memory::verify_buddy_integrity();
 
@@ -588,14 +685,26 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     security::mpk::init();
     info!(target: "init", "MPK/PKU security initialized");
 
-    // 2.8.5. セルローダー / ライブアップデート / DriverCell の基盤初期化
+    // 2.8.5. セルローダー / ライブアップデート / DriverDomain の基盤初期化
+    io::log::early_print("[DEBUG] Before early loader init\n");
     info!(target: "init", "Initializing cell loader (early)");
+    io::log::early_print("[DEBUG] early loader: before init_kernel_cell\n");
     loader::init_kernel_cell();
+    io::log::early_print("[DEBUG] early loader: after init_kernel_cell\n");
+    io::log::early_print("[DEBUG] early loader: before register_kernel_symbols\n");
     register_kernel_symbols();
+    io::log::early_print("[DEBUG] early loader: after register_kernel_symbols\n");
+    io::log::early_print("[DEBUG] early loader: before live_update::init\n");
     loader::live_update::init();
+    io::log::early_print("[DEBUG] early loader: after live_update::init\n");
+    io::log::early_print("[DEBUG] early loader: before set_active_cores\n");
     loader::live_update::set_active_cores(1);
+    io::log::early_print("[DEBUG] early loader: after set_active_cores\n");
+    io::log::early_print("[DEBUG] early loader: before driver_domain::init\n");
     crate::driver_domain::init();
-    info!(target: "init", "Cell loader/live update/DriverCell initialized");
+    io::log::early_print("[DEBUG] early loader: after driver_domain::init\n");
+    info!(target: "init", "Cell loader/live update/DriverDomain initialized");
+    io::log::early_print("[DEBUG] After early loader init\n");
 
     // 2.9. Initramfs からドライバ Cells をロード
     info!(target: "init", "Loading driver Cells from initramfs...");
@@ -607,11 +716,13 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     }
 
     init_hid_and_serial_drivers();
+    io::log::early_print("[DEBUG] calling info! for NVMe\n");
     // 3.5.5 – 3.5.7. Storage and USB controller scanning
     init_nvme_controllers();
     init_ahci_controllers();
     init_usb_controllers();
     // 3.5.8. ドライバ初期化サマリ
+    io::log::early_print("[DEBUG] Driver Summary STARTING\n");
     {
         let registry = driver_registry::driver_registry();
         let drivers = registry.list();
@@ -626,9 +737,11 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // 3.6. システム統合 (PCI掃描/デバイス初期化) をネットワークより先に行う
     io::log::early_print("[DEBUG] Before integration::init\n");
     info!(target: "init", "Initializing system integration");
+    let mut integration_initialized = false;
     if let Err(e) = integration::init() {
         warn!(target: "init", "System integration failed: {:?}", e);
     } else {
+        integration_initialized = true;
         info!(target: "init", "System integration initialized");
     }
     io::log::early_print("[DEBUG] After integration::init\n");
@@ -636,53 +749,114 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     init_network_subsystem();
 
     // 3.7. ファイルシステム（memfs）の初期化
+    io::log::early_print("[DEBUG] Before memfs init\n");
     info!(target: "init", "Initializing memory filesystem");
     fs::init_shell_fs();
     info!(target: "init", "Memory filesystem initialized");
+    io::log::early_print("[DEBUG] After memfs init\n");
 
-    // 3.7.1. NVMe Namespace FS のマウント（メインFS切替）
-    if io::nvme::with_driver(|_| ()).is_some() {
-        info!(target: "init", "NVMe driver detected — mounting NVMe Namespace FS...");
-        match io::nvme::mount_nvme_ns_fs() {
-            Ok(()) => {
-                info!(target: "init", "NVMe Namespace FS mounted successfully");
-                // MountTable に /nvme として登録
-                if let Some(fs_arc) = io::nvme::nvme_ns_fs() {
-                    let adapter = alloc::sync::Arc::new(
-                        fs::NvmeNsFileSystemAdapter::new(alloc::sync::Arc::clone(fs_arc)),
-                    );
-                    if let Err(e) = fs::mount_table().mount("/nvme", adapter) {
-                        warn!(target: "init", "NVMe NS FS mount table registration failed: {:?}", e);
-                    } else {
-                        info!(target: "init", "NVMe Namespace FS registered at /nvme");
-                    }
-                }
+    // 3.8. WAL / PMEM / KGDB initialization
+    info!(target: "init", "Initializing durability + kgdb subsystems");
+    durability::init();
+
+    let cmdline = kernel_cmdline(boot_info, phys_mem_offset);
+    if let Some(cmdline) = cmdline
+        && let Some(wal_mode) = util::get_cmdline_option(cmdline, "wal")
+        && wal_mode == "nvme_raw"
+    {
+        let nsid = util::get_cmdline_option(cmdline, "wal_nsid")
+            .and_then(parse_cmdline_u64)
+            .unwrap_or(0) as u32;
+        let lba_start = util::get_cmdline_option(cmdline, "wal_lba_start")
+            .and_then(parse_cmdline_u64)
+            .unwrap_or(0);
+        let lba_len = util::get_cmdline_option(cmdline, "wal_lba_len")
+            .and_then(parse_cmdline_u64)
+            .unwrap_or(0);
+        if nsid != 0 && lba_len != 0 {
+            if let Err(e) = durability::wal::set_backend_nvme_raw(nsid, lba_start, lba_len) {
+                warn!(target: "init", "WAL NVMe backend disabled: {:?}", e);
+            } else {
+                info!(
+                    target: "init",
+                    "WAL backend enabled: nvme_raw nsid={} lba_start={} lba_len={}",
+                    nsid,
+                    lba_start,
+                    lba_len
+                );
             }
-            Err(e) => warn!(target: "init", "NVMe Namespace FS mount failed: {}", e),
+        } else {
+            warn!(
+                target: "init",
+                "wal=nvme_raw requested but wal_nsid/wal_lba_len missing; WAL kept disabled"
+            );
         }
-    } else {
-        debug!(target: "init", "No NVMe driver found, skipping NVMe NS FS");
     }
 
-    // 3.8. WAL/PMEM/GDB スタブ初期化
-    info!(target: "init", "Initializing durability + debug subsystems");
-    storage::init();
-    let _ = storage::wal::replay(|_tx_id, _op| {
-        // Storage drivers can hook replay application in their own mount path.
-    });
-    let _ = debug::gdb_stub::init_gdb_stub();
-    info!(target: "init", "Durability + debug subsystems initialized");
+    if let Err(e) = durability::wal::recover_from_backend(|_tx_id, _op| {
+        // Recovery apply-hook is intentionally a no-op at kernel boot stage.
+    }) {
+        warn!(target: "init", "WAL recovery skipped: {:?}", e);
+    }
+    if let Err(e) = durability::wal::checkpoint() {
+        warn!(target: "init", "WAL checkpoint skipped: {:?}", e);
+    }
+
+    let kgdb_on = cmdline
+        .and_then(|c| util::get_cmdline_option(c, "kgdb"))
+        .map(parse_cmdline_bool)
+        .unwrap_or(false);
+    if kgdb_on {
+        let transport_mode = cmdline
+            .and_then(|c| util::get_cmdline_option(c, "kgdb_transport"))
+            .unwrap_or("both");
+        let use_serial = transport_mode == "serial" || transport_mode == "both";
+        let use_virtio = transport_mode == "virtio" || transport_mode == "both";
+        let serial_exclusive = cmdline
+            .and_then(|c| util::get_cmdline_option(c, "kgdb_serial_exclusive"))
+            .map(parse_cmdline_bool)
+            .unwrap_or(use_serial);
+
+        let _ = debug::gdb_stub::init_gdb_stub();
+        debug::gdb_stub::set_enabled(true);
+        if use_serial {
+            let _ = debug::gdb_stub::register_transport(alloc::sync::Arc::new(
+                debug::gdb_stub::SerialCom1Transport::new(),
+            ));
+        }
+        if use_virtio {
+            let _ = debug::gdb_stub::register_transport(alloc::sync::Arc::new(
+                debug::gdb_stub::VirtioConsoleTransport::new(),
+            ));
+        }
+        if serial_exclusive && use_serial {
+            io::log::set_serial_output_enabled(false);
+        }
+        info!(
+            target: "init",
+            "kgdb enabled (transport={}, serial_exclusive={})",
+            transport_mode,
+            serial_exclusive
+        );
+    } else {
+        debug::gdb_stub::set_enabled(false);
+    }
+    info!(target: "init", "Durability + kgdb subsystems initialized");
 
     // 4. タスクスケジューラの初期化
+    io::log::early_print("[DEBUG] Before scheduler init\n");
     info!(target: "init", "Initializing task scheduler");
     #[cfg(feature = "legacy-scheduler")]
     task::init_scheduler(0); // CPU 0
     info!(target: "init", "Task scheduler initialized");
+    io::log::early_print("[DEBUG] After scheduler init\n");
 
     // 4.5. Per-Core Executorの初期化（設計書 4.3）
+    io::log::early_print("[DEBUG] Before executor init\n");
     info!(target: "init", "Initializing per-core executors");
     task::init_executors(1); // シングルコアで開始
     info!(target: "init", "Per-core executors initialized");
+    io::log::early_print("[DEBUG] After executor init\n");
 
     // 4.6. I/Oスケジューラの初期化
     io::io_scheduler::init_io_scheduler();
@@ -695,43 +869,55 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     debug!(target: "init", "Cell loader/live update already initialized (early path)");
 
     // 5.5. シンボルテーブルの初期化（バックトレース用）
+    io::log::early_print("[DEBUG] Before symbol table init\n");
     info!(target: "init", "Initializing symbol table");
     unwind::init_symbol_table();
     info!(target: "init", "Symbol table initialized");
+    io::log::early_print("[DEBUG] After symbol table init\n");
 
     // 5.6. テストフレームワークの初期化
-    // before test framework init
+    io::log::early_print("[DEBUG] Before test::init\n");
     info!(target: "init", "Initializing test framework");
     test::init();
     info!(target: "init", "Test framework initialized");
-    // after test framework init
+    io::log::early_print("[DEBUG] After test::init\n");
 
-    // 5.7. システム統合の初期化 (補完用, 本来は 3.6 で実行済み)
+    // 5.7. システム統合の初期化 (本来はこちら側には来ないが念のため)
+    // 当初、統合はネットワーク初期化の前に呼ぶべきであるため、
+    // 先に呼び出された場合はここでも補完的に実行する。
     io::log::early_print("[DEBUG] (late) Before integration::init\n");
-    info!(target: "init", "(late) Initializing system integration");
-    if let Err(e) = integration::init() {
-        warn!(target: "init", "(late) System integration failed: {:?}", e);
+    if integration_initialized {
+        info!(
+            target: "init",
+            "(late) Skipping system integration: already initialized"
+        );
+        io::log::early_print("[DEBUG] (late) After integration::init (skipped)\n");
     } else {
-        info!(target: "init", "(late) System integration initialized");
+        info!(target: "init", "(late) Initializing system integration");
+        if let Err(e) = integration::init() {
+            warn!(target: "init", "(late) System integration failed: {:?}", e);
+        } else {
+            info!(target: "init", "(late) System integration initialized");
+        }
+        io::log::early_print("[DEBUG] (late) After integration::init\n");
     }
-    io::log::early_print("[DEBUG] (late) After integration::init\n");
 
     // Diagnostic: immediate manual ping attempt to exercise network transmit path
-    // manual ping insertion point (network debug)
-    crate::io::log::early_print("[DEBUG] before send_real_icmp_echo\n");
-    info!(target: "init", "Manual network ping attempt to 10.0.2.2 (will trigger ARP)");
+    io::log::early_print("[DEBUG] Manual ping insertion point\n");
+    io::log::early_print("[DEBUG] Manual network ping attempt to 10.0.2.2 (will trigger ARP)\n");
     match manual_ping_before_if_strict([10, 0, 2, 2], 1) {
         Ok(rtt) => {
             info!(target: "init", "Manual ping success rtt={}", rtt);
-            crate::io::log::early_print("[DEBUG] ping succeeded\n");
+            io::log::early_print(&alloc::format!("[DEBUG] Manual ping success rtt={}\n", rtt));
         }
         Err(e) => {
             warn!(target: "init", "Manual ping failed: {}", e);
-            crate::io::log::early_print("[DEBUG] ping failed\n");
+            io::log::early_print(&alloc::format!("[DEBUG] Manual ping failed: {}\n", e));
         }
     }
 
     // 6. 割り込みを有効化
+    io::log::early_print("[DEBUG] Before enable interrupts\n");
     #[cfg(not(feature = "qemu-test-export"))]
     {
         interrupts::enable_interrupts();
@@ -767,7 +953,9 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
                     boot_info.cmdline_len
                 );
             }
-            if let Some(slice) = slice_opt && let Ok(cmdline) = core::str::from_utf8(slice) {
+            if let Some(slice) = slice_opt
+                && let Ok(cmdline) = core::str::from_utf8(slice)
+            {
                 if let Some(v) = util::get_cmdline_option(cmdline, "qemu_no_if") {
                     if v == "1" || v == "true" || v == "yes" {
                         skip_interrupt_enable = true;
@@ -786,23 +974,80 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             info!(target: "init", "Interrupts enabled (qemu-test-export mode)");
         }
     }
+    io::log::early_print("[DEBUG] After enable interrupts\n");
 
     // 6.5. cmdline 指定の統合テスト実行（必要ならここで QEMU へ終了コードを返す）
     run_integration_tests_if_requested(boot_info, phys_mem_offset);
 
     // 7. システム統計を表示
-    // before printing system stats
+    io::log::early_print("[DEBUG] Before print_system_stats\n");
     print_system_stats();
-    // after printing system stats
+    io::log::early_print("[DEBUG] After print_system_stats\n");
 
     // 8. Executorの作成とタスクスポーン
-    // before creating executor
+    io::log::early_print("[DEBUG] Before Executor::new\n");
     info!(target: "init", "Creating async executor");
     let mut executor = task::Executor::new();
+    io::log::early_print("[DEBUG] After Executor::new\n");
 
-    // spawning kernel tasks
-    spawn_kernel_tasks(&mut executor, graphics_console_ready);
+    let shell_mode = {
+        let mut mode = crate::shell::session::ShellLaunchMode::default();
+        if boot_info.cmdline_len > 0 {
+            let cmdline_addr = if boot_info.cmdline_ptr >= phys_mem_offset {
+                boot_info.cmdline_ptr
+            } else {
+                match phys_mem_offset.checked_add(boot_info.cmdline_ptr) {
+                    Some(addr) => addr,
+                    None => {
+                        warn!(target: "init", "Skipping shell mode parse: address overflow");
+                        0
+                    }
+                }
+            };
+
+            if cmdline_addr != 0 {
+                match usize::try_from(boot_info.cmdline_len) {
+                    Ok(cmdline_len) => {
+                        let slice = unsafe {
+                            core::slice::from_raw_parts(cmdline_addr as *const u8, cmdline_len)
+                        };
+                        if let Ok(cmdline) = core::str::from_utf8(slice) {
+                            mode = crate::shell::session::parse_shell_launch_mode(Some(cmdline));
+                        }
+                    }
+                    Err(_) => {
+                        warn!(
+                            target: "init",
+                            "Skipping shell mode parse: invalid length {}",
+                            boot_info.cmdline_len
+                        );
+                    }
+                }
+            }
+        }
+
+        let adjusted_mode =
+            crate::shell::session::adjust_shell_launch_mode_for_console_availability(
+                mode,
+                graphics_console_ready,
+            );
+        if adjusted_mode != mode {
+            warn!(
+                target: "init",
+                "Framebuffer console unavailable; falling back shell mode {:?} -> {:?}",
+                mode,
+                adjusted_mode
+            );
+        }
+
+        info!(target: "init", "Shell launch mode: {:?}", adjusted_mode);
+        adjusted_mode
+    };
+
+    io::log::early_print("[DEBUG] Before spawn_kernel_tasks\n");
+    spawn_kernel_tasks(&mut executor, shell_mode);
     info!(target: "init", "Kernel tasks spawned");
+    io::log::early_print("[DEBUG] After spawn_kernel_tasks\n");
 
     // =========================================================================
     // 🚨 STACK OVERFLOW TEST (Double Fault Verification)
@@ -814,7 +1059,9 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // stack_overflow();
     // =========================================================================
 
+    io::log::early_print("[DEBUG] Before executor info macro\n");
     info!(target: "run", "Starting executor main loop");
+    crate::io::log::early_print("[DEBUG] Executor run starting...\n");
 
     // グラフィカルシェルを開始
     // graphical_shell::start();

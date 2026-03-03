@@ -5,8 +5,8 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use super::registry::{DomainState, get_domain, register_domain, set_domain_state, update_domain};
-use crate::ipc::rref::{DomainId, reclaim_domain_resources};
+use crate::domain_system::{DomainId, DomainState, create_domain, set_domain_state, with_domain, with_domain_mut};
+use crate::ipc::rref::reclaim_domain_resources;
 use crate::task::Task;
 use alloc::string::String;
 use core::future::Future;
@@ -74,7 +74,7 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     // 新しいドメインを作成
-    let domain_id = register_domain(domain_name.into());
+    let domain_id = create_domain(domain_name.into()).map_err(|_| DomainError::NotFound)?;
     set_domain_state(domain_id, DomainState::Running);
 
     // ドメインラッパーでFutureをラップ
@@ -85,7 +85,7 @@ where
     let task_id = task.id.as_u64();
 
     // ドメインにタスクを登録
-    update_domain(domain_id, |domain| {
+    with_domain_mut(domain_id, |domain| {
         domain.add_task(task_id);
     });
 
@@ -118,7 +118,7 @@ where
 /// 設計書 8.1: リソース回収
 pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
     // ドメインの存在確認
-    let domain_exists = get_domain(domain_id, |_| true).unwrap_or(false);
+    let domain_exists = with_domain(domain_id, |_| true).unwrap_or(false);
     if !domain_exists {
         return Err(DomainError::NotFound);
     }
@@ -130,7 +130,7 @@ pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
     reclaim_domain_resources(domain_id);
 
     // ドメインに属するタスクを停止
-    let tasks = get_domain(domain_id, |d| d.tasks.clone()).unwrap_or_default();
+    let tasks = with_domain(domain_id, |d| d.tasks.clone()).unwrap_or_default();
     for task_id in tasks {
         // タスクを停止状態に設定
         // 注: 実際のタスク停止はスケジューラが次回処理時に行う
@@ -142,7 +142,7 @@ pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
     }
 
     // ドメインに依存する他のドメインに通知
-    let dependents = get_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
+    let dependents = with_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
     for dep_id in dependents {
         log::info!(
             "[Domain {}] Notifying dependent domain {} of termination\n",
@@ -150,7 +150,7 @@ pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
             dep_id.as_u64()
         );
         // 依存ドメインの状態を更新（依存先が停止したことを記録）
-        update_domain(dep_id, |domain| {
+        with_domain_mut(dep_id, |domain| {
             domain.remove_dependency(domain_id);
         });
     }
@@ -162,7 +162,7 @@ pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
 /// カスタムパニックハンドラから呼ばれる
 pub fn handle_domain_panic(domain_id: DomainId, message: String) {
     // 状態を停止に変更
-    update_domain(domain_id, |domain| {
+    with_domain_mut(domain_id, |domain| {
         domain.state = DomainState::Stopped;
         domain.panic_message = Some(message.clone());
     });
@@ -178,14 +178,14 @@ pub fn handle_domain_panic(domain_id: DomainId, message: String) {
     );
 
     // 依存するドメインに通知
-    let dependents = get_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
+    let dependents = with_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
     for dep_id in dependents {
         log::info!(
             "[PANIC] Notifying dependent domain {} of panic\n",
             dep_id.as_u64()
         );
         // 依存ドメインの状態を更新
-        update_domain(dep_id, |domain| {
+        with_domain_mut(dep_id, |domain| {
             domain.remove_dependency(domain_id);
             // パニック情報を伝播
             domain.last_error = Some(alloc::format!(
@@ -200,7 +200,7 @@ pub fn handle_domain_panic(domain_id: DomainId, message: String) {
 /// ドメインを再起動
 pub fn restart_domain(domain_id: DomainId) -> Result<(), DomainError> {
     // ドメインの状態を確認
-    let state = get_domain(domain_id, |d| d.state);
+    let state = with_domain(domain_id, |d| d.state);
 
     match state {
         Some(DomainState::Stopped) | Some(DomainState::Terminated) => {
@@ -208,7 +208,7 @@ pub fn restart_domain(domain_id: DomainId) -> Result<(), DomainError> {
             set_domain_state(domain_id, DomainState::Initializing);
 
             // ドメインの状態をリセット
-            update_domain(domain_id, |domain| {
+            with_domain_mut(domain_id, |domain| {
                 // エラー状態をクリア
                 domain.panic_message = None;
                 domain.last_error = None;
@@ -243,17 +243,17 @@ pub fn restart_domain(domain_id: DomainId) -> Result<(), DomainError> {
 /// ドメイン間の依存関係を追加
 pub fn add_domain_dependency(dependent: DomainId, dependency: DomainId) -> Result<(), DomainError> {
     // 両方のドメインが存在することを確認
-    let dep_exists = get_domain(dependency, |_| true).unwrap_or(false);
+    let dep_exists = with_domain(dependency, |_| true).unwrap_or(false);
     if !dep_exists {
         return Err(DomainError::NotFound);
     }
 
     // 依存関係を追加
-    update_domain(dependent, |domain| {
+    with_domain_mut(dependent, |domain| {
         domain.add_dependency(dependency);
     });
 
-    update_domain(dependency, |domain| {
+    with_domain_mut(dependency, |domain| {
         domain.add_dependent(dependent);
     });
 
@@ -267,15 +267,15 @@ mod tests {
     #[test_case]
     fn test_domain_lifecycle() {
         // ドメイン作成
-        let id = register_domain("test_domain".into());
+        let id = create_domain("test_domain".into()).expect("create_domain failed");
 
         // 状態確認
-        let state = get_domain(id, |d| d.state);
+        let state = with_domain(id, |d| d.state);
         assert_eq!(state, Some(DomainState::Initializing));
 
         // 状態変更
         set_domain_state(id, DomainState::Running);
-        let state = get_domain(id, |d| d.state);
+        let state = with_domain(id, |d| d.state);
         assert_eq!(state, Some(DomainState::Running));
 
         // 終了

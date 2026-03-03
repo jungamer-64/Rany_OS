@@ -1,0 +1,36 @@
+# libs/sync — 外部クレート向け同期プリミティブ
+
+## 概要
+
+このクレートは、カーネル外部のクレート（`filesystems/fat32` 等）から使用可能な
+**スタンドアロン版の同期プリミティブ** を提供します。
+
+## kernel/src/sync/ との関係
+
+| | `libs/sync` | `kernel/src/sync/` |
+|---|---|---|
+| **対象** | 外部クレート (fs, driver等) | カーネル内部 |
+| **PoisonLock** | 基本版（`spin::Mutex` ベース） | 完全版（IRQ対応、デバッグ情報付き） |
+| **Backoff** | 基本版 | 拡張版（`yield_limit` 付き） |
+| **追加機能** | なし | `IrqMutex`, `AtomicWaker`, MPMC/MPSCリングバッファ, `BoundedChannel` 等 |
+
+## 設計意図
+
+カーネルの `sync/` モジュールはカーネル内部の API（割り込み制御、タスクスケジューラ等）に
+依存しているため、外部クレートから直接使用できません。`libs/sync` はその依存を持たない
+サブセット版として存在します。
+
+API の互換性は意図的に維持されており、外部クレートのコードが将来カーネルに統合された際に
+`use` 文の変更のみで移行できるようになっています。
+
+## 使用例
+
+```toml
+# Cargo.toml
+[dependencies]
+exo_sync = { path = "../../libs/sync" }
+```
+
+```rust
+use exo_sync::{PoisonLock, Backoff};
+```

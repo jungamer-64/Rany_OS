@@ -347,7 +347,7 @@ pub mod fs;
     feature = "full_mm_tests",
     feature = "qemu-test-export"
 ))]
-pub mod storage;
+pub mod durability;
 
 #[cfg(any(
     not(test),

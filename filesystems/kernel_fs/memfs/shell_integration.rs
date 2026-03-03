@@ -16,21 +16,21 @@ pub(crate) static SHELL_FS: Once<Arc<MemoryFs>> = Once::new();
     feature = "qemu-test-export"
 ))]
 fn wal_record_mutation(op: &str, path: &str, payload: &[u8]) {
-    let tx = crate::storage::wal::begin();
+    let tx = crate::durability::wal::begin();
     let mut data = alloc::vec::Vec::with_capacity(op.len() + path.len() + payload.len() + 2);
     data.extend_from_slice(op.as_bytes());
     data.push(0);
     data.extend_from_slice(path.as_bytes());
     data.push(0);
     data.extend_from_slice(payload);
-    crate::storage::wal::append(
+    crate::durability::wal::append(
         tx,
-        crate::storage::wal::WalOperation::Write {
+        crate::durability::wal::WalOperation::Write {
             offset: 0,
             data,
         },
     );
-    crate::storage::wal::commit(tx);
+    crate::durability::wal::commit(tx);
 }
 
 #[cfg(not(any(

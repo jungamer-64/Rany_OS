@@ -17,10 +17,10 @@ mod epoch;
 mod error;
 #[path = "../../filesystems/kernel_fs/mod.rs"]
 mod fs;
-mod storage;
+mod durability;
 mod debug;
-mod ahci_and_init;
-pub use ahci_and_init::*;
+mod kernel_main;
+pub use kernel_main::*;
 #[macro_use]
 mod interrupt_macros;
 // ============================================================================
@@ -58,7 +58,7 @@ mod system_info;
 
 
 // Phase 5: Extended Features & System Integration
-mod gpu;
+// gpu は io/ 配下に移動済み (io::gpu)
 mod profiler;
 mod thermal;
 mod watchdog;

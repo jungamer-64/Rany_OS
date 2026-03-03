@@ -32,7 +32,7 @@ impl SystemIntegration {
                 crate::io::virtio::VirtioDeviceType::Gpu,
             ) {
                 match unsafe {
-                    crate::gpu::init_virtio_gpu_for_device(
+                    crate::io::gpu::init_virtio_gpu_for_device(
                         alloc::boxed::Box::new(transport),
                         iommu_device,
                     )
@@ -53,7 +53,7 @@ impl SystemIntegration {
             if !initialized_via_pci {
                 use alloc::boxed::Box;
                 use crate::driver_registry::{register_driver, driver_registry};
-                use crate::gpu::gpu_driver::VirtioGpuDriver;
+                use crate::io::gpu::gpu_driver::VirtioGpuDriver;
 
                 let drv = Box::new(VirtioGpuDriver::new(bar0_virt, iommu_device));
                 match register_driver(drv) {

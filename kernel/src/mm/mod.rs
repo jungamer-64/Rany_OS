@@ -1,7 +1,14 @@
 #![allow(dead_code)]
 // ============================================================================
-// Memory Management Module
+// mm/ - ページテーブル・フレームアロケータ・仮想メモリ管理
 // 設計書 5: メモリ管理戦略 - 階層型アロケータ設計
+//
+// ■ 責務: 物理フレームアロケータ、ページテーブル(Lv4/Lv5)、
+//          NUMAアフィニティ、ページ回収、TLB Shootdown、
+//          Exchange Heap、メモリホットプラグ等
+//
+// ■ 注意: ヒープアロケータ(GlobalAlloc)、アドレス変換ユーティリティ等は
+//          memory.rs (トップレベル) にあります。
 //
 // ディレクトリ構造:
 //   mm/types.rs, atomic_utils.rs, bitmap/, remote_free/  -- Foundation

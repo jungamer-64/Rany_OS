@@ -6,7 +6,7 @@
 // ============================================================================
 pub mod lifecycle;
 pub mod quota;
-pub mod registry;
+// registry.rs は廃止: domain_system を直接使用してください
 
 #[allow(unused_imports)]
 pub use quota::{DomainPriority, DomainQuota, QuotaError, quota_manager};

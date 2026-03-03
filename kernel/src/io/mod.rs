@@ -12,6 +12,7 @@ pub mod ahci;
 pub mod apic;
 pub mod audio;
 pub mod dma;
+pub mod gpu;
 pub mod hid;
 pub mod ide;
 pub mod interrupt_manager;
