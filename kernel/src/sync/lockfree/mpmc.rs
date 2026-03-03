@@ -1,5 +1,64 @@
-use super::*;
+// ============================================================================
+// src/sync/lockfree/mpmc.rs - MPMC (Multi-Producer Multi-Consumer) リングバッファ
+// 汎用的なコア間通信用
+// ============================================================================
 
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+use super::backoff::Backoff;
+use super::CacheLinePadded;
+
+/// スロットの状態
+const SLOT_EMPTY: u32 = 0;
+const SLOT_WRITING: u32 = 1;
+const SLOT_READY: u32 = 2;
+const SLOT_READING: u32 = 3;
+
+/// MPMCスロット
+///
+/// 各スロットは独立した状態を持ち、複数のプロデューサーとコンシューマーが
+/// 同時に異なるスロットにアクセス可能
+#[repr(C, align(64))]
+struct MpmcSlot<T> {
+    /// スロットの状態
+    state: AtomicU32,
+    /// シーケンス番号（ABAプロブレム対策）
+    sequence: AtomicUsize,
+    /// データ
+    data: UnsafeCell<MaybeUninit<T>>,
+}
+
+impl<T> MpmcSlot<T> {
+    const fn new(seq: usize) -> Self {
+        Self {
+            state: AtomicU32::new(SLOT_EMPTY),
+            sequence: AtomicUsize::new(seq),
+            data: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+}
+
+/// ロックフリーMPMC (Multi-Producer Multi-Consumer) リングバッファ
+///
+/// 複数のプロデューサーと複数のコンシューマーが同時に操作可能
+/// 各スロットに独立した状態を持ち、競合を最小化
+///
+/// # 特徴
+/// - 複数プロデューサー・複数コンシューマー
+/// - スロットレベルのロックフリー操作
+/// - ABAプロブレム対策（シーケンス番号）
+/// - 指数バックオフによる競合緩和
+#[repr(C, align(64))]
+pub struct MpmcRingBuffer<T, const N: usize> {
+    /// 書き込み位置
+    head: CacheLinePadded<AtomicUsize>,
+    /// 読み取り位置
+    tail: CacheLinePadded<AtomicUsize>,
+    /// スロット配列
+    slots: [MpmcSlot<T>; N],
+}
 
 // SAFETY: MPMCRingBufferはSend/Sync安全
 // - 各スロットは独立した状態を持つ
