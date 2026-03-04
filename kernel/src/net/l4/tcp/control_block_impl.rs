@@ -1452,11 +1452,19 @@ impl TcpControlBlock {
         false
     }
 
-    /// Clear SACK scoreboard on new cumulative ACK
+    /// Clear or trim SACK scoreboard entries based on new cumulative ACK
     pub fn clear_sacked_below(&mut self, ack: u32) {
-        self.options.sack_scoreboard.retain(|&(left, _)| {
-            let diff = left.wrapping_sub(ack) as i32;
-            diff >= 0
+        self.options.sack_scoreboard.retain_mut(|(left, right)| {
+            // If the whole block is below the new ACK, remove it.
+            if seq_leq(*right, ack) {
+                return false;
+            }
+            // If the block starts below the ACK but ends after it, trim the left edge.
+            // This preserves the SACK information for the remaining part of the block.
+            if seq_before(*left, ack) {
+                *left = ack;
+            }
+            true
         });
     }
 

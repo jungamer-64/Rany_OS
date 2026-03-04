@@ -644,15 +644,27 @@ net-setup:
 	printf '  make run                         # bridge mode (default)\n'; \
 	printf '  make run NETWORK=bridge NIC=%s  # explicit\n' "$(NIC)"
 
-# Bridge + 関連 tap を削除 (make net-teardown NIC=eth0)
+# Bridge + 関連 tap を削除 (make net-teardown [NIC=eth0])
+# NIC未指定時は brif から物理NICを自動検出して IP/ルートを復元する
 net-teardown:
 	@_bridge="$(BRIDGE)"; \
-	printf '\033[36mTearing down bridge network...\033[0m\n'; \
+	printf '\033[36mTearing down bridge network (restore NIC)...\033[0m\n'; \
 	if ! ip link show "$$_bridge" >/dev/null 2>&1; then \
 		printf '   -> \033[33m[SKIP] Bridge %s does not exist\033[0m\n' "$$_bridge"; \
 		exit 0; \
 	fi; \
-	_br_ip=$$(ip -4 addr show "$$_bridge" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p' | head -1); \
+	_nic="$(NIC)"; \
+	if [ -z "$$_nic" ]; then \
+		_nic=$$(ls /sys/class/net/"$$_bridge"/brif 2>/dev/null | grep -v '^tap' | head -1); \
+	fi; \
+	if [ -z "$$_nic" ] || ! ip link show "$$_nic" >/dev/null 2>&1; then \
+		printf '   -> \033[31m[ERROR] Cannot determine NIC to restore.\033[0m\n'; \
+		printf '      Usage: make net-teardown NIC=<iface>\n'; \
+		exit 1; \
+	fi; \
+	printf '   Bridge : %s\n' "$$_bridge"; \
+	printf '   NIC    : %s\n' "$$_nic"; \
+	_br_ips=$$(ip -4 addr show "$$_bridge" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p'); \
 	_br_gw=$$(ip route show default dev "$$_bridge" 2>/dev/null | awk '{print $$3}' | head -1); \
 	for tap in $$(ls /sys/class/net/ 2>/dev/null | grep '^tap'); do \
 		_master=$$(cat /sys/class/net/$$tap/master/uevent 2>/dev/null | sed -n 's/INTERFACE=//p'); \
@@ -662,23 +674,27 @@ net-teardown:
 			printf '   -> \033[32mRemoved tap: %s\033[0m\n' "$$tap"; \
 		fi; \
 	done; \
-	if [ -n "$(NIC)" ] && ip link show "$(NIC)" >/dev/null 2>&1; then \
-		sudo ip link set "$(NIC)" nomaster 2>/dev/null || true; \
-		if [ -n "$$_br_ip" ]; then \
-			sudo ip addr add "$$_br_ip" dev "$(NIC)" 2>/dev/null || true; \
-		fi; \
-		if [ -n "$$_br_gw" ]; then \
-			sudo ip route replace default via "$$_br_gw" dev "$(NIC)" 2>/dev/null || true; \
-		fi; \
-		printf '   -> \033[32mRestored NIC: %s (IP: %s)\033[0m\n' "$(NIC)" "$${_br_ip:-dhcp}"; \
+	sudo ip link set "$$_nic" up 2>/dev/null || true; \
+	sudo ip -4 addr flush dev "$$_nic" 2>/dev/null || true; \
+	if [ -n "$$_br_ips" ]; then \
+		for _ip in $$_br_ips; do \
+			sudo ip addr add "$$_ip" dev "$$_nic" 2>/dev/null || true; \
+		done; \
 	fi; \
+	if [ -n "$$_br_gw" ]; then \
+		sudo ip route replace default via "$$_br_gw" dev "$$_nic" 2>/dev/null || true; \
+	fi; \
+	sudo ip link set "$$_nic" nomaster 2>/dev/null || true; \
+	sudo ip -4 addr flush dev "$$_bridge" 2>/dev/null || true; \
 	if command -v resolvectl >/dev/null 2>&1; then \
 		sudo resolvectl revert "$$_bridge" >/dev/null 2>&1 || true; \
-		printf '   -> \033[32m[NET] Reverted DNS settings for %s\033[0m\n' "$$_bridge"; \
+		sudo resolvectl revert "$$_nic" >/dev/null 2>&1 || true; \
+		printf '   -> \033[32mReverted DNS: %s, %s\033[0m\n' "$$_bridge" "$$_nic"; \
 	fi; \
 	sudo ip link set "$$_bridge" down 2>/dev/null || true; \
 	sudo ip link del "$$_bridge" 2>/dev/null || true; \
-	printf '   -> \033[32m[OK] Bridge %s removed\033[0m\n' "$$_bridge"
+	printf '   -> \033[32m[OK] Restored NIC %s (IP: %s, GW: %s), bridge %s removed\033[0m\n' \
+		"$$_nic" "$${_br_ips:-none}" "$${_br_gw:-none}" "$$_bridge"
 
 # Bridge 状態を表示
 net-status:
