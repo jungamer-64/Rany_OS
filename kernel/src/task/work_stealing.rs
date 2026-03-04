@@ -12,6 +12,30 @@
 //! - グローバルな注入/取得キュー（`inject_global` / `steal_from_global`）
 //! - キュー統計（`global_queue_len`, `global_queue_stats`）
 //!
+//! ## `work_stealing_advanced` との共存理由
+//!
+//! 本モジュールは **グローバルインジェクションキューのみ** を提供します。
+//! ISRや外部ドメインからのタスク注入（`inject_global`）は、特定のコアに
+//! 紐付かない「入口」として機能するため、Per-Core スケジューラ
+//! (`work_stealing_advanced`) とは独立して存在する必要があります。
+//!
+//! ```text
+//! ISR / 外部ドメイン
+//!       │
+//!       ▼
+//!  ┌──────────────────┐
+//!  │ work_stealing.rs  │  ← グローバルインジェクションキュー
+//!  │ (inject_global)   │
+//!  └────────┬─────────┘
+//!           │ steal_from_global()
+//!           ▼
+//!  ┌──────────────────────────┐
+//!  │ work_stealing_advanced/  │  ← NUMA対応 Per-Core スケジューラ
+//!  │ (PerCoreWorker,          │     3段階スティーリング
+//!  │  GlobalScheduler)        │
+//!  └──────────────────────────┘
+//! ```
+//!
 //! ## 関連モジュール
 //! - `work_stealing_advanced/` — NUMA対応のPer-Coreスケジューラ
 //!   （旧 Per-Core WorkStealingQueue はそちらに移行済み）

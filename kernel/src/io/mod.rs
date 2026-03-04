@@ -23,7 +23,6 @@ pub mod nvme;
 pub mod pci;
 pub mod rtc;
 pub mod serial;
-pub mod time_management;
 pub mod usb;
 pub mod virtio;
 
