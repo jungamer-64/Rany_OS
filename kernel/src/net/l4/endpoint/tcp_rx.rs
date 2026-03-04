@@ -419,6 +419,9 @@ fn try_fast_path(
     tcb_table().update(tcb.local, tcb.remote, |entry| {
         entry.rcv_nxt = new_rcv_nxt;
         // Delayed ACK: セグメントカウンタをインクリメント
+        if entry.delayed_ack_pending == 0 {
+            entry.delayed_ack_timer = tcb_table().get_current_tick();
+        }
         entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
 
         // RFC 7323: タイムスタンプ更新 (Fast Path)
@@ -483,11 +486,13 @@ fn send_ack_for_fast_path(tcb: &TcpControlBlockEntry, rcv_nxt: u32) {
 /// 定期的に呼び出され、遅延中のACKを送信する。
 /// `DELAYED_ACK_TIMEOUT_MS` 経過した接続の保留ACKをフラッシュする。
 pub fn flush_delayed_acks() {
-    // Step 1: 保留ACKがある接続を収集（読み取りロック）
+    let now = tcb_table().get_current_tick();
+
+    // Step 1: 期限切れの保留ACKがある接続を収集（読み取りロック）
     let mut pending: alloc::vec::Vec<(EndpointAddr, EndpointAddr, u32, u32, u16, bool, u32)> =
         alloc::vec::Vec::new();
     tcb_table().for_each_established(|entry| {
-        if entry.delayed_ack_pending > 0 {
+        if entry.delayed_ack_pending > 0 && now.saturating_sub(entry.delayed_ack_timer) >= DELAYED_ACK_TIMEOUT_MS {
             pending.push((
                 entry.local,
                 entry.remote,
@@ -755,6 +760,9 @@ fn handle_data_received_with_delayed_ack(tcb: TcpControlBlockEntry, seq_num: u32
     tcb_table().update(tcb.local, tcb.remote, |entry| {
         entry.rcv_nxt = new_rcv_nxt;
         // Delayed ACK: セグメントカウンタをインクリメント
+        if entry.delayed_ack_pending == 0 {
+            entry.delayed_ack_timer = tcb_table().get_current_tick();
+        }
         entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
     });
 

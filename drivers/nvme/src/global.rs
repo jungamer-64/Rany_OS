@@ -20,8 +20,11 @@ use super::polling_driver::{NvmeDriverStats, NvmePollingDriver};
 static NVME_DRIVER: Mutex<Option<NvmePollingDriver>> = Mutex::new(None);
 
 /// NVMeドライバを初期化
-pub fn init(bar0: u64, num_cores: u32) -> Result<(), &'static str> {
-    let mut driver = NvmePollingDriver::new(bar0, num_cores);
+///
+/// `device_id` にIOMMU対応のパック済みデバイスIDを指定すると、
+/// DMAバッファがデバイス固有のIOMMUドメインにマッピングされる。
+pub fn init(bar0: u64, num_cores: u32, device_id: Option<u64>) -> Result<(), &'static str> {
+    let mut driver = NvmePollingDriver::new(bar0, num_cores, device_id);
     driver.init()?;
     *NVME_DRIVER.lock() = Some(driver);
     Ok(())

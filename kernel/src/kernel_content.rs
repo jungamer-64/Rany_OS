@@ -534,7 +534,13 @@ fn init_single_nvme_controller(dev: &pci_driver::PciDeviceInfo, nvme_controller_
     };
 
     let num_cores = crate::smp::cpu_count();
-    match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores) {
+    let packed_device_id = crate::io::nvme::iommu_device().map(|d| {
+        ((d.segment as u64) << 32)
+            | ((d.bus as u64) << 16)
+            | ((d.device as u64) << 8)
+            | (d.function as u64)
+    });
+    match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
         Ok(()) => {
             info!(target: "init", "NVMe driver initialized (polling)");
             let apic_id = crate::io::apic::local_apic().id() as u32;

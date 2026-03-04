@@ -105,8 +105,14 @@ impl SystemIntegration {
                     crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
                         .as_u64();
                 let num_cores = crate::smp::cpu_count();
+                let packed_device_id = Some(
+                    ((dev.segment as u64) << 32)
+                        | ((dev.bdf.bus() as u64) << 16)
+                        | ((dev.bdf.device() as u64) << 8)
+                        | (dev.bdf.function() as u64),
+                );
 
-                match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores) {
+                match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
                     Ok(()) => {
                         self.log("    NVMe driver initialized (polling)");
                         let apic_id = crate::io::apic::local_apic().id() as u32;

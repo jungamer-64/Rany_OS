@@ -95,6 +95,8 @@ pub struct TcpControlBlockEntry {
     /// ファストパスでデータを受信するたびにインクリメントされ、
     /// DELAYED_ACK_SEGMENTS (2) に達するか、タイムアウトでACK送信後にリセット。
     pub delayed_ack_pending: u8,
+    /// Delayed ACK: 最初の保留ACKパケットを受信した時刻（tick）
+    pub delayed_ack_timer: u64,
     /// 保留中のエラー (RFC 1122: ICMPエラー等を次回の操作で返すために保持)
     pub pending_error: Option<EndpointError>,
 }
@@ -140,6 +142,7 @@ impl TcpControlBlockEntry {
             nagle_enabled: true, // デフォルトで有効
             priority: 0,
             delayed_ack_pending: 0,
+            delayed_ack_timer: 0,
             pending_error: None,
         }
     }

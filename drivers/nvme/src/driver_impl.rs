@@ -12,7 +12,7 @@ pub struct NvmeDriverWrapper {
 impl NvmeDriverWrapper {
     pub fn new(bar0: u64, cores: u32) -> Self {
         Self {
-            inner: Mutex::new(NvmePollingDriver::new(bar0, cores)),
+            inner: Mutex::new(NvmePollingDriver::new(bar0, cores, None)),
         }
     }
 }
@@ -50,7 +50,7 @@ fn abi_probe(ctx: &mut DriverContext) -> i32 {
     static mut DRIVER: Option<NvmePollingDriver> = None;
 
     unsafe {
-        DRIVER = Some(NvmePollingDriver::new(ctx.device_address, 1));
+        DRIVER = Some(NvmePollingDriver::new(ctx.device_address, 1, None));
         if let Some(ref mut driver) = DRIVER {
             if driver.init().is_err() {
                 return -1;

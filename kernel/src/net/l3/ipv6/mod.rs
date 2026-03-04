@@ -1153,19 +1153,13 @@ impl Ipv6PmtuCache {
 
     /// Evict expired entries
     pub fn evict_expired(&mut self, current_time: u64) {
-        // Collect expired entries explicitly
-        let mut expired = Vec::new();
-        for (time, key) in self.lru.iter() {
-            if current_time.saturating_sub(*time) > Ipv6PmtuEntry::TIMEOUT_MS {
-                expired.push((*time, *key));
-            } else {
-                // Since lru is sorted by time, once we hit an unexpired one we can stop
+        // Remove entries from the head while they are expired.
+        // This avoids temporary allocation in runtime paths and keeps O(k log N).
+        while let Some((time, key)) = self.lru.first().copied() {
+            if current_time.saturating_sub(time) <= Ipv6PmtuEntry::TIMEOUT_MS {
                 break;
             }
-        }
-
-        for (time, key) in expired {
-            self.lru.remove(&(time, key));
+            self.lru.pop_first();
             self.entries.remove(&key);
         }
     }

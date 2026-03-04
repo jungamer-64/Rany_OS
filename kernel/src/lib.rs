@@ -1993,6 +1993,15 @@ pub mod loader;
     ),
     feature = "bench"
 ))]
+pub mod crypto;
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub mod sync;
 
 #[cfg(any(

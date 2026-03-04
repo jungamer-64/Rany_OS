@@ -126,7 +126,12 @@ impl FlowController {
     /// Returns: 新しい広告ウィンドウ
     pub fn on_receive(&mut self, bytes: u32) -> u32 {
         self.buffer_used = self.buffer_used.saturating_add(bytes);
-        self.update_advertised_window();
+        // 受信した分だけ広告ウィンドウを減らして、ウィンドウ右端を維持する (RFC 1122)
+        self.advertised_window = self.advertised_window.saturating_sub(bytes);
+        
+        if self.advertised_window == 0 {
+            self.state = FlowControlState::ZeroWindow;
+        }
         self.advertised_window
     }
 
@@ -135,22 +140,26 @@ impl FlowController {
     /// - bytes: 消費したバイト数
     /// Returns: 新しい広告ウィンドウ
     pub fn on_consume(&mut self, bytes: u32) -> u32 {
-        let prev_window = self.advertised_window;
         self.buffer_used = self.buffer_used.saturating_sub(bytes);
-        self.update_advertised_window();
+        let available = self.available_buffer();
 
-        // ゼロウィンドウから回復した場合
-        if self.state == FlowControlState::ZeroWindow && self.advertised_window > 0 {
+        // RFC 1122 Section 4.2.3.3: Receiver SWS Avoidance
+        // ウィンドウの更新（右端の移動）を行う閾値: max(MSS, BufferSize / 2)
+        let threshold = max(MIN_ADVERTISE_WINDOW, self.buffer_size / 2);
+        
+        // 以下のいずれかの場合にウィンドウを更新する:
+        // 1. 増加分が閾値以上
+        // 2. ウィンドウが0から回復し、かつ最小広告ウィンドウ以上
+        // 3. バッファが完全に空になった
+        let can_update = (available >= self.advertised_window + threshold) ||
+                        (self.advertised_window == 0 && available >= MIN_ADVERTISE_WINDOW) ||
+                        (available == self.buffer_size && self.advertised_window < self.buffer_size);
+
+        if can_update {
+            self.advertised_window = available;
+            self.window_update_needed = true;
             self.state = FlowControlState::Normal;
             self.probe_count = 0;
-        }
-
-        // 大きなウィンドウ増加があればウィンドウ更新を送信
-        // RFC 1122: ウィンドウが MSS または buffer_size/2 以上増えた場合
-        let threshold = max(MIN_ADVERTISE_WINDOW, self.buffer_size / 4);
-        if self.advertised_window > prev_window && self.advertised_window - prev_window >= threshold
-        {
-            self.window_update_needed = true;
         }
 
         self.advertised_window
@@ -161,12 +170,15 @@ impl FlowController {
         let available = self.available_buffer();
 
         // SWS回避: 小さすぎるウィンドウは0として広告
-        if available < MIN_ADVERTISE_WINDOW && available < self.buffer_size / 4 {
+        if available < MIN_ADVERTISE_WINDOW && available < self.buffer_size / 2 {
             self.advertised_window = 0;
             self.state = FlowControlState::ZeroWindow;
         } else {
-            self.advertised_window = available;
-            if self.state == FlowControlState::ZeroWindow && available > 0 {
+            // Note: 本来は RightEdge を維持すべきだが、既存実装との互換性のため
+            // available が十分大きい場合は更新する。
+            // on_consume 側で詳細な制御を行っている。
+            if available >= self.advertised_window + max(MIN_ADVERTISE_WINDOW, self.buffer_size / 2) {
+                self.advertised_window = available;
                 self.state = FlowControlState::Normal;
             }
         }
