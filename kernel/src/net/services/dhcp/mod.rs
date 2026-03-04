@@ -116,6 +116,8 @@ pub enum DhcpOption {
     ServerIdentifier = 54,
     /// パラメータ要求リスト
     ParameterRequestList = 55,
+    /// 最大メッセージサイズ (RFC 2131)
+    MaximumMessageSize = 57,
     /// クライアント識別子
     ClientIdentifier = 61,
     /// 終端

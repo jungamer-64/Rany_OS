@@ -29,6 +29,12 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
+        // DEBUG: DHCP port=67 or 68 の送信をトレース
+        if dst_port == 67 || src_port == 68 {
+            log::warn!("[UDP-TX] DHCP pkt: {}:{} -> {}:{} len={}",
+                src_ip, src_port, dst_ip, dst_port, data.len());
+        }
+
         let config = self.config.clone();
         let current_time = self.current_time();
 
@@ -36,7 +42,12 @@ impl NetworkStack {
         let dst_mac = self.resolve_mac(dst_ip, &config, current_time);
         let dst_mac = match dst_mac {
             Some(mac) => mac,
-            None => return false,
+            None => {
+                if dst_port == 67 || src_port == 68 {
+                    log::warn!("[UDP-TX] MAC resolve FAILED for {}", dst_ip);
+                }
+                return false;
+            }
         };
 
         let mut buffer = [0u8; MAX_PACKET_SIZE];
@@ -76,8 +87,24 @@ impl NetworkStack {
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
 
-                    return self.transmit(frame.as_bytes());
+                    let result = self.transmit(frame.as_bytes());
+                    if dst_port == 67 || src_port == 68 {
+                        log::warn!("[UDP-TX] transmit({} bytes) = {}", frame.as_bytes().len(), result);
+                    }
+                    return result;
+                } else {
+                    if dst_port == 67 || src_port == 68 {
+                        log::warn!("[UDP-TX] UDP build_packet FAILED");
+                    }
                 }
+            } else {
+                if dst_port == 67 || src_port == 68 {
+                    log::warn!("[UDP-TX] Ipv4PacketMut FAILED");
+                }
+            }
+        } else {
+            if dst_port == 67 || src_port == 68 {
+                log::warn!("[UDP-TX] EthernetFrameMut FAILED");
             }
         }
 

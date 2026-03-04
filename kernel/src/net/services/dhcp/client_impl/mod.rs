@@ -286,6 +286,10 @@ impl DhcpClient {
         client_id[1..7].copy_from_slice(self.mac_address.as_bytes());
         append_opt(DhcpOption::ClientIdentifier as u8, &client_id)?;
 
+        // 最大メッセージサイズ (Option 57)
+        let max_size = (DHCP_MAX_MESSAGE_SIZE as u16).to_be_bytes();
+        append_opt(DhcpOption::MaximumMessageSize as u8, &max_size)?;
+
         // ホスト名 (Option 12)
         append_opt(DhcpOption::Hostname as u8, b"ranyos")?;
 
@@ -385,6 +389,10 @@ impl DhcpClient {
         client_id[0] = 1; // Ethernet
         client_id[1..7].copy_from_slice(self.mac_address.as_bytes());
         append_opt(DhcpOption::ClientIdentifier as u8, &client_id)?;
+
+        // 最大メッセージサイズ (Option 57)
+        let max_size = (DHCP_MAX_MESSAGE_SIZE as u16).to_be_bytes();
+        append_opt(DhcpOption::MaximumMessageSize as u8, &max_size)?;
 
         if offset >= buffer.len() {
             return Err("Buffer overflow at End option");
@@ -625,12 +633,6 @@ impl DhcpClient {
         header: &DhcpHeader,
         server_id: Ipv4Address,
     ) -> Result<(), &'static str> {
-        let siaddr = header.siaddr();
-        if siaddr != Ipv4Address::new([0, 0, 0, 0]) && siaddr != server_id {
-            log::warn!("[NET] DHCP server identifier ({:?}) and siaddr ({:?}) mismatch", server_id, siaddr);
-            return Err("Server identifier mismatch");
-        }
-
         if header.yiaddr() == Ipv4Address::new([0, 0, 0, 0]) {
             return Err("Missing yiaddr in Offer/Ack");
         }

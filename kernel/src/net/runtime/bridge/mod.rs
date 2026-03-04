@@ -425,6 +425,15 @@ async fn tx_worker_task() {
         for req in drained.into_iter() {
             let device_index = resolve_virtio_index(req.if_id);
 
+            // DEBUG: DHCP パケットをトレース (Ethernet dst_port=67)
+            if req.data.len() >= 42 {
+                // Ethernet(14) + IP(20) + UDP dst_port at offset 36..38
+                let udp_dst = u16::from_be_bytes([req.data[36], req.data[37]]);
+                if udp_dst == 67 || udp_dst == 68 {
+                    log::warn!("[TX-WORKER] DHCP frame len={} dev={}", req.data.len(), device_index);
+                }
+            }
+
             log::debug!("[TX-WORKER] processing req: dev={}, len={}", device_index, req.data.len());
 
             // Try IoScheduler path first
