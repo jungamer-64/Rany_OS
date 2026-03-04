@@ -576,10 +576,25 @@ impl DhcpClient {
 
     // --- check_timeout helper: handle Rebinding state ---
     pub(super) fn handle_rebinding_timeout(&self, elapsed_secs: u64) -> bool {
-        // Retransmit rebind requests; if retried too many times, give up and start over
-        if elapsed_secs > Self::RETRY_INTERVAL_SECS {
-            let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
-            if retry >= Self::MAX_RETRIES {
+        // RFC 2131: Retransmit rebind requests with exponential backoff.
+        // If retried too many times, give up and start over.
+        let retry = self.retry_count.load(Ordering::SeqCst);
+
+        // Exponential backoff: 4s * 2^retry, clamped at 64s (matching check_retry_or_transition)
+        let base_interval = (4u64 << core::cmp::min(retry, 4)).min(64);
+
+        // Add jitter ±1s
+        let jitter = if retry > 0 {
+            let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
+            (rnd % 3) - 1 // -1, 0, or 1
+        } else {
+            0
+        };
+        let interval = (base_interval as i64 + jitter).max(1) as u64;
+
+        if elapsed_secs >= interval {
+            let actual_retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
+            if actual_retry >= Self::MAX_RETRIES {
                 // Give up
                 self.transition_state(DhcpState::Init);
                 self.retry_count.store(0, Ordering::SeqCst);

@@ -116,38 +116,78 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     }
 
     // Spawn DHCPv4 client task
+    //
+    // DHCP_CLIENT は PoisonLock（スピンロック）で保護されている。
+    // ロックを .await を跨いで保持するとデッドロックするため、
+    // 初期化済みクライアントへの 'static 参照を取得してからロックを解放する。
     crate::task::Executor::spawn_global(crate::task::Task::new(async move {
-        if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
-            if let Some(client) = &*guard {
-                let _ = client.run().await;
-            }
+        let client_ref: Option<&'static dhcp::DhcpClient> = {
+            let guard = match dhcp::DHCP_CLIENT.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            guard.as_ref().map(|c| {
+                // SAFETY: DHCP_CLIENT はカーネル静的変数で init() 後は
+                // Some のまま変更されず、カーネル寿命と同等に存続する。
+                unsafe { &*(c as *const dhcp::DhcpClient) }
+            })
+        }; // guard ドロップ → ロック解放
+        if let Some(client) = client_ref {
+            let _ = client.run().await;
         }
     }));
 
     // Spawn DHCPv6 client task
     crate::task::Executor::spawn_global(crate::task::Task::new(async move {
-        if let Ok(guard) = dhcp::DHCPV6_CLIENT.lock() {
-            if let Some(client6) = &*guard {
-                let _ = client6.run().await;
-            }
+        let client_ref: Option<&'static dhcp::DhcpV6Client> = {
+            let guard = match dhcp::DHCPV6_CLIENT.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            guard.as_ref().map(|c| {
+                // SAFETY: DHCPV6_CLIENT はカーネル静的変数で init_v6() 後は
+                // Some のまま変更されず、カーネル寿命と同等に存続する。
+                unsafe { &*(c as *const dhcp::DhcpV6Client) }
+            })
+        }; // guard ドロップ → ロック解放
+        if let Some(client6) = client_ref {
+            let _ = client6.run().await;
         }
     }));
 
     // Spawn mDNS service task
     crate::task::Executor::spawn_global(crate::task::Task::new(async move {
-        if let Ok(mut guard) = crate::net::services::mdns::service().lock() {
-            if let Some(ref mut service) = *guard {
-                let _ = service.run().await;
-            }
+        let svc_ref: Option<&'static mut crate::net::services::mdns::MdnsService> = {
+            let mut guard = match crate::net::services::mdns::service().lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            guard.as_mut().map(|s| {
+                // SAFETY: mDNS サービスはカーネル静的変数で init() 後は
+                // Some のまま変更されず、カーネル寿命と同等に存続する。
+                unsafe { &mut *(s as *mut crate::net::services::mdns::MdnsService) }
+            })
+        }; // guard ドロップ → ロック解放
+        if let Some(service) = svc_ref {
+            let _ = service.run().await;
         }
     }));
 
     // Spawn DNS client task
     crate::task::Executor::spawn_global(crate::task::Task::new(async move {
-        if let Ok(guard) = crate::net::services::dns::client().lock() {
-            if let Some(ref client) = *guard {
-                let _ = client.run().await;
-            }
+        let client_ref: Option<&'static crate::net::services::dns::DnsClient> = {
+            let guard = match crate::net::services::dns::client().lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            guard.as_ref().map(|c| {
+                // SAFETY: DNS クライアントはカーネル静的変数で init() 後は
+                // Some のまま変更されず、カーネル寿命と同等に存続する。
+                unsafe { &*(c as *const crate::net::services::dns::DnsClient) }
+            })
+        }; // guard ドロップ → ロック解放
+        if let Some(client) = client_ref {
+            let _ = client.run().await;
         }
     }));
 

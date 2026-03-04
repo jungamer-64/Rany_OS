@@ -803,9 +803,16 @@ impl DhcpV6Client {
                     return true;
                 }
             }
+            // ADVERTISE は OFFER に相当し、リース受理にはならない。
+            // SolicitSent 以外の状態で受信した ADVERTISE は無視する。
+            return false;
         }
 
-        // Otherwise, treat REPLY that contains IAADDR as lease acceptance
+        // Only treat REPLY messages as lease acceptance (RFC 8415)
+        if msg_type != (DhcpV6MessageType::Reply as u8) {
+            return false;
+        }
+
         match self.parse_reply(data, now) {
             Ok(Some(lease)) => {
                 // Accept lease: configure IPv6 address + NDP
@@ -872,11 +879,12 @@ impl DhcpV6Client {
                     let base_t = (1u64 << core::cmp::min(retry, 7)).min(120);
                     
                     // RFC 8415: RT = (1 + RAND) * T, where RAND is [-0.1, 0.1]
-                    // For simplicity, we use ~10% jitter based on pseudo-random from MAC/Time
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21; // 0..20
                     let jitter_percent = (rnd as i64) - 10; // -10% .. +10%
-                    let interval_ms = (base_t * 1000).saturating_add((base_t * 100 * jitter_percent as u64) / 1000);
-                    let interval_ticks = interval_ms.max(100); // at least 100ms
+                    let base_ms = (base_t * 1000) as i64;
+                    let jitter_ms = (base_t as i64 * jitter_percent) / 10;
+                    let interval_ms = (base_ms + jitter_ms).max(100) as u64;
+                    let interval_ticks = interval_ms; // already >= 100ms
 
                     let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
                     if elapsed_ms >= interval_ticks {
@@ -902,8 +910,10 @@ impl DhcpV6Client {
                     
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
                     let jitter_percent = (rnd as i64) - 10;
-                    let interval_ms = (base_t * 1000).saturating_add((base_t * 100 * jitter_percent as u64) / 1000);
-                    let interval_ticks = interval_ms.max(100);
+                    let base_ms = (base_t * 1000) as i64;
+                    let jitter_ms = (base_t as i64 * jitter_percent) / 10;
+                    let interval_ms = (base_ms + jitter_ms).max(100) as u64;
+                    let interval_ticks = interval_ms;
 
                     let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
                     if elapsed_ms >= interval_ticks {
@@ -947,8 +957,10 @@ impl DhcpV6Client {
                     
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
                     let jitter_percent = (rnd as i64) - 10;
-                    let interval_ms = (base_t * 1000).saturating_add((base_t * 100 * jitter_percent as u64) / 1000);
-                    let interval_ticks = interval_ms.max(100);
+                    let base_ms = (base_t * 1000) as i64;
+                    let jitter_ms = (base_t as i64 * jitter_percent) / 10;
+                    let interval_ms = (base_ms + jitter_ms).max(100) as u64;
+                    let interval_ticks = interval_ms;
 
                     let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
                     if elapsed_ms >= interval_ticks {
@@ -985,8 +997,10 @@ impl DhcpV6Client {
                     
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
                     let jitter_percent = (rnd as i64) - 10;
-                    let interval_ms = (base_t * 1000).saturating_add((base_t * 100 * jitter_percent as u64) / 1000);
-                    let interval_ticks = interval_ms.max(100);
+                    let base_ms = (base_t * 1000) as i64;
+                    let jitter_ms = (base_t as i64 * jitter_percent) / 10;
+                    let interval_ms = (base_ms + jitter_ms).max(100) as u64;
+                    let interval_ticks = interval_ms;
 
                     let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
                     if elapsed_ms >= interval_ticks {
