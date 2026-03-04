@@ -226,6 +226,22 @@ pub(crate) fn init_network_subsystem() {
 
 /// Synchronous DHCP handshake for bridge/TAP mode.
 ///
+/// DHCP パケットを source IP 0.0.0.0 で broadcast 送信する。
+/// RFC 2131: DHCPDISCOVER/REQUEST ではクライアントは source IP 0.0.0.0 を使う。
+fn send_dhcp_packet(src_port: u16, dst_port: u16, data: &[u8]) -> bool {
+    use crate::net::l3::ipv4::Ipv4Address;
+    let any = Ipv4Address::new([0, 0, 0, 0]);
+    let broadcast = Ipv4Address::new([255, 255, 255, 255]);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
+            if let Some(stack) = guard.as_mut() {
+                return stack.send_udp_raw_with_src_ttl(any, src_port, broadcast, dst_port, data, 64);
+            }
+        }
+        false
+    })
+}
+
 /// asyncエグゼキュータ起動前に DISCOVER→OFFER→REQUEST→ACK を同期的に実行し、
 /// ネットワークスタックに正しいIPアドレス/ゲートウェイを設定する。
 /// 成功時はゲートウェイIPを返す。失敗時は `None` を返し、呼び出し元がフォールバックする。
@@ -255,7 +271,6 @@ fn try_sync_dhcp_configure() -> Option<[u8; 4]> {
     };
     info!(target: "init", "[DHCP-SYNC] Bound UDP port {}", DHCP_CLIENT_PORT);
 
-    let broadcast = Ipv4Address::new([255, 255, 255, 255]);
     let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
 
     // ── Step 2: DHCP DISCOVER 構築 & 送信 ──
@@ -278,13 +293,11 @@ fn try_sync_dhcp_configure() -> Option<[u8; 4]> {
         }
     };
 
-    crate::net::runtime::stack::send_udp_async(
-        DHCP_CLIENT_PORT, broadcast, DHCP_SERVER_PORT, &buf[..discover_len], 64,
-    );
-    // イベント処理 → TX ドレイン → VMEXIT → RXポーリングの同期パイプライン
+    send_dhcp_packet(DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &buf[..discover_len]);
+    // TX ドレイン → VMEXIT → RXポーリングの同期パイプライン
     for _ in 0..4 {
-        crate::net::runtime::bridge::sync_process_network_events();
         crate::net::runtime::bridge::sync_drain_tx_queue();
+        crate::net::runtime::bridge::sync_process_network_events();
         io_delay_vmexit(200);
     }
     info!(target: "init", "[DHCP-SYNC] DISCOVER sent ({} bytes), waiting for OFFER...", discover_len);
@@ -327,12 +340,10 @@ fn try_sync_dhcp_configure() -> Option<[u8; 4]> {
                 client.build_discover(&mut buf, crate::task::timer::current_tick()).ok()
             });
             if let Some(len) = resend {
-                crate::net::runtime::stack::send_udp_async(
-                    DHCP_CLIENT_PORT, broadcast, DHCP_SERVER_PORT, &buf[..len], 64,
-                );
+                send_dhcp_packet(DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &buf[..len]);
                 for _ in 0..4 {
-                    crate::net::runtime::bridge::sync_process_network_events();
                     crate::net::runtime::bridge::sync_drain_tx_queue();
+                    crate::net::runtime::bridge::sync_process_network_events();
                     io_delay_vmexit(200);
                 }
                 info!(target: "init", "[DHCP-SYNC] Re-sent DISCOVER");
@@ -371,12 +382,10 @@ fn try_sync_dhcp_configure() -> Option<[u8; 4]> {
         }
     };
 
-    crate::net::runtime::stack::send_udp_async(
-        DHCP_CLIENT_PORT, broadcast, DHCP_SERVER_PORT, &buf[..request_len], 64,
-    );
+    send_dhcp_packet(DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &buf[..request_len]);
     for _ in 0..4 {
-        crate::net::runtime::bridge::sync_process_network_events();
         crate::net::runtime::bridge::sync_drain_tx_queue();
+        crate::net::runtime::bridge::sync_process_network_events();
         io_delay_vmexit(200);
     }
     info!(target: "init", "[DHCP-SYNC] REQUEST sent ({} bytes), waiting for ACK...", request_len);
