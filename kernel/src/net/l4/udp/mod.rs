@@ -443,6 +443,27 @@ impl UdpEndpoint {
         }
     }
 
+    /// Try to receive a datagram synchronously (non-blocking).
+    ///
+    /// ブートストラップ同期コンテキスト（async executor 未起動時）で使用する。
+    /// キューにパケットがなければ `None` を返す。
+    pub fn try_recv_sync(&self) -> Option<(UdpAddr, u8, PacketRef)> {
+        match self.inner.lock() {
+            Ok(mut inner) => {
+                if let Some((addr, ttl, pkt)) = inner.rx_packet_queue.pop_front() {
+                    inner.rx_queue_bytes = inner.rx_queue_bytes.saturating_sub(pkt.len());
+                    Some((addr, ttl, pkt))
+                } else {
+                    None
+                }
+            }
+            Err(_) => {
+                log::error!("[NET] UDP Endpoint poisoned (try_recv_sync)");
+                None
+            }
+        }
+    }
+
     /// Deliver a packet to this socket (called by the network stack)
     pub fn deliver(&self, src: UdpAddr, ttl: u8, packet: PacketRef) {
         match self.inner.lock() {

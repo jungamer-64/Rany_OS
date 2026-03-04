@@ -497,6 +497,30 @@ impl ArpCache {
         }
     }
 
+    /// Remove an entry only if it is in the Incomplete state.
+    ///
+    /// ブートストラップ同期コンテキストで `current_time` が進まない場合、
+    /// `is_pending()` が永続的に true を返し ARP 要求の再送が抑止される。
+    /// Incomplete エントリのみを削除し、Resolved エントリはそのまま保持する。
+    pub fn remove_if_incomplete(&self, ip: Ipv4Address) {
+        let mut entries = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[NET] ARP cache lock poisoned - remove_if_incomplete ignored");
+                return;
+            }
+        };
+
+        for entry in entries.iter_mut() {
+            if let Some(e) = entry {
+                if e.ip == ip && e.state == ArpEntryState::Incomplete {
+                    *entry = None;
+                    return;
+                }
+            }
+        }
+    }
+
     /// Expire old entries
     pub fn expire_old(&self, current_time: u64) {
         let mut entries = match self.entries.lock() {

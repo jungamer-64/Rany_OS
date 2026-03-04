@@ -148,6 +148,16 @@ impl NetworkStack {
         self.arp.cache().insert(ip, mac, current_time);
     }
 
+    /// Remove an ARP cache entry only if it is still in the Incomplete state.
+    ///
+    /// ブートストラップ同期コンテキストで `current_time` が進まない場合、
+    /// `is_pending()` が永続的に `true` を返し、ARP 要求の再送が抑止される。
+    /// この関数で Incomplete エントリを削除し、次の `resolve_mac()` 呼出しで
+    /// 新た ARP 要求を送信できるようにする。
+    pub fn arp_cache_remove_incomplete(&mut self, ip: Ipv4Address) {
+        self.arp.cache().remove_if_incomplete(ip);
+    }
+
     /// Get ARP cache entries (for debugging)
     pub fn arp_cache(&self) -> Vec<(Ipv4Address, MacAddress)> {
         self.arp
