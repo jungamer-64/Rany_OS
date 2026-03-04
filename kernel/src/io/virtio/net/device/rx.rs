@@ -119,18 +119,34 @@ impl VirtioNetDevice {
             );
         }
 
-        // Re-post a new PacketRef buffer to the queue so we keep a steady supply
+        // Re-post a new PacketRef buffer to the queue so we keep a steady supply.
+        // When the mempool is exhausted, fall back to a DMA VBuf to prevent the
+        // RX queue depth from shrinking (matches complete_rx_vbuf behaviour).
         match self.try_post_rx_packet(rx_queue) {
             Ok(true) => {}
-            Ok(false) => {
-                log::warn!("[VIRTIO-NET] OOM allocating replacement PacketRef");
-                counters::global().record_drop();
-                trace::push_event(
-                    NetLayer::Driver,
-                    NetEventKind::QueuePressure,
-                    "virtio rx packetref repost oom",
-                );
-            }
+            Ok(false) => match self.try_post_rx_vbuf(rx_queue) {
+                Ok(true) => {
+                    log::debug!("[VIRTIO-NET] PacketRef OOM; reposted RX buffer via VBuf fallback");
+                }
+                Ok(false) => {
+                    log::warn!("[VIRTIO-NET] OOM allocating replacement PacketRef (VBuf fallback also failed)");
+                    counters::global().record_drop();
+                    trace::push_event(
+                        NetLayer::Driver,
+                        NetEventKind::QueuePressure,
+                        "virtio rx packetref repost oom",
+                    );
+                }
+                Err(_) => {
+                    log::warn!("[VIRTIO-NET] RX repost VBuf fallback aborted");
+                    counters::global().record_error();
+                    trace::push_event(
+                        NetLayer::Driver,
+                        NetEventKind::Error,
+                        "virtio rx packetref vbuf fallback failed",
+                    );
+                }
+            },
             Err(_) => {
                 counters::global().record_error();
                 trace::push_event(

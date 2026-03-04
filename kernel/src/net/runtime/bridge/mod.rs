@@ -983,7 +983,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
     }
 
     // Initialize zero-copy packet mempool (required for alloc_packet() in TX path)
-    if let Err(e) = crate::net::datapath::mempool::init_net_mempool(256) {
+    if let Err(e) = crate::net::datapath::mempool::init_net_mempool(1024) {
         log::warn!("[NET BRIDGE] mempool init failed: {}", e);
     }
 
