@@ -3,6 +3,11 @@ use super::*;
 impl NvmePollingDriver {
     /// Admin完了をポーリング
     pub(super) fn poll_admin_completion(&self) -> Result<NvmeCompletion, &'static str> {
+        self.poll_admin_completion_named("admin")
+    }
+
+    /// Admin完了をポーリング（コマンド名付き診断ログ出力）
+    pub(super) fn poll_admin_completion_named(&self, cmd_name: &str) -> Result<NvmeCompletion, &'static str> {
         let admin_queue = self
             .admin_queue
             .as_ref()
@@ -14,11 +19,21 @@ impl NvmePollingDriver {
                 if cqe.is_success() {
                     return Ok(cqe);
                 } else {
+                    log::error!(
+                        "[NVME] {} failed: status=0x{:04x} SCT={} SC=0x{:02x} DNR={} CID={}",
+                        cmd_name,
+                        cqe.status,
+                        cqe.sct(),
+                        cqe.sc(),
+                        cqe.dnr(),
+                        cqe.command_id()
+                    );
                     return Err("Admin command failed");
                 }
             }
             cpu_pause();
         }
+        log::error!("[NVME] {} timed out after 10M iterations", cmd_name);
         Err("Admin command timeout")
     }
 

@@ -174,8 +174,8 @@ impl NvmeCommand {
     ) -> Self {
         let mut cmd = Self::with_opcode_and_cid(AdminOpcode::CreateIOCQ as u8, cid);
         cmd.set_prp(prp, 0);
-        // CDW10: Queue Size (15:0) | Queue Identifier (31:16)
-        cmd.cdw10 = ((qid as u32) << 16) | ((queue_size - 1) as u32);
+        // CDW10: QID (15:0) | QSIZE (31:16)  — NVMe spec Section 5.2
+        cmd.cdw10 = (qid as u32) | (((queue_size - 1) as u32) << 16);
         // CDW11: Interrupt Vector (31:16) | IEN (1) | PC (0)
         let mut cdw11: u32 = 0x01; // PC=1: Physically Contiguous
         if irq_enabled {
@@ -197,8 +197,8 @@ impl NvmeCommand {
     ) -> Self {
         let mut cmd = Self::with_opcode_and_cid(AdminOpcode::CreateIOSQ as u8, cid);
         cmd.set_prp(prp, 0);
-        // CDW10: Queue Size (15:0) | Queue Identifier (31:16)
-        cmd.cdw10 = ((qid as u32) << 16) | ((queue_size - 1) as u32);
+        // CDW10: QID (15:0) | QSIZE (31:16)  — NVMe spec Section 5.4
+        cmd.cdw10 = (qid as u32) | (((queue_size - 1) as u32) << 16);
         // CDW11: CQID (31:16) | QPRIO (2:1) | PC (0)
         let mut cdw11: u32 = 0x01; // PC=1: Physically Contiguous
         cdw11 |= ((priority & 0x3) as u32) << 1;

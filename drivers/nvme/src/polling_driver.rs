@@ -471,6 +471,13 @@ impl NvmePollingDriver {
             if let Some(cqe) = admin_queue.poll_completion() {
                 let status = cqe.status >> 1;
                 if status != 0 {
+                    log::error!(
+                        "[NVME] Identify Controller failed: status=0x{:04x} SCT={} SC=0x{:02x} CID={}",
+                        cqe.status,
+                        cqe.sct(),
+                        cqe.sc(),
+                        cqe.command_id()
+                    );
                     kernel.free_dma(identify_buffer);
                     return Err("Identify Controller command failed");
                 }
@@ -534,19 +541,28 @@ impl NvmePollingDriver {
 
         admin_queue.submit(&cmd)?;
 
-        for _ in 0..10000 {
+        // NVMeスペック準拠: 十分な待機（10M回 ≈ 100-200ms）
+        for _ in 0..10_000_000 {
             if let Some(cqe) = admin_queue.poll_completion() {
                 let status = cqe.status >> 1;
                 if status != 0 {
+                    log::error!(
+                        "[NVME] Set Features (Number of Queues) failed: status=0x{:04x} SCT={} SC=0x{:02x}",
+                        cqe.status,
+                        cqe.sct(),
+                        cqe.sc()
+                    );
                     return Err("Set Features failed");
                 }
                 let allocated_sq = ((cqe.result & 0xFFFF) + 1) as u16;
                 let allocated_cq = (((cqe.result >> 16) & 0xFFFF) + 1) as u16;
+                log::info!("[NVME] Set Features: allocated {} SQ, {} CQ", allocated_sq, allocated_cq);
                 return Ok((allocated_sq, allocated_cq));
             }
             core::hint::spin_loop();
         }
 
+        log::error!("[NVME] Set Features (Number of Queues) timed out after 10M iterations");
         Err("Set Features timeout")
     }
 
@@ -641,13 +657,15 @@ impl NvmePollingDriver {
         // Create I/O Completion Queue (cid=0 for first admin command of this queue)
         let create_cq_cmd =
             NvmeCommand::create_io_cq(0, qid, depth, cq_phys, entry, self.interrupt_mode);
+        log::debug!("[NVME] Creating I/O CQ qid={} depth={} phys=0x{:x} irq_vec={}", qid, depth, cq_phys, entry);
         admin_queue.submit(&create_cq_cmd)?;
-        self.poll_admin_completion()?;
+        self.poll_admin_completion_named("Create I/O CQ")?;
 
         // Create I/O Submission Queue (cid=1 for second admin command of this queue)
         let create_sq_cmd = NvmeCommand::create_io_sq(1, qid, depth, sq_phys, qid, 0);
+        log::debug!("[NVME] Creating I/O SQ qid={} depth={} phys=0x{:x}", qid, depth, sq_phys);
         admin_queue.submit(&create_sq_cmd)?;
-        self.poll_admin_completion()?;
+        self.poll_admin_completion_named("Create I/O SQ")?;
 
         // キューペアを設定
         let qp = unsafe {
