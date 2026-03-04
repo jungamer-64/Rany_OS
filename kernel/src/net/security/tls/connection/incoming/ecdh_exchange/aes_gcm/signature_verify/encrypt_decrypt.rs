@@ -1,3 +1,5 @@
+// Building block: TLS encrypt/decrypt
+
 use super::*;
 
 impl TlsConnection {

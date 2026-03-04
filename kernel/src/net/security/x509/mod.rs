@@ -17,6 +17,8 @@
 //! - 境界チェック付きパース（バッファオーバーフロー防止）
 //! - 不正なDERエンコーディングの検出
 
+// Building block: X.509 certificate parsing
+#![allow(dead_code)]
 
 // ============================================================================
 // OID Constants (DER-encoded OID value bytes)

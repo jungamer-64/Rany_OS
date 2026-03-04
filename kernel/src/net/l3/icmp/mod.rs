@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/icmp.rs
+// kernel/src/net/l3/icmp/mod.rs
 // ============================================================================
 //! ICMP (Internet Control Message Protocol) Implementation for ExoRust
 //!

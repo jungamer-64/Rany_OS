@@ -194,15 +194,15 @@ impl IcmpProcessor {
         payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
 
         // RFC 1122: Include the full IP header + at least 8 octets of the data.
+        // RFC 1812: SHOULD include as much of the original datagram as possible,
+        // up to a total ICMP length of 576 bytes.
         let header_len = if !original_packet.is_empty() {
             ((original_packet[0] & 0x0F) as usize) * 4
         } else {
             20
         };
-        // RFC 1122 Section 3.2.2: include the Internet header and at least the first 8 octets.
-        // We try to include more if possible, but at least 28 (20+8) or header_len+8.
-        let min_required = header_len + 8;
-        let copy_len = original_packet.len().min(payload.len() - 4).min(min_required);
+        // We include as much of the original packet as will fit in our buffer.
+        let copy_len = original_packet.len().min(payload.len() - 4);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
         builder.set_payload_len(4 + copy_len);
@@ -228,13 +228,13 @@ impl IcmpProcessor {
         payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
 
         // RFC 1122: Include the full IP header + at least 8 octets of the data.
+        // RFC 1812: SHOULD include as much of the original datagram as possible.
         let header_len = if !original_packet.is_empty() {
             ((original_packet[0] & 0x0F) as usize) * 4
         } else {
             20
         };
-        let min_required = header_len + 8;
-        let copy_len = original_packet.len().min(payload.len() - 4).min(min_required);
+        let copy_len = original_packet.len().min(payload.len() - 4);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
         builder.set_payload_len(4 + copy_len);
@@ -261,13 +261,13 @@ impl IcmpProcessor {
         payload[1..4].copy_from_slice(&[0, 0, 0]); // Unused
 
         // RFC 1122: Include the full IP header + at least 8 octets of the data.
+        // RFC 1812: SHOULD include as much of the original datagram as possible.
         let header_len = if !original_packet.is_empty() {
             ((original_packet[0] & 0x0F) as usize) * 4
         } else {
             20
         };
-        let min_required = header_len + 8;
-        let copy_len = original_packet.len().min(payload.len() - 4).min(min_required);
+        let copy_len = original_packet.len().min(payload.len() - 4);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
         builder.set_payload_len(4 + copy_len);

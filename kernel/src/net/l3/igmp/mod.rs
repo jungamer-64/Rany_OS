@@ -20,6 +20,9 @@
 //! - All Hosts Group: 224.0.0.1
 //! - All Routers Group: 224.0.0.2
 
+// Building block: IGMP processor fields retained for IGMPv3 support
+#![allow(dead_code)]
+
 use crate::net::l3::ipv4::Ipv4Address;
 use alloc::vec::Vec;
 

@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/net/endpoint/congestion.rs
+// kernel/src/net/l4/endpoint/congestion/mod.rs
 // ============================================================================
+// 輻輳制御の内部統計フィールドはデバッグ及びチューニング用に保持。
 //! # TCP Congestion Control - 輻輳制御
 //!
 //! RFC 5681 (TCP Congestion Control) 準拠実装
@@ -28,13 +29,16 @@ pub const INITIAL_WINDOW: u32 = 10;
 pub const MIN_CWND: u32 = 2;
 
 /// 輻輳制御アルゴリズムの種類
+///
+/// 現在 `NewReno`, `Cubic`, `Bbr` の3種類が実装済み。
+/// デフォルトは `NewReno`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CongestionAlgorithm {
     /// RFC 5681 NewReno
     NewReno,
-    /// RFC 8312 CUBIC (将来実装)
+    /// RFC 8312 CUBIC
     Cubic,
-    /// RFC 9002 BBR (将来実装)
+    /// BBR (Bottleneck Bandwidth and RTT)
     Bbr,
 }
 

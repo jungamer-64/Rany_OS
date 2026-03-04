@@ -15,6 +15,8 @@
 //! - 散布/収集I/O（Scatter-Gather）
 //! - DMA対応バッファアライメント
 
+// Building block: Zero-copy buffer types
+#![allow(dead_code)]
 
 use alloc::sync::Arc;
 use alloc::collections::VecDeque;

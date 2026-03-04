@@ -1,6 +1,15 @@
 // ============================================================================
 // src/net/types.rs - Network shared types
 // ============================================================================
+//! ネットワークサブシステム全体で共有される基本型。
+//!
+//! ## IPv4アドレス型について
+//!
+//! - [`Ipv4Addr`] — 上位層（TCP/UDP/API等）向けの軽量ラッパー
+//! - [`crate::net::l3::ipv4::Ipv4Address`] — プロトコルスタック内部向けのフル機能版
+//!   (`is_private()`, `same_subnet()`, `apply_mask()` 等)
+//!
+//! 両者間の変換は `From`/`Into` トレイトで提供される。
 
 /// Common Network Errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,10 +35,11 @@ pub enum NetworkError {
 // IPv4 アドレス（軽量ラッパー）
 // ============================================================================
 
-/// IPv4アドレス
+/// 上位層向け軽量 IPv4 アドレス型
 ///
-/// `l3::ipv4::Ipv4Address` がプロトコルスタック向けの詳細実装を提供するのに対し、
-/// こちらは汎用的な軽量 IPv4 アドレス型として上位層（TCP/UDP/API等）で使用する。
+/// プロトコルスタック内部では [`crate::net::l3::ipv4::Ipv4Address`] を使用し、
+/// 上位層（TCP/UDP/APIなど）ではこちらを使用する。
+/// `From<Ipv4Address>` / `Into<Ipv4Address>` による相互変換が可能。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ipv4Addr(pub [u8; 4]);
 
@@ -53,10 +63,37 @@ impl Ipv4Addr {
     pub fn from_u32(val: u32) -> Self {
         Self(val.to_be_bytes())
     }
+
+    /// `[u8; 4]` バイト列から生成
+    pub const fn from_bytes(bytes: [u8; 4]) -> Self {
+        Self(bytes)
+    }
 }
 
 impl core::fmt::Display for Ipv4Addr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}.{}.{}.{}", self.0[0], self.0[1], self.0[2], self.0[3])
+    }
+}
+
+// ============================================================================
+// Ipv4Addr <-> l3::ipv4::Ipv4Address 相互変換
+// ============================================================================
+
+impl From<crate::net::l3::ipv4::Ipv4Address> for Ipv4Addr {
+    fn from(addr: crate::net::l3::ipv4::Ipv4Address) -> Self {
+        Self(addr.octets())
+    }
+}
+
+impl From<Ipv4Addr> for crate::net::l3::ipv4::Ipv4Address {
+    fn from(addr: Ipv4Addr) -> Self {
+        crate::net::l3::ipv4::Ipv4Address::new(addr.0)
+    }
+}
+
+impl From<[u8; 4]> for Ipv4Addr {
+    fn from(bytes: [u8; 4]) -> Self {
+        Self(bytes)
     }
 }

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/endpoint/ooo_queue.rs
+// kernel/src/net/l4/endpoint/ooo_queue.rs
 // ============================================================================
 //! # TCP Out-of-Order (OOO) 受信キュー
 //!
@@ -12,6 +12,7 @@
 //! - 最大セグメント数制限でメモリ枯渇を防止
 //! - SACKブロック生成をサポート
 
+// Building block: Out-of-order queue implementation
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;

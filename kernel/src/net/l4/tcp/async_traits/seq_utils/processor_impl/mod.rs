@@ -1312,10 +1312,23 @@ impl TcpProcessor {
             tcb.set_last_snd_wnd(window);
             Self::make_ack_result(tcb)
         } else {
+            // SEG.ACK <= SND.UNA (Old ACK)
             tcb.set_last_snd_wnd(window);
+
+            // Security: RFC 5961 Section 5.2 (Blind ACK Spoofing Mitigation)
+            // An incoming ACK is considered acceptable if SND.UNA - MAX.SND.WND <= SEG.ACK <= SND.NXT
+            // If it is too far in the past, we MUST send a challenge ACK.
+            if ack {
+                let diff = tcb.snd_una().wrapping_sub(ack_num) as i32;
+                if diff > (tcb.snd_wnd() as i32) {
+                    // ACK is too far in the past - send challenge ACK
+                    log::warn!("[TCP] RFC 5961: Sending challenge ACK for old ACK {} (SND.UNA={})", ack_num, tcb.snd_una());
+                    return Self::make_ack_result(tcb);
+                }
+            }
             TcpProcessResult::None
         }
-    }
+
 
     /// Attempt fast retransmit on duplicate ACK
     pub(super) fn try_fast_retransmit(tcb: &mut TcpControlBlock) -> TcpProcessResult {

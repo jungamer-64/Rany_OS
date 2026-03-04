@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/endpoint/tcp_rx.rs
+// kernel/src/net/l4/endpoint/tcp_rx.rs
 // ============================================================================
 //! # TCP受信処理 - 3ウェイハンドシェイク・データ受信
 //!
@@ -11,6 +11,7 @@
 //! - **Delayed ACK**: RFC 1122/5681準拠。連続データ受信時にACKを遅延させ、
 //!   2セグメントごとまたは最大200msでACKを送信してACKトラフィックを半減させる。
 
+// Building block: TCP RX processing helpers
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 

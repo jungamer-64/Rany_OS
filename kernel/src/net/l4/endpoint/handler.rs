@@ -1,9 +1,11 @@
 // ============================================================================
-// kernel/src/net/endpoint/handler.rs
+// kernel/src/net/l4/endpoint/handler.rs
 // ============================================================================
 //! # NetworkEventHandler - ネットワークイベントハンドラ
 //!
 //! NetworkEventHandler, EventHandleResult
+
+// Building block: Endpoint handler implementation
 
 use alloc::vec::Vec;
 

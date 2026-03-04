@@ -1,3 +1,5 @@
+// Building block: NDP helper functions retained for IPv6 multicast
+
 use super::*;
 use crate::net::l2::ethernet::MacAddress;
 

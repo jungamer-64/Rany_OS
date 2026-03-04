@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/ipv6.rs
+// kernel/src/net/l3/ipv6/mod.rs
 // ============================================================================
 //! IPv6 Protocol Implementation for ExoRust
 //!
@@ -12,6 +12,8 @@
 //! - EUI-64 link-local address generation
 //! - Solicited-node multicast address computation
 
+// Building block: IPv6 processor fields retained for PMTU support
+#![allow(dead_code)]
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;

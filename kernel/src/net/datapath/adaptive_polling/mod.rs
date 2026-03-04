@@ -219,9 +219,12 @@ impl<T> RingBuffer<T> {
 // Statistics
 // ============================================================================
 
-/// ネットワーク統計
+/// ポーリング統計（適応的ポーリング用）
+///
+/// ネットワークスタック全体の統計は [`crate::net::runtime::stack::NetworkStats`] を使用する。
+/// こちらはポーリングモード切り替えの判断に使用されるローカル統計。
 #[derive(Debug, Default)]
-pub struct NetworkStats {
+pub struct PollingStats {
     /// 受信パケット数
     pub rx_packets: AtomicU64,
     /// 送信パケット数
@@ -244,7 +247,7 @@ pub struct NetworkStats {
     pub mode_switches: AtomicU64,
 }
 
-impl NetworkStats {
+impl PollingStats {
     pub fn new() -> Self {
         Self::default()
     }
@@ -269,7 +272,7 @@ pub struct AdaptivePoller {
     /// 現在のモード
     mode: PollingMode,
     /// 統計
-    stats: NetworkStats,
+    stats: PollingStats,
     /// 最後の適応調整時刻
     last_adaptation: u64,
     /// 最後の統計スナップショット
@@ -291,7 +294,7 @@ impl AdaptivePoller {
     pub fn new() -> Self {
         Self {
             mode: PollingMode::InterruptDriven,
-            stats: NetworkStats::new(),
+            stats: PollingStats::new(),
             last_adaptation: 0,
             last_stats_snapshot: (0, 0),
             threshold_high: POLLING_THRESHOLD_HIGH,
@@ -440,7 +443,7 @@ impl AdaptivePoller {
     }
 
     /// 統計を取得
-    pub fn stats(&self) -> &NetworkStats {
+    pub fn stats(&self) -> &PollingStats {
         &self.stats
     }
 
@@ -682,7 +685,7 @@ pub struct PollingManager {
     /// コアごとのポーリングコンテキスト
     per_core: Vec<PerCorePolling>,
     /// グローバル統計
-    global_stats: NetworkStats,
+    global_stats: PollingStats,
 }
 
 impl PollingManager {
@@ -695,7 +698,7 @@ impl PollingManager {
 
         Self {
             per_core,
-            global_stats: NetworkStats::new(),
+            global_stats: PollingStats::new(),
         }
     }
 
@@ -705,7 +708,7 @@ impl PollingManager {
     }
 
     /// グローバル統計を取得
-    pub fn stats(&self) -> &NetworkStats {
+    pub fn stats(&self) -> &PollingStats {
         &self.global_stats
     }
 }
@@ -815,7 +818,7 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_network_stats() {
-        let stats = NetworkStats::new();
+        let stats = PollingStats::new();
         stats.rx_packets.fetch_add(100, Ordering::Relaxed);
         stats.tx_packets.fetch_add(50, Ordering::Relaxed);
 

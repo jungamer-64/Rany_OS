@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/mdns.rs
+// kernel/src/net/services/mdns/mod.rs
 // ============================================================================
 //! mDNS (Multicast DNS) プロトコル実装 (RFC 6762)
 //!
@@ -13,6 +13,8 @@
 //! - DNSワイヤーフォーマットのエンコード/デコード
 //! - ラベル圧縮対応の名前解析
 
+// Building block: mDNS implementation
+#![allow(dead_code)]
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;

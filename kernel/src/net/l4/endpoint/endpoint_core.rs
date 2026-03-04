@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/endpoint/socket.rs
+// kernel/src/net/l4/endpoint/endpoint_core.rs
 // ============================================================================
 //! # Socket - Arc<PoisonLock<EndpointInner>>ラッパー
 //!

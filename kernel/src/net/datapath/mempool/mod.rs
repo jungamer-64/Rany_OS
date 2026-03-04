@@ -3,6 +3,9 @@
 // 設計書 6.2: Mempool によるゼロコピーネットワークバッファ管理
 // ============================================================================
 
+// Building block: Memory pool types
+#![allow(dead_code)]
+
 use crate::domain_system::DomainId;
 use crate::ipc::rref::RRef;
 use crate::sync::PoisonLock;

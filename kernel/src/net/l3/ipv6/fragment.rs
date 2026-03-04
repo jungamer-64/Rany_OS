@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/ipv6/fragment.rs
+// kernel/src/net/l3/ipv6/fragment.rs
 // ============================================================================
 //! IPv6 Fragment Reassembly (RFC 8200 Section 4.5)
 //!
@@ -370,6 +370,7 @@ impl Ipv6FragmentBuffer {
                     
                     // Previous extension header's Next Header field is at 'pos'
                     // We need to update nh_value to the CURRENT extension header's Next Header
+                    let current_nh = nh_value;
                     nh_value = unfrag[ext_offset];
                     
                     if nh_value == super::EXT_HEADER_FRAGMENT {
@@ -379,7 +380,12 @@ impl Ipv6FragmentBuffer {
                         break;
                     }
                     
-                    let ext_len = (unfrag[ext_offset + 1] as usize + 1) * 8;
+                    let ext_len = if current_nh == 51 { // EXT_HEADER_AUTH
+                        (unfrag[ext_offset + 1] as usize + 2) * 4
+                    } else {
+                        (unfrag[ext_offset + 1] as usize + 1) * 8
+                    };
+                    
                     if ext_len == 0 { break; } 
                     
                     ext_offset += ext_len;

@@ -621,7 +621,7 @@ pub fn tcp_connect_timeout_expires_smoke() -> bool {
     // In QEMU kernel suite runs the precise timer can still be effectively zero,
     // so the host test's `now - timeout - 1` setup may saturate and never expire.
     // Keep a deterministic smoke for the timeout policy arithmetic and state target.
-    let local = tcp::EndpointAddr::new(tcp::Ipv4Addr::LOCALHOST.octets(), 4001);
+    let local = tcp::EndpointAddr::new(crate::net::types::Ipv4Addr::LOCALHOST.octets(), 4001);
     let mut tcb = tcp::TcpControlBlock::new(local);
     tcb.enter_syn_sent();
 

@@ -60,13 +60,8 @@ pub mod qemu_tests;
 
 // Re-exports: types
 pub use types::{
-    EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
+    EndpointAddr, EndpointError, EndpointFd, EndpointType,
 };
-
-// Re-exports: event
-pub use event::NetworkEvent;
-
-// Re-exports: inner
 
 // Re-exports: tcb
 pub use tcb::{TcpConnectionState, tcb_table};
@@ -82,8 +77,8 @@ pub use manager::{
 
 // Re-exports: endpoint
 pub use endpoint_core::{
-    OwnedEndpoint, create_raw_endpoint, create_tcp_endpoint, create_udp_endpoint,
-    create_tcp_server_async, open_tcp_connection_async, create_udp_endpoint_bound_async,
+    OwnedEndpoint, create_raw_endpoint, create_tcp_endpoint,
+    create_tcp_server_async,
 };
 // Re-exports: futures
 

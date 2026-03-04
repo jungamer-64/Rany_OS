@@ -7,16 +7,15 @@ use alloc::string::String;
 
 extern crate alloc;
 
-/// ICMP Echo送信（イベントキュー経由の非同期フォールバック）
+/// ICMP Echo送信（fire-and-forget）
 ///
 /// 内部的に `send_icmp_echo_async()` に委任する。
-/// RTTを取得するには `ping_async()` または `IcmpEchoFuture` を使用すること。
-pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
+/// この関数はRTTを測定**しない**。RTT測定には [`ping_async()`] を使用すること。
+#[deprecated(note = "RTT測定が不可能です。ping_async() を使用してください")]
+pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<(), String> {
     // イベントキュー経由でfire-and-forget送信
     send_icmp_echo_async(target, seq);
-    // 同期的にRTTを返すことはできないため、0を返す
-    // 実際のRTTを取得するには ping_async().await を使用
-    Ok(0.0)
+    Ok(())
 }
 
 /// 非同期ICMP Echo送信（fire-and-forget）

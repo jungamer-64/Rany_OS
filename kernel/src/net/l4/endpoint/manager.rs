@@ -1,9 +1,11 @@
 // ============================================================================
-// kernel/src/net/endpoint/manager.rs
+// kernel/src/net/l4/endpoint/manager.rs
 // ============================================================================
 //! # EndpointManager - RwLockによる読み取り並列化
 //!
 //! ソケット管理マネージャ
+
+// Building block: Endpoint manager internal fields
 
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, Ordering};

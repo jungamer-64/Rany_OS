@@ -10,6 +10,8 @@
 //! 完全非同期設計: NETWORK_STACKロックを一切使用せず、
 //! ArpResolveRequestイベント経由でキャッシュ確認・ARP要求送信を行う。
 
+// Building block: ARP resolve timeout constants retained for future async ARP
+
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;

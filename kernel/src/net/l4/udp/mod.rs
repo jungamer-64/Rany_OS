@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/udp.rs
+// kernel/src/net/l4/udp/mod.rs
 // ============================================================================
 //! UDP (User Datagram Protocol) Implementation for ExoRust
 //!

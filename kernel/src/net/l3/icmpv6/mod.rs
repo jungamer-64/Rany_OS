@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/icmpv6.rs
+// kernel/src/net/l3/icmpv6/mod.rs
 // ============================================================================
 //! ICMPv6 (Internet Control Message Protocol for IPv6) Implementation
 //!

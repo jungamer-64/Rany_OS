@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/driver.rs - VirtIO-Net Driver Wrapper
+// kernel/src/net/drivers/virtio_registry.rs - VirtIO-Net Driver Registry
 // ============================================================================
 //!
 //! VirtIO-Net driver implementing the Driver trait for DriverRegistry integration.

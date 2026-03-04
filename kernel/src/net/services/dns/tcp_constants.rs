@@ -1,3 +1,5 @@
+// Building block: DNS over TCP constants
+
 use super::*;
 use alloc::sync::Arc;
 

@@ -1,3 +1,6 @@
+// Building block: P-384 field arithmetic
+#![allow(dead_code)]
+
 use super::*;
 
 
@@ -12,7 +15,7 @@ use super::*;
 /// フィールド算術を実装している。
 mod ecdh_group;
 pub use ecdh_group::*;
-#[allow(dead_code)]
+/// P-384演算の内部実装。TLS 1.2以降のECDHE鍵交換で使用。
 pub mod p384 {
     
 

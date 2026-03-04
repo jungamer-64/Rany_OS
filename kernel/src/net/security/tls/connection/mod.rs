@@ -2,6 +2,9 @@
 // tls/connection.rs - TLS Connection State Machine
 // ============================================================================
 
+// Building block: TLS connection internals
+#![allow(dead_code)]
+
 use alloc::vec;
 use alloc::vec::Vec;
 
