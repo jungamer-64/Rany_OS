@@ -1128,6 +1128,11 @@ impl NetworkEventHandler {
                 stack.stats.record_rx_error();
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Success => {}
+            crate::net::l3::ipv4::Ipv4ProcessResult::UnknownProtocol(_proto, src, _dst, orig_packet) => {
+                // RFC 792: Send ICMP Destination Unreachable (Protocol Unreachable, Code 2)
+                log::warn!("[NET] Unknown protocol {} from {} - sending ICMP Protocol Unreachable", _proto, src);
+                stack.send_icmp_error(src, crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable, orig_packet, current_time);
+            }
         }
 
         EventHandleResult::Success

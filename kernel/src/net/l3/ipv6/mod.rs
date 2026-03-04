@@ -781,8 +781,8 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
 
 /// Result of extension-header walk with fragment awareness.
 pub enum ExtHeaderResult<'a> {
-    /// No fragment header encountered — upper-layer protocol and payload
-    NoFragment(IpProtocol, &'a [u8]),
+    /// No fragment header encountered — upper-layer protocol, payload, and pointer to final next_header field
+    NoFragment(IpProtocol, &'a [u8], u32),
     /// Fragment header found.
     /// Fields: (unfragmentable part, fragment header, fragment payload)
     Fragment {
@@ -987,6 +987,10 @@ pub enum Ipv6ProcessResult<'a> {
     ReassemblyTimeout(Ipv6Address, Ipv6Address, Vec<u8>),
     /// Reassembly error (type, src, dst, unfragmentable_part)
     ReassemblyError(Ipv6ReassemblyError, Ipv6Address, Ipv6Address, Vec<u8>),
+    /// Unknown Next Header encountered (RFC 4443 Parameter Problem Code 1)
+    UnknownNextHeader(u8, u32, Ipv6Address, Ipv6Address, &'a [u8]),
+    /// Hop Limit exceeded (RFC 4443 Time Exceeded Code 0)
+    HopLimitExceeded(Ipv6Address, Ipv6Address, &'a [u8]),
     /// Packet dropped (not for us, malformed, etc.)
     Dropped,
     /// Processing error

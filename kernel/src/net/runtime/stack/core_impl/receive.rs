@@ -106,6 +106,11 @@ impl NetworkStack {
                 log::info!("IPv4: Reassembly timeout for {} - sending ICMP Time Exceeded", src);
                 self.send_icmp_time_exceeded(src, crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded, &header_data);
             }
+            Ipv4ProcessResult::UnknownProtocol(proto, src, _dst, orig_packet) => {
+                // RFC 792: Send ICMP Destination Unreachable (Protocol Unreachable, Code 2)
+                log::warn!("IPv4: Unknown protocol {} from {} - sending ICMP Protocol Unreachable", proto, src);
+                self.send_icmp_error(src, crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable, orig_packet, current_time);
+            }
             Ipv4ProcessResult::Dropped => {
                 self.stats.record_dropped();
             }
@@ -113,6 +118,9 @@ impl NetworkStack {
                 self.stats.record_rx_error();
             }
             Ipv4ProcessResult::Success => {}
+            Ipv4ProcessResult::UnknownProtocol(proto, _src, _dst, _data) => {
+                log::debug!("[NET] Unknown IP protocol: {}", proto);
+            }
         }
     }
 
@@ -291,11 +299,27 @@ impl NetworkStack {
                     }
                 }
             }
+            Ipv6ProcessResult::UnknownNextHeader(_proto, pointer, src, _dst, orig_packet) => {
+                // RFC 4443 Section 3.4: Send ICMPv6 Parameter Problem (Code 1)
+                log::warn!("IPv6: Unknown Next Header from {} - sending ICMPv6 Parameter Problem", src);
+                self.send_icmpv6_parameter_problem(src, 1, pointer, orig_packet);
+            }
+            Ipv6ProcessResult::HopLimitExceeded(src, _dst, orig_packet) => {
+                // RFC 4443 Section 3.3: Send ICMPv6 Time Exceeded (Code 0)
+                log::warn!("IPv6: Hop Limit exceeded from {} - sending ICMPv6 Time Exceeded", src);
+                self.send_icmpv6_time_exceeded(src, 0, orig_packet);
+            }
             Ipv6ProcessResult::Dropped => {
                 self.stats.record_dropped();
             }
             Ipv6ProcessResult::Error => {
                 self.stats.record_rx_error();
+            }
+            Ipv6ProcessResult::UnknownNextHeader(nh, _pointer, src, _dst, _data) => {
+                log::debug!("[NET] IPv6 unknown next header: {} from {}", nh, src);
+            }
+            Ipv6ProcessResult::HopLimitExceeded(src, _dst, _data) => {
+                log::debug!("[NET] IPv6 hop limit exceeded from {}", src);
             }
         }
     }

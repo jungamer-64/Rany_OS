@@ -616,6 +616,8 @@ pub enum Ipv4ProcessResult<'a> {
     FragmentPending,
     /// Reassembly timeout (source address and first fragment's header for ICMP)
     ReassemblyTimeout(Ipv4Address, Vec<u8>),
+    /// Unknown protocol (RFC 792 Protocol Unreachable)
+    UnknownProtocol(u8, Ipv4Address, Ipv4Address, &'a [u8]),
     /// Dropped
     Dropped,
     /// Error
@@ -769,7 +771,7 @@ impl Ipv4Processor {
             IpProtocol::Igmp => Ipv4ProcessResult::Igmp(payload, src, packet.ttl(), data),
             IpProtocol::Tcp => Ipv4ProcessResult::Tcp(payload, src, dst, data),
             IpProtocol::Udp => Ipv4ProcessResult::Udp(payload, src, dst, data),
-            _ => Ipv4ProcessResult::Dropped,
+            p => Ipv4ProcessResult::UnknownProtocol(p.into(), src, dst, data),
         }
     }
 

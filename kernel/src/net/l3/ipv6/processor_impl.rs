@@ -66,7 +66,7 @@ impl Ipv6Processor {
         // Check hop limit
         if packet.hop_limit() == 0 {
             self.stats.record_hop_limit_exceeded();
-            return Ipv6ProcessResult::Dropped;
+            return Ipv6ProcessResult::HopLimitExceeded(src, dst, data);
         }
 
         // Walk extension headers with fragment awareness
@@ -77,9 +77,15 @@ impl Ipv6Processor {
                     IpProtocol::Icmpv6 => Ipv6ProcessResult::Icmpv6(upper_payload, src, dst, packet.hop_limit()),
                     IpProtocol::Tcp => Ipv6ProcessResult::Tcp(upper_payload, src, dst, packet.hop_limit()),
                     IpProtocol::Udp => Ipv6ProcessResult::Udp(upper_payload, src, dst, packet.hop_limit()),
-                    _ => {
-                        self.stats.record_dropped();
-                        Ipv6ProcessResult::Dropped
+                    p => {
+                        // RFC 4443 Section 3.4: Parameter Problem Code 1 for unrecognized Next Header
+                        // The pointer should point to the byte where the unrecognized Next Header was found.
+                        // We'll calculate the pointer by finding where 'upper_payload' starts.
+                        let pointer = (upper_payload.as_ptr() as usize).saturating_sub(data.as_ptr() as usize) as u32;
+                        // For the fixed header, the Next Header is at offset 6.
+                        // If it's an extension header, it's at the start of that header.
+                        // We'll use a conservative pointer (the start of the unrecognized protocol data).
+                        Ipv6ProcessResult::UnknownNextHeader(p.into(), pointer, src, dst, data)
                     }
                 }
             }

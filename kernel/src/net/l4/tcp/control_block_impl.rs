@@ -1158,6 +1158,12 @@ impl TcpControlBlock {
         if !self.is_established() {
             return None;
         }
+
+        // RFC 1122 Section 4.2.3.6: Keep-alive packets SHOULD NOT be sent 
+        // if there is any data currently in flight.
+        if self.tx.outstanding_bytes > 0 {
+            return None;
+        }
         
         let elapsed = current_time.saturating_sub(self.timers.last_activity_time);
         

@@ -449,14 +449,27 @@ impl Executor {
             let mut context = Context::from_waker(&waker);
             let start_ns = crate::time::precise_time_nanos();
 
+            // Debug: trace DHCP task poll
+            if task.id.0 == 1 {
+                crate::io::log::early_print("[RUN] polling task_id=1 tm=");
+                crate::io::log::early_print_dec(crate::task::timer::current_tick());
+                crate::io::log::early_print("\n");
+            }
+
             match task.poll(&mut context) {
                 Poll::Ready(()) => {
+                    if task.id.0 == 1 {
+                        crate::io::log::early_print("[RUN] task_id=1 -> Ready\n");
+                    }
                     // タスク完了
                     EXECUTOR_STATS
                         .tasks_completed
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 Poll::Pending => {
+                    if task.id.0 == 1 {
+                        crate::io::log::early_print("[RUN] task_id=1 -> Pending\n");
+                    }
                     let end_ns = crate::time::precise_time_nanos();
                     let elapsed_ns = end_ns.saturating_sub(start_ns);
                     let exceeded = if task.domain_id == crate::domain_system::DomainId::KERNEL {

@@ -94,6 +94,17 @@ impl<F: Future> Future for TimeoutFuture<F> {
 
         let now = current_tick();
 
+        // Debug: log TimeoutFuture poll for deadline near DHCP range
+        if this.deadline > 500 && this.deadline < 100_000 {
+            crate::io::log::early_print("[TF] now=");
+            crate::io::log::early_print_dec(now);
+            crate::io::log::early_print(" dl=");
+            crate::io::log::early_print_dec(this.deadline);
+            crate::io::log::early_print(" reg=");
+            crate::io::log::early_print_dec(if this.timer_registered { 1 } else { 0 });
+            crate::io::log::early_print("\n");
+        }
+
         // タイムアウトチェック
         if now >= this.deadline {
             // タイマー登録を解除

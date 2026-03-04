@@ -280,7 +280,7 @@ impl DhcpClient {
     /// Send a DHCPDISCOVER packet for the current state machine cycle.
     ///
     /// RFC 2131: DHCPDISCOVER は src_ip = 0.0.0.0 で送信する。
-    fn send_discover_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
+    async fn send_discover_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
         Ok(crate::net::runtime::stack::send_udp_async_with_src(
@@ -312,7 +312,7 @@ impl DhcpClient {
     ///
     /// RFC 2131: Renewing 時は取得済みIPをソースIPとして使用し、
     /// それ以外 (Requesting/Rebinding) は src_ip = 0.0.0.0 で送信する。
-    fn send_request_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
+    async fn send_request_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_request(&mut buf, current_tick)?;
         let state = self.state();
@@ -342,22 +342,22 @@ impl DhcpClient {
 
     /// Drive DHCP state machine and emit outbound packets when state changes
     /// or retransmission timers fire.
-    pub fn drive(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
+    pub async fn drive(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
         let state_before = self.state();
 
         // Initial kick: INIT immediately sends DISCOVER.
         if state_before == DhcpState::Init {
-            let _ = self.send_discover_packet(current_tick)?;
+            let _ = self.send_discover_packet(current_tick).await?;
             return Ok(());
         }
 
-        let transitioned = self.check_timeout(current_tick, tick_rate);
+        let transitioned = self.check_timeout(current_tick, tick_rate).await;
         let state_after = self.state();
 
         // OFFER passed ARP probe and moved into REQUESTING.
         if state_before == DhcpState::Selecting && state_after == DhcpState::Requesting {
             log::info!("[NET] DHCP drive: Selecting->Requesting, sending REQUEST (tick={})", current_tick);
-            match self.send_request_packet(current_tick) {
+            match self.send_request_packet(current_tick).await {
                 Ok(sent) => log::info!("[NET] DHCP REQUEST queued (sent={})", sent),
                 Err(e) => {
                     log::error!("[NET] DHCP REQUEST failed: {}", e);
@@ -372,16 +372,16 @@ impl DhcpClient {
             match state_after {
                 // Selecting retransmit / conflict recovery.
                 DhcpState::Selecting => {
-                    let _ = self.send_discover_packet(current_tick)?;
+                    let _ = self.send_discover_packet(current_tick).await?;
                 }
                 // Requesting, Renewing, Rebinding retransmits.
                 DhcpState::Requesting | DhcpState::Renewing | DhcpState::Rebinding => {
-                    let _ = self.send_request_packet(current_tick)?;
+                    let _ = self.send_request_packet(current_tick).await?;
                 }
                 // Retry budget exhausted and reset to INIT -> restart discovery.
                 DhcpState::Init => {
                     log::warn!("[NET] DHCP retries exhausted, restarting discovery");
-                    let _ = self.send_discover_packet(current_tick)?;
+                    let _ = self.send_discover_packet(current_tick).await?;
                 }
                 _ => {}
             }
@@ -471,12 +471,19 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: check ARP cache for address conflict ---
-    pub(super) fn check_arp_conflict(&self, offered_ip: Ipv4Address, _current_tick: u64) -> bool {
-        // ARP解決をイベントキュー経由で実行（デッドロック回避）
-        // check_arp_conflict は非asyncコンテキストから呼ばれるため、
-        // fire-and-forget でARPプローブを送信し、次回check_timeoutで再チェックする。
-        // ここでは即時の結果を返せないので、常にfalseを返してタイムアウト待ちとする
-        // TODO: 将来的にはFuture版に移行
+    pub(super) async fn check_arp_conflict(&self, offered_ip: Ipv4Address, _current_tick: u64) -> bool {
+        // ARP解決結果を非同期で取得（RFC 2131 Section 2.2 / RFC 5227）
+        // get_arp_cache_async() は現在のARPキャッシュスナップショットを返す
+        let entries = crate::net::api::connections::get_arp_cache_async().await;
+        for entry in entries {
+            // offered_ip に対する解決済みエントリが存在すれば、他者がそのIPを使用中と判断
+            if entry.ip == offered_ip.octets() && entry.complete {
+                log::warn!("[NET-DHCP] ARP conflict detected for offered IP {}", offered_ip);
+                return true;
+            }
+        }
+        
+        // また、将来的な競合を防ぐため、追加のプローブを定期的に送信
         crate::net::l4::endpoint::event::send_event_ignore(
             crate::net::l4::endpoint::event::NetworkEvent::AsyncArpProbe {
                 target_ip: *offered_ip.as_bytes(),
@@ -496,7 +503,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: evaluate ARP probe result ---
-    pub(super) fn check_arp_probe_result(
+    pub(super) async fn check_arp_probe_result(
         &self,
         offered_ip: Ipv4Address,
         server_ip: Ipv4Address,
@@ -504,13 +511,12 @@ impl DhcpClient {
         tick_rate: u64,
         probe_at: u64,
     ) -> bool {
-        let probe_elapsed = (current_tick.saturating_sub(probe_at)) / tick_rate;
-        log::info!("[NET] DHCP ARP probe check: elapsed={}s tick={} probe_at={}", probe_elapsed, current_tick, probe_at);
-        if probe_elapsed < Self::PROBE_WAIT_SECS {
+        let probe_secs = (current_tick.saturating_sub(probe_at)) / tick_rate;
+        if probe_secs < Self::PROBE_WAIT_SECS {
             return false; // still waiting for ARP replies
         }
 
-        if self.check_arp_conflict(offered_ip, current_tick) {
+        if self.check_arp_conflict(offered_ip, current_tick).await {
             self.handle_conflict_decline(offered_ip, server_ip);
             return true; // prompt caller to retry discovery
         }
@@ -523,7 +529,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: try ARP probe flow for Selecting ---
-    pub(super) fn try_selecting_arp_probe(&self, current_tick: u64, tick_rate: u64) -> Option<bool> {
+    pub(super) async fn try_selecting_arp_probe(&self, current_tick: u64, tick_rate: u64) -> Option<bool> {
         // Extract offered lease info then release the lock to avoid re-entrance deadlock
         let (offered_ip, server_ip) = {
             let off = self.offered_lease.lock().ok()?;
@@ -535,13 +541,13 @@ impl DhcpClient {
         if probe_at == 0 {
             return Some(self.send_initial_arp_probe(offered_ip, current_tick));
         }
-        Some(self.check_arp_probe_result(offered_ip, server_ip, current_tick, tick_rate, probe_at))
+        Some(self.check_arp_probe_result(offered_ip, server_ip, current_tick, tick_rate, probe_at).await)
     }
 
     // --- check_timeout helper: handle Selecting state ---
-    pub(super) fn handle_selecting_timeout(&self, current_tick: u64, tick_rate: u64, elapsed_secs: u64) -> bool {
+    pub(super) async fn handle_selecting_timeout(&self, current_tick: u64, tick_rate: u64, elapsed_secs: u64) -> bool {
         // If we have an offered lease, perform ARP probe & check for conflicts
-        if let Some(result) = self.try_selecting_arp_probe(current_tick, tick_rate) {
+        if let Some(result) = self.try_selecting_arp_probe(current_tick, tick_rate).await {
             return result;
         }
         // No offer yet or fallback to retransmit DISCOVER
@@ -617,7 +623,7 @@ impl DhcpClient {
     }
 
     /// タイムアウトをチェック
-    pub fn check_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
+    pub async fn check_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
         let state = match self.state.lock() {
             Ok(g) => *g,
             Err(_) => {
@@ -629,7 +635,7 @@ impl DhcpClient {
         let elapsed_secs = (current_tick.saturating_sub(state_time)) / tick_rate;
 
         match state {
-            DhcpState::Selecting => self.handle_selecting_timeout(current_tick, tick_rate, elapsed_secs),
+            DhcpState::Selecting => self.handle_selecting_timeout(current_tick, tick_rate, elapsed_secs).await,
             DhcpState::Requesting => self.check_retry_or_transition(elapsed_secs, DhcpState::Init),
             DhcpState::Bound => self.handle_bound_timeout(current_tick, tick_rate),
             DhcpState::Renewing => self.handle_renewing_timeout(current_tick, tick_rate, elapsed_secs),
