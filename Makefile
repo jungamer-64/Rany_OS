@@ -24,7 +24,7 @@ SMP             ?= 8
 SERIAL          ?= stdio
 IOMMU           ?= 1
 NUMA            ?= 1
-NETWORK         ?= 1
+NETWORK         ?= bridge
 MONITOR         ?= 0
 GDB             ?= 0
 TCG             ?= 0
@@ -297,14 +297,37 @@ define LAUNCH_QEMU
 			"$$cores_node0" "$$mem_node0" "$$(( $(SMP) - cores_node0 ))" "$$mem_node1"; \
 	fi; \
 	\
-	if [ "$(NETWORK)" = "1" ]; then \
-		netdev_args="user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"; \
+	_net_mode="$(NETWORK)"; \
+	if [ "$$_net_mode" = "1" ]; then _net_mode="bridge"; fi; \
+	if [ "$$_net_mode" = "0" ]; then _net_mode="none"; fi; \
+	if [ "$$_net_mode" != "none" ]; then \
+		case "$$_net_mode" in \
+			bridge) \
+				_tap="tap$$$$"; \
+				netdev_args="tap,id=net0,ifname=$$_tap,script=no,downscript=no"; \
+				printf '   -> \033[32m[NET] VirtIO-net bridge/tap (ifname=%s)\033[0m\n' "$$_tap"; \
+				;; \
+			user) \
+				netdev_args="user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"; \
+				printf '   -> \033[32m[NET] VirtIO-net user/NAT (hostfwd: tcp 5555->80, udp 5556->80)\033[0m\n'; \
+				;; \
+			macvtap) \
+				_macvtap_if="$${MACVTAP_IF:-macvtap0}"; \
+				_macvtap_fd=3; \
+				netdev_args="tap,id=net0,fd=$$_macvtap_fd"; \
+				qemu_args="$$qemu_args 3<>/dev/tap$$(cat /sys/class/net/$$_macvtap_if/ifindex 2>/dev/null || echo 0)"; \
+				printf '   -> \033[32m[NET] VirtIO-net macvtap (%s)\033[0m\n' "$$_macvtap_if"; \
+				;; \
+			*) \
+				printf '   -> \033[31m[NET] Unknown NETWORK mode: %s (use bridge|user|macvtap|none)\033[0m\n' "$$_net_mode"; \
+				exit 1; \
+				;; \
+		esac; \
 		device_args="virtio-net-pci,netdev=net0,mq=on,vectors=10"; \
 		if [ "$(IOMMU)" = "1" ]; then \
 			device_args="$$device_args,iommu_platform=on,disable-legacy=on"; \
 		fi; \
 		qemu_args="$$qemu_args -netdev $$netdev_args -device $$device_args"; \
-		printf '   -> \033[32m[NET] VirtIO-net enabled (hostfwd: tcp 5555->80, udp 5556->80)\033[0m\n'; \
 	fi; \
 	\
 	if [ -n "$(NVME)" ]; then \
@@ -543,7 +566,11 @@ help:
 	@echo "  CPU=MODEL               QEMU CPU model (default: auto)"
 	@echo "  IOMMU=0|1              Intel VT-d IOMMU (default: 1)"
 	@echo "  NUMA=0|1               NUMA topology (default: 1)"
-	@echo "  NETWORK=0|1            VirtIO network (default: 1)"
+	@echo "  NETWORK=bridge|user|macvtap|none  VirtIO network mode (default: bridge)"
+	@echo "                                     bridge  = tap/bridge (LAN IP, needs br0+tap)"
+	@echo "                                     user    = QEMU user NAT (slirp, no root)"
+	@echo "                                     macvtap = macvtap passthrough"
+	@echo "                                     none/0  = disabled"
 	@echo "  NVME=SIZE              NVMe device size (default: 1G, empty=disabled)"
 	@echo "  MONITOR=0|1            QEMU monitor on telnet:4444 (default: 0)"
 	@echo "  GDB=0|1                GDB stub on :1234 (default: 0)"
