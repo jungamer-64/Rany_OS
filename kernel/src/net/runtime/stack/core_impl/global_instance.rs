@@ -257,9 +257,8 @@ pub fn unbind_tcp_listener(local: TcpEndpointAddr) {
 
 /// Bind a TCP listener (sync, acquires NETWORK_STACK lock)
 ///
-/// # 非推奨
+/// **ブートストラップ/テスト専用**: エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
 /// asyncコンテキストでは `bind_tcp_async()` または `bind_tcp_listener_async()` を使用すること。
-#[deprecated(note = "Use bind_tcp_async() or bind_tcp_listener_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
     // 同期コンテキスト互換: イベントキュー経由でbindを非同期リクエスト
     // TcpListener::bind()を使用する方が推奨

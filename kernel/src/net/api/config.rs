@@ -49,14 +49,11 @@ static NETWORK_STATS: PoisonLock<NetworkStatsSnapshot> = PoisonLock::new(Network
     rx_dropped: 0,
 });
 
-/// ネットワーク設定取得（読み取り専用・短命ロック）
+/// ネットワーク設定取得（同期ロック・読み取り専用）
 ///
-/// `stack().lock()` で同期ロックを取得するが、読み取りのみのため
-/// ロック保持時間は最小限。ブートストラップなどの同期コンテキストで使用。
-///
-/// # 非推奨
+/// **ブートストラップ専用**: `stack().lock()` で同期ロックを取得するが、読み取りのみのため
+/// ロック保持時間は最小限。エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
 /// asyncコンテキストでは [`get_network_config_async()`] を使用すること。
-#[deprecated(note = "Use get_network_config_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => guard.as_ref().map(|stack_guard| {
@@ -75,13 +72,10 @@ pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
     }
 }
 
-/// ネットワーク統計取得（読み取り専用・短命ロック）
+/// ネットワーク統計取得（同期ロック・読み取り専用）
 ///
-/// ネットワークスタックロックを短時間取得し、統計スナップショットを返す。
-///
-/// # 非推奨
+/// **ブートストラップ専用**: エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
 /// asyncコンテキストでは [`get_network_stats_async()`] を使用すること。
-#[deprecated(note = "Use get_network_stats_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => {
