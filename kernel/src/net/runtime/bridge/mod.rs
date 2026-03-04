@@ -1284,32 +1284,6 @@ pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
 #[path = "tests.rs"]
 pub(crate) mod tests;
 
-/// Send ICMP echo via real NetworkStack（ブートストラップ専用）
-///
-/// **ブートストラップ専用**: エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
-/// IRQ無効化 + 同期ロックを使用するため、asyncコンテキストでは
-/// `crate::net::api::icmp::ping_async()` を使用すること。
-pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
-    // Avoid IRQ re-entry deadlock: RX IRQ path also touches the global stack lock.
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        match stack::stack().lock() {
-            Ok(mut guard) => match guard.as_mut() {
-                Some(stack) => {
-                    let target_ip = Ipv4Address::new(target);
-                    stack
-                        .send_icmp_echo_request(target_ip, seq)
-                        .map_err(|_| "Failed to send ICMP echo request")
-                }
-                None => Err("Network stack not initialized"),
-            },
-            Err(_) => {
-                log::error!("[NET BRIDGE] Stack poisoned (send_real_icmp_echo)");
-                Err("Network stack not initialized")
-            }
-        }
-    })
-}
-
 
 // ============================================================================
 // 非同期ブリッジAPI（推奨）— イベントキュー経由でスタックアクセス
