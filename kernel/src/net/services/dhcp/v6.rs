@@ -513,7 +513,7 @@ impl DhcpV6Client {
                     // For simplicity, we use ~10% jitter based on pseudo-random from MAC/Time
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21; // 0..20
                     let jitter_percent = (rnd as i64) - 10; // -10% .. +10%
-                    let interval_ms = (base_t * 1000).saturating_add(((base_t * 100 * jitter_percent as u64) / 1000));
+                    let interval_ms = (base_t * 1000).saturating_add((base_t * 100 * jitter_percent as u64) / 1000);
                     let interval_ticks = interval_ms.max(100); // at least 100ms
 
                     let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
@@ -540,7 +540,7 @@ impl DhcpV6Client {
                     
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
                     let jitter_percent = (rnd as i64) - 10;
-                    let interval_ms = (base_t * 1000).saturating_add(((base_t * 100 * jitter_percent as u64) / 1000));
+                    let interval_ms = (base_t * 1000).saturating_add((base_t * 100 * jitter_percent as u64) / 1000);
                     let interval_ticks = interval_ms.max(100);
 
                     let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
@@ -586,7 +586,7 @@ impl DhcpV6Client {
                     
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
                     let jitter_percent = (rnd as i64) - 10;
-                    let interval_ms = (base_t * 1000).saturating_add(((base_t * 100 * jitter_percent as u64) / 1000));
+                    let interval_ms = (base_t * 1000).saturating_add((base_t * 100 * jitter_percent as u64) / 1000);
                     let interval_ticks = interval_ms.max(100);
 
                     let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
@@ -624,7 +624,7 @@ impl DhcpV6Client {
                     
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
                     let jitter_percent = (rnd as i64) - 10;
-                    let interval_ms = (base_t * 1000).saturating_add(((base_t * 100 * jitter_percent as u64) / 1000));
+                    let interval_ms = (base_t * 1000).saturating_add((base_t * 100 * jitter_percent as u64) / 1000);
                     let interval_ticks = interval_ms.max(100);
 
                     let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));

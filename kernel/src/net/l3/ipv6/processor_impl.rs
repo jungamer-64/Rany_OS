@@ -1,5 +1,5 @@
 use super::*;
-use crate::net::l3::ipv6::{Ipv6Packet, IPV6_HEADER_SIZE, skip_extension_headers_fraginfo, ExtHeaderResult};
+use crate::net::l3::ipv6::{Ipv6Packet, skip_extension_headers_fraginfo, ExtHeaderResult};
 
 
 impl Ipv6Processor {
