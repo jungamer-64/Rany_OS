@@ -268,6 +268,7 @@ impl TcpControlBlockEntry {
     pub fn on_send(&mut self, bytes: u32) {
         let tick = self.last_send_tick;
         self.congestion.on_send(bytes, tick);
+        self.delayed_ack_pending = 0;
     }
 
     /// タイムアウト時の処理
