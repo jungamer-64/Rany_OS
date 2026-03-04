@@ -172,9 +172,9 @@ impl TlsConnection {
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         let handshake_hash = if cipher.uses_sha384() {
-            crate::loader::sha384::compute(&self.handshake_messages).to_vec()
+            crate::crypto::sha384::compute(&self.handshake_messages).to_vec()
         } else {
-            crate::loader::sha256::compute(&self.handshake_messages).to_vec()
+            crate::crypto::sha256::compute(&self.handshake_messages).to_vec()
         };
 
         let mut verify_data = [0u8; 12];

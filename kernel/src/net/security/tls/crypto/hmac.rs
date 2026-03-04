@@ -20,7 +20,7 @@ pub const SHA256_OUTPUT_SIZE: usize = 32;
 /// # Returns
 /// 32-byte MAC value
 pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; SHA256_OUTPUT_SIZE] {
-    use crate::loader::sha256;
+    use crate::crypto::sha256;
 
     // Step 1: If key > block size, hash it to get a shorter key
     let hashed_key;
@@ -71,7 +71,7 @@ pub const SHA384_OUTPUT_SIZE: usize = 48;
 /// # Returns
 /// 48-byte MAC value
 pub fn hmac_sha384(key: &[u8], data: &[u8]) -> [u8; SHA384_OUTPUT_SIZE] {
-    use crate::loader::sha384;
+    use crate::crypto::sha384;
 
     // Step 1: If key > block size, hash it to get a shorter key
     let hashed_key;

@@ -6,6 +6,11 @@
 //!
 //! kernel内部で必要な機能のみを再エクスポート。
 //! ドライバ実装は `nvme_driver` クレートを参照。
+//!
+//! ## 関連モジュール
+//!
+//! - [`crate::task::io`] — テスト/ドライバ未初期化時用のNVMe stubモジュール
+//! - `drivers/nvme/` — 外部NVMeドライバセル実装
 
 #![allow(dead_code)]
 

@@ -368,7 +368,7 @@ pub(crate) fn test_tls13_hkdf_expand_label_rfc8446() {
 /// matching the expected chain: Early -> derive("derived") -> Handshake -> derive("derived") -> Master
 #[test_case]
 pub(crate) fn test_tls13_key_schedule_chain_consistency() {
-    use crate::loader::sha256;
+    use crate::crypto::sha256;
 
     let shared = [0xABu8; 32];
     let empty_hash = sha256::compute(&[]);

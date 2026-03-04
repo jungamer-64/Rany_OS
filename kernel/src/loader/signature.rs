@@ -421,7 +421,7 @@ impl SignatureVerifier {
     ///
     /// 設計書 3.3: SHA-256によるコード完全性検証
     fn compute_hash(&self, data: &[u8]) -> [u8; 32] {
-        super::sha256::compute(data)
+        crate::crypto::sha256::compute(data)
     }
 
     /// Ed25519署名を検証
@@ -448,7 +448,7 @@ impl SignatureVerifier {
         sig_bytes.copy_from_slice(signature);
 
         // Ed25519検証を実行
-        super::ed25519::verify(public_key, message, &sig_bytes)
+        crate::crypto::ed25519::verify(public_key, message, &sig_bytes)
     }
 
     /// 統計を取得

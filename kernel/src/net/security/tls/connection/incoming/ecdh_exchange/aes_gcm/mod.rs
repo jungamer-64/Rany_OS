@@ -96,7 +96,7 @@ impl TlsConnection {
 
         if use_384 {
             // SHA-384ベース鍵スケジュール
-            let transcript_ch_sh = crate::loader::sha384::compute(&self.handshake_messages);
+            let transcript_ch_sh = crate::crypto::sha384::compute(&self.handshake_messages);
 
             let psk_ref = if self.tls13_using_psk { self.tls13_psk.as_deref() } else { None };
             let early_secret = tls13_early_secret_sha384(psk_ref);
@@ -121,12 +121,12 @@ impl TlsConnection {
             let ms = tls13_master_secret_sha384(&handshake_secret);
             self.master_secret[..48].copy_from_slice(&ms);
 
-            let mut hasher = crate::loader::sha384::Sha384::new();
+            let mut hasher = crate::crypto::sha384::Sha384::new();
             hasher.update(&self.handshake_messages);
             self.transcript_hash = Some(TranscriptHash::Sha384(hasher));
         } else {
             // SHA-256ベース鍵スケジュール
-            use crate::loader::sha256;
+            use crate::crypto::sha256;
 
             let transcript_ch_sh = {
                 let mut hasher = sha256::Sha256::new();
@@ -546,9 +546,9 @@ impl TlsConnection {
     pub(super) fn build_tls13_cv_verify_content(&self, label: &[u8]) -> Vec<u8> {
         let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
         let transcript_hash: Vec<u8> = if use_384 {
-            crate::loader::sha384::compute(&self.handshake_messages).to_vec()
+            crate::crypto::sha384::compute(&self.handshake_messages).to_vec()
         } else {
-            crate::loader::sha256::compute(&self.handshake_messages).to_vec()
+            crate::crypto::sha256::compute(&self.handshake_messages).to_vec()
         };
 
         let mut content = Vec::with_capacity(64 + label.len() + 1 + transcript_hash.len());
@@ -597,15 +597,15 @@ impl TlsConnection {
 
         let digest = match hash_alg {
             crate::net::security::rsa::HashAlgorithm::Sha256 => {
-                let h = crate::loader::sha256::compute(message);
+                let h = crate::crypto::sha256::compute(message);
                 h.to_vec()
             }
             crate::net::security::rsa::HashAlgorithm::Sha384 => {
-                let h = crate::loader::sha384::compute(message);
+                let h = crate::crypto::sha384::compute(message);
                 h.to_vec()
             }
             crate::net::security::rsa::HashAlgorithm::Sha512 => {
-                let h = crate::loader::sha512::compute(message);
+                let h = crate::crypto::sha512::compute(message);
                 h.to_vec()
             }
             // Security: SHA-1 is not supported for PSS in TLS 1.3.
@@ -627,7 +627,7 @@ impl TlsConnection {
             _ => return Err(TlsError::CertificateError),
         };
 
-        let digest = crate::loader::sha256::compute(message);
+        let digest = crate::crypto::sha256::compute(message);
 
         ecdh::p256::ecdsa_p256_verify(pubkey_bytes, &digest, signature)
             .map_err(|_| TlsError::CryptoError)

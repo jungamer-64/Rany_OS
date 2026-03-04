@@ -13,6 +13,7 @@ use log::{debug, error, info, warn};
 
 mod domain;
 mod domain_system;
+mod crypto;
 mod epoch;
 mod error;
 #[path = "../../filesystems/kernel_fs/mod.rs"]

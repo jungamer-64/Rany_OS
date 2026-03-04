@@ -16,7 +16,7 @@ impl TcpControlBlock {
             seq: TcpSeqState::new(isn),
             tx: TcpTxState::new(),
             rx: TcpRxState::new(),
-            congestion: TcpCongestionState::new(),
+            congestion: TcpCongestionState::new(local_addr.default_mss()),
             options: TcpOptionsState::new(),
             timers: TcpTimerState::new(),
             waiters: TcpAsyncWaiters::default(),
@@ -1210,11 +1210,9 @@ impl TcpControlBlock {
 
     /// Get effective send window (peer's window scaled)
     pub fn get_effective_snd_wnd(&self) -> u32 {
-        if self.options.wscale_enabled {
-            (self.seq.snd_wnd as u32) << self.options.rcv_wscale
-        } else {
-            self.seq.snd_wnd as u32
-        }
+        // self.seq.snd_wnd is already scaled by rcv_wscale in set_snd_wnd().
+        // Scaling it again here would be a violation of RFC 7323.
+        self.seq.snd_wnd
     }
 
     /// Get effective receive window (our window scaled)
@@ -1227,7 +1225,8 @@ impl TcpControlBlock {
     pub fn set_mss(&mut self, mss: u16) {
         self.congestion.mss = mss;
         // Also update initial cwnd if we're still using the default initial window
-        if self.congestion.cwnd == 10 * 536 {
+        let default_mss = self.local_addr().default_mss() as u32;
+        if self.congestion.cwnd == 10 * default_mss {
             self.congestion.cwnd = 10 * mss as u32;
         }
     }

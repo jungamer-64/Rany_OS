@@ -471,9 +471,9 @@ impl TlsConnection {
         // MessageHash = Handshake(254, Hash(messages_so_far))
         let use_384 = cipher.uses_sha384();
         let current_hash: Vec<u8> = if use_384 {
-            crate::loader::sha384::compute(&self.handshake_messages).to_vec()
+            crate::crypto::sha384::compute(&self.handshake_messages).to_vec()
         } else {
-            let h = crate::loader::sha256::compute(&self.handshake_messages);
+            let h = crate::crypto::sha256::compute(&self.handshake_messages);
             h.to_vec()
         };
         let hash_len = current_hash.len();
@@ -645,11 +645,11 @@ impl TlsConnection {
 
         let (hash_alg, digest) = match alg_selector {
             2 => {
-                let d = crate::loader::sha256::compute(signed_data);
+                let d = crate::crypto::sha256::compute(signed_data);
                 (crate::net::security::rsa::HashAlgorithm::Sha256, d.to_vec())
             }
             3 => {
-                let d = crate::loader::sha384::compute(signed_data);
+                let d = crate::crypto::sha384::compute(signed_data);
                 (crate::net::security::rsa::HashAlgorithm::Sha384, d.to_vec())
             }
             _ => return Err(TlsError::CryptoError),
@@ -674,7 +674,7 @@ impl TlsConnection {
             Some(ServerPublicKey::EcdsaP256 { point }) => point.as_slice(),
             _ => return Err(TlsError::CertificateError),
         };
-        let digest = crate::loader::sha256::compute(signed_data);
+        let digest = crate::crypto::sha256::compute(signed_data);
         ecdh::p256::ecdsa_p256_verify(pubkey_bytes, &digest, signature)
             .map_err(|_| TlsError::CryptoError)
     }

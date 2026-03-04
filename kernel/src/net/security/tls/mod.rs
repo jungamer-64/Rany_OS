@@ -58,7 +58,7 @@ fn tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished() -> Vec<
 
     // Finished verify_data = PRF(master_secret, "server finished", Hash(handshake_messages))[0..12]
     // For TlsConnection::new(), master_secret starts as all-zero 48 bytes.
-    let handshake_hash = crate::loader::sha256::compute(&server_hello_done);
+    let handshake_hash = crate::crypto::sha256::compute(&server_hello_done);
     let master_secret = [0u8; 48];
     let mut verify_data = [0u8; 12];
     tls12_prf(&master_secret, b"server finished", &handshake_hash, &mut verify_data);

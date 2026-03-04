@@ -82,9 +82,9 @@ pub(crate) fn mgf1(seed: &[u8], length: usize, hash_alg: HashAlgorithm) -> Vec<u
 pub(crate) fn hash_compute(hash_alg: HashAlgorithm, data: &[u8]) -> Vec<u8> {
     match hash_alg {
         HashAlgorithm::Sha1 => crate::net::security::tls::crypto::legacy::sha1_compute(data).to_vec(),
-        HashAlgorithm::Sha256 => crate::loader::sha256::compute(data).to_vec(),
-        HashAlgorithm::Sha384 => crate::loader::sha384::compute(data).to_vec(),
-        HashAlgorithm::Sha512 => crate::loader::sha512::compute(data).to_vec(),
+        HashAlgorithm::Sha256 => crate::crypto::sha256::compute(data).to_vec(),
+        HashAlgorithm::Sha384 => crate::crypto::sha384::compute(data).to_vec(),
+        HashAlgorithm::Sha512 => crate::crypto::sha512::compute(data).to_vec(),
     }
 }
 

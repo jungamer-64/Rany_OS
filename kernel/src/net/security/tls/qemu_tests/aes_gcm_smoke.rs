@@ -255,7 +255,7 @@ pub fn wave8_tls_generate_random_different_calls_smoke() -> bool {
 // ========================================================================
 
 pub fn wave8_tls_sha384_empty_smoke() -> bool {
-    use crate::loader::sha384;
+    use crate::crypto::sha384;
     // SHA-384("") -- FIPS 180-4 既知テストベクトル
     let hash = sha384::compute(b"");
     let expected: [u8; 48] = [
@@ -270,7 +270,7 @@ pub fn wave8_tls_sha384_empty_smoke() -> bool {
 }
 
 pub fn wave8_tls_sha384_abc_smoke() -> bool {
-    use crate::loader::sha384;
+    use crate::crypto::sha384;
     // SHA-384("abc") -- FIPS 180-4 既知テストベクトル
     let hash = sha384::compute(b"abc");
     let expected: [u8; 48] = [

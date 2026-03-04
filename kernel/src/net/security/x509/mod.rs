@@ -1113,7 +1113,7 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
     match cert.signature_algorithm {
         SignatureAlgorithmId::Sha256WithRsa => {
             if let SubjectPublicKeyInfo::Rsa { modulus, exponent } = issuer_pubkey {
-                let digest = crate::loader::sha256::compute(cert.raw_tbs);
+                let digest = crate::crypto::sha256::compute(cert.raw_tbs);
                 let key = RsaPublicKey { modulus, exponent };
                 rsa_pkcs1_verify(&key, HashAlgorithm::Sha256, &digest, cert.signature_value).is_ok()
             } else {
@@ -1122,7 +1122,7 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
         }
         SignatureAlgorithmId::Sha384WithRsa => {
             if let SubjectPublicKeyInfo::Rsa { modulus, exponent } = issuer_pubkey {
-                let digest = crate::loader::sha384::compute(cert.raw_tbs);
+                let digest = crate::crypto::sha384::compute(cert.raw_tbs);
                 let key = RsaPublicKey { modulus, exponent };
                 rsa_pkcs1_verify(&key, HashAlgorithm::Sha384, &digest, cert.signature_value).is_ok()
             } else {
@@ -1131,7 +1131,7 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
         }
         SignatureAlgorithmId::Sha512WithRsa => {
             if let SubjectPublicKeyInfo::Rsa { modulus, exponent } = issuer_pubkey {
-                let digest = crate::loader::sha512::compute(cert.raw_tbs);
+                let digest = crate::crypto::sha512::compute(cert.raw_tbs);
                 let key = RsaPublicKey { modulus, exponent };
                 rsa_pkcs1_verify(&key, HashAlgorithm::Sha512, &digest, cert.signature_value).is_ok()
             } else {
@@ -1141,7 +1141,7 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
         SignatureAlgorithmId::RsaPss => {
             if let SubjectPublicKeyInfo::Rsa { modulus, exponent } = issuer_pubkey {
                 // RSA-PSSはデフォルトでSHA-256を使用
-                let digest = crate::loader::sha256::compute(cert.raw_tbs);
+                let digest = crate::crypto::sha256::compute(cert.raw_tbs);
                 let key = RsaPublicKey { modulus, exponent };
                 rsa_pss_verify(&key, HashAlgorithm::Sha256, &digest, cert.signature_value).is_ok()
             } else {
@@ -1150,7 +1150,7 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
         }
         SignatureAlgorithmId::EcdsaWithSha256 => {
             if let SubjectPublicKeyInfo::EcdsaP256 { public_key } = issuer_pubkey {
-                let digest = crate::loader::sha256::compute(cert.raw_tbs);
+                let digest = crate::crypto::sha256::compute(cert.raw_tbs);
                 crate::net::security::ecdh::p256::ecdsa_p256_verify(
                     public_key,
                     &digest,
@@ -1162,7 +1162,7 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
         }
         SignatureAlgorithmId::EcdsaWithSha384 => {
             if let SubjectPublicKeyInfo::EcdsaP384 { public_key } = issuer_pubkey {
-                let digest = crate::loader::sha384::compute(cert.raw_tbs);
+                let digest = crate::crypto::sha384::compute(cert.raw_tbs);
                 crate::net::security::ecdh::p384::ecdsa_p384_verify(
                     public_key,
                     &digest,

@@ -247,11 +247,11 @@ struct TcpCongestionState {
 }
 
 impl TcpCongestionState {
-    fn new() -> Self {
+    fn new(mss: u16) -> Self {
         Self {
-            cwnd: 10 * 536, // 初期値: 10 MSS (RFC 6928 compliance with default MSS)
+            cwnd: 10 * mss as u32, // 初期値: 10 MSS (RFC 6928 compliance)
             ssthresh: 65535,
-            mss: 536, // RFC 1122 Section 4.2.2.6: Default send MSS is 536 if not negotiated.
+            mss, // RFC 1122 Section 4.2.2.6 default
             dup_ack_count: 0,
             last_ack: 0,
             last_snd_wnd: 65535,

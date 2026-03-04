@@ -355,7 +355,7 @@ pub fn wave8_tls_tls13_hkdf_expand_label_rfc8446_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls13_key_schedule_chain_consistency_smoke() -> bool {
-    use crate::loader::sha256;
+    use crate::crypto::sha256;
 
     let shared = [0xABu8; 32];
     let empty_hash = sha256::compute(&[]);

@@ -84,11 +84,11 @@ impl TcpProcessor {
 
             if (cookie & 0xFFFFFF00) == expected_mixed {
                 let mss = match mss_idx {
-                    0 => 536,
+                    0 => local.default_mss(),
                     1 => 1300,
                     2 => 1440,
-                    3 => 1460,
-                    _ => 1460,
+                    3 => if local.is_ipv6() { 1440 } else { 1460 },
+                    _ => if local.is_ipv6() { 1440 } else { 1460 },
                 };
                 return Some(mss);
             }
@@ -597,11 +597,11 @@ impl TcpProcessor {
             
             // Build fixed MSS option for SYN Cookie response
             let mss_val: u16 = match mss_idx {
-                0 => 536,
+                0 => local_addr.default_mss(),
                 1 => 1300,
                 2 => 1440,
-                3 => 1460,
-                _ => 1460,
+                3 => if local_addr.is_ipv6() { 1440 } else { 1460 },
+                _ => if local_addr.is_ipv6() { 1440 } else { 1460 },
             };
             let mut cookie_opts = Vec::with_capacity(4);
             cookie_opts.push(2); // MSS
@@ -648,8 +648,8 @@ impl TcpProcessor {
         }
 
         // RFC 1122 Section 4.2.2.6: If an MSS option is not received, 
-        // a default MSS of 536 is used.
-        tcb.set_mss(peer_mss_val.unwrap_or(536));
+        // a default MSS based on the address family is used.
+        tcb.set_mss(peer_mss_val.unwrap_or(local_addr.default_mss()));
 
         tcb.enter_syn_received();
 
@@ -1116,8 +1116,8 @@ impl TcpProcessor {
         if syn && ack {
             // Both SYN and ACK are set and ACK is acceptable (checked above)
             
-            // Apply MSS (defaulting to 536 as per RFC 1122 if not provided)
-            tcb.set_mss(peer_mss_val.unwrap_or(536));
+            // Apply MSS (defaulting to appropriate value as per RFC 1122 if not provided)
+            tcb.set_mss(peer_mss_val.unwrap_or(tcb.local_addr().default_mss()));
 
             tcb.set_snd_una(ack_num);
             // Remove SYN from retransmit queue and update RTO
@@ -1133,7 +1133,7 @@ impl TcpProcessor {
         } else if syn && !ack {
             // Simultaneous open
             // Apply MSS even in simultaneous open
-            tcb.set_mss(peer_mss_val.unwrap_or(536));
+            tcb.set_mss(peer_mss_val.unwrap_or(tcb.local_addr().default_mss()));
 
             tcb.set_rcv_nxt(seq_num.wrapping_add(1));
             tcb.enter_syn_received();

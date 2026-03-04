@@ -16,8 +16,8 @@ use crate::net::security::ecdh;
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
 mod incoming;
 enum TranscriptHash {
-    Sha256(crate::loader::sha256::Sha256),
-    Sha384(crate::loader::sha384::Sha384),
+    Sha256(crate::crypto::sha256::Sha256),
+    Sha384(crate::crypto::sha384::Sha384),
 }
 
 impl TranscriptHash {
@@ -292,7 +292,7 @@ impl TlsConnection {
 
     /// トランスクリプトハッシュを初期化する（HRR後の再送にも対応）
     fn init_transcript_hash(&mut self) {
-        let mut hasher = crate::loader::sha256::Sha256::new();
+        let mut hasher = crate::crypto::sha256::Sha256::new();
         if !self.handshake_messages.is_empty() {
             hasher.update(&self.handshake_messages);
         }
@@ -337,21 +337,21 @@ impl TlsConnection {
 
         if use_384 {
             let early_secret = tls13_early_secret_sha384(Some(psk));
-            let empty_hash = crate::loader::sha384::compute(&[]);
+            let empty_hash = crate::crypto::sha384::compute(&[]);
             let binder_key = tls13_derive_secret_sha384(&early_secret, b"res binder", &empty_hash);
-            let transcript_hash = crate::loader::sha384::compute(&message[..truncated_len]);
+            let transcript_hash = crate::crypto::sha384::compute(&message[..truncated_len]);
             let binder = hmac_sha384(&binder_key, &transcript_hash);
             let binder_start = message.len() - hash_len;
             message[binder_start..].copy_from_slice(&binder[..hash_len]);
         } else {
             let early_secret = tls13_early_secret(Some(psk));
             let empty_hash = {
-                let h = crate::loader::sha256::Sha256::new();
+                let h = crate::crypto::sha256::Sha256::new();
                 h.finalize()
             };
             let binder_key = tls13_derive_secret(&early_secret, b"res binder", &empty_hash);
             let transcript_hash = {
-                let mut h = crate::loader::sha256::Sha256::new();
+                let mut h = crate::crypto::sha256::Sha256::new();
                 h.update(&message[..truncated_len]);
                 h.finalize()
             };
@@ -373,7 +373,7 @@ impl TlsConnection {
 
         if use_384 {
             let early_secret = tls13_early_secret_sha384(Some(psk));
-            let ch_hash = crate::loader::sha384::compute(&self.handshake_messages);
+            let ch_hash = crate::crypto::sha384::compute(&self.handshake_messages);
             let cets = tls13_derive_secret_sha384(&early_secret, b"c e traffic", &ch_hash);
             let (ew_key, ew_iv) = tls13_derive_traffic_keys_sha384(&cets, key_len);
             self.early_write_key = ew_key;
@@ -381,7 +381,7 @@ impl TlsConnection {
         } else {
             let early_secret = tls13_early_secret(Some(psk));
             let ch_hash = {
-                let mut h = crate::loader::sha256::Sha256::new();
+                let mut h = crate::crypto::sha256::Sha256::new();
                 h.update(&self.handshake_messages);
                 h.finalize()
             };

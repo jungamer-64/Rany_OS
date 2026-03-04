@@ -14,7 +14,7 @@ impl TlsConnection {
             _ => return Err(TlsError::CertificateError),
         };
 
-        let digest = crate::loader::sha384::compute(message);
+        let digest = crate::crypto::sha384::compute(message);
 
         ecdh::p384::ecdsa_p384_verify(pubkey_bytes, &digest, signature)
             .map_err(|_| TlsError::CryptoError)
@@ -34,7 +34,7 @@ impl TlsConnection {
         // Finished の verify_data を検証
         // トランスクリプトハッシュは Finished メッセージ自体を含まない状態で計算
         if use_384 {
-            let transcript = crate::loader::sha384::compute(&self.handshake_messages);
+            let transcript = crate::crypto::sha384::compute(&self.handshake_messages);
             let mut shs = [0u8; 48];
             shs.copy_from_slice(&self.server_hs_traffic_secret[..48]);
             let finished_key = tls13_finished_key_sha384(&shs);
@@ -48,7 +48,7 @@ impl TlsConnection {
             }
         } else {
             let transcript = {
-                let mut hasher = crate::loader::sha256::Sha256::new();
+                let mut hasher = crate::crypto::sha256::Sha256::new();
                 hasher.update(&self.handshake_messages);
                 hasher.finalize()
             };
@@ -158,14 +158,14 @@ impl TlsConnection {
     pub(super) fn compute_tls13_client_verify_data(&self) -> Vec<u8> {
         let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
         if use_384 {
-            let transcript = crate::loader::sha384::compute(&self.handshake_messages);
+            let transcript = crate::crypto::sha384::compute(&self.handshake_messages);
             let mut chs = [0u8; 48];
             chs.copy_from_slice(&self.client_hs_traffic_secret[..48]);
             let finished_key = tls13_finished_key_sha384(&chs);
             tls13_verify_data_sha384(&finished_key, &transcript).to_vec()
         } else {
             let transcript = {
-                let mut hasher = crate::loader::sha256::Sha256::new();
+                let mut hasher = crate::crypto::sha256::Sha256::new();
                 hasher.update(&self.handshake_messages);
                 hasher.finalize()
             };
@@ -255,7 +255,7 @@ impl TlsConnection {
         let msgs_before_cf = &self.handshake_messages[..sf_offset];
 
         if use_384 {
-            let transcript_sf = crate::loader::sha384::compute(msgs_before_cf);
+            let transcript_sf = crate::crypto::sha384::compute(msgs_before_cf);
             let mut master_secret = [0u8; 48];
             master_secret.copy_from_slice(&self.master_secret[..48]);
 
@@ -273,7 +273,7 @@ impl TlsConnection {
             self.write_iv = client_iv;
         } else {
             let transcript_sf = {
-                let mut hasher = crate::loader::sha256::Sha256::new();
+                let mut hasher = crate::crypto::sha256::Sha256::new();
                 hasher.update(msgs_before_cf);
                 hasher.finalize()
             };
@@ -298,14 +298,14 @@ impl TlsConnection {
         // RMS = Derive-Secret(master_secret, "res master", transcript_with_client_finished)
         // handshake_messages には client Finished を含む全メッセージが含まれている
         if use_384 {
-            let transcript_cf = crate::loader::sha384::compute(&self.handshake_messages);
+            let transcript_cf = crate::crypto::sha384::compute(&self.handshake_messages);
             let mut ms48 = [0u8; 48];
             ms48.copy_from_slice(&self.master_secret[..48]);
             let rms = tls13_derive_secret_sha384(&ms48, b"res master", &transcript_cf);
             self.resumption_master_secret = rms.to_vec();
         } else {
             let transcript_cf = {
-                let mut h = crate::loader::sha256::Sha256::new();
+                let mut h = crate::crypto::sha256::Sha256::new();
                 h.update(&self.handshake_messages);
                 h.finalize()
             };

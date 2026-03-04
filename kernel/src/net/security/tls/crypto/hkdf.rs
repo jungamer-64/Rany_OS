@@ -136,7 +136,7 @@ pub fn tls13_handshake_secret(
     early_secret: &[u8; SHA256_OUTPUT_SIZE],
     shared_secret: &[u8],
 ) -> [u8; SHA256_OUTPUT_SIZE] {
-    use crate::loader::sha256;
+    use crate::crypto::sha256;
     let empty_hash = sha256::compute(&[]);
     let derived = tls13_derive_secret(early_secret, b"derived", &empty_hash);
     hkdf_extract(&derived, shared_secret)
@@ -153,7 +153,7 @@ pub fn tls13_handshake_secret(
 pub fn tls13_master_secret(
     handshake_secret: &[u8; SHA256_OUTPUT_SIZE],
 ) -> [u8; SHA256_OUTPUT_SIZE] {
-    use crate::loader::sha256;
+    use crate::crypto::sha256;
     let empty_hash = sha256::compute(&[]);
     let derived = tls13_derive_secret(handshake_secret, b"derived", &empty_hash);
     hkdf_extract(&derived, &[0u8; SHA256_OUTPUT_SIZE])
@@ -287,7 +287,7 @@ pub fn tls13_handshake_secret_sha384(
     early_secret: &[u8; SHA384_OUTPUT_SIZE],
     shared_secret: &[u8],
 ) -> [u8; SHA384_OUTPUT_SIZE] {
-    use crate::loader::sha384;
+    use crate::crypto::sha384;
     let empty_hash = sha384::compute(&[]);
     let derived = tls13_derive_secret_sha384(early_secret, b"derived", &empty_hash);
     hkdf_extract_sha384(&derived, shared_secret)
@@ -297,7 +297,7 @@ pub fn tls13_handshake_secret_sha384(
 pub fn tls13_master_secret_sha384(
     handshake_secret: &[u8; SHA384_OUTPUT_SIZE],
 ) -> [u8; SHA384_OUTPUT_SIZE] {
-    use crate::loader::sha384;
+    use crate::crypto::sha384;
     let empty_hash = sha384::compute(&[]);
     let derived = tls13_derive_secret_sha384(handshake_secret, b"derived", &empty_hash);
     hkdf_extract_sha384(&derived, &[0u8; SHA384_OUTPUT_SIZE])

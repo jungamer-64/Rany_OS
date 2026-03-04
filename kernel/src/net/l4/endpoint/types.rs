@@ -237,6 +237,15 @@ impl EndpointAddr {
         matches!(self, EndpointAddr::V6 { .. })
     }
 
+    /// Get default MSS for this address family (RFC 1122 Section 4.2.2.6)
+    pub fn default_mss(&self) -> u16 {
+        if self.is_ipv6() {
+            1220 // IPv6 minimum MTU (1280) - IPv6 header (40) - TCP header (20)
+        } else {
+            536 // IPv4 default (RFC 793/1122)
+        }
+    }
+
     /// Get port
     #[inline(always)]
     pub fn port(&self) -> u16 {

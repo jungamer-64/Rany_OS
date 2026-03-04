@@ -35,6 +35,9 @@ use spin::Mutex;
 // ============================================================================
 
 /// タイムスタンプカウンタを読む
+///
+/// **注意**: 実装は `crate::time::rdtsc()` に一元化。
+/// 本関数は後方互換のためのエイリアスです。
 mod accessors;
 // The accessors module provides helpers that may be consumed by
 // other crates/tests. We don't re-export its contents here to
@@ -42,23 +45,7 @@ mod accessors;
 // organization and future use.
 #[inline(always)]
 pub fn rdtsc() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        let lo: u32;
-        let hi: u32;
-        core::arch::asm!(
-            "rdtsc",
-            out("eax") lo,
-            out("edx") hi,
-            options(nomem, nostack)
-        );
-        ((hi as u64) << 32) | (lo as u64)
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        0
-    }
+    crate::time::rdtsc()
 }
 
 /// 高精度タイムスタンプ（RDTSCP）

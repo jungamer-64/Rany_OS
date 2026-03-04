@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::signature::{self, CellSignature};
-use super::sha256;
+use crate::crypto::sha256;
 use super::LoadError;
 use crate::util::{get_slice, read_struct};
 

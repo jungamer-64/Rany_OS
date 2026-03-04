@@ -1,5 +1,18 @@
-// Minimal task-scoped IO shims for tests
-// Provides a small NVMe shim to satisfy `crate::task::io::nvme` references
+// ============================================================================
+// src/task/io/mod.rs - テスト用 I/O shim モジュール
+// ============================================================================
+//
+// **本番NVMeドライバは `crate::io::nvme` に存在します。**
+//
+// このモジュールは `crate::task::io::nvme` への参照を満たすための
+// 最小限のスタブ（no-op）実装を提供します。テストビルドやドライバ未
+// 初期化時のコンパイルを可能にするためのものです。
+//
+// 各構造体・関数のシグネチャは本番版 (`crate::io::nvme`) に合わせて
+// いますが、全メソッドは固定値を返すかno-opです。
+//
+// 参照: `crate::io::nvme` — 本番NVMeカーネル統合
+//       `drivers/nvme/`    — 外部NVMeドライバセル
 
 
 pub mod nvme {
