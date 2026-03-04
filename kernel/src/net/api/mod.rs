@@ -8,4 +8,3 @@ pub mod dhcp;
 pub mod diagnostics;
 pub mod firewall;
 pub mod icmp;
-pub mod shell;
