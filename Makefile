@@ -27,6 +27,7 @@ NUMA            ?= 1
 NETWORK         ?= bridge
 BRIDGE          ?= br0
 NIC             ?=
+NET_STATE_DIR   ?= target/net_state
 MONITOR         ?= 0
 GDB             ?= 0
 TCG             ?= 0
@@ -598,9 +599,26 @@ net-setup:
 		exit 1; \
 	fi
 	@_bridge="$(BRIDGE)"; \
+	_state_dir="$(NET_STATE_DIR)"; \
+	_state_file="$$_state_dir/$(NIC).state"; \
+	mkdir -p "$$_state_dir"; \
+	printf 'NIC %s\nBRIDGE %s\n' "$(NIC)" "$$_bridge" > "$$_state_file"; \
+	ip -4 addr show "$(NIC)" 2>/dev/null | awk '/inet /{print "IPV4 "$$2}' >> "$$_state_file"; \
+	ip -6 addr show "$(NIC)" 2>/dev/null | awk '/inet6 / && !/scope link/{print "IPV6 "$$2}' >> "$$_state_file"; \
+	ip route show default dev "$(NIC)" 2>/dev/null | awk '{print "DEFAULT_GW "$$3; exit}' >> "$$_state_file"; \
+	ip route show dev "$(NIC)" 2>/dev/null | grep -v 'proto kernel' | grep -v 'proto link' | grep -v '^default' | awk '{print "ROUTE "$$0}' >> "$$_state_file"; \
+	if command -v resolvectl >/dev/null 2>&1; then \
+		_dns=$$(resolvectl dns "$(NIC)" 2>/dev/null | sed 's/.*: //'); \
+		_dom=$$(resolvectl domain "$(NIC)" 2>/dev/null | sed 's/.*: //'); \
+		[ -n "$$_dns" ] && printf 'DNS %s\n' "$$_dns" >> "$$_state_file" || true; \
+		[ -n "$$_dom" ] && printf 'DNS_DOMAIN %s\n' "$$_dom" >> "$$_state_file" || true; \
+	fi; \
+	_old_master=$$(readlink /sys/class/net/$(NIC)/master 2>/dev/null | xargs basename 2>/dev/null || true); \
+	[ -n "$$_old_master" ] && printf 'OLD_MASTER %s\n' "$$_old_master" >> "$$_state_file" || true; \
 	printf '\033[36mSetting up bridge network...\033[0m\n'; \
 	printf '   Bridge : %s\n' "$$_bridge"; \
 	printf '   NIC    : %s\n' "$(NIC)"; \
+	printf '   State  : %s\n' "$$_state_file"; \
 	_nic_mac=$$(cat /sys/class/net/$(NIC)/address 2>/dev/null); \
 	if ip link show "$$_bridge" >/dev/null 2>&1; then \
 		_br_mac=$$(cat /sys/class/net/$$_bridge/address 2>/dev/null); \
@@ -625,9 +643,9 @@ net-setup:
 	if command -v resolvectl >/dev/null 2>&1; then \
 		sudo resolvectl dns "$$_bridge" 1.1.1.1 1.0.0.1 >/dev/null 2>&1 || true; \
 		sudo resolvectl domain "$$_bridge" "~." >/dev/null 2>&1 || true; \
-		printf '   -> \033[32m[NET] Assigned DNS to %s\033[0m\n' "$$_bridge"; \
+		printf '   -> \033[32m[NET] Assigned DNS 1.1.1.1 1.0.0.1 to %s\033[0m\n' "$$_bridge"; \
 	fi; \
-	_nic_ip=$$(ip -4 addr show "$(NIC)" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p' | head -1); \
+	_nic_ip=$$(ip -4 addr show "$(NIC)" 2>/dev/null | sed -n 's|.*inet \([^ ]*\) .*|\1|p' | head -1); \
 	_nic_gw=$$(ip route show default dev "$(NIC)" 2>/dev/null | awk '{print $$3}' | head -1); \
 	sudo ip link set "$(NIC)" master "$$_bridge" 2>/dev/null || true; \
 	if [ -n "$$_nic_ip" ]; then \
@@ -648,7 +666,8 @@ net-setup:
 # NIC未指定時は brif から物理NICを自動検出して IP/ルートを復元する
 net-teardown:
 	@_bridge="$(BRIDGE)"; \
-	printf '\033[36mTearing down bridge network (restore NIC)...\033[0m\n'; \
+	_state_dir="$(NET_STATE_DIR)"; \
+	printf '\033[36mTearing down bridge network (full restore)...\033[0m\n'; \
 	if ! ip link show "$$_bridge" >/dev/null 2>&1; then \
 		printf '   -> \033[33m[SKIP] Bridge %s does not exist\033[0m\n' "$$_bridge"; \
 		exit 0; \
@@ -662,10 +681,9 @@ net-teardown:
 		printf '      Usage: make net-teardown NIC=<iface>\n'; \
 		exit 1; \
 	fi; \
+	_state_file="$$_state_dir/$$_nic.state"; \
 	printf '   Bridge : %s\n' "$$_bridge"; \
 	printf '   NIC    : %s\n' "$$_nic"; \
-	_br_ips=$$(ip -4 addr show "$$_bridge" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p'); \
-	_br_gw=$$(ip route show default dev "$$_bridge" 2>/dev/null | awk '{print $$3}' | head -1); \
 	for tap in $$(ls /sys/class/net/ 2>/dev/null | grep '^tap'); do \
 		_master=$$(cat /sys/class/net/$$tap/master/uevent 2>/dev/null | sed -n 's/INTERFACE=//p'); \
 		if [ "$$_master" = "$$_bridge" ]; then \
@@ -674,27 +692,51 @@ net-teardown:
 			printf '   -> \033[32mRemoved tap: %s\033[0m\n' "$$tap"; \
 		fi; \
 	done; \
-	sudo ip link set "$$_nic" up 2>/dev/null || true; \
-	sudo ip -4 addr flush dev "$$_nic" 2>/dev/null || true; \
-	if [ -n "$$_br_ips" ]; then \
-		for _ip in $$_br_ips; do \
-			sudo ip addr add "$$_ip" dev "$$_nic" 2>/dev/null || true; \
-		done; \
-	fi; \
-	if [ -n "$$_br_gw" ]; then \
-		sudo ip route replace default via "$$_br_gw" dev "$$_nic" 2>/dev/null || true; \
-	fi; \
 	sudo ip link set "$$_nic" nomaster 2>/dev/null || true; \
-	sudo ip -4 addr flush dev "$$_bridge" 2>/dev/null || true; \
-	if command -v resolvectl >/dev/null 2>&1; then \
-		sudo resolvectl revert "$$_bridge" >/dev/null 2>&1 || true; \
-		sudo resolvectl revert "$$_nic" >/dev/null 2>&1 || true; \
-		printf '   -> \033[32mReverted DNS: %s, %s\033[0m\n' "$$_bridge" "$$_nic"; \
+	sudo ip link set "$$_nic" up 2>/dev/null || true; \
+	sudo ip addr flush dev "$$_nic" 2>/dev/null || true; \
+	sudo ip -6 addr flush dev "$$_nic" 2>/dev/null || true; \
+	if [ -f "$$_state_file" ]; then \
+		printf '   -> \033[32mRestoring from state file: %s\033[0m\n' "$$_state_file"; \
+		grep '^IPV4 ' "$$_state_file" | awk '{print $$2}' | \
+			while IFS= read -r _a; do sudo ip addr add "$$_a" dev "$$_nic" 2>/dev/null || true; done; \
+		grep '^IPV6 ' "$$_state_file" | awk '{print $$2}' | \
+			while IFS= read -r _a; do sudo ip -6 addr add "$$_a" dev "$$_nic" 2>/dev/null || true; done; \
+		_gw=$$(grep '^DEFAULT_GW ' "$$_state_file" | awk '{print $$2}'); \
+		[ -n "$$_gw" ] && sudo ip route replace default via "$$_gw" dev "$$_nic" 2>/dev/null || true; \
+		grep '^ROUTE ' "$$_state_file" | sed 's/^ROUTE //' | \
+			while IFS= read -r _r; do sudo ip route replace $$_r dev "$$_nic" 2>/dev/null || true; done; \
+		if command -v resolvectl >/dev/null 2>&1; then \
+			sudo resolvectl revert "$$_bridge" 2>/dev/null || true; \
+			_saved_dns=$$(grep '^DNS ' "$$_state_file" | sed 's/^DNS //'); \
+			_saved_dom=$$(grep '^DNS_DOMAIN ' "$$_state_file" | sed 's/^DNS_DOMAIN //'); \
+			if [ -n "$$_saved_dns" ]; then \
+				sudo resolvectl dns "$$_nic" $$_saved_dns 2>/dev/null || true; \
+			else \
+				sudo resolvectl revert "$$_nic" 2>/dev/null || true; \
+			fi; \
+			[ -n "$$_saved_dom" ] && sudo resolvectl domain "$$_nic" $$_saved_dom 2>/dev/null || true; \
+			printf '   -> \033[32mDNS restored on %s\033[0m\n' "$$_nic"; \
+		fi; \
+		_ipv4_restored=$$(grep '^IPV4 ' "$$_state_file" | awk '{print $$2}' | tr '\n' ' '); \
+		_gw_restored=$$(grep '^DEFAULT_GW ' "$$_state_file" | awk '{print $$2}'); \
+		printf '   -> \033[32m[OK] NIC %s restored (IP: %s GW: %s)\033[0m\n' "$$_nic" "$${_ipv4_restored:-none}" "$${_gw_restored:-none}"; \
+	else \
+		printf '   -> \033[33m[WARN] No state file found (%s), best-effort from br0\033[0m\n' "$$_state_file"; \
+		_br_ips=$$(ip -4 addr show "$$_bridge" 2>/dev/null | sed -n 's|.*inet \([^ ]*\) .*|\1|p'); \
+		_br_gw=$$(ip route show default dev "$$_bridge" 2>/dev/null | awk '{print $$3}' | head -1); \
+		[ -n "$$_br_ips" ] && for _ip in $$_br_ips; do sudo ip addr add "$$_ip" dev "$$_nic" 2>/dev/null || true; done; \
+		[ -n "$$_br_gw" ] && sudo ip route replace default via "$$_br_gw" dev "$$_nic" 2>/dev/null || true; \
+		if command -v resolvectl >/dev/null 2>&1; then \
+			sudo resolvectl revert "$$_bridge" 2>/dev/null || true; \
+			sudo resolvectl revert "$$_nic" 2>/dev/null || true; \
+		fi; \
 	fi; \
+	sudo ip addr flush dev "$$_bridge" 2>/dev/null || true; \
 	sudo ip link set "$$_bridge" down 2>/dev/null || true; \
 	sudo ip link del "$$_bridge" 2>/dev/null || true; \
-	printf '   -> \033[32m[OK] Restored NIC %s (IP: %s, GW: %s), bridge %s removed\033[0m\n' \
-		"$$_nic" "$${_br_ips:-none}" "$${_br_gw:-none}" "$$_bridge"
+	[ -f "$$_state_file" ] && rm -f "$$_state_file" && printf '   -> \033[32mState file removed\033[0m\n' || true; \
+	printf '   -> \033[32m[OK] Bridge %s removed\033[0m\n' "$$_bridge"
 
 # Bridge 状態を表示
 net-status:
