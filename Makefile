@@ -233,6 +233,15 @@ define LAUNCH_QEMU
 		cp "$(OVMF_VARS_ORIG)" "$(OVMF_VARS_LOCAL)"; \
 	fi; \
 	\
+	_tap=""; \
+	cleanup_tap() { \
+		if [ -n "$$_tap" ] && ip link show "$$_tap" >/dev/null 2>&1; then \
+			sudo ip link del "$$_tap" 2>/dev/null || true; \
+			printf '   -> [NET] tap %s removed\n' "$$_tap"; \
+		fi; \
+	}; \
+	trap cleanup_tap EXIT INT TERM; \
+	\
 	accel=""; \
 	if [ "$(TCG)" = "1" ]; then \
 		accel="tcg"; \
@@ -307,7 +316,6 @@ define LAUNCH_QEMU
 case "$$_net_mode" in \
 			bridge) \
 				_bridge="$(BRIDGE)"; \
-				_tap="tap$$$$"; \
 				if ! ip link show "$$_bridge" >/dev/null 2>&1; then \
 					if [ -z "$(NIC)" ]; then \
 						printf '   -> \033[31m[NET] Bridge "%s" not found. Run: make net-setup NIC=<iface>\033[0m\n' "$$_bridge"; \
@@ -323,6 +331,11 @@ case "$$_net_mode" in \
 							printf '   -> \033[32m[NET] Bridge MAC set to %s (from %s)\033[0m\n' "$$_nic_mac" "$(NIC)"; \
 						fi; \
 						sudo ip link set "$$_bridge" up; \
+						if command -v resolvectl >/dev/null 2>&1; then \
+							sudo resolvectl dns "$$_bridge" 1.1.1.1 1.0.0.1 >/dev/null 2>&1 || true; \
+							sudo resolvectl domain "$$_bridge" "~." >/dev/null 2>&1 || true; \
+							printf '   -> \033[32m[NET] Assigned DNS to %s\033[0m\n' "$$_bridge"; \
+						fi; \
 						_nic_ip=$$(ip -4 addr show "$(NIC)" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p' | head -1); \
 						_nic_gw=$$(ip route show default dev "$(NIC)" 2>/dev/null | awk '{print $$3}' | head -1); \
 						sudo ip link set "$(NIC)" master "$$_bridge" 2>/dev/null || true; \
@@ -331,12 +344,29 @@ case "$$_net_mode" in \
 							sudo ip addr add "$$_nic_ip" dev "$$_bridge" 2>/dev/null || true; \
 						fi; \
 						if [ -n "$$_nic_gw" ]; then \
-							sudo ip route add default via "$$_nic_gw" dev "$$_bridge" 2>/dev/null || true; \
+							sudo ip route replace default via "$$_nic_gw" dev "$$_bridge" 2>/dev/null || true; \
 						fi; \
 						printf '   -> \033[32m[NET] Bridge %s created (IP: %s, GW: %s)\033[0m\n' "$$_bridge" "$${_nic_ip:-dhcp}" "$${_nic_gw:-none}"; \
 					fi; \
+				else \
+					if [ -n "$(NIC)" ]; then \
+						_br_mac=$$(cat /sys/class/net/$$_bridge/address 2>/dev/null); \
+						_nic_mac=$$(cat /sys/class/net/$(NIC)/address 2>/dev/null); \
+						if [ -n "$$_nic_mac" ] && [ "$$_br_mac" != "$$_nic_mac" ]; then \
+							printf '   -> \033[33m[NET] MAC mismatch (br0=%s NIC=%s) — fixing...\033[0m\n' "$$_br_mac" "$$_nic_mac"; \
+							sudo ip link set "$$_bridge" down 2>/dev/null || true; \
+							sudo ip link set "$$_bridge" address "$$_nic_mac" 2>/dev/null || true; \
+							sudo ip link set "$$_bridge" up 2>/dev/null || true; \
+							printf '   -> \033[32m[NET] Bridge MAC corrected to %s\033[0m\n' "$$_nic_mac"; \
+						fi; \
+						if command -v resolvectl >/dev/null 2>&1; then \
+							sudo resolvectl dns "$$_bridge" 1.1.1.1 1.0.0.1 >/dev/null 2>&1 || true; \
+							sudo resolvectl domain "$$_bridge" "~." >/dev/null 2>&1 || true; \
+						fi; \
+					fi; \
 				fi; \
 				if ip link show "$$_bridge" >/dev/null 2>&1; then \
+					_tap="tap$$$$"; \
 					sudo ip tuntap add "$$_tap" mode tap user $$(id -un) 2>/dev/null || true; \
 					sudo ip link set "$$_tap" master "$$_bridge" 2>/dev/null || true; \
 					sudo ip link set "$$_tap" up 2>/dev/null || true; \
@@ -573,7 +603,16 @@ net-setup:
 	printf '   NIC    : %s\n' "$(NIC)"; \
 	_nic_mac=$$(cat /sys/class/net/$(NIC)/address 2>/dev/null); \
 	if ip link show "$$_bridge" >/dev/null 2>&1; then \
-		printf '   -> \033[33m[SKIP] Bridge %s already exists\033[0m\n' "$$_bridge"; \
+		_br_mac=$$(cat /sys/class/net/$$_bridge/address 2>/dev/null); \
+		if [ -n "$$_nic_mac" ] && [ "$$_br_mac" != "$$_nic_mac" ]; then \
+			printf '   -> \033[33m[NET] MAC mismatch (br0=%s NIC=%s) — fixing...\033[0m\n' "$$_br_mac" "$$_nic_mac"; \
+			sudo ip link set "$$_bridge" down 2>/dev/null || true; \
+			sudo ip link set "$$_bridge" address "$$_nic_mac" 2>/dev/null || true; \
+			sudo ip link set "$$_bridge" up 2>/dev/null || true; \
+			printf '   -> \033[32mBridge MAC corrected to %s\033[0m\n' "$$_nic_mac"; \
+		else \
+			printf '   -> \033[33m[SKIP] Bridge %s already exists (MAC OK)\033[0m\n' "$$_bridge"; \
+		fi; \
 	else \
 		sudo ip link add "$$_bridge" type bridge; \
 		if [ -n "$$_nic_mac" ]; then \
@@ -583,6 +622,11 @@ net-setup:
 		printf '   -> \033[32mCreated bridge %s\033[0m\n' "$$_bridge"; \
 	fi; \
 	sudo ip link set "$$_bridge" up; \
+	if command -v resolvectl >/dev/null 2>&1; then \
+		sudo resolvectl dns "$$_bridge" 1.1.1.1 1.0.0.1 >/dev/null 2>&1 || true; \
+		sudo resolvectl domain "$$_bridge" "~." >/dev/null 2>&1 || true; \
+		printf '   -> \033[32m[NET] Assigned DNS to %s\033[0m\n' "$$_bridge"; \
+	fi; \
 	_nic_ip=$$(ip -4 addr show "$(NIC)" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p' | head -1); \
 	_nic_gw=$$(ip route show default dev "$(NIC)" 2>/dev/null | awk '{print $$3}' | head -1); \
 	sudo ip link set "$(NIC)" master "$$_bridge" 2>/dev/null || true; \
@@ -592,8 +636,7 @@ net-setup:
 		printf '   -> \033[32mMigrated IP %s to %s\033[0m\n' "$$_nic_ip" "$$_bridge"; \
 	fi; \
 	if [ -n "$$_nic_gw" ]; then \
-		sudo ip route del default 2>/dev/null || true; \
-		sudo ip route add default via "$$_nic_gw" dev "$$_bridge"; \
+		sudo ip route replace default via "$$_nic_gw" dev "$$_bridge"; \
 		printf '   -> \033[32mDefault route via %s on %s\033[0m\n' "$$_nic_gw" "$$_bridge"; \
 	fi; \
 	printf '   -> \033[32m[OK] Bridge %s is ready\033[0m\n' "$$_bridge"; \
@@ -628,6 +671,11 @@ net-teardown:
 			sudo ip route add default via "$$_br_gw" dev "$(NIC)" 2>/dev/null || true; \
 		fi; \
 		printf '   -> \033[32mRestored NIC: %s (IP: %s)\033[0m\n' "$(NIC)" "$${_br_ip:-dhcp}"; \
+	fi; \
+	# Revert per-link DNS settings if systemd-resolved is available
+	if command -v resolvectl >/dev/null 2>&1; then \
+		sudo resolvectl revert "$$_bridge" >/dev/null 2>&1 || true; \
+		printf '   -> \033[32m[NET] Reverted DNS settings for %s\033[0m\n' "$$_bridge"; \
 	fi; \
 	sudo ip link set "$$_bridge" down 2>/dev/null || true; \
 	sudo ip link del "$$_bridge" 2>/dev/null || true; \
