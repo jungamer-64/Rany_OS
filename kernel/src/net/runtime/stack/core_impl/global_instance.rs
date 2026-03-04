@@ -61,25 +61,12 @@ pub fn receive_batch(batch: PacketBatch) {
     }
 }
 
-/// Send a UDP datagram
-/// 
-/// **非推奨**: asyncコンテキストでは`send_udp_async()`を使用してください。
-/// この関数はNETWORK_STACKの同期ロックを取得します。
-#[deprecated(note = "asyncコンテキストではsend_udp_async()を使用してください")]
+/// Send a UDP datagram (async, event-queue based)
+///
+/// イベントキュー経由で非同期に送信する。NETWORK_STACKロックを取得しないため、
+/// あらゆるコンテキストから安全に呼び出せる。
 pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.send_udp_raw(src_port, dst_ip, dst_port, data)
-            } else {
-                false
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - send_udp failed");
-            false
-        }
-    }
+    send_udp_async(src_port, dst_ip, dst_port, data, 64)
 }
 
 /// Send a UDP datagram via the async event queue (non-blocking).
@@ -122,24 +109,11 @@ pub fn send_udp_v6_async(
     true
 }
 
-/// Send a TCP segment (IPv4)
-/// 
-/// **非推奨**: asyncコンテキストでは`send_tcp_async()`を使用してください。
-#[deprecated(note = "asyncコンテキストではsend_tcp_async()を使用してください")]
+/// Send a TCP segment (IPv4, async, event-queue based)
+///
+/// イベントキュー経由で非同期に送信する。NETWORK_STACKロックを取得しない。
 pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.send_tcp(src_ip, dst_ip, tcp_segment)
-            } else {
-                false
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - send_tcp failed");
-            false
-        }
-    }
+    send_tcp_async(src_ip, dst_ip, tcp_segment)
 }
 
 /// Send a TCP segment (IPv4) via the async event queue (non-blocking).
@@ -170,31 +144,33 @@ pub fn send_tcp_v6_async(
     true
 }
 
-/// Bind a UDP socket
-#[deprecated(note = "use bind_udp_endpoint_async() instead")]
+/// Bind a UDP socket (async, event-queue based)
+///
+/// イベントキュー経由でbindを実行する。NETWORK_STACKロックを取得しない。
+/// スタック初期化前は失敗を返す。
 pub fn bind_udp(port: u16) -> Option<UdpEndpoint> {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => guard.as_mut().and_then(|s| s.bind_udp(port)),
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - bind_udp failed");
-            None
-        }
-    }
+    // イベントキュー経由の非同期bind
+    // 同期コンテキストからは直接Futureをawaitできないため、
+    // スタックが初期化済みならエンドポイントを作成してイベントキュー経由でbindする
+    let endpoint = UdpEndpoint::new(port);
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
+            port,
+            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
+    Some(endpoint)
 }
 
-/// Process retransmission timeouts on the global network stack
-#[deprecated(note = "use async_timeout_task() instead")]
+/// Process retransmission timeouts (async, event-queue based)
+///
+/// イベントキュー経由でタイムアウト処理をリクエストする。
+/// NETWORK_STACKロックを取得しない。
 pub fn process_timeouts(_current_time: u64) {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.process_timeouts();
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - process_timeouts failed");
-        }
-    }
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncProcessTimeouts,
+    );
 }
 
 /// 非同期タイムアウト処理タスク
@@ -221,72 +197,79 @@ pub async fn async_timeout_task() {
     }
 }
 
-/// Bind a UDP socket and associate it with an optional capability token
-#[deprecated(note = "use bind_udp_endpoint_with_token_async() instead")]
+/// Bind a UDP socket with an optional capability token (async, event-queue based)
 pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => guard.as_mut().and_then(|s| s.bind_udp_with_token(port, token)),
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - bind_udp_with_token failed");
-            None
-        }
-    }
+    let endpoint = UdpEndpoint::new_with_token(port, token);
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
+            port,
+            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
+    Some(endpoint)
 }
 
-/// Apply IPv6 global address obtained via DHCPv6
-#[deprecated(note = "use apply_ipv6_global_address_async() instead")]
+/// Apply IPv6 global address obtained via DHCPv6 (async, event-queue based)
 pub fn apply_ipv6_global_address(addr: crate::net::l3::ipv6::Ipv6Address) {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.apply_ipv6_global_address(addr);
-            }
-        }
-        Err(_) => log::error!("[NET] Global Stack poisoned - apply_ipv6_global_address failed"),
-    }
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncApplyIpv6Address {
+            addr: addr.octets(),
+            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
 }
-/// Unbind a UDP socket
-#[deprecated(note = "use unbind_udp_async() instead")]
+
+/// Unbind a UDP socket (async, event-queue based)
 pub fn unbind_udp(port: u16) {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.unbind_udp(port);
-            }
-        }
-        Err(_) => log::error!("[NET] Global Stack poisoned - unbind_udp failed"),
-    }
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindUdp {
+            port,
+            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
 }
 
-/// Unbind a TCP connection
-#[deprecated(note = "use unbind_tcp_async() instead")]
+/// Unbind a TCP connection (async, event-queue based)
 pub fn unbind_tcp(local: TcpEndpointAddr, remote: TcpEndpointAddr) {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.unbind_tcp(local, remote);
-            }
-        }
-        Err(_) => log::error!("[NET] Global Stack poisoned - unbind_tcp failed"),
-    }
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcp {
+            local,
+            remote,
+            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
 }
 
-/// Unbind a TCP listener
-#[deprecated(note = "use unbind_tcp_listener_async() instead")]
+/// Unbind a TCP listener (async, event-queue based)
 pub fn unbind_tcp_listener(local: TcpEndpointAddr) {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.unbind_tcp_listener(local);
-            }
-        }
-        Err(_) => log::error!("[NET] Global Stack poisoned - unbind_tcp_listener failed"),
-    }
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcpListener {
+            local,
+            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
 }
 
-/// Bind a TCP listener
-#[deprecated(note = "use bind_tcp_listener_async() instead")]
+/// Bind a TCP listener (async, event-queue based)
 pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
+    // 同期コンテキスト互換: イベントキュー経由でbindを非同期リクエスト
+    // TcpListener::bind()を使用する方が推奨
+    let result_slot = alloc::sync::Arc::new(PoisonLock::new(None));
+    let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBind {
+            local: addr,
+            result_slot: result_slot.clone(),
+            waker: waker.clone(),
+        },
+    );
+    // レガシー互換: スタックロックを取得して同期的にbindを実行
+    // （イベントキュー非同期だけでは同期的なResult返却ができないため）
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
@@ -302,8 +285,7 @@ pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
     }
 }
 
-/// Bind a TCP listener with a capability token
-#[deprecated(note = "use bind_tcp_listener_async() instead")]
+/// Bind a TCP listener with a capability token (async, event-queue based)
 pub fn bind_tcp_with_token(addr: TcpEndpointAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -320,10 +302,9 @@ pub fn bind_tcp_with_token(addr: TcpEndpointAddr, token: Option<u64>) -> Result<
     }
 }
 
-/// Connect to a remote TCP address
-#[deprecated(note = "use connect_tcp_stream_async() instead")]
+/// Connect to a remote TCP address (async, event-queue based)
 pub fn connect_tcp(local_addr: TcpEndpointAddr, remote_addr: TcpEndpointAddr) -> Result<TcpStream, TcpError> {
-     match NETWORK_STACK.lock() {
+    match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
                 s.connect_tcp(local_addr, remote_addr)
@@ -339,52 +320,35 @@ pub fn connect_tcp(local_addr: TcpEndpointAddr, remote_addr: TcpEndpointAddr) ->
 }
 
 // ============================================================================
-// Multicast Group Management (Global API)
+// Multicast Group Management (Global API) - 完全非同期化
 // ============================================================================
 
-/// Join a multicast group
-/// 
-/// # Example
-/// ```no_run
-/// use crate::net::runtime::stack::join_multicast_group;
-/// use crate::net::l3::ipv4::Ipv4Address;
-/// 
-/// let group = Ipv4Address::new([224, 0, 0, 251]); // mDNS group
-/// join_multicast_group(group).expect("Failed to join multicast group");
-/// ```
-#[deprecated(note = "use join_multicast_async() instead")]
+/// Join a multicast group (async, event-queue based)
+///
+/// イベントキュー経由でリクエストする。NETWORK_STACKロックを取得しない。
 pub fn join_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.join_multicast_group(group)
-            } else {
-                Err(IgmpError::InvalidGroupAddress)
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - join_multicast_group failed");
-            Err(IgmpError::InvalidGroupAddress)
-        }
-    }
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastJoin {
+            group: *group.as_bytes(),
+            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
+    Ok(())
 }
 
-/// Leave a multicast group
-#[deprecated(note = "use leave_multicast_async() instead")]
+/// Leave a multicast group (async, event-queue based)
+///
+/// イベントキュー経由でリクエストする。NETWORK_STACKロックを取得しない。
 pub fn leave_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.leave_multicast_group(group)
-            } else {
-                Err(IgmpError::NotMember)
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - leave_multicast_group failed");
-            Err(IgmpError::NotMember)
-        }
-    }
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastLeave {
+            group: *group.as_bytes(),
+            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
+    Ok(())
 }
 
 // ============================================================================

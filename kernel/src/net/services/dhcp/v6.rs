@@ -722,7 +722,11 @@ pub(crate) mod tests {
         let client = DhcpV6Client::new(mac);
         let mut buf = [0u8; 256];
         let now = 1000u64;
-        let len = client.build_solicit(&mut buf, now).unwrap();
+        
+        // Setup XID
+        client.xid.store(((now as u32) ^ 0xDEADBEEF) & 0x00FF_FFFF, Ordering::SeqCst);
+        
+        let len = client.build_solicit(&mut buf).unwrap();
         assert!(len > 0);
         assert_eq!(buf[0], DhcpV6MessageType::Solicit as u8);
     }
@@ -774,7 +778,11 @@ pub(crate) mod tests {
         };
         let mut buf = [0u8; 512];
         let now = 200u64;
-        let len = client.build_request(&mut buf, &lease, now).unwrap();
+
+        // Setup XID
+        client.xid.store(((now as u32) ^ 0xBEEFBEEF) & 0x00FF_FFFF, Ordering::SeqCst);
+
+        let len = client.build_request(&mut buf, &lease).unwrap();
         assert!(len > 0);
         assert_eq!(buf[0], DhcpV6MessageType::Request as u8);
         // find IAADDR suboption code (5) somewhere after header

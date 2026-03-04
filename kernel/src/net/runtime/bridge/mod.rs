@@ -404,9 +404,10 @@ fn resolve_virtio_index(if_id: Option<NetIfId>) -> u8 {
 /// Background TX worker: drains TX_QUEUE and performs actual device submits.
 ///
 /// IoScheduler 経路が利用可能な場合は非同期で送信し、完了を await する。
-/// IoScheduler 未登録またはDMA割り当て失敗時はレガシー経路（submit_tx）にフォールバックする。
+/// IoScheduler 未登録またはDMA割り当て失敗時はゼロコピー非同期経路にフォールバックする。
+/// 【完全非同期化】旧来の同期 submit_tx フォールバックを完全に排除。
 async fn tx_worker_task() {
-    log::info!("[TX-WORKER] tx_worker_task started");
+    log::info!("[TX-WORKER] tx_worker_task started (fully async)");
     loop {
         // Drain any pending entries without awaiting
         let mut drained = tx_queue_drain_all();
@@ -431,14 +432,10 @@ async fn tx_worker_task() {
                     true
                 }
                 Err(reason) => {
-                    log::warn!("[TX-WORKER] IoScheduler path failed: {}, fallback to legacy", reason);
-                    // Fallback to legacy path
-                    if let Some(if_id) = req.if_id {
-                        send_packet_on_interface(if_id, &req.data)
-                    } else {
-                        let result = with_virtio_net(|device| transmit_packet(device, &req.data));
-                        matches!(result, Some(Ok(())))
-                    }
+                    log::debug!("[TX-WORKER] IoScheduler path unavailable: {}, using zero-copy async fallback", reason);
+                    // 【完全非同期化】ゼロコピー非同期経路でフォールバック
+                    // 旧来の同期 submit_tx() は完全に排除
+                    transmit_packet_zero_copy_async(device_index, req.if_id, &req.data)
                 }
             };
 
@@ -454,36 +451,57 @@ async fn tx_worker_task() {
     }
 }
 
-/// Low-level packet transmission via VirtIO-Net
-#[allow(deprecated)] // ブリッジ内部: 同期フォールバック送信経路
-fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static str> {
-    // Synchronously submit the packet using a DMA buffer so that the descriptor
-    // is added and the device is notified immediately. The DMA buffer is
-    // retained in the device's tx_inflight map and freed when the TX completion
-    // is processed in the interrupt handler.
+/// 【完全非同期化】ゼロコピー非同期パケット送信
+///
+/// PacketRefをmempool経由で割り当て、`enqueue_send_zero_copy`で
+/// DMAキューに投入する。同期的な`submit_tx()`は完全に排除。
+fn transmit_packet_zero_copy(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static str> {
+    // Mempool からバッファを確保してペイロードをコピー
+    let mut packet = crate::net::datapath::mempool::alloc_packet()
+        .ok_or("PacketRef alloc failed")?;
+    let buf = packet.data_mut();
+    let len = data.len().min(buf.len());
+    buf[..len].copy_from_slice(&data[..len]);
+    packet.set_len(len);
 
-    match device.submit_tx(data) {
-        Ok(()) => {
-            if data.len() >= 14 {
-                log::info!(
-                    "[NET-TX] {} bytes queued, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                    data.len(),
-                    data[0],
-                    data[1],
-                    data[2],
-                    data[3],
-                    data[4],
-                    data[5]
-                );
-            } else {
-                log::info!("[NET-TX] {} bytes queued", data.len());
-            }
-            Ok(())
+    // ゼロコピーでDMAキューに投入（非同期完了は割り込みハンドラで処理）
+    device.enqueue_send_zero_copy(packet).map_err(|e| {
+        match e {
+            crate::io::virtio::VirtioNetError::QueueFull => "TX queue full",
+            _ => "enqueue_send_zero_copy failed",
         }
-        Err(_) => {
-            log::info!("[NET-TX] submit failed");
-            Err("Failed to submit TX")
-        },
+    })
+}
+
+/// 【完全非同期化】デバイスインデックス指定のゼロコピー非同期送信フォールバック
+///
+/// tx_worker_task内のIoScheduler失敗時フォールバックとして使用。
+/// 同期的な`submit_tx()`による送信を完全に排除し、
+/// `enqueue_send_zero_copy()`経由のゼロコピー非同期パスのみ使用する。
+fn transmit_packet_zero_copy_async(device_index: u8, if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    let result = if let Some(if_id) = if_id {
+        let virtio_index = lookup_virtio_index_for_interface(if_id);
+        match virtio_index {
+            Some(idx) => with_virtio_net_at_index(idx, |dev| transmit_packet_zero_copy(dev, data)),
+            None => {
+                log::warn!("[TX-WORKER] VirtIO mapping not found for interface if_id={}", if_id.0);
+                None
+            }
+        }
+    } else {
+        with_virtio_net(|dev| transmit_packet_zero_copy(dev, data))
+    };
+
+    match result {
+        Some(Ok(())) => true,
+        Some(Err(e)) => {
+            log::warn!("[TX-WORKER] zero-copy async TX failed: {}", e);
+            false
+        }
+        None => {
+            log::warn!("[TX-WORKER] VirtIO-Net device not available");
+            false
+        }
     }
 }
 
@@ -494,27 +512,29 @@ fn lookup_virtio_index_for_interface(if_id: NetIfId) -> Option<u8> {
         .and_then(|iface| iface.virtio_index)
 }
 
-fn transmit_packet_for_interface(if_id: NetIfId, data: &[u8]) -> Result<(), &'static str> {
+fn transmit_packet_for_interface_zero_copy(if_id: NetIfId, data: &[u8]) -> Result<(), &'static str> {
     let virtio_index =
         lookup_virtio_index_for_interface(if_id).ok_or("VirtIO mapping not found for interface")?;
-    match with_virtio_net_at_index(virtio_index, |device| transmit_packet(device, data)) {
+    match with_virtio_net_at_index(virtio_index, |device| transmit_packet_zero_copy(device, data)) {
         Some(result) => result,
         None => Err("VirtIO-Net device not initialized for interface"),
     }
 }
 
-/// Explicit TX submit on a logical interface (transitional helper).
+/// 【完全非同期化】インターフェース上のパケット送信
+///
+/// 旧来の同期`submit_tx()`を使用する`send_packet_on_interface`を
+/// ゼロコピー非同期パスに完全移行。
 pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
-    match transmit_packet_for_interface(if_id, data) {
+    match transmit_packet_for_interface_zero_copy(if_id, data) {
         Ok(()) => {
             TX_PACKETS.fetch_add(1, Ordering::Relaxed);
             counters::global().record_tx(data.len());
-            trace::push_event(NetLayer::Driver, NetEventKind::Tx, "interface transmit");
+            trace::push_event(NetLayer::Driver, NetEventKind::Tx, "interface transmit (zero-copy)");
             record_bridge_if_tx(if_id);
             true
         }
         Err(_e) => {
-            // log the failure reason and interface
             log::info!("[NET BRIDGE] Interface transmit error if_id={}", if_id.0);
             counters::global().record_error();
             trace::push_event(

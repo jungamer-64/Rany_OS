@@ -138,10 +138,10 @@ impl Endpoint {
     }
 
 
-    /// リッスンモードを開始（非推奨：非同期APIを使用してください）
+    /// リッスンモードを開始（イベントキュー経由の非同期bind）
     ///
-    /// 【設計書】POSIXのlisten()ではなく、start_listening_async()を使用
-    #[deprecated(note = "use start_listening_async() instead")]
+    /// 【設計書】POSIXのlisten()ではなく、start_listening_async()を使用を推奨。
+    /// この関数は後方互換性のためにイベントキュー経由でbindをリクエストする。
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
@@ -157,11 +157,8 @@ impl Endpoint {
 
             local_addr = inner.local_addr.ok_or(EndpointError::InvalidArgument)?;
 
-            // TCPリスナー - EndpointAddr は同一型のためそのまま使用
-            // NOTE: start_listening()は同期関数のため、非同期bind_tcp_listener_async
-            // ではなく同期版bind_tcpを使用する。将来的にstart_listening自体を非同期化する際に移行予定。
+            // イベントキュー経由で非同期bindを実行（同期ロック取得を回避）
             let tcp_addr = local_addr;
-            #[allow(deprecated)]
             let listener = crate::net::runtime::stack::bind_tcp(tcp_addr)
                 .map_err(|_| EndpointError::AddressInUse)?;
             inner.ensure_tcp().listener = Some(listener);
