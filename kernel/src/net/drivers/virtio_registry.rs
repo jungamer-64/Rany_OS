@@ -77,6 +77,7 @@ impl Driver for VirtioNetDriver {
             // quick ping test to verify network connectivity; this runs in
             // driver probe context so it can exercise the transmit path.
             // We log at INFO so it appears even in noisy boots.
+            #[allow(deprecated)] // ドライバプローブ: 同期コンテキストのため同期APIが必要
             match crate::net::runtime::bridge::send_real_icmp_echo([10, 0, 2, 2], 1) {
                 Ok(rtt) => {
                     log::info!(target: "net", "Probe ping success rtt={}", rtt);

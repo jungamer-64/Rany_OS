@@ -455,6 +455,7 @@ async fn tx_worker_task() {
 }
 
 /// Low-level packet transmission via VirtIO-Net
+#[allow(deprecated)] // ブリッジ内部: 同期フォールバック送信経路
 fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static str> {
     // Synchronously submit the packet using a DMA buffer so that the descriptor
     // is added and the device is notified immediately. The DMA buffer is

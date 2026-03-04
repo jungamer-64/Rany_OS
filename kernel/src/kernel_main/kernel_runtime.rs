@@ -172,9 +172,10 @@ pub(crate) fn spawn_kernel_tasks(
 
         crate::io::log::early_print("[NET-PING-MANUAL] sending manual ping now\n");
         info!(target: "net_test", "Sending ICMP echo to 10.0.2.2 seq=1");
-        match crate::net::runtime::bridge::send_real_icmp_echo([10, 0, 2, 2], 1) {
-            Ok(rtt) => info!(target: "net_test", "Ping success rtt={} (units depending on implementation)", rtt),
-            Err(e) => warn!(target: "net_test", "Ping failed: {}", e),
+        // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
+        match crate::net::api::icmp::ping_async([10, 0, 2, 2], 1).await {
+            Ok(echo) => info!(target: "net_test", "Ping success rtt={} us", echo.rtt_us),
+            Err(e) => warn!(target: "net_test", "Ping failed: {:?}", e),
         }
 
         let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();

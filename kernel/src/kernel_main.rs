@@ -224,6 +224,7 @@ pub(crate) fn init_network_subsystem() {
     }
 }
 
+#[allow(deprecated)] // ブートストラップ: エグゼキュータ起動前なので同期APIが必要
 fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
     const MAX_ATTEMPTS: usize = 12;
     const PUMP_ROUNDS_PER_ATTEMPT: usize = 8;

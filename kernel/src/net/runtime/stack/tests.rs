@@ -71,6 +71,7 @@ pub fn test_send_icmp_fallback_zero_copy() {
         }
     }
 
+    #[allow(deprecated)] // テスト: 同期APIのフォールバック動作を検証
     let res = crate::net::api::shell::send_icmp_echo([8, 8, 8, 8], 1);
     assert!(res.is_ok());
 }

@@ -47,7 +47,7 @@ pub fn test_fragment_buffer_basic() {
     let buffer = FragmentBuffer::new(0);
     assert!(!buffer.is_complete());
     assert!(!buffer.is_expired(1000));
-    assert!(buffer.is_expired(31000)); // After 30s timeout
+    assert!(buffer.is_expired(FragmentBuffer::TIMEOUT_MS + 1000));
 }
 
 #[cfg_attr(test, test_case)]

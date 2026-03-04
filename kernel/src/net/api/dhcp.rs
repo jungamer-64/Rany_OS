@@ -79,6 +79,7 @@ pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
         file: [0; 128],
     };
 
+    #[allow(deprecated)] // DHCP: ブートストラップ時に呼ばれるため同期API使用
     if let Some(cfg) = get_network_config() {
         header_struct.chaddr[..6].copy_from_slice(&cfg.mac);
     }

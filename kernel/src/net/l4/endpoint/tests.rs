@@ -55,6 +55,7 @@ pub mod tests {
         }
 
         // 空のキューからnext_incomingするとTimeout
+        #[allow(deprecated)] // テスト: 同期APIの動作検証
         let result = endpoint.next_incoming();
         assert!(matches!(result, Err(EndpointError::Timeout)));
     }

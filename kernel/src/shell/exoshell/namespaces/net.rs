@@ -60,7 +60,10 @@ impl NetNamespace {
         }
     }
 
-    /// Dispatch methods for 'net' namespace
+    /// Dispatch methods for 'net' namespace (同期)
+    ///
+    /// 非同期版は `call()` メソッドを使用してください。
+    #[allow(deprecated)] // 同期ディスパッチ: 非推奨同期APIを使用
     pub fn dispatch(
         method: &str,
         args: &[ExoValue<'static>],
@@ -81,7 +84,8 @@ impl NetNamespace {
             _ => ExoValue::Error(format!("Unknown method 'net.{}'", method)),
         }
     }
-    /// ネットワーク設定を取得
+    /// ネットワーク設定を取得（同期版）
+    #[allow(deprecated)] // 同期APIラッパー: async版はconfig_async()
     pub fn config() -> ExoValue<'static> {
         if let Some(cfg) = crate::net::api::shell::get_network_config() {
             let mut map = BTreeMap::new();
@@ -112,7 +116,8 @@ impl NetNamespace {
         }
     }
 
-    /// ネットワーク統計
+    /// ネットワーク統計（同期版）
+    #[allow(deprecated)] // 同期APIラッパー: async版はstats_async()
     pub fn stats() -> ExoValue<'static> {
         if let Some(stats) = crate::net::api::shell::get_network_stats() {
             let mut map = BTreeMap::new();
@@ -146,7 +151,8 @@ impl NetNamespace {
         }
     }
 
-    /// ARP キャッシュ
+    /// ARP キャッシュ（同期版）
+    #[allow(deprecated)] // 同期APIラッパー: async版はarp_cache_async()
     pub fn arp_cache() -> ExoValue<'static> {
         if let Some(entries) = crate::net::api::shell::get_arp_cache() {
             let values: Vec<ExoValue> = entries
@@ -225,8 +231,86 @@ impl NetNamespace {
             }
             _ => return ExoValue::Error(String::from("mac must be string")),
         };
+        #[allow(deprecated)] // 同期API: async版から置き換え予定
         let ok = crate::net::api::shell::arp_cache_insert(ip, mac);
         ExoValue::Bool(ok)
+    }
+
+    /// ネットワーク設定を取得（非同期版）
+    pub async fn config_async() -> ExoValue<'static> {
+        match crate::net::api::shell::get_network_config_async().await {
+            Some(cfg) => {
+                let mut map = BTreeMap::new();
+                map.insert(
+                    String::from("ip"),
+                    ExoValue::String(Cow::Owned(format!(
+                        "{}.{}.{}.{}",
+                        cfg.ip[0], cfg.ip[1], cfg.ip[2], cfg.ip[3]
+                    ))),
+                );
+                map.insert(
+                    String::from("netmask"),
+                    ExoValue::String(Cow::Owned(format!(
+                        "{}.{}.{}.{}",
+                        cfg.netmask[0], cfg.netmask[1], cfg.netmask[2], cfg.netmask[3]
+                    ))),
+                );
+                map.insert(
+                    String::from("mac"),
+                    ExoValue::String(Cow::Owned(format!(
+                        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                        cfg.mac[0], cfg.mac[1], cfg.mac[2], cfg.mac[3], cfg.mac[4], cfg.mac[5]
+                    ))),
+                );
+                ExoValue::Map(map)
+            }
+            None => ExoValue::Error(String::from("Network not configured")),
+        }
+    }
+
+    /// ネットワーク統計（非同期版）
+    pub async fn stats_async() -> ExoValue<'static> {
+        match crate::net::api::shell::get_network_stats_async().await {
+            Some(stats) => {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("rx_packets"), ExoValue::Int(stats.rx_packets as i64));
+                map.insert(String::from("tx_packets"), ExoValue::Int(stats.tx_packets as i64));
+                map.insert(String::from("rx_bytes"), ExoValue::Int(stats.rx_bytes as i64));
+                map.insert(String::from("tx_bytes"), ExoValue::Int(stats.tx_bytes as i64));
+                map.insert(String::from("rx_errors"), ExoValue::Int(stats.rx_errors as i64));
+                map.insert(String::from("rx_dropped"), ExoValue::Int(stats.rx_dropped as i64));
+                ExoValue::Map(map)
+            }
+            None => ExoValue::Error(String::from("No network statistics")),
+        }
+    }
+
+    /// ARPキャッシュ（非同期版）
+    pub async fn arp_cache_async() -> ExoValue<'static> {
+        let entries = crate::net::api::shell::get_arp_cache_async().await;
+        let values: Vec<ExoValue> = entries
+            .into_iter()
+            .map(|e| {
+                let mut map = BTreeMap::new();
+                map.insert(
+                    String::from("ip"),
+                    ExoValue::String(Cow::Owned(format!(
+                        "{}.{}.{}.{}",
+                        e.ip[0], e.ip[1], e.ip[2], e.ip[3]
+                    ))),
+                );
+                map.insert(
+                    String::from("mac"),
+                    ExoValue::String(Cow::Owned(format!(
+                        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                        e.mac[0], e.mac[1], e.mac[2], e.mac[3], e.mac[4], e.mac[5]
+                    ))),
+                );
+                map.insert(String::from("complete"), ExoValue::Bool(e.complete));
+                ExoValue::Map(map)
+            })
+            .collect();
+        ExoValue::Array(values)
     }
 
     fn format_ipv6(addr: [u8; 16]) -> String {
@@ -382,7 +466,10 @@ impl NetNamespace {
         }
     }
 
-    /// ICMP エコー送信（async版 - パケット間でyield）
+    /// ICMP エコー送信（完全非同期版）
+    ///
+    /// `IcmpEchoFuture` を使用し、イベントキュー経由で送信・応答待機を行う。
+    /// 同期ロックやIRQ無効化を一切使用しない。
     /// Requires CAP_NET_RAW
     pub async fn ping(ip: [u8; 4], count: u16) -> ExoValue<'static> {
         // セキュリティチェック
@@ -399,18 +486,23 @@ impl NetNamespace {
             // 各パケット送信前にyield（他タスクに機会を与える）
             crate::task::yield_now().await;
 
-            match crate::net::runtime::bridge::send_real_icmp_echo(ip, seq) {
-                Ok(rtt) => {
+            // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
+            match crate::net::api::icmp::ping_async(ip, seq).await {
+                Ok(echo) => {
                     let mut map = BTreeMap::new();
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
-                    map.insert(String::from("rtt_ms"), ExoValue::Float(rtt as f64));
+                    // rtt_us（マイクロ秒）をミリ秒に変換
+                    map.insert(String::from("rtt_ms"), ExoValue::Float(echo.rtt_us as f64 / 1000.0));
                     map.insert(String::from("success"), ExoValue::Bool(true));
                     results.push(ExoValue::Map(map));
                 }
                 Err(e) => {
                     let mut map = BTreeMap::new();
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
-                    map.insert(String::from("error"), ExoValue::String(Cow::Owned(String::from(e))));
+                    map.insert(
+                        String::from("error"),
+                        ExoValue::String(Cow::Owned(alloc::format!("{:?}", e)),
+                    ));
                     map.insert(String::from("success"), ExoValue::Bool(false));
                     results.push(ExoValue::Map(map));
                 }
@@ -480,9 +572,9 @@ impl ShellNamespace for NetNamespace {
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
-                "config" => Self::config(),
-                "stats" => Self::stats(),
-                "arp" => Self::arp_cache(),
+                "config" => Self::config_async().await,
+                "stats" => Self::stats_async().await,
+                "arp" => Self::arp_cache_async().await,
                 "dhcp_state" => Self::dhcp_state(),
                 "dhcp_renew" => Self::dhcp_renew(),
                 "open" => Self::handle_open_async(_args).await,
