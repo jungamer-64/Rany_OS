@@ -60,20 +60,8 @@ static OOM_KILLER: OomKiller = OomKiller {
 };
 
 impl OomKiller {
-    #[inline]
-    fn register_domain(&self, _info: DomainMemoryInfo) {
-        log::warn!("[OOM] register_domain() is deprecated; quota manager is authoritative");
-    }
-
-    #[inline]
-    fn unregister_domain(&self, _domain_id: u64) {
-        log::warn!("[OOM] unregister_domain() is deprecated; quota manager is authoritative");
-    }
-
-    #[inline]
-    fn update_memory_usage(&self, _domain_id: u64, _usage: u64) {
-        log::warn!("[OOM] update_memory_usage() is deprecated; quota manager is authoritative");
-    }
+    // Removed: register_domain(), unregister_domain(), update_memory_usage()
+    // These were deprecated stubs; quota manager is the authoritative source.
 
     fn try_free_memory(&self) -> Option<u64> {
         if self.in_progress.swap(true, Ordering::SeqCst) {
@@ -172,17 +160,9 @@ impl OomKiller {
 // Public API
 // ============================================================================
 
-pub fn register_domain(info: DomainMemoryInfo) {
-    OOM_KILLER.register_domain(info);
-}
-
-pub fn unregister_domain(domain_id: u64) {
-    OOM_KILLER.unregister_domain(domain_id);
-}
-
-pub fn update_memory_usage(domain_id: u64, usage: u64) {
-    OOM_KILLER.update_memory_usage(domain_id, usage);
-}
+// Removed: register_domain(), unregister_domain(), update_memory_usage(), register_simple()
+// These were deprecated no-op stubs. The quota manager is the authoritative
+// source for domain memory tracking. Use `crate::domain::quota::quota_manager()`.
 
 pub fn try_free_memory() -> bool {
     OOM_KILLER.try_free_memory().is_some()
@@ -194,16 +174,6 @@ pub fn stats() -> OomStats {
 
 pub fn list_domains() -> Vec<DomainMemoryInfo> {
     OOM_KILLER.list_domains()
-}
-
-pub fn register_simple(domain_id: u64, name: &str, priority: DomainPriority, memory_usage: u64) {
-    register_domain(DomainMemoryInfo {
-        domain_id,
-        name: String::from(name),
-        priority,
-        memory_usage,
-        last_activity: crate::task::timer::current_tick(),
-    });
 }
 
 #[cfg(all(test, any(feature = "full_mm_tests", feature = "qemu-test-export")))]

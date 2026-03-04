@@ -69,8 +69,7 @@ pub fn test_send_icmp_fallback_zero_copy() {
         }
     }
 
-    let res = crate::net::api::shell::send_icmp_echo([8, 8, 8, 8], 1);
-    assert!(res.is_ok());
+    assert!(crate::net::api::shell::send_icmp_echo_async([8, 8, 8, 8], 1));
 }
 
 #[cfg_attr(test, test_case)]

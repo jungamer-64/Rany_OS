@@ -32,7 +32,7 @@ use x86_64::instructions::interrupts;
 
 /// ロックフリーのタスクID キュー
 ///
-/// 実際のタスクはTASK_STOREに保存し、
+/// 実際のタスクはPer-coreタスクストアに保存し、
 /// キューはTaskIdのみを管理してオーバーヘッド削減。
 mod stats_impl;
 pub struct LockFreeQueue {
@@ -185,7 +185,6 @@ impl PerCoreTaskStore {
                 log::error!(
                     "[EXECUTOR] Per-core tasks lock poisoned during insert; dropping task"
                 );
-                // Legacy global TASK_STORE is deprecated and not used here.
             }
         }
     }
@@ -550,7 +549,7 @@ impl Executor {
                     self.local_queue.push_back(task);
                     fetched += 1;
                 } else {
-                    // Legacy TASK_STORE is deprecated; cache the task id for later processing.
+                    // Task not found in any per-core store; cache the id for later.
                     self.local_cache.push_back(task_id);
                 }
             } else {

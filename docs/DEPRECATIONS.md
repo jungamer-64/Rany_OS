@@ -115,7 +115,7 @@ This document lists symbols that have been marked deprecated and recommended mig
     - 代表例:
       - `crate::net::get_network_config` -> `crate::net::api::shell::get_network_config`
       - `crate::net::get_network_stats` -> `crate::net::api::shell::get_network_stats`
-      - `crate::net::send_icmp_echo` -> `crate::net::api::shell::send_icmp_echo`
+      - `crate::net::send_icmp_echo` -> `crate::net::api::shell::send_icmp_echo_async` (sync版は削除済み)
       - `crate::net::get_arp_cache` -> `crate::net::api::shell::get_arp_cache`
   - POSIX-style socket compatibility methods (e.g., `Socket::bind`, `Socket::connect`, `Socket::listen`, `Socket::accept`, `TcpStream::connect`, `TcpListener::bind`/`accept`) ❌ **removed**
     - Removal: These compatibility wrappers have been removed; migrate to the async-first APIs: `set_local_addr()`, `open_connection()`, `start_listening()`/`next_connection()`, and `dial()`/`TcpStream::dial()`.
@@ -136,9 +136,25 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `pub use serial_driver::serial_print(ln)` ❌ **removed** (prefer kernel logging APIs)
     - Replacement: Use `crate::io::log::early_print` or `log` macros once available.
 
+- `kernel/src/net/api/icmp.rs`
+  - `send_icmp_echo()` ❌ **removed** (was deprecated)
+    - Migration: Use `send_icmp_echo_async()` or `ping_async()` instead.
+
+- `kernel/src/net/api/diagnostics.rs`
+  - `dns_resolve()` ❌ **removed** (was deprecated)
+    - Migration: Use `crate::net::services::dns` for DNS resolution.
+
+- `kernel/src/diag/accessors.rs`
+  - `with_profiler()` ❌ **removed** (was deprecated)
+    - Migration: Use `crate::profiler::profiler().cpu` instead.
+
+- `kernel/src/memory/oom_killer.rs`
+  - `register_domain()`, `unregister_domain()`, `update_memory_usage()`, `register_simple()` ❌ **removed** (were deprecated stubs)
+    - Migration: Use `crate::domain::quota::quota_manager()` directly. The quota manager is the authoritative source for domain memory tracking.
+
 - `kernel/src/task/executor.rs`
-  - `TASK_STORE` (legacy global task store) ✅ **deprecated**
-    - Migration: Use per-core task stores (`PER_CORE_STORES`) and the per-core APIs; avoid using the global `TASK_STORE`.
+  - `TASK_STORE` (legacy global task store) ❌ **removed**
+    - Migration: Per-core task stores (`PER_CORE_STORES`) are used exclusively; all legacy TASK_STORE references have been cleaned up.
 
 ## Drivers
 
@@ -167,9 +183,27 @@ This document lists symbols that have been marked deprecated and recommended mig
 - These deprecations are intentionally incremental and conservative — each change adds a `#[deprecated]` attribute and helpful migration notes. The aim is to show compile-time warnings and give downstream code time to migrate.
 - Workspace-level full builds may still fail due to unrelated driver compile issues (e.g. `drivers/nvme`). Deprecation commits are small and intended to be low-risk.
 
-If you want, I can:
+## 2026-03-04 更新サマリー
 
-- Continue deprecating additional kernel-level compatibility shims (low-risk) ✅
-- Start deprecating driver-level compatibility re-exports more aggressively (riskier; may require driver fixes) ⚠️
+以下の deprecated 項目を一括整理しました:
 
-Which would you prefer next? (kernel-only / include-drivers)
+### 削除済み（呼び出し元なしのため完全削除）
+- `send_icmp_echo()` — `send_icmp_echo_async()` / `ping_async()` に移行
+- `dns_resolve()` — `crate::net::services::dns` に移行
+- `with_profiler()` — `crate::profiler::profiler().cpu` に移行
+- OOM killer の deprecated スタブ: `register_domain()`, `unregister_domain()`, `update_memory_usage()`, `register_simple()` — `crate::domain::quota::quota_manager()` に移行
+
+### 呼び出し元を移行
+- テスト `test_send_icmp_fallback_zero_copy` の `send_icmp_echo()` → `send_icmp_echo_async()` に更新
+
+### 新規モジュール
+- `kernel/src/net/api/shell.rs` — テスト/シェルから参照される `api::shell` ファサードモジュールを作成（`config`, `icmp`, `dhcp`, `diagnostics` の公開関数を集約）
+
+### コメント整理
+- `executor.rs` の旧 `TASK_STORE` 参照コメントを per-core ストアの表記に更新
+
+### 残存する deprecated 項目（呼び出し元あり、要段階的移行）
+- `submit_tx()` — ブートストラップ用フォールバック。呼び出し元なしだが意図的に保持
+- `Ipv4Header::compute_checksum()`, `update_checksum()`, `verify_checksum()` — 内部・外部から使用中
+- `notify_addr` フィールド — virtio transport で現役使用中
+- IO scheduler の `#[allow(deprecated)]` — 内部パターン互換性のため保持

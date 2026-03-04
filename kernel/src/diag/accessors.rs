@@ -25,17 +25,7 @@ where
     TRACE_BUFFER.lock().as_ref().map(f)
 }
 
-/// CPUプロファイラにアクセス
-///
-/// 旧 `diag::CpuProfiler` は `profiler::CpuProfiler` に統合されたため、
-/// この関数は非推奨です。代わりに `crate::profiler::profiler()` を使用してください。
-#[deprecated(note = "Use crate::profiler::profiler().cpu instead")]
-pub fn with_profiler<F, R>(_f: F) -> Option<R>
-where
-    F: FnOnce(&()) -> R,
-{
-    None
-}
+// Removed: `with_profiler()` — deprecated. Use `crate::profiler::profiler().cpu` instead.
 
 /// 統計を記録
 pub fn record(name: &'static str, value: u64) {

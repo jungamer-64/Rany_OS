@@ -7,16 +7,7 @@ use alloc::string::String;
 
 extern crate alloc;
 
-/// ICMP Echo送信（fire-and-forget）
-///
-/// 内部的に `send_icmp_echo_async()` に委任する。
-/// この関数はRTTを測定**しない**。RTT測定には [`ping_async()`] を使用すること。
-#[deprecated(note = "RTT測定が不可能です。ping_async() を使用してください")]
-pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<(), String> {
-    // イベントキュー経由でfire-and-forget送信
-    send_icmp_echo_async(target, seq);
-    Ok(())
-}
+// Removed: `send_icmp_echo()` — deprecated, use `send_icmp_echo_async()` or `ping_async()` instead.
 
 /// 非同期ICMP Echo送信（fire-and-forget）
 ///
