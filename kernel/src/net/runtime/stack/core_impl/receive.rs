@@ -318,12 +318,6 @@ impl NetworkStack {
             Ipv6ProcessResult::Error => {
                 self.stats.record_rx_error();
             }
-            Ipv6ProcessResult::UnknownNextHeader(nh, _pointer, src, _dst, _data) => {
-                log::debug!("[NET] IPv6 unknown next header: {} from {}", nh, src);
-            }
-            Ipv6ProcessResult::HopLimitExceeded(src, _dst, _data) => {
-                log::debug!("[NET] IPv6 hop limit exceeded from {}", src);
-            }
         }
     }
 
