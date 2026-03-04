@@ -201,7 +201,7 @@ pub fn process_tcp_segment_v6(
     let data_off_flags = u16::from_be_bytes([segment[12], segment[13]]);
     let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
     let flags = (data_off_flags & 0x003F) as u8;
-    let _window = u16::from_be_bytes([segment[14], segment[15]]);
+    let window = u16::from_be_bytes([segment[14], segment[15]]);
     let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
 
     let remote = EndpointAddr::new_v6(src_ip.octets(), src_port);
@@ -209,6 +209,11 @@ pub fn process_tcp_segment_v6(
 
     // TCBを検索
     if let Some(tcb) = tcb_table().get(local, remote) {
+        // RFC 793: Update peer window from the segment
+        tcb_table().update(local, remote, |entry| {
+            entry.update_peer_window(window);
+        });
+
         // RFC 793 Step 1: Check sequence number acceptability
         let payload_len = if segment.len() > data_offset { segment.len() - data_offset } else { 0 };
         if !is_acceptable_sequence(&tcb, seq_num, payload_len) {
@@ -274,7 +279,7 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     let data_off_flags = u16::from_be_bytes([segment[12], segment[13]]);
     let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
     let flags = (data_off_flags & 0x003F) as u8;
-    let _window = u16::from_be_bytes([segment[14], segment[15]]);
+    let window = u16::from_be_bytes([segment[14], segment[15]]);
     let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
 
     let remote = EndpointAddr::new(src_ip, src_port);
@@ -282,6 +287,11 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
 
     // TCBを検索
     if let Some(tcb) = tcb_table().get(local, remote) {
+        // RFC 793: Update peer window from the segment
+        tcb_table().update(local, remote, |entry| {
+            entry.update_peer_window(window);
+        });
+
         // RFC 793 Step 1: Check sequence number acceptability
         let payload_len = if segment.len() > data_offset { segment.len() - data_offset } else { 0 };
         if !is_acceptable_sequence(&tcb, seq_num, payload_len) {
@@ -836,13 +846,18 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
         return;
     }
 
-    // SYN-ACKのTCPオプションを解析（TSopt / SACK-Permitted検出）
-    let (peer_ts, sack_permitted) = if data_offset > 20 && data_offset <= segment.len() {
+    // SYN-ACKのTCPオプションを解析（TSopt / SACK-Permitted / MSS / WSCALE検出）
+    let (peer_ts, sack_permitted, peer_mss, peer_ws) = if data_offset > 20 && data_offset <= segment.len() {
         let options = &segment[20..data_offset];
         let mut parser = TcpOptionParser::new(options);
-        (parser.find_timestamps(), parser.find_sack_permitted())
+        (
+            parser.find_timestamps(),
+            parser.find_sack_permitted(),
+            parser.find_mss(),
+            parser.find_window_scale(),
+        )
     } else {
-        (None, false)
+        (None, false, None, None)
     };
 
     // TCB更新
@@ -851,7 +866,7 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
         entry.snd_una = ack_num;
         entry.state = TcpConnectionState::Established;
 
-        // TCP Timestamps (RFC 7323): SYN-ACKにTSoptがあればクライアント側も有効化
+        // TCP Timestamps (RFC 7323)
         if let Some((peer_ts_val, _)) = peer_ts {
             entry.ts_enabled = true;
             entry.ts_ecr = peer_ts_val;
@@ -861,6 +876,20 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
         // SACK negotiation
         if sack_permitted {
             entry.sack_enabled = true;
+        }
+
+        // MSS (RFC 793 / 1122)
+        if let Some(mss) = peer_mss {
+            entry.mss = mss as u32;
+        }
+
+        // Window Scale (RFC 7323)
+        if let Some(ws) = peer_ws {
+            entry.window_scale.enabled = true;
+            entry.window_scale.set_snd_scale(ws);
+        } else {
+            // WSopt not present in SYN-ACK: disable scaling for this connection
+            entry.window_scale.enabled = false;
         }
     });
 
@@ -980,13 +1009,18 @@ fn process_tcp_new_connection(
     let priority = inner.priority;
     drop(inner);
 
-    // TCPオプション解析 (Timestamps / SACK Permitted)
-    let (peer_ts, sack_permitted) = if data_offset > 20 && data_offset <= segment.len() {
+    // TCPオプション解析 (Timestamps / SACK Permitted / MSS / WSCALE)
+    let (peer_ts, sack_permitted, peer_mss, peer_ws) = if data_offset > 20 && data_offset <= segment.len() {
         let options = &segment[20..data_offset];
         let mut parser = TcpOptionParser::new(options);
-        (parser.find_timestamps(), parser.find_sack_permitted())
+        (
+            parser.find_timestamps(),
+            parser.find_sack_permitted(),
+            parser.find_mss(),
+            parser.find_window_scale(),
+        )
     } else {
-        (None, false)
+        (None, false, None, None)
     };
 
     // TCB作成
@@ -998,13 +1032,23 @@ fn process_tcp_new_connection(
     tcb.rcv_nxt = seq_num.wrapping_add(1);
     tcb.state = TcpConnectionState::SynReceived;
 
-    // TCP Timestamps / SACK negotiation
+    // TCP options negotiation (RFC 793 / 7323 / 2018)
     if let Some((peer_ts_val, _)) = peer_ts {
         tcb.ts_enabled = true;
         tcb.ts_ecr = peer_ts_val; // SYN-ACKのTSecr = 相手のTSval
     }
     if sack_permitted {
         tcb.sack_enabled = true;
+    }
+    if let Some(mss) = peer_mss {
+        tcb.mss = mss as u32;
+    }
+    if let Some(ws) = peer_ws {
+        tcb.window_scale.enabled = true;
+        tcb.window_scale.set_snd_scale(ws);
+    } else {
+        // Peer did not send WSopt: disable scaling (RFC 7323)
+        tcb.window_scale.enabled = false;
     }
     
     // TCB更新: SYN-ACKは1シーケンス番号を消費する (RFC 793)

@@ -715,6 +715,14 @@ impl Ipv4Processor {
         self.stats.rx_packets += 1;
 
         let src = packet.source();
+
+        // Security: Land Attack prevention (src == dst)
+        // Discarding packets where source and destination addresses are the same.
+        if src == dst && !src.is_any() && !src.is_loopback() {
+            self.stats.rx_dropped += 1;
+            log::warn!("[NET-IPV4] Dropping packet with src == dst (Land Attack) from {}", src);
+            return Ipv4ProcessResult::Dropped;
+        }
         
         // Security: Prevent Source IP spoofing (Martian packets)
         // RFC 1812: Source IP must not be a multicast or broadcast address.
