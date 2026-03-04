@@ -59,18 +59,22 @@ impl UdpEndpointTable {
                 } else {
                     // Security: Check for privileged ports (< 1024)
                     if port < 1024 {
-                        let caller = crate::task::context::current_subject().domain.as_u64();
-                        let mut permitted = false;
+                        let subject = crate::task::context::current_subject();
+                        let caller = subject.domain.as_u64();
+                        // Kernel domain always has full privilege
+                        let mut permitted = subject.domain == crate::domain_system::DomainId::KERNEL;
 
-                        if let Some(t) = token {
-                            // If a token is provided, it MUST grant CAP_NET_BIND for privileged ports
-                            if crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_NET_BIND) {
-                                permitted = true;
-                            }
-                        } else {
-                            // If no token, check if the domain has the capability ambiently
-                            if crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_NET_BIND) {
-                                permitted = true;
+                        if !permitted {
+                            if let Some(t) = token {
+                                // If a token is provided, it MUST grant CAP_NET_BIND for privileged ports
+                                if crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_NET_BIND) {
+                                    permitted = true;
+                                }
+                            } else {
+                                // If no token, check if the domain has the capability ambiently
+                                if crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_NET_BIND) {
+                                    permitted = true;
+                                }
                             }
                         }
 

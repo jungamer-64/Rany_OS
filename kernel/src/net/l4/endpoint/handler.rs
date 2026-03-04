@@ -1149,6 +1149,18 @@ impl NetworkEventHandler {
         }
 
         if !found {
+            // Fallback: try the stack-level UdpProcessor endpoint table.
+            // This handles endpoints created via stack.bind_udp() (e.g. sync DHCP during boot).
+            use crate::net::l3::ipv4::Ipv4Address;
+            let src_v4 = Ipv4Address::new(src_ip);
+            let dst_v4 = Ipv4Address::new(dst_ip);
+            let result = stack.udp_process_raw(payload, src_v4, dst_v4, 64);
+            if matches!(result, crate::net::l4::udp::UdpResult::Delivered) {
+                found = true;
+            }
+        }
+
+        if !found {
             // RFC 1122: Send ICMP Port Unreachable
             use crate::net::l3::ipv4::Ipv4Address;
             use crate::net::l3::icmp::DestUnreachCode;

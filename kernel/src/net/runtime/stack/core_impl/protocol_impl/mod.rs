@@ -123,6 +123,14 @@ impl NetworkStack {
         }
     }
 
+    /// Try to deliver a raw UDP segment (with header) to a stack-level UdpEndpoint.
+    ///
+    /// This is used as a fallback when ENDPOINT_MANAGER doesn't have a matching
+    /// socket. Returns the UdpResult so the caller can decide what to do on miss.
+    pub fn udp_process_raw(&self, udp_segment: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, ttl: u8) -> UdpResult {
+        self.udp.process(udp_segment, src_ip, dst_ip, ttl)
+    }
+
     /// Process TCP data (for reassembled packets)
     pub fn process_tcp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) {
         // For reassembled packets, use the non-zero-copy TCP processing path
