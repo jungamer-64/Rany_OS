@@ -144,6 +144,7 @@ pub(crate) fn spawn_kernel_tasks(
 
     // Initialize network event handler and spawn the background task for async networking
     crate::net::l4::endpoint::handler::init_network_event_handler();
+    crate::io::log::early_print("[INIT-DBG] spawning network_event_task\n");
     executor.spawn(crate::task::Task::new(crate::net::l4::endpoint::tcp_rx::network_event_task()));
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)

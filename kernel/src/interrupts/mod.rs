@@ -528,10 +528,20 @@ pub fn poll_timer_events() {
         crate::task::interrupt_waker::handle_timer_interrupt_waker();
 
         // Deferred VirtIO-Net completion fallback (non-ISR context).
+        // Use poll_all_virtio_net_queues() instead of handle_all_virtio_net_interrupts()
+        // because the latter checks get_interrupt_status() which may return 0 when
+        // there is no real PCI interrupt pending, causing RX packets to be missed.
+        // poll_all_virtio_net_queues() directly processes used rings regardless of
+        // interrupt status, which is the correct behavior for a timer-based fallback.
         if VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
             && VIRTIO_NET_IRQ_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
         {
-            crate::io::virtio::handle_all_virtio_net_interrupts();
+            static VIRTIO_POLL_LOGGED: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            if !VIRTIO_POLL_LOGGED.swap(true, Ordering::Relaxed) {
+                crate::io::log::early_print("[RX-DBG] VirtIO-Net fallback poll triggered\n");
+            }
+            crate::io::virtio::poll_all_virtio_net_queues();
         }
 
         // PMMメンテナンス (非ISRコンテキスト)

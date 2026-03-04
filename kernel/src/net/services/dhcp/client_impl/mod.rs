@@ -32,8 +32,10 @@ impl DhcpClient {
     /// 
     /// 指定されたポートでUDPソケットをバインドし、DHCP状態機械を駆動します。
     pub async fn run(&self) -> Result<(), &'static str> {
+        crate::io::log::early_print("[DHCP-DBG] DHCPv4 run() entered, binding port 68...\n");
         // DHCPクライアントポート(68)でバインド
         let socket = crate::net::runtime::stack::bind_udp_endpoint_async(DHCP_CLIENT_PORT).await.ok_or("Failed to bind DHCP socket")?;
+        crate::io::log::early_print("[DHCP-DBG] DHCPv4 bind succeeded\n");
         
         log::info!("[NET] DHCPv4 client task started");
 
