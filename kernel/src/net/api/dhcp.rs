@@ -12,6 +12,7 @@ use crate::net::l4::endpoint::tcb_table;
 use crate::net::runtime::stack;
 use crate::net::services::dhcp;
 
+#[allow(deprecated)] // ブートストラップMAC取得用
 use super::config::get_network_config;
 
 extern crate alloc;
