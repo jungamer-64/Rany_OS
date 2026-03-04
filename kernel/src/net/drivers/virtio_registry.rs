@@ -74,17 +74,8 @@ impl Driver for VirtioNetDriver {
         // Check if VirtIO-Net device is available (global instance)
         if crate::net::runtime::bridge::is_initialized() {
             self.initialized = true;
-            // quick ping test to verify network connectivity; this runs in
-            // driver probe context で transmit path の動作確認。
-            // ブートストラップ同期コンテキストのためsend_real_icmp_echoを使用。
-            match crate::net::runtime::bridge::send_real_icmp_echo(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES, 1) {
-                Ok(rtt) => {
-                    log::info!(target: "net", "Probe ping success rtt={}", rtt);
-                }
-                Err(e) => {
-                    log::warn!(target: "net", "Probe ping failed: {:?}", e);
-                }
-            }
+            // 接続性確認は呼び出し元（network_bootstrap_task等）に委任する。
+            // probe() 内での同期ping は Async-First 原則に反するため削除。
             return Ok(());
         }
 

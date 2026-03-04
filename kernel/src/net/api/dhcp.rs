@@ -18,8 +18,6 @@ use crate::net::services::dhcp;
 use crate::sync::PoisonLock;
 use crate::sync::atomic_waker::AtomicWaker;
 
-use super::config::get_network_config;
-
 extern crate alloc;
 
 /// DHCP runtime state snapshot for v4/v6 clients.
@@ -45,125 +43,10 @@ pub struct DhcpOfferInfo {
 
 /// DHCPディスカバー（イベントキュー経由）
 ///
-/// DHCP discover イベントを発火し、クライアントの駆動をエグゼキュータに委任する。
-/// 同期的にオファー結果を返すことはできないため、
-/// 応答を取得するには `dhcp_discover_async().await` を使用すること。
-pub fn dhcp_discover() -> Option<DhcpOfferInfo> {
-    // fire-and-forget: イベントキュー経由でDHCPクライアントを駆動
-    crate::net::l4::endpoint::event::send_event_ignore(
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpDiscover {
-            result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-    // 同期的にオファーを返すことはできない（イベントキュー経由のため）
-    None
-}
-
-/// DHCPリクエスト送信（内部的にイベントキュー経由のUDP送信を使用）
-///
-/// パケット構築は同期的に行うが、実際の送信は `send_udp_async()` 経由で
-/// イベントキューに委任されるため、ブロッキングは発生しない。
-pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
-    use crate::net::services::dhcp::{
-        DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE, DHCP_SERVER_PORT,
-        DhcpHeader, DhcpMessageType, DhcpOperation, DhcpOption,
-    };
-
-    let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
-    let xid = tcb_table().get_current_tick() as u32 ^ 0xDEAD_BEEF;
-
-    let mut header_struct = DhcpHeader {
-        op: DhcpOperation::Request as u8,
-        htype: 1,
-        hlen: 6,
-        hops: 0,
-        xid: xid.to_be_bytes(),
-        secs: 0u16.to_be_bytes(),
-        flags: 0x8000u16.to_be_bytes(),
-        ciaddr: [0; 4],
-        yiaddr: [0; 4],
-        siaddr: [0; 4],
-        giaddr: [0; 4],
-        chaddr: [0; 16],
-        sname: [0; 64],
-        file: [0; 128],
-    };
-
-    // NOTE: パケット構築のためMAC取得に同期版を使用（ブートストラップ専用・短命ロック）
-    if let Some(cfg) = get_network_config() {
-        header_struct.chaddr[..6].copy_from_slice(&cfg.mac);
-    }
-
-    if header_struct.encode_into(&mut buf[..DhcpHeader::SIZE]).is_err() {
-        return false;
-    }
-
-    let mut opts = Vec::with_capacity(64);
-    opts.extend_from_slice(&DHCP_MAGIC_COOKIE);
-    opts.push(DhcpOption::MessageType as u8);
-    opts.push(1);
-    opts.push(DhcpMessageType::Request as u8);
-    opts.push(DhcpOption::RequestedIp as u8);
-    opts.push(4);
-    opts.extend_from_slice(&offered_ip);
-    opts.push(DhcpOption::ServerIdentifier as u8);
-    opts.push(4);
-    opts.extend_from_slice(&server_ip);
-    opts.push(DhcpOption::End as u8);
-
-    let total_len = DhcpHeader::SIZE + opts.len();
-    if total_len > buf.len() {
-        return false;
-    }
-    buf[DhcpHeader::SIZE..DhcpHeader::SIZE + opts.len()].copy_from_slice(&opts);
-
-    let dst = if server_ip == [0, 0, 0, 0] {
-        Ipv4Address::new([255, 255, 255, 255])
-    } else {
-        Ipv4Address::new(server_ip)
-    };
-    stack::send_udp_async(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..total_len], 64)
-}
-
-/// DHCPリリース（イベントキュー経由）
-///
-/// DHCP release イベントを発火し、リリース処理をエグゼキュータに委任する。
-/// 完了を待機するには `dhcp_release_async().await` を使用すること。
-pub fn dhcp_release() {
-    crate::net::l4::endpoint::event::send_event_ignore(
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRelease {
-            result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-}
-
-/// DHCP最終拒否IP取得（読み取り専用・短命ロック）
-///
-/// DHCPクライアントの最終拒否IPを読み取る。読み取り専用のため
-/// ロック保持時間は最小限であり、デッドロックリスクは低い。
-pub fn dhcp_last_declined() -> Option<[u8; 4]> {
-    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
-        if let Some(ref client) = *guard {
-            return client.last_declined_ip().map(|ip| *ip.as_bytes());
-        }
-    }
-    None
-}
-
-/// DHCP最終解放IP取得（読み取り専用・短命ロック）
-///
-/// DHCPクライアントの最終解放IPを読み取る。読み取り専用のため
-/// ロック保持時間は最小限であり、デッドロックリスクは低い。
-pub fn dhcp_last_released() -> Option<[u8; 4]> {
-    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
-        if let Some(ref client) = *guard {
-            return client.last_released_ip().map(|ip| *ip.as_bytes());
-        }
-    }
-    None
-}
+// 旧同期API (dhcp_discover, dhcp_request, dhcp_release, dhcp_last_declined,
+// dhcp_last_released, dhcp_renew) は削除済み。
+// 非同期版 (dhcp_discover_async, dhcp_release_async, dhcp_renew_async,
+// dhcp_last_declined_async, dhcp_last_released_async) を使用すること。
 
 pub fn dhcp_v4_state_name(state: dhcp::DhcpState) -> &'static str {
     match state {
@@ -338,22 +221,7 @@ pub fn dhcp_state() -> DhcpRuntimeState {
     out
 }
 
-/// DHCPリニュー（イベントキュー経由）
-///
-/// DHCP renew イベントを発火し、リニュー処理をエグゼキュータに委任する。
-/// 完了を待機するには `dhcp_renew_async().await` を使用すること。
-pub fn dhcp_renew() -> Result<(), String> {
-    crate::net::l4::endpoint::event::send_event_ignore(
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRenew {
-            result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-    Ok(())
-}
-
-// NOTE: 旧同期dhcp_renewは削除済み（イベントキュー経由に移行）
-// handler.rs の AsyncDhcpRenew イベントハンドラで処理される
+// 旧同期 dhcp_renew は削除済み（dhcp_renew_async を使用すること）
 
 // ============================================================================
 // 非同期API（推奨）

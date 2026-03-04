@@ -107,23 +107,25 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
         .unwrap_or(true)
 }
 
-// smoke test exercising public runtime APIs
+// smoke test exercising DHCP last_declined/last_released via dhcp_state()
+// 旧同期API (dhcp_last_declined, dhcp_last_released, dhcp_release) は削除済み。
+// dhcp_state() のスナップショットで同等のフィールドを検証する。
 pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
-    use crate::net::api::shell::{dhcp_last_declined, dhcp_last_released};
     use crate::net::runtime::stack;
 
     stack::init_default();
-    let _ = crate::net::api::shell::init_dhcp_runtime();
+    let _ = crate::net::api::dhcp::init_dhcp_runtime();
 
     // initially None
-    if dhcp_last_declined().is_some() || dhcp_last_released().is_some() {
+    let st = crate::net::api::dhcp::dhcp_state();
+    if st.v4_last_declined.is_some() || st.v4_last_released.is_some() {
         return false;
     }
 
     // manipulate global client directly to produce values
     if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
-            // simulate lease and then release via public API
+            // simulate lease and then release via internal API
             let lease = crate::net::services::dhcp::DhcpLease {
                 ip_address: crate::net::l3::ipv4::Ipv4Address::new([1,2,3,4]),
                 subnet_mask: crate::net::l3::ipv4::Ipv4Address::new([255,255,255,0]),
@@ -138,11 +140,13 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
                 domain_name:None,
             };
             client.set_lease_for_test(lease.clone());
+            // release via internal client method
+            client.release();
         }
     }
 
-    crate::net::api::shell::dhcp_release();
-    if dhcp_last_released() != Some([1,2,3,4]) {
+    let st2 = crate::net::api::dhcp::dhcp_state();
+    if st2.v4_last_released != Some([1,2,3,4]) {
         return false;
     }
 
@@ -152,7 +156,8 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
             let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5,6,7,8]), None);
         }
     }
-    if dhcp_last_declined() != Some([5,6,7,8]) {
+    let st3 = crate::net::api::dhcp::dhcp_state();
+    if st3.v4_last_declined != Some([5,6,7,8]) {
         return false;
     }
 

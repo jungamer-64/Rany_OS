@@ -8,8 +8,6 @@
 
 // ---- config ----------------------------------------------------------------
 pub use super::config::{
-    get_network_config,
-    get_network_stats,
     get_network_config_async,
     get_network_stats_async,
 };
@@ -23,17 +21,11 @@ pub use super::icmp::{
 
 // ---- dhcp ------------------------------------------------------------------
 pub use super::dhcp::{
-    dhcp_discover,
-    dhcp_request,
-    dhcp_release,
-    dhcp_last_declined,
-    dhcp_last_released,
     dhcp_v4_state_name,
     dhcp_v6_state_name,
     lease_remaining_secs,
     init_dhcp_runtime,
     dhcp_state,
-    dhcp_renew,
     dhcp_state_async,
     dhcp_renew_async,
     dhcp_release_async,

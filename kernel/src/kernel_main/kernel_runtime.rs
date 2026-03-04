@@ -56,7 +56,7 @@ async fn network_bootstrap_task() {
         // 100ms × 100 = 最大10秒
         task::sleep_ms(100).await;
 
-        let state = crate::net::api::dhcp::dhcp_state();
+        let state = crate::net::api::dhcp::dhcp_state_async().await;
         if state.v4_state == "Bound" {
             info!(
                 target: "net_boot",
@@ -74,8 +74,8 @@ async fn network_bootstrap_task() {
 
     // 非同期ping: ゲートウェイへの接続性確認
     let ping_target = if dhcp_bound {
-        // DHCP取得済みの場合、スタックからゲートウェイを読む
-        crate::net::api::config::get_network_config()
+        // DHCP取得済みの場合、スタックからゲートウェイを読む（非同期版使用）
+        crate::net::api::config::get_network_config_async().await
             .and_then(|cfg| {
                 let gw = cfg.gateway;
                 if gw != [0, 0, 0, 0] { Some(gw) } else { None }

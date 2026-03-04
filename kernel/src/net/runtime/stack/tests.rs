@@ -69,7 +69,7 @@ pub fn test_send_icmp_fallback_zero_copy() {
         }
     }
 
-    assert!(crate::net::api::shell::send_icmp_echo_async([8, 8, 8, 8], 1));
+    assert!(crate::net::api::icmp::send_icmp_echo_async([8, 8, 8, 8], 1));
 }
 
 #[cfg_attr(test, test_case)]
@@ -191,52 +191,18 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
 pub fn test_dhcp_runtime_public_apis_smoke() {
     init_default();
 
-    assert!(crate::net::api::shell::init_dhcp_runtime().is_ok());
+    assert!(crate::net::api::dhcp::init_dhcp_runtime().is_ok());
 
-    let st = crate::net::api::shell::dhcp_state();
+    let st = crate::net::api::dhcp::dhcp_state();
     assert!(!st.v4_state.is_empty());
     assert!(!st.v6_state.is_empty());
 
-    assert!(crate::net::api::shell::dhcp_renew().is_ok());
+    // 旧同期API (dhcp_discover, dhcp_request, dhcp_release, dhcp_renew,
+    // dhcp_last_declined, dhcp_last_released) は削除済み。
+    // 非同期版 (dhcp_discover_async, dhcp_release_async, ...) は
+    // async executor 上でのみテスト可能なため、ここでは dhcp_state のみ検証する。
 
-    // The new public entrypoints should at least compile and return sane defaults.
-    // At the moment no offer exists, so discover should return None.
-    assert!(crate::net::api::shell::dhcp_discover().is_none());
-
-    // Sending a request with bogus addresses should not panic; result may be false.
-    let _ = crate::net::api::shell::dhcp_request([0, 0, 0, 0], [0, 0, 0, 0]);
-
-    // Release should be a no-op as well
-    crate::net::api::shell::dhcp_release();
-
-    // last declined / released are initially None
-    assert!(crate::net::api::shell::dhcp_last_declined().is_none());
-    assert!(crate::net::api::shell::dhcp_last_released().is_none());
-
-    // create a fake client lease to exercise release API
-    if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
-        if let Some(ref client) = *guard {
-            // manually populate lease and then release via helper
-            let lease = crate::net::services::dhcp::DhcpLease {
-                ip_address: crate::net::l3::ipv4::Ipv4Address::new([10, 1, 2, 3]),
-                subnet_mask: crate::net::l3::ipv4::Ipv4Address::new([255, 255, 255, 0]),
-                gateway: None,
-                dns_servers: alloc::vec![],
-                server_ip: crate::net::l3::ipv4::Ipv4Address::new([10, 1, 2, 1]),
-                lease_time: 3600,
-                t1: 1800,
-                t2: 3150,
-                obtained_at: 0,
-                hostname: None,
-                domain_name: None,
-            };
-            client.set_lease_for_test(lease.clone());
-        }
-    }
-    crate::net::api::shell::dhcp_release();
-    assert_eq!(crate::net::api::shell::dhcp_last_released(), Some([10,1,2,3]));
-
-    // simulate a conflict/decline
+    // simulate a conflict/decline via internal client API to verify state snapshot
     let test_ip = [192, 168, 123, 45];
     let server_ip = [192, 168, 123, 1];
     if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
@@ -244,12 +210,10 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
             let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new(test_ip), Some(crate::net::l3::ipv4::Ipv4Address::new(server_ip)));
         }
     }
-    assert_eq!(crate::net::api::shell::dhcp_last_declined(), Some(test_ip));
 
-    // verify dhcp_state snapshot reflects the same
-    let snap = crate::net::api::shell::dhcp_state();
+    // verify dhcp_state snapshot reflects the decline
+    let snap = crate::net::api::dhcp::dhcp_state();
     assert_eq!(snap.v4_last_declined, Some(test_ip));
-    assert_eq!(snap.v4_last_released, Some([10,1,2,3]));
 }
 
 #[cfg_attr(test, test_case)]
