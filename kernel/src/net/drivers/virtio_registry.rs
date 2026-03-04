@@ -77,7 +77,7 @@ impl Driver for VirtioNetDriver {
             // quick ping test to verify network connectivity; this runs in
             // driver probe context で transmit path の動作確認。
             // ブートストラップ同期コンテキストのためsend_real_icmp_echoを使用。
-            match crate::net::runtime::bridge::send_real_icmp_echo([10, 0, 2, 2], 1) {
+            match crate::net::runtime::bridge::send_real_icmp_echo(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES, 1) {
                 Ok(rtt) => {
                     log::info!(target: "net", "Probe ping success rtt={}", rtt);
                 }

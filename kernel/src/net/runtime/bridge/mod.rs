@@ -1003,17 +1003,17 @@ pub fn init_bridge() -> Result<(), &'static str> {
     })
     .unwrap_or_else(|| {
         // Default MAC for QEMU user mode networking
-        MacAddress::from_octets(0x52, 0x54, 0x00, 0x12, 0x34, 0x56)
+        crate::net::defaults::QEMU_DEFAULT_MAC
     });
 
     // Initialize NetworkStack with configuration
     let config = NetworkConfig {
         mac,
         ipv4: Ipv4Config {
-            address: Ipv4Address::new([10, 0, 2, 15]), // QEMU default
-            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
-            gateway: Ipv4Address::new([10, 0, 2, 2]), // QEMU gateway
-            dns: Some(Ipv4Address::new([10, 0, 2, 3])),
+            address: crate::net::defaults::QEMU_DEFAULT_IP,
+            subnet_mask: crate::net::defaults::QEMU_DEFAULT_SUBNET_MASK,
+            gateway: crate::net::defaults::QEMU_DEFAULT_GATEWAY,
+            dns: Some(crate::net::defaults::QEMU_DEFAULT_DNS),
         },
         ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
         icmp_echo_enabled: true,
@@ -1073,7 +1073,8 @@ pub fn init_bridge() -> Result<(), &'static str> {
         mac.as_bytes()[4],
         mac.as_bytes()[5]
     );
-    log::info!("  IP: 10.0.2.15");
+    let ip = crate::net::defaults::QEMU_DEFAULT_IP_BYTES;
+    log::info!("  IP: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
 
     // Enable timer-based fallback RX/TX completion once the bridge is live.
     crate::interrupts::enable_virtio_net_irq_fallback();

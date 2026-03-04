@@ -26,6 +26,7 @@
 #![allow(dead_code)]
 
 pub mod api;
+pub mod defaults;
 pub mod obs;
 pub mod types;
 

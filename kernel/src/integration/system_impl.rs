@@ -382,7 +382,7 @@ impl SystemIntegration {
                     // global VirtIO device is working the ping should succeed
                     // (or at least return an I/O error if the network is down).
                     // ブートストラップ同期コンテキスト: send_real_icmp_echoを使用
-                    let ping = crate::net::runtime::bridge::send_real_icmp_echo([10, 0, 2, 2], 1);
+                    let ping = crate::net::runtime::bridge::send_real_icmp_echo(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES, 1);
                     self.log(&alloc::format!("    [PING TEST] result={:?}", ping));
                 }
             }

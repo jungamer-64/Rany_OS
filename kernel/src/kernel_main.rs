@@ -210,7 +210,7 @@ pub(crate) fn init_network_subsystem() {
         // First try DHCP to obtain the correct IP/gateway (needed for bridge/TAP mode).
         // In QEMU slirp mode, the built-in DHCP server will respond with 10.0.2.15/10.0.2.2.
         // In bridge mode, the LAN DHCP server will provide the actual IP/gateway.
-        let ping_target = try_sync_dhcp_configure().unwrap_or([10, 0, 2, 2]);
+        let ping_target = try_sync_dhcp_configure().unwrap_or(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES);
         info!(target: "init", "Manual network ping attempt to {:?}", ping_target);
         match manual_ping_before_if_strict(ping_target, 1) {
             Ok(rtt) => info!(target: "init", "Manual ping success rtt={}", rtt),
@@ -1090,7 +1090,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
     // Diagnostic: manual ping attempt to exercise network transmit path
     // Use DHCP-configured gateway if available; otherwise fall back to slirp default.
-    let late_ping_target = try_sync_dhcp_configure().unwrap_or([10, 0, 2, 2]);
+    let late_ping_target = try_sync_dhcp_configure().unwrap_or(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES);
     match manual_ping_before_if_strict(late_ping_target, 1) {
         Ok(rtt) => {
             info!(target: "init", "Manual ping success rtt={}", rtt);

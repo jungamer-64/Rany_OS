@@ -171,9 +171,10 @@ pub(crate) fn spawn_kernel_tasks(
         info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
 
         crate::io::log::early_print("[NET-PING-MANUAL] sending manual ping now\n");
-        info!(target: "net_test", "Sending ICMP echo to 10.0.2.2 seq=1");
+        let gw = crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES;
+        info!(target: "net_test", "Sending ICMP echo to {}.{}.{}.{} seq=1", gw[0], gw[1], gw[2], gw[3]);
         // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
-        match crate::net::api::icmp::ping_async([10, 0, 2, 2], 1).await {
+        match crate::net::api::icmp::ping_async(gw, 1).await {
             Ok(echo) => info!(target: "net_test", "Ping success rtt={} us", echo.rtt_us),
             Err(e) => warn!(target: "net_test", "Ping failed: {:?}", e),
         }

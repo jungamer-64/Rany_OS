@@ -49,7 +49,7 @@ pub struct VirtioNetConfig {
 impl Default for VirtioNetConfig {
     fn default() -> Self {
         Self {
-            mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56], // QEMU default
+            mac: crate::net::defaults::QEMU_DEFAULT_MAC_BYTES,
             max_queues: 1,
             mtu: 1500,
         }
@@ -170,7 +170,7 @@ impl VirtioNetDevice {
         Self {
             transport: alloc::sync::Arc::from(transport),
             config: VirtioNetConfig {
-                mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
+                mac: crate::net::defaults::QEMU_DEFAULT_MAC_BYTES,
                 max_queues: 1,
                 mtu: 1500,
             },
