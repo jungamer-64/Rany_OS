@@ -133,7 +133,9 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
             })
         }; // guard ドロップ → ロック解放
         if let Some(client) = client_ref {
-            let _ = client.run().await;
+            if let Err(e) = client.run().await {
+                log::error!("[NET] DHCPv4 client task failed: {}", e);
+            }
         }
     }));
 
@@ -151,7 +153,9 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
             })
         }; // guard ドロップ → ロック解放
         if let Some(client6) = client_ref {
-            let _ = client6.run().await;
+            if let Err(e) = client6.run().await {
+                log::error!("[NET] DHCPv6 client task failed: {}", e);
+            }
         }
     }));
 

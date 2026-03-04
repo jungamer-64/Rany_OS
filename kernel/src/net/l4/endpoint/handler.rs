@@ -612,6 +612,22 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
+            NetworkEvent::AsyncUdpBindEndpoint { port, result_slot, waker } => {
+                let endpoint = stack.bind_udp(port);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(endpoint);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncUdpBindEndpointWithToken { port, token, result_slot, waker } => {
+                let endpoint = stack.bind_udp_with_token(port, token);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(endpoint);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
             NetworkEvent::AsyncApplyIpv6Address { addr, result_slot, waker } => {
                 let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(addr);
                 stack.apply_ipv6_global_address(ipv6);
