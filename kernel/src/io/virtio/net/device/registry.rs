@@ -58,7 +58,11 @@ async fn virtio_net_worker_task(index: u8) {
             device.refill_rx_queues();
         });
         crate::net::runtime::bridge::drain_deferred_rx_packets();
-        
+        // Flush any packets that were enqueued in the batch processor during drain.
+        // Without this, single packets (e.g. DHCP OFFER) would sit in the batch
+        // until the next timer-tick driven check_batch_timeout() fires.
+        crate::net::runtime::bridge::flush_batch();
+
         if result.is_none() {
             log::warn!("[VIRTIO-NET] Worker task index {} exiting (device removed)", index);
             break;
@@ -303,6 +307,8 @@ fn poll_virtio_net_queues_for_index(index: u8) {
 
     // Phase 2: デバイスロック解放後にバッファされたパケットをディスパッチ
     crate::net::runtime::bridge::drain_deferred_rx_packets();
+    // Flush any packets sitting in the batch processor after drain
+    crate::net::runtime::bridge::flush_batch();
 }
 
 #[cfg(test)]

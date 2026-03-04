@@ -295,10 +295,14 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
             if let Some(ref mut s) = *guard {
                 s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
             } else {
+                log::error!("bridge_v4: stack is None");
                 return false;
             }
         }
-        Err(_) => return false,
+        Err(_) => {
+            log::error!("bridge_v4: stack poisoned");
+            return false;
+        }
     }
 
     let header_size = VirtioNetHeader::SIZE;
@@ -308,11 +312,15 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
 
     let mut packet = match mempool::alloc_packet() {
         Some(packet) => packet,
-        None => return false,
+        None => {
+            log::error!("bridge_v4: alloc_packet failed");
+            return false;
+        }
     };
     let buf = packet.data_mut();
     let needed = header_size + eth_total_len;
     if buf.len() < needed {
+        log::error!("bridge_v4: buffer too small (len={}, needed={})", buf.len(), needed);
         return false;
     }
 
@@ -334,6 +342,7 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
             .set_protocol(IpProtocol::Tcp)
             .set_identification(1);
     } else {
+        log::error!("bridge_v4: ipv4 new failed");
         return false;
     }
 
@@ -350,6 +359,7 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     if let Some(mut ipv4_mut) = Ipv4PacketMut::new(&mut buf[ip_off..ip_off + 20]) {
         ipv4_mut.finalize(tcp_len);
     } else {
+        log::error!("bridge_v4: ipv4 finalize failed");
         return false;
     }
 
@@ -359,14 +369,22 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
 
     if let Ok(guard) = tcb_arc.lock() {
         if guard.recv_buffer_is_empty() {
+            log::error!("bridge_v4: recv buffer is empty");
             return false;
         }
         if let Some(first) = guard.recv_buffer_front_data() {
-            first == payload
+            if first == payload {
+                true
+            } else {
+                log::error!("bridge_v4: payload mismatch");
+                false
+            }
         } else {
+            log::error!("bridge_v4: no front data");
             false
         }
     } else {
+        log::error!("bridge_v4: tcb_arc poisoned");
         false
     }
 }

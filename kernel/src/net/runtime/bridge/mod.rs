@@ -699,7 +699,7 @@ pub fn process_received_packet_zero_copy_for_interface(
         use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
         static RX_IF_DUMP_COUNT: AtomicU32 = AtomicU32::new(0);
         let n = RX_IF_DUMP_COUNT.fetch_add(1, AtOrd::Relaxed);
-        if n < 3 {
+        if n < 30 {
             let data = packet.data();
             crate::io::log::early_print("[RX-IF-DUMP] pkt#");
             crate::io::log::early_print_dec(n as u64);
@@ -980,6 +980,19 @@ pub fn process_received_packet_zero_copy_for_interface(
     // Flow Hash 計算: パケットメタにRSSハッシュを設定
     compute_and_set_flow_hash(&mut packet);
 
+    {
+        use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
+        static ENQUEUE_COUNT: AtomicU32 = AtomicU32::new(0);
+        let n = ENQUEUE_COUNT.fetch_add(1, AtOrd::Relaxed);
+        if n < 30 {
+            crate::io::log::early_print("[BATCH-ENQ] pkt#");
+            crate::io::log::early_print_dec(n as u64);
+            crate::io::log::early_print(" len=");
+            crate::io::log::early_print_dec(packet.len() as u64);
+            crate::io::log::early_print("\n");
+        }
+    }
+
     if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
         stack::receive_batch(batch);
     }
@@ -1216,6 +1229,17 @@ pub fn is_initialized() -> bool {
 /// Should be called periodically (e.g. from timer interrupt)
 pub fn check_batch_timeout(current_tsc: u64, tsc_freq: u64) {
     if let Some(batch) = BATCH_PROCESSOR.check_timeout(current_tsc, tsc_freq) {
+        stack::receive_batch(batch);
+    }
+}
+
+/// Force-flush any packets sitting in the batch processor.
+///
+/// Called from the VirtIO-Net worker task after draining deferred RX packets
+/// to ensure that low-traffic packets (e.g. DHCP OFFER) are dispatched
+/// immediately instead of waiting for the timer-tick driven timeout.
+pub fn flush_batch() {
+    if let Some(batch) = BATCH_PROCESSOR.flush() {
         stack::receive_batch(batch);
     }
 }

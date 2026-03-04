@@ -1159,7 +1159,7 @@ impl Ipv6PmtuCache {
             if current_time.saturating_sub(time) <= Ipv6PmtuEntry::TIMEOUT_MS {
                 break;
             }
-            self.lru.pop_first();
+            self.lru.remove(&(time, key));
             self.entries.remove(&key);
         }
     }
