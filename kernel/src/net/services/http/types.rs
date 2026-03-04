@@ -5,6 +5,7 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
+use core::str::FromStr;
 
 /// HTTPメソッド
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,22 @@ impl fmt::Display for HttpMethod {
     }
 }
 
+impl FromStr for HttpMethod {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "GET" => Ok(HttpMethod::Get),
+            "POST" => Ok(HttpMethod::Post),
+            "PUT" => Ok(HttpMethod::Put),
+            "DELETE" => Ok(HttpMethod::Delete),
+            "HEAD" => Ok(HttpMethod::Head),
+            "OPTIONS" => Ok(HttpMethod::Options),
+            "PATCH" => Ok(HttpMethod::Patch),
+            _ => Err(()),
+        }
+    }
+}
+
 /// HTTPバージョン
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpVersion {
@@ -44,6 +61,17 @@ impl fmt::Display for HttpVersion {
         match self {
             HttpVersion::Http1_0 => write!(f, "HTTP/1.0"),
             HttpVersion::Http1_1 => write!(f, "HTTP/1.1"),
+        }
+    }
+}
+
+impl FromStr for HttpVersion {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "HTTP/1.0" => Ok(HttpVersion::Http1_0),
+            "HTTP/1.1" => Ok(HttpVersion::Http1_1),
+            _ => Err(()),
         }
     }
 }
@@ -107,16 +135,13 @@ impl HttpRequest {
     /// バイト列にシリアライズ
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = String::new();
-        out.push_str(&alloc::format!("{} {} {}
-", self.method, self.uri, self.version));
+        out.push_str(&alloc::format!("{} {} {}\r\n", self.method, self.uri, self.version));
         
         for header in &self.headers {
-            out.push_str(&alloc::format!("{}: {}
-", header.name, header.value));
+            out.push_str(&alloc::format!("{}: {}\r\n", header.name, header.value));
         }
         
-        out.push_str("
-");
+        out.push_str("\r\n");
         let mut bytes = out.into_bytes();
         
         if let Some(body) = &self.body {
@@ -124,6 +149,17 @@ impl HttpRequest {
         }
         
         bytes
+    }
+    
+    /// 特定のヘッダの値を取得（大文字小文字を区別しない）
+    pub fn get_header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find_map(|h| {
+            if h.name.eq_ignore_ascii_case(name) {
+                Some(h.value.as_str())
+            } else {
+                None
+            }
+        })
     }
 }
 

@@ -14,7 +14,6 @@
 //! task.yield()        → 手動yield
 //! ```
 
-use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;

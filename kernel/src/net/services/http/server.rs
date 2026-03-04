@@ -107,24 +107,9 @@ async fn run_service() {
 }
 
 async fn handle_client(mut client: TcpStream) {
-    let response = match read_request_with_timeout(&mut client).await {
-        Ok(request) => build_response_for_request(&request),
-        Err(err) => {
-            log::warn!("[HOST-HTTP] read request failed: {}", err);
-            build_json_response("400 Bad Request", "{\"status\":\"bad_request\"}")
-        }
-    };
-    log::info!("[HOST-HTTP] preparing response: {} bytes", response.len());
-    log::info!("[HOST-HTTP] connection established, preparing response...");
+    let mut parser = super::parser::HttpParser::new();
+    let mut response_bytes = None;
 
-    if let Err(err) = write_response(&mut client, response.as_slice()).await {
-        log::warn!("[HOST-HTTP] send error: {}", err);
-    }
-
-    let _ = client.shutdown().await;
-}
-
-async fn read_request_with_timeout(client: &mut TcpStream) -> Result<Vec<u8>, &'static str> {
     const READ_TRIES: usize = 20;
     const READ_TIMEOUT_MS: u64 = 100;
 
@@ -132,19 +117,49 @@ async fn read_request_with_timeout(client: &mut TcpStream) -> Result<Vec<u8>, &'
     for _ in 0..READ_TRIES {
         match task::with_timeout(client.read(&mut buffer), READ_TIMEOUT_MS).await {
             TimeoutResult::TimedOut => {
-                // ISR + network_event_taskが非同期にパケット処理するためyieldのみ
                 task::yield_now().await;
             }
-            TimeoutResult::Completed(Err(_)) => return Err("socket recv error"),
-            TimeoutResult::Completed(Ok(0)) => return Err("peer closed connection"),
+            TimeoutResult::Completed(Err(_)) => {
+                log::warn!("[HOST-HTTP] read error");
+                response_bytes = Some(build_json_response("500 Internal Server Error", "{\"status\":\"error\"}"));
+                break;
+            }
+            TimeoutResult::Completed(Ok(0)) => {
+                break;
+            }
             TimeoutResult::Completed(Ok(len)) => {
                 BYTES_RX.fetch_add(len as u64, Ordering::Relaxed);
-                return Ok(buffer[..len].to_vec());
+                parser.push_data(&buffer[..len]);
+                match parser.try_parse_request() {
+                    Ok(Some(request)) => {
+                        response_bytes = Some(build_response_for_request(&request));
+                        break;
+                    }
+                    Ok(None) => {
+                        // Continue reading
+                    }
+                    Err(err) => {
+                        log::warn!("[HOST-HTTP] parse error: {:?}", err);
+                        response_bytes = Some(build_json_response("400 Bad Request", "{\"status\":\"bad_request\"}"));
+                        break;
+                    }
+                }
             }
         }
     }
 
-    Err("request read timeout")
+    let response = response_bytes.unwrap_or_else(|| {
+        log::warn!("[HOST-HTTP] request read timeout or client closed connection early");
+        build_json_response("408 Request Timeout", "{\"status\":\"timeout\"}")
+    });
+
+    log::info!("[HOST-HTTP] preparing response: {} bytes", response.len());
+
+    if let Err(err) = write_response(&mut client, response.as_slice()).await {
+        log::warn!("[HOST-HTTP] send error: {}", err);
+    }
+
+    let _ = client.shutdown().await;
 }
 
 async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &'static str> {
@@ -213,20 +228,11 @@ fn build_health_response() -> Vec<u8> {
     build_json_response("200 OK", &body)
 }
 
-fn build_response_for_request(request: &[u8]) -> Vec<u8> {
+fn build_response_for_request(request: &super::types::HttpRequest) -> Vec<u8> {
     TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
 
-    let request_line = core::str::from_utf8(request)
-        .ok()
-        .and_then(|text| text.lines().next())
-        .unwrap_or("");
-
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("");
-
-    if method == "GET" {
-        match path {
+    if request.method == super::types::HttpMethod::Get {
+        match request.uri.as_str() {
             "/" => return build_index_response(),
             "/health" => return build_health_response(),
             "/stats" => return build_stats_response(),
