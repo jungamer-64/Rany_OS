@@ -219,135 +219,142 @@ reset-vars:
 # ==============================================================================
 # QEMU 実行ターゲット
 # ==============================================================================
+# run.sh の start_qemu() を完全にシェルスクリプトとして移植。
+# Make の $(if ...) / $(shell ...) 展開の問題を避けるため、QEMU 引数の
+# 動的構築は全てシェル変数で行う。
 
-# QEMU共通セットアップ
-define QEMU_SETUP
+# QEMU 起動用シェルスクリプト (run.sh の start_qemu + get_qemu_accelerator を完全移植)
+# 引数: $1 = 追加 QEMU フラグ (debug ターゲット用、省略可)
+define LAUNCH_QEMU
 	@if [ ! -f "$(OVMF_VARS_LOCAL)" ]; then \
-		cp $(OVMF_VARS_ORIG) $(OVMF_VARS_LOCAL); \
-	fi
-endef
-
-# アクセラレータ検出
-define DETECT_ACCEL
-$(if $(filter 1,$(TCG)),tcg,$(shell \
-	if [ -w /dev/kvm ] && $(QEMU) -accel help 2>&1 | grep -q kvm; then \
-		echo kvm; \
+		cp "$(OVMF_VARS_ORIG)" "$(OVMF_VARS_LOCAL)"; \
+	fi; \
+	\
+	accel=""; \
+	if [ "$(TCG)" = "1" ]; then \
+		accel="tcg"; \
+		printf '   -> \033[33m[WARN] [ACCEL] TCG (forced via TCG=1)\033[0m\n'; \
+	elif [ -w /dev/kvm ] && $(QEMU) -accel help 2>&1 | grep -q kvm; then \
+		accel="kvm"; \
+		printf '   -> \033[32m[ACCEL] KVM (Linux hardware virtualization)\033[0m\n'; \
 	elif $(QEMU) -accel help 2>&1 | grep -q hvf; then \
-		echo hvf; \
+		accel="hvf"; \
+		printf '   -> \033[32m[ACCEL] Hypervisor.framework (macOS)\033[0m\n'; \
 	else \
-		echo tcg; \
-	fi))
-endef
-
-# CPU モデル選択 (CPU 変数で上書き可能、run.sh の --cpu 相当)
-define DETECT_CPU
-$(if $(CPU),$(CPU),$(shell accel="$(DETECT_ACCEL)"; \
-	case "$$accel" in kvm|hvf) echo host ;; *) echo max ;; esac))
-endef
-
-# シリアル引数
-define SERIAL_ARG
-$(if $(filter file,$(SERIAL)),file:$(BUILD_DIR)/serial.log,$(if $(filter null,$(SERIAL)),null,stdio))
-endef
-
-# NVMe セットアップヘルパー (run.sh の NVMe デバイス処理を完全移植)
-define NVME_ARGS
-$(if $(NVME), \
-	-drive "file=$(BUILD_DIR)/nvme.img$(comma)if=none$(comma)id=nvm" \
-	-device "nvme$(comma)serial=deadbeef$(comma)drive=nvm",)
-endef
-
-# QEMU コマンド生成 (run.sh の start_qemu を完全移植)
-define QEMU_CMD
-	$(QEMU) \
-		-machine $(if $(filter 1,$(IOMMU)),q35$(comma)kernel-irqchip=split,q35) \
-		-cpu $(DETECT_CPU) \
-		-smp $(SMP) -m $(MEMORY)M \
-		-nic none \
-		-serial $(SERIAL_ARG) \
-		-no-reboot -no-shutdown \
-		-drive "if=pflash,format=raw,readonly=on,file=$(OVMF_CODE)" \
-		-drive "if=pflash,format=raw,file=$(OVMF_VARS_LOCAL)" \
-		-drive "file=fat:rw:$(FAT_ROOT),format=raw,media=disk" \
-		-accel $(DETECT_ACCEL) \
-		$(if $(filter 1,$(IOMMU)),-device "intel-iommu,intremap=on,caching-mode=on",) \
-		$(if $(filter 1,$(NUMA)), \
-			-object "memory-backend-ram,id=mem0,size=$$(( $(MEMORY) / 2 ))M" \
-			-object "memory-backend-ram,id=mem1,size=$$(( $(MEMORY) - $(MEMORY) / 2 ))M" \
-			-numa "node,nodeid=0,cpus=0-$$(( $(SMP) / 2 - 1 )),memdev=mem0" \
-			-numa "node,nodeid=1,cpus=$$(( $(SMP) / 2 ))-$$(( $(SMP) - 1 )),memdev=mem1",) \
-		$(if $(filter 1,$(NETWORK)), \
-			-netdev "user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80" \
-			-device "virtio-net-pci,netdev=net0,mq=on,vectors=10$(if $(filter 1,$(IOMMU)),$(comma)iommu_platform=on$(comma)disable-legacy=on,)",) \
-		$(NVME_ARGS) \
-		$(if $(filter 1,$(GDB)),-s -S,) \
-		$(if $(or $(filter 1,$(MONITOR)),$(filter 1,$(GDB))),-monitor "telnet:127.0.0.1:4444,server,nowait",) \
-		$(if $(filter 1,$(TEST_MODE)),-device "isa-debug-exit,iobase=0xf4,iosize=0x04" -display none,) \
-		$(QEMU_EXTRA)
-endef
-
-# ビルド＋QEMU起動 (デフォルト: debug)
-run: image
-	@printf '\033[36m%s\033[0m\n' "Launching QEMU..."
-	@printf '   -> \033[32m[ACCEL] %s  [CPU] %s  [SMP] %s  [MEM] %sMB\033[0m\n' \
-		"$(DETECT_ACCEL)" "$(DETECT_CPU)" "$(SMP)" "$(MEMORY)"
-	$(if $(filter 1,$(IOMMU)),@printf '   -> \033[32m%s\033[0m\n' "[IOMMU] Intel VT-d enabled (intremap=on) [DEFAULT]")
-	$(if $(filter 1,$(NUMA)),@printf '   -> \033[32m%s\033[0m\n' "[NUMA] 2-node topology")
-	$(if $(filter 1,$(NETWORK)),@printf '   -> \033[32m%s\033[0m\n' "[NET] VirtIO-net enabled (hostfwd: tcp 5555->80, udp 5556->80)")
-	@if [ -n "$(NVME)" ]; then \
-		printf '   -> \033[32mNVMe device attached (%s)\033[0m\n' "$(NVME)"; \
-	fi
-	$(if $(filter 1,$(GDB)),@printf '   -> \033[33m[WARN] GDB Stub: localhost:1234 (CPU Frozen)\033[0m\n')
-	@if [ "$(MONITOR)" = "1" ] || [ "$(GDB)" = "1" ]; then \
-		if command -v lsof >/dev/null 2>&1 && lsof -iTCP:4444 -sTCP:LISTEN >/dev/null 2>&1; then \
-			printf '   -> \033[33m[WARN] Port 4444 is already in use; QEMU monitor may fail to bind\033[0m\n'; \
+		accel="tcg"; \
+		printf '   -> \033[33m[WARN] No hardware acceleration detected. Using TCG (Slow).\033[0m\n'; \
+	fi; \
+	\
+	cpu_model=""; \
+	if [ -n "$(CPU)" ]; then \
+		cpu_model="$(CPU)"; \
+	elif [ "$$accel" = "kvm" ] || [ "$$accel" = "hvf" ]; then \
+		cpu_model="host"; \
+	else \
+		cpu_model="max"; \
+	fi; \
+	printf '   -> \033[32m[CPU] %s\033[0m\n' "$$cpu_model"; \
+	\
+	serial_arg="stdio"; \
+	if [ "$(SERIAL)" = "file" ]; then \
+		serial_arg="file:$(BUILD_DIR)/serial.log"; \
+	elif [ "$(SERIAL)" = "null" ]; then \
+		serial_arg="null"; \
+	fi; \
+	\
+	if [ "$(IOMMU)" = "1" ]; then \
+		machine_spec="q35,kernel-irqchip=split"; \
+	else \
+		machine_spec="q35"; \
+	fi; \
+	\
+	qemu_args=""; \
+	qemu_args="$$qemu_args -machine $$machine_spec"; \
+	qemu_args="$$qemu_args -cpu $$cpu_model"; \
+	qemu_args="$$qemu_args -smp $(SMP) -m $(MEMORY)M"; \
+	qemu_args="$$qemu_args -nic none"; \
+	qemu_args="$$qemu_args -serial $$serial_arg"; \
+	qemu_args="$$qemu_args -no-reboot -no-shutdown"; \
+	qemu_args="$$qemu_args -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE)"; \
+	qemu_args="$$qemu_args -drive if=pflash,format=raw,file=$(OVMF_VARS_LOCAL)"; \
+	qemu_args="$$qemu_args -drive file=fat:rw:$(FAT_ROOT),format=raw,media=disk"; \
+	qemu_args="$$qemu_args -accel $$accel"; \
+	\
+	if [ "$(IOMMU)" = "1" ]; then \
+		qemu_args="$$qemu_args -device intel-iommu,intremap=on,caching-mode=on"; \
+		printf '   -> \033[32m[IOMMU] Intel VT-d enabled (intremap=on) [DEFAULT]\033[0m\n'; \
+	fi; \
+	\
+	if [ "$(NUMA)" = "1" ] && [ "$(SMP)" -ge 2 ]; then \
+		cores_node0=$$(( $(SMP) / 2 )); \
+		mem_node0=$$(( $(MEMORY) / 2 )); \
+		mem_node1=$$(( $(MEMORY) - mem_node0 )); \
+		qemu_args="$$qemu_args -object memory-backend-ram,id=mem0,size=$${mem_node0}M"; \
+		qemu_args="$$qemu_args -object memory-backend-ram,id=mem1,size=$${mem_node1}M"; \
+		qemu_args="$$qemu_args -numa node,nodeid=0,cpus=0-$$(( cores_node0 - 1 )),memdev=mem0"; \
+		qemu_args="$$qemu_args -numa node,nodeid=1,cpus=$${cores_node0}-$$(( $(SMP) - 1 )),memdev=mem1"; \
+		printf '   -> \033[32m[NUMA] 2-node topology: node0 %s cores %sMB, node1 %s cores %sMB\033[0m\n' \
+			"$$cores_node0" "$$mem_node0" "$$(( $(SMP) - cores_node0 ))" "$$mem_node1"; \
+	fi; \
+	\
+	if [ "$(NETWORK)" = "1" ]; then \
+		netdev_args="user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"; \
+		device_args="virtio-net-pci,netdev=net0,mq=on,vectors=10"; \
+		if [ "$(IOMMU)" = "1" ]; then \
+			device_args="$$device_args,iommu_platform=on,disable-legacy=on"; \
 		fi; \
-		printf '   -> \033[32m[MONITOR] telnet localhost 4444 (info tlb, info mem, etc.)\033[0m\n'; \
-	fi
-	$(if $(filter 1,$(TEST_MODE)),@printf '   -> \033[32m%s\033[0m\n' "Test mode: Headless execution")
-	$(if $(filter file,$(SERIAL)),@printf '   -> \033[32mLog: %s/serial.log\033[0m\n' "$(BUILD_DIR)")
-	@# NVMe ディスクイメージ作成 (run.sh と同じ qemu-img 処理)
-	@if [ -n "$(NVME)" ]; then \
+		qemu_args="$$qemu_args -netdev $$netdev_args -device $$device_args"; \
+		printf '   -> \033[32m[NET] VirtIO-net enabled (hostfwd: tcp 5555->80, udp 5556->80)\033[0m\n'; \
+	fi; \
+	\
+	if [ -n "$(NVME)" ]; then \
 		if ! command -v qemu-img >/dev/null 2>&1; then \
 			printf '   -> \033[31m[ERROR] qemu-img not found.\033[0m\n'; \
 			exit 1; \
 		fi; \
-		if [ ! -f "$(BUILD_DIR)/nvme.img" ]; then \
+		nvme_path="$(BUILD_DIR)/nvme.img"; \
+		if [ ! -f "$$nvme_path" ]; then \
 			printf '   -> \033[32mCreating NVMe disk image (%s)...\033[0m\n' "$(NVME)"; \
-			qemu-img create -f qcow2 "$(BUILD_DIR)/nvme.img" "$(NVME)" >/dev/null 2>&1; \
+			qemu-img create -f qcow2 "$$nvme_path" "$(NVME)" >/dev/null 2>&1; \
 		fi; \
-	fi
-	$(QEMU_SETUP)
-	@# QEMU 実行 + テストモード終了コード正規化 (run.sh と同じ)
-	@set +e; \
-	$(QEMU) \
-		-machine $(if $(filter 1,$(IOMMU)),q35$(comma)kernel-irqchip=split,q35) \
-		-cpu $(DETECT_CPU) \
-		-smp $(SMP) -m $(MEMORY)M \
-		-nic none \
-		-serial $(SERIAL_ARG) \
-		-no-reboot -no-shutdown \
-		-drive "if=pflash,format=raw,readonly=on,file=$(OVMF_CODE)" \
-		-drive "if=pflash,format=raw,file=$(OVMF_VARS_LOCAL)" \
-		-drive "file=fat:rw:$(FAT_ROOT),format=raw,media=disk" \
-		-accel $(DETECT_ACCEL) \
-		$(if $(filter 1,$(IOMMU)),-device "intel-iommu,intremap=on,caching-mode=on",) \
-		$(if $(filter 1,$(NUMA)), \
-			-object "memory-backend-ram,id=mem0,size=$$(( $(MEMORY) / 2 ))M" \
-			-object "memory-backend-ram,id=mem1,size=$$(( $(MEMORY) - $(MEMORY) / 2 ))M" \
-			-numa "node,nodeid=0,cpus=0-$$(( $(SMP) / 2 - 1 )),memdev=mem0" \
-			-numa "node,nodeid=1,cpus=$$(( $(SMP) / 2 ))-$$(( $(SMP) - 1 )),memdev=mem1",) \
-		$(if $(filter 1,$(NETWORK)), \
-			-netdev "user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80" \
-			-device "virtio-net-pci,netdev=net0,mq=on,vectors=10$(if $(filter 1,$(IOMMU)),$(comma)iommu_platform=on$(comma)disable-legacy=on,)",) \
-		$(if $(NVME), \
-			-drive "file=$(BUILD_DIR)/nvme.img$(comma)if=none$(comma)id=nvm" \
-			-device "nvme$(comma)serial=deadbeef$(comma)drive=nvm",) \
-		$(if $(filter 1,$(GDB)),-s -S,) \
-		$(if $(or $(filter 1,$(MONITOR)),$(filter 1,$(GDB))),-monitor "telnet:127.0.0.1:4444,server,nowait",) \
-		$(if $(filter 1,$(TEST_MODE)),-device "isa-debug-exit,iobase=0xf4,iosize=0x04" -display none,) \
-		$(QEMU_EXTRA); \
+		qemu_args="$$qemu_args -drive file=$$nvme_path,if=none,id=nvm -device nvme,serial=deadbeef,drive=nvm"; \
+		printf '   -> \033[32mNVMe device attached (%s)\033[0m\n' "$(NVME)"; \
+	fi; \
+	\
+	if [ "$(GDB)" = "1" ]; then \
+		qemu_args="$$qemu_args -s -S"; \
+		printf '   -> \033[33m[WARN] GDB Stub: localhost:1234 (CPU Frozen)\033[0m\n'; \
+	fi; \
+	\
+	if [ "$(MONITOR)" = "1" ] || [ "$(GDB)" = "1" ]; then \
+		if command -v lsof >/dev/null 2>&1 && lsof -iTCP:4444 -sTCP:LISTEN >/dev/null 2>&1; then \
+			printf '   -> \033[33m[WARN] Port 4444 is already in use; QEMU monitor may fail to bind\033[0m\n'; \
+		fi; \
+		qemu_args="$$qemu_args -monitor telnet:127.0.0.1:4444,server,nowait"; \
+		printf '   -> \033[32m[MONITOR] telnet localhost 4444 (info tlb, info mem, etc.)\033[0m\n'; \
+	fi; \
+	\
+	if [ "$(TEST_MODE)" = "1" ]; then \
+		qemu_args="$$qemu_args -device isa-debug-exit,iobase=0xf4,iosize=0x04 -display none"; \
+		printf '   -> \033[32mTest mode: Headless execution\033[0m\n'; \
+	fi; \
+	\
+	if [ -n "$(QEMU_EXTRA)" ]; then \
+		qemu_args="$$qemu_args $(QEMU_EXTRA)"; \
+		printf '   -> \033[32mInjected extra args: %s\033[0m\n' "$(QEMU_EXTRA)"; \
+	fi; \
+	\
+	if [ "$(SERIAL)" = "file" ]; then \
+		printf '   -> \033[32mLog: %s/serial.log\033[0m\n' "$(BUILD_DIR)"; \
+	fi; \
+	\
+	qemu_args="$$qemu_args $(1)"; \
+	\
+	set +e; \
+	$(QEMU) $$qemu_args; \
 	exit_code=$$?; \
+	set -e; \
+	\
 	if [ "$(TEST_MODE)" = "1" ]; then \
 		if [ $$exit_code -eq 33 ]; then \
 			printf '   -> \033[32mTEST RESULT: PASSED\033[0m\n'; \
@@ -358,6 +365,12 @@ run: image
 		fi; \
 	fi; \
 	exit $$exit_code
+endef
+
+# ビルド＋QEMU起動 (デフォルト: debug)
+run: image
+	@printf '\033[36m%s\033[0m\n' "Launching QEMU..."
+	$(call LAUNCH_QEMU,)
 
 # リリースビルド＋実行
 run-release:
@@ -366,24 +379,12 @@ run-release:
 # デバッグ実行 (QEMU の割り込みログ付き)
 debug: image
 	@printf '\033[36m%s\033[0m\n' "Starting ExoRust kernel with debug output..."
-	$(QEMU_SETUP)
-	@# NVMe ディスクイメージ作成
-	@if [ -n "$(NVME)" ]; then \
-		if ! command -v qemu-img >/dev/null 2>&1; then \
-			printf '   -> \033[31m[ERROR] qemu-img not found.\033[0m\n'; \
-			exit 1; \
-		fi; \
-		if [ ! -f "$(BUILD_DIR)/nvme.img" ]; then \
-			qemu-img create -f qcow2 "$(BUILD_DIR)/nvme.img" "$(NVME)" >/dev/null 2>&1; \
-		fi; \
-	fi
-	$(QEMU_CMD) -d int,cpu_reset -D $(BUILD_DIR)/qemu_int.log
+	$(call LAUNCH_QEMU,-d int$(comma)cpu_reset -D $(BUILD_DIR)/qemu_int.log)
 
 # GDB デバッグ
-gdb: image
+gdb:
 	@printf '\033[36m%s\033[0m\n' "Starting ExoRust kernel with GDB server..."
 	@echo "Connect with: gdb -ex 'target remote localhost:1234' $(KERNEL_RAW)"
-	$(QEMU_SETUP)
 	$(MAKE) run GDB=1 MONITOR=1
 
 # テスト実行 (ヘッドレス、終了コード正規化付き)
