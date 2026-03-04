@@ -6,6 +6,9 @@
 //! ARP要求を送信し、解決完了をWakerベースで待機する。
 //! ISR/ポーリングコンテキストからの呼び出しを回避し、
 //! イベントキュー経由で安全にARP解決を行う。
+//!
+//! 完全非同期設計: NETWORK_STACKロックを一切使用せず、
+//! ArpResolveRequestイベント経由でキャッシュ確認・ARP要求送信を行う。
 
 use alloc::vec::Vec;
 use core::future::Future;
@@ -167,19 +170,7 @@ impl Future for ArpResolveFuture {
             return Poll::Ready(Ok(MacAddress::BROADCAST));
         }
 
-        // まずキャッシュを確認（イベントキューを経由しない高速パス）
-        if let Ok(stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
-            if let Some(ref stack) = *stack_guard {
-                let current_time = stack.current_time();
-                if let Some(mac) = stack.arp.resolve(self.target_ip, current_time) {
-                    return Poll::Ready(Ok(mac));
-                }
-            } else {
-                return Poll::Ready(Err(ArpResolveError::NotInitialized));
-            }
-        }
-
-        // ウェイター登録済みの結果を確認
+        // ウェイター登録済みの結果を確認（ロックフリーパス）
         if let Some(mac) = poll_arp_result(ip_bytes) {
             return Poll::Ready(Ok(mac));
         }
@@ -191,6 +182,7 @@ impl Future for ArpResolveFuture {
         }
 
         // ARP要求をイベントキュー経由で送信（初回のみ、または再送）
+        // ArpResolveRequestハンドラ内でキャッシュヒット時は即座にnotify_arp_resolved()が呼ばれる
         if !self.request_sent || self.poll_count % 10 == 0 {
             crate::net::l4::endpoint::event::send_event_ignore(
                 crate::net::l4::endpoint::event::NetworkEvent::ArpResolveRequest {

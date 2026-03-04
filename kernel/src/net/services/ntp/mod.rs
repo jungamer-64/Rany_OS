@@ -4,7 +4,8 @@
 //! NTP (Network Time Protocol) / SNTP Client Implementation (RFC 4330)
 
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::l4::endpoint::{EndpointAddr, EndpointError, create_udp_endpoint};
+use crate::net::l4::endpoint::EndpointError;
+use crate::net::l4::udp::UdpAddr;
 use crate::time;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -116,12 +117,14 @@ impl NtpClient {
         self.server = Some(addr);
     }
 
-    /// Perform a single time synchronization query (Sync)
+    /// Perform a single time synchronization query (Async)
     pub async fn sync_time(&self) -> Result<u64, EndpointError> {
         let server_ip = self.server.ok_or(EndpointError::InvalidArgument)?;
-        let remote = EndpointAddr::new(server_ip.octets(), NTP_PORT);
+        let remote = UdpAddr::new(server_ip, NTP_PORT);
         
-        let socket = create_udp_endpoint();
+        // 非同期UDPバインド: イベントキュー経由でNETWORK_STACKロックを回避
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(0).await
+            .ok_or(EndpointError::Internal)?;
         
         let mut req = NtpHeader::new_client_request();
         
@@ -134,43 +137,56 @@ impl NtpClient {
         req.transmit_timestamp.fraction = fraction.to_be_bytes();
         let sent_ts = req.transmit_timestamp;
 
-        socket.send_to(req.as_bytes(), remote)?;
+        socket.send_to(req.as_bytes(), remote).map_err(|_| EndpointError::Internal)?;
 
-        // Async receive via futures module helper
-        let recv_fut = socket.recv_from_async(1024).ok_or(EndpointError::Internal)?;
-        let (data, _from) = recv_fut.await?;
-
-        let resp = NtpHeader::from_bytes(&data).ok_or(EndpointError::Internal)?;
+        // 非同期受信: UdpRecvFuture経由（タイムアウト付き）
+        use crate::task::{with_timeout, TimeoutResult};
+        const NTP_TIMEOUT_MS: u64 = 5_000;
         
-        // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
-        // in the response matches the transmit timestamp in the request.
-        if !resp.origin_timestamp.is_equal(&sent_ts) {
-            log::warn!("[NTP] Security: Originate timestamp mismatch! Dropping spoofed response.");
-            return Err(EndpointError::Internal);
-        }
+        match with_timeout(socket.recv(), NTP_TIMEOUT_MS).await {
+            TimeoutResult::Completed(Some((_src, _ttl, packet))) => {
+                let data = packet.data();
+                let resp = NtpHeader::from_bytes(data).ok_or(EndpointError::Internal)?;
+                
+                // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
+                // in the response matches the transmit timestamp in the request.
+                if !resp.origin_timestamp.is_equal(&sent_ts) {
+                    log::warn!("[NTP] Security: Originate timestamp mismatch! Dropping spoofed response.");
+                    return Err(EndpointError::Internal);
+                }
 
-        // Validation
-        if resp.mode() != 4 { // Server response mode
-            return Err(EndpointError::Internal);
-        }
+                // Validation
+                if resp.mode() != 4 { // Server response mode
+                    return Err(EndpointError::Internal);
+                }
 
-        let transmit_ts = resp.transmit_timestamp;
-        let unix_time = transmit_ts.to_unix_seconds();
-        
-        if unix_time > 0 {
-            log::info!("[NTP] Synced time: {} (UNIX)", unix_time);
-            
-            let current_uptime = time::get_uptime_ms() / 1000;
-            let calculated_boot_time = unix_time.saturating_sub(current_uptime);
-            
-            // システム時計を更新
-            time::system_clock().set_boot_time(calculated_boot_time);
-            
-            self.last_sync_uptime.store(time::get_uptime_ms(), Ordering::Relaxed);
-            return Ok(unix_time);
-        }
+                let transmit_ts = resp.transmit_timestamp;
+                let unix_time = transmit_ts.to_unix_seconds();
+                
+                if unix_time > 0 {
+                    log::info!("[NTP] Synced time: {} (UNIX)", unix_time);
+                    
+                    let current_uptime = time::get_uptime_ms() / 1000;
+                    let calculated_boot_time = unix_time.saturating_sub(current_uptime);
+                    
+                    // システム時計を更新
+                    time::system_clock().set_boot_time(calculated_boot_time);
+                    
+                    self.last_sync_uptime.store(time::get_uptime_ms(), Ordering::Relaxed);
+                    return Ok(unix_time);
+                }
 
-        Err(EndpointError::Internal)
+                Err(EndpointError::Internal)
+            }
+            TimeoutResult::Completed(None) => {
+                log::warn!("[NTP] Socket closed during recv");
+                Err(EndpointError::Internal)
+            }
+            TimeoutResult::TimedOut => {
+                log::warn!("[NTP] Response timed out ({}ms)", NTP_TIMEOUT_MS);
+                Err(EndpointError::Timeout)
+            }
+        }
     }
 }
 

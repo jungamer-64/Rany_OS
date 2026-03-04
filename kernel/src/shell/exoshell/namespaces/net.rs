@@ -194,10 +194,11 @@ impl NetNamespace {
         }
     }
 
-    /// Insert an entry into the network stack's ARP cache.
+    /// Insert an entry into the network stack's ARP cache (sync, legacy).
     ///
-    /// Takes two arguments: IP address string (e.g. "10.0.2.2") and MAC
-    /// address string (e.g. "52:54:00:12:34:56"). Returns `true` on success.
+    /// # 非推奨
+    /// asyncコンテキストでは [`arp_insert_async()`] を使用すること。
+    #[deprecated(note = "Use arp_insert_async() for async contexts.")]
     fn arp_insert(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         if args.len() != 2 {
             return ExoValue::Error(String::from("usage: net.arp_insert(ip, mac)"));
@@ -321,6 +322,55 @@ impl NetNamespace {
             })
             .collect();
         ExoValue::Array(values)
+    }
+
+    /// ARPキャッシュ挿入（非同期版）
+    ///
+    /// イベントキュー経由でARP挿入を行い、NETWORK_STACKロックを回避する。
+    pub async fn arp_insert_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        if args.len() != 2 {
+            return ExoValue::Error(String::from("usage: net.arp_insert(ip, mac)"));
+        }
+        let ip = match &args[0] {
+            ExoValue::String(s) => {
+                let nums: Vec<_> = s.split('.').collect();
+                if nums.len() != 4 {
+                    return ExoValue::Error(String::from("invalid IP"));
+                }
+                let mut octets = [0u8; 4];
+                for (i, part) in nums.iter().enumerate() {
+                    if let Ok(v) = part.parse::<u8>() {
+                        octets[i] = v;
+                    } else {
+                        return ExoValue::Error(String::from("invalid IP"));
+                    }
+                }
+                crate::net::l3::ipv4::Ipv4Address::new(octets)
+            }
+            _ => return ExoValue::Error(String::from("ip must be string")),
+        };
+        let mac = match &args[1] {
+            ExoValue::String(s) => {
+                let parts: Vec<_> = s.split(':').collect();
+                if parts.len() != 6 {
+                    return ExoValue::Error(String::from("invalid MAC"));
+                }
+                let mut octets = [0u8; 6];
+                for (i, part) in parts.iter().enumerate() {
+                    if let Ok(v) = u8::from_str_radix(part, 16) {
+                        octets[i] = v;
+                    } else {
+                        return ExoValue::Error(String::from("invalid MAC"));
+                    }
+                }
+                crate::net::l2::ethernet::MacAddress::from_octets(
+                    octets[0], octets[1], octets[2], octets[3], octets[4], octets[5]
+                )
+            }
+            _ => return ExoValue::Error(String::from("mac must be string")),
+        };
+        crate::net::api::connections::arp_cache_insert_async(ip, mac);
+        ExoValue::Bool(true)
     }
 
     fn format_ipv6(addr: [u8; 16]) -> String {
@@ -646,6 +696,7 @@ impl ShellNamespace for NetNamespace {
                 "config" => Self::config_async().await,
                 "stats" => Self::stats_async().await,
                 "arp" => Self::arp_cache_async().await,
+                "arp_insert" => Self::arp_insert_async(_args).await,
                 "dhcp_state" => Self::dhcp_state_async().await,
                 "dhcp_renew" => Self::dhcp_renew_async().await,
                 "dhcp_discover" => Self::dhcp_discover_async().await,
@@ -654,7 +705,7 @@ impl ShellNamespace for NetNamespace {
                 "dhcp_last_released" => Self::dhcp_last_released_async().await,
                 "open" => Self::handle_open_async(_args).await,
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping, open, dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
+                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, arp_insert, ping, open, dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
                     method
                 )),
             }
