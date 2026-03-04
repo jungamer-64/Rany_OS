@@ -801,41 +801,43 @@ pub enum ExtHeaderResult<'a> {
 /// Returns `ExtHeaderResult` describing the final state.
 pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_> {
     if raw_packet.len() < 40 {
-        return ExtHeaderResult::NoFragment(IpProtocol::from(0), &[]);
+        return ExtHeaderResult::NoFragment(IpProtocol::from(0), &[], 6);
     }
 
     let mut next_header = raw_packet[6];
+    let mut next_header_ptr = 6usize;
     let mut offset = 40usize; // after fixed header
     let mut headers_seen = 0;
 
     loop {
         headers_seen += 1;
         if headers_seen > MAX_EXTENSION_HEADERS {
-            return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+            return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
         }
 
         match next_header {
             EXT_HEADER_HOP_BY_HOP | EXT_HEADER_ROUTING | EXT_HEADER_DESTINATION => {
                 if offset + 2 > raw_packet.len() {
-                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
                 }
                 
                 // Security (RFC 5095): Reject Routing Header Type 0
                 if next_header == EXT_HEADER_ROUTING && offset + 3 <= raw_packet.len() && raw_packet[offset + 2] == 0 {
-                    return ExtHeaderResult::NoFragment(IpProtocol::from(EXT_HEADER_NO_NEXT), &[]);
+                    return ExtHeaderResult::NoFragment(IpProtocol::from(EXT_HEADER_NO_NEXT), &[], next_header_ptr as u32);
                 }
 
                 let ext_next = raw_packet[offset];
                 let ext_len = (raw_packet[offset + 1] as usize + 1) * 8;
                 if offset + ext_len > raw_packet.len() {
-                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
                 }
+                next_header_ptr = offset;
                 next_header = ext_next;
                 offset += ext_len;
             }
             EXT_HEADER_FRAGMENT => {
                 if offset + 8 > raw_packet.len() {
-                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
                 }
                 if let Some(frag) = Ipv6FragmentHeader::parse(&raw_packet[offset..]) {
                     // Security (RFC 8200): Nested fragmentation check.
@@ -843,7 +845,7 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                     // it MUST be discarded.
                     if frag.next_header == EXT_HEADER_FRAGMENT {
                         log::warn!("[NET-IPV6] Nested fragmentation detected (Next Header=44 in Fragment Header), dropping");
-                        return ExtHeaderResult::NoFragment(IpProtocol::from(EXT_HEADER_NO_NEXT), &[]);
+                        return ExtHeaderResult::NoFragment(IpProtocol::from(EXT_HEADER_NO_NEXT), &[], next_header_ptr as u32);
                     }
 
                     let unfragmentable = &raw_packet[..offset];
@@ -855,13 +857,13 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                     };
                 }
                 // Failed to parse — treat as no fragment
-                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
             }
             EXT_HEADER_NO_NEXT => {
-                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
             }
             _ => {
-                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
             }
         }
     }

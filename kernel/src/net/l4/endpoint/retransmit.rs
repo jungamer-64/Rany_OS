@@ -520,12 +520,12 @@ pub mod tests {
         // SACKで最初のセグメント(1000..1003)が通知される
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
 
-        // 内部状態を確認（最初のセグメントが削除され、残り1件）
+        // 内部状態を確認（RFC 2018: 累積ACKが来るまで削除はしないが、is_sackedフラグが立つ）
         let idx = retransmit_shard_index(&local, &remote);
         let qs = RETRANSMIT_SHARDS[idx].read();
         let q = qs.get(&(local, remote)).unwrap();
-        assert_eq!(q.unacked.len(), 1);
-        assert_eq!(q.unacked.front().unwrap().seq, 1003);
+        assert_eq!(q.unacked.len(), 2);
+        assert!(q.unacked.front().unwrap().is_sacked);
     }
 
     #[cfg_attr(test, test_case)]
@@ -640,7 +640,7 @@ pub mod qemu_tests {
             let Some(q) = qs.get(&(local, remote)) else {
                 return false;
             };
-            q.unacked.len() == 1 && q.unacked.front().map(|x| x.seq) == Some(1003)
+            q.unacked.len() == 2 && q.unacked.front().map(|x| x.is_sacked) == Some(true)
         };
 
         retransmit_queue_remove(local, remote);

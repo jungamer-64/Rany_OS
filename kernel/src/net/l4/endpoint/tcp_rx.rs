@@ -1120,8 +1120,10 @@ fn process_tcp_new_connection(
             builder = builder.seq(ack_num);
         } else {
             // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+            let is_syn = (flags & tcp_flags::SYN) != 0;
+            let is_fin = (flags & tcp_flags::FIN) != 0;
             let payload_len = if segment.len() > data_offset { segment.len() - data_offset } else { 0 };
-            let seg_len = if is_syn || ((flags & tcp_flags::FIN) != 0) { 1 } else { 0 };
+            let seg_len = (if is_syn { 1 } else { 0 }) + (if is_fin { 1 } else { 0 });
             let ack = seq_num.wrapping_add(seg_len as u32).wrapping_add(payload_len as u32);
             builder = builder.seq(0).ack(ack).ack_flag();
         }
