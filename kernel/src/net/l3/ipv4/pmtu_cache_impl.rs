@@ -775,6 +775,12 @@ impl Ipv4Processor {
 
     /// Check if a packet is for us
     pub(super) fn is_for_us(&self, addr: &Ipv4Address) -> bool {
+        // DHCP取得フェーズ（ローカルIP未設定=0.0.0.0）では、
+        // サーバが提案IPアドレス宛にOFFER/ACKをユニキャスト送信するため
+        // 全てのIPv4パケットを受理する。DHCPリース取得後は通常フィルタに戻る。
+        if self.config.address.is_any() {
+            return true;
+        }
         *addr == self.config.address
             || addr.is_broadcast()
             || *addr == self.config.broadcast_address()

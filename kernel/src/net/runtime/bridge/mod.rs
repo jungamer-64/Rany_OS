@@ -96,7 +96,7 @@ fn enqueue_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
         use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
         static TX_DUMP_COUNT: AtomicU32 = AtomicU32::new(0);
         let n = TX_DUMP_COUNT.fetch_add(1, AtOrd::Relaxed);
-        if n < 3 && data.len() >= 14 {
+        if n < 20 && data.len() >= 14 {
             crate::io::log::early_print("[TX-DUMP] pkt#");
             crate::io::log::early_print_dec(n as u64);
             crate::io::log::early_print(" len=");

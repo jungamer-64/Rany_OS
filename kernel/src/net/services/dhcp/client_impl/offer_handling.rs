@@ -347,12 +347,21 @@ impl DhcpClient {
 
         // Initial kick: INIT immediately sends DISCOVER.
         if state_before == DhcpState::Init {
+            crate::io::log::early_print("[DHCP-DRV] state=Init, sending discover\n");
             let _ = self.send_discover_packet(current_tick)?;
             return Ok(());
         }
 
         let transitioned = self.check_timeout(current_tick, tick_rate);
         let state_after = self.state();
+
+        if transitioned {
+            crate::io::log::early_print("[DHCP-DRV] transitioned! before=");
+            crate::io::log::early_print_dec(state_before as u64);
+            crate::io::log::early_print(" after=");
+            crate::io::log::early_print_dec(state_after as u64);
+            crate::io::log::early_print("\n");
+        }
 
         // OFFER passed ARP probe and moved into REQUESTING.
         if state_before == DhcpState::Selecting && state_after == DhcpState::Requesting {
@@ -364,6 +373,7 @@ impl DhcpClient {
             match state_after {
                 // Selecting retransmit / conflict recovery.
                 DhcpState::Selecting => {
+                    crate::io::log::early_print("[DHCP-DRV] retransmit DISCOVER\n");
                     let _ = self.send_discover_packet(current_tick)?;
                 }
                 // Requesting, Renewing, Rebinding retransmits.
@@ -372,6 +382,7 @@ impl DhcpClient {
                 }
                 // Retry budget exhausted and reset to INIT -> restart discovery.
                 DhcpState::Init => {
+                    crate::io::log::early_print("[DHCP-DRV] MAX_RETRIES, restart\n");
                     let _ = self.send_discover_packet(current_tick)?;
                 }
                 _ => {}
