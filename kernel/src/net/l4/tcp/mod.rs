@@ -36,13 +36,8 @@ mod control_block_impl;
 
 /// ソケットアドレス（統一定義）
 ///
-/// `crate::net::l4::endpoint::types::EndpointAddr` を正規定義とし、
-/// TCP層からの後方互換のために再エクスポート。
-/// 以前は `Ipv4Addr` / `Ipv6Address` を内包する独自 enum を定義していたが、
-/// `endpoint::types` 版 (raw `[u8; 4]` / `[u8; 16]`) に統一し、
-/// 変換コードの散在を解消する。
+/// `crate::net::l4::endpoint::types::EndpointAddr` を正規定義とする。
 pub use crate::net::l4::endpoint::types::EndpointAddr;
-pub type SocketAddr = EndpointAddr;
 
 // ============================================================================
 // TCP接続状態

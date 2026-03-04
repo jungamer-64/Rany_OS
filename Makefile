@@ -25,6 +25,8 @@ SERIAL          ?= stdio
 IOMMU           ?= 1
 NUMA            ?= 1
 NETWORK         ?= bridge
+BRIDGE          ?= br0
+NIC             ?=
 MONITOR         ?= 0
 GDB             ?= 0
 TCG             ?= 0
@@ -75,7 +77,8 @@ comma := ,
 .PHONY: all build build-kernel build-loader build-signer setup-keys \
         sign image run run-release debug gdb test test-one \
         clean lint check clippy fmt fmt-check doc doc-open \
-        size deps stats ci check-driver-deps check-deps reset-vars help
+        size deps stats ci check-driver-deps check-deps reset-vars help \
+        net-setup net-teardown net-status
 
 all: build
 
@@ -301,11 +304,45 @@ define LAUNCH_QEMU
 	if [ "$$_net_mode" = "1" ]; then _net_mode="bridge"; fi; \
 	if [ "$$_net_mode" = "0" ]; then _net_mode="none"; fi; \
 	if [ "$$_net_mode" != "none" ]; then \
-		case "$$_net_mode" in \
+case "$$_net_mode" in \
 			bridge) \
+				_bridge="$(BRIDGE)"; \
 				_tap="tap$$$$"; \
-				netdev_args="tap,id=net0,ifname=$$_tap,script=no,downscript=no"; \
-				printf '   -> \033[32m[NET] VirtIO-net bridge/tap (ifname=%s)\033[0m\n' "$$_tap"; \
+				if ! ip link show "$$_bridge" >/dev/null 2>&1; then \
+					if [ -z "$(NIC)" ]; then \
+						printf '   -> \033[31m[NET] Bridge "%s" not found. Run: make net-setup NIC=<iface>\033[0m\n' "$$_bridge"; \
+						printf '   -> \033[33m[NET] Falling back to user/NAT mode\033[0m\n'; \
+						netdev_args="user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"; \
+						printf '   -> \033[32m[NET] VirtIO-net user/NAT (fallback)\033[0m\n'; \
+					else \
+						printf '   -> \033[36m[NET] Auto-creating bridge %s with NIC %s...\033[0m\n' "$$_bridge" "$(NIC)"; \
+						_nic_mac=$$(cat /sys/class/net/$(NIC)/address 2>/dev/null); \
+						sudo ip link add "$$_bridge" type bridge 2>/dev/null || true; \
+						if [ -n "$$_nic_mac" ]; then \
+							sudo ip link set "$$_bridge" address "$$_nic_mac"; \
+							printf '   -> \033[32m[NET] Bridge MAC set to %s (from %s)\033[0m\n' "$$_nic_mac" "$(NIC)"; \
+						fi; \
+						sudo ip link set "$$_bridge" up; \
+						_nic_ip=$$(ip -4 addr show "$(NIC)" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p' | head -1); \
+						_nic_gw=$$(ip route show default dev "$(NIC)" 2>/dev/null | awk '{print $$3}' | head -1); \
+						sudo ip link set "$(NIC)" master "$$_bridge" 2>/dev/null || true; \
+						if [ -n "$$_nic_ip" ]; then \
+							sudo ip addr flush dev "$(NIC)" 2>/dev/null || true; \
+							sudo ip addr add "$$_nic_ip" dev "$$_bridge" 2>/dev/null || true; \
+						fi; \
+						if [ -n "$$_nic_gw" ]; then \
+							sudo ip route add default via "$$_nic_gw" dev "$$_bridge" 2>/dev/null || true; \
+						fi; \
+						printf '   -> \033[32m[NET] Bridge %s created (IP: %s, GW: %s)\033[0m\n' "$$_bridge" "$${_nic_ip:-dhcp}" "$${_nic_gw:-none}"; \
+					fi; \
+				fi; \
+				if ip link show "$$_bridge" >/dev/null 2>&1; then \
+					sudo ip tuntap add "$$_tap" mode tap user $$(id -un) 2>/dev/null || true; \
+					sudo ip link set "$$_tap" master "$$_bridge" 2>/dev/null || true; \
+					sudo ip link set "$$_tap" up 2>/dev/null || true; \
+					netdev_args="tap,id=net0,ifname=$$_tap,script=no,downscript=no"; \
+					printf '   -> \033[32m[NET] VirtIO-net bridge/tap (bridge=%s, tap=%s)\033[0m\n' "$$_bridge" "$$_tap"; \
+				fi; \
 				;; \
 			user) \
 				netdev_args="user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"; \
@@ -519,6 +556,105 @@ stats:
 	@find kernel/src -type d | sed 's|kernel/src/||' | grep -v '^kernel/src$$'
 
 # ==============================================================================
+# ネットワーク管理 (bridge/tap)
+# ==============================================================================
+
+# Bridge + tap を手動セットアップ (make net-setup NIC=eth0)
+net-setup:
+	@if [ -z "$(NIC)" ]; then \
+		printf '\033[31m[ERROR] NIC is required. Usage: make net-setup NIC=<iface>\033[0m\n'; \
+		printf '\033[33mAvailable interfaces:\033[0m\n'; \
+		ip -br link show | grep -v '^lo ' | awk '{printf "  %s (%s)\n", $$1, $$2}'; \
+		exit 1; \
+	fi
+	@_bridge="$(BRIDGE)"; \
+	printf '\033[36mSetting up bridge network...\033[0m\n'; \
+	printf '   Bridge : %s\n' "$$_bridge"; \
+	printf '   NIC    : %s\n' "$(NIC)"; \
+	_nic_mac=$$(cat /sys/class/net/$(NIC)/address 2>/dev/null); \
+	if ip link show "$$_bridge" >/dev/null 2>&1; then \
+		printf '   -> \033[33m[SKIP] Bridge %s already exists\033[0m\n' "$$_bridge"; \
+	else \
+		sudo ip link add "$$_bridge" type bridge; \
+		if [ -n "$$_nic_mac" ]; then \
+			sudo ip link set "$$_bridge" address "$$_nic_mac"; \
+			printf '   -> \033[32mBridge MAC set to %s (from %s)\033[0m\n' "$$_nic_mac" "$(NIC)"; \
+		fi; \
+		printf '   -> \033[32mCreated bridge %s\033[0m\n' "$$_bridge"; \
+	fi; \
+	sudo ip link set "$$_bridge" up; \
+	_nic_ip=$$(ip -4 addr show "$(NIC)" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p' | head -1); \
+	_nic_gw=$$(ip route show default dev "$(NIC)" 2>/dev/null | awk '{print $$3}' | head -1); \
+	sudo ip link set "$(NIC)" master "$$_bridge" 2>/dev/null || true; \
+	if [ -n "$$_nic_ip" ]; then \
+		sudo ip addr flush dev "$(NIC)"; \
+		sudo ip addr add "$$_nic_ip" dev "$$_bridge"; \
+		printf '   -> \033[32mMigrated IP %s to %s\033[0m\n' "$$_nic_ip" "$$_bridge"; \
+	fi; \
+	if [ -n "$$_nic_gw" ]; then \
+		sudo ip route del default 2>/dev/null || true; \
+		sudo ip route add default via "$$_nic_gw" dev "$$_bridge"; \
+		printf '   -> \033[32mDefault route via %s on %s\033[0m\n' "$$_nic_gw" "$$_bridge"; \
+	fi; \
+	printf '   -> \033[32m[OK] Bridge %s is ready\033[0m\n' "$$_bridge"; \
+	printf '\n\033[36mUsage:\033[0m\n'; \
+	printf '  make run                         # bridge mode (default)\n'; \
+	printf '  make run NETWORK=bridge NIC=%s  # explicit\n' "$(NIC)"
+
+# Bridge + 関連 tap を削除 (make net-teardown NIC=eth0)
+net-teardown:
+	@_bridge="$(BRIDGE)"; \
+	printf '\033[36mTearing down bridge network...\033[0m\n'; \
+	if ! ip link show "$$_bridge" >/dev/null 2>&1; then \
+		printf '   -> \033[33m[SKIP] Bridge %s does not exist\033[0m\n' "$$_bridge"; \
+		exit 0; \
+	fi; \
+	_br_ip=$$(ip -4 addr show "$$_bridge" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p' | head -1); \
+	_br_gw=$$(ip route show default dev "$$_bridge" 2>/dev/null | awk '{print $$3}' | head -1); \
+	for tap in $$(ls /sys/class/net/ 2>/dev/null | grep '^tap'); do \
+		_master=$$(cat /sys/class/net/$$tap/master/uevent 2>/dev/null | sed -n 's/INTERFACE=//p'); \
+		if [ "$$_master" = "$$_bridge" ]; then \
+			sudo ip link set "$$tap" nomaster 2>/dev/null || true; \
+			sudo ip link del "$$tap" 2>/dev/null || true; \
+			printf '   -> \033[32mRemoved tap: %s\033[0m\n' "$$tap"; \
+		fi; \
+	done; \
+	if [ -n "$(NIC)" ] && ip link show "$(NIC)" >/dev/null 2>&1; then \
+		sudo ip link set "$(NIC)" nomaster 2>/dev/null || true; \
+		if [ -n "$$_br_ip" ]; then \
+			sudo ip addr add "$$_br_ip" dev "$(NIC)" 2>/dev/null || true; \
+		fi; \
+		if [ -n "$$_br_gw" ]; then \
+			sudo ip route add default via "$$_br_gw" dev "$(NIC)" 2>/dev/null || true; \
+		fi; \
+		printf '   -> \033[32mRestored NIC: %s (IP: %s)\033[0m\n' "$(NIC)" "$${_br_ip:-dhcp}"; \
+	fi; \
+	sudo ip link set "$$_bridge" down 2>/dev/null || true; \
+	sudo ip link del "$$_bridge" 2>/dev/null || true; \
+	printf '   -> \033[32m[OK] Bridge %s removed\033[0m\n' "$$_bridge"
+
+# Bridge 状態を表示
+net-status:
+	@_bridge="$(BRIDGE)"; \
+	printf '\033[36mNetwork Status\033[0m\n'; \
+	if ip link show "$$_bridge" >/dev/null 2>&1; then \
+		printf '   Bridge: \033[32m%s (UP)\033[0m\n' "$$_bridge"; \
+		_br_ip=$$(ip -4 addr show "$$_bridge" 2>/dev/null | sed -n 's|.*inet \([^ ]*\).*|\1|p' | head -1); \
+		printf '   IP    : %s\n' "$${_br_ip:-none}"; \
+		printf '   Ports :\n'; \
+		for iface in $$(ls /sys/class/net/ 2>/dev/null); do \
+			_master=$$(cat /sys/class/net/$$iface/master/uevent 2>/dev/null | sed -n 's/INTERFACE=//p'); \
+			if [ "$$_master" = "$$_bridge" ]; then \
+				_state=$$(cat /sys/class/net/$$iface/operstate 2>/dev/null); \
+				printf '     - %s (%s)\n' "$$iface" "$${_state:-unknown}"; \
+			fi; \
+		done; \
+	else \
+		printf '   Bridge: \033[31m%s (NOT FOUND)\033[0m\n' "$$_bridge"; \
+		printf '   -> Run: make net-setup NIC=<iface>\n'; \
+	fi
+
+# ==============================================================================
 # CI/CD
 # ==============================================================================
 
@@ -567,10 +703,12 @@ help:
 	@echo "  IOMMU=0|1              Intel VT-d IOMMU (default: 1)"
 	@echo "  NUMA=0|1               NUMA topology (default: 1)"
 	@echo "  NETWORK=bridge|user|macvtap|none  VirtIO network mode (default: bridge)"
-	@echo "                                     bridge  = tap/bridge (LAN IP, needs br0+tap)"
+	@echo "                                     bridge  = tap/bridge (auto-setup with NIC=)"
 	@echo "                                     user    = QEMU user NAT (slirp, no root)"
 	@echo "                                     macvtap = macvtap passthrough"
 	@echo "                                     none/0  = disabled"
+	@echo "  BRIDGE=NAME            Bridge device name (default: br0)"
+	@echo "  NIC=IFACE              Host NIC to add to bridge (auto-setup)"
 	@echo "  NVME=SIZE              NVMe device size (default: 1G, empty=disabled)"
 	@echo "  MONITOR=0|1            QEMU monitor on telnet:4444 (default: 0)"
 	@echo "  GDB=0|1                GDB stub on :1234 (default: 0)"
@@ -591,6 +729,9 @@ help:
 	@echo "Utilities:"
 	@echo "  make check-deps    - Verify toolchain & dependencies"
 	@echo "  make reset-vars    - Reset UEFI variables (OVMF_VARS.fd)"
+	@echo "  make net-setup NIC=eth0  - Create bridge + attach NIC (sudo)"
+	@echo "  make net-teardown NIC=eth0 - Remove bridge + restore NIC"
+	@echo "  make net-status    - Show bridge/tap status"
 	@echo "  make clean         - Clean build artifacts"
 	@echo "  make doc           - Generate documentation"
 	@echo "  make size          - Show kernel binary size"
