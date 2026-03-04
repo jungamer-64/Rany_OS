@@ -178,10 +178,6 @@ pub(crate) fn init_network_subsystem() {
     crate::net::l4::endpoint::retransmit::init_timer_wheel();
     info!(target: "init", "OOO queues and retransmit timer wheel initialized");
 
-    info!(target: "init", "Initializing network shell API");
-    crate::net::api::shell::init_network_shell();
-    info!(target: "init", "Network shell API initialized");
-
     let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
     info!(target: "init", "Global VirtIO-Net device present: {}", virtio_net_present);
 
