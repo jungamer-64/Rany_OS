@@ -828,11 +828,15 @@ fn process_tcp_with_tcb(
     }
 
     // RFC 793 / 9293 Section 3.10.7.1: 受信セグメントのシーケンス番号妥当性を検証
-    if tcb.state != TcpConnectionState::SynSent && !is_acceptable_sequence(&tcb, seq_num, payload_len) {
+    let mut seg_len = payload_len;
+    if (flags & tcp_flags::SYN) != 0 { seg_len += 1; }
+    if (flags & tcp_flags::FIN) != 0 { seg_len += 1; }
+
+    if tcb.state != TcpConnectionState::SynSent && !is_acceptable_sequence(&tcb, seq_num, seg_len) {
         if (flags & tcp_flags::RST) == 0 {
             log::warn!(
                 "[TCP] Incoming segment out of window (seq={}, len={}) for connection to {}, sending Challenge ACK",
-                seq_num, payload_len, tcb.remote
+                seq_num, seg_len, tcb.remote
             );
             send_challenge_ack(&tcb);
         }
