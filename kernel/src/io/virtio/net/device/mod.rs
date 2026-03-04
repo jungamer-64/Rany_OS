@@ -49,7 +49,8 @@ pub struct VirtioNetConfig {
 impl Default for VirtioNetConfig {
     fn default() -> Self {
         Self {
-            mac: crate::net::defaults::QEMU_DEFAULT_MAC_BYTES,
+            // 初期プレースホルダ: デバイス初期化時にVirtIO config spaceから読み取られる
+            mac: [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
             max_queues: 1,
             mtu: 1500,
         }
@@ -169,11 +170,7 @@ impl VirtioNetDevice {
     ) -> Self {
         Self {
             transport: alloc::sync::Arc::from(transport),
-            config: VirtioNetConfig {
-                mac: crate::net::defaults::QEMU_DEFAULT_MAC_BYTES,
-                max_queues: 1,
-                mtu: 1500,
-            },
+            config: VirtioNetConfig::default(),
             virtio_index: index,
             net_if_id: None,
             iommu_device_id,

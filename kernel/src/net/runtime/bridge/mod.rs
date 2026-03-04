@@ -1002,19 +1002,14 @@ pub fn init_bridge() -> Result<(), &'static str> {
         )
     })
     .unwrap_or_else(|| {
-        // Default MAC for QEMU user mode networking
-        crate::net::defaults::QEMU_DEFAULT_MAC
+        // VirtIO-Netからの読み取りに失敗した場合のフォールバック
+        MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01)
     });
 
-    // Initialize NetworkStack with configuration
+    // Initialize NetworkStack with zero-config (DHCP will provide IP/gateway/DNS)
     let config = NetworkConfig {
         mac,
-        ipv4: Ipv4Config {
-            address: crate::net::defaults::QEMU_DEFAULT_IP,
-            subnet_mask: crate::net::defaults::QEMU_DEFAULT_SUBNET_MASK,
-            gateway: crate::net::defaults::QEMU_DEFAULT_GATEWAY,
-            dns: Some(crate::net::defaults::QEMU_DEFAULT_DNS),
-        },
+        ipv4: Ipv4Config::default(),
         ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
         icmp_echo_enabled: true,
     };
@@ -1073,8 +1068,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
         mac.as_bytes()[4],
         mac.as_bytes()[5]
     );
-    let ip = crate::net::defaults::QEMU_DEFAULT_IP_BYTES;
-    log::info!("  IP: {}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+    log::info!("  IP: awaiting DHCP lease...");
 
     // Enable timer-based fallback RX/TX completion once the bridge is live.
     crate::interrupts::enable_virtio_net_irq_fallback();

@@ -80,9 +80,19 @@ async fn network_bootstrap_task() {
                 let gw = cfg.gateway;
                 if gw != [0, 0, 0, 0] { Some(gw) } else { None }
             })
-            .unwrap_or(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES)
     } else {
-        crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES
+        None
+    };
+
+    let Some(ping_target) = ping_target else {
+        warn!(target: "net_boot", "No gateway available (DHCP not bound); skipping connectivity check");
+        let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
+        info!(
+            target: "net_boot",
+            "Network bootstrap complete (no DHCP): bridge init={} rx={} tx={}",
+            bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets
+        );
+        return;
     };
 
     info!(target: "net_boot", "Async connectivity check to {:?}", ping_target);
@@ -279,7 +289,15 @@ pub(crate) fn spawn_kernel_tasks(
         info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
 
         crate::io::log::early_print("[NET-PING-MANUAL] sending manual ping now\n");
-        let gw = crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES;
+
+        // DHCP/スタックからゲートウェイを取得
+        let gw_opt = crate::net::api::config::get_network_config()
+            .map(|cfg| cfg.gateway)
+            .filter(|gw| *gw != [0, 0, 0, 0]);
+        let Some(gw) = gw_opt else {
+            warn!(target: "net_test", "No gateway configured yet; skipping ping test");
+            return;
+        };
         info!(target: "net_test", "Sending ICMP echo to {}.{}.{}.{} seq=1", gw[0], gw[1], gw[2], gw[3]);
         // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
         match crate::net::api::icmp::ping_async(gw, 1).await {
