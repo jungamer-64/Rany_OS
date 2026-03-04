@@ -67,7 +67,6 @@ mod thermal;
 mod watchdog;
 
 // Phase 6: Testing, Demos & System Monitor
-mod demo;
 mod monitor;
 mod test;
 

@@ -604,6 +604,24 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
+            NetworkEvent::AsyncTcpBindListener { local, result_slot, waker } => {
+                // スタックロック保持版: TcpListenerを作成して返す
+                let result = stack.bind_tcp(local);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncTcpBindListenerWithToken { local, token, result_slot, waker } => {
+                // スタックロック保持版: TcpListenerをトークン付きで作成して返す
+                let result = stack.bind_tcp_with_token(local, token);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
             NetworkEvent::AsyncUdpBindWithToken { port, token, result_slot, waker } => {
                 let success = stack.bind_udp_with_token(port, token).is_some();
                 if let Ok(mut slot) = result_slot.lock() {

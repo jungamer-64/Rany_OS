@@ -3,6 +3,49 @@
 // ============================================================================
 use super::*;
 
+// ============================================================================
+// ARP フラップダンプニング
+// ============================================================================
+// 同一IPのMAC変更ログを短時間に大量出力するのを防止する。
+// ブリッジ環境やISPプロキシARP環境で頻繁にフラップする場合に有効。
+
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering};
+
+/// ARP MAC変更ログの抑制ウィンドウ (ms)
+const ARP_FLAP_WINDOW_MS: u64 = 5000;
+/// ウィンドウ内の最大ログ数
+const ARP_FLAP_MAX_LOGS: u32 = 3;
+static ARP_FLAP_LOG_COUNT: AtomicU32 = AtomicU32::new(0);
+static ARP_FLAP_LAST_RESET: AtomicU64 = AtomicU64::new(0);
+/// 抑制されたフラップイベント数（統計用）
+static ARP_FLAP_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+
+/// ARP MACフラップログのレート制限チェック
+fn check_arp_flap_log_rate(current_time: u64) -> bool {
+    let last_reset = ARP_FLAP_LAST_RESET.load(AtomicOrdering::Relaxed);
+
+    if current_time.saturating_sub(last_reset) >= ARP_FLAP_WINDOW_MS {
+        ARP_FLAP_LOG_COUNT.store(0, AtomicOrdering::Relaxed);
+        ARP_FLAP_LAST_RESET.store(current_time, AtomicOrdering::Relaxed);
+    }
+
+    let count = ARP_FLAP_LOG_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
+    if count < ARP_FLAP_MAX_LOGS {
+        true
+    } else {
+        if count == ARP_FLAP_MAX_LOGS {
+            log::warn!("[NET-ARP] MAC flap log suppressed (>{}/{}ms window)", ARP_FLAP_MAX_LOGS, ARP_FLAP_WINDOW_MS);
+        }
+        ARP_FLAP_SUPPRESSED.fetch_add(1, AtomicOrdering::Relaxed);
+        false
+    }
+}
+
+/// 抑制されたARPフラップイベント数を取得
+pub fn arp_flap_suppressed_count() -> u64 {
+    ARP_FLAP_SUPPRESSED.load(AtomicOrdering::Relaxed)
+}
+
 
 impl ArpProcessor {
     /// Create a new ARP processor
@@ -84,8 +127,10 @@ impl ArpProcessor {
                 // Security: Log if MAC changed (indicator of spoofing or migration)
                 if let Some(existing_mac) = self.cache.lookup(sender_ip, current_time) {
                     if existing_mac != sender_mac {
-                        log::info!("[NET-ARP] MAC changed for {}: {} -> {} (updating per RFC 826)", 
-                            sender_ip, existing_mac, sender_mac);
+                        if check_arp_flap_log_rate(current_time) {
+                            log::info!("[NET-ARP] MAC changed for {}: {} -> {} (updating per RFC 826)", 
+                                sender_ip, existing_mac, sender_mac);
+                        }
                     }
                 }
                 should_update = true;

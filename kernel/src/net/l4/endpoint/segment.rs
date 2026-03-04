@@ -344,9 +344,9 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
         // 非同期イベントキュー経由で送信（ロック競合回避）
         let ok = crate::net::runtime::stack::send_tcp_async(src_ip, dst_ip, &segment);
         if ok {
-            log::info!("TCP TX (async): {} -> {} ({} bytes)", local, remote, segment.len());
+            log::debug!("TCP TX (async): {} -> {} ({} bytes)", local, remote, segment.len());
         } else {
-            log::info!("TCP TX enqueue failed: {} -> {}", local, remote);
+            log::debug!("TCP TX enqueue failed: {} -> {}", local, remote);
         }
         return ok;
     }
@@ -356,7 +356,7 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
         let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
         let ok = crate::net::runtime::stack::send_tcp_v6_async(src_v6, dst_v6, &segment);
         if ok {
-            log::info!(
+            log::debug!(
                 "TCP TX (v6 async): [{}]:{} -> [{}]:{} ({} bytes)",
                 src_v6,
                 local.port(),
@@ -365,7 +365,7 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
                 segment.len()
             );
         } else {
-            log::info!(
+            log::debug!(
                 "TCP TX enqueue failed (v6): [{}]:{} -> [{}]:{}",
                 src_v6,
                 local.port(),

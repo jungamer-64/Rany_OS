@@ -102,6 +102,45 @@ static CHALLENGE_ACK_MAX_COUNT: u32 = 100;
 static CHALLENGE_ACK_COUNT: AtomicU32 = AtomicU32::new(0);
 static CHALLENGE_ACK_LAST_RESET: AtomicU64 = AtomicU64::new(0);
 
+// ============================================================================
+// Closed-port RST rate limiting (anti-scan flood)
+// ============================================================================
+
+/// 閉ポート宛RST送信のグローバルレートリミット（1秒あたり最大数）
+/// インターネット直結環境ではスキャンパケットが大量に届くため、
+/// 状態を作らずRSTを返す場合でもイベントキュー圧迫を防止する。
+const CLOSED_PORT_RST_LIMIT_MS: u64 = 1000;
+const CLOSED_PORT_RST_MAX_COUNT: u32 = 10;
+static CLOSED_PORT_RST_COUNT: AtomicU32 = AtomicU32::new(0);
+static CLOSED_PORT_RST_LAST_RESET: AtomicU64 = AtomicU64::new(0);
+/// レート制限によりドロップされたパケット数（統計用）
+static CLOSED_PORT_RST_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// 閉ポート宛RSTの送信レート制限チェック
+/// true: 送信可 / false: レートオーバー（サイレントドロップすべき）
+fn check_closed_port_rst_rate() -> bool {
+    let now = tcb_table().get_current_tick();
+    let last_reset = CLOSED_PORT_RST_LAST_RESET.load(Ordering::Relaxed);
+
+    if now.saturating_sub(last_reset) >= CLOSED_PORT_RST_LIMIT_MS {
+        CLOSED_PORT_RST_COUNT.store(0, Ordering::Relaxed);
+        CLOSED_PORT_RST_LAST_RESET.store(now, Ordering::Relaxed);
+    }
+
+    let count = CLOSED_PORT_RST_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count < CLOSED_PORT_RST_MAX_COUNT {
+        true
+    } else {
+        CLOSED_PORT_RST_DROPPED.fetch_add(1, Ordering::Relaxed);
+        false
+    }
+}
+
+/// 閉ポートRSTのドロップ統計を取得
+pub fn closed_port_rst_dropped_count() -> u64 {
+    CLOSED_PORT_RST_DROPPED.load(Ordering::Relaxed)
+}
+
 fn check_challenge_ack_rate_limit() -> bool {
     let now = tcb_table().get_current_tick();
     let last_reset = CHALLENGE_ACK_LAST_RESET.load(Ordering::Relaxed);
@@ -1130,6 +1169,18 @@ fn process_tcp_new_connection(
     
     // リッスン中のソケットがない場合、または SYN 以外を受信した場合
     if socket.is_none() || !is_syn {
+        // ────────────────────────────────────────────────────────
+        // 閉ポート宛: stateless RST with rate limiting
+        // ────────────────────────────────────────────────────────
+        // インターネット直結環境ではポートスキャンが大量に届く。
+        // 各パケットにRSTを返すとイベントキュー（容量256）が溢れ、
+        // 正規トラフィックの ResourceExhausted を引き起こす。
+        // レート超過分はサイレントドロップする（RFC非違反: RFC 793は
+        // RST送信をSHOULDであり、破棄は許容される）。
+        if !check_closed_port_rst_rate() {
+            return; // サイレントドロップ
+        }
+
         // RFC 793 / RFC 9293 Section 3.10.7.1:
         // If the segment has an ACK field, the reset takes its sequence number 
         // from the ACK field of the segment, otherwise the reset has sequence 
@@ -1687,10 +1738,25 @@ fn process_handle_result(result: EventHandleResult, event_clone: NetworkEvent) {
         EventHandleResult::Success | EventHandleResult::IngressPacket { .. } => {}
         EventHandleResult::SocketNotFound(fd) => {
             // ソケットが既に閉じられている - 正常
-            log::info!("Network: Socket {} not found (already closed)", fd.raw());
+            log::debug!("Network: Socket {} not found (already closed)", fd.raw());
         }
         EventHandleResult::ProtocolError(e) => {
-            log::info!("Network: Protocol error: {:?}", e);
+            // レート制限付きログ: スキャントラフィックによるログDoSを防止
+            static PROTO_ERR_COUNT: AtomicU32 = AtomicU32::new(0);
+            static PROTO_ERR_LAST_LOG: AtomicU64 = AtomicU64::new(0);
+            let now = tcb_table().get_current_tick();
+            let last = PROTO_ERR_LAST_LOG.load(Ordering::Relaxed);
+            if now.saturating_sub(last) >= 5000 {
+                let suppressed = PROTO_ERR_COUNT.swap(0, Ordering::Relaxed);
+                PROTO_ERR_LAST_LOG.store(now, Ordering::Relaxed);
+                if suppressed > 0 {
+                    log::info!("Network: Protocol error: {:?} (suppressed {} similar in last 5s)", e, suppressed);
+                } else {
+                    log::info!("Network: Protocol error: {:?}", e);
+                }
+            } else {
+                PROTO_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
         }
         EventHandleResult::Retry => {
             // 再試行が必要な場合はイベントを再キュー（バックプレッシャー対応）
