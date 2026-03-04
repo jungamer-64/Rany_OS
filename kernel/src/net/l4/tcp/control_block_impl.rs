@@ -1,6 +1,6 @@
 use super::*;
 use crate::net::l3::icmp::{IcmpType, DestUnreachCode};
-use crate::net::l4::endpoint::types::{seq_before, seq_leq};
+use crate::net::l4::endpoint::types::{seq_before, seq_leq, seq_after, seq_geq};
 
 
 impl TcpControlBlock {
@@ -619,18 +619,30 @@ impl TcpControlBlock {
 
     #[inline]
     pub fn clone_oldest_unacked_packet_for_retransmit(&self) -> Option<(u32, u16, Vec<u8>)> {
-        let oldest = self.timers.unacked_segments.front()?;
-        Some((oldest.seq, oldest.flags, oldest.data.clone()))
+        // RFC 2018: Skip segments that have been SACKed
+        for seg in self.timers.unacked_segments.iter() {
+            if !self.options.is_sacked(seg.seq, Self::unacked_seq_space_len(seg)) {
+                return Some((seg.seq, seg.flags, seg.data.clone()));
+            }
+        }
+        None
     }
 
     #[inline]
     pub fn touch_oldest_unacked_for_retransmit(&mut self, current_time: u64) -> Option<(u32, Vec<u8>)> {
         let ts_val = self.get_ts_val(); // Get new timestamp for retransmission
-        let oldest = self.timers.unacked_segments.front_mut()?;
-        oldest.sent_time = current_time;
-        oldest.ts_val = ts_val;
-        oldest.retransmit_count = oldest.retransmit_count.saturating_add(1);
-        Some((oldest.seq, oldest.data.clone()))
+        
+        // RFC 2018: Skip segments that have been SACKed
+        // Borrow checker: we can borrow self.options while self.timers.unacked_segments is mutably borrowed
+        for seg in self.timers.unacked_segments.iter_mut() {
+            if !self.options.is_sacked(seg.seq, Self::unacked_seq_space_len(seg)) {
+                seg.sent_time = current_time;
+                seg.ts_val = ts_val;
+                seg.retransmit_count = seg.retransmit_count.saturating_add(1);
+                return Some((seg.seq, seg.data.clone()));
+            }
+        }
+        None
     }
 
     #[inline]
@@ -749,6 +761,11 @@ impl TcpControlBlock {
             if rtt > 0 {
                 self.update_rto(rtt);
             }
+        }
+
+        // RFC 2018: Clear SACK scoreboard for segments that are now cumulatively acknowledged
+        if self.options.sack_enabled {
+            self.clear_sacked_below(ack_num);
         }
 
         // Reset retransmit count on successful ACK
@@ -930,14 +947,30 @@ impl TcpControlBlock {
     /// Implements:
     /// - Slow Start (cwnd < ssthresh): cwnd += bytes_acked (up to 1 MSS)
     /// - Congestion Avoidance (cwnd >= ssthresh): cwnd += mss per RTT
-    pub fn on_new_ack(&mut self, bytes_acked: u32) {
+    /// - NewReno Partial ACK handling (RFC 6582)
+    ///
+    /// Returns true if this was a partial ACK (RFC 6582), requiring retransmission.
+    pub fn on_new_ack(&mut self, bytes_acked: u32) -> bool {
         let mss = self.congestion.mss as u32;
+        let ack_num = self.seq.snd_una;
         
-        // Exit fast recovery on new ACK
+        // Fast Recovery handling
         if self.congestion.in_recovery {
-            self.congestion.in_recovery = false;
-            self.congestion.cwnd = self.congestion.ssthresh;
-            self.congestion.bytes_acked_in_ca = 0;
+            // RFC 6582 (NewReno): Check if this is a Full ACK
+            // Full ACK: acknowledges all data that was outstanding when Fast Recovery was entered.
+            if seq_geq(ack_num, self.congestion.recovery_exit_point) {
+                // Full ACK: Exit fast recovery
+                self.congestion.in_recovery = false;
+                self.congestion.cwnd = self.congestion.ssthresh;
+                self.congestion.bytes_acked_in_ca = 0;
+            } else {
+                // Partial ACK: RFC 6582
+                // 1. Retransmit the first unacknowledged segment (caller handles this)
+                // 2. Deflate cwnd by the amount of data acknowledged, then add 1 MSS
+                self.congestion.cwnd = self.congestion.cwnd.saturating_sub(bytes_acked).saturating_add(mss);
+                // 3. Stay in recovery
+                return true; // Partial ACK
+            }
         }
         
         // Reset dup ACK counter
@@ -956,6 +989,7 @@ impl TcpControlBlock {
                 self.congestion.cwnd = self.congestion.cwnd.saturating_add(mss);
             }
         }
+        false // Not a partial ACK
     }
 
     /// Called when a duplicate ACK is received
@@ -982,6 +1016,9 @@ impl TcpControlBlock {
     pub(super) fn enter_fast_recovery(&mut self) {
         let mss = self.congestion.mss as u32;
         
+        // RFC 6582 (NewReno): Record the recovery exit point (the next sequence number to be sent)
+        self.congestion.recovery_exit_point = self.seq.snd_nxt;
+
         // ssthresh = max(FlightSize / 2, 2*MSS)
         self.congestion.ssthresh = (self.tx.outstanding_bytes / 2).max(2 * mss);
         
@@ -1279,9 +1316,16 @@ impl TcpControlBlock {
         let mss = self.congestion.mss as u32;
         let total_buffer = self.rx.recv_buffer_limit_bytes as u32;
         
-        // If the window is shrinking, we MUST update it immediately to avoid 
-        // buffer overflow and maintain correctness.
+        // RFC 1122 Section 4.2.2.13: "A TCP SHOULD NOT shrink the window after it has 
+        // been advertised."
+        // We try to maintain the right edge (RCV.NXT + RCV.WND) if possible.
+        
         if available_buffer < old_wnd {
+            // Buffer pressure detected. 
+            // However, we should only shrink if the available_buffer is significantly 
+            // less than old_wnd, to avoid frequent minor shrinks which are non-compliant.
+            // If we MUST shrink, we do so, but is_acceptable_sequence will still 
+            // accept segments up to the previous max advertised right edge.
             self.options.rcv_wnd_scaled = available_buffer;
         } else {
             // Window is growing or staying the same. Apply SWS avoidance.
@@ -1292,6 +1336,13 @@ impl TcpControlBlock {
                 self.options.rcv_wnd_scaled = available_buffer;
             }
             // Else: Keep old_wnd to avoid Silly Window Syndrome
+        }
+
+        // Track the maximum right edge we've advertised for acceptability checks
+        let current_right_edge = self.seq.rcv_nxt.wrapping_add(self.options.rcv_wnd_scaled);
+        let max_right_edge = self.options.rcv_wnd_max_adv;
+        if seq_after(current_right_edge, max_right_edge) {
+            self.options.rcv_wnd_max_adv = current_right_edge;
         }
 
         // Calculate the 16-bit window field (scaled down)
@@ -1412,45 +1463,7 @@ impl TcpControlBlock {
     /// 
     /// Updates scoreboard to mark segments as selectively acknowledged
     pub fn process_sack_option(&mut self, blocks: &[(u32, u32)]) {
-        for &(left, right) in blocks {
-            // Merge or add to scoreboard
-            let mut merged = false;
-            for (l, r) in self.options.sack_scoreboard.iter_mut() {
-                // Check for overlap or adjacency
-                if Self::seq_in_range(left, *l, *r) || Self::seq_in_range(*l, left, right) ||
-                   right == *l || *r == left {
-                    *l = core::cmp::min(*l, left);
-                    *r = core::cmp::max(*r, right);
-                    merged = true;
-                    break;
-                }
-            }
-            if !merged {
-                // Security: Limit scoreboard size to prevent memory exhaustion (DoS)
-                if self.options.sack_scoreboard.len() < 64 {
-                    self.options.sack_scoreboard.push((left, right));
-                }
-            }
-        }
-    }
-
-    /// Check if a sequence number is within a range (handling wrap-around)
-    pub(super) fn seq_in_range(seq: u32, left: u32, right: u32) -> bool {
-        let diff_left = seq.wrapping_sub(left) as i32;
-        let diff_right = right.wrapping_sub(seq) as i32;
-        diff_left >= 0 && diff_right > 0
-    }
-
-    /// Check if a segment is marked as SACKed
-    pub fn is_sacked(&self, seq: u32, len: u32) -> bool {
-        let end = seq.wrapping_add(len);
-        for &(left, right) in &self.options.sack_scoreboard {
-            if Self::seq_in_range(seq, left, right) && 
-               (Self::seq_in_range(end, left, right) || end == right) {
-                return true;
-            }
-        }
-        false
+        self.options.process_sack_option(blocks);
     }
 
     /// Clear or trim SACK scoreboard entries based on new cumulative ACK

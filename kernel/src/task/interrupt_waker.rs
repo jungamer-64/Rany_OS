@@ -439,8 +439,8 @@ pub fn handle_timer_interrupt_waker() {
     // タイマー関連のWakerを起動
     wake_from_interrupt(InterruptSource::Timer);
 
-    // タイマーモジュールに通知
-    super::timer::handle_timer_interrupt();
+    // NOTE: handle_timer_interrupt() は poll_timer_events() で既に呼ばれているため
+    // ここでは呼ばない（二重インクリメント防止）
 }
 
 // ============================================================================

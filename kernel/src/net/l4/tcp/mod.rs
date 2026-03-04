@@ -237,6 +237,8 @@ struct TcpCongestionState {
     last_snd_wnd: u16,
     /// Fast recovery state
     in_recovery: bool,
+    /// Recovery exit point (snd_nxt at enter_fast_recovery) - RFC 6582 (NewReno)
+    recovery_exit_point: u32,
     /// Bytes acknowledged since last cwnd increase (for linear Congestion Avoidance)
     bytes_acked_in_ca: u32,
     /// Nagle's algorithm enabled (delays small packets until ACK received)
@@ -253,6 +255,7 @@ impl TcpCongestionState {
             last_ack: 0,
             last_snd_wnd: 65535,
             in_recovery: false,
+            recovery_exit_point: 0,
             bytes_acked_in_ca: 0,
             nagle_enabled: true, // Nagle's algorithm on by default
         }
@@ -270,6 +273,8 @@ struct TcpOptionsState {
     wscale_enabled: bool,
     /// Actual receive window (scaled: rcv_wnd << rcv_wscale)
     rcv_wnd_scaled: u32,
+    /// Maximum advertised window on this connection (RFC 1122 Section 4.2.2.13 avoidance)
+    rcv_wnd_max_adv: u32,
 
     // TCP Timestamps (RFC 7323)
     /// Timestamps enabled (negotiated during SYN)
@@ -301,6 +306,7 @@ impl TcpOptionsState {
             rcv_wscale: 0, // Set when peer SYN received
             wscale_enabled: false, // Negotiated during handshake
             rcv_wnd_scaled: 65535 << 7, // Initial scaled window
+            rcv_wnd_max_adv: 65535 << 7,
             ts_enabled: false,
             ts_val: 0,
             ts_ecr: 0,
@@ -310,6 +316,49 @@ impl TcpOptionsState {
             sack_blocks: [(0, 0); 4],
             sack_block_count: 0,
             sack_scoreboard: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// Check if a sequence number is within a range (handling wrap-around)
+    pub(crate) fn seq_in_range(seq: u32, left: u32, right: u32) -> bool {
+        let diff_left = seq.wrapping_sub(left) as i32;
+        let diff_right = right.wrapping_sub(seq) as i32;
+        diff_left >= 0 && diff_right > 0
+    }
+
+    /// Check if a segment is marked as SACKed
+    pub fn is_sacked(&self, seq: u32, len: u32) -> bool {
+        let end = seq.wrapping_add(len);
+        for &(left, right) in &self.sack_scoreboard {
+            if Self::seq_in_range(seq, left, right) && 
+               (Self::seq_in_range(end, left, right) || end == right) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Process SACK option received from peer
+    pub fn process_sack_option(&mut self, blocks: &[(u32, u32)]) {
+        for &(left, right) in blocks {
+            // Merge or add to scoreboard
+            let mut merged = false;
+            for (l, r) in self.sack_scoreboard.iter_mut() {
+                // Check for overlap or adjacency
+                if Self::seq_in_range(left, *l, *r) || Self::seq_in_range(*l, left, right) ||
+                   right == *l || *r == left {
+                    *l = core::cmp::min(*l, left);
+                    *r = core::cmp::max(*r, right);
+                    merged = true;
+                    break;
+                }
+            }
+            if !merged {
+                // Security: Limit scoreboard size to prevent memory exhaustion (DoS)
+                if self.sack_scoreboard.len() < 64 {
+                    self.sack_scoreboard.push((left, right));
+                }
+            }
         }
     }
 }

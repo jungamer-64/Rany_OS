@@ -278,6 +278,12 @@ pub fn active_cpu_count() -> usize {
 
 /// タスクをwake queueに追加（Wakerから呼ばれる）
 pub fn wake_task(task_id: TaskId) {
+    // Debug: track DHCP task (id=1) wakes
+    if task_id.0 == 1 {
+        crate::io::log::early_print("[WAKE] task_id=1 (DHCP) tm=");
+        crate::io::log::early_print_dec(crate::task::timer::current_tick());
+        crate::io::log::early_print("\n");
+    }
     WAKE_QUEUE.push(task_id);
     EXECUTOR_STATS.wakeups.fetch_add(1, Ordering::Relaxed);
 }
@@ -558,9 +564,15 @@ impl Executor {
         let mut woken = 0;
         while let Some(task_id) = WAKE_QUEUE.pop() {
             if let Some(task) = self.find_task_in_stores(task_id, true) {
+                if task_id.0 == 1 {
+                    crate::io::log::early_print("[WAKEQ] task_id=1 -> local_queue\n");
+                }
                 self.local_queue.push_back(task);
                 woken += 1;
             } else {
+                if task_id.0 == 1 {
+                    crate::io::log::early_print("[WAKEQ] task_id=1 -> local_cache (NOT FOUND)\n");
+                }
                 self.local_cache.push_back(task_id);
             }
 

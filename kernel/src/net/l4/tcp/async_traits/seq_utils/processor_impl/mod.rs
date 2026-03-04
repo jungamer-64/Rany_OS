@@ -854,26 +854,35 @@ impl TcpProcessor {
     pub(crate) fn is_acceptable_sequence(tcb: &TcpControlBlock, seq_num: u32, payload_len: usize) -> bool {
         let rcv_nxt = tcb.rcv_nxt();
         let rcv_wnd = tcb.get_effective_rcv_wnd();
+        
+        // RFC 1122: If the window is shrunk, we must still accept segments within 
+        // the previous window (tracked by rcv_wnd_max_adv).
+        let current_rcv_end = rcv_nxt.wrapping_add(rcv_wnd);
+        let max_rcv_end = tcb.options.rcv_wnd_max_adv;
+        let rcv_end = if Self::seq_after(max_rcv_end, current_rcv_end) {
+            max_rcv_end
+        } else {
+            current_rcv_end
+        };
 
         if payload_len == 0 {
-            if rcv_wnd == 0 {
+            if rcv_wnd == 0 && current_rcv_end == rcv_end {
                 seq_num == rcv_nxt
             } else {
-                // rcv_nxt <= seq_num < rcv_nxt + rcv_wnd
+                // rcv_nxt <= seq_num < rcv_end
                 let diff = seq_num.wrapping_sub(rcv_nxt);
-                diff < rcv_wnd
+                let wnd_diff = rcv_end.wrapping_sub(rcv_nxt);
+                diff < wnd_diff
             }
         } else {
-            if rcv_wnd == 0 {
+            if rcv_wnd == 0 && current_rcv_end == rcv_end {
                 // Data received but window is 0 - not acceptable
                 false
             } else {
-                // RFC 9293: "If the segment overlaps at all with the receive window, it is acceptable."
                 // Overlap exists if NOT (Entirely before OR Entirely after)
                 // Entirely before: SEG.SEQ + SEG.LEN <= RCV.NXT
-                // Entirely after: SEG.SEQ >= RCV.NXT + RCV.WND
+                // Entirely after: SEG.SEQ >= RCV.END
 
-                let rcv_end = rcv_nxt.wrapping_add(rcv_wnd);
                 let seg_end = seq_num.wrapping_add(payload_len as u32);
 
                 // (seg_end <= rcv_nxt)
@@ -1282,10 +1291,29 @@ impl TcpProcessor {
             tcb.ack_segments(ack_num, current_time);
 
             // Congestion control: update cwnd on new ACK
-            tcb.on_new_ack(bytes_acked);
+            let is_partial_ack = tcb.on_new_ack(bytes_acked);
 
             tcb.set_last_snd_wnd(window);
             tcb.wake_write_waiter();
+
+            if is_partial_ack {
+                // RFC 6582: Immediate retransmit of the first unacknowledged segment on partial ACK
+                if let Some((seq, flags, payload)) = tcb.clone_oldest_unacked_packet_for_retransmit() {
+                    if let Some(remote) = tcb.remote_addr() {
+                        let opts = tcb.build_options(flags);
+                        return TcpProcessResult::SendPacket {
+                            local: tcb.local_addr(),
+                            remote,
+                            seq,
+                            ack: tcb.rcv_nxt(),
+                            flags,
+                            window: tcb.rcv_wnd(),
+                            payload,
+                            options: opts,
+                        };
+                    }
+                }
+            }
             TcpProcessResult::None
         } else if ack && ack_num == tcb.snd_una() && tcb.outstanding_bytes() > 0 {
             // Duplicate ACK detection (RFC 5681)
@@ -1367,38 +1395,9 @@ impl TcpProcessor {
         current_time: u64,
     ) -> TcpProcessResult {
         let rcv_nxt = tcb.rcv_nxt();
-        let rcv_wnd = tcb.rcv_wnd() as u32;
-        
-        // Security: RFC 793 / 5961 segment acceptability check
-        // Also account for FIN (1 seq num)
-        let total_seq_len = payload_len + if fin { 1 } else { 0 };
-        
-        let is_acceptable = if total_seq_len == 0 {
-            if rcv_wnd == 0 {
-                seq_num == rcv_nxt
-            } else {
-                let diff = seq_num.wrapping_sub(rcv_nxt) as i32;
-                diff >= 0 && diff < rcv_wnd as i32
-            }
-        } else {
-            if rcv_wnd == 0 {
-                false
-            } else {
-                let start_diff = seq_num.wrapping_sub(rcv_nxt) as i32;
-                let end_seq = seq_num.wrapping_add(total_seq_len as u32).wrapping_sub(1);
-                let end_diff = end_seq.wrapping_sub(rcv_nxt) as i32;
-                
-                (start_diff >= 0 && start_diff < rcv_wnd as i32) ||
-                (end_diff >= 0 && end_diff < rcv_wnd as i32)
-            }
-        };
-
-        if !is_acceptable {
-            // Segment outside window - send challenge ACK
-            return Self::make_ack_result(tcb);
-        }
 
         // --- PARTIAL OVERLAP HANDLING ---
+
         // If the segment starts before rcv_nxt but contains new data after it,
         // we trim the old part so it can be processed as in-order.
         let mut seq_num = seq_num;
