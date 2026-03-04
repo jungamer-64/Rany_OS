@@ -196,7 +196,7 @@ impl IcmpProcessor {
         // RFC 1122: Include the full IP header + at least 8 octets of the data.
         // RFC 1812: SHOULD include as much of the original datagram as possible,
         // up to a total ICMP length of 576 bytes.
-        let header_len = if !original_packet.is_empty() {
+        let _header_len = if !original_packet.is_empty() {
             ((original_packet[0] & 0x0F) as usize) * 4
         } else {
             20
@@ -229,7 +229,7 @@ impl IcmpProcessor {
 
         // RFC 1122: Include the full IP header + at least 8 octets of the data.
         // RFC 1812: SHOULD include as much of the original datagram as possible.
-        let header_len = if !original_packet.is_empty() {
+        let _header_len = if !original_packet.is_empty() {
             ((original_packet[0] & 0x0F) as usize) * 4
         } else {
             20
@@ -262,7 +262,7 @@ impl IcmpProcessor {
 
         // RFC 1122: Include the full IP header + at least 8 octets of the data.
         // RFC 1812: SHOULD include as much of the original datagram as possible.
-        let header_len = if !original_packet.is_empty() {
+        let _header_len = if !original_packet.is_empty() {
             ((original_packet[0] & 0x0F) as usize) * 4
         } else {
             20

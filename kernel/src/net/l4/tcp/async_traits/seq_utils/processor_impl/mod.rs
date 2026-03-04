@@ -1328,6 +1328,7 @@ impl TcpProcessor {
             }
             TcpProcessResult::None
         }
+    }
 
 
     /// Attempt fast retransmit on duplicate ACK
@@ -1592,8 +1593,3 @@ impl Default for TcpProcessor {
         Self::new()
     }
 }
-
-// ============================================================================
-// テスト
-// ============================================================================
-
