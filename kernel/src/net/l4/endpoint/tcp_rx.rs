@@ -1560,7 +1560,6 @@ fn get_socket_by_fd(fd: EndpointFd) -> Option<Endpoint> {
 /// - バッチ間でロックを解放し、yield_now()で他のタスクに実行機会を与える
 /// - ISR内でwake()を直接呼ばない（設計書準拠: 2段階Wake方式）
 pub async fn network_event_task() {
-    crate::io::log::early_print("[NET-DBG] network_event_task started\n");
     log::info!("[NET] network_event_task started (fully async)");
 
     /// 1回のバッチで処理するイベントの最大数

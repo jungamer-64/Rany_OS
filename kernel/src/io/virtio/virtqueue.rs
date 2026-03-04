@@ -280,22 +280,6 @@ impl VirtQueue {
             return None;
         }
 
-        // Debug: log when we actually find a completion (queue index identifies RX vs TX)
-        {
-            use core::sync::atomic::AtomicU32;
-            static VQ_COMP_DBG: AtomicU32 = AtomicU32::new(0);
-            let n = VQ_COMP_DBG.fetch_add(1, Ordering::Relaxed);
-            if n < 10 {
-                crate::io::log::early_print("[VQ-COMP] q=");
-                crate::io::log::early_print_dec(self.index as u64);
-                crate::io::log::early_print(" last_used=");
-                crate::io::log::early_print_dec(last_used as u64);
-                crate::io::log::early_print(" used_idx=");
-                crate::io::log::early_print_dec(used_idx as u64);
-                crate::io::log::early_print("\n");
-            }
-        }
-
         let elem = self.get_used_elem(last_used % self.queue_size);
         self.last_used_idx.store(last_used.wrapping_add(1), Ordering::Release);
 

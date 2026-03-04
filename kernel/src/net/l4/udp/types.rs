@@ -54,7 +54,9 @@ impl UdpProcessor {
 
         let packet = match UdpPacket::parse(data) {
             Some(p) => p,
-            None => return UdpResult::Invalid,
+            None => {
+                return UdpResult::Invalid;
+            }
         };
 
         // Verify checksum (optional for IPv4)
@@ -68,12 +70,14 @@ impl UdpProcessor {
 
         let payload = packet.payload();
         if let Some(mut pkt_ref) = crate::net::datapath::mempool::alloc_packet() {
-            let buf = pkt_ref.data_mut();
-            if payload.len() > buf.len() {
+            if payload.len() > pkt_ref.capacity() {
                 return UdpResult::Invalid;
             }
-            buf[..payload.len()].copy_from_slice(payload);
+            // Set length BEFORE data_mut() — freshly allocated buffers have len=0,
+            // so data_mut() would return an empty slice without this.
             pkt_ref.set_len(payload.len());
+            let buf = pkt_ref.data_mut();
+            buf[..payload.len()].copy_from_slice(payload);
             
             let src = UdpAddr::new(src_ip, packet.src_port());
             let dst_port = packet.dst_port();
@@ -109,12 +113,13 @@ impl UdpProcessor {
 
         let payload = packet.payload();
         if let Some(mut pkt_ref) = crate::net::datapath::mempool::alloc_packet() {
-            let buf = pkt_ref.data_mut();
-            if payload.len() > buf.len() {
+            if payload.len() > pkt_ref.capacity() {
                 return UdpResult::Invalid;
             }
-            buf[..payload.len()].copy_from_slice(payload);
+            // Set length BEFORE data_mut() — freshly allocated buffers have len=0
             pkt_ref.set_len(payload.len());
+            let buf = pkt_ref.data_mut();
+            buf[..payload.len()].copy_from_slice(payload);
             
             let src = UdpAddr::new_v6(src_ip, packet.src_port());
             let dst_port = packet.dst_port();

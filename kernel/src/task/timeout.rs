@@ -101,11 +101,6 @@ impl<F: Future> Future for TimeoutFuture<F> {
                 TIME_MANAGER.unregister_sleep(this.deadline);
                 this.timer_registered = false;
             }
-            crate::io::log::early_print("[TIMEOUT] fired at tick=");
-            crate::io::log::early_print_dec(now);
-            crate::io::log::early_print(" deadline=");
-            crate::io::log::early_print_dec(this.deadline);
-            crate::io::log::early_print("\n");
             return Poll::Ready(TimeoutResult::TimedOut);
         }
 
@@ -124,11 +119,6 @@ impl<F: Future> Future for TimeoutFuture<F> {
             Poll::Pending => {
                 // デッドライン到達時にタスクを起床させるためタイマーwaker登録
                 if !this.timer_registered {
-                    crate::io::log::early_print("[TIMEOUT] registering sleep at deadline=");
-                    crate::io::log::early_print_dec(this.deadline);
-                    crate::io::log::early_print(" now=");
-                    crate::io::log::early_print_dec(now);
-                    crate::io::log::early_print("\n");
                     TIME_MANAGER.register_sleep(this.deadline, cx.waker().clone());
                     this.timer_registered = true;
                 }

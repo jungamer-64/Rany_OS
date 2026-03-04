@@ -144,7 +144,6 @@ pub(crate) fn spawn_kernel_tasks(
 
     // Initialize network event handler and spawn the background task for async networking
     crate::net::l4::endpoint::handler::init_network_event_handler();
-    crate::io::log::early_print("[INIT-DBG] spawning network_event_task\n");
     executor.spawn(crate::task::Task::new(crate::net::l4::endpoint::tcp_rx::network_event_task()));
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)
@@ -288,8 +287,6 @@ pub(crate) fn spawn_kernel_tasks(
     // タスク (ネットワーク ping テスト): ゲートウェイへの ICMP を試して結果をログ出力
     executor.spawn(Task::new(async {
         info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
-
-        crate::io::log::early_print("[NET-PING-MANUAL] sending manual ping now\n");
 
         // DHCP/スタックからゲートウェイを取得
         let gw_opt = crate::net::api::config::get_network_config()

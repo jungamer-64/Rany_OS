@@ -344,7 +344,6 @@ impl Executor {
 
     /// メインループ
     pub fn run(&mut self) -> ! {
-        let mut tick_print_counter: u64 = 0;
         loop {
             // 0. Process pending interrupt events and deferred waker notifications (non-ISR)
             crate::interrupts::poll_timer_events();
@@ -359,19 +358,6 @@ impl Executor {
             });
             // IOMMU command queue processing
             crate::io::iommu::api::process_pending_command_queues();
-
-            // DEBUG: tick進行確認（最初の5回のみ、1000回ごと）
-            tick_print_counter += 1;
-            if (tick_print_counter == 1 || tick_print_counter == 10 || tick_print_counter == 100
-                || tick_print_counter == 1000 || tick_print_counter == 10000)
-            {
-                let t = crate::task::timer::current_tick();
-                crate::io::log::early_print("[EXEC-TICK] iter=");
-                crate::io::log::early_print_dec(tick_print_counter);
-                crate::io::log::early_print(" tick=");
-                crate::io::log::early_print_dec(t);
-                crate::io::log::early_print("\n");
-            }
 
             // 0.5 Suspend期限到達タスクを再投入
             self.process_suspended_tasks();

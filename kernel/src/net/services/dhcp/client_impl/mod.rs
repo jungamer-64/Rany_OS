@@ -32,34 +32,21 @@ impl DhcpClient {
     /// 
     /// 指定されたポートでUDPソケットをバインドし、DHCP状態機械を駆動します。
     pub async fn run(&self) -> Result<(), &'static str> {
-        crate::io::log::early_print("[DHCP-DBG] DHCPv4 run() entered, binding port 68...\n");
         // DHCPクライアントポート(68)でバインド
         let socket = crate::net::runtime::stack::bind_udp_endpoint_async(DHCP_CLIENT_PORT).await.ok_or("Failed to bind DHCP socket")?;
-        crate::io::log::early_print("[DHCP-DBG] DHCPv4 bind succeeded\n");
         
         log::info!("[NET] DHCPv4 client task started");
 
         loop {
             let now = crate::task::timer::current_tick();
             
-            crate::io::log::early_print("[DHCP-DBG] drive() calling, tick=");
-            crate::io::log::early_print_dec(now);
-            crate::io::log::early_print("\n");
-            
             // 状態機械を駆動（タイムアウトチェックと必要に応じたパケット送信）
             match self.drive(now, 1000) {
-                Ok(()) => {
-                    crate::io::log::early_print("[DHCP-DBG] drive() ok\n");
-                }
+                Ok(()) => {}
                 Err(e) => {
-                    crate::io::log::early_print("[DHCP-DBG] drive() ERR: ");
-                    crate::io::log::early_print(e);
-                    crate::io::log::early_print("\n");
                     return Err(e);
                 }
             }
-            
-            crate::io::log::early_print("[DHCP-DBG] awaiting recv with timeout...\n");
             
             // パケット受信を待機。再送タイマーを考慮して1秒でタイムアウト。
             match task::with_timeout(socket.recv(), 1000).await {
@@ -94,13 +81,11 @@ impl DhcpClient {
                             log::warn!("[NET] DHCPv4 NAK received");
                         }
                         Err(e) => {
-                            // 自分宛てでないXIDのパケットなどは無視される
-                            log::trace!("[NET] DHCPv4 response ignored: {}", e);
+                            log::warn!("[NET] DHCPv4 response error: {}", e);
                         }
                     }
                 }
                 TimeoutResult::TimedOut => {
-                    crate::io::log::early_print("[DHCP-DBG] recv timeout, will loop\n");
                     // タイムアウトした場合はループの先頭に戻り、drive() で再送チェックが行われる
                 }
                 TimeoutResult::Completed(None) => {
@@ -166,12 +151,11 @@ impl DhcpClient {
         &self,
         current_state: DhcpState,
     ) -> Result<(DhcpLease, bool), &'static str> {
-        // If we're renewing, or already bound/rebinding/requesting, use the
+        // If we're renewing, or already bound/rebinding, use the
         // active lease.  Otherwise fall back to the offered lease.
         if current_state == DhcpState::Renewing
             || current_state == DhcpState::Bound
             || current_state == DhcpState::Rebinding
-            || current_state == DhcpState::Requesting
         {
             let lease_opt = match self.lease.lock() {
                 Ok(g) => g.clone(),

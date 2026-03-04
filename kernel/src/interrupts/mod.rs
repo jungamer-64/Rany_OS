@@ -536,11 +536,6 @@ pub fn poll_timer_events() {
         if VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
             && VIRTIO_NET_IRQ_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
         {
-            static VIRTIO_POLL_LOGGED: core::sync::atomic::AtomicBool =
-                core::sync::atomic::AtomicBool::new(false);
-            if !VIRTIO_POLL_LOGGED.swap(true, Ordering::Relaxed) {
-                crate::io::log::early_print("[RX-DBG] VirtIO-Net fallback poll triggered\n");
-            }
             crate::io::virtio::poll_all_virtio_net_queues();
         }
 

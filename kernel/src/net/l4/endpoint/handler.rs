@@ -1122,26 +1122,6 @@ impl NetworkEventHandler {
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Dropped => {
-                {
-                    use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
-                    static IPV4_DROP_DBG: AtomicU32 = AtomicU32::new(0);
-                    let n = IPV4_DROP_DBG.fetch_add(1, AtOrd::Relaxed);
-                    if n < 10 {
-                        crate::io::log::early_print("[IPV4-DROP] pkt#");
-                        crate::io::log::early_print_dec(n as u64);
-                        if data.len() >= 20 {
-                            crate::io::log::early_print(" dst=");
-                            crate::io::log::early_print_dec(data[16] as u64);
-                            crate::io::log::early_print(".");
-                            crate::io::log::early_print_dec(data[17] as u64);
-                            crate::io::log::early_print(".");
-                            crate::io::log::early_print_dec(data[18] as u64);
-                            crate::io::log::early_print(".");
-                            crate::io::log::early_print_dec(data[19] as u64);
-                        }
-                        crate::io::log::early_print("\n");
-                    }
-                }
                 stack.stats.record_dropped();
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Error => {
@@ -1177,24 +1157,6 @@ impl NetworkEventHandler {
         let dst_port = u16::from_be_bytes([payload[2], payload[3]]);
         let data = &payload[8..];
 
-        // Debug: print first 20 UDP packets
-        {
-            use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
-            static UDP_RX_DBG_COUNT: AtomicU32 = AtomicU32::new(0);
-            let n = UDP_RX_DBG_COUNT.fetch_add(1, AtOrd::Relaxed);
-            if n < 20 {
-                crate::io::log::early_print("[UDP-RX] #");
-                crate::io::log::early_print_dec(n as u64);
-                crate::io::log::early_print(" src_port=");
-                crate::io::log::early_print_dec(src_port as u64);
-                crate::io::log::early_print(" dst_port=");
-                crate::io::log::early_print_dec(dst_port as u64);
-                crate::io::log::early_print(" len=");
-                crate::io::log::early_print_dec(data.len() as u64);
-                crate::io::log::early_print("\n");
-            }
-        }
-
         let remote = EndpointAddr::new(src_ip, src_port);
 
         let mut found = false;
@@ -1212,6 +1174,7 @@ impl NetworkEventHandler {
             let src_v4 = Ipv4Address::new(src_ip);
             let dst_v4 = Ipv4Address::new(dst_ip);
             let result = stack.udp_process_raw(payload, src_v4, dst_v4, 64);
+
             if matches!(result, crate::net::l4::udp::UdpResult::Delivered) {
                 found = true;
             }
