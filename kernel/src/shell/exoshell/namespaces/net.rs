@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::security::capability::{CAP_NET_RAW, CAP_NET_BIND, manager};
+use crate::security::capability::{CAP_NET_RAW, CAP_NET_BIND, CAP_NET_ADMIN, manager};
 use crate::shell::exoshell::types::ExoValue;
 use crate::net::runtime::stack::{bind_udp_endpoint_with_token_async, bind_udp_endpoint_async};
 use alloc::boxed::Box;
@@ -320,6 +320,588 @@ impl NetNamespace {
         ExoValue::Array(results)
     }
 
+    // ================================================================
+    // TCP/UDP接続一覧 (netstat相当)
+    // ================================================================
+
+    /// TCP接続一覧 (非同期版)
+    pub async fn tcp_connections_async() -> ExoValue<'static> {
+        let connections = crate::net::api::connections::get_tcp_connections_async().await;
+        let values: Vec<ExoValue> = connections
+            .into_iter()
+            .map(|c| {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("local"), ExoValue::String(Cow::Owned(c.local_addr)));
+                map.insert(String::from("remote"), ExoValue::String(Cow::Owned(c.remote_addr)));
+                map.insert(String::from("state"), ExoValue::String(Cow::Owned(c.state)));
+                ExoValue::Map(map)
+            })
+            .collect();
+        ExoValue::Array(values)
+    }
+
+    /// UDP エンドポイント一覧 (非同期版)
+    pub async fn udp_endpoints_async() -> ExoValue<'static> {
+        let endpoints = crate::net::api::connections::get_udp_endpoints_async().await;
+        let values: Vec<ExoValue> = endpoints
+            .into_iter()
+            .map(|e| {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("local"), ExoValue::String(Cow::Owned(e.local_addr)));
+                map.insert(String::from("remote"), ExoValue::String(Cow::Owned(e.remote_addr)));
+                ExoValue::Map(map)
+            })
+            .collect();
+        ExoValue::Array(values)
+    }
+
+    /// netstat相当 — TCP接続 + UDPエンドポイント統合表示
+    pub async fn netstat_async() -> ExoValue<'static> {
+        let tcp_connections = crate::net::api::connections::get_tcp_connections_async().await;
+        let udp_endpoints = crate::net::api::connections::get_udp_endpoints_async().await;
+
+        let tcp_values: Vec<ExoValue> = tcp_connections
+            .into_iter()
+            .map(|c| {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("proto"), ExoValue::String(Cow::Borrowed("TCP")));
+                map.insert(String::from("local"), ExoValue::String(Cow::Owned(c.local_addr)));
+                map.insert(String::from("remote"), ExoValue::String(Cow::Owned(c.remote_addr)));
+                map.insert(String::from("state"), ExoValue::String(Cow::Owned(c.state)));
+                ExoValue::Map(map)
+            })
+            .collect();
+
+        let udp_values: Vec<ExoValue> = udp_endpoints
+            .into_iter()
+            .map(|e| {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("proto"), ExoValue::String(Cow::Borrowed("UDP")));
+                map.insert(String::from("local"), ExoValue::String(Cow::Owned(e.local_addr)));
+                map.insert(String::from("remote"), ExoValue::String(Cow::Owned(e.remote_addr)));
+                map.insert(String::from("state"), ExoValue::String(Cow::Borrowed("-")));
+                ExoValue::Map(map)
+            })
+            .collect();
+
+        let mut all = tcp_values;
+        all.extend(udp_values);
+        ExoValue::Array(all)
+    }
+
+    // ================================================================
+    // インターフェース管理
+    // ================================================================
+
+    /// ネットワークインターフェース一覧
+    pub async fn interfaces_async() -> ExoValue<'static> {
+        match crate::net::runtime::manager::list_interfaces() {
+            Ok(ifaces) => {
+                let values: Vec<ExoValue> = ifaces
+                    .into_iter()
+                    .map(|iface| {
+                        let mut map = BTreeMap::new();
+                        map.insert(String::from("id"), ExoValue::Int(iface.if_id.0 as i64));
+                        map.insert(String::from("name"), ExoValue::String(Cow::Owned(iface.name)));
+                        map.insert(String::from("admin_up"), ExoValue::Bool(iface.admin_up));
+                        if let Some(cfg) = &iface.config {
+                            let ip = cfg.ipv4.address;
+                            map.insert(
+                                String::from("ip"),
+                                ExoValue::String(Cow::Owned(format!("{}", ip))),
+                            );
+                            map.insert(
+                                String::from("netmask"),
+                                ExoValue::String(Cow::Owned(format!("{}", cfg.ipv4.subnet_mask))),
+                            );
+                            map.insert(
+                                String::from("gateway"),
+                                ExoValue::String(Cow::Owned(format!("{}", cfg.ipv4.gateway))),
+                            );
+                        } else {
+                            map.insert(String::from("ip"), ExoValue::Nil);
+                        }
+                        ExoValue::Map(map)
+                    })
+                    .collect();
+                ExoValue::Array(values)
+            }
+            Err(_) => ExoValue::Error(String::from("Failed to list network interfaces")),
+        }
+    }
+
+    /// インターフェースを有効化（管理権限必要）
+    pub async fn if_up_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        let if_id = match args.first() {
+            Some(ExoValue::Int(n)) => crate::net::runtime::manager::NetIfId(*n as u16),
+            _ => return ExoValue::Error(String::from("usage: net.if_up(interface_id)")),
+        };
+        match crate::net::runtime::manager::set_interface_up(if_id) {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(format!("Failed: {:?}", e)),
+        }
+    }
+
+    /// インターフェースを無効化（管理権限必要）
+    pub async fn if_down_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        let if_id = match args.first() {
+            Some(ExoValue::Int(n)) => crate::net::runtime::manager::NetIfId(*n as u16),
+            _ => return ExoValue::Error(String::from("usage: net.if_down(interface_id)")),
+        };
+        match crate::net::runtime::manager::set_interface_down(if_id) {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(format!("Failed: {:?}", e)),
+        }
+    }
+
+    // ================================================================
+    // ルーティングテーブル管理
+    // ================================================================
+
+    /// IPv4/IPv6 ルーティングテーブル表示
+    pub async fn routes_async() -> ExoValue<'static> {
+        let mut entries = Vec::new();
+
+        // IPv4 routes
+        if let Ok(routes) = crate::net::runtime::manager::list_ipv4_routes() {
+            for r in routes {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("family"), ExoValue::String(Cow::Borrowed("IPv4")));
+                map.insert(
+                    String::from("destination"),
+                    ExoValue::String(Cow::Owned(format!("{}/{}", r.destination, r.prefix_len))),
+                );
+                map.insert(
+                    String::from("gateway"),
+                    match r.gateway {
+                        Some(gw) => ExoValue::String(Cow::Owned(format!("{}", gw))),
+                        None => ExoValue::String(Cow::Borrowed("*")),
+                    },
+                );
+                map.insert(String::from("if_id"), ExoValue::Int(r.if_id.0 as i64));
+                map.insert(String::from("metric"), ExoValue::Int(r.metric as i64));
+                let mut flags_str = String::new();
+                if r.flags.connected { flags_str.push('C'); }
+                if r.flags.static_route { flags_str.push('S'); }
+                if r.flags.default_route { flags_str.push('D'); }
+                if !r.admin_enabled { flags_str.push_str("(down)"); }
+                map.insert(String::from("flags"), ExoValue::String(Cow::Owned(flags_str)));
+                entries.push(ExoValue::Map(map));
+            }
+        }
+
+        // IPv6 routes
+        if let Ok(routes) = crate::net::runtime::manager::list_ipv6_routes() {
+            for r in routes {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("family"), ExoValue::String(Cow::Borrowed("IPv6")));
+                map.insert(
+                    String::from("destination"),
+                    ExoValue::String(Cow::Owned(format!("{}/{}", r.destination, r.prefix_len))),
+                );
+                map.insert(
+                    String::from("gateway"),
+                    match r.gateway {
+                        Some(gw) => ExoValue::String(Cow::Owned(format!("{}", gw))),
+                        None => ExoValue::String(Cow::Borrowed("*")),
+                    },
+                );
+                map.insert(String::from("if_id"), ExoValue::Int(r.if_id.0 as i64));
+                map.insert(String::from("metric"), ExoValue::Int(r.metric as i64));
+                let mut flags_str = String::new();
+                if r.flags.connected { flags_str.push('C'); }
+                if r.flags.static_route { flags_str.push('S'); }
+                if r.flags.default_route { flags_str.push('D'); }
+                if !r.admin_enabled { flags_str.push_str("(down)"); }
+                map.insert(String::from("flags"), ExoValue::String(Cow::Owned(flags_str)));
+                entries.push(ExoValue::Map(map));
+            }
+        }
+
+        ExoValue::Array(entries)
+    }
+
+    /// IPv4ルート追加（管理権限必要）
+    ///
+    /// usage: net.route_add("192.168.1.0", 24, "10.0.2.1", 0, 100)
+    ///        net.route_add(dest, prefix_len, gateway, if_id, metric)
+    pub async fn route_add_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        if args.len() < 4 {
+            return ExoValue::Error(String::from(
+                "usage: net.route_add(dest, prefix_len, gateway, if_id [, metric])\n\
+                 例: net.route_add(\"192.168.1.0\", 24, \"10.0.2.1\", 0)"
+            ));
+        }
+        let dest = match Self::parse_ipv4_arg(&args[0]) {
+            Ok(ip) => crate::net::l3::ipv4::Ipv4Address::new(ip),
+            Err(e) => return ExoValue::Error(format!("dest: {}", e)),
+        };
+        let prefix_len = match &args[1] {
+            ExoValue::Int(n) => *n as u8,
+            _ => return ExoValue::Error(String::from("prefix_len must be integer")),
+        };
+        let gateway = match &args[2] {
+            ExoValue::String(s) if s.as_ref() == "*" || s.as_ref() == "none" => None,
+            other => match Self::parse_ipv4_arg(other) {
+                Ok(ip) => Some(crate::net::l3::ipv4::Ipv4Address::new(ip)),
+                Err(e) => return ExoValue::Error(format!("gateway: {}", e)),
+            },
+        };
+        let if_id = match &args[3] {
+            ExoValue::Int(n) => crate::net::runtime::manager::NetIfId(*n as u16),
+            _ => return ExoValue::Error(String::from("if_id must be integer")),
+        };
+        let metric = args.get(4)
+            .and_then(|v| match v { ExoValue::Int(n) => Some(*n as u32), _ => None })
+            .unwrap_or(100);
+
+        let route = crate::net::runtime::manager::Ipv4Route {
+            destination: dest,
+            prefix_len,
+            gateway,
+            if_id,
+            metric,
+            flags: crate::net::runtime::manager::RouteFlags::static_route(),
+            admin_enabled: true,
+            managed_by_interface: false,
+        };
+        match crate::net::runtime::manager::add_ipv4_route(route) {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(format!("Failed to add route: {:?}", e)),
+        }
+    }
+
+    /// IPv4 ルート削除（管理権限必要）
+    ///
+    /// usage: net.route_del("192.168.1.0", 24, 0)
+    ///        net.route_del(dest, prefix_len, if_id)
+    pub async fn route_del_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        if args.len() < 3 {
+            return ExoValue::Error(String::from(
+                "usage: net.route_del(dest, prefix_len, if_id)\n\
+                 例: net.route_del(\"192.168.1.0\", 24, 0)"
+            ));
+        }
+        let dest = match Self::parse_ipv4_arg(&args[0]) {
+            Ok(ip) => crate::net::l3::ipv4::Ipv4Address::new(ip),
+            Err(e) => return ExoValue::Error(format!("dest: {}", e)),
+        };
+        let prefix_len = match &args[1] {
+            ExoValue::Int(n) => *n as u8,
+            _ => return ExoValue::Error(String::from("prefix_len must be integer")),
+        };
+        let if_id = match &args[2] {
+            ExoValue::Int(n) => crate::net::runtime::manager::NetIfId(*n as u16),
+            _ => return ExoValue::Error(String::from("if_id must be integer")),
+        };
+        // Build a route to match for deletion (gateway/metric/flags don't matter for retain comparison)
+        let route = crate::net::runtime::manager::Ipv4Route {
+            destination: dest,
+            prefix_len,
+            gateway: None,
+            if_id,
+            metric: 0,
+            flags: crate::net::runtime::manager::RouteFlags::static_route(),
+            admin_enabled: true,
+            managed_by_interface: false,
+        };
+        match crate::net::runtime::manager::del_ipv4_route(route) {
+            Ok(deleted) => ExoValue::Bool(deleted),
+            Err(e) => ExoValue::Error(format!("Failed to delete route: {:?}", e)),
+        }
+    }
+
+    // ================================================================
+    // ファイアウォール管理
+    // ================================================================
+
+    /// ファイアウォール状態表示
+    pub async fn firewall_status_async() -> ExoValue<'static> {
+        let status = crate::net::api::firewall::firewall_status();
+        ExoValue::String(Cow::Owned(status))
+    }
+
+    /// ファイアウォール有効化 (管理権限必要)
+    pub async fn firewall_enable_async() -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        match crate::net::api::firewall::firewall_enable() {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(String::from(e)),
+        }
+    }
+
+    /// ファイアウォール無効化 (管理権限必要)
+    pub async fn firewall_disable_async() -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        match crate::net::api::firewall::firewall_disable() {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(String::from(e)),
+        }
+    }
+
+    /// ファイアウォールルール一覧表示
+    pub async fn firewall_rules_async() -> ExoValue<'static> {
+        let rules = crate::net::api::firewall::firewall_list_rules();
+        ExoValue::String(Cow::Owned(rules))
+    }
+
+    /// ファイアウォール統計情報
+    pub async fn firewall_stats_async() -> ExoValue<'static> {
+        let stats = crate::net::api::firewall::firewall_stats();
+        ExoValue::String(Cow::Owned(stats))
+    }
+
+    /// ファイアウォールルール追加 (管理権限必要)
+    ///
+    /// usage: net.firewall_add("deny", "in", "10.0.0.0/8", "*", "tcp", "*", "22", 50, "block-ssh")
+    pub async fn firewall_add_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        if args.len() < 8 {
+            return ExoValue::Error(String::from(
+                "usage: net.firewall_add(action, direction, src_ip, dst_ip, protocol, src_port, dst_port, priority [, name])\n\
+                 例: net.firewall_add(\"deny\", \"in\", \"*\", \"*\", \"tcp\", \"*\", \"22\", 50, \"block-ssh\")"
+            ));
+        }
+        let str_arg = |i: usize| -> Result<&str, ExoValue<'static>> {
+            match &args[i] {
+                ExoValue::String(s) => Ok(s.as_ref()),
+                _ => Err(ExoValue::Error(format!("arg {} must be a string", i + 1))),
+            }
+        };
+        let action = match str_arg(0) { Ok(v) => v, Err(e) => return e };
+        let direction = match str_arg(1) { Ok(v) => v, Err(e) => return e };
+        let src_ip = match str_arg(2) { Ok(v) => v, Err(e) => return e };
+        let dst_ip = match str_arg(3) { Ok(v) => v, Err(e) => return e };
+        let protocol = match str_arg(4) { Ok(v) => v, Err(e) => return e };
+        let src_port = match str_arg(5) { Ok(v) => v, Err(e) => return e };
+        let dst_port = match str_arg(6) { Ok(v) => v, Err(e) => return e };
+        let priority = match &args[7] {
+            ExoValue::Int(n) => *n as u16,
+            ExoValue::String(s) => s.parse::<u16>().unwrap_or(100),
+            _ => 100,
+        };
+        let name = args.get(8)
+            .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
+            .unwrap_or("");
+
+        match crate::net::api::firewall::firewall_add_rule(
+            action, direction, src_ip, dst_ip, protocol, src_port, dst_port, priority, name,
+        ) {
+            Ok(id) => {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("rule_id"), ExoValue::Int(id as i64));
+                map.insert(String::from("success"), ExoValue::Bool(true));
+                ExoValue::Map(map)
+            }
+            Err(e) => ExoValue::Error(e),
+        }
+    }
+
+    /// ファイアウォールルール削除 (管理権限必要)
+    pub async fn firewall_remove_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        let rule_id = match args.first() {
+            Some(ExoValue::Int(n)) => *n as u64,
+            _ => return ExoValue::Error(String::from("usage: net.firewall_remove(rule_id)")),
+        };
+        match crate::net::api::firewall::firewall_remove_rule(rule_id) {
+            Ok(deleted) => ExoValue::Bool(deleted),
+            Err(e) => ExoValue::Error(e),
+        }
+    }
+
+    /// ファイアウォールルール全削除 (管理権限必要)
+    pub async fn firewall_clear_async() -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        match crate::net::api::firewall::firewall_clear_rules() {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(e),
+        }
+    }
+
+    /// ファイアウォールデフォルトポリシー設定 (管理権限必要)
+    ///
+    /// usage: net.firewall_policy("in", "deny")
+    pub async fn firewall_policy_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        }
+        if args.len() < 2 {
+            return ExoValue::Error(String::from(
+                "usage: net.firewall_policy(direction, action)\n\
+                 例: net.firewall_policy(\"in\", \"deny\")"
+            ));
+        }
+        let direction = match &args[0] {
+            ExoValue::String(s) => s.as_ref(),
+            _ => return ExoValue::Error(String::from("direction must be string")),
+        };
+        let action = match &args[1] {
+            ExoValue::String(s) => s.as_ref(),
+            _ => return ExoValue::Error(String::from("action must be string")),
+        };
+        match crate::net::api::firewall::firewall_set_default_policy(direction, action) {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(e),
+        }
+    }
+
+    // ================================================================
+    // DNS解決
+    // ================================================================
+
+    /// DNS名前解決 (非同期)
+    ///
+    /// usage: net.dns("example.com")
+    pub async fn dns_resolve_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let hostname = match args.first() {
+            Some(ExoValue::String(s)) => s.as_ref(),
+            _ => return ExoValue::Error(String::from("usage: net.dns(hostname)\n例: net.dns(\"example.com\")")),
+        };
+        match crate::net::services::dns::resolve_ipv4(hostname).await {
+            Some(addr) => ExoValue::String(Cow::Owned(format!("{}", addr))),
+            None => ExoValue::Error(format!("DNS resolution failed for '{}'", hostname)),
+        }
+    }
+
+    // ================================================================
+    // ネットワーク診断・スナップショット
+    // ================================================================
+
+    /// ネットワーク全体のスナップショット (カウンタ + インターフェース + イベント)
+    pub async fn snapshot_async() -> ExoValue<'static> {
+        let snap = crate::net::api::diagnostics::network_snapshot();
+        let mut map = BTreeMap::new();
+        map.insert(String::from("rx_packets"), ExoValue::Int(snap.rx_packets as i64));
+        map.insert(String::from("tx_packets"), ExoValue::Int(snap.tx_packets as i64));
+        map.insert(String::from("rx_bytes"), ExoValue::Int(snap.rx_bytes as i64));
+        map.insert(String::from("tx_bytes"), ExoValue::Int(snap.tx_bytes as i64));
+        map.insert(String::from("drops"), ExoValue::Int(snap.drops as i64));
+        map.insert(String::from("errors"), ExoValue::Int(snap.errors as i64));
+
+        let ifaces: Vec<ExoValue> = snap.interfaces
+            .into_iter()
+            .map(|iface| {
+                let mut m = BTreeMap::new();
+                m.insert(String::from("name"), ExoValue::String(Cow::Owned(iface.name)));
+                m.insert(String::from("rx_packets"), ExoValue::Int(iface.rx_packets as i64));
+                m.insert(String::from("tx_packets"), ExoValue::Int(iface.tx_packets as i64));
+                ExoValue::Map(m)
+            })
+            .collect();
+        map.insert(String::from("interfaces"), ExoValue::Array(ifaces));
+        map.insert(String::from("recent_events_count"), ExoValue::Int(snap.recent_events.len() as i64));
+
+        ExoValue::Map(map)
+    }
+
+    /// 最近のネットワークイベント一覧
+    ///
+    /// usage: net.events(limit)  — デフォルト20件
+    pub async fn events_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let limit = args.first()
+            .and_then(|v| match v { ExoValue::Int(n) => Some(*n as usize), _ => None })
+            .unwrap_or(20);
+        let events = crate::net::api::diagnostics::network_recent_events(limit);
+        let values: Vec<ExoValue> = events
+            .into_iter()
+            .map(|e| {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("layer"), ExoValue::String(Cow::Owned(format!("{:?}", e.layer))));
+                map.insert(String::from("kind"), ExoValue::String(Cow::Owned(format!("{:?}", e.kind))));
+                map.insert(String::from("message"), ExoValue::String(Cow::Owned(e.message)));
+                map.insert(String::from("ts_ms"), ExoValue::Int(e.ts_ms as i64));
+                ExoValue::Map(map)
+            })
+            .collect();
+        ExoValue::Array(values)
+    }
+
+    // ================================================================
+    // ヘルパー
+    // ================================================================
+
+    /// ExoValueからIPv4アドレスをパースするヘルパー
+    fn parse_ipv4_arg(val: &ExoValue<'_>) -> Result<[u8; 4], String> {
+        match val {
+            ExoValue::String(s) => {
+                let parts: Vec<&str> = s.split('.').collect();
+                if parts.len() != 4 {
+                    return Err(format!("invalid IPv4: '{}'", s));
+                }
+                let mut octets = [0u8; 4];
+                for (i, part) in parts.iter().enumerate() {
+                    octets[i] = part.parse::<u8>()
+                        .map_err(|_| format!("invalid octet '{}' in '{}'", part, s))?;
+                }
+                Ok(octets)
+            }
+            _ => Err(String::from("IP address must be a string")),
+        }
+    }
+
     /// 非同期版 handle_open: イベントキュー経由で UDP bind を実行
     async fn handle_open_async(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let port = match _args.get(0) {
@@ -387,8 +969,43 @@ impl ShellNamespace for NetNamespace {
                 "dhcp_last_declined" => Self::dhcp_last_declined_async().await,
                 "dhcp_last_released" => Self::dhcp_last_released_async().await,
                 "open" => Self::handle_open_async(_args).await,
+                // TCP/UDP接続管理
+                "connections" | "netstat" => Self::netstat_async().await,
+                "tcp" => Self::tcp_connections_async().await,
+                "udp" => Self::udp_endpoints_async().await,
+                // インターフェース管理
+                "interfaces" | "ifaces" => Self::interfaces_async().await,
+                "if_up" => Self::if_up_async(_args).await,
+                "if_down" => Self::if_down_async(_args).await,
+                // ルーティング
+                "routes" => Self::routes_async().await,
+                "route_add" => Self::route_add_async(_args).await,
+                "route_del" => Self::route_del_async(_args).await,
+                // ファイアウォール
+                "firewall" => Self::firewall_status_async().await,
+                "firewall_enable" => Self::firewall_enable_async().await,
+                "firewall_disable" => Self::firewall_disable_async().await,
+                "firewall_rules" => Self::firewall_rules_async().await,
+                "firewall_stats" => Self::firewall_stats_async().await,
+                "firewall_add" => Self::firewall_add_async(_args).await,
+                "firewall_remove" => Self::firewall_remove_async(_args).await,
+                "firewall_clear" => Self::firewall_clear_async().await,
+                "firewall_policy" => Self::firewall_policy_async(_args).await,
+                // DNS
+                "dns" | "resolve" => Self::dns_resolve_async(_args).await,
+                // 診断
+                "snapshot" => Self::snapshot_async().await,
+                "events" => Self::events_async(_args).await,
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, arp_insert, ping, open, dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
+                    "Unknown method 'net.{}'\nValid methods:\n  \
+                     config, stats, arp, arp_insert, ping, open,\n  \
+                     connections/netstat, tcp, udp,\n  \
+                     interfaces/ifaces, if_up, if_down,\n  \
+                     routes, route_add, route_del,\n  \
+                     firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
+                     firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
+                     dns/resolve, snapshot, events,\n  \
+                     dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
                     method
                 )),
             }

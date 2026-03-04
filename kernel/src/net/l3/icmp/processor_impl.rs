@@ -3,9 +3,9 @@ use super::*;
 
 impl IcmpProcessor {
     /// Create a new ICMP processor
-    pub fn new(local_ip: Ipv4Address) -> Self {
+    pub fn new(_local_ip: Ipv4Address) -> Self {
         IcmpProcessor {
-            _local_ip: local_ip,
+            _local_ip,
             stats: IcmpStats::default(),
             per_ip_rate_limits: alloc::collections::BTreeMap::new(),
             global_last_time: 0,
@@ -20,11 +20,11 @@ impl IcmpProcessor {
 
     /// Check rate limit for a given IP (Token Bucket)
     /// Returns true if allowed, false if dropped.
-    pub(crate) fn check_rate_limit(&mut self, src_ip: Ipv4Address, current_time: u64) -> bool {
+    pub fn check_rate_limit(&mut self, ip: Ipv4Address, current_time: u64) -> bool {
         // Global rate limit: Add 1 token per 10ms (100 pkts/sec), max 100 tokens.
         let elapsed_global = current_time.saturating_sub(self.global_last_time);
-        let new_global_tokens = (elapsed_global / 10) as u32;
-        if new_global_tokens > 0 {
+        if elapsed_global >= 10 {
+            let new_global_tokens = (elapsed_global / 10) as u32;
             self.global_tokens = (self.global_tokens + new_global_tokens).min(100);
             self.global_last_time = current_time;
         }
@@ -33,26 +33,21 @@ impl IcmpProcessor {
             return false;
         }
 
-        // Add 1 token per 100ms, max 20 tokens per IP.
-        // Security: Limit map size to prevent memory DoS.
+        // Per-IP rate limit: Add 1 token per 100ms, max 20 tokens per IP.
         const MAX_RATE_LIMIT_ENTRIES: usize = 1024;
         
-        if self.per_ip_rate_limits.len() >= MAX_RATE_LIMIT_ENTRIES && !self.per_ip_rate_limits.contains_key(&src_ip) {
-            // Evict oldest entry to prevent DoS
-            let oldest = self.per_ip_rate_limits.iter()
-                .min_by_key(|(_, (last_time, _))| *last_time)
-                .map(|(&ip, _)| ip);
-            if let Some(oldest_ip) = oldest {
-                self.per_ip_rate_limits.remove(&oldest_ip);
-            } else {
-                return false;
+        // If entry doesn't exist and map is full, we need to evict.
+        // We check this before taking the entry to avoid borrow checker issues.
+        if !self.per_ip_rate_limits.contains_key(&ip) && self.per_ip_rate_limits.len() >= MAX_RATE_LIMIT_ENTRIES {
+            if let Some(&first_key) = self.per_ip_rate_limits.keys().next() {
+                self.per_ip_rate_limits.remove(&first_key);
             }
         }
 
-        let (last_time, tokens) = self.per_ip_rate_limits.entry(src_ip).or_insert((current_time, 10));
+        let (last_time, tokens) = self.per_ip_rate_limits.entry(ip).or_insert((current_time, 10));
         let elapsed = current_time.saturating_sub(*last_time);
-        let new_tokens = (elapsed / 100) as u32;
-        if new_tokens > 0 {
+        if elapsed >= 100 {
+            let new_tokens = (elapsed / 100) as u32;
             *tokens = (*tokens + new_tokens).min(20);
             *last_time = current_time;
         }
@@ -68,6 +63,11 @@ impl IcmpProcessor {
 
     /// Process an incoming ICMP packet
     pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) -> IcmpResult {
+        // Security: Check rate limit BEFORE expensive operations (like checksum)
+        if !self.check_rate_limit(src_ip, current_time) {
+            return IcmpResult::Ignored;
+        }
+
         let packet = match IcmpPacket::parse(data) {
             Some(p) => p,
             None => {
@@ -87,12 +87,7 @@ impl IcmpProcessor {
                 self.stats.echo_requests_rx += 1;
 
                 // Security: RFC 1122 Section 3.2.2.6 - Do not respond to broadcast/multicast ICMP Echo Requests.
-                // This prevents being used in Smurf amplification attacks.
                 if dst_ip.is_broadcast() || dst_ip.is_multicast() {
-                    return IcmpResult::Ignored;
-                }
-
-                if !self.check_rate_limit(src_ip, current_time) {
                     return IcmpResult::Ignored;
                 }
 
@@ -132,16 +127,12 @@ impl IcmpProcessor {
             }
             IcmpType::Redirect => {
                 self.stats.errors_rx += 1;
-                self.process_redirect(&packet)
+                self.process_redirect(&packet, src_ip)
             }
             IcmpType::TimestampRequest => {
-                if !self.check_rate_limit(src_ip, current_time) {
-                    return IcmpResult::Ignored;
-                }
                 self.process_timestamp_request(&packet, src_ip)
             }
             IcmpType::TimestampReply => {
-                // Just acknowledge receipt
                 IcmpResult::Ignored
             }
             _ => IcmpResult::Ignored,
@@ -202,14 +193,6 @@ impl IcmpProcessor {
         }
 
         // RFC 1122: Include the full IP header + at least 8 octets of the data.
-        // RFC 1812: SHOULD include as much of the original datagram as possible,
-        // up to a total ICMP length of 576 bytes.
-        let _header_len = if !original_packet.is_empty() {
-            ((original_packet[0] & 0x0F) as usize) * 4
-        } else {
-            20
-        };
-        // We include as much of the original packet as will fit in our buffer.
         let copy_len = original_packet.len().min(payload.len() - 4);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
@@ -235,13 +218,6 @@ impl IcmpProcessor {
         let payload = builder.payload_mut();
         payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
 
-        // RFC 1122: Include the full IP header + at least 8 octets of the data.
-        // RFC 1812: SHOULD include as much of the original datagram as possible.
-        let _header_len = if !original_packet.is_empty() {
-            ((original_packet[0] & 0x0F) as usize) * 4
-        } else {
-            20
-        };
         let copy_len = original_packet.len().min(payload.len() - 4);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
@@ -268,13 +244,6 @@ impl IcmpProcessor {
         payload[0] = pointer; // Pointer to the byte in the original header where the error was detected
         payload[1..4].copy_from_slice(&[0, 0, 0]); // Unused
 
-        // RFC 1122: Include the full IP header + at least 8 octets of the data.
-        // RFC 1812: SHOULD include as much of the original datagram as possible.
-        let _header_len = if !original_packet.is_empty() {
-            ((original_packet[0] & 0x0F) as usize) * 4
-        } else {
-            20
-        };
         let copy_len = original_packet.len().min(payload.len() - 4);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
@@ -283,10 +252,6 @@ impl IcmpProcessor {
     }
 
     /// Build a timestamp reply packet (RFC 792)
-    ///
-    /// Timestamp reply format (20 bytes total):
-    /// Type(1) Code(1) Checksum(2) Identifier(2) Sequence(2)
-    /// Originate Timestamp(4) Receive Timestamp(4) Transmit Timestamp(4)
     pub fn build_timestamp_reply(
         buffer: &mut [u8],
         identifier: u16,
@@ -295,28 +260,20 @@ impl IcmpProcessor {
         receive_ts: u32,
         transmit_ts: u32,
     ) -> Option<usize> {
-        // Timestamp reply: 8 bytes header + 12 bytes timestamps
         let total_len = 20;
         if buffer.len() < total_len {
             return None;
         }
 
-        // Type = 14 (Timestamp Reply), Code = 0
         buffer[0] = u8::from(IcmpType::TimestampReply);
         buffer[1] = 0;
-        // Checksum placeholder
         buffer[2..4].copy_from_slice(&[0, 0]);
-        // Identifier and Sequence
         buffer[4..6].copy_from_slice(&identifier.to_be_bytes());
         buffer[6..8].copy_from_slice(&sequence.to_be_bytes());
-        // Originate Timestamp (copied from request)
         buffer[8..12].copy_from_slice(&originate_ts.to_be_bytes());
-        // Receive Timestamp
         buffer[12..16].copy_from_slice(&receive_ts.to_be_bytes());
-        // Transmit Timestamp
         buffer[16..20].copy_from_slice(&transmit_ts.to_be_bytes());
 
-        // Calculate checksum
         let checksum = data_checksum(&buffer[..total_len], 0);
         buffer[2..4].copy_from_slice(&checksum.to_be_bytes());
 
@@ -324,11 +281,24 @@ impl IcmpProcessor {
     }
 
     /// Process an ICMP Redirect packet.
-    pub(super) fn process_redirect(&self, _packet: &IcmpPacket<'_>) -> IcmpResult {
-        // Security: ICMP Redirects are dangerous and can be used for MitM attacks.
-        // We ignore them by default unless the system is specifically configured to
-        // trust them and they come from the current gateway.
-        log::warn!("[NET] ICMP: Ignoring Redirect message (Security: disabled by default)");
+    pub(super) fn process_redirect(&self, packet: &IcmpPacket<'_>, src_ip: Ipv4Address) -> IcmpResult {
+        // Security: ICMP Redirects are dangerous.
+        // Even if we don't apply them here, we extract information for the stack to decide.
+        let payload = packet.payload();
+        if payload.len() >= 4 {
+            let gateway = Ipv4Address::from_octets(payload[0], payload[1], payload[2], payload[3]);
+            // The destination address is in the quoted packet in the payload after byte 4
+            if payload.len() >= 4 + 20 {
+                let dest_ip = Ipv4Address::from_octets(payload[4+16], payload[4+17], payload[4+18], payload[4+19]);
+                return IcmpResult::Redirect {
+                    code: RedirectCode::from(packet.code()),
+                    gateway,
+                    destination: dest_ip,
+                };
+            }
+        }
+        
+        log::warn!("[NET] ICMP: Ignoring Redirect from {} (Security: disabled by default)", src_ip);
         IcmpResult::Ignored
     }
 
@@ -343,7 +313,6 @@ impl IcmpProcessor {
             ]);
 
             // RFC 792: Time is milliseconds since midnight UT.
-            // If not UT, high bit must be 1.
             let now_ms = crate::task::timer::current_tick() as u32;
             let ts_val = now_ms | 0x80000000; // High bit set to indicate non-UT
 

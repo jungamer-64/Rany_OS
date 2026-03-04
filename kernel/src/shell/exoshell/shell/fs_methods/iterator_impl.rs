@@ -529,6 +529,14 @@ impl ExoShell {
             "ifconfig" => NetNamespace::config_async().await,
             "arp" => NetNamespace::arp_cache_async().await,
             "ping" => self.eval_ping(&parts).await,
+            "netstat" => NetNamespace::netstat_async().await,
+            "route" => {
+                if parts.len() > 1 {
+                    Self::dispatch_namespace_command(&["net", &format!("route_{}", parts[1])], "net").await
+                } else {
+                    NetNamespace::routes_async().await
+                }
+            }
             "uname" => SysNamespace::info(),
             "free" => SysNamespace::memory(),
             "net" => Self::dispatch_namespace_command(&parts, parts[0]).await,

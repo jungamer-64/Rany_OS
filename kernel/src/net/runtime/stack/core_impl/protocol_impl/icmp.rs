@@ -5,7 +5,7 @@
 //! ICMP Redirect processing, and ICMP echo request/reply.
 
 use super::*;
-use crate::net::l3::icmp::{IcmpBuilder, IcmpType};
+use crate::net::l3::icmp::{IcmpBuilder, IcmpType, IcmpPacket};
 
 impl NetworkStack {
     /// Process ICMP packet
@@ -22,16 +22,7 @@ impl NetworkStack {
             return;
         }
 
-        // Security: Do not respond to broadcast/multicast ICMP Echo Requests (Smurf attack prevention)
-        // RFC 1122 specifies that a host SHOULD NOT respond to ICMP echo requests sent to
-        // a broadcast or multicast address.
-        if dst_ip.is_broadcast()
-            || dst_ip.is_multicast()
-            || dst_ip == self.ipv4.config().broadcast_address()
-        {
-            return;
-        }
-
+        // IcmpProcessor::process now handles Smurf attack prevention and rate limiting.
         let result = self.icmp.process(data, src_ip, dst_ip, current_time);
 
         match result {
@@ -96,7 +87,10 @@ impl NetworkStack {
                     current_time,
                 );
             }
-            _ => {}
+            IcmpResult::Ignored => {}
+            IcmpResult::Invalid => {
+                log::debug!("[NET] ICMP: Received invalid packet from {}", src_ip);
+            }
         }
     }
 
@@ -200,40 +194,40 @@ impl NetworkStack {
     fn should_send_icmp_v4_error(&self, original_packet: &[u8], dst_ip: Ipv4Address) -> bool {
         let config = self.config.clone();
 
-        // Security (RFC 1122 Section 3.2.2):
-        // An ICMP error message MUST NOT be sent in response to:
-        
-        // 1. An ICMP error message.
-        if original_packet.len() >= 20 {
-            let proto = original_packet[9];
-            if proto == u8::from(IpProtocol::Icmp) && original_packet.len() >= 20 + 1 {
-                let icmp_type = original_packet[20];
-                match IcmpType::from(icmp_type) {
-                    IcmpType::DestinationUnreachable
-                    | IcmpType::Redirect
-                    | IcmpType::TimeExceeded
-                    | IcmpType::ParameterProblem => {
-                        return false;
+        // 1. MUST NOT send ICMP error for another ICMP error message.
+        if let Some(ip) = Ipv4Packet::parse(original_packet) {
+            if ip.protocol() == IpProtocol::Icmp {
+                if let Some(icmp) = IcmpPacket::parse(ip.payload()) {
+                    match icmp.icmp_type() {
+                        IcmpType::DestinationUnreachable
+                        | IcmpType::Redirect
+                        | IcmpType::TimeExceeded
+                        | IcmpType::ParameterProblem
+                        | IcmpType::SourceQuench => {
+                            return false;
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
-        }
 
-        // 2. A packet sent to an IP broadcast or multicast address.
-        if let Some(ip) = Ipv4Packet::parse(original_packet) {
+            // 2. MUST NOT send ICMP error for a packet sent to an IP broadcast or multicast address.
             let orig_dst = ip.destination();
             if orig_dst.is_broadcast() || orig_dst.is_multicast() || (config.ipv4.subnet_mask.as_bytes()[0] != 0 && orig_dst == config.ipv4.broadcast_address()) {
                 return false;
             }
 
-            // 3. A packet that is not the first fragment.
+            // 3. MUST NOT send ICMP error for a packet that is not the first fragment.
             if ip.header().fragment_offset() != 0 {
                 return false;
             }
+        } else {
+            // If we can't parse the IP header, we shouldn't send an ICMP error.
+            return false;
         }
 
-        // 4. A packet whose source address is not a single host (e.g. 0.0.0.0, broadcast, etc.)
+        // 4. MUST NOT send ICMP error for a packet whose source address is not a single host.
+        // (e.g. 0.0.0.0, broadcast, multicast, or martian addresses)
         if dst_ip.is_any() || dst_ip.is_broadcast() || dst_ip.is_multicast() || dst_ip.is_martian() {
             return false;
         }
@@ -322,6 +316,11 @@ impl NetworkStack {
         echo_data: &[u8],
         current_time: u64,
     ) {
+        // Rate limiting for replies to prevent being part of an amplification attack.
+        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+            return;
+        }
+
         let config = self.config.clone();
 
         // Resolve next-hop gateway (considering redirects)
@@ -835,43 +834,28 @@ impl NetworkStack {
         buf[13] = 0x00;
 
         let ip_start = eth_hdr_len;
-        buf[ip_start] = 0x45;
-        buf[ip_start + 1] = 0x00;
-        let total_ip_len = (ip_hdr_len + icmp_hdr_len) as u16;
-        buf[ip_start + 2] = (total_ip_len >> 8) as u8;
-        buf[ip_start + 3] = total_ip_len as u8;
-        buf[ip_start + 4..ip_start + 6].copy_from_slice(&[0x00, 0x00]);
-        buf[ip_start + 6..ip_start + 8].copy_from_slice(&[0x40, 0x00]);
-        buf[ip_start + 8] = 64;
-        buf[ip_start + 9] = 1;
-        buf[ip_start + 10..ip_start + 12].copy_from_slice(&[0x00, 0x00]);
-        buf[ip_start + 12..ip_start + 16].copy_from_slice(local_ip.as_bytes());
-        buf[ip_start + 16..ip_start + 20].copy_from_slice(target.as_bytes());
+        if let Some(mut ip_packet) = Ipv4PacketMut::new(&mut buf[ip_start..]) {
+            ip_packet
+                .init_header()
+                .set_source(local_ip)
+                .set_destination(target)
+                .set_protocol(IpProtocol::Icmp)
+                .set_ttl(64);
 
-        let ip_checksum = Self::checksum(&buf[ip_start..ip_start + ip_hdr_len]);
-        buf[ip_start + 10] = (ip_checksum >> 8) as u8;
-        buf[ip_start + 11] = ip_checksum as u8;
-
-        let icmp_start = ip_start + ip_hdr_len;
-        buf[icmp_start] = 8;
-        buf[icmp_start + 1] = 0;
-        buf[icmp_start + 2..icmp_start + 4].copy_from_slice(&[0, 0]);
-        buf[icmp_start + 4..icmp_start + 6].copy_from_slice(&identifier.to_be_bytes());
-        buf[icmp_start + 6..icmp_start + 8].copy_from_slice(&sequence.to_be_bytes());
-
-        let icmp_checksum = Self::checksum(&buf[icmp_start..icmp_start + icmp_hdr_len]);
-        buf[icmp_start + 2] = (icmp_checksum >> 8) as u8;
-        buf[icmp_start + 3] = icmp_checksum as u8;
+            if let Some(mut icmp) = IcmpEchoBuilder::new(ip_packet.payload_mut()) {
+                icmp.build_request(identifier, sequence).write_data(&[]);
+                let icmp_len = icmp.finalize();
+                ip_packet.finalize(icmp_len);
+            }
+        }
 
         let send_time = self.current_time();
 
         if self.transmit(&buf[..total_len]) {
-            log::info!("[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}", 
-                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
+            log::info!("[NET-PING] Sent ICMP echo to {} seq={}", target, sequence);
             Ok(send_time)
         } else {
-            log::warn!("[NET-PING] Failed to transmit ICMP echo to {}.{}.{}.{} seq={}", 
-                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
+            log::warn!("[NET-PING] Failed to transmit ICMP echo to {} seq={}", target, sequence);
             Err(())
         }
     }

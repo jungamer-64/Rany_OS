@@ -95,11 +95,49 @@ impl ExoShell {
     net.config()          - Show network configuration
     net.stats()           - Show TX/RX statistics
     net.arp()             - Show ARP cache
+    net.arp_insert(ip,mac)- Insert ARP entry manually
     net.ping("ip", count) - Send ICMP echo
     net.dhcp_state()      - Show DHCPv4/DHCPv6 state
     net.dhcp_discover()   - Send DHCPDISCOVER and return any offer
-    net.dhcp_request("server","offered") - Send DHCPREQUEST to server
+    net.dhcp_renew()      - Renew DHCP lease
     net.dhcp_release()    - Send DHCPRELEASE and clear lease
+
+  net.* - Connection Tracking
+    net.connections()     - Show all TCP/UDP connections (netstat)
+    net.netstat()         - Alias for connections()
+    net.tcp()             - Show TCP connections only
+    net.udp()             - Show UDP endpoints only
+
+  net.* - Interface Management
+    net.interfaces()      - List all network interfaces
+    net.ifaces()          - Alias for interfaces()
+    net.if_up(id)         - Bring interface up (CAP_NET_ADMIN)
+    net.if_down(id)       - Bring interface down (CAP_NET_ADMIN)
+
+  net.* - Routing
+    net.routes()          - Show IPv4/IPv6 routing table
+    net.route_add(dest, prefix_len, gateway, if_id [, metric])
+                          - Add IPv4 static route (CAP_NET_ADMIN)
+    net.route_del(dest, prefix_len, if_id)
+                          - Delete IPv4 route (CAP_NET_ADMIN)
+
+  net.* - Firewall
+    net.firewall()        - Show firewall status
+    net.firewall_enable() - Enable firewall (CAP_NET_ADMIN)
+    net.firewall_disable()- Disable firewall (CAP_NET_ADMIN)
+    net.firewall_rules()  - List firewall rules
+    net.firewall_stats()  - Show firewall statistics
+    net.firewall_add(action, dir, src, dst, proto, sport, dport, prio [, name])
+                          - Add firewall rule (CAP_NET_ADMIN)
+    net.firewall_remove(id) - Remove rule by ID (CAP_NET_ADMIN)
+    net.firewall_clear()  - Clear all rules (CAP_NET_ADMIN)
+    net.firewall_policy(dir, action) - Set default policy (CAP_NET_ADMIN)
+
+  net.* - DNS & Diagnostics
+    net.dns("hostname")   - Resolve hostname to IPv4
+    net.resolve("host")   - Alias for dns()
+    net.snapshot()        - Full network diagnostic snapshot
+    net.events(limit?)    - Recent network events (default: 20)
   cap.* - Capability (permissions)
     cap.list()            - List current capabilities
     cap.grant(...)        - Grant permission
@@ -159,7 +197,7 @@ impl ExoShell {
   _                         - Last result
 
 [Aliases (Unix compatibility)]
-  ls, cd, pwd, cat, mkdir, rm, ifconfig, ping are also available
+  ls, cd, pwd, cat, mkdir, rm, ifconfig, ping, netstat, route are also available
 "#;
         ExoValue::String(Cow::Owned(help_text.to_string()))
     }

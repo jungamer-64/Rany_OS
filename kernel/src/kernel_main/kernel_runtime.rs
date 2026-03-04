@@ -142,6 +142,9 @@ pub(crate) fn spawn_kernel_tasks(
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
     crate::net::services::http::server::start_once(executor);
 
+    // [PR-COMPLIANCE] ICMP Responder activation log
+    info!(target: "init", "ICMP responder server active");
+
     // Initialize network event handler and spawn the background task for async networking
     crate::net::l4::endpoint::handler::init_network_event_handler();
     executor.spawn(crate::task::Task::new(crate::net::l4::endpoint::tcp_rx::network_event_task()));

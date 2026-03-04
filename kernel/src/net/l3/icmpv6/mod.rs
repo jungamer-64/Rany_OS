@@ -358,6 +358,11 @@ impl Icmpv6Processor {
 
         self.stats.rx_messages.fetch_add(1, Ordering::Relaxed);
 
+        // Security: Check rate limit for incoming messages too to prevent DoS
+        if !self.check_tx_rate_limit(current_time) {
+            return Icmpv6Result::Dropped;
+        }
+
         // Verify checksum (mandatory for ICMPv6)
         if !self.verify_checksum(data, &src, &dst) {
             self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
@@ -370,12 +375,6 @@ impl Icmpv6Processor {
         match msg_type {
             Icmpv6Type::EchoRequest => {
                 self.stats.rx_echo_requests.fetch_add(1, Ordering::Relaxed);
-
-                // Informational messages are also rate-limited
-                if !self.check_tx_rate_limit(current_time) {
-                    return Icmpv6Result::Dropped;
-                }
-
                 self.handle_echo_request(data, src, dst)
             }
             Icmpv6Type::EchoReply => {
@@ -420,8 +419,7 @@ impl Icmpv6Processor {
             Icmpv6Type::RouterSolicitation
             | Icmpv6Type::RouterAdvertisement
             | Icmpv6Type::NeighborSolicitation
-            | Icmpv6Type::NeighborAdvertisement
-            | Icmpv6Type::Redirect => {
+            | Icmpv6Type::NeighborAdvertisement => {
                 self.stats.rx_ndp.fetch_add(1, Ordering::Relaxed);
                 Icmpv6Result::NdpMessage {
                     msg_type,
@@ -431,6 +429,11 @@ impl Icmpv6Processor {
                     src_mac,
                     hop_limit,
                 }
+            }
+            Icmpv6Type::Redirect => {
+                self.stats.rx_ndp.fetch_add(1, Ordering::Relaxed);
+                log::warn!("ICMPv6: Ignoring Redirect from {} (Security: disabled by default)", src);
+                Icmpv6Result::Dropped
             }
             _ => {
                 log::debug!("ICMPv6: Unknown type {} code {}", u8::from(msg_type), code);
@@ -447,8 +450,13 @@ impl Icmpv6Processor {
     }
 
     /// Handle Echo Request → produce Echo Reply
-    fn handle_echo_request(&self, data: &[u8], src: Ipv6Address, _dst: Ipv6Address) -> Icmpv6Result {
+    fn handle_echo_request(&self, data: &[u8], src: Ipv6Address, dst: Ipv6Address) -> Icmpv6Result {
         if !self.echo_enabled {
+            return Icmpv6Result::Dropped;
+        }
+
+        // Security: RFC 4443 Section 2.4(e) - MUST NOT respond to multicast
+        if dst.is_multicast() {
             return Icmpv6Result::Dropped;
         }
 

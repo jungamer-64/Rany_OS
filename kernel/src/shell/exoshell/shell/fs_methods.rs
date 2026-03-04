@@ -65,6 +65,33 @@ impl ExoShell {
             "dhcp_release" => NetNamespace::dhcp_release_async().await,
             "dhcp_last_declined" => NetNamespace::dhcp_last_declined_async().await,
             "dhcp_last_released" => NetNamespace::dhcp_last_released_async().await,
+            // TCP/UDP接続管理
+            "connections" | "netstat" => NetNamespace::netstat_async().await,
+            "tcp" => NetNamespace::tcp_connections_async().await,
+            "udp" => NetNamespace::udp_endpoints_async().await,
+            // インターフェース管理
+            "interfaces" | "ifaces" => NetNamespace::interfaces_async().await,
+            "if_up" => NetNamespace::if_up_async(&args).await,
+            "if_down" => NetNamespace::if_down_async(&args).await,
+            // ルーティング
+            "routes" => NetNamespace::routes_async().await,
+            "route_add" => NetNamespace::route_add_async(&args).await,
+            "route_del" => NetNamespace::route_del_async(&args).await,
+            // ファイアウォール
+            "firewall" => NetNamespace::firewall_status_async().await,
+            "firewall_enable" => NetNamespace::firewall_enable_async().await,
+            "firewall_disable" => NetNamespace::firewall_disable_async().await,
+            "firewall_rules" => NetNamespace::firewall_rules_async().await,
+            "firewall_stats" => NetNamespace::firewall_stats_async().await,
+            "firewall_add" => NetNamespace::firewall_add_async(&args).await,
+            "firewall_remove" => NetNamespace::firewall_remove_async(&args).await,
+            "firewall_clear" => NetNamespace::firewall_clear_async().await,
+            "firewall_policy" => NetNamespace::firewall_policy_async(&args).await,
+            // DNS
+            "dns" | "resolve" => NetNamespace::dns_resolve_async(&args).await,
+            // 診断
+            "snapshot" => NetNamespace::snapshot_async().await,
+            "events" => NetNamespace::events_async(&args).await,
             "ping" => {
                 let ip_str = match args.first() {
                     Some(ExoValue::String(s)) => s.as_ref().to_string(),
@@ -119,7 +146,12 @@ impl ExoShell {
                     method: name.to_string(),
                 }
                 .to_string()
-                    + "\n有効なメソッド: config, stats, arp, ping, dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
+                    + "\n有効なメソッド: config, stats, arp, ping, connections/netstat, tcp, udp,\n  \
+                       interfaces/ifaces, if_up, if_down, routes, route_add, route_del,\n  \
+                       firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
+                       firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
+                       dns/resolve, snapshot, events,\n  \
+                       dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
             ),
         }
     }
