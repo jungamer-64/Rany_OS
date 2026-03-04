@@ -188,14 +188,30 @@ impl Ipv6FragmentBuffer {
         }
 
         // RFC 8200: Sum of Fragment Offset and Payload Length > 65535
+        // (Note: This refers to the offset from the beginning of the fragmentable part)
         if end > 65535 {
-            log::warn!("[NET-IPV6] Sum of fragment offset ({}) and length ({}) exceeds 65535, dropping (RFC 8200)",
-                offset, payload_len);
+            log::warn!("[NET-IPV6] Fragment offset + length exceeds 65535, discarding (RFC 8200)");
             return Err(Ipv6ReassemblyError::PacketTooLarge);
         }
 
-        if end as usize > Self::MAX_PAYLOAD {
-            return Err(Ipv6ReassemblyError::PacketTooLarge);
+        // RFC 8200: Reassembled packet size check (Payload Length field is 16 bits)
+        // Reassembled Payload Length = (unfragmentable_part_len - 40) + total_payload_len
+        // This MUST NOT exceed 65,535 octets.
+        if let Some(unfrag) = &self.unfragmentable_part {
+            let reassembled_payload_len = unfrag.len().saturating_sub(40) + end as usize;
+            if reassembled_payload_len > 65535 {
+                log::warn!("[NET-IPV6] Reassembled packet Payload Length {} exceeds 65535, discarding (RFC 8200)",
+                    reassembled_payload_len);
+                return Err(Ipv6ReassemblyError::PacketTooLarge);
+            }
+        } else if frag.fragment_offset == 0 {
+            // We are processing the first fragment right now
+            let reassembled_payload_len = unfragmentable.len().saturating_sub(40) + end as usize;
+            if reassembled_payload_len > 65535 {
+                log::warn!("[NET-IPV6] Reassembled packet Payload Length {} exceeds 65535, discarding (RFC 8200)",
+                    reassembled_payload_len);
+                return Err(Ipv6ReassemblyError::PacketTooLarge);
+            }
         }
 
         // RFC 8200: Check for consistent total length

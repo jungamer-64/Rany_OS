@@ -401,6 +401,37 @@ pub fn aggregate_per_core_to_global(max_bytes: usize) -> usize {
 pub fn kick_serial_tx() {
     // Reuse the existing helper which performs aggregation + IER RMW.
     start_serial_tx();
+
+    // 16550 THRE interrupt is edge-triggered: it fires only when the TX
+    // holding register transitions from non-empty to empty.  If the register
+    // is already empty when we enable THRE, no interrupt will be generated
+    // and the global buffer will never be drained.
+    //
+    // Work around this by synchronously draining a burst of bytes here in
+    // non-ISR context.  The final THRE interrupt after these bytes are
+    // transmitted will kick the ISR for the remaining data.
+    if serial_output_enabled() && !IN_PANIC.load(Ordering::Relaxed) {
+        // Keep draining in a loop until the buffer is empty or the UART's
+        // FIFO is full.  A single burst may only send ISR_TX_BURST bytes
+        // (typically 16) which is not enough when thousands of log bytes
+        // have been buffered.
+        let _io_guard = SERIAL_IO_LOCK.lock();
+        let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE);
+        let mut lsr: PortU8 = IoPort::new(SERIAL_PORT_BASE + 5);
+        // Drain up to 4 KiB per idle cycle to make steady progress
+        // without monopolising the CPU.
+        let mut total = 0usize;
+        loop {
+            let n = drain_global_tx_buffer(&mut data_port, &mut lsr);
+            if n == 0 {
+                break;
+            }
+            total += n;
+            if total >= 4096 {
+                break;
+            }
+        }
+    }
 }
 
 /// Background aggregator task entry point. Move data from per-core buffers to

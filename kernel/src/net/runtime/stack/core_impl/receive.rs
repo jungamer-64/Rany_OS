@@ -265,9 +265,8 @@ impl NetworkStack {
             Ipv6ProcessResult::ReassemblyError(err, src, _dst, unfragmentable) => {
                 match err {
                     crate::net::l3::ipv6::Ipv6ReassemblyError::Overlap => {
-                        // RFC 8200: Send ICMPv6 Time Exceeded (Code 1) on overlap
-                        log::warn!("IPv6: Fragment overlap from {} - sending ICMPv6 Time Exceeded (RFC 8200)", src);
-                        self.send_icmpv6_time_exceeded(src, 1, &unfragmentable);
+                        // RFC 8200/5722: Silent discard for overlapping fragments (no ICMP error required)
+                        log::warn!("IPv6: Fragment overlap from {} - discarding (RFC 8200)", src);
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::InvalidSize => {
                         // RFC 8200: Send ICMPv6 Parameter Problem (Code 0), pointing to Payload Length
@@ -276,12 +275,10 @@ impl NetworkStack {
                         self.send_icmpv6_parameter_problem(src, 0, 4, &unfragmentable);
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
-                        // RFC 8200: Send ICMPv6 Parameter Problem (Code 0), pointing to Fragment Offset
-                        // The pointer field should point to the Fragment Offset field in the Fragment header.
-                        // unfragmentable ends just before the Fragment Header.
-                        let pointer = (unfragmentable.len() as u32) + 2;
-                        log::warn!("IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem (RFC 8200) pointer={}", src, pointer);
-                        self.send_icmpv6_parameter_problem(src, 0, pointer, &unfragmentable);
+                        // RFC 8200: If the reassembled packet would be larger than 65,535 octets,
+                        // send ICMPv6 Parameter Problem Code 1 pointing to Payload Length field.
+                        log::warn!("IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem Code 1 (RFC 8200)", src);
+                        self.send_icmpv6_parameter_problem(src, 1, 4, &unfragmentable);
                     }
                 }
             }
@@ -304,11 +301,6 @@ impl NetworkStack {
         hop_limit: u8,
         current_time: u64,
     ) {
-        // Security: Do not respond to multicast Echo Requests (Smurf attack prevention)
-        if dst.is_multicast() {
-            return;
-        }
-
         let icmpv6 = match self.icmpv6 {
             Some(ref icmpv6) => icmpv6,
             None => return,
@@ -323,6 +315,11 @@ impl NetworkStack {
                 sequence,
                 data: echo_data,
             } => {
+                // Security (RFC 4443): SHOULD NOT respond to multicast Echo Requests
+                if dst.is_multicast() {
+                    return;
+                }
+
                 // Choose source address: if the original request was to our global address, 
                 // use that as source for the reply.
                 let mut reply_src = None;

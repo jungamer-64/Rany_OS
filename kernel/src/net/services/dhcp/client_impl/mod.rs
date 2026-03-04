@@ -37,13 +37,19 @@ impl DhcpClient {
         
         log::info!("[NET] DHCPv4 client task started");
 
+        let mut loop_count: u64 = 0;
         loop {
             let now = crate::task::timer::current_tick();
+            loop_count += 1;
+            if loop_count <= 10 || loop_count % 10 == 0 {
+                log::info!("[NET] DHCP loop #{} state={:?} tick={}", loop_count, self.state(), now);
+            }
             
             // 状態機械を駆動（タイムアウトチェックと必要に応じたパケット送信）
             match self.drive(now, 1000) {
                 Ok(()) => {}
                 Err(e) => {
+                    log::error!("[NET] DHCP drive() error: {} (state={:?}, tick={})", e, self.state(), now);
                     return Err(e);
                 }
             }
@@ -52,6 +58,7 @@ impl DhcpClient {
             match task::with_timeout(socket.recv(), 1000).await {
                 TimeoutResult::Completed(Some((_src, _ttl, packet))) => {
                     let now = crate::task::timer::current_tick();
+                    log::info!("[NET] DHCP recv: got packet len={}", packet.data().len());
                     // 応答パケットを処理
                     match self.process_response(packet.data(), now) {
                         Ok(DhcpResponseResult::Ack(lease)) => {
@@ -87,6 +94,7 @@ impl DhcpClient {
                 }
                 TimeoutResult::TimedOut => {
                     // タイムアウトした場合はループの先頭に戻り、drive() で再送チェックが行われる
+                    log::info!("[NET] DHCP recv timeout (tick={})", crate::task::timer::current_tick());
                 }
                 TimeoutResult::Completed(None) => {
                     log::warn!("[NET] DHCPv4 socket closed unexpectedly");

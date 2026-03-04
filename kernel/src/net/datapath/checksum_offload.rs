@@ -250,7 +250,14 @@ impl ChecksumOffloadManager {
             // ソフトウェア計算
             tcp_data[16] = 0;
             tcp_data[17] = 0;
-            let cksum = tcp_udp_checksum(src_ip, dst_ip, 6, tcp_data);
+            let mut cksum = tcp_udp_checksum(src_ip, dst_ip, 6, tcp_data);
+            
+            // RFC 793/1122: If the computed checksum is zero, it MUST be
+            // transmitted as all ones (0xFFFF).
+            if cksum == 0 {
+                cksum = 0xFFFF;
+            }
+            
             let bytes = cksum.to_be_bytes();
             tcp_data[16] = bytes[0];
             tcp_data[17] = bytes[1];
@@ -285,15 +292,22 @@ impl ChecksumOffloadManager {
                 csum_offset: 6,
             }
         } else {
-            // ソフトウェア計算
-            udp_data[6] = 0;
-            udp_data[7] = 0;
-            let cksum = tcp_udp_checksum(src_ip, dst_ip, 17, udp_data);
-            let bytes = cksum.to_be_bytes();
-            udp_data[6] = bytes[0];
-            udp_data[7] = bytes[1];
-            self.stats.tx_sw_computed.fetch_add(1, Ordering::Relaxed);
-            TxChecksumAction::Computed
+    // ソフトウェア計算
+    udp_data[6] = 0;
+    udp_data[7] = 0;
+    let mut cksum = tcp_udp_checksum(src_ip, dst_ip, 17, udp_data);
+    
+    // RFC 768 / RFC 8200: If the computed checksum is zero, it is transmitted 
+    // as all ones (0xFFFF). 0x0000 is reserved for \"no checksum\".
+    if cksum == 0 {
+        cksum = 0xFFFF;
+    }
+    
+    let bytes = cksum.to_be_bytes();
+    udp_data[6] = bytes[0];
+    udp_data[7] = bytes[1];
+    self.stats.tx_sw_computed.fetch_add(1, Ordering::Relaxed);
+    TxChecksumAction::Computed
         }
     }
 

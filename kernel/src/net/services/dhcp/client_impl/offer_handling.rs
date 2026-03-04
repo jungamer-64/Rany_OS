@@ -356,11 +356,19 @@ impl DhcpClient {
 
         // OFFER passed ARP probe and moved into REQUESTING.
         if state_before == DhcpState::Selecting && state_after == DhcpState::Requesting {
-            let _ = self.send_request_packet(current_tick)?;
+            log::info!("[NET] DHCP drive: Selecting->Requesting, sending REQUEST (tick={})", current_tick);
+            match self.send_request_packet(current_tick) {
+                Ok(sent) => log::info!("[NET] DHCP REQUEST queued (sent={})", sent),
+                Err(e) => {
+                    log::error!("[NET] DHCP REQUEST failed: {}", e);
+                    return Err(e);
+                }
+            }
             return Ok(());
         }
 
         if transitioned {
+            log::info!("[NET] DHCP drive: transitioned, state_after={:?} (tick={})", state_after, current_tick);
             match state_after {
                 // Selecting retransmit / conflict recovery.
                 DhcpState::Selecting => {
@@ -372,6 +380,7 @@ impl DhcpClient {
                 }
                 // Retry budget exhausted and reset to INIT -> restart discovery.
                 DhcpState::Init => {
+                    log::warn!("[NET] DHCP retries exhausted, restarting discovery");
                     let _ = self.send_discover_packet(current_tick)?;
                 }
                 _ => {}
@@ -496,6 +505,7 @@ impl DhcpClient {
         probe_at: u64,
     ) -> bool {
         let probe_elapsed = (current_tick.saturating_sub(probe_at)) / tick_rate;
+        log::info!("[NET] DHCP ARP probe check: elapsed={}s tick={} probe_at={}", probe_elapsed, current_tick, probe_at);
         if probe_elapsed < Self::PROBE_WAIT_SECS {
             return false; // still waiting for ARP replies
         }
