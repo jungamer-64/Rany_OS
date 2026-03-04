@@ -504,9 +504,85 @@ fn handle_syn_sent_segment(tcb: TcpControlBlockEntry, flags: u8, seq_num: u32, a
 
     if is_syn && is_ack {
         handle_syn_ack_received(tcb, seq_num, ack_num, segment, data_offset);
+    } else if is_syn {
+        // RFC 793: Simultaneous Open (双方からSYNを送信した場合)
+        // SYN-SENT -> SYN-RECEIVED 遷移し、SYN-ACKを返送する。
+        handle_simultaneous_syn_received(tcb, seq_num, segment, data_offset);
     } else if is_rst {
         handle_rst_received(tcb, seq_num);
+    } else if is_ack {
+        // RFC 793: SYN-SENT状態でSYNなしACKを受信した場合はRSTでリセット
+        send_rst_for_unexpected_ack(&tcb, ack_num);
     }
+}
+
+/// 同時オープン(Simultaneous Open)時のSYN受信処理
+fn handle_simultaneous_syn_received(tcb: TcpControlBlockEntry, seq_num: u32, segment: &[u8], data_offset: usize) {
+    // TCPオプション解析
+    let (peer_ts, sack_permitted) = if data_offset > 20 && data_offset <= segment.len() {
+        let options = &segment[20..data_offset];
+        let mut parser = TcpOptionParser::new(options);
+        (parser.find_timestamps(), parser.find_sack_permitted())
+    } else {
+        (None, false)
+    };
+
+    tcb_table().update(tcb.local, tcb.remote, |entry| {
+        entry.rcv_nxt = seq_num.wrapping_add(1);
+        entry.state = TcpConnectionState::SynReceived;
+
+        if let Some((peer_ts_val, _)) = peer_ts {
+            entry.ts_enabled = true;
+            entry.ts_ecr = peer_ts_val;
+            entry.ts_val = generate_tcp_timestamp();
+        }
+        if sack_permitted {
+            entry.sack_enabled = true;
+        }
+    });
+
+    // SYN-ACKを送信
+    let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
+        .seq(tcb.snd_una) // 自分の初期ISN
+        .ack(seq_num.wrapping_add(1))
+        .syn()
+        .ack_flag()
+        .window(65535);
+
+    if let Some((peer_ts_val, _)) = peer_ts {
+        builder = builder.nop().nop().timestamp(generate_tcp_timestamp(), peer_ts_val);
+    }
+
+    let mut syn_ack = builder.build();
+    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
+        TcpSegmentBuilder::calculate_checksum(&mut syn_ack, lv4, rv4);
+    } else {
+        TcpSegmentBuilder::calculate_checksum_v6(
+            &mut syn_ack,
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
+        );
+    }
+    send_tcp_segment(tcb.local, tcb.remote, syn_ack);
+}
+
+/// 予期しないACKに対するRST送信 (RFC 793)
+fn send_rst_for_unexpected_ack(tcb: &TcpControlBlockEntry, ack_num: u32) {
+    let mut rst = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
+        .seq(ack_num)
+        .rst()
+        .build();
+
+    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
+        TcpSegmentBuilder::calculate_checksum(&mut rst, lv4, rv4);
+    } else {
+        TcpSegmentBuilder::calculate_checksum_v6(
+            &mut rst,
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
+        );
+    }
+    send_tcp_segment(tcb.local, tcb.remote, rst);
 }
 
 /// ESTABLISHED状態でのセグメント処理
@@ -699,6 +775,7 @@ pub fn handle_icmp_error(local: EndpointAddr, remote: EndpointAddr, icmp_type: c
     let error = if icmp_type == IcmpType::DestinationUnreachable {
         match DestUnreachCode::from(code) {
             DestUnreachCode::PortUnreachable => EndpointError::ConnectionRefused,
+            DestUnreachCode::ProtocolUnreachable => EndpointError::ProtocolUnreachable,
             DestUnreachCode::HostUnreachable => EndpointError::HostUnreachable,
             DestUnreachCode::NetworkUnreachable => EndpointError::NetworkUnreachable,
             _ => return, // Ignore other errors for now
@@ -711,11 +788,22 @@ pub fn handle_icmp_error(local: EndpointAddr, remote: EndpointAddr, icmp_type: c
     let mut fd = None;
 
     tcb_table().update(local, remote, |entry| {
-        // RFC 1122: For SYN-SENT state, certain errors mean the connection 
-        // attempt failed (e.g. Port Unreachable = Connection Refused).
+        // RFC 1122 Section 4.2.3.9: ICMP error handling
+        // A TCP SHOULD notify the user of the error, but it SHOULD NOT close 
+        // the connection (it's a "soft" error), except for certain "hard" 
+        // errors in SYN-SENT state.
         if entry.state == TcpConnectionState::SynSent {
-            should_close = true;
-            fd = Some(entry.fd);
+            match error {
+                EndpointError::ConnectionRefused | EndpointError::ProtocolUnreachable => {
+                    // Hard errors: close the connection (RFC 1122)
+                    should_close = true;
+                    fd = Some(entry.fd);
+                }
+                _ => {
+                    // Soft errors (Host/Network unreachable): keep connection open,
+                    // letting it time out naturally or succeed if route recovers.
+                }
+            }
         }
 
         // Notify the user of the error (RFC 1122 requirement)
