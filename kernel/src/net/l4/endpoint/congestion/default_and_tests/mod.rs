@@ -242,41 +242,51 @@ impl BbrController {
             mss,
             cwnd: initial_cwnd,
             pacing_rate: 0,
-            
+
             btl_bw_filter: [BwSample::default(); bbr_constants::BTLBW_FILTER_LEN],
             bw_filter_idx: 0,
             btl_bw: 0,
-            
+
             rt_prop: u64::MAX,
             rt_prop_stamp: 0,
             rt_prop_expired: false,
-            
+
             delivered: 0,
             delivered_time: 0,
             first_sent_time: 0,
             bytes_in_flight: 0,
-            
+
             pacing_gain: bbr_constants::STARTUP_GAIN,
             cwnd_gain: bbr_constants::STARTUP_GAIN,
-            
+
             cycle_idx: 0,
             cycle_start: 0,
-            
+
             full_bw_reached: false,
             full_bw: 0,
             full_bw_count: 0,
             round_count: 0,
             round_start: false,
             next_round_delivered: 0,
-            
+
             probe_rtt_done_stamp: 0,
             probe_rtt_round_done: false,
             prior_cwnd: 0,
-            
+
             last_rtt: 0,
         }
     }
-    
+
+    /// MSS更新時の処理
+    pub fn update_mss(&mut self, new_mss: u32) {
+        let old_mss = self.mss;
+        self.mss = new_mss;
+
+        // 初期状態（Startup）かつcwndが初期値のままであれば、新MSSに合わせて更新
+        if self.state == BbrState::Startup && self.cwnd == INITIAL_WINDOW * old_mss {
+            self.cwnd = INITIAL_WINDOW * new_mss;
+        }
+    }
     /// Get current cwnd
     #[inline]
     pub fn cwnd(&self) -> u32 {

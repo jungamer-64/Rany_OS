@@ -1258,7 +1258,6 @@ impl TcpProcessor {
                 }
             }
             TcpProcessResult::None => data_result,
-            _ => ack_result, // Use other special results like RST
         }
     }
 

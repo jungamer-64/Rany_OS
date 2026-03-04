@@ -59,6 +59,15 @@ impl CongestionControllerVariant {
         }
     }
 
+    /// MSS更新
+    pub fn update_mss(&mut self, mss: u32) {
+        match self {
+            Self::NewReno(c) => c.update_mss(mss),
+            Self::Cubic(c) => c.update_mss(mss),
+            Self::Bbr(c) => c.update_mss(mss),
+        }
+    }
+
     /// 送信可能なバイト数を計算
     pub fn available_window(&self, rwnd: u32) -> u32 {
         match self {

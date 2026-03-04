@@ -149,6 +149,12 @@ impl TcpControlBlockEntry {
         self.nagle_enabled = !nodelay;
     }
 
+    /// MSSを設定し、輻輳制御ウィンドウを更新 (RFC 6928)
+    pub fn set_mss(&mut self, mss: u32) {
+        self.mss = mss;
+        self.congestion.update_mss(mss);
+    }
+
     /// QoS優先度を設定
     pub fn set_priority(&mut self, priority: u8) {
         self.priority = priority & 0x3F;

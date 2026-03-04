@@ -101,6 +101,17 @@ impl CongestionController {
         }
     }
 
+    /// MSS更新時の処理 (RFC 6928: 初期ウィンドウを新MSSに合わせる)
+    pub fn update_mss(&mut self, new_mss: u32) {
+        let old_mss = self.mss;
+        self.mss = new_mss;
+
+        // 接続開始直後（まだデータ送信前）であれば、初期ウィンドウを再計算
+        if self.state == CongestionState::SlowStart && self.cwnd == INITIAL_WINDOW * old_mss {
+            self.cwnd = INITIAL_WINDOW * new_mss;
+        }
+    }
+
     /// MSSを指定して作成
     pub fn with_mss(mss: u32) -> Self {
         Self {
@@ -380,6 +391,11 @@ impl CubicController {
             ack_cnt: 0,
             last_congestion: 0,
         }
+    }
+
+    /// MSS更新時の処理
+    pub fn update_mss(&mut self, new_mss: u32) {
+        self.base.update_mss(new_mss);
     }
 
     /// Get current cwnd

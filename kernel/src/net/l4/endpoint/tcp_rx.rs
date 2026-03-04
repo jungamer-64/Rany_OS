@@ -12,7 +12,7 @@
 //!   2セグメントごとまたは最大200msでACKを送信してACKトラフィックを半減させる。
 
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::event::{event_queue, NetworkEvent};
 use super::handler::{EventHandleResult, NetworkEventHandler};
@@ -26,7 +26,6 @@ use super::endpoint_core::Endpoint;
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
 use super::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
-    seq_before,
 };
 use super::window_scale::TcpOptionParser;
 
@@ -91,7 +90,6 @@ fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, payload_len:
     }
 }
 
-use core::sync::atomic::AtomicU32;
 
 /// Challenge ACK rate limiting (RFC 5961 Section 10)
 /// Recommended limit: 100 segments per second
@@ -277,7 +275,7 @@ pub fn process_tcp_segment_v6(
         process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
     } else {
         // 新規接続要求の可能性（LISTENソケット検索）
-        process_tcp_new_connection(local, remote, flags, seq_num, segment, data_offset);
+        process_tcp_new_connection(local, remote, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
     }
 }
 
@@ -365,7 +363,7 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
         process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
     } else {
         // 新規接続要求の可能性（LISTENソケット検索）
-        process_tcp_new_connection(local, remote, flags, seq_num, segment, data_offset);
+        process_tcp_new_connection(local, remote, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
     }
 }
 
@@ -826,8 +824,12 @@ fn process_tcp_with_tcb(
                         entry.snd_una = ack_num;
                         entry.state = TcpConnectionState::Established;
                     });
+                    
                     // Continue processing in Established state
-                    handle_synchronized_segment(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
+                    let mut established_tcb = tcb.clone();
+                    established_tcb.snd_una = ack_num;
+                    established_tcb.state = TcpConnectionState::Established;
+                    handle_synchronized_segment(established_tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
                 } else if (flags & tcp_flags::RST) == 0 {
                     send_rst_for_unexpected_ack(&tcb, ack_num);
                 }
@@ -957,7 +959,7 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
 
         // MSS (RFC 793 / 1122)
         if let Some(mss) = peer_mss {
-            entry.mss = mss as u32;
+            entry.set_mss(mss as u32);
         }
 
         // Window Scale (RFC 7323)
@@ -1018,6 +1020,8 @@ fn process_tcp_new_connection(
     remote: EndpointAddr,
     flags: u8,
     seq_num: u32,
+    ack_num: u32,
+    _urgent_ptr: u16,
     segment: &[u8],
     data_offset: usize,
 ) {
@@ -1053,7 +1057,6 @@ fn process_tcp_new_connection(
         
         if is_ack {
             // <SEQ=SEG.ACK><CTL=RST>
-            let ack_num = u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]);
             builder = builder.seq(ack_num);
         } else {
             // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
@@ -1118,7 +1121,7 @@ fn process_tcp_new_connection(
         tcb.sack_enabled = true;
     }
     if let Some(mss) = peer_mss {
-        tcb.mss = mss as u32;
+        tcb.set_mss(mss as u32);
     }
     if let Some(ws) = peer_ws {
         tcb.window_scale.enabled = true;
