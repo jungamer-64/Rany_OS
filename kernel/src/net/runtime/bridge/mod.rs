@@ -1283,6 +1283,7 @@ pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
 ///
 /// Transitional behavior: returns the single global stack config only for the
 /// current primary bridge interface.
+#[allow(deprecated)]
 pub fn get_real_config_for_interface(if_id: NetIfId) -> Option<NetworkConfigSnapshot> {
     if primary_bridge_if() != Some(if_id) {
         return None;
@@ -1330,6 +1331,7 @@ pub fn get_real_stats() -> Option<NetworkStatsSnapshot> {
 ///
 /// Transitional behavior: returns the single global stack stats only for the
 /// current primary bridge interface.
+#[allow(deprecated)]
 pub fn get_real_stats_for_interface(if_id: NetIfId) -> Option<NetworkStatsSnapshot> {
     if primary_bridge_if() != Some(if_id) {
         return None;

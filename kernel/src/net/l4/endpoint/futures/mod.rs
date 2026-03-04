@@ -202,6 +202,7 @@ impl AcceptFuture {
 impl Future for AcceptFuture {
     type Output = EndpointResult<(OwnedEndpoint, EndpointAddr)>;
 
+    #[allow(deprecated)] // AcceptFutureはnext_incoming()を内部で使用するが、Future自体がasync代替
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.endpoint.next_incoming() {
             Ok(( ep, addr)) => Poll::Ready(Ok((OwnedEndpoint::from_endpoint(ep), addr))),

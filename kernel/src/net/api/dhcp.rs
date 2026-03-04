@@ -18,6 +18,7 @@ use crate::net::services::dhcp;
 use crate::sync::PoisonLock;
 use crate::sync::atomic_waker::AtomicWaker;
 
+#[allow(deprecated)]
 use super::config::get_network_config;
 
 extern crate alloc;

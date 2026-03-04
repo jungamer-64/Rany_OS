@@ -167,6 +167,7 @@ impl Endpoint {
 
             // イベントキュー経由で非同期bindを実行（同期ロック取得を回避）
             let tcp_addr = local_addr;
+            #[allow(deprecated)]
             let listener = crate::net::runtime::stack::bind_tcp(tcp_addr)
                 .map_err(|_| EndpointError::AddressInUse)?;
             inner.ensure_tcp().listener = Some(listener);
@@ -683,6 +684,7 @@ impl OwnedEndpoint {
     /// # 非推奨
     /// asyncコンテキストでは [`open_connection_async()`] を使用すること。
     #[deprecated(note = "Use open_connection_async() for async contexts.")]
+    #[allow(deprecated)]
     pub fn open_connection(&self, addr: EndpointAddr) -> EndpointResult<()> {
         self.endpoint
             .as_ref()
@@ -696,6 +698,7 @@ impl OwnedEndpoint {
     /// # 非推奨
     /// asyncコンテキストでは [`start_listening_async()`] を使用すること。
     #[deprecated(note = "Use start_listening_async() for async contexts.")]
+    #[allow(deprecated)]
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
         self.endpoint
             .as_ref()
@@ -709,6 +712,7 @@ impl OwnedEndpoint {
     /// # 非推奨
     /// asyncコンテキストでは `accept_async()` を使用すること。
     #[deprecated(note = "Use accept_async() via start_listening_async() for async contexts.")]
+    #[allow(deprecated)]
     pub fn next_incoming(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr)> {
         let (ep, addr) = self
             .endpoint
@@ -855,6 +859,7 @@ pub fn create_raw_endpoint() -> OwnedEndpoint {
 /// # 非推奨
 /// asyncコンテキストでは [`create_tcp_server_async()`] を使用すること。
 #[deprecated(note = "Use create_tcp_server_async() for async contexts.")]
+#[allow(deprecated)]
 pub fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<OwnedEndpoint> {
     let ep = create_tcp_endpoint();
     ep.set_local_addr(addr)?;
@@ -869,6 +874,7 @@ pub fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<Own
 /// # 非推奨
 /// asyncコンテキストでは [`open_tcp_connection_async()`] を使用すること。
 #[deprecated(note = "Use open_tcp_connection_async() for async contexts.")]
+#[allow(deprecated)]
 pub fn open_tcp_connection(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
     let ep = create_tcp_endpoint();
     ep.open_connection(addr)?;

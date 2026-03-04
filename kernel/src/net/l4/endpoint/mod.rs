@@ -81,6 +81,7 @@ pub use manager::{
 };
 
 // Re-exports: endpoint
+#[allow(deprecated)]
 pub use endpoint_core::{
     OwnedEndpoint, create_raw_endpoint, create_tcp_endpoint, create_tcp_server, create_udp_endpoint,
     create_tcp_server_async, open_tcp_connection_async, create_udp_endpoint_bound_async,
