@@ -272,22 +272,22 @@ impl TcpControlBlock {
         }
     }
 
-    /// RFC 793 check for whether to update send window
-    pub fn should_update_window(&self, seq: u32, ack: u32) -> bool {
-        // SND.UNA < SEG.ACK <= SND.NXT
-        if seq_after(ack, self.seq.snd_una) && !seq_after(ack, self.seq.snd_nxt) {
+    /// RFC 793 / 9293 check for whether to update send window
+    pub fn should_update_window(&self, seq: u32, ack: u32, window: u16) -> bool {
+        let new_wnd = (window as u32) << self.options.peer_wscale;
+        
+        // RFC 9293 Section 3.10.7.4 (Step 6):
+        // (SND.WL1 < SEG.SEQ) OR (SND.WL1 = SEG.SEQ AND SND.WL2 < SEG.ACK) 
+        // OR (SND.WL1 = SEG.SEQ AND SND.WL2 = SEG.ACK AND SEG.WND > SND.WND)
+        if seq_after(seq, self.seq.snd_wl1) {
             return true;
         }
-        // SEG.ACK == SND.UNA
-        if ack == self.seq.snd_una {
-            if seq_after(seq, self.seq.snd_wl1) {
+        if seq == self.seq.snd_wl1 {
+            if seq_after(ack, self.seq.snd_wl2) {
                 return true;
             }
-            if seq == self.seq.snd_wl1 {
-                // Note: We compare unscaled windows for WL2 comparison as per RFC
-                // Actually RFC 793 says "SEG.WND > SND.WL2", where WL2 is the window value.
-                // But in modern stacks with scaling, we usually compare scaled values.
-                return true; // Simplified: always update if same seq/ack to catch window changes
+            if ack == self.seq.snd_wl2 && new_wnd > self.seq.snd_wnd {
+                return true;
             }
         }
         false

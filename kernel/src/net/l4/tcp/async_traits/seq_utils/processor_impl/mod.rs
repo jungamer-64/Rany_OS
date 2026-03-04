@@ -851,7 +851,7 @@ impl TcpProcessor {
 
 
     /// Check if an incoming segment is acceptable according to RFC 793 / 9293 Step 1
-    pub(crate) fn is_acceptable_sequence(tcb: &TcpControlBlock, seq_num: u32, payload_len: usize) -> bool {
+    pub(crate) fn is_acceptable_sequence(tcb: &TcpControlBlock, seq_num: u32, seg_len: usize) -> bool {
         let rcv_nxt = tcb.rcv_nxt();
         let rcv_wnd = tcb.get_effective_rcv_wnd();
         
@@ -865,7 +865,7 @@ impl TcpProcessor {
             current_rcv_end
         };
 
-        if payload_len == 0 {
+        if seg_len == 0 {
             if rcv_wnd == 0 && current_rcv_end == rcv_end {
                 seq_num == rcv_nxt
             } else {
@@ -876,14 +876,15 @@ impl TcpProcessor {
             }
         } else {
             if rcv_wnd == 0 && current_rcv_end == rcv_end {
-                // Data received but window is 0 - not acceptable
-                false
+                // RFC 1122 Section 4.2.2.17: "The receiver MUST accept a zero-window 
+                // probe containing a single octet of new data."
+                seg_len == 1 && seq_num == rcv_nxt
             } else {
                 // Overlap exists if NOT (Entirely before OR Entirely after)
                 // Entirely before: SEG.SEQ + SEG.LEN <= RCV.NXT
                 // Entirely after: SEG.SEQ >= RCV.END
 
-                let seg_end = seq_num.wrapping_add(payload_len as u32);
+                let seg_end = seq_num.wrapping_add(seg_len as u32);
 
                 // (seg_end <= rcv_nxt)
                 let entirely_before = (seg_end.wrapping_sub(rcv_nxt) as i32) <= 0;
@@ -915,8 +916,12 @@ impl TcpProcessor {
         let _psh = flags & TcpHeader::FLAG_PSH != 0;
 
         // RFC 793 Step 1: Check sequence number acceptability
-        let payload_len = payload.len();
-        if tcb.state() != TcpState::SynSent && !Self::is_acceptable_sequence(tcb, seq_num, payload_len) {
+        // SEG.LEN includes SYN and FIN bits (RFC 793 Section 3.1)
+        let mut seg_len = payload.len();
+        if syn { seg_len += 1; }
+        if fin { seg_len += 1; }
+
+        if tcb.state() != TcpState::SynSent && !Self::is_acceptable_sequence(tcb, seq_num, seg_len) {
             // If the segment is not acceptable and RST is not set, send an ACK
             if !rst {
                 return Self::make_ack_result(tcb);
@@ -1033,8 +1038,8 @@ impl TcpProcessor {
                 }
             }
             
-            // RFC 793: Update send window if acceptable
-            if tcb.should_update_window(seq_num, ack_num) {
+            // RFC 793 / 9293: Update send window if acceptable
+            if tcb.should_update_window(seq_num, ack_num, window) {
                 tcb.set_snd_wnd(window, seq_num, ack_num);
             }
         }
@@ -1221,14 +1226,15 @@ impl TcpProcessor {
 
             tcb.wake_connect_waiter();
 
-            // Some peers send ACK + first data segment immediately after SYN-ACK.
-            // Process that payload instead of dropping it at state transition.
-            if !payload.is_empty() {
+            // Some peers send ACK + first data segment (or FIN) immediately after SYN-ACK.
+            // Process that payload/FIN instead of dropping it at state transition.
+            let fin = flags & TcpHeader::FLAG_FIN != 0;
+            if !payload.is_empty() || fin {
                 return Self::handle_established_segment(
                     tcb,
                     ack,
                     ack_num,
-                    false,
+                    fin,
                     seq_num,
                     payload,
                     header_len,
@@ -1483,8 +1489,8 @@ impl TcpProcessor {
             // Drain contiguous OOO segments
             let ooo_fin = tcb.drain_ooo_segments();
 
-            // Handle FIN if it is now at the head of the sequence
-            if (fin || ooo_fin) && tcb.rcv_nxt() == seq_num.wrapping_add(payload_len as u32) {
+            // Handle FIN if it is now at the head of the sequence (current or just drained)
+            if fin || ooo_fin {
                 return Self::handle_established_fin(tcb);
             }
 

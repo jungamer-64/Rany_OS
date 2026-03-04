@@ -118,9 +118,6 @@ impl NetworkStack {
                 self.stats.record_rx_error();
             }
             Ipv4ProcessResult::Success => {}
-            Ipv4ProcessResult::UnknownProtocol(proto, _src, _dst, _data) => {
-                log::debug!("[NET] Unknown IP protocol: {}", proto);
-            }
         }
     }
 

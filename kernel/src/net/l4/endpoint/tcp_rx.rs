@@ -66,11 +66,13 @@ pub(crate) fn generate_tcp_timestamp() -> u32 {
 // seq_before は types モジュールの統一実装を使用
 
 /// RFC 793 Step 1: 受信セグメントのシーケンス番号妥当性を検証
-fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, payload_len: usize) -> bool {
+/// 
+/// SEG.LEN は SYN および FIN ビットを含むシーケンス空間の長さを指定する必要がある。
+fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, seg_len: usize) -> bool {
     let rcv_nxt = tcb.rcv_nxt;
     let rcv_wnd = tcb.effective_recv_window();
-    
-    if payload_len == 0 {
+
+    if seg_len == 0 {
         if rcv_wnd == 0 {
             seq_num == rcv_nxt
         } else {
@@ -80,17 +82,18 @@ fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, payload_len:
         }
     } else {
         if rcv_wnd == 0 {
-            false
+            // RFC 1122 Section 4.2.2.17: "The receiver MUST accept a zero-window 
+            // probe containing a single octet of new data."
+            seg_len == 1 && seq_num == rcv_nxt
         } else {
             // rcv_nxt <= seq_num < rcv_nxt + rcv_wnd OR
-            // rcv_nxt <= seq_num + payload_len - 1 < rcv_nxt + rcv_wnd
+            // rcv_nxt <= seq_num + seg_len - 1 < rcv_nxt + rcv_wnd
             let diff_start = seq_num.wrapping_sub(rcv_nxt);
-            let diff_end = seq_num.wrapping_add(payload_len as u32).wrapping_sub(1).wrapping_sub(rcv_nxt);
+            let diff_end = seq_num.wrapping_add(seg_len as u32).wrapping_sub(1).wrapping_sub(rcv_nxt);
             diff_start < rcv_wnd || diff_end < rcv_wnd
         }
     }
 }
-
 
 /// Challenge ACK rate limiting (RFC 5961 Section 10)
 /// Recommended limit: 100 segments per second
@@ -241,7 +244,11 @@ pub fn process_tcp_segment_v6(
 
         // RFC 793 Step 1: Check sequence number acceptability
         let payload_len = if segment.len() > data_offset { segment.len() - data_offset } else { 0 };
-        if !is_acceptable_sequence(&tcb, seq_num, payload_len) {
+        let mut seg_len = payload_len;
+        if (flags & tcp_flags::SYN) != 0 { seg_len += 1; }
+        if (flags & tcp_flags::FIN) != 0 { seg_len += 1; }
+
+        if !is_acceptable_sequence(&tcb, seq_num, seg_len) {
             let is_rst = (flags & tcp_flags::RST) != 0;
             if !is_rst {
                 send_challenge_ack(&tcb);
@@ -319,7 +326,11 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
 
         // RFC 793 Step 1: Check sequence number acceptability
         let payload_len = if segment.len() > data_offset { segment.len() - data_offset } else { 0 };
-        if !is_acceptable_sequence(&tcb, seq_num, payload_len) {
+        let mut seg_len = payload_len;
+        if (flags & tcp_flags::SYN) != 0 { seg_len += 1; }
+        if (flags & tcp_flags::FIN) != 0 { seg_len += 1; }
+
+        if !is_acceptable_sequence(&tcb, seq_num, seg_len) {
             let is_rst = (flags & tcp_flags::RST) != 0;
             if !is_rst {
                 send_challenge_ack(&tcb);
