@@ -145,6 +145,8 @@ impl DhcpClient {
     }
 
     /// Send a DHCPDECLINE (best-effort)
+    ///
+    /// RFC 2131: DHCPDECLINE は src_ip = 0.0.0.0 で送信する。
     pub fn send_decline(&self, declined_ip: Ipv4Address, server_ip: Option<Ipv4Address>) -> bool {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         match self.build_decline(&mut buf, declined_ip, server_ip, 0) {
@@ -153,7 +155,14 @@ impl DhcpClient {
                 self.last_declined.store(declined_ip.to_u32(), Ordering::SeqCst);
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
-                crate::net::runtime::stack::send_udp_async(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..len], 64)
+                crate::net::runtime::stack::send_udp_async_with_src(
+                    Ipv4Address::new([0, 0, 0, 0]),
+                    DHCP_CLIENT_PORT,
+                    dst,
+                    DHCP_SERVER_PORT,
+                    &buf[..len],
+                    64,
+                )
             }
             Err(_) => false,
         }
@@ -234,7 +243,15 @@ impl DhcpClient {
 
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         match self.build_release(&mut buf, 0) {
-            Ok(len) => crate::net::runtime::stack::send_udp_async(DHCP_CLIENT_PORT, lease.server_ip, DHCP_SERVER_PORT, &buf[..len], 64),
+            // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
+            Ok(len) => crate::net::runtime::stack::send_udp_async_with_src(
+                lease.ip_address,
+                DHCP_CLIENT_PORT,
+                lease.server_ip,
+                DHCP_SERVER_PORT,
+                &buf[..len],
+                64,
+            ),
             Err(_) => false,
         }
     }
@@ -261,10 +278,13 @@ impl DhcpClient {
     }
 
     /// Send a DHCPDISCOVER packet for the current state machine cycle.
+    ///
+    /// RFC 2131: DHCPDISCOVER は src_ip = 0.0.0.0 で送信する。
     fn send_discover_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
-        Ok(crate::net::runtime::stack::send_udp_async(
+        Ok(crate::net::runtime::stack::send_udp_async_with_src(
+            Ipv4Address::new([0, 0, 0, 0]),
             DHCP_CLIENT_PORT,
             Ipv4Address::new([255, 255, 255, 255]),
             DHCP_SERVER_PORT,
@@ -289,12 +309,29 @@ impl DhcpClient {
     }
 
     /// Send a DHCPREQUEST packet for Requesting/Renewing/Rebinding.
+    ///
+    /// RFC 2131: Renewing 時は取得済みIPをソースIPとして使用し、
+    /// それ以外 (Requesting/Rebinding) は src_ip = 0.0.0.0 で送信する。
     fn send_request_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_request(&mut buf, current_tick)?;
         let state = self.state();
         let dst = self.request_destination_for_state(state);
-        Ok(crate::net::runtime::stack::send_udp_async(
+        let src_ip = if state == DhcpState::Renewing {
+            // Renewing: ユニキャストで取得済みIPを使用
+            match self.lease.lock() {
+                Ok(lease) => lease
+                    .as_ref()
+                    .map(|l| l.ip_address)
+                    .unwrap_or(Ipv4Address::new([0, 0, 0, 0])),
+                Err(_) => Ipv4Address::new([0, 0, 0, 0]),
+            }
+        } else {
+            // Requesting/Rebinding: src_ip = 0.0.0.0
+            Ipv4Address::new([0, 0, 0, 0])
+        };
+        Ok(crate::net::runtime::stack::send_udp_async_with_src(
+            src_ip,
             DHCP_CLIENT_PORT,
             dst,
             DHCP_SERVER_PORT,
