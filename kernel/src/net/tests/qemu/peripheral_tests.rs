@@ -108,7 +108,9 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
 }
 
 // new smoke test exercising public runtime APIs
+#[allow(deprecated)] // テスト用: 同期APIの動作確認
 pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
+    #[allow(deprecated)]
     use crate::net::api::shell::{dhcp_last_declined, dhcp_last_released};
     use crate::net::runtime::stack;
 
@@ -116,6 +118,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     let _ = crate::net::api::shell::init_dhcp_runtime();
 
     // initially None
+    #[allow(deprecated)]
     if dhcp_last_declined().is_some() || dhcp_last_released().is_some() {
         return false;
     }
@@ -141,7 +144,9 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
         }
     }
 
+    #[allow(deprecated)]
     crate::net::api::shell::dhcp_release();
+    #[allow(deprecated)]
     if dhcp_last_released() != Some([1,2,3,4]) {
         return false;
     }
@@ -152,6 +157,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
             let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5,6,7,8]), None);
         }
     }
+    #[allow(deprecated)]
     if dhcp_last_declined() != Some([5,6,7,8]) {
         return false;
     }

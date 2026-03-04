@@ -57,7 +57,10 @@ impl ExoShell {
                 .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
                 .collect();
             match namespace {
-                "net" => crate::shell::exoshell::namespaces::net::NetNamespace::dispatch(method, &args),
+                "net" => {
+                    #[allow(deprecated)]
+                    crate::shell::exoshell::namespaces::net::NetNamespace::dispatch(method, &args)
+                },
                 _ => ExoValue::String(Cow::Owned(format!("Usage: {} <method> [args...]", namespace))),
             }
         } else {

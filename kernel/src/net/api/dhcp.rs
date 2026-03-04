@@ -4,13 +4,19 @@
 //! DHCPv4/v6クライアントの初期化、discover/request/release/renew、状態取得。
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::tcb_table;
 use crate::net::runtime::stack;
 use crate::net::services::dhcp;
+use crate::sync::PoisonLock;
+use crate::sync::atomic_waker::AtomicWaker;
 
 #[allow(deprecated)] // ブートストラップMAC取得用
 use super::config::get_network_config;
@@ -38,6 +44,8 @@ pub struct DhcpOfferInfo {
     pub offered_ip: [u8; 4],
 }
 
+/// 同期DHCPディスカバー（非推奨：dhcp_discover_async を使用してください）
+#[deprecated(note = "use dhcp_discover_async() instead")]
 pub fn dhcp_discover() -> Option<DhcpOfferInfo> {
     let now = tcb_table().get_current_tick();
     if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
@@ -54,6 +62,8 @@ pub fn dhcp_discover() -> Option<DhcpOfferInfo> {
     None
 }
 
+/// 同期DHCPリクエスト（非推奨：dhcp_request_async を使用してください）
+#[deprecated(note = "use dhcp_request_async() instead")]
 pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
     use crate::net::services::dhcp::{
         DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE, DHCP_SERVER_PORT,
@@ -116,6 +126,8 @@ pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
     stack::send_udp_async(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..total_len], 64)
 }
 
+/// 同期DHCPリリース（非推奨：dhcp_release_async を使用してください）
+#[deprecated(note = "use dhcp_release_async() instead")]
 pub fn dhcp_release() {
     if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
@@ -124,6 +136,8 @@ pub fn dhcp_release() {
     }
 }
 
+/// 同期DHCP最終拒否IP取得（非推奨：dhcp_last_declined_async を使用してください）
+#[deprecated(note = "use dhcp_last_declined_async() instead")]
 pub fn dhcp_last_declined() -> Option<[u8; 4]> {
     if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
@@ -133,6 +147,8 @@ pub fn dhcp_last_declined() -> Option<[u8; 4]> {
     None
 }
 
+/// 同期DHCP最終解放IP取得（非推奨：dhcp_last_released_async を使用してください）
+#[deprecated(note = "use dhcp_last_released_async() instead")]
 pub fn dhcp_last_released() -> Option<[u8; 4]> {
     if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
@@ -142,7 +158,7 @@ pub fn dhcp_last_released() -> Option<[u8; 4]> {
     None
 }
 
-fn dhcp_v4_state_name(state: dhcp::DhcpState) -> &'static str {
+pub fn dhcp_v4_state_name(state: dhcp::DhcpState) -> &'static str {
     match state {
         dhcp::DhcpState::Init => "Init",
         dhcp::DhcpState::Selecting => "Selecting",
@@ -153,7 +169,7 @@ fn dhcp_v4_state_name(state: dhcp::DhcpState) -> &'static str {
     }
 }
 
-fn dhcp_v6_state_name(state: dhcp::DhcpV6State) -> &'static str {
+pub fn dhcp_v6_state_name(state: dhcp::DhcpV6State) -> &'static str {
     match state {
         dhcp::DhcpV6State::Init => "Init",
         dhcp::DhcpV6State::SolicitSent => "SolicitSent",
@@ -164,7 +180,7 @@ fn dhcp_v6_state_name(state: dhcp::DhcpV6State) -> &'static str {
     }
 }
 
-fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u64) -> u32 {
+pub fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u64) -> u32 {
     let elapsed = (now.saturating_sub(obtained_at)) / tick_rate;
     total.saturating_sub(core::cmp::min(elapsed, u32::MAX as u64) as u32)
 }
@@ -243,6 +259,8 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     Ok(())
 }
 
+/// 同期DHCP状態取得（非推奨：dhcp_state_async を使用してください）
+#[deprecated(note = "use dhcp_state_async() instead")]
 pub fn dhcp_state() -> DhcpRuntimeState {
     let now = tcb_table().get_current_tick();
     let tick_rate = 1000u64;
@@ -306,6 +324,8 @@ pub fn dhcp_state() -> DhcpRuntimeState {
     out
 }
 
+/// 同期DHCPリニュー（非推奨：dhcp_renew_async を使用してください）
+#[deprecated(note = "use dhcp_renew_async() instead")]
 pub fn dhcp_renew() -> Result<(), String> {
     let now = tcb_table().get_current_tick();
     let mut touched = false;
@@ -335,4 +355,336 @@ pub fn dhcp_renew() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+// ============================================================================
+// 非同期API（推奨）
+// ============================================================================
+
+/// 非同期DHCP状態取得Future
+pub struct DhcpStateFuture {
+    result_slot: Arc<PoisonLock<Option<DhcpRuntimeState>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl DhcpStateFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for DhcpStateFuture {
+    type Output = DhcpRuntimeState;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetDhcpState {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(state) = slot.as_ref() {
+                return Poll::Ready(state.clone());
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期DHCP状態取得（推奨API）
+///
+/// イベントキュー経由でDHCPクライアントにアクセスし、同期ロックを回避する。
+///
+/// # 使用例
+/// ```ignore
+/// let state = dhcp_state_async().await;
+/// ```
+pub fn dhcp_state_async() -> DhcpStateFuture {
+    DhcpStateFuture::new()
+}
+
+/// 非同期DHCPリニューFuture
+pub struct DhcpRenewFuture {
+    result_slot: Arc<PoisonLock<Option<Result<(), String>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl DhcpRenewFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for DhcpRenewFuture {
+    type Output = Result<(), String>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRenew {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(result) = slot.as_ref() {
+                return Poll::Ready(result.clone());
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期DHCPリニュー（推奨API）
+///
+/// # 使用例
+/// ```ignore
+/// let result = dhcp_renew_async().await;
+/// ```
+pub fn dhcp_renew_async() -> DhcpRenewFuture {
+    DhcpRenewFuture::new()
+}
+
+/// 非同期DHCPリリースFuture
+pub struct DhcpReleaseFuture {
+    result_slot: Arc<PoisonLock<Option<bool>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl DhcpReleaseFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for DhcpReleaseFuture {
+    type Output = bool;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRelease {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(result) = slot.as_ref() {
+                return Poll::Ready(*result);
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期DHCPリリース（推奨API）
+///
+/// # 使用例
+/// ```ignore
+/// let released = dhcp_release_async().await;
+/// ```
+pub fn dhcp_release_async() -> DhcpReleaseFuture {
+    DhcpReleaseFuture::new()
+}
+
+/// 非同期DHCPディスカバーFuture
+pub struct DhcpDiscoverFuture {
+    result_slot: Arc<PoisonLock<Option<Option<DhcpOfferInfo>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl DhcpDiscoverFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for DhcpDiscoverFuture {
+    type Output = Option<DhcpOfferInfo>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpDiscover {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(result) = slot.as_ref() {
+                return Poll::Ready(result.clone());
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期DHCPディスカバー（推奨API）
+///
+/// # 使用例
+/// ```ignore
+/// let offer = dhcp_discover_async().await;
+/// ```
+pub fn dhcp_discover_async() -> DhcpDiscoverFuture {
+    DhcpDiscoverFuture::new()
+}
+
+/// 非同期DHCP最終拒否IP取得Future
+pub struct DhcpLastDeclinedFuture {
+    result_slot: Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl DhcpLastDeclinedFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for DhcpLastDeclinedFuture {
+    type Output = Option<[u8; 4]>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpLastDeclined {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(result) = slot.as_ref() {
+                return Poll::Ready(*result);
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期DHCP最終拒否IP取得（推奨API）
+pub fn dhcp_last_declined_async() -> DhcpLastDeclinedFuture {
+    DhcpLastDeclinedFuture::new()
+}
+
+/// 非同期DHCP最終解放IP取得Future
+pub struct DhcpLastReleasedFuture {
+    result_slot: Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl DhcpLastReleasedFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for DhcpLastReleasedFuture {
+    type Output = Option<[u8; 4]>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpLastReleased {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(result) = slot.as_ref() {
+                return Poll::Ready(*result);
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期DHCP最終解放IP取得（推奨API）
+pub fn dhcp_last_released_async() -> DhcpLastReleasedFuture {
+    DhcpLastReleasedFuture::new()
 }

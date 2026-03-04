@@ -192,29 +192,37 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
 }
 
 #[cfg_attr(test, test_case)]
+#[allow(deprecated)] // テスト内で同期APIを使用
 pub fn test_dhcp_runtime_public_apis_smoke() {
     init_default();
 
     assert!(crate::net::api::shell::init_dhcp_runtime().is_ok());
 
+    #[allow(deprecated)]
     let st = crate::net::api::shell::dhcp_state();
     assert!(!st.v4_state.is_empty());
     assert!(!st.v6_state.is_empty());
 
+    #[allow(deprecated)]
     assert!(crate::net::api::shell::dhcp_renew().is_ok());
 
     // The new public entrypoints should at least compile and return sane defaults.
     // At the moment no offer exists, so discover should return None.
+    #[allow(deprecated)]
     assert!(crate::net::api::shell::dhcp_discover().is_none());
 
     // Sending a request with bogus addresses should not panic; result may be false.
+    #[allow(deprecated)]
     let _ = crate::net::api::shell::dhcp_request([0, 0, 0, 0], [0, 0, 0, 0]);
 
     // Release should be a no-op as well
+    #[allow(deprecated)]
     crate::net::api::shell::dhcp_release();
 
     // last declined / released are initially None
+    #[allow(deprecated)]
     assert!(crate::net::api::shell::dhcp_last_declined().is_none());
+    #[allow(deprecated)]
     assert!(crate::net::api::shell::dhcp_last_released().is_none());
 
     // create a fake client lease to exercise release API
@@ -237,7 +245,9 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
             client.set_lease_for_test(lease.clone());
         }
     }
+    #[allow(deprecated)]
     crate::net::api::shell::dhcp_release();
+    #[allow(deprecated)]
     assert_eq!(crate::net::api::shell::dhcp_last_released(), Some([10,1,2,3]));
 
     // simulate a conflict/decline
@@ -248,9 +258,11 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
             let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new(test_ip), Some(crate::net::l3::ipv4::Ipv4Address::new(server_ip)));
         }
     }
+    #[allow(deprecated)]
     assert_eq!(crate::net::api::shell::dhcp_last_declined(), Some(test_ip));
 
     // verify dhcp_state snapshot reflects the same
+    #[allow(deprecated)]
     let snap = crate::net::api::shell::dhcp_state();
     assert_eq!(snap.v4_last_declined, Some(test_ip));
     assert_eq!(snap.v4_last_released, Some([10,1,2,3]));

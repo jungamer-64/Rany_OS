@@ -1319,19 +1319,25 @@ impl TcpControlBlock {
     }
 
     /// Process incoming timestamp option
-    /// 
-    /// Updates ts_recent for PAWS and prepares ts_ecr for reply
+    ///
+    /// Updates ts_recent for PAWS and prepares ts_ecr for reply (RFC 7323 Section 5.3)
     pub fn process_ts_option(&mut self, ts_val: u32, _ts_ecr: u32, current_time: u64, seq_num: u32) {
-        // Only update ts_recent if segment is in sequence
-        if seq_num == self.seq.rcv_nxt || self.options.ts_recent == 0 {
+        // RFC 7323 Section 5.3: Update TS.Recent if:
+        // (1) SEG.TSval >= TS.Recent, AND
+        // (2) SEG.SEQ <= last.ACK.sent (rcv_nxt)
+        // Note: ts_recent == 0 check is for initialization.
+        let in_sequence = (seq_num.wrapping_sub(self.seq.rcv_nxt) as i32) <= 0;
+        let ts_not_older = (ts_val.wrapping_sub(self.options.ts_recent) as i32) >= 0;
+
+        if (in_sequence && ts_not_older) || self.options.ts_recent == 0 {
             self.options.ts_recent = ts_val;
             self.options.ts_recent_age = current_time;
         }
-        
-        // Echo back the received timestamp
-        self.options.ts_ecr = ts_val;
-    }
 
+        // RFC 7323 Section 5.2: The TSval to be sent in the TSecr field 
+        // of the NEXT segment is the current value of TS.Recent.
+        self.options.ts_ecr = self.options.ts_recent;
+    }
     /// Check PAWS (Protection Against Wrapped Sequences)
     /// 
     /// Returns true if segment should be rejected (old duplicate)

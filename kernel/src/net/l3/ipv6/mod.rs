@@ -836,6 +836,14 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                     return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
                 }
                 if let Some(frag) = Ipv6FragmentHeader::parse(&raw_packet[offset..]) {
+                    // Security (RFC 8200): Nested fragmentation check.
+                    // If the Fragment Header's Next Header is also 44 (Fragment), 
+                    // it MUST be discarded.
+                    if frag.next_header == EXT_HEADER_FRAGMENT {
+                        log::warn!("[NET-IPV6] Nested fragmentation detected (Next Header=44 in Fragment Header), dropping");
+                        return ExtHeaderResult::NoFragment(IpProtocol::from(EXT_HEADER_NO_NEXT), &[]);
+                    }
+
                     let unfragmentable = &raw_packet[..offset];
                     let frag_payload = &raw_packet[offset + 8..];
                     return ExtHeaderResult::Fragment {

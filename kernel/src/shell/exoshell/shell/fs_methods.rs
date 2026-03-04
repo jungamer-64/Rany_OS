@@ -56,11 +56,11 @@ impl ExoShell {
         let args = self.evaluate_args(args).await;
 
         match name {
-            "config" => NetNamespace::config(),
-            "stats" => NetNamespace::stats(),
-            "arp" => NetNamespace::arp_cache(),
-            "dhcp_state" => NetNamespace::dhcp_state(),
-            "dhcp_renew" => NetNamespace::dhcp_renew(),
+            "config" => NetNamespace::config_async().await,
+            "stats" => NetNamespace::stats_async().await,
+            "arp" => NetNamespace::arp_cache_async().await,
+            "dhcp_state" => NetNamespace::dhcp_state_async().await,
+            "dhcp_renew" => NetNamespace::dhcp_renew_async().await,
             "ping" => {
                 let ip_str = match args.first() {
                     Some(ExoValue::String(s)) => s.as_ref().to_string(),

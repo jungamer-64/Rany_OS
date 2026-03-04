@@ -267,6 +267,59 @@ impl NetworkEventHandler {
             }
 
             // ============================================================
+            // DHCP/TCP 非同期クエリ: スタック不可時はデフォルト値で完了
+            // ============================================================
+            NetworkEvent::AsyncGetDhcpState { result_slot, waker } => {
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(crate::net::api::dhcp::DhcpRuntimeState {
+                        v4_state: alloc::string::String::from("Unavailable"),
+                        v4_assigned_ip: None,
+                        v4_lease_remaining: None,
+                        v4_last_declined: None,
+                        v4_last_released: None,
+                        v6_state: alloc::string::String::from("Unavailable"),
+                        v6_assigned_ip: None,
+                        v6_preferred_remaining: None,
+                        v6_valid_remaining: None,
+                    });
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpRenew { result_slot, waker } => {
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(Err(alloc::string::String::from("Stack unavailable")));
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpRelease { result_slot, waker } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(false); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpDiscover { result_slot, waker } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(None); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpLastDeclined { result_slot, waker } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(None); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpLastReleased { result_slot, waker } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(None); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncGetTcpConnections { result_slot, waker } => {
+                if let Ok(mut slot) = result_slot.lock() { *slot = Some(Vec::new()); }
+                waker.wake();
+                EventHandleResult::Success
+            }
+
+            // ============================================================
             // スタック依存だがFuture結果不要のイベント: ドロップ（ログのみ）
             // ============================================================
             _ => {
@@ -732,6 +785,230 @@ impl NetworkEventHandler {
                 }).collect();
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+
+            // ============================================================
+            // 非同期DHCP/TCP クエリ（スタックロック保持中に処理）
+            // ============================================================
+            NetworkEvent::AsyncGetDhcpState { result_slot, waker } => {
+                use crate::net::services::dhcp;
+
+                let now = tcb_table().get_current_tick();
+                let tick_rate = 1000u64;
+
+                let mut out = crate::net::api::dhcp::DhcpRuntimeState {
+                    v4_state: alloc::string::String::from("Init"),
+                    v4_assigned_ip: None,
+                    v4_lease_remaining: None,
+                    v4_last_declined: None,
+                    v4_last_released: None,
+                    v6_state: alloc::string::String::from("Init"),
+                    v6_assigned_ip: None,
+                    v6_preferred_remaining: None,
+                    v6_valid_remaining: None,
+                };
+
+                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                    if let Some(ref client) = *guard {
+                        out.v4_state = alloc::string::String::from(
+                            crate::net::api::dhcp::dhcp_v4_state_name(client.state()),
+                        );
+                        if let Some(lease) = client.lease() {
+                            out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
+                            out.v4_lease_remaining = Some(
+                                crate::net::api::dhcp::lease_remaining_secs(
+                                    lease.lease_time,
+                                    lease.obtained_at,
+                                    now,
+                                    tick_rate,
+                                ),
+                            );
+                        }
+                        out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
+                        out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
+                    }
+                }
+
+                if let Ok(guard6) = dhcp::DHCPV6_CLIENT.lock() {
+                    if let Some(ref client6) = *guard6 {
+                        out.v6_state = alloc::string::String::from(
+                            crate::net::api::dhcp::dhcp_v6_state_name(client6.state()),
+                        );
+                        if let Some(lease6) = client6.lease() {
+                            out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
+                            out.v6_preferred_remaining = Some(
+                                crate::net::api::dhcp::lease_remaining_secs(
+                                    lease6.preferred_lifetime,
+                                    lease6.obtained_at,
+                                    now,
+                                    tick_rate,
+                                ),
+                            );
+                            out.v6_valid_remaining = Some(
+                                crate::net::api::dhcp::lease_remaining_secs(
+                                    lease6.valid_lifetime,
+                                    lease6.obtained_at,
+                                    now,
+                                    tick_rate,
+                                ),
+                            );
+                        }
+                    }
+                }
+
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(out);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpRenew { result_slot, waker } => {
+                use crate::net::services::dhcp;
+
+                let now = tcb_table().get_current_tick();
+                let mut touched = false;
+                let mut err_msg: Option<alloc::string::String> = None;
+
+                match dhcp::DHCP_CLIENT.lock() {
+                    Ok(guard) => {
+                        if let Some(ref client) = *guard {
+                            client.force_renew_or_restart(now);
+                            touched = true;
+                        }
+                    }
+                    Err(_) => err_msg = Some(alloc::string::String::from("DHCPv4 global client lock poisoned")),
+                }
+
+                if err_msg.is_none() {
+                    match dhcp::DHCPV6_CLIENT.lock() {
+                        Ok(guard6) => {
+                            if let Some(ref client6) = *guard6 {
+                                if let Err(e) = client6.force_renew_or_restart(now) {
+                                    err_msg = Some(alloc::string::String::from(e));
+                                } else {
+                                    touched = true;
+                                }
+                            }
+                        }
+                        Err(_) => err_msg = Some(alloc::string::String::from("DHCPv6 global client lock poisoned")),
+                    }
+                }
+
+                let result = if let Some(e) = err_msg {
+                    Err(e)
+                } else if !touched {
+                    Err(alloc::string::String::from("DHCP runtime is not initialized"))
+                } else {
+                    Ok(())
+                };
+
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpRelease { result_slot, waker } => {
+                use crate::net::services::dhcp;
+
+                let mut released = false;
+                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                    if let Some(ref client) = *guard {
+                        client.release();
+                        released = true;
+                    }
+                }
+
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(released);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpDiscover { result_slot, waker } => {
+                use crate::net::services::dhcp;
+
+                let now = tcb_table().get_current_tick();
+                let mut offer = None;
+
+                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                    if let Some(ref client) = *guard {
+                        let _ = client.drive(now, 1000);
+                        if let Some(o) = client.offered_lease() {
+                            offer = Some(crate::net::api::dhcp::DhcpOfferInfo {
+                                server_ip: *o.server_ip.as_bytes(),
+                                offered_ip: *o.ip_address.as_bytes(),
+                            });
+                        }
+                    }
+                }
+
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(offer);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpLastDeclined { result_slot, waker } => {
+                use crate::net::services::dhcp;
+
+                let mut ip = None;
+                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                    if let Some(ref client) = *guard {
+                        ip = client.last_declined_ip().map(|a| *a.as_bytes());
+                    }
+                }
+
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(ip);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncDhcpLastReleased { result_slot, waker } => {
+                use crate::net::services::dhcp;
+
+                let mut ip = None;
+                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                    if let Some(ref client) = *guard {
+                        ip = client.last_released_ip().map(|a| *a.as_bytes());
+                    }
+                }
+
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(ip);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::AsyncGetTcpConnections { result_slot, waker } => {
+                let snapshots = tcb_table().list_connections();
+                let connections: Vec<_> = snapshots.into_iter().map(|snap| {
+                    let state = match snap.state {
+                        TcpConnectionState::Closed => "CLOSED",
+                        TcpConnectionState::Listen => "LISTEN",
+                        TcpConnectionState::SynSent => "SYN_SENT",
+                        TcpConnectionState::SynReceived => "SYN_RCVD",
+                        TcpConnectionState::Established => "ESTABLISHED",
+                        TcpConnectionState::FinWait1 => "FIN_WAIT1",
+                        TcpConnectionState::FinWait2 => "FIN_WAIT2",
+                        TcpConnectionState::CloseWait => "CLOSE_WAIT",
+                        TcpConnectionState::Closing => "CLOSING",
+                        TcpConnectionState::LastAck => "LAST_ACK",
+                        TcpConnectionState::TimeWait => "TIME_WAIT",
+                    };
+                    crate::net::api::connections::TcpConnectionInfo {
+                        local_addr: alloc::format!("{}", snap.local),
+                        remote_addr: alloc::format!("{}", snap.remote),
+                        state: alloc::string::String::from(state),
+                    }
+                }).collect();
+
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(connections);
                 }
                 waker.wake();
                 EventHandleResult::Success

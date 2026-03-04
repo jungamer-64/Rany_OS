@@ -37,6 +37,8 @@ pub struct ArpCacheEntry {
     pub complete: bool,
 }
 
+/// 同期TCP接続一覧取得（非推奨：get_tcp_connections_async を使用してください）
+#[deprecated(note = "use get_tcp_connections_async() instead")]
 pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
     let snapshots = tcb_table().list_connections();
     if snapshots.is_empty() {
@@ -267,4 +269,60 @@ impl Future for GetUdpEndpointsFuture {
 /// 非同期UDPエンドポイント一覧取得（推奨API）
 pub fn get_udp_endpoints_async() -> GetUdpEndpointsFuture {
     GetUdpEndpointsFuture::new()
+}
+
+/// 非同期TCP接続一覧取得Future
+pub struct GetTcpConnectionsFuture {
+    result_slot: Arc<PoisonLock<Option<Vec<TcpConnectionInfo>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl GetTcpConnectionsFuture {
+    fn new() -> Self {
+        Self {
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for GetTcpConnectionsFuture {
+    type Output = Vec<TcpConnectionInfo>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetTcpConnections {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            this.waker.register(cx.waker());
+            this.sent = true;
+            return Poll::Pending;
+        }
+
+        if let Ok(slot) = this.result_slot.lock() {
+            if let Some(connections) = slot.as_ref() {
+                return Poll::Ready(connections.clone());
+            }
+        }
+
+        this.waker.register(cx.waker());
+        Poll::Pending
+    }
+}
+
+/// 非同期TCP接続一覧取得（推奨API）
+///
+/// # 使用例
+/// ```ignore
+/// let connections = get_tcp_connections_async().await;
+/// ```
+pub fn get_tcp_connections_async() -> GetTcpConnectionsFuture {
+    GetTcpConnectionsFuture::new()
 }

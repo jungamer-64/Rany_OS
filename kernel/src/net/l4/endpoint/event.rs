@@ -342,6 +342,46 @@ pub enum NetworkEvent {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::connections::UdpEndpointInfo>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
+
+    // ====================================================================
+    // Async DHCP / TCP query events (complete async conversion)
+    // ====================================================================
+
+    /// 非同期DHCP状態取得
+    AsyncGetDhcpState {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<crate::net::api::dhcp::DhcpRuntimeState>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期DHCPリニュー
+    AsyncDhcpRenew {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期DHCPリリース
+    AsyncDhcpRelease {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期DHCPディスカバー
+    AsyncDhcpDiscover {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::api::dhcp::DhcpOfferInfo>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期DHCP最終拒否IP取得
+    AsyncDhcpLastDeclined {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期DHCP最終解放IP取得
+    AsyncDhcpLastReleased {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期TCP接続一覧取得
+    AsyncGetTcpConnections {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::connections::TcpConnectionInfo>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
 }
 
 // ============================================================================

@@ -62,8 +62,9 @@ impl NetNamespace {
 
     /// Dispatch methods for 'net' namespace (同期)
     ///
-    /// 非同期版は `call()` メソッドを使用してください。
+    /// 非推奨: 非同期版は `call()` メソッドを使用してください。
     #[allow(deprecated)] // 同期ディスパッチ: 非推奨同期APIを使用
+    #[deprecated(note = "use async call() interface instead")]
     pub fn dispatch(
         method: &str,
         args: &[ExoValue<'static>],
@@ -317,9 +318,22 @@ impl NetNamespace {
         format!("{}", crate::net::l3::ipv6::Ipv6Address::new(addr))
     }
 
-    /// DHCP state snapshot (IPv4 + IPv6)
+    /// DHCP state snapshot (IPv4 + IPv6) — 同期版
+    #[allow(deprecated)] // 同期APIラッパー: async版はdhcp_state_async()
     pub fn dhcp_state() -> ExoValue<'static> {
+        #[allow(deprecated)]
         let state = crate::net::api::shell::dhcp_state();
+        Self::format_dhcp_state(state)
+    }
+
+    /// DHCP state snapshot — 非同期版（推奨）
+    pub async fn dhcp_state_async() -> ExoValue<'static> {
+        let state = crate::net::api::dhcp::dhcp_state_async().await;
+        Self::format_dhcp_state(state)
+    }
+
+    /// DhcpRuntimeState を ExoValue に変換（共通ヘルパー）
+    fn format_dhcp_state(state: crate::net::api::dhcp::DhcpRuntimeState) -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         map.insert(
             String::from("v4_state"),
@@ -384,11 +398,63 @@ impl NetNamespace {
         ExoValue::Map(map)
     }
 
-    /// Trigger DHCP renew/restart for both DHCPv4 and DHCPv6.
+    /// Trigger DHCP renew/restart — 同期版
+    #[allow(deprecated)] // 同期APIラッパー: async版はdhcp_renew_async()
     pub fn dhcp_renew() -> ExoValue<'static> {
+        #[allow(deprecated)]
         match crate::net::api::shell::dhcp_renew() {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
+        }
+    }
+
+    /// DHCP renew — 非同期版（推奨）
+    pub async fn dhcp_renew_async() -> ExoValue<'static> {
+        match crate::net::api::dhcp::dhcp_renew_async().await {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(e),
+        }
+    }
+
+    /// DHCP discover — 非同期版（推奨）
+    pub async fn dhcp_discover_async() -> ExoValue<'static> {
+        if let Some(info) = crate::net::api::dhcp::dhcp_discover_async().await {
+            let mut map = BTreeMap::new();
+            map.insert(
+                String::from("server_ip"),
+                ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", info.server_ip[0], info.server_ip[1], info.server_ip[2], info.server_ip[3]))),
+            );
+            map.insert(
+                String::from("offered_ip"),
+                ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", info.offered_ip[0], info.offered_ip[1], info.offered_ip[2], info.offered_ip[3]))),
+            );
+            ExoValue::Map(map)
+        } else {
+            ExoValue::Nil
+        }
+    }
+
+    /// DHCP release — 非同期版（推奨）
+    pub async fn dhcp_release_async() -> ExoValue<'static> {
+        let released = crate::net::api::dhcp::dhcp_release_async().await;
+        ExoValue::Bool(released)
+    }
+
+    /// DHCP last declined — 非同期版（推奨）
+    pub async fn dhcp_last_declined_async() -> ExoValue<'static> {
+        if let Some(ip) = crate::net::api::dhcp::dhcp_last_declined_async().await {
+            ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
+        } else {
+            ExoValue::Nil
+        }
+    }
+
+    /// DHCP last released — 非同期版（推奨）
+    pub async fn dhcp_last_released_async() -> ExoValue<'static> {
+        if let Some(ip) = crate::net::api::dhcp::dhcp_last_released_async().await {
+            ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
+        } else {
+            ExoValue::Nil
         }
     }
 
@@ -575,11 +641,15 @@ impl ShellNamespace for NetNamespace {
                 "config" => Self::config_async().await,
                 "stats" => Self::stats_async().await,
                 "arp" => Self::arp_cache_async().await,
-                "dhcp_state" => Self::dhcp_state(),
-                "dhcp_renew" => Self::dhcp_renew(),
+                "dhcp_state" => Self::dhcp_state_async().await,
+                "dhcp_renew" => Self::dhcp_renew_async().await,
+                "dhcp_discover" => Self::dhcp_discover_async().await,
+                "dhcp_release" => Self::dhcp_release_async().await,
+                "dhcp_last_declined" => Self::dhcp_last_declined_async().await,
+                "dhcp_last_released" => Self::dhcp_last_released_async().await,
                 "open" => Self::handle_open_async(_args).await,
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping, open, dhcp_state, dhcp_renew",
+                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping, open, dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
                     method
                 )),
             }

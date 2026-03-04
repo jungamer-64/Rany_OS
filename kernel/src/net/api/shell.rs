@@ -30,6 +30,7 @@ pub use super::connections::{
     get_tcp_connections, get_udp_endpoints, get_arp_cache, arp_cache_insert,
     get_arp_cache_async, arp_cache_insert_async,
     get_udp_endpoints_async,
+    get_tcp_connections_async,
 };
 
 // ── 再エクスポート: icmp ────────────────────────────────
@@ -37,11 +38,14 @@ pub use super::connections::{
 pub use super::icmp::{send_icmp_echo, send_icmp_echo_async, ping_async, ping_async_with_timeout};
 
 // ── 再エクスポート: dhcp ────────────────────────────────
+#[allow(deprecated)]
 pub use super::dhcp::{
     DhcpRuntimeState, DhcpOfferInfo,
     dhcp_discover, dhcp_request, dhcp_release,
     dhcp_last_declined, dhcp_last_released,
     init_dhcp_runtime, dhcp_state, dhcp_renew,
+    dhcp_state_async, dhcp_renew_async, dhcp_release_async,
+    dhcp_discover_async, dhcp_last_declined_async, dhcp_last_released_async,
 };
 
 // ── 再エクスポート: diagnostics ─────────────────────────
