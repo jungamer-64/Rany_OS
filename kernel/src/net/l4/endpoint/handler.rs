@@ -1162,12 +1162,6 @@ impl NetworkEventHandler {
         let dst_port = u16::from_be_bytes([payload[2], payload[3]]);
         let data = &payload[8..];
 
-        // DEBUG: DHCP ポート宛パケット到着トレース
-        if dst_port == 68 || src_port == 67 {
-            log::warn!("[UDP-RX] DHCP pkt: {}:{} -> port {} len={}",
-                src_ip[0], src_ip[1], dst_port, data.len());
-        }
-
         let remote = EndpointAddr::new(src_ip, src_port);
 
         let mut found = false;

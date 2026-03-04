@@ -174,10 +174,11 @@ impl IcmpProcessor {
         Some(builder.finalize())
     }
 
-    /// Build a destination unreachable packet
+    /// Build a destination unreachable packet (RFC 792 / RFC 1191)
     pub fn build_dest_unreachable(
         buffer: &mut [u8],
         code: DestUnreachCode,
+        next_hop_mtu: Option<u16>,
         original_packet: &[u8],
     ) -> Option<usize> {
         if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
@@ -189,9 +190,16 @@ impl IcmpProcessor {
             .set_type(IcmpType::DestinationUnreachable)
             .set_code(code as u8);
 
-        // 4 bytes unused, then original IP header + at least 8 bytes of data (RFC 1122)
+        // Bytes 4-7 of ICMP: 4 bytes unused, but for Code 4 (Fragmentation Needed)
+        // the last 2 bytes (bytes 6-7) contain the Next-Hop MTU (RFC 1191).
         let payload = builder.payload_mut();
-        payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
+        payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Default to zero
+
+        if code == DestUnreachCode::FragmentationNeeded {
+            if let Some(mtu) = next_hop_mtu {
+                payload[2..4].copy_from_slice(&mtu.to_be_bytes());
+            }
+        }
 
         // RFC 1122: Include the full IP header + at least 8 octets of the data.
         // RFC 1812: SHOULD include as much of the original datagram as possible,

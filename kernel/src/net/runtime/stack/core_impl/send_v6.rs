@@ -19,7 +19,7 @@ impl NetworkStack {
         echo_data: &[u8],
     ) {
         // Build ICMPv6 Echo Reply message (with checksum)
-        let icmpv6_msg = Icmpv6EchoBuilder::build_echo_reply(
+        let icmpv6_msg = Icmpv6Builder::build_echo_reply(
             &src, &dst, identifier, sequence, echo_data,
         );
 
@@ -54,7 +54,7 @@ impl NetworkStack {
                 }
             }
 
-            let icmp_msg = crate::net::l3::icmpv6::Icmpv6EchoBuilder::build_time_exceeded(
+            let icmp_msg = crate::net::l3::icmpv6::Icmpv6Builder::build_time_exceeded(
                 &our_addr,
                 &dst_v6,
                 code,

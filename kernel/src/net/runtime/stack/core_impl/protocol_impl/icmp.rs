@@ -201,7 +201,7 @@ impl NetworkStack {
                 let ip_payload = ip_packet.payload_mut();
 
                 // Build ICMP packet (Type 3: Destination Unreachable)
-                if let Some(len) = IcmpProcessor::build_dest_unreachable(ip_payload, code, original_packet) {
+                if let Some(len) = IcmpProcessor::build_dest_unreachable(ip_payload, code, None, original_packet) {
                     ip_packet.finalize(len);
                     let total_len = EthernetHeader::SIZE + ip_packet.total_len();
                     
@@ -434,7 +434,7 @@ impl NetworkStack {
         };
 
         // Build ICMPv6 Destination Unreachable (Type 1)
-        let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6EchoBuilder::build_dest_unreachable(
+        let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6Builder::build_dest_unreachable(
             &src_v6, &dst_v6, code, original_packet
         );
 
@@ -471,7 +471,7 @@ impl NetworkStack {
             None => return false,
         };
 
-        let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6EchoBuilder::build_parameter_problem(
+        let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6Builder::build_parameter_problem(
             &src_v6, &dst_v6, code, pointer, original_packet
         );
 

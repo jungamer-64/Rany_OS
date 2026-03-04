@@ -545,13 +545,13 @@ impl Default for Icmpv6Processor {
 }
 
 // =====================================================
-// ICMPv6 Echo Builder
+// ICMPv6 Builder
 // =====================================================
 
-/// Builder for ICMPv6 Echo Request/Reply messages
-pub struct Icmpv6EchoBuilder;
+/// Builder for ICMPv6 messages
+pub struct Icmpv6Builder;
 
-impl Icmpv6EchoBuilder {
+impl Icmpv6Builder {
     /// Build an ICMPv6 Echo Reply
     ///
     /// Returns the complete ICMPv6 message with correct checksum
@@ -621,6 +621,16 @@ impl Icmpv6EchoBuilder {
         message[3] = cksum_bytes[1];
 
         message
+    }
+
+    /// Build a Packet Too Big message (RFC 4443 Section 3.2)
+    pub fn build_packet_too_big(
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        mtu: u32,
+        trigger_packet: &[u8],
+    ) -> Vec<u8> {
+        Self::build_error(src, dst, Icmpv6Type::PacketTooBig, 0, mtu, trigger_packet)
     }
 
     /// Build a Destination Unreachable message
@@ -730,7 +740,7 @@ pub mod tests {
         let dst = Ipv6Address::LOOPBACK;
         let payload = [0xDE, 0xAD, 0xBE, 0xEF];
 
-        let msg = Icmpv6EchoBuilder::build_echo_reply(&src, &dst, 0x1234, 1, &payload);
+        let msg = Icmpv6Builder::build_echo_reply(&src, &dst, 0x1234, 1, &payload);
 
         // Verify structure
         assert_eq!(msg[0], u8::from(Icmpv6Type::EchoReply));
@@ -750,7 +760,7 @@ pub mod tests {
         let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         let dst = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
-        let msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 42, 7, &[1, 2, 3]);
+        let msg = Icmpv6Builder::build_echo_request(&src, &dst, 42, 7, &[1, 2, 3]);
 
         assert_eq!(msg[0], u8::from(Icmpv6Type::EchoRequest));
         assert_eq!(msg.len(), ICMPV6_ECHO_HEADER_SIZE + 3);
@@ -768,7 +778,7 @@ pub mod tests {
         let dst = Ipv6Address::LOOPBACK;
 
         // Build a valid Echo Request
-        let msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 100, 5, &[0xAB]);
+        let msg = Icmpv6Builder::build_echo_request(&src, &dst, 100, 5, &[0xAB]);
 
         // Process it
         let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
@@ -790,7 +800,7 @@ pub mod tests {
         let src = Ipv6Address::LOOPBACK;
         let dst = Ipv6Address::LOOPBACK;
 
-        let msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 1, 1, &[]);
+        let msg = Icmpv6Builder::build_echo_request(&src, &dst, 1, 1, &[]);
         let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
         let result = processor.process(&msg, src, dst, mac, 64, 100);
         assert!(matches!(result, Icmpv6Result::Dropped));
@@ -803,7 +813,7 @@ pub mod tests {
         let dst = Ipv6Address::LOOPBACK;
 
         // Build a valid message, then corrupt the checksum
-        let mut msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 1, 1, &[]);
+        let mut msg = Icmpv6Builder::build_echo_request(&src, &dst, 1, 1, &[]);
         msg[2] ^= 0xFF; // corrupt checksum
 
         let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
