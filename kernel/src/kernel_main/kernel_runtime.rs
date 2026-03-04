@@ -1,4 +1,103 @@
+// ============================================================================
+// kernel/src/kernel_main/kernel_runtime.rs
+// ============================================================================
+//! カーネルのランタイム機能（タスクスポーン、統計表示、シンボル登録など）
+//!! カーネルの初期化後、Executor上で動作するタスクをスポーンする関数や、システム統計を表示する関数などを定義する。
 use super::*;
+
+/// ネットワークブートストラップ（完全非同期）
+///
+/// Executor起動後にスポーンされ、VirtIO-Netドライバの登録・ブリッジ初期化・
+/// DHCP完了待機・接続性確認をすべてasyncコンテキストで実行する。
+/// 設計書 §3「Async-First」原則に準拠し、同期ブロッキングI/Oを排除する。
+///
+/// `init_bridge()` が `init_dhcp_runtime()` 経由で DHCPv4/v6 クライアントタスクを
+/// `spawn_global` するため、ブリッジ初期化後はDHCPが自動的に非同期で走る。
+/// このタスクは状態がBoundになるのを待ってからpingで接続性を確認する。
+async fn network_bootstrap_task() {
+    info!(target: "net_boot", "Network bootstrap task started (async)");
+
+    let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
+    if !virtio_net_present {
+        info!(target: "net_boot", "VirtIO-Net device not present; network bootstrap skipped");
+        return;
+    }
+
+    let bridge_initialized = crate::net::runtime::bridge::is_initialized();
+    if bridge_initialized {
+        info!(target: "net_boot", "Bridge already initialized; skipping driver startup");
+    } else {
+        // VirtIO-Net ドライバ登録 & ブリッジ初期化
+        // init_bridge() が init_dhcp_runtime() を呼び、DHCPv4/v6タスクが自動spawn
+        info!(target: "net_boot", "Registering VirtIO-Net driver via DriverRegistry");
+        {
+            use alloc::boxed::Box;
+            use driver_registry::register_driver;
+            use crate::net::drivers::virtio_registry::VirtioNetDriver;
+
+            let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
+            if let Err(e) = driver_registry::driver_registry()
+                .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
+            {
+                warn!(target: "net_boot", "VirtIO-Net driver init failed: {:?}", e);
+                return;
+            }
+            info!(target: "net_boot", "VirtIO-Net driver initialized via DriverRegistry");
+        }
+    }
+
+    // Yield して tx_worker / DHCPクライアント等のバックグラウンドタスクに実行機会を与える
+    task::yield_now().await;
+
+    // DHCPクライアントが Bound 状態になるのを待機（最大10秒）
+    info!(target: "net_boot", "Waiting for DHCP lease acquisition (async)...");
+    let mut dhcp_bound = false;
+    for _ in 0..100 {
+        // 100ms × 100 = 最大10秒
+        task::sleep_ms(100).await;
+
+        let state = crate::net::api::dhcp::dhcp_state();
+        if state.v4_state == "Bound" {
+            info!(
+                target: "net_boot",
+                "DHCP lease acquired: ip={:?}",
+                state.v4_assigned_ip
+            );
+            dhcp_bound = true;
+            break;
+        }
+    }
+
+    if !dhcp_bound {
+        warn!(target: "net_boot", "DHCP did not reach Bound state within timeout; using default config");
+    }
+
+    // 非同期ping: ゲートウェイへの接続性確認
+    let ping_target = if dhcp_bound {
+        // DHCP取得済みの場合、スタックからゲートウェイを読む
+        crate::net::api::config::get_network_config()
+            .and_then(|cfg| {
+                let gw = cfg.gateway;
+                if gw != [0, 0, 0, 0] { Some(gw) } else { None }
+            })
+            .unwrap_or(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES)
+    } else {
+        crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES
+    };
+
+    info!(target: "net_boot", "Async connectivity check to {:?}", ping_target);
+    match crate::net::api::icmp::ping_async(ping_target, 1).await {
+        Ok(echo) => info!(target: "net_boot", "Async ping success rtt={} us", echo.rtt_us),
+        Err(e) => warn!(target: "net_boot", "Async ping failed: {:?}", e),
+    }
+
+    let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
+    info!(
+        target: "net_boot",
+        "Network bootstrap complete: bridge init={} rx={} tx={}",
+        bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets
+    );
+}
 
 /// カーネルタスクをスポーン
 pub(crate) fn spawn_kernel_tasks(
@@ -20,6 +119,11 @@ pub(crate) fn spawn_kernel_tasks(
             info!(target: "init", "Shell launch disabled by cmdline (shell=off)");
         }
     }
+
+    // === ネットワークブートストラップ（完全非同期） ===
+    // VirtIO-Netドライバ登録 → DHCP → ping をExecutor上で非同期実行
+    executor.spawn(Task::new(network_bootstrap_task()));
+    info!(target: "init", "Network bootstrap task spawned (async)");
 
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
     crate::net::services::http::server::start_once(executor);

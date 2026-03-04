@@ -127,9 +127,13 @@ pub(crate) fn init_hid_and_serial_drivers() {
     }
 }
 
-/// Initialize the network subsystem, shell API, and VirtIO-Net driver.
-pub(crate) fn init_network_subsystem() {
-    info!(target: "init", "Initializing network subsystem");
+/// ネットワークインフラストラクチャの早期初期化（Executor不要）
+///
+/// NetworkStack、EndpointManager、OOOキュー、再送タイマーの初期化のみを行う。
+/// VirtIO-Netドライバの登録・DHCP・pingは `network_bootstrap_task()` で
+/// Executor起動後に完全非同期で実行される。
+pub(crate) fn init_network_infra() {
+    info!(target: "init", "Initializing network infrastructure (pre-executor)");
     let bridge_initialized = crate::net::runtime::bridge::is_initialized();
     let stack_initialized = crate::net::runtime::stack::stack()
         .lock()
@@ -179,396 +183,14 @@ pub(crate) fn init_network_subsystem() {
     info!(target: "init", "OOO queues and retransmit timer wheel initialized");
 
     let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
-    info!(target: "init", "Global VirtIO-Net device present: {}", virtio_net_present);
-
-    if virtio_net_present {
-        if bridge_initialized {
-            info!(
-                target: "init",
-                "VirtIO-Net bridge already initialized; skipping duplicate driver startup"
-            );
-            return;
-        }
-        // VirtIO-Net driver via DriverRegistry
-        info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
-        {
-            use alloc::boxed::Box;
-            use driver_registry::register_driver;
-            use crate::net::drivers::virtio_registry::VirtioNetDriver;
-
-            let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
-            if let Err(e) = driver_registry::driver_registry()
-                .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
-            {
-                warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
-            } else {
-                info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
-            }
-        }
-
-        // Diagnostic: attempt a manual ping to exercise the transmit path.
-        // First try DHCP to obtain the correct IP/gateway (needed for bridge/TAP mode).
-        // In QEMU slirp mode, the built-in DHCP server will respond with 10.0.2.15/10.0.2.2.
-        // In bridge mode, the LAN DHCP server will provide the actual IP/gateway.
-        let ping_target = try_sync_dhcp_configure().unwrap_or(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES);
-        info!(target: "init", "Manual network ping attempt to {:?}", ping_target);
-        match manual_ping_before_if_strict(ping_target, 1) {
-            Ok(rtt) => info!(target: "init", "Manual ping success rtt={}", rtt),
-            Err(e) => warn!(target: "init", "Manual ping failed: {}", e),
-        }
-    } else {
-        info!(
-            target: "init",
-            "VirtIO-Net device is not initialized yet; deferring network driver startup"
-        );
-    }
+    info!(target: "init", "Global VirtIO-Net device present: {} (driver init deferred to async)", virtio_net_present);
 }
 
-/// Synchronous DHCP handshake for bridge/TAP mode.
-///
-/// DHCP パケットを source IP 0.0.0.0 で broadcast 送信する。
-/// RFC 2131: DHCPDISCOVER/REQUEST ではクライアントは source IP 0.0.0.0 を使う。
-fn send_dhcp_packet(src_port: u16, dst_port: u16, data: &[u8]) -> bool {
-    use crate::net::l3::ipv4::Ipv4Address;
-    let any = Ipv4Address::new([0, 0, 0, 0]);
-    let broadcast = Ipv4Address::new([255, 255, 255, 255]);
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-            if let Some(stack) = guard.as_mut() {
-                return stack.send_udp_raw_with_src_ttl(any, src_port, broadcast, dst_port, data, 64);
-            }
-        }
-        false
-    })
-}
-
-/// asyncエグゼキュータ起動前に DISCOVER→OFFER→REQUEST→ACK を同期的に実行し、
-/// ネットワークスタックに正しいIPアドレス/ゲートウェイを設定する。
-/// 成功時はゲートウェイIPを返す。失敗時は `None` を返し、呼び出し元がフォールバックする。
-fn try_sync_dhcp_configure() -> Option<[u8; 4]> {
-    use crate::net::services::dhcp::{
-        DHCP_CLIENT, DHCP_CLIENT_PORT, DHCP_MAX_MESSAGE_SIZE, DHCP_SERVER_PORT,
-        DhcpResponseResult,
-    };
-    use crate::net::l3::ipv4::Ipv4Address;
-
-    const POLL_ROUNDS: usize = 120;
-
-    // ── Step 1: UDPポート68を同期的にバインド ──
-    let endpoint = x86_64::instructions::interrupts::without_interrupts(|| {
-        if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-            guard.as_mut().and_then(|stack| stack.bind_udp(DHCP_CLIENT_PORT))
-        } else {
-            None
-        }
-    });
-    let endpoint = match endpoint {
-        Some(ep) => ep,
-        None => {
-            warn!(target: "init", "[DHCP-SYNC] Failed to bind UDP port 68 — skipping DHCP");
-            return None;
-        }
-    };
-    info!(target: "init", "[DHCP-SYNC] Bound UDP port {}", DHCP_CLIENT_PORT);
-
-    let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
-
-    // ── Step 2: DHCP DISCOVER 構築 & 送信 ──
-    let discover_len = {
-        let guard = match DHCP_CLIENT.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                warn!(target: "init", "[DHCP-SYNC] DHCP_CLIENT lock poisoned");
-                return None;
-            }
-        };
-        let client = guard.as_ref()?;
-        let tick = crate::task::timer::current_tick();
-        match client.build_discover(&mut buf, tick) {
-            Ok(len) => len,
-            Err(e) => {
-                warn!(target: "init", "[DHCP-SYNC] build_discover failed: {}", e);
-                return None;
-            }
-        }
-    };
-
-    send_dhcp_packet(DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &buf[..discover_len]);
-    // TX ドレイン → VMEXIT → RXポーリングの同期パイプライン
-    for _ in 0..4 {
-        crate::net::runtime::bridge::sync_drain_tx_queue();
-        crate::net::runtime::bridge::sync_process_network_events();
-        io_delay_vmexit(200);
-    }
-    info!(target: "init", "[DHCP-SYNC] DISCOVER sent ({} bytes), waiting for OFFER...", discover_len);
-
-    // ── Step 3: DHCP OFFER 待ち ──
-    let mut got_offer = false;
-    for round in 0..POLL_ROUNDS {
-        io_delay_vmexit(300);
-        crate::io::virtio::poll_all_virtio_net_queues();
-        crate::net::runtime::bridge::flush_pending_batch();
-        crate::net::runtime::bridge::sync_process_network_events();
-
-        if let Some((_src, _ttl, pkt)) = endpoint.try_recv_sync() {
-            let tick = crate::task::timer::current_tick();
-            if let Ok(guard) = DHCP_CLIENT.lock() {
-                if let Some(client) = guard.as_ref() {
-                    match client.process_response(pkt.data(), tick) {
-                        Ok(DhcpResponseResult::Offer(ref lease)) => {
-                            info!(
-                                target: "init",
-                                "[DHCP-SYNC] OFFER received: ip={:?} gw={:?}",
-                                lease.ip_address, lease.gateway
-                            );
-                            got_offer = true;
-                            break;
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(target: "init", "[DHCP-SYNC] response parse error: {}", e);
-                        }
-                    }
-                }
-            }
-        }
-
-        // 30ラウンドごとに DISCOVER を再送
-        if round > 0 && round % 30 == 0 {
-            let resend = DHCP_CLIENT.lock().ok().and_then(|g| {
-                let client = g.as_ref()?;
-                client.build_discover(&mut buf, crate::task::timer::current_tick()).ok()
-            });
-            if let Some(len) = resend {
-                send_dhcp_packet(DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &buf[..len]);
-                for _ in 0..4 {
-                    crate::net::runtime::bridge::sync_drain_tx_queue();
-                    crate::net::runtime::bridge::sync_process_network_events();
-                    io_delay_vmexit(200);
-                }
-                info!(target: "init", "[DHCP-SYNC] Re-sent DISCOVER");
-            }
-        }
-    }
-
-    if !got_offer {
-        warn!(target: "init", "[DHCP-SYNC] Timeout waiting for OFFER — falling back to static config");
-        // ポートを解放して async DHCP タスクが後で bind できるようにする
-        endpoint.close();
-        x86_64::instructions::interrupts::without_interrupts(|| {
-            if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-                if let Some(stack) = guard.as_mut() {
-                    stack.unbind_udp(DHCP_CLIENT_PORT);
-                }
-            }
-        });
-        return None;
-    }
-
-    // ── Step 4: DHCP REQUEST 構築 & 送信 ──
-    let request_len = {
-        let guard = match DHCP_CLIENT.lock() {
-            Ok(g) => g,
-            Err(_) => return None,
-        };
-        let client = guard.as_ref()?;
-        let tick = crate::task::timer::current_tick();
-        match client.build_request(&mut buf, tick) {
-            Ok(len) => len,
-            Err(e) => {
-                warn!(target: "init", "[DHCP-SYNC] build_request failed: {}", e);
-                return None;
-            }
-        }
-    };
-
-    send_dhcp_packet(DHCP_CLIENT_PORT, DHCP_SERVER_PORT, &buf[..request_len]);
-    for _ in 0..4 {
-        crate::net::runtime::bridge::sync_drain_tx_queue();
-        crate::net::runtime::bridge::sync_process_network_events();
-        io_delay_vmexit(200);
-    }
-    info!(target: "init", "[DHCP-SYNC] REQUEST sent ({} bytes), waiting for ACK...", request_len);
-
-    // ── Step 5: DHCP ACK 待ち ──
-    let mut ack_lease = None;
-    for _round in 0..POLL_ROUNDS {
-        io_delay_vmexit(300);
-        crate::io::virtio::poll_all_virtio_net_queues();
-        crate::net::runtime::bridge::flush_pending_batch();
-        crate::net::runtime::bridge::sync_process_network_events();
-
-        if let Some((_src, _ttl, pkt)) = endpoint.try_recv_sync() {
-            let tick = crate::task::timer::current_tick();
-            if let Ok(guard) = DHCP_CLIENT.lock() {
-                if let Some(client) = guard.as_ref() {
-                    match client.process_response(pkt.data(), tick) {
-                        Ok(DhcpResponseResult::Ack(lease)) => {
-                            info!(
-                                target: "init",
-                                "[DHCP-SYNC] ACK received: ip={:?} gw={:?}",
-                                lease.ip_address, lease.gateway
-                            );
-                            ack_lease = Some(lease);
-                            break;
-                        }
-                        Ok(DhcpResponseResult::Nak) => {
-                            warn!(target: "init", "[DHCP-SYNC] NAK received");
-                            break;
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            warn!(target: "init", "[DHCP-SYNC] response parse error: {}", e);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Step 6: ポート解放 ──
-    endpoint.close();
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-            if let Some(stack) = guard.as_mut() {
-                stack.unbind_udp(DHCP_CLIENT_PORT);
-            }
-        }
-    });
-
-    let lease = match ack_lease {
-        Some(l) => l,
-        None => {
-            warn!(target: "init", "[DHCP-SYNC] Timeout waiting for ACK — falling back to static config");
-            return None;
-        }
-    };
-
-    // ── Step 7: リースをスタックに適用 ──
-    let gateway_bytes = lease.gateway.map(|gw| *gw.as_bytes());
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-            if let Some(stack) = guard.as_mut() {
-                stack.apply_dhcp_v4_lease(&lease);
-                info!(
-                    target: "init",
-                    "[DHCP-SYNC] Lease applied: ip={:?} subnet={:?} gw={:?}",
-                    lease.ip_address, lease.subnet_mask, lease.gateway
-                );
-            }
-        }
-    });
-
-    gateway_bytes
-}
-
-fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
-    const MAX_ATTEMPTS: usize = 12;
-    const PUMP_ROUNDS_PER_ATTEMPT: usize = 12;
-
-    let mut last_err = "Failed to send ICMP echo request";
-
-    // ── Phase 0: 初期化前の TX / RX 同期フラッシュ ──
-    //
-    // ブートシーケンス中に NetworkStack から enqueue された送信要求（ARP 要求等）は
-    // TX_QUEUE に滞留したままになっている。ここで先に VirtIO へサブミットし、
-    // QEMU ホストに処理させてから最初の ping 試行を行う。
-    //
-    // 流れ:
-    //   1. TX ドレイン  → 滞留 ARP 要求を VirtIO TX キューへサブミット
-    //   2. I/O ポート書込み × N → VMEXIT を誘発し QEMU に処理時間を与える
-    //   3. RX ポーリング → ARP 応答を含む受信パケットを取得
-    //   4. バッチフラッシュ + イベント処理 → ARP キャッシュを更新
-    for _pre in 0..4 {
-        crate::net::runtime::bridge::sync_drain_tx_queue();
-
-        // Port 0x80 (POST diagnostic) への書込みで VMEXIT を誘発し、
-        // QEMU の I/O スレッドにパケット処理の機会を与える。
-        // spin_loop() (PAUSE 命令) は VMEXIT を発生させないため、
-        // QEMU がゲストの仮想 NIC にパケットを配送できない。
-        io_delay_vmexit(200);
-
-        crate::io::virtio::poll_all_virtio_net_queues();
-        crate::net::runtime::bridge::flush_pending_batch();
-        crate::net::runtime::bridge::sync_process_network_events();
-    }
-
-    for attempt in 1..=MAX_ATTEMPTS {
-        match crate::net::runtime::bridge::send_real_icmp_echo(target, seq) {
-            Ok(rtt) => return Ok(rtt),
-            Err(err) => {
-                last_err = err;
-                warn!(
-                    target: "init",
-                    "Manual ping attempt {}/{} failed before IF: {}",
-                    attempt,
-                    MAX_ATTEMPTS,
-                    err
-                );
-            }
-        }
-
-        if attempt == MAX_ATTEMPTS {
-            break;
-        }
-
-        // ARP Incomplete エントリが長時間滞留するとリトライが抑止される。
-        // current_time が 0 のまま進まない環境 (タイマ未起動) では
-        // is_pending() が永続的に true を返すため、4回失敗ごとに
-        // ARP キャッシュから Incomplete エントリを削除してリトライを許可する。
-        if attempt % 4 == 0 {
-            let target_ip = crate::net::l3::ipv4::Ipv4Address::new(target);
-            x86_64::instructions::interrupts::without_interrupts(|| {
-                if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
-                    if let Some(stack) = guard.as_mut() {
-                        stack.arp_cache_remove_incomplete(target_ip);
-                        info!(
-                            target: "init",
-                            "Cleared ARP pending entry for {} to allow re-request",
-                            target_ip
-                        );
-                    }
-                }
-            });
-        }
-
-        // 同期的にRX/TXキューをポーリングし、受信バッチをフラッシュする。
-        // handle_all_virtio_net_interrupts() はasyncワーカーにwakeするだけなので
-        // 同期コンテキストでは直接処理する poll_all_virtio_net_queues() を使用する。
-        // TX_QUEUEにエンキューされたパケットも同期的にデバイスへサブミットする。
-        // NETWORK_EVENT_QUEUEに溜まったイベント（ARP応答等）も同期的に処理する。
-        for round in 0..PUMP_ROUNDS_PER_ATTEMPT {
-            crate::net::runtime::bridge::sync_drain_tx_queue();
-            crate::io::virtio::poll_all_virtio_net_queues();
-            crate::net::runtime::bridge::flush_pending_batch();
-            crate::net::runtime::bridge::sync_process_network_events();
-
-            // Port 0x80 書込みで VMEXIT を誘発する I/O ディレイ。
-            // QEMU（特に slirp / TAP バックエンド）がパケットを処理し、
-            // ARP 応答を VirtIO RX キューに配送する時間を確保する。
-            if round < PUMP_ROUNDS_PER_ATTEMPT - 1 {
-                io_delay_vmexit(300);
-            }
-        }
-    }
-
-    Err(last_err)
-}
-
-/// Port 0x80 (POST diagnostic) への書込みで I/O ディレイを発生させる。
-///
-/// 各書込みは VMEXIT を誘発し、QEMU ホストプロセスに CPU 制御を返す。
-/// これにより QEMU の I/O スレッドがネットワークパケット（ARP 応答等）を処理し、
-/// VirtIO RX キューに配送する機会を得る。
-///
-/// `spin_loop()` (`PAUSE` 命令) は VMEXIT を発生させないため、
-/// この関数で置換する。
-#[inline]
-fn io_delay_vmexit(iterations: usize) {
-    for _ in 0..iterations {
-        hal::port_io::outb(0x80, 0);
-    }
-}
+// ============================================================================
+// 同期DHCP / 同期ping / io_delay_vmexit は廃止。
+// ネットワーク初期化は network_bootstrap_task() (kernel_runtime.rs) で
+// Executor起動後に完全非同期で実行される。
+// ============================================================================
 
 fn kernel_cmdline<'a>(boot_info: &'a ExoBootInfo, _phys_mem_offset: u64) -> Option<&'a str> {
     // boot_proto の統合ヘルパーを使用
@@ -951,7 +573,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         info!(target: "init", "System integration initialized");
     }
 
-    init_network_subsystem();
+    init_network_infra();
 
     // 3.7. ファイルシステム（memfs）の初期化
     info!(target: "init", "Initializing memory filesystem");
@@ -1088,17 +710,8 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         }
     }
 
-    // Diagnostic: manual ping attempt to exercise network transmit path
-    // Use DHCP-configured gateway if available; otherwise fall back to slirp default.
-    let late_ping_target = try_sync_dhcp_configure().unwrap_or(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES);
-    match manual_ping_before_if_strict(late_ping_target, 1) {
-        Ok(rtt) => {
-            info!(target: "init", "Manual ping success rtt={}", rtt);
-        }
-        Err(e) => {
-            warn!(target: "init", "Manual ping failed: {}", e);
-        }
-    }
+    // NOTE: 同期DHCP/pingは廃止。ネットワーク初期化は network_bootstrap_task() で
+    // Executor起動後に完全非同期で実行される。
 
     // 6. 割り込みを有効化
     #[cfg(not(feature = "qemu-test-export"))]
