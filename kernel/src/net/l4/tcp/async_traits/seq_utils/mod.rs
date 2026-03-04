@@ -310,7 +310,7 @@ pub(crate) fn send_tcp_packet_with_options(
     // オプション長は4バイト境界に揃える
     let options_len = options.len();
     let padded_options_len = (options_len + 3) & !3;
-    let data_offset: u8 = (20 + padded_options_len as usize / 4) as u8; // 5 + オプション分
+    let data_offset: u8 = (5 + padded_options_len as usize / 4) as u8; // 5 + オプション分
     let header_len = (data_offset as usize) * 4;
     let total_len = header_len + payload.len();
 
@@ -322,7 +322,7 @@ pub(crate) fn send_tcp_packet_with_options(
     segment[4..8].copy_from_slice(&seq.to_be_bytes());
     segment[8..12].copy_from_slice(&ack.to_be_bytes());
 
-    let data_off_flags = ((data_offset as u16) << 12) | (flags & 0x3F);
+    let data_off_flags = ((data_offset as u16) << 12) | (flags & 0x01FF);
     segment[12..14].copy_from_slice(&data_off_flags.to_be_bytes());
     segment[14..16].copy_from_slice(&window.to_be_bytes());
     segment[16..18].copy_from_slice(&0u16.to_be_bytes()); // Checksum placeholder
