@@ -120,9 +120,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     // DHCP_CLIENT は PoisonLock（スピンロック）で保護されている。
     // ロックを .await を跨いで保持するとデッドロックするため、
     // 初期化済みクライアントへの 'static 参照を取得してからロックを解放する。
-    crate::io::log::early_print("[DHCP-DBG] spawning DHCPv4 client task\n");
     crate::task::Executor::spawn_global(crate::task::Task::new(async move {
-        crate::io::log::early_print("[DHCP-DBG] DHCPv4 task polled (first time)\n");
         let client_ref: Option<&'static dhcp::DhcpClient> = {
             let guard = match dhcp::DHCP_CLIENT.lock() {
                 Ok(g) => g,

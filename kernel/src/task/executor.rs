@@ -569,7 +569,6 @@ impl Executor {
         }
 
         if fetched > 0 {
-            crate::io::log::early_print("[EXEC-DBG] fetch_from_global: fetched global tasks\n");
             EXECUTOR_STATS
                 .global_fetches
                 .fetch_add(fetched as u64, Ordering::Relaxed);
