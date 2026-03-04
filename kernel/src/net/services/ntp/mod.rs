@@ -134,7 +134,6 @@ impl NtpClient {
         req.transmit_timestamp.fraction = fraction.to_be_bytes();
         let sent_ts = req.transmit_timestamp;
 
-        #[allow(deprecated)] // NTP: OwnedEndpointの同期送信（send_to_asyncは別経路）
         socket.send_to(req.as_bytes(), remote)?;
 
         // Async receive via futures module helper

@@ -853,6 +853,23 @@ impl PmtuEntry {
     pub fn should_probe(&self, current_time: u64) -> bool {
         current_time >= self.next_probe && self.pmtu < Self::DEFAULT_MTU
     }
+
+    /// RFC 1191: Get the next smaller MTU from the plateau list.
+    /// Used when a router doesn't provide the next-hop MTU in ICMP.
+    pub fn get_next_plateau(current_mtu: u16) -> u16 {
+        // RFC 1191 Section 4: "A host MUST use the next smaller MTU from the following list"
+        // List is recommended: 65535, 32000, 17914, 8166, 4352, 2048, 1492, 1006, 508, 296, 68.
+        const PLATEAUS: &[u16] = &[
+            65535, 32000, 17914, 8166, 4352, 2048, 1500, 1492, 1006, 576, 508, 296, 68,
+        ];
+
+        for &p in PLATEAUS {
+            if p < current_mtu {
+                return p;
+            }
+        }
+        Self::MIN_MTU
+    }
 }
 
 /// Path MTU Discovery cache

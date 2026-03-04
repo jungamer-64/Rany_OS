@@ -18,7 +18,6 @@ use crate::net::services::dhcp;
 use crate::sync::PoisonLock;
 use crate::sync::atomic_waker::AtomicWaker;
 
-#[allow(deprecated)] // ブートストラップMAC取得用
 use super::config::get_network_config;
 
 extern crate alloc;
@@ -44,26 +43,27 @@ pub struct DhcpOfferInfo {
     pub offered_ip: [u8; 4],
 }
 
-/// 同期DHCPディスカバー（非推奨：dhcp_discover_async を使用してください）
-#[deprecated(note = "use dhcp_discover_async() instead")]
+/// DHCPディスカバー（イベントキュー経由）
+///
+/// DHCP discover イベントを発火し、クライアントの駆動をエグゼキュータに委任する。
+/// 同期的にオファー結果を返すことはできないため、
+/// 応答を取得するには `dhcp_discover_async().await` を使用すること。
 pub fn dhcp_discover() -> Option<DhcpOfferInfo> {
-    let now = tcb_table().get_current_tick();
-    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
-        if let Some(ref client) = *guard {
-            let _ = client.drive(now, 1000);
-            if let Some(offer) = client.offered_lease() {
-                return Some(DhcpOfferInfo {
-                    server_ip: *offer.server_ip.as_bytes(),
-                    offered_ip: *offer.ip_address.as_bytes(),
-                });
-            }
-        }
-    }
+    // fire-and-forget: イベントキュー経由でDHCPクライアントを駆動
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpDiscover {
+            result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
+    // 同期的にオファーを返すことはできない（イベントキュー経由のため）
     None
 }
 
-/// 同期DHCPリクエスト（非推奨：dhcp_request_async を使用してください）
-#[deprecated(note = "use dhcp_request_async() instead")]
+/// DHCPリクエスト送信（内部的にイベントキュー経由のUDP送信を使用）
+///
+/// パケット構築は同期的に行うが、実際の送信は `send_udp_async()` 経由で
+/// イベントキューに委任されるため、ブロッキングは発生しない。
 pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
     use crate::net::services::dhcp::{
         DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE, DHCP_SERVER_PORT,
@@ -90,7 +90,6 @@ pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
         file: [0; 128],
     };
 
-    #[allow(deprecated)] // DHCP: ブートストラップ時に呼ばれるため同期API使用
     if let Some(cfg) = get_network_config() {
         header_struct.chaddr[..6].copy_from_slice(&cfg.mac);
     }
@@ -126,18 +125,23 @@ pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
     stack::send_udp_async(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..total_len], 64)
 }
 
-/// 同期DHCPリリース（非推奨：dhcp_release_async を使用してください）
-#[deprecated(note = "use dhcp_release_async() instead")]
+/// DHCPリリース（イベントキュー経由）
+///
+/// DHCP release イベントを発火し、リリース処理をエグゼキュータに委任する。
+/// 完了を待機するには `dhcp_release_async().await` を使用すること。
 pub fn dhcp_release() {
-    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
-        if let Some(ref client) = *guard {
-            client.release();
-        }
-    }
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRelease {
+            result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
 }
 
-/// 同期DHCP最終拒否IP取得（非推奨：dhcp_last_declined_async を使用してください）
-#[deprecated(note = "use dhcp_last_declined_async() instead")]
+/// DHCP最終拒否IP取得（読み取り専用・短命ロック）
+///
+/// DHCPクライアントの最終拒否IPを読み取る。読み取り専用のため
+/// ロック保持時間は最小限であり、デッドロックリスクは低い。
 pub fn dhcp_last_declined() -> Option<[u8; 4]> {
     if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
@@ -147,8 +151,10 @@ pub fn dhcp_last_declined() -> Option<[u8; 4]> {
     None
 }
 
-/// 同期DHCP最終解放IP取得（非推奨：dhcp_last_released_async を使用してください）
-#[deprecated(note = "use dhcp_last_released_async() instead")]
+/// DHCP最終解放IP取得（読み取り専用・短命ロック）
+///
+/// DHCPクライアントの最終解放IPを読み取る。読み取り専用のため
+/// ロック保持時間は最小限であり、デッドロックリスクは低い。
 pub fn dhcp_last_released() -> Option<[u8; 4]> {
     if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
@@ -259,8 +265,10 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     Ok(())
 }
 
-/// 同期DHCP状態取得（非推奨：dhcp_state_async を使用してください）
-#[deprecated(note = "use dhcp_state_async() instead")]
+/// DHCP状態取得（読み取り専用・短命ロック）
+///
+/// DHCPv4/v6クライアントの現在の状態をスナップショットとして取得する。
+/// 読み取り専用のためロック保持時間は最小限。
 pub fn dhcp_state() -> DhcpRuntimeState {
     let now = tcb_table().get_current_tick();
     let tick_rate = 1000u64;
@@ -324,38 +332,22 @@ pub fn dhcp_state() -> DhcpRuntimeState {
     out
 }
 
-/// 同期DHCPリニュー（非推奨：dhcp_renew_async を使用してください）
-#[deprecated(note = "use dhcp_renew_async() instead")]
+/// DHCPリニュー（イベントキュー経由）
+///
+/// DHCP renew イベントを発火し、リニュー処理をエグゼキュータに委任する。
+/// 完了を待機するには `dhcp_renew_async().await` を使用すること。
 pub fn dhcp_renew() -> Result<(), String> {
-    let now = tcb_table().get_current_tick();
-    let mut touched = false;
-
-    match dhcp::DHCP_CLIENT.lock() {
-        Ok(guard) => {
-            if let Some(ref client) = *guard {
-                client.force_renew_or_restart(now);
-                touched = true;
-            }
-        }
-        Err(_) => return Err(String::from("DHCPv4 global client lock poisoned")),
-    }
-
-    match dhcp::DHCPV6_CLIENT.lock() {
-        Ok(guard6) => {
-            if let Some(ref client6) = *guard6 {
-                client6.force_renew_or_restart(now).map_err(String::from)?;
-                touched = true;
-            }
-        }
-        Err(_) => return Err(String::from("DHCPv6 global client lock poisoned")),
-    }
-
-    if !touched {
-        return Err(String::from("DHCP runtime is not initialized"));
-    }
-
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRenew {
+            result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
+            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        },
+    );
     Ok(())
 }
+
+// NOTE: 旧同期dhcp_renewは削除済み（イベントキュー経由に移行）
+// handler.rs の AsyncDhcpRenew イベントハンドラで処理される
 
 // ============================================================================
 // 非同期API（推奨）

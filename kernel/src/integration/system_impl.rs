@@ -48,7 +48,6 @@ impl SystemIntegration {
         } else {
             self.log("  Net Config: none");
         }
-        #[allow(deprecated)] // 同期統合テスト: 非asyncコンテキスト
         if let Some(stats) = crate::net::api::shell::get_network_stats() {
             self.log(&alloc::format!("  Net Stack stats: rx={} tx={} rx_bytes={} tx_bytes={}", stats.rx_packets, stats.tx_packets, stats.rx_bytes, stats.tx_bytes));
         } else {
@@ -381,7 +380,7 @@ impl SystemIntegration {
                     // Quick sanity ping immediately after driver start.  If the
                     // global VirtIO device is working the ping should succeed
                     // (or at least return an I/O error if the network is down).
-                    #[allow(deprecated)] // ブートストラップ: ドライバ登録直後のサニティチェック
+                    // ブートストラップ同期コンテキスト: send_real_icmp_echoを使用
                     let ping = crate::net::runtime::bridge::send_real_icmp_echo([10, 0, 2, 2], 1);
                     self.log(&alloc::format!("    [PING TEST] result={:?}", ping));
                 }

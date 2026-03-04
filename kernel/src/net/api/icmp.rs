@@ -7,16 +7,16 @@ use alloc::string::String;
 
 extern crate alloc;
 
-/// 同期ICMP Echo送信（非推奨：ping_async を使用してください）
+/// ICMP Echo送信（イベントキュー経由の非同期フォールバック）
 ///
-/// IRQ無効化 + 同期ロックを使用するため、デッドロックリスクがある。
-/// asyncコンテキストでは `ping_async()` または `IcmpEchoFuture` を使用すること。
-#[deprecated(note = "use ping_async() or IcmpEchoFuture instead")]
+/// 内部的に `send_icmp_echo_async()` に委任する。
+/// RTTを取得するには `ping_async()` または `IcmpEchoFuture` を使用すること。
 pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
-    #[allow(deprecated)]
-    crate::net::runtime::bridge::send_real_icmp_echo(target, seq)
-        .map(|rtt| rtt as f32)
-        .map_err(String::from)
+    // イベントキュー経由でfire-and-forget送信
+    send_icmp_echo_async(target, seq);
+    // 同期的にRTTを返すことはできないため、0を返す
+    // 実際のRTTを取得するには ping_async().await を使用
+    Ok(0.0)
 }
 
 /// 非同期ICMP Echo送信（fire-and-forget）

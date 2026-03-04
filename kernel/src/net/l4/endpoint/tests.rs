@@ -55,7 +55,6 @@ pub mod tests {
         }
 
         // 空のキューからnext_incomingするとTimeout
-        #[allow(deprecated)] // テスト: 同期APIの動作検証
         let result = endpoint.next_incoming();
         assert!(matches!(result, Err(EndpointError::Timeout)));
     }
@@ -255,7 +254,6 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
-    #[allow(deprecated)]
     pub fn test_start_listening_v6() {
         // Ensure manager exists
         crate::net::l4::endpoint::manager::init_endpoint_manager();

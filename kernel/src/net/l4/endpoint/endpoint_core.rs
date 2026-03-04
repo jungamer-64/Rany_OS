@@ -174,11 +174,10 @@ impl Endpoint {
     }
 
 
-    /// 次の接続を取得（非推奨：非同期版 accept_async を使用してください）
+    /// 次の接続を取得（同期バッファ読み取り）
     ///
-    /// 【設計書】POSIXのaccept()ではなく、accept_async()を使用
-    /// Acceptキューから接続を取得、空の場合はTimeoutを返す
-    #[deprecated(note = "use accept_async() via OwnedEndpoint or AcceptFuture instead")]
+    /// Acceptキューから接続を取得する。ネットワークスタックロックは使用しない。
+    /// 空の場合はTimeoutを返す。asyncコンテキストでは `accept_async()` 推奨。
     pub fn next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr)> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
@@ -267,8 +266,10 @@ impl Endpoint {
         Ok(new_socket)
     }
 
-    /// データ送信（非推奨：非同期版 send_async を使用してください）
-    #[deprecated(note = "use send_async() via OwnedEndpoint or SendFuture instead")]
+    /// データ送信（イベントキュー経由）
+    ///
+    /// 内部バッファに書き込み、DataReadyイベントを発火する。
+    /// ネットワークスタックロックは使用しない。
     pub fn send(&self, data: &[u8]) -> EndpointResult<usize> {
         let len = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -291,8 +292,9 @@ impl Endpoint {
         Ok(len)
     }
 
-    /// データ受信（非推奨：非同期版 recv_async を使用してください）
-    #[deprecated(note = "use recv_async() via OwnedEndpoint or RecvFuture instead")]
+    /// データ受信（同期バッファ読み取り）
+    ///
+    /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
     pub fn recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -308,9 +310,9 @@ impl Endpoint {
         }
     }
 
-    /// UDP送信（非推奨：非同期版 send_to_async を使用してください）
-    #[deprecated(note = "use send_to_async() via OwnedEndpoint or SendToFuture instead")]
-    #[allow(deprecated)]
+    /// UDP送信（イベントキュー経由）
+    ///
+    /// SendToイベントを発火して送信を委任する。
     pub fn send_to(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
         if self.endpoint_type != EndpointType::Udp {
             return Err(EndpointError::InvalidArgument);
@@ -334,9 +336,9 @@ impl Endpoint {
         Ok(data.len())
     }
 
-    /// UDP受信（非推奨：非同期版 recv_from_async を使用してください）
-    #[deprecated(note = "use recv_from_async() via OwnedEndpoint or RecvFromFuture instead")]
-    #[allow(deprecated)]
+    /// UDP受信（同期バッファ読み取り）
+    ///
+    /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
     pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr)> {
         if self.endpoint_type != EndpointType::Udp {
             return Err(EndpointError::InvalidArgument);
@@ -673,9 +675,7 @@ impl OwnedEndpoint {
     }
 
 
-    /// リッスンモードを開始（非推奨：非同期APIを使用してください）
-    #[deprecated(note = "use Endpoint::start_listening_async() instead")]
-    #[allow(deprecated)]
+    /// リッスンモードを開始（Endpoint::start_listening委任）
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
         self.endpoint
             .as_ref()
@@ -684,9 +684,7 @@ impl OwnedEndpoint {
     }
 
 
-    /// 次の接続を取得（非推奨：accept_async を使用してください）
-    #[deprecated(note = "use accept_async() instead")]
-    #[allow(deprecated)]
+    /// 次の接続を取得（同期）
     pub fn next_incoming(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr)> {
         let (ep, addr) = self
             .endpoint
@@ -697,9 +695,7 @@ impl OwnedEndpoint {
     }
 
 
-    /// 送信（非推奨：send_async を使用してください）
-    #[deprecated(note = "use send_async() instead")]
-    #[allow(deprecated)]
+    /// 送信（同期）
     pub fn send(&self, data: &[u8]) -> EndpointResult<usize> {
         self.endpoint
             .as_ref()
@@ -707,16 +703,12 @@ impl OwnedEndpoint {
             .send(data)
     }
 
-    /// 受信（非推奨：recv_async を使用してください）
-    #[deprecated(note = "use recv_async() instead")]
-    #[allow(deprecated)]
+    /// 受信（同期）
     pub fn recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
         self.endpoint.as_ref().ok_or(EndpointError::NotFound)?.recv(buf)
     }
 
-    /// UDP送信（非推奨：send_to_async を使用してください）
-    #[deprecated(note = "use send_to_async() instead")]
-    #[allow(deprecated)]
+    /// UDP送信（同期）
     pub fn send_to(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
         self.endpoint
             .as_ref()
@@ -724,9 +716,7 @@ impl OwnedEndpoint {
             .send_to(data, addr)
     }
 
-    /// UDP受信（非推奨：recv_from_async を使用してください）
-    #[deprecated(note = "use recv_from_async() instead")]
-    #[allow(deprecated)]
+    /// UDP受信（同期）
     pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr)> {
         self.endpoint
             .as_ref()
@@ -834,14 +824,12 @@ pub fn create_raw_endpoint() -> OwnedEndpoint {
     OwnedEndpoint::new(EndpointType::Raw)
 }
 
-/// TCPサーバー作成（非推奨：非同期版 create_tcp_server_async を使用してください）
+/// TCPサーバー作成（同期コンテキスト用）
 ///
 /// 【設計書】POSIXソケットAPIを模倣しない
-#[deprecated(note = "use create_tcp_server_async() instead")]
 pub fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<OwnedEndpoint> {
     let ep = create_tcp_endpoint();
     ep.set_local_addr(addr)?;
-    #[allow(deprecated)]
     ep.start_listening(backlog)?;
     Ok(ep)
 }

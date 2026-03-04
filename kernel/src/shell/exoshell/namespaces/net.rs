@@ -60,11 +60,7 @@ impl NetNamespace {
         }
     }
 
-    /// Dispatch methods for 'net' namespace (同期)
-    ///
-    /// 非推奨: 非同期版は `call()` メソッドを使用してください。
-    #[allow(deprecated)] // 同期ディスパッチ: 非推奨同期APIを使用
-    #[deprecated(note = "use async call() interface instead")]
+    /// Dispatch methods for 'net' namespace（同期）
     pub fn dispatch(
         method: &str,
         args: &[ExoValue<'static>],
@@ -86,7 +82,6 @@ impl NetNamespace {
         }
     }
     /// ネットワーク設定を取得（同期版）
-    #[allow(deprecated)] // 同期APIラッパー: async版はconfig_async()
     pub fn config() -> ExoValue<'static> {
         if let Some(cfg) = crate::net::api::shell::get_network_config() {
             let mut map = BTreeMap::new();
@@ -118,7 +113,6 @@ impl NetNamespace {
     }
 
     /// ネットワーク統計（同期版）
-    #[allow(deprecated)] // 同期APIラッパー: async版はstats_async()
     pub fn stats() -> ExoValue<'static> {
         if let Some(stats) = crate::net::api::shell::get_network_stats() {
             let mut map = BTreeMap::new();
@@ -153,7 +147,6 @@ impl NetNamespace {
     }
 
     /// ARP キャッシュ（同期版）
-    #[allow(deprecated)] // 同期APIラッパー: async版はarp_cache_async()
     pub fn arp_cache() -> ExoValue<'static> {
         if let Some(entries) = crate::net::api::shell::get_arp_cache() {
             let values: Vec<ExoValue> = entries
@@ -232,7 +225,6 @@ impl NetNamespace {
             }
             _ => return ExoValue::Error(String::from("mac must be string")),
         };
-        #[allow(deprecated)] // 同期API: async版から置き換え予定
         let ok = crate::net::api::shell::arp_cache_insert(ip, mac);
         ExoValue::Bool(ok)
     }
@@ -319,9 +311,7 @@ impl NetNamespace {
     }
 
     /// DHCP state snapshot (IPv4 + IPv6) — 同期版
-    #[allow(deprecated)] // 同期APIラッパー: async版はdhcp_state_async()
     pub fn dhcp_state() -> ExoValue<'static> {
-        #[allow(deprecated)]
         let state = crate::net::api::shell::dhcp_state();
         Self::format_dhcp_state(state)
     }
@@ -399,9 +389,7 @@ impl NetNamespace {
     }
 
     /// Trigger DHCP renew/restart — 同期版
-    #[allow(deprecated)] // 同期APIラッパー: async版はdhcp_renew_async()
     pub fn dhcp_renew() -> ExoValue<'static> {
-        #[allow(deprecated)]
         match crate::net::api::shell::dhcp_renew() {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),

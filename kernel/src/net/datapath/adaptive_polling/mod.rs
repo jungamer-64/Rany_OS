@@ -585,11 +585,11 @@ impl PerCorePolling {
         work_done
     }
 
-    /// ポーリングループを実行（非推奨：async_poll_loop を使用してください）
+    /// ポーリングループを実行（同期コンテキスト専用）
     ///
-    /// `spin_loop()` でCPUを浪費するため、非同期コンテキストでは
-    /// `async_poll_loop()` を使用すること。
-    #[deprecated(note = "use async_poll_loop() instead for async contexts")]
+    /// `spin_loop()` でCPUを消費するため、非同期コンテキストでは
+    /// `async_poll_loop()` を使用すること。ブートストラップ時など、
+    /// エグゼキュータが未起動の同期コンテキストでのみ使用可能。
     pub fn poll_loop<F>(&mut self, mut driver_poll: F)
     where
         F: FnMut(usize) -> usize,

@@ -467,7 +467,7 @@ fn transmit_packet_zero_copy(device: &VirtioNetDevice, data: &[u8]) -> Result<()
     // ゼロコピーでDMAキューに投入（非同期完了は割り込みハンドラで処理）
     device.enqueue_send_zero_copy(packet).map_err(|e| {
         match e {
-            crate::io::virtio::VirtioNetError::QueueFull => "TX queue full",
+            crate::io::virtio::net::VirtioNetError::QueueFull => "TX queue full",
             _ => "enqueue_send_zero_copy failed",
         }
     })
@@ -478,7 +478,7 @@ fn transmit_packet_zero_copy(device: &VirtioNetDevice, data: &[u8]) -> Result<()
 /// tx_worker_task内のIoScheduler失敗時フォールバックとして使用。
 /// 同期的な`submit_tx()`による送信を完全に排除し、
 /// `enqueue_send_zero_copy()`経由のゼロコピー非同期パスのみ使用する。
-fn transmit_packet_zero_copy_async(device_index: u8, if_id: Option<NetIfId>, data: &[u8]) -> bool {
+fn transmit_packet_zero_copy_async(_device_index: u8, if_id: Option<NetIfId>, data: &[u8]) -> bool {
     let result = if let Some(if_id) = if_id {
         let virtio_index = lookup_virtio_index_for_interface(if_id);
         match virtio_index {
@@ -1129,7 +1129,7 @@ pub fn sync_drain_tx_queue() {
         let sent = if let Some(if_id) = req.if_id {
             send_packet_on_interface(if_id, &req.data)
         } else {
-            let result = with_virtio_net(|device| transmit_packet(device, &req.data));
+            let result = with_virtio_net(|device| transmit_packet_zero_copy(device, &req.data));
             matches!(result, Some(Ok(())))
         };
 
@@ -1329,15 +1329,11 @@ pub fn get_real_stats_for_interface(if_id: NetIfId) -> Option<NetworkStatsSnapsh
     get_real_stats()
 }
 
-/// Send ICMP echo via real NetworkStack (非推奨: ping_async を使用してください)
+/// Send ICMP echo via real NetworkStack（ブートストラップ専用）
 ///
-/// この関数はIRQ無効化 + 同期ロックを使用するため、デッドロックリスクがある。
-/// 新規コードでは `crate::net::api::icmp::ping_async()` または
-/// `IcmpEchoFuture` を使用すること。
-///
-/// 初期化時のブートストラップping（sync_drain_tx_queue前提）では
-/// 引き続き使用可能。
-#[deprecated(note = "use crate::net::api::icmp::ping_async() or IcmpEchoFuture instead")]
+/// この関数はIRQ無効化 + 同期ロックを使用するため、
+/// エグゼキュータ起動前のブートストラップpingのみで使用する。
+/// asyncコンテキストでは `crate::net::api::icmp::ping_async()` を使用すること。
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
     // Avoid IRQ re-entry deadlock: RX IRQ path also touches the global stack lock.
     x86_64::instructions::interrupts::without_interrupts(|| {

@@ -175,7 +175,6 @@ impl Future for SendToFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         // UDPは現在バッファリングせず即座にイベントキューへ
-        #[allow(deprecated)] // Future内部: 同期メソッドを非同期ラッパーから呼ぶ
         match this.endpoint.send_to(&this.data, this.addr) {
             Ok(len) => Poll::Ready(Ok(len)),
             Err(EndpointError::ResourceExhausted) => {
@@ -204,7 +203,6 @@ impl Future for AcceptFuture {
     type Output = EndpointResult<(OwnedEndpoint, EndpointAddr)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[allow(deprecated)] // Future内部: 同期メソッドを非同期ラッパーから呼ぶ
         match self.endpoint.next_incoming() {
             Ok(( ep, addr)) => Poll::Ready(Ok((OwnedEndpoint::from_endpoint(ep), addr))),
 
@@ -244,7 +242,6 @@ impl Future for RecvFromFuture {
         let buf_len = this.buffer.len();
         let mut temp_buf = alloc::vec![0u8; buf_len];
 
-        #[allow(deprecated)] // Future内部: 同期メソッドを非同期ラッパーから呼ぶ
         match this.endpoint.recv_from(&mut temp_buf) {
             Ok((len, addr)) => {
                 this.buffer.truncate(len);

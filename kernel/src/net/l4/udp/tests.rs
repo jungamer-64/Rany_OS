@@ -153,7 +153,6 @@ pub fn test_bind_with_token_reclaim() {
     // Target binds using token
     {
         let _target_guard = set_current_subject(target);
-        #[allow(deprecated)]
         let sock = crate::net::runtime::stack::bind_udp_with_token(40000, Some(token));
         assert!(sock.is_some());
         assert_eq!(manager().in_flight_count(token), 1);
@@ -171,7 +170,6 @@ pub fn test_bind_with_token_reclaim() {
     // Now unbind the endpoint (target releases resource)
     {
         let _target_guard = set_current_subject(target);
-        #[allow(deprecated)]
         crate::net::runtime::stack::unbind_udp(40000);
     }
 

@@ -37,8 +37,9 @@ pub struct ArpCacheEntry {
     pub complete: bool,
 }
 
-/// 同期TCP接続一覧取得（非推奨：get_tcp_connections_async を使用してください）
-#[deprecated(note = "use get_tcp_connections_async() instead")]
+/// TCP接続一覧取得（読み取り専用・tcb_table参照）
+///
+/// `tcb_table()` から接続スナップショットを取得する。ネットワークスタックロックは使用しない。
 pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
     let snapshots = tcb_table().list_connections();
     if snapshots.is_empty() {
@@ -72,8 +73,9 @@ pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
     Some(connections)
 }
 
-/// 同期UDPエンドポイント一覧取得（非推奨：get_udp_endpoints_async を使用してください）
-#[deprecated(note = "use get_udp_endpoints_async() instead")]
+/// UDPエンドポイント一覧取得（読み取り専用・短命ロック）
+///
+/// ネットワークスタックロックを短時間取得し、UDPエンドポイント情報をスナップショットする。
 pub fn get_udp_endpoints() -> Option<Vec<UdpEndpointInfo>> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -100,8 +102,9 @@ pub fn get_udp_endpoints() -> Option<Vec<UdpEndpointInfo>> {
     None
 }
 
-/// 同期ARPキャッシュ取得（非推奨：get_arp_cache_async を使用してください）
-#[deprecated(note = "use get_arp_cache_async() instead")]
+/// ARPキャッシュ取得（読み取り専用・短命ロック）
+///
+/// ネットワークスタックロックを短時間取得し、ARPエントリをスナップショットする。
 pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -125,8 +128,9 @@ pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
     None
 }
 
-/// 同期ARPキャッシュ挿入（非推奨：arp_cache_insert_async を使用してください）
-#[deprecated(note = "use arp_cache_insert_async() instead")]
+/// ARPキャッシュ挿入（短命ロック）
+///
+/// ネットワークスタックロックを短時間取得し、ARPエントリを挿入する。
 pub fn arp_cache_insert(ip: Ipv4Address, mac: MacAddress) -> bool {
     if let Ok(mut guard) = stack::stack().lock() {
         if let Some(stack_ref) = guard.as_mut() {

@@ -574,7 +574,13 @@ impl NetworkStack {
         // PMTUD specific handling
         if icmp_type == IcmpType::DestinationUnreachable && code == DestUnreachCode::FragmentationNeeded as u8 {
             let next_hop_mtu = u16::from_be_bytes([data[6], data[7]]);
-            let mtu = if next_hop_mtu == 0 { 576u16 } else { next_hop_mtu };
+            let mtu = if next_hop_mtu == 0 {
+                // RFC 1191: If Next-Hop MTU is 0, use next smaller plateau
+                let current_mtu = self.ipv4.get_pmtu(original_dst, current_time);
+                crate::net::l3::ipv4::PmtuEntry::get_next_plateau(current_mtu)
+            } else {
+                next_hop_mtu
+            };
             self.ipv4.update_pmtu(original_dst, mtu, current_time);
         }
     }
