@@ -6,7 +6,7 @@
 //!
 //! # 真のゼロコピーネットワークスタック
 //!
-//! POSIXソケットを廃止し、RustのAsyncRead/AsyncWriteトレイトを実装した
+//! POSIX socketを廃止し、RustのAsyncRead/AsyncWriteトレイトを実装した
 //! 非同期ストリームを提供します。
 //!
 //! ## 設計原則

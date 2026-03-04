@@ -1,7 +1,7 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/types.rs
 // ============================================================================
-//! # 基本型定義 - ソケットAPI用の型
+//! # 基本型定義 - エンドポイントAPI用の型
 //!
 //! EndpointFd, EndpointType, EndpointState, EndpointError, EndpointAddr, AcceptedConnection等
 
@@ -10,7 +10,7 @@ use core::sync::atomic::AtomicU32;
 
 use super::tcb::TcpControlBlockEntry;
 
-/// ソケットファイルディスクリプタ
+/// エンドポイントファイルディスクリプタ
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct EndpointFd(u32);
@@ -41,18 +41,18 @@ impl EndpointFd {
 /// 次のファイルディスクリプタ
 pub static NEXT_FD: AtomicU32 = AtomicU32::new(0);
 
-/// ソケットタイプ
+/// エンドポイントタイプ
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointType {
-    /// TCPストリームソケット
+    /// TCPストリームエンドポイント
     Tcp,
-    /// UDPデータグラムソケット
+    /// UDPデータグラムエンドポイント
     Udp,
-    /// RAWソケット（直接IP層アクセス）
+    /// RAWエンドポイント（直接IP層アクセス）
     Raw,
 }
 
-/// ソケット状態
+/// エンドポイント状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointState {
     /// 作成直後
@@ -103,10 +103,10 @@ impl EndpointState {
     }
 }
 
-/// ソケットエラー
+/// エンドポイントエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointError {
-    /// ソケットが見つからない
+    /// エンドポイントが見つからない
     NotFound,
     /// 無効な引数
     InvalidArgument,
@@ -184,10 +184,10 @@ impl EndpointError {
     }
 }
 
-/// ソケット結果型
+/// エンドポイント結果型
 pub type EndpointResult<T> = Result<T, EndpointError>;
 
-/// ソケットアドレス（IPv4 / IPv6 - unified）
+/// エンドポイントアドレス（IPv4 / IPv6 - unified）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EndpointAddr {
     /// IPv4 address + port
@@ -203,7 +203,7 @@ impl EndpointAddr {
         EndpointAddr::V4 { ip, port }
     }
 
-    /// Create an IPv6 socket address
+    /// Create an IPv6 endpoint address
     #[inline(always)]
     pub const fn new_v6(ip: [u8; 16], port: u16) -> Self {
         EndpointAddr::V6 { ip, port }
@@ -318,7 +318,7 @@ impl core::fmt::Display for EndpointAddr {
 /// ハンドシェイク完了済みの接続（Acceptキュー用）
 #[derive(Debug, Clone)]
 pub struct AcceptedConnection {
-    /// 新規作成されたソケットFD
+    /// 新規作成されたエンドポイントFD
     pub fd: EndpointFd,
     /// ローカルアドレス
     pub local_addr: EndpointAddr,
@@ -434,7 +434,7 @@ pub mod tests {
     use super::*;
 
     #[cfg_attr(test, test_case)]
-    pub fn test_socket_fd() {
+    pub fn test_endpoint_fd() {
         let fd1 = EndpointFd::from_raw(1);
         let fd2 = EndpointFd::from_raw(2);
 
@@ -444,7 +444,7 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_socket_addr() {
+    pub fn test_endpoint_addr() {
         let addr = EndpointAddr::new([192, 168, 1, 1], 8080);
         assert_eq!(addr.as_ipv4().unwrap(), [192, 168, 1, 1]);
         assert_eq!(addr.port(), 8080);
@@ -460,14 +460,14 @@ pub mod tests {
 pub mod qemu_tests {
     use super::*;
 
-    pub fn socket_fd_smoke() -> bool {
+    pub fn endpoint_fd_smoke() -> bool {
         let fd1 = EndpointFd::from_raw(1);
         let fd2 = EndpointFd::from_raw(2);
 
         fd1.is_valid() && !EndpointFd::INVALID.is_valid() && fd1 < fd2
     }
 
-    pub fn socket_addr_smoke() -> bool {
+    pub fn endpoint_addr_smoke() -> bool {
         let addr = EndpointAddr::new([192, 168, 1, 1], 8080);
         if addr.as_ipv4().unwrap() != [192, 168, 1, 1] || addr.port() != 8080 {
             return false;
