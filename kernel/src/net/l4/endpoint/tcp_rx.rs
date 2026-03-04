@@ -919,7 +919,58 @@ pub fn handle_icmp_error(local: EndpointAddr, remote: EndpointAddr, icmp_type: c
                 }
             }
         }
-        tcb_table().remove(local, remote);
+    }
+}
+
+/// Handle ICMPv6 Error (RFC 4443 Section 3)
+pub fn handle_icmpv6_error(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    icmp_type: crate::net::l3::icmpv6::Icmpv6Type,
+    code: u8,
+) {
+    use crate::net::l3::icmpv6::Icmpv6Type;
+
+    let error = if icmp_type == Icmpv6Type::DestinationUnreachable {
+        match code {
+            0 => EndpointError::NetworkUnreachable, // No route to destination
+            1 => EndpointError::ConnectionRefused,  // Communication with destination administratively prohibited
+            3 => EndpointError::HostUnreachable,    // Address unreachable
+            4 => EndpointError::ConnectionRefused,  // Port unreachable
+            _ => return, // Ignore other codes
+        }
+    } else {
+        return; // Ignore other error types for now
+    };
+
+    let mut should_close = false;
+    let mut fd = None;
+
+    tcb_table().update(local, remote, |entry| {
+        // RFC 4443 Section 2.4 / RFC 1122 Section 4.2.3.9
+        if entry.state == TcpConnectionState::SynSent {
+            match error {
+                EndpointError::ConnectionRefused | EndpointError::ProtocolUnreachable => {
+                    should_close = true;
+                    fd = Some(entry.fd);
+                }
+                _ => {}
+            }
+        }
+        entry.on_icmp_error(error);
+    });
+
+    if should_close {
+        log::info!("[TCP-V6] Connection failed due to ICMPv6 error ({:?}) in SYN-SENT", error);
+        if let Some(f) = fd {
+            if let Some(socket) = get_socket_by_fd(f) {
+                let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                inner.last_error = Some(error);
+                if let Some(waker) = inner.connect_waker.take() {
+                    waker.wake();
+                }
+            }
+        }
     }
 }
 /// SYN-ACK受信処理（クライアント側3ウェイハンドシェイク）

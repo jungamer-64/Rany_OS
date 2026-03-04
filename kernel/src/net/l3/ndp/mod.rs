@@ -509,6 +509,11 @@ pub enum NdpResult {
         router_mac: Option<[u8; 6]>,
         prefixes: Vec<NdpOption>,
     },
+    /// Redirect received (RFC 4861)
+    Redirect {
+        target: Ipv6Address,
+        destination: Ipv6Address,
+    },
     /// Nothing to do
     None,
     /// Processing error

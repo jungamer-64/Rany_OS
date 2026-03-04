@@ -74,6 +74,9 @@ impl NdpProcessor {
             Icmpv6Type::RouterAdvertisement => {
                 self.process_ra(data, src, dst, current_time)
             }
+            Icmpv6Type::Redirect => {
+                self.process_redirect(data, src, dst, current_time)
+            }
             Icmpv6Type::RouterSolicitation => {
                 // We don't process RS (we're not a router)
                 NdpResult::None
@@ -315,6 +318,80 @@ impl NdpProcessor {
             router_mac,
             prefixes: prefix_options,
         }
+    }
+
+    /// Process Redirect message (RFC 4861 Section 8)
+    ///
+    /// Redirect format: type(1) + code(1) + checksum(2) + reserved(4) + target(16) + destination(16) [+ options]
+    pub(super) fn process_redirect(
+        &mut self,
+        data: &[u8],
+        src: Ipv6Address,
+        _dst: Ipv6Address,
+        current_time: u64,
+    ) -> NdpResult {
+        // Security (RFC 4861 Section 8.1):
+        // 1. Source address MUST be a link-local address.
+        if !src.is_link_local() {
+            log::warn!("NDP: Dropping Redirect from non-link-local address {}", src);
+            return NdpResult::Error;
+        }
+
+        // 2. The ICMP Hop Limit MUST be 255 (already checked in receive.rs via process_ndp_message).
+
+        if data.len() < 40 {
+            // type(1) + code(1) + checksum(2) + reserved(4) + target(16) + destination(16) = 40
+            return NdpResult::Error;
+        }
+
+        // Extract target (bytes 8-23) and destination (bytes 24-39)
+        let mut target_bytes = [0u8; 16];
+        target_bytes.copy_from_slice(&data[8..24]);
+        let target = Ipv6Address::new(target_bytes);
+
+        let mut dest_bytes = [0u8; 16];
+        dest_bytes.copy_from_slice(&data[24..40]);
+        let destination = Ipv6Address::new(dest_bytes);
+
+        // Security (RFC 4861 Section 8.1):
+        // 3. The ICMP Code MUST be 0.
+        if data[1] != 0 {
+            return NdpResult::Error;
+        }
+
+        // 4. Destination address MUST NOT be a multicast address.
+        if destination.is_multicast() {
+            log::warn!("NDP: Dropping Redirect with multicast destination {}", destination);
+            return NdpResult::Error;
+        }
+
+        // 5. The Target Address MUST be either a link-local address (when the redirect 
+        //    is to a router) or the same as the Destination Address (when the 
+        //    redirect is to the destination itself).
+        if !target.is_link_local() && target != destination {
+            log::warn!("NDP: Dropping Redirect with invalid target {} for destination {}", target, destination);
+            return NdpResult::Error;
+        }
+
+        // Parse options for Target Link-Layer Address
+        let options = if data.len() > 40 {
+            parse_ndp_options(&data[40..])
+        } else {
+            Vec::new()
+        };
+
+        for opt in options {
+            if let NdpOption::LinkLayerAddress {
+                option_type: NdpOptionType::TargetLinkLayerAddress,
+                mac,
+            } = opt
+            {
+                // Update neighbor cache with target's MAC
+                self.cache.update_reachable(&target, mac, current_time);
+            }
+        }
+
+        NdpResult::Redirect { target, destination }
     }
 
     /// Build a Neighbor Solicitation message

@@ -524,6 +524,16 @@ pub fn poll_timer_events() {
             crate::io::log::early_print_dec(tick);
             crate::io::log::early_print(" tm=");
             crate::io::log::early_print_dec(crate::task::timer::current_tick());
+            let (drained, failed) = time_driver::TIME_MANAGER.debug_drain_stats();
+            let last_reg = time_driver::TIME_MANAGER.debug_last_registered_sleep.load(core::sync::atomic::Ordering::Relaxed);
+            if drained > 0 || failed > 0 || last_reg > 0 {
+                crate::io::log::early_print(" dr=");
+                crate::io::log::early_print_dec(drained as u64);
+                crate::io::log::early_print(" fail=");
+                crate::io::log::early_print_dec(failed as u64);
+                crate::io::log::early_print(" lreg=");
+                crate::io::log::early_print_dec(last_reg);
+            }
             crate::io::log::early_print("\n");
         }
 

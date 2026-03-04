@@ -265,7 +265,7 @@ impl Ipv6FragmentBuffer {
                 log::warn!(
                     "[NET-IPV6] Dropping IPv6 datagram due to incomplete header chain in first fragment (Tiny Fragment Attack prevention)"
                 );
-                return Err(Ipv6ReassemblyError::InvalidSize); // Treated as invalid size/format
+                return Err(Ipv6ReassemblyError::IncompleteHeaderChain);
             }
             self.unfragmentable_part = Some(unfragmentable.to_vec());
         }

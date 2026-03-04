@@ -958,14 +958,17 @@ impl Ipv6Stats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ipv6ReassemblyError {
     /// Overlapping fragments detected (RFC 8200 Section 4.5)
-    /// Discard datagram, send ICMPv6 Time Exceeded
+    /// Discard datagram, no ICMP error required.
     Overlap,
     /// Fragment length not a multiple of 8 octets while M=1 (RFC 8200 Section 4.5)
-    /// Discard datagram, send ICMPv6 Parameter Problem
+    /// Discard datagram, send ICMPv6 Parameter Problem Code 0, pointer to Payload Length.
     InvalidSize,
-    /// Sum of Fragment Offset and Payload Length > 65535 (RFC 8200 Section 4.5)
-    /// Discard fragment, send ICMPv6 Parameter Problem
+    /// Sum of Fragment Offset and Payload Length > 65535, or reassembled size too large (RFC 8200 Section 4.5)
+    /// Discard datagram, send ICMPv6 Parameter Problem Code 0, pointer to Payload Length.
     PacketTooLarge,
+    /// Incomplete header chain in the first fragment (RFC 7112 Section 5)
+    /// Discard datagram, send ICMPv6 Parameter Problem Code 0, pointer to Fragment Offset.
+    IncompleteHeaderChain,
 }
 
 /// Result of IPv6 packet processing

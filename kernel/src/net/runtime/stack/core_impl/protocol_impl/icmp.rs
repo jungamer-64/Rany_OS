@@ -846,6 +846,61 @@ impl NetworkStack {
         self.send_icmp_echo_fallback(target, dst_mac, local_ip, identifier, sequence)
     }
 
+    /// Handle ICMPv6 error messages for transport layer notification (RFC 5927 / RFC 4443)
+    pub(crate) fn handle_icmpv6_error_transport_notification(
+        &mut self,
+        quoted_src: Ipv6Address,
+        quoted_dst: Ipv6Address,
+        icmp_type: Icmpv6Type,
+        code: u8,
+        quoted_packet: &[u8],
+    ) {
+        // Quoted packet starts with an IPv6 header (40 bytes)
+        if quoted_packet.len() < 48 { // Header(40) + minimum transport(8)
+            return;
+        }
+
+        let next_header = quoted_packet[6];
+        let payload = &quoted_packet[40..];
+
+        // Skip extension headers to find the upper-layer header
+        use crate::net::l3::ipv6::skip_extension_headers;
+        let (final_proto, transport_data) = skip_extension_headers(IpProtocol::from(next_header), payload);
+
+        if transport_data.len() < 8 {
+            return;
+        }
+
+        match final_proto {
+            IpProtocol::Tcp => {
+                let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
+                let seq_num = u32::from_be_bytes([transport_data[4], transport_data[5], transport_data[6], transport_data[7]]);
+
+                use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
+                let local_addr = TcpEndpointAddr::new_v6(quoted_src.octets(), src_port);
+                let remote_addr = TcpEndpointAddr::new_v6(quoted_dst.octets(), dst_port);
+
+                // Validate sequence number (RFC 5927)
+                let tcb_table = crate::net::l4::endpoint::tcb_table();
+                if tcb_table.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
+                    // Notify TCP stack
+                    crate::net::l4::endpoint::tcp_rx::handle_icmpv6_error(local_addr, remote_addr, icmp_type, code);
+                } else {
+                    log::warn!("[NET] ICMPv6: error type {:?} for {} rejected due to invalid TCP seq {} (RFC 5927)", icmp_type, quoted_dst, seq_num);
+                }
+            }
+            IpProtocol::Udp => {
+                let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                if !self.udp.has_endpoint(src_port) {
+                    return;
+                }
+                // UDP error notification could be implemented here
+            }
+            _ => {}
+        }
+    }
+
     /// Calculate IP/ICMP checksum
     pub(crate) fn checksum(data: &[u8]) -> u16 {
         let mut sum: u32 = 0;

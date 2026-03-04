@@ -262,7 +262,7 @@ impl NetworkStack {
                 log::info!("IPv6: Reassembly timeout for {} - sending ICMPv6 Time Exceeded", src);
                 self.send_icmpv6_time_exceeded(src, 1, &unfragmentable);
             }
-            Ipv6ProcessResult::ReassemblyError(err, src, _dst, unfragmentable) => {
+            Ipv6ProcessResult::ReassemblyError(err, src, _dst, quoted_packet) => {
                 match err {
                     crate::net::l3::ipv6::Ipv6ReassemblyError::Overlap => {
                         // RFC 8200/5722: Silent discard for overlapping fragments (no ICMP error required)
@@ -271,14 +271,23 @@ impl NetworkStack {
                     crate::net::l3::ipv6::Ipv6ReassemblyError::InvalidSize => {
                         // RFC 8200: Send ICMPv6 Parameter Problem (Code 0), pointing to Payload Length
                         // Payload Length is at offset 4 in IPv6 header
-                        log::warn!("IPv6: Invalid fragment size from {} - sending ICMPv6 Parameter Problem (RFC 8200)", src);
-                        self.send_icmpv6_parameter_problem(src, 0, 4, &unfragmentable);
+                        log::warn!("IPv6: Invalid fragment size (not multiple of 8) from {} - sending ICMPv6 Parameter Problem (RFC 8200)", src);
+                        self.send_icmpv6_parameter_problem(src, 0, 4, &quoted_packet);
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
                         // RFC 8200: If the reassembled packet would be larger than 65,535 octets,
-                        // send ICMPv6 Parameter Problem Code 1 pointing to Payload Length field.
-                        log::warn!("IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem Code 1 (RFC 8200)", src);
-                        self.send_icmpv6_parameter_problem(src, 1, 4, &unfragmentable);
+                        // send ICMPv6 Parameter Problem Code 0 pointing to Payload Length field.
+                        log::warn!("IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem (RFC 8200)", src);
+                        self.send_icmpv6_parameter_problem(src, 0, 4, &quoted_packet);
+                    }
+                    crate::net::l3::ipv6::Ipv6ReassemblyError::IncompleteHeaderChain => {
+                        // RFC 7112: Send ICMPv6 Parameter Problem (Code 0), pointing to Fragment Offset
+                        // Fragment Header starts at offset 40 in basic case, but it's unfragmentable.len()
+                        // quoted_packet contains unfragmentable + 8-byte fragment header.
+                        // Fragment Offset is at offset 2 within the 8-byte Fragment Header.
+                        let fragment_offset_pointer = (quoted_packet.len() as u32).saturating_sub(6);
+                        log::warn!("IPv6: Incomplete header chain in first fragment from {} - sending ICMPv6 Parameter Problem (RFC 7112)", src);
+                        self.send_icmpv6_parameter_problem(src, 0, fragment_offset_pointer, &quoted_packet);
                     }
                 }
             }
@@ -426,23 +435,26 @@ impl NetworkStack {
                 }
             }
 
-            Icmpv6Result::DestinationUnreachable { code, quoted_src, quoted_dst, .. } => {
+            Icmpv6Result::DestinationUnreachable { code, quoted_src, quoted_dst, quoted_packet } => {
                 log::warn!(
                     "ICMPv6: Destination Unreachable (code={}) src={} dst={}",
                     code, quoted_src, quoted_dst
                 );
+                self.handle_icmpv6_error_transport_notification(quoted_src, quoted_dst, Icmpv6Type::DestinationUnreachable, code, &quoted_packet);
             }
-            Icmpv6Result::TimeExceeded { code, quoted_src, quoted_dst, .. } => {
+            Icmpv6Result::TimeExceeded { code, quoted_src, quoted_dst, quoted_packet } => {
                 log::warn!(
                     "ICMPv6: Time Exceeded (code={}) src={} dst={}",
                     code, quoted_src, quoted_dst
                 );
+                self.handle_icmpv6_error_transport_notification(quoted_src, quoted_dst, Icmpv6Type::TimeExceeded, code, &quoted_packet);
             }
-            Icmpv6Result::ParameterProblem { code, pointer, quoted_src, quoted_dst, .. } => {
+            Icmpv6Result::ParameterProblem { code, pointer, quoted_src, quoted_dst, quoted_packet } => {
                 log::warn!(
                     "ICMPv6: Parameter Problem (code={}, pointer={}) src={} dst={}",
                     code, pointer, quoted_src, quoted_dst
                 );
+                self.handle_icmpv6_error_transport_notification(quoted_src, quoted_dst, Icmpv6Type::ParameterProblem, code, &quoted_packet);
             }
             Icmpv6Result::Dropped | Icmpv6Result::Error => {}
         }
@@ -598,6 +610,12 @@ impl NetworkStack {
                         log::info!("SLAAC: Set default gateway to {}", router);
                     }
                 }
+            }
+            NdpResult::Redirect { target, destination } => {
+                log::info!("NDP: Redirect for {} to target router {}", destination, target);
+                // Update IPv6 Path MTU or routing table with redirect info
+                // Currently we don't have a separate IPv6 redirect cache like IPv4,
+                // but we could theoretically update the neighbor cache (already done in process_redirect).
             }
             NdpResult::None | NdpResult::Error => {}
         }
