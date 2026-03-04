@@ -60,7 +60,7 @@ pub mod qemu_tests;
 
 // Re-exports: types
 pub use types::{
-    EndpointAddr, EndpointError, EndpointFd, EndpointType,
+    EndpointAddr, EndpointError, EndpointFd,
 };
 
 // Re-exports: tcb

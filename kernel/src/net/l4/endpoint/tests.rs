@@ -9,8 +9,7 @@
 pub mod tests {
     use super::super::endpoint_core::Endpoint;
     use super::super::tcb::TcpControlBlockEntry;
-    use super::super::types::{AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState};
-    use crate::net::l4::endpoint::EndpointType;
+    use super::super::types::{AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType};
     use alloc::vec::Vec;
 
     #[cfg_attr(test, test_case)]
