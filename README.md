@@ -202,7 +202,7 @@ src/
 
 ### **必要条件**
 
-* Rust nightly (2025年以降推奨)
+* Rust nightly (2026年以降推奨)
 * `rust-src`, `llvm-tools-preview`
 * QEMU (x86_64)
 
@@ -239,10 +239,12 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 ```
 
 テスト構成は 2 層です。
+
 * `純` (crate-local `std #[test]`): host/std の高速ロジック検証。`cargo test`（root）は host純全体を実行します。
 * `QEMU実` (`qemu-tests`): `exoloader -> 実kernel ELF` の full-boot 検証。`run_integration=<profile>` を `exoloader.cmdline` に注入して runtime dispatcher を起動します。
 
 補足:
+
 * pure tier (`pr-required` / `nightly-required`) の真実源は `tests/pure_tiers.toml` です。
 * `pure-tests` は削除済み。純テストは crate-local `std #[test]` に集約。
 * `pending` / `runtime_pending` スイートは廃止されました。
