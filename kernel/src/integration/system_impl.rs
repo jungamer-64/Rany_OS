@@ -378,11 +378,25 @@ impl SystemIntegration {
                     self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
                 } else {
                     self.log("    VirtIO-net driver initialized via DriverRegistry");
-                    // Quick sanity ping immediately after driver start.  If the
-                    // global VirtIO device is working the ping should succeed
-                    // (or at least return an I/O error if the network is down).
-                    // ブートストラップ同期コンテキスト: send_real_icmp_echoを使用
-                    let ping = crate::net::runtime::bridge::send_real_icmp_echo(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES, 1);
+                    // Quick sanity ping immediately after driver start.
+                    // ARP解決にはRXパケット受信（割り込み）が必要なため、
+                    // 1回目で失敗した場合はIRQ有効状態で短いポーリング後にリトライする。
+                    let mut ping = crate::net::runtime::bridge::send_real_icmp_echo(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES, 1);
+                    if ping.is_err() {
+                        // ARP応答の受信を待つ: IRQ有効化して短いスピン待機
+                        for _ in 0..5 {
+                            // 割り込みを一時的に有効化してARP応答を受信
+                            x86_64::instructions::interrupts::enable();
+                            for _ in 0..500_000 {
+                                core::hint::spin_loop();
+                            }
+                            x86_64::instructions::interrupts::disable();
+                            ping = crate::net::runtime::bridge::send_real_icmp_echo(crate::net::defaults::QEMU_DEFAULT_GATEWAY_BYTES, 1);
+                            if ping.is_ok() {
+                                break;
+                            }
+                        }
+                    }
                     self.log(&alloc::format!("    [PING TEST] result={:?}", ping));
                 }
             }

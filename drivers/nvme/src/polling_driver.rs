@@ -418,10 +418,14 @@ impl NvmePollingDriver {
         let sq_doorbell = (self.bar0 + 0x1000) as *mut u32;
         let cq_doorbell = (self.bar0 + 0x1000 + self.doorbell_stride as u64) as *mut u32;
 
+        // QueuePair::new() にはCPU仮想アドレスを渡す（IOVAではない）
+        let asq_cpu_ptr = asq_buffer.as_ptr() as *mut NvmeCommand;
+        let acq_cpu_ptr = acq_buffer.as_ptr() as *mut NvmeCompletion;
+
         let admin_qp = unsafe {
             QueuePair::new(
-                asq_phys as *mut NvmeCommand,
-                acq_phys as *mut NvmeCompletion,
+                asq_cpu_ptr,
+                acq_cpu_ptr,
                 depth,
                 sq_doorbell,
                 cq_doorbell,
@@ -461,7 +465,9 @@ impl NvmePollingDriver {
 
         admin_queue.submit(&cmd)?;
 
-        for _ in 0..10000 {
+        // NVMeスペック上、コントローラは最大数百ms応答に要する場合がある。
+        // 10,000,000回のスピンループ ≈ 100-200ms（PAUSE命令 ≈ 10-20ns）
+        for _ in 0..10_000_000 {
             if let Some(cqe) = admin_queue.poll_completion() {
                 let status = cqe.status >> 1;
                 if status != 0 {

@@ -8,7 +8,8 @@ impl NvmePollingDriver {
             .as_ref()
             .ok_or("Admin queue not initialized")?;
 
-        for _ in 0..100000 {
+        // NVMeスペック準拠: 十分な待機（10M回 ≈ 100-200ms）
+        for _ in 0..10_000_000 {
             if let Some(cqe) = admin_queue.poll_completion() {
                 if cqe.is_success() {
                     return Ok(cqe);
