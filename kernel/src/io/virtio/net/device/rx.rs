@@ -40,9 +40,37 @@ impl VirtioNetDevice {
 
     /// RXキュー完了を処理し、パケットをスタックに渡す
     pub(super) fn process_rx_completions(&self) {
+        use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
+        static DBG_COUNT: AtomicU32 = AtomicU32::new(0);
         for (q_idx, rx_queue) in self.rx_queues.iter().enumerate() {
+            // One-shot diagnostic: dump used ring indices
+            let dbg = DBG_COUNT.fetch_add(1, AtOrd::Relaxed);
+            if dbg < 5 || (dbg % 500 == 0) {
+                if let Ok(vq) = rx_queue.vq.lock() {
+                    let used_idx = vq.get_used_idx_public();
+                    let last_used = vq.get_last_used_idx();
+                    let avail_idx_raw = unsafe {
+                        core::ptr::read_volatile(vq.avail_ring.as_ref().idx.get())
+                    };
+                    let free_count = vq.free_list.lock().map(|l| l.len()).unwrap_or(9999);
+                    crate::io::log::early_print("[RX-DIAG] q=");
+                    crate::io::log::early_print_dec(q_idx as u64);
+                    crate::io::log::early_print(" used_idx=");
+                    crate::io::log::early_print_dec(used_idx as u64);
+                    crate::io::log::early_print(" last_used=");
+                    crate::io::log::early_print_dec(last_used as u64);
+                    crate::io::log::early_print(" avail_idx=");
+                    crate::io::log::early_print_dec(avail_idx_raw as u64);
+                    crate::io::log::early_print(" free=");
+                    crate::io::log::early_print_dec(free_count as u64);
+                    crate::io::log::early_print("\n");
+                }
+            }
             // Diagnostic: check raw used ring state
             let completions = rx_queue.process_used();
+            if !completions.is_empty() {
+                crate::io::log::early_print("[RX-DBG] process_rx_completions: got completions!\n");
+            }
             for (desc_idx, len) in completions {
                 self.rx_packets.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 trace::push_event(NetLayer::Driver, NetEventKind::Rx, "virtio rx completion");

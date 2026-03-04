@@ -371,6 +371,12 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
     info!(target: "init", "Interrupt system initialized");
 
+    // 0.1. PIT (Programmable Interval Timer) を 1000 Hz に設定
+    // コード全体が 1 tick = 1ms を想定しているため、明示的に初期化する。
+    // BIOS/UEFI デフォルト（~18.2 Hz）のままだとタイマータイムアウトが極端に遅くなる。
+    crate::time::init(1000);
+    info!(target: "init", "PIT initialized at 1000 Hz");
+
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
     let numa_info = if boot_info.numa_info.node_count > 0 {

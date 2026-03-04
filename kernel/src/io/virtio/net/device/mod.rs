@@ -507,6 +507,21 @@ impl VirtioNetDevice {
         let avail_addr = dma_base + desc_size as u64;
         let used_addr = dma_base + used_offset as u64;
 
+        // Debug: dump queue addresses
+        crate::io::log::early_print("[VQ-SETUP] q=");
+        crate::io::log::early_print_dec(queue_index as u64);
+        crate::io::log::early_print(" desc=0x");
+        crate::io::log::early_print_hex(desc_addr);
+        crate::io::log::early_print(" avail=0x");
+        crate::io::log::early_print_hex(avail_addr);
+        crate::io::log::early_print(" used=0x");
+        crate::io::log::early_print_hex(used_addr);
+        crate::io::log::early_print(" phys_base=0x");
+        crate::io::log::early_print_hex(phys_base);
+        crate::io::log::early_print(" size=");
+        crate::io::log::early_print_dec(queue_size as u64);
+        crate::io::log::early_print("\n");
+
         self.mut_transport().set_queue_desc_addr(desc_addr);
         self.mut_transport().set_queue_avail_addr(avail_addr);
         self.mut_transport().set_queue_used_addr(used_addr);
@@ -711,6 +726,22 @@ impl VirtioNetDevice {
         let buf_len = packet.capacity();
 
         let (dma_addr, iommu_iova, iommu_map_len) = self.map_buffer_for_rx(phys, buf_len)?;
+
+        // Debug: log first few RX buffer DMA addresses
+        {
+            use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
+            static RX_POST_DBG: AtomicU32 = AtomicU32::new(0);
+            let n = RX_POST_DBG.fetch_add(1, AtOrd::Relaxed);
+            if n < 3 {
+                crate::io::log::early_print("[RX-POST] phys=0x");
+                crate::io::log::early_print_hex(phys);
+                crate::io::log::early_print(" dma=0x");
+                crate::io::log::early_print_hex(dma_addr);
+                crate::io::log::early_print(" len=");
+                crate::io::log::early_print_dec(buf_len as u64);
+                crate::io::log::early_print("\n");
+            }
+        }
 
         match rxq.add_rx_buffer_zero_copy(dma_addr, buf_len) {
             Ok(desc_idx) => {

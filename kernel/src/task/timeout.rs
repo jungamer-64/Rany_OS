@@ -26,6 +26,8 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use super::{Executor, Task, TaskId};
 use super::timer::current_tick;
+use kernel_api::TimeService;
+use time_driver::TIME_MANAGER;
 
 // ============================================================================
 // Timeout Support (設計書 4.4)
@@ -63,9 +65,13 @@ impl<T> TimeoutResult<T> {
 /// タイムアウト付きFuture
 ///
 /// 設計書 4.4: タイマーベースのyield
+///
+/// 内部Futureが `Pending` を返した場合でも、デッドライン到達時に
+/// タイマーwaker経由でタスクを再pollし、タイムアウトを確実に発火させる。
 pub struct TimeoutFuture<F: Future> {
     inner: F,
     deadline: u64,
+    timer_registered: bool,
 }
 
 impl<F: Future> TimeoutFuture<F> {
@@ -74,6 +80,7 @@ impl<F: Future> TimeoutFuture<F> {
         Self {
             inner: future,
             deadline: current_tick() + timeout_ms,
+            timer_registered: false,
         }
     }
 }
@@ -85,8 +92,20 @@ impl<F: Future> Future for TimeoutFuture<F> {
         // SAFETY: inner futureをpinするためにunsafeが必要
         let this = unsafe { self.get_unchecked_mut() };
 
+        let now = current_tick();
+
         // タイムアウトチェック
-        if current_tick() >= this.deadline {
+        if now >= this.deadline {
+            // タイマー登録を解除
+            if this.timer_registered {
+                TIME_MANAGER.unregister_sleep(this.deadline);
+                this.timer_registered = false;
+            }
+            crate::io::log::early_print("[TIMEOUT] fired at tick=");
+            crate::io::log::early_print_dec(now);
+            crate::io::log::early_print(" deadline=");
+            crate::io::log::early_print_dec(this.deadline);
+            crate::io::log::early_print("\n");
             return Poll::Ready(TimeoutResult::TimedOut);
         }
 
@@ -94,8 +113,35 @@ impl<F: Future> Future for TimeoutFuture<F> {
         // SAFETY: selfがpinnedなので、innerもpinされている
         let inner_pin = unsafe { Pin::new_unchecked(&mut this.inner) };
         match inner_pin.poll(cx) {
-            Poll::Ready(result) => Poll::Ready(TimeoutResult::Completed(result)),
-            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                // 完了時にタイマー登録を解除
+                if this.timer_registered {
+                    TIME_MANAGER.unregister_sleep(this.deadline);
+                    this.timer_registered = false;
+                }
+                Poll::Ready(TimeoutResult::Completed(result))
+            }
+            Poll::Pending => {
+                // デッドライン到達時にタスクを起床させるためタイマーwaker登録
+                if !this.timer_registered {
+                    crate::io::log::early_print("[TIMEOUT] registering sleep at deadline=");
+                    crate::io::log::early_print_dec(this.deadline);
+                    crate::io::log::early_print(" now=");
+                    crate::io::log::early_print_dec(now);
+                    crate::io::log::early_print("\n");
+                    TIME_MANAGER.register_sleep(this.deadline, cx.waker().clone());
+                    this.timer_registered = true;
+                }
+                Poll::Pending
+            }
+        }
+    }
+}
+
+impl<F: Future> Drop for TimeoutFuture<F> {
+    fn drop(&mut self) {
+        if self.timer_registered {
+            TIME_MANAGER.unregister_sleep(self.deadline);
         }
     }
 }

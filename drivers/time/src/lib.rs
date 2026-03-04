@@ -64,13 +64,15 @@ const PENDING_QUEUE_MASK: usize = PENDING_QUEUE_SIZE - 1;
 ///
 /// ティック値でシャーディングすることで、ISRでのロック競合を減らす。
 /// `drain_expired()` は try_lock を使用し、ISRから安全に呼べる。
+///
+/// 同じティックに複数のWakerを登録できるよう `BTreeMap<u64, Vec<Waker>>` を使用。
 struct ShardedSleepRegistry {
-    shards: [Mutex<BTreeMap<u64, Waker>>; SHARD_COUNT],
+    shards: [Mutex<BTreeMap<u64, Vec<Waker>>>; SHARD_COUNT],
 }
 
 impl ShardedSleepRegistry {
     const fn new() -> Self {
-        const EMPTY_SHARD: Mutex<BTreeMap<u64, Waker>> = Mutex::new(BTreeMap::new());
+        const EMPTY_SHARD: Mutex<BTreeMap<u64, Vec<Waker>>> = Mutex::new(BTreeMap::new());
         Self {
             shards: [EMPTY_SHARD; SHARD_COUNT],
         }
@@ -83,12 +85,21 @@ impl ShardedSleepRegistry {
 
     fn insert(&self, tick: u64, waker: Waker) {
         let idx = Self::shard_index(tick);
-        self.shards[idx].lock().insert(tick, waker);
+        self.shards[idx].lock().entry(tick).or_insert_with(Vec::new).push(waker);
     }
 
     fn remove(&self, tick: u64) -> Option<Waker> {
         let idx = Self::shard_index(tick);
-        self.shards[idx].lock().remove(&tick)
+        let mut guard = self.shards[idx].lock();
+        if let Some(wakers) = guard.get_mut(&tick) {
+            let w = wakers.pop();
+            if wakers.is_empty() {
+                guard.remove(&tick);
+            }
+            w
+        } else {
+            None
+        }
     }
 
     /// 期限切れWakerを収集（ISR安全: try_lock使用）
@@ -99,8 +110,8 @@ impl ShardedSleepRegistry {
                     guard.range(..=current_tick).map(|(k, _)| *k).collect();
 
                 for key in expired_keys {
-                    if let Some(waker) = guard.remove(&key) {
-                        out.push(waker);
+                    if let Some(wakers) = guard.remove(&key) {
+                        out.extend(wakers);
                     }
                 }
             }

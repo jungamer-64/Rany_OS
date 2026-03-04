@@ -91,6 +91,53 @@ static TX_QUEUE_HAS_EVENTS: AtomicBool = AtomicBool::new(false);
 
 /// Enqueue a transmit request (called from stack's transmit_fn)
 fn enqueue_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    // Debug: dump first few TX packets' Ethernet header
+    {
+        use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
+        static TX_DUMP_COUNT: AtomicU32 = AtomicU32::new(0);
+        let n = TX_DUMP_COUNT.fetch_add(1, AtOrd::Relaxed);
+        if n < 3 && data.len() >= 14 {
+            crate::io::log::early_print("[TX-DUMP] pkt#");
+            crate::io::log::early_print_dec(n as u64);
+            crate::io::log::early_print(" len=");
+            crate::io::log::early_print_dec(data.len() as u64);
+            crate::io::log::early_print(" dst=");
+            for i in 0..6 {
+                crate::io::log::early_print_hex(data[i] as u64);
+                if i < 5 { crate::io::log::early_print(":"); }
+            }
+            crate::io::log::early_print(" src=");
+            for i in 6..12 {
+                crate::io::log::early_print_hex(data[i] as u64);
+                if i < 11 { crate::io::log::early_print(":"); }
+            }
+            crate::io::log::early_print(" ethtype=0x");
+            crate::io::log::early_print_hex(((data[12] as u64) << 8) | data[13] as u64);
+            // If IPv4 (0x0800), dump IP header
+            if data[12] == 0x08 && data[13] == 0x00 && data.len() >= 34 {
+                crate::io::log::early_print(" ip_src=");
+                for i in 26..30 {
+                    crate::io::log::early_print_dec(data[i] as u64);
+                    if i < 29 { crate::io::log::early_print("."); }
+                }
+                crate::io::log::early_print(" ip_dst=");
+                for i in 30..34 {
+                    crate::io::log::early_print_dec(data[i] as u64);
+                    if i < 33 { crate::io::log::early_print("."); }
+                }
+                // If UDP (protocol 17), dump ports
+                if data.len() >= 38 && data[23] == 17 {
+                    let sp = ((data[34] as u16) << 8) | data[35] as u16;
+                    let dp = ((data[36] as u16) << 8) | data[37] as u16;
+                    crate::io::log::early_print(" udp ");
+                    crate::io::log::early_print_dec(sp as u64);
+                    crate::io::log::early_print("->");
+                    crate::io::log::early_print_dec(dp as u64);
+                }
+            }
+            crate::io::log::early_print("\n");
+        }
+    }
     let req = TransmitRequest { if_id, data: data.to_vec() };
     let Ok(mut q) = TX_QUEUE.lock() else { return false; };
     if q.len() >= TX_QUEUE_CAPACITY {
@@ -572,6 +619,38 @@ pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
 
 /// Process a completed RX buffer without copying: use the provided PacketRef (zero-copy)
 pub fn process_received_packet_zero_copy(mut packet: crate::net::datapath::mempool::PacketRef, header_size: usize, payload_len: usize) {
+    // Debug: dump first few RX packets
+    {
+        use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
+        static RX_DUMP_COUNT: AtomicU32 = AtomicU32::new(0);
+        let n = RX_DUMP_COUNT.fetch_add(1, AtOrd::Relaxed);
+        if n < 3 {
+            let data = packet.data();
+            let total = header_size + payload_len;
+            crate::io::log::early_print("[RX-DUMP] pkt#");
+            crate::io::log::early_print_dec(n as u64);
+            crate::io::log::early_print(" hdr=");
+            crate::io::log::early_print_dec(header_size as u64);
+            crate::io::log::early_print(" payload=");
+            crate::io::log::early_print_dec(payload_len as u64);
+            if data.len() >= header_size + 14 {
+                let eth = &data[header_size..];
+                crate::io::log::early_print(" dst=");
+                for i in 0..6 {
+                    crate::io::log::early_print_hex(eth[i] as u64);
+                    if i < 5 { crate::io::log::early_print(":"); }
+                }
+                crate::io::log::early_print(" src=");
+                for i in 6..12 {
+                    crate::io::log::early_print_hex(eth[i] as u64);
+                    if i < 11 { crate::io::log::early_print(":"); }
+                }
+                crate::io::log::early_print(" ethtype=0x");
+                crate::io::log::early_print_hex(((eth[12] as u64) << 8) | eth[13] as u64);
+            }
+            crate::io::log::early_print("\n");
+        }
+    }
     // Deferred mode: buffer packet for later dispatch to avoid deadlock
     if RX_DEFERRED_MODE.load(Ordering::Acquire) {
         if let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() {
@@ -615,6 +694,37 @@ pub fn process_received_packet_zero_copy_for_interface(
     header_size: usize,
     payload_len: usize,
 ) {
+    // Debug: dump first few RX packets (interface path)
+    {
+        use core::sync::atomic::{AtomicU32, Ordering as AtOrd};
+        static RX_IF_DUMP_COUNT: AtomicU32 = AtomicU32::new(0);
+        let n = RX_IF_DUMP_COUNT.fetch_add(1, AtOrd::Relaxed);
+        if n < 3 {
+            let data = packet.data();
+            crate::io::log::early_print("[RX-IF-DUMP] pkt#");
+            crate::io::log::early_print_dec(n as u64);
+            crate::io::log::early_print(" hdr=");
+            crate::io::log::early_print_dec(header_size as u64);
+            crate::io::log::early_print(" payload=");
+            crate::io::log::early_print_dec(payload_len as u64);
+            if data.len() >= header_size + 14 {
+                let eth = &data[header_size..];
+                crate::io::log::early_print(" dst=");
+                for i in 0..6 {
+                    crate::io::log::early_print_hex(eth[i] as u64);
+                    if i < 5 { crate::io::log::early_print(":"); }
+                }
+                crate::io::log::early_print(" src=");
+                for i in 6..12 {
+                    crate::io::log::early_print_hex(eth[i] as u64);
+                    if i < 11 { crate::io::log::early_print(":"); }
+                }
+                crate::io::log::early_print(" ethtype=0x");
+                crate::io::log::early_print_hex(((eth[12] as u64) << 8) | eth[13] as u64);
+            }
+            crate::io::log::early_print("\n");
+        }
+    }
     // Deferred mode: buffer packet for later dispatch to avoid deadlock
     if RX_DEFERRED_MODE.load(Ordering::Acquire) {
         if let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() {

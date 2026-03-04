@@ -49,11 +49,15 @@ async fn virtio_net_worker_task(index: u8) {
         wait_for_interrupt(InterruptSource::VirtioNet(index)).await;
         
         // 2. デバイスをロックして後処理（非ISRコンテキストなので安全）
+        // デバイスロック保持中にRX処理→ブリッジ→TX送信→デバイスロック再取得の
+        // デッドロックを防止するため、deferred RXモードを使用する。
+        crate::net::runtime::bridge::enter_deferred_rx_mode();
         let result = with_virtio_net_device_at_index(index, |device| {
             device.handle_interrupt();
             // スタベーション回復: 不足しているRXバッファを補充
             device.refill_rx_queues();
         });
+        crate::net::runtime::bridge::drain_deferred_rx_packets();
         
         if result.is_none() {
             log::warn!("[VIRTIO-NET] Worker task index {} exiting (device removed)", index);

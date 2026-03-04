@@ -42,8 +42,24 @@ impl DhcpClient {
         loop {
             let now = crate::task::timer::current_tick();
             
+            crate::io::log::early_print("[DHCP-DBG] drive() calling, tick=");
+            crate::io::log::early_print_dec(now);
+            crate::io::log::early_print("\n");
+            
             // 状態機械を駆動（タイムアウトチェックと必要に応じたパケット送信）
-            self.drive(now, 1000)?;
+            match self.drive(now, 1000) {
+                Ok(()) => {
+                    crate::io::log::early_print("[DHCP-DBG] drive() ok\n");
+                }
+                Err(e) => {
+                    crate::io::log::early_print("[DHCP-DBG] drive() ERR: ");
+                    crate::io::log::early_print(e);
+                    crate::io::log::early_print("\n");
+                    return Err(e);
+                }
+            }
+            
+            crate::io::log::early_print("[DHCP-DBG] awaiting recv with timeout...\n");
             
             // パケット受信を待機。再送タイマーを考慮して1秒でタイムアウト。
             match task::with_timeout(socket.recv(), 1000).await {
@@ -84,6 +100,7 @@ impl DhcpClient {
                     }
                 }
                 TimeoutResult::TimedOut => {
+                    crate::io::log::early_print("[DHCP-DBG] recv timeout, will loop\n");
                     // タイムアウトした場合はループの先頭に戻り、drive() で再送チェックが行われる
                 }
                 TimeoutResult::Completed(None) => {
