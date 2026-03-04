@@ -668,11 +668,10 @@ net-teardown:
 			sudo ip addr add "$$_br_ip" dev "$(NIC)" 2>/dev/null || true; \
 		fi; \
 		if [ -n "$$_br_gw" ]; then \
-			sudo ip route add default via "$$_br_gw" dev "$(NIC)" 2>/dev/null || true; \
+			sudo ip route replace default via "$$_br_gw" dev "$(NIC)" 2>/dev/null || true; \
 		fi; \
 		printf '   -> \033[32mRestored NIC: %s (IP: %s)\033[0m\n' "$(NIC)" "$${_br_ip:-dhcp}"; \
 	fi; \
-	# Revert per-link DNS settings if systemd-resolved is available
 	if command -v resolvectl >/dev/null 2>&1; then \
 		sudo resolvectl revert "$$_bridge" >/dev/null 2>&1 || true; \
 		printf '   -> \033[32m[NET] Reverted DNS settings for %s\033[0m\n' "$$_bridge"; \
