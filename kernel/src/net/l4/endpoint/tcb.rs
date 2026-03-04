@@ -505,6 +505,37 @@ impl TcbTable {
             self.scavenge_syn_received(tick);
             // TIME_WAIT対策: 定期的に期限切れのTIME_WAITエントリを掃除する
             self.scavenge_time_wait(tick);
+            // FIN_WAIT_2対策: 相手からのFINを待ち続けてリソースを使い果たすのを防ぐ (RFC 1122)
+            self.scavenge_fin_wait_2(tick);
+        }
+    }
+
+    /// FIN_WAIT_2状態の期限切れエントリを掃除する
+    fn scavenge_fin_wait_2(&self, current_tick: u64) {
+        /// FIN_WAIT_2 のタイムアウト閾値 (60秒)
+        /// RFC 793/1122 では規定されていないが、多くのスタックで実装されている
+        const FIN_WAIT_2_TIMEOUT_TICKS: u64 = 60_000;
+        const MAX_SCAVENGE_PER_SHARD: usize = 8;
+
+        for shard in &self.shards {
+            let mut entries = shard.write();
+            let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
+
+            for (key, entry) in entries.iter() {
+                if entry.state == TcpConnectionState::FinWait2
+                    && current_tick.saturating_sub(entry.last_send_tick) > FIN_WAIT_2_TIMEOUT_TICKS
+                {
+                    to_remove.push(*key);
+                    if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
+                        break;
+                    }
+                }
+            }
+
+            for key in to_remove {
+                entries.remove(&key);
+                self.total_count.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 

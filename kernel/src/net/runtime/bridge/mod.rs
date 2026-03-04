@@ -1250,7 +1250,11 @@ pub fn list_bridge_stats() -> Vec<BridgeInterfaceStats> {
     BRIDGE_IF_STATS.read().values().copied().collect()
 }
 
-/// Get real network configuration from NetworkStack
+/// Get real network configuration from NetworkStack (sync, acquires stack lock)
+///
+/// # 非推奨
+/// asyncコンテキストでは [`get_real_config_async()`] を使用すること。
+#[deprecated(note = "Use get_real_config_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -1291,7 +1295,11 @@ pub fn get_real_config_for_interface(if_id: NetIfId) -> Option<NetworkConfigSnap
 #[path = "tests.rs"]
 pub(crate) mod tests;
 
-/// Get real network statistics from NetworkStack
+/// Get real network statistics from NetworkStack (sync, acquires stack lock)
+///
+/// # 非推奨
+/// asyncコンテキストでは [`get_real_stats_async()`] を使用すること。
+#[deprecated(note = "Use get_real_stats_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_real_stats() -> Option<NetworkStatsSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -1334,6 +1342,10 @@ pub fn get_real_stats_for_interface(if_id: NetIfId) -> Option<NetworkStatsSnapsh
 /// この関数はIRQ無効化 + 同期ロックを使用するため、
 /// エグゼキュータ起動前のブートストラップpingのみで使用する。
 /// asyncコンテキストでは `crate::net::api::icmp::ping_async()` を使用すること。
+///
+/// # 非推奨
+/// asyncコンテキストでは `crate::net::api::icmp::ping_async()` を使用すること。
+#[deprecated(note = "Use crate::net::api::icmp::ping_async() for async contexts. Sync version uses IRQ disable + NETWORK_STACK lock.")]
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
     // Avoid IRQ re-entry deadlock: RX IRQ path also touches the global stack lock.
     x86_64::instructions::interrupts::without_interrupts(|| {
@@ -1355,7 +1367,11 @@ pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static st
     })
 }
 
-/// Get ARP cache entries from real NetworkStack
+/// Get ARP cache entries from real NetworkStack (sync, acquires stack lock)
+///
+/// # 非推奨
+/// asyncコンテキストでは [`get_real_arp_cache_async()`] を使用すること。
+#[deprecated(note = "Use get_real_arp_cache_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_real_arp_cache() -> Vec<ArpCacheEntry> {
     match stack::stack().lock() {
         Ok(guard) => match guard.as_ref() {
@@ -1380,4 +1396,53 @@ pub fn get_real_arp_cache() -> Vec<ArpCacheEntry> {
             Vec::new()
         }
     }
+}
+
+// ============================================================================
+// 非同期ブリッジAPI（推奨）— イベントキュー経由でスタックアクセス
+// ============================================================================
+
+/// 非同期ネットワーク設定取得（推奨API）
+///
+/// `get_network_config_async()`へ委任する。NETWORK_STACKロックの
+/// 同期取得を完全に回避する。
+///
+/// # 使用例
+/// ```ignore
+/// let config = get_real_config_async().await;
+/// ```
+pub async fn get_real_config_async() -> Option<NetworkConfigSnapshot> {
+    crate::net::api::config::get_network_config_async().await
+}
+
+/// 特定インターフェースの非同期ネットワーク設定取得（推奨API）
+pub async fn get_real_config_for_interface_async(if_id: NetIfId) -> Option<NetworkConfigSnapshot> {
+    if primary_bridge_if() != Some(if_id) {
+        return None;
+    }
+    get_real_config_async().await
+}
+
+/// 非同期ネットワーク統計取得（推奨API）
+///
+/// `get_network_stats_async()`へ委任する。NETWORK_STACKロックの
+/// 同期取得を完全に回避する。
+pub async fn get_real_stats_async() -> Option<NetworkStatsSnapshot> {
+    crate::net::api::config::get_network_stats_async().await
+}
+
+/// 特定インターフェースの非同期ネットワーク統計取得（推奨API）
+pub async fn get_real_stats_for_interface_async(if_id: NetIfId) -> Option<NetworkStatsSnapshot> {
+    if primary_bridge_if() != Some(if_id) {
+        return None;
+    }
+    get_real_stats_async().await
+}
+
+/// 非同期ARPキャッシュ取得（推奨API）
+///
+/// `get_arp_cache_async()`へ委任する。NETWORK_STACKロックの
+/// 同期取得を完全に回避する。
+pub async fn get_real_arp_cache_async() -> Vec<ArpCacheEntry> {
+    crate::net::api::connections::get_arp_cache_async().await
 }

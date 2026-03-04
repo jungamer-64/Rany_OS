@@ -260,7 +260,10 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::AsyncProcessTimeouts => {
-                // タイムアウト処理はスタックなしではスキップ
+                // タイムアウト処理（スタック依存部分はスキップ）
+                // しかし、独立した TCB テーブルのメンテナンスは実行する
+                tcb_table().tick();
+                
                 crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
                 crate::net::l2::arp::cleanup_arp_waiters();
                 EventHandleResult::Success
@@ -605,6 +608,13 @@ impl NetworkEventHandler {
             }
             NetworkEvent::AsyncProcessTimeouts => {
                 stack.process_timeouts();
+                
+                // --- RFC Compliance: Process TCP periodic tasks ---
+                // 1. TCB table maintenance (RTO, TimeWait, FinWait2, etc.)
+                tcb_table().tick();
+                // 2. Delayed ACK flushing (RFC 1122 Section 4.2.3.2)
+                super::tcp_rx::flush_delayed_acks();
+                
                 // ICMP Echo待ちの期限切れエントリをクリーンアップ
                 crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
                 // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ

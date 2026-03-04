@@ -111,6 +111,10 @@ impl Endpoint {
     /// リモートアドレスへ接続を開始（推奨API）
     ///
     /// 【設計書】POSIXのconnect()ではなく、open_connection()を使用
+    ///
+    /// # 非推奨
+    /// asyncコンテキストでは [`open_connection_async()`] を使用すること。
+    #[deprecated(note = "Use open_connection_async() for async contexts.")]
     pub fn open_connection(&self, addr: EndpointAddr) -> EndpointResult<()> {
         let local_addr;
         {
@@ -142,6 +146,10 @@ impl Endpoint {
     ///
     /// 【設計書】POSIXのlisten()ではなく、start_listening_async()を使用を推奨。
     /// この関数は後方互換性のためにイベントキュー経由でbindをリクエストする。
+    ///
+    /// # 非推奨
+    /// asyncコンテキストでは [`start_listening_async()`] を使用すること。
+    #[deprecated(note = "Use start_listening_async() for async contexts. Sync version acquires NETWORK_STACK lock via bind_tcp().")]
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
@@ -178,6 +186,10 @@ impl Endpoint {
     ///
     /// Acceptキューから接続を取得する。ネットワークスタックロックは使用しない。
     /// 空の場合はTimeoutを返す。asyncコンテキストでは `accept_async()` 推奨。
+    ///
+    /// # 非推奨
+    /// asyncコンテキストでは [`accept_async()`] を使用すること。
+    #[deprecated(note = "Use accept_async() for async contexts. Sync version returns Err(Timeout) when queue is empty.")]
     pub fn next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr)> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
@@ -666,7 +678,11 @@ impl OwnedEndpoint {
     }
 
 
-    /// リモートアドレスへ接続を開始（推奨API）
+    /// リモートアドレスへ接続を開始（同期版）
+    ///
+    /// # 非推奨
+    /// asyncコンテキストでは [`open_connection_async()`] を使用すること。
+    #[deprecated(note = "Use open_connection_async() for async contexts.")]
     pub fn open_connection(&self, addr: EndpointAddr) -> EndpointResult<()> {
         self.endpoint
             .as_ref()
@@ -675,7 +691,11 @@ impl OwnedEndpoint {
     }
 
 
-    /// リッスンモードを開始（Endpoint::start_listening委任）
+    /// リッスンモードを開始（同期版）
+    ///
+    /// # 非推奨
+    /// asyncコンテキストでは [`start_listening_async()`] を使用すること。
+    #[deprecated(note = "Use start_listening_async() for async contexts.")]
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
         self.endpoint
             .as_ref()
@@ -684,7 +704,11 @@ impl OwnedEndpoint {
     }
 
 
-    /// 次の接続を取得（同期）
+    /// 次の接続を取得（同期版）
+    ///
+    /// # 非推奨
+    /// asyncコンテキストでは `accept_async()` を使用すること。
+    #[deprecated(note = "Use accept_async() via start_listening_async() for async contexts.")]
     pub fn next_incoming(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr)> {
         let (ep, addr) = self
             .endpoint
@@ -827,6 +851,10 @@ pub fn create_raw_endpoint() -> OwnedEndpoint {
 /// TCPサーバー作成（同期コンテキスト用）
 ///
 /// 【設計書】POSIXソケットAPIを模倣しない
+///
+/// # 非推奨
+/// asyncコンテキストでは [`create_tcp_server_async()`] を使用すること。
+#[deprecated(note = "Use create_tcp_server_async() for async contexts.")]
 pub fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<OwnedEndpoint> {
     let ep = create_tcp_endpoint();
     ep.set_local_addr(addr)?;
@@ -834,9 +862,13 @@ pub fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<Own
     Ok(ep)
 }
 
-/// TCP接続（推奨API）
+/// TCP接続（同期コンテキスト用）
 ///
 /// 【設計書】POSIXソケットAPIを模倣しない
+///
+/// # 非推奨
+/// asyncコンテキストでは [`open_tcp_connection_async()`] を使用すること。
+#[deprecated(note = "Use open_tcp_connection_async() for async contexts.")]
 pub fn open_tcp_connection(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
     let ep = create_tcp_endpoint();
     ep.open_connection(addr)?;

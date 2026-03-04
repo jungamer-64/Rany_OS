@@ -50,15 +50,20 @@ impl ExoShell {
         }
     }
 
-    /// Dispatch a legacy `net` namespace sub-command.
-    pub(super) fn dispatch_namespace_command(parts: &[&str], namespace: &str) -> ExoValue<'static> {
+    /// Dispatch a legacy `net` namespace sub-command (async version).
+    ///
+    /// イベントキュー経由の非同期APIを使用し、
+    /// NETWORK_STACKロックの同期取得を完全に回避する。
+    pub(super) async fn dispatch_namespace_command(parts: &[&str], namespace: &str) -> ExoValue<'static> {
         if let Some(method) = parts.get(1) {
             let args: Vec<ExoValue> = parts.iter().skip(2)
                 .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
                 .collect();
             match namespace {
                 "net" => {
-                    crate::shell::exoshell::namespaces::net::NetNamespace::dispatch(method, &args)
+                    let ns = crate::shell::exoshell::namespaces::net::NetNamespace;
+                    let caps = crate::security::CapabilitySet::empty();
+                    ns.call(method, &args, &caps).await
                 },
                 _ => ExoValue::String(Cow::Owned(format!("Usage: {} <method> [args...]", namespace))),
             }

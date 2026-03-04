@@ -90,6 +90,8 @@ pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
         file: [0; 128],
     };
 
+    // NOTE: パケット構築のためMAC取得に同期版を使用（短命ロック・許容）
+    #[allow(deprecated)]
     if let Some(cfg) = get_network_config() {
         header_struct.chaddr[..6].copy_from_slice(&cfg.mac);
     }
@@ -191,6 +193,12 @@ pub fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u
     total.saturating_sub(core::cmp::min(elapsed, u32::MAX as u64) as u32)
 }
 
+/// DHCP/mDNS/DNS ランタイム初期化
+///
+/// エグゼキュータ起動前の初期化処理のため、同期版スタックアクセスを使用。
+/// この関数は一度だけ呼ばれるブートストラップ処理であり、
+/// 同期ロック取得は許容される。
+#[allow(deprecated)]
 pub fn init_dhcp_runtime() -> Result<(), String> {
     let mac = match stack::stack().lock() {
         Ok(guard) => match guard.as_ref() {

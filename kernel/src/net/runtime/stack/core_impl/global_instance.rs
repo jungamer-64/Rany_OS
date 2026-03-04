@@ -255,7 +255,11 @@ pub fn unbind_tcp_listener(local: TcpEndpointAddr) {
     );
 }
 
-/// Bind a TCP listener (async, event-queue based)
+/// Bind a TCP listener (sync, acquires NETWORK_STACK lock)
+///
+/// # 非推奨
+/// asyncコンテキストでは `bind_tcp_async()` または `bind_tcp_listener_async()` を使用すること。
+#[deprecated(note = "Use bind_tcp_async() or bind_tcp_listener_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
     // 同期コンテキスト互換: イベントキュー経由でbindを非同期リクエスト
     // TcpListener::bind()を使用する方が推奨
@@ -285,7 +289,11 @@ pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
     }
 }
 
-/// Bind a TCP listener with a capability token (async, event-queue based)
+/// Bind a TCP listener with a capability token (sync, acquires NETWORK_STACK lock)
+///
+/// # 非推奨
+/// asyncコンテキストでは `bind_tcp_with_token_async()` を使用すること。
+#[deprecated(note = "Use bind_tcp_with_token_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn bind_tcp_with_token(addr: TcpEndpointAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -302,7 +310,11 @@ pub fn bind_tcp_with_token(addr: TcpEndpointAddr, token: Option<u64>) -> Result<
     }
 }
 
-/// Connect to a remote TCP address (async, event-queue based)
+/// Connect to a remote TCP address (sync, acquires NETWORK_STACK lock)
+///
+/// # 非推奨
+/// asyncコンテキストでは `connect_tcp_async()` または `connect_tcp_stream_async()` を使用すること。
+#[deprecated(note = "Use connect_tcp_async() or connect_tcp_stream_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn connect_tcp(local_addr: TcpEndpointAddr, remote_addr: TcpEndpointAddr) -> Result<TcpStream, TcpError> {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {

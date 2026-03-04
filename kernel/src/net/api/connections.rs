@@ -76,6 +76,10 @@ pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
 /// UDPエンドポイント一覧取得（読み取り専用・短命ロック）
 ///
 /// ネットワークスタックロックを短時間取得し、UDPエンドポイント情報をスナップショットする。
+///
+/// # 非推奨
+/// asyncコンテキストでは [`get_udp_endpoints_async()`] を使用すること。
+#[deprecated(note = "Use get_udp_endpoints_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_udp_endpoints() -> Option<Vec<UdpEndpointInfo>> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -105,6 +109,10 @@ pub fn get_udp_endpoints() -> Option<Vec<UdpEndpointInfo>> {
 /// ARPキャッシュ取得（読み取り専用・短命ロック）
 ///
 /// ネットワークスタックロックを短時間取得し、ARPエントリをスナップショットする。
+///
+/// # 非推奨
+/// asyncコンテキストでは [`get_arp_cache_async()`] を使用すること。
+#[deprecated(note = "Use get_arp_cache_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -131,6 +139,10 @@ pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
 /// ARPキャッシュ挿入（短命ロック）
 ///
 /// ネットワークスタックロックを短時間取得し、ARPエントリを挿入する。
+///
+/// # 非推奨
+/// asyncコンテキストでは [`arp_cache_insert_async()`] を使用すること。
+#[deprecated(note = "Use arp_cache_insert_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn arp_cache_insert(ip: Ipv4Address, mac: MacAddress) -> bool {
     if let Ok(mut guard) = stack::stack().lock() {
         if let Some(stack_ref) = guard.as_mut() {

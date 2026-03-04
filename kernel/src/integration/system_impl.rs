@@ -41,13 +41,16 @@ impl SystemIntegration {
         self.log("System integration complete!");
 
         // Diagnostic: print Net Bridge and Network configuration/stats
+        // NOTE: ブートストラップ時はエグゼキュータ未起動のため同期版を使用（許容）
         let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
         self.log(&alloc::format!("  Net Bridge stats: init={} rx={} tx={}", bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets));
+        #[allow(deprecated)]
         if let Some(cfg) = crate::net::runtime::bridge::get_real_config() {
             self.log(&alloc::format!("  Net Config: IP={:?} MAC={:02x?}", cfg.ip, cfg.mac));
         } else {
             self.log("  Net Config: none");
         }
+        #[allow(deprecated)]
         if let Some(stats) = crate::net::api::shell::get_network_stats() {
             self.log(&alloc::format!("  Net Stack stats: rx={} tx={} rx_bytes={} tx_bytes={}", stats.rx_packets, stats.tx_packets, stats.rx_bytes, stats.tx_bytes));
         } else {

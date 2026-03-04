@@ -60,7 +60,12 @@ impl NetNamespace {
         }
     }
 
-    /// Dispatch methods for 'net' namespace（同期）
+    /// Dispatch methods for 'net' namespace（非推奨）
+    ///
+    /// # 非推奨
+    /// 非同期版の `call()` インターフェースを使用すること。
+    /// この同期 dispatch はレガシー互換のために残されている。
+    #[deprecated(note = "Use async call() interface instead. Sync dispatch uses NETWORK_STACK lock.")]
     pub fn dispatch(
         method: &str,
         args: &[ExoValue<'static>],
@@ -81,7 +86,11 @@ impl NetNamespace {
             _ => ExoValue::Error(format!("Unknown method 'net.{}'", method)),
         }
     }
-    /// ネットワーク設定を取得（同期版）
+    /// ネットワーク設定を取得（同期版 — レガシー互換）
+    ///
+    /// # 非推奨
+    /// asyncコンテキストでは [`config_async()`] を使用すること。
+    #[deprecated(note = "Use config_async() for async contexts.")]
     pub fn config() -> ExoValue<'static> {
         if let Some(cfg) = crate::net::api::shell::get_network_config() {
             let mut map = BTreeMap::new();
@@ -112,7 +121,11 @@ impl NetNamespace {
         }
     }
 
-    /// ネットワーク統計（同期版）
+    /// ネットワーク統計（同期版 — レガシー互換）
+    ///
+    /// # 非推奨
+    /// asyncコンテキストでは [`stats_async()`] を使用すること。
+    #[deprecated(note = "Use stats_async() for async contexts.")]
     pub fn stats() -> ExoValue<'static> {
         if let Some(stats) = crate::net::api::shell::get_network_stats() {
             let mut map = BTreeMap::new();
@@ -146,7 +159,11 @@ impl NetNamespace {
         }
     }
 
-    /// ARP キャッシュ（同期版）
+    /// ARP キャッシュ（同期版 — レガシー互換）
+    ///
+    /// # 非推奨
+    /// asyncコンテキストでは [`arp_cache_async()`] を使用すること。
+    #[deprecated(note = "Use arp_cache_async() for async contexts.")]
     pub fn arp_cache() -> ExoValue<'static> {
         if let Some(entries) = crate::net::api::shell::get_arp_cache() {
             let values: Vec<ExoValue> = entries

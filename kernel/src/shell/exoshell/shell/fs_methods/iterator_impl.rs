@@ -526,12 +526,12 @@ impl ExoShell {
                     ExoValue::Error(String::from("Usage: rm <path>"))
                 }
             }
-            "ifconfig" => NetNamespace::config(),
-            "arp" => NetNamespace::arp_cache(),
+            "ifconfig" => NetNamespace::config_async().await,
+            "arp" => NetNamespace::arp_cache_async().await,
             "ping" => self.eval_ping(&parts).await,
             "uname" => SysNamespace::info(),
             "free" => SysNamespace::memory(),
-            "net" => Self::dispatch_namespace_command(&parts, parts[0]),
+            "net" => Self::dispatch_namespace_command(&parts, parts[0]).await,
             "uptime" => SysNamespace::time(),
             _ => ExoValue::Error(
 format!(

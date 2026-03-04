@@ -53,6 +53,10 @@ static NETWORK_STATS: PoisonLock<NetworkStatsSnapshot> = PoisonLock::new(Network
 ///
 /// `stack().lock()` で同期ロックを取得するが、読み取りのみのため
 /// ロック保持時間は最小限。ブートストラップなどの同期コンテキストで使用。
+///
+/// # 非推奨
+/// asyncコンテキストでは [`get_network_config_async()`] を使用すること。
+#[deprecated(note = "Use get_network_config_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => guard.as_ref().map(|stack_guard| {
@@ -74,6 +78,10 @@ pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
 /// ネットワーク統計取得（読み取り専用・短命ロック）
 ///
 /// ネットワークスタックロックを短時間取得し、統計スナップショットを返す。
+///
+/// # 非推奨
+/// asyncコンテキストでは [`get_network_stats_async()`] を使用すること。
+#[deprecated(note = "Use get_network_stats_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => {
