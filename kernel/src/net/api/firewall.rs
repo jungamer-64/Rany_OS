@@ -1,0 +1,261 @@
+// ============================================================================
+// kernel/src/net/api/firewall.rs - シェル向けファイアウォールAPI
+// ============================================================================
+//! シェルコマンドから呼び出せるファイアウォール操作関数群。
+//!
+//! ## 使用例（ExoShell）
+//! ```text
+//! > firewall enable
+//! > firewall add deny ingress src=10.0.0.0/8 proto=tcp dport=22
+//! > firewall add allow ingress src=192.168.1.0/24 proto=tcp dport=22 priority=100
+//! > firewall list
+//! > firewall stats
+//! > firewall disable
+//! ```
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
+
+use crate::net::security::firewall::{
+    self, FirewallRule, FirewallAction, FirewallDirection,
+    FirewallProtocol, IpMatch, PortMatch,
+};
+
+extern crate alloc;
+
+/// ファイアウォールを有効化する
+pub fn firewall_enable() -> Result<(), &'static str> {
+    firewall::enable()
+}
+
+/// ファイアウォールを無効化する
+pub fn firewall_disable() -> Result<(), &'static str> {
+    firewall::disable()
+}
+
+/// ファイアウォールの状態を返す
+pub fn firewall_status() -> String {
+    let enabled = firewall::is_enabled();
+    let stats = firewall::get_stats();
+    let rules = firewall::list_rules().unwrap_or_default();
+    format!(
+        "Firewall: {}\nRules: {}\nStats: {}",
+        if enabled { "ENABLED" } else { "DISABLED" },
+        rules.len(),
+        stats,
+    )
+}
+
+/// ルール一覧を文字列で返す
+pub fn firewall_list_rules() -> String {
+    match firewall::list_rules() {
+        Ok(rules) if rules.is_empty() => String::from("(no rules)"),
+        Ok(rules) => {
+            let mut out = String::new();
+            for rule in &rules {
+                out.push_str(&format!("{}\n", rule));
+            }
+            out
+        }
+        Err(e) => format!("Error: {}", e),
+    }
+}
+
+/// 統計情報を文字列で返す
+pub fn firewall_stats() -> String {
+    format!("{}", firewall::get_stats())
+}
+
+/// ルールを追加する
+///
+/// ## 引数
+/// - `action`: "allow" / "deny" / "log-allow" / "log-deny"
+/// - `direction`: "in" / "out" / "both"
+/// - `src_ip`: IP/CIDR 文字列（"*" or "0.0.0.0/0" for any）
+/// - `dst_ip`: IP/CIDR 文字列
+/// - `protocol`: "tcp" / "udp" / "icmp" / "*" / 数字
+/// - `src_port`: ポート文字列（"*" / "80" / "1024-65535"）
+/// - `dst_port`: ポート文字列
+/// - `priority`: 優先度（小さいほど先に評価）
+/// - `name`: ルール名（オプション）
+pub fn firewall_add_rule(
+    action: &str,
+    direction: &str,
+    src_ip: &str,
+    dst_ip: &str,
+    protocol: &str,
+    src_port: &str,
+    dst_port: &str,
+    priority: u16,
+    name: &str,
+) -> Result<u64, String> {
+    let action = parse_action(action)?;
+    let direction = parse_direction(direction)?;
+    let src_ip = parse_ip_match(src_ip)?;
+    let dst_ip = parse_ip_match(dst_ip)?;
+    let protocol = parse_protocol(protocol)?;
+    let src_port = parse_port_match(src_port)?;
+    let dst_port = parse_port_match(dst_port)?;
+
+    let rule = FirewallRule::builder()
+        .name(name)
+        .action(action)
+        .direction(direction)
+        .src_ip(src_ip)
+        .dst_ip(dst_ip)
+        .protocol(protocol)
+        .src_port(src_port)
+        .dst_port(dst_port)
+        .priority(priority)
+        .build();
+
+    firewall::add_rule(rule).map_err(|e| String::from(e))
+}
+
+/// ルールを削除する
+pub fn firewall_remove_rule(id: u64) -> Result<bool, String> {
+    firewall::remove_rule(id).map_err(|e| String::from(e))
+}
+
+/// 全ルールをクリアする
+pub fn firewall_clear_rules() -> Result<(), String> {
+    firewall::clear_rules().map_err(|e| String::from(e))
+}
+
+/// デフォルトポリシーを設定する
+pub fn firewall_set_default_policy(direction: &str, action: &str) -> Result<(), String> {
+    let dir = parse_direction(direction)?;
+    let act = parse_action(action)?;
+    firewall::set_default_policy(dir, act).map_err(|e| String::from(e))
+}
+
+// ============================================================================
+// パーサーヘルパー
+// ============================================================================
+
+fn parse_action(s: &str) -> Result<FirewallAction, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "allow" | "accept" => Ok(FirewallAction::Allow),
+        "deny" | "drop" | "reject" => Ok(FirewallAction::Deny),
+        "log-allow" | "log_allow" => Ok(FirewallAction::LogAllow),
+        "log-deny" | "log_deny" => Ok(FirewallAction::LogDeny),
+        _ => Err(format!("unknown action: '{}' (allow/deny/log-allow/log-deny)", s)),
+    }
+}
+
+fn parse_direction(s: &str) -> Result<FirewallDirection, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "in" | "ingress" | "input" => Ok(FirewallDirection::Ingress),
+        "out" | "egress" | "output" => Ok(FirewallDirection::Egress),
+        "both" | "any" | "*" => Ok(FirewallDirection::Both),
+        _ => Err(format!("unknown direction: '{}' (in/out/both)", s)),
+    }
+}
+
+fn parse_protocol(s: &str) -> Result<FirewallProtocol, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "*" | "any" | "all" => Ok(FirewallProtocol::Any),
+        "tcp" => Ok(FirewallProtocol::Tcp),
+        "udp" => Ok(FirewallProtocol::Udp),
+        "icmp" => Ok(FirewallProtocol::Icmp),
+        _ => {
+            if let Ok(n) = s.parse::<u8>() {
+                Ok(FirewallProtocol::Number(n))
+            } else {
+                Err(format!("unknown protocol: '{}' (tcp/udp/icmp/*/0-255)", s))
+            }
+        }
+    }
+}
+
+/// IPv4 アドレスまたは CIDR 表記をパースする
+///
+/// 例:
+/// - `"*"` → `IpMatch::Any`
+/// - `"10.0.2.15"` → `IpMatch::Exact([10, 0, 2, 15])`
+/// - `"192.168.1.0/24"` → `IpMatch::Cidr([192, 168, 1, 0], 24)`
+fn parse_ip_match(s: &str) -> Result<IpMatch, String> {
+    let s = s.trim();
+    if s == "*" || s == "any" || s == "0.0.0.0/0" {
+        return Ok(IpMatch::Any);
+    }
+
+    // CIDR 判定
+    if let Some(slash_pos) = s.find('/') {
+        let ip_str = &s[..slash_pos];
+        let prefix_str = &s[slash_pos + 1..];
+        let ip = parse_ipv4(ip_str)?;
+        let prefix: u8 = prefix_str.parse::<u8>()
+            .map_err(|_| format!("invalid prefix length: '{}'", prefix_str))?;
+        if prefix > 32 {
+            return Err(format!("prefix length {} > 32", prefix));
+        }
+        return Ok(IpMatch::Cidr(ip, prefix));
+    }
+
+    // 単一 IP
+    let ip = parse_ipv4(s)?;
+    Ok(IpMatch::Exact(ip))
+}
+
+/// ドット区切り IPv4 をパースする
+fn parse_ipv4(s: &str) -> Result<[u8; 4], String> {
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 4 {
+        return Err(format!("invalid IPv4: '{}'", s));
+    }
+    let mut octets = [0u8; 4];
+    for (i, part) in parts.iter().enumerate() {
+        octets[i] = part.parse::<u8>()
+            .map_err(|_| format!("invalid octet '{}' in '{}'", part, s))?;
+    }
+    Ok(octets)
+}
+
+/// ポートマッチ条件をパースする
+///
+/// 例:
+/// - `"*"` → `PortMatch::Any`
+/// - `"80"` → `PortMatch::Exact(80)`
+/// - `"1024-65535"` → `PortMatch::Range(1024, 65535)`
+fn parse_port_match(s: &str) -> Result<PortMatch, String> {
+    let s = s.trim();
+    if s == "*" || s == "any" || s.is_empty() {
+        return Ok(PortMatch::Any);
+    }
+
+    if let Some(dash_pos) = s.find('-') {
+        let start_str = &s[..dash_pos];
+        let end_str = &s[dash_pos + 1..];
+        let start = start_str.parse::<u16>()
+            .map_err(|_| format!("invalid port start: '{}'", start_str))?;
+        let end = end_str.parse::<u16>()
+            .map_err(|_| format!("invalid port end: '{}'", end_str))?;
+        if start > end {
+            return Err(format!("port range start {} > end {}", start, end));
+        }
+        return Ok(PortMatch::Range(start, end));
+    }
+
+    let port = s.parse::<u16>()
+        .map_err(|_| format!("invalid port: '{}'", s))?;
+    Ok(PortMatch::Exact(port))
+}
+
+/// 文字列をASCII小文字に変換（no_std互換）
+trait ToAsciiLowerStr {
+    fn to_ascii_lowercase(&self) -> String;
+}
+
+impl ToAsciiLowerStr for str {
+    fn to_ascii_lowercase(&self) -> String {
+        self.chars().map(|c| {
+            if c.is_ascii_uppercase() {
+                (c as u8 + 32) as char
+            } else {
+                c
+            }
+        }).collect()
+    }
+}

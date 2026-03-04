@@ -93,6 +93,18 @@ impl NetworkStack {
         tcp_segment: &[u8],
         ttl: u8,
     ) -> bool {
+        // ── ファイアウォール Egress チェック ──
+        if tcp_segment.len() >= 4 {
+            let src_port = u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]);
+            let dst_port = u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]);
+            if !crate::net::security::firewall::check_egress(
+                src_ip.octets(), dst_ip.octets(), 6, src_port, dst_port,
+            ) {
+                self.stats.record_dropped();
+                return false;
+            }
+        }
+
         let config = self.config.clone();
         let current_time = self.current_time();
 

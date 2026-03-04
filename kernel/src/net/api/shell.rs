@@ -39,3 +39,16 @@ pub use super::diagnostics::{
     network_snapshot,
     network_recent_events,
 };
+
+// ---- firewall --------------------------------------------------------------
+pub use super::firewall::{
+    firewall_enable,
+    firewall_disable,
+    firewall_status,
+    firewall_list_rules,
+    firewall_stats,
+    firewall_add_rule,
+    firewall_remove_rule,
+    firewall_clear_rules,
+    firewall_set_default_policy,
+};

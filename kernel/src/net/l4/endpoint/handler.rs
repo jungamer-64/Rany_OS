@@ -1105,6 +1105,24 @@ impl NetworkEventHandler {
         current_time: u64, 
         stack: &mut crate::net::runtime::stack::NetworkStack
     ) -> EventHandleResult {
+        // ── ファイアウォール Ingress チェック ──
+        // IPv4ヘッダから最小限の 5-tuple を抽出してルール照合する。
+        // ゼロコピー: データ参照のみでバッファコピーは行わない。
+        if data.len() >= 20 {
+            let protocol = data[9];
+            let src_ip: [u8; 4] = [data[12], data[13], data[14], data[15]];
+            let dst_ip: [u8; 4] = [data[16], data[17], data[18], data[19]];
+            let ihl = ((data[0] & 0x0F) as usize) * 4;
+            let (src_port, dst_port) = extract_ports(data, ihl, protocol);
+
+            if !crate::net::security::firewall::check_ingress(
+                src_ip, dst_ip, protocol, src_port, dst_port,
+            ) {
+                stack.stats.record_dropped();
+                return EventHandleResult::Success;
+            }
+        }
+
         // Ipv4Processorを使用してプロトコル判定
         let result = stack.ipv4.process_with_time(data, current_time);
 
@@ -2152,5 +2170,26 @@ pub mod qemu_tests {
             handler.handle_data_ready(fd, EndpointType::Tcp),
             EventHandleResult::Retry | EventHandleResult::Success
         )
+    }
+}
+
+// ============================================================================
+// ファイアウォール用ヘルパー
+// ============================================================================
+
+/// IPv4 ペイロードからトランスポート層の送信元/宛先ポートを抽出する。
+///
+/// TCP (proto=6) / UDP (proto=17) の場合、ヘッダ先頭 4 バイトに
+/// src_port(2) + dst_port(2) が格納されている。
+/// ICMP やその他のプロトコルではポート 0 を返す。
+#[inline]
+fn extract_ports(ipv4_data: &[u8], ihl: usize, protocol: u8) -> (u16, u16) {
+    // TCP=6, UDP=17 のみポートを持つ
+    if (protocol == 6 || protocol == 17) && ipv4_data.len() >= ihl + 4 {
+        let src_port = u16::from_be_bytes([ipv4_data[ihl], ipv4_data[ihl + 1]]);
+        let dst_port = u16::from_be_bytes([ipv4_data[ihl + 2], ipv4_data[ihl + 3]]);
+        (src_port, dst_port)
+    } else {
+        (0, 0)
     }
 }

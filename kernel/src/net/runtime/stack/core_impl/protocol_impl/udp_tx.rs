@@ -29,6 +29,14 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
+        // ── ファイアウォール Egress チェック ──
+        if !crate::net::security::firewall::check_egress(
+            src_ip.octets(), dst_ip.octets(), 17, src_port, dst_port,
+        ) {
+            self.stats.record_dropped();
+            return false;
+        }
+
         let config = self.config.clone();
         let current_time = self.current_time();
 
