@@ -358,11 +358,11 @@ pub fn core_accept_backlog_limit_smoke() -> bool {
 }
 
 pub fn types_socket_fd_smoke() -> bool {
-    run_case!(types::tests::test_socket_fd)
+    run_case!(types::tests::test_endpoint_fd)
 }
 
 pub fn types_socket_addr_smoke() -> bool {
-    run_case!(types::tests::test_socket_addr)
+    run_case!(types::tests::test_endpoint_addr)
 }
 
 pub fn window_scale_disabled_smoke() -> bool {

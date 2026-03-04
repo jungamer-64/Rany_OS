@@ -937,7 +937,15 @@ impl NetworkEventHandler {
                 use crate::net::services::dhcp;
 
                 let mut released = false;
+                // DHCPv4 Release
                 if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                    if let Some(ref client) = *guard {
+                        client.release();
+                        released = true;
+                    }
+                }
+                // DHCPv6 Release (RFC 8415 Section 18.2.6)
+                if let Ok(guard) = dhcp::DHCPV6_CLIENT.lock() {
                     if let Some(ref client) = *guard {
                         client.release();
                         released = true;

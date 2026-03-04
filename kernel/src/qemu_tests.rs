@@ -1,5 +1,6 @@
 use crate::error::{KernelError, MemoryError};
-use crate::loader::{ed25519, elf, live_update, sha256, signature, type_id};
+use crate::crypto::{ed25519, sha256};
+use crate::loader::{elf, live_update, signature, type_id};
 use alloc::collections::{BTreeSet, VecDeque};
 use alloc::sync::Arc;
 use core::fmt::Write;

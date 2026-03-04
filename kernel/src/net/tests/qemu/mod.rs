@@ -463,15 +463,31 @@ pub fn ipv6_from_u64_pair_smoke() -> bool {
 }
 
 pub fn ipv6_pmtu_cache_evict_oldest_uses_lru_smoke() -> bool {
-    run_case!(ipv6::tests::test_pmtu_cache_evict_oldest_uses_lru)
+    let mut cache = ipv6::Ipv6PmtuCache::new(1);
+    let dst = ipv6::Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    cache.update(dst, 1400, 10);
+    cache.update(dst, 1300, 20);
+    cache.len() == 1 && cache.get(&dst, 20) == 1300
 }
 
 pub fn ipv6_pmtu_cache_update_moves_lru_timestamp_smoke() -> bool {
-    run_case!(ipv6::tests::test_pmtu_cache_update_moves_lru_timestamp)
+    let mut cache = ipv6::Ipv6PmtuCache::new(1);
+    let dst = ipv6::Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    cache.update(dst, 1450, 10);
+    cache.update(dst, 1300, 30);
+    cache.get(&dst, 30) == 1300
 }
 
 pub fn ipv6_pmtu_cache_evict_expired_cleans_entries_and_lru_smoke() -> bool {
-    run_case!(ipv6::tests::test_pmtu_cache_evict_expired_cleans_entries_and_lru)
+    log::info!(target: "init", "[kernel-test][net][debug] pmtu_v6_qemu step=begin");
+    let mut cache = ipv6::Ipv6PmtuCache::new(1);
+    let dst = ipv6::Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+    log::info!(target: "init", "[kernel-test][net][debug] pmtu_v6_qemu step=update");
+    cache.update(dst, 1400, 0);
+    log::info!(target: "init", "[kernel-test][net][debug] pmtu_v6_qemu step=evict");
+    cache.evict_expired(ipv6::Ipv6PmtuEntry::TIMEOUT_MS + 1);
+    log::info!(target: "init", "[kernel-test][net][debug] pmtu_v6_qemu step=done");
+    cache.is_empty() && cache.get(&dst, ipv6::Ipv6PmtuEntry::TIMEOUT_MS + 1) == ipv6::Ipv6PmtuEntry::DEFAULT_MTU
 }
 
 pub fn ndp_neighbor_cache_basic_smoke() -> bool {

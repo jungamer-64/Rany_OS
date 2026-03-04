@@ -61,6 +61,10 @@ impl ExoShell {
             "arp" => NetNamespace::arp_cache_async().await,
             "dhcp_state" => NetNamespace::dhcp_state_async().await,
             "dhcp_renew" => NetNamespace::dhcp_renew_async().await,
+            "dhcp_discover" => NetNamespace::dhcp_discover_async().await,
+            "dhcp_release" => NetNamespace::dhcp_release_async().await,
+            "dhcp_last_declined" => NetNamespace::dhcp_last_declined_async().await,
+            "dhcp_last_released" => NetNamespace::dhcp_last_released_async().await,
             "ping" => {
                 let ip_str = match args.first() {
                     Some(ExoValue::String(s)) => s.as_ref().to_string(),
@@ -115,7 +119,7 @@ impl ExoShell {
                     method: name.to_string(),
                 }
                 .to_string()
-                    + "\n有効なメソッド: config, stats, arp, ping, dhcp_state, dhcp_renew",
+                    + "\n有効なメソッド: config, stats, arp, ping, dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
             ),
         }
     }

@@ -369,18 +369,13 @@ pub fn test_pmtu_cache_update_moves_lru_timestamp() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_pmtu_cache_evict_expired_cleans_entries_and_lru() {
-    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=begin");
     let mut cache = Ipv6PmtuCache::new(4);
     let dst_a = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1a]);
     let dst_b = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1b]);
 
-    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=update_a");
     cache.update(dst_a, 1400, 0);
-    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=update_b");
     cache.update(dst_b, 1390, Ipv6PmtuEntry::TIMEOUT_MS);
-    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=evict");
     cache.evict_expired(Ipv6PmtuEntry::TIMEOUT_MS + 1);
-    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=asserts");
 
     assert_eq!(cache.len(), 1);
     assert_eq!(cache.lru.len(), 1);
@@ -435,7 +430,7 @@ pub fn test_ipv6_fragment_reassembly_success() {
     let payload1 = [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]; // 8 bytes
 
     let (res1, _) = reassembler.process_fragment(src, dst, &unfrag, &frag1_hdr, &payload1, now);
-    assert!(res1.is_none());
+    assert!(matches!(res1, Ok(None)));
     assert_eq!(reassembler.active_buffers(), 1);
 
     // Fragment 2: offset=1 (8 bytes), M=0
@@ -448,7 +443,9 @@ pub fn test_ipv6_fragment_reassembly_success() {
     let payload2 = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22];
 
     let (res2, _) = reassembler.process_fragment(src, dst, &unfrag, &frag2_hdr, &payload2, now);
-    let packet = res2.expect("reassembly failed");
+    let packet = res2
+        .expect("reassembly should not error")
+        .expect("reassembly failed");
     assert_eq!(reassembler.active_buffers(), 0);
 
     // Check reassembled packet
@@ -474,7 +471,7 @@ pub fn test_ipv6_fragment_overlap_rejection() {
     
     // Overlapping fragment (starts at offset 8, but offset 0-16 already filled)
     let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag2, &[0xbb; 8], 0);
-    assert!(res.is_none());
+    assert!(res.is_err());
     assert_eq!(reassembler.stats().dropped_invalid, 1);
     assert_eq!(reassembler.active_buffers(), 0); // Entire datagram discarded on overlap
 }
@@ -491,6 +488,6 @@ pub fn test_ipv6_fragment_tiny_attack_rejection() {
     let frag = Ipv6FragmentHeader { next_header: 58, fragment_offset: 0, more_fragments: true, identification: 0x123 };
     
     let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag, &[0x00; 4], 0);
-    assert!(res.is_none());
+    assert!(res.is_err());
     assert_eq!(reassembler.stats().dropped_invalid, 1);
 }

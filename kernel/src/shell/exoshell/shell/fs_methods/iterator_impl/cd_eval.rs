@@ -208,7 +208,7 @@ impl ExoShell {
             "fs" => &[
                 "entries", "read", "stat", "mkdir", "remove", "cd", "pwd", "write",
             ],
-            "net" => &["config", "stats", "arp", "ping", "dhcp_state", "dhcp_renew"],
+            "net" => &["config", "stats", "arp", "ping", "dhcp_state", "dhcp_renew", "dhcp_discover", "dhcp_release", "dhcp_last_declined", "dhcp_last_released"],
             "domain" => &["list", "info", "kill"],
             "cap" => &["list", "grant", "revoke"],
             "sys" => &[

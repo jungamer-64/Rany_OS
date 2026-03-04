@@ -9,14 +9,20 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 pub const DHCPV6_CLIENT_PORT: u16 = 546;
 pub const DHCPV6_SERVER_PORT: u16 = 547;
 
-/// DHCPv6 メッセージタイプ（RFC 8415 の主要種のみ）
+/// DHCPv6 メッセージタイプ（RFC 8415 準拠）
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DhcpV6MessageType {
     Solicit = 1,
     Advertise = 2,
     Request = 3,
+    Confirm = 4,
+    Renew = 5,
+    Rebind = 6,
     Reply = 7,
+    Release = 8,
+    Decline = 9,
+    InformationRequest = 11,
 }
 
 /// IA_NA による割当情報
@@ -26,6 +32,10 @@ pub struct DhcpV6Lease {
     pub preferred_lifetime: u32,
     pub valid_lifetime: u32,
     pub obtained_at: u64,
+    /// DHCPv6 Option 23 (DNS Recursive Name Server) から取得した DNS サーバー
+    pub dns_servers: Vec<Ipv6Address>,
+    /// DHCPv6 Option 24 (Domain Search List) から取得したドメイン名
+    pub domain_search: Vec<alloc::string::String>,
 }
 
 /// DHCPv6 クライアント状態（簡易）
@@ -122,12 +132,15 @@ impl DhcpV6Client {
 
     pub fn new(mac: crate::net::l2::ethernet::MacAddress) -> Self {
         let duid = Self::make_duid_ll(&mac);
+        // MAC アドレスベースの IAID（一意だが予測困難性は不要）
+        let mac_bytes = mac.as_bytes();
+        let iaid = u32::from_be_bytes([mac_bytes[2], mac_bytes[3], mac_bytes[4], mac_bytes[5]]);
         Self {
             mac,
             duid,
             state: PoisonLock::new(DhcpV6State::Init),
             xid: AtomicU32::new(0),
-            iaid: 0xAABBCCDD, // 固定 IAID（将来乱数化可）
+            iaid,
             lease: PoisonLock::new(None),
             server_duid: PoisonLock::new(None),
             server_addr: PoisonLock::new(None),
@@ -175,6 +188,13 @@ impl DhcpV6Client {
             Ok(g) => *g,
             Err(_) => DhcpV6State::Init,
         }
+    }
+
+    /// 暗号学的安全な24bitトランザクションIDを生成し保存する
+    fn generate_secure_xid(&self) {
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        let xid = u32::from_be_bytes([0, random_bytes[0], random_bytes[1], random_bytes[2]]);
+        self.xid.store(xid, Ordering::SeqCst);
     }
 
     pub fn lease(&self) -> Option<DhcpV6Lease> {
@@ -347,7 +367,240 @@ impl DhcpV6Client {
         Ok(off)
     }
 
-    /// Parse a DHCPv6 REPLY/ADVERTISE and extract IAADDR if present
+    /// Build a DHCPv6 RENEW message (RFC 8415 Section 18.2.3)
+    /// Sent to the server that originally assigned the lease (unicast).
+    /// Includes ClientID + ServerID + IA_NA with IAADDR suboption.
+    pub fn build_renew(&self, buf: &mut [u8], lease: &DhcpV6Lease) -> Result<usize, &'static str> {
+        if buf.len() < 256 {
+            return Err("buffer too small");
+        }
+
+        let xid = self.xid.load(Ordering::SeqCst);
+
+        buf[0] = DhcpV6MessageType::Renew as u8;
+        buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
+        let mut off = 4usize;
+
+        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+            if *offset + 4 + data.len() > buf.len() {
+                return Err("Buffer overflow during option writing");
+            }
+            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
+            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
+            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
+            *offset += 4 + data.len();
+            Ok(())
+        };
+
+        // Client Identifier (option 1)
+        append_opt(buf, &mut off, 1, &self.duid)?;
+
+        // Server Identifier (option 2) — RFC 8415 requires this for Renew
+        if let Ok(g) = self.server_duid.lock() {
+            if let Some(ref duid) = *g {
+                append_opt(buf, &mut off, 2, duid)?;
+            }
+        }
+
+        // IA_NA (option 3) with IAADDR suboption
+        if off + 44 > buf.len() {
+            return Err("Buffer overflow during IA_NA writing");
+        }
+        buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
+        buf[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // length
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T1
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T2
+        off += 4;
+        // IAADDR suboption
+        buf[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
+        buf[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
+        off += 4;
+        buf[off..off + 16].copy_from_slice(lease.addr.as_bytes());
+        off += 16;
+        buf[off..off + 4].copy_from_slice(&lease.preferred_lifetime.to_be_bytes());
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&lease.valid_lifetime.to_be_bytes());
+        off += 4;
+
+        Ok(off)
+    }
+
+    /// Build a DHCPv6 REBIND message (RFC 8415 Section 18.2.5)
+    /// Sent to All_DHCP_Relay_Agents_and_Servers (multicast).
+    /// Includes ClientID + IA_NA with IAADDR suboption (no ServerID — any server may respond).
+    pub fn build_rebind(&self, buf: &mut [u8], lease: &DhcpV6Lease) -> Result<usize, &'static str> {
+        if buf.len() < 256 {
+            return Err("buffer too small");
+        }
+
+        let xid = self.xid.load(Ordering::SeqCst);
+
+        buf[0] = DhcpV6MessageType::Rebind as u8;
+        buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
+        let mut off = 4usize;
+
+        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+            if *offset + 4 + data.len() > buf.len() {
+                return Err("Buffer overflow during option writing");
+            }
+            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
+            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
+            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
+            *offset += 4 + data.len();
+            Ok(())
+        };
+
+        // Client Identifier (option 1)
+        append_opt(buf, &mut off, 1, &self.duid)?;
+
+        // No Server Identifier for Rebind (RFC 8415 Section 18.2.5)
+
+        // IA_NA (option 3) with IAADDR suboption
+        if off + 44 > buf.len() {
+            return Err("Buffer overflow during IA_NA writing");
+        }
+        buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
+        buf[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // length
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T1
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T2
+        off += 4;
+        // IAADDR suboption
+        buf[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
+        buf[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
+        off += 4;
+        buf[off..off + 16].copy_from_slice(lease.addr.as_bytes());
+        off += 16;
+        buf[off..off + 4].copy_from_slice(&lease.preferred_lifetime.to_be_bytes());
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&lease.valid_lifetime.to_be_bytes());
+        off += 4;
+
+        Ok(off)
+    }
+
+    /// Build a DHCPv6 RELEASE message (RFC 8415 Section 18.2.6)
+    /// Includes ClientID + ServerID + IA_NA with IAADDR suboption.
+    pub fn build_release(&self, buf: &mut [u8], lease: &DhcpV6Lease) -> Result<usize, &'static str> {
+        if buf.len() < 256 {
+            return Err("buffer too small");
+        }
+
+        let xid = self.xid.load(Ordering::SeqCst);
+
+        buf[0] = DhcpV6MessageType::Release as u8;
+        buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
+        let mut off = 4usize;
+
+        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+            if *offset + 4 + data.len() > buf.len() {
+                return Err("Buffer overflow during option writing");
+            }
+            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
+            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
+            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
+            *offset += 4 + data.len();
+            Ok(())
+        };
+
+        // Client Identifier (option 1)
+        append_opt(buf, &mut off, 1, &self.duid)?;
+
+        // Server Identifier (option 2) — RFC 8415 requires this for Release
+        if let Ok(g) = self.server_duid.lock() {
+            if let Some(ref duid) = *g {
+                append_opt(buf, &mut off, 2, duid)?;
+            }
+        }
+
+        // IA_NA (option 3) with IAADDR suboption
+        if off + 44 > buf.len() {
+            return Err("Buffer overflow during IA_NA writing");
+        }
+        buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
+        buf[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // length
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T1
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T2
+        off += 4;
+        // IAADDR suboption
+        buf[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
+        buf[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
+        off += 4;
+        buf[off..off + 16].copy_from_slice(lease.addr.as_bytes());
+        off += 16;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // preferred=0 (releasing)
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // valid=0 (releasing)
+        off += 4;
+
+        Ok(off)
+    }
+
+    /// DHCPv6 RELEASE を送信してリースをクリアする
+    pub fn release(&self) {
+        let lease = match self.lease.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => {
+                log::error!("[NET] DHCPv6: lease lock poisoned (release)");
+                return;
+            }
+        };
+
+        if let Some(lease) = lease {
+            // Generate new XID for the Release transaction
+            self.generate_secure_xid();
+
+            let mut buf = [0u8; 512];
+            match self.build_release(&mut buf, &lease) {
+                Ok(len) => {
+                    if let Some(src) = self.get_link_local() {
+                        // Send to server address if known, otherwise multicast
+                        let all_dhcp_servers = Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
+                        let dst = match self.server_addr.lock() {
+                            Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
+                            Err(_) => all_dhcp_servers,
+                        };
+                        self.send_v6_async(src, dst, &buf[..len]);
+                        log::info!("[NET] DHCPv6: RELEASE sent for {}", lease.addr);
+                    }
+                }
+                Err(e) => {
+                    log::error!("[NET] DHCPv6: Failed to build RELEASE: {}", e);
+                }
+            }
+        }
+
+        // Clear lease and reset state
+        if let Ok(mut lg) = self.lease.lock() {
+            *lg = None;
+        }
+        if let Ok(mut st) = self.state.lock() {
+            *st = DhcpV6State::Init;
+        }
+        if let Ok(mut sg) = self.server_duid.lock() {
+            *sg = None;
+        }
+        if let Ok(mut ag) = self.server_addr.lock() {
+            *ag = None;
+        }
+        self.state_time.store(0, Ordering::SeqCst);
+        self.retry_count.store(0, Ordering::SeqCst);
+    }
+
+    /// Parse a DHCPv6 REPLY/ADVERTISE and extract IAADDR if present.
+    /// Also parses DNS Recursive Name Server (option 23), Domain Search List (option 24),
+    /// and Status Code (option 13).
     pub fn parse_reply(&self, data: &[u8], current_time: u64) -> Result<Option<DhcpV6Lease>, &'static str> {
         if data.len() < 4 {
             return Err("packet too small");
@@ -359,7 +612,10 @@ impl DhcpV6Client {
 
         // iterate options after header
         let mut off = 4usize;
-        let mut found_iaaddr: Option<DhcpV6Lease> = None;
+        let mut found_addr: Option<(Ipv6Address, u32, u32)> = None;
+        let mut dns_servers: Vec<Ipv6Address> = Vec::new();
+        let mut domain_search: Vec<alloc::string::String> = Vec::new();
+        let mut status_code: Option<u16> = None;
 
         while off + 4 <= data.len() {
             let code = u16::from_be_bytes([data[off], data[off + 1]]);
@@ -379,44 +635,75 @@ impl DhcpV6Client {
                     }
                 }
                 3 => {
-                    // IA_NA - scan suboptions for IAADDR
-                    let mut sub_off = off + 12; // skip IAID/T1/T2
-                    while sub_off + 4 <= off + len {
-                        let sc = u16::from_be_bytes([data[sub_off], data[sub_off + 1]]);
-                        let sl = u16::from_be_bytes([data[sub_off + 2], data[sub_off + 3]]) as usize;
-                        sub_off += 4;
-                        if sub_off + sl > off + len {
-                            break;
-                        }
-                        if sc == 5 {
-                            // IAADDR: 16 bytes addr + 4 preferred + 4 valid + suboptions
-                            if sl >= 24 {
-                                let mut addr_bytes = [0u8; 16];
-                                addr_bytes.copy_from_slice(&data[sub_off..sub_off + 16]);
-                                let pref = u32::from_be_bytes([
-                                    data[sub_off + 16],
-                                    data[sub_off + 17],
-                                    data[sub_off + 18],
-                                    data[sub_off + 19],
-                                ]);
-                                let valid = u32::from_be_bytes([
-                                    data[sub_off + 20],
-                                    data[sub_off + 21],
-                                    data[sub_off + 22],
-                                    data[sub_off + 23],
-                                ]);
-                                let lease = DhcpV6Lease {
-                                    addr: Ipv6Address::new(addr_bytes),
-                                    preferred_lifetime: pref,
-                                    valid_lifetime: valid,
-                                    obtained_at: current_time,
-                                };
-                                found_iaaddr = Some(lease);
+                    // IA_NA - scan suboptions for IAADDR and Status Code
+                    if len >= 12 {
+                        let mut sub_off = off + 12; // skip IAID/T1/T2
+                        while sub_off + 4 <= off + len {
+                            let sc = u16::from_be_bytes([data[sub_off], data[sub_off + 1]]);
+                            let sl = u16::from_be_bytes([data[sub_off + 2], data[sub_off + 3]]) as usize;
+                            sub_off += 4;
+                            if sub_off + sl > off + len {
                                 break;
                             }
+                            match sc {
+                                5 => {
+                                    // IAADDR: 16 bytes addr + 4 preferred + 4 valid
+                                    if sl >= 24 {
+                                        let mut addr_bytes = [0u8; 16];
+                                        addr_bytes.copy_from_slice(&data[sub_off..sub_off + 16]);
+                                        let pref = u32::from_be_bytes([
+                                            data[sub_off + 16],
+                                            data[sub_off + 17],
+                                            data[sub_off + 18],
+                                            data[sub_off + 19],
+                                        ]);
+                                        let valid = u32::from_be_bytes([
+                                            data[sub_off + 20],
+                                            data[sub_off + 21],
+                                            data[sub_off + 22],
+                                            data[sub_off + 23],
+                                        ]);
+                                        found_addr = Some((Ipv6Address::new(addr_bytes), pref, valid));
+                                    }
+                                }
+                                13 => {
+                                    // Status Code (within IA_NA)
+                                    if sl >= 2 {
+                                        let sc_val = u16::from_be_bytes([data[sub_off], data[sub_off + 1]]);
+                                        status_code = Some(sc_val);
+                                    }
+                                }
+                                _ => {}
+                            }
+                            sub_off += sl;
                         }
-                        sub_off += sl;
                     }
+                }
+                13 => {
+                    // Status Code (top-level)
+                    if len >= 2 {
+                        let sc_val = u16::from_be_bytes([data[off], data[off + 1]]);
+                        status_code = Some(sc_val);
+                    }
+                }
+                23 => {
+                    // DNS Recursive Name Server (RFC 3646)
+                    // Contains one or more IPv6 addresses (16 bytes each)
+                    let count = len / 16;
+                    for i in 0..count {
+                        let start = off + i * 16;
+                        if start + 16 <= off + len {
+                            let mut addr_bytes = [0u8; 16];
+                            addr_bytes.copy_from_slice(&data[start..start + 16]);
+                            dns_servers.push(Ipv6Address::new(addr_bytes));
+                        }
+                    }
+                }
+                24 => {
+                    // Domain Search List (RFC 3646)
+                    // DNS-encoded domain name list
+                    let domain_data = &data[off..off + len];
+                    Self::parse_domain_search_list(domain_data, &mut domain_search);
                 }
                 _ => {}
             }
@@ -424,7 +711,59 @@ impl DhcpV6Client {
             off += len;
         }
 
-        Ok(found_iaaddr)
+        // If a non-zero status code was found, treat as error
+        if let Some(sc) = status_code {
+            if sc != 0 {
+                log::warn!("[NET] DHCPv6: Received status code {} in reply", sc);
+                return Ok(None);
+            }
+        }
+
+        match found_addr {
+            Some((addr, pref, valid)) => {
+                let lease = DhcpV6Lease {
+                    addr,
+                    preferred_lifetime: pref,
+                    valid_lifetime: valid,
+                    obtained_at: current_time,
+                    dns_servers,
+                    domain_search,
+                };
+                Ok(Some(lease))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// DNS エンコードされたドメインサーチリストをパースする (RFC 1035 Section 4.1.4 形式)
+    fn parse_domain_search_list(data: &[u8], out: &mut Vec<alloc::string::String>) {
+        let mut off = 0usize;
+        while off < data.len() {
+            let mut labels: Vec<&[u8]> = Vec::new();
+            loop {
+                if off >= data.len() {
+                    break;
+                }
+                let label_len = data[off] as usize;
+                off += 1;
+                if label_len == 0 {
+                    break; // end of domain name
+                }
+                if off + label_len > data.len() {
+                    return; // malformed
+                }
+                labels.push(&data[off..off + label_len]);
+                off += label_len;
+            }
+            if !labels.is_empty() {
+                let domain: alloc::string::String = labels
+                    .iter()
+                    .map(|l| core::str::from_utf8(l).unwrap_or("?"))
+                    .collect::<Vec<_>>()
+                    .join(".");
+                out.push(domain);
+            }
+        }
     }
 
     /// Handle an incoming DHCPv6 packet (called by network receive path)
@@ -447,9 +786,8 @@ impl DhcpV6Client {
                     if let Ok(mut sd) = self.server_addr.lock() {
                         *sd = Some(src);
                     }
-                    // transition to Requesting: Generate a new XID for the Request transaction
-                    let xid = ((now as u32) ^ 0xC0FFEE) & 0x00FF_FFFF;
-                    self.xid.store(xid, Ordering::SeqCst);
+                    // transition to Requesting: Generate a new secure XID
+                    self.generate_secure_xid();
 
                     *st = DhcpV6State::Requesting;
                     self.state_time.store(now, Ordering::SeqCst);
@@ -511,9 +849,8 @@ impl DhcpV6Client {
         match self.state.lock() {
             Ok(mut s) => match *s {
                 DhcpV6State::Init => {
-                    // Start new transaction: Generate SOLICIT XID
-                    let xid = ((current_tick as u32) ^ 0xDEADBEEF) & 0x00FF_FFFF;
-                    self.xid.store(xid, Ordering::SeqCst);
+                    // Start new transaction: Generate cryptographically secure SOLICIT XID
+                    self.generate_secure_xid();
 
                     // Send SOLICIT
                     let mut buf = [0u8; 256];
@@ -594,9 +931,8 @@ impl DhcpV6Client {
                     if let Some(lease) = self.lease() {
                         let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
                         if elapsed_ms >= (lease.preferred_lifetime as u64 * 1000) {
-                            // start renewal: Generate new XID for Renew transaction
-                            let xid = ((current_tick as u32) ^ 0xBEEFBEEF) & 0x00FF_FFFF;
-                            self.xid.store(xid, Ordering::SeqCst);
+                            // start renewal: Generate secure XID for Renew transaction
+                            self.generate_secure_xid();
 
                             *s = DhcpV6State::Renewing;
                             self.state_time.store(current_tick, Ordering::SeqCst);
@@ -605,7 +941,7 @@ impl DhcpV6Client {
                     }
                 }
                 DhcpV6State::Renewing => {
-                    // Attempt to renew (RFC 8415 Section 15: IRT = 10s, MRT = 600s)
+                    // Attempt to renew (RFC 8415 Section 18.2.3: IRT = 10s, MRT = 600s)
                     let retry = self.retry_count.load(Ordering::SeqCst);
                     let base_t = (10u64 << core::cmp::min(retry, 6)).min(600);
                     
@@ -623,10 +959,10 @@ impl DhcpV6Client {
                             self.retry_count.store(0, Ordering::SeqCst);
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         } else {
-                            // Resend REQUEST for the current lease using SAME XID
+                            // Send RENEW (msg type 5) to the original server using SAME XID
                             if let Some(lease) = self.lease() {
                                 let mut buf = [0u8; 512];
-                                let len = self.build_request(&mut buf, &lease)?;
+                                let len = self.build_renew(&mut buf, &lease)?;
                                 if let Some(src) = self.get_link_local() {
                                     let dst = match self.server_addr.lock() {
                                         Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
@@ -643,7 +979,7 @@ impl DhcpV6Client {
                     }
                 }
                 DhcpV6State::Rebinding => {
-                    // Rebinding (RFC 8415 Section 15: IRT = 10s, MRT = 600s)
+                    // Rebinding (RFC 8415 Section 18.2.5: IRT = 10s, MRT = 600s)
                     let retry = self.retry_count.load(Ordering::SeqCst);
                     let base_t = (10u64 << core::cmp::min(retry, 6)).min(600);
                     
@@ -662,10 +998,10 @@ impl DhcpV6Client {
                                 *lg = None;
                             }
                         } else {
-                            // retransmit REQUEST (multicast) using SAME XID
+                            // Send REBIND (msg type 6) to multicast using SAME XID
                             if let Some(lease) = self.lease() {
                                 let mut buf = [0u8; 512];
-                                let len = self.build_request(&mut buf, &lease)?;
+                                let len = self.build_rebind(&mut buf, &lease)?;
                                 if let Some(src) = self.get_link_local() {
                                     self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
                                 }
@@ -800,6 +1136,8 @@ pub(crate) mod tests {
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
             obtained_at: 100,
+            dns_servers: Vec::new(),
+            domain_search: Vec::new(),
         };
         let mut buf = [0u8; 512];
         let now = 200u64;
@@ -831,6 +1169,8 @@ pub(crate) mod tests {
             preferred_lifetime: 1,
             valid_lifetime: 10,
             obtained_at: 0,
+            dns_servers: Vec::new(),
+            domain_search: Vec::new(),
         };
         if let Ok(mut lg) = client.lease.lock() {
             *lg = Some(lease.clone());
@@ -962,6 +1302,8 @@ pub(crate) mod tests {
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
             obtained_at: 0,
+            dns_servers: Vec::new(),
+            domain_search: Vec::new(),
         };
 
         if let Ok(mut lg) = client.lease.lock() { *lg = Some(lease.clone()); }
@@ -1038,6 +1380,8 @@ pub(crate) mod tests {
             preferred_lifetime: 1,
             valid_lifetime: 10,
             obtained_at: 0,
+            dns_servers: Vec::new(),
+            domain_search: Vec::new(),
         };
         if let Ok(mut lg) = client.lease.lock() {
             *lg = Some(lease.clone());
@@ -1055,5 +1399,203 @@ pub(crate) mod tests {
         client.check_timeout(now, tick_rate).unwrap();
         // should still be Renewing (not immediately escalate to Rebinding)
         assert_eq!(client.state(), DhcpV6State::Renewing);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_build_renew_uses_correct_msg_type() {
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+        let lease = DhcpV6Lease {
+            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xa]),
+            preferred_lifetime: 3600,
+            valid_lifetime: 7200,
+            obtained_at: 0,
+            dns_servers: Vec::new(),
+            domain_search: Vec::new(),
+        };
+        // Set server DUID
+        if let Ok(mut g) = client.server_duid.lock() {
+            *g = Some(alloc::vec![0x01, 0x02, 0x03, 0x04]);
+        }
+        client.xid.store(0x123456, Ordering::SeqCst);
+        let mut buf = [0u8; 512];
+        let len = client.build_renew(&mut buf, &lease).unwrap();
+        assert!(len > 0);
+        assert_eq!(buf[0], DhcpV6MessageType::Renew as u8); // msg type 5
+        // Verify IAADDR suboption exists
+        let mut found_iaaddr = false;
+        for i in 4..len.saturating_sub(1) {
+            if buf[i] == 0 && buf[i+1] == 5 {
+                found_iaaddr = true;
+                break;
+            }
+        }
+        assert!(found_iaaddr, "IAADDR suboption not found in Renew");
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_build_rebind_uses_correct_msg_type() {
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+        let lease = DhcpV6Lease {
+            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xb]),
+            preferred_lifetime: 3600,
+            valid_lifetime: 7200,
+            obtained_at: 0,
+            dns_servers: Vec::new(),
+            domain_search: Vec::new(),
+        };
+        client.xid.store(0xABCDEF, Ordering::SeqCst);
+        let mut buf = [0u8; 512];
+        let len = client.build_rebind(&mut buf, &lease).unwrap();
+        assert!(len > 0);
+        assert_eq!(buf[0], DhcpV6MessageType::Rebind as u8); // msg type 6
+        // Rebind should NOT contain Server Identifier (option 2)
+        let mut found_server_id = false;
+        let mut off = 4usize;
+        while off + 4 <= len {
+            let code = u16::from_be_bytes([buf[off], buf[off+1]]);
+            let opt_len = u16::from_be_bytes([buf[off+2], buf[off+3]]) as usize;
+            off += 4;
+            if code == 2 { found_server_id = true; }
+            off += opt_len;
+        }
+        assert!(!found_server_id, "Rebind must not contain Server ID");
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_build_release_uses_correct_msg_type() {
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+        let lease = DhcpV6Lease {
+            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xc]),
+            preferred_lifetime: 3600,
+            valid_lifetime: 7200,
+            obtained_at: 0,
+            dns_servers: Vec::new(),
+            domain_search: Vec::new(),
+        };
+        if let Ok(mut g) = client.server_duid.lock() {
+            *g = Some(alloc::vec![0xAA, 0xBB]);
+        }
+        client.xid.store(0x654321, Ordering::SeqCst);
+        let mut buf = [0u8; 512];
+        let len = client.build_release(&mut buf, &lease).unwrap();
+        assert!(len > 0);
+        assert_eq!(buf[0], DhcpV6MessageType::Release as u8); // msg type 8
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_release_clears_lease_and_state() {
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+        let lease = DhcpV6Lease {
+            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xd]),
+            preferred_lifetime: 3600,
+            valid_lifetime: 7200,
+            obtained_at: 0,
+            dns_servers: Vec::new(),
+            domain_search: Vec::new(),
+        };
+        if let Ok(mut lg) = client.lease.lock() { *lg = Some(lease); }
+        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Bound; }
+        if let Ok(mut sg) = client.server_duid.lock() { *sg = Some(alloc::vec![0x01]); }
+        if let Ok(mut ag) = client.server_addr.lock() {
+            *ag = Some(Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,1]));
+        }
+
+        client.release();
+
+        assert_eq!(client.state(), DhcpV6State::Init);
+        assert!(client.lease().is_none());
+        if let Ok(g) = client.server_duid.lock() { assert!(g.is_none()); }
+        if let Ok(g) = client.server_addr.lock() { assert!(g.is_none()); }
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_parse_reply_with_dns_servers() {
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+
+        // Build a REPLY with IA_NA/IAADDR + DNS Recursive Name Server (option 23)
+        let dns1 = Ipv6Address::new([0x20,0x01,0x48,0x60,0x48,0x60,0,0,0,0,0,0,0,0,0x88,0x88]);
+        let dns2 = Ipv6Address::new([0x20,0x01,0x48,0x60,0x48,0x60,0,0,0,0,0,0,0,0,0x88,0x44]);
+        let addr = Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xe]);
+
+        // header(4) + IA_NA(4+12 + subopt IAADDR 4+24) + DNS(4+32)
+        let mut pkt = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24 + 4 + 32];
+        pkt[0] = DhcpV6MessageType::Reply as u8;
+        let mut off = 4usize;
+
+        // IA_NA option (code=3, len=40)
+        pkt[off..off+2].copy_from_slice(&3u16.to_be_bytes());
+        pkt[off+2..off+4].copy_from_slice(&40u16.to_be_bytes());
+        off += 4;
+        // IAID + T1 + T2 = 0
+        pkt[off..off+12].copy_from_slice(&[0u8; 12]);
+        off += 12;
+        // IAADDR suboption (code=5, len=24)
+        pkt[off..off+2].copy_from_slice(&5u16.to_be_bytes());
+        pkt[off+2..off+4].copy_from_slice(&24u16.to_be_bytes());
+        off += 4;
+        pkt[off..off+16].copy_from_slice(addr.as_bytes());
+        off += 16;
+        pkt[off..off+4].copy_from_slice(&3600u32.to_be_bytes()); // preferred
+        off += 4;
+        pkt[off..off+4].copy_from_slice(&7200u32.to_be_bytes()); // valid
+        off += 4;
+
+        // DNS Recursive Name Server (option 23, len=32: 2 addresses)
+        pkt[off..off+2].copy_from_slice(&23u16.to_be_bytes());
+        pkt[off+2..off+4].copy_from_slice(&32u16.to_be_bytes());
+        off += 4;
+        pkt[off..off+16].copy_from_slice(dns1.as_bytes());
+        off += 16;
+        pkt[off..off+16].copy_from_slice(dns2.as_bytes());
+
+        let parsed = client.parse_reply(&pkt, 500).unwrap();
+        assert!(parsed.is_some());
+        let lease = parsed.unwrap();
+        assert_eq!(lease.addr, addr);
+        assert_eq!(lease.dns_servers.len(), 2);
+        assert_eq!(lease.dns_servers[0], dns1);
+        assert_eq!(lease.dns_servers[1], dns2);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_parse_reply_with_status_code_error() {
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+
+        // Build a REPLY with Status Code = 2 (NoBinding)
+        let mut pkt = alloc::vec![0u8; 4 + 4 + 2];
+        pkt[0] = DhcpV6MessageType::Reply as u8;
+        let mut off = 4usize;
+        // Status Code option (code=13, len=2)
+        pkt[off..off+2].copy_from_slice(&13u16.to_be_bytes());
+        pkt[off+2..off+4].copy_from_slice(&2u16.to_be_bytes());
+        off += 4;
+        pkt[off..off+2].copy_from_slice(&2u16.to_be_bytes()); // NoBinding
+
+        let parsed = client.parse_reply(&pkt, 100).unwrap();
+        assert!(parsed.is_none(), "Non-zero status code should return None");
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_parse_domain_search_list() {
+        // DNS-encoded domain: "example.com" → [7, 'e','x','a','m','p','l','e', 3, 'c','o','m', 0]
+        let data = [
+            7, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+            3, b'c', b'o', b'm',
+            0,
+            4, b't', b'e', b's', b't',
+            3, b'n', b'e', b't',
+            0,
+        ];
+        let mut out = Vec::new();
+        DhcpV6Client::parse_domain_search_list(&data, &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], "example.com");
+        assert_eq!(out[1], "test.net");
     }
 }

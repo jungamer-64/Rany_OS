@@ -453,6 +453,16 @@ pub mod tests {
         assert_eq!(localhost.as_ipv4().unwrap(), [127, 0, 0, 1]);
         assert_eq!(localhost.port(), 3000);
     }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_socket_fd() {
+        test_endpoint_fd();
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_socket_addr() {
+        test_endpoint_addr();
+    }
 }
 
 
@@ -475,5 +485,13 @@ pub mod qemu_tests {
 
         let localhost = EndpointAddr::LOCALHOST.with_port(3000);
         localhost.as_ipv4().unwrap() == [127, 0, 0, 1] && localhost.port() == 3000
+    }
+
+    pub fn socket_fd_smoke() -> bool {
+        endpoint_fd_smoke()
+    }
+
+    pub fn socket_addr_smoke() -> bool {
+        endpoint_addr_smoke()
     }
 }
