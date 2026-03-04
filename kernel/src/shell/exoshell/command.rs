@@ -236,8 +236,8 @@ impl ShellCommand for SetCommand {
             ExoValue::String(s) => s.as_ref().to_string(),
             other => alloc::format!("{}", other),
         };
-        let value = args[1].clone();
-        shell.env.define(name.clone(), value.clone());
+        let value = args[1].clone().into_owned();
+        shell.env.define(name, value.clone());
         Ok(value)
     }
     fn help(&self) -> &str { "Set a variable. Usage: set <name> <value>" }

@@ -87,7 +87,7 @@ pub fn list_namespaces() -> alloc::vec::Vec<String> {
 /// 
 /// シェルシステム初期化時に呼び出される。
 pub fn register_builtin_namespaces() {
-    use super::{CapNamespace, CellNamespace, DomainNamespace, DriverNamespace, FsNamespace, NetNamespace, SysNamespace, ShellControlNamespace, AsyncSwapoutNamespace, ReclaimNamespace};
+    use super::{CapNamespace, CellNamespace, DomainNamespace, DriverNamespace, FsNamespace, LogNamespace, NetNamespace, SysNamespace, ShellControlNamespace, TaskNamespace, AsyncSwapoutNamespace, ReclaimNamespace};
     
     register_namespace(Arc::new(FsNamespace));
     register_namespace(Arc::new(NetNamespace));
@@ -97,6 +97,10 @@ pub fn register_builtin_namespaces() {
     register_namespace(Arc::new(CellNamespace));
     register_namespace(Arc::new(DriverNamespace));
     register_namespace(Arc::new(ShellControlNamespace));
+    // Task management namespace
+    register_namespace(Arc::new(TaskNamespace));
+    // Log control namespace
+    register_namespace(Arc::new(LogNamespace));
     // AsyncSwapout control namespace (tunable introspection and control)
     register_namespace(Arc::new(AsyncSwapoutNamespace));
     register_namespace(Arc::new(ReclaimNamespace));

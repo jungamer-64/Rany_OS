@@ -53,6 +53,7 @@ pub mod preemption;
 pub mod io;
 pub mod timeout;
 pub mod timer;
+pub mod waker;
 mod work_stealing;
 
 // Phase 4: Advanced Work-Stealing

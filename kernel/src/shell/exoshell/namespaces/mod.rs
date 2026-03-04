@@ -7,11 +7,13 @@ pub mod cell;
 pub mod driver;
 pub mod dynamic_driver;
 pub mod fs;
+pub mod log;
 pub mod net;
 pub mod domain;
 pub mod registry;
 pub mod sys;
 pub mod shell;
+pub mod task;
 pub mod async_swapout;
 pub mod reclaim;
 
@@ -19,10 +21,12 @@ pub use cap::CapNamespace;
 pub use cell::CellNamespace;
 pub use driver::DriverNamespace;
 pub use fs::FsNamespace;
+pub use log::LogNamespace;
 pub use net::NetNamespace;
 pub use domain::DomainNamespace;
 pub use sys::SysNamespace;
 pub use shell::ShellControlNamespace;
+pub use task::TaskNamespace;
 pub use async_swapout::AsyncSwapoutNamespace;
 pub use reclaim::ReclaimNamespace;
 

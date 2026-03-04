@@ -120,7 +120,7 @@ impl LockFreeWakeQueue {
                         core::hint::spin_loop();
                     }
                     // Subtract 1 to get original TaskId value
-                    return Some(TaskId::from_u64((val - 1) as u64));
+                    return Some(TaskId::from_raw((val - 1) as u64));
                 }
                 Err(_) => {
                     core::hint::spin_loop();
