@@ -65,8 +65,13 @@ pub enum NetworkEvent {
         priority: u8,
     },
     /// Raw UDP送信（ソケット非経由・スタック直接）
+    ///
+    /// `src_ip` が `Some` の場合、指定されたIPをソースアドレスとして使用する。
+    /// `None` の場合、スタックの設定IPアドレスを使用する。
+    /// DHCP DISCOVERなど、ソースIPを 0.0.0.0 にする必要がある場合に `Some([0,0,0,0])` を指定する。
     RawUdpSend {
         src_port: u16,
+        src_ip: Option<[u8; 4]>,
         dst_ip: [u8; 4],
         dst_port: u16,
         data: Vec<u8>,

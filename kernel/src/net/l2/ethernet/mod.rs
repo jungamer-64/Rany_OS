@@ -458,8 +458,11 @@ impl EthernetProcessor {
     }
 
     /// Check if a MAC address is for us
+    ///
+    /// ユニキャスト: 自分のMAC宛のみ受理
+    /// ブロードキャスト/マルチキャスト: 全て受理（上位レイヤでIGMPグループフィルタリング）
     fn is_for_us(&self, mac: &MacAddress) -> bool {
-        *mac == self.local_mac || mac.is_broadcast()
+        *mac == self.local_mac || mac.is_broadcast() || mac.is_multicast()
     }
 
     /// Build a reply frame (swaps src/dst)

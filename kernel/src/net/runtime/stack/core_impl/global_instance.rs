@@ -74,10 +74,32 @@ pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) 
 /// Instead of synchronously acquiring the NETWORK_STACK lock, the send request
 /// is posted to the `NetworkEventQueue` and processed by the `network_event_task`.
 /// This avoids lock contention and potential deadlocks when called from async contexts.
+///
+/// ソースIPはスタックの設定IPアドレスを使用する。
+/// DHCP等でソースIPを明示的に指定する場合は `send_udp_async_with_src` を使用すること。
 pub fn send_udp_async(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8], ttl: u8) -> bool {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
             src_port,
+            src_ip: None,
+            dst_ip: *dst_ip.as_bytes(),
+            dst_port,
+            data: Vec::from(data),
+            ttl,
+        },
+    );
+    true
+}
+
+/// Send a UDP datagram with explicit source IP via the async event queue.
+///
+/// RFC 2131 準拠: DHCP DISCOVER/初期REQUEST では src_ip = 0.0.0.0 を指定する。
+/// リニューアルでは取得済みIPを指定する。
+pub fn send_udp_async_with_src(src_ip: Ipv4Address, src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8], ttl: u8) -> bool {
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
+            src_port,
+            src_ip: Some(*src_ip.as_bytes()),
             dst_ip: *dst_ip.as_bytes(),
             dst_port,
             data: Vec::from(data),

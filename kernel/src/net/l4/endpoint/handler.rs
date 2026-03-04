@@ -453,10 +453,13 @@ impl NetworkEventHandler {
             NetworkEvent::SendTo { fd, data, remote } => {
                 self.handle_send_to_with_stack(fd, remote, data, stack)
             }
-            NetworkEvent::RawUdpSend { src_port, dst_ip, dst_port, data, ttl } => {
+            NetworkEvent::RawUdpSend { src_port, src_ip, dst_ip, dst_port, data, ttl } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let src_ip = stack.config().ipv4.address;
-                if stack.send_udp_raw_with_src_ttl(src_ip, src_port, dst, dst_port, &data, ttl) {
+                let resolved_src = match src_ip {
+                    Some(ip) => crate::net::l3::ipv4::Ipv4Address::new(ip),
+                    None => stack.config().ipv4.address,
+                };
+                if stack.send_udp_raw_with_src_ttl(resolved_src, src_port, dst, dst_port, &data, ttl) {
                     EventHandleResult::Success
                 } else {
                     EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
