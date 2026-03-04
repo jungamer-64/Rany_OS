@@ -510,8 +510,6 @@ static TIMER_EVENT_PENDING: core::sync::atomic::AtomicBool =
 /// Debug helpers: log first occurrence of certain interrupts
 static KEYBOARD_LOGGED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-static IOMMU_LOGGED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
 
 /// タイマーイベントをポーリング（非ISRコンテキストから呼び出し）
 ///
@@ -611,10 +609,9 @@ define_interrupt!(
 // Also wakes any pending async invalidation waiters.
 define_interrupt!(
     fn iommu_fault_handler(_stack_frame: InterruptStackFrame) {
-        if !IOMMU_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-            crate::io::log::early_print("[INT] IOMMU fault interrupt received\n");
-        }
-        // Process faults
+        // Intel VT-d uses the same vector (0x50) for faults and QI completion.
+        // Actual fault details are logged by the fault_handler_task drain.
+        // Process faults (reads fault recording registers if PPF is set)
         crate::io::iommu::api::handle_fault();
 
         // Wake any pending async invalidation waiters
