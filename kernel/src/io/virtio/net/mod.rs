@@ -337,6 +337,12 @@ impl NetVirtQueue {
         data_len: usize,
         header: VirtioNetHeader,
     ) -> Result<u16, VirtioNetError> {
+        // ゼロサイズバッファの防御チェック（QEMU "zero sized buffers are not allowed" 対策）
+        if data_len == 0 {
+            log::warn!("[VIRTIO-NET] add_tx_buffer_zero_copy_with_header: rejected zero-length data descriptor");
+            return Err(VirtioNetError::BufferTooSmall);
+        }
+
         let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
         
         let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
@@ -415,6 +421,12 @@ impl NetVirtQueue {
         phys_addr: u64,
         buffer_len: usize,
     ) -> Result<u16, VirtioNetError> {
+        // ゼロサイズバッファの防御チェック
+        if buffer_len == 0 {
+            log::warn!("[VIRTIO-NET] add_rx_buffer_zero_copy: rejected zero-length RX descriptor");
+            return Err(VirtioNetError::BufferTooSmall);
+        }
+
         let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
         let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
 

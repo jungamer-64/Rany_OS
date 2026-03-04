@@ -458,13 +458,23 @@ async fn tx_worker_task() {
 /// PacketRefをmempool経由で割り当て、`enqueue_send_zero_copy`で
 /// DMAキューに投入する。同期的な`submit_tx()`は完全に排除。
 fn transmit_packet_zero_copy(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static str> {
+    if data.is_empty() {
+        return Err("zero-length payload");
+    }
+
     // Mempool からバッファを確保してペイロードをコピー
     let mut packet = crate::net::datapath::mempool::alloc_packet()
         .ok_or("PacketRef alloc failed")?;
-    let buf = packet.data_mut();
-    let len = data.len().min(buf.len());
-    buf[..len].copy_from_slice(&data[..len]);
+
+    // capacity() で書き込み可能サイズを取得し、先に set_len で論理長を設定する。
+    // 注意: alloc() 直後の PacketRef は meta.len=0 であるため、
+    // data_mut() は空スライスを返す。set_len を先に呼ぶことで
+    // data_mut() が正しいサイズのスライスを返すようにする。
+    let cap = packet.capacity();
+    let len = data.len().min(cap);
     packet.set_len(len);
+    let buf = packet.data_mut();
+    buf[..len].copy_from_slice(&data[..len]);
 
     // ゼロコピーでDMAキューに投入（非同期完了は割り込みハンドラで処理）
     device.enqueue_send_zero_copy(packet).map_err(|e| {
