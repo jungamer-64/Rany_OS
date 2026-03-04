@@ -109,7 +109,7 @@ impl NetworkStack {
             Ipv4ProcessResult::UnknownProtocol(proto, src, _dst, orig_packet) => {
                 // RFC 792: Send ICMP Destination Unreachable (Protocol Unreachable, Code 2)
                 log::warn!("IPv4: Unknown protocol {} from {} - sending ICMP Protocol Unreachable", proto, src);
-                self.send_icmp_error(src, crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable, orig_packet, current_time);
+                self.send_icmp_error(src, crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable, None, orig_packet, current_time);
             }
             Ipv4ProcessResult::Dropped => {
                 self.stats.record_dropped();

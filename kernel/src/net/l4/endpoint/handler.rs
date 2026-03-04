@@ -696,6 +696,18 @@ impl NetworkEventHandler {
                 );
                 EventHandleResult::Success
             }
+            NetworkEvent::NatIcmpDestUnreachable { src_ip, code, next_hop_mtu, original_packet } => {
+                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
+                let now = stack.current_time();
+                stack.send_icmp_error(
+                    src,
+                    crate::net::l3::icmp::DestUnreachCode::from(code),
+                    next_hop_mtu,
+                    &original_packet,
+                    now,
+                );
+                EventHandleResult::Success
+            }
             NetworkEvent::NatForwardUdp { if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl } => {
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
                 let s = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
@@ -1131,7 +1143,7 @@ impl NetworkEventHandler {
             crate::net::l3::ipv4::Ipv4ProcessResult::UnknownProtocol(_proto, src, _dst, orig_packet) => {
                 // RFC 792: Send ICMP Destination Unreachable (Protocol Unreachable, Code 2)
                 log::warn!("[NET] Unknown protocol {} from {} - sending ICMP Protocol Unreachable", _proto, src);
-                stack.send_icmp_error(src, crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable, orig_packet, current_time);
+                stack.send_icmp_error(src, crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable, None, orig_packet, current_time);
             }
         }
 
@@ -1195,7 +1207,7 @@ impl NetworkEventHandler {
             
             // Only send if it wasn't broadcast/multicast (RFC 1122)
             if !dst_v4.is_broadcast() && !dst_v4.is_multicast() {
-                stack.send_icmp_error(src_v4, DestUnreachCode::PortUnreachable, original_packet, current_time);
+                stack.send_icmp_error(src_v4, DestUnreachCode::PortUnreachable, None, original_packet, current_time);
             }
         }
 

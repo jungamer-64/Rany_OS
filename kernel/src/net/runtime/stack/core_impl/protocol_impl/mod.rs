@@ -114,7 +114,7 @@ impl NetworkStack {
                 // RFC 1122: Send ICMP Port Unreachable
                 // Only send if it wasn't broadcast/multicast
                 if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
-                    self.send_icmp_error(src_ip, DestUnreachCode::PortUnreachable, original_packet, current_time);
+                    self.send_icmp_error(src_ip, DestUnreachCode::PortUnreachable, None, original_packet, current_time);
                 }
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
@@ -411,7 +411,7 @@ impl NetworkStack {
                 // Only send if it wasn't broadcast/multicast
                 if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
                     let current_time = self.current_time();
-                    self.send_icmp_error(src_ip, DestUnreachCode::PortUnreachable, packet.data(), current_time);
+                    self.send_icmp_error(src_ip, DestUnreachCode::PortUnreachable, None, packet.data(), current_time);
                 }
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {

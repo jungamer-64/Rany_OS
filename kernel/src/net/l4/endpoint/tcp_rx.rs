@@ -722,38 +722,46 @@ fn handle_synchronized_segment(
         handle_urgent_received(tcb.clone(), seq_num, urgent_ptr);
     }
 
-    // 5. Process segment data (RFC 793)
-    if payload_len > 0 {
-        handle_data_received_with_delayed_ack(tcb.clone(), seq_num, &segment[data_offset..]);
-    }
-
-    // 6. Check FIN bit (RFC 793)
-    if is_fin {
-        handle_fin_received(tcb, seq_num);
+    // 5. Process segment data and FIN (RFC 793)
+    if payload_len > 0 || is_fin {
+        handle_data_received_with_delayed_ack(tcb.clone(), seq_num, &segment[data_offset..], is_fin);
     }
 }
 
 /// Slow path データ受信処理 (Delayed ACK対応)
-fn handle_data_received_with_delayed_ack(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
+fn handle_data_received_with_delayed_ack(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8], fin: bool) {
     let payload_len = data.len() as u32;
 
     if seq_num != tcb.rcv_nxt {
         // Out-of-order: OOOキューに追加して即座に重複ACKを送信 (RFC 5681)
-        ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data);
+        ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data, fin);
         send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
         return;
     }
 
     let mut new_rcv_nxt = seq_num.wrapping_add(payload_len);
+    let mut fin_encountered = fin;
 
     // ソケットの受信バッファにデータ追加
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        socket.push_data(data);
+        if payload_len > 0 {
+            socket.push_data(data);
+        }
 
         // OOOキューから連続セグメントをドレインしてバッファに追加
-        new_rcv_nxt = ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt, |_seg_seq, seg_data| {
+        let (drained_nxt, ooo_fin) = ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt, |_, seg_data| {
             socket.push_data(seg_data);
         });
+        new_rcv_nxt = drained_nxt;
+        if ooo_fin {
+            fin_encountered = true;
+        }
+    }
+
+    if fin_encountered {
+        // FINを処理（rcv_nxtをさらに+1し、状態遷移させる）
+        handle_fin_in_order(tcb, new_rcv_nxt);
+        return;
     }
 
     // TCB更新
@@ -1450,29 +1458,15 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
     false
 }
 
-/// FIN受信処理 (RFC 793 Section 3.5)
-///
-/// 相手側からFINを受信した際の状態遷移を処理する。
-/// FINは1シーケンス番号を消費するため、rcv_nxtを1進める。
-///
-/// ## 状態遷移 (RFC 793)
-/// - ESTABLISHED → CLOSE_WAIT (相手が接続クローズを開始)
-/// - FIN_WAIT_1 → CLOSING (同時クローズ)
-/// - FIN_WAIT_2 → TIME_WAIT (正常なアクティブクローズ完了)
-fn handle_fin_received(tcb: TcpControlBlockEntry, seq_num: u32) {
-    // FINはrcv_nxtの位置に到着した場合のみ処理
-    // (out-of-order FINは既にOOOキューに入れられている)
-    if seq_num != tcb.rcv_nxt {
-        // FINが期待位置にない場合はACKのみ送信
-        send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
-        return;
-    }
-
+/// 順序通りに到達した（またはOOOから復元された）FINを処理
+fn handle_fin_in_order(tcb: TcpControlBlockEntry, rcv_nxt_at_fin: u32) {
     let mut should_ack = false;
+    let mut final_rcv_nxt = rcv_nxt_at_fin;
 
     tcb_table().update(tcb.local, tcb.remote, |entry| {
         // FINは1シーケンス番号を消費 (RFC 793)
-        entry.rcv_nxt = entry.rcv_nxt.wrapping_add(1);
+        entry.rcv_nxt = rcv_nxt_at_fin.wrapping_add(1);
+        final_rcv_nxt = entry.rcv_nxt;
 
         match entry.state {
             TcpConnectionState::Established => {
@@ -1516,8 +1510,7 @@ fn handle_fin_received(tcb: TcpControlBlockEntry, seq_num: u32) {
 
     if should_ack {
         // FINに対するACKを送信 (rcv_nxtは既に+1済み)
-        let new_rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-        send_ack_for_fast_path(&tcb, new_rcv_nxt);
+        send_ack_for_fast_path(&tcb, final_rcv_nxt);
     }
 
     // ソケットに接続相手のクローズを通知

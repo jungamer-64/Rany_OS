@@ -763,7 +763,18 @@ impl IommuDomain {
             domain_id_placeholder: self.id,
         };
         for guard in guards.iter_mut() {
-            let _ = guard.mappings.insert(mapping.clone());
+            if guard.mappings.insert(mapping.clone()).is_err() {
+                log::error!("[IOMMU] Mapping slab full: failed to insert iova={:#x} size={:#x}", iova, size);
+                // Rollback the page table mapping on slab overflow
+                if self.domain_type != IommuDomainType::Passthrough {
+                    let _ = self.unmap_range(iova, size);
+                }
+                // Also remove entries already inserted into earlier shards
+                for prev in guards.iter_mut() {
+                    prev.mappings.remove(iova);
+                }
+                return Err(IommuError::OutOfMemory);
+            }
         }
 
         // SECURITY: Register the mapping in the resource registry to enable force-unmap
@@ -771,6 +782,9 @@ impl IommuDomain {
         if let Err(e) = self.dma_registry.register(iova, phys, size) {
             log::error!("[IOMMU] Failed to register DMA mapping in registry: {:?}", e);
             // Rollback the mapping if registration fails to maintain consistency
+            for guard in guards.iter_mut() {
+                guard.mappings.remove(iova);
+            }
             if self.domain_type != IommuDomainType::Passthrough {
                 let _ = self.unmap_range(iova, size);
             }

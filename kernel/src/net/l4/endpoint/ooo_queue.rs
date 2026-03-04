@@ -47,17 +47,25 @@ struct OooSegment {
 struct ConnectionOooQueue {
     /// シーケンス番号順にソートされたセグメント
     segments: BTreeMap<u32, PacketRef>,
+    /// FINビットが設定されていたシーケンス番号（存在する場合）
+    fin_seq: Option<u32>,
 }
 
 impl ConnectionOooQueue {
     fn new() -> Self {
         Self {
             segments: BTreeMap::new(),
+            fin_seq: None,
         }
     }
 
     /// セグメントを挿入
-    fn insert(&mut self, seq: u32, data: PacketRef) {
+    fn insert(&mut self, seq: u32, data: PacketRef, fin: bool) {
+        if fin {
+            let seg_end = seq.wrapping_add(data.len() as u32);
+            self.fin_seq = Some(seg_end);
+        }
+
         if self.segments.len() >= MAX_OOO_SEGMENTS {
             // キュー満杯: 最も遠いセグメントを破棄
             if let Some((&last_key, _)) = self.segments.iter().next_back() {
@@ -113,12 +121,15 @@ impl ConnectionOooQueue {
     }
 
     /// rcv_nxtから連続するデータをドレイン
-    fn drain_contiguous_with<F>(&mut self, mut rcv_nxt: u32, mut f: F) -> u32
+    /// 戻り値: (新rcv_nxt, fin_encountered)
+    fn drain_contiguous_with<F>(&mut self, mut rcv_nxt: u32, mut f: F) -> (u32, bool)
     where
         F: FnMut(u32, &[u8]),
     {
         // まず古いセグメントを掃除・トリム
         self.prune_outdated(rcv_nxt);
+
+        let mut fin_encountered = false;
 
         loop {
             if let Some(packet) = self.segments.remove(&rcv_nxt) {
@@ -128,13 +139,27 @@ impl ConnectionOooQueue {
                 f(rcv_nxt, data);
                 rcv_nxt = rcv_nxt.wrapping_add(data_len);
                 
+                // FINに到達したか確認
+                if let Some(fs) = self.fin_seq {
+                    if fs == rcv_nxt {
+                        fin_encountered = true;
+                        break;
+                    }
+                }
+
                 // 次のセグメントとの重複をトリムするために再度 prune
                 self.prune_outdated(rcv_nxt);
             } else {
+                // ペイロードが空でFINのみのセグメントがrcv_nxtにある場合も確認
+                if let Some(fs) = self.fin_seq {
+                    if fs == rcv_nxt {
+                        fin_encountered = true;
+                    }
+                }
                 break;
             }
         }
-        rcv_nxt
+        (rcv_nxt, fin_encountered)
     }
 
     /// SACKブロックを生成（最大4ブロック、RFC 2018）
@@ -170,6 +195,21 @@ impl ConnectionOooQueue {
             }
         }
 
+        // FINも含めてブロック終了を計算
+        if let Some(fs) = self.fin_seq {
+            if let Some(start) = block_start {
+                if !seq_before(fs, start) {
+                    block_end = block_end.max(fs.wrapping_add(1));
+                }
+            } else {
+                // FINのみがOOOの場合もSACKブロックに含めるべきか？
+                // RFC 2018はデータセグメントを対象としているが、
+                // FINは1シーケンス番号を消費するので含めても良い。
+                block_start = Some(fs);
+                block_end = fs.wrapping_add(1);
+            }
+        }
+
         if let Some(start) = block_start {
             sack.push((start, block_end));
         }
@@ -178,12 +218,13 @@ impl ConnectionOooQueue {
     }
 
     fn is_empty(&self) -> bool {
-        self.segments.is_empty()
+        self.segments.is_empty() && self.fin_seq.is_none()
     }
 
     fn clear(&mut self) {
         let count = self.segments.len();
         self.segments.clear();
+        self.fin_seq = None;
         GLOBAL_OOO_COUNT.fetch_sub(count, Ordering::Relaxed);
     }
 }
@@ -262,8 +303,9 @@ pub fn insert_ooo_segment(
     remote: EndpointAddr,
     seq: u32,
     data: &[u8],
+    fin: bool,
 ) {
-    if data.is_empty() { return; }
+    if data.is_empty() && !fin { return; }
 
     // まずグローバル上限チェック
     if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
@@ -293,36 +335,38 @@ pub fn insert_ooo_segment(
         .entry((local, remote))
         .or_insert_with(ConnectionOooQueue::new);
 
-    conn_queue.insert(seq, packet);
+    conn_queue.insert(seq, packet, fin);
 }
 
 /// OOOキューから連続データをクロージャにプッシュしてドレイン
+/// 戻り値: (新rcv_nxt, fin_encountered)
 pub fn drain_ooo_contiguous<F>(
     local: EndpointAddr,
     remote: EndpointAddr,
     mut rcv_nxt: u32,
     f: F,
-) -> u32
+) -> (u32, bool)
 where
     F: FnMut(u32, &[u8]),
 {
     let idx = ooo_shard_index(&local, &remote);
     let Ok(mut guard) = OOO_SHARDS[idx].lock() else {
-        return rcv_nxt;
+        return (rcv_nxt, false);
     };
     let Some(queues) = guard.as_mut() else {
-        return rcv_nxt;
+        return (rcv_nxt, false);
     };
 
     if let Some(conn_queue) = queues.get_mut(&(local, remote)) {
-        rcv_nxt = conn_queue.drain_contiguous_with(rcv_nxt, f);
+        let (new_rcv_nxt, fin) = conn_queue.drain_contiguous_with(rcv_nxt, f);
+        rcv_nxt = new_rcv_nxt;
         // 空になったキューを削除
         if conn_queue.is_empty() {
             queues.remove(&(local, remote));
         }
-        rcv_nxt
+        (rcv_nxt, fin)
     } else {
-        rcv_nxt
+        (rcv_nxt, false)
     }
 }
 

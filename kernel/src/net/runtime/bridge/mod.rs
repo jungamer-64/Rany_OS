@@ -800,7 +800,21 @@ pub fn process_received_packet_zero_copy_for_interface(
                                 };
 
                                 let ttl = ip_pkt.ttl();
-                                if ttl <= 1 {
+                                let total_len = ip_pkt.header().total_length() as usize;
+                                let mtu = crate::net::runtime::stack::MTU;
+
+                                if total_len > mtu && ip_pkt.header().dont_fragment() {
+                                    // RFC 791 / RFC 1191: DF=1 and packet too large -> ICMP Fragmentation Needed
+                                    let original_packet = Vec::from(ip_pkt.as_bytes());
+                                    crate::net::l4::endpoint::event::send_event_ignore(
+                                        crate::net::l4::endpoint::event::NetworkEvent::NatIcmpDestUnreachable {
+                                            src_ip: *src.as_bytes(),
+                                            code: crate::net::l3::icmp::DestUnreachCode::FragmentationNeeded as u8,
+                                            next_hop_mtu: Some(mtu as u16),
+                                            original_packet,
+                                        },
+                                    );
+                                } else if ttl <= 1 {
                                     // TTL切れ: イベントキュー経由でICMP Time Exceeded送信（デッドロック回避）
                                     let original_ip_header = Vec::from(ip_pkt.as_bytes());
                                     crate::net::l4::endpoint::event::send_event_ignore(

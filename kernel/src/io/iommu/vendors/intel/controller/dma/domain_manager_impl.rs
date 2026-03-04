@@ -241,16 +241,24 @@ impl DomainManager for IommuController {
                 }
                 Ok(0)
             },
-            IommuCommandKind::UnmapRegion { domain, iova, .. } => {
+            IommuCommandKind::UnmapRegion { domain, iova, size } => {
                 let domain_arc = self.domain(*domain).ok_or(())?;
                 let pts_before = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
-                domain_arc.unmap(*iova).map_err(|_| ())?;
+                let mapping = domain_arc.unmap(*iova).map_err(|_| ())?;
                 let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
                 let pt_removed = pts_after > pts_before;
 
                 self.invalidate_iotlb(*domain, true).map_err(|_| ())?;
                 if pt_removed {
                     let _ = domain_arc.flush(self, self);
+                }
+
+                // Free the IOVA to prevent allocator leaks
+                if let Err(IommuError::OutOfMemory) = self.free_iova(*iova, mapping.size) {
+                    let _ = self.invalidate_iotlb_global_sync();
+                    let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
+                        self, *iova, mapping.size,
+                    );
                 }
                 Ok(0)
             },
@@ -266,6 +274,14 @@ impl DomainManager for IommuController {
                     let _ = domain_arc.flush(self, self);
                 } else {
                     self.qi_invalidate_unmap(domain_id, device, *iova, mapping.size as u64).map_err(|_| ())?;
+                }
+
+                // Free the IOVA to prevent allocator leaks
+                if let Err(IommuError::OutOfMemory) = self.free_iova(*iova, mapping.size) {
+                    let _ = self.invalidate_iotlb_global_sync();
+                    let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
+                        self, *iova, mapping.size,
+                    );
                 }
                 Ok(0)
             },

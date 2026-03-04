@@ -264,6 +264,13 @@ pub enum NetworkEvent {
         src_ip: [u8; 4],
         original_ip_header: Vec<u8>,
     },
+    /// NAT転送: 到達不能ICMPエラー送信（bridge RXパスから非同期オフロード）
+    NatIcmpDestUnreachable {
+        src_ip: [u8; 4],
+        code: u8,
+        next_hop_mtu: Option<u16>,
+        original_packet: Vec<u8>,
+    },
     /// NAT転送: UDP転送（bridge RXパスから非同期オフロード）
     NatForwardUdp {
         if_id: u16,

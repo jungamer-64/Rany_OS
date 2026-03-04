@@ -250,6 +250,7 @@ impl NetworkStack {
         &mut self,
         dst_ip: Ipv4Address,
         code: DestUnreachCode,
+        next_hop_mtu: Option<u16>,
         original_packet: &[u8],
         current_time: u64,
     ) {
@@ -299,7 +300,7 @@ impl NetworkStack {
                 let ip_payload = ip_packet.payload_mut();
 
                 // Build ICMP packet (Type 3: Destination Unreachable)
-                if let Some(len) = IcmpProcessor::build_dest_unreachable(ip_payload, code, None, original_packet) {
+                if let Some(len) = IcmpProcessor::build_dest_unreachable(ip_payload, code, next_hop_mtu, original_packet) {
                     ip_packet.finalize(len);
                     let total_len = EthernetHeader::SIZE + ip_packet.total_len();
                     

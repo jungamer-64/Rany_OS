@@ -155,6 +155,8 @@ struct TcpRxState {
     recv_queue_limit_bytes: usize,
     /// Out-of-order segments queue
     ooo_queue: BTreeMap<u32, PacketRef>,
+    /// Sequence number of the FIN segment, if received out-of-order
+    ooo_fin_seq: Option<u32>,
 }
 
 impl TcpRxState {
@@ -168,6 +170,7 @@ impl TcpRxState {
             // limit initialized from constant above (currently zero)
             recv_queue_limit_bytes: TCP_RECV_COPY_FALLBACK_LIMIT_BYTES,
             ooo_queue: BTreeMap::new(),
+            ooo_fin_seq: None,
         }
     }
 }
