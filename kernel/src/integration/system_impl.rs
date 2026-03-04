@@ -51,7 +51,7 @@ impl SystemIntegration {
             self.log("  Net Config: none");
         }
         #[allow(deprecated)]
-        if let Some(stats) = crate::net::api::shell::get_network_stats() {
+        if let Some(stats) = crate::net::api::config::get_network_stats() {
             self.log(&alloc::format!("  Net Stack stats: rx={} tx={} rx_bytes={} tx_bytes={}", stats.rx_packets, stats.tx_packets, stats.rx_bytes, stats.tx_bytes));
         } else {
             self.log("  Net Stack stats: none");

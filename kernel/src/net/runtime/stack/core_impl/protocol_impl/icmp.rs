@@ -81,6 +81,23 @@ impl NetworkStack {
         }
     }
 
+    /// Resolve the next-hop IPv4 address for a destination, considering redirects.
+    pub(crate) fn resolve_ipv4_next_hop(&mut self, dst_ip: Ipv4Address, current_time: u64) -> Ipv4Address {
+        let config = self.config.clone();
+        
+        if config.ipv4.is_local(&dst_ip) {
+            dst_ip
+        } else {
+            // RFC 1122: Check redirect cache first for an alternative gateway
+            self.redirect_cache.set_time(current_time);
+            if let Some(redirected_gateway) = self.redirect_cache.get(dst_ip) {
+                redirected_gateway
+            } else {
+                config.ipv4.gateway
+            }
+        }
+    }
+
     /// Check if an ICMP error message should be sent (RFC 1122 Section 3.2.2)
     fn should_send_icmp_v4_error(&self, original_packet: &[u8], dst_ip: Ipv4Address) -> bool {
         let config = self.config.clone();
@@ -149,19 +166,14 @@ impl NetworkStack {
 
         let config = self.config.clone();
 
-        // Resolve MAC address for the original sender
-        let dst_mac = if config.ipv4.is_local(&dst_ip) {
-            if let Some(mac) = self.arp.resolve(dst_ip, current_time) {
-                mac
-            } else {
-                self.send_arp_request(dst_ip);
-                return;
-            }
-        } else {
-            if let Some(mac) = self.arp.resolve(config.ipv4.gateway, current_time) {
-                mac
-            } else {
-                self.send_arp_request(config.ipv4.gateway);
+        // Resolve next-hop gateway (considering redirects)
+        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+
+        // Resolve MAC address
+        let dst_mac = match self.arp.resolve(next_hop, current_time) {
+            Some(mac) => mac,
+            None => {
+                self.send_arp_request(next_hop);
                 return;
             }
         };
@@ -213,22 +225,14 @@ impl NetworkStack {
     ) {
         let config = self.config.clone();
 
+        // Resolve next-hop gateway (considering redirects)
+        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+
         // Resolve MAC address
-        let dst_mac = if config.ipv4.is_local(&dst_ip) {
-            // Destination is on local subnet, use ARP
-            if let Some(mac) = self.arp.resolve(dst_ip, current_time) {
-                mac
-            } else {
-                // Need to send ARP request first
-                self.send_arp_request(dst_ip);
-                return;
-            }
-        } else {
-            // Destination is remote, use gateway
-            if let Some(mac) = self.arp.resolve(config.ipv4.gateway, current_time) {
-                mac
-            } else {
-                self.send_arp_request(config.ipv4.gateway);
+        let dst_mac = match self.arp.resolve(next_hop, current_time) {
+            Some(mac) => mac,
+            None => {
+                self.send_arp_request(next_hop);
                 return;
             }
         };
@@ -295,9 +299,17 @@ impl NetworkStack {
         }
 
         let config = self.config.clone();
-        let dst_mac = match self.resolve_mac(dst_ip, &config, current_time) {
+        
+        // Resolve next-hop gateway (considering redirects)
+        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+
+        // Resolve MAC address
+        let dst_mac = match self.arp.resolve(next_hop, current_time) {
             Some(mac) => mac,
-            None => return false,
+            None => {
+                self.send_arp_request(next_hop);
+                return false;
+            }
         };
 
         let mut buffer = [0u8; MAX_PACKET_SIZE];
@@ -349,9 +361,17 @@ impl NetworkStack {
         }
 
         let config = self.config.clone();
-        let dst_mac = match self.resolve_mac(dst_ip, &config, current_time) {
+        
+        // Resolve next-hop gateway (considering redirects)
+        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+
+        // Resolve MAC address
+        let dst_mac = match self.arp.resolve(next_hop, current_time) {
             Some(mac) => mac,
-            None => return false,
+            None => {
+                self.send_arp_request(next_hop);
+                return false;
+            }
         };
 
         let mut buffer = [0u8; MAX_PACKET_SIZE];
@@ -394,7 +414,7 @@ impl NetworkStack {
         let current_time = self.current_time();
 
         // Security: RFC 4443 compliance check (e.g. no errors for multicast)
-        if !self.should_send_icmp_v6_error(original_packet, dst_v6, false) {
+        if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::DestinationUnreachable, code) {
             return false;
         }
 
@@ -408,18 +428,7 @@ impl NetworkStack {
         }
 
         // Determine our source address for the error message
-        let mut src_v6 = None;
-        if let Some(ref ipv6) = self.ipv6 {
-            let config = ipv6.config();
-            // If the original packet was to our global address, use it as source
-            if let Some(global) = config.global {
-                src_v6 = Some(global);
-            } else {
-                src_v6 = Some(config.link_local);
-            }
-        }
-
-        let src_v6 = match src_v6 {
+        let src_v6 = match self.get_ipv6_source_for(&dst_v6) {
             Some(s) => s,
             None => return false,
         };
@@ -433,8 +442,60 @@ impl NetworkStack {
         true
     }
 
+    /// Send an ICMPv6 Parameter Problem error (RFC 4443 Section 3.4).
+    pub fn send_icmpv6_parameter_problem(
+        &mut self,
+        dst_v6: Ipv6Address,
+        code: u8,
+        pointer: u32,
+        original_packet: &[u8],
+    ) -> bool {
+        let current_time = self.current_time();
+
+        // Security: RFC 4443 compliance check
+        if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::ParameterProblem, code) {
+            return false;
+        }
+
+        // Rate limiting
+        if let Some(ref icmpv6) = self.icmpv6 {
+            if !icmpv6.check_tx_rate_limit(current_time) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        let src_v6 = match self.get_ipv6_source_for(&dst_v6) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6EchoBuilder::build_parameter_problem(
+            &src_v6, &dst_v6, code, pointer, original_packet
+        );
+
+        self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
+        true
+    }
+
+    /// Helper to get the best IPv6 source address for a destination
+    fn get_ipv6_source_for(&self, _dst: &Ipv6Address) -> Option<Ipv6Address> {
+        if let Some(ref ipv6) = self.ipv6 {
+            let config = ipv6.config();
+            // Simple selection: use global if available, otherwise link-local
+            if let Some(global) = config.global {
+                Some(global)
+            } else {
+                Some(config.link_local)
+            }
+        } else {
+            None
+        }
+    }
+
     /// Check if an ICMPv6 error message should be sent (RFC 4443 Section 2.4(e))
-    pub(crate) fn should_send_icmp_v6_error(&self, original_packet: &[u8], dst_ip: Ipv6Address, is_ptb: bool) -> bool {
+    pub(crate) fn should_send_icmp_v6_error(&self, original_packet: &[u8], dst_ip: Ipv6Address, error_type: Icmpv6Type, error_code: u8) -> bool {
         // (e.1) An ICMPv6 error message.
         // (e.2) An ICMPv6 redirect message.
         if original_packet.len() >= 40 {
@@ -458,8 +519,14 @@ impl NetworkStack {
                 original_packet[36], original_packet[37], original_packet[38], original_packet[39],
             ]);
             if orig_dst.is_multicast() {
-                // Exception: Packet Too Big is allowed for multicast
-                if !is_ptb {
+                // RFC 4443 Section 2.4(e.3) Exceptions:
+                // 1. Packet Too Big is allowed for multicast
+                let is_ptb = error_type == Icmpv6Type::PacketTooBig;
+                
+                // 2. Parameter Problem (Code 2: unrecognized Next Header) is allowed for multicast
+                let is_pp_unrecognized_header = error_type == Icmpv6Type::ParameterProblem && error_code == 2;
+
+                if !is_ptb && !is_pp_unrecognized_header {
                     return false;
                 }
             }
@@ -719,16 +786,14 @@ impl NetworkStack {
         let local_ip = self.ipv4_address();
         let identifier = 0x1234u16; // Fixed identifier for now
 
-        // Need to resolve target MAC via ARP
+        // Need to resolve destination MAC
+        let config = self.config.clone();
         let current_time = self.current_time();
-        let target_mac = self.arp.cache().lookup(target, current_time);
-
-        let dst_mac = match target_mac {
+        let dst_mac = match self.resolve_mac(target, &config, current_time) {
             Some(mac) => mac,
             None => {
-                log::info!("[NET-PING] ARP required for {}.{}.{}.{} seq={} - sending ARP request",
+                log::info!("[NET-PING] Resolution required for {}.{}.{}.{} seq={} - resolution started",
                     target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
-                self.send_arp_request(target);
                 return Err(());
             }
         };

@@ -102,19 +102,7 @@ impl NetworkStack {
         }
 
         // Determine next hop, considering ICMP Redirect cache
-        let next_hop = if config.ipv4.is_local(&dst_ip) {
-            dst_ip
-        } else {
-            // Check redirect cache first for an alternative gateway
-            // Update cache time before lookup
-            self.redirect_cache.set_time(current_time);
-            if let Some(redirected_gateway) = self.redirect_cache.get(dst_ip) {
-                // Use the redirected gateway instead of the default
-                redirected_gateway
-            } else {
-                config.ipv4.gateway
-            }
-        };
+        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
 
         // Look up in ARP cache
         match self.arp.resolve(next_hop, current_time) {

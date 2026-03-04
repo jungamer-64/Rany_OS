@@ -92,7 +92,7 @@ impl NetNamespace {
     /// asyncコンテキストでは [`config_async()`] を使用すること。
     #[deprecated(note = "Use config_async() for async contexts.")]
     pub fn config() -> ExoValue<'static> {
-        if let Some(cfg) = crate::net::api::shell::get_network_config() {
+        if let Some(cfg) = crate::net::api::config::get_network_config() {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("ip"),
@@ -127,7 +127,7 @@ impl NetNamespace {
     /// asyncコンテキストでは [`stats_async()`] を使用すること。
     #[deprecated(note = "Use stats_async() for async contexts.")]
     pub fn stats() -> ExoValue<'static> {
-        if let Some(stats) = crate::net::api::shell::get_network_stats() {
+        if let Some(stats) = crate::net::api::config::get_network_stats() {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("rx_packets"),
@@ -165,7 +165,7 @@ impl NetNamespace {
     /// asyncコンテキストでは [`arp_cache_async()`] を使用すること。
     #[deprecated(note = "Use arp_cache_async() for async contexts.")]
     pub fn arp_cache() -> ExoValue<'static> {
-        if let Some(entries) = crate::net::api::shell::get_arp_cache() {
+        if let Some(entries) = crate::net::api::connections::get_arp_cache() {
             let values: Vec<ExoValue> = entries
                 .into_iter()
                 .map(|e| {
@@ -242,13 +242,13 @@ impl NetNamespace {
             }
             _ => return ExoValue::Error(String::from("mac must be string")),
         };
-        let ok = crate::net::api::shell::arp_cache_insert(ip, mac);
+        let ok = crate::net::api::connections::arp_cache_insert(ip, mac);
         ExoValue::Bool(ok)
     }
 
     /// ネットワーク設定を取得（非同期版）
     pub async fn config_async() -> ExoValue<'static> {
-        match crate::net::api::shell::get_network_config_async().await {
+        match crate::net::api::config::get_network_config_async().await {
             Some(cfg) => {
                 let mut map = BTreeMap::new();
                 map.insert(
@@ -280,7 +280,7 @@ impl NetNamespace {
 
     /// ネットワーク統計（非同期版）
     pub async fn stats_async() -> ExoValue<'static> {
-        match crate::net::api::shell::get_network_stats_async().await {
+        match crate::net::api::config::get_network_stats_async().await {
             Some(stats) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("rx_packets"), ExoValue::Int(stats.rx_packets as i64));
@@ -297,7 +297,7 @@ impl NetNamespace {
 
     /// ARPキャッシュ（非同期版）
     pub async fn arp_cache_async() -> ExoValue<'static> {
-        let entries = crate::net::api::shell::get_arp_cache_async().await;
+        let entries = crate::net::api::connections::get_arp_cache_async().await;
         let values: Vec<ExoValue> = entries
             .into_iter()
             .map(|e| {
@@ -329,7 +329,7 @@ impl NetNamespace {
 
     /// DHCP state snapshot (IPv4 + IPv6) — 同期版
     pub fn dhcp_state() -> ExoValue<'static> {
-        let state = crate::net::api::shell::dhcp_state();
+        let state = crate::net::api::dhcp::dhcp_state();
         Self::format_dhcp_state(state)
     }
 
@@ -407,7 +407,7 @@ impl NetNamespace {
 
     /// Trigger DHCP renew/restart — 同期版
     pub fn dhcp_renew() -> ExoValue<'static> {
-        match crate::net::api::shell::dhcp_renew() {
+        match crate::net::api::dhcp::dhcp_renew() {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
         }
@@ -465,7 +465,7 @@ impl NetNamespace {
 
     /// Send DHCPDISCOVER and report any currently stored offer
     pub fn dhcp_discover() -> ExoValue<'static> {
-        if let Some(info) = crate::net::api::shell::dhcp_discover() {
+        if let Some(info) = crate::net::api::dhcp::dhcp_discover() {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("server_ip"),
@@ -510,18 +510,18 @@ impl NetNamespace {
         }
         let server = parse_ip(&args[0]).unwrap_or([0,0,0,0]);
         let offered = parse_ip(&args[1]).unwrap_or([0,0,0,0]);
-        ExoValue::Bool(crate::net::api::shell::dhcp_request(server, offered))
+        ExoValue::Bool(crate::net::api::dhcp::dhcp_request(server, offered))
     }
 
     /// Send DHCPRELEASE for current lease (if any)
     pub fn dhcp_release() -> ExoValue<'static> {
-        crate::net::api::shell::dhcp_release();
+        crate::net::api::dhcp::dhcp_release();
         ExoValue::Bool(true)
     }
 
     /// last declined IP (string or nil)
     pub fn dhcp_last_declined() -> ExoValue<'static> {
-        if let Some(ip) = crate::net::api::shell::dhcp_last_declined() {
+        if let Some(ip) = crate::net::api::dhcp::dhcp_last_declined() {
             ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
         } else {
             ExoValue::Nil
@@ -530,7 +530,7 @@ impl NetNamespace {
 
     /// last released IP (string or nil)
     pub fn dhcp_last_released() -> ExoValue<'static> {
-        if let Some(ip) = crate::net::api::shell::dhcp_last_released() {
+        if let Some(ip) = crate::net::api::dhcp::dhcp_last_released() {
             ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
         } else {
             ExoValue::Nil

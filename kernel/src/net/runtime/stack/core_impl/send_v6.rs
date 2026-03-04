@@ -42,7 +42,7 @@ impl NetworkStack {
             let our_addr = ipv6_proc.config().link_local;
             
             // Security: RFC 4443 compliance check (no errors for multicast etc)
-            if !self.should_send_icmp_v6_error(original_packet, dst_v6, false) {
+            if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::TimeExceeded, code) {
                 return false;
             }
 

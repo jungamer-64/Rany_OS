@@ -11,7 +11,9 @@ use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::{Ipv4Address, Ipv4Config};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
-use crate::net::api::shell::{ArpCacheEntry, NetworkConfigSnapshot, NetworkStatsSnapshot};
+use crate::net::api::connections::ArpCacheEntry;
+use crate::net::api::config::NetworkConfigSnapshot;
+use crate::net::api::config::NetworkStatsSnapshot;
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
@@ -1047,7 +1049,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
     // Do not seed gateway ARP with the local NIC MAC.
     // Let normal ARP resolution discover the peer MAC to avoid self-MAC misrouting.
 
-    if let Err(e) = crate::net::api::shell::init_dhcp_runtime() {
+    if let Err(e) = crate::net::api::dhcp::init_dhcp_runtime() {
         log::warn!("[NET BRIDGE] DHCP runtime init failed: {}", e);
     }
 
