@@ -1,6 +1,6 @@
 # ==============================================================================
 # ExoRust Kernel Makefile
-# ExoLoader (UEFI) bootloader pipeline — fully mirrors scripts/run.sh
+# ExoLoader (UEFI) bootloader pipeline
 # ==============================================================================
 
 # --- プロジェクト定数 ---
