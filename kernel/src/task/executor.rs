@@ -278,12 +278,6 @@ pub fn active_cpu_count() -> usize {
 
 /// タスクをwake queueに追加（Wakerから呼ばれる）
 pub fn wake_task(task_id: TaskId) {
-    // Debug: track DHCP task (id=1) wakes
-    if task_id.0 == 1 {
-        crate::io::log::early_print("[WAKE] task_id=1 (DHCP) tm=");
-        crate::io::log::early_print_dec(crate::task::timer::current_tick());
-        crate::io::log::early_print("\n");
-    }
     WAKE_QUEUE.push(task_id);
     EXECUTOR_STATS.wakeups.fetch_add(1, Ordering::Relaxed);
 }
@@ -350,14 +344,7 @@ impl Executor {
 
     /// メインループ
     pub fn run(&mut self) -> ! {
-        // one-shot: confirm we entered the executor main loop
-        crate::io::log::early_print("[EXEC] executor.run() entered\n");
-        let mut _loop_counter: u64 = 0;
         loop {
-            _loop_counter = _loop_counter.wrapping_add(1);
-            if _loop_counter == 1 || _loop_counter == 10 || _loop_counter == 100 || _loop_counter == 1000 {
-                crate::io::log::early_print("[EXEC] loop iter ");
-            }
             // 0. Process pending interrupt events and deferred waker notifications (non-ISR)
             crate::interrupts::poll_timer_events();
             crate::io::hid::keyboard::process_pending_wakes();
@@ -399,10 +386,6 @@ impl Executor {
             // 5. アイドル状態
             if self.local_queue.is_empty() && self.local_cache.is_empty() {
                 EXECUTOR_STATS.idle_cycles.fetch_add(1, Ordering::Relaxed);
-                static IDLE_DBG: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-                if !IDLE_DBG.swap(true, core::sync::atomic::Ordering::Relaxed) {
-                    crate::io::log::early_print("[EXEC] IDLE reached\n");
-                }
 
                 // Aggregate per-core logs and kick serial TX while idle (non-ISR context).
                 // This does bounded work (AGGREGATE_MAX_PER_CALL) and avoids creating
@@ -424,17 +407,8 @@ impl Executor {
     fn run_ready_tasks(&mut self) {
         // バッチ処理
         let mut processed = 0;
-        static DBG_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
         while let Some(mut task) = self.local_queue.pop_front() {
-            let cnt = DBG_POLL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if cnt < 50 || (cnt & 0xFFF) == 0 {
-                crate::io::log::early_print("[POLL] t=");
-                crate::io::log::early_print_dec(cnt);
-                crate::io::log::early_print(" id=");
-                crate::io::log::early_print_dec(task.id.0);
-                crate::io::log::early_print("\n");
-            }
             let now_ns = crate::time::precise_time_nanos();
             if !crate::domain_system::is_domain_runnable_now(task.domain_id, now_ns) {
                 let deadline = crate::domain_system::quota_suspend_deadline_ns(task.domain_id)
@@ -449,27 +423,14 @@ impl Executor {
             let mut context = Context::from_waker(&waker);
             let start_ns = crate::time::precise_time_nanos();
 
-            // Debug: trace DHCP task poll
-            if task.id.0 == 1 {
-                crate::io::log::early_print("[RUN] polling task_id=1 tm=");
-                crate::io::log::early_print_dec(crate::task::timer::current_tick());
-                crate::io::log::early_print("\n");
-            }
-
             match task.poll(&mut context) {
                 Poll::Ready(()) => {
-                    if task.id.0 == 1 {
-                        crate::io::log::early_print("[RUN] task_id=1 -> Ready\n");
-                    }
                     // タスク完了
                     EXECUTOR_STATS
                         .tasks_completed
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 Poll::Pending => {
-                    if task.id.0 == 1 {
-                        crate::io::log::early_print("[RUN] task_id=1 -> Pending\n");
-                    }
                     let end_ns = crate::time::precise_time_nanos();
                     let elapsed_ns = end_ns.saturating_sub(start_ns);
                     let exceeded = if task.domain_id == crate::domain_system::DomainId::KERNEL {
@@ -577,15 +538,9 @@ impl Executor {
         let mut woken = 0;
         while let Some(task_id) = WAKE_QUEUE.pop() {
             if let Some(task) = self.find_task_in_stores(task_id, true) {
-                if task_id.0 == 1 {
-                    crate::io::log::early_print("[WAKEQ] task_id=1 -> local_queue\n");
-                }
                 self.local_queue.push_back(task);
                 woken += 1;
             } else {
-                if task_id.0 == 1 {
-                    crate::io::log::early_print("[WAKEQ] task_id=1 -> local_cache (NOT FOUND)\n");
-                }
                 self.local_cache.push_back(task_id);
             }
 

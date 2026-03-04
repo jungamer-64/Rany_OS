@@ -518,25 +518,6 @@ pub fn poll_timer_events() {
     if TIMER_EVENT_PENDING.swap(false, Ordering::Acquire) {
         let tick = TIMER_TICKS.load(Ordering::Relaxed);
 
-        // debug: log every 1000 ticks
-        if tick == 1 || tick == 100 || tick == 1000 || (tick % 5000) == 0 {
-            crate::io::log::early_print("[TMR] tick=");
-            crate::io::log::early_print_dec(tick);
-            crate::io::log::early_print(" tm=");
-            crate::io::log::early_print_dec(crate::task::timer::current_tick());
-            let (drained, failed) = time_driver::TIME_MANAGER.debug_drain_stats();
-            let last_reg = time_driver::TIME_MANAGER.debug_last_registered_sleep.load(core::sync::atomic::Ordering::Relaxed);
-            if drained > 0 || failed > 0 || last_reg > 0 {
-                crate::io::log::early_print(" dr=");
-                crate::io::log::early_print_dec(drained as u64);
-                crate::io::log::early_print(" fail=");
-                crate::io::log::early_print_dec(failed as u64);
-                crate::io::log::early_print(" lreg=");
-                crate::io::log::early_print_dec(last_reg);
-            }
-            crate::io::log::early_print("\n");
-        }
-
         // タイマーベースのスリープを処理
         crate::task::timer::handle_timer_interrupt();
 

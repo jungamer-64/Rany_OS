@@ -340,6 +340,16 @@ impl ArpCache {
         }
     }
 
+    /// Check if the cache contains an entry for an IP (regardless of state)
+    pub fn has_entry(&self, ip: Ipv4Address) -> bool {
+        let entries_guard = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+
+        entries_guard.iter().flatten().any(|e| e.ip == ip)
+    }
+
     /// Look up a MAC address by IP
     pub fn lookup(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
         let entries_guard = match self.entries.lock() {

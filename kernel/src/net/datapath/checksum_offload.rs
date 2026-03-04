@@ -250,13 +250,7 @@ impl ChecksumOffloadManager {
             // ソフトウェア計算
             tcp_data[16] = 0;
             tcp_data[17] = 0;
-            let mut cksum = tcp_udp_checksum(src_ip, dst_ip, 6, tcp_data);
-            
-            // RFC 793/1122: If the computed checksum is zero, it MUST be
-            // transmitted as all ones (0xFFFF).
-            if cksum == 0 {
-                cksum = 0xFFFF;
-            }
+            let cksum = tcp_udp_checksum(src_ip, dst_ip, 6, tcp_data);
             
             let bytes = cksum.to_be_bytes();
             tcp_data[16] = bytes[0];
@@ -295,13 +289,7 @@ impl ChecksumOffloadManager {
     // ソフトウェア計算
     udp_data[6] = 0;
     udp_data[7] = 0;
-    let mut cksum = tcp_udp_checksum(src_ip, dst_ip, 17, udp_data);
-    
-    // RFC 768 / RFC 8200: If the computed checksum is zero, it is transmitted 
-    // as all ones (0xFFFF). 0x0000 is reserved for \"no checksum\".
-    if cksum == 0 {
-        cksum = 0xFFFF;
-    }
+    let cksum = tcp_udp_checksum(src_ip, dst_ip, 17, udp_data);
     
     let bytes = cksum.to_be_bytes();
     udp_data[6] = bytes[0];
@@ -445,7 +433,11 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
 
-    !(sum as u16)
+    let mut result = !(sum as u16);
+    if result == 0 {
+        result = 0xFFFF;
+    }
+    result
 }
 
 /// 疑似ヘッダの部分和 (HWオフロード用)
@@ -506,7 +498,11 @@ fn tcp_udp_checksum(
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
 
-    !(sum as u16)
+    let mut result = !(sum as u16);
+    if result == 0 {
+        result = 0xFFFF;
+    }
+    result
 }
 
 /// TCP/UDPチェックサム検証

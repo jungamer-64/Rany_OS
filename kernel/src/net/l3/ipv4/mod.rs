@@ -403,7 +403,11 @@ impl Ipv4Header {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
 
-        !(sum as u16)
+        let mut result = !(sum as u16);
+        if result == 0 {
+            result = 0xFFFF;
+        }
+        result
     }
 
     /// Calculate header checksum (instance method, only works for IHL=5)

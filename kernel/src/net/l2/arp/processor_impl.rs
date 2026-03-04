@@ -73,29 +73,28 @@ impl ArpProcessor {
             return ArpResult::Invalid;
         }
 
-        // Decide whether we're allowed to update the cache. (Strict ARP logic)
-        // To prevent ARP Poisoning, we only accept:
-        //  1. ARP Requests that target our IP (we need the mapping to reply).
-        //  2. ARP Replies that we are actually waiting for (Incomplete entry exists).
-        //  3. ARP Replies for entries we already have, but ONLY if they don't change
-        //     the MAC address (refreshing timestamp). This prevents unsolicited
-        //     poisoning of existing entries.
+        // Decide whether we're allowed to update the cache. (RFC 826 logic)
+        // RFC 826: "If the pair <protocol type, sender protocol address> is already in 
+        // my translation table, update that sender's entry... and then check the opcode."
         let mut should_update = false;
         if !sender_ip.is_any() && !sender_mac.is_broadcast() {
-            if packet.operation() == ArpOperation::Request && target_ip == self.local_ip {
+            // Rule 1: Always update if entry already exists (standard compliance)
+            if self.cache.has_entry(sender_ip) {
+                // Security: Log if MAC changed (indicator of spoofing or migration)
+                if let Some(existing_mac) = self.cache.lookup(sender_ip, current_time) {
+                    if existing_mac != sender_mac {
+                        log::info!("[NET-ARP] MAC changed for {}: {} -> {} (updating per RFC 826)", 
+                            sender_ip, existing_mac, sender_mac);
+                    }
+                }
+                should_update = true;
+            } 
+            // Rule 2: Create new entry if it's a request for US or a reply we are waiting for.
+            else if packet.operation() == ArpOperation::Request && target_ip == self.local_ip {
                 should_update = true;
             } else if packet.operation() == ArpOperation::Reply {
                 if self.cache.is_pending(sender_ip, current_time) {
                     should_update = true;
-                } else if let Some(existing_mac) = self.cache.lookup(sender_ip, current_time) {
-                    if existing_mac == sender_mac {
-                        should_update = true; // Just refreshing timestamp
-                    } else {
-                        log::warn!(
-                            "[NET-ARP] Ignoring unsolicited ARP reply from {} with DIFFERENT MAC {} (cached: {}) to prevent poisoning",
-                            sender_ip, sender_mac, existing_mac
-                        );
-                    }
                 } else {
                     log::warn!("[NET-ARP] Dropping unsolicited ARP reply from {} ({})", sender_ip, sender_mac);
                 }

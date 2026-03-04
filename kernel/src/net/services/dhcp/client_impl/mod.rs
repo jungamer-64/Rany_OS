@@ -37,53 +37,19 @@ impl DhcpClient {
         
         log::info!("[NET] DHCPv4 client task started");
 
-        let mut loop_count: u64 = 0;
         loop {
             let now = crate::task::timer::current_tick();
-            loop_count += 1;
-            if loop_count <= 10 || loop_count % 10 == 0 {
-                log::info!("[NET] DHCP loop #{} state={:?} tick={}", loop_count, self.state(), now);
-            }
             
             // 状態機械を駆動（タイムアウトチェックと必要に応じたパケット送信）
-            match self.drive(now, 1000).await {
-                Ok(()) => {}
-                Err(e) => {
-                    log::error!("[NET] DHCP drive() error: {} (state={:?}, tick={})", e, self.state(), now);
-                    return Err(e);
-                }
-            }
+            self.drive(now, 1000).await?;
             
             // パケット受信を待機。再送タイマーを考慮して1秒でタイムアウト。
             match task::with_timeout(socket.recv(), 1000).await {
                 TimeoutResult::Completed(Some((_src, _ttl, packet))) => {
                     let now = crate::task::timer::current_tick();
-                    crate::io::log::early_print("[DHCP-EP] recv pkt len=");
-                    crate::io::log::early_print_dec(packet.data().len() as u64);
-                    crate::io::log::early_print(" state=");
-                    crate::io::log::early_print(match self.state() {
-                        DhcpState::Init => "Init",
-                        DhcpState::Selecting => "Sel",
-                        DhcpState::Requesting => "Req",
-                        DhcpState::Bound => "Bnd",
-                        _ => "?",
-                    });
-                    crate::io::log::early_print(" tm=");
-                    crate::io::log::early_print_dec(now);
-                    crate::io::log::early_print("\n");
                     // 応答パケットを処理
                     match self.process_response(packet.data(), now) {
                         Ok(DhcpResponseResult::Ack(lease)) => {
-                            crate::io::log::early_print("[DHCP-EP] ACK! ip=");
-                            let ip_bytes = lease.ip_address.as_bytes();
-                            crate::io::log::early_print_dec(ip_bytes[0] as u64);
-                            crate::io::log::early_print(".");
-                            crate::io::log::early_print_dec(ip_bytes[1] as u64);
-                            crate::io::log::early_print(".");
-                            crate::io::log::early_print_dec(ip_bytes[2] as u64);
-                            crate::io::log::early_print(".");
-                            crate::io::log::early_print_dec(ip_bytes[3] as u64);
-                            crate::io::log::early_print("\n");
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
                             let hostname_bytes = lease.hostname.clone().unwrap_or_default();
@@ -104,24 +70,18 @@ impl DhcpClient {
                             }
                         }
                         Ok(DhcpResponseResult::Offer(lease)) => {
-                            crate::io::log::early_print("[DHCP-EP] OFFER\n");
                             log::info!("[NET] DHCPv4 OFFER received: {:?} from {:?}", lease.ip_address, lease.server_ip);
                         }
                         Ok(DhcpResponseResult::Nak) => {
-                            crate::io::log::early_print("[DHCP-EP] NAK\n");
                             log::warn!("[NET] DHCPv4 NAK received");
                         }
                         Err(e) => {
-                            crate::io::log::early_print("[DHCP-EP] resp ERR\n");
                             log::warn!("[NET] DHCPv4 response error: {}", e);
                         }
                     }
                 }
                 TimeoutResult::TimedOut => {
                     // タイムアウトした場合はループの先頭に戻り、drive() で再送チェックが行われる
-                    crate::io::log::early_print("[DHCP-EP] timeout tm=");
-                    crate::io::log::early_print_dec(crate::task::timer::current_tick());
-                    crate::io::log::early_print("\n");
                 }
                 TimeoutResult::Completed(None) => {
                     log::warn!("[NET] DHCPv4 socket closed unexpectedly");

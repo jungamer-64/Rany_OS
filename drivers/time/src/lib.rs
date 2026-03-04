@@ -340,12 +340,6 @@ pub struct TimeManagement {
     total_fired: AtomicU64,
     /// CPU時間トラッカー
     cpu_tracker: TaskCpuTracker,
-    /// Debug: ドレインされたWaker数
-    debug_drained_count: AtomicUsize,
-    /// Debug: エンキュー失敗数
-    debug_enqueue_failed: AtomicUsize,
-    /// Debug: 最後に登録されたスリープのtick
-    pub debug_last_registered_sleep: AtomicU64,
 }
 
 /// SAFETY: 全フィールドが Send + Sync
@@ -365,9 +359,6 @@ impl TimeManagement {
             next_timer_id: AtomicU64::new(1),
             total_fired: AtomicU64::new(0),
             cpu_tracker: TaskCpuTracker::new(),
-            debug_drained_count: AtomicUsize::new(0),
-            debug_enqueue_failed: AtomicUsize::new(0),
-            debug_last_registered_sleep: AtomicU64::new(0),
         }
     }
 
@@ -509,20 +500,9 @@ impl TimeService for TimeManagement {
         self.sleep_registry
             .drain_expired(current_tick, &mut expired);
 
-        // Debug: log when wakers are drained
-        if !expired.is_empty() {
-            // Use serial port directly for ISR-safe logging
-            let count = expired.len();
-            // We'll use a simple flag approach - log via pending counter
-            self.debug_drained_count.fetch_add(count, Ordering::Relaxed);
-        }
-
         // ロックフリーキューにエンキュー (ISR安全)
         for waker in expired {
-            let ok = self.pending_wakers.enqueue(waker);
-            if !ok {
-                self.debug_enqueue_failed.fetch_add(1, Ordering::Relaxed);
-            }
+            let _ok = self.pending_wakers.enqueue(waker);
         }
 
         // 登録タイマーの期限切れチェック
@@ -544,26 +524,11 @@ impl TimeService for TimeManagement {
     }
 
     fn register_sleep(&self, wake_tick: u64, waker: Waker) {
-        // Debug: log all sleep registrations with current tick for analysis
-        let cur = self.ticks.load(Ordering::Relaxed);
-        if wake_tick < cur + 5000 {
-            // Only log near-future sleeps to avoid flooding
-            self.debug_last_registered_sleep.store(wake_tick, Ordering::Relaxed);
-        }
         self.sleep_registry.insert(wake_tick, waker);
     }
 
     fn unregister_sleep(&self, wake_tick: u64) {
         let _ = self.sleep_registry.remove(wake_tick);
-    }
-}
-
-impl TimeManagement {
-    /// Debug: ドレインされたWaker数を取得しリセット
-    pub fn debug_drain_stats(&self) -> (usize, usize) {
-        let drained = self.debug_drained_count.swap(0, Ordering::Relaxed);
-        let failed = self.debug_enqueue_failed.swap(0, Ordering::Relaxed);
-        (drained, failed)
     }
 }
 

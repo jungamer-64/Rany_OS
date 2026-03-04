@@ -39,7 +39,7 @@ pub fn test_check_timeout_poisoned_state_reset_skips() {
 
     set_panicking(true);
     // Should not panic even if state lock is poisoned
-    let _ = client.check_timeout(10, 1);
+    let _ = crate::task::block_on(client.check_timeout(10, 1));
     set_panicking(false);
 }
 
@@ -557,11 +557,11 @@ pub fn test_parse_t1_t2_and_timeout_transitions() {
             }
             client.lease.lock().unwrap().as_mut().unwrap().obtained_at = 0;
             // current_tick passes T1
-            assert!(client.check_timeout(31, 1));
+            assert!(crate::task::block_on(client.check_timeout(31, 1)));
             assert_eq!(client.state(), DhcpState::Renewing);
 
             // advance past T2 -> Rebinding
-            assert!(client.check_timeout(61, 1));
+            assert!(crate::task::block_on(client.check_timeout(61, 1)));
             assert_eq!(client.state(), DhcpState::Rebinding);
         }
         _ => panic!("expected Ack"),
@@ -618,7 +618,7 @@ pub fn test_offer_probe_and_decline_flow() {
     }
 
     // Advance time beyond PROBE_WAIT_SECS
-    let _ = client.check_timeout(200, 1);
+    let _ = crate::task::block_on(client.check_timeout(200, 1));
     // Offer should have been cleared due to conflict
     assert!(client.offered_lease.lock().unwrap().is_none());
     // Decline should have been recorded
@@ -629,7 +629,7 @@ pub fn test_offer_probe_and_decline_flow() {
 pub fn test_drive_init_sends_discover_and_enters_selecting() {
     let client = DhcpClient::new(crate::net::l2::ethernet::MacAddress::ZERO);
     assert_eq!(client.state(), DhcpState::Init);
-    client.drive(123, 1).expect("drive failed");
+    crate::task::block_on(client.drive(123, 1)).expect("drive failed");
     assert_eq!(client.state(), DhcpState::Selecting);
 }
 

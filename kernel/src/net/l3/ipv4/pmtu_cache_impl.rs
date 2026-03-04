@@ -566,7 +566,11 @@ pub(crate) fn calculate_ip_checksum(header: &[u8]) -> u16 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
 
-    !(sum as u16)
+    let mut result = !(sum as u16);
+    if result == 0 {
+        result = 0xFFFF;
+    }
+    result
 }
 
 /// IPv4 packet processor
@@ -885,6 +889,10 @@ pub fn data_checksum(data: &[u8], initial: u32) -> u16 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
 
-    !(sum as u16)
+    let mut result = !(sum as u16);
+    if result == 0 {
+        result = 0xFFFF;
+    }
+    result
 }
 

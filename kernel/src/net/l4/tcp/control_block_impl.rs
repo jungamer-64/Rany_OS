@@ -1328,11 +1328,23 @@ impl TcpControlBlock {
         
         if available_buffer < old_wnd {
             // Buffer pressure detected. 
-            // However, we should only shrink if the available_buffer is significantly 
-            // less than old_wnd, to avoid frequent minor shrinks which are non-compliant.
-            // If we MUST shrink, we do so, but is_acceptable_sequence will still 
-            // accept segments up to the previous max advertised right edge.
-            self.options.rcv_wnd_scaled = available_buffer;
+            // RFC 1122 Section 4.2.2.16: "A TCP SHOULD NOT shrink the window after it has 
+            // been advertised. If it must shrink the window, it should do so by not 
+            // moving the right window edge to the left."
+            
+            let max_right_edge = self.options.rcv_wnd_max_adv;
+            let current_nxt = self.seq.rcv_nxt;
+            
+            // Promised window: Distance to the previously advertised right edge
+            let promised_wnd = if seq_after(max_right_edge, current_nxt) {
+                max_right_edge.wrapping_sub(current_nxt)
+            } else {
+                0
+            };
+            
+            // We MUST at least advertise promised_wnd to avoid moving the right edge left.
+            // available_buffer might be smaller, but we already promised the space!
+            self.options.rcv_wnd_scaled = core::cmp::max(available_buffer, promised_wnd);
         } else {
             // Window is growing or staying the same. Apply SWS avoidance.
             let increment = available_buffer - old_wnd;
