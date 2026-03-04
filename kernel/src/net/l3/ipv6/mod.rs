@@ -840,6 +840,19 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                     return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
                 }
                 if let Some(frag) = Ipv6FragmentHeader::parse(&raw_packet[offset..]) {
+                    // RFC 6946: Atomic Fragment (Offset=0, M=0)
+                    // "A host that receives an IPv6 packet that includes a Fragment header
+                    // with the Fragment Offset field set to zero and the M flag set to zero
+                    // MUST NOT use the Fragment header as a basis for reassembling the
+                    // packet. Instead, the packet MUST be processed as if it did not
+                    // include a Fragment header."
+                    if frag.fragment_offset == 0 && !frag.more_fragments {
+                        next_header_ptr = offset;
+                        next_header = frag.next_header;
+                        offset += 8;
+                        continue;
+                    }
+
                     // Security (RFC 8200): Nested fragmentation check.
                     // If the Fragment Header's Next Header is also 44 (Fragment), 
                     // it MUST be discarded.
@@ -985,9 +998,9 @@ pub enum Ipv6ProcessResult<'a> {
     Reassembled(Vec<u8>),
     /// Fragment received, reassembly in progress
     FragmentPending,
-    /// Reassembly timeout (src, dst, unfragmentable_part for ICMPv6)
-    ReassemblyTimeout(Ipv6Address, Ipv6Address, Vec<u8>),
-    /// Reassembly error (type, src, dst, unfragmentable_part)
+    /// Reassembly timeout (src, dst, unfragmentable_part, fragment_header for ICMPv6)
+    ReassemblyTimeout(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>),
+    /// Reassembly error (type, src, dst, unfragmentable_part + fragment_header)
     ReassemblyError(Ipv6ReassemblyError, Ipv6Address, Ipv6Address, Vec<u8>),
     /// Unknown Next Header encountered (RFC 4443 Parameter Problem Code 1)
     UnknownNextHeader(u8, u32, Ipv6Address, Ipv6Address, &'a [u8]),

@@ -93,8 +93,8 @@ impl Ipv6Processor {
                     Ok(Some(data)) => Ipv6ProcessResult::Reassembled(data),
                     Ok(None) => {
                         if !expired.is_empty() {
-                            let (e_src, e_dst, e_unfrag) = expired[0].clone();
-                            Ipv6ProcessResult::ReassemblyTimeout(e_src, e_dst, e_unfrag)
+                            let (e_src, e_dst, e_unfrag, e_frag_header) = expired[0].clone();
+                            Ipv6ProcessResult::ReassemblyTimeout(e_src, e_dst, e_unfrag, e_frag_header)
                         } else {
                             Ipv6ProcessResult::FragmentPending
                         }

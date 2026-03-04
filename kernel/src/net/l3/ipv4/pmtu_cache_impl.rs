@@ -149,6 +149,8 @@ pub struct FragmentBuffer {
     total_len: Option<u16>,
     /// First fragment's full header (including options, up to 60 bytes)
     first_header: Option<Vec<u8>>,
+    /// First fragment's payload prefix (first 8 bytes for RFC 792 ICMP error)
+    first_payload_prefix: Option<[u8; 8]>,
     /// Creation timestamp (for timeout)
     created_at: u64,
     /// Last update timestamp
@@ -177,6 +179,7 @@ impl FragmentBuffer {
             }],
             total_len: None,
             first_header: None,
+            first_payload_prefix: None,
             created_at: timestamp,
             last_update: timestamp,
         }
@@ -215,6 +218,14 @@ impl FragmentBuffer {
         let fragment_len = fragment_len as u16;
 
         self.last_update = current_time;
+
+        // Capture first payload prefix for ICMP error (RFC 792)
+        if fragment_offset == 0 && self.first_payload_prefix.is_none() {
+            let mut prefix = [0u8; 8];
+            let copy_len = payload.len().min(8);
+            prefix[..copy_len].copy_from_slice(&payload[..copy_len]);
+            self.first_payload_prefix = Some(prefix);
+        }
 
         // Security: Check for 'Tiny Fragments' (RFC 1858, RFC 3128)
         // The first fragment (offset 0) must be large enough to contain the critical
@@ -521,7 +532,7 @@ impl FragmentReassembler {
     }
 
     /// Evict expired reassembly buffers
-    /// Returns a list of (src, first_header) for buffers that had the first fragment
+    /// Returns a list of (src, full_header_plus_payload_prefix) for buffers that had the first fragment
     pub(super) fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv4Address, Vec<u8>)> {
         let mut expired_with_first = Vec::new();
         let mut expired_keys = Vec::new();
@@ -529,7 +540,12 @@ impl FragmentReassembler {
         for (key, buf) in self.buffers.iter() {
             if buf.is_expired(current_time) {
                 if let Some(ref header) = buf.first_header {
-                    expired_with_first.push((key.src, header.clone()));
+                    // RFC 792: Include IP header + first 64 bits of data
+                    let mut quoted = header.clone();
+                    if let Some(prefix) = buf.first_payload_prefix {
+                        quoted.extend_from_slice(&prefix);
+                    }
+                    expired_with_first.push((key.src, quoted));
                 }
                 expired_keys.push(*key);
             }

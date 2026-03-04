@@ -125,6 +125,9 @@ pub struct Ipv6FragmentBuffer {
     /// Unfragmentable part (IPv6 fixed header + pre-fragment extension headers)
     /// captured from the first fragment (offset == 0).
     unfragmentable_part: Option<Vec<u8>>,
+    /// 8-byte Fragment Header captured from the first fragment (offset == 0).
+    /// RFC 8200: Required for ICMPv6 error messages to identify the datagram.
+    first_frag_header: Option<[u8; 8]>,
     /// Timestamp of first fragment arrival
     created_at: u64,
 }
@@ -149,6 +152,7 @@ impl Ipv6FragmentBuffer {
             total_len: None,
             next_header: None,
             unfragmentable_part: None,
+            first_frag_header: None,
             created_at: timestamp,
         }
     }
@@ -257,7 +261,7 @@ impl Ipv6FragmentBuffer {
             self.next_header = Some(frag.next_header);
         }
 
-        // Capture unfragmentable part from the first fragment
+        // Capture unfragmentable part and fragment header from the first fragment
         if frag.fragment_offset == 0 && self.unfragmentable_part.is_none() {
             // RFC 8200/7112: The first fragment (offset 0) MUST contain the entire header chain
             // (all extension headers + upper-layer header).
@@ -268,6 +272,15 @@ impl Ipv6FragmentBuffer {
                 return Err(Ipv6ReassemblyError::IncompleteHeaderChain);
             }
             self.unfragmentable_part = Some(unfragmentable.to_vec());
+
+            // Store the 8-byte fragment header for ICMPv6 error messages (RFC 8200)
+            let mut frag_bytes = [0u8; 8];
+            frag_bytes[0] = frag.next_header;
+            frag_bytes[1] = 0; // Reserved
+            let off_and_flags = (frag.fragment_offset << 3) | (if frag.more_fragments { 0x01 } else { 0 });
+            frag_bytes[2..4].copy_from_slice(&off_and_flags.to_be_bytes());
+            frag_bytes[4..8].copy_from_slice(&frag.identification.to_be_bytes());
+            self.first_frag_header = Some(frag_bytes);
         }
 
         // Last fragment determines total length
@@ -485,7 +498,7 @@ impl Ipv6FragmentReassembler {
         frag: &Ipv6FragmentHeader,
         payload: &[u8],
         current_time: u64,
-    ) -> (Result<Option<Vec<u8>>, Ipv6ReassemblyError>, Vec<(Ipv6Address, Ipv6Address, Vec<u8>)>) {
+    ) -> (Result<Option<Vec<u8>>, Ipv6ReassemblyError>, Vec<(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>)>) {
         self.stats.fragments_received += 1;
 
         let key = Ipv6FragmentKey::new(src, dst, frag.identification);
@@ -534,6 +547,7 @@ impl Ipv6FragmentReassembler {
             Err(e) => {
                 // RFC 8200: Discard datagram on overlap/error
                 self.stats.dropped_invalid += 1;
+                let first_header = buffer.first_frag_header;
                 self.buffers.remove(&key);
                 (Err(e), expired)
             }
@@ -541,15 +555,15 @@ impl Ipv6FragmentReassembler {
     }
 
     /// Evict expired reassembly buffers.
-    /// Returns a list of (src, dst, unfragmentable_part) for buffers that had the first fragment.
-    pub fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv6Address, Ipv6Address, Vec<u8>)> {
+    /// Returns a list of (src, dst, unfragmentable_part, fragment_header) for buffers that had the first fragment.
+    pub fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>)> {
         let mut expired_with_first = Vec::new();
         let mut keys_to_remove = Vec::new();
 
         for (key, buf) in self.buffers.iter() {
             if buf.is_expired(current_time) {
                 if let Some(ref unfrag) = buf.unfragmentable_part {
-                    expired_with_first.push((key.src, key.dst, unfrag.clone()));
+                    expired_with_first.push((key.src, key.dst, unfrag.clone(), buf.first_frag_header));
                 }
                 keys_to_remove.push(*key);
             }

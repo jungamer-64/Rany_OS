@@ -265,10 +265,17 @@ impl NetworkStack {
                 );
             }
             Ipv6ProcessResult::FragmentPending => {}
-            Ipv6ProcessResult::ReassemblyTimeout(src, _dst, unfragmentable) => {
+            Ipv6ProcessResult::ReassemblyTimeout(src, _dst, unfragmentable, frag_header) => {
                 // RFC 8200: Send ICMPv6 Time Exceeded (Fragment Reassembly Time Exceeded)
                 log::info!("IPv6: Reassembly timeout for {} - sending ICMPv6 Time Exceeded", src);
-                self.send_icmpv6_time_exceeded(src, 1, &unfragmentable);
+                
+                // Security/RFC Compliance: Include the fragment header in the quoted packet 
+                // so the sender can identify the datagram via the Identification field.
+                let mut quoted = unfragmentable;
+                if let Some(fh) = frag_header {
+                    quoted.extend_from_slice(&fh);
+                }
+                self.send_icmpv6_time_exceeded(src, 1, &quoted);
             }
             Ipv6ProcessResult::ReassemblyError(err, src, _dst, quoted_packet) => {
                 match err {
@@ -289,13 +296,12 @@ impl NetworkStack {
                         self.send_icmpv6_parameter_problem(src, 0, 4, &quoted_packet);
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::IncompleteHeaderChain => {
-                        // RFC 7112: Send ICMPv6 Parameter Problem (Code 0), pointing to Fragment Offset
-                        // Fragment Header starts at offset 40 in basic case, but it's unfragmentable.len()
+                        // RFC 7112: Send ICMPv6 Parameter Problem (Code 0), pointing to the first octet
+                        // of the Fragment Header.
                         // quoted_packet contains unfragmentable + 8-byte fragment header.
-                        // Fragment Offset is at offset 2 within the 8-byte Fragment Header.
-                        let fragment_offset_pointer = (quoted_packet.len() as u32).saturating_sub(6);
+                        let fragment_header_pointer = (quoted_packet.len() as u32).saturating_sub(8);
                         log::warn!("IPv6: Incomplete header chain in first fragment from {} - sending ICMPv6 Parameter Problem (RFC 7112)", src);
-                        self.send_icmpv6_parameter_problem(src, 0, fragment_offset_pointer, &quoted_packet);
+                        self.send_icmpv6_parameter_problem(src, 0, fragment_header_pointer, &quoted_packet);
                     }
                 }
             }
