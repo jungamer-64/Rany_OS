@@ -106,7 +106,7 @@ impl TcpControlBlock {
     }
 
     /// Enqueue an out-of-order segment
-    pub fn enqueue_ooo_payload(&mut self, mut seq: u32, mut packet: PacketRef) -> bool {
+    pub fn enqueue_ooo_payload(&mut self, mut seq: u32, mut packet: PacketRef, fin: bool) -> bool {
         let rcv_nxt = self.seq.rcv_nxt;
 
         // 1. Acknowledge parts: skip data before rcv_nxt
@@ -114,11 +114,18 @@ impl TcpControlBlock {
         if (diff as i32) > 0 {
             let skip = diff as usize;
             if skip >= packet.len() {
+                // If it's just a FIN that we already have or is old, return false.
+                // But wait, if it's a FIN at rcv_nxt, it should have been processed as in-order.
                 return false; // Entirely old
             }
             // Trim the packet using PacketRef's built-in advance mechanism
             packet.advance(skip);
             seq = rcv_nxt;
+        }
+
+        if fin {
+            let seg_end = seq.wrapping_add(packet.len() as u32);
+            self.rx.ooo_fin_seq = Some(seg_end);
         }
 
         // Limit per-connection OOO segments
@@ -166,13 +173,16 @@ impl TcpControlBlock {
         GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
         true
     }
-    /// Try to drain contiguous OOO segments into the receive buffer
-    pub fn drain_ooo_segments(&mut self) -> u32 {
+
+    /// Try to drain contiguous OOO segments into the receive buffer.
+    /// Returns true if a FIN was encountered during drainage.
+    pub fn drain_ooo_segments(&mut self) -> bool {
         // First, prune segments that are now entirely before rcv_nxt
         self.prune_ooo_segments();
 
         let mut drained_count = 0;
         let mut current_rcv_nxt = self.seq.rcv_nxt;
+        let mut fin_encountered = false;
 
         while let Some(packet) = self.rx.ooo_queue.remove(&current_rcv_nxt) {
             GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
@@ -183,7 +193,16 @@ impl TcpControlBlock {
                 self.rx.recv_buffer.push_back(packet);
                 current_rcv_nxt = current_rcv_nxt.wrapping_add(len as u32);
                 drained_count += 1;
+
+                // Check if we've reached the FIN sequence
+                if let Some(fs) = self.rx.ooo_fin_seq {
+                    if fs == current_rcv_nxt {
+                        fin_encountered = true;
+                        break;
+                    }
+                }
             } else {
+                // Buffer full, put it back
                 self.rx.ooo_queue.insert(current_rcv_nxt, packet);
                 GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
                 break;
@@ -195,7 +214,16 @@ impl TcpControlBlock {
             self.wake_read_waiter();
         }
 
-        current_rcv_nxt
+        // Also check if we have a zero-length FIN at the current rcv_nxt
+        if !fin_encountered {
+            if let Some(fs) = self.rx.ooo_fin_seq {
+                if fs == self.seq.rcv_nxt {
+                    fin_encountered = true;
+                }
+            }
+        }
+
+        fin_encountered
     }
 
     /// Remove outdated OOO segments (before rcv_nxt)

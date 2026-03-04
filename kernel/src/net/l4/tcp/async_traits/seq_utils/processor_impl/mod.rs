@@ -1481,10 +1481,10 @@ impl TcpProcessor {
             }
 
             // Drain contiguous OOO segments
-            tcb.drain_ooo_segments();
+            let ooo_fin = tcb.drain_ooo_segments();
 
             // Handle FIN if it is now at the head of the sequence
-            if fin && tcb.rcv_nxt() == seq_num.wrapping_add(payload_len as u32) {
+            if (fin || ooo_fin) && tcb.rcv_nxt() == seq_num.wrapping_add(payload_len as u32) {
                 return Self::handle_established_fin(tcb);
             }
 
@@ -1498,7 +1498,7 @@ impl TcpProcessor {
                     p.advance(header_len);
                     p.set_len(payload_len);
                     
-                    if tcb.enqueue_ooo_payload(seq_num, p) {
+                    if tcb.enqueue_ooo_payload(seq_num, p, fin) {
                         tcb.add_sack_block(seq_num, seq_num.wrapping_add(payload_len as u32));
                     }
                 }
