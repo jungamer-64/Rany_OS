@@ -289,48 +289,6 @@ pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
     }
 }
 
-/// Bind a TCP listener with a capability token (sync, acquires NETWORK_STACK lock)
-///
-/// # 非推奨
-/// asyncコンテキストでは `bind_tcp_with_token_async()` を使用すること。
-#[deprecated(note = "Use bind_tcp_with_token_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
-pub fn bind_tcp_with_token(addr: TcpEndpointAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.bind_tcp_with_token(addr, token)
-            } else {
-                Err(TcpError::InvalidState)
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - bind_tcp_with_token failed");
-            Err(TcpError::InvalidState)
-        }
-    }
-}
-
-/// Connect to a remote TCP address (sync, acquires NETWORK_STACK lock)
-///
-/// # 非推奨
-/// asyncコンテキストでは `connect_tcp_async()` または `connect_tcp_stream_async()` を使用すること。
-#[deprecated(note = "Use connect_tcp_async() or connect_tcp_stream_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
-pub fn connect_tcp(local_addr: TcpEndpointAddr, remote_addr: TcpEndpointAddr) -> Result<TcpStream, TcpError> {
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.connect_tcp(local_addr, remote_addr)
-            } else {
-                Err(TcpError::InvalidState)
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Global Stack poisoned - connect_tcp failed");
-            Err(TcpError::InvalidState)
-        }
-    }
-}
-
 // ============================================================================
 // Multicast Group Management (Global API) - 完全非同期化
 // ============================================================================

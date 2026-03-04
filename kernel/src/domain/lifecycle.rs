@@ -21,7 +21,6 @@
 #![allow(dead_code)]
 
 use crate::domain_system::{DomainId, DomainState, create_domain, set_domain_state, with_domain, with_domain_mut};
-use crate::ipc::rref::reclaim_domain_resources;
 use crate::task::Task;
 use alloc::string::String;
 use core::future::Future;

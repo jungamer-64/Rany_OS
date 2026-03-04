@@ -1254,9 +1254,8 @@ pub fn list_bridge_stats() -> Vec<BridgeInterfaceStats> {
 
 /// Get real network configuration from NetworkStack (sync, acquires stack lock)
 ///
-/// # 非推奨
+/// **ブートストラップ専用**: エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
 /// asyncコンテキストでは [`get_real_config_async()`] を使用すること。
-#[deprecated(note = "Use get_real_config_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
 pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => {
@@ -1281,75 +1280,15 @@ pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
     }
 }
 
-/// Get real network configuration for a specific interface.
-///
-/// Transitional behavior: returns the single global stack config only for the
-/// current primary bridge interface.
-#[allow(deprecated)]
-pub fn get_real_config_for_interface(if_id: NetIfId) -> Option<NetworkConfigSnapshot> {
-    if primary_bridge_if() != Some(if_id) {
-        return None;
-    }
-    get_real_config()
-}
-
-
 #[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "tests.rs"]
 pub(crate) mod tests;
 
-/// Get real network statistics from NetworkStack (sync, acquires stack lock)
-///
-/// # 非推奨
-/// asyncコンテキストでは [`get_real_stats_async()`] を使用すること。
-#[deprecated(note = "Use get_real_stats_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
-pub fn get_real_stats() -> Option<NetworkStatsSnapshot> {
-    match stack::stack().lock() {
-        Ok(guard) => {
-            let stack = match guard.as_ref() {
-                Some(s) => s,
-                None => return None,
-            };
-
-            let stats = stack.stats();
-
-            Some(NetworkStatsSnapshot {
-                rx_packets: stats.rx_packets.load(Ordering::Relaxed),
-                tx_packets: stats.tx_packets.load(Ordering::Relaxed),
-                rx_bytes: stats.rx_bytes.load(Ordering::Relaxed),
-                tx_bytes: stats.tx_bytes.load(Ordering::Relaxed),
-                rx_errors: stats.rx_errors.load(Ordering::Relaxed),
-                rx_dropped: stats.rx_dropped.load(Ordering::Relaxed),
-            })
-        }
-        Err(_) => {
-            log::error!("[NET BRIDGE] Stack poisoned (get_real_stats)");
-            None
-        }
-    }
-}
-
-/// Get real network statistics for a specific interface.
-///
-/// Transitional behavior: returns the single global stack stats only for the
-/// current primary bridge interface.
-#[allow(deprecated)]
-pub fn get_real_stats_for_interface(if_id: NetIfId) -> Option<NetworkStatsSnapshot> {
-    if primary_bridge_if() != Some(if_id) {
-        return None;
-    }
-    get_real_stats()
-}
-
 /// Send ICMP echo via real NetworkStack（ブートストラップ専用）
 ///
-/// この関数はIRQ無効化 + 同期ロックを使用するため、
-/// エグゼキュータ起動前のブートストラップpingのみで使用する。
-/// asyncコンテキストでは `crate::net::api::icmp::ping_async()` を使用すること。
-///
-/// # 非推奨
-/// asyncコンテキストでは `crate::net::api::icmp::ping_async()` を使用すること。
-#[deprecated(note = "Use crate::net::api::icmp::ping_async() for async contexts. Sync version uses IRQ disable + NETWORK_STACK lock.")]
+/// **ブートストラップ専用**: エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
+/// IRQ無効化 + 同期ロックを使用するため、asyncコンテキストでは
+/// `crate::net::api::icmp::ping_async()` を使用すること。
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
     // Avoid IRQ re-entry deadlock: RX IRQ path also touches the global stack lock.
     x86_64::instructions::interrupts::without_interrupts(|| {
@@ -1371,36 +1310,6 @@ pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static st
     })
 }
 
-/// Get ARP cache entries from real NetworkStack (sync, acquires stack lock)
-///
-/// # 非推奨
-/// asyncコンテキストでは [`get_real_arp_cache_async()`] を使用すること。
-#[deprecated(note = "Use get_real_arp_cache_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
-pub fn get_real_arp_cache() -> Vec<ArpCacheEntry> {
-    match stack::stack().lock() {
-        Ok(guard) => match guard.as_ref() {
-            Some(stack) => {
-                let arp_cache = stack.arp_cache();
-                let mut entries = Vec::new();
-
-                for (ip, mac) in arp_cache {
-                    entries.push(ArpCacheEntry {
-                        ip: *ip.as_bytes(),
-                        mac: *mac.as_bytes(),
-                        complete: true,
-                    });
-                }
-
-                entries
-            }
-            None => Vec::new(),
-        },
-        Err(_) => {
-            log::error!("[NET BRIDGE] Stack poisoned (get_real_arp_cache)");
-            Vec::new()
-        }
-    }
-}
 
 // ============================================================================
 // 非同期ブリッジAPI（推奨）— イベントキュー経由でスタックアクセス

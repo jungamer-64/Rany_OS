@@ -10,7 +10,6 @@ use alloc::vec::Vec;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::{TcpConnectionState, tcb_table};
-use crate::net::runtime::stack;
 
 extern crate alloc;
 
@@ -71,87 +70,6 @@ pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
         .collect();
 
     Some(connections)
-}
-
-/// UDPエンドポイント一覧取得（読み取り専用・短命ロック）
-///
-/// ネットワークスタックロックを短時間取得し、UDPエンドポイント情報をスナップショットする。
-///
-/// # 非推奨
-/// asyncコンテキストでは [`get_udp_endpoints_async()`] を使用すること。
-#[deprecated(note = "Use get_udp_endpoints_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
-pub fn get_udp_endpoints() -> Option<Vec<UdpEndpointInfo>> {
-    match stack::stack().lock() {
-        Ok(guard) => {
-            if let Some(ref stack_guard) = guard.as_ref() {
-                let snapshots = stack_guard.list_udp_endpoints();
-                if snapshots.is_empty() {
-                    return None;
-                }
-                return Some(
-                    snapshots
-                        .into_iter()
-                        .map(|snap| UdpEndpointInfo {
-                            local_addr: format!("*:{}", snap.local_port),
-                            remote_addr: String::from("*:*"),
-                        })
-                        .collect(),
-                );
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Stack lock poisoned (get_udp_endpoints)");
-        }
-    }
-    None
-}
-
-/// ARPキャッシュ取得（読み取り専用・短命ロック）
-///
-/// ネットワークスタックロックを短時間取得し、ARPエントリをスナップショットする。
-///
-/// # 非推奨
-/// asyncコンテキストでは [`get_arp_cache_async()`] を使用すること。
-#[deprecated(note = "Use get_arp_cache_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
-pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
-    match stack::stack().lock() {
-        Ok(guard) => {
-            if let Some(stack_guard) = guard.as_ref() {
-                let arp_entries = stack_guard.arp_cache();
-                let entries: Vec<ArpCacheEntry> = arp_entries
-                    .iter()
-                    .map(|(ip, mac)| ArpCacheEntry {
-                        ip: *ip.as_bytes(),
-                        mac: *mac.as_bytes(),
-                        complete: true,
-                    })
-                    .collect();
-                if !entries.is_empty() {
-                    return Some(entries);
-                }
-            }
-        }
-        Err(_) => log::error!("[NET] Stack lock poisoned (get_arp_cache) - returning demo output"),
-    }
-    None
-}
-
-/// ARPキャッシュ挿入（短命ロック）
-///
-/// ネットワークスタックロックを短時間取得し、ARPエントリを挿入する。
-///
-/// # 非推奨
-/// asyncコンテキストでは [`arp_cache_insert_async()`] を使用すること。
-#[deprecated(note = "Use arp_cache_insert_async() for async contexts. Sync version acquires NETWORK_STACK lock.")]
-pub fn arp_cache_insert(ip: Ipv4Address, mac: MacAddress) -> bool {
-    if let Ok(mut guard) = stack::stack().lock() {
-        if let Some(stack_ref) = guard.as_mut() {
-            let now = crate::time::get_uptime_ms();
-            stack_ref.arp_cache_insert(ip, mac, now);
-            return true;
-        }
-    }
-    false
 }
 
 // ============================================================================

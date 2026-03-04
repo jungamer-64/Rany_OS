@@ -88,7 +88,7 @@ impl NetworkStack {
     pub(crate) fn resolve_mac(
         &mut self,
         dst_ip: Ipv4Address,
-        config: &NetworkConfig,
+        _config: &NetworkConfig,
         current_time: u64,
     ) -> Option<MacAddress> {
         // Broadcast address

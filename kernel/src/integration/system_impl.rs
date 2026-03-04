@@ -44,7 +44,6 @@ impl SystemIntegration {
         // NOTE: ブートストラップ時はエグゼキュータ未起動のため同期版を使用（許容）
         let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
         self.log(&alloc::format!("  Net Bridge stats: init={} rx={} tx={}", bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets));
-        #[allow(deprecated)]
         if let Some(cfg) = crate::net::runtime::bridge::get_real_config() {
             self.log(&alloc::format!("  Net Config: IP={:?} MAC={:02x?}", cfg.ip, cfg.mac));
         } else {

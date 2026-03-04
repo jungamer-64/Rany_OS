@@ -479,7 +479,7 @@ impl DhcpV6Client {
     ///
     /// 非同期イベントキュー経由で送信（ロック競合回避）:
     /// `get_link_local()` で短時間ロックのみ取得し、送信は `send_v6_async()` を使用する。
-    pub fn check_timeout(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
+    pub fn check_timeout(&self, current_tick: u64, _tick_rate: u64) -> Result<(), &'static str> {
         // All-DHCP-Servers multicast address (ff02::2)
         let all_dhcp_servers = crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
 
