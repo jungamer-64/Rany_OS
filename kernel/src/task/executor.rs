@@ -383,14 +383,13 @@ impl Executor {
             crate::loader::live_update::poll_pending_updates();
             crate::driver_domain::hot_swap::poll_validation_windows();
 
+            // 4.6. Per-coreログバッファをシリアルへフラッシュ
+            // Busyループ中もログが排出されるよう、idle以外でも呼ぶ。
+            crate::io::log::kick_serial_tx();
+
             // 5. アイドル状態
             if self.local_queue.is_empty() && self.local_cache.is_empty() {
                 EXECUTOR_STATS.idle_cycles.fetch_add(1, Ordering::Relaxed);
-
-                // Aggregate per-core logs and kick serial TX while idle (non-ISR context).
-                // This does bounded work (AGGREGATE_MAX_PER_CALL) and avoids creating
-                // extra background tasks by leveraging the executor idle path.
-                crate::io::log::kick_serial_tx();
 
                 #[cfg(feature = "qemu-test-export")]
                 {

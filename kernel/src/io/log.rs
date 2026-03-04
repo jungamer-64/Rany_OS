@@ -83,8 +83,9 @@ const TX_TIMEOUT_US: u64 = 100;
 const ISR_TX_BURST: usize = 64;
 
 /// Maximum bytes to pull from per-core buffers into the global buffer in one
-/// non-ISR aggregation call. Kept modest to avoid long blocking in writers.
-const AGGREGATE_MAX_PER_CALL: usize = 1024;
+/// non-ISR aggregation call. 4KiB per call ensures log::info!() messages from
+/// async tasks are flushed within a few executor iterations.
+const AGGREGATE_MAX_PER_CALL: usize = 4096;
 
 // ============================================================================
 // ログレベル定義

@@ -275,8 +275,11 @@ impl FragmentBuffer {
         }
 
         if covered_hole_bytes == 0 {
-            // Duplicate fragment - ignore it but don't drop the datagram
-            return true;
+            // Duplicate fragment - RFC 5722 (for IPv6) recommends dropping the entire 
+            // datagram to prevent IDS evasion attacks. We apply this to IPv4 for 
+            // enhanced security.
+            log::warn!("[NET-IPV4] Duplicate fragment detected at offset {}, dropping datagram per RFC 5722 policy", fragment_offset);
+            return false;
         }
 
         if covered_hole_bytes < fragment_len as u32 {

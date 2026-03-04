@@ -61,16 +61,17 @@ impl ArpProcessor {
         let target_ip = packet.target_ip();
 
         // Security: Reject ARP packets where sender_ip claims to be our own IP.
-        // This prevents IP address conflict / gratuitous ARP spoofing attacks where
-        // an attacker advertises our IP with their MAC address.
+        // RFC 5227: If we detect another host claiming our IP, we should defend it
+        // by broadcasting a gratuitous ARP or log a conflict error.
         if sender_ip == self.local_ip && sender_mac != self.local_mac {
-            log::warn!(
-                "[NET-ARP] Possible IP conflict/spoofing: sender claims our IP {} with MAC {} (our MAC: {})",
+            log::error!(
+                "[NET-ARP] IP CONFLICT DETECTED: {} is claimed by MAC {} (our MAC: {})",
                 sender_ip,
                 sender_mac,
                 self.local_mac
             );
-            return ArpResult::Invalid;
+            // Defend our address by sending a gratuitous ARP (RFC 5227)
+            return ArpResult::SendGratuitous;
         }
 
         // Decide whether we're allowed to update the cache. (RFC 826 logic)

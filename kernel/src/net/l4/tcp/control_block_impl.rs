@@ -1043,12 +1043,11 @@ impl TcpControlBlock {
 
     /// Handle ICMP Source Quench (RFC 1122 Section 4.2.3.9)
     pub fn on_source_quench(&mut self) {
-        let mss = self.congestion.mss as u32;
-
-        // Reduce amount of data in flight by reducing congestion window.
-        // Similar to Fast Retransmit (RFC 5681).
-        self.congestion.ssthresh = (self.tx.outstanding_bytes / 2).max(2 * mss);
-        self.congestion.cwnd = self.congestion.ssthresh;
+        // RFC 1122 Section 4.2.3.9: "A TCP SHOULD NOT, however, change the 
+        // congestion window in response to a Source Quench."
+        // Modern stacks (and RFC 6633) deprecate Source Quench entirely.
+        // We log it and ignore for RFC 1122 compliance.
+        log::debug!("[TCP] Ignoring ICMP Source Quench per RFC 1122 Section 4.2.3.9");
     }
 
     /// Handle ICMP Error (RFC 1122 Section 4.2.3.9)

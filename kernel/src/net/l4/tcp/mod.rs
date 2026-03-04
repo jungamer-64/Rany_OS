@@ -266,12 +266,12 @@ impl TcpCongestionState {
 struct TcpOptionsState {
     // TCP Window Scaling (RFC 7323)
     /// Our window scale factor (0-14)
-    snd_wscale: u8,
+    our_wscale: u8,
     /// Peer's window scale factor (0-14)
-    rcv_wscale: u8,
+    peer_wscale: u8,
     /// Window scaling enabled (negotiated during SYN)
     wscale_enabled: bool,
-    /// Actual receive window (scaled: rcv_wnd << rcv_wscale)
+    /// Actual receive window (scaled: rcv_wnd << our_wscale)
     rcv_wnd_scaled: u32,
     /// Maximum advertised window on this connection (RFC 1122 Section 4.2.2.13 avoidance)
     rcv_wnd_max_adv: u32,
@@ -302,8 +302,8 @@ struct TcpOptionsState {
 impl TcpOptionsState {
     fn new() -> Self {
         Self {
-            snd_wscale: 7,
-            rcv_wscale: 0, // Set when peer SYN received
+            our_wscale: 7,
+            peer_wscale: 0, // Set when peer SYN received
             wscale_enabled: false, // Negotiated during handshake
             rcv_wnd_scaled: 65535 << 7, // Initial scaled window
             rcv_wnd_max_adv: 65535 << 7,
