@@ -1013,9 +1013,30 @@ impl TcpProcessor {
             return Self::make_ack_result(tcb);
         }
 
-        // Update send window
+            // RFC 793: Fifth step, check the ACK field
         if ack {
-            tcb.set_snd_wnd(window);
+            if tcb.state() == TcpState::SynReceived {
+                if Self::seq_after(ack_num, tcb.snd_nxt()) {
+                    // RFC 9293 Section 3.10.7.4: SYN-RECEIVED STATE
+                    // "If SEG.ACK > SND.NXT, send a reset <SEQ=SEG.ACK><CTL=RST> and return."
+                    log::warn!("[TCP] SYN-RECEIVED: ACK {} in the future (SND.NXT={}), sending RST", ack_num, tcb.snd_nxt());
+                    return TcpProcessResult::SendPacket {
+                        local: tcb.local_addr(),
+                        remote: tcb.remote_addr().unwrap_or(EndpointAddr::new([0,0,0,0], 0)),
+                        seq: ack_num,
+                        ack: 0,
+                        flags: TcpHeader::FLAG_RST,
+                        window: 0,
+                        payload: Vec::new(),
+                        options: Vec::new(),
+                    };
+                }
+            }
+            
+            // RFC 793: Update send window if acceptable
+            if tcb.should_update_window(seq_num, ack_num) {
+                tcb.set_snd_wnd(window, seq_num, ack_num);
+            }
         }
 
         match tcb.state() {
@@ -1217,6 +1238,21 @@ impl TcpProcessor {
                     current_time,
                 );
             }
+        } else if ack {
+            // RFC 9293 Section 3.10.7.4: SYN-RECEIVED STATE
+            // "If the segment acknowledgment is not acceptable, form a reset segment, 
+            // <SEQ=SEG.ACK><CTL=RST> and send it."
+            log::warn!("[TCP] SYN-RECEIVED: Invalid ACK {} (expected {}), sending RST", ack_num, tcb.snd_una().wrapping_add(1));
+            return TcpProcessResult::SendPacket {
+                local: tcb.local_addr(),
+                remote: tcb.remote_addr().unwrap_or(EndpointAddr::new([0,0,0,0], 0)),
+                seq: ack_num,
+                ack: 0,
+                flags: TcpHeader::FLAG_RST,
+                window: 0,
+                payload: Vec::new(),
+                options: Vec::new(),
+            };
         }
         TcpProcessResult::None
     }
@@ -1348,7 +1384,7 @@ impl TcpProcessor {
             // If it is too far in the past, we MUST send a challenge ACK.
             if ack {
                 let diff = tcb.snd_una().wrapping_sub(ack_num) as i32;
-                if diff > (tcb.snd_wnd() as i32) {
+                if diff > (tcb.seq.max_snd_wnd as i32) {
                     // ACK is too far in the past - send challenge ACK
                     log::warn!("[TCP] RFC 5961: Sending challenge ACK for old ACK {} (SND.UNA={})", ack_num, tcb.snd_una());
                     return Self::make_ack_result(tcb);

@@ -182,6 +182,10 @@ struct TcpSeqState {
     snd_wnd: u32,
     /// 最大送信ウィンドウサイズ (SWS回避用, RFC 1122)
     max_snd_wnd: u32,
+    /// SND.WL1 - segment sequence number used for last window update (RFC 793)
+    snd_wl1: u32,
+    /// SND.WL2 - segment acknowledgment number used for last window update (RFC 793)
+    snd_wl2: u32,
     /// 受信シーケンス番号（次に期待するバイト）
     rcv_nxt: u32,
     /// 受信ウィンドウサイズ (16-bit field for header)
@@ -195,6 +199,8 @@ impl TcpSeqState {
             snd_una: isn,
             snd_wnd: 65535,
             max_snd_wnd: 65535,
+            snd_wl1: 0,
+            snd_wl2: isn,
             rcv_nxt: 0,
             rcv_wnd: 65535,
         }

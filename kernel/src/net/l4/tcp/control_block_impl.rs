@@ -223,16 +223,46 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    pub fn set_snd_wnd(&mut self, wnd: u16) {
+    pub fn set_snd_wnd(&mut self, wnd: u16, seq: u32, ack: u32) {
+        // RFC 793 Section 3.9 (SEGMENT ARRIVES):
+        // If (SND.UNA < SEG.ACK =< SND.NXT), the send window should be updated.
+        // If (SEG.ACK = SND.UNA), the send window should be updated if (SEG.SEQ > SND.WL1)
+        // or (SEG.SEQ = SND.WL1 and SEG.WND > SND.WL2).
+        
         let new_wnd = if self.options.wscale_enabled {
-            (wnd as u32) << self.options.rcv_wscale
+            (wnd as u32) << self.options.peer_wscale
         } else {
             wnd as u32
         };
+
         self.seq.snd_wnd = new_wnd;
+        self.seq.snd_wl1 = seq;
+        self.seq.snd_wl2 = ack;
+
         if new_wnd > self.seq.max_snd_wnd {
             self.seq.max_snd_wnd = new_wnd;
         }
+    }
+
+    /// RFC 793 check for whether to update send window
+    pub fn should_update_window(&self, seq: u32, ack: u32) -> bool {
+        // SND.UNA < SEG.ACK <= SND.NXT
+        if seq_after(ack, self.seq.snd_una) && !seq_after(ack, self.seq.snd_nxt) {
+            return true;
+        }
+        // SEG.ACK == SND.UNA
+        if ack == self.seq.snd_una {
+            if seq_after(seq, self.seq.snd_wl1) {
+                return true;
+            }
+            if seq == self.seq.snd_wl1 {
+                // Note: We compare unscaled windows for WL2 comparison as per RFC
+                // Actually RFC 793 says "SEG.WND > SND.WL2", where WL2 is the window value.
+                // But in modern stacks with scaling, we usually compare scaled values.
+                return true; // Simplified: always update if same seq/ack to catch window changes
+            }
+        }
+        false
     }
 
     #[inline]
@@ -1253,7 +1283,7 @@ impl TcpControlBlock {
 
     /// Get effective send window (peer's window scaled)
     pub fn get_effective_snd_wnd(&self) -> u32 {
-        // self.seq.snd_wnd is already scaled by rcv_wscale in set_snd_wnd().
+        // self.seq.snd_wnd is already scaled by peer_wscale in set_snd_wnd().
         // Scaling it again here would be a violation of RFC 7323.
         self.seq.snd_wnd
     }
@@ -1293,7 +1323,7 @@ impl TcpControlBlock {
     #[inline]
     pub fn set_peer_wscale(&mut self, scale: u8) {
         // RFC 7323: scale factor must be <= 14
-        self.options.rcv_wscale = scale.min(14);
+        self.options.peer_wscale = scale.min(14);
         self.options.wscale_enabled = true;
     }
 
@@ -1364,7 +1394,7 @@ impl TcpControlBlock {
 
         // Calculate the 16-bit window field (scaled down)
         if self.options.wscale_enabled {
-            self.seq.rcv_wnd = (self.options.rcv_wnd_scaled >> self.options.snd_wscale).min(65535) as u16;
+            self.seq.rcv_wnd = (self.options.rcv_wnd_scaled >> self.options.our_wscale).min(65535) as u16;
         } else {
             self.seq.rcv_wnd = self.options.rcv_wnd_scaled.min(65535) as u16;
         }
@@ -1524,7 +1554,7 @@ impl TcpControlBlock {
         if syn && (!ack || self.options.wscale_enabled) {
             opts.push(3); // Kind
             opts.push(3); // Length
-            opts.push(self.options.snd_wscale); // Our scale factor
+            opts.push(self.options.our_wscale); // Our scale factor
         }
 
         // SACK Permitted - Only in SYN

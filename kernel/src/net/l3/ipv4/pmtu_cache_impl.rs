@@ -751,6 +751,27 @@ impl Ipv4Processor {
         let is_fragment = header.more_fragments() || header.fragment_offset() != 0;
 
         if is_fragment {
+            // Security: RFC 1858 Tiny Fragment Filtering
+            // If FO=0 and protocol is TCP, the fragment MUST be large enough 
+            // to contain the entire TCP header (20 bytes).
+            // If FO=1 (offset 8), it might contain part of the TCP header, which is also suspicious.
+            if packet.protocol() == IpProtocol::Tcp {
+                let fragment_offset = header.fragment_offset();
+                let payload_len = packet.payload().len();
+                
+                if fragment_offset == 0 && payload_len < 20 {
+                    log::warn!("[NET-IPV4] Dropping tiny fragment (FO=0, len={}) - RFC 1858 violation", payload_len);
+                    self.stats.rx_errors += 1;
+                    return Ipv4ProcessResult::Dropped;
+                }
+                
+                if fragment_offset == 1 {
+                    log::warn!("[NET-IPV4] Dropping suspicious fragment (FO=1) - RFC 1858 violation");
+                    self.stats.rx_errors += 1;
+                    return Ipv4ProcessResult::Dropped;
+                }
+            }
+
             // Handle fragmented packet
             let header_len = header.header_len();
             let header_data = &data[..header_len];
