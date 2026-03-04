@@ -107,8 +107,55 @@ impl ExoShell {
                     .collect();
                 ExoValue::Array(keys)
             }
+            "values" => {
+                let values: Vec<ExoValue<'static>> = map.values().cloned().collect();
+                ExoValue::Array(values)
+            }
+            "entries" | "items" => {
+                let entries: Vec<ExoValue<'static>> = map
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let mut entry = BTreeMap::new();
+                        entry.insert(String::from("key"), ExoValue::String(Cow::Owned(k)));
+                        entry.insert(String::from("value"), v);
+                        ExoValue::Map(entry)
+                    })
+                    .collect();
+                ExoValue::Array(entries)
+            }
+            "contains_key" | "has_key" => {
+                let key = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                ExoValue::Bool(map.contains_key(&key))
+            }
+            "merge" => {
+                let mut merged = map;
+                if let Some(ExoValue::Map(other)) = args.first() {
+                    for (k, v) in other {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                }
+                ExoValue::Map(merged)
+            }
+            "to_json" | "format" => {
+                // シンプルなJSON風フォーマット
+                let mut parts = Vec::new();
+                for (k, v) in &map {
+                    parts.push(alloc::format!("  \"{}\": {}", k, v));
+                }
+                ExoValue::String(Cow::Owned(alloc::format!("{{\n{}\n}}", parts.join(",\n"))))
+            }
             "len" | "size" => ExoValue::Int(map.len() as i64),
-            _ => ExoValue::Error(format!("Map does not have method '{}'", method)),
+            "is_empty" => ExoValue::Bool(map.is_empty()),
+            _ => ExoValue::Error(alloc::format!(
+                "Map does not have method '{}'\nValid: get, keys, values, entries, contains_key, merge, to_json, len, is_empty",
+                method
+            )),
         }
     }
 
@@ -144,15 +191,34 @@ impl ExoShell {
     ) -> ExoValue<'static> {
         match method {
             "len" | "length" => ExoValue::Int(s.len() as i64),
+            "char_count" => ExoValue::Int(s.chars().count() as i64),
             "trim" => ExoValue::String(Cow::Owned(s.trim().to_string())),
-            "upper" => ExoValue::String(Cow::Owned(s.to_uppercase())),
-            "lower" => ExoValue::String(Cow::Owned(s.to_lowercase())),
+            "trim_start" | "ltrim" => ExoValue::String(Cow::Owned(s.trim_start().to_string())),
+            "trim_end" | "rtrim" => ExoValue::String(Cow::Owned(s.trim_end().to_string())),
+            "upper" | "to_uppercase" => ExoValue::String(Cow::Owned(s.to_uppercase())),
+            "lower" | "to_lowercase" => ExoValue::String(Cow::Owned(s.to_lowercase())),
+            "reverse" => ExoValue::String(Cow::Owned(s.chars().rev().collect())),
+            "is_empty" => ExoValue::Bool(s.is_empty()),
             "lines" => {
                 let lines: Vec<ExoValue<'static>> = s
                     .lines()
                     .map(|l| ExoValue::String(Cow::Owned(l.to_string())))
                     .collect();
                 ExoValue::Array(lines)
+            }
+            "chars" => {
+                let chars: Vec<ExoValue<'static>> = s
+                    .chars()
+                    .map(|c| ExoValue::String(Cow::Owned(c.to_string())))
+                    .collect();
+                ExoValue::Array(chars)
+            }
+            "bytes" => {
+                let bytes: Vec<ExoValue<'static>> = s
+                    .bytes()
+                    .map(|b| ExoValue::Int(b as i64))
+                    .collect();
+                ExoValue::Array(bytes)
             }
             "split" => {
                 let empty = String::from(" ");
@@ -189,7 +255,146 @@ impl ExoShell {
                     .unwrap_or("");
                 ExoValue::Bool(s.starts_with(sub))
             }
-            _ => ExoValue::Error(format!("String method '{}' not found", method)),
+            "ends_with" => {
+                let sub = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref()),
+                        _ => None,
+                    })
+                    .unwrap_or("");
+                ExoValue::Bool(s.ends_with(sub))
+            }
+            "replace" => {
+                let from = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let to = args
+                    .get(1)
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                ExoValue::String(Cow::Owned(s.replace(&from, &to)))
+            }
+            "repeat" => {
+                let n = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                let n = n.min(10000); // 安全制限
+                ExoValue::String(Cow::Owned(s.repeat(n)))
+            }
+            "substring" | "slice" => {
+                let start = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let end = args
+                    .get(1)
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(s.len());
+                let chars: Vec<char> = s.chars().collect();
+                let start = start.min(chars.len());
+                let end = end.min(chars.len());
+                let sub: String = chars[start..end].iter().collect();
+                ExoValue::String(Cow::Owned(sub))
+            }
+            "pad_left" | "lpad" => {
+                let width = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let pad_char = args
+                    .get(1)
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => s.chars().next(),
+                        _ => None,
+                    })
+                    .unwrap_or(' ');
+                let current_len = s.chars().count();
+                if current_len >= width {
+                    ExoValue::String(Cow::Owned(s))
+                } else {
+                    let padding: String = core::iter::repeat(pad_char).take(width - current_len).collect();
+                    ExoValue::String(Cow::Owned(alloc::format!("{}{}", padding, s)))
+                }
+            }
+            "pad_right" | "rpad" => {
+                let width = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let pad_char = args
+                    .get(1)
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => s.chars().next(),
+                        _ => None,
+                    })
+                    .unwrap_or(' ');
+                let current_len = s.chars().count();
+                if current_len >= width {
+                    ExoValue::String(Cow::Owned(s))
+                } else {
+                    let padding: String = core::iter::repeat(pad_char).take(width - current_len).collect();
+                    ExoValue::String(Cow::Owned(alloc::format!("{}{}", s, padding)))
+                }
+            }
+            "find" | "index_of" => {
+                let sub = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                match s.find(&sub) {
+                    Some(idx) => ExoValue::Int(idx as i64),
+                    None => ExoValue::Int(-1),
+                }
+            }
+            "count" => {
+                let sub = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                ExoValue::Int(s.matches(&sub).count() as i64)
+            }
+            "to_int" | "parse_int" => match s.trim().parse::<i64>() {
+                Ok(n) => ExoValue::Int(n),
+                Err(_) => ExoValue::Error(alloc::format!("Cannot parse '{}' as integer", s)),
+            },
+            "to_float" | "parse_float" => match s.trim().parse::<f64>() {
+                Ok(f) => ExoValue::Float(f),
+                Err(_) => ExoValue::Error(alloc::format!("Cannot parse '{}' as float", s)),
+            },
+            _ => ExoValue::Error(alloc::format!(
+                "String method '{}' not found\nValid: len, trim, upper, lower, reverse, lines, chars, bytes, split, contains, starts_with, ends_with, replace, repeat, substring, pad_left, pad_right, find, count, to_int, to_float, is_empty, char_count",
+                method
+            )),
         }
     }
 

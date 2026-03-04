@@ -116,6 +116,14 @@ impl ExoShell {
         commands.register(HelpCommand);
         commands.register(ExitCommand);
         commands.register(ClearCommand);
+        commands.register(super::command::EchoCommand);
+        commands.register(super::command::HistoryCommand);
+        commands.register(super::command::EnvCommand);
+        commands.register(super::command::TypeCommand);
+        commands.register(super::command::WhoamiCommand);
+        commands.register(super::command::DateCommand);
+        commands.register(super::command::SetCommand);
+        commands.register(super::command::UnsetCommand);
 
         Self {
             env: Environment::new(),

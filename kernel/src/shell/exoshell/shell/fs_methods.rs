@@ -435,8 +435,117 @@ impl ExoShell {
                 }
                 ExoValue::Array(result)
             }
+            "unique" | "dedup" | "distinct" => {
+                let mut result = Vec::new();
+                for item in list {
+                    if !result.contains(&item) {
+                        result.push(item);
+                    }
+                }
+                ExoValue::Array(result)
+            }
+            "enumerate" => {
+                let enumerated: Vec<ExoValue<'static>> = list
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let mut map = BTreeMap::new();
+                        map.insert(String::from("index"), ExoValue::Int(i as i64));
+                        map.insert(String::from("value"), v);
+                        ExoValue::Map(map)
+                    })
+                    .collect();
+                ExoValue::Array(enumerated)
+            }
+            "zip" => {
+                let args = self.evaluate_args(args).await;
+                let other = match args.first() {
+                    Some(ExoValue::Array(arr)) => arr.clone(),
+                    _ => return ExoValue::Error(String::from("zip requires an array argument")),
+                };
+                let zipped: Vec<ExoValue<'static>> = list
+                    .into_iter()
+                    .zip(other.into_iter())
+                    .map(|(a, b)| ExoValue::Array(alloc::vec![a, b]))
+                    .collect();
+                ExoValue::Array(zipped)
+            }
+            "group_by" => {
+                let args = self.evaluate_args(args).await;
+                let field = Self::extract_string_arg(&args)
+                    .unwrap_or_else(|| String::from("name"));
+                let mut groups: BTreeMap<String, Vec<ExoValue<'static>>> = BTreeMap::new();
+                for item in list {
+                    let key = match self.get_field_value(&item, &field) {
+                        ExoValue::String(s) => s.into_owned(),
+                        ExoValue::Int(n) => alloc::format!("{}", n),
+                        other => alloc::format!("{}", other),
+                    };
+                    groups.entry(key).or_insert_with(Vec::new).push(item);
+                }
+                let mut map = BTreeMap::new();
+                for (k, v) in groups {
+                    map.insert(k, ExoValue::Array(v));
+                }
+                ExoValue::Map(map)
+            }
+            "chunks" => {
+                let args = self.evaluate_args(args).await;
+                let chunk_size = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) if *n > 0 => Some(*n as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(2);
+                let chunks: Vec<ExoValue<'static>> = list
+                    .chunks(chunk_size)
+                    .map(|chunk| ExoValue::Array(chunk.to_vec()))
+                    .collect();
+                ExoValue::Array(chunks)
+            }
+            "reduce" | "fold" => {
+                // reduce(initial, |acc, x| acc + x) — 遅延クロージャ不対応のため簡易版
+                // reduce("sum") / reduce("product") / reduce("concat") の既定演算
+                let args = self.evaluate_args(args).await;
+                let op = Self::extract_string_arg(&args)
+                    .unwrap_or_else(|| String::from("sum"));
+                match op.as_str() {
+                    "sum" => {
+                        let sum: i64 = list
+                            .iter()
+                            .filter_map(|v| match v {
+                                ExoValue::Int(n) => Some(*n),
+                                _ => None,
+                            })
+                            .sum();
+                        ExoValue::Int(sum)
+                    }
+                    "product" => {
+                        let product: i64 = list
+                            .iter()
+                            .filter_map(|v| match v {
+                                ExoValue::Int(n) => Some(*n),
+                                _ => None,
+                            })
+                            .product();
+                        ExoValue::Int(product)
+                    }
+                    "concat" => {
+                        let parts: Vec<String> = list
+                            .iter()
+                            .map(|v| alloc::format!("{}", v))
+                            .collect();
+                        ExoValue::String(Cow::Owned(parts.join("")))
+                    }
+                    _ => ExoValue::Error(alloc::format!(
+                        "reduce supports: sum, product, concat"
+                    )),
+                }
+            }
+            "is_empty" => ExoValue::Bool(list.is_empty()),
             _ => ExoValue::Error(format!(
-                "Array does not have method '{}'\nValid methods: len, first, last, reverse, take, skip, filter, map, sort, sum, avg, min, max, join, find, any, all, contains, flatten",
+                "Array does not have method '{}'\nValid methods: len, first, last, reverse, take, skip, filter, map, sort, sum, avg, min, max, join, find, any, all, contains, flatten, unique, enumerate, zip, group_by, chunks, reduce, is_empty",
                 method
             )),
         }

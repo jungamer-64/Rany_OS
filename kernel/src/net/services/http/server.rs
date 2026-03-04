@@ -8,6 +8,9 @@ static HOST_HTTP_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// アクティブな同時接続数を追跡
 static ACTIVE_CONNECTIONS: AtomicU32 = AtomicU32::new(0);
+static TOTAL_REQUESTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static BYTES_RX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static BYTES_TX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// 同時接続数の上限
 const MAX_CONCURRENT_CONNECTIONS: u32 = 16;
@@ -134,7 +137,10 @@ async fn read_request_with_timeout(client: &mut TcpStream) -> Result<Vec<u8>, &'
             }
             TimeoutResult::Completed(Err(_)) => return Err("socket recv error"),
             TimeoutResult::Completed(Ok(0)) => return Err("peer closed connection"),
-            TimeoutResult::Completed(Ok(len)) => return Ok(buffer[..len].to_vec()),
+            TimeoutResult::Completed(Ok(len)) => {
+                BYTES_RX.fetch_add(len as u64, Ordering::Relaxed);
+                return Ok(buffer[..len].to_vec());
+            }
         }
     }
 
@@ -168,6 +174,7 @@ async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &
                 write_timeouts = 0;
                 log::info!("[HOST-HTTP] wrote {} bytes", written);
                 sent += written;
+                BYTES_TX.fetch_add(written as u64, Ordering::Relaxed);
                 // yieldでExecutorに制御を渡し、ISR駆動のVirtIO処理を促進
                 task::yield_now().await;
             }
@@ -207,6 +214,8 @@ fn build_health_response() -> Vec<u8> {
 }
 
 fn build_response_for_request(request: &[u8]) -> Vec<u8> {
+    TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
+
     let request_line = core::str::from_utf8(request)
         .ok()
         .and_then(|text| text.lines().next())
@@ -216,16 +225,136 @@ fn build_response_for_request(request: &[u8]) -> Vec<u8> {
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
 
-    if method == "GET" && path == "/health" {
-        return build_health_response();
+    if method == "GET" {
+        match path {
+            "/" => return build_index_response(),
+            "/health" => return build_health_response(),
+            "/stats" => return build_stats_response(),
+            "/info" => return build_info_response(),
+            _ => {}
+        }
     }
 
     build_json_response("404 Not Found", "{\"status\":\"not_found\"}")
 }
 
+fn build_index_response() -> Vec<u8> {
+    let html = r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>ExoRust Kernel</title>
+    <style>
+        body { font-family: sans-serif; margin: 40px; background: #1a1a2e; color: #eee; }
+        h1 { color: #e94560; }
+        .stats { background: #16213e; padding: 20px; border-radius: 8px; }
+        .stat { margin: 10px 0; }
+        a { color: #0f4c75; }
+    </style>
+</head>
+<body>
+    <h1>🦀 ExoRust Kernel HTTP Server</h1>
+    <p>Welcome to the ExoRust zero-copy HTTP server!</p>
+    
+    <h2>Architecture Highlights</h2>
+    <ul>
+        <li><strong>Single Address Space (SAS)</strong> - No TLB flushes</li>
+        <li><strong>Single Privilege Level (SPL)</strong> - Syscalls are function calls</li>
+        <li><strong>Zero-Copy I/O</strong> - Data flows without copying</li>
+        <li><strong>Async-First Design</strong> - Cooperative multitasking</li>
+    </ul>
+    
+    <h2>Endpoints</h2>
+    <ul>
+        <li><a href="/">/</a> - This page</li>
+        <li><a href="/stats">/stats</a> - Server statistics</li>
+        <li><a href="/health">/health</a> - Health check</li>
+        <li><a href="/info">/info</a> - System information</li>
+    </ul>
+    
+    <p><em>Running on ExoRust v0.3.0</em></p>
+</body>
+</html>"#;
+    build_html_response("200 OK", html)
+}
+
+fn build_stats_response() -> Vec<u8> {
+    let requests = TOTAL_REQUESTS.load(Ordering::Relaxed);
+    let bytes_rx = BYTES_RX.load(Ordering::Relaxed);
+    let bytes_tx = BYTES_TX.load(Ordering::Relaxed);
+    let connections = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
+    
+    let (heap_used, heap_free) = crate::memory::heap_stats();
+    let timer_ticks = crate::interrupts::get_timer_ticks();
+    
+    let json = format!(r#"{{
+    "server": "ExoRust HTTP",
+    "version": "0.3.0",
+    "stats": {{
+        "requests": {},
+        "bytes_received": {},
+        "bytes_sent": {},
+        "active_connections": {}
+    }},
+    "system": {{
+        "heap_used": {},
+        "heap_free": {},
+        "timer_ticks": {}
+    }}
+}}"#, requests, bytes_rx, bytes_tx, connections, heap_used, heap_free, timer_ticks);
+    
+    build_json_response("200 OK", &json)
+}
+
+fn build_info_response() -> Vec<u8> {
+    let domain_stats = crate::domain_system::get_domain_stats();
+    let sas_stats = crate::sas::stats();
+    let spectre = crate::security::spectre::status_summary();
+    
+    let json = format!(r#"{{
+    "kernel": {{
+        "name": "ExoRust",
+        "version": "0.3.0",
+        "architecture": "x86_64",
+        "design": "Single Address Space + Single Privilege Level"
+    }},
+    "domains": {{
+        "total": {},
+        "running": {},
+        "stopped": {}
+    }},
+    "sas": {{
+        "regions": {},
+        "objects": {},
+        "domains": {}
+    }},
+    "security": {{
+        "ibrs": {},
+        "stibp": {},
+        "ssbd": {},
+        "retpoline": {}
+    }}
+}}"#, 
+        domain_stats.total, domain_stats.running, domain_stats.stopped,
+        sas_stats.total_regions, sas_stats.total_objects, sas_stats.domains,
+        spectre.ibrs_enabled, spectre.stibp_enabled, spectre.ssbd_enabled, spectre.using_retpoline
+    );
+    
+    build_json_response("200 OK", &json)
+}
+
 fn build_json_response(status: &str, body: &str) -> Vec<u8> {
     format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+        status = status,
+        len = body.len(),
+        body = body
+    )
+    .into_bytes()
+}
+
+fn build_html_response(status: &str, body: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
         status = status,
         len = body.len(),
         body = body
