@@ -160,14 +160,13 @@ impl DhcpV6Client {
     }
 
     /// Build a DHCPv6 SOLICIT message (minimal: client-id + IA_NA option)
-    pub fn build_solicit(&self, buf: &mut [u8], current_time: u64) -> Result<usize, &'static str> {
+    pub fn build_solicit(&self, buf: &mut [u8]) -> Result<usize, &'static str> {
         if buf.len() < 128 {
             return Err("buffer too small");
         }
 
-        // Generate XID (24-bit)
-        let xid = ((current_time as u32) ^ 0xC0FFEE) & 0x00FF_FFFF;
-        self.xid.store(xid, Ordering::SeqCst);
+        // Use current XID (should be generated once by the caller for the transaction)
+        let xid = self.xid.load(Ordering::SeqCst);
 
         // Header
         buf[0] = DhcpV6MessageType::Solicit as u8;
@@ -211,14 +210,13 @@ impl DhcpV6Client {
 
     /// Build a DHCPv6 REQUEST message (used for Renew/Rebind).
     /// Includes ClientID + IA_NA with IAADDR suboption for the lease being renewed.
-    pub fn build_request(&self, buf: &mut [u8], lease: &DhcpV6Lease, current_time: u64) -> Result<usize, &'static str> {
+    pub fn build_request(&self, buf: &mut [u8], lease: &DhcpV6Lease) -> Result<usize, &'static str> {
         if buf.len() < 256 {
             return Err("buffer too small");
         }
 
-        // XID
-        let xid = ((current_time as u32) ^ 0xC0FFEE) & 0x00FF_FFFF;
-        self.xid.store(xid, Ordering::SeqCst);
+        // Use current XID
+        let xid = self.xid.load(Ordering::SeqCst);
 
         buf[0] = DhcpV6MessageType::Request as u8;
         buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
@@ -272,14 +270,13 @@ impl DhcpV6Client {
 
     /// Build a DHCPv6 REQUEST to *select* a server after receiving ADVERTISE.
     /// Includes ClientID + ServerID (if available) + IA_NA (no IAADDR suboption).
-    pub fn build_request_from_advertise(&self, buf: &mut [u8], current_time: u64) -> Result<usize, &'static str> {
+    pub fn build_request_from_advertise(&self, buf: &mut [u8]) -> Result<usize, &'static str> {
         if buf.len() < 128 {
             return Err("buffer too small");
         }
 
-        // Generate XID (24-bit)
-        let xid = ((current_time as u32) ^ 0xC0FFEE) & 0x00FF_FFFF;
-        self.xid.store(xid, Ordering::SeqCst);
+        // Use current XID
+        let xid = self.xid.load(Ordering::SeqCst);
 
         // Header
         buf[0] = DhcpV6MessageType::Request as u8;
@@ -425,13 +422,17 @@ impl DhcpV6Client {
                     if let Ok(mut sd) = self.server_addr.lock() {
                         *sd = Some(src);
                     }
+                    // transition to Requesting: Generate a new XID for the Request transaction
+                    let xid = ((now as u32) ^ 0xC0FFEE) & 0x00FF_FFFF;
+                    self.xid.store(xid, Ordering::SeqCst);
+
                     *st = DhcpV6State::Requesting;
                     self.state_time.store(now, Ordering::SeqCst);
                     self.retry_count.store(0, Ordering::SeqCst);
 
                     // build and send REQUEST (selection) via async event queue
                     let mut buf = [0u8; 256];
-                    if let Ok(len) = self.build_request_from_advertise(&mut buf, now) {
+                    if let Ok(len) = self.build_request_from_advertise(&mut buf) {
                         if let Some(src_ip) = self.get_link_local() {
                             self.send_v6_async(src_ip, src, &buf[..len]);
                         }
@@ -485,9 +486,13 @@ impl DhcpV6Client {
         match self.state.lock() {
             Ok(mut s) => match *s {
                 DhcpV6State::Init => {
+                    // Start new transaction: Generate SOLICIT XID
+                    let xid = ((current_tick as u32) ^ 0xDEADBEEF) & 0x00FF_FFFF;
+                    self.xid.store(xid, Ordering::SeqCst);
+
                     // Send SOLICIT
                     let mut buf = [0u8; 256];
-                    let len = self.build_solicit(&mut buf, current_tick)?;
+                    let len = self.build_solicit(&mut buf)?;
 
                     // Use link-local as source for SOLICIT (async event queue)
                     if let Some(src) = self.get_link_local() {
@@ -499,26 +504,28 @@ impl DhcpV6Client {
                     }
                 }
                 DhcpV6State::SolicitSent => {
-                    // Retransmit logic (RFC 8415 Section 15: Exponential backoff)
+                    // Retransmit logic (RFC 8415 Section 15: Exponential backoff with 10% jitter)
                     let retry = self.retry_count.load(Ordering::SeqCst);
                     // IRT = 1s, MRT = 120s
-                    let base_interval = (1u64 << core::cmp::min(retry, 7)).min(120);
-                    let jitter = if retry > 0 {
-                        let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
-                        (rnd % 3) - 1 // -1, 0, or 1
-                    } else { 0 };
-                    let interval = (base_interval as i64 + jitter).max(1) as u64;
+                    let base_t = (1u64 << core::cmp::min(retry, 7)).min(120);
+                    
+                    // RFC 8415: RT = (1 + RAND) * T, where RAND is [-0.1, 0.1]
+                    // For simplicity, we use ~10% jitter based on pseudo-random from MAC/Time
+                    let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21; // 0..20
+                    let jitter_percent = (rnd as i64) - 10; // -10% .. +10%
+                    let interval_ms = (base_t * 1000).saturating_add(((base_t * 100 * jitter_percent as u64) / 1000));
+                    let interval_ticks = interval_ms.max(100); // at least 100ms
 
-                    let elapsed_secs = (current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst))) / tick_rate;
-                    if elapsed_secs >= interval {
+                    let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                    if elapsed_ms >= interval_ticks {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
                             // Give up, go back to Init (will retry later)
                             *s = DhcpV6State::Init;
                         } else {
-                            // retransmit SOLICIT via async event queue
+                            // retransmit SOLICIT using SAME XID
                             let mut buf = [0u8; 256];
-                            let len = self.build_solicit(&mut buf, current_tick)?;
+                            let len = self.build_solicit(&mut buf)?;
                             if let Some(src) = self.get_link_local() {
                                 self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
                             }
@@ -529,23 +536,23 @@ impl DhcpV6Client {
                 DhcpV6State::Requesting => {
                     // Retransmit REQUEST (RFC 8415 Section 15: IRT = 1s, MRT = 30s)
                     let retry = self.retry_count.load(Ordering::SeqCst);
-                    let base_interval = (1u64 << core::cmp::min(retry, 5)).min(30);
-                    let jitter = if retry > 0 {
-                        let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
-                        (rnd % 3) - 1 // -1, 0, or 1
-                    } else { 0 };
-                    let interval = (base_interval as i64 + jitter).max(1) as u64;
+                    let base_t = (1u64 << core::cmp::min(retry, 5)).min(30);
+                    
+                    let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
+                    let jitter_percent = (rnd as i64) - 10;
+                    let interval_ms = (base_t * 1000).saturating_add(((base_t * 100 * jitter_percent as u64) / 1000));
+                    let interval_ticks = interval_ms.max(100);
 
-                    let elapsed_secs = (current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst))) / tick_rate;
-                    if elapsed_secs >= interval {
+                    let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                    if elapsed_ms >= interval_ticks {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
                             // Give up and return to Init
                             *s = DhcpV6State::Init;
                         } else {
-                            // rebuild Request (selection) and resend via async event queue
+                            // resend Request using SAME XID
                             let mut buf = [0u8; 256];
-                            let len = self.build_request_from_advertise(&mut buf, current_tick)?;
+                            let len = self.build_request_from_advertise(&mut buf)?;
                             if let Some(src) = self.get_link_local() {
                                 let dst = match self.server_addr.lock() {
                                     Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
@@ -560,27 +567,30 @@ impl DhcpV6Client {
                 DhcpV6State::Bound => {
                     // Check lease lifetimes and transition to Renewing if needed
                     if let Some(lease) = self.lease() {
-                        let elapsed_secs = (current_tick.saturating_sub(lease.obtained_at)) / tick_rate;
-                        if elapsed_secs >= (lease.preferred_lifetime as u64) {
-                            // start renewal
+                        let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
+                        if elapsed_ms >= (lease.preferred_lifetime as u64 * 1000) {
+                            // start renewal: Generate new XID for Renew transaction
+                            let xid = ((current_tick as u32) ^ 0xBEEFBEEF) & 0x00FF_FFFF;
+                            self.xid.store(xid, Ordering::SeqCst);
+
                             *s = DhcpV6State::Renewing;
                             self.state_time.store(current_tick, Ordering::SeqCst);
-                            self.retry_count.store(0, Ordering::SeqCst); // Reset for Renewing
+                            self.retry_count.store(0, Ordering::SeqCst); 
                         }
                     }
                 }
                 DhcpV6State::Renewing => {
                     // Attempt to renew (RFC 8415 Section 15: IRT = 10s, MRT = 600s)
                     let retry = self.retry_count.load(Ordering::SeqCst);
-                    let base_interval = (10u64 << core::cmp::min(retry, 6)).min(600);
-                    let jitter = if retry > 0 {
-                        let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
-                        (rnd % 5) - 2 // ±2s jitter for larger intervals
-                    } else { 0 };
-                    let interval = (base_interval as i64 + jitter).max(1) as u64;
+                    let base_t = (10u64 << core::cmp::min(retry, 6)).min(600);
+                    
+                    let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
+                    let jitter_percent = (rnd as i64) - 10;
+                    let interval_ms = (base_t * 1000).saturating_add(((base_t * 100 * jitter_percent as u64) / 1000));
+                    let interval_ticks = interval_ms.max(100);
 
-                    let elapsed_secs = (current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst))) / tick_rate;
-                    if elapsed_secs >= interval {
+                    let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                    if elapsed_ms >= interval_ticks {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
                             // Escalate to rebinding (multicast) if renew fails
@@ -588,10 +598,10 @@ impl DhcpV6Client {
                             self.retry_count.store(0, Ordering::SeqCst);
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         } else {
-                            // Build and send REQUEST for the current lease via async event queue
+                            // Resend REQUEST for the current lease using SAME XID
                             if let Some(lease) = self.lease() {
                                 let mut buf = [0u8; 512];
-                                let len = self.build_request(&mut buf, &lease, current_tick)?;
+                                let len = self.build_request(&mut buf, &lease)?;
                                 if let Some(src) = self.get_link_local() {
                                     let dst = match self.server_addr.lock() {
                                         Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
@@ -610,15 +620,15 @@ impl DhcpV6Client {
                 DhcpV6State::Rebinding => {
                     // Rebinding (RFC 8415 Section 15: IRT = 10s, MRT = 600s)
                     let retry = self.retry_count.load(Ordering::SeqCst);
-                    let base_interval = (10u64 << core::cmp::min(retry, 6)).min(600);
-                    let jitter = if retry > 0 {
-                        let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
-                        (rnd % 5) - 2 // ±2s
-                    } else { 0 };
-                    let interval = (base_interval as i64 + jitter).max(1) as u64;
+                    let base_t = (10u64 << core::cmp::min(retry, 6)).min(600);
+                    
+                    let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
+                    let jitter_percent = (rnd as i64) - 10;
+                    let interval_ms = (base_t * 1000).saturating_add(((base_t * 100 * jitter_percent as u64) / 1000));
+                    let interval_ticks = interval_ms.max(100);
 
-                    let elapsed_secs = (current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst))) / tick_rate;
-                    if elapsed_secs >= interval {
+                    let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                    if elapsed_ms >= interval_ticks {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
                             // Give up and return to Init (clear lease)
@@ -627,10 +637,10 @@ impl DhcpV6Client {
                                 *lg = None;
                             }
                         } else {
-                            // retransmit REQUEST (multicast) via async event queue
+                            // retransmit REQUEST (multicast) using SAME XID
                             if let Some(lease) = self.lease() {
                                 let mut buf = [0u8; 512];
-                                let len = self.build_request(&mut buf, &lease, current_tick)?;
+                                let len = self.build_request(&mut buf, &lease)?;
                                 if let Some(src) = self.get_link_local() {
                                     self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
                                 }

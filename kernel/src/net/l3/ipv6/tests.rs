@@ -369,13 +369,18 @@ pub fn test_pmtu_cache_update_moves_lru_timestamp() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_pmtu_cache_evict_expired_cleans_entries_and_lru() {
+    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=begin");
     let mut cache = Ipv6PmtuCache::new(4);
     let dst_a = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1a]);
     let dst_b = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1b]);
 
+    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=update_a");
     cache.update(dst_a, 1400, 0);
+    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=update_b");
     cache.update(dst_b, 1390, Ipv6PmtuEntry::TIMEOUT_MS);
+    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=evict");
     cache.evict_expired(Ipv6PmtuEntry::TIMEOUT_MS + 1);
+    log::info!(target: "init", "[kernel-test][net][debug] ipv6_pmtu_expired step=asserts");
 
     assert_eq!(cache.len(), 1);
     assert_eq!(cache.lru.len(), 1);
