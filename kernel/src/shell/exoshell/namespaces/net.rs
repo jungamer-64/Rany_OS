@@ -148,12 +148,6 @@ impl NetNamespace {
         format!("{}", crate::net::l3::ipv6::Ipv6Address::new(addr))
     }
 
-    /// DHCP state snapshot (IPv4 + IPv6) — 同期版
-    pub fn dhcp_state() -> ExoValue<'static> {
-        let state = crate::net::api::dhcp::dhcp_state();
-        Self::format_dhcp_state(state)
-    }
-
     /// DHCP state snapshot — 非同期版（推奨）
     pub async fn dhcp_state_async() -> ExoValue<'static> {
         let state = crate::net::api::dhcp::dhcp_state_async().await;
@@ -226,14 +220,6 @@ impl NetNamespace {
         ExoValue::Map(map)
     }
 
-    /// Trigger DHCP renew/restart — 同期版
-    pub fn dhcp_renew() -> ExoValue<'static> {
-        match crate::net::api::dhcp::dhcp_renew() {
-            Ok(()) => ExoValue::Bool(true),
-            Err(e) => ExoValue::Error(e),
-        }
-    }
-
     /// DHCP renew — 非同期版（推奨）
     pub async fn dhcp_renew_async() -> ExoValue<'static> {
         match crate::net::api::dhcp::dhcp_renew_async().await {
@@ -278,80 +264,6 @@ impl NetNamespace {
     /// DHCP last released — 非同期版（推奨）
     pub async fn dhcp_last_released_async() -> ExoValue<'static> {
         if let Some(ip) = crate::net::api::dhcp::dhcp_last_released_async().await {
-            ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
-        } else {
-            ExoValue::Nil
-        }
-    }
-
-    /// Send DHCPDISCOVER and report any currently stored offer
-    pub fn dhcp_discover() -> ExoValue<'static> {
-        if let Some(info) = crate::net::api::dhcp::dhcp_discover() {
-            let mut map = BTreeMap::new();
-            map.insert(
-                String::from("server_ip"),
-                ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", info.server_ip[0], info.server_ip[1], info.server_ip[2], info.server_ip[3]))),
-            );
-            map.insert(
-                String::from("offered_ip"),
-                ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", info.offered_ip[0], info.offered_ip[1], info.offered_ip[2], info.offered_ip[3]))),
-            );
-            ExoValue::Map(map)
-        } else {
-            ExoValue::Nil
-        }
-    }
-
-    /// Send DHCPREQUEST to a specific server for a specific offered address.
-    /// Arguments should be two IPv4 address strings (dotted).
-    pub fn dhcp_request(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        fn parse_ip(val: &ExoValue<'static>) -> Option<[u8;4]> {
-            match val {
-                ExoValue::String(s) => {
-                    let parts: Vec<_> = s.split('.').collect();
-                    if parts.len() == 4 {
-                        let mut out = [0u8;4];
-                        for (i,p) in parts.iter().enumerate() {
-                            if let Ok(n) = p.parse::<u8>() {
-                                out[i] = n;
-                            } else {
-                                return None;
-                            }
-                        }
-                        return Some(out);
-                    }
-                    None
-                }
-                _ => None,
-            }
-        }
-
-        if args.len() < 2 {
-            return ExoValue::Error(String::from("dhcp_request(server_ip, offered_ip) requires two arguments"));
-        }
-        let server = parse_ip(&args[0]).unwrap_or([0,0,0,0]);
-        let offered = parse_ip(&args[1]).unwrap_or([0,0,0,0]);
-        ExoValue::Bool(crate::net::api::dhcp::dhcp_request(server, offered))
-    }
-
-    /// Send DHCPRELEASE for current lease (if any)
-    pub fn dhcp_release() -> ExoValue<'static> {
-        crate::net::api::dhcp::dhcp_release();
-        ExoValue::Bool(true)
-    }
-
-    /// last declined IP (string or nil)
-    pub fn dhcp_last_declined() -> ExoValue<'static> {
-        if let Some(ip) = crate::net::api::dhcp::dhcp_last_declined() {
-            ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
-        } else {
-            ExoValue::Nil
-        }
-    }
-
-    /// last released IP (string or nil)
-    pub fn dhcp_last_released() -> ExoValue<'static> {
-        if let Some(ip) = crate::net::api::dhcp::dhcp_last_released() {
             ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
         } else {
             ExoValue::Nil
