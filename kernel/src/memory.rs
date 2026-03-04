@@ -726,7 +726,9 @@ pub use crate::ALLOCATOR;
 pub const HEAP_SIZE: usize = 128 * 1024 * 1024; // 128 MiB
 
 /// Exchange Heap のサイズ
-pub const EXCHANGE_HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+/// NOTE: ネットワーク Mempool (1024 × 4KB = 4MiB) + RRef IPC + その他のため
+/// 十分な容量を確保する
+pub const EXCHANGE_HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
 const EFI_PAGE_SIZE: u64 = 4096;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_CODE: u32 = 3;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_DATA: u32 = 4;

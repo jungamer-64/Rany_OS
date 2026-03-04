@@ -250,11 +250,20 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
         // 同期コンテキストでは直接処理する poll_all_virtio_net_queues() を使用する。
         // TX_QUEUEにエンキューされたパケットも同期的にデバイスへサブミットする。
         // NETWORK_EVENT_QUEUEに溜まったイベント（ARP応答等）も同期的に処理する。
-        for _ in 0..PUMP_ROUNDS_PER_ATTEMPT {
+        for round in 0..PUMP_ROUNDS_PER_ATTEMPT {
             crate::net::runtime::bridge::sync_drain_tx_queue();
             crate::io::virtio::poll_all_virtio_net_queues();
             crate::net::runtime::bridge::flush_pending_batch();
             crate::net::runtime::bridge::sync_process_network_events();
+
+            // QEMU slirpスタックがパケット（ARP応答等）を処理する時間を確保する。
+            // 同期ポーリングは高速すぎてslirpの応答が間に合わないため、
+            // 各ラウンド間に短いビジーウェイトを挿入する。
+            if round < PUMP_ROUNDS_PER_ATTEMPT - 1 {
+                for _ in 0..50_000 {
+                    core::hint::spin_loop();
+                }
+            }
         }
     }
 
