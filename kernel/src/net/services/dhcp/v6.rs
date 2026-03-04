@@ -53,24 +53,48 @@ pub struct DhcpV6Client {
     server_addr: PoisonLock<Option<Ipv6Address>>,
     state_time: AtomicU64,
     retry_count: AtomicU32,
+    /// キャッシュ済みリンクローカルIPv6アドレス（初回取得後はロックフリー）
+    cached_link_local: PoisonLock<Option<Ipv6Address>>,
 }
 
 impl DhcpV6Client {
     pub const MAX_RETRIES: u32 = 4;
     pub const RETRANS_INTERVAL_SECS: u64 = 4;
 
-    /// スタック設定からリンクローカルIPv6アドレスを取得（短時間ロック）
+    /// スタック設定からリンクローカルIPv6アドレスを取得（キャッシュ付き）
     ///
-    /// NOTE: この関数は短期間のロック取得のみ行うため、デッドロックリスクは低い。
-    /// 将来的には AsyncGetLinkLocal イベント経由の async 版に移行する。
+    /// 初回アクセス時にキャッシュし、以降はロックフリーで高速に返す。
+    /// リンクローカルアドレスはMAC由来のため起動後は不変。
+    ///
+    /// ## 設計根拠
+    /// - `handle_packet()` / `check_timeout()` は同期関数であり、イベントハンドラの
+    ///   スタックロック保持中に呼ばれるため、async版（AsyncGetLinkLocal）は使用不可
+    ///   （再帰的ロック取得→デッドロック）
+    /// - 短期間の読み取りロックで初回のみアクセスし、以降はキャッシュを参照する
     fn get_link_local(&self) -> Option<Ipv6Address> {
-        match crate::net::runtime::stack::stack().lock() {
+        // キャッシュ済みの場合はスタックロック不要
+        if let Ok(guard) = self.cached_link_local.lock() {
+            if let Some(addr) = *guard {
+                return Some(addr);
+            }
+        }
+
+        // 初回のみスタックロックで取得してキャッシュ
+        let result = match crate::net::runtime::stack::stack().lock() {
             Ok(guard) => guard.as_ref().and_then(|s| s.config().ipv6.map(|c| c.link_local)),
             Err(_) => {
                 log::error!("[NET] DHCPv6: Global Stack poisoned - cannot get link-local");
                 None
             }
+        };
+
+        if let Some(addr) = result {
+            if let Ok(mut guard) = self.cached_link_local.lock() {
+                *guard = Some(addr);
+            }
         }
+
+        result
     }
 
     /// 非同期イベントキュー経由でUDPv6パケットを送信（ロック競合回避）
@@ -109,6 +133,7 @@ impl DhcpV6Client {
             server_addr: PoisonLock::new(None),
             state_time: AtomicU64::new(0),
             retry_count: AtomicU32::new(0),
+            cached_link_local: PoisonLock::new(None),
         }
     }
 

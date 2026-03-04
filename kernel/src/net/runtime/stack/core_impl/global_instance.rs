@@ -257,32 +257,40 @@ pub fn unbind_tcp_listener(local: TcpEndpointAddr) {
 
 /// Bind a TCP listener (sync, acquires NETWORK_STACK lock)
 ///
-/// **ブートストラップ/テスト専用**: エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
-/// asyncコンテキストでは `bind_tcp_async()` または `bind_tcp_listener_async()` を使用すること。
+/// **非推奨 (deprecated)**: エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
+/// asyncコンテキストでは `bind_tcp_listener_async()` を使用すること。
+///
+/// # 完全非同期化
+/// 以前はNETWORK_STACKのロックを直接取得していたが、イベントキュー経由の
+/// 非同期パスに統一し、ロック競合を排除。ブートストラップ時のみIRQ無効化 +
+/// 同期ドレインで処理する。
 pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
-    // 同期コンテキスト互換: イベントキュー経由でbindを非同期リクエスト
-    // TcpListener::bind()を使用する方が推奨
+    // イベントキュー経由でbindリクエストを送信（非同期パスと統一）
     let result_slot = alloc::sync::Arc::new(PoisonLock::new(None));
     let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
     crate::net::l4::endpoint::event::send_event_ignore(
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBind {
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindListener {
             local: addr,
             result_slot: result_slot.clone(),
             waker: waker.clone(),
         },
     );
-    // レガシー互換: スタックロックを取得して同期的にbindを実行
-    // （イベントキュー非同期だけでは同期的なResult返却ができないため）
-    match NETWORK_STACK.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.bind_tcp(addr)
-            } else {
+    // ブートストラップ互換: イベントキューを同期ドレインして処理
+    // asyncエグゼキュータ未起動時はイベントがキューに滞留するため、
+    // sync_process_network_events()で即時処理する
+    crate::net::runtime::bridge::sync_process_network_events();
+
+    // 結果スロットから結果を取得
+    match result_slot.lock() {
+        Ok(mut slot) => match slot.take() {
+            Some(result) => result,
+            None => {
+                log::warn!("[NET] bind_tcp sync: result not yet available after drain");
                 Err(TcpError::InvalidState)
             }
-        }
+        },
         Err(_) => {
-            log::error!("[NET] Global Stack poisoned - bind_tcp failed");
+            log::error!("[NET] bind_tcp sync: result_slot poisoned");
             Err(TcpError::InvalidState)
         }
     }

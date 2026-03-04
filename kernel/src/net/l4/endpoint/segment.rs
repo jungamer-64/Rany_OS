@@ -200,22 +200,30 @@ impl TcpSegmentBuilder {
     }
 
     /// SYN/SYN-ACK用の標準オプションセットを追加
-    /// MSS + Window Scale + SACK Permitted + Timestamp + NOP (4バイト境界パディング)
-    pub fn syn_options(self, mss: u16, window_scale: u8, ts_val: Option<u32>) -> Self {
-        // MSS(4) + WS(3) + SACK(2) + TS(10) + NOP(1) = 20 bytes → 4バイト境界
-        let mut builder = self.mss(mss)
-            .window_scale(window_scale)
-            .sack_permitted();
-        
+    /// MSS + Window Scale (optional) + SACK Permitted (optional) + Timestamp (optional)
+    pub fn syn_options(
+        self,
+        mss: u16,
+        window_scale: Option<u8>,
+        sack_permitted: bool,
+        ts_val: Option<u32>,
+    ) -> Self {
+        let mut builder = self.mss(mss);
+
+        if let Some(ws) = window_scale {
+            builder = builder.window_scale(ws);
+        }
+
+        if sack_permitted {
+            builder = builder.sack_permitted();
+        }
+
         if let Some(val) = ts_val {
             builder = builder.timestamp(val, 0);
-        } else {
-            // パディングして境界を合わせる (TSがない場合)
-            builder = builder.nop().nop().nop();
         }
+
         builder
     }
-
     /// オプション長をパディングして4バイト境界に揃える
     fn pad_options(&mut self) {
         // 20バイト + オプション長が4の倍数になるようパディング
@@ -423,7 +431,7 @@ pub mod tests {
             .seq(1000)
             .syn()
             .window(65535)
-            .syn_options(1460, 7, None) // MSS=1460, WS=7, SACK
+            .syn_options(1460, Some(7), true, None) // MSS=1460, WS=7, SACK
             .build();
 
         // ヘッダ20バイト + オプション12バイト = 32バイト (MSS:4, WS:3, SACK:2, NOP:3)
@@ -561,7 +569,7 @@ pub mod qemu_tests {
             .seq(1000)
             .syn()
             .window(65535)
-            .syn_options(1460, 7, None)
+            .syn_options(1460, Some(7), true, None)
             .build();
 
         if segment.len() != 32 {

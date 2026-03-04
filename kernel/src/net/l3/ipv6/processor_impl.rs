@@ -84,18 +84,24 @@ impl Ipv6Processor {
                 }
             }
             ExtHeaderResult::Fragment { unfragmentable, frag_header, frag_payload } => {
-                let (reassembled, expired) = self.reassembler.process_fragment(
+                let (res, expired) = self.reassembler.process_fragment(
                     src, dst, unfragmentable, &frag_header, frag_payload, current_time
                 );
 
-                if let Some(data) = reassembled {
-                    return Ipv6ProcessResult::Reassembled(data);
-                } else if !expired.is_empty() {
-                    // Return first expired buffer for ICMPv6 processing
-                    let (e_src, e_dst, e_unfrag) = expired[0].clone();
-                    return Ipv6ProcessResult::ReassemblyTimeout(e_src, e_dst, e_unfrag);
-                } else {
-                    return Ipv6ProcessResult::FragmentPending;
+                match res {
+                    Ok(Some(data)) => Ipv6ProcessResult::Reassembled(data),
+                    Ok(None) => {
+                        if !expired.is_empty() {
+                            let (e_src, e_dst, e_unfrag) = expired[0].clone();
+                            Ipv6ProcessResult::ReassemblyTimeout(e_src, e_dst, e_unfrag)
+                        } else {
+                            Ipv6ProcessResult::FragmentPending
+                        }
+                    }
+                    Err(e) => {
+                        // RFC 8200 Error handling
+                        Ipv6ProcessResult::ReassemblyError(e, src, dst, unfragmentable.to_vec())
+                    }
                 }
             }
         }

@@ -91,8 +91,34 @@ fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, payload_len:
     }
 }
 
+use core::sync::atomic::AtomicU32;
+
+/// Challenge ACK rate limiting (RFC 5961 Section 10)
+/// Recommended limit: 100 segments per second
+static CHALLENGE_ACK_LIMIT_MS: u64 = 1000; // 1 second window
+static CHALLENGE_ACK_MAX_COUNT: u32 = 100;
+static CHALLENGE_ACK_COUNT: AtomicU32 = AtomicU32::new(0);
+static CHALLENGE_ACK_LAST_RESET: AtomicU64 = AtomicU64::new(0);
+
+fn check_challenge_ack_rate_limit() -> bool {
+    let now = tcb_table().get_current_tick();
+    let last_reset = CHALLENGE_ACK_LAST_RESET.load(Ordering::Relaxed);
+
+    if now.saturating_sub(last_reset) >= CHALLENGE_ACK_LIMIT_MS {
+        CHALLENGE_ACK_COUNT.store(0, Ordering::Relaxed);
+        CHALLENGE_ACK_LAST_RESET.store(now, Ordering::Relaxed);
+    }
+
+    let count = CHALLENGE_ACK_COUNT.fetch_add(1, Ordering::Relaxed);
+    count < CHALLENGE_ACK_MAX_COUNT
+}
+
 /// チャレンジACK（シーケンス番号エラー時の応答）を送信
 fn send_challenge_ack(tcb: &TcpControlBlockEntry) {
+    if !check_challenge_ack_rate_limit() {
+        log::debug!("[TCP] Challenge ACK rate limit exceeded, dropping");
+        return;
+    }
     let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
         .seq(tcb.snd_nxt)
         .ack(tcb.rcv_nxt)
@@ -595,8 +621,8 @@ fn send_rst_for_unexpected_ack(tcb: &TcpControlBlockEntry, ack_num: u32) {
     send_tcp_segment(tcb.local, tcb.remote, rst);
 }
 
-/// ESTABLISHED状態でのセグメント処理
-fn handle_established_segment(
+/// 既存TCBに対するTCPセグメント処理（RFC 793 / 9293 / 5961 準拠）
+fn handle_synchronized_segment(
     tcb: TcpControlBlockEntry,
     flags: u8,
     seq_num: u32,
@@ -605,12 +631,14 @@ fn handle_established_segment(
     segment: &[u8],
     data_offset: usize,
 ) {
-    let is_fin = (flags & tcp_flags::FIN) != 0;
     let is_rst = (flags & tcp_flags::RST) != 0;
-    let is_urg = (flags & tcp_flags::URG) != 0;
+    let is_syn = (flags & tcp_flags::SYN) != 0;
     let is_ack = (flags & tcp_flags::ACK) != 0;
+    let is_fin = (flags & tcp_flags::FIN) != 0;
+    let is_urg = (flags & tcp_flags::URG) != 0;
+    let payload_len = segment.len().saturating_sub(data_offset);
 
-    // TCPオプション解析（SACK / Timestamps）
+    // 0. Parse TCP Options (SACK / Timestamps)
     if data_offset > 20 && data_offset <= segment.len() {
         let options = &segment[20..data_offset];
         let mut parser = TcpOptionParser::new(options);
@@ -628,15 +656,14 @@ fn handle_established_segment(
             }
         }
 
-        // Timestamp
+        // Timestamp (RFC 7323 Section 5.3)
         if tcb.ts_enabled {
             if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
-                // RFC 7323 Section 5.3: Only update TS.Recent if SEG.SEQ <= Last.ACK.sent
+                // RFC 7323: SEG.SEQ <= last.ACK.sent の場合に更新。
                 // 簡略化して in-order セグメントの場合のみ更新する。
                 if seq_num == tcb.rcv_nxt {
                     tcb_table().update(tcb.local, tcb.remote, |entry| {
                         entry.ts_ecr = peer_ts_val; // 次のACKのTSecrに使用
-                        // 自分のTSvalを更新
                         entry.ts_val = generate_tcp_timestamp();
                     });
                 }
@@ -644,33 +671,105 @@ fn handle_established_segment(
         }
     }
 
+    // 1. Check RST bit (RFC 793 / RFC 5961 Section 3.2)
+    if is_rst {
+        handle_rst_received(tcb, seq_num);
+        return;
+    }
+
+    // 2. Check SYN bit (RFC 5961 Section 4.2)
+    // Synchronized states: ESTABLISHED, FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT
+    // (Note: SynReceived is handled separately if needed, but here we assume synchronized)
+    if is_syn {
+        log::warn!(
+            "[TCP] SYN in synchronized state {:?} from {} (seq={}), sending Challenge ACK (RFC 5961)",
+            tcb.state, tcb.remote, seq_num
+        );
+        send_challenge_ack(&tcb);
+        return;
+    }
+
+    // 3. Check ACK bit (RFC 793 / RFC 5961 Section 5.2)
+    if !is_ack {
+        // All segments in synchronized states MUST have ACK bit set (except RST)
+        return;
+    }
+
+    // RFC 5961 Section 5.2: ACK validation
+    // SND.UNA - MAX.SND.WND <= SEG.ACK <= SND.NXT
+    let diff_nxt = ack_num.wrapping_sub(tcb.snd_nxt) as i32;
+    let diff_una = tcb.snd_una.wrapping_sub(ack_num) as i32;
+    let max_wnd = tcb.max_snd_wnd as i32;
+
+    if diff_nxt > 0 || diff_una > max_wnd {
+        log::warn!(
+            "[TCP] ACK value outside acceptable range (ack={}, una={}, nxt={}, max_wnd={}), sending Challenge ACK (RFC 5961)",
+            ack_num, tcb.snd_una, tcb.snd_nxt, max_wnd
+        );
+        send_challenge_ack(&tcb);
+        return;
+    }
+
+    // Acceptable ACK: Process it
+    handle_ack_received(tcb.clone(), ack_num);
+
+    // 4. Check URG bit (RFC 793 / RFC 6093)
+    if is_urg && urgent_ptr > 0 {
+        handle_urgent_received(tcb.clone(), seq_num, urgent_ptr);
+    }
+
+    // 5. Process segment data (RFC 793)
+    if payload_len > 0 {
+        handle_data_received_with_delayed_ack(tcb.clone(), seq_num, &segment[data_offset..]);
+    }
+
+    // 6. Check FIN bit (RFC 793)
     if is_fin {
         handle_fin_received(tcb, seq_num);
-    } else if is_rst {
-        handle_rst_received(tcb, seq_num);
-    } else {
-        if is_urg && urgent_ptr > 0 {
-            handle_urgent_received(tcb.clone(), seq_num, urgent_ptr);
-        }
-        let data_start = data_offset;
-        if data_start < segment.len() {
-            let data = &segment[data_start..];
-            handle_data_received(tcb, seq_num, data);
-        } else if is_ack {
-            handle_ack_received(tcb, ack_num);
-        }
     }
 }
 
-/// FIN-WAIT-1状態でのセグメント処理
-fn handle_fin_wait1_segment(tcb: TcpControlBlockEntry, flags: u8, seq_num: u32, ack_num: u32) {
-    let is_fin = (flags & tcp_flags::FIN) != 0;
-    let is_ack = (flags & tcp_flags::ACK) != 0;
+/// Slow path データ受信処理 (Delayed ACK対応)
+fn handle_data_received_with_delayed_ack(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
+    let payload_len = data.len() as u32;
 
-    if is_fin && is_ack {
-        handle_fin_ack_received(tcb, seq_num, ack_num);
-    } else if is_ack {
-        handle_ack_for_fin(tcb, ack_num);
+    if seq_num != tcb.rcv_nxt {
+        // Out-of-order: OOOキューに追加して即座に重複ACKを送信 (RFC 5681)
+        ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data);
+        send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
+        return;
+    }
+
+    let mut new_rcv_nxt = seq_num.wrapping_add(payload_len);
+
+    // ソケットの受信バッファにデータ追加
+    if let Some(socket) = get_socket_by_fd(tcb.fd) {
+        socket.push_data(data);
+
+        // OOOキューから連続セグメントをドレインしてバッファに追加
+        new_rcv_nxt = ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt, |_seg_seq, seg_data| {
+            socket.push_data(seg_data);
+        });
+    }
+
+    // TCB更新
+    tcb_table().update(tcb.local, tcb.remote, |entry| {
+        entry.rcv_nxt = new_rcv_nxt;
+        // Delayed ACK: セグメントカウンタをインクリメント
+        entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
+    });
+
+    // Delayed ACK 判定 (RFC 1122 / 5681)
+    let should_ack_now = tcb_table()
+        .lookup(tcb.local, tcb.remote)
+        .map(|e| e.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
+        .unwrap_or(true);
+
+    if should_ack_now {
+        send_ack_for_fast_path(&tcb, new_rcv_nxt);
+        tcb_table().update(tcb.local, tcb.remote, |entry| {
+            entry.delayed_ack_pending = 0;
+        });
     }
 }
 
@@ -687,13 +786,10 @@ fn process_tcp_with_tcb(
     let payload_len = segment.len().saturating_sub(data_offset);
 
     // RFC 7323 Section 5.8: PAWS (Protection Against Wrapped Sequence numbers)
-    // タイムスタンプオプションが有効な場合、PAWSチェックを行う。
     if tcb.ts_enabled {
         let options = &segment[20..data_offset];
         let mut parser = TcpOptionParser::new(options);
         if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
-            // RFC 7323: SEG.TSval < TS.Recent ならば古いセグメントとみなして破棄
-            // (ただし RST 以外。また 24日以上の経過によるラップアラウンドは考慮外)
             if (flags & tcp_flags::RST) == 0 && peer_ts_val < tcb.ts_ecr {
                 log::warn!(
                     "[TCP] PAWS check failed (TSval {} < TSrecent {}) for {} - dropping segment (RFC 7323)",
@@ -706,26 +802,14 @@ fn process_tcp_with_tcb(
     }
 
     // RFC 793 / 9293 Section 3.10.7.1: 受信セグメントのシーケンス番号妥当性を検証
-    // SYN-SENT状態以外では、セグメントがウィンドウ内にあることを確認する必要がある。
     if tcb.state != TcpConnectionState::SynSent && !is_acceptable_sequence(&tcb, seq_num, payload_len) {
-        log::warn!(
-            "[TCP] Incoming segment out of window (seq={}, len={}) for connection to {}, sending Challenge ACK",
-            seq_num, payload_len, tcb.remote
-        );
-        send_challenge_ack(&tcb);
-        return;
-    }
-
-    // RFC 5961 Section 4.2: SYN bit in synchronized state
-    // 確立済みの接続に対してSYNを受信した場合、ブラインドリセット攻撃を防ぐため
-    // RSTではなくチャレンジACKを送信して生存確認を行う。
-    let is_syn = (flags & tcp_flags::SYN) != 0;
-    if is_syn && tcb.state != TcpConnectionState::SynSent && tcb.state != TcpConnectionState::SynReceived {
-        log::warn!(
-            "[TCP] SYN in synchronized state {:?} from {} (seq={}), sending Challenge ACK",
-            tcb.state, tcb.remote, seq_num
-        );
-        send_challenge_ack(&tcb);
+        if (flags & tcp_flags::RST) == 0 {
+            log::warn!(
+                "[TCP] Incoming segment out of window (seq={}, len={}) for connection to {}, sending Challenge ACK",
+                seq_num, payload_len, tcb.remote
+            );
+            send_challenge_ack(&tcb);
+        }
         return;
     }
 
@@ -734,38 +818,31 @@ fn process_tcp_with_tcb(
             handle_syn_sent_segment(tcb, flags, seq_num, ack_num, segment, data_offset);
         }
         TcpConnectionState::SynReceived => {
+            // RFC 793: If ACK bit is set, check if acceptable and transition to Established
             if (flags & tcp_flags::ACK) != 0 {
-                handle_ack_for_syn(tcb, ack_num);
+                if ack_num.wrapping_sub(tcb.snd_una) as i32 > 0 && ack_num.wrapping_sub(tcb.snd_nxt) as i32 <= 0 {
+                    // Valid ACK: Transition to Established
+                    tcb_table().update(tcb.local, tcb.remote, |entry| {
+                        entry.snd_una = ack_num;
+                        entry.state = TcpConnectionState::Established;
+                    });
+                    // Continue processing in Established state
+                    handle_synchronized_segment(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
+                } else if (flags & tcp_flags::RST) == 0 {
+                    send_rst_for_unexpected_ack(&tcb, ack_num);
+                }
+            } else if (flags & tcp_flags::SYN) != 0 {
+                // Duplicate SYN in SynReceived: Ignore or re-send SYN-ACK
             }
         }
-        TcpConnectionState::Established => {
-            handle_established_segment(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
-        }
-        TcpConnectionState::FinWait1 => {
-            handle_fin_wait1_segment(tcb, flags, seq_num, ack_num);
-        }
-        TcpConnectionState::FinWait2 => {
-            if (flags & tcp_flags::FIN) != 0 {
-                handle_fin_received(tcb, seq_num);
-            }
-        }
-        TcpConnectionState::CloseWait | TcpConnectionState::LastAck => {
-            if (flags & tcp_flags::ACK) != 0 {
-                handle_final_ack(tcb, ack_num);
-            }
-        }
-        TcpConnectionState::TimeWait => {
-            // RFC 793 / 9293 Section 3.10.7.4:
-            // "Any segment received in the TIME-WAIT state MUST be acknowledged.
-            // This re-acknowledges the peer's FIN and restarts the 2MSL timer."
-
-            // TCBを更新して最終送信時刻をリセット（2MSLタイマーの再起動）
-            tcb_table().update(tcb.local, tcb.remote, |entry| {
-                entry.last_send_tick = tcb_table().get_current_tick();
-            });
-
-            // ACK送信
-            send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
+        TcpConnectionState::Established
+        | TcpConnectionState::FinWait1
+        | TcpConnectionState::FinWait2
+        | TcpConnectionState::CloseWait
+        | TcpConnectionState::Closing
+        | TcpConnectionState::LastAck
+        | TcpConnectionState::TimeWait => {
+            handle_synchronized_segment(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
         }
         _ => {}
     }
@@ -1054,6 +1131,12 @@ fn process_tcp_new_connection(
     // TCB更新: SYN-ACKは1シーケンス番号を消費する (RFC 793)
     tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
 
+    // SYN-ACK送信に必要な値をinsertの前にキャプチャ
+    let ws_enabled = tcb.window_scale.enabled;
+    let sack_opt = tcb.sack_enabled;
+    let ts_enabled = tcb.ts_enabled;
+    let isn = tcb.snd_nxt.wrapping_sub(1); // insert前のISN
+
     // TCBをテーブルに挿入 (リソース制限チェック)
     if let Err(e) = tcb_table().insert(tcb) {
         log::warn!("[NET] TCP: Failed to accept new connection from {}: {}", remote, e);
@@ -1062,14 +1145,16 @@ fn process_tcp_new_connection(
 
     // SYN-ACK送信 (TCPオプション付き)
     // MSS=1460 (標準的なイーサネットMTU 1500 - IPヘッダ20 - TCPヘッダ20)
-    // Window Scale=7 (最大8MBウィンドウ)
+    let ws_opt = if ws_enabled { Some(7) } else { None };
+    let ts_opt = if ts_enabled { Some(generate_tcp_timestamp()) } else { None };
+
     let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
         .seq(isn)
         .ack(seq_num.wrapping_add(1))
         .syn()
         .ack_flag()
         .window(65535)
-        .syn_options(1460, 7, Some(generate_tcp_timestamp())); // MSS + Window Scale + SACK Permitted + TS
+        .syn_options(1460, ws_opt, sack_opt, ts_opt);
 
     // TSopt付きSYN-ACK (RFC 7323 Section 3.2)
     if let Some((peer_ts_val, _)) = peer_ts {
@@ -1154,15 +1239,40 @@ fn handle_ack_received(tcb: TcpControlBlockEntry, ack_num: u32) {
     // 重複ACK判定: ack_num == snd_una なら新データ未確認（重複ACK）
     let is_dup = ack_num == tcb.snd_una;
 
+    let mut should_remove = false;
     tcb_table().update(tcb.local, tcb.remote, |entry| {
         // 輻輳制御に委譲（snd_una更新含む）
-        // RTTサンプルは再送キュー側で測定するため、ここでは0を渡す。
-        // BBRは on_ack 内で独自に計算する。
         entry.on_ack_received(ack_num, is_dup, current_time_ms, 0);
+        
         if !is_dup {
             entry.retransmit_count = 0;
+            
+            // RFC 793: State transitions on ACK
+            match entry.state {
+                TcpConnectionState::FinWait1 => {
+                    if ack_num == entry.snd_nxt {
+                        entry.state = TcpConnectionState::FinWait2;
+                    }
+                }
+                TcpConnectionState::Closing => {
+                    if ack_num == entry.snd_nxt {
+                        entry.state = TcpConnectionState::TimeWait;
+                    }
+                }
+                TcpConnectionState::LastAck => {
+                    if ack_num == entry.snd_nxt {
+                        entry.state = TcpConnectionState::Closed;
+                        should_remove = true;
+                    }
+                }
+                _ => {}
+            }
         }
     });
+
+    if should_remove {
+        tcb_table().remove(tcb.local, tcb.remote);
+    }
 
     // 再送キューからACK済みセグメントを削除（RTT測定も実行）
     retransmit_queue_ack(tcb.local, tcb.remote, ack_num);
@@ -1275,164 +1385,98 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
     false
 }
 
-/// データ受信処理（OOO再組立て対応）
-fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
-    // --- In-order / Overlapping セグメント処理 ---
-    let (actual_seq, actual_data) = if seq_num == tcb.rcv_nxt {
-        (seq_num, data)
-    } else if seq_before(seq_num, tcb.rcv_nxt) {
-        // 重複/オーバーラップ: すでに受信済みの部分を切り捨てる
-        let overlap = tcb.rcv_nxt.wrapping_sub(seq_num) as usize;
-        if overlap >= data.len() {
-            // 完全に受信済み
-            return;
+/// FIN受信処理 (RFC 793 Section 3.5)
+///
+/// 相手側からFINを受信した際の状態遷移を処理する。
+/// FINは1シーケンス番号を消費するため、rcv_nxtを1進める。
+///
+/// ## 状態遷移 (RFC 793)
+/// - ESTABLISHED → CLOSE_WAIT (相手が接続クローズを開始)
+/// - FIN_WAIT_1 → CLOSING (同時クローズ)
+/// - FIN_WAIT_2 → TIME_WAIT (正常なアクティブクローズ完了)
+fn handle_fin_received(tcb: TcpControlBlockEntry, seq_num: u32) {
+    // FINはrcv_nxtの位置に到着した場合のみ処理
+    // (out-of-order FINは既にOOOキューに入れられている)
+    if seq_num != tcb.rcv_nxt {
+        // FINが期待位置にない場合はACKのみ送信
+        send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
+        return;
+    }
+
+    let mut should_ack = false;
+
+    tcb_table().update(tcb.local, tcb.remote, |entry| {
+        // FINは1シーケンス番号を消費 (RFC 793)
+        entry.rcv_nxt = entry.rcv_nxt.wrapping_add(1);
+
+        match entry.state {
+            TcpConnectionState::Established => {
+                // ESTABLISHED → CLOSE_WAIT
+                // 相手がクローズを開始。アプリケーションが明示的にcloseするまで待つ。
+                entry.state = TcpConnectionState::CloseWait;
+                should_ack = true;
+                log::info!(
+                    "[TCP] FIN received in ESTABLISHED: {} <- {} → CLOSE_WAIT",
+                    entry.local, entry.remote
+                );
+            }
+            TcpConnectionState::FinWait1 => {
+                // FIN_WAIT_1 → CLOSING (同時クローズ)
+                // 我々のFINがまだACKされていないが、相手もFINを送信した
+                entry.state = TcpConnectionState::Closing;
+                should_ack = true;
+                log::info!(
+                    "[TCP] FIN received in FIN_WAIT_1: {} <- {} → CLOSING",
+                    entry.local, entry.remote
+                );
+            }
+            TcpConnectionState::FinWait2 => {
+                // FIN_WAIT_2 → TIME_WAIT
+                // 正常なアクティブクローズの最終段階
+                entry.state = TcpConnectionState::TimeWait;
+                // TIME_WAIT開始時刻を記録
+                entry.last_send_tick = tcb_table().get_current_tick();
+                should_ack = true;
+                log::info!(
+                    "[TCP] FIN received in FIN_WAIT_2: {} <- {} → TIME_WAIT",
+                    entry.local, entry.remote
+                );
+            }
+            _ => {
+                // 他の状態ではFINは無視またはACKのみ
+                should_ack = true;
+            }
         }
-        (tcb.rcv_nxt, &data[overlap..])
-    } else {
-        // 完全に順序外: OOOキューに保存し、即座にDupACKを返す
-        ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data);
+    });
 
-        // SACKブロック取得（OOOキュー内の受信済み範囲を通知）
-        let sack = ooo_queue::get_sack_blocks(tcb.local, tcb.remote);
+    if should_ack {
+        // FINに対するACKを送信 (rcv_nxtは既に+1済み)
+        let new_rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+        send_ack_for_fast_path(&tcb, new_rcv_nxt);
+    }
 
-        // DupACK — 現在のrcv_nxtで応答（Fast Retransmitトリガ用 + SACKブロック付き）
-        let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
-            .seq(tcb.snd_nxt)
-            .ack(tcb.rcv_nxt)
-            .ack_flag()
-            .window(65535);
+    // ソケットに接続相手のクローズを通知
+    // recv_wakerを起こして、readがEOFを返せるようにする
+    notify_socket_peer_fin(tcb.fd);
+}
 
-        if tcb.sack_enabled && !sack.is_empty() {
-            // NOP+NOP+SACK でアラインメント (RFC 2018 Section 3)
-            builder = builder.nop().nop().sack_blocks(sack.as_slice());
-        }
-
-        if tcb.ts_enabled {
-            builder = builder.nop().nop().timestamp(tcb.ts_val, tcb.ts_ecr);
-        }
-
-        let mut dup_ack = builder.build();
-        if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
-            TcpSegmentBuilder::calculate_checksum(&mut dup_ack, lv4, rv4);
-        } else {
-            TcpSegmentBuilder::calculate_checksum_v6(
-                &mut dup_ack,
-                crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
-                crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
-            );
-        }
-        send_tcp_segment(tcb.local, tcb.remote, dup_ack);
+/// ソケットに相手側FIN受信を通知
+///
+/// recv_wakerを起こすことで、アプリケーション側のread操作が
+/// EOF (0バイト読み取り) を返せるようにする。
+fn notify_socket_peer_fin(fd: EndpointFd) {
+    let manager = ENDPOINT_MANAGER.read();
+    let Some(ref mgr) = *manager else {
         return;
     };
 
-    let mut new_rcv_nxt = actual_seq.wrapping_add(actual_data.len() as u32);
-
-    // ソケットの受信バッファにデータ追加
-    if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        socket.push_data(actual_data);
-
-        // OOOキューから連続セグメントをドレインしてバッファに追加
-        new_rcv_nxt = ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt, |_seg_seq, seg_data| {
-            socket.push_data(seg_data);
-        });
-    }
-
-    // TCB更新
-    tcb_table().update(tcb.local, tcb.remote, |entry| {
-        entry.rcv_nxt = new_rcv_nxt;
-    });
-
-    // ACK送信（ドレイン後のrcv_nxtで応答）
-    let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
-        .seq(tcb.snd_nxt)
-        .ack(new_rcv_nxt)
-        .ack_flag()
-        .window(65535);
-
-    // SACK: OOOキューのSACKブロックをACKに付与（交渉済みの場合）
-    if tcb.sack_enabled {
-        let sack = ooo_queue::get_sack_blocks(tcb.local, tcb.remote);
-        if !sack.is_empty() {
-            builder = builder.nop().nop().sack_blocks(sack.as_slice());
+    if let Some(socket) = mgr.get(fd) {
+        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        // recv_wakerを起こしてEOFを通知
+        if let Some(waker) = inner.recv_waker.take() {
+            waker.wake();
         }
     }
-
-    // TCP Timestamps (RFC 7323): ACKにTSoptを付与
-    if tcb.ts_enabled {
-        builder = builder.nop().nop().timestamp(tcb.ts_val, tcb.ts_ecr);
-    }
-
-    let mut ack = builder.build();
-
-    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
-        TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
-    } else {
-        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
-    }
-    send_tcp_segment(tcb.local, tcb.remote, ack);
-}
-
-/// FIN受信処理
-fn handle_fin_received(tcb: TcpControlBlockEntry, seq_num: u32) {
-    tcb_table().update(tcb.local, tcb.remote, |entry| {
-        entry.rcv_nxt = seq_num.wrapping_add(1); // FINは1バイト消費
-        entry.state = match entry.state {
-            TcpConnectionState::Established => TcpConnectionState::CloseWait,
-            TcpConnectionState::FinWait1 => TcpConnectionState::Closing,
-            TcpConnectionState::FinWait2 => TcpConnectionState::TimeWait,
-            s => s,
-        };
-    });
-
-    // ACK送信
-    let mut ack = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
-        .seq(tcb.snd_nxt)
-        .ack(seq_num.wrapping_add(1))
-        .ack_flag()
-        .window(65535)
-        .build();
-
-    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
-        TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
-    } else {
-        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
-    }
-    // パケット送信
-    send_tcp_segment(tcb.local, tcb.remote, ack);
-}
-
-/// FIN-ACK受信処理
-fn handle_fin_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32) {
-    handle_ack_received(tcb.clone(), ack_num);
-    handle_fin_received(tcb, seq_num);
-}
-
-/// FIN確認応答処理
-fn handle_ack_for_fin(tcb: TcpControlBlockEntry, ack_num: u32) {
-    if ack_num != tcb.snd_nxt {
-        return;
-    }
-
-    tcb_table().update(tcb.local, tcb.remote, |entry| {
-        entry.snd_una = ack_num;
-        entry.state = TcpConnectionState::FinWait2;
-    });
-}
-
-/// 最終ACK処理
-fn handle_final_ack(tcb: TcpControlBlockEntry, ack_num: u32) {
-    if ack_num != tcb.snd_nxt {
-        return;
-    }
-
-    tcb_table().update(tcb.local, tcb.remote, |entry| {
-        entry.state = TcpConnectionState::Closed;
-    });
-
-    // リソースクリーンアップ
-    retransmit_queue_remove(tcb.local, tcb.remote);
-    ooo_queue::remove_ooo_queue(tcb.local, tcb.remote);
-    tcb_table().remove(tcb.local, tcb.remote);
 }
 
 /// Urgent data受信処理 (RFC 793/6093)
@@ -1492,13 +1536,28 @@ fn get_socket_by_fd(fd: EndpointFd) -> Option<Endpoint> {
     mgr.get(fd)
 }
 
-/// ネットワークイベント処理タスク
-/// 非同期でイベントを消費してプロトコルスタックに渡す
+/// ネットワークイベント処理タスク（完全非同期版）
+///
+/// 【完全非同期化】イベントキュー経由でプロトコルスタックにアクセスする。
+/// NETWORK_STACKのロック取得はこのタスク内でのみ行われ、
+/// 他の全てのネットワーク操作はイベントキュー経由で非同期にオフロードされる。
+///
+/// ## ロック取得の設計方針
+/// - スタックロックは1回のバッチ処理で取得し、バッチ内の全イベントを処理
+/// - バッチサイズに上限を設け、長時間のロック保持によるスターベーションを防止
+/// - バッチ間でロックを解放し、yield_now()で他のタスクに実行機会を与える
+/// - ISR内でwake()を直接呼ばない（設計書準拠: 2段階Wake方式）
 pub async fn network_event_task() {
+    log::info!("[NET] network_event_task started (fully async)");
+
+    /// 1回のバッチで処理するイベントの最大数
+    /// ロック保持時間を制限し、他タスクのスターベーションを防止
+    const MAX_BATCH_SIZE: usize = 128;
+
     let handler = NetworkEventHandler::new();
 
     loop {
-        // イベントを待機（単一イベントを取得）
+        // イベントを非同期で待機（Futureベース）
         let event = event_queue().wait_for_events().await;
 
         // スタックのロックを取得してバッチ処理
@@ -1510,16 +1569,33 @@ pub async fn network_event_task() {
                 process_handle_result(result, event_clone);
 
                 // キューに溜まっている他のイベントもスタックロック保持中に一括処理
-                while let Some(batch_event) = event_queue().recv() {
-                    let batch_clone = batch_event.clone();
-                    let result = handler.handle_event_with_stack(batch_event, stack);
-                    process_handle_result(result, batch_clone);
+                // バッチサイズに上限を設けてスターベーションを防止
+                let mut batch_count = 1usize;
+                while batch_count < MAX_BATCH_SIZE {
+                    match event_queue().recv() {
+                        Some(batch_event) => {
+                            let batch_clone = batch_event.clone();
+                            let result = handler.handle_event_with_stack(batch_event, stack);
+                            process_handle_result(result, batch_clone);
+                            batch_count += 1;
+                        }
+                        None => break,
+                    }
+                }
+
+                // ロックを明示的に解放（次のバッチを処理する前に）
+                drop(stack_guard);
+
+                // バッチサイズ上限に達した場合、他タスクに実行機会を与えてから
+                // 残りを処理（協調的スケジューリング）
+                if batch_count >= MAX_BATCH_SIZE {
+                    crate::task::yield_now().await;
                 }
                 continue;
             }
         }
 
-        // スタック未初期化やロック失敗時は通常の個別処理
+        // スタック未初期化やロック失敗時はstacklessフォールバック
         let event_clone = event.clone();
         let result = handler.handle_event(event);
         process_handle_result(result, event_clone);

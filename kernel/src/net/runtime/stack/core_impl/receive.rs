@@ -262,6 +262,29 @@ impl NetworkStack {
                 log::info!("IPv6: Reassembly timeout for {} - sending ICMPv6 Time Exceeded", src);
                 self.send_icmpv6_time_exceeded(src, 1, &unfragmentable);
             }
+            Ipv6ProcessResult::ReassemblyError(err, src, _dst, unfragmentable) => {
+                match err {
+                    crate::net::l3::ipv6::Ipv6ReassemblyError::Overlap => {
+                        // RFC 8200: Send ICMPv6 Time Exceeded (Code 1) on overlap
+                        log::warn!("IPv6: Fragment overlap from {} - sending ICMPv6 Time Exceeded (RFC 8200)", src);
+                        self.send_icmpv6_time_exceeded(src, 1, &unfragmentable);
+                    }
+                    crate::net::l3::ipv6::Ipv6ReassemblyError::InvalidSize => {
+                        // RFC 8200: Send ICMPv6 Parameter Problem (Code 0), pointing to Payload Length
+                        // Payload Length is at offset 4 in IPv6 header
+                        log::warn!("IPv6: Invalid fragment size from {} - sending ICMPv6 Parameter Problem (RFC 8200)", src);
+                        self.send_icmpv6_parameter_problem(src, 0, 4, &unfragmentable);
+                    }
+                    crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
+                        // RFC 8200: Send ICMPv6 Parameter Problem (Code 0), pointing to Fragment Offset
+                        // The pointer field should point to the Fragment Offset field in the Fragment header.
+                        // unfragmentable ends just before the Fragment Header.
+                        let pointer = (unfragmentable.len() as u32) + 2;
+                        log::warn!("IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem (RFC 8200) pointer={}", src, pointer);
+                        self.send_icmpv6_parameter_problem(src, 0, pointer, &unfragmentable);
+                    }
+                }
+            }
             Ipv6ProcessResult::Dropped => {
                 self.stats.record_dropped();
             }

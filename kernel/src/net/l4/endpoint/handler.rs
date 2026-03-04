@@ -85,10 +85,20 @@ impl NetworkEventHandler {
         }
     }
 
-    /// イベントを処理
+    /// イベントを処理（フォールバックパス）
     ///
-    /// スタックロックの取得を1回に集約し、全イベントを`handle_event_with_stack()`に
-    /// 委譲する。ロック取得に失敗した場合のみ、スタック非依存のフォールバックパスへ。
+    /// ## 概要
+    /// スタックロックの取得を試み、成功時は`handle_event_with_stack()`に委譲する。
+    /// ロック取得に失敗した場合のみ、スタック非依存の`handle_event_stackless()`へ。
+    ///
+    /// ## ⚠️ 使用上の注意
+    /// 通常の非同期パスでは `network_event_task()` がスタックロックを保持した状態で
+    /// 直接 `handle_event_with_stack()` を呼び出すため、この関数は呼ばれない。
+    /// この関数は以下のケースでのみ使用される：
+    /// - `network_event_task()` のフォールバックパス（スタック初期化前）
+    /// - `sync_process_network_events()` がロック取得に失敗した場合の再エンキュー後
+    ///
+    /// asyncコンテキストから直接呼び出す場合、スタックロックの二重取得に注意すること。
     pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
         // 最適パス: スタックロックを1回取得し、handle_event_with_stack() に委譲
         // これにより、各イベントが個別にロックを取得する非効率なパターンを排除する
@@ -1030,13 +1040,19 @@ impl NetworkEventHandler {
     }
 
     /// IngressPacketイベント処理
+    ///
+    /// 【完全非同期化】このメソッドはイベントキュー経由でのみ呼び出されるべき。
+    /// `handle_event()` → `handle_event_with_stack()` のパスで呼ばれる場合は
+    /// 既にスタックロックが保持されている。
+    /// `handle_event()` → `handle_event_stackless()` のパスで呼ばれた場合は
+    /// イベントを再エンキューして非同期パスに委譲する。
     fn handle_ingress_packet(&self, packet: PacketRef) -> EventHandleResult {
-        // Ethernetヘッダ解析
-        if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
-            if let Some(ref mut stack) = *stack_guard {
-                return self.handle_event_with_stack(NetworkEvent::IngressPacket { packet }, stack);
-            }
-        }
+        // スタックロックなしのコンテキストから呼ばれた場合:
+        // イベントキュー経由で再エンキューし、network_event_taskが
+        // スタックロック保持下で処理する（二重ロック取得を回避）
+        crate::net::l4::endpoint::event::send_event_ignore(
+            NetworkEvent::IngressPacket { packet },
+        );
         EventHandleResult::Success
     }
 
@@ -1520,7 +1536,12 @@ impl NetworkEventHandler {
             .seq(isn)
             .syn()
             .window(65535)
-            .syn_options(1460, 7, Some(crate::net::l4::endpoint::tcp_rx::generate_tcp_timestamp())) // MSS + Window Scale + SACK Permitted + TS
+            .syn_options(
+                1460,
+                Some(7),
+                true,
+                Some(crate::net::l4::endpoint::tcp_rx::generate_tcp_timestamp()),
+            ) // MSS + Window Scale + SACK Permitted + TS
             .build();
 
         // チェックサム計算 (IPv4/IPv6)

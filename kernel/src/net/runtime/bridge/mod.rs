@@ -1149,26 +1149,55 @@ pub fn sync_drain_tx_queue() {
 
 /// NETWORK_EVENT_QUEUEに溜まったイベントを同期的にドレインし処理する。
 ///
+/// # ⚠️ ブートストラップ専用
+///
 /// asyncエグゼキュータが起動する前の同期ポーリングコンテキスト（初期化時ping等）で使用する。
-/// 通常はasyncイベントループが`EventWaitFuture`でイベントを消費するが、
-/// エグゼキュータ未起動時にはイベントがキューに滞留する。
+/// 通常はasyncイベントループ（`network_event_task()`）がイベントを消費するが、
+/// エグゼキュータ未起動時にはイベントがキューに滞留するため、
 /// この関数がARP応答等のIngressPacketイベントを同期的に処理する。
+///
+/// ## asyncコンテキストでの使用禁止
+///
+/// asyncエグゼキュータ起動後は、`network_event_task()` が自動的にイベントを消費する。
+/// asyncコンテキストからこの関数を呼ぶとスタックロックの二重取得によるデッドロックを
+/// 引き起こす可能性がある。
+///
+/// ## バッチサイズ制限
+///
+/// 1回の呼び出しで処理するイベント数に上限を設け、
+/// 長時間のロック保持を防止する。上限を超えたイベントはキューに残留し、
+/// 次回の呼び出しで処理される。
 pub fn sync_process_network_events() {
     use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
     use crate::net::l4::endpoint::handler::NetworkEventHandler;
+
+    /// 同期コンテキストでの1回あたりの最大処理イベント数
+    const MAX_SYNC_BATCH: usize = 64;
 
     let events = event_queue().drain_all();
     if events.is_empty() {
         return;
     }
 
-    log::debug!("[NET-SYNC] processing {} queued network events synchronously", events.len());
+    let total = events.len();
+    let process_count = total.min(MAX_SYNC_BATCH);
+
+    log::debug!(
+        "[NET-SYNC] processing {}/{} queued network events synchronously",
+        process_count,
+        total,
+    );
 
     let handler = NetworkEventHandler::new();
 
     if let Ok(mut stack_guard) = stack::NETWORK_STACK.lock() {
         if let Some(ref mut stack) = *stack_guard {
-            for event in events {
+            for (i, event) in events.into_iter().enumerate() {
+                if i >= MAX_SYNC_BATCH {
+                    // 上限を超えたイベントは再エンキュー
+                    crate::net::l4::endpoint::event::send_event_ignore(event);
+                    continue;
+                }
                 match &event {
                     NetworkEvent::IngressPacket { .. } => {
                         log::trace!("[NET-SYNC] processing IngressPacket event");
@@ -1182,7 +1211,6 @@ pub fn sync_process_network_events() {
         }
     } else {
         log::warn!("[NET-SYNC] NETWORK_STACK lock poisoned; re-enqueuing events");
-        // スタックロックが取れない場合はイベントを再エンキューする
         for event in events {
             crate::net::l4::endpoint::event::send_event_ignore(event);
         }

@@ -952,6 +952,20 @@ impl Ipv6Stats {
 // IPv6 Process Result
 // =====================================================
 
+/// Result of IPv6 fragment reassembly (RFC 8200)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ipv6ReassemblyError {
+    /// Overlapping fragments detected (RFC 8200 Section 4.5)
+    /// Discard datagram, send ICMPv6 Time Exceeded
+    Overlap,
+    /// Fragment length not a multiple of 8 octets while M=1 (RFC 8200 Section 4.5)
+    /// Discard datagram, send ICMPv6 Parameter Problem
+    InvalidSize,
+    /// Sum of Fragment Offset and Payload Length > 65535 (RFC 8200 Section 4.5)
+    /// Discard fragment, send ICMPv6 Parameter Problem
+    PacketTooLarge,
+}
+
 /// Result of IPv6 packet processing
 pub enum Ipv6ProcessResult<'a> {
     /// ICMPv6 payload with addresses and hop limit
@@ -966,6 +980,8 @@ pub enum Ipv6ProcessResult<'a> {
     FragmentPending,
     /// Reassembly timeout (src, dst, unfragmentable_part for ICMPv6)
     ReassemblyTimeout(Ipv6Address, Ipv6Address, Vec<u8>),
+    /// Reassembly error (type, src, dst, unfragmentable_part)
+    ReassemblyError(Ipv6ReassemblyError, Ipv6Address, Ipv6Address, Vec<u8>),
     /// Packet dropped (not for us, malformed, etc.)
     Dropped,
     /// Processing error

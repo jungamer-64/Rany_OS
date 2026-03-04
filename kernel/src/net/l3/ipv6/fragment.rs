@@ -28,6 +28,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::Ipv6Address;
+use super::Ipv6ReassemblyError;
 
 // =====================================================
 // Fragment Header Parsing
@@ -167,26 +168,34 @@ impl Ipv6FragmentBuffer {
     /// `unfragmentable` is the bytes before the fragment header (IPv6 fixed header +
     /// pre-fragment extension headers). It is captured from the first fragment (offset == 0).
     /// `frag` is the parsed fragment header and `payload` is the fragment payload.
+    /// Incorporate a fragment into the buffer.
     ///
-    /// Returns `true` if the fragment was successfully incorporated.
+    /// Returns `Ok(())` if the fragment was successfully incorporated.
     fn add_fragment(
         &mut self,
         unfragmentable: &[u8],
         frag: &Ipv6FragmentHeader,
         payload: &[u8],
-    ) -> bool {
+    ) -> Result<(), Ipv6ReassemblyError> {
         let offset = frag.offset_bytes();
         let payload_len = payload.len() as u32;
         let end = offset + payload_len;
 
         // RFC 8200: 8-octet multiple check for non-last fragments
         if frag.more_fragments && (payload_len % 8 != 0) {
-            log::warn!("[NET-IPV6] Fragment length ({}) not a multiple of 8 while M=1, dropping", payload_len);
-            return false;
+            log::warn!("[NET-IPV6] Fragment length ({}) not a multiple of 8 while M=1, dropping (RFC 8200)", payload_len);
+            return Err(Ipv6ReassemblyError::InvalidSize);
+        }
+
+        // RFC 8200: Sum of Fragment Offset and Payload Length > 65535
+        if end > 65535 {
+            log::warn!("[NET-IPV6] Sum of fragment offset ({}) and length ({}) exceeds 65535, dropping (RFC 8200)",
+                offset, payload_len);
+            return Err(Ipv6ReassemblyError::PacketTooLarge);
         }
 
         if end as usize > Self::MAX_PAYLOAD {
-            return false;
+            return Err(Ipv6ReassemblyError::PacketTooLarge);
         }
 
         // RFC 8200: Check for consistent total length
@@ -194,14 +203,14 @@ impl Ipv6FragmentBuffer {
             if let Some(existing_total) = self.total_len {
                 if existing_total != end {
                     log::warn!("[NET-IPV6] Inconsistent total length in fragments: expected {}, got {}", existing_total, end);
-                    return false;
+                    return Err(Ipv6ReassemblyError::Overlap);
                 }
             }
             self.total_len = Some(end);
         } else if let Some(total) = self.total_len {
             if end > total {
                 log::warn!("[NET-IPV6] Fragment beyond end of datagram: {} > {}", end, total);
-                return false;
+                return Err(Ipv6ReassemblyError::Overlap);
             }
         }
 
@@ -218,11 +227,13 @@ impl Ipv6FragmentBuffer {
         }
         if covered_hole_bytes == 0 {
             // Duplicate fragment - ignore it but don't drop the datagram
-            return true;
+            return Ok(());
         }
         if covered_hole_bytes < payload_len {
             // Overlap detected with already received data
-            return false;
+            log::warn!("[NET-IPV6] Overlapping fragment detected (offset={}, len={}), discarding datagram (RFC 8200)",
+                offset, payload_len);
+            return Err(Ipv6ReassemblyError::Overlap);
         }
 
         // Record Next Header (should be consistent across fragments of same datagram)
@@ -238,7 +249,7 @@ impl Ipv6FragmentBuffer {
                 log::warn!(
                     "[NET-IPV6] Dropping IPv6 datagram due to incomplete header chain in first fragment (Tiny Fragment Attack prevention)"
                 );
-                return false;
+                return Err(Ipv6ReassemblyError::InvalidSize); // Treated as invalid size/format
             }
             self.unfragmentable_part = Some(unfragmentable.to_vec());
         }
@@ -261,12 +272,12 @@ impl Ipv6FragmentBuffer {
 
         // Check for hole list exhaustion attack
         if self.holes.len() > Self::MAX_HOLES {
-            return false;
+            return Err(Ipv6ReassemblyError::Overlap);
         }
 
         self.trim_holes();
 
-        true
+        Ok(())
     }
 
     /// RFC 815 hole-list update
@@ -443,7 +454,7 @@ impl Ipv6FragmentReassembler {
 
     /// Process an incoming IPv6 packet that contains a fragment header.
     ///
-    /// Returns (reassembled_packet, expired_buffers).
+    /// Returns (Result<reassembled_packet, error>, expired_buffers).
     pub fn process_fragment(
         &mut self,
         src: Ipv6Address,
@@ -452,7 +463,7 @@ impl Ipv6FragmentReassembler {
         frag: &Ipv6FragmentHeader,
         payload: &[u8],
         current_time: u64,
-    ) -> (Option<Vec<u8>>, Vec<(Ipv6Address, Ipv6Address, Vec<u8>)>) {
+    ) -> (Result<Option<Vec<u8>>, Ipv6ReassemblyError>, Vec<(Ipv6Address, Ipv6Address, Vec<u8>)>) {
         self.stats.fragments_received += 1;
 
         let key = Ipv6FragmentKey::new(src, dst, frag.identification);
@@ -464,7 +475,7 @@ impl Ipv6FragmentReassembler {
         if !self.buffers.contains_key(&key) {
             if self.buffers.len() >= self.max_buffers {
                 self.stats.dropped_limit += 1;
-                return (None, expired);
+                return (Ok(None), expired);
             }
             // Per-source limit: prevent a single source from monopolizing buffers
             let source_count = self.buffers.keys().filter(|k| k.src == src).count();
@@ -475,32 +486,36 @@ impl Ipv6FragmentReassembler {
                     src
                 );
                 self.stats.dropped_limit += 1;
-                return (None, expired);
+                return (Ok(None), expired);
             }
             self.buffers.insert(key, Ipv6FragmentBuffer::new(current_time));
         }
 
         let buffer = match self.buffers.get_mut(&key) {
             Some(b) => b,
-            None => return (None, expired),
+            None => return (Ok(None), expired),
         };
 
-        if !buffer.add_fragment(unfragmentable, frag, payload) {
-            self.stats.dropped_invalid += 1;
-            self.buffers.remove(&key);
-            return (None, expired);
-        }
-
-        if buffer.is_complete() {
-            let result = buffer.reassemble();
-            self.buffers.remove(&key);
-            if result.is_some() {
-                self.stats.reassembled += 1;
+        match buffer.add_fragment(unfragmentable, frag, payload) {
+            Ok(()) => {
+                if buffer.is_complete() {
+                    let result = buffer.reassemble();
+                    self.buffers.remove(&key);
+                    if result.is_some() {
+                        self.stats.reassembled += 1;
+                    }
+                    (Ok(result), expired)
+                } else {
+                    (Ok(None), expired)
+                }
             }
-            return (result, expired);
+            Err(e) => {
+                // RFC 8200: Discard datagram on overlap/error
+                self.stats.dropped_invalid += 1;
+                self.buffers.remove(&key);
+                (Err(e), expired)
+            }
         }
-
-        (None, expired)
     }
 
     /// Evict expired reassembly buffers.
