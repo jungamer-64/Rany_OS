@@ -536,6 +536,8 @@ pub enum IcmpResult {
         identifier: u16,
         sequence: u16,
         originate_ts: u32,
+        receive_ts: u32,
+        transmit_ts: u32,
     },
     /// Ignored/dropped
     Ignored,

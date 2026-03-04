@@ -5,6 +5,7 @@
 //! ICMP Redirect processing, and ICMP echo request/reply.
 
 use super::*;
+use crate::net::l3::icmp::{IcmpBuilder, IcmpType};
 
 impl NetworkStack {
     /// Process ICMP packet
@@ -77,7 +78,104 @@ impl NetworkStack {
                 // Handle ICMP Redirect for route optimization (RFC 792)
                 self.handle_icmp_redirect(code, gateway, destination, src_ip);
             }
+            IcmpResult::SendTimestampReply {
+                src_ip,
+                identifier,
+                sequence,
+                originate_ts,
+                receive_ts,
+                transmit_ts,
+            } => {
+                self.send_icmp_timestamp_reply(
+                    src_ip,
+                    identifier,
+                    sequence,
+                    originate_ts,
+                    receive_ts,
+                    transmit_ts,
+                    current_time,
+                );
+            }
             _ => {}
+        }
+    }
+
+    /// Send ICMP timestamp reply (RFC 792)
+    pub(crate) fn send_icmp_timestamp_reply(
+        &mut self,
+        dst_ip: Ipv4Address,
+        identifier: u16,
+        sequence: u16,
+        originate_ts: u32,
+        receive_ts: u32,
+        transmit_ts: u32,
+        current_time: u64,
+    ) {
+        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+            return;
+        }
+
+        let config = self.config.clone();
+
+        // Resolve next-hop gateway (considering redirects)
+        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+
+        // Resolve MAC address
+        let dst_mac = match self.arp.resolve(next_hop, current_time) {
+            Some(mac) => mac,
+            None => {
+                self.send_arp_request(next_hop);
+                return;
+            }
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+
+        // Build Ethernet frame
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            let eth_payload = frame.payload_mut();
+
+            // Build IP packet
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                ip_packet
+                    .init_header()
+                    .set_source(config.ipv4.address)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Icmp)
+                    .set_ttl(64);
+
+                let ip_payload = ip_packet.payload_mut();
+
+                // Build ICMP Timestamp Reply
+                if let Some(mut icmp_builder) = IcmpBuilder::new(ip_payload) {
+                    icmp_builder
+                        .set_type(IcmpType::TimestampReply)
+                        .set_code(0);
+
+                    let payload = icmp_builder.payload_mut();
+                    // Identifier (2) + Sequence (2) + Originate (4) + Receive (4) + Transmit (4) = 16 bytes
+                    payload[0..2].copy_from_slice(&identifier.to_be_bytes());
+                    payload[2..4].copy_from_slice(&sequence.to_be_bytes());
+                    payload[4..8].copy_from_slice(&originate_ts.to_be_bytes());
+                    payload[8..12].copy_from_slice(&receive_ts.to_be_bytes());
+                    payload[12..16].copy_from_slice(&transmit_ts.to_be_bytes());
+
+                    icmp_builder.set_payload_len(16);
+                    let icmp_len = icmp_builder.finalize();
+                    ip_packet.finalize(icmp_len);
+
+                    let total_len = EthernetHeader::SIZE + ip_packet.total_len();
+                    if let Some(ref transmit) = self.transmit_fn {
+                        transmit(None, &buffer[..total_len]);
+                        self.stats.record_tx(total_len);
+                    }
+                }
+            }
         }
     }
 

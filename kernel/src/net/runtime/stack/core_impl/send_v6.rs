@@ -31,6 +31,44 @@ impl NetworkStack {
         );
     }
 
+    /// Send an ICMPv6 Packet Too Big error (RFC 4443 Section 3.2).
+    ///
+    /// Used for Path MTU Discovery to notify the sender that a packet exceeded the MTU.
+    pub fn send_icmpv6_packet_too_big(
+        &mut self,
+        dst_v6: Ipv6Address,
+        mtu: u32,
+        original_packet: &[u8],
+    ) -> bool {
+        if let Some(ref mut ipv6_proc) = self.ipv6 {
+            let our_addr = ipv6_proc.config().link_local;
+
+            // Security: RFC 4443 compliance check
+            if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::PacketTooBig, 0) {
+                return false;
+            }
+
+            // Rate limit ICMPv6 error messages
+            let current_time = self.current_time();
+            if let Some(ref icmpv6) = self.icmpv6 {
+                if !icmpv6.check_tx_rate_limit(current_time) {
+                    return false;
+                }
+            }
+
+            let icmp_msg = crate::net::l3::icmpv6::Icmpv6Builder::build_packet_too_big(
+                &our_addr,
+                &dst_v6,
+                mtu,
+                original_packet
+            );
+            self.send_ipv6_icmpv6(&our_addr, &dst_v6, &icmp_msg);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Send an ICMPv6 Time Exceeded error (RFC 4443).
     pub fn send_icmpv6_time_exceeded(
         &mut self,

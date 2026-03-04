@@ -341,11 +341,19 @@ impl IcmpProcessor {
             let originate_ts = u32::from_be_bytes([
                 payload[4], payload[5], payload[6], payload[7],
             ]);
+
+            // RFC 792: Time is milliseconds since midnight UT.
+            // If not UT, high bit must be 1.
+            let now_ms = crate::task::timer::current_tick() as u32;
+            let ts_val = now_ms | 0x80000000; // High bit set to indicate non-UT
+
             IcmpResult::SendTimestampReply {
                 src_ip,
                 identifier,
                 sequence,
                 originate_ts,
+                receive_ts: ts_val,
+                transmit_ts: ts_val,
             }
         } else {
             IcmpResult::Invalid
