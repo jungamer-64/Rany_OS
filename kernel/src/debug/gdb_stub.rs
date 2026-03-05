@@ -1,7 +1,7 @@
 //! Minimal kernel GDB remote protocol stub.
 //!
 //! Supported packets: `? g G m M c s Z0 z0`
-
+#![allow(dead_code)]
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;

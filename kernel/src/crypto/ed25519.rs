@@ -11,7 +11,7 @@
 //! ## 実装
 //! `ed25519-compact` クレートを使用し、no_std環境で動作します。
 //! このクレートはcurve25519-dalekに依存せず、軽量な実装を提供します。
-
+#![allow(dead_code)]
 #[allow(unused_imports)]
 use ed25519_compact::{PublicKey, Signature};
 

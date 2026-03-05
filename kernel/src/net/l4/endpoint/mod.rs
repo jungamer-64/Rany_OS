@@ -32,7 +32,7 @@
 //! - `window_scale`   — TCP Window Scaling (RFC 7323)
 //! - `timer_wheel`    — タイマーホイール
 //! - `futures`        — async TcpStream/TcpListener の Future 実装
-
+#![allow(dead_code)]
 // ── 汎用ソケット基盤 ───────────────────────────────────
 pub mod types;
 pub mod endpoint_core;

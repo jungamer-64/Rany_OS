@@ -569,7 +569,7 @@ pub fn build_create_sq_input(
     cqn: u32,
     tisn: u32,
     uar_page: u32,
-    mkey: u32,
+    _mkey: u32,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     // SQ Context at offset 0x10
@@ -645,8 +645,8 @@ pub fn build_create_rq_input(
     rq_buf_pa: u64,
     db_pa: u64,
     cqn: u32,
-    uar_page: u32,
-    mkey: u32,
+    _uar_page: u32,
+    _mkey: u32,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     // RQ Context at offset 0x10

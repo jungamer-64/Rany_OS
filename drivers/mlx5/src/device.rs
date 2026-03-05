@@ -1720,38 +1720,44 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Starting full teardown sequence...");
 
         if let Some(cmd) = self.cmd.as_mut() {
-            // 1. Destroy Flow Table Entries, Groups, Tables (reverse order)
+            // 1. Destroy Flow Table Entries (逆順)
+            for entry in self.flow_entries.iter().rev() {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_delete_flow_table_entry_input(
+                    in_mbox,
+                    entry.table_id,
+                    entry.index,
+                );
+                let _ = cmd.execute(
+                    CmdOpcode::DeleteFlowTableEntry,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.flow_entries.clear();
+
+            // 2. Destroy Flow Groups (逆順)
+            for group in self.flow_groups.iter().rev() {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_destroy_flow_group_input(
+                    in_mbox,
+                    group.table_id,
+                    group.group_id,
+                );
+                let _ = cmd.execute(
+                    CmdOpcode::DestroyFlowGroup,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.flow_groups.clear();
+
+            // 3. Destroy Flow Tables (逆順)
             for ft in self.flow_tables.iter().rev() {
-                for entry in &ft.entries {
-                    let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-                    crate::cmd::build_delete_flow_table_entry_input(
-                        in_mbox,
-                        ft.table_id,
-                        entry.flow_index,
-                    );
-                    let _ = cmd.execute(
-                        CmdOpcode::DeleteFlowTableEntry,
-                        self.cmd_in_mbox_phys,
-                        MLX5_CMD_MBOX_SIZE as u32,
-                        self.cmd_out_mbox_phys,
-                        MLX5_CMD_MBOX_SIZE as u32,
-                    );
-                }
-                for group in &ft.groups {
-                    let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-                    crate::cmd::build_destroy_flow_group_input(
-                        in_mbox,
-                        ft.table_id,
-                        group.group_id,
-                    );
-                    let _ = cmd.execute(
-                        CmdOpcode::DestroyFlowGroup,
-                        self.cmd_in_mbox_phys,
-                        MLX5_CMD_MBOX_SIZE as u32,
-                        self.cmd_out_mbox_phys,
-                        MLX5_CMD_MBOX_SIZE as u32,
-                    );
-                }
                 let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
                 crate::cmd::build_destroy_flow_table_input(in_mbox, ft.table_id);
                 let _ = cmd.execute(
@@ -2032,11 +2038,24 @@ impl Mlx5Device {
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn init_full(
         &mut self,
+        // Phase 1: コマンドIF用DMAバッファ
+        cmdq_virt: u64,
+        cmdq_phys: u64,
+        cmd_in_mbox_virt: u64,
+        cmd_in_mbox_phys: u64,
+        cmd_out_mbox_virt: u64,
+        cmd_out_mbox_phys: u64,
+        // Phase 3: FWページ
+        fw_page_addrs: &[u64],
+        // Phase 4: MKEY
+        mkey_params: &MkeyParams,
+        // Phase 5-7: キューバッファ (virt, phys) or (virt, phys, db_virt, db_phys)
         eq_buf: (u64, u64),
         tx_cq_buf: (u64, u64, u64, u64),
         rx_cq_buf: (u64, u64, u64, u64),
         sq_buf: (u64, u64, u64, u64),
         rq_buf: (u64, u64, u64, u64),
+        // キューサイズ (log2)
         log_eq_size: u8,
         log_cq_size: u8,
         log_sq_size: u8,
@@ -2048,7 +2067,11 @@ impl Mlx5Device {
         self.wait_firmware()?;
         log::info!(target: "mlx5", "[1/8] Firmware ready");
 
-        self.init_command_interface()?;
+        self.init_command_interface(
+            cmdq_virt, cmdq_phys,
+            cmd_in_mbox_virt, cmd_in_mbox_phys,
+            cmd_out_mbox_virt, cmd_out_mbox_phys,
+        )?;
         log::info!(target: "mlx5", "[1/8] Command interface initialized");
 
         self.enable_and_init_hca()?;
@@ -2068,20 +2091,22 @@ impl Mlx5Device {
         let _ = self.set_driver_version(); // Non-fatal if fails
         log::info!(target: "mlx5", "[3/8] Driver version set");
 
-        self.provide_pages()?;
+        if !fw_page_addrs.is_empty() {
+            self.provide_pages(0, fw_page_addrs)?;
+        }
         log::info!(target: "mlx5", "[3/8] Pages provided to FW");
 
         // Phase 4: Key resources
         self.query_port_mac(0)?;
         log::info!(target: "mlx5", "[4/8] MAC address obtained");
 
-        self.create_mkey()?;
+        self.create_mkey(mkey_params)?;
         log::info!(target: "mlx5", "[4/8] MKEY created");
 
         // Phase 5: Event & Completion queues
-        let event_mask = crate::defs::eq_event_mask::CQ_COMPLETION
+        let event_mask = crate::defs::eq_event_mask::COMPLETION
             | crate::defs::eq_event_mask::PORT_STATE_CHANGE
-            | crate::defs::eq_event_mask::CMD_COMPLETION
+            | crate::defs::eq_event_mask::COMMAND_COMPLETION
             | crate::defs::eq_event_mask::PAGE_REQUEST;
 
         let eqn = self.create_eq_hw(
@@ -2115,7 +2140,9 @@ impl Mlx5Device {
 
         // Phase 6: TX path
         let tis_params = crate::resources::TisParams {
+            pd: self.pd,
             td: self.td,
+            port: 1,
             prio: 0,
         };
         let tisn = self.create_tis(&tis_params)?;
@@ -2134,7 +2161,7 @@ impl Mlx5Device {
 
         // Phase 7: RX path
         let tir_params = crate::resources::TirParams {
-            receive_type: TirReceiveType::Direct,
+            receive_type: TirReceiveType::DirectRq,
             td: self.td,
             inline_rqn: 0, // Will be filled after RQ creation
             rqtn: 0,
