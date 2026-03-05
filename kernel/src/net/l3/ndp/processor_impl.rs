@@ -138,7 +138,7 @@ impl NdpProcessor {
                 }
 
                 if !src.is_unspecified() {
-                    self.cache.update_reachable(&src, *mac, current_time);
+                    self.cache.update_stale(&src, *mac, current_time);
                 }
             }
         }
@@ -245,11 +245,9 @@ impl NdpProcessor {
                         entry.timestamp = current_time;
                     }
                 }
-            } else if solicited {
-                // New entry from solicited NA
-                self.cache.update_reachable(&target, mac, current_time);
             } else {
-                // Unsolicited NA for non-existent entry - ignore to prevent cache poisoning
+                // RFC 4861 Section 7.2.5: If the Target Address is NOT in the Neighbor Cache, 
+                // advertisements for the target SHOULD be silently discarded.
                 return NdpResult::None;
             }
 
@@ -303,8 +301,8 @@ impl NdpProcessor {
                     mac,
                 } => {
                     router_mac = Some(*mac);
-                    // Update neighbor cache with router's MAC
-                    self.cache.update_reachable(&src, *mac, current_time);
+                    // Update neighbor cache with router's MAC (RFC 4861: should be STALE)
+                    self.cache.update_stale(&src, *mac, current_time);
                 }
                 NdpOption::PrefixInfo { .. } | NdpOption::Mtu(_) | NdpOption::RecursiveDnsServer { .. } => {
                     prefix_options.push(opt);

@@ -211,10 +211,10 @@ pub fn test_ns_processing() {
         _ => panic!("Expected SendNeighborAdvertisement"),
     }
 
-    // Sender should be learned in our cache
+    // Sender should be learned in our cache as STALE (RFC 4861)
     let entry = processor.cache().lookup(&sender_ip).unwrap();
     assert_eq!(entry.mac, sender_mac);
-    assert_eq!(entry.state, NeighborState::Reachable);
+    assert_eq!(entry.state, NeighborState::Stale);
 }
 
 #[cfg_attr(test, test_case)]
@@ -276,4 +276,76 @@ pub fn test_na_multicast_target_rejection() {
     
     // Cache should NOT be updated with multicast address
     assert!(processor.cache().lookup(&mcast_target).is_none());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_na_discard_unknown_target() {
+    let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let our_ip = Ipv6Address::from_eui64(&our_mac);
+    let mut processor = NdpProcessor::new(our_ip, our_mac);
+
+    let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+    let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    let target_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+
+    // Build an NA for a target NOT in our cache
+    let na = NdpProcessor::build_na(&sender_ip, &our_ip, &target_ip, &sender_mac, true);
+
+    let result = processor.process(
+        Icmpv6Type::NeighborAdvertisement,
+        &na,
+        sender_ip,
+        our_ip,
+        sender_mac,
+        1000,
+    );
+
+    // Should return None because it was discarded
+    assert!(matches!(result, NdpResult::None));
+    
+    // Cache should NOT have the target
+    assert!(processor.cache().lookup(&target_ip).is_none());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ra_processing() {
+    let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let our_ip = Ipv6Address::from_eui64(&our_mac);
+    let mut processor = NdpProcessor::new(our_ip, our_mac);
+
+    let router_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+    let router_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+
+    // Build a simple RA with SLLA option
+    let mut ra = vec![0u8; 16];
+    ra[0] = u8::from(Icmpv6Type::RouterAdvertisement);
+    ra[4] = 64; // Hop limit
+    // bytes 8-23 are router info... for RA processing it's just raw bytes
+    
+    // Add SLLA option
+    ra.push(1); // type=SourceLinkLayerAddress
+    ra.push(1); // len=1
+    ra.extend_from_slice(&router_mac);
+
+    let result = processor.process(
+        Icmpv6Type::RouterAdvertisement,
+        &ra,
+        router_ip,
+        our_ip,
+        router_mac,
+        1000,
+    );
+
+    match result {
+        NdpResult::RouterAdvertisement { router, router_mac: learned_mac, .. } => {
+            assert_eq!(router, router_ip);
+            assert_eq!(learned_mac, Some(router_mac));
+        }
+        _ => panic!("Expected RouterAdvertisement result"),
+    }
+
+    // Router should be in cache as STALE
+    let entry = processor.cache().lookup(&router_ip).expect("Router should be in cache");
+    assert_eq!(entry.mac, router_mac);
+    assert_eq!(entry.state, NeighborState::Stale);
 }

@@ -611,6 +611,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "mlx5_driver"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "kernel_api",
+ "log",
+ "spin",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -767,6 +777,7 @@ dependencies = [
  "ide_driver",
  "kernel_api",
  "log",
+ "mlx5_driver",
  "nvme_driver",
  "nvme_ns",
  "once_cell",

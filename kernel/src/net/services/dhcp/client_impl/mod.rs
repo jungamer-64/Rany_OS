@@ -157,8 +157,8 @@ impl DhcpClient {
                 Err(_) => return Err("Lease lock poisoned"),
             };
             if let Some(l) = lease_opt {
-                let is_renewal = current_state == DhcpState::Renewing;
-                Ok((l, is_renewal))
+                let is_renew_or_rebind = current_state == DhcpState::Renewing || current_state == DhcpState::Rebinding;
+                Ok((l, is_renew_or_rebind))
             } else {
                 Err("No active lease available")
             }
@@ -319,7 +319,7 @@ impl DhcpClient {
         }
 
         let current_state = self.lock_dhcp_state()?;
-        let (lease, is_renewal) = self.get_lease_for_request(current_state)?;
+        let (lease, is_renew_or_rebind) = self.get_lease_for_request(current_state)?;
 
         let xid = self.xid.load(Ordering::SeqCst);
 
@@ -336,8 +336,8 @@ impl DhcpClient {
         let flags: u16 = if current_state == DhcpState::Renewing { 0 } else { 0x8000 };
         buffer[10..12].copy_from_slice(&flags.to_be_bytes());
 
-        // ciaddr must be set for renewals; cleared for new requests
-        if is_renewal {
+        // ciaddr must be set for renewals and rebinding; cleared for new requests (RFC 2131 Table 5)
+        if is_renew_or_rebind {
             buffer[12..16].copy_from_slice(lease.ip_address.as_bytes());
         } else {
             buffer[12..16].fill(0);
@@ -369,7 +369,8 @@ impl DhcpClient {
         // メッセージタイプ: REQUEST
         append_opt(DhcpOption::MessageType as u8, &[DhcpMessageType::Request as u8])?;
 
-        if !is_renewal {
+        // RFC 2131 Section 4.3.2: omit ServerIdentifier and RequestedIp during RENEWING/REBINDING
+        if !is_renew_or_rebind {
             append_opt(DhcpOption::RequestedIp as u8, lease.ip_address.as_bytes())?;
             append_opt(DhcpOption::ServerIdentifier as u8, lease.server_ip.as_bytes())?;
         }

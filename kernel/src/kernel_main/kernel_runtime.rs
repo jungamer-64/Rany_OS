@@ -46,6 +46,33 @@ async fn network_bootstrap_task() {
         }
     }
 
+    // ConnectX-4 Lx (mlx5) ドライバのPCI検出・登録
+    {
+        use alloc::boxed::Box;
+        use driver_registry::register_driver;
+        use crate::net::drivers::mlx5_registry::Mlx5ConnectXDriver;
+
+        info!(target: "net_boot", "Probing ConnectX-4 Lx (mlx5) via DriverRegistry");
+        let mlx5_handle = register_driver(Box::new(Mlx5ConnectXDriver::new()));
+        match mlx5_handle {
+            Ok(handle) => {
+                match driver_registry::driver_registry().probe_and_start(handle) {
+                    Ok(()) => {
+                        info!(target: "net_boot", "ConnectX-4 Lx driver initialized via DriverRegistry");
+                    }
+                    Err(e) => {
+                        // ConnectX-4 Lx が実機に接続されていない場合はNotFoundが返るので
+                        // 警告レベルで報告のみ（起動失敗にはしない）
+                        info!(target: "net_boot", "ConnectX-4 Lx not found or init failed: {:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(target: "net_boot", "Failed to register mlx5 driver: {:?}", e);
+            }
+        }
+    }
+
     // Yield して tx_worker / DHCPクライアント等のバックグラウンドタスクに実行機会を与える
     task::yield_now().await;
 

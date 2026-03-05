@@ -280,6 +280,17 @@ impl NeighborEntry {
         }
     }
 
+    /// Create a new entry in Stale state
+    pub fn new_stale(ip: Ipv6Address, mac: [u8; 6], timestamp: u64) -> Self {
+        Self {
+            ip,
+            mac,
+            state: NeighborState::Stale,
+            timestamp,
+            probes_sent: 0,
+        }
+    }
+
     /// Check if this entry has a valid MAC address
     pub fn has_mac(&self) -> bool {
         self.state != NeighborState::Incomplete
@@ -327,7 +338,7 @@ impl NeighborCache {
         self.entries.remove(ip.as_bytes())
     }
 
-    /// Update a neighbor's MAC address and set Reachable
+    /// Update a neighbor's MAC address and set Reachable (for solicited NA)
     pub fn update_reachable(&mut self, ip: &Ipv6Address, mac: [u8; 6], timestamp: u64) {
         if let Some(entry) = self.entries.get_mut(ip.as_bytes()) {
             entry.mac = mac;
@@ -335,7 +346,23 @@ impl NeighborCache {
             entry.timestamp = timestamp;
             entry.probes_sent = 0;
         } else {
+            // RFC 4861 Section 7.2.5: SHOULD discard if not in cache.
+            // But if we're here, process_na should have already checked.
+            // We use new_reachable if forced.
             self.insert(NeighborEntry::new_reachable(*ip, mac, timestamp));
+        }
+    }
+
+    /// Update a neighbor's MAC address and set Stale (for unsolicited info like NS SLLA or RA)
+    pub fn update_stale(&mut self, ip: &Ipv6Address, mac: [u8; 6], timestamp: u64) {
+        if let Some(entry) = self.entries.get_mut(ip.as_bytes()) {
+            if entry.mac != mac {
+                entry.mac = mac;
+                entry.state = NeighborState::Stale;
+                entry.timestamp = timestamp;
+            }
+        } else {
+            self.insert(NeighborEntry::new_stale(*ip, mac, timestamp));
         }
     }
 

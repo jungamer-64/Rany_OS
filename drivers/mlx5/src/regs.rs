@@ -1,0 +1,235 @@
+// ============================================================================
+// drivers/mlx5/src/regs.rs - Hardware register definitions
+// ============================================================================
+//! ConnectX-4 Lx レジスタマップ定義
+//!
+//! BAR0 にマッピングされる初期化セグメントおよびコマンドインタフェースレジスタ。
+//! mlx5 IFC (Interface Control) 仕様に基づく。
+
+/// BAR0 レジスタオフセット (Initialization Segment)
+pub mod init_seg {
+    /// ファームウェアリビジョン (Major)
+    pub const FW_REV_MAJOR: usize = 0x0000;
+    /// ファームウェアリビジョン (Minor)
+    pub const FW_REV_MINOR: usize = 0x0002;
+    /// ファームウェアリビジョン (Sub-minor)
+    pub const FW_REV_SUBMINOR: usize = 0x0004;
+    /// コマンドインタフェースリビジョン
+    pub const CMD_IF_REV: usize = 0x0006;
+
+    /// ファームウェア状態フラグ
+    pub const FW_STATE: usize = 0x0010;
+
+    /// 健全性カウンタ
+    pub const HEALTH_COUNTER: usize = 0x0018;
+
+    /// 初期化セグメントサイズ
+    pub const INIT_SEG_SIZE: usize = 0x001C;
+
+    /// コマンドドアベル
+    pub const CMDQ_ADDR_H: usize = 0x0010;
+    /// コマンドキュー低32ビットアドレス + ログサイズ
+    pub const CMDQ_ADDR_L_SZ: usize = 0x0014;
+
+    /// コマンドドアベルベクタ
+    pub const CMDQ_DOORBELL: usize = 0x0018;
+
+    /// HCA健全性バッファオフセット
+    pub const HEALTH_BUFFER: usize = 0x0020;
+
+    /// NIC インタフェース (bit field)
+    pub const NIC_INTERFACE: usize = 0x000C;
+
+    /// Internal Timer（高位32ビット）
+    pub const INTERNAL_TIMER_H: usize = 0x1000;
+    /// Internal Timer（低位32ビット）
+    pub const INTERNAL_TIMER_L: usize = 0x1004;
+
+    /// EQドアベルアドレスオフセット
+    ///
+    /// UAR (User Access Region) ページ内のドアベルオフセット基準
+    pub const EQ_DOORBELL_OFFSET: usize = 0x0040;
+
+    /// BF (BlueFlame) レジスタオフセット
+    ///
+    /// UAR ページ内送信ドアベル / BlueFlame領域
+    pub const BF_OFFSET: usize = 0x0800;
+}
+
+/// コマンドキューエントリ (CQE) レイアウト
+///
+/// 各コマンドエントリは64バイト。メールボックスポインタと
+/// ステータスフィールドで構成。
+pub mod cmd_entry {
+    /// エントリサイズ
+    pub const ENTRY_SIZE: usize = 64;
+
+    /// 入力メールボックスポインタ(高位)
+    pub const IN_MBOX_PTR_H: usize = 0x00;
+    /// 入力メールボックスポインタ(低位)
+    pub const IN_MBOX_PTR_L: usize = 0x04;
+
+    /// 入力データ長 (input_length)
+    pub const IN_LENGTH: usize = 0x08;
+
+    /// 出力メールボックスポインタ(高位)
+    pub const OUT_MBOX_PTR_H: usize = 0x10;
+    /// 出力メールボックスポインタ(低位)
+    pub const OUT_MBOX_PTR_L: usize = 0x14;
+
+    /// 出力データ長 (output_length)
+    pub const OUT_LENGTH: usize = 0x18;
+
+    /// コマンドトークンとシグネチャ
+    pub const TOKEN_SIG: usize = 0x1C;
+
+    /// ステータスとオペコード（オーナービット含む）
+    /// bit 0: ownership (0=SW, 1=HW)
+    /// bits [31:24]: status
+    /// bits [23:8]: opcode
+    pub const STATUS_OWN: usize = 0x3C;
+}
+
+/// UAR (User Access Region) レジスタ
+///
+/// 各UARページは4KBで、ドアベルレジスタやBlueFlame書き込み領域を含む。
+pub mod uar {
+    /// 1 UARページサイズ
+    pub const PAGE_SIZE: usize = 0x1000;
+
+    /// CQドアベルオフセット（8バイト: CQ番号 + CI）
+    pub const CQ_DOORBELL: usize = 0x0020;
+
+    /// EQドアベルオフセット
+    pub const EQ_DOORBELL: usize = 0x0040;
+
+    /// SQドアベルオフセット（4バイト: SQ番号）
+    pub const SQ_DOORBELL: usize = 0x0800;
+
+    /// BlueFlame領域オフセット（256バイト）
+    pub const BLUEFLAME: usize = 0x0800;
+
+    /// CQ ARMドアベルオフセット
+    pub const CQ_ARM_DOORBELL: usize = 0x0028;
+}
+
+/// ファームウェア状態ビット
+pub mod fw_state {
+    /// NIC インタフェースサポートビット
+    pub const NIC_INTERFACE_SUPPORTED: u32 = 1 << 24;
+
+    /// ブートフェーズ: 初期化中
+    pub const BOOT_PHASE_INIT: u32 = 0;
+    /// ブートフェーズ: FWロード中
+    pub const BOOT_PHASE_FW_LOADING: u32 = 1;
+    /// ブートフェーズ: ドライバレディ
+    pub const BOOT_PHASE_DRIVER_READY: u32 = 2;
+
+    /// 健全性: OK
+    pub const HEALTH_OK: u32 = 0;
+    /// 健全性: FW致命的エラー
+    pub const HEALTH_FATAL: u32 = 0x0BAD;
+}
+
+/// イベントキューエントリ (EQE) レイアウト
+pub mod eqe {
+    /// EQEサイズ (bytes)
+    pub const EQE_SIZE: usize = 64;
+
+    /// オーナービットを含むステータスワード
+    pub const STATUS_OWN: usize = 0x3C;
+
+    /// イベントタイプフィールド
+    pub const TYPE: usize = 0x00;
+
+    /// イベントサブタイプ
+    pub const SUBTYPE: usize = 0x01;
+
+    /// CQ完了イベント: CQ番号
+    pub const CQ_NUMBER: usize = 0x0C;
+
+    /// ポートイベント: ポート番号
+    pub const PORT_NUMBER: usize = 0x08;
+
+    /// ページ要求イベント: 関数ID
+    pub const FUNC_ID: usize = 0x08;
+
+    /// ページ要求イベント: 必要ページ数
+    pub const NUM_PAGES: usize = 0x0C;
+}
+
+/// Completion Queue Entry (CQE) レイアウト (64-byte CQE)
+pub mod cqe {
+    /// CQEサイズ
+    pub const SIZE: usize = 64;
+
+    /// オペコードとオーナービット (byte 63)
+    ///
+    /// bits [7:4]: opcode
+    /// bit 0: ownership (cycle bit)
+    pub const OP_OWN: usize = 0x3F;
+
+    /// 受信バイトカウント
+    pub const BYTE_COUNT: usize = 0x2C;
+
+    /// WQEカウンタ（SQ/RQインデックス）
+    pub const WQE_COUNTER: usize = 0x30;
+
+    /// QP番号 (SQ/RQ識別子)
+    pub const QPN: usize = 0x38;
+
+    /// VLANタグ情報
+    pub const VLAN_INFO: usize = 0x18;
+
+    /// RXハッシュ情報
+    pub const RX_HASH: usize = 0x14;
+
+    /// チェックサムステータスビット
+    pub const CHECKSUM: usize = 0x10;
+
+    /// LRO (Large Receive Offload) セグメントサイズ
+    pub const LRO_SEG_SIZE: usize = 0x24;
+}
+
+/// Work Queue Entry (WQE) レイアウト
+pub mod wqe {
+    /// WQE Control Segment (16 bytes)
+    pub mod ctrl {
+        /// オペコードとWQEインデックス（31:24=opcode, 23:0=wqe_index）
+        pub const OPMOD_IDX_OPCODE: usize = 0x00;
+        /// QP番号とDS (Descriptor Stride) カウント
+        pub const QPN_DS: usize = 0x04;
+        /// シグネチャとフラグ
+        pub const SIGNATURE: usize = 0x08;
+        /// FM CE SE フラグ
+        pub const FM_CE_SE: usize = 0x0C;
+    }
+
+    /// WQE Ethernet Segment (16 bytes) — 送信用
+    pub mod eth {
+        /// インラインヘッダサイズ（LSB 10ビット）
+        pub const INLINE_HDR_SZ: usize = 0x00;
+        /// CS flags (チェックサムオフロード)
+        pub const CS_FLAGS: usize = 0x02;
+        /// MSS（TCP Segmentation Offload）
+        pub const MSS: usize = 0x04;
+        /// インラインヘッダ開始（最初の2バイト = EtherType部分）
+        pub const INLINE_HDR_START: usize = 0x08;
+    }
+
+    /// WQE Data Segment (16 bytes)
+    pub mod data {
+        /// バイトカウント
+        pub const BYTE_COUNT: usize = 0x00;
+        /// L-Key (Memory Key)
+        pub const LKEY: usize = 0x04;
+        /// アドレス（64ビット)
+        pub const ADDR: usize = 0x08;
+    }
+
+    /// WQEBBサイズ（16バイト）
+    pub const WQEBB_SIZE: usize = 16;
+
+    /// 送信WQEの最小サイズ（ctrl + eth + data = 48 bytes = 3 WQEBBs）
+    pub const MIN_TX_WQE_SIZE: usize = 48;
+}

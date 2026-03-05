@@ -1,0 +1,26 @@
+[package]
+name = "mlx5_driver"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Mellanox ConnectX-4 Lx (mlx5) Ethernet Driver for RanyOS"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+hal = { path = "../../hal" }
+kernel_api = { path = "../../interfaces/kernel_api" }
+spin = "0.10"
+log = "0.4"
+
+[features]
+default = []
+standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
+export_driver_entry = ["kernel_api/export_driver_entry"]

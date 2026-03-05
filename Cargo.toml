@@ -33,6 +33,7 @@ members = [
     "drivers/ide",
     "drivers/time",
     "drivers/example_abi",
+    "drivers/mlx5",
     # Apps
     "apps",
     "libs/boot_proto",
@@ -64,6 +65,7 @@ default-members = [
     "drivers/virtio",
     "drivers/acpi",
     "drivers/time",
+    "drivers/mlx5",
     "apps",
     "tools/cap_harness",
 ]

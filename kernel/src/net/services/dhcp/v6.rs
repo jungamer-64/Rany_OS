@@ -31,6 +31,8 @@ pub struct DhcpV6Lease {
     pub addr: Ipv6Address,
     pub preferred_lifetime: u32,
     pub valid_lifetime: u32,
+    pub t1: u32,
+    pub t2: u32,
     pub obtained_at: u64,
     /// DHCPv6 Option 23 (DNS Recursive Name Server) から取得した DNS サーバー
     pub dns_servers: Vec<Ipv6Address>,
@@ -613,6 +615,8 @@ impl DhcpV6Client {
         // iterate options after header
         let mut off = 4usize;
         let mut found_addr: Option<(Ipv6Address, u32, u32)> = None;
+        let mut found_t1: u32 = 0;
+        let mut found_t2: u32 = 0;
         let mut dns_servers: Vec<Ipv6Address> = Vec::new();
         let mut domain_search: Vec<alloc::string::String> = Vec::new();
         let mut status_code: Option<u16> = None;
@@ -637,6 +641,18 @@ impl DhcpV6Client {
                 3 => {
                     // IA_NA - scan suboptions for IAADDR and Status Code
                     if len >= 12 {
+                        found_t1 = u32::from_be_bytes([
+                            data[off + 4],
+                            data[off + 5],
+                            data[off + 6],
+                            data[off + 7],
+                        ]);
+                        found_t2 = u32::from_be_bytes([
+                            data[off + 8],
+                            data[off + 9],
+                            data[off + 10],
+                            data[off + 11],
+                        ]);
                         let mut sub_off = off + 12; // skip IAID/T1/T2
                         while sub_off + 4 <= off + len {
                             let sc = u16::from_be_bytes([data[sub_off], data[sub_off + 1]]);
@@ -721,10 +737,22 @@ impl DhcpV6Client {
 
         match found_addr {
             Some((addr, pref, valid)) => {
+                // RFC 8415 Section 21.4: T1/T2 defaults if 0
+                let mut t1 = found_t1;
+                let mut t2 = found_t2;
+                if t1 == 0 {
+                    t1 = pref / 2;
+                }
+                if t2 == 0 {
+                    t2 = (pref as u64 * 8 / 10) as u32;
+                }
+
                 let lease = DhcpV6Lease {
                     addr,
                     preferred_lifetime: pref,
                     valid_lifetime: valid,
+                    t1,
+                    t2,
                     obtained_at: current_time,
                     dns_servers,
                     domain_search,
@@ -940,13 +968,25 @@ impl DhcpV6Client {
                     // Check lease lifetimes and transition to Renewing if needed
                     if let Some(lease) = self.lease() {
                         let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
-                        if elapsed_ms >= (lease.preferred_lifetime as u64 * 1000) {
+                        if elapsed_ms >= (lease.t1 as u64 * 1000) {
                             // start renewal: Generate secure XID for Renew transaction
                             self.generate_secure_xid();
 
                             *s = DhcpV6State::Renewing;
                             self.state_time.store(current_tick, Ordering::SeqCst);
                             self.retry_count.store(0, Ordering::SeqCst); 
+
+                            // Send first RENEW immediately
+                            let mut buf = [0u8; 512];
+                            if let Ok(len) = self.build_renew(&mut buf, &lease) {
+                                if let Some(src) = self.get_link_local() {
+                                    let dst = match self.server_addr.lock() {
+                                        Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
+                                        Err(_) => all_dhcp_servers,
+                                    };
+                                    self.send_v6_async(src, dst, &buf[..len]);
+                                }
+                            }
                         }
                     }
                 }
@@ -962,32 +1002,42 @@ impl DhcpV6Client {
                     let interval_ms = (base_ms + jitter_ms).max(100) as u64;
                     let interval_ticks = interval_ms;
 
-                    let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
-                    if elapsed_ms >= interval_ticks {
-                        let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
-                        if retries >= Self::MAX_RETRIES {
-                            // Escalate to rebinding (multicast) if renew fails
+                    if let Some(lease) = self.lease() {
+                        let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
+                        if elapsed_ms >= (lease.t2 as u64 * 1000) {
+                            // Escalate to rebinding (multicast) if T2 expires
                             *s = DhcpV6State::Rebinding;
                             self.retry_count.store(0, Ordering::SeqCst);
                             self.state_time.store(current_tick, Ordering::SeqCst);
-                        } else {
-                            // Send RENEW (msg type 5) to the original server using SAME XID
-                            if let Some(lease) = self.lease() {
-                                let mut buf = [0u8; 512];
-                                let len = self.build_renew(&mut buf, &lease)?;
+                            
+                            // Send first REBIND immediately
+                            let mut buf = [0u8; 512];
+                            if let Ok(len) = self.build_rebind(&mut buf, &lease) {
                                 if let Some(src) = self.get_link_local() {
-                                    let dst = match self.server_addr.lock() {
-                                        Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
-                                        Err(_) => all_dhcp_servers,
-                                    };
-                                    self.send_v6_async(src, dst, &buf[..len]);
+                                    self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
                                 }
-                                self.state_time.store(current_tick, Ordering::SeqCst);
-                            } else {
-                                // No lease known — reset to Init
-                                *s = DhcpV6State::Init;
                             }
+                            return Ok(());
                         }
+
+                        let elapsed_state_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                        if elapsed_state_ms >= interval_ticks {
+                            self.retry_count.fetch_add(1, Ordering::SeqCst);
+                            // Send RENEW (msg type 5) to the original server using SAME XID
+                            let mut buf = [0u8; 512];
+                            let len = self.build_renew(&mut buf, &lease)?;
+                            if let Some(src) = self.get_link_local() {
+                                let dst = match self.server_addr.lock() {
+                                    Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
+                                    Err(_) => all_dhcp_servers,
+                                };
+                                self.send_v6_async(src, dst, &buf[..len]);
+                            }
+                            self.state_time.store(current_tick, Ordering::SeqCst);
+                        }
+                    } else {
+                        // No lease known — reset to Init
+                        *s = DhcpV6State::Init;
                     }
                 }
                 DhcpV6State::Rebinding => {
@@ -1002,28 +1052,30 @@ impl DhcpV6Client {
                     let interval_ms = (base_ms + jitter_ms).max(100) as u64;
                     let interval_ticks = interval_ms;
 
-                    let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
-                    if elapsed_ms >= interval_ticks {
-                        let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
-                        if retries >= Self::MAX_RETRIES {
+                    if let Some(lease) = self.lease() {
+                        let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
+                        if elapsed_ms >= (lease.valid_lifetime as u64 * 1000) {
                             // Give up and return to Init (clear lease)
                             *s = DhcpV6State::Init;
                             if let Ok(mut lg) = self.lease.lock() {
                                 *lg = None;
                             }
-                        } else {
+                            return Ok(());
+                        }
+
+                        let elapsed_state_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                        if elapsed_state_ms >= interval_ticks {
+                            self.retry_count.fetch_add(1, Ordering::SeqCst);
                             // Send REBIND (msg type 6) to multicast using SAME XID
-                            if let Some(lease) = self.lease() {
-                                let mut buf = [0u8; 512];
-                                let len = self.build_rebind(&mut buf, &lease)?;
-                                if let Some(src) = self.get_link_local() {
-                                    self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
-                                }
-                            } else {
-                                *s = DhcpV6State::Init;
+                            let mut buf = [0u8; 512];
+                            let len = self.build_rebind(&mut buf, &lease)?;
+                            if let Some(src) = self.get_link_local() {
+                                self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
+                    } else {
+                        *s = DhcpV6State::Init;
                     }
                 }
             },
@@ -1149,6 +1201,8 @@ pub(crate) mod tests {
             addr: crate::net::l3::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,2]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
+            t1: 0,
+            t2: 0,
             obtained_at: 100,
             dns_servers: Vec::new(),
             domain_search: Vec::new(),
@@ -1177,11 +1231,13 @@ pub(crate) mod tests {
     pub fn test_bound_to_renewing_and_rebinding_transitions() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
-        // set lease with preferred lifetime = 1 second
+        // set lease with T1 = 1 second, T2 = 2 seconds, valid = 10 seconds
         let lease = DhcpV6Lease {
             addr: crate::net::l3::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,3]),
-            preferred_lifetime: 1,
+            preferred_lifetime: 5,
             valid_lifetime: 10,
+            t1: 1,
+            t2: 2,
             obtained_at: 0,
             dns_servers: Vec::new(),
             domain_search: Vec::new(),
@@ -1192,19 +1248,22 @@ pub(crate) mod tests {
         if let Ok(mut st) = client.state.lock() {
             *st = DhcpV6State::Bound;
         }
-        // tick_rate = 1000 (ms per sec), current_tick beyond preferred lifetime
+        // tick_rate = 1000 (ms per sec), current_tick beyond T1
         let tick_rate = 1000u64;
-        let now = (lease.obtained_at as u64) + lease.preferred_lifetime as u64 * tick_rate + 10;
+        let now = (lease.obtained_at as u64) + lease.t1 as u64 * tick_rate + 10;
         client.check_timeout(now, tick_rate).unwrap();
         assert_eq!(client.state(), DhcpV6State::Renewing);
 
-        // simulate retransmissions until Rebinding
-        for i in 0..(DhcpV6Client::MAX_RETRIES + 2) {
-            let t = now + (i as u64 + 1) * DhcpV6Client::RETRANS_INTERVAL_SECS * tick_rate;
-            client.check_timeout(t, tick_rate).unwrap();
-        }
-        // after exceeding retries client should be in Rebinding or Init depending on counts
-        assert!(client.state() == DhcpV6State::Rebinding || client.state() == DhcpV6State::Init);
+        // move time beyond T2
+        let now_t2 = (lease.obtained_at as u64) + lease.t2 as u64 * tick_rate + 10;
+        client.check_timeout(now_t2, tick_rate).unwrap();
+        assert_eq!(client.state(), DhcpV6State::Rebinding);
+
+        // move time beyond valid_lifetime
+        let now_valid = (lease.obtained_at as u64) + lease.valid_lifetime as u64 * tick_rate + 10;
+        client.check_timeout(now_valid, tick_rate).unwrap();
+        assert_eq!(client.state(), DhcpV6State::Init);
+        assert!(client.lease().is_none());
     }
 
     #[cfg_attr(test, test_case)]
@@ -1315,6 +1374,8 @@ pub(crate) mod tests {
             addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,8]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
+            t1: 0,
+            t2: 0,
             obtained_at: 0,
             dns_servers: Vec::new(),
             domain_search: Vec::new(),
@@ -1393,6 +1454,8 @@ pub(crate) mod tests {
             addr: crate::net::l3::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,5]),
             preferred_lifetime: 1,
             valid_lifetime: 10,
+            t1: 0,
+            t2: 0,
             obtained_at: 0,
             dns_servers: Vec::new(),
             domain_search: Vec::new(),
@@ -1423,6 +1486,8 @@ pub(crate) mod tests {
             addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xa]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
+            t1: 0,
+            t2: 0,
             obtained_at: 0,
             dns_servers: Vec::new(),
             domain_search: Vec::new(),
@@ -1455,6 +1520,8 @@ pub(crate) mod tests {
             addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xb]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
+            t1: 0,
+            t2: 0,
             obtained_at: 0,
             dns_servers: Vec::new(),
             domain_search: Vec::new(),
@@ -1485,6 +1552,8 @@ pub(crate) mod tests {
             addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xc]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
+            t1: 0,
+            t2: 0,
             obtained_at: 0,
             dns_servers: Vec::new(),
             domain_search: Vec::new(),
@@ -1507,6 +1576,8 @@ pub(crate) mod tests {
             addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xd]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
+            t1: 0,
+            t2: 0,
             obtained_at: 0,
             dns_servers: Vec::new(),
             domain_search: Vec::new(),
