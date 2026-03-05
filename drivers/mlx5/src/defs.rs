@@ -154,6 +154,48 @@ pub enum CmdOpcode {
     /// アクセスレジスタ
     AccessRegister            = 0x0805,
 
+    /// UAR (User Access Region) 割り当て
+    AllocUar                  = 0x0802,
+    /// UAR解放
+    DeallocUar                = 0x0803,
+
+    /// Protection Domain 割り当て
+    AllocPd                   = 0x0800,
+    /// Protection Domain解放
+    DeallocPd                 = 0x0801,
+
+    /// Transport Domain 割り当て
+    AllocTransportDomain      = 0x0816,
+    /// Transport Domain解放
+    DeallocTransportDomain    = 0x0817,
+
+    /// RQT (Receive Queue Table) 作成
+    CreateRqt                 = 0x0916,
+    /// RQT破棄
+    DestroyRqt                = 0x0917,
+
+    /// フローテーブル作成
+    CreateFlowTable           = 0x0930,
+    /// フローテーブル破棄
+    DestroyFlowTable          = 0x0931,
+    /// フローグループ作成
+    CreateFlowGroup           = 0x0933,
+    /// フローグループ破棄
+    DestroyFlowGroup          = 0x0934,
+    /// フローテーブルエントリ設定
+    SetFlowTableEntry         = 0x0936,
+    /// フローテーブルエントリ削除
+    DeleteFlowTableEntry      = 0x0938,
+
+    /// VPORTカウンタクエリ
+    QueryVportCounter         = 0x0770,
+
+    /// ドライババージョン設定
+    SetDriverVersion          = 0x010D,
+
+    /// CQモデレーション設定
+    ModifyCq                  = 0x0402,
+
     /// NOP (テスト用)
     Nop                       = 0x80FD,
 }
@@ -382,4 +424,85 @@ pub enum MkeyType {
     Indirect    = 0x00,
     /// 物理ブロックリスト
     Klm         = 0x01,
+}
+
+// ============================================================================
+// SQ/RQ State Transitions
+// ============================================================================
+
+/// SQ / RQ の状態
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WqState {
+    /// リセット状態（初期状態）
+    Reset   = 0x00,
+    /// Ready to Send/Receive
+    Ready   = 0x01,
+    /// エラー状態
+    Error   = 0x03,
+}
+
+// ============================================================================
+// EQ Event Bitmask
+// ============================================================================
+
+/// EQイベントビットマスク生成用
+pub mod eq_event_mask {
+    use super::EventType;
+
+    /// 全CQ完了イベント
+    pub const COMPLETION: u64 = 1 << (EventType::CompletionEvent as u64);
+    /// ポート状態変更
+    pub const PORT_STATE_CHANGE: u64 = 1 << (EventType::PortStateChange as u64);
+    /// コマンド完了
+    pub const COMMAND_COMPLETION: u64 = 1 << (EventType::CommandCompletion as u64);
+    /// ページ要求
+    pub const PAGE_REQUEST: u64 = 1 << (EventType::PageRequest as u64);
+    /// VPORT変更
+    pub const NIC_VPORT_CHANGE: u64 = 1 << (EventType::NicVportChange as u64);
+
+    /// 全受信イベント（標準的な組み合わせ）
+    pub const STANDARD: u64 = COMPLETION | PORT_STATE_CHANGE | COMMAND_COMPLETION
+        | PAGE_REQUEST | NIC_VPORT_CHANGE;
+}
+
+// ============================================================================
+// VPORT Counter Fields
+// ============================================================================
+
+/// VPORTカウンタ情報
+#[derive(Debug, Clone, Default)]
+pub struct VportCounters {
+    /// 受信ユニキャストパケット数
+    pub rx_unicast_packets: u64,
+    /// 受信ユニキャストバイト数
+    pub rx_unicast_bytes: u64,
+    /// 受信マルチキャストパケット数
+    pub rx_multicast_packets: u64,
+    /// 受信マルチキャストバイト数
+    pub rx_multicast_bytes: u64,
+    /// 受信ブロードキャストパケット数
+    pub rx_broadcast_packets: u64,
+    /// 受信ブロードキャストバイト数
+    pub rx_broadcast_bytes: u64,
+    /// 送信ユニキャストパケット数
+    pub tx_unicast_packets: u64,
+    /// 送信ユニキャストバイト数
+    pub tx_unicast_bytes: u64,
+    /// 送信マルチキャストパケット数
+    pub tx_multicast_packets: u64,
+    /// 送信マルチキャストバイト数
+    pub tx_multicast_bytes: u64,
+    /// 送信ブロードキャストパケット数
+    pub tx_broadcast_packets: u64,
+    /// 送信ブロードキャストバイト数
+    pub tx_broadcast_bytes: u64,
+    /// 受信エラーパケット数
+    pub rx_error_packets: u64,
+    /// 送信エラーパケット数
+    pub tx_error_packets: u64,
+    /// 受信ドロップパケット数
+    pub rx_dropped: u64,
+    /// 送信ドロップパケット数
+    pub tx_dropped: u64,
 }

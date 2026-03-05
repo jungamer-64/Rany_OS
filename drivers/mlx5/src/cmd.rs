@@ -446,3 +446,411 @@ pub fn parse_vport_mac(out_mbox: &CmdMailbox) -> [u8; 6] {
         mac_l as u8,
     ]
 }
+
+// ============================================================================
+// Resource Allocation Commands
+// ============================================================================
+
+/// ALLOC_UAR コマンド入力の構築
+pub fn build_alloc_uar_input(in_mbox: &mut CmdMailbox) {
+    *in_mbox = CmdMailbox::zeroed();
+    // ALLOC_UAR は追加パラメータ不要
+}
+
+/// ALLOC_UAR 出力からUARページ番号を解析
+pub fn parse_alloc_uar_output(out_mbox: &CmdMailbox) -> u32 {
+    // UAR number at offset 0x08 (bits [23:0])
+    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+}
+
+/// DEALLOC_UAR コマンド入力の構築
+pub fn build_dealloc_uar_input(in_mbox: &mut CmdMailbox, uar_number: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, uar_number & 0x00FF_FFFF);
+}
+
+/// ALLOC_PD コマンド入力の構築
+pub fn build_alloc_pd_input(in_mbox: &mut CmdMailbox) {
+    *in_mbox = CmdMailbox::zeroed();
+}
+
+/// ALLOC_PD 出力からPD番号を解析
+pub fn parse_alloc_pd_output(out_mbox: &CmdMailbox) -> u32 {
+    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+}
+
+/// DEALLOC_PD コマンド入力の構築
+pub fn build_dealloc_pd_input(in_mbox: &mut CmdMailbox, pd: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, pd & 0x00FF_FFFF);
+}
+
+/// ALLOC_TRANSPORT_DOMAIN コマンド入力の構築
+pub fn build_alloc_td_input(in_mbox: &mut CmdMailbox) {
+    *in_mbox = CmdMailbox::zeroed();
+}
+
+/// ALLOC_TRANSPORT_DOMAIN 出力からTD番号を解析
+pub fn parse_alloc_td_output(out_mbox: &CmdMailbox) -> u32 {
+    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+}
+
+/// DEALLOC_TRANSPORT_DOMAIN コマンド入力の構築
+pub fn build_dealloc_td_input(in_mbox: &mut CmdMailbox, td: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, td & 0x00FF_FFFF);
+}
+
+// ============================================================================
+// Queue Creation / Modification Commands
+// ============================================================================
+
+/// CREATE_CQ コマンド入力の構築
+///
+/// # Arguments
+/// - `log_cq_size`: ログ2 CQサイズ
+/// - `cq_buf_pa`: CQバッファの物理アドレス
+/// - `db_pa`: CQドアベルレコードの物理アドレス
+/// - `uar_page`: UARページ番号
+/// - `eqn`: 紐づくEQ番号
+/// - `cqe_comp`: CQE圧縮の有効/無効
+pub fn build_create_cq_input(
+    in_mbox: &mut CmdMailbox,
+    log_cq_size: u8,
+    cq_buf_pa: u64,
+    db_pa: u64,
+    uar_page: u32,
+    eqn: u32,
+    cqe_comp: bool,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // CQ Context at offset 0x10
+    let ctx = 0x10;
+    // log_cq_size at bits [4:0] | cqe_sz at bits [6:5] (0 = 64-byte CQE)
+    let cqe_sz: u32 = 0; // 64-byte CQE
+    let flags: u32 = if cqe_comp { 0x01 << 8 } else { 0 }; // cqe_compression
+    in_mbox.write_be32(ctx, (cqe_sz << 5) | (log_cq_size as u32) | flags);
+    // UAR page at offset +0x04
+    in_mbox.write_be32(ctx + 0x04, uar_page & 0x00FF_FFFF);
+    // EQ番号 at offset +0x08
+    in_mbox.write_be32(ctx + 0x08, eqn & 0x00FF_FFFF);
+    // CQ buffer PA at offset +0x10 (PAS list, first entry)
+    in_mbox.write_be64(ctx + 0x10, cq_buf_pa);
+    // Doorbell record PA at offset +0x18
+    in_mbox.write_be64(ctx + 0x18, db_pa);
+}
+
+/// CREATE_CQ 出力からCQ番号を解析
+pub fn parse_create_cq_output(out_mbox: &CmdMailbox) -> u32 {
+    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+}
+
+/// DESTROY_CQ コマンド入力の構築
+pub fn build_destroy_cq_input(in_mbox: &mut CmdMailbox, cqn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, cqn & 0x00FF_FFFF);
+}
+
+/// CREATE_SQ コマンド入力の構築
+///
+/// # Arguments
+/// - `log_sq_size`: ログ2 SQサイズ
+/// - `sq_buf_pa`: SQバッファ物理アドレス
+/// - `db_pa`: SQドアベルレコード物理アドレス
+/// - `cqn`: 紐づくCQ番号
+/// - `tisn`: 紐づくTIS番号
+/// - `uar_page`: UARページ番号
+/// - `mkey`: メモリキー
+pub fn build_create_sq_input(
+    in_mbox: &mut CmdMailbox,
+    log_sq_size: u8,
+    sq_buf_pa: u64,
+    db_pa: u64,
+    cqn: u32,
+    tisn: u32,
+    uar_page: u32,
+    mkey: u32,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // SQ Context at offset 0x10
+    let ctx = 0x10;
+    // flags + state (RESET=0x00) at offset +0x00
+    // flush_in_error: bit 28
+    in_mbox.write_be32(ctx, 0x1 << 28); // flush_in_error = 1
+    // CQN at offset +0x04
+    in_mbox.write_be32(ctx + 0x04, cqn & 0x00FF_FFFF);
+    // TISN at offset +0x08
+    in_mbox.write_be32(ctx + 0x08, tisn & 0x00FF_FFFF);
+    // UAR page at offset +0x0C
+    in_mbox.write_be32(ctx + 0x0C, uar_page & 0x00FF_FFFF);
+    // WQ Context at offset 0x30
+    let wq_ctx = 0x30;
+    // wq_type (0x01 = cyclic) + log_wq_stride (6 = 64-byte WQEs) + log_wq_sz
+    let wq_type: u32 = 0x01; // cyclic
+    let log_wq_stride: u32 = 6; // 64-byte WQE stride (2^6 = 64)
+    in_mbox.write_be32(wq_ctx, (wq_type << 28) | (log_wq_stride << 16) | (log_sq_size as u32));
+    // PD at offset +0x04
+    // (PD is set globally, not per-queue in this simplified model)
+    // Buffer PA at offset +0x10
+    in_mbox.write_be64(wq_ctx + 0x10, sq_buf_pa);
+    // Doorbell PA at offset +0x18
+    in_mbox.write_be64(wq_ctx + 0x18, db_pa);
+}
+
+/// CREATE_SQ 出力からSQ番号を解析
+pub fn parse_create_sq_output(out_mbox: &CmdMailbox) -> u32 {
+    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+}
+
+/// DESTROY_SQ コマンド入力の構築
+pub fn build_destroy_sq_input(in_mbox: &mut CmdMailbox, sqn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, sqn & 0x00FF_FFFF);
+}
+
+/// MODIFY_SQ コマンド入力の構築（状態遷移用）
+///
+/// # Arguments
+/// - `sqn`: SQ番号
+/// - `current_state`: 現在の状態
+/// - `next_state`: 遷移先の状態
+pub fn build_modify_sq_input(
+    in_mbox: &mut CmdMailbox,
+    sqn: u32,
+    current_state: u8,
+    next_state: u8,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // SQN at offset 0x04
+    in_mbox.write_be32(0x04, sqn & 0x00FF_FFFF);
+    // SQ Context at offset 0x10
+    let ctx = 0x10;
+    // sq_state (current) at bits [7:4], next_state at bits [3:0]
+    let state_val = ((current_state as u32) << 4) | (next_state as u32);
+    in_mbox.write_be32(ctx, state_val);
+}
+
+/// CREATE_RQ コマンド入力の構築
+///
+/// # Arguments
+/// - `log_rq_size`: ログ2 RQサイズ
+/// - `rq_buf_pa`: RQバッファ物理アドレス
+/// - `db_pa`: RQドアベルレコード物理アドレス
+/// - `cqn`: 紐づくCQ番号
+/// - `uar_page`: UARページ番号
+/// - `mkey`: メモリキー
+pub fn build_create_rq_input(
+    in_mbox: &mut CmdMailbox,
+    log_rq_size: u8,
+    rq_buf_pa: u64,
+    db_pa: u64,
+    cqn: u32,
+    uar_page: u32,
+    mkey: u32,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // RQ Context at offset 0x10
+    let ctx = 0x10;
+    // flags + state (RESET=0x00) at offset +0x00
+    // flush_in_error: bit 28
+    in_mbox.write_be32(ctx, 0x1 << 28);
+    // CQN at offset +0x04
+    in_mbox.write_be32(ctx + 0x04, cqn & 0x00FF_FFFF);
+    // WQ Context at offset 0x30
+    let wq_ctx = 0x30;
+    // wq_type (0x01 = cyclic) + log_wq_stride (4 = 16-byte scatter) + log_wq_sz
+    let wq_type: u32 = 0x01; // cyclic
+    let log_wq_stride: u32 = 4; // 16-byte WQE stride for RQ (single scatter entry)
+    in_mbox.write_be32(wq_ctx, (wq_type << 28) | (log_wq_stride << 16) | (log_rq_size as u32));
+    // Buffer PA at offset +0x10
+    in_mbox.write_be64(wq_ctx + 0x10, rq_buf_pa);
+    // Doorbell PA at offset +0x18
+    in_mbox.write_be64(wq_ctx + 0x18, db_pa);
+}
+
+/// CREATE_RQ 出力からRQ番号を解析
+pub fn parse_create_rq_output(out_mbox: &CmdMailbox) -> u32 {
+    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+}
+
+/// DESTROY_RQ コマンド入力の構築
+pub fn build_destroy_rq_input(in_mbox: &mut CmdMailbox, rqn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, rqn & 0x00FF_FFFF);
+}
+
+/// MODIFY_RQ コマンド入力の構築（状態遷移用）
+pub fn build_modify_rq_input(
+    in_mbox: &mut CmdMailbox,
+    rqn: u32,
+    current_state: u8,
+    next_state: u8,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // RQN at offset 0x04
+    in_mbox.write_be32(0x04, rqn & 0x00FF_FFFF);
+    // RQ Context at offset 0x10
+    let ctx = 0x10;
+    let state_val = ((current_state as u32) << 4) | (next_state as u32);
+    in_mbox.write_be32(ctx, state_val);
+}
+
+/// DESTROY_EQ コマンド入力の構築
+pub fn build_destroy_eq_input(in_mbox: &mut CmdMailbox, eqn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, eqn & 0x00FF_FFFF);
+}
+
+/// CREATE_EQ 出力からEQ番号を解析
+pub fn parse_create_eq_output(out_mbox: &CmdMailbox) -> u32 {
+    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+}
+
+// ============================================================================
+// Port & Statistics Commands
+// ============================================================================
+
+/// QUERY_VPORT_STATE コマンド入力の構築
+pub fn build_query_vport_state_input(in_mbox: &mut CmdMailbox, vport_number: u16) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be16(0x04, vport_number);
+}
+
+/// QUERY_VPORT_STATE 出力からリンク状態を解析
+///
+/// # Returns
+/// (admin_state, link_state) — 各2ビットフィールド
+pub fn parse_query_vport_state_output(out_mbox: &CmdMailbox) -> (u8, u8) {
+    let val = out_mbox.read_be32(0x10);
+    let admin_state = ((val >> 4) & 0x0F) as u8;
+    let oper_state = (val & 0x0F) as u8;
+    (admin_state, oper_state)
+}
+
+/// QUERY_VPORT_COUNTER コマンド入力の構築
+pub fn build_query_vport_counter_input(
+    in_mbox: &mut CmdMailbox,
+    port: u8,
+    clear_on_read: bool,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // other_vport = 0, port_num at byte 0x09
+    in_mbox.data[0x09] = port;
+    // clear on read at bit 0 of byte 0x02
+    if clear_on_read {
+        in_mbox.data[0x02] = 0x01;
+    }
+}
+
+/// QUERY_VPORT_COUNTER 出力を解析
+pub fn parse_query_vport_counter_output(
+    out_mbox: &CmdMailbox,
+) -> crate::defs::VportCounters {
+    use crate::defs::VportCounters;
+    // Counter offsets in output mailbox (simplified layout)
+    let base = 0x10;
+    VportCounters {
+        rx_unicast_packets:   out_mbox.read_be64(base + 0x00),
+        rx_unicast_bytes:     out_mbox.read_be64(base + 0x08),
+        rx_multicast_packets: out_mbox.read_be64(base + 0x10),
+        rx_multicast_bytes:   out_mbox.read_be64(base + 0x18),
+        rx_broadcast_packets: out_mbox.read_be64(base + 0x20),
+        rx_broadcast_bytes:   out_mbox.read_be64(base + 0x28),
+        tx_unicast_packets:   out_mbox.read_be64(base + 0x30),
+        tx_unicast_bytes:     out_mbox.read_be64(base + 0x38),
+        tx_multicast_packets: out_mbox.read_be64(base + 0x40),
+        tx_multicast_bytes:   out_mbox.read_be64(base + 0x48),
+        tx_broadcast_packets: out_mbox.read_be64(base + 0x50),
+        tx_broadcast_bytes:   out_mbox.read_be64(base + 0x58),
+        rx_error_packets:     out_mbox.read_be64(base + 0x60),
+        tx_error_packets:     out_mbox.read_be64(base + 0x68),
+        rx_dropped:           out_mbox.read_be64(base + 0x70),
+        tx_dropped:           out_mbox.read_be64(base + 0x78),
+    }
+}
+
+/// MODIFY_NIC_VPORT_CONTEXT コマンド入力の構築（プロミスキャスモード）
+pub fn build_modify_nic_vport_promisc_input(
+    in_mbox: &mut CmdMailbox,
+    uc_promisc: bool,
+    mc_promisc: bool,
+    all_promisc: bool,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // Modify field select at offset 0x00: bit 0 = promisc
+    in_mbox.write_be32(0x00, 0x01); // promisc field selected
+    // NIC VPORT context at offset 0x10
+    let ctx = 0x10;
+    let mut promisc_flags: u32 = 0;
+    if uc_promisc { promisc_flags |= 0x01; }
+    if mc_promisc { promisc_flags |= 0x02; }
+    if all_promisc { promisc_flags |= 0x04; }
+    in_mbox.write_be32(ctx + 0x00, promisc_flags);
+}
+
+/// SET_DRIVER_VERSION コマンド入力の構築
+pub fn build_set_driver_version_input(in_mbox: &mut CmdMailbox, version_str: &[u8]) {
+    *in_mbox = CmdMailbox::zeroed();
+    // Driver version string at offset 0x10 (max 64 bytes)
+    let copy_len = version_str.len().min(64);
+    in_mbox.data[0x10..0x10 + copy_len].copy_from_slice(&version_str[..copy_len]);
+}
+
+/// MODIFY_CQ コマンド入力の構築（CQモデレーション設定）
+///
+/// # Arguments
+/// - `cqn`: CQ番号
+/// - `max_count`: 割り込み結合の最大パケット数
+/// - `max_period_us`: 割り込み結合の最大遅延（マイクロ秒）
+pub fn build_modify_cq_moderation_input(
+    in_mbox: &mut CmdMailbox,
+    cqn: u32,
+    max_count: u16,
+    max_period_us: u16,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // CQN at offset 0x04
+    in_mbox.write_be32(0x04, cqn & 0x00FF_FFFF);
+    // CQ Context (modify fields) at offset 0x10
+    let ctx = 0x10;
+    // Modify field select: bit 0 = moderation
+    in_mbox.write_be32(0x00, 0x01);
+    // cq_max_count at offset +0x00 (upper 16 bits)
+    // cq_period at offset +0x00 (lower 16 bits)
+    let moderation = ((max_count as u32) << 16) | (max_period_us as u32);
+    in_mbox.write_be32(ctx, moderation);
+}
+
+/// DESTROY_RQT コマンド入力の構築
+pub fn build_destroy_rqt_input(in_mbox: &mut CmdMailbox, rqtn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, rqtn & 0x00FF_FFFF);
+}
+
+/// DESTROY_FLOW_TABLE コマンド入力の構築
+pub fn build_destroy_flow_table_input(in_mbox: &mut CmdMailbox, table_id: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, table_id & 0x00FF_FFFF);
+}
+
+/// DESTROY_FLOW_GROUP コマンド入力の構築
+pub fn build_destroy_flow_group_input(
+    in_mbox: &mut CmdMailbox,
+    table_id: u32,
+    group_id: u32,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, table_id & 0x00FF_FFFF);
+    in_mbox.write_be32(0x08, group_id & 0x00FF_FFFF);
+}
+
+/// DELETE_FLOW_TABLE_ENTRY コマンド入力の構築
+pub fn build_delete_flow_table_entry_input(
+    in_mbox: &mut CmdMailbox,
+    table_id: u32,
+    flow_index: u32,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, table_id & 0x00FF_FFFF);
+    in_mbox.write_be32(0x08, flow_index);
+}

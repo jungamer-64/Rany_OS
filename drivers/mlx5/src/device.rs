@@ -20,12 +20,12 @@ use crate::cq::CompletionQueue;
 use crate::defs::*;
 use crate::eq::{EventQueue, EqEvent, decode_eqe};
 use crate::error::{Mlx5Error, Mlx5Result};
-use crate::flow::{FlowTable, FlowGroup, FlowTableEntry, FlowTableConfig, RqTable};
+use crate::flow::{FlowTable, FlowGroup, FlowTableEntry, FlowTableConfig, RqTable, RssConfig};
 use crate::fw::{self, FwInfo};
 use crate::pages::PageManager;
 use crate::polling::AdaptivePollingState;
 use crate::port::{MacAddr, Mlx5Port};
-use crate::resources::{MkeyInfo, TirInfo, TisInfo, TirParams, TisParams, MkeyParams};
+use crate::resources::{MkeyInfo, TirInfo, TisInfo, TirParams, TisParams, MkeyParams, TirReceiveType};
 use crate::wq::{ReceiveQueue, SendQueue};
 
 /// デバイスの初期化状態
@@ -124,6 +124,20 @@ pub struct Mlx5Device {
 
     /// 適応的ポーリング状態
     polling_state: AdaptivePollingState,
+
+    /// Protection Domain 番号
+    pd: u32,
+    /// Transport Domain 番号
+    td: u32,
+
+    /// 割り当て済みUAR番号リスト（teardown時に解放）
+    allocated_uars: Vec<u32>,
+
+    /// CQドアベルレコードの仮想/物理アドレスペア
+    cq_db_records: Vec<(u64, u64)>,
+
+    /// ドライバ初期化済みフラグ（リソース割り当て完了）
+    resources_allocated: bool,
 }
 
 impl Mlx5Device {
@@ -160,6 +174,11 @@ impl Mlx5Device {
             flow_entries: Vec::new(),
             rq_tables: Vec::new(),
             polling_state: AdaptivePollingState::with_defaults(),
+            pd: 0,
+            td: 0,
+            allocated_uars: Vec::new(),
+            cq_db_records: Vec::new(),
+            resources_allocated: false,
         }
     }
 
@@ -208,6 +227,16 @@ impl Mlx5Device {
     /// アクティブかどうか
     pub fn is_active(&self) -> bool {
         self.state == DeviceState::Active
+    }
+
+    /// Protection Domain 番号
+    pub fn pd(&self) -> u32 {
+        self.pd
+    }
+
+    /// Transport Domain 番号
+    pub fn td(&self) -> u32 {
+        self.td
     }
 
     // ========================================================================
@@ -701,10 +730,8 @@ impl Mlx5Device {
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::flow::build_create_flow_table_input(in_mbox, config);
 
-        // CREATE_FLOW_TABLE は拡張コマンドのため、直接オペコードを使用
-        // ここでは NOP で代替（実HWではFW IFC仕様に従う）
         cmd.execute(
-            CmdOpcode::Nop, // 実際は 0x0930
+            CmdOpcode::CreateFlowTable,
             self.cmd_in_mbox_phys,
             MLX5_CMD_MBOX_SIZE as u32,
             self.cmd_out_mbox_phys,
@@ -738,7 +765,7 @@ impl Mlx5Device {
         crate::flow::build_create_flow_group_input(in_mbox, table_id, start_index, end_index, criteria);
 
         cmd.execute(
-            CmdOpcode::Nop, // 実際は 0x0933
+            CmdOpcode::CreateFlowGroup,
             self.cmd_in_mbox_phys,
             MLX5_CMD_MBOX_SIZE as u32,
             self.cmd_out_mbox_phys,
@@ -783,7 +810,7 @@ impl Mlx5Device {
         );
 
         cmd.execute(
-            CmdOpcode::Nop, // 実際は 0x0936
+            CmdOpcode::SetFlowTableEntry,
             self.cmd_in_mbox_phys,
             MLX5_CMD_MBOX_SIZE as u32,
             self.cmd_out_mbox_phys,
