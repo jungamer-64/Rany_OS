@@ -31,6 +31,9 @@ NIC             ?=
 NET_STATE_DIR   ?= target/net_state
 VFIO_NET_BDF    ?=
 VFIO_ACK        ?= 0
+RUN_SMART       ?= 1
+RUN_PREFLIGHT   ?= 1
+RUN_FORCE_IMAGE ?= 0
 MONITOR         ?= 0
 GDB             ?= 0
 TCG             ?= 0
@@ -231,6 +234,275 @@ reset-vars:
 # Make の $(if ...) / $(shell ...) 展開の問題を避けるため、QEMU 引数の
 # 動的構築は全てシェル変数で行う。
 
+# 起動前共通preflight (read-only)
+define RUN_PREFLIGHT_COMMON
+	if [ "$(RUN_PREFLIGHT)" != "1" ]; then \
+		printf '   -> \033[33m[PREFLIGHT] Skipped (RUN_PREFLIGHT=%s)\033[0m\n' "$(RUN_PREFLIGHT)"; \
+	else \
+		_pf_fail=0; \
+		pf_pass() { printf '   -> \033[32mPASS\033[0m [PREFLIGHT] %s\n' "$$1"; }; \
+		pf_warn() { printf '   -> \033[33mWARN\033[0m [PREFLIGHT] %s\n' "$$1"; }; \
+		pf_fail() { printf '   -> \033[31mFAIL\033[0m [PREFLIGHT] %s\n' "$$1"; _pf_fail=$$((_pf_fail + 1)); }; \
+		printf '\033[36m[PREFLIGHT] Common checks...\033[0m\n'; \
+		for _cmd in "$(QEMU)" ip awk sed grep; do \
+			if command -v "$$_cmd" >/dev/null 2>&1; then \
+				pf_pass "command available: $$_cmd"; \
+			else \
+				pf_fail "command missing: $$_cmd"; \
+			fi; \
+		done; \
+		if [ -f "$(OVMF_CODE)" ]; then \
+			pf_pass "OVMF code present: $(OVMF_CODE)"; \
+		else \
+			pf_fail "OVMF code missing: $(OVMF_CODE)"; \
+		fi; \
+		if [ -f "$(OVMF_VARS_ORIG)" ]; then \
+			pf_pass "OVMF vars present: $(OVMF_VARS_ORIG)"; \
+		else \
+			pf_fail "OVMF vars missing: $(OVMF_VARS_ORIG)"; \
+		fi; \
+		if [ "$(IOMMU)" = "1" ]; then \
+			if printf '%s' "$(IOMMU_AW_BITS)" | grep -Eq '^[0-9]+$$'; then \
+				pf_pass "IOMMU_AW_BITS is numeric: $(IOMMU_AW_BITS)"; \
+			else \
+				pf_fail "IOMMU_AW_BITS must be numeric (current: $(IOMMU_AW_BITS))"; \
+			fi; \
+		else \
+			pf_warn "IOMMU disabled (IOMMU=0)"; \
+		fi; \
+		if [ "$$_pf_fail" -ne 0 ]; then \
+			printf '   -> \033[31m[PREFLIGHT] %s failure(s). Aborting run.\033[0m\n' "$$_pf_fail"; \
+			exit 1; \
+		fi; \
+		printf '   -> \033[32m[PREFLIGHT] Common checks passed.\033[0m\n'; \
+	fi
+endef
+
+# VFIO専用preflight (runモード, read-only)
+define RUN_PREFLIGHT_VFIO_RUN
+	if [ "$(RUN_PREFLIGHT)" != "1" ]; then \
+		:; \
+	else \
+		_net_mode="$(NETWORK)"; \
+		if [ "$$_net_mode" = "1" ]; then _net_mode="bridge"; fi; \
+		if [ "$$_net_mode" = "0" ]; then _net_mode="none"; fi; \
+		if [ "$$_net_mode" = "vfio" ]; then _net_mode="pcie"; fi; \
+		if [ "$$_net_mode" != "pcie" ]; then \
+			printf '   -> \033[32mPASS\033[0m [PREFLIGHT][VFIO] skipped (NETWORK=%s)\033[0m\n' "$$_net_mode"; \
+		else \
+			_pf_fail=0; \
+			pf_fail() { printf '   -> \033[31mFAIL\033[0m [PREFLIGHT][VFIO] %s\n' "$$1"; _pf_fail=$$((_pf_fail + 1)); }; \
+			pf_pass() { printf '   -> \033[32mPASS\033[0m [PREFLIGHT][VFIO] %s\n' "$$1"; }; \
+			printf '\033[36m[PREFLIGHT] VFIO run checks...\033[0m\n'; \
+			if [ "$(IOMMU)" = "1" ]; then \
+				pf_pass "IOMMU enabled"; \
+			else \
+				pf_fail "IOMMU=1 is required for NETWORK=pcie|vfio"; \
+			fi; \
+			_vfio_bdf="$(VFIO_NET_BDF)"; \
+			_vfio_bdf_valid=0; \
+			if [ -z "$$_vfio_bdf" ]; then \
+				pf_fail "VFIO_NET_BDF is required"; \
+			elif printf '%s' "$$_vfio_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
+				_vfio_bdf_valid=1; \
+				pf_pass "VFIO_NET_BDF format valid: $$_vfio_bdf"; \
+			else \
+				pf_fail "invalid VFIO_NET_BDF format: $$_vfio_bdf (expected 0000:01:00.0)"; \
+			fi; \
+			if [ "$$_vfio_bdf_valid" = "1" ]; then \
+				_vfio_dev="/sys/bus/pci/devices/$$_vfio_bdf"; \
+				if [ -d "$$_vfio_dev" ]; then \
+					pf_pass "PCI device exists: $$_vfio_bdf"; \
+				else \
+					pf_fail "PCI device not found: $$_vfio_bdf"; \
+				fi; \
+				_vfio_norm=$$(printf '%s' "$$_vfio_bdf" | tr ':.' '_'); \
+				_vfio_state_file="$(NET_STATE_DIR)/vfio-$$_vfio_norm.state"; \
+				if [ -f "$$_vfio_state_file" ]; then \
+					_state_bdf=$$(awk '/^BDF /{print $$2; exit}' "$$_vfio_state_file"); \
+					if [ "$$_state_bdf" = "$$_vfio_bdf" ]; then \
+						pf_pass "state file OK: $$_vfio_state_file"; \
+					else \
+						pf_fail "state mismatch (file=$$_state_bdf requested=$$_vfio_bdf). Fix: make vfio-restore VFIO_NET_BDF=$$_state_bdf && make vfio-prepare VFIO_NET_BDF=$$_vfio_bdf VFIO_ACK=1"; \
+					fi; \
+				else \
+					pf_fail "state file missing: $$_vfio_state_file. Fix: make vfio-prepare VFIO_NET_BDF=$$_vfio_bdf VFIO_ACK=1"; \
+				fi; \
+				_vfio_driver=$$(basename "$$(readlink "$$_vfio_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
+				if [ "$$_vfio_driver" = "vfio-pci" ]; then \
+					pf_pass "driver is vfio-pci"; \
+				else \
+					pf_fail "driver is $${_vfio_driver:-none}. Fix: make vfio-prepare VFIO_NET_BDF=$$_vfio_bdf VFIO_ACK=1"; \
+				fi; \
+				if [ -e "$$_vfio_dev/iommu_group" ]; then \
+					_vfio_group=$$(basename "$$(readlink "$$_vfio_dev/iommu_group")"); \
+					_vfio_group_dev="/dev/vfio/$$_vfio_group"; \
+					if [ -e "$$_vfio_group_dev" ]; then \
+						if [ -r "$$_vfio_group_dev" ] && [ -w "$$_vfio_group_dev" ]; then \
+							pf_pass "group device access OK: $$_vfio_group_dev"; \
+						else \
+							pf_fail "permission denied: $$_vfio_group_dev. Fix: sudo setfacl -m u:$$(id -un):rw $$_vfio_group_dev"; \
+						fi; \
+					else \
+						pf_fail "missing VFIO group device: $$_vfio_group_dev"; \
+					fi; \
+				else \
+					pf_fail "no IOMMU group for $$_vfio_bdf"; \
+				fi; \
+			fi; \
+			_memlock_kb=$$(ulimit -l 2>/dev/null || echo 0); \
+			_required_kb=$$(( $(MEMORY) * 1024 )); \
+			if [ "$$_memlock_kb" = "unlimited" ]; then \
+				pf_pass "memlock=unlimited"; \
+			else \
+				case "$$_memlock_kb" in \
+					''|*[!0-9]*) pf_fail "memlock is non-numeric: $$_memlock_kb";; \
+					*) \
+						if [ "$$_memlock_kb" -ge "$$_required_kb" ]; then \
+							pf_pass "memlock sufficient: $$_memlock_kb KiB"; \
+						else \
+							pf_fail "memlock too small ($$_memlock_kb KiB < $$_required_kb KiB). Fix: set memlock unlimited in /etc/security/limits.d/*.conf and re-login"; \
+						fi ;; \
+				esac; \
+			fi; \
+			if [ "$$_pf_fail" -ne 0 ]; then \
+				printf '   -> \033[31m[PREFLIGHT][VFIO] %s failure(s). Aborting run.\033[0m\n' "$$_pf_fail"; \
+				exit 1; \
+			fi; \
+			printf '   -> \033[32m[PREFLIGHT][VFIO] checks passed.\033[0m\n'; \
+		fi; \
+	fi
+endef
+
+# VFIO prepare用preflight
+define VFIO_PREPARE_PREFLIGHT
+	_pf_fail=0; \
+	pf_fail() { printf '   -> \033[31mFAIL\033[0m [PREFLIGHT][VFIO-PREPARE] %s\n' "$$1"; _pf_fail=$$((_pf_fail + 1)); }; \
+	pf_pass() { printf '   -> \033[32mPASS\033[0m [PREFLIGHT][VFIO-PREPARE] %s\n' "$$1"; }; \
+	printf '\033[36m[PREFLIGHT] VFIO prepare checks...\033[0m\n'; \
+	if [ "$$(uname -s)" = "Linux" ]; then \
+		pf_pass "Linux host"; \
+	else \
+		pf_fail "Linux host required"; \
+	fi; \
+	_vfio_bdf="$(VFIO_NET_BDF)"; \
+	_vfio_bdf_valid=0; \
+	if [ -z "$$_vfio_bdf" ]; then \
+		pf_fail "VFIO_NET_BDF is required"; \
+	elif printf '%s' "$$_vfio_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
+		_vfio_bdf_valid=1; \
+		pf_pass "VFIO_NET_BDF format valid: $$_vfio_bdf"; \
+	else \
+		pf_fail "invalid VFIO_NET_BDF format: $$_vfio_bdf"; \
+	fi; \
+	if [ "$$_vfio_bdf_valid" = "1" ]; then \
+		_vfio_dev="/sys/bus/pci/devices/$$_vfio_bdf"; \
+		if [ -d "$$_vfio_dev" ]; then \
+			pf_pass "PCI device exists: $$_vfio_bdf"; \
+		else \
+			pf_fail "PCI device not found: $$_vfio_bdf"; \
+		fi; \
+	else \
+		_vfio_dev=""; \
+	fi; \
+	if [ -e /dev/vfio/vfio ]; then \
+		pf_pass "/dev/vfio/vfio available"; \
+	else \
+		pf_fail "/dev/vfio/vfio missing"; \
+	fi; \
+	if [ -n "$$_vfio_dev" ] && [ -e "$$_vfio_dev/iommu_group" ]; then \
+		_group_id=$$(basename "$$(readlink "$$_vfio_dev/iommu_group")"); \
+		_group_dir="/sys/kernel/iommu_groups/$$_group_id/devices"; \
+		_group_count=$$(find "$$_group_dir" -mindepth 1 -maxdepth 1 -type l 2>/dev/null | wc -l | tr -d '[:space:]'); \
+		if [ "$$_group_count" = "1" ]; then \
+			pf_pass "IOMMU group has single device: $$_group_id"; \
+		else \
+			pf_fail "IOMMU group $$_group_id has $$_group_count devices (fail-fast)"; \
+		fi; \
+	elif [ -n "$$_vfio_dev" ]; then \
+		pf_fail "no IOMMU group for $$_vfio_bdf"; \
+	fi; \
+	if [ "$$_pf_fail" -ne 0 ]; then \
+		printf '   -> \033[31m[PREFLIGHT][VFIO-PREPARE] %s failure(s).\033[0m\n' "$$_pf_fail"; \
+		exit 1; \
+	fi; \
+	printf '   -> \033[32m[PREFLIGHT][VFIO-PREPARE] checks passed.\033[0m\n'
+endef
+
+# runの自動最適化 (mtimeベース)
+define RUN_SMART_IMAGE
+	if [ "$(RUN_FORCE_IMAGE)" = "1" ]; then \
+		printf '   -> \033[36m[RUN] RUN_FORCE_IMAGE=1: rebuilding image.\033[0m\n'; \
+		$(MAKE) image; \
+	elif [ "$(RUN_SMART)" = "0" ]; then \
+		printf '   -> \033[36m[RUN] RUN_SMART=0: rebuilding image.\033[0m\n'; \
+		$(MAKE) image; \
+	else \
+		_need_image=0; \
+		_reason=""; \
+		mark_need() { if [ "$$_need_image" -eq 0 ]; then _need_image=1; _reason="$$1"; fi; }; \
+		[ ! -f "$(LOADER_EFI)" ] && mark_need "missing loader artifact: $(LOADER_EFI)"; \
+		[ ! -f "$(KERNEL_SIGNED)" ] && mark_need "missing signed kernel: $(KERNEL_SIGNED)"; \
+		[ ! -f "$(FAT_ROOT)/EFI/BOOT/BOOTX64.EFI" ] && mark_need "missing FAT loader copy"; \
+		[ ! -f "$(FAT_ROOT)/rany_os" ] && mark_need "missing FAT kernel copy"; \
+		if [ "$$_need_image" -eq 0 ]; then \
+			_new_kernel_src=$$(find kernel/src -type f -newer "$(KERNEL_SIGNED)" 2>/dev/null | head -1); \
+			[ -n "$$_new_kernel_src" ] && mark_need "kernel sources newer than signed kernel"; \
+		fi; \
+		if [ "$$_need_image" -eq 0 ]; then \
+			_new_loader_src=$$(find bootloader/src -type f -newer "$(LOADER_EFI)" 2>/dev/null | head -1); \
+			[ -n "$$_new_loader_src" ] && mark_need "bootloader sources newer than loader artifact"; \
+		fi; \
+		if [ "$$_need_image" -eq 0 ]; then \
+			for _meta in Cargo.toml Cargo.lock x86_64-exorust.json x86_64-exorust-cell.json Makefile; do \
+				if [ -f "$$_meta" ] && { [ "$$_meta" -nt "$(FAT_ROOT)/rany_os" ] || [ "$$_meta" -nt "$(FAT_ROOT)/EFI/BOOT/BOOTX64.EFI" ]; }; then \
+					mark_need "$$_meta newer than FAT boot artifacts"; \
+					break; \
+				fi; \
+			done; \
+		fi; \
+		if [ "$$_need_image" -eq 0 ] && [ -f "$(KERNEL_SIGNED)" ] && [ -f "$(FAT_ROOT)/rany_os" ] && [ "$(KERNEL_SIGNED)" -nt "$(FAT_ROOT)/rany_os" ]; then \
+			mark_need "signed kernel newer than FAT copy"; \
+		fi; \
+		if [ "$$_need_image" -eq 0 ] && [ -f "$(LOADER_EFI)" ] && [ -f "$(FAT_ROOT)/EFI/BOOT/BOOTX64.EFI" ] && [ "$(LOADER_EFI)" -nt "$(FAT_ROOT)/EFI/BOOT/BOOTX64.EFI" ]; then \
+			mark_need "loader artifact newer than FAT copy"; \
+		fi; \
+		if [ "$$_need_image" -eq 0 ] && [ -f target/initramfs.tar ]; then \
+			if [ ! -f "$(FAT_ROOT)/initramfs.tar" ] || [ target/initramfs.tar -nt "$(FAT_ROOT)/initramfs.tar" ]; then \
+				mark_need "initramfs changed"; \
+			fi; \
+		fi; \
+		if [ "$$_need_image" -eq 0 ] && [ -d "$(BUILD_DIR)/cells" ]; then \
+			if [ ! -d "$(FAT_ROOT)/cells" ]; then \
+				mark_need "cell payload missing in FAT image"; \
+			else \
+				_new_cell=$$(find "$(BUILD_DIR)/cells" -type f -newer "$(FAT_ROOT)/rany_os" 2>/dev/null | head -1); \
+				[ -n "$$_new_cell" ] && mark_need "cell payload changed"; \
+			fi; \
+		fi; \
+		if [ "$$_need_image" -eq 0 ] && [ -n "$(CMDLINE)" ]; then \
+			if [ ! -f "$(FAT_ROOT)/exoloader.cmdline" ] || ! grep -Fxq "$(CMDLINE)" "$(FAT_ROOT)/exoloader.cmdline" 2>/dev/null; then \
+				mark_need "cmdline changed"; \
+			fi; \
+		fi; \
+		if [ "$$_need_image" -eq 1 ]; then \
+			printf '   -> \033[36m[RUN] Rebuilding image (%s)\033[0m\n' "$$_reason"; \
+			$(MAKE) image; \
+		else \
+			printf '   -> \033[32m[RUN] Smart mode: image is up to date, skipping build/image.\033[0m\n'; \
+		fi; \
+	fi
+endef
+
+# run/debug共通の起動パイプライン
+define RUN_PIPELINE
+	@$(call RUN_PREFLIGHT_COMMON)
+	@$(call RUN_PREFLIGHT_VFIO_RUN)
+	@$(call RUN_SMART_IMAGE)
+	@printf '\033[36m%s\033[0m\n' "$(2)"
+	$(call LAUNCH_QEMU,$(1))
+endef
+
 # QEMU 起動用シェルスクリプト (run.sh の start_qemu + get_qemu_accelerator を完全移植)
 # 引数: $1 = 追加 QEMU フラグ (debug ターゲット用、省略可)
 define LAUNCH_QEMU
@@ -412,72 +684,6 @@ case "$$_net_mode" in \
 					printf '      Expected format: 0000:01:00.0\n'; \
 					exit 1; \
 				fi; \
-				if [ "$$(uname -s)" != "Linux" ]; then \
-					printf '   -> \033[31m[NET][VFIO] NETWORK=%s is supported only on Linux hosts\033[0m\n' "$$_net_mode"; \
-					exit 1; \
-				fi; \
-				if [ "$$accel" != "kvm" ]; then \
-					printf '   -> \033[31m[NET][VFIO] KVM acceleration is required (current: %s)\033[0m\n' "$$accel"; \
-					exit 1; \
-				fi; \
-				if [ "$(IOMMU)" != "1" ]; then \
-					printf '   -> \033[31m[NET][VFIO] IOMMU=1 is required for NETWORK=%s\033[0m\n' "$$_net_mode"; \
-					exit 1; \
-				fi; \
-				_vfio_dev="/sys/bus/pci/devices/$$_vfio_bdf"; \
-				if [ ! -d "$$_vfio_dev" ]; then \
-					printf '   -> \033[31m[NET][VFIO] PCI device not found: %s\033[0m\n' "$$_vfio_bdf"; \
-					exit 1; \
-				fi; \
-				_vfio_norm=$$(printf '%s' "$$_vfio_bdf" | tr ':.' '_'); \
-				_vfio_state_file="$(NET_STATE_DIR)/vfio-$$_vfio_norm.state"; \
-				if [ ! -f "$$_vfio_state_file" ]; then \
-					printf '   -> \033[33m[WARN] [NET][VFIO] Run-time auto bind/unbind is disabled.\033[0m\n'; \
-					printf '   -> \033[31m[NET][VFIO] Device is not prepared: %s\033[0m\n' "$$_vfio_state_file"; \
-					printf '      Run first: make vfio-prepare VFIO_NET_BDF=%s VFIO_ACK=1\n' "$$_vfio_bdf"; \
-					exit 1; \
-				fi; \
-				_state_bdf=$$(awk '/^BDF /{print $$2; exit}' "$$_vfio_state_file"); \
-				if [ "$$_state_bdf" != "$$_vfio_bdf" ]; then \
-					printf '   -> \033[31m[NET][VFIO] State mismatch: file BDF=%s, requested BDF=%s\033[0m\n' "$$_state_bdf" "$$_vfio_bdf"; \
-					exit 1; \
-				fi; \
-				_vfio_driver=$$(basename "$$(readlink "$$_vfio_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
-				if [ "$$_vfio_driver" != "vfio-pci" ]; then \
-					printf '   -> \033[33m[WARN] [NET][VFIO] Run-time auto bind/unbind is disabled.\033[0m\n'; \
-					printf '   -> \033[31m[NET][VFIO] %s is not bound to vfio-pci (current: %s)\033[0m\n' "$$_vfio_bdf" "$${_vfio_driver:-none}"; \
-					printf '      Run first: make vfio-prepare VFIO_NET_BDF=%s VFIO_ACK=1\n' "$$_vfio_bdf"; \
-					exit 1; \
-				fi; \
-				if [ ! -e "$$_vfio_dev/iommu_group" ]; then \
-					printf '   -> \033[31m[NET][VFIO] No IOMMU group for %s\033[0m\n' "$$_vfio_bdf"; \
-					exit 1; \
-				fi; \
-				_vfio_group=$$(basename "$$(readlink "$$_vfio_dev/iommu_group")"); \
-				_vfio_group_dev="/dev/vfio/$$_vfio_group"; \
-				if [ ! -e "$$_vfio_group_dev" ]; then \
-					printf '   -> \033[31m[NET][VFIO] Missing VFIO group device: %s\033[0m\n' "$$_vfio_group_dev"; \
-					exit 1; \
-				fi; \
-				if [ ! -r "$$_vfio_group_dev" ] || [ ! -w "$$_vfio_group_dev" ]; then \
-					_vfio_user=$$(id -un); \
-					printf '   -> \033[31m[NET][VFIO] Permission denied for %s (user=%s)\033[0m\n' "$$_vfio_group_dev" "$$_vfio_user"; \
-					ls -l "$$_vfio_group_dev" 2>/dev/null || true; \
-					printf '      Fix (temporary): sudo setfacl -m u:%s:rw %s\n' "$$_vfio_user" "$$_vfio_group_dev"; \
-					printf '      Then retry: make run NETWORK=pcie VFIO_NET_BDF=%s\n' "$$_vfio_bdf"; \
-					exit 1; \
-				fi; \
-				_memlock_kb=$$(ulimit -l 2>/dev/null || echo 0); \
-				_required_kb=$$(( $(MEMORY) * 1024 )); \
-				if [ "$$_memlock_kb" != "unlimited" ] && [ "$$_memlock_kb" -lt "$$_required_kb" ]; then \
-					printf '   -> \033[31m[NET][VFIO] Max locked memory too small for VFIO DMA mapping\033[0m\n'; \
-					printf '      current: %s KiB, required: >= %s KiB (MEMORY=%sM)\n' "$$_memlock_kb" "$$_required_kb" "$(MEMORY)"; \
-					printf '      Host fix (persistent): set memlock unlimited for user "%s", then re-login\n' "$$(id -un)"; \
-					printf '      Example file: /etc/security/limits.d/99-vfio.conf\n'; \
-					printf '        %s soft memlock unlimited\n' "$$(id -un)"; \
-					printf '        %s hard memlock unlimited\n' "$$(id -un)"; \
-					exit 1; \
-				fi; \
 				qemu_args="$$qemu_args -device vfio-pci,host=$$_vfio_bdf"; \
 				printf '   -> \033[32m[NET][VFIO] PCIe passthrough enabled (host=%s)\033[0m\n' "$$_vfio_bdf"; \
 				;; \
@@ -556,18 +762,16 @@ case "$$_net_mode" in \
 endef
 
 # ビルド＋QEMU起動 (デフォルト: debug)
-run: image
-	@printf '\033[36m%s\033[0m\n' "Launching QEMU..."
-	$(call LAUNCH_QEMU,)
+run:
+	$(call RUN_PIPELINE,,Launching QEMU...)
 
 # リリースビルド＋実行
 run-release:
 	$(MAKE) run PROFILE=release
 
 # デバッグ実行 (QEMU の割り込みログ付き)
-debug: image
-	@printf '\033[36m%s\033[0m\n' "Starting ExoRust kernel with debug output..."
-	$(call LAUNCH_QEMU,-d int$(comma)cpu_reset -D $(BUILD_DIR)/qemu_int.log)
+debug:
+	$(call RUN_PIPELINE,-d int$(comma)cpu_reset -D $(BUILD_DIR)/qemu_int.log,Starting ExoRust kernel with debug output...)
 
 # GDB デバッグ
 gdb:
@@ -864,34 +1068,13 @@ vfio-prepare:
 		printf '        Example: make vfio-prepare VFIO_NET_BDF=0000:01:00.0 VFIO_ACK=1\n'; \
 		exit 1; \
 	fi
-	@if [ -z "$(VFIO_NET_BDF)" ]; then \
-		printf '\033[31m[ERROR] VFIO_NET_BDF is required.\033[0m\n'; \
-		printf '        Example: make vfio-prepare VFIO_NET_BDF=0000:01:00.0 VFIO_ACK=1\n'; \
-		exit 1; \
-	fi
-	@if ! printf '%s' "$(VFIO_NET_BDF)" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
-		printf '\033[31m[ERROR] Invalid VFIO_NET_BDF format: %s\033[0m\n' "$(VFIO_NET_BDF)"; \
-		printf '        Expected format: 0000:01:00.0\n'; \
-		exit 1; \
-	fi
-	@if [ "$$(uname -s)" != "Linux" ]; then \
-		printf '\033[31m[ERROR] vfio-prepare is supported only on Linux.\033[0m\n'; \
-		exit 1; \
-	fi
-	@if [ ! -d "/sys/bus/pci/devices/$(VFIO_NET_BDF)" ]; then \
-		printf '\033[31m[ERROR] PCI device not found: %s\033[0m\n' "$(VFIO_NET_BDF)"; \
-		exit 1; \
-	fi
-	@printf '\033[36mPreparing VFIO passthrough for %s...\033[0m\n' "$(VFIO_NET_BDF)"
 	@if ! command -v sudo >/dev/null 2>&1; then \
 		printf '\033[31m[ERROR] sudo command is required for vfio-prepare.\033[0m\n'; \
 		exit 1; \
 	fi
 	@sudo modprobe vfio-pci
-	@if [ ! -e /dev/vfio/vfio ]; then \
-		printf '\033[31m[ERROR] /dev/vfio/vfio is not available. Check host IOMMU/VFIO setup.\033[0m\n'; \
-		exit 1; \
-	fi
+	@$(call VFIO_PREPARE_PREFLIGHT)
+	@printf '\033[36mPreparing VFIO passthrough for %s...\033[0m\n' "$(VFIO_NET_BDF)"
 	@_bdf="$(VFIO_NET_BDF)"; \
 	_dev="/sys/bus/pci/devices/$$_bdf"; \
 	_group_link="$$_dev/iommu_group"; \
@@ -900,14 +1083,6 @@ vfio-prepare:
 		exit 1; \
 	fi; \
 	_group_id=$$(basename "$$(readlink "$$_group_link")"); \
-	_group_dir="/sys/kernel/iommu_groups/$$_group_id/devices"; \
-	_group_count=$$(find "$$_group_dir" -mindepth 1 -maxdepth 1 -type l 2>/dev/null | wc -l | tr -d '[:space:]'); \
-	if [ "$$_group_count" != "1" ]; then \
-		printf '   -> \033[31m[ERROR] IOMMU group %s has %s devices (fail-fast policy).\033[0m\n' "$$_group_id" "$$_group_count"; \
-		printf '      Group members:\n'; \
-		for _d in $$(ls "$$_group_dir" 2>/dev/null | sort); do printf '        - %s\n' "$$_d"; done; \
-		exit 1; \
-	fi; \
 	_state_dir="$(NET_STATE_DIR)"; \
 	mkdir -p "$$_state_dir"; \
 	_bdf_norm=$$(printf '%s' "$$_bdf" | tr ':.' '_'); \
@@ -1119,7 +1294,7 @@ help:
 	@echo "  make image         - Build + create FAT boot image"
 	@echo ""
 	@echo "Run targets:"
-	@echo "  make run           - Build + run in QEMU (default: debug)"
+	@echo "  make run           - Smart run in QEMU (preflight + auto image rebuild)"
 	@echo "  make run-release   - Build + run in release mode"
 	@echo "  make debug         - Run with detailed interrupt logging"
 	@echo "  make gdb           - Run with GDB stub (localhost:1234)"
@@ -1144,6 +1319,9 @@ help:
 	@echo "  NIC=IFACE              Host NIC to add to bridge (auto-setup)"
 	@echo "  VFIO_NET_BDF=BDF       PCI BDF for passthrough (e.g. 0000:01:00.0)"
 	@echo "  VFIO_ACK=0|1           Safety ack required by vfio-prepare (set 1)"
+	@echo "  RUN_SMART=0|1          Smart image rebuild for run/debug (default: 1)"
+	@echo "  RUN_PREFLIGHT=0|1      Enable preflight fail-fast for run/debug (default: 1)"
+	@echo "  RUN_FORCE_IMAGE=0|1    Force image rebuild before run/debug (default: 0)"
 	@echo "  NVME=SIZE              NVMe device size (default: 1G, empty=disabled)"
 	@echo "  MONITOR=0|1            QEMU monitor on telnet:4444 (default: 0)"
 	@echo "  GDB=0|1                GDB stub on :1234 (default: 0)"
@@ -1170,6 +1348,7 @@ help:
 	@echo "  make vfio-prepare VFIO_NET_BDF=0000:01:00.0 VFIO_ACK=1 - Bind NIC to vfio-pci"
 	@echo "  make vfio-restore VFIO_NET_BDF=0000:01:00.0 - Restore NIC to original driver"
 	@echo "  make vfio-status [VFIO_NET_BDF=0000:01:00.0] - Show VFIO preparation status"
+	@echo "  VFIO flow: vfio-prepare -> run NETWORK=pcie VFIO_NET_BDF=... -> vfio-restore"
 	@echo "  make clean         - Clean build artifacts"
 	@echo "  make doc           - Generate documentation"
 	@echo "  make size          - Show kernel binary size"
