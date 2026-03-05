@@ -203,8 +203,10 @@ pub fn build_create_tis_input(in_mbox: &mut CmdMailbox, params: &TisParams) {
     // - tisc context starts at 0x20
     let ctx = 0x20usize;
 
-    // tisc.prio[3:0] in dword @ ctx+0x00 (bits 19:16)
-    in_mbox.write_be32(ctx, ((params.prio as u32) & 0x0F) << 16);
+    // Keep lag affinity fields cleared here and program only traffic class priority.
+    // Linux mlx5 path sets affinity through MODIFY_TIS when needed.
+    let tisc0 = ((params.prio as u32) & 0x0F) << 16;
+    in_mbox.write_be32(ctx, tisc0);
     // tisc.transport_domain[23:0] in dword @ ctx+0x24
     in_mbox.write_be32(ctx + 0x24, params.td & 0x00FF_FFFF);
     // tisc.pd[23:0] in dword @ ctx+0x2C

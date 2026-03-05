@@ -1029,7 +1029,13 @@ pub fn build_create_sq_input(
     in_mbox.write_be32(ctx, 1 << 28);
     // sqc.cqn[23:0] at ctx+0x08
     in_mbox.write_be32(ctx + 0x08, cqn & 0x00FF_FFFF);
-    // sqc.tis_num_0[23:0] at ctx+0x2C
+    // sqc.packet_pacing_rate_limit_index[15:0] sits at ctx+0x1C (low 16 bits).
+    // 0xFFFF disables packet pacing and matches Linux mlx5 SQ bring-up defaults.
+    in_mbox.write_be32(ctx + 0x1C, 0x0000_FFFF);
+    // sqc.tis_lst_sz[15:0] is at ctx+0x20 high 16 bits.
+    let tis_list_size = 1u32;
+    in_mbox.write_be32(ctx + 0x20, (tis_list_size & 0xFFFF) << 16);
+    // sqc.tis_num_0[23:0] at ctx+0x2C (low 24 bits of the dword).
     in_mbox.write_be32(ctx + 0x2C, tisn & 0x00FF_FFFF);
 
     // sqc.wq starts at ctx+0x30.
