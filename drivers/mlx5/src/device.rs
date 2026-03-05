@@ -112,6 +112,8 @@ pub struct Mlx5Device {
     page_manager: PageManager,
     /// FW command pathで使用する function_id（QUERY_PAGESで更新）
     fw_function_id: u16,
+    /// INIT_HCA で使用する software VHCA ID（query_hca_cap 由来）
+    sw_vhca_id: u16,
 
     /// TIS (Transport Interface Send) 情報
     tis_list: Vec<TisInfo>,
@@ -183,6 +185,7 @@ impl Mlx5Device {
             pci_function: 0,
             page_manager: PageManager::new(),
             fw_function_id: 0,
+            sw_vhca_id: 0,
             tis_list: Vec::new(),
             tir_list: Vec::new(),
             mkey_info: None,
@@ -392,14 +395,14 @@ impl Mlx5Device {
     }
 
     // ========================================================================
-    // Phase 3: HCA Enable & Init
+    // Phase 3: HCA Enable & Capability Setup
     // ========================================================================
 
-    /// HCA有効化と初期化シーケンスを実行
+    /// HCA有効化と能力設定シーケンスを実行（INIT_HCA は実行しない）
     ///
     /// # Safety
     /// - コマンドインタフェースが初期化済みであること
-    pub unsafe fn enable_and_init_hca(&mut self) -> Mlx5Result<()> {
+    pub unsafe fn enable_hca_and_setup(&mut self) -> Mlx5Result<()> {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
         // 1. ENABLE_HCA
@@ -477,17 +480,19 @@ impl Mlx5Device {
             let queried_cap_len = queried_capability.len();
             queried_capability.copy_from_slice(&out_mbox.data[0x10..0x10 + queried_cap_len]);
             // mlx5_ifc_cmd_hca_cap_bits.vhca_id is at cap offset bytes [6..8).
-            let cmd_uid = out_mbox
+            let vhca_id = out_mbox
                 .data
                 .get(0x16..0x18)
                 .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
                 .unwrap_or(0);
-            if cmd_uid != 0 {
-                cmd.set_uid(cmd_uid);
-                log::info!(
+            if vhca_id != 0 {
+                self.sw_vhca_id = vhca_id & 0x3FFF;
+                log::debug!(
                     target: "mlx5",
-                    "Command UID set from HCA caps vhca_id={:#06x}",
-                    cmd_uid
+                    "Observed HCA caps vhca_id={:#06x}; init_hca sw_vhca_id={:#06x}, command uid remains {}",
+                    vhca_id,
+                    self.sw_vhca_id,
+                    cmd.uid()
                 );
             }
             let caps = fw::parse_hca_caps(&out_mbox.data);
@@ -526,21 +531,28 @@ impl Mlx5Device {
                 }
                 Err(e) => return Err(e),
             }
+
         }
 
-        // 4. INIT_HCA
-        {
-            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-            crate::cmd::build_init_hca_input(in_mbox);
-            cmd.execute(
-                CmdOpcode::InitHca,
-                self.cmd_in_mbox_phys,
-                MLX5_CMD_MBOX_SIZE as u32,
-                self.cmd_out_mbox_phys,
-                MLX5_CMD_MBOX_SIZE as u32,
-            )?;
-        }
+        log::info!(target: "mlx5", "HCA capability setup complete");
+        Ok(())
+    }
 
+    /// INIT_HCA を実行してHCAを運用状態へ遷移
+    ///
+    /// # Safety
+    /// - enable_hca_and_setup および必要ページ供給が完了していること
+    pub unsafe fn init_hca(&mut self) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_init_hca_input(in_mbox, self.sw_vhca_id);
+        cmd.execute(
+            CmdOpcode::InitHca,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
         log::info!(target: "mlx5", "HCA initialized");
         self.state = DeviceState::HcaInitialized;
         Ok(())
@@ -849,9 +861,9 @@ impl Mlx5Device {
         cmd.execute(
             CmdOpcode::CreateTis,
             self.cmd_in_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0xC0,
             self.cmd_out_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x10,
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -880,9 +892,9 @@ impl Mlx5Device {
         cmd.execute(
             CmdOpcode::CreateTir,
             self.cmd_in_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x110,
             self.cmd_out_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x10,
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -1232,6 +1244,7 @@ impl Mlx5Device {
         msix_vector: u32,
         event_bitmask: u64,
     ) -> Mlx5Result<u32> {
+        let is_vf = self.is_virtual_function();
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -1240,16 +1253,35 @@ impl Mlx5Device {
             log_eq_size,
             eq_buf_phys,
             self.uar_page,
+            msix_vector,
             event_bitmask,
         );
 
-        cmd.execute(
+        let eq_bytes = (1usize << (log_eq_size as usize)) * crate::regs::eqe::EQE_SIZE;
+        let eq_pages = (eq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+        let eq_in_len = (0x110 + eq_pages * 8) as u32;
+
+        // Completion EQ on VF follows shared-resource UID semantics in mlx5 Linux path.
+        // Keep this scoped to CREATE_EQ and restore previous UID immediately.
+        let prev_uid = cmd.uid();
+        let use_shared_uid = is_vf && event_bitmask == 0;
+        if use_shared_uid {
+            cmd.set_uid(0xFFFF);
+        }
+
+        let exec_res = cmd.execute(
             CmdOpcode::CreateEq,
             self.cmd_in_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            eq_in_len,
             self.cmd_out_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
+            0x10,
+        );
+
+        if use_shared_uid {
+            cmd.set_uid(prev_uid);
+        }
+
+        exec_res?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let eqn = crate::cmd::parse_create_eq_output(out_mbox);
@@ -1302,12 +1334,16 @@ impl Mlx5Device {
             false, // CQE compression disabled by default
         );
 
+        let cq_bytes = (1usize << (log_cq_size as usize)) * crate::regs::cqe::SIZE;
+        let cq_pages = (cq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+        let cq_in_len = (0x110 + cq_pages * 8) as u32;
+
         cmd.execute(
             CmdOpcode::CreateCq,
             self.cmd_in_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            cq_in_len,
             self.cmd_out_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x10,
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -1363,15 +1399,19 @@ impl Mlx5Device {
             cqn,
             tisn,
             self.uar_page,
-            self.mkey,
+            self.pd,
         );
+
+        let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
+        let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+        let sq_in_len = (0x90 + sq_pages * 8) as u32;
 
         cmd.execute(
             CmdOpcode::CreateSq,
             self.cmd_in_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            sq_in_len,
             self.cmd_out_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x10,
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -1451,16 +1491,19 @@ impl Mlx5Device {
             rq_buf_phys,
             db_phys,
             cqn,
-            self.uar_page,
-            self.mkey,
+            self.pd,
         );
+
+        let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
+        let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+        let rq_in_len = (0x90 + rq_pages * 8) as u32;
 
         cmd.execute(
             CmdOpcode::CreateRq,
             self.cmd_in_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            rq_in_len,
             self.cmd_out_mbox_phys,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x10,
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -2370,12 +2413,13 @@ impl Mlx5Device {
         )?;
         log::info!(target: "mlx5", "[1/8] Command interface initialized");
 
-        self.enable_and_init_hca()?;
-        log::info!(target: "mlx5", "[1/8] HCA enabled and initialized");
+        self.enable_hca_and_setup()?;
+        log::info!(target: "mlx5", "[1/8] HCA enabled and caps configured");
 
         // Phase 2: FW startup pages
         let mut page_function_id = self.fw_function_id;
         let mut requested_pages = fw_page_addrs.len();
+        let mut pages_consumed = 0usize;
         match self.query_required_pages(0x01) {
             Ok((func_id, num_pages)) => {
                 page_function_id = func_id;
@@ -2413,6 +2457,7 @@ impl Mlx5Device {
         if requested_pages > 0 && !fw_page_addrs.is_empty() {
             let give_pages = core::cmp::min(requested_pages, fw_page_addrs.len());
             self.provide_pages(page_function_id, &fw_page_addrs[..give_pages])?;
+            pages_consumed = give_pages;
             if give_pages < requested_pages {
                 log::warn!(
                     target: "mlx5",
@@ -2429,7 +2474,60 @@ impl Mlx5Device {
                 fw_page_addrs.len()
             );
         }
-        log::info!(target: "mlx5", "[2/8] Startup pages setup complete");
+
+        // Linux mlx5 と同様に、INIT_HCA 前に init pages も供給する。
+        let mut init_page_function_id = self.fw_function_id;
+        let mut init_requested_pages = 0usize;
+        match self.query_required_pages(0x02) {
+            Ok((func_id, num_pages)) => {
+                init_page_function_id = func_id;
+                self.fw_function_id = func_id;
+                init_requested_pages = core::cmp::max(num_pages, 0) as usize;
+                log::info!(
+                    target: "mlx5",
+                    "[2/8] QUERY_PAGES init: function_id={} requested_pages={}",
+                    func_id,
+                    init_requested_pages
+                );
+            }
+            Err(Mlx5Error::CommandFailed(code))
+                if code == CmdStatus::BadOpcode as u8 || code == CmdStatus::BadParam as u8 =>
+            {
+                log::debug!(
+                    target: "mlx5",
+                    "[2/8] QUERY_PAGES init unsupported (status={:#x}); skipping",
+                    code
+                );
+            }
+            Err(e) => {
+                log::warn!(target: "mlx5", "[2/8] QUERY_PAGES init failed ({:?})", e);
+            }
+        }
+
+        if init_requested_pages > 0 && pages_consumed < fw_page_addrs.len() {
+            let remaining = &fw_page_addrs[pages_consumed..];
+            let give_pages = core::cmp::min(init_requested_pages, remaining.len());
+            self.provide_pages(init_page_function_id, &remaining[..give_pages])?;
+            if give_pages < init_requested_pages {
+                log::warn!(
+                    target: "mlx5",
+                    "[2/8] Init pages shortfall: requested={} provided={}",
+                    init_requested_pages,
+                    give_pages
+                );
+            }
+        } else if init_requested_pages > 0 {
+            log::warn!(
+                target: "mlx5",
+                "[2/8] Init pages requested={} but no free page buffers remain (available={})",
+                init_requested_pages,
+                fw_page_addrs.len().saturating_sub(pages_consumed)
+            );
+        }
+
+        self.init_hca()?;
+        log::info!(target: "mlx5", "[2/8] HCA initialized");
+        log::info!(target: "mlx5", "[2/8] Startup/init pages setup complete");
 
         // Phase 3: Resource allocation
         self.alloc_uar().map_err(|e| {
@@ -2484,10 +2582,9 @@ impl Mlx5Device {
         }
 
         // Phase 6: Event & Completion queues
-        let event_mask = crate::defs::eq_event_mask::COMPLETION
-            | crate::defs::eq_event_mask::PORT_STATE_CHANGE
-            | crate::defs::eq_event_mask::COMMAND_COMPLETION
-            | crate::defs::eq_event_mask::PAGE_REQUEST;
+        // Completion EQ follows the Linux path: mask[0] = 0 for comp EQ creation.
+        // Setting CQ completion bits explicitly can be rejected with BadParam on VF FW.
+        let event_mask = 0u64;
 
         let eqn = match self.create_eq_hw(
             eq_buf.0,
@@ -2557,17 +2654,6 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "[7/8] SQ created and RDY (sqn={})", sqn);
 
         // Phase 8: RX path
-        let tir_params = crate::resources::TirParams {
-            receive_type: TirReceiveType::DirectRq,
-            td: self.td,
-            inline_rqn: 0, // Will be filled after RQ creation
-            rqtn: 0,
-            rss: None,
-            scatter_fcs: false,
-            vlan_strip: false,
-        };
-        let tirn = self.create_tir(&tir_params)?;
-
         let rqn = self.create_rq_hw(
             rq_buf.0,
             rq_buf.1,
@@ -2575,9 +2661,24 @@ impl Mlx5Device {
             rq_buf.3,
             log_rq_size,
             rx_cqn,
-            tirn,
+            0, // TIR is created after RQ for direct-rq binding.
         )?;
         log::info!(target: "mlx5", "[8/8] RQ created and RDY (rqn={})", rqn);
+
+        let tir_params = crate::resources::TirParams {
+            receive_type: TirReceiveType::DirectRq,
+            td: self.td,
+            inline_rqn: rqn,
+            rqtn: 0,
+            rss: None,
+            scatter_fcs: false,
+            vlan_strip: false,
+        };
+        let tirn = self.create_tir(&tir_params)?;
+        if let Some(rq) = self.rqs.last_mut() {
+            rq.tirn = tirn;
+        }
+        log::info!(target: "mlx5", "[8/8] TIR created (tirn={})", tirn);
 
         // Phase 8: Flow steering & finalize
         self.setup_rx_flow_table(tirn)?;

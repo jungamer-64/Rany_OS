@@ -157,7 +157,8 @@ impl SendQueue {
 
         // WQEの構築: ctrl(16) + eth(16) + data(16) = 3 WQEBBs
         // 実際はWQE全体がSQバッファの連続領域に配置される
-        let wqe_offset = buf_idx * wqe::MIN_TX_WQE_SIZE;
+        // SQ uses 64-byte WQE stride (log_wq_stride=6).
+        let wqe_offset = buf_idx * 64;
         let wqe_ptr = (self.buf_virt as usize + wqe_offset) as *mut u8;
 
         // Control Segment (16 bytes)

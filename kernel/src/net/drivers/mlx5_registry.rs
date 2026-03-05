@@ -18,6 +18,7 @@ use mlx5_driver::{ConnectXVariant, MELLANOX_VENDOR_ID, Mlx5Device, SUPPORTED_DEV
 const CMD_LOG_SIZE: u8 = 2; // 4 entries
 const DMA_PAGE_BYTES: usize = MLX5_PAGE_SIZE;
 const FW_BOOT_PAGE_COUNT: usize = 4;
+const MLX5_EQ_SPARE_EQE: u32 = 0x80;
 
 /// ConnectX ファミリのサポートデバイスID一覧を動的構築
 fn build_supported_devices() -> Vec<DeviceId> {
@@ -183,9 +184,13 @@ impl Mlx5ConnectXDriver {
         let cmdq_size = DMA_PAGE_BYTES.max((1usize << CMD_LOG_SIZE) * cmd_entry::ENTRY_SIZE);
         let cmd_mbox_size = DMA_PAGE_BYTES;
 
-        let eq_size = (MLX5_EQ_DEPTH as usize) * eqe::EQE_SIZE;
+        let eq_target_depth = MLX5_EQ_DEPTH.saturating_add(MLX5_EQ_SPARE_EQE);
+        let eq_log_size = log2_ceil_u32(eq_target_depth);
+        let eq_alloc_depth = 1u32 << eq_log_size;
+        let eq_size = (eq_alloc_depth as usize) * eqe::EQE_SIZE;
         let cq_size = (MLX5_CQ_DEPTH as usize) * cqe::SIZE;
-        let sq_size = (MLX5_WQ_DEPTH as usize) * wqe::MIN_TX_WQE_SIZE;
+        // SQ WQ stride is 64 bytes (log_wq_stride=6) in CREATE_SQ.
+        let sq_size = (MLX5_WQ_DEPTH as usize) * 64;
         let rq_size = (MLX5_WQ_DEPTH as usize) * wqe::WQEBB_SIZE;
         let db_record_size = DMA_PAGE_BYTES;
 
@@ -372,7 +377,7 @@ impl Mlx5ConnectXDriver {
             pci_dev.bdf.function(),
         );
 
-        let eq_log_size = log2_u32(MLX5_EQ_DEPTH);
+        let eq_log_size = log2_ceil_u32(MLX5_EQ_DEPTH.saturating_add(MLX5_EQ_SPARE_EQE));
         let cq_log_size = log2_u32(MLX5_CQ_DEPTH);
         let sq_log_size = log2_u32(MLX5_WQ_DEPTH);
         let rq_log_size = log2_u32(MLX5_WQ_DEPTH);
@@ -547,6 +552,13 @@ fn log2_u32(val: u32) -> u8 {
         return 0;
     }
     31 - val.leading_zeros() as u8
+}
+
+fn log2_ceil_u32(val: u32) -> u8 {
+    if val <= 1 {
+        return 0;
+    }
+    32 - (val - 1).leading_zeros() as u8
 }
 
 fn ensure_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {

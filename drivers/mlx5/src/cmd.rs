@@ -257,6 +257,37 @@ struct CmdProtBlock {
 }
 
 impl CmdQueueTransport {
+    fn opcode_uses_uid(opcode: CmdOpcode) -> bool {
+        matches!(
+            opcode,
+            CmdOpcode::AllocUar
+                | CmdOpcode::DeallocUar
+                | CmdOpcode::AllocPd
+                | CmdOpcode::DeallocPd
+                | CmdOpcode::AllocTransportDomain
+                | CmdOpcode::DeallocTransportDomain
+                | CmdOpcode::CreateEq
+                | CmdOpcode::CreateCq
+                | CmdOpcode::DestroyCq
+                | CmdOpcode::ModifyCq
+                | CmdOpcode::CreateSq
+                | CmdOpcode::DestroySq
+                | CmdOpcode::ModifySq
+                | CmdOpcode::CreateRq
+                | CmdOpcode::DestroyRq
+                | CmdOpcode::ModifyRq
+                | CmdOpcode::CreateTis
+                | CmdOpcode::DestroyTis
+                | CmdOpcode::CreateTir
+                | CmdOpcode::DestroyTir
+                | CmdOpcode::CreateMkey
+                | CmdOpcode::DestroyMkey
+                | CmdOpcode::CreateRqt
+                | CmdOpcode::DestroyRqt
+                | CmdOpcode::CreateFlowTable
+        )
+    }
+
     /// ハードウェアが公開する `cmdq_addr_l_sz` から CMDQ パラメータを抽出
     pub fn parse_hw_cmdq_layout(cmdq_addr_l_sz: u32) -> (u8, u8, bool) {
         let low = cmdq_addr_l_sz & 0xFF;
@@ -486,8 +517,14 @@ impl CmdQueueTransport {
         let in_mbox = &mut *(self.in_mbox_virt as *mut CmdMailbox);
         // opcode[15:0] is at command input offset 0x00.
         in_mbox.write_be16(0x00, opcode as u16);
-        // uid[15:0] is at command input offset 0x02.
-        in_mbox.write_be16(0x02, self.uid);
+        // Only commands with explicit uid[15:0] field consume offset 0x02.
+        // For non-uid commands this is reserved and must remain zero.
+        let cmd_uid = if Self::opcode_uses_uid(opcode) {
+            self.uid
+        } else {
+            0
+        };
+        in_mbox.write_be16(0x02, cmd_uid);
         let in_inline = self.prepare_in_block(token, in_len_usize);
         if out_len_usize > 16 {
             self.prepare_out_block(token);
@@ -667,9 +704,13 @@ pub fn build_set_hca_cap_input(
 }
 
 /// INIT_HCA コマンド入力の構築
-pub fn build_init_hca_input(in_mbox: &mut CmdMailbox) {
+///
+/// `sw_vhca_id` は 14-bit フィールド（init_hca_in.sw_vhca_id）。
+pub fn build_init_hca_input(in_mbox: &mut CmdMailbox, sw_vhca_id: u16) {
     *in_mbox = CmdMailbox::zeroed();
-    // INIT_HCA は基本パラメータなし
+    // mlx5_ifc_init_hca_in_bits:
+    // reserved_at_60[2], sw_vhca_id[14] => byte offset 0x0C.
+    in_mbox.write_be16(0x0C, sw_vhca_id & 0x3FFF);
 }
 
 /// NOP コマンド入力の構築
@@ -720,21 +761,42 @@ pub fn build_manage_pages_input(
 pub fn build_create_eq_input(
     in_mbox: &mut CmdMailbox,
     log_eq_size: u8,
-    eqc_pa: u64,
+    eq_buf_pa: u64,
     uar_page: u32,
+    msix_vector: u32,
     event_bitmask: u64,
 ) {
     *in_mbox = CmdMailbox::zeroed();
-    // EQ Context (EQC) at offset 0x10
-    // log_eq_size at EQC offset 0x00 bits[4:0]
-    let eqc_base = 0x10;
-    in_mbox.write_be32(eqc_base, log_eq_size as u32);
-    // UAR page at EQC offset 0x08
-    in_mbox.write_be32(eqc_base + 0x08, uar_page);
-    // Page address at EQC offset 0x20
-    in_mbox.write_be64(eqc_base + 0x20, eqc_pa);
-    // Event bitmask at offset 0x0C
-    in_mbox.write_be64(0x0C, event_bitmask);
+    // create_eq_in layout (mlx5_ifc.h):
+    // - eq_context_entry at 0x10
+    // - event_bitmask[0] at 0x58
+    // - pas[0] at 0x110
+    let eqc_base = 0x10usize;
+
+    // eqc.reserved_at_60[3], log_eq_size[5], uar_page[24]
+    let log_eq_uar = ((log_eq_size as u32) & 0x1F) | ((uar_page & 0x00FF_FFFF) << 8);
+    in_mbox.write_be32(eqc_base + 0x0C, log_eq_uar);
+
+    // eqc.reserved_at_a0[20], intr[12]
+    in_mbox.write_be32(eqc_base + 0x14, msix_vector & 0x0FFF);
+
+    // eqc.reserved_at_c0[3], log_page_size[5], reserved_at_c8[24]
+    // Driver buffers are 4KB pages, so log_page_size delta from adapter page is 0.
+    in_mbox.write_be32(eqc_base + 0x18, 0);
+
+    // event_bitmask[0]
+    in_mbox.write_be64(0x58, event_bitmask);
+
+    // pas[0]
+    // EQ buffer PAS list (4KB pages)
+    let eq_bytes = (1usize << (log_eq_size as usize)) * crate::regs::eqe::EQE_SIZE;
+    let eq_pages = (eq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+    for i in 0..eq_pages {
+        let off = 0x110 + i * 8;
+        if off + 8 <= MLX5_CMD_MBOX_SIZE {
+            in_mbox.write_be64(off, eq_buf_pa + (i as u64) * (crate::defs::MLX5_PAGE_SIZE as u64));
+        }
+    }
 }
 
 /// QUERY_NIC_VPORT_CONTEXT コマンド入力の構築
@@ -896,20 +958,36 @@ pub fn build_create_cq_input(
     cqe_comp: bool,
 ) {
     *in_mbox = CmdMailbox::zeroed();
-    // CQ Context at offset 0x10
-    let ctx = 0x10;
-    // log_cq_size at bits [4:0] | cqe_sz at bits [6:5] (0 = 64-byte CQE)
-    let cqe_sz: u32 = 0; // 64-byte CQE
-    let flags: u32 = if cqe_comp { 0x01 << 8 } else { 0 }; // cqe_compression
-    in_mbox.write_be32(ctx, (cqe_sz << 5) | (log_cq_size as u32) | flags);
-    // UAR page at offset +0x04
-    in_mbox.write_be32(ctx + 0x04, uar_page & 0x00FF_FFFF);
-    // EQ番号 at offset +0x08
-    in_mbox.write_be32(ctx + 0x08, eqn & 0x00FF_FFFF);
-    // CQ buffer PA at offset +0x10 (PAS list, first entry)
-    in_mbox.write_be64(ctx + 0x10, cq_buf_pa);
-    // Doorbell record PA at offset +0x18
-    in_mbox.write_be64(ctx + 0x18, db_pa);
+    // create_cq_in layout (mlx5_ifc.h):
+    // - cq_context at 0x10
+    // - pas[0] at 0x110
+    let ctx = 0x10usize;
+
+    // cqe_comp_en is optional; current path keeps default disabled.
+    let _ = cqe_comp;
+
+    // cqc.reserved_at_60[3], log_cq_size[5], uar_page[24]
+    let log_cq_uar = ((log_cq_size as u32) & 0x1F) | ((uar_page & 0x00FF_FFFF) << 8);
+    in_mbox.write_be32(ctx + 0x0C, log_cq_uar);
+
+    // cqc.c_eqn_or_apu_element[32]
+    in_mbox.write_be32(ctx + 0x14, eqn);
+
+    // cqc.reserved_at_c0[3], log_page_size[5], reserved_at_c8[24]
+    in_mbox.write_be32(ctx + 0x18, 0);
+
+    // cqc.dbr_addr[64]
+    in_mbox.write_be64(ctx + 0x38, db_pa);
+
+    // CQ buffer PAS list (4KB pages, 64-byte CQE)
+    let cq_bytes = (1usize << (log_cq_size as usize)) * crate::regs::cqe::SIZE;
+    let cq_pages = (cq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+    for i in 0..cq_pages {
+        let off = 0x110 + i * 8;
+        if off + 8 <= MLX5_CMD_MBOX_SIZE {
+            in_mbox.write_be64(off, cq_buf_pa + (i as u64) * (crate::defs::MLX5_PAGE_SIZE as u64));
+        }
+    }
 }
 
 /// CREATE_CQ 出力からCQ番号を解析
@@ -942,35 +1020,43 @@ pub fn build_create_sq_input(
     cqn: u32,
     tisn: u32,
     uar_page: u32,
-    _mkey: u32,
+    pd: u32,
 ) {
     *in_mbox = CmdMailbox::zeroed();
-    // SQ Context at offset 0x10
-    let ctx = 0x10;
-    // flags + state (RESET=0x00) at offset +0x00
-    // flush_in_error: bit 28
-    in_mbox.write_be32(ctx, 0x1 << 28); // flush_in_error = 1
-                                        // CQN at offset +0x04
-    in_mbox.write_be32(ctx + 0x04, cqn & 0x00FF_FFFF);
-    // TISN at offset +0x08
-    in_mbox.write_be32(ctx + 0x08, tisn & 0x00FF_FFFF);
-    // UAR page at offset +0x0C
-    in_mbox.write_be32(ctx + 0x0C, uar_page & 0x00FF_FFFF);
-    // WQ Context at offset 0x30
-    let wq_ctx = 0x30;
-    // wq_type (0x01 = cyclic) + log_wq_stride (6 = 64-byte WQEs) + log_wq_sz
-    let wq_type: u32 = 0x01; // cyclic
-    let log_wq_stride: u32 = 6; // 64-byte WQE stride (2^6 = 64)
-    in_mbox.write_be32(
-        wq_ctx,
-        (wq_type << 28) | (log_wq_stride << 16) | (log_sq_size as u32),
-    );
-    // PD at offset +0x04
-    // (PD is set globally, not per-queue in this simplified model)
-    // Buffer PA at offset +0x10
-    in_mbox.write_be64(wq_ctx + 0x10, sq_buf_pa);
-    // Doorbell PA at offset +0x18
-    in_mbox.write_be64(wq_ctx + 0x18, db_pa);
+    // create_sq_in.ctx starts at 0x20.
+    let ctx = 0x20usize;
+    // sqc.flush_in_error_en=1, sqc.state=RST(0)
+    in_mbox.write_be32(ctx, 1 << 28);
+    // sqc.cqn[23:0] at ctx+0x08
+    in_mbox.write_be32(ctx + 0x08, cqn & 0x00FF_FFFF);
+    // sqc.tis_num_0[23:0] at ctx+0x2C
+    in_mbox.write_be32(ctx + 0x2C, tisn & 0x00FF_FFFF);
+
+    // sqc.wq starts at ctx+0x30.
+    let wq = ctx + 0x30;
+    // wq.wq_type = cyclic(1)
+    in_mbox.write_be32(wq, 0x1 << 28);
+    // wq.pd[23:0], wq.uar_page[23:0], wq.dbr_addr
+    in_mbox.write_be32(wq + 0x08, pd & 0x00FF_FFFF);
+    in_mbox.write_be32(wq + 0x0C, uar_page & 0x00FF_FFFF);
+    in_mbox.write_be64(wq + 0x10, db_pa);
+
+    // wq.log_wq_stride/log_wq_pg_sz/log_wq_sz
+    let log_wq_stride = 6u32; // 64-byte SQ WQE stride
+    let log_wq_pg_sz = 0u32; // 4KB page vs adapter page
+    let log_wq_sz = (log_sq_size as u32) & 0x1F;
+    let wq_sz_word = ((log_wq_stride & 0x0F) << 16) | ((log_wq_pg_sz & 0x1F) << 8) | log_wq_sz;
+    in_mbox.write_be32(wq + 0x20, wq_sz_word);
+
+    // sqc.wq.pas[] starts at wq+0x40.
+    let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
+    let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+    for i in 0..sq_pages {
+        let off = wq + 0x40 + i * 8;
+        if off + 8 <= MLX5_CMD_MBOX_SIZE {
+            in_mbox.write_be64(off, sq_buf_pa + (i as u64) * (crate::defs::MLX5_PAGE_SIZE as u64));
+        }
+    }
 }
 
 /// CREATE_SQ 出力からSQ番号を解析
@@ -998,13 +1084,12 @@ pub fn build_modify_sq_input(
     next_state: u8,
 ) {
     *in_mbox = CmdMailbox::zeroed();
-    // SQN at offset 0x04
-    in_mbox.write_be32(0x04, sqn & 0x00FF_FFFF);
-    // SQ Context at offset 0x10
-    let ctx = 0x10;
-    // sq_state (current) at bits [7:4], next_state at bits [3:0]
-    let state_val = ((current_state as u32) << 4) | (next_state as u32);
-    in_mbox.write_be32(ctx, state_val);
+    // modify_sq_in.sq_state[3:0] + sqn[23:0] at dword 0x04.
+    let sq_state_and_num = (((current_state as u32) & 0x0F) << 28) | (sqn & 0x00FF_FFFF);
+    in_mbox.write_be32(0x04, sq_state_and_num);
+    // modify_sq_in.ctx starts at 0x20; sqc.state[3:0] is bits 23:20 of first dword.
+    let ctx = 0x20usize;
+    in_mbox.write_be32(ctx, ((next_state as u32) & 0x0F) << 20);
 }
 
 /// CREATE_RQ コマンド入力の構築
@@ -1022,30 +1107,38 @@ pub fn build_create_rq_input(
     rq_buf_pa: u64,
     db_pa: u64,
     cqn: u32,
-    _uar_page: u32,
-    _mkey: u32,
+    pd: u32,
 ) {
     *in_mbox = CmdMailbox::zeroed();
-    // RQ Context at offset 0x10
-    let ctx = 0x10;
-    // flags + state (RESET=0x00) at offset +0x00
-    // flush_in_error: bit 28
-    in_mbox.write_be32(ctx, 0x1 << 28);
-    // CQN at offset +0x04
-    in_mbox.write_be32(ctx + 0x04, cqn & 0x00FF_FFFF);
-    // WQ Context at offset 0x30
-    let wq_ctx = 0x30;
-    // wq_type (0x01 = cyclic) + log_wq_stride (4 = 16-byte scatter) + log_wq_sz
-    let wq_type: u32 = 0x01; // cyclic
-    let log_wq_stride: u32 = 4; // 16-byte WQE stride for RQ (single scatter entry)
-    in_mbox.write_be32(
-        wq_ctx,
-        (wq_type << 28) | (log_wq_stride << 16) | (log_rq_size as u32),
-    );
-    // Buffer PA at offset +0x10
-    in_mbox.write_be64(wq_ctx + 0x10, rq_buf_pa);
-    // Doorbell PA at offset +0x18
-    in_mbox.write_be64(wq_ctx + 0x18, db_pa);
+    // create_rq_in.ctx starts at 0x20.
+    let ctx = 0x20usize;
+    // rqc.flush_in_error_en=1, rqc.state=RST(0), mem_rq_type=inline(0)
+    in_mbox.write_be32(ctx, 1 << 18);
+    // rqc.cqn[23:0] at ctx+0x08
+    in_mbox.write_be32(ctx + 0x08, cqn & 0x00FF_FFFF);
+
+    // rqc.wq starts at ctx+0x30.
+    let wq = ctx + 0x30;
+    in_mbox.write_be32(wq, 0x1 << 28); // wq.wq_type = cyclic
+    in_mbox.write_be32(wq + 0x08, pd & 0x00FF_FFFF); // wq.pd
+    in_mbox.write_be64(wq + 0x10, db_pa); // wq.dbr_addr
+
+    // wq.log_wq_stride/log_wq_pg_sz/log_wq_sz
+    let log_wq_stride = 4u32; // 16-byte RQ stride
+    let log_wq_pg_sz = 0u32;
+    let log_wq_sz = (log_rq_size as u32) & 0x1F;
+    let wq_sz_word = ((log_wq_stride & 0x0F) << 16) | ((log_wq_pg_sz & 0x1F) << 8) | log_wq_sz;
+    in_mbox.write_be32(wq + 0x20, wq_sz_word);
+
+    // rqc.wq.pas[] starts at wq+0x40.
+    let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
+    let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+    for i in 0..rq_pages {
+        let off = wq + 0x40 + i * 8;
+        if off + 8 <= MLX5_CMD_MBOX_SIZE {
+            in_mbox.write_be64(off, rq_buf_pa + (i as u64) * (crate::defs::MLX5_PAGE_SIZE as u64));
+        }
+    }
 }
 
 /// CREATE_RQ 出力からRQ番号を解析
@@ -1068,12 +1161,12 @@ pub fn build_modify_rq_input(
     next_state: u8,
 ) {
     *in_mbox = CmdMailbox::zeroed();
-    // RQN at offset 0x04
-    in_mbox.write_be32(0x04, rqn & 0x00FF_FFFF);
-    // RQ Context at offset 0x10
-    let ctx = 0x10;
-    let state_val = ((current_state as u32) << 4) | (next_state as u32);
-    in_mbox.write_be32(ctx, state_val);
+    // modify_rq_in.rq_state[3:0] + rqn[23:0] at dword 0x04.
+    let rq_state_and_num = (((current_state as u32) & 0x0F) << 28) | (rqn & 0x00FF_FFFF);
+    in_mbox.write_be32(0x04, rq_state_and_num);
+    // modify_rq_in.ctx starts at 0x20; rqc.state[3:0] at bits 23:20.
+    let ctx = 0x20usize;
+    in_mbox.write_be32(ctx, ((next_state as u32) & 0x0F) << 20);
 }
 
 /// DESTROY_EQ コマンド入力の構築

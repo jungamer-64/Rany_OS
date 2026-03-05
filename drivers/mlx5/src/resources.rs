@@ -198,15 +198,17 @@ pub fn parse_create_mkey_output(out_mbox: &CmdMailbox) -> u32 {
 /// CREATE_TIS コマンド入力の構築
 pub fn build_create_tis_input(in_mbox: &mut CmdMailbox, params: &TisParams) {
     *in_mbox = CmdMailbox::zeroed();
-    // TIS Context at offset 0x10
-    let ctx = 0x10;
-    // PD at offset +0x00
-    in_mbox.write_be32(ctx, params.pd & 0x00FF_FFFF);
-    // TD at offset +0x04
-    in_mbox.write_be32(ctx + 0x04, params.td & 0x00FF_FFFF);
-    // port at offset +0x08 bits [7:4]
-    let port_prio = ((params.port as u32) << 4) | (params.prio as u32);
-    in_mbox.write_be32(ctx + 0x08, port_prio);
+    // mlx5_ifc_create_tis_in_bits:
+    // - header/reserved up to 0x20
+    // - tisc context starts at 0x20
+    let ctx = 0x20usize;
+
+    // tisc.prio[3:0] in dword @ ctx+0x00 (bits 19:16)
+    in_mbox.write_be32(ctx, ((params.prio as u32) & 0x0F) << 16);
+    // tisc.transport_domain[23:0] in dword @ ctx+0x24
+    in_mbox.write_be32(ctx + 0x24, params.td & 0x00FF_FFFF);
+    // tisc.pd[23:0] in dword @ ctx+0x2C
+    in_mbox.write_be32(ctx + 0x2C, params.pd & 0x00FF_FFFF);
 }
 
 /// CREATE_TIS 出力からTIS番号を解析
@@ -218,35 +220,37 @@ pub fn parse_create_tis_output(out_mbox: &CmdMailbox) -> u32 {
 /// CREATE_TIR コマンド入力の構築
 pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
     *in_mbox = CmdMailbox::zeroed();
-    // TIR Context at offset 0x10
-    let ctx = 0x10;
+    // mlx5_ifc_create_tir_in_bits:
+    // - header/reserved up to 0x20
+    // - tirc context starts at 0x20
+    let ctx = 0x20usize;
 
-    // disp_type: 0x00 = Direct, 0x01 = RQT/RSS
+    // tirc.disp_type[3:0] in dword @ ctx+0x04 (bits 31:28)
     let disp_type: u32 = match params.receive_type {
-        TirReceiveType::DirectRq => 0x00,
-        TirReceiveType::Rqt => 0x01,
+        TirReceiveType::DirectRq => 0x0,
+        TirReceiveType::Rqt => 0x1,
     };
-    in_mbox.write_be32(ctx, disp_type << 24);
-
-    // TD at offset +0x04
-    in_mbox.write_be32(ctx + 0x04, params.td & 0x00FF_FFFF);
+    in_mbox.write_be32(ctx + 0x04, (disp_type & 0x0F) << 28);
 
     match params.receive_type {
         TirReceiveType::DirectRq => {
-            // inline_rqn at offset +0x08
-            in_mbox.write_be32(ctx + 0x08, params.inline_rqn & 0x00FF_FFFF);
+            // tirc.inline_rqn[23:0] at dword @ ctx+0x1C
+            in_mbox.write_be32(ctx + 0x1C, params.inline_rqn & 0x00FF_FFFF);
         }
         TirReceiveType::Rqt => {
-            // rqtn at offset +0x08
-            in_mbox.write_be32(ctx + 0x08, params.rqtn & 0x00FF_FFFF);
-            // RSS configuration at offset +0x10
+            // tirc.indirect_table[23:0] at dword @ ctx+0x20
+            in_mbox.write_be32(ctx + 0x20, params.rqtn & 0x00FF_FFFF);
             if let Some(ref rss) = params.rss {
-                // hash_function
-                in_mbox.data[ctx + 0x10] = rss.hash_function as u8;
-                // hash_fields
-                in_mbox.write_be32(ctx + 0x14, rss.hash_fields);
-                // hash_key at offset +0x20 (40 bytes)
-                let key_off = ctx + 0x20;
+                // MLX5 RX hash fn encoding: NONE=0, XOR=1, TOEPLITZ=2.
+                let rx_hash_fn = match rss.hash_function {
+                    crate::flow::RssHashFunction::Toeplitz => 0x2u32,
+                    crate::flow::RssHashFunction::Xor => 0x1u32,
+                };
+                let td_hash = ((rx_hash_fn & 0x0F) << 28) | (params.td & 0x00FF_FFFF);
+                in_mbox.write_be32(ctx + 0x24, td_hash);
+
+                // tirc.rx_hash_toeplitz_key[10] starts at ctx+0x28 (40 bytes).
+                let key_off = ctx + 0x28;
                 let copy_len = rss.hash_key.len().min(40);
                 in_mbox.data[key_off..key_off + copy_len]
                     .copy_from_slice(&rss.hash_key[..copy_len]);
@@ -254,15 +258,13 @@ pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
         }
     }
 
-    // Flags
-    let mut flags: u32 = 0;
-    if params.scatter_fcs {
-        flags |= 0x01;
-    }
-    if params.vlan_strip {
-        flags |= 0x02;
-    }
-    in_mbox.write_be32(ctx + 0x0C, flags);
+    // tirc.transport_domain[23:0] at dword @ ctx+0x24.
+    // If RQT+RSS path set this dword above, keep only TD low24 here.
+    let dword_124 = in_mbox.read_be32(ctx + 0x24) & 0xFF00_0000;
+    in_mbox.write_be32(ctx + 0x24, dword_124 | (params.td & 0x00FF_FFFF));
+
+    // NOTE: scatter_fcs / vlan_strip are RQ context settings, not TIR context bits.
+    let _ = (params.scatter_fcs, params.vlan_strip);
 }
 
 /// CREATE_TIR 出力からTIR番号を解析
