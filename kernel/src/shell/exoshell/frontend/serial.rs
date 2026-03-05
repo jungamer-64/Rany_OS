@@ -110,7 +110,7 @@ impl ShellFrontend for SerialFrontend {
         self.navigator.reset_navigation();
 
         loop {
-            let byte = serial::read_byte().await;
+            let byte = serial::read_byte_for_shell().await;
 
             match byte {
                 b'\r' | b'\n' => {
@@ -135,11 +135,11 @@ impl ShellFrontend for SerialFrontend {
                     self.print_prompt(&shell.cwd);
                 }
                 0x1B => {
-                    let b2 = serial::read_byte().await;
+                    let b2 = serial::read_byte_for_shell().await;
                     if b2 == b'[' {
-                        let b3 = serial::read_byte().await;
+                        let b3 = serial::read_byte_for_shell().await;
                         if b3 == b'3' {
-                            let tilde = serial::read_byte().await;
+                            let tilde = serial::read_byte_for_shell().await;
                             if tilde == b'~' {
                                 self.handle_delete_key(shell);
                             }

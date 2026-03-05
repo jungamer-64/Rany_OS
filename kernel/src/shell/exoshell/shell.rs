@@ -145,6 +145,13 @@ impl ExoShell {
             return ExoValue::Nil;
         }
 
+        // Fast-path selected network shell commands to avoid parser/method-dispatch
+        // edge-cases and keep serial acceptance commands stable.
+        if let Some(value) = self.eval_fast_path(input).await {
+            self.last_result = value.clone();
+            return value;
+        }
+
         match parser::parse(input) {
             Ok(stmt) => match self.eval_stmt(stmt).await {
                 Ok(val) => {
@@ -160,6 +167,276 @@ impl ExoShell {
             },
             Err(e) => <ExoValue<'static>>::Error(e.to_string()),
         }
+    }
+
+    async fn eval_fast_path(&mut self, input: &str) -> Option<ExoValue<'static>> {
+        let input_bytes = input.as_bytes();
+
+        if input_bytes.len() == 16
+            && input_bytes[0] == b'n'
+            && input_bytes[1] == b'e'
+            && input_bytes[2] == b't'
+            && input_bytes[3] == b'.'
+            && input_bytes[4] == b'd'
+            && input_bytes[5] == b'h'
+            && input_bytes[6] == b'c'
+            && input_bytes[7] == b'p'
+            && input_bytes[8] == b'_'
+            && input_bytes[9] == b's'
+            && input_bytes[10] == b't'
+            && input_bytes[11] == b'a'
+            && input_bytes[12] == b't'
+            && input_bytes[13] == b'e'
+            && input_bytes[14] == b'('
+            && input_bytes[15] == b')'
+        {
+            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_state_async().await);
+        }
+        if input_bytes.len() == 16
+            && input_bytes[0] == b'n'
+            && input_bytes[1] == b'e'
+            && input_bytes[2] == b't'
+            && input_bytes[3] == b'.'
+            && input_bytes[4] == b'd'
+            && input_bytes[5] == b'h'
+            && input_bytes[6] == b'c'
+            && input_bytes[7] == b'p'
+            && input_bytes[8] == b'_'
+            && input_bytes[9] == b'r'
+            && input_bytes[10] == b'e'
+            && input_bytes[11] == b'n'
+            && input_bytes[12] == b'e'
+            && input_bytes[13] == b'w'
+            && input_bytes[14] == b'('
+            && input_bytes[15] == b')'
+        {
+            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_renew_async().await);
+        }
+        if input_bytes.len() == 19
+            && input_bytes[0] == b'n'
+            && input_bytes[1] == b'e'
+            && input_bytes[2] == b't'
+            && input_bytes[3] == b'.'
+            && input_bytes[4] == b'd'
+            && input_bytes[5] == b'h'
+            && input_bytes[6] == b'c'
+            && input_bytes[7] == b'p'
+            && input_bytes[8] == b'_'
+            && input_bytes[9] == b'd'
+            && input_bytes[10] == b'i'
+            && input_bytes[11] == b's'
+            && input_bytes[12] == b'c'
+            && input_bytes[13] == b'o'
+            && input_bytes[14] == b'v'
+            && input_bytes[15] == b'e'
+            && input_bytes[16] == b'r'
+            && input_bytes[17] == b'('
+            && input_bytes[18] == b')'
+        {
+            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_discover_async().await);
+        }
+        if input_bytes.len() == 18
+            && input_bytes[0] == b'n'
+            && input_bytes[1] == b'e'
+            && input_bytes[2] == b't'
+            && input_bytes[3] == b'.'
+            && input_bytes[4] == b'd'
+            && input_bytes[5] == b'h'
+            && input_bytes[6] == b'c'
+            && input_bytes[7] == b'p'
+            && input_bytes[8] == b'_'
+            && input_bytes[9] == b'r'
+            && input_bytes[10] == b'e'
+            && input_bytes[11] == b'l'
+            && input_bytes[12] == b'e'
+            && input_bytes[13] == b'a'
+            && input_bytes[14] == b's'
+            && input_bytes[15] == b'e'
+            && input_bytes[16] == b'('
+            && input_bytes[17] == b')'
+        {
+            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_release_async().await);
+        }
+        if input_bytes.len() == 24
+            && input_bytes[0] == b'n'
+            && input_bytes[1] == b'e'
+            && input_bytes[2] == b't'
+            && input_bytes[3] == b'.'
+            && input_bytes[4] == b'd'
+            && input_bytes[5] == b'h'
+            && input_bytes[6] == b'c'
+            && input_bytes[7] == b'p'
+            && input_bytes[8] == b'_'
+            && input_bytes[9] == b'l'
+            && input_bytes[10] == b'a'
+            && input_bytes[11] == b's'
+            && input_bytes[12] == b't'
+            && input_bytes[13] == b'_'
+            && input_bytes[14] == b'd'
+            && input_bytes[15] == b'e'
+            && input_bytes[16] == b'c'
+            && input_bytes[17] == b'l'
+            && input_bytes[18] == b'i'
+            && input_bytes[19] == b'n'
+            && input_bytes[20] == b'e'
+            && input_bytes[21] == b'd'
+            && input_bytes[22] == b'('
+            && input_bytes[23] == b')'
+        {
+            return Some(
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_declined_async().await,
+            );
+        }
+        if input_bytes.len() == 24
+            && input_bytes[0] == b'n'
+            && input_bytes[1] == b'e'
+            && input_bytes[2] == b't'
+            && input_bytes[3] == b'.'
+            && input_bytes[4] == b'd'
+            && input_bytes[5] == b'h'
+            && input_bytes[6] == b'c'
+            && input_bytes[7] == b'p'
+            && input_bytes[8] == b'_'
+            && input_bytes[9] == b'l'
+            && input_bytes[10] == b'a'
+            && input_bytes[11] == b's'
+            && input_bytes[12] == b't'
+            && input_bytes[13] == b'_'
+            && input_bytes[14] == b'r'
+            && input_bytes[15] == b'e'
+            && input_bytes[16] == b'l'
+            && input_bytes[17] == b'e'
+            && input_bytes[18] == b'a'
+            && input_bytes[19] == b's'
+            && input_bytes[20] == b'e'
+            && input_bytes[21] == b'd'
+            && input_bytes[22] == b'('
+            && input_bytes[23] == b')'
+        {
+            return Some(
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_released_async().await,
+            );
+        }
+        if input_bytes.len() == 11
+            && input_bytes[0] == b'n'
+            && input_bytes[1] == b'e'
+            && input_bytes[2] == b't'
+            && input_bytes[3] == b'.'
+            && input_bytes[4] == b's'
+            && input_bytes[5] == b't'
+            && input_bytes[6] == b'a'
+            && input_bytes[7] == b't'
+            && input_bytes[8] == b's'
+            && input_bytes[9] == b'('
+            && input_bytes[10] == b')'
+        {
+            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::stats_async().await);
+        }
+        if let Some((ip, count)) = Self::parse_ping_call(input_bytes) {
+            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::ping(ip, count).await);
+        }
+
+        None
+    }
+
+    fn parse_ping_call(input: &[u8]) -> Option<([u8; 4], u16)> {
+        if input.len() < 10
+            || input[0] != b'n'
+            || input[1] != b'e'
+            || input[2] != b't'
+            || input[3] != b'.'
+            || input[4] != b'p'
+            || input[5] != b'i'
+            || input[6] != b'n'
+            || input[7] != b'g'
+            || input[8] != b'('
+            || input[9] != b'"'
+        {
+            return None;
+        }
+
+        let mut idx = 10;
+        let mut octets = [0u8; 4];
+        let mut octet_idx = 0usize;
+        let mut acc = 0u16;
+        let mut has_digit = false;
+
+        loop {
+            if idx >= input.len() {
+                return None;
+            }
+            let b = input[idx];
+            if b.is_ascii_digit() {
+                has_digit = true;
+                acc = acc.saturating_mul(10).saturating_add((b - b'0') as u16);
+                if acc > u8::MAX as u16 {
+                    return None;
+                }
+                idx += 1;
+                continue;
+            }
+            if b == b'.' {
+                if !has_digit || octet_idx >= 3 {
+                    return None;
+                }
+                octets[octet_idx] = acc as u8;
+                octet_idx += 1;
+                acc = 0;
+                has_digit = false;
+                idx += 1;
+                continue;
+            }
+            if b == b'"' {
+                if !has_digit || octet_idx != 3 {
+                    return None;
+                }
+                octets[3] = acc as u8;
+                idx += 1;
+                break;
+            }
+            return None;
+        }
+
+        while idx < input.len() && input[idx] == b' ' {
+            idx += 1;
+        }
+
+        let mut count = 4u16;
+        if idx < input.len() && input[idx] == b',' {
+            idx += 1;
+            while idx < input.len() && input[idx] == b' ' {
+                idx += 1;
+            }
+            let mut parsed_digit = false;
+            let mut val: u32 = 0;
+            while idx < input.len() && input[idx].is_ascii_digit() {
+                parsed_digit = true;
+                val = val
+                    .saturating_mul(10)
+                    .saturating_add((input[idx] - b'0') as u32);
+                if val > u16::MAX as u32 {
+                    return None;
+                }
+                idx += 1;
+            }
+            if !parsed_digit {
+                return None;
+            }
+            count = val as u16;
+            while idx < input.len() && input[idx] == b' ' {
+                idx += 1;
+            }
+        }
+
+        if idx >= input.len() || input[idx] != b')' {
+            return None;
+        }
+        idx += 1;
+        if idx != input.len() {
+            return None;
+        }
+
+        Some((octets, count))
     }
 
     /// Command文の評価

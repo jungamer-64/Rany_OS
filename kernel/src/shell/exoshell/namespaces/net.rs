@@ -150,74 +150,53 @@ impl NetNamespace {
 
     /// DHCP state snapshot — 非同期版（推奨）
     pub async fn dhcp_state_async() -> ExoValue<'static> {
-        let state = crate::net::api::dhcp::dhcp_state_async().await;
+        let state = crate::net::api::dhcp::dhcp_state();
         Self::format_dhcp_state(state)
     }
 
     /// DhcpRuntimeState を ExoValue に変換（共通ヘルパー）
     fn format_dhcp_state(state: crate::net::api::dhcp::DhcpRuntimeState) -> ExoValue<'static> {
-        let mut map = BTreeMap::new();
-        map.insert(
-            String::from("v4_state"),
-            ExoValue::String(Cow::Owned(state.v4_state)),
-        );
-        map.insert(
-            String::from("v4_assigned_ip"),
-            match state.v4_assigned_ip {
-                Some(ip) => ExoValue::String(Cow::Owned(format!(
-                    "{}.{}.{}.{}",
-                    ip[0], ip[1], ip[2], ip[3]
-                ))),
-                None => ExoValue::Nil,
-            },
-        );
-        map.insert(
-            String::from("v4_lease_remaining"),
-            match state.v4_lease_remaining {
-                Some(v) => ExoValue::Int(v as i64),
-                None => ExoValue::Nil,
-            },
-        );
-        map.insert(
-            String::from("v4_last_declined"),
-            match state.v4_last_declined {
-                Some(ip) => ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]))),
-                None => ExoValue::Nil,
-            },
-        );
-        map.insert(
-            String::from("v4_last_released"),
-            match state.v4_last_released {
-                Some(ip) => ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]))),
-                None => ExoValue::Nil,
-            },
-        );
-        map.insert(
-            String::from("v6_state"),
-            ExoValue::String(Cow::Owned(state.v6_state)),
-        );
-        map.insert(
-            String::from("v6_assigned_ip"),
-            match state.v6_assigned_ip {
-                Some(ip) => ExoValue::String(Cow::Owned(Self::format_ipv6(ip))),
-                None => ExoValue::Nil,
-            },
-        );
-        map.insert(
-            String::from("v6_preferred_remaining"),
-            match state.v6_preferred_remaining {
-                Some(v) => ExoValue::Int(v as i64),
-                None => ExoValue::Nil,
-            },
-        );
-        map.insert(
-            String::from("v6_valid_remaining"),
-            match state.v6_valid_remaining {
-                Some(v) => ExoValue::Int(v as i64),
-                None => ExoValue::Nil,
-            },
-        );
-        ExoValue::Map(map)
+        let v4_ip = match state.v4_assigned_ip {
+            Some(ip) => format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
+            None => String::from("nil"),
+        };
+        let v4_lease = match state.v4_lease_remaining {
+            Some(v) => format!("{}s", v),
+            None => String::from("nil"),
+        };
+        let v4_last_declined = match state.v4_last_declined {
+            Some(ip) => format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
+            None => String::from("nil"),
+        };
+        let v4_last_released = match state.v4_last_released {
+            Some(ip) => format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
+            None => String::from("nil"),
+        };
+        let v6_ip = match state.v6_assigned_ip {
+            Some(ip) => Self::format_ipv6(ip),
+            None => String::from("nil"),
+        };
+        let v6_pref = match state.v6_preferred_remaining {
+            Some(v) => format!("{}s", v),
+            None => String::from("nil"),
+        };
+        let v6_valid = match state.v6_valid_remaining {
+            Some(v) => format!("{}s", v),
+            None => String::from("nil"),
+        };
+
+        ExoValue::String(Cow::Owned(format!(
+            "v4_state={} v4_ip={} v4_lease={} v4_last_declined={} v4_last_released={} v6_state={} v6_ip={} v6_preferred={} v6_valid={}",
+            state.v4_state,
+            v4_ip,
+            v4_lease,
+            v4_last_declined,
+            v4_last_released,
+            state.v6_state,
+            v6_ip,
+            v6_pref,
+            v6_valid
+        )))
     }
 
     /// DHCP renew — 非同期版（推奨）
@@ -254,19 +233,35 @@ impl NetNamespace {
 
     /// DHCP last declined — 非同期版（推奨）
     pub async fn dhcp_last_declined_async() -> ExoValue<'static> {
-        if let Some(ip) = crate::net::api::dhcp::dhcp_last_declined_async().await {
-            ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
-        } else {
-            ExoValue::Nil
+        use crate::net::services::dhcp;
+        match dhcp::DHCP_CLIENT.lock() {
+            Ok(guard) => {
+                if let Some(ref client) = *guard {
+                    if let Some(ip) = client.last_declined_ip() {
+                        let o = ip.as_bytes();
+                        return ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])));
+                    }
+                }
+                ExoValue::Nil
+            }
+            Err(_) => ExoValue::Error(String::from("DHCP client lock poisoned")),
         }
     }
 
     /// DHCP last released — 非同期版（推奨）
     pub async fn dhcp_last_released_async() -> ExoValue<'static> {
-        if let Some(ip) = crate::net::api::dhcp::dhcp_last_released_async().await {
-            ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
-        } else {
-            ExoValue::Nil
+        use crate::net::services::dhcp;
+        match dhcp::DHCP_CLIENT.lock() {
+            Ok(guard) => {
+                if let Some(ref client) = *guard {
+                    if let Some(ip) = client.last_released_ip() {
+                        let o = ip.as_bytes();
+                        return ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])));
+                    }
+                }
+                ExoValue::Nil
+            }
+            Err(_) => ExoValue::Error(String::from("DHCP client lock poisoned")),
         }
     }
 

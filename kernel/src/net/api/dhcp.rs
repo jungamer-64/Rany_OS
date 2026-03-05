@@ -6,7 +6,6 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
-use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -273,17 +272,13 @@ pub fn dhcp_state() -> DhcpRuntimeState {
 
 /// 非同期DHCP状態取得Future
 pub struct DhcpStateFuture {
-    result_slot: Arc<PoisonLock<Option<DhcpRuntimeState>>>,
-    waker: Arc<AtomicWaker>,
-    sent: bool,
+    ready: Option<DhcpRuntimeState>,
 }
 
 impl DhcpStateFuture {
     fn new() -> Self {
         Self {
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
-            sent: false,
+            ready: Some(dhcp_state()),
         }
     }
 }
@@ -292,28 +287,10 @@ impl Future for DhcpStateFuture {
     type Output = DhcpRuntimeState;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-
-        if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetDhcpState {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
-                },
-            );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(state) = slot.as_ref() {
-                return Poll::Ready(state.clone());
-            }
-        }
-
-        this.waker.register(cx.waker());
-        Poll::Pending
+        let _ = cx;
+        let this = self.get_mut();
+        let state = this.ready.take().unwrap_or_else(dhcp_state);
+        Poll::Ready(state)
     }
 }
 

@@ -550,12 +550,9 @@ impl ExoShell {
         if entry.trim().is_empty() {
             return;
         }
-        // 重複排除
-        if self.history.last() != Some(&entry) {
-            self.history.push(entry);
-            if self.history.len() > self.max_history {
-                self.history.remove(0);
-            }
+        self.history.push(entry);
+        if self.history.len() > self.max_history {
+            self.history.remove(0);
         }
     }
 

@@ -258,7 +258,9 @@ static WAKE_QUEUE: LockFreeQueue = LockFreeQueue::new();
 /// 統計情報
 static EXECUTOR_STATS: ExecutorStats = ExecutorStats::new();
 static EXECUTOR_INITDBG_STAGE: AtomicUsize = AtomicUsize::new(0);
-static EXECUTOR_RUNDBG_POLLS: AtomicUsize = AtomicUsize::new(0);
+// Keep RUNDBG poll spam disabled in normal runtime unless this counter is
+// explicitly reset by debug-only instrumentation.
+static EXECUTOR_RUNDBG_POLLS: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// アクティブCPU数
 static ACTIVE_CPU_COUNT: AtomicUsize = AtomicUsize::new(1);
