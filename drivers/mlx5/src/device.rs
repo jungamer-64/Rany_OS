@@ -830,6 +830,745 @@ impl Mlx5Device {
     }
 
     // ========================================================================
+    // Phase 5f: Resource Allocation (UAR, PD, TD)
+    // ========================================================================
+
+    /// UAR (User Access Region) を割り当て
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn alloc_uar(&mut self) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_alloc_uar_input(in_mbox);
+
+        cmd.execute(
+            CmdOpcode::AllocUar,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let uar_number = crate::cmd::parse_alloc_uar_output(out_mbox);
+
+        self.allocated_uars.push(uar_number);
+        log::info!(target: "mlx5", "UAR allocated: {}", uar_number);
+
+        if self.uar_page == 0 {
+            self.uar_page = uar_number;
+            // UAR base address = BAR0 base + UAR_number * PAGE_SIZE
+            self.uar_base = self.bar0_base + (uar_number as u64) * (crate::regs::uar::PAGE_SIZE as u64);
+        }
+
+        Ok(uar_number)
+    }
+
+    /// Protection Domain を割り当て
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn alloc_pd(&mut self) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_alloc_pd_input(in_mbox);
+
+        cmd.execute(
+            CmdOpcode::AllocPd,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        self.pd = crate::cmd::parse_alloc_pd_output(out_mbox);
+        log::info!(target: "mlx5", "PD allocated: {}", self.pd);
+        Ok(self.pd)
+    }
+
+    /// Transport Domain を割り当て
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn alloc_td(&mut self) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_alloc_td_input(in_mbox);
+
+        cmd.execute(
+            CmdOpcode::AllocTransportDomain,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        self.td = crate::cmd::parse_alloc_td_output(out_mbox);
+        log::info!(target: "mlx5", "TD allocated: {}", self.td);
+        Ok(self.td)
+    }
+
+    /// ドライババージョンをFWに通知
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn set_driver_version(&mut self) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let version = b"RanyOS mlx5 0.1.0";
+        crate::cmd::build_set_driver_version_input(in_mbox, version);
+
+        cmd.execute(
+            CmdOpcode::SetDriverVersion,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "Driver version set");
+        Ok(())
+    }
+
+    // ========================================================================
+    // Phase 5g: HW Queue Creation via FW Commands
+    // ========================================================================
+
+    /// Event Queueを作成（FWコマンド経由）
+    ///
+    /// # Arguments
+    /// - `eq_buf_virt`: EQバッファの仮想アドレス
+    /// - `eq_buf_phys`: EQバッファの物理アドレス
+    /// - `log_eq_size`: ログ2 EQサイズ
+    /// - `msix_vector`: MSI-Xベクタ番号
+    /// - `event_bitmask`: 受信イベントのビットマスク
+    ///
+    /// # Safety
+    /// - バッファアドレスが有効であること
+    pub unsafe fn create_eq_hw(
+        &mut self,
+        eq_buf_virt: u64,
+        eq_buf_phys: u64,
+        log_eq_size: u8,
+        msix_vector: u32,
+        event_bitmask: u64,
+    ) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_create_eq_input(
+            in_mbox,
+            log_eq_size,
+            eq_buf_phys,
+            self.uar_page,
+            event_bitmask,
+        );
+
+        cmd.execute(
+            CmdOpcode::CreateEq,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let eqn = crate::cmd::parse_create_eq_output(out_mbox);
+
+        let eq = EventQueue::new(
+            eqn,
+            eq_buf_virt,
+            eq_buf_phys,
+            self.uar_base,
+            log_eq_size,
+            msix_vector,
+        );
+        self.eqs.push(eq);
+
+        log::info!(target: "mlx5", "EQ created: eqn={} msix_vec={}", eqn, msix_vector);
+        Ok(eqn)
+    }
+
+    /// Completion Queueを作成（FWコマンド経由）
+    ///
+    /// # Arguments
+    /// - `cq_buf_virt`: CQバッファの仮想アドレス
+    /// - `cq_buf_phys`: CQバッファの物理アドレス
+    /// - `db_virt`: ドアベルレコードの仮想アドレス
+    /// - `db_phys`: ドアベルレコードの物理アドレス
+    /// - `log_cq_size`: ログ2 CQサイズ
+    /// - `eqn`: 紐づくEQ番号
+    ///
+    /// # Safety
+    /// - バッファアドレスが有効であること
+    pub unsafe fn create_cq_hw(
+        &mut self,
+        cq_buf_virt: u64,
+        cq_buf_phys: u64,
+        db_virt: u64,
+        db_phys: u64,
+        log_cq_size: u8,
+        eqn: u32,
+    ) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_create_cq_input(
+            in_mbox,
+            log_cq_size,
+            cq_buf_phys,
+            db_phys,
+            self.uar_page,
+            eqn,
+            false, // CQE compression disabled by default
+        );
+
+        cmd.execute(
+            CmdOpcode::CreateCq,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let cqn = crate::cmd::parse_create_cq_output(out_mbox);
+
+        let cq = CompletionQueue::new(
+            cqn,
+            cq_buf_virt,
+            cq_buf_phys,
+            self.uar_base,
+            db_virt,
+            log_cq_size,
+            eqn,
+        );
+        self.cqs.push(cq);
+        self.cq_db_records.push((db_virt, db_phys));
+
+        log::info!(target: "mlx5", "CQ created: cqn={} eqn={}", cqn, eqn);
+        Ok(cqn)
+    }
+
+    /// Send Queueを作成（FWコマンド経由）
+    ///
+    /// # Arguments
+    /// - `sq_buf_virt`: SQバッファの仮想アドレス
+    /// - `sq_buf_phys`: SQバッファの物理アドレス
+    /// - `db_virt`: SQドアベルレコードの仮想アドレス
+    /// - `db_phys`: SQドアベルレコードの物理アドレス
+    /// - `log_sq_size`: ログ2 SQサイズ
+    /// - `cqn`: 紐づくCQ番号
+    /// - `tisn`: 紐づくTIS番号
+    ///
+    /// # Safety
+    /// - バッファアドレスが有効であること
+    pub unsafe fn create_sq_hw(
+        &mut self,
+        sq_buf_virt: u64,
+        sq_buf_phys: u64,
+        db_virt: u64,
+        db_phys: u64,
+        log_sq_size: u8,
+        cqn: u32,
+        tisn: u32,
+    ) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_create_sq_input(
+            in_mbox,
+            log_sq_size,
+            sq_buf_phys,
+            db_phys,
+            cqn,
+            tisn,
+            self.uar_page,
+            self.mkey,
+        );
+
+        cmd.execute(
+            CmdOpcode::CreateSq,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let sqn = crate::cmd::parse_create_sq_output(out_mbox);
+
+        // Transition SQ from RESET to RDY
+        self.transition_sq_to_ready(sqn)?;
+
+        let sq = SendQueue::new(
+            sqn,
+            sq_buf_virt,
+            sq_buf_phys,
+            db_virt,
+            self.uar_base,
+            log_sq_size,
+            tisn,
+            cqn,
+            self.mkey,
+        );
+        self.sqs.push(sq);
+
+        log::info!(target: "mlx5", "SQ created: sqn={} cqn={} tisn={}", sqn, cqn, tisn);
+        Ok(sqn)
+    }
+
+    /// SQをRESET→RDY状態に遷移
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    unsafe fn transition_sq_to_ready(&mut self, sqn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_modify_sq_input(
+            in_mbox,
+            sqn,
+            WqState::Reset as u8,
+            WqState::Ready as u8,
+        );
+
+        cmd.execute(
+            CmdOpcode::ModifySq,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::trace!(target: "mlx5", "SQ {} transitioned to RDY", sqn);
+        Ok(())
+    }
+
+    /// Receive Queueを作成（FWコマンド経由）
+    ///
+    /// # Arguments
+    /// - `rq_buf_virt`: RQバッファの仮想アドレス
+    /// - `rq_buf_phys`: RQバッファの物理アドレス
+    /// - `db_virt`: RQドアベルレコードの仮想アドレス
+    /// - `db_phys`: RQドアベルレコードの物理アドレス
+    /// - `log_rq_size`: ログ2 RQサイズ
+    /// - `cqn`: 紐づくCQ番号
+    /// - `tirn`: 紐づくTIR番号
+    ///
+    /// # Safety
+    /// - バッファアドレスが有効であること
+    pub unsafe fn create_rq_hw(
+        &mut self,
+        rq_buf_virt: u64,
+        rq_buf_phys: u64,
+        db_virt: u64,
+        db_phys: u64,
+        log_rq_size: u8,
+        cqn: u32,
+        tirn: u32,
+    ) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_create_rq_input(
+            in_mbox,
+            log_rq_size,
+            rq_buf_phys,
+            db_phys,
+            cqn,
+            self.uar_page,
+            self.mkey,
+        );
+
+        cmd.execute(
+            CmdOpcode::CreateRq,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let rqn = crate::cmd::parse_create_rq_output(out_mbox);
+
+        // Transition RQ from RESET to RDY
+        self.transition_rq_to_ready(rqn)?;
+
+        let rq = ReceiveQueue::new(
+            rqn,
+            rq_buf_virt,
+            rq_buf_phys,
+            db_virt,
+            log_rq_size,
+            cqn,
+            tirn,
+            self.mkey,
+        );
+        self.rqs.push(rq);
+
+        log::info!(target: "mlx5", "RQ created: rqn={} cqn={} tirn={}", rqn, cqn, tirn);
+        Ok(rqn)
+    }
+
+    /// RQをRESET→RDY状態に遷移
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    unsafe fn transition_rq_to_ready(&mut self, rqn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_modify_rq_input(
+            in_mbox,
+            rqn,
+            WqState::Reset as u8,
+            WqState::Ready as u8,
+        );
+
+        cmd.execute(
+            CmdOpcode::ModifyRq,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::trace!(target: "mlx5", "RQ {} transitioned to RDY", rqn);
+        Ok(())
+    }
+
+    // ========================================================================
+    // Phase 5h: RSS (Receive Side Scaling) / RQT
+    // ========================================================================
+
+    /// RQT (Receive Queue Table) を作成（RSS用）
+    ///
+    /// # Arguments
+    /// - `rq_numbers`: RQ番号のリスト
+    /// - `log_rqt_size`: ログ2 RQTサイズ
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn create_rqt(
+        &mut self,
+        rq_numbers: &[u32],
+        log_rqt_size: u8,
+    ) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::flow::build_create_rqt_input(in_mbox, rq_numbers, log_rqt_size);
+
+        cmd.execute(
+            CmdOpcode::CreateRqt,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let rqtn = crate::flow::parse_create_rqt_output(out_mbox);
+
+        self.rq_tables.push(RqTable {
+            rqtn,
+            rq_list: rq_numbers.to_vec(),
+            log_rqt_size,
+        });
+
+        log::info!(target: "mlx5", "RQT created: rqtn={} rq_count={}", rqtn, rq_numbers.len());
+        Ok(rqtn)
+    }
+
+    /// RSS付きTIRを作成してRQTに紐づける
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn create_tir_with_rss(
+        &mut self,
+        rqtn: u32,
+        rss_config: &RssConfig,
+    ) -> Mlx5Result<u32> {
+        let params = TirParams {
+            receive_type: TirReceiveType::Rqt,
+            td: self.td,
+            inline_rqn: 0,
+            rqtn,
+            rss: Some(rss_config.clone()),
+            scatter_fcs: false,
+            vlan_strip: false,
+        };
+
+        self.create_tir(&params)
+    }
+
+    /// マルチキューRSSセットアップ
+    ///
+    /// 複数のRQをRQTにまとめ、RSS付きTIRを作成し、
+    /// フローテーブルで全パケットをそのTIRにフォワードする。
+    ///
+    /// # Arguments
+    /// - `rq_numbers`: RQ番号のリスト
+    /// - `rss_config`: RSS設定（None=デフォルト設定を使用）
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn setup_multi_queue_rss(
+        &mut self,
+        rq_numbers: &[u32],
+        rss_config: Option<&RssConfig>,
+    ) -> Mlx5Result<u32> {
+        if rq_numbers.is_empty() {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+
+        // RQTサイズ: 最小は対象RQ数を包含する2のべき乗 (ceil(log2(n)))
+        let log_rqt_size =
+            (usize::BITS - (rq_numbers.len() - 1).leading_zeros()) as u8;
+        let rqtn = self.create_rqt(rq_numbers, log_rqt_size)?;
+
+        // RSS付きTIR作成
+        let default_rss = RssConfig::default();
+        let rss = rss_config.unwrap_or(&default_rss);
+        let tirn = self.create_tir_with_rss(rqtn, rss)?;
+
+        // フローテーブル設定
+        self.setup_rx_flow_table(tirn)?;
+
+        log::info!(
+            target: "mlx5",
+            "Multi-queue RSS configured: {} RQs → RQT={} → TIR={} → FlowTable",
+            rq_numbers.len(), rqtn, tirn
+        );
+
+        Ok(tirn)
+    }
+
+    // ========================================================================
+    // Phase 5i: Port Operations
+    // ========================================================================
+
+    /// VPORTの状態をクエリ
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn query_port_state(&mut self, port_index: usize) -> Mlx5Result<PortLinkState> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_query_vport_state_input(in_mbox, 0);
+
+        cmd.execute(
+            CmdOpcode::QueryVportState,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let (_admin, oper) = crate::cmd::parse_query_vport_state_output(out_mbox);
+
+        let link_state = match oper {
+            0x01 => PortLinkState::Up,
+            _ => PortLinkState::Down,
+        };
+
+        if let Some(port) = self.ports.get_mut(port_index) {
+            port.set_link_state(link_state);
+            log::info!(
+                target: "mlx5",
+                "Port {} link state: {:?}",
+                port.port_number(),
+                link_state
+            );
+        }
+
+        Ok(link_state)
+    }
+
+    /// VPORTカウンタを取得
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn query_vport_counters(
+        &mut self,
+        port_num: u8,
+        clear_on_read: bool,
+    ) -> Mlx5Result<VportCounters> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_query_vport_counter_input(in_mbox, port_num, clear_on_read);
+
+        cmd.execute(
+            CmdOpcode::QueryVportCounter,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let counters = crate::cmd::parse_query_vport_counter_output(out_mbox);
+
+        log::trace!(
+            target: "mlx5",
+            "VPORT counters: rx_unicast={} tx_unicast={} rx_errors={} tx_errors={}",
+            counters.rx_unicast_packets,
+            counters.tx_unicast_packets,
+            counters.rx_error_packets,
+            counters.tx_error_packets,
+        );
+
+        Ok(counters)
+    }
+
+    /// プロミスキャスモードを設定
+    ///
+    /// # Arguments
+    /// - `uc_promisc`: ユニキャストプロミスキャス
+    /// - `mc_promisc`: マルチキャストプロミスキャス
+    /// - `all_promisc`: 全プロミスキャス
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn set_promisc_mode(
+        &mut self,
+        uc_promisc: bool,
+        mc_promisc: bool,
+        all_promisc: bool,
+    ) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_modify_nic_vport_promisc_input(
+            in_mbox,
+            uc_promisc,
+            mc_promisc,
+            all_promisc,
+        );
+
+        cmd.execute(
+            CmdOpcode::ModifyNicVportContext,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(
+            target: "mlx5",
+            "Promisc mode set: uc={} mc={} all={}",
+            uc_promisc, mc_promisc, all_promisc
+        );
+
+        Ok(())
+    }
+
+    /// MTUを設定
+    ///
+    /// ポートのMTU設定とVPORTコンテキストの更新。
+    ///
+    /// # Arguments
+    /// - `port_index`: ポートインデックス（0-based）
+    /// - `mtu`: 新しいMTU値
+    pub fn set_port_mtu(&mut self, port_index: usize, mtu: u32) -> Mlx5Result<()> {
+        let port = self.ports.get_mut(port_index)
+            .ok_or(Mlx5Error::InvalidParameter)?;
+        port.set_mtu(mtu).map_err(|_| Mlx5Error::InvalidParameter)?;
+        log::info!(target: "mlx5", "Port {} MTU set to {}", port.port_number(), mtu);
+        Ok(())
+    }
+
+    // ========================================================================
+    // Phase 5j: CQ Moderation
+    // ========================================================================
+
+    /// CQモデレーション（割り込み結合）を設定
+    ///
+    /// # Arguments
+    /// - `cq_index`: CQインデックス
+    /// - `max_count`: 結合する最大CQE数
+    /// - `max_period_us`: 結合の最大遅延（マイクロ秒）
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn set_cq_moderation(
+        &mut self,
+        cq_index: usize,
+        max_count: u16,
+        max_period_us: u16,
+    ) -> Mlx5Result<()> {
+        let cqn = self.cqs.get(cq_index)
+            .ok_or(Mlx5Error::InvalidParameter)?
+            .cqn;
+
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_modify_cq_moderation_input(in_mbox, cqn, max_count, max_period_us);
+
+        cmd.execute(
+            CmdOpcode::ModifyCq,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(
+            target: "mlx5",
+            "CQ {} moderation: count={} period={}us",
+            cqn, max_count, max_period_us
+        );
+
+        Ok(())
+    }
+
+    /// HWカウンタをポート統計情報に同期
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn sync_port_stats(&mut self, port_index: usize) -> Mlx5Result<()> {
+        let port_num = self.ports.get(port_index)
+            .ok_or(Mlx5Error::InvalidParameter)?
+            .port_number();
+
+        let counters = self.query_vport_counters(port_num, false)?;
+
+        if let Some(port) = self.ports.get_mut(port_index) {
+            let stats = port.stats_mut();
+            stats.rx_packets = counters.rx_unicast_packets
+                + counters.rx_multicast_packets
+                + counters.rx_broadcast_packets;
+            stats.rx_bytes = counters.rx_unicast_bytes
+                + counters.rx_multicast_bytes
+                + counters.rx_broadcast_bytes;
+            stats.tx_packets = counters.tx_unicast_packets
+                + counters.tx_multicast_packets
+                + counters.tx_broadcast_packets;
+            stats.tx_bytes = counters.tx_unicast_bytes
+                + counters.tx_multicast_bytes
+                + counters.tx_broadcast_bytes;
+            stats.rx_errors = counters.rx_error_packets;
+            stats.tx_errors = counters.tx_error_packets;
+            stats.rx_dropped = counters.rx_dropped;
+            stats.tx_dropped = counters.tx_dropped;
+        }
+
+        Ok(())
+    }
+
+    // ========================================================================
     // Adaptive Polling
     // ========================================================================
 
