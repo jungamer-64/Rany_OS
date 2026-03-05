@@ -325,6 +325,20 @@ impl Mlx5Device {
         let cmd = CmdInterface::new(self.bar0_base, cmdq_phys, cmdq_virt, 2);
         cmd.setup_cmdq_in_bar0();
 
+        let base = self.bar0_base as usize;
+        let nic_iface = hal::mmio::mmio_read_u32(base + crate::regs::init_seg::NIC_INTERFACE);
+        let cmd_if_rev = hal::mmio::mmio_read_u16(base + crate::regs::init_seg::CMD_IF_REV);
+        let cmdq_addr_h = hal::mmio::mmio_read_u32(base + crate::regs::init_seg::CMDQ_ADDR_H);
+        let cmdq_addr_l_sz = hal::mmio::mmio_read_u32(base + crate::regs::init_seg::CMDQ_ADDR_L_SZ);
+        log::info!(
+            target: "mlx5",
+            "CMD IF regs: nic_if={:#010x} cmd_if_rev={:#06x} cmdq_h={:#010x} cmdq_l_sz={:#010x}",
+            nic_iface,
+            cmd_if_rev,
+            cmdq_addr_h,
+            cmdq_addr_l_sz
+        );
+
         self.cmd = Some(cmd);
 
         log::info!(target: "mlx5", "Command interface initialized");
@@ -340,10 +354,16 @@ impl Mlx5Device {
     /// # Safety
     /// - コマンドインタフェースが初期化済みであること
     pub unsafe fn enable_and_init_hca(&mut self) -> Mlx5Result<()> {
+        let is_vf = self.is_virtual_function();
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
         // 1. ENABLE_HCA
-        {
+        if is_vf {
+            log::warn!(
+                target: "mlx5",
+                "VF mode: skipping ENABLE_HCA (assume PF already enabled)"
+            );
+        } else {
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             crate::cmd::build_enable_hca_input(in_mbox, 0);
             cmd.execute(
@@ -353,8 +373,9 @@ impl Mlx5Device {
                 self.cmd_out_mbox_phys,
                 MLX5_CMD_MBOX_SIZE as u32,
             )?;
+            log::info!(target: "mlx5", "HCA enabled");
         }
-        log::info!(target: "mlx5", "HCA enabled");
+
         self.state = DeviceState::HcaEnabled;
 
         // 2. QUERY_ISSI → SET_ISSI
