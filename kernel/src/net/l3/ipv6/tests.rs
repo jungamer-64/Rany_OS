@@ -491,3 +491,19 @@ pub fn test_ipv6_fragment_tiny_attack_rejection() {
     assert!(res.is_err());
     assert_eq!(reassembler.stats().dropped_invalid, 1);
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_tcp_ipv6_invalid_header_offset() {
+    // constructing a TCP segment whose data offset claims to be larger
+    // than the actual buffer.  With our header length validation this
+    // should be dropped rather than causing an index panic.
+    let mut seg = vec![0u8; 20];
+    // set data offset = 6 (24 bytes) in offset/flags field
+    seg[12..14].copy_from_slice(&((6u16 << 12) | 0u16).to_be_bytes());
+    // call the handler – should not panic
+    crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6(
+        Ipv6Address::LOOPBACK,
+        Ipv6Address::LOOPBACK,
+        &seg,
+    );
+}

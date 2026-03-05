@@ -450,17 +450,11 @@ impl PageTablePool {
                 .map_err(|_| IommuError::HardwareError)?;
 
         // Allocate zeroed page on the specified NUMA node
-        let ptr = crate::mm::numa::topology::allocate_zeroed_on_node(layout, Some(node))
+        let (ptr, actual_node) = crate::mm::numa::topology::allocate_zeroed_on_node_with_info(layout, Some(node))
             .ok_or(IommuError::OutOfMemory)?;
 
         // Get physical address
         let phys = crate::io::iommu::common::tables::virt_ptr_to_phys(ptr.as_ptr())?;
-
-        // Note: The allocator may have fallen back to a different node.
-        // In a real NUMA-aware allocator, we would query the actual node.
-        // For now, we trust the hint as the actual node.
-        // TODO: Query actual allocation node when allocator supports it.
-        let actual_node = node;
 
         // Security: Register and protect the page table IMMEDIATELY after allocation.
         // This ensures it is protected from DMA even before it's used in any domain.

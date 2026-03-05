@@ -108,6 +108,18 @@ impl TcpSegmentBuilder {
         self
     }
 
+    /// ECN-Echo flag (RFC 3168)
+    pub fn ece(mut self) -> Self {
+        self.flags |= tcp_flags::ECE;
+        self
+    }
+
+    /// Congestion Window Reduced flag (RFC 3168)
+    pub fn cwr(mut self) -> Self {
+        self.flags |= tcp_flags::CWR;
+        self
+    }
+
     /// Urgent pointer設定
     /// Note: URGフラグも自動的に設定される
     pub fn urgent_pointer(mut self, ptr: u16) -> Self {

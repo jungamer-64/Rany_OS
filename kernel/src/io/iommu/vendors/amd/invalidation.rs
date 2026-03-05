@@ -561,6 +561,59 @@ impl AmdIommuDriver {
         Ok(())
     }
 
+    /// Invalidate Device-TLBs for all attached devices (global).
+    pub(crate) fn invalidate_global_device_tlbs(&self) -> Result<(), IommuError> {
+        let devices: Vec<DeviceId> = {
+            let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
+            device_domains.keys().cloned().collect()
+        };
+        
+        for device in devices {
+            let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
+        }
+        Ok(())
+    }
+
+    /// Invalidate Device-TLBs for a specific domain asynchronously.
+    pub(super) async fn invalidate_domain_device_tlbs_async(
+        &self,
+        domain_id: u16,
+        iova: Option<u64>,
+        size: Option<u64>,
+    ) -> Result<(), IommuError> {
+        let mut futures = Vec::new();
+        {
+            let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
+            for (&device, &did) in device_domains.iter() {
+                if did == domain_id {
+                    let fut = match (iova, size) {
+                        (Some(iova_val), Some(size_val)) => {
+                            self.invalidate_iotlb_pages_async(device, iova_val, size_val)
+                        }
+                        _ => {
+                            self.invalidate_iotlb_pages_async(device, 0, u64::MAX)
+                        }
+                    };
+                    futures.push(fut);
+                }
+            }
+        }
+
+        let mut last_err = None;
+        for f in futures {
+            if let Err(e) = f.await {
+                last_err = Some(e);
+            }
+        }
+
+        if let Some(err) = last_err {
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
+
+
     /// Invalidate all device table entries.
     fn invalidate_all_device_entries(&self) -> Result<(), IommuError> {
         let device_ids: Vec<u16> = match self.device_domains.lock() {
@@ -635,11 +688,14 @@ impl IommuInvalidator for AmdIommuDriver {
         let epoch = self.iova_allocator.advance_epoch();
 
         for req in requests {
+            // Check for ATS flush requirement across all kinds
+            let ats = req.flags.contains(InvalidateFlags::ATS_AWARE);
+
             match req.kind {
                 InvalidateKind::Pages { start_iova, bytes } => {
                     // AMD-Vi invalidate_domain_pages iterates over all units
                     self.invalidate_domain_pages(req.domain_id, start_iova, bytes)?;
-                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                    if ats {
                         self.invalidate_domain_device_tlbs(
                             req.domain_id,
                             Some(start_iova),
@@ -649,22 +705,30 @@ impl IommuInvalidator for AmdIommuDriver {
                 }
                 InvalidateKind::Domain => {
                     self.invalidate_domain_all(req.domain_id)?;
-                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                    if ats {
                         self.invalidate_domain_device_tlbs(req.domain_id, None, None)?;
                     }
                 }
                 InvalidateKind::Global => {
                     self.invalidate_all_entries()?;
+                    if ats {
+                        self.invalidate_global_device_tlbs()?;
+                    }
                 }
                 InvalidateKind::Context { source_id } => {
                     let device = Self::device_id_from_devid(0, source_id);
                     self.invalidate_device_entry(device)?;
+                    if ats {
+                        // For context invalidation with ATS, flush the entire device IOTLB
+                        let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
+                    }
                 }
                 _ => {
                     // IEC, PasidIotlb, etc. are not yet fully supported on AMD backend
                     // Fall back to global flush for safety if requested and unsupported
-                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                    if ats {
                          self.invalidate_all_entries()?;
+                         self.invalidate_global_device_tlbs()?;
                     }
                 }
             }
@@ -677,22 +741,29 @@ impl IommuInvalidator for AmdIommuDriver {
 
     fn invalidate_async(&self, request: InvalidateRequest) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
         async move {
+            let ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
             match request.kind {
                 InvalidateKind::Pages { start_iova, bytes } => {
                     self.invalidate_domain_pages_async(request.domain_id, start_iova, bytes).await?;
-                    if request.flags.contains(InvalidateFlags::ATS_AWARE) {
-                        // TODO: Implement async Device-TLB invalidation for AMD
-                        self.invalidate_domain_device_tlbs(request.domain_id, Some(start_iova), Some(bytes))?;
+                    if ats {
+                        self.invalidate_domain_device_tlbs_async(request.domain_id, Some(start_iova), Some(bytes)).await?;
                     }
                 }
                 InvalidateKind::Domain => {
                     self.invalidate_domain_pages_async(request.domain_id, 0, u64::MAX).await?;
-                    if request.flags.contains(InvalidateFlags::ATS_AWARE) {
-                        self.invalidate_domain_device_tlbs(request.domain_id, None, None)?;
+                    if ats {
+                        self.invalidate_domain_device_tlbs_async(request.domain_id, None, None).await?;
+                    }
+                }
+                InvalidateKind::Global => {
+                    // Fall back to sync path for now as global is rare
+                    self.invalidate_all_entries()?;
+                    if ats {
+                        self.invalidate_global_device_tlbs()?;
                     }
                 }
                 _ => {
-                    // Fall back to sync path for global/context for now
+                    // Fall back to sync path for context for now
                     self.invalidate(request)?;
                 }
             }

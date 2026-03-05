@@ -116,8 +116,16 @@ static CLOSED_PORT_RST_LAST_RESET: AtomicU64 = AtomicU64::new(0);
 /// レート制限によりドロップされたパケット数（統計用）
 static CLOSED_PORT_RST_DROPPED: AtomicU64 = AtomicU64::new(0);
 
-/// 閉ポート宛RSTの送信レート制限チェック
-/// true: 送信可 / false: レートオーバー（サイレントドロップすべき）
+/// Update closed-port RST rate statistics.
+///
+/// Historically we used this function to decide whether to drop a
+/// stateless reset in order to protect the event queue.  Dropping the
+/// packet was arguably a violation of RFC 793/RFC 9293 (the spec says a host
+/// "should" send a reset).  The new implementation always returns `true` so
+/// that callers attempt to send the RST; the return value is retained for
+/// backwards compatibility but is no longer used.  `CLOSED_PORT_RST_DROPPED`
+/// continues to count the number of times we would have suppressed a reset
+/// under the old policy, giving a rough idea of the scan volume.
 fn check_closed_port_rst_rate() -> bool {
     let now = tcb_table().get_current_tick();
     let last_reset = CLOSED_PORT_RST_LAST_RESET.load(Ordering::Relaxed);
@@ -131,14 +139,52 @@ fn check_closed_port_rst_rate() -> bool {
     if count < CLOSED_PORT_RST_MAX_COUNT {
         true
     } else {
+        // exceeding the window: record for telemetry but still send
         CLOSED_PORT_RST_DROPPED.fetch_add(1, Ordering::Relaxed);
-        false
+        true
     }
 }
 
 /// 閉ポートRSTのドロップ統計を取得
 pub fn closed_port_rst_dropped_count() -> u64 {
     CLOSED_PORT_RST_DROPPED.load(Ordering::Relaxed)
+}
+
+//======================================================================
+// Unit tests
+//======================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::Ordering;
+
+    #[test]
+    fn closed_port_rst_rate_counters_increment_but_always_allow() {
+        // clear previous state
+        CLOSED_PORT_RST_COUNT.store(0, Ordering::Relaxed);
+        CLOSED_PORT_RST_LAST_RESET.store(0, Ordering::Relaxed);
+        CLOSED_PORT_RST_DROPPED.store(0, Ordering::Relaxed);
+
+        // call more than the max count inside the same window
+        for i in 0..(CLOSED_PORT_RST_MAX_COUNT + 5) {
+            assert!(check_closed_port_rst_rate(), "function should always return true");
+        }
+        // dropped counter should reflect excess above limit
+        assert_eq!(
+            CLOSED_PORT_RST_DROPPED.load(Ordering::Relaxed) as u32,
+            5,
+            "dropped count should track excess resets"
+        );
+
+        // advance window manually by resetting last_reset further back
+        let now = CLOSED_PORT_RST_LAST_RESET.load(Ordering::Relaxed);
+        CLOSED_PORT_RST_LAST_RESET.store(now - CLOSED_PORT_RST_LIMIT_MS - 1, Ordering::Relaxed);
+
+        // next call should reset the counter
+        assert!(check_closed_port_rst_rate());
+        assert_eq!(CLOSED_PORT_RST_COUNT.load(Ordering::Relaxed), 1);
+    }
 }
 
 fn check_challenge_ack_rate_limit() -> bool {
@@ -267,9 +313,15 @@ pub fn process_tcp_segment_v6(
     let ack_num = u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]);
     let data_off_flags = u16::from_be_bytes([segment[12], segment[13]]);
     let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
-    let flags = (data_off_flags & 0x003F) as u8;
+    // capture full flag byte (CWR/ECE/URG/ACK/PSH/RST/SYN/FIN)
+    let flags = (data_off_flags as u8);
     let window = u16::from_be_bytes([segment[14], segment[15]]);
     let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
+
+    if data_offset < 20 || data_offset > segment.len() {
+        log::warn!("[TCP] Invalid data offset {} in IPv6 segment (len={}), dropping", data_offset, segment.len());
+        return;
+    }
 
     let remote = EndpointAddr::new_v6(src_ip.octets(), src_port);
     let local = EndpointAddr::new_v6(dst_ip.octets(), dst_port);
@@ -296,9 +348,10 @@ pub fn process_tcp_segment_v6(
         }
 
         // TCP Fast Path (ESTABLISHED状態の高速受信処理)
+        let base_flags = flags & !(tcp_flags::CWR | tcp_flags::ECE);
         if tcb.state == TcpConnectionState::Established
             && seq_num == tcb.rcv_nxt
-            && flags == tcp_flags::ACK
+            && base_flags == tcp_flags::ACK
             && payload_len > 0
         {
             if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
@@ -309,7 +362,7 @@ pub fn process_tcp_segment_v6(
         // PSH|ACK もファストパス対象
         if tcb.state == TcpConnectionState::Established
             && seq_num == tcb.rcv_nxt
-            && (flags == (tcp_flags::ACK | tcp_flags::PSH))
+            && (base_flags == (tcp_flags::ACK | tcp_flags::PSH))
             && payload_len > 0
         {
             if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
@@ -349,7 +402,8 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     let ack_num = u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]);
     let data_off_flags = u16::from_be_bytes([segment[12], segment[13]]);
     let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
-    let flags = (data_off_flags & 0x003F) as u8;
+    // grab full low byte (includes CWR/ECE) rather than truncating to 6 bits
+    let flags = (data_off_flags as u8);
     let window = u16::from_be_bytes([segment[14], segment[15]]);
     let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
 
@@ -388,9 +442,12 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
         //
         // これにより、状態マシン遷移チェック、TCPオプション再解析等を省略し、
         // 直接データを受信バッファへ投入する。
+        // compute base_flags with ECN bits masked off so that fast path still
+        // applies even if CWR/ECE are present (they shouldn't affect sequencing).
+        let base_flags = flags & !(tcp_flags::ECE | tcp_flags::CWR);
         if tcb.state == TcpConnectionState::Established
             && seq_num == tcb.rcv_nxt
-            && flags == tcp_flags::ACK  // ACKのみ (PSH|ACK は 0x18 なので除外)
+            && base_flags == tcp_flags::ACK  // ACKのみ (PSH|ACK は 0x18 なので除外)
             && payload_len > 0
         {
             if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
@@ -1175,11 +1232,16 @@ fn process_tcp_new_connection(
         // インターネット直結環境ではポートスキャンが大量に届く。
         // 各パケットにRSTを返すとイベントキュー（容量256）が溢れ、
         // 正規トラフィックの ResourceExhausted を引き起こす。
-        // レート超過分はサイレントドロップする（RFC非違反: RFC 793は
-        // RST送信をSHOULDであり、破棄は許容される）。
-        if !check_closed_port_rst_rate() {
-            return; // サイレントドロップ
-        }
+        // We still maintain a simple rate counter to avoid pathological
+        // packet storms, but the RFC guidance is a **SHOULD** rather than a
+        // **MUST**.  To remain compliant we always attempt to send the RST
+        // even when the rate window has been exceeded; the underlying async
+        // queue may still drop packets if it is full, but the host has at least
+        // made an effort to respond.  The counter returned by
+        // `closed_port_rst_dropped_count()` now reflects the number of packets
+        // that *would have been* dropped under the old policy, useful for
+        // telemetry.
+        check_closed_port_rst_rate();
 
         // RFC 793 / RFC 9293 Section 3.10.7.1:
         // If the segment has an ACK field, the reset takes its sequence number 

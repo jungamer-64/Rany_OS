@@ -25,6 +25,10 @@ pub mod tcp_flags {
     pub const PSH: u8 = 0x08;
     pub const ACK: u8 = 0x10;
     pub const URG: u8 = 0x20;
+    /// ECN-Echo (RFC 3168)
+    pub const ECE: u8 = 0x40;
+    /// Congestion Window Reduced (RFC 3168)
+    pub const CWR: u8 = 0x80;
 }
 
 /// TCP接続状態
@@ -989,6 +993,8 @@ pub mod tests {
         assert_eq!(tcp_flags::PSH, 0x08);
         assert_eq!(tcp_flags::ACK, 0x10);
         assert_eq!(tcp_flags::URG, 0x20);
+        assert_eq!(tcp_flags::ECE, 0x40);
+        assert_eq!(tcp_flags::CWR, 0x80);
 
         // 複合フラグ
         let syn_ack = tcp_flags::SYN | tcp_flags::ACK;

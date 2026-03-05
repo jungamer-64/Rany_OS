@@ -665,7 +665,8 @@ pub(crate) fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_heade
     let seq_num = u32::from_be_bytes([tcp_data[4], tcp_data[5], tcp_data[6], tcp_data[7]]);
     let ack_num = u32::from_be_bytes([tcp_data[8], tcp_data[9], tcp_data[10], tcp_data[11]]);
     let data_offset_flags = u16::from_be_bytes([tcp_data[12], tcp_data[13]]);
-    let flags = data_offset_flags & 0x003F;
+    // low byte contains all eight control bits
+    let flags = (data_offset_flags as u8) as u16;
 
     // ソケットアドレスを構築
     let src_addr = EndpointAddr::new(

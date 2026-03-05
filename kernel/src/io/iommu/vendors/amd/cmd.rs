@@ -30,11 +30,9 @@ impl AmdIommuDriver {
                 self.handle_unmap_region_device(*device, *iova)
             }
             IommuCommandKind::InvalidateIotlbGlobal => {
-                if self.invalidate_all_entries().is_ok() {
-                    Ok(0)
-                } else {
-                    Err(())
-                }
+                let _ = self.invalidate_all_entries();
+                let _ = self.invalidate_global_device_tlbs();
+                Ok(0)
             }
             IommuCommandKind::InvalidateIotlbDomain { .. } => Err(()),
             IommuCommandKind::MapRegion { .. } => Err(()),

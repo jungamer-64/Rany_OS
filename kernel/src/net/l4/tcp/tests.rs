@@ -101,6 +101,42 @@ pub fn test_process_with_packet_zero_copy() {
     } else {
         panic!("TCB lock poisoned in test");
     }
+
+    // --- additional compliance tests ---
+    // invalid header length should simply be dropped without panicking
+    let mut bad = alloc::vec::Vec::new();
+    bad.resize(10, 0); // smaller than minimum header
+    let res = processor.process(&bad, Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, 0);
+    assert!(matches!(res, TcpProcessResult::None));
+
+    // header offset larger than buffer should also be dropped
+    let mut pkt_bad = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
+    pkt_bad.set_len(20);
+    // set data offset to 6 (24 bytes) which exceeds length 20
+    pkt_bad.data_mut()[12..14].copy_from_slice(&((6u16 << 12) | 0u16).to_be_bytes());
+    let data_bad = alloc::vec::Vec::from(pkt_bad.data());
+    let res2 = processor.process(&data_bad, Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, 0);
+    assert!(matches!(res2, TcpProcessResult::None));
+
+    // fast path should still be taken when CWR/ECE bits present
+    let before = crate::net::l4::endpoint::tcp_rx::fast_path_stats().0;
+    let mut pkt2 = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
+    let payload2 = b"data";
+    pkt2.data_mut()[0..2].copy_from_slice(&2000u16.to_be_bytes());
+    pkt2.data_mut()[2..4].copy_from_slice(&1000u16.to_be_bytes());
+    pkt2.data_mut()[4..8].copy_from_slice(&1u32.to_be_bytes());
+    pkt2.data_mut()[8..12].copy_from_slice(&0u32.to_be_bytes());
+    // set flags ACK|CWR|ECE
+    let flags_val = tcp_flags::ACK | tcp_flags::CWR | tcp_flags::ECE;
+    let data_off_flags2 = ((5u16 << 12) | (flags_val as u16)) .to_be_bytes();
+    pkt2.data_mut()[12..14].copy_from_slice(&data_off_flags2);
+    pkt2.data_mut()[14..16].copy_from_slice(&65535u16.to_be_bytes());
+    pkt2.data_mut()[20..20 + payload2.len()].copy_from_slice(payload2);
+    pkt2.set_len(20 + payload2.len());
+    let data2 = alloc::vec::Vec::from(pkt2.data());
+    let _ = processor.process_with_packet(&data2, Ipv4Address::from_octets(127,0,0,1), Ipv4Address::from_octets(127,0,0,1), pkt2, 0);
+    let after = crate::net::l4::endpoint::tcp_rx::fast_path_stats().0;
+    assert!(after > before, "fast path should count the ECN packet");
 }
 
 #[cfg_attr(test, test_case)]

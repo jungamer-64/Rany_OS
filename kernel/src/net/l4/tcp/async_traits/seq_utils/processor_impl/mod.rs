@@ -256,7 +256,7 @@ impl TcpProcessor {
         let seq_num = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         let ack_num = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
         let data_offset_flags = u16::from_be_bytes([data[12], data[13]]);
-        let flags = data_offset_flags & 0x003F;
+        let flags = (data_offset_flags as u8) as u16;
         let window = u16::from_be_bytes([data[14], data[15]]);
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
 
@@ -386,7 +386,7 @@ impl TcpProcessor {
         let seq_num = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         let ack_num = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
         let data_offset_flags = u16::from_be_bytes([data[12], data[13]]);
-        let flags = data_offset_flags & 0x003F;
+        let flags = (data_offset_flags as u8) as u16;
         let window = u16::from_be_bytes([data[14], data[15]]);
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
 
@@ -702,7 +702,7 @@ impl TcpProcessor {
         let seq_num = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         let ack_num = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
         let data_offset_flags = u16::from_be_bytes([data[12], data[13]]);
-        let flags = data_offset_flags & 0x003F;
+        let flags = (data_offset_flags as u8) as u16;
         let window = u16::from_be_bytes([data[14], data[15]]);
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
 
@@ -767,7 +767,7 @@ impl TcpProcessor {
         let seq_num = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         let ack_num = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
         let data_offset_flags = u16::from_be_bytes([data[12], data[13]]);
-        let flags = data_offset_flags & 0x003F;
+        let flags = (data_offset_flags as u8) as u16;
         let window = u16::from_be_bytes([data[14], data[15]]);
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
 
