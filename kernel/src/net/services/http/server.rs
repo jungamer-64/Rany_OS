@@ -1,4 +1,4 @@
-use alloc::{format, vec::Vec};
+use alloc::{format, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::net::l4::tcp::{EndpointAddr, TcpListener, TcpStream};
@@ -279,9 +279,13 @@ fn build_response_for_request(request: &super::types::HttpRequest, keep_alive: b
             "/health" => return build_health_response(keep_alive),
             "/stats" => return build_stats_response(keep_alive),
             "/info" => return build_info_response(keep_alive),
+            "/logs" => return build_log_response(keep_alive),
+            "/executors" => return build_executor_stats_response(keep_alive),
+            "/memory" => return build_memory_info_response(keep_alive),
             _ => {}
         }
-    } else if request.method == super::types::HttpMethod::Post {
+    }
+ else if request.method == super::types::HttpMethod::Post {
         if request.uri.as_str() == "/echo" {
             return build_echo_response(request, keep_alive);
         }
@@ -329,8 +333,11 @@ fn build_index_response(keep_alive: bool) -> Vec<u8> {
     <ul>
         <li><a href="/">/</a> - This page</li>
         <li><a href="/stats">/stats</a> - Server statistics</li>
-        <li><a href="/health">/health</a> - Health check</li>
         <li><a href="/info">/info</a> - System information</li>
+        <li><a href="/health">/health</a> - Health check</li>
+        <li><a href="/memory">/memory</a> - Detailed memory information</li>
+        <li><a href="/executors">/executors</a> - Per-core scheduler statistics</li>
+        <li><a href="/logs">/logs</a> - Kernel log viewer</li>
         <li><a href="/echo">/echo</a> - POST Echo API</li>
     </ul>
     
@@ -338,6 +345,80 @@ fn build_index_response(keep_alive: bool) -> Vec<u8> {
 </body>
 </html>"#;
     build_html_response("200 OK", html, keep_alive)
+}
+
+fn build_log_response(keep_alive: bool) -> Vec<u8> {
+    let len = crate::io::log::get_log_len();
+    // 16KB までのログを返却
+    let max_len = core::cmp::min(len, 16 * 1024);
+    let mut buf = vec![0u8; max_len];
+    let actual = crate::io::log::peek_global_log(&mut buf);
+    
+    // Valid UTF-8 な部分のみを返却
+    let logs = match core::str::from_utf8(&buf[..actual]) {
+        Ok(s) => s,
+        Err(e) => {
+            let valid_len = e.valid_up_to();
+            core::str::from_utf8(&buf[..valid_len]).unwrap_or("[INVALID LOG DATA]")
+        }
+    };
+    
+    build_custom_response("200 OK", "text/plain; charset=utf-8", logs, keep_alive)
+}
+
+fn build_executor_stats_response(keep_alive: bool) -> Vec<u8> {
+    let manager = crate::task::executor_manager();
+    let all_stats = manager.all_stats();
+    
+    let mut json = alloc::string::String::from("[\n");
+    for (i, stats) in all_stats.iter().enumerate() {
+        if i > 0 { json.push_str(",\n"); }
+        json.push_str(&format!(r#"  {{
+    "core_id": {},
+    "tasks_executed": {},
+    "tasks_stolen": {},
+    "tasks_stolen_from": {},
+    "queue_length": {},
+    "running_count": {}
+  }}"#, stats.core_id, stats.tasks_executed, stats.tasks_stolen, stats.tasks_stolen_from, stats.queue_length, stats.running_count));
+    }
+    json.push_str("\n]");
+    
+    build_json_response("200 OK", &json, keep_alive)
+}
+
+fn build_memory_info_response(keep_alive: bool) -> Vec<u8> {
+    let stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
+    let total_kb = (stats.total_frames as u64) * 4;
+    let free_kb = (stats.free_frames as u64) * 4;
+    let used_kb = total_kb.saturating_sub(free_kb);
+    
+    let (heap_used, heap_free) = crate::memory::heap_stats();
+    
+    let mut json = format!(r#"{{
+    "physical_memory": {{
+        "total_kb": {},
+        "free_kb": {},
+        "used_kb": {},
+        "split_count": {},
+        "coalesce_count": {}
+    }},
+    "heap": {{
+        "used_bytes": {},
+        "free_bytes": {}
+    }},
+    "order_stats": ["#, 
+        total_kb, free_kb, used_kb, stats.split_count, stats.coalesce_count,
+        heap_used, heap_free
+    );
+
+    for (i, (blocks, frames)) in stats.order_stats.iter().enumerate() {
+        if i > 0 { json.push_str(", "); }
+        json.push_str(&format!(r#"{{"order": {}, "blocks": {}, "frames": {}}}"#, i, blocks, frames));
+    }
+    json.push_str("]}\n");
+    
+    build_json_response("200 OK", &json, keep_alive)
 }
 
 fn build_stats_response(keep_alive: bool) -> Vec<u8> {

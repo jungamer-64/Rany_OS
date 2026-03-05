@@ -705,9 +705,20 @@ pub fn enable_serial_interrupts() {
 /// カーネル用シリアルロガー
 pub(crate) struct KernelLogger;
 
-#[inline]
+#[inline(always)]
 fn read_tsc_serialized() -> u64 {
     // Use RDTSC which is supported on all x64 CPUs.
     // We don't strictly need RDTSCP's serialization for simple timeouts.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
+
+/// グローバルログバッファからデータを読み出す（読み出し位置は進めない）
+pub fn peek_global_log(dst: &mut [u8]) -> usize {
+    LOG_BUFFER.lock().peek_bulk(dst)
+}
+
+/// グローバルログバッファ内のデータ長を取得
+pub fn get_log_len() -> usize {
+    LOG_BUFFER.lock().len()
+}
+
