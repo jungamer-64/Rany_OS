@@ -45,12 +45,19 @@ pub mod port;
 pub mod fw;
 pub mod device;
 pub mod error;
+pub mod flow;
+pub mod pages;
+pub mod resources;
+pub mod polling;
 
 // Re-export core types
 pub use defs::{
     MELLANOX_VENDOR_ID, CONNECTX4_LX_DEVICE_ID,
-    CONNECTX4_LX_VF_DEVICE_ID, MLX5_MAX_PORTS,
+    CONNECTX4_LX_VF_DEVICE_ID, CONNECTX4_DEVICE_ID,
+    MLX5_MAX_PORTS,
 };
 pub use error::Mlx5Error;
 pub use device::Mlx5Device;
 pub use port::Mlx5Port;
+pub use polling::{AdaptivePollingState, PollingMode};
+pub use resources::{TirInfo, TisInfo, MkeyInfo};

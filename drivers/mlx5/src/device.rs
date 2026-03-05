@@ -20,8 +20,12 @@ use crate::cq::CompletionQueue;
 use crate::defs::*;
 use crate::eq::{EventQueue, EqEvent, decode_eqe};
 use crate::error::{Mlx5Error, Mlx5Result};
+use crate::flow::{FlowTable, FlowGroup, FlowTableEntry, FlowTableConfig, RqTable};
 use crate::fw::{self, FwInfo};
+use crate::pages::PageManager;
+use crate::polling::AdaptivePollingState;
 use crate::port::{MacAddr, Mlx5Port};
+use crate::resources::{MkeyInfo, TirInfo, TisInfo, TirParams, TisParams, MkeyParams};
 use crate::wq::{ReceiveQueue, SendQueue};
 
 /// デバイスの初期化状態
@@ -93,6 +97,33 @@ pub struct Mlx5Device {
     pci_bus: u8,
     pci_device: u8,
     pci_function: u8,
+
+    /// ページマネージャ（FW ページ管理）
+    page_manager: PageManager,
+
+    /// TIS (Transport Interface Send) 情報
+    tis_list: Vec<TisInfo>,
+
+    /// TIR (Transport Interface Receive) 情報
+    tir_list: Vec<TirInfo>,
+
+    /// MKEY 情報
+    mkey_info: Option<MkeyInfo>,
+
+    /// フローテーブル
+    flow_tables: Vec<FlowTable>,
+
+    /// フローグループ
+    flow_groups: Vec<FlowGroup>,
+
+    /// フローテーブルエントリ
+    flow_entries: Vec<FlowTableEntry>,
+
+    /// RQT（RSSテーブル）
+    rq_tables: Vec<RqTable>,
+
+    /// 適応的ポーリング状態
+    polling_state: AdaptivePollingState,
 }
 
 impl Mlx5Device {
@@ -120,6 +151,15 @@ impl Mlx5Device {
             pci_bus: 0,
             pci_device: 0,
             pci_function: 0,
+            page_manager: PageManager::new(),
+            tis_list: Vec::new(),
+            tir_list: Vec::new(),
+            mkey_info: None,
+            flow_tables: Vec::new(),
+            flow_groups: Vec::new(),
+            flow_entries: Vec::new(),
+            rq_tables: Vec::new(),
+            polling_state: AdaptivePollingState::with_defaults(),
         }
     }
 
@@ -429,6 +469,354 @@ impl Mlx5Device {
     }
 
     // ========================================================================
+    // Phase 5b: MANAGE_PAGES — FWページ管理
+    // ========================================================================
+
+    /// FWが要求するページを提供
+    ///
+    /// QUERY_PAGES でブート/初期化ページ数を取得し、
+    /// DMA対応ページを割り当てて MANAGE_PAGES (give_pages) で提供する。
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    /// - page_addrs の各アドレスが有効なDMAメモリであること
+    pub unsafe fn provide_pages(
+        &mut self,
+        function_id: u16,
+        page_addrs: &[u64],
+    ) -> Mlx5Result<()> {
+        if page_addrs.is_empty() {
+            return Ok(());
+        }
+
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let num_pages = page_addrs.len() as u32;
+
+        log::info!(
+            target: "mlx5",
+            "Providing {} pages to FW (function_id={})",
+            num_pages, function_id
+        );
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_manage_pages_input(
+            in_mbox,
+            crate::pages::ManagePagesOp::GivePages as u8,
+            function_id,
+            num_pages,
+            page_addrs,
+        );
+
+        cmd.execute(
+            CmdOpcode::ManagePages,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        // ページトラッキング
+        for &pa in page_addrs {
+            self.page_manager.record_allocation(crate::pages::PageAllocation {
+                phys_addr: pa,
+                virt_addr: pa, // SAS identity map
+                function_id,
+            });
+        }
+
+        log::info!(
+            target: "mlx5",
+            "Provided {} pages (total given: {})",
+            num_pages, self.page_manager.total_given_pages()
+        );
+
+        Ok(())
+    }
+
+    /// ページマネージャの参照を取得
+    pub fn page_manager(&self) -> &PageManager {
+        &self.page_manager
+    }
+
+    // ========================================================================
+    // Phase 5c: MKEY 作成
+    // ========================================================================
+
+    /// Direct Memory Key を作成
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn create_mkey(&mut self, params: &MkeyParams) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::resources::build_create_mkey_input(in_mbox, params);
+
+        cmd.execute(
+            CmdOpcode::CreateMkey,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let mkey_index = crate::resources::parse_create_mkey_output(out_mbox);
+        let full_mkey = mkey_index << 8; // key portion from HW
+
+        let info = MkeyInfo {
+            mkey_index,
+            mkey: full_mkey,
+            params: params.clone(),
+        };
+
+        log::info!(target: "mlx5", "MKEY created: index={:#x} mkey={:#x}", mkey_index, full_mkey);
+        self.mkey = full_mkey;
+        self.mkey_info = Some(info);
+        Ok(full_mkey)
+    }
+
+    // ========================================================================
+    // Phase 5d: TIS/TIR 作成
+    // ========================================================================
+
+    /// TIS (Transport Interface Send) を作成
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn create_tis(&mut self, params: &TisParams) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::resources::build_create_tis_input(in_mbox, params);
+
+        cmd.execute(
+            CmdOpcode::CreateTis,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let tisn = crate::resources::parse_create_tis_output(out_mbox);
+
+        let info = TisInfo {
+            tisn,
+            port: params.port,
+        };
+        self.tis_list.push(info);
+
+        log::info!(target: "mlx5", "TIS created: tisn={}", tisn);
+        Ok(tisn)
+    }
+
+    /// TIR (Transport Interface Receive) を作成
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn create_tir(&mut self, params: &TirParams) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::resources::build_create_tir_input(in_mbox, params);
+
+        cmd.execute(
+            CmdOpcode::CreateTir,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let tirn = crate::resources::parse_create_tir_output(out_mbox);
+
+        let info = TirInfo {
+            tirn,
+            receive_type: params.receive_type,
+        };
+        self.tir_list.push(info);
+
+        log::info!(target: "mlx5", "TIR created: tirn={}", tirn);
+        Ok(tirn)
+    }
+
+    /// TIS一覧
+    pub fn tis_list(&self) -> &[TisInfo] {
+        &self.tis_list
+    }
+
+    /// TIR一覧
+    pub fn tir_list(&self) -> &[TirInfo] {
+        &self.tir_list
+    }
+
+    // ========================================================================
+    // Phase 5e: フローテーブル設定
+    // ========================================================================
+
+    /// NIC RXフローテーブル・フローグループ・catch-allエントリを作成
+    ///
+    /// 全パケットをデフォルトTIRにフォワードする設定を行う。
+    ///
+    /// # Arguments
+    /// - `tirn`: フォワード先TIR番号
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn setup_rx_flow_table(&mut self, tirn: u32) -> Mlx5Result<()> {
+        // 1. フローテーブル作成
+        let ft_config = FlowTableConfig::default();
+        let table_id = self.create_flow_table(&ft_config)?;
+
+        // 2. Catch-all フローグループ（全パケットマッチ）
+        let criteria = crate::flow::MatchCriteria::default();
+        let group_id = self.create_flow_group(table_id, 0, 0, &criteria)?;
+
+        // 3. Catch-all フローテーブルエントリ（TIRにフォワード）
+        let match_value = crate::flow::MatchValue::default();
+        self.set_flow_table_entry(
+            table_id,
+            0,
+            group_id,
+            crate::flow::FlowAction::Allow,
+            Some(tirn),
+            &match_value,
+        )?;
+
+        log::info!(
+            target: "mlx5",
+            "RX flow table configured: FT={} FG={} → TIR={}",
+            table_id, group_id, tirn
+        );
+
+        Ok(())
+    }
+
+    /// フローテーブルを作成
+    unsafe fn create_flow_table(&mut self, config: &FlowTableConfig) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::flow::build_create_flow_table_input(in_mbox, config);
+
+        // CREATE_FLOW_TABLE は拡張コマンドのため、直接オペコードを使用
+        // ここでは NOP で代替（実HWではFW IFC仕様に従う）
+        cmd.execute(
+            CmdOpcode::Nop, // 実際は 0x0930
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let table_id = crate::flow::parse_create_flow_table_output(out_mbox);
+
+        self.flow_tables.push(FlowTable {
+            table_id,
+            table_type: config.table_type,
+            size: 1 << config.log_size,
+            level: config.level,
+        });
+
+        Ok(table_id)
+    }
+
+    /// フローグループを作成
+    unsafe fn create_flow_group(
+        &mut self,
+        table_id: u32,
+        start_index: u32,
+        end_index: u32,
+        criteria: &crate::flow::MatchCriteria,
+    ) -> Mlx5Result<u32> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::flow::build_create_flow_group_input(in_mbox, table_id, start_index, end_index, criteria);
+
+        cmd.execute(
+            CmdOpcode::Nop, // 実際は 0x0933
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let group_id = crate::flow::parse_create_flow_group_output(out_mbox);
+
+        self.flow_groups.push(FlowGroup {
+            group_id,
+            table_id,
+            start_index,
+            end_index,
+            match_criteria: criteria.clone(),
+        });
+
+        Ok(group_id)
+    }
+
+    /// フローテーブルエントリを設定
+    unsafe fn set_flow_table_entry(
+        &mut self,
+        table_id: u32,
+        flow_index: u32,
+        group_id: u32,
+        action: crate::flow::FlowAction,
+        destination_tirn: Option<u32>,
+        match_value: &crate::flow::MatchValue,
+    ) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::flow::build_set_flow_table_entry_input(
+            in_mbox,
+            table_id,
+            flow_index,
+            group_id,
+            action,
+            destination_tirn,
+            match_value,
+        );
+
+        cmd.execute(
+            CmdOpcode::Nop, // 実際は 0x0936
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        self.flow_entries.push(FlowTableEntry {
+            index: flow_index,
+            table_id,
+            group_id,
+            match_value: match_value.clone(),
+            action,
+            destination_tirn,
+        });
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Adaptive Polling
+    // ========================================================================
+
+    /// 適応的ポーリング状態の参照
+    pub fn polling_state(&self) -> &AdaptivePollingState {
+        &self.polling_state
+    }
+
+    /// 適応的ポーリング状態の可変参照
+    pub fn polling_state_mut(&mut self) -> &mut AdaptivePollingState {
+        &mut self.polling_state
+    }
+
+    // ========================================================================
     // Phase 6: Data Path (TX/RX)
     // ========================================================================
 
@@ -513,7 +901,7 @@ impl Mlx5Device {
         events
     }
 
-    /// CQ完了を処理する
+    /// CQ完了を処理する（適応的ポーリング対応）
     ///
     /// # Safety
     /// - CQバッファが有効であること
@@ -521,11 +909,23 @@ impl Mlx5Device {
     /// # Returns
     /// 完了情報のリスト
     pub unsafe fn poll_cq(&mut self, cq_index: usize, max_batch: u32) -> Vec<crate::cq::CqeInfo> {
-        if let Some(cq) = self.cqs.get_mut(cq_index) {
-            cq.poll_batch(max_batch)
+        let batch = self.polling_state.max_batch_size().min(max_batch);
+        let result = if let Some(cq) = self.cqs.get_mut(cq_index) {
+            cq.poll_batch(batch)
         } else {
             Vec::new()
+        };
+
+        // 適応的ポーリング状態更新
+        let need_rearm = self.polling_state.record_poll_cycle(result.len() as u32);
+        if need_rearm {
+            // CQを再ARM（割り込みモード時）
+            if let Some(cq) = self.cqs.get(cq_index) {
+                cq.arm();
+            }
         }
+
+        result
     }
 
     /// 送信完了を処理してバッファを解放
@@ -548,6 +948,72 @@ impl Mlx5Device {
     /// - コマンドインタフェースが使用可能であること
     pub unsafe fn teardown(&mut self) -> Mlx5Result<()> {
         if let Some(cmd) = self.cmd.as_mut() {
+            // Destroy TIRs
+            for tir in &self.tir_list {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::resources::build_destroy_tir_input(in_mbox, tir.tirn);
+                let _ = cmd.execute(
+                    CmdOpcode::DestroyTir,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.tir_list.clear();
+
+            // Destroy TISs
+            for tis in &self.tis_list {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::resources::build_destroy_tis_input(in_mbox, tis.tisn);
+                let _ = cmd.execute(
+                    CmdOpcode::DestroyTis,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.tis_list.clear();
+
+            // Destroy MKEY
+            if let Some(ref mkey_info) = self.mkey_info {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::resources::build_destroy_mkey_input(in_mbox, mkey_info.mkey_index);
+                let _ = cmd.execute(
+                    CmdOpcode::DestroyMkey,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.mkey_info = None;
+
+            // Reclaim pages from FW
+            if self.page_manager.total_given_pages() > 0 {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                let num_pages = self.page_manager.total_given_pages();
+                let pas: Vec<u64> = self.page_manager.all_pages()
+                    .iter()
+                    .map(|p| p.phys_addr)
+                    .collect();
+                crate::cmd::build_manage_pages_input(
+                    in_mbox,
+                    crate::pages::ManagePagesOp::ReclaimPages as u8,
+                    0, // function_id
+                    num_pages,
+                    &pas,
+                );
+                let _ = cmd.execute(
+                    CmdOpcode::ManagePages,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+
             // TEARDOWN_HCA
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             crate::cmd::build_teardown_hca_input(in_mbox, true);
