@@ -108,55 +108,97 @@ async fn run_service() {
 
 async fn handle_client(mut client: TcpStream) {
     let mut parser = super::parser::HttpParser::new();
-    let mut response_bytes = None;
 
-    const READ_TRIES: usize = 20;
-    const READ_TIMEOUT_MS: u64 = 100;
+    loop {
+        let mut response_bytes = None;
+        let mut keep_alive = false;
 
-    let mut buffer = [0u8; 2048];
-    for _ in 0..READ_TRIES {
-        match task::with_timeout(client.read(&mut buffer), READ_TIMEOUT_MS).await {
-            TimeoutResult::TimedOut => {
-                task::yield_now().await;
+        // まずバッファ内のデータだけでパースできるか試す（パイプライン処理対応）
+        match parser.try_parse_request() {
+            Ok(Some(request)) => {
+                let req_keep_alive = request.get_header("Connection").map(|v| v.eq_ignore_ascii_case("keep-alive")).unwrap_or(false);
+                let default_keep_alive = request.version == super::types::HttpVersion::Http1_1;
+                let conn_close = request.get_header("Connection").map(|v| v.eq_ignore_ascii_case("close")).unwrap_or(false);
+                keep_alive = (req_keep_alive || default_keep_alive) && !conn_close;
+                
+                response_bytes = Some(build_response_for_request(&request, keep_alive));
             }
-            TimeoutResult::Completed(Err(_)) => {
-                log::warn!("[HOST-HTTP] read error");
-                response_bytes = Some(build_json_response("500 Internal Server Error", "{\"status\":\"error\"}"));
-                break;
+            Ok(None) => {} // データ不足
+            Err(err) => {
+                log::warn!("[HOST-HTTP] parse error: {:?}", err);
+                response_bytes = Some(build_json_response("400 Bad Request", "{\"status\":\"bad_request\"}", false));
             }
-            TimeoutResult::Completed(Ok(0)) => {
-                break;
-            }
-            TimeoutResult::Completed(Ok(len)) => {
-                BYTES_RX.fetch_add(len as u64, Ordering::Relaxed);
-                parser.push_data(&buffer[..len]);
-                match parser.try_parse_request() {
-                    Ok(Some(request)) => {
-                        response_bytes = Some(build_response_for_request(&request));
+        }
+
+        // バッファ内のデータだけでリクエストが完成しなかった場合のみ、ソケットから読み込みを行う
+        if response_bytes.is_none() {
+            const READ_TRIES: usize = 20;
+            const READ_TIMEOUT_MS: u64 = 100;
+
+            let mut buffer = [0u8; 2048];
+            let mut read_success = false;
+
+            for _ in 0..READ_TRIES {
+                match task::with_timeout(client.read(&mut buffer), READ_TIMEOUT_MS).await {
+                    TimeoutResult::TimedOut => {
+                        task::yield_now().await;
+                    }
+                    TimeoutResult::Completed(Err(_)) => {
+                        log::warn!("[HOST-HTTP] read error");
+                        response_bytes = Some(build_json_response("500 Internal Server Error", "{\"status\":\"error\"}", false));
                         break;
                     }
-                    Ok(None) => {
-                        // Continue reading
-                    }
-                    Err(err) => {
-                        log::warn!("[HOST-HTTP] parse error: {:?}", err);
-                        response_bytes = Some(build_json_response("400 Bad Request", "{\"status\":\"bad_request\"}"));
+                    TimeoutResult::Completed(Ok(0)) => {
                         break;
+                    }
+                    TimeoutResult::Completed(Ok(len)) => {
+                        read_success = true;
+                        BYTES_RX.fetch_add(len as u64, Ordering::Relaxed);
+                        parser.push_data(&buffer[..len]);
+                        match parser.try_parse_request() {
+                            Ok(Some(request)) => {
+                                let req_keep_alive = request.get_header("Connection").map(|v| v.eq_ignore_ascii_case("keep-alive")).unwrap_or(false);
+                                let default_keep_alive = request.version == super::types::HttpVersion::Http1_1;
+                                let conn_close = request.get_header("Connection").map(|v| v.eq_ignore_ascii_case("close")).unwrap_or(false);
+                                keep_alive = (req_keep_alive || default_keep_alive) && !conn_close;
+                                
+                                response_bytes = Some(build_response_for_request(&request, keep_alive));
+                                break;
+                            }
+                            Ok(None) => {
+                                // Continue reading
+                            }
+                            Err(err) => {
+                                log::warn!("[HOST-HTTP] parse error: {:?}", err);
+                                response_bytes = Some(build_json_response("400 Bad Request", "{\"status\":\"bad_request\"}", false));
+                                break;
+                            }
+                        }
                     }
                 }
             }
+
+            if !read_success && response_bytes.is_none() {
+                // クライアントが正常に接続を閉じた場合
+                break;
+            }
         }
-    }
 
-    let response = response_bytes.unwrap_or_else(|| {
-        log::warn!("[HOST-HTTP] request read timeout or client closed connection early");
-        build_json_response("408 Request Timeout", "{\"status\":\"timeout\"}")
-    });
+        let response = response_bytes.unwrap_or_else(|| {
+            log::warn!("[HOST-HTTP] request read timeout or client closed connection early");
+            build_json_response("408 Request Timeout", "{\"status\":\"timeout\"}", false)
+        });
 
-    log::info!("[HOST-HTTP] preparing response: {} bytes", response.len());
+        log::info!("[HOST-HTTP] preparing response: {} bytes", response.len());
 
-    if let Err(err) = write_response(&mut client, response.as_slice()).await {
-        log::warn!("[HOST-HTTP] send error: {}", err);
+        if let Err(err) = write_response(&mut client, response.as_slice()).await {
+            log::warn!("[HOST-HTTP] send error: {}", err);
+            break;
+        }
+
+        if !keep_alive {
+            break;
+        }
     }
 
     let _ = client.shutdown().await;
@@ -216,7 +258,7 @@ async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &
     }
 }
 
-fn build_health_response() -> Vec<u8> {
+fn build_health_response(keep_alive: bool) -> Vec<u8> {
     let bridge = crate::net::runtime::bridge::is_initialized();
     let stats = crate::net::runtime::bridge::get_bridge_stats();
     let body = format!(
@@ -225,26 +267,40 @@ fn build_health_response() -> Vec<u8> {
         stats.rx_packets,
         stats.tx_packets
     );
-    build_json_response("200 OK", &body)
+    build_json_response("200 OK", &body, keep_alive)
 }
 
-fn build_response_for_request(request: &super::types::HttpRequest) -> Vec<u8> {
+fn build_response_for_request(request: &super::types::HttpRequest, keep_alive: bool) -> Vec<u8> {
     TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
 
     if request.method == super::types::HttpMethod::Get {
         match request.uri.as_str() {
-            "/" => return build_index_response(),
-            "/health" => return build_health_response(),
-            "/stats" => return build_stats_response(),
-            "/info" => return build_info_response(),
+            "/" => return build_index_response(keep_alive),
+            "/health" => return build_health_response(keep_alive),
+            "/stats" => return build_stats_response(keep_alive),
+            "/info" => return build_info_response(keep_alive),
             _ => {}
+        }
+    } else if request.method == super::types::HttpMethod::Post {
+        if request.uri.as_str() == "/echo" {
+            return build_echo_response(request, keep_alive);
         }
     }
 
-    build_json_response("404 Not Found", "{\"status\":\"not_found\"}")
+    build_json_response("404 Not Found", "{\"status\":\"not_found\"}", keep_alive)
 }
 
-fn build_index_response() -> Vec<u8> {
+fn build_echo_response(request: &super::types::HttpRequest, keep_alive: bool) -> Vec<u8> {
+    if let Some(body) = &request.body {
+        let content_type = request.get_header("Content-Type").unwrap_or("application/json");
+        let body_str = core::str::from_utf8(body).unwrap_or("{\"error\": \"invalid utf-8\"}");
+        build_custom_response("200 OK", content_type, body_str, keep_alive)
+    } else {
+        build_json_response("400 Bad Request", "{\"status\":\"missing_body\"}", keep_alive)
+    }
+}
+
+fn build_index_response(keep_alive: bool) -> Vec<u8> {
     let html = r#"<!DOCTYPE html>
 <html>
 <head>
@@ -275,15 +331,16 @@ fn build_index_response() -> Vec<u8> {
         <li><a href="/stats">/stats</a> - Server statistics</li>
         <li><a href="/health">/health</a> - Health check</li>
         <li><a href="/info">/info</a> - System information</li>
+        <li><a href="/echo">/echo</a> - POST Echo API</li>
     </ul>
     
     <p><em>Running on ExoRust v0.3.0</em></p>
 </body>
 </html>"#;
-    build_html_response("200 OK", html)
+    build_html_response("200 OK", html, keep_alive)
 }
 
-fn build_stats_response() -> Vec<u8> {
+fn build_stats_response(keep_alive: bool) -> Vec<u8> {
     let requests = TOTAL_REQUESTS.load(Ordering::Relaxed);
     let bytes_rx = BYTES_RX.load(Ordering::Relaxed);
     let bytes_tx = BYTES_TX.load(Ordering::Relaxed);
@@ -308,10 +365,10 @@ fn build_stats_response() -> Vec<u8> {
     }}
 }}"#, requests, bytes_rx, bytes_tx, connections, heap_used, heap_free, timer_ticks);
     
-    build_json_response("200 OK", &json)
+    build_json_response("200 OK", &json, keep_alive)
 }
 
-fn build_info_response() -> Vec<u8> {
+fn build_info_response(keep_alive: bool) -> Vec<u8> {
     let domain_stats = crate::domain_system::get_domain_stats();
     let sas_stats = crate::sas::stats();
     let spectre = crate::security::spectre::status_summary();
@@ -345,25 +402,26 @@ fn build_info_response() -> Vec<u8> {
         spectre.ibrs_enabled, spectre.stibp_enabled, spectre.ssbd_enabled, spectre.using_retpoline
     );
     
-    build_json_response("200 OK", &json)
+    build_json_response("200 OK", &json, keep_alive)
 }
 
-fn build_json_response(status: &str, body: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
-        status = status,
-        len = body.len(),
-        body = body
-    )
-    .into_bytes()
+fn build_json_response(status: &str, body: &str, keep_alive: bool) -> Vec<u8> {
+    build_custom_response(status, "application/json", body, keep_alive)
 }
 
-fn build_html_response(status: &str, body: &str) -> Vec<u8> {
-    format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
-        status = status,
-        len = body.len(),
-        body = body
-    )
-    .into_bytes()
+fn build_html_response(status: &str, body: &str, keep_alive: bool) -> Vec<u8> {
+    build_custom_response(status, "text/html; charset=utf-8", body, keep_alive)
+}
+
+fn build_custom_response(status: &str, content_type: &str, body: &str, keep_alive: bool) -> Vec<u8> {
+    let connection_header = if keep_alive { "keep-alive" } else { "close" };
+    let mut parts = status.splitn(2, ' ');
+    let status_code: u16 = parts.next().unwrap_or("200").parse().unwrap_or(200);
+    let reason_phrase = parts.next().unwrap_or("");
+
+    super::types::HttpResponse::new(status_code, reason_phrase)
+        .header("Content-Type", content_type)
+        .header("Connection", connection_header)
+        .body(body.as_bytes().to_vec())
+        .to_bytes()
 }
