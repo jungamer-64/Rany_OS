@@ -1,7 +1,9 @@
 // ============================================================================
 // drivers/mlx5/src/defs.rs - Constants and common definitions
 // ============================================================================
-//! ConnectX-4 Lx (mlx5) ハードウェア定数・共通定義
+//! ConnectX ファミリ (mlx5) ハードウェア定数・共通定義
+//!
+//! ConnectX-4 / 4 Lx / 5 / 5 Ex / 6 / 6 Dx / 6 Lx / 7 をサポート。
 
 // ============================================================================
 // PCI Identification
@@ -10,17 +12,147 @@
 /// Mellanox (NVIDIA Networking) PCI Vendor ID
 pub const MELLANOX_VENDOR_ID: u16 = 0x15B3;
 
+// -- ConnectX-4 --
+/// ConnectX-4 EN PCI Device ID (Physical Function)
+pub const CONNECTX4_DEVICE_ID: u16 = 0x1013;
+/// ConnectX-4 EN VF PCI Device ID
+pub const CONNECTX4_VF_DEVICE_ID: u16 = 0x1014;
 /// ConnectX-4 Lx EN PCI Device ID (Physical Function)
 pub const CONNECTX4_LX_DEVICE_ID: u16 = 0x1015;
-
 /// ConnectX-4 Lx EN PCI Device ID (Virtual Function)
 pub const CONNECTX4_LX_VF_DEVICE_ID: u16 = 0x1016;
 
-/// ConnectX-4 EN PCI Device ID (非-Lx版)
-pub const CONNECTX4_DEVICE_ID: u16 = 0x1013;
+// -- ConnectX-5 --
+/// ConnectX-5 EN PCI Device ID (Physical Function)
+pub const CONNECTX5_DEVICE_ID: u16 = 0x1017;
+/// ConnectX-5 EN VF PCI Device ID
+pub const CONNECTX5_VF_DEVICE_ID: u16 = 0x1018;
+/// ConnectX-5 Ex EN PCI Device ID (Physical Function)
+pub const CONNECTX5_EX_DEVICE_ID: u16 = 0x1019;
+/// ConnectX-5 Ex EN VF PCI Device ID
+pub const CONNECTX5_EX_VF_DEVICE_ID: u16 = 0x101A;
 
-/// ConnectX-4 EN VF PCI Device ID
-pub const CONNECTX4_VF_DEVICE_ID: u16 = 0x1014;
+// -- ConnectX-6 --
+/// ConnectX-6 EN PCI Device ID (Physical Function)
+pub const CONNECTX6_DEVICE_ID: u16 = 0x101B;
+/// ConnectX-6 EN VF PCI Device ID
+pub const CONNECTX6_VF_DEVICE_ID: u16 = 0x101C;
+/// ConnectX-6 Dx EN PCI Device ID (Physical Function)
+pub const CONNECTX6_DX_DEVICE_ID: u16 = 0x101D;
+/// ConnectX-6 Dx EN VF PCI Device ID
+pub const CONNECTX6_DX_VF_DEVICE_ID: u16 = 0x101E;
+/// ConnectX-6 Lx EN PCI Device ID (Physical Function)
+pub const CONNECTX6_LX_DEVICE_ID: u16 = 0x101F;
+/// ConnectX-6 Lx EN VF PCI Device ID
+pub const CONNECTX6_LX_VF_DEVICE_ID: u16 = 0x1020;
+
+// -- ConnectX-7 --
+/// ConnectX-7 EN PCI Device ID (Physical Function)
+pub const CONNECTX7_DEVICE_ID: u16 = 0x1021;
+/// ConnectX-7 EN VF PCI Device ID
+pub const CONNECTX7_VF_DEVICE_ID: u16 = 0x1022;
+
+// ============================================================================
+// Supported Device ID Table
+// ============================================================================
+
+/// ドライバがサポートする全デバイスの (Vendor ID, Device ID) ペア
+pub static SUPPORTED_DEVICE_IDS: &[(u16, u16)] = &[
+    // ConnectX-4
+    (MELLANOX_VENDOR_ID, CONNECTX4_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX4_VF_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX4_LX_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX4_LX_VF_DEVICE_ID),
+    // ConnectX-5
+    (MELLANOX_VENDOR_ID, CONNECTX5_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX5_VF_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX5_EX_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX5_EX_VF_DEVICE_ID),
+    // ConnectX-6
+    (MELLANOX_VENDOR_ID, CONNECTX6_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX6_VF_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX6_DX_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX6_DX_VF_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX6_LX_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX6_LX_VF_DEVICE_ID),
+    // ConnectX-7
+    (MELLANOX_VENDOR_ID, CONNECTX7_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTX7_VF_DEVICE_ID),
+];
+
+// ============================================================================
+// ConnectX Variant Identification
+// ============================================================================
+
+/// ConnectX ファミリのバリアント識別
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectXVariant {
+    /// ConnectX-4
+    CX4,
+    /// ConnectX-4 Lx
+    CX4Lx,
+    /// ConnectX-5
+    CX5,
+    /// ConnectX-5 Ex
+    CX5Ex,
+    /// ConnectX-6
+    CX6,
+    /// ConnectX-6 Dx
+    CX6Dx,
+    /// ConnectX-6 Lx
+    CX6Lx,
+    /// ConnectX-7
+    CX7,
+    /// 不明なバリアント（新規デバイス等）
+    Unknown(u16),
+}
+
+impl ConnectXVariant {
+    /// PCI Device ID からバリアントを判別
+    pub fn from_device_id(device_id: u16) -> Self {
+        match device_id {
+            CONNECTX4_DEVICE_ID | CONNECTX4_VF_DEVICE_ID => Self::CX4,
+            CONNECTX4_LX_DEVICE_ID | CONNECTX4_LX_VF_DEVICE_ID => Self::CX4Lx,
+            CONNECTX5_DEVICE_ID | CONNECTX5_VF_DEVICE_ID => Self::CX5,
+            CONNECTX5_EX_DEVICE_ID | CONNECTX5_EX_VF_DEVICE_ID => Self::CX5Ex,
+            CONNECTX6_DEVICE_ID | CONNECTX6_VF_DEVICE_ID => Self::CX6,
+            CONNECTX6_DX_DEVICE_ID | CONNECTX6_DX_VF_DEVICE_ID => Self::CX6Dx,
+            CONNECTX6_LX_DEVICE_ID | CONNECTX6_LX_VF_DEVICE_ID => Self::CX6Lx,
+            CONNECTX7_DEVICE_ID | CONNECTX7_VF_DEVICE_ID => Self::CX7,
+            other => Self::Unknown(other),
+        }
+    }
+
+    /// 人間可読なデバイス名を返す
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::CX4 => "ConnectX-4",
+            Self::CX4Lx => "ConnectX-4 Lx",
+            Self::CX5 => "ConnectX-5",
+            Self::CX5Ex => "ConnectX-5 Ex",
+            Self::CX6 => "ConnectX-6",
+            Self::CX6Dx => "ConnectX-6 Dx",
+            Self::CX6Lx => "ConnectX-6 Lx",
+            Self::CX7 => "ConnectX-7",
+            Self::Unknown(_) => "ConnectX (unknown)",
+        }
+    }
+
+    /// Virtual Function かどうか判定
+    pub fn is_vf_device_id(device_id: u16) -> bool {
+        matches!(
+            device_id,
+            CONNECTX4_VF_DEVICE_ID
+                | CONNECTX4_LX_VF_DEVICE_ID
+                | CONNECTX5_VF_DEVICE_ID
+                | CONNECTX5_EX_VF_DEVICE_ID
+                | CONNECTX6_VF_DEVICE_ID
+                | CONNECTX6_DX_VF_DEVICE_ID
+                | CONNECTX6_LX_VF_DEVICE_ID
+                | CONNECTX7_VF_DEVICE_ID
+        )
+    }
+}
 
 // ============================================================================
 // Device Limits

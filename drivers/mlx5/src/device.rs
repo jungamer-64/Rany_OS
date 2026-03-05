@@ -1,7 +1,7 @@
 // ============================================================================
 // drivers/mlx5/src/device.rs - Device Management
 // ============================================================================
-//! ConnectX-4 Lx デバイス管理
+//! ConnectX ファミリ デバイス管理
 //!
 //! HCA (Host Channel Adapter) の完全なライフサイクル管理:
 //! 1. PCIデバイス検出とBAR0マッピング
@@ -27,6 +27,7 @@ use crate::polling::AdaptivePollingState;
 use crate::port::{MacAddr, Mlx5Port};
 use crate::resources::{MkeyInfo, TirInfo, TisInfo, TirParams, TisParams, MkeyParams, TirReceiveType};
 use crate::wq::{ReceiveQueue, SendQueue};
+use crate::defs::ConnectXVariant;
 
 /// デバイスの初期化状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,9 +50,11 @@ pub enum DeviceState {
 
 /// mlx5 デバイス
 ///
-/// ConnectX-4 Lx NICの完全な状態を管理する。
+/// ConnectX ファミリ NIC の完全な状態を管理する。
 /// BAR0マッピング、コマンドインタフェース、キュー、ポートを含む。
 pub struct Mlx5Device {
+    /// デバイスバリアント (ConnectX-4 / 5 / 6 / 7 etc.)
+    variant: ConnectXVariant,
     /// デバイス状態
     state: DeviceState,
     /// BAR0 仮想ベースアドレス
@@ -142,8 +145,11 @@ pub struct Mlx5Device {
 
 impl Mlx5Device {
     /// デバイスを作成（未初期化状態）
-    pub fn new(bar0_base: u64, bar0_size: usize) -> Self {
+    ///
+    /// `device_id` から `ConnectXVariant` を自動判別する。
+    pub fn new(bar0_base: u64, bar0_size: usize, device_id: u16) -> Self {
         Self {
+            variant: ConnectXVariant::from_device_id(device_id),
             state: DeviceState::Uninitialized,
             bar0_base,
             bar0_size,
@@ -182,6 +188,11 @@ impl Mlx5Device {
         }
     }
 
+    /// ConnectX バリアントを取得
+    pub fn variant(&self) -> ConnectXVariant {
+        self.variant
+    }
+
     /// PCI BDF情報を設定
     pub fn set_pci_bdf(&mut self, bus: u8, device: u8, function: u8) {
         self.pci_bus = bus;
@@ -192,6 +203,17 @@ impl Mlx5Device {
     /// デバイス状態を取得
     pub fn state(&self) -> DeviceState {
         self.state
+    }
+
+    /// Force firmware-ready state for VF fallback paths.
+    ///
+    /// Some VF passthrough environments do not expose PF-style FW boot phase
+    /// transitions via `NIC_INTERFACE`, causing `wait_fw_ready()` to fail even
+    /// though command interface operations can still succeed.
+    pub fn assume_firmware_ready_for_vf(&mut self) {
+        if self.state == DeviceState::Uninitialized {
+            self.state = DeviceState::FirmwareReady;
+        }
     }
 
     /// BAR0ベースアドレス

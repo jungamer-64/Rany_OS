@@ -304,7 +304,10 @@ impl CmdInterface {
     unsafe fn poll_completion(&self, slot: usize) -> Mlx5Result<()> {
         // 簡易ポーリング: spin待ち
         // 実プロダクション環境ではタイマーベースのタイムアウトを使用
-        let max_iters = 10_000_000u64;
+        // IMPORTANT:
+        //   This path may run on the kernel async executor thread.
+        //   Keep timeout bounded to avoid executor starvation on stuck hardware.
+        let max_iters = 200_000u64;
 
         for _ in 0..max_iters {
             let entry = self.entry(slot);

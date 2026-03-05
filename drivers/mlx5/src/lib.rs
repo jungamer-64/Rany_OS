@@ -1,11 +1,11 @@
 // ============================================================================
-// drivers/mlx5/src/lib.rs - Mellanox ConnectX-4 Lx (mlx5) Ethernet Driver
+// drivers/mlx5/src/lib.rs - NVIDIA/Mellanox ConnectX Family (mlx5) Ethernet Driver
 // ============================================================================
 //!
-//! # ConnectX-4 Lx (mlx5) Ethernet Driver
+//! # ConnectX Family (mlx5) Ethernet Driver
 //!
-//! NVIDIA/Mellanox ConnectX-4 Lx 25GbE NIC ドライバ。
-//! MCX4421A-ACQN 等の ConnectX-4 Lx ファミリをサポート。
+//! NVIDIA/Mellanox ConnectX ファミリ NIC ドライバ。
+//! ConnectX-4 / 4 Lx / 5 / 5 Ex / 6 / 6 Dx / 6 Lx / 7 をサポート。
 //!
 //! ## Architecture
 //!
@@ -55,6 +55,10 @@ pub mod health;
 pub use defs::{
     MELLANOX_VENDOR_ID, CONNECTX4_LX_DEVICE_ID,
     CONNECTX4_LX_VF_DEVICE_ID, CONNECTX4_DEVICE_ID,
+    CONNECTX5_DEVICE_ID, CONNECTX5_EX_DEVICE_ID,
+    CONNECTX6_DEVICE_ID, CONNECTX6_DX_DEVICE_ID, CONNECTX6_LX_DEVICE_ID,
+    CONNECTX7_DEVICE_ID,
+    SUPPORTED_DEVICE_IDS, ConnectXVariant,
     MLX5_MAX_PORTS,
 };
 pub use error::Mlx5Error;

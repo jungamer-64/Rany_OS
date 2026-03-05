@@ -1,5 +1,5 @@
 // ============================================================================
-// drivers/mlx5/src/polling.rs - Adaptive Polling for ConnectX-4 Lx
+// drivers/mlx5/src/polling.rs - Adaptive Polling for ConnectX Family
 // ============================================================================
 //! 適応的ポーリング — 割り込み駆動とビジーポーリングのハイブリッド
 //!

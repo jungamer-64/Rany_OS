@@ -1,17 +1,17 @@
 // ============================================================================
-// kernel/src/net/drivers/mlx5_registry.rs - ConnectX-4 Lx Driver Registry
+// kernel/src/net/drivers/mlx5_registry.rs - ConnectX Family Driver Registry
 // ============================================================================
 //!
-//! ConnectX-4 Lx (mlx5) ドライバの DriverRegistry 統合。
+//! ConnectX ファミリ (mlx5) ドライバの DriverRegistry 統合。
 //!
-//! MCX4421A-ACQN 等の ConnectX-4 Lx ファミリをサポート。
+//! ConnectX-4 / 4 Lx / 5 / 5 Ex / 6 / 6 Dx / 6 Lx / 7 をサポート。
 //!
 //! PCI バスからデバイスを検出し、BAR0 マッピング・DMA バッファ割り当て・
 //! HCA 初期化シーケンスを実行して NIC をアクティブにする。
 //!
 //! ## 初期化フロー
 //!
-//! 1. PCI バス検出 (Vendor=0x15B3, Device=0x1015/0x1016)
+//! 1. PCI バス検出 (Vendor=0x15B3, 全 ConnectX Device ID)
 //! 2. BAR0 マッピング → FW Ready 待ち
 //! 3. コマンドインタフェース初期化
 //! 4. ENABLE_HCA → QUERY_ISSI → SET_ISSI → QUERY_HCA_CAP → INIT_HCA
@@ -27,8 +27,7 @@ use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
 use mlx5_driver::{
-    CONNECTX4_LX_DEVICE_ID, CONNECTX4_LX_VF_DEVICE_ID,
-    CONNECTX4_DEVICE_ID, MELLANOX_VENDOR_ID,
+    MELLANOX_VENDOR_ID, SUPPORTED_DEVICE_IDS, ConnectXVariant,
     Mlx5Device,
 };
 use mlx5_driver::eq::EventQueue;
@@ -36,39 +35,29 @@ use mlx5_driver::cq::CompletionQueue;
 use mlx5_driver::wq::{SendQueue, ReceiveQueue};
 use mlx5_driver::resources::{TisParams, TirParams, TirReceiveType, MkeyParams};
 
-/// ConnectX-4 Lx のサポートデバイスID一覧
-///
-/// MCX4421A-ACQN (25GbE dual-port) を含む ConnectX-4 Lx ファミリ全体をサポート。
-static SUPPORTED_DEVICES: [DeviceId; 3] = [
-    // ConnectX-4 Lx Physical Function
-    DeviceId {
-        vendor: MELLANOX_VENDOR_ID,
-        device: CONNECTX4_LX_DEVICE_ID,
-        subsystem_vendor: None,
-        subsystem_device: None,
-    },
-    // ConnectX-4 Lx Virtual Function
-    DeviceId {
-        vendor: MELLANOX_VENDOR_ID,
-        device: CONNECTX4_LX_VF_DEVICE_ID,
-        subsystem_vendor: None,
-        subsystem_device: None,
-    },
-    // ConnectX-4 (non-Lx) Physical Function
-    DeviceId {
-        vendor: MELLANOX_VENDOR_ID,
-        device: CONNECTX4_DEVICE_ID,
-        subsystem_vendor: None,
-        subsystem_device: None,
-    },
-];
+const CONNECTX4_LX_VF_ID: u16 = 0x1016;
 
-/// ConnectX-4 Lx ドライバラッパー for DriverRegistry
+/// ConnectX ファミリのサポートデバイスID一覧を動的構築
+fn build_supported_devices() -> alloc::vec::Vec<DeviceId> {
+    SUPPORTED_DEVICE_IDS
+        .iter()
+        .map(|&(vendor, device)| DeviceId {
+            vendor,
+            device,
+            subsystem_vendor: None,
+            subsystem_device: None,
+        })
+        .collect()
+}
+
+/// ConnectX ファミリドライバラッパー for DriverRegistry
 pub struct Mlx5ConnectXDriver {
     /// 初期化済みかどうか
     initialized: bool,
     /// 内部デバイスインスタンス（probe成功後に保持）
     device: Option<Mlx5Device>,
+    /// サポートデバイスリスト（動的構築）
+    supported_devices: alloc::vec::Vec<DeviceId>,
 }
 
 impl Mlx5ConnectXDriver {
@@ -77,6 +66,7 @@ impl Mlx5ConnectXDriver {
         Self {
             initialized: false,
             device: None,
+            supported_devices: build_supported_devices(),
         }
     }
 }
@@ -89,11 +79,11 @@ impl Default for Mlx5ConnectXDriver {
 
 impl Driver for Mlx5ConnectXDriver {
     fn name(&self) -> &str {
-        "mlx5-connectx4lx"
+        "mlx5"
     }
 
     fn version(&self) -> DriverVersion {
-        DriverVersion::new(0, 2, 0)
+        DriverVersion::new(0, 3, 0)
     }
 
     fn driver_type(&self) -> DriverType {
@@ -101,30 +91,27 @@ impl Driver for Mlx5ConnectXDriver {
     }
 
     fn probe(&mut self) -> KapiResult<()> {
-        log::info!(target: "mlx5", "Probing for ConnectX-4 Lx devices (MCX4421A-ACQN)...");
+        crate::io::log::early_print("[MLX5DBG] probe enter\n");
+        log::info!(target: "mlx5", "Probing for ConnectX family devices...");
 
-        // PCI バスから ConnectX-4 Lx (PF) を検索
-        let pci_devices = crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, CONNECTX4_LX_DEVICE_ID);
-
-        if pci_devices.is_empty() {
-            log::info!(target: "mlx5", "No ConnectX-4 Lx PF found, trying VF...");
-            let vf_devices =
-                crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, CONNECTX4_LX_VF_DEVICE_ID);
-            if vf_devices.is_empty() {
-                // ConnectX-4 (非Lx) も試行
-                log::info!(target: "mlx5", "No ConnectX-4 Lx VF found, trying ConnectX-4...");
-                let cx4_devices =
-                    crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, CONNECTX4_DEVICE_ID);
-                if cx4_devices.is_empty() {
-                    log::info!(target: "mlx5", "No ConnectX-4 family devices found on PCI bus");
-                    return Err(KapiError::NotFound);
-                }
-                return self.probe_device(&cx4_devices[0]);
+        // SUPPORTED_DEVICE_IDS をイテレートして最初に見つかったデバイスを初期化
+        for &(_vendor_id, device_id) in SUPPORTED_DEVICE_IDS {
+            let pci_devices = crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, device_id);
+            if !pci_devices.is_empty() {
+                let variant = ConnectXVariant::from_device_id(device_id);
+                log::info!(
+                    target: "mlx5",
+                    "Found {} (device_id={:#06x})",
+                    variant.name(),
+                    device_id,
+                );
+                crate::io::log::early_print("[MLX5DBG] probing first device\n");
+                return self.probe_device(&pci_devices[0]);
             }
-            return self.probe_device(&vf_devices[0]);
         }
 
-        self.probe_device(&pci_devices[0])
+        log::info!(target: "mlx5", "No ConnectX family devices found on PCI bus");
+        Err(KapiError::NotFound)
     }
 
     fn start(&mut self) -> KapiResult<()> {
@@ -132,12 +119,18 @@ impl Driver for Mlx5ConnectXDriver {
             return Err(KapiError::Internal(-1));
         }
 
-        log::info!(target: "mlx5", "ConnectX-4 Lx driver started (MCX4421A-ACQN)");
+        let variant_name = self.device.as_ref()
+            .map(|d| d.variant().name())
+            .unwrap_or("ConnectX");
+        log::info!(target: "mlx5", "{} driver started", variant_name);
         Ok(())
     }
 
     fn stop(&mut self) -> KapiResult<()> {
-        log::info!(target: "mlx5", "ConnectX-4 Lx driver stopping...");
+        let variant_name = self.device.as_ref()
+            .map(|d| d.variant().name())
+            .unwrap_or("ConnectX");
+        log::info!(target: "mlx5", "{} driver stopping...", variant_name);
 
         if let Some(ref mut dev) = self.device {
             // 安全にデバイスをシャットダウン
@@ -148,12 +141,12 @@ impl Driver for Mlx5ConnectXDriver {
             }
         }
         self.initialized = false;
-        log::info!(target: "mlx5", "ConnectX-4 Lx driver stopped");
+        log::info!(target: "mlx5", "{} driver stopped", variant_name);
         Ok(())
     }
 
     fn supported_devices(&self) -> &[DeviceId] {
-        &SUPPORTED_DEVICES
+        &self.supported_devices
     }
 }
 
@@ -203,7 +196,7 @@ fn ensure_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
 impl Mlx5ConnectXDriver {
     /// PCI デバイスの完全な初期化を行う
     ///
-    /// MCX4421A-ACQN (ConnectX-4 Lx 25GbE) の初期化シーケンス:
+    /// ConnectX ファミリの初期化シーケンス:
     /// Phase 1: FW Ready Wait
     /// Phase 2: Command Interface Setup
     /// Phase 3: HCA Enable & Init (ENABLE_HCA, ISSI, QUERY_HCA_CAP, INIT_HCA)
@@ -214,9 +207,12 @@ impl Mlx5ConnectXDriver {
     /// Phase 8: Flow Table Setup (RX Steering)
     /// Phase 9: Activation
     fn probe_device(&mut self, pci_dev: &crate::io::pci::PciDeviceInfo) -> KapiResult<()> {
+        let variant = ConnectXVariant::from_device_id(pci_dev.device_id.0);
+        crate::io::log::early_print("[MLX5DBG] probe_device enter\n");
         log::info!(
             target: "mlx5",
-            "Found ConnectX-4 Lx at {:02x}:{:02x}.{} (vendor={:#06x} device={:#06x})",
+            "Initializing {} at {:02x}:{:02x}.{} (vendor={:#06x} device={:#06x})",
+            variant.name(),
             pci_dev.bdf.bus(),
             pci_dev.bdf.device(),
             pci_dev.bdf.function(),
@@ -291,7 +287,7 @@ impl Mlx5ConnectXDriver {
         // ================================================================
         // Phase 1: Mlx5Device 作成 & FW Ready
         // ================================================================
-        let mut device = Mlx5Device::new(bar0_base, bar0_size);
+        let mut device = Mlx5Device::new(bar0_base, bar0_size, pci_dev.device_id.0);
         device.set_pci_bdf(
             pci_dev.bdf.bus(),
             pci_dev.bdf.device(),
@@ -299,10 +295,24 @@ impl Mlx5ConnectXDriver {
         );
 
         unsafe {
-            device.wait_firmware().map_err(|e| {
-                log::error!(target: "mlx5", "FW init failed: {:?}", e);
-                KapiError::IoError
-            })?;
+            crate::io::log::early_print("[MLX5DBG] before wait_firmware\n");
+            match device.wait_firmware() {
+                Ok(()) => {}
+                Err(e) => {
+                    if pci_dev.device_id.0 == CONNECTX4_LX_VF_ID {
+                        log::warn!(
+                            target: "mlx5",
+                            "FW ready wait failed on VF ({:?}); continuing with VF fallback",
+                            e
+                        );
+                        device.assume_firmware_ready_for_vf();
+                    } else {
+                        log::error!(target: "mlx5", "FW init failed: {:?}", e);
+                        return Err(KapiError::IoError);
+                    }
+                }
+            }
+            crate::io::log::early_print("[MLX5DBG] after wait_firmware\n");
         }
 
         // ================================================================
@@ -325,6 +335,7 @@ impl Mlx5ConnectXDriver {
         let out_mbox_phys = bar0_phys + out_mbox_offset;
 
         unsafe {
+            crate::io::log::early_print("[MLX5DBG] before init_cmd_if\n");
             device
                 .init_command_interface(
                     cmdq_virt, cmdq_phys,
@@ -335,22 +346,25 @@ impl Mlx5ConnectXDriver {
                     log::error!(target: "mlx5", "CMD interface init failed: {:?}", e);
                     KapiError::IoError
                 })?;
+            crate::io::log::early_print("[MLX5DBG] after init_cmd_if\n");
         }
 
         // ================================================================
         // Phase 3: HCA 有効化・初期化
         // ================================================================
         unsafe {
+            crate::io::log::early_print("[MLX5DBG] before enable_and_init_hca\n");
             device.enable_and_init_hca().map_err(|e| {
                 log::error!(target: "mlx5", "HCA enable/init failed: {:?}", e);
                 KapiError::IoError
             })?;
+            crate::io::log::early_print("[MLX5DBG] after enable_and_init_hca\n");
         }
 
         // ================================================================
         // Phase 4: FW ページ管理
         // ================================================================
-        // ConnectX-4 Lx FWは初期化中にページを要求する
+        // ConnectX FWは初期化中にページを要求する
         // 初期ブートページを提供（SAS identity map: phys == virt）
         let boot_page_base = bar0_phys + bar0_size as u64 - 0x10_0000;
         let boot_page_count = 4u32; // 最小限のブートページ
@@ -524,9 +538,9 @@ impl Mlx5ConnectXDriver {
 
         log::info!(
             target: "mlx5",
-            "ConnectX-4 Lx device initialized and active (MCX4421A-ACQN) \
+            "{} device initialized and active \
              MKEY={:#x} TISN={} TIRN={} polling={}",
-            mkey, tisn, tirn, device.polling_state().mode()
+            variant.name(), mkey, tisn, tirn, device.polling_state().mode()
         );
 
         self.device = Some(device);

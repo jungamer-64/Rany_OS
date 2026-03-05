@@ -750,8 +750,10 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     print_system_stats();
 
     // 8. Executorの作成とタスクスポーン
+    crate::io::log::early_print("[INITDBG] before executor create\n");
     info!(target: "init", "Creating async executor");
     let mut executor = task::Executor::new();
+    crate::io::log::early_print("[INITDBG] executor created\n");
 
     let shell_mode = {
         let mode = crate::shell::session::parse_shell_launch_mode(
@@ -776,7 +778,9 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         adjusted_mode
     };
 
+    crate::io::log::early_print("[INITDBG] before spawn_kernel_tasks\n");
     spawn_kernel_tasks(&mut executor, shell_mode);
+    crate::io::log::early_print("[INITDBG] after spawn_kernel_tasks\n");
     info!(target: "init", "Kernel tasks spawned");
 
     // =========================================================================
@@ -795,5 +799,6 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // graphical_shell::start();
 
     // メインループ開始（戻ってこない）
+    crate::io::log::early_print("[INITDBG] entering executor.run\n");
     executor.run();
 }

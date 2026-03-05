@@ -4,7 +4,7 @@
 //! HCA リソース管理 — MKEY, TIS, TIR の作成・破棄
 //!
 //! ## MKEY (Memory Key)
-//! DMAアクセス制御用のメモリ登録キー。ConnectX-4 Lx では
+//! DMAアクセス制御用のメモリ登録キー。ConnectX ファミリでは
 //! Direct Memory Key を使用してDMAバッファを保護する。
 //!
 //! ## TIS (Transport Interface Send)

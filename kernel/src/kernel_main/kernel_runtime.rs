@@ -15,9 +15,12 @@ use super::*;
 /// `spawn_global` するため、ブリッジ初期化後はDHCPが自動的に非同期で走る。
 /// このタスクは状態がBoundになるのを待ってからpingで接続性を確認する。
 async fn network_bootstrap_task() {
+    crate::io::log::early_print("[NETBOOTDBG] enter\n");
     info!(target: "net_boot", "Network bootstrap task started (async)");
+    crate::io::log::early_print("[NETBOOTDBG] after start log\n");
 
     let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
+    crate::io::log::early_print("[NETBOOTDBG] after virtio presence check\n");
     if virtio_net_present {
         let bridge_initialized = crate::net::runtime::bridge::is_initialized();
         if bridge_initialized {
@@ -46,26 +49,33 @@ async fn network_bootstrap_task() {
             target: "net_boot",
             "VirtIO-Net device not present; continuing with non-VirtIO probes (mlx5)"
         );
+        crate::io::log::early_print("[NETBOOTDBG] virtio absent branch\n");
     }
 
-    // ConnectX-4 Lx (mlx5) ドライバのPCI検出・登録
+    // ConnectX ファミリ (mlx5) ドライバのPCI検出・登録
+    crate::io::log::early_print("[NETBOOTDBG] before mlx5 probe\n");
     {
         use crate::net::drivers::mlx5_registry::Mlx5ConnectXDriver;
         use alloc::boxed::Box;
         use driver_registry::register_driver;
 
-        info!(target: "net_boot", "Probing ConnectX-4 Lx (mlx5) via DriverRegistry");
+        info!(target: "net_boot", "Probing ConnectX (mlx5) via DriverRegistry");
+        crate::io::log::early_print("[NETBOOTDBG] after mlx5 info log\n");
         let mlx5_handle = register_driver(Box::new(Mlx5ConnectXDriver::new()));
+        crate::io::log::early_print("[NETBOOTDBG] after register_driver call\n");
         match mlx5_handle {
             Ok(handle) => {
+                crate::io::log::early_print("[NETBOOTDBG] before probe_and_start\n");
                 match driver_registry::driver_registry().probe_and_start(handle) {
                     Ok(()) => {
-                        info!(target: "net_boot", "ConnectX-4 Lx driver initialized via DriverRegistry");
+                        crate::io::log::early_print("[NETBOOTDBG] probe_and_start ok\n");
+                        info!(target: "net_boot", "ConnectX (mlx5) driver initialized via DriverRegistry");
                     }
                     Err(e) => {
-                        // ConnectX-4 Lx が実機に接続されていない場合はNotFoundが返るので
+                        crate::io::log::early_print("[NETBOOTDBG] probe_and_start err\n");
+                        // ConnectX NIC が実機に接続されていない場合はNotFoundが返るので
                         // 警告レベルで報告のみ（起動失敗にはしない）
-                        info!(target: "net_boot", "ConnectX-4 Lx not found or init failed: {:?}", e);
+                        info!(target: "net_boot", "ConnectX (mlx5) not found or init failed: {:?}", e);
                     }
                 }
             }
@@ -315,6 +325,7 @@ pub(crate) fn spawn_kernel_tasks(
 
         info!(target: "task5", "Completed");
     }));
+    crate::io::log::early_print("[INITDBG] task5 spawned\n");
 
     // タスク6: ベンチマーク実行（オプション）
     // 注意: 大量メモリ割り当てでパニックするため一時的に無効化
@@ -351,6 +362,7 @@ pub(crate) fn spawn_kernel_tasks(
         let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
         info!(target: "net_test", "Bridge stats after ping: init={} rx={} tx={} ", bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets);
     }));
+    crate::io::log::early_print("[INITDBG] net_test spawned\n");
 
     // タスク7: 統合テスト実行
     // 注意: 大量メモリ割り当てでパニックする可能性があるため一時的に無効化
@@ -391,6 +403,7 @@ pub(crate) fn spawn_kernel_tasks(
         shell::graphical::run_async_shell().await;
     }));
     */
+    crate::io::log::early_print("[INITDBG] spawn_kernel_tasks complete\n");
 }
 
 /// システム統計を表示

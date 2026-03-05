@@ -2,7 +2,7 @@
 // drivers/mlx5/src/health.rs - Health Monitoring & Error Recovery
 // ============================================================================
 //!
-//! ConnectX-4 Lx FW 健全性モニタリングとエラーリカバリ。
+//! ConnectX ファミリ FW 健全性モニタリングとエラーリカバリ。
 //!
 //! ## 機能
 //!

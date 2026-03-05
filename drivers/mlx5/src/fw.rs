@@ -60,10 +60,28 @@ pub unsafe fn wait_fw_ready(bar0_base: u64) -> Mlx5Result<FwInfo> {
 
     // ポーリング: NIC_INTERFACE のブート完了を待つ
     // FW_STATE レジスタの健全性をチェック
-    let max_iters = 50_000_000u64; // ~数十秒相当のスピンループ
+    // NOTE:
+    //   This runs inside an async executor task context in the kernel.
+    //   Large unbounded spin loops can stall the whole executor and block boot.
+    //   Keep the budget tight and fail fast when FW does not become ready.
+    let max_iters = 200_000u64;
+    let mut invalid_reads = 0u64;
 
     for _ in 0..max_iters {
         let nic_iface = hal::mmio::mmio_read_u32(base + init_seg::NIC_INTERFACE);
+
+        // MMIO read returning all-zeros/all-ones repeatedly indicates inaccessible BAR
+        // or not-ready VF path; fail fast instead of stalling the executor.
+        if nic_iface == 0 || nic_iface == u32::MAX {
+            invalid_reads = invalid_reads.saturating_add(1);
+            if invalid_reads >= 4096 {
+                return Err(Mlx5Error::DeviceNotReady);
+            }
+            core::hint::spin_loop();
+            continue;
+        } else {
+            invalid_reads = 0;
+        }
 
         // ブートフェーズ確認
         let boot_phase = nic_iface & 0x03;

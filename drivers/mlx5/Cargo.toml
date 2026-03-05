@@ -8,7 +8,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Mellanox ConnectX-4 Lx (mlx5) Ethernet Driver for RanyOS"
+description = "NVIDIA/Mellanox ConnectX Family (mlx5) Ethernet Driver for RanyOS"
 
 [lib]
 path = "src/lib.rs"

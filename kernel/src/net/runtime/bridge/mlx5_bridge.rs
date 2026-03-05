@@ -1,8 +1,8 @@
 // ============================================================================
-// src/net/runtime/bridge/mlx5_bridge.rs - ConnectX-4 Lx <-> NetworkStack Bridge
+// src/net/runtime/bridge/mlx5_bridge.rs - ConnectX Family <-> NetworkStack Bridge
 // ============================================================================
 //!
-//! ConnectX-4 Lx (mlx5) ドライバとNetworkStackを接続するブリッジモジュール。
+//! ConnectX ファミリ (mlx5) ドライバとNetworkStackを接続するブリッジモジュール。
 //!
 //! ## 設計
 //!

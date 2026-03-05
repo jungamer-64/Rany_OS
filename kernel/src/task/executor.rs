@@ -257,6 +257,8 @@ static WAKE_QUEUE: LockFreeQueue = LockFreeQueue::new();
 
 /// 統計情報
 static EXECUTOR_STATS: ExecutorStats = ExecutorStats::new();
+static EXECUTOR_INITDBG_STAGE: AtomicUsize = AtomicUsize::new(0);
+static EXECUTOR_RUNDBG_POLLS: AtomicUsize = AtomicUsize::new(0);
 
 /// アクティブCPU数
 static ACTIVE_CPU_COUNT: AtomicUsize = AtomicUsize::new(1);
@@ -345,36 +347,139 @@ impl Executor {
     /// メインループ
     pub fn run(&mut self) -> ! {
         loop {
+            let initdbg_stage = EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed);
+            if initdbg_stage == 0
+                && EXECUTOR_INITDBG_STAGE
+                    .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                crate::io::log::early_print("[RUNDBG] loop entered\n");
+            } else if initdbg_stage == 17
+                && EXECUTOR_INITDBG_STAGE
+                    .compare_exchange(17, 100, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                crate::io::log::early_print("[RUNDBG] second loop entered\n");
+            }
             // 0. Process pending interrupt events and deferred waker notifications (non-ISR)
             crate::interrupts::poll_timer_events();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 1 {
+                crate::io::log::early_print("[RUNDBG] after poll_timer_events\n");
+                EXECUTOR_INITDBG_STAGE.store(2, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 100 {
+                crate::io::log::early_print("[RUNDBG2] after poll_timer_events\n");
+                EXECUTOR_INITDBG_STAGE.store(101, Ordering::Release);
+            }
             crate::io::hid::keyboard::process_pending_wakes();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 2 {
+                crate::io::log::early_print("[RUNDBG] after keyboard wakes\n");
+                EXECUTOR_INITDBG_STAGE.store(3, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 101 {
+                crate::io::log::early_print("[RUNDBG2] after keyboard wakes\n");
+                EXECUTOR_INITDBG_STAGE.store(102, Ordering::Release);
+            }
             crate::task::timer::process_pending_timer_wakers();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 3 {
+                crate::io::log::early_print("[RUNDBG] after timer wakers\n");
+                EXECUTOR_INITDBG_STAGE.store(4, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 102 {
+                crate::io::log::early_print("[RUNDBG2] after timer wakers\n");
+                EXECUTOR_INITDBG_STAGE.store(103, Ordering::Release);
+            }
             crate::task::interrupt_waker::process_interrupt_events();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 4 {
+                crate::io::log::early_print("[RUNDBG] after interrupt events\n");
+                EXECUTOR_INITDBG_STAGE.store(5, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 103 {
+                crate::io::log::early_print("[RUNDBG2] after interrupt events\n");
+                EXECUTOR_INITDBG_STAGE.store(104, Ordering::Release);
+            }
             crate::io::io_scheduler::process_deferred_completions();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 5 {
+                crate::io::log::early_print("[RUNDBG] after deferred completions\n");
+                EXECUTOR_INITDBG_STAGE.store(6, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 104 {
+                crate::io::log::early_print("[RUNDBG2] after deferred completions\n");
+                EXECUTOR_INITDBG_STAGE.store(105, Ordering::Release);
+            }
             crate::sync::process_deferred_wakes();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 6 {
+                crate::io::log::early_print("[RUNDBG] after deferred atomic wakes\n");
+                EXECUTOR_INITDBG_STAGE.store(7, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 105 {
+                crate::io::log::early_print("[RUNDBG2] after deferred atomic wakes\n");
+                EXECUTOR_INITDBG_STAGE.store(106, Ordering::Release);
+            }
             crate::sync::process_deferred_waker_queue_wakes();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 7 {
+                crate::io::log::early_print("[RUNDBG] after deferred waker queue wakes\n");
+                EXECUTOR_INITDBG_STAGE.store(8, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 106 {
+                crate::io::log::early_print("[RUNDBG2] after deferred waker queue wakes\n");
+                EXECUTOR_INITDBG_STAGE.store(107, Ordering::Release);
+            }
             crate::io::io_scheduler::hybrid_coordinator().tick(|| {
                 crate::task::interrupt_waker::process_interrupt_events();
             });
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 8 {
+                crate::io::log::early_print("[RUNDBG] after io tick\n");
+                EXECUTOR_INITDBG_STAGE.store(9, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 107 {
+                crate::io::log::early_print("[RUNDBG2] after io tick\n");
+                EXECUTOR_INITDBG_STAGE.store(108, Ordering::Release);
+            }
             // IOMMU command queue processing
             crate::io::iommu::api::process_pending_command_queues();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 9 {
+                crate::io::log::early_print("[RUNDBG] after iommu cq\n");
+                EXECUTOR_INITDBG_STAGE.store(10, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 108 {
+                crate::io::log::early_print("[RUNDBG2] after iommu cq\n");
+                EXECUTOR_INITDBG_STAGE.store(109, Ordering::Release);
+            }
 
             // 0.5 Suspend期限到達タスクを再投入
             self.process_suspended_tasks();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 10 {
+                crate::io::log::early_print("[RUNDBG] after suspended tasks\n");
+                EXECUTOR_INITDBG_STAGE.store(11, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 109 {
+                crate::io::log::early_print("[RUNDBG2] after suspended tasks\n");
+                EXECUTOR_INITDBG_STAGE.store(110, Ordering::Release);
+            }
 
             // 1. Refill fuel for this executor slice and process local tasks
             crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
             self.run_ready_tasks();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 11 {
+                crate::io::log::early_print("[RUNDBG] after run_ready_tasks\n");
+                EXECUTOR_INITDBG_STAGE.store(12, Ordering::Release);
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 110 {
+                crate::io::log::early_print("[RUNDBG2] after run_ready_tasks\n");
+                EXECUTOR_INITDBG_STAGE.store(111, Ordering::Release);
+            }
 
             // 2. Wake queueを処理
             self.process_wake_queue();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 12 {
+                crate::io::log::early_print("[RUNDBG] after process_wake_queue\n");
+                EXECUTOR_INITDBG_STAGE.store(13, Ordering::Release);
+            }
 
             // 3. グローバルキューからバッチ取得
             self.fetch_from_global();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 13 {
+                crate::io::log::early_print("[RUNDBG] after fetch_from_global\n");
+                EXECUTOR_INITDBG_STAGE.store(14, Ordering::Release);
+            }
 
             // 4. Work Stealing（他のCPUから盗む）
             if self.local_queue.is_empty() && self.local_cache.is_empty() {
                 self.try_steal();
+            }
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 14 {
+                crate::io::log::early_print("[RUNDBG] after try_steal\n");
+                EXECUTOR_INITDBG_STAGE.store(15, Ordering::Release);
             }
 
             // 4.5. Quiescent Point (設計書 3.5.3: Epoch-based Reclamation)
@@ -382,10 +487,18 @@ impl Executor {
             crate::loader::live_update::enter_quiescent_state();
             crate::loader::live_update::poll_pending_updates();
             crate::driver_domain::hot_swap::poll_validation_windows();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 15 {
+                crate::io::log::early_print("[RUNDBG] after quiescent\n");
+                EXECUTOR_INITDBG_STAGE.store(16, Ordering::Release);
+            }
 
             // 4.6. Per-coreログバッファをシリアルへフラッシュ
             // Busyループ中もログが排出されるよう、idle以外でも呼ぶ。
             crate::io::log::kick_serial_tx();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 16 {
+                crate::io::log::early_print("[RUNDBG] after kick_serial_tx\n");
+                EXECUTOR_INITDBG_STAGE.store(17, Ordering::Release);
+            }
 
             // 5. アイドル状態
             if self.local_queue.is_empty() && self.local_cache.is_empty() {
@@ -406,10 +519,36 @@ impl Executor {
     fn run_ready_tasks(&mut self) {
         // バッチ処理
         let mut processed = 0;
+        if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 11 {
+            if self.local_queue.is_empty() {
+                crate::io::log::early_print("[RUNDBG] local_queue empty at run_ready entry\n");
+            } else {
+                crate::io::log::early_print("[RUNDBG] local_queue has tasks at run_ready entry\n");
+            }
+        } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 110 {
+            crate::io::log::early_print("[RUNDBG2] run_ready entry\n");
+        }
 
         while let Some(mut task) = self.local_queue.pop_front() {
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 11 {
+                crate::io::log::early_print("[RUNDBG] popped one task\n");
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 110 {
+                crate::io::log::early_print("[RUNDBG2] popped one task\n");
+            }
+            let debug_seq = EXECUTOR_RUNDBG_POLLS.load(Ordering::Relaxed);
+            if debug_seq < 8 {
+                log::info!(
+                    target: "run_dbg",
+                    "about to poll task id={} domain={}",
+                    task.id.as_u64(),
+                    task.domain_id.as_u64()
+                );
+            }
             let now_ns = crate::time::precise_time_nanos();
             if !crate::domain_system::is_domain_runnable_now(task.domain_id, now_ns) {
+                if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 11 {
+                    crate::io::log::early_print("[RUNDBG] task suspended (domain not runnable)\n");
+                }
                 let deadline = crate::domain_system::quota_suspend_deadline_ns(task.domain_id)
                     .unwrap_or_else(|| {
                         now_ns.saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
@@ -421,15 +560,26 @@ impl Executor {
             let waker = create_waker(task.id);
             let mut context = Context::from_waker(&waker);
             let start_ns = crate::time::precise_time_nanos();
+            if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 11 {
+                crate::io::log::early_print("[RUNDBG] polling task future\n");
+            } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 110 {
+                crate::io::log::early_print("[RUNDBG2] polling task future\n");
+            }
 
             match task.poll(&mut context) {
                 Poll::Ready(()) => {
+                    if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 11 {
+                        crate::io::log::early_print("[RUNDBG] task returned Ready\n");
+                    }
                     // タスク完了
                     EXECUTOR_STATS
                         .tasks_completed
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 Poll::Pending => {
+                    if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 11 {
+                        crate::io::log::early_print("[RUNDBG] task returned Pending\n");
+                    }
                     let end_ns = crate::time::precise_time_nanos();
                     let elapsed_ns = end_ns.saturating_sub(start_ns);
                     let exceeded = if task.domain_id == crate::domain_system::DomainId::KERNEL {
@@ -464,6 +614,10 @@ impl Executor {
                         }
                     }
                 }
+            }
+            let poll_seq = EXECUTOR_RUNDBG_POLLS.fetch_add(1, Ordering::Relaxed);
+            if poll_seq < 32 {
+                crate::io::log::early_print("[RUNDBG] task poll completed\n");
             }
 
             processed += 1;
