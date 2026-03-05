@@ -274,6 +274,82 @@ impl Mlx5ConnectXDriver {
 
         if let Some(msix_offset) = pci_dev.msix_cap_offset {
             log::info!(target: "mlx5", "MSI-X capability at offset {:#x}", msix_offset);
+            
+            // 必要なベクタ数を見積もる (EQの数など)
+            let requested_vectors = 1;
+            
+            if let Ok(allocs) = crate::io::interrupt_manager::allocate_msix(
+                pci_dev.bdf.to_u16() as u32,
+                requested_vectors,
+                "mlx5_event_queue",
+                Some(0), // Target BSP
+            ) {
+                if !allocs.is_empty() {
+                    let msix_vectors = allocs;
+                    let base_vector = msix_vectors[0].vector;
+                    log::info!(target: "mlx5", "Allocated MSI-X base vector: {}", base_vector);
+                    
+                    let config = &msix_vectors[0].config;
+                    
+                    // MSI-X テーブルの情報取得とマッピング
+                    let table_info = crate::io::pci::pci_read(
+                        pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(), (msix_offset + 4) as u8
+                    );
+                    let table_bir = (table_info & 0x7) as usize;
+                    let table_offset = table_info & !0x7;
+                    
+                    if let Some(bar) = pci_dev.bars[table_bir] {
+                        if let Some(table_bar_base) = ensure_bar_mapped(bar.base(), bar.size() as u64) {
+                            let table_base_virt = table_bar_base + table_offset as u64;
+                            let entry_ptr = table_base_virt as *mut u32;
+                            
+                            // Entry 0 を設定 (device.init_full で msix_vector=0 を使用するため)
+                            unsafe {
+                                core::ptr::write_volatile(entry_ptr.add(0), config.msi_address() as u32); // Msg Addr Lo
+                                core::ptr::write_volatile(entry_ptr.add(1), (config.msi_address() >> 32) as u32); // Msg Addr Hi
+                                core::ptr::write_volatile(entry_ptr.add(2), config.msi_data()); // Msg Data
+                                core::ptr::write_volatile(entry_ptr.add(3), 0); // Vector Control (Unmask)
+                            }
+                            
+                            // MSI-X を有効化し、Function Mask を解除
+                            let dword = crate::io::pci::pci_read(
+                                pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(), msix_offset as u8
+                            );
+                            let msg_ctrl = (dword >> 16) as u16;
+                            let new_msg_ctrl = (msg_ctrl | 0x8000) & !0x4000; // Enable=1, Function Mask=0
+                            crate::io::pci::pci_write(
+                                pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(),
+                                msix_offset as u8,
+                                (dword & 0x0000FFFF) | ((new_msg_ctrl as u32) << 16)
+                            );
+                            
+                            // レガシー INTx を無効化
+                            let cmd = crate::io::pci::pci_read(
+                                pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(), crate::io::pci::config_regs::COMMAND as u8
+                            );
+                            crate::io::pci::pci_write(
+                                pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(),
+                                crate::io::pci::config_regs::COMMAND as u8,
+                                cmd | (crate::io::pci::command_bits::INTERRUPT_DISABLE as u32),
+                            );
+                        } else {
+                            log::warn!(target: "mlx5", "Failed to map MSI-X table BAR");
+                        }
+                    }
+                    
+                    // ハンドラを登録（Interrupt-Waker Bridge連携）
+                    for alloc in &msix_vectors {
+                        let vec = alloc.vector;
+                        crate::io::interrupt_manager::register_handler(vec, alloc::boxed::Box::new(move || {
+                            crate::io::interrupt_manager::push_interrupt_event(vec);
+                        }));
+                    }
+                } else {
+                    log::warn!(target: "mlx5", "MSI-X allocation returned empty, falling back to polling");
+                }
+            } else {
+                log::warn!(target: "mlx5", "Failed to allocate MSI-X vectors, falling back to polling");
+            }
         } else {
             log::warn!(target: "mlx5", "MSI-X not available; using polling mode");
         }
@@ -301,14 +377,22 @@ impl Mlx5ConnectXDriver {
         let sq_log_size = log2_u32(MLX5_WQ_DEPTH);
         let rq_log_size = log2_u32(MLX5_WQ_DEPTH);
 
+        log::info!(
+            target: "mlx5",
+            "CMD DMA IOVA: cmdq={:#x} in_mbox={:#x} out_mbox={:#x}",
+            dma_resources.cmdq.device_address(),
+            dma_resources.cmd_in_mbox.device_address(),
+            dma_resources.cmd_out_mbox.device_address(),
+        );
+
         let init_result = unsafe {
             device.init_full(
                 dma_resources.cmdq.as_ptr_u64(),
-                dma_resources.cmdq.phys_address(),
+                dma_resources.cmdq.device_address(),
                 dma_resources.cmd_in_mbox.as_ptr_u64(),
-                dma_resources.cmd_in_mbox.phys_address(),
+                dma_resources.cmd_in_mbox.device_address(),
                 dma_resources.cmd_out_mbox.as_ptr_u64(),
-                dma_resources.cmd_out_mbox.phys_address(),
+                dma_resources.cmd_out_mbox.device_address(),
                 &fw_page_addrs,
                 &MkeyParams::default(),
                 (

@@ -294,7 +294,21 @@ impl CmdInterface {
         self.ring_doorbell();
 
         // ポーリングで完了を待つ（タイムアウト付き）
-        self.poll_completion(slot)
+        match self.poll_completion(slot) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                log::error!(
+                    target: "mlx5",
+                    "CMD {:?} failed: {:?} (token={} in_iova={:#x} out_iova={:#x})",
+                    opcode,
+                    err,
+                    token,
+                    in_mbox_phys,
+                    out_mbox_phys
+                );
+                Err(err)
+            }
+        }
     }
 
     /// ポーリングでコマンド完了を待つ
@@ -308,7 +322,8 @@ impl CmdInterface {
         //   This path may run on the kernel async executor thread.
         //   Keep timeout bounded, but allow enough budget for VF + vIOMMU paths where
         //   command completion latency is noticeably higher than pure PF bring-up.
-        let max_iters = 10_000_000u64;
+        // VF + vIOMMU 環境では完了までの待ちが長引くため、十分な上限を確保する。
+        let max_iters = 200_000_000u64;
 
         for _ in 0..max_iters {
             let entry = self.entry(slot);
