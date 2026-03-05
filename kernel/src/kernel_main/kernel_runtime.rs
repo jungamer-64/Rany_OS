@@ -79,14 +79,22 @@ async fn network_bootstrap_task() {
     task::yield_now().await;
 
     // VirtIO / mlx5 初期化後に有効なネットワーク経路がなければ DHCP 待機は行わない。
-    if !crate::net::runtime::bridge::is_initialized() {
-        let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
+    let virtio_bridge_ready = crate::net::runtime::bridge::is_initialized();
+    let mlx5_bridge_ready = crate::net::runtime::bridge::mlx5_bridge::is_mlx5_bridge_initialized();
+    if !virtio_bridge_ready && !mlx5_bridge_ready {
+        let virtio_stats = crate::net::runtime::bridge::get_bridge_stats();
+        let mlx5_stats = crate::net::runtime::bridge::mlx5_bridge::get_mlx5_bridge_stats();
         info!(
             target: "net_boot",
-            "No active network bridge after driver probes; skipping DHCP/connectivity checks (bridge init={} rx={} tx={})",
-            bridge_stats.initialized,
-            bridge_stats.rx_packets,
-            bridge_stats.tx_packets
+            "No active network bridge after driver probes; skipping DHCP/connectivity checks (virtio_init={} virtio_rx={} virtio_tx={} mlx5_init={} mlx5_rx={} mlx5_tx={} mlx5_tx_err={} mlx5_rx_err={})",
+            virtio_stats.initialized,
+            virtio_stats.rx_packets,
+            virtio_stats.tx_packets,
+            mlx5_stats.initialized,
+            mlx5_stats.rx_packets,
+            mlx5_stats.tx_packets,
+            mlx5_stats.tx_errors,
+            mlx5_stats.rx_errors
         );
         return;
     }
