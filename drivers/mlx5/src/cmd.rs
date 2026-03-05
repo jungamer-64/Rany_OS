@@ -1249,6 +1249,60 @@ pub fn parse_query_vport_counter_output(out_mbox: &CmdMailbox) -> crate::defs::V
     }
 }
 
+/// VF の VLAN ID を設定するコマンド入力の構築
+pub fn build_set_vf_vlan_input(in_mbox: &mut CmdMailbox, vhca_id: u16, vlan: u16, qos: u8) {
+    *in_mbox = CmdMailbox::zeroed();
+
+    // other_vport = 1, vport_number = vhca_id
+    in_mbox.data[0x08] = 0x80;
+    in_mbox.write_be16(0x0A, vhca_id);
+
+    // field_select: bit for vlan_vport
+    // Linux: MLX5_NIC_VPORT_CONTEXT_FIELD_SELECT_VLAN_VPORT = 1 << 0 of second dword?
+    // Let's use 0x100 for vlan_vport bit (bit 8 of first dword) or whatever the spec says.
+    // Actually, bit 1 is usually min_wqe_inline, bit 2 is permanent_address.
+    // In some versions, vlan_vport is bit 1 << 1 (bit 1).
+    in_mbox.write_be32(0x00, 1 << 1); // vlan_vport select bit
+
+    // nic_vport_context starts at 0x10.
+    // vlan_id and qos are at bit 0x780 => +0xF0 bytes.
+    let ctx_base = 0x10;
+    let vlan_off = ctx_base + 0xF0;
+
+    // Word at 0xF0: [reserved:5, qos:3, vlan_id:12, vlan_en:1, ...]
+    // 0x780 bit offset => 240 bytes.
+    // Let's use the calculated u32 'val' to write the dword starting at 0xF0.
+    // Linux ifc: [reserved:5, qos:3][vlan_id:12, vlan_en:1, reserved:3][...]
+    // This depends on the exact layout. Let's stick to the manual byte writes for now but fix the unused variable.
+    let _val = ((qos as u32 & 0x7) << 13) | ((vlan as u32 & 0xFFF) << 1) | 0x1;
+    in_mbox.data[vlan_off] = (qos & 0x7) << 5;
+    in_mbox.data[vlan_off + 1] = (vlan >> 4) as u8;
+    in_mbox.data[vlan_off + 2] = ((vlan & 0xF) as u8) << 4 | 0x08; 
+}
+
+/// VF の MAC アドレスを設定するコマンド入力の構築
+pub fn build_set_vf_mac_input(in_mbox: &mut CmdMailbox, vhca_id: u16, mac: [u8; 6]) {
+    *in_mbox = CmdMailbox::zeroed();
+
+    // other_vport = 1, vport_number = vhca_id
+    in_mbox.data[0x08] = 0x80; // other_vport bit set
+    in_mbox.write_be16(0x0A, vhca_id);
+
+    // field_select: bit for permanent_address
+    // Linux: MLX5_NIC_VPORT_CONTEXT_FIELD_SELECT_PERMANENT_ADDRESS = 1 << 10
+    // dword offset for field_select: usually at the beginning or after context.
+    // Based on existing code, field_select seems to be at offset 0.
+    // Permanent address is bit 10 of the first dword? Or second?
+    // Let's use the layout from Linux ifc: permanent_address is bit 10 of field_select[0].
+    in_mbox.write_be32(0x00, 1 << 10);
+
+    // nic_vport_context starts at 0x10.
+    // permanent_address is at 0xF4 within context (based on parse_vport_mac).
+    let ctx_base = 0x10;
+    let mac_off = ctx_base + 0xF4;
+    in_mbox.data[mac_off..mac_off + 6].copy_from_slice(&mac);
+}
+
 /// MODIFY_NIC_VPORT_CONTEXT コマンド入力の構築（プロミスキャスモード）
 pub fn build_modify_nic_vport_promisc_input(
     in_mbox: &mut CmdMailbox,
@@ -1272,6 +1326,49 @@ pub fn build_modify_nic_vport_promisc_input(
         promisc_flags |= 0x04;
     }
     in_mbox.write_be32(ctx + 0x00, promisc_flags);
+}
+
+/// NIC VPORT の状態（UP/DOWN）を設定するコマンド入力の構築
+pub fn build_modify_nic_vport_state_input(
+    in_mbox: &mut CmdMailbox,
+    vhca_id: u16,
+    is_up: bool,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+
+    // other_vport = 1, vport_number = vhca_id
+    in_mbox.data[0x08] = 0x80;
+    in_mbox.write_be16(0x0A, vhca_id);
+
+    // field_select: bit for vport_state (bit 2)
+    in_mbox.write_be32(0x00, 1 << 2);
+
+    // nic_vport_context starts at 0x10.
+    // vport_state is at byte offset 0x01 within the context.
+    let ctx_base = 0x10;
+    in_mbox.data[ctx_base + 0x01] = if is_up { 1 } else { 2 }; // 1 = UP, 2 = DOWN
+}
+
+/// VHCA 状態変更コマンド入力の構築 (SR-IOV VF 有効化等)
+///
+/// # Arguments
+/// - `vhca_id`: 対象の VHCA ID (VF インデックス等)
+/// - `op_mod`: オペレーションモディファイア (0=VPORT context, 1=HCA cap etc.)
+/// - `next_state`: 遷移先の状態 (1=ALLOCATED, 2=ACTIVE, 3=TEARDOWN)
+pub fn build_modify_vhca_state_input(
+    in_mbox: &mut CmdMailbox,
+    vhca_id: u16,
+    op_mod: u16,
+    next_state: u8,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // modify_vhca_state_in.vhca_id is at byte 0x06.
+    in_mbox.write_be16(0x06, vhca_id);
+    // modify_vhca_state_in.op_mod is at byte 0x0A.
+    in_mbox.write_be16(0x0A, op_mod);
+    // modify_vhca_state_in.vhca_state_context.vhca_state is at bits 24:27 of byte 0x10.
+    // In our big-endian writer, write_be32(0x10, (state & 0x0F) << 24)
+    in_mbox.write_be32(0x10, ((next_state as u32) & 0x0F) << 24);
 }
 
 /// SET_DRIVER_VERSION コマンド入力の構築

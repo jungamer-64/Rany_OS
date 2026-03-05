@@ -152,6 +152,10 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
     let log_max_tis_per_sq = read_bits(0x39B, 0x5) as u8;
     let tis_tir_td_order = read_bits(0x2A9, 0x1) != 0;
     let num_ports = read_bits(0x1B8, 0x8) as u8;
+    let vport_group_manager = read_bits(0x1B0, 0x1) != 0;
+    let eswitch_manager = read_bits(0x1B1, 0x1) != 0;
+    let num_vhca_ports = read_bits(0x1C0, 0x8) as u16;
+
     let cqe_version = read_bits(0x1FC, 0x4) as u8;
     let csum_cap = read_bits(0x21D, 0x1) != 0; // eth_net_offloads
 
@@ -182,5 +186,8 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         cqe_compression: false,
         cqe_version,
         tis_tir_td_order,
+        vport_group_manager,
+        eswitch_manager,
+        num_vhca_ports,
     }
 }

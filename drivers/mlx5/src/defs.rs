@@ -334,6 +334,11 @@ pub enum CmdOpcode {
     /// VPORTカウンタクエリ
     QueryVportCounter = 0x0770,
 
+    /// VHCA 状態変更 (SR-IOV VF 有効化等)
+    ModifyVhcaState = 0x010E,
+    /// VHCA 状態クエリ
+    QueryVhcaState = 0x010F,
+
     /// ドライババージョン設定
     SetDriverVersion = 0x010D,
 
@@ -490,6 +495,12 @@ pub struct HcaCaps {
     pub cqe_version: u8,
     /// TIS/TIR/TD ordering capability bit
     pub tis_tir_td_order: bool,
+    /// VPORT グループマネージャ（PFでVF管理可能か）
+    pub vport_group_manager: bool,
+    /// E-Switch マネージャ
+    pub eswitch_manager: bool,
+    /// VHCA ポート数
+    pub num_vhca_ports: u16,
 }
 
 // ============================================================================

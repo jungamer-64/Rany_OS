@@ -1935,6 +1935,247 @@ impl Mlx5Device {
     // Phase 5i: Port Operations
     // ========================================================================
 
+    /// SR-IOV Virtual Functions を有効化・アクティブ化する
+    ///
+    /// # Arguments
+    /// - `num_vfs`: 有効化する VF 数
+    ///
+    /// # Safety
+    /// - PF デバイスであること
+    /// - PCI 側で VF が有効化済みであること
+    pub unsafe fn activate_vfs(&mut self, num_vfs: u16) -> Mlx5Result<()> {
+        if self.is_virtual_function() {
+            return Err(Mlx5Error::NotSupported);
+        }
+
+        let caps = self.hca_caps.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        if !caps.vport_group_manager {
+            log::warn!(target: "mlx5", "Device is not a VPORT group manager; cannot activate VFs");
+            return Err(Mlx5Error::NotSupported);
+        }
+
+        log::info!(target: "mlx5", "Activating {} VFs...", num_vfs);
+
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        for i in 0..num_vfs {
+            let vhca_id = i + 1; // VF vhca_id start from 1 usually, but it can depend on FW.
+                                 // For mlx5, vhca_id for VFs are typically [1..num_vfs].
+
+            // 1. ALLOCATED 状態へ遷移
+            {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_modify_vhca_state_input(in_mbox, vhca_id, 0, 1); // 1 = ALLOCATED
+                cmd.execute(
+                    CmdOpcode::ModifyVhcaState,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                )?;
+            }
+
+            // 2. ACTIVE 状態へ遷移
+            {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_modify_vhca_state_input(in_mbox, vhca_id, 0, 2); // 2 = ACTIVE
+                cmd.execute(
+                    CmdOpcode::ModifyVhcaState,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                )?;
+            }
+
+            // 3. VPORT admin state を UP に設定
+            {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_modify_nic_vport_state_input(in_mbox, vhca_id, true);
+                cmd.execute(
+                    CmdOpcode::ModifyNicVportContext,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                )?;
+            }
+
+            log::debug!(target: "mlx5", "VF {} (vhca_id={}) activated", i, vhca_id);
+        }
+
+        log::info!(target: "mlx5", "Successfully activated {} VFs", num_vfs);
+        Ok(())
+    }
+
+    /// SR-IOV Virtual Functions を無効化する
+    ///
+    /// # Arguments
+    /// - `num_vfs`: 無効化する VF 数
+    ///
+    /// # Safety
+    /// - PF デバイスであること
+    pub unsafe fn disable_vfs(&mut self, num_vfs: u16) -> Mlx5Result<()> {
+        if self.is_virtual_function() {
+            return Err(Mlx5Error::NotSupported);
+        }
+
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        log::info!(target: "mlx5", "Disabling {} VFs...", num_vfs);
+
+        for i in 0..num_vfs {
+            let vhca_id = i + 1;
+
+            // 1. VPORT admin state を DOWN に設定
+            {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_modify_nic_vport_state_input(in_mbox, vhca_id, false);
+                let _ = cmd.execute(
+                    CmdOpcode::ModifyNicVportContext,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+
+            // 2. INVALID/TEARDOWN 状態へ遷移
+            {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_modify_vhca_state_input(in_mbox, vhca_id, 0, 3); // 3 = TEARDOWN
+                let _ = cmd.execute(
+                    CmdOpcode::ModifyVhcaState,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                )?;
+            }
+
+            log::debug!(target: "mlx5", "VF {} (vhca_id={}) disabled", i, vhca_id);
+        }
+
+        Ok(())
+    }
+
+    /// VF の VHCA 状態をクエリする
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn query_vhca_state(&mut self, vhca_id: u16) -> Mlx5Result<u8> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        *in_mbox = CmdMailbox::zeroed();
+        in_mbox.write_be16(0x06, vhca_id);
+
+        cmd.execute(
+            CmdOpcode::QueryVhcaState,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        // vhca_state is at bits 24:27 of byte 0x10 in the output context
+        let state = (out_mbox.read_be32(0x10) >> 24) as u8 & 0x0F;
+        Ok(state)
+    }
+
+    /// VF の MAC アドレスを取得する（PF用）
+    ///
+    /// # Safety
+    /// - PF デバイスであること
+    pub unsafe fn query_vf_mac(&mut self, vf_index: u16) -> Mlx5Result<[u8; 6]> {
+        if self.is_virtual_function() {
+            return Err(Mlx5Error::NotSupported);
+        }
+
+        let vhca_id = vf_index + 1;
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_query_nic_vport_input_ex(
+            in_mbox,
+            vhca_id,
+            true, // other_vport
+            None,
+        );
+
+        cmd.execute(
+            CmdOpcode::QueryNicVportContext,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        Ok(crate::cmd::parse_vport_mac(out_mbox))
+    }
+
+    /// VF の MAC アドレスを設定する
+    ///
+    /// # Safety
+    /// - PF デバイスであること
+    pub unsafe fn set_vf_mac(&mut self, vf_index: u16, mac: [u8; 6]) -> Mlx5Result<()> {
+        if self.is_virtual_function() {
+            return Err(Mlx5Error::NotSupported);
+        }
+
+        let vhca_id = vf_index + 1;
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_set_vf_mac_input(in_mbox, vhca_id, mac);
+        cmd.execute(
+            CmdOpcode::ModifyNicVportContext,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(
+            target: "mlx5",
+            "VF {} (vhca_id={}) MAC set to {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            vf_index, vhca_id, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+        );
+        Ok(())
+    }
+
+    /// VF の VLAN ID を設定する
+    ///
+    /// # Safety
+    /// - PF デバイスであること
+    pub unsafe fn set_vf_vlan(&mut self, vf_index: u16, vlan: u16, qos: u8) -> Mlx5Result<()> {
+        if self.is_virtual_function() {
+            return Err(Mlx5Error::NotSupported);
+        }
+
+        let vhca_id = vf_index + 1;
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_set_vf_vlan_input(in_mbox, vhca_id, vlan, qos);
+        cmd.execute(
+            CmdOpcode::ModifyNicVportContext,
+            self.cmd_in_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_phys,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(
+            target: "mlx5",
+            "VF {} (vhca_id={}) VLAN set to {}, QoS={}",
+            vf_index, vhca_id, vlan, qos
+        );
+        Ok(())
+    }
+
     /// VPORTの状態をクエリ
     ///
     /// # Safety
