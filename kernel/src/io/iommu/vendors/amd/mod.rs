@@ -517,7 +517,11 @@ impl AmdIommuDriver {
 
         // Security: Invalidate the hardware interrupt table cache to ensure the new mapping is used.
         // Propagation of invalidation errors is critical for security and consistency.
-        self.invalidate_interrupt_table(segment, devid)?;
+        if let Err(e) = self.invalidate_interrupt_table(segment, devid) {
+            // SECURITY: Rollback the allocation if invalidation fails to prevent leaking.
+            let _ = irt.table.free(handle);
+            return Err(e);
+        }
 
         Ok(handle)
     }

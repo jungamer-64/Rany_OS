@@ -35,8 +35,10 @@ unsafe impl Sync for AmdCommandWaitToken {}
 
 impl AmdCommandWaitToken {
     fn is_complete(&self) -> bool {
-        // Commands complete in order; a newer sequence implies this one finished.
-        (unsafe { self.sync_ptr.as_ptr().read_volatile() }) >= self.expected_seq
+        // Wrap-around safe comparison: treat completed if distance < half-space.
+        // This mirrors the Intel QI path's wrapping_sub approach.
+        let status = unsafe { self.sync_ptr.as_ptr().read_volatile() };
+        status.wrapping_sub(self.expected_seq) < (1u64 << 63)
     }
 
     pub(super) fn wait_blocking(self) -> Result<(), IommuError> {
@@ -536,7 +538,7 @@ impl AmdIommuDriver {
     }
 
     /// Invalidate Device-TLBs for all devices belonging to a specific domain.
-    fn invalidate_domain_device_tlbs(
+    pub(crate) fn invalidate_domain_device_tlbs(
         &self,
         domain_id: u16,
         iova: Option<u64>,

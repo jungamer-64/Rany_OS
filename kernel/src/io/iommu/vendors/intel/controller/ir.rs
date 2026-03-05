@@ -140,11 +140,27 @@ impl InterruptRemapTable {
 
     pub fn set(&mut self, index: u16, entry: InterruptRemapEntry) -> bool {
         if let Some(e) = self.table.get_mut(index as usize) {
-            // SECURITY: Update IRTE in a safe order. 
-            // Write the high QWORD first (SID/validation), then the low QWORD (vector/dest/P bit).
-            e.hi = entry.hi;
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-            e.lo = entry.lo;
+            // SECURITY: Update IRTE in a safe order.
+            let is_present = (entry.lo & 1) != 0;
+            let was_present = (unsafe { core::ptr::read_volatile(&e.lo) } & 1) != 0;
+
+            if was_present && is_present {
+                // Modifying a present entry: Clear Present bit first.
+                unsafe { core::ptr::write_volatile(&mut e.lo, 0); }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            }
+
+            if is_present {
+                // Setting to Present=1: Write hi first, then lo.
+                unsafe { core::ptr::write_volatile(&mut e.hi, entry.hi); }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                unsafe { core::ptr::write_volatile(&mut e.lo, entry.lo); }
+            } else {
+                // Clearing to Present=0: Write lo first, then hi.
+                unsafe { core::ptr::write_volatile(&mut e.lo, entry.lo); }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                unsafe { core::ptr::write_volatile(&mut e.hi, entry.hi); }
+            }
             true
         } else {
             false
@@ -366,7 +382,11 @@ impl InterruptRemapper for IommuController {
 
         // Security: Invalidate IEC after allocating IRTE to ensure hardware sees the new entry.
         // Propagation of invalidation errors is critical for security and consistency.
-        self.invalidate_iec(false, index)?;
+        if let Err(e) = self.invalidate_iec(false, index) {
+            irt.set(index, InterruptRemapEntry::new());
+            irt.free(index);
+            return Err(e);
+        }
 
         Ok(index)
     }
@@ -380,11 +400,17 @@ impl InterruptRemapper for IommuController {
         let irt = guard.as_mut().ok_or(IommuError::NotPresent)?;
 
         irt.set(index, InterruptRemapEntry::new());
-        irt.free(index);
 
         // Security: Invalidate IEC after freeing IRTE to prevent stale interrupts.
         // Propagation of invalidation errors is critical for security and consistency.
-        self.invalidate_iec(false, index)?;
+        if let Err(e) = self.invalidate_iec(false, index) {
+            // SECURITY: If invalidation fails, we must leak the IRTE index.
+            // Returning the index to the allocator while the hardware might still
+            // hold a stale cached entry could lead to cross-device interrupt spoofing.
+            return Err(e);
+        }
+
+        irt.free(index);
 
         Ok(())
     }

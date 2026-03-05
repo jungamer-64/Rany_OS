@@ -165,6 +165,41 @@ fn log2_u32(val: u32) -> u8 {
     31 - val.leading_zeros() as u8
 }
 
+fn ensure_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
+    if base_phys == 0 || bar_size == 0 {
+        return None;
+    }
+
+    let base_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
+    let page_size = 0x1000u64;
+    let map_size = crate::util::align_up_u64(bar_size, page_size);
+    let virt_start = crate::mm::virt::higher_half::VirtAddr::new(base_virt);
+    let phys_start = crate::mm::virt::higher_half::PhysAddr::new(base_phys);
+
+    if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(virt_start) {
+        if pte.is_present() && pte.phys_addr() == phys_start {
+            return Some(base_virt);
+        }
+    }
+
+    let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
+    let mut manager = unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+    let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
+    match unsafe { manager.map_range(virt_start, phys_start, map_size, flags) } {
+        Ok(()) | Err(crate::mm::virt::higher_half::MapError::AlreadyMapped) => Some(base_virt),
+        Err(err) => {
+            log::error!(
+                target: "mlx5",
+                "BAR mapping failed: phys={:#x} size={:#x} err={:?}",
+                base_phys,
+                bar_size,
+                err
+            );
+            None
+        }
+    }
+}
+
 impl Mlx5ConnectXDriver {
     /// PCI デバイスの完全な初期化を行う
     ///
@@ -197,17 +232,46 @@ impl Mlx5ConnectXDriver {
             KapiError::IoError
         })?;
 
-        let bar0_base = bar0.base();
-        let bar0_size = bar0.size() as usize;
+        let bar0_phys = bar0.base();
+        let bar0_size_u64 = bar0.size();
+        let bar0_size = bar0_size_u64 as usize;
 
-        if bar0_base == 0 || bar0_size == 0 {
-            log::error!(target: "mlx5", "BAR0 invalid: base={:#x} size={:#x}", bar0_base, bar0_size);
+        if bar0_phys == 0 || bar0_size == 0 {
+            log::error!(
+                target: "mlx5",
+                "BAR0 invalid: phys={:#x} size={:#x}",
+                bar0_phys,
+                bar0_size
+            );
+            return Err(KapiError::IoError);
+        }
+
+        let bar0_base = match ensure_bar_mapped(bar0_phys, bar0_size_u64) {
+            Some(virt) => virt,
+            None => {
+                log::error!(
+                    target: "mlx5",
+                    "BAR0 mapping failed: phys={:#x} size={:#x}",
+                    bar0_phys,
+                    bar0_size
+                );
+                return Err(KapiError::IoError);
+            }
+        };
+
+        if bar0_base == 0 {
+            log::error!(
+                target: "mlx5",
+                "BAR0 virtual base is zero after mapping: phys={:#x}",
+                bar0_phys
+            );
             return Err(KapiError::IoError);
         }
 
         log::info!(
             target: "mlx5",
-            "BAR0: base={:#x} size={:#x} ({}KB)",
+            "BAR0: phys={:#x} virt={:#x} size={:#x} ({}KB)",
+            bar0_phys,
             bar0_base,
             bar0_size,
             bar0_size / 1024
@@ -215,6 +279,7 @@ impl Mlx5ConnectXDriver {
 
         // バスマスタを有効化（DMA用）
         pci_dev.enable_bus_master();
+        pci_dev.enable_memory_space();
 
         // MSI-X セットアップ
         if let Some(msix_offset) = pci_dev.msix_cap_offset {
@@ -253,11 +318,11 @@ impl Mlx5ConnectXDriver {
         let out_mbox_offset = bar0_size as u64 - 0x2000;
 
         let cmdq_virt = bar0_base + cmdq_offset;
-        let cmdq_phys = cmdq_virt; // SAS identity map
+        let cmdq_phys = bar0_phys + cmdq_offset;
         let in_mbox_virt = bar0_base + in_mbox_offset;
-        let in_mbox_phys = in_mbox_virt;
+        let in_mbox_phys = bar0_phys + in_mbox_offset;
         let out_mbox_virt = bar0_base + out_mbox_offset;
-        let out_mbox_phys = out_mbox_virt;
+        let out_mbox_phys = bar0_phys + out_mbox_offset;
 
         unsafe {
             device
@@ -287,7 +352,7 @@ impl Mlx5ConnectXDriver {
         // ================================================================
         // ConnectX-4 Lx FWは初期化中にページを要求する
         // 初期ブートページを提供（SAS identity map: phys == virt）
-        let boot_page_base = bar0_base + bar0_size as u64 - 0x10_0000;
+        let boot_page_base = bar0_phys + bar0_size as u64 - 0x10_0000;
         let boot_page_count = 4u32; // 最小限のブートページ
         let mut boot_pas = alloc::vec::Vec::with_capacity(boot_page_count as usize);
         for i in 0..boot_page_count {
@@ -358,31 +423,71 @@ impl Mlx5ConnectXDriver {
         let rq_log_size = log2_u32(mlx5_driver::defs::MLX5_WQ_DEPTH);
 
         // Event Queue: EQN=0, MSI-Xベクタ0
-        let eq_base = bar0_base + 0x1_0000;
-        let eq = EventQueue::new(0, eq_base, eq_base, uar_base, eq_log_size, 0);
+        let eq_base_virt = bar0_base + 0x1_0000;
+        let eq_base_phys = bar0_phys + 0x1_0000;
+        let eq = EventQueue::new(0, eq_base_virt, eq_base_phys, uar_base, eq_log_size, 0);
         device.add_eq(eq);
 
         // Completion Queues: TX CQ + RX CQ
-        let cq_tx_base = bar0_base + 0x2_0000;
+        let cq_tx_base_virt = bar0_base + 0x2_0000;
+        let cq_tx_base_phys = bar0_phys + 0x2_0000;
         let cq_tx_db = bar0_base + 0x2_F000;
-        let tx_cq = CompletionQueue::new(0, cq_tx_base, cq_tx_base, uar_base, cq_tx_db, cq_log_size, 0);
+        let tx_cq = CompletionQueue::new(
+            0,
+            cq_tx_base_virt,
+            cq_tx_base_phys,
+            uar_base,
+            cq_tx_db,
+            cq_log_size,
+            0,
+        );
         device.add_cq(tx_cq);
 
-        let cq_rx_base = bar0_base + 0x3_0000;
+        let cq_rx_base_virt = bar0_base + 0x3_0000;
+        let cq_rx_base_phys = bar0_phys + 0x3_0000;
         let cq_rx_db = bar0_base + 0x3_F000;
-        let rx_cq = CompletionQueue::new(1, cq_rx_base, cq_rx_base, uar_base, cq_rx_db, cq_log_size, 0);
+        let rx_cq = CompletionQueue::new(
+            1,
+            cq_rx_base_virt,
+            cq_rx_base_phys,
+            uar_base,
+            cq_rx_db,
+            cq_log_size,
+            0,
+        );
         device.add_cq(rx_cq);
 
         // Send Queue: SQN=0, CQN=0 (TX CQ), TISN from create_tis, mkey
-        let sq_base = bar0_base + 0x4_0000;
+        let sq_base_virt = bar0_base + 0x4_0000;
+        let sq_base_phys = bar0_phys + 0x4_0000;
         let sq_db = bar0_base + 0x4_F000;
-        let sq = SendQueue::new(0, sq_base, sq_base, sq_db, uar_base, sq_log_size, tisn, 0, mkey);
+        let sq = SendQueue::new(
+            0,
+            sq_base_virt,
+            sq_base_phys,
+            sq_db,
+            uar_base,
+            sq_log_size,
+            tisn,
+            0,
+            mkey,
+        );
         device.add_sq(sq);
 
         // Receive Queue: RQN=0, CQN=1 (RX CQ), TIRN=0 (set after TIR creation), mkey
-        let rq_base = bar0_base + 0x5_0000;
+        let rq_base_virt = bar0_base + 0x5_0000;
+        let rq_base_phys = bar0_phys + 0x5_0000;
         let rq_db = bar0_base + 0x5_F000;
-        let rq = ReceiveQueue::new(0, rq_base, rq_base, rq_db, rq_log_size, 1, 0, mkey);
+        let rq = ReceiveQueue::new(
+            0,
+            rq_base_virt,
+            rq_base_phys,
+            rq_db,
+            rq_log_size,
+            1,
+            0,
+            mkey,
+        );
         device.add_rq(rq);
 
         // キューセットアップ完了

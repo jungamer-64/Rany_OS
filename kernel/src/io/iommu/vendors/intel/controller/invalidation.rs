@@ -199,9 +199,15 @@ impl IommuController {
         Ok(())
     }
 
-    pub(crate) fn invalidate_context_nosync(&self, _source_id: u16) -> Result<(), IommuError> {
+    pub(crate) fn invalidate_context_nosync(&self, source_id: u16) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_context_global()?;
+            if source_id != 0 {
+                // VT-d §6.5.2.1: For device-selective (granularity=3), DID is ignored;
+                // only the SID matters. Pass domain_id=0 as it is unused.
+                self.qi_invalidate_context_device(source_id, 0)?;
+            } else {
+                self.qi_invalidate_context_global()?;
+            }
         }
         Ok(())
     }
@@ -245,26 +251,10 @@ impl IommuInvalidator for IommuController {
             self.process_single_invalidation_nosync(req, any_ats)?;
         }
 
-        if any_ats {
-            // Re-validate ATS if needed (domain/global)
-            for req in requests {
-                if req.flags.contains(InvalidateFlags::ATS_AWARE) {
-                    match req.kind {
-                        InvalidateKind::Pages { .. } => {} // Handled in loop
-                        InvalidateKind::Domain => {
-                            self.invalidate_device_tlbs(req.domain_id, None, None)?;
-                        }
-                        InvalidateKind::Global => {
-                            let ats_devices = self.ats_enabled_devices.lock().map_err(|_| IommuError::Poisoned)?;
-                            for device in ats_devices.iter() {
-                                self.qi_invalidate_device_tlb_all(device.requester_id())?;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
+        // Note: ATS Device-TLB invalidation for Domain/Global/Pages kinds
+        // is already dispatched inside process_single_invalidation_nosync
+        // via invalidate_domain_nosync / invalidate_global_nosync / invalidate_pages_nosync.
+        // No additional dispatch is needed here.
 
         if self.is_queued_invalidation_enabled() {
             self.qi_wait_sync()?;

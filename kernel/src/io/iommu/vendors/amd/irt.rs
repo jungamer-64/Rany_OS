@@ -208,7 +208,27 @@ impl AmdInterruptRemapTable {
             .table
             .get_mut(index as usize)
             .ok_or(IommuError::InvalidAddress)?;
-        *entry = irte;
+
+        let is_present = (irte.lo & 1) != 0;
+        let was_present = (unsafe { core::ptr::read_volatile(&entry.lo) } & 1) != 0;
+
+        if was_present && is_present {
+            // Modifying a present entry. Clear RemapEn first.
+            unsafe { core::ptr::write_volatile(&mut entry.lo, 0); }
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        }
+
+        if is_present {
+            // Setting to Present=1: Write hi first, then lo.
+            unsafe { core::ptr::write_volatile(&mut entry.hi, irte.hi); }
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            unsafe { core::ptr::write_volatile(&mut entry.lo, irte.lo); }
+        } else {
+            // Clearing to Present=0: Write lo first, then hi.
+            unsafe { core::ptr::write_volatile(&mut entry.lo, irte.lo); }
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            unsafe { core::ptr::write_volatile(&mut entry.hi, irte.hi); }
+        }
         Ok(())
     }
 

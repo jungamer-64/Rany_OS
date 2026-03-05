@@ -95,8 +95,8 @@ impl AmdIommuDriver {
             return Err(());
         }
 
-        self.invalidate_iommu_pages(device, domain_id, iova, size).map_err(|_| ())?;
-        self.invalidate_iotlb_pages(device, iova, size).map_err(|_| ())?;
+        self.invalidate_domain_pages(domain_id, iova, size).map_err(|_| ())?;
+        self.invalidate_domain_device_tlbs(domain_id, Some(iova), Some(size)).map_err(|_| ())?;
 
         Ok(0)
     }
@@ -153,14 +153,14 @@ impl AmdIommuDriver {
                 return Err(());
             }
         } else {
-            if let Err(err) = self.invalidate_iommu_pages(device, domain_id, iova, mapping.size) {
+            if let Err(err) = self.invalidate_domain_pages(domain_id, iova, mapping.size) {
                 log::error!("[IOMMU][AMD-Vi] handle_unmap_region_device IOMMU invalidation failed: {:?}. Poisoning domain.", err);
                 domain.poison();
                 return Err(());
             }
         }
 
-        if let Err(err) = self.invalidate_iotlb_pages(device, iova, mapping.size) {
+        if let Err(err) = self.invalidate_domain_device_tlbs(domain_id, Some(iova), Some(mapping.size)) {
             log::error!("[IOMMU][AMD-Vi] handle_unmap_region_device IOTLB invalidation failed: {:?}. Poisoning domain.", err);
             domain.poison();
             return Err(());
@@ -270,12 +270,16 @@ impl AmdCommand {
         let inv_address = build_inv_address(address, size);
         let mut cmd = Self::zero();
         cmd.data[0] = device_id as u32 | ((qdep as u32) << 24);
-        cmd.data[1] = device_id as u32;
+        // DW1 bits [27:0] are reserved when GN=0; do not write device_id here.
+        // set_type() will OR the command type into DW1[31:28].
         cmd.data[2] = lower32(inv_address);
         cmd.data[3] = upper32(inv_address);
         if let Some(pasid) = pasid {
-            cmd.data[0] |= ((pasid >> 8) & 0xff) << 16;
-            cmd.data[1] |= (pasid & 0xff) << 16;
+            // AMD-Vi Spec §2.4.3 with GN=1:
+            //   DW0[23:16] = PASID[19:12] (8 bits)
+            //   DW1[27:16] = PASID[11:0] (12 bits)
+            cmd.data[0] |= ((pasid >> 12) & 0xFF) << 16;
+            cmd.data[1] |= (pasid & 0xFFF) << 16;
             cmd.data[2] |= CMD_INV_IOMMU_PAGES_GN_MASK;
         }
         cmd.set_type(CMD_INV_IOTLB_PAGES);

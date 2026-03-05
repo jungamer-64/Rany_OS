@@ -18,39 +18,41 @@ async fn network_bootstrap_task() {
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
     let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
-    if !virtio_net_present {
-        info!(target: "net_boot", "VirtIO-Net device not present; network bootstrap skipped");
-        return;
-    }
-
-    let bridge_initialized = crate::net::runtime::bridge::is_initialized();
-    if bridge_initialized {
-        info!(target: "net_boot", "Bridge already initialized; skipping driver startup");
-    } else {
-        // VirtIO-Net ドライバ登録 & ブリッジ初期化
-        // init_bridge() が init_dhcp_runtime() を呼び、DHCPv4/v6タスクが自動spawn
-        info!(target: "net_boot", "Registering VirtIO-Net driver via DriverRegistry");
-        {
-            use alloc::boxed::Box;
-            use driver_registry::register_driver;
-            use crate::net::drivers::virtio_registry::VirtioNetDriver;
-
-            let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
-            if let Err(e) = driver_registry::driver_registry()
-                .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
+    if virtio_net_present {
+        let bridge_initialized = crate::net::runtime::bridge::is_initialized();
+        if bridge_initialized {
+            info!(target: "net_boot", "Bridge already initialized; skipping VirtIO-Net startup");
+        } else {
+            // VirtIO-Net ドライバ登録 & ブリッジ初期化
+            // init_bridge() が init_dhcp_runtime() を呼び、DHCPv4/v6タスクが自動spawn
+            info!(target: "net_boot", "Registering VirtIO-Net driver via DriverRegistry");
             {
-                warn!(target: "net_boot", "VirtIO-Net driver init failed: {:?}", e);
-                return;
+                use crate::net::drivers::virtio_registry::VirtioNetDriver;
+                use alloc::boxed::Box;
+                use driver_registry::register_driver;
+
+                let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
+                if let Err(e) = driver_registry::driver_registry()
+                    .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
+                {
+                    warn!(target: "net_boot", "VirtIO-Net driver init failed: {:?}", e);
+                } else {
+                    info!(target: "net_boot", "VirtIO-Net driver initialized via DriverRegistry");
+                }
             }
-            info!(target: "net_boot", "VirtIO-Net driver initialized via DriverRegistry");
         }
+    } else {
+        info!(
+            target: "net_boot",
+            "VirtIO-Net device not present; continuing with non-VirtIO probes (mlx5)"
+        );
     }
 
     // ConnectX-4 Lx (mlx5) ドライバのPCI検出・登録
     {
+        use crate::net::drivers::mlx5_registry::Mlx5ConnectXDriver;
         use alloc::boxed::Box;
         use driver_registry::register_driver;
-        use crate::net::drivers::mlx5_registry::Mlx5ConnectXDriver;
 
         info!(target: "net_boot", "Probing ConnectX-4 Lx (mlx5) via DriverRegistry");
         let mlx5_handle = register_driver(Box::new(Mlx5ConnectXDriver::new()));
@@ -75,6 +77,19 @@ async fn network_bootstrap_task() {
 
     // Yield して tx_worker / DHCPクライアント等のバックグラウンドタスクに実行機会を与える
     task::yield_now().await;
+
+    // VirtIO / mlx5 初期化後に有効なネットワーク経路がなければ DHCP 待機は行わない。
+    if !crate::net::runtime::bridge::is_initialized() {
+        let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
+        info!(
+            target: "net_boot",
+            "No active network bridge after driver probes; skipping DHCP/connectivity checks (bridge init={} rx={} tx={})",
+            bridge_stats.initialized,
+            bridge_stats.rx_packets,
+            bridge_stats.tx_packets
+        );
+        return;
+    }
 
     // DHCPクライアントが Bound 状態になるのを待機（最大10秒）
     info!(target: "net_boot", "Waiting for DHCP lease acquisition (async)...");

@@ -49,6 +49,7 @@ pub mod flow;
 pub mod pages;
 pub mod resources;
 pub mod polling;
+pub mod health;
 
 // Re-export core types
 pub use defs::{
@@ -61,3 +62,4 @@ pub use device::Mlx5Device;
 pub use port::Mlx5Port;
 pub use polling::{AdaptivePollingState, PollingMode};
 pub use resources::{TirInfo, TisInfo, MkeyInfo};
+pub use health::HealthMonitor;

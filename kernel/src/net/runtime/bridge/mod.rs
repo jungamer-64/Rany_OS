@@ -21,6 +21,7 @@ use crate::net::obs::{
 
 mod nat;
 use nat::*;
+pub mod mlx5_bridge;
 use crate::io::virtio::{
     VirtioNetDevice, bind_virtio_net_interface, with_virtio_net, with_virtio_net_at_index,
     VIRTIO_NET_IOCTL_TX,

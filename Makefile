@@ -31,6 +31,7 @@ NIC             ?=
 NET_STATE_DIR   ?= target/net_state
 VFIO_NET_BDF    ?=
 VFIO_ACK        ?= 0
+VFIO_NO_MMAP    ?= auto
 RUN_SMART       ?= 1
 RUN_PREFLIGHT   ?= 1
 RUN_FORCE_IMAGE ?= 0
@@ -672,25 +673,51 @@ case "$$_net_mode" in \
 				printf '   -> \033[32m[NET] VirtIO-net macvtap (%s)\033[0m\n' "$$_macvtap_if"; \
 				_attach_virtio_net=1; \
 				;; \
-			pcie) \
-				_vfio_bdf="$(VFIO_NET_BDF)"; \
-				if [ -z "$$_vfio_bdf" ]; then \
-					printf '   -> \033[31m[NET][VFIO] VFIO_NET_BDF is required for NETWORK=%s\033[0m\n' "$$_net_mode"; \
-					printf '      Example: make run NETWORK=pcie VFIO_NET_BDF=0000:01:00.0\n'; \
+				pcie) \
+					_vfio_bdf="$(VFIO_NET_BDF)"; \
+					if [ -z "$$_vfio_bdf" ]; then \
+						printf '   -> \033[31m[NET][VFIO] VFIO_NET_BDF is required for NETWORK=%s\033[0m\n' "$$_net_mode"; \
+						printf '      Example: make run NETWORK=pcie VFIO_NET_BDF=0000:01:00.0\n'; \
+						exit 1; \
+					fi; \
+					if ! printf '%s' "$$_vfio_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
+						printf '   -> \033[31m[NET][VFIO] Invalid VFIO_NET_BDF format: %s\033[0m\n' "$$_vfio_bdf"; \
+						printf '      Expected format: 0000:01:00.0\n'; \
+						exit 1; \
+					fi; \
+					qemu_args="$$qemu_args -device vfio-pci,host=$$_vfio_bdf"; \
+					printf '   -> \033[32m[NET][VFIO] PCIe passthrough enabled (host=%s)\033[0m\n' "$$_vfio_bdf"; \
+					_vfio_no_mmap="$(VFIO_NO_MMAP)"; \
+					if [ -z "$$_vfio_no_mmap" ]; then _vfio_no_mmap="auto"; fi; \
+					if [ "$$_vfio_no_mmap" != "auto" ] && [ "$$_vfio_no_mmap" != "0" ] && [ "$$_vfio_no_mmap" != "1" ]; then \
+						printf '   -> \033[31m[NET][VFIO] Invalid VFIO_NO_MMAP value: %s (use auto|0|1)\033[0m\n' "$$_vfio_no_mmap"; \
+						exit 1; \
+					fi; \
+					_vfio_aw_bits="$(IOMMU_AW_BITS)"; \
+					_vfio_risky_aw=0; \
+					if printf '%s' "$$_vfio_aw_bits" | grep -Eq '^[0-9]+$$' && [ "$$_vfio_aw_bits" -le 39 ]; then \
+						_vfio_risky_aw=1; \
+					fi; \
+					_vfio_enable_no_mmap=0; \
+					case "$$_vfio_no_mmap" in \
+						1) _vfio_enable_no_mmap=1 ;; \
+						auto) \
+							if [ "$(IOMMU)" = "1" ] && [ "$$_vfio_risky_aw" = "1" ]; then \
+								_vfio_enable_no_mmap=1; \
+							fi ;; \
+						0) ;; \
+					esac; \
+					if [ "$$_vfio_enable_no_mmap" = "1" ]; then \
+						qemu_args="$$qemu_args -global vfio-pci.x-no-mmap=on"; \
+						printf '   -> \033[32m[NET][VFIO] Enabling safe mode: vfio-pci x-no-mmap=on (aw-bits=%s)\033[0m\n' "$$_vfio_aw_bits"; \
+					elif [ "$(IOMMU)" = "1" ] && [ "$$_vfio_risky_aw" = "1" ]; then \
+						printf '   -> \033[33m[WARN][NET][VFIO] x-no-mmap is disabled under aw-bits<=39; crash may reoccur\033[0m\n'; \
+					fi; \
+					;; \
+				*) \
+					printf '   -> \033[31m[NET] Unknown NETWORK mode: %s (use bridge|user|macvtap|pcie|vfio|none)\033[0m\n' "$$_net_mode"; \
 					exit 1; \
-				fi; \
-				if ! printf '%s' "$$_vfio_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
-					printf '   -> \033[31m[NET][VFIO] Invalid VFIO_NET_BDF format: %s\033[0m\n' "$$_vfio_bdf"; \
-					printf '      Expected format: 0000:01:00.0\n'; \
-					exit 1; \
-				fi; \
-				qemu_args="$$qemu_args -device vfio-pci,host=$$_vfio_bdf"; \
-				printf '   -> \033[32m[NET][VFIO] PCIe passthrough enabled (host=%s)\033[0m\n' "$$_vfio_bdf"; \
-				;; \
-			*) \
-				printf '   -> \033[31m[NET] Unknown NETWORK mode: %s (use bridge|user|macvtap|pcie|vfio|none)\033[0m\n' "$$_net_mode"; \
-				exit 1; \
-				;; \
+					;; \
 		esac; \
 		if [ "$$_attach_virtio_net" = "1" ]; then \
 			device_args="virtio-net-pci,netdev=net0,mq=on,vectors=10"; \
@@ -1319,6 +1346,7 @@ help:
 	@echo "  NIC=IFACE              Host NIC to add to bridge (auto-setup)"
 	@echo "  VFIO_NET_BDF=BDF       PCI BDF for passthrough (e.g. 0000:01:00.0)"
 	@echo "  VFIO_ACK=0|1           Safety ack required by vfio-prepare (set 1)"
+	@echo "  VFIO_NO_MMAP=auto|0|1  VFIO safe mode for low aw-bits (default: auto)"
 	@echo "  RUN_SMART=0|1          Smart image rebuild for run/debug (default: 1)"
 	@echo "  RUN_PREFLIGHT=0|1      Enable preflight fail-fast for run/debug (default: 1)"
 	@echo "  RUN_FORCE_IMAGE=0|1    Force image rebuild before run/debug (default: 0)"
