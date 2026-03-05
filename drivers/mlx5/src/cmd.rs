@@ -306,8 +306,9 @@ impl CmdInterface {
         // 実プロダクション環境ではタイマーベースのタイムアウトを使用
         // IMPORTANT:
         //   This path may run on the kernel async executor thread.
-        //   Keep timeout bounded to avoid executor starvation on stuck hardware.
-        let max_iters = 200_000u64;
+        //   Keep timeout bounded, but allow enough budget for VF + vIOMMU paths where
+        //   command completion latency is noticeably higher than pure PF bring-up.
+        let max_iters = 10_000_000u64;
 
         for _ in 0..max_iters {
             let entry = self.entry(slot);

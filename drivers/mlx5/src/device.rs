@@ -55,6 +55,8 @@ pub enum DeviceState {
 pub struct Mlx5Device {
     /// デバイスバリアント (ConnectX-4 / 5 / 6 / 7 etc.)
     variant: ConnectXVariant,
+    /// PCI Device ID (PF/VF 判別を含む初期化ポリシー判定に使用)
+    device_id: u16,
     /// デバイス状態
     state: DeviceState,
     /// BAR0 仮想ベースアドレス
@@ -150,6 +152,7 @@ impl Mlx5Device {
     pub fn new(bar0_base: u64, bar0_size: usize, device_id: u16) -> Self {
         Self {
             variant: ConnectXVariant::from_device_id(device_id),
+            device_id,
             state: DeviceState::Uninitialized,
             bar0_base,
             bar0_size,
@@ -191,6 +194,11 @@ impl Mlx5Device {
     /// ConnectX バリアントを取得
     pub fn variant(&self) -> ConnectXVariant {
         self.variant
+    }
+
+    /// このデバイスが SR-IOV Virtual Function かどうかを返す。
+    pub fn is_virtual_function(&self) -> bool {
+        ConnectXVariant::is_vf_device_id(self.device_id)
     }
 
     /// PCI BDF情報を設定
@@ -2086,8 +2094,22 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "=== Starting full pipeline initialization ===");
 
         // Phase 1: Boot sequence
-        self.wait_firmware()?;
-        log::info!(target: "mlx5", "[1/8] Firmware ready");
+        match self.wait_firmware() {
+            Ok(()) => {
+                log::info!(target: "mlx5", "[1/8] Firmware ready");
+            }
+            Err(Mlx5Error::DeviceNotReady) if self.is_virtual_function() => {
+                // VF passthrough では PF と同じ FW ブート状態が露出しない場合がある。
+                // FW wait だけを緩和し、以降のコマンドIF/HCA初期化で実際の可否を判定する。
+                log::warn!(
+                    target: "mlx5",
+                    "[1/8] Firmware ready wait skipped for VF (device_id={:#06x})",
+                    self.device_id
+                );
+                self.assume_firmware_ready_for_vf();
+            }
+            Err(e) => return Err(e),
+        }
 
         self.init_command_interface(
             cmdq_virt, cmdq_phys,

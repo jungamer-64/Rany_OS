@@ -1,44 +1,26 @@
 // ============================================================================
 // kernel/src/net/drivers/mlx5_registry.rs - ConnectX Family Driver Registry
 // ============================================================================
-//!
-//! ConnectX ファミリ (mlx5) ドライバの DriverRegistry 統合。
-//!
-//! ConnectX-4 / 4 Lx / 5 / 5 Ex / 6 / 6 Dx / 6 Lx / 7 をサポート。
-//!
-//! PCI バスからデバイスを検出し、BAR0 マッピング・DMA バッファ割り当て・
-//! HCA 初期化シーケンスを実行して NIC をアクティブにする。
-//!
-//! ## 初期化フロー
-//!
-//! 1. PCI バス検出 (Vendor=0x15B3, 全 ConnectX Device ID)
-//! 2. BAR0 マッピング → FW Ready 待ち
-//! 3. コマンドインタフェース初期化
-//! 4. ENABLE_HCA → QUERY_ISSI → SET_ISSI → QUERY_HCA_CAP → INIT_HCA
-//! 5. MANAGE_PAGES（FW要求ページ提供）
-//! 6. CREATE_MKEY → CREATE_TIS → CREATE_TIR
-//! 7. キュー作成（EQ, CQ, SQ, RQ）
-//! 8. フローテーブル設定（RX steering）
-//! 9. デバイスアクティベーション → ブリッジ接続
 
 extern crate alloc;
 
+use alloc::vec::Vec;
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
+use kernel_api::services::kernel;
+use kernel_api::DmaBuffer;
 
-use mlx5_driver::{
-    MELLANOX_VENDOR_ID, SUPPORTED_DEVICE_IDS, ConnectXVariant,
-    Mlx5Device,
-};
-use mlx5_driver::eq::EventQueue;
-use mlx5_driver::cq::CompletionQueue;
-use mlx5_driver::wq::{SendQueue, ReceiveQueue};
-use mlx5_driver::resources::{TisParams, TirParams, TirReceiveType, MkeyParams};
+use mlx5_driver::defs::{MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH};
+use mlx5_driver::regs::{cmd_entry, cqe, eqe, wqe};
+use mlx5_driver::resources::MkeyParams;
+use mlx5_driver::{ConnectXVariant, MELLANOX_VENDOR_ID, Mlx5Device, SUPPORTED_DEVICE_IDS};
 
-const CONNECTX4_LX_VF_ID: u16 = 0x1016;
+const CMD_LOG_SIZE: u8 = 2; // 4 entries
+const DMA_PAGE_BYTES: usize = MLX5_PAGE_SIZE;
+const FW_BOOT_PAGE_COUNT: usize = 4;
 
 /// ConnectX ファミリのサポートデバイスID一覧を動的構築
-fn build_supported_devices() -> alloc::vec::Vec<DeviceId> {
+fn build_supported_devices() -> Vec<DeviceId> {
     SUPPORTED_DEVICE_IDS
         .iter()
         .map(|&(vendor, device)| DeviceId {
@@ -50,14 +32,113 @@ fn build_supported_devices() -> alloc::vec::Vec<DeviceId> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct DmaSlot {
+    phys_addr: u64,
+    device_addr: u64,
+    virt_addr: u64,
+    size: usize,
+}
+
+impl DmaSlot {
+    fn from_dma_buffer(buffer: DmaBuffer) -> Self {
+        Self {
+            phys_addr: buffer.physical_address(),
+            device_addr: buffer.device_address(),
+            virt_addr: buffer.as_ptr() as u64,
+            size: buffer.size(),
+        }
+    }
+
+    fn as_ptr_u64(&self) -> u64 {
+        self.virt_addr
+    }
+
+    fn phys_address(&self) -> u64 {
+        self.phys_addr
+    }
+
+    fn device_address(&self) -> u64 {
+        self.device_addr
+    }
+
+    fn into_dma_buffer(self) -> DmaBuffer {
+        DmaBuffer::new_with_device_addr(
+            self.phys_addr,
+            self.device_addr,
+            self.virt_addr as *mut u8,
+            self.size,
+        )
+    }
+}
+
+fn release_dma_slot(slot: &mut DmaSlot) {
+    if slot.size == 0 {
+        return;
+    }
+
+    let owned = core::mem::take(slot);
+    if owned.size != 0 {
+        kernel().free_dma(owned.into_dma_buffer());
+    }
+}
+
+/// mlx5 初期化中に確保する DMA リソース一式。
+///
+/// ドライバのライフタイム中は保持し、Drop 時に一括で解放する。
+struct Mlx5DmaResources {
+    cmdq: DmaSlot,
+    cmd_in_mbox: DmaSlot,
+    cmd_out_mbox: DmaSlot,
+    fw_pages: Vec<DmaSlot>,
+    eq: DmaSlot,
+    tx_cq: DmaSlot,
+    tx_cq_db: DmaSlot,
+    rx_cq: DmaSlot,
+    rx_cq_db: DmaSlot,
+    sq: DmaSlot,
+    sq_db: DmaSlot,
+    rq: DmaSlot,
+    rq_db: DmaSlot,
+}
+
+impl Mlx5DmaResources {
+    fn fw_page_device_addrs(&self) -> Vec<u64> {
+        self.fw_pages.iter().map(DmaSlot::device_address).collect()
+    }
+}
+
+impl Drop for Mlx5DmaResources {
+    fn drop(&mut self) {
+        for page in self.fw_pages.iter_mut() {
+            release_dma_slot(page);
+        }
+
+        release_dma_slot(&mut self.rq_db);
+        release_dma_slot(&mut self.rq);
+        release_dma_slot(&mut self.sq_db);
+        release_dma_slot(&mut self.sq);
+        release_dma_slot(&mut self.rx_cq_db);
+        release_dma_slot(&mut self.rx_cq);
+        release_dma_slot(&mut self.tx_cq_db);
+        release_dma_slot(&mut self.tx_cq);
+        release_dma_slot(&mut self.eq);
+        release_dma_slot(&mut self.cmd_out_mbox);
+        release_dma_slot(&mut self.cmd_in_mbox);
+        release_dma_slot(&mut self.cmdq);
+    }
+}
+
 /// ConnectX ファミリドライバラッパー for DriverRegistry
 pub struct Mlx5ConnectXDriver {
     /// 初期化済みかどうか
     initialized: bool,
-    /// 内部デバイスインスタンス（probe成功後に保持）
-    device: Option<Mlx5Device>,
+    /// プローブしたデバイス種別（ログ表示用）
+    variant: Option<ConnectXVariant>,
+    /// デバイス起動中に保持する DMA リソース
+    dma_resources: Option<Mlx5DmaResources>,
     /// サポートデバイスリスト（動的構築）
-    supported_devices: alloc::vec::Vec<DeviceId>,
+    supported_devices: Vec<DeviceId>,
 }
 
 impl Mlx5ConnectXDriver {
@@ -65,9 +146,240 @@ impl Mlx5ConnectXDriver {
     pub fn new() -> Self {
         Self {
             initialized: false,
-            device: None,
+            variant: None,
+            dma_resources: None,
             supported_devices: build_supported_devices(),
         }
+    }
+
+    fn pack_iommu_device_id(device: crate::io::iommu::types::DeviceId) -> u64 {
+        ((device.segment as u64) << 32)
+            | ((device.bus as u64) << 16)
+            | ((device.device as u64) << 8)
+            | (device.function as u64)
+    }
+
+    fn alloc_dma_for_device(
+        size: usize,
+        packed_device_id: u64,
+        label: &'static str,
+    ) -> KapiResult<DmaSlot> {
+        kernel()
+            .alloc_dma_for_device(size, packed_device_id)
+            .map(DmaSlot::from_dma_buffer)
+            .map_err(|e| {
+                log::error!(
+                    target: "mlx5",
+                    "DMA allocation failed: {} size={} err={:?}",
+                    label,
+                    size,
+                    e
+                );
+                KapiError::OutOfMemory
+            })
+    }
+
+    fn allocate_dma_resources(&self, packed_device_id: u64) -> KapiResult<Mlx5DmaResources> {
+        let cmdq_size = DMA_PAGE_BYTES.max((1usize << CMD_LOG_SIZE) * cmd_entry::ENTRY_SIZE);
+        let cmd_mbox_size = DMA_PAGE_BYTES;
+
+        let eq_size = (MLX5_EQ_DEPTH as usize) * eqe::EQE_SIZE;
+        let cq_size = (MLX5_CQ_DEPTH as usize) * cqe::SIZE;
+        let sq_size = (MLX5_WQ_DEPTH as usize) * wqe::MIN_TX_WQE_SIZE;
+        let rq_size = (MLX5_WQ_DEPTH as usize) * wqe::WQEBB_SIZE;
+        let db_record_size = DMA_PAGE_BYTES;
+
+        let mut fw_pages = Vec::with_capacity(FW_BOOT_PAGE_COUNT);
+        for _ in 0..FW_BOOT_PAGE_COUNT {
+            fw_pages.push(Self::alloc_dma_for_device(
+                DMA_PAGE_BYTES,
+                packed_device_id,
+                "fw_page",
+            )?);
+        }
+
+        Ok(Mlx5DmaResources {
+            cmdq: Self::alloc_dma_for_device(cmdq_size, packed_device_id, "cmdq")?,
+            cmd_in_mbox: Self::alloc_dma_for_device(cmd_mbox_size, packed_device_id, "cmd_in_mbox")?,
+            cmd_out_mbox: Self::alloc_dma_for_device(cmd_mbox_size, packed_device_id, "cmd_out_mbox")?,
+            fw_pages,
+            eq: Self::alloc_dma_for_device(eq_size, packed_device_id, "eq")?,
+            tx_cq: Self::alloc_dma_for_device(cq_size, packed_device_id, "tx_cq")?,
+            tx_cq_db: Self::alloc_dma_for_device(db_record_size, packed_device_id, "tx_cq_db")?,
+            rx_cq: Self::alloc_dma_for_device(cq_size, packed_device_id, "rx_cq")?,
+            rx_cq_db: Self::alloc_dma_for_device(db_record_size, packed_device_id, "rx_cq_db")?,
+            sq: Self::alloc_dma_for_device(sq_size, packed_device_id, "sq")?,
+            sq_db: Self::alloc_dma_for_device(db_record_size, packed_device_id, "sq_db")?,
+            rq: Self::alloc_dma_for_device(rq_size, packed_device_id, "rq")?,
+            rq_db: Self::alloc_dma_for_device(db_record_size, packed_device_id, "rq_db")?,
+        })
+    }
+
+    /// PCI デバイスの完全な初期化を行う
+    fn probe_device(&mut self, pci_dev: &crate::io::pci::PciDeviceInfo) -> KapiResult<()> {
+        let variant = ConnectXVariant::from_device_id(pci_dev.device_id.0);
+        log::info!(
+            target: "mlx5",
+            "Initializing {} at {:02x}:{:02x}.{} (vendor={:#06x} device={:#06x})",
+            variant.name(),
+            pci_dev.bdf.bus(),
+            pci_dev.bdf.device(),
+            pci_dev.bdf.function(),
+            pci_dev.vendor_id.0,
+            pci_dev.device_id.0,
+        );
+
+        // BAR0 取得
+        let bar0 = pci_dev.bars[0].ok_or_else(|| {
+            log::error!(target: "mlx5", "BAR0 not found");
+            KapiError::IoError
+        })?;
+
+        let bar0_phys = bar0.base();
+        let bar0_size_u64 = bar0.size();
+        let bar0_size = bar0_size_u64 as usize;
+
+        if bar0_phys == 0 || bar0_size == 0 {
+            log::error!(
+                target: "mlx5",
+                "BAR0 invalid: phys={:#x} size={:#x}",
+                bar0_phys,
+                bar0_size
+            );
+            return Err(KapiError::IoError);
+        }
+
+        let bar0_base = ensure_bar_mapped(bar0_phys, bar0_size_u64).ok_or_else(|| {
+            log::error!(
+                target: "mlx5",
+                "BAR0 mapping failed: phys={:#x} size={:#x}",
+                bar0_phys,
+                bar0_size
+            );
+            KapiError::IoError
+        })?;
+
+        log::info!(
+            target: "mlx5",
+            "BAR0: phys={:#x} virt={:#x} size={:#x} ({}KB)",
+            bar0_phys,
+            bar0_base,
+            bar0_size,
+            bar0_size / 1024
+        );
+
+        // バスマスタを有効化（DMA用）
+        pci_dev.enable_bus_master();
+        pci_dev.enable_memory_space();
+
+        if let Some(msix_offset) = pci_dev.msix_cap_offset {
+            log::info!(target: "mlx5", "MSI-X capability at offset {:#x}", msix_offset);
+        } else {
+            log::warn!(target: "mlx5", "MSI-X not available; using polling mode");
+        }
+
+        let iommu_device_id = crate::io::iommu::types::DeviceId::new(
+            pci_dev.segment,
+            pci_dev.bdf.bus(),
+            pci_dev.bdf.device(),
+            pci_dev.bdf.function(),
+        );
+        let packed_device_id = Self::pack_iommu_device_id(iommu_device_id);
+
+        let dma_resources = self.allocate_dma_resources(packed_device_id)?;
+        let fw_page_addrs = dma_resources.fw_page_device_addrs();
+
+        let mut device = Mlx5Device::new(bar0_base, bar0_size, pci_dev.device_id.0);
+        device.set_pci_bdf(
+            pci_dev.bdf.bus(),
+            pci_dev.bdf.device(),
+            pci_dev.bdf.function(),
+        );
+
+        let eq_log_size = log2_u32(MLX5_EQ_DEPTH);
+        let cq_log_size = log2_u32(MLX5_CQ_DEPTH);
+        let sq_log_size = log2_u32(MLX5_WQ_DEPTH);
+        let rq_log_size = log2_u32(MLX5_WQ_DEPTH);
+
+        let init_result = unsafe {
+            device.init_full(
+                dma_resources.cmdq.as_ptr_u64(),
+                dma_resources.cmdq.phys_address(),
+                dma_resources.cmd_in_mbox.as_ptr_u64(),
+                dma_resources.cmd_in_mbox.phys_address(),
+                dma_resources.cmd_out_mbox.as_ptr_u64(),
+                dma_resources.cmd_out_mbox.phys_address(),
+                &fw_page_addrs,
+                &MkeyParams::default(),
+                (
+                    dma_resources.eq.as_ptr_u64(),
+                    dma_resources.eq.device_address(),
+                ),
+                (
+                    dma_resources.tx_cq.as_ptr_u64(),
+                    dma_resources.tx_cq.device_address(),
+                    dma_resources.tx_cq_db.as_ptr_u64(),
+                    dma_resources.tx_cq_db.device_address(),
+                ),
+                (
+                    dma_resources.rx_cq.as_ptr_u64(),
+                    dma_resources.rx_cq.device_address(),
+                    dma_resources.rx_cq_db.as_ptr_u64(),
+                    dma_resources.rx_cq_db.device_address(),
+                ),
+                (
+                    dma_resources.sq.as_ptr_u64(),
+                    dma_resources.sq.device_address(),
+                    dma_resources.sq_db.as_ptr_u64(),
+                    dma_resources.sq_db.device_address(),
+                ),
+                (
+                    dma_resources.rq.as_ptr_u64(),
+                    dma_resources.rq.device_address(),
+                    dma_resources.rq_db.as_ptr_u64(),
+                    dma_resources.rq_db.device_address(),
+                ),
+                eq_log_size,
+                cq_log_size,
+                sq_log_size,
+                rq_log_size,
+            )
+        };
+        if let Err(e) = init_result {
+            log::error!(target: "mlx5", "Full init failed: {:?}", e);
+            log::warn!(
+                target: "mlx5",
+                "Keeping mlx5 DMA mappings pinned after init failure to avoid unstable IOMMU unmap path"
+            );
+            core::mem::forget(dma_resources);
+            return Err(KapiError::IoError);
+        }
+
+        crate::net::runtime::bridge::mlx5_bridge::register_mlx5_device(device);
+        if let Err(e) = crate::net::runtime::bridge::mlx5_bridge::init_mlx5_bridge() {
+            log::error!(target: "mlx5", "Bridge initialization failed: {}", e);
+
+            if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device() {
+                unsafe {
+                    if let Err(teardown_err) = dev.teardown() {
+                        log::warn!(target: "mlx5", "Teardown after bridge failure failed: {:?}", teardown_err);
+                    }
+                }
+            }
+
+            return Err(KapiError::IoError);
+        }
+
+        self.variant = Some(variant);
+        self.dma_resources = Some(dma_resources);
+        self.initialized = true;
+
+        log::info!(
+            target: "mlx5",
+            "{} device initialized and bridge activated",
+            variant.name()
+        );
+        Ok(())
     }
 }
 
@@ -83,7 +395,7 @@ impl Driver for Mlx5ConnectXDriver {
     }
 
     fn version(&self) -> DriverVersion {
-        DriverVersion::new(0, 3, 0)
+        DriverVersion::new(0, 4, 0)
     }
 
     fn driver_type(&self) -> DriverType {
@@ -91,13 +403,11 @@ impl Driver for Mlx5ConnectXDriver {
     }
 
     fn probe(&mut self) -> KapiResult<()> {
-        crate::io::log::early_print("[MLX5DBG] probe enter\n");
         log::info!(target: "mlx5", "Probing for ConnectX family devices...");
 
-        // SUPPORTED_DEVICE_IDS をイテレートして最初に見つかったデバイスを初期化
         for &(_vendor_id, device_id) in SUPPORTED_DEVICE_IDS {
             let pci_devices = crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, device_id);
-            if !pci_devices.is_empty() {
+            if let Some(first) = pci_devices.first() {
                 let variant = ConnectXVariant::from_device_id(device_id);
                 log::info!(
                     target: "mlx5",
@@ -105,8 +415,7 @@ impl Driver for Mlx5ConnectXDriver {
                     variant.name(),
                     device_id,
                 );
-                crate::io::log::early_print("[MLX5DBG] probing first device\n");
-                return self.probe_device(&pci_devices[0]);
+                return self.probe_device(first);
             }
         }
 
@@ -119,27 +428,25 @@ impl Driver for Mlx5ConnectXDriver {
             return Err(KapiError::Internal(-1));
         }
 
-        let variant_name = self.device.as_ref()
-            .map(|d| d.variant().name())
-            .unwrap_or("ConnectX");
+        let variant_name = self.variant.map(|v| v.name()).unwrap_or("ConnectX");
         log::info!(target: "mlx5", "{} driver started", variant_name);
         Ok(())
     }
 
     fn stop(&mut self) -> KapiResult<()> {
-        let variant_name = self.device.as_ref()
-            .map(|d| d.variant().name())
-            .unwrap_or("ConnectX");
+        let variant_name = self.variant.map(|v| v.name()).unwrap_or("ConnectX");
         log::info!(target: "mlx5", "{} driver stopping...", variant_name);
 
-        if let Some(ref mut dev) = self.device {
-            // 安全にデバイスをシャットダウン
+        if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device() {
             unsafe {
                 if let Err(e) = dev.teardown() {
                     log::warn!(target: "mlx5", "Teardown error: {:?}", e);
                 }
             }
         }
+
+        self.dma_resources = None;
+        self.variant = None;
         self.initialized = false;
         log::info!(target: "mlx5", "{} driver stopped", variant_name);
         Ok(())
@@ -190,361 +497,5 @@ fn ensure_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
             );
             None
         }
-    }
-}
-
-impl Mlx5ConnectXDriver {
-    /// PCI デバイスの完全な初期化を行う
-    ///
-    /// ConnectX ファミリの初期化シーケンス:
-    /// Phase 1: FW Ready Wait
-    /// Phase 2: Command Interface Setup
-    /// Phase 3: HCA Enable & Init (ENABLE_HCA, ISSI, QUERY_HCA_CAP, INIT_HCA)
-    /// Phase 4: Page Management (MANAGE_PAGES)
-    /// Phase 5: Port MAC Query
-    /// Phase 6: Resource Creation (MKEY, TIS, TIR)
-    /// Phase 7: Queue Setup (EQ, CQ, SQ, RQ)
-    /// Phase 8: Flow Table Setup (RX Steering)
-    /// Phase 9: Activation
-    fn probe_device(&mut self, pci_dev: &crate::io::pci::PciDeviceInfo) -> KapiResult<()> {
-        let variant = ConnectXVariant::from_device_id(pci_dev.device_id.0);
-        crate::io::log::early_print("[MLX5DBG] probe_device enter\n");
-        log::info!(
-            target: "mlx5",
-            "Initializing {} at {:02x}:{:02x}.{} (vendor={:#06x} device={:#06x})",
-            variant.name(),
-            pci_dev.bdf.bus(),
-            pci_dev.bdf.device(),
-            pci_dev.bdf.function(),
-            pci_dev.vendor_id.0,
-            pci_dev.device_id.0,
-        );
-
-        // ================================================================
-        // BAR0 取得
-        // ================================================================
-        let bar0 = pci_dev.bars[0].ok_or_else(|| {
-            log::error!(target: "mlx5", "BAR0 not found");
-            KapiError::IoError
-        })?;
-
-        let bar0_phys = bar0.base();
-        let bar0_size_u64 = bar0.size();
-        let bar0_size = bar0_size_u64 as usize;
-
-        if bar0_phys == 0 || bar0_size == 0 {
-            log::error!(
-                target: "mlx5",
-                "BAR0 invalid: phys={:#x} size={:#x}",
-                bar0_phys,
-                bar0_size
-            );
-            return Err(KapiError::IoError);
-        }
-
-        let bar0_base = match ensure_bar_mapped(bar0_phys, bar0_size_u64) {
-            Some(virt) => virt,
-            None => {
-                log::error!(
-                    target: "mlx5",
-                    "BAR0 mapping failed: phys={:#x} size={:#x}",
-                    bar0_phys,
-                    bar0_size
-                );
-                return Err(KapiError::IoError);
-            }
-        };
-
-        if bar0_base == 0 {
-            log::error!(
-                target: "mlx5",
-                "BAR0 virtual base is zero after mapping: phys={:#x}",
-                bar0_phys
-            );
-            return Err(KapiError::IoError);
-        }
-
-        log::info!(
-            target: "mlx5",
-            "BAR0: phys={:#x} virt={:#x} size={:#x} ({}KB)",
-            bar0_phys,
-            bar0_base,
-            bar0_size,
-            bar0_size / 1024
-        );
-
-        // バスマスタを有効化（DMA用）
-        pci_dev.enable_bus_master();
-        pci_dev.enable_memory_space();
-
-        // MSI-X セットアップ
-        if let Some(msix_offset) = pci_dev.msix_cap_offset {
-            log::info!(target: "mlx5", "MSI-X capability at offset {:#x}", msix_offset);
-        } else {
-            log::warn!(target: "mlx5", "MSI-X not available; using polling mode");
-        }
-
-        // ================================================================
-        // Phase 1: Mlx5Device 作成 & FW Ready
-        // ================================================================
-        let mut device = Mlx5Device::new(bar0_base, bar0_size, pci_dev.device_id.0);
-        device.set_pci_bdf(
-            pci_dev.bdf.bus(),
-            pci_dev.bdf.device(),
-            pci_dev.bdf.function(),
-        );
-
-        unsafe {
-            crate::io::log::early_print("[MLX5DBG] before wait_firmware\n");
-            match device.wait_firmware() {
-                Ok(()) => {}
-                Err(e) => {
-                    if pci_dev.device_id.0 == CONNECTX4_LX_VF_ID {
-                        log::warn!(
-                            target: "mlx5",
-                            "FW ready wait failed on VF ({:?}); continuing with VF fallback",
-                            e
-                        );
-                        device.assume_firmware_ready_for_vf();
-                    } else {
-                        log::error!(target: "mlx5", "FW init failed: {:?}", e);
-                        return Err(KapiError::IoError);
-                    }
-                }
-            }
-            crate::io::log::early_print("[MLX5DBG] after wait_firmware\n");
-        }
-
-        // ================================================================
-        // Phase 2: コマンドインタフェース初期化
-        // ================================================================
-        // DMA対応メモリの割り当て（コマンドキュー + 入出力メールボックス）
-        //
-        // 設計書 §2: Exchange Heap を通じた DMA バッファ管理
-        // TODO: CoherentDmaBuffer API が安定したら移行する
-        // 現在は SAS identity mapping を前提に BAR0 空間末尾を一時使用
-        let cmdq_offset = bar0_size as u64 - 0x4000;
-        let in_mbox_offset = bar0_size as u64 - 0x3000;
-        let out_mbox_offset = bar0_size as u64 - 0x2000;
-
-        let cmdq_virt = bar0_base + cmdq_offset;
-        let cmdq_phys = bar0_phys + cmdq_offset;
-        let in_mbox_virt = bar0_base + in_mbox_offset;
-        let in_mbox_phys = bar0_phys + in_mbox_offset;
-        let out_mbox_virt = bar0_base + out_mbox_offset;
-        let out_mbox_phys = bar0_phys + out_mbox_offset;
-
-        unsafe {
-            crate::io::log::early_print("[MLX5DBG] before init_cmd_if\n");
-            device
-                .init_command_interface(
-                    cmdq_virt, cmdq_phys,
-                    in_mbox_virt, in_mbox_phys,
-                    out_mbox_virt, out_mbox_phys,
-                )
-                .map_err(|e| {
-                    log::error!(target: "mlx5", "CMD interface init failed: {:?}", e);
-                    KapiError::IoError
-                })?;
-            crate::io::log::early_print("[MLX5DBG] after init_cmd_if\n");
-        }
-
-        // ================================================================
-        // Phase 3: HCA 有効化・初期化
-        // ================================================================
-        unsafe {
-            crate::io::log::early_print("[MLX5DBG] before enable_and_init_hca\n");
-            device.enable_and_init_hca().map_err(|e| {
-                log::error!(target: "mlx5", "HCA enable/init failed: {:?}", e);
-                KapiError::IoError
-            })?;
-            crate::io::log::early_print("[MLX5DBG] after enable_and_init_hca\n");
-        }
-
-        // ================================================================
-        // Phase 4: FW ページ管理
-        // ================================================================
-        // ConnectX FWは初期化中にページを要求する
-        // 初期ブートページを提供（SAS identity map: phys == virt）
-        let boot_page_base = bar0_phys + bar0_size as u64 - 0x10_0000;
-        let boot_page_count = 4u32; // 最小限のブートページ
-        let mut boot_pas = alloc::vec::Vec::with_capacity(boot_page_count as usize);
-        for i in 0..boot_page_count {
-            boot_pas.push(boot_page_base + (i as u64) * 0x1000);
-        }
-
-        unsafe {
-            if let Err(e) = device.provide_pages(0, &boot_pas) {
-                // ページ提供失敗は致命的ではない（FWが要求しない場合もある）
-                log::warn!(target: "mlx5", "Boot page provision: {:?} (non-fatal)", e);
-            }
-        }
-
-        // ================================================================
-        // Phase 5: ポートMAC取得
-        // ================================================================
-        unsafe {
-            device.query_port_mac(0).map_err(|e| {
-                log::error!(target: "mlx5", "Port MAC query failed: {:?}", e);
-                KapiError::IoError
-            })?;
-        }
-
-        if let Some(port) = device.port(0) {
-            log::info!(
-                target: "mlx5",
-                "Port 0: MAC={} MTU={}",
-                port.mac_address(),
-                port.mtu()
-            );
-        }
-
-        // ================================================================
-        // Phase 6: リソース作成 (MKEY, TIS, TIR)
-        // ================================================================
-
-        // Direct Memory Key 作成（全DMAアクセス用）
-        let mkey_params = MkeyParams::default();
-        let mkey = unsafe {
-            device.create_mkey(&mkey_params).unwrap_or_else(|e| {
-                log::warn!(target: "mlx5", "MKEY creation failed: {:?}, using direct key", e);
-                0xFF_FF_FF // fallback: direct key
-            })
-        };
-
-        // TIS 作成（送信インタフェース）
-        let tis_params = TisParams {
-            port: 1, // ポート1
-            ..TisParams::default()
-        };
-        let tisn = unsafe {
-            device.create_tis(&tis_params).unwrap_or_else(|e| {
-                log::warn!(target: "mlx5", "TIS creation failed: {:?}, using TISN=0", e);
-                0
-            })
-        };
-
-        // ================================================================
-        // Phase 7: キュー設定
-        // ================================================================
-        let uar_base = bar0_base + 0x800; // UAR page 0 offset
-        device.set_uar(uar_base, 0);
-        device.set_mkey(mkey);
-
-        let eq_log_size = log2_u32(mlx5_driver::defs::MLX5_EQ_DEPTH);
-        let cq_log_size = log2_u32(mlx5_driver::defs::MLX5_CQ_DEPTH);
-        let sq_log_size = log2_u32(mlx5_driver::defs::MLX5_WQ_DEPTH);
-        let rq_log_size = log2_u32(mlx5_driver::defs::MLX5_WQ_DEPTH);
-
-        // Event Queue: EQN=0, MSI-Xベクタ0
-        let eq_base_virt = bar0_base + 0x1_0000;
-        let eq_base_phys = bar0_phys + 0x1_0000;
-        let eq = EventQueue::new(0, eq_base_virt, eq_base_phys, uar_base, eq_log_size, 0);
-        device.add_eq(eq);
-
-        // Completion Queues: TX CQ + RX CQ
-        let cq_tx_base_virt = bar0_base + 0x2_0000;
-        let cq_tx_base_phys = bar0_phys + 0x2_0000;
-        let cq_tx_db = bar0_base + 0x2_F000;
-        let tx_cq = CompletionQueue::new(
-            0,
-            cq_tx_base_virt,
-            cq_tx_base_phys,
-            uar_base,
-            cq_tx_db,
-            cq_log_size,
-            0,
-        );
-        device.add_cq(tx_cq);
-
-        let cq_rx_base_virt = bar0_base + 0x3_0000;
-        let cq_rx_base_phys = bar0_phys + 0x3_0000;
-        let cq_rx_db = bar0_base + 0x3_F000;
-        let rx_cq = CompletionQueue::new(
-            1,
-            cq_rx_base_virt,
-            cq_rx_base_phys,
-            uar_base,
-            cq_rx_db,
-            cq_log_size,
-            0,
-        );
-        device.add_cq(rx_cq);
-
-        // Send Queue: SQN=0, CQN=0 (TX CQ), TISN from create_tis, mkey
-        let sq_base_virt = bar0_base + 0x4_0000;
-        let sq_base_phys = bar0_phys + 0x4_0000;
-        let sq_db = bar0_base + 0x4_F000;
-        let sq = SendQueue::new(
-            0,
-            sq_base_virt,
-            sq_base_phys,
-            sq_db,
-            uar_base,
-            sq_log_size,
-            tisn,
-            0,
-            mkey,
-        );
-        device.add_sq(sq);
-
-        // Receive Queue: RQN=0, CQN=1 (RX CQ), TIRN=0 (set after TIR creation), mkey
-        let rq_base_virt = bar0_base + 0x5_0000;
-        let rq_base_phys = bar0_phys + 0x5_0000;
-        let rq_db = bar0_base + 0x5_F000;
-        let rq = ReceiveQueue::new(
-            0,
-            rq_base_virt,
-            rq_base_phys,
-            rq_db,
-            rq_log_size,
-            1,
-            0,
-            mkey,
-        );
-        device.add_rq(rq);
-
-        // キューセットアップ完了
-        device.mark_queues_ready();
-
-        // ================================================================
-        // Phase 8: TIR 作成 & フローテーブル設定
-        // ================================================================
-
-        // TIR 作成（直接RQ配送: RQN=0）
-        let tir_params = TirParams {
-            receive_type: TirReceiveType::DirectRq,
-            inline_rqn: 0, // RQN=0
-            ..TirParams::default()
-        };
-        let tirn = unsafe {
-            device.create_tir(&tir_params).unwrap_or_else(|e| {
-                log::warn!(target: "mlx5", "TIR creation failed: {:?}", e);
-                0
-            })
-        };
-
-        // RXフローテーブル設定（catch-all → TIR）
-        unsafe {
-            if let Err(e) = device.setup_rx_flow_table(tirn) {
-                log::warn!(target: "mlx5", "Flow table setup failed: {:?} (non-fatal)", e);
-            }
-        }
-
-        // ================================================================
-        // Phase 9: アクティベーション
-        // ================================================================
-        device.activate();
-
-        log::info!(
-            target: "mlx5",
-            "{} device initialized and active \
-             MKEY={:#x} TISN={} TIRN={} polling={}",
-            variant.name(), mkey, tisn, tirn, device.polling_state().mode()
-        );
-
-        self.device = Some(device);
-        self.initialized = true;
-        Ok(())
     }
 }
