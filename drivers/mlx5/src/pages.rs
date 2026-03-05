@@ -15,16 +15,16 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use crate::cmd::CmdMailbox;
 use crate::defs::MLX5_CMD_MBOX_SIZE;
+use alloc::vec::Vec;
 
 /// ページ管理操作タイプ
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagePagesOp {
     /// ページ提供（FWへ）
-    GivePages   = 0x01,
+    GivePages = 0x01,
     /// ページ回収（FWから）
     ReclaimPages = 0x02,
 }
@@ -81,7 +81,8 @@ impl PageManager {
 
     /// 回収されたページを記録から削除
     pub fn remove_pages(&mut self, phys_addrs: &[u64]) {
-        self.allocated_pages.retain(|p| !phys_addrs.contains(&p.phys_addr));
+        self.allocated_pages
+            .retain(|p| !phys_addrs.contains(&p.phys_addr));
         self.total_given = self.allocated_pages.len() as u32;
     }
 

@@ -159,39 +159,89 @@ impl CmdEntry {
 // Command Interface Abstraction
 // ============================================================================
 
-/// コマンドインタフェース
+/// コマンド転送抽象（CMDQ, 将来の別経路対応）
+pub trait CommandTransport {
+    /// コマンドを同期的に発行して完了を待つ
+    ///
+    /// # Safety
+    /// - メールボックスポインタが有効なDMAメモリであること
+    unsafe fn execute(
+        &mut self,
+        opcode: CmdOpcode,
+        in_mbox_phys: u64,
+        in_len: u32,
+        out_mbox_phys: u64,
+        out_len: u32,
+    ) -> Mlx5Result<()>;
+}
+
+/// CMDQベースのコマンドインタフェース
 ///
 /// コマンドキューのベースアドレスとログサイズを保持し、
 /// コマンドの発行とポーリング完了を管理する。
-pub struct CmdInterface {
+pub struct CmdQueueTransport {
     /// コマンドキューDMA物理アドレス
     cmdq_phys: u64,
     /// コマンドキューの仮想アドレス（MMIOマップ済み）
     cmdq_virt: u64,
     /// ログ2コマンドキューサイズ（エントリ数）
     log_cmdq_size: u8,
+    /// ログ2コマンドエントリstride（bytes）
+    log_cmd_stride: u8,
     /// BAR0ベース仮想アドレス
     bar0_base: u64,
     /// 次のトークン値
     next_token: u8,
 }
 
-impl CmdInterface {
-    /// コマンドインタフェースを作成
+impl CmdQueueTransport {
+    /// ハードウェアが公開する `cmdq_addr_l_sz` から CMDQ パラメータを抽出
+    pub fn parse_hw_cmdq_layout(cmdq_addr_l_sz: u32) -> (u8, u8, bool) {
+        let low = cmdq_addr_l_sz & 0xFF;
+        let log_cmdq_size = ((low >> 4) & 0x0F) as u8;
+        let log_cmd_stride = (low & 0x0F) as u8;
+        let nic_if_supported =
+            (cmdq_addr_l_sz & crate::regs::fw_state::NIC_INTERFACE_SUPPORTED_BIT) != 0;
+        (log_cmdq_size, log_cmd_stride, nic_if_supported)
+    }
+
+    fn validate_hw_cmdq_layout(log_cmdq_size: u8, log_cmd_stride: u8) -> Mlx5Result<()> {
+        if log_cmdq_size == 0 {
+            return Err(Mlx5Error::NotSupported);
+        }
+        let entry_size = 1usize
+            .checked_shl(log_cmd_stride as u32)
+            .ok_or(Mlx5Error::NotSupported)?;
+        if entry_size != cmd_entry::ENTRY_SIZE {
+            return Err(Mlx5Error::NotSupported);
+        }
+        Ok(())
+    }
+
+    /// CMDQ転送インタフェースを作成
     ///
     /// # Arguments
     /// - `bar0_base`: BAR0ベース仮想アドレス
     /// - `cmdq_phys`: コマンドキューDMA物理アドレス
     /// - `cmdq_virt`: コマンドキュー仮想アドレス
     /// - `log_cmdq_size`: ログ2キューサイズ
-    pub fn new(bar0_base: u64, cmdq_phys: u64, cmdq_virt: u64, log_cmdq_size: u8) -> Self {
-        Self {
+    /// - `log_cmd_stride`: ログ2エントリstride
+    pub fn new(
+        bar0_base: u64,
+        cmdq_phys: u64,
+        cmdq_virt: u64,
+        log_cmdq_size: u8,
+        log_cmd_stride: u8,
+    ) -> Mlx5Result<Self> {
+        Self::validate_hw_cmdq_layout(log_cmdq_size, log_cmd_stride)?;
+        Ok(Self {
             cmdq_phys,
             cmdq_virt,
             log_cmdq_size,
+            log_cmd_stride,
             bar0_base,
             next_token: 1,
-        }
+        })
     }
 
     /// コマンドキューのエントリ数
@@ -226,10 +276,12 @@ impl CmdInterface {
         use crate::regs::init_seg;
 
         let addr_h = (self.cmdq_phys >> 32) as u32;
-        let addr_l_sz = ((self.cmdq_phys & 0xFFFF_F000) as u32) | (self.log_cmdq_size as u32);
+        let layout_low =
+            (((self.log_cmdq_size as u32) & 0x0F) << 4) | ((self.log_cmd_stride as u32) & 0x0F);
+        let addr_l_sz = ((self.cmdq_phys & 0xFFFF_F000) as u32) | layout_low;
 
-        hal::mmio::mmio_write_u32(self.bar0_base as usize + init_seg::CMDQ_ADDR_H, addr_h);
-        hal::mmio::mmio_write_u32(
+        crate::mmio_write_be32(self.bar0_base as usize + init_seg::CMDQ_ADDR_H, addr_h);
+        crate::mmio_write_be32(
             self.bar0_base as usize + init_seg::CMDQ_ADDR_L_SZ,
             addr_l_sz,
         );
@@ -241,7 +293,7 @@ impl CmdInterface {
     /// - bar0_base が有効なMMIOマッピングであること
     pub unsafe fn ring_doorbell(&self) {
         use crate::regs::init_seg;
-        hal::mmio::mmio_write_u32(self.bar0_base as usize + init_seg::CMDQ_DOORBELL, 0x01);
+        crate::mmio_write_be32(self.bar0_base as usize + init_seg::CMDQ_DOORBELL, 0x01);
     }
 
     /// コマンドを同期的に発行して完了を待つ
@@ -341,6 +393,19 @@ impl CmdInterface {
         }
 
         Err(Mlx5Error::CommandTimeout)
+    }
+}
+
+impl CommandTransport for CmdQueueTransport {
+    unsafe fn execute(
+        &mut self,
+        opcode: CmdOpcode,
+        in_mbox_phys: u64,
+        in_len: u32,
+        out_mbox_phys: u64,
+        out_len: u32,
+    ) -> Mlx5Result<()> {
+        CmdQueueTransport::execute(self, opcode, in_mbox_phys, in_len, out_mbox_phys, out_len)
     }
 }
 
@@ -596,7 +661,7 @@ pub fn build_create_sq_input(
     // flags + state (RESET=0x00) at offset +0x00
     // flush_in_error: bit 28
     in_mbox.write_be32(ctx, 0x1 << 28); // flush_in_error = 1
-    // CQN at offset +0x04
+                                        // CQN at offset +0x04
     in_mbox.write_be32(ctx + 0x04, cqn & 0x00FF_FFFF);
     // TISN at offset +0x08
     in_mbox.write_be32(ctx + 0x08, tisn & 0x00FF_FFFF);
@@ -607,7 +672,10 @@ pub fn build_create_sq_input(
     // wq_type (0x01 = cyclic) + log_wq_stride (6 = 64-byte WQEs) + log_wq_sz
     let wq_type: u32 = 0x01; // cyclic
     let log_wq_stride: u32 = 6; // 64-byte WQE stride (2^6 = 64)
-    in_mbox.write_be32(wq_ctx, (wq_type << 28) | (log_wq_stride << 16) | (log_sq_size as u32));
+    in_mbox.write_be32(
+        wq_ctx,
+        (wq_type << 28) | (log_wq_stride << 16) | (log_sq_size as u32),
+    );
     // PD at offset +0x04
     // (PD is set globally, not per-queue in this simplified model)
     // Buffer PA at offset +0x10
@@ -680,7 +748,10 @@ pub fn build_create_rq_input(
     // wq_type (0x01 = cyclic) + log_wq_stride (4 = 16-byte scatter) + log_wq_sz
     let wq_type: u32 = 0x01; // cyclic
     let log_wq_stride: u32 = 4; // 16-byte WQE stride for RQ (single scatter entry)
-    in_mbox.write_be32(wq_ctx, (wq_type << 28) | (log_wq_stride << 16) | (log_rq_size as u32));
+    in_mbox.write_be32(
+        wq_ctx,
+        (wq_type << 28) | (log_wq_stride << 16) | (log_rq_size as u32),
+    );
     // Buffer PA at offset +0x10
     in_mbox.write_be64(wq_ctx + 0x10, rq_buf_pa);
     // Doorbell PA at offset +0x18
@@ -747,11 +818,7 @@ pub fn parse_query_vport_state_output(out_mbox: &CmdMailbox) -> (u8, u8) {
 }
 
 /// QUERY_VPORT_COUNTER コマンド入力の構築
-pub fn build_query_vport_counter_input(
-    in_mbox: &mut CmdMailbox,
-    port: u8,
-    clear_on_read: bool,
-) {
+pub fn build_query_vport_counter_input(in_mbox: &mut CmdMailbox, port: u8, clear_on_read: bool) {
     *in_mbox = CmdMailbox::zeroed();
     // other_vport = 0, port_num at byte 0x09
     in_mbox.data[0x09] = port;
@@ -762,29 +829,27 @@ pub fn build_query_vport_counter_input(
 }
 
 /// QUERY_VPORT_COUNTER 出力を解析
-pub fn parse_query_vport_counter_output(
-    out_mbox: &CmdMailbox,
-) -> crate::defs::VportCounters {
+pub fn parse_query_vport_counter_output(out_mbox: &CmdMailbox) -> crate::defs::VportCounters {
     use crate::defs::VportCounters;
     // Counter offsets in output mailbox (simplified layout)
     let base = 0x10;
     VportCounters {
-        rx_unicast_packets:   out_mbox.read_be64(base + 0x00),
-        rx_unicast_bytes:     out_mbox.read_be64(base + 0x08),
+        rx_unicast_packets: out_mbox.read_be64(base + 0x00),
+        rx_unicast_bytes: out_mbox.read_be64(base + 0x08),
         rx_multicast_packets: out_mbox.read_be64(base + 0x10),
-        rx_multicast_bytes:   out_mbox.read_be64(base + 0x18),
+        rx_multicast_bytes: out_mbox.read_be64(base + 0x18),
         rx_broadcast_packets: out_mbox.read_be64(base + 0x20),
-        rx_broadcast_bytes:   out_mbox.read_be64(base + 0x28),
-        tx_unicast_packets:   out_mbox.read_be64(base + 0x30),
-        tx_unicast_bytes:     out_mbox.read_be64(base + 0x38),
+        rx_broadcast_bytes: out_mbox.read_be64(base + 0x28),
+        tx_unicast_packets: out_mbox.read_be64(base + 0x30),
+        tx_unicast_bytes: out_mbox.read_be64(base + 0x38),
         tx_multicast_packets: out_mbox.read_be64(base + 0x40),
-        tx_multicast_bytes:   out_mbox.read_be64(base + 0x48),
+        tx_multicast_bytes: out_mbox.read_be64(base + 0x48),
         tx_broadcast_packets: out_mbox.read_be64(base + 0x50),
-        tx_broadcast_bytes:   out_mbox.read_be64(base + 0x58),
-        rx_error_packets:     out_mbox.read_be64(base + 0x60),
-        tx_error_packets:     out_mbox.read_be64(base + 0x68),
-        rx_dropped:           out_mbox.read_be64(base + 0x70),
-        tx_dropped:           out_mbox.read_be64(base + 0x78),
+        tx_broadcast_bytes: out_mbox.read_be64(base + 0x58),
+        rx_error_packets: out_mbox.read_be64(base + 0x60),
+        tx_error_packets: out_mbox.read_be64(base + 0x68),
+        rx_dropped: out_mbox.read_be64(base + 0x70),
+        tx_dropped: out_mbox.read_be64(base + 0x78),
     }
 }
 
@@ -798,12 +863,18 @@ pub fn build_modify_nic_vport_promisc_input(
     *in_mbox = CmdMailbox::zeroed();
     // Modify field select at offset 0x00: bit 0 = promisc
     in_mbox.write_be32(0x00, 0x01); // promisc field selected
-    // NIC VPORT context at offset 0x10
+                                    // NIC VPORT context at offset 0x10
     let ctx = 0x10;
     let mut promisc_flags: u32 = 0;
-    if uc_promisc { promisc_flags |= 0x01; }
-    if mc_promisc { promisc_flags |= 0x02; }
-    if all_promisc { promisc_flags |= 0x04; }
+    if uc_promisc {
+        promisc_flags |= 0x01;
+    }
+    if mc_promisc {
+        promisc_flags |= 0x02;
+    }
+    if all_promisc {
+        promisc_flags |= 0x04;
+    }
     in_mbox.write_be32(ctx + 0x00, promisc_flags);
 }
 
@@ -853,11 +924,7 @@ pub fn build_destroy_flow_table_input(in_mbox: &mut CmdMailbox, table_id: u32) {
 }
 
 /// DESTROY_FLOW_GROUP コマンド入力の構築
-pub fn build_destroy_flow_group_input(
-    in_mbox: &mut CmdMailbox,
-    table_id: u32,
-    group_id: u32,
-) {
+pub fn build_destroy_flow_group_input(in_mbox: &mut CmdMailbox, table_id: u32, group_id: u32) {
     *in_mbox = CmdMailbox::zeroed();
     in_mbox.write_be32(0x04, table_id & 0x00FF_FFFF);
     in_mbox.write_be32(0x08, group_id & 0x00FF_FFFF);

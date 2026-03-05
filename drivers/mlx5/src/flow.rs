@@ -43,7 +43,7 @@ pub enum FlowAction {
     /// パケット許可（TIRにフォワード）
     Allow = 0x01,
     /// パケット破棄
-    Drop  = 0x02,
+    Drop = 0x02,
 }
 
 /// RSS ハッシュ関数タイプ
@@ -53,7 +53,7 @@ pub enum RssHashFunction {
     /// Toeplitz ハッシュ
     Toeplitz = 0x00,
     /// XOR ハッシュ
-    Xor      = 0x01,
+    Xor = 0x01,
 }
 
 /// RSS ハッシュフィールド選択ビットマスク
@@ -85,10 +85,8 @@ pub mod rss_field {
 
 /// Toeplitz RSSハッシュキー（デフォルト値: Microsoft推奨ハッシュキー）
 pub const DEFAULT_RSS_KEY: [u8; 40] = [
-    0x6D, 0x5A, 0x56, 0xDA, 0x25, 0x5B, 0x0E, 0xC2,
-    0x41, 0x67, 0x25, 0x3D, 0x43, 0xA3, 0x8F, 0xB0,
-    0xD0, 0xCA, 0x2B, 0xCB, 0xAE, 0x7B, 0x30, 0xB4,
-    0x77, 0xCB, 0x2D, 0xA3, 0x80, 0x30, 0xF2, 0x0C,
+    0x6D, 0x5A, 0x56, 0xDA, 0x25, 0x5B, 0x0E, 0xC2, 0x41, 0x67, 0x25, 0x3D, 0x43, 0xA3, 0x8F, 0xB0,
+    0xD0, 0xCA, 0x2B, 0xCB, 0xAE, 0x7B, 0x30, 0xB4, 0x77, 0xCB, 0x2D, 0xA3, 0x80, 0x30, 0xF2, 0x0C,
     0x6A, 0x42, 0xB7, 0x3B, 0xBE, 0xAC, 0x01, 0xFA,
 ];
 
@@ -258,10 +256,7 @@ pub const CMD_CREATE_RQT: u16 = 0x0916;
 pub const CMD_DESTROY_RQT: u16 = 0x0917;
 
 /// CREATE_FLOW_TABLE コマンド入力の構築
-pub fn build_create_flow_table_input(
-    in_mbox: &mut CmdMailbox,
-    config: &FlowTableConfig,
-) {
+pub fn build_create_flow_table_input(in_mbox: &mut CmdMailbox, config: &FlowTableConfig) {
     *in_mbox = CmdMailbox::zeroed();
     // Flow Table Context at offset 0x10
     let ctx_base = 0x10;
@@ -298,9 +293,15 @@ pub fn build_create_flow_group_input(
     in_mbox.write_be32(ctx_base + 0x04, end_index);
     // match_criteria_enable bit mask
     let mut criteria_enable: u8 = 0;
-    if criteria.outer_l2 { criteria_enable |= 0x01; }
-    if criteria.outer_l3 { criteria_enable |= 0x02; }
-    if criteria.outer_l4 { criteria_enable |= 0x04; }
+    if criteria.outer_l2 {
+        criteria_enable |= 0x01;
+    }
+    if criteria.outer_l3 {
+        criteria_enable |= 0x02;
+    }
+    if criteria.outer_l4 {
+        criteria_enable |= 0x04;
+    }
     in_mbox.write_be32(ctx_base + 0x08, criteria_enable as u32);
 }
 
@@ -360,11 +361,7 @@ pub fn build_set_flow_table_entry_input(
 /// # Arguments
 /// - `rq_numbers`: RQ番号のリスト
 /// - `log_rqt_size`: ログ2テーブルサイズ
-pub fn build_create_rqt_input(
-    in_mbox: &mut CmdMailbox,
-    rq_numbers: &[u32],
-    log_rqt_size: u8,
-) {
+pub fn build_create_rqt_input(in_mbox: &mut CmdMailbox, rq_numbers: &[u32], log_rqt_size: u8) {
     *in_mbox = CmdMailbox::zeroed();
     // RQT Context at offset 0x10
     let ctx_base = 0x10;

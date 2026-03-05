@@ -25,7 +25,7 @@ use crate::flow::RssConfig;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MkeyAccessFlags {
     /// ローカル読み取り
-    LocalRead  = 0x01,
+    LocalRead = 0x01,
     /// ローカル書き込み
     LocalWrite = 0x02,
     /// リモート読み取り
@@ -54,8 +54,7 @@ impl Default for MkeyParams {
         Self {
             start_addr: 0,
             length: 0xFFFF_FFFF_FFFF_FFFF, // 全アドレス空間
-            access_flags: MkeyAccessFlags::LocalRead as u8
-                | MkeyAccessFlags::LocalWrite as u8,
+            access_flags: MkeyAccessFlags::LocalRead as u8 | MkeyAccessFlags::LocalWrite as u8,
             pd: 0,
             log_page_size: 12, // 4KB
         }
@@ -170,10 +169,7 @@ pub struct TirInfo {
 // ============================================================================
 
 /// CREATE_MKEY コマンド入力の構築
-pub fn build_create_mkey_input(
-    in_mbox: &mut CmdMailbox,
-    params: &MkeyParams,
-) {
+pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
     *in_mbox = CmdMailbox::zeroed();
     // MKEY Context at offset 0x10
     let ctx = 0x10;
@@ -200,10 +196,7 @@ pub fn parse_create_mkey_output(out_mbox: &CmdMailbox) -> u32 {
 }
 
 /// CREATE_TIS コマンド入力の構築
-pub fn build_create_tis_input(
-    in_mbox: &mut CmdMailbox,
-    params: &TisParams,
-) {
+pub fn build_create_tis_input(in_mbox: &mut CmdMailbox, params: &TisParams) {
     *in_mbox = CmdMailbox::zeroed();
     // TIS Context at offset 0x10
     let ctx = 0x10;
@@ -222,10 +215,7 @@ pub fn parse_create_tis_output(out_mbox: &CmdMailbox) -> u32 {
 }
 
 /// CREATE_TIR コマンド入力の構築
-pub fn build_create_tir_input(
-    in_mbox: &mut CmdMailbox,
-    params: &TirParams,
-) {
+pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
     *in_mbox = CmdMailbox::zeroed();
     // TIR Context at offset 0x10
     let ctx = 0x10;
@@ -265,8 +255,12 @@ pub fn build_create_tir_input(
 
     // Flags
     let mut flags: u32 = 0;
-    if params.scatter_fcs { flags |= 0x01; }
-    if params.vlan_strip { flags |= 0x02; }
+    if params.scatter_fcs {
+        flags |= 0x01;
+    }
+    if params.vlan_strip {
+        flags |= 0x02;
+    }
     in_mbox.write_be32(ctx + 0x0C, flags);
 }
 

@@ -50,7 +50,7 @@ pub struct AdaptivePollingConfig {
 impl Default for AdaptivePollingConfig {
     fn default() -> Self {
         Self {
-            high_throughput_threshold: 100_000,  // 100Kpps
+            high_throughput_threshold: 100_000, // 100Kpps
             idle_threshold: 256,
             max_batch_size: 64,
             max_poll_iterations: 8,

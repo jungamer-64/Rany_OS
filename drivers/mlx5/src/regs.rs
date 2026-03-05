@@ -8,37 +8,27 @@
 
 /// BAR0 レジスタオフセット (Initialization Segment)
 pub mod init_seg {
-    /// ファームウェアリビジョン (Major)
-    pub const FW_REV_MAJOR: usize = 0x0000;
-    /// ファームウェアリビジョン (Minor)
-    pub const FW_REV_MINOR: usize = 0x0002;
-    /// ファームウェアリビジョン (Sub-minor)
-    pub const FW_REV_SUBMINOR: usize = 0x0004;
-    /// コマンドインタフェースリビジョン
-    pub const CMD_IF_REV: usize = 0x0006;
-
-    /// ファームウェア状態フラグ
-    pub const FW_STATE: usize = 0x0010;
+    /// ファームウェアリビジョン (major/minor packed)
+    pub const FW_REV: usize = 0x0000;
+    /// コマンドIFリビジョン/サブマイナ (cmdif_rev[31:16], fw_subminor[15:0])
+    pub const CMDIF_REV_FW_SUB: usize = 0x0004;
 
     /// 健全性カウンタ
-    pub const HEALTH_COUNTER: usize = 0x0018;
+    pub const HEALTH_COUNTER: usize = 0x1010;
 
-    /// 初期化セグメントサイズ
-    pub const INIT_SEG_SIZE: usize = 0x001C;
-
-    /// コマンドドアベル
+    /// コマンドキュー上位32ビットアドレス
     pub const CMDQ_ADDR_H: usize = 0x0010;
     /// コマンドキュー低32ビットアドレス + ログサイズ
     pub const CMDQ_ADDR_L_SZ: usize = 0x0014;
 
-    /// コマンドドアベルベクタ
+    /// コマンドドアベル
     pub const CMDQ_DOORBELL: usize = 0x0018;
 
-    /// HCA健全性バッファオフセット
-    pub const HEALTH_BUFFER: usize = 0x0020;
+    /// 初期化進行状態（bit31=1 で初期化中）
+    pub const INITIALIZING: usize = 0x01FC;
 
-    /// NIC インタフェース (bit field)
-    pub const NIC_INTERFACE: usize = 0x000C;
+    /// HCA健全性バッファオフセット
+    pub const HEALTH_BUFFER: usize = 0x0200;
 
     /// Internal Timer（高位32ビット）
     pub const INTERNAL_TIMER_H: usize = 0x1000;
@@ -115,15 +105,10 @@ pub mod uar {
 
 /// ファームウェア状態ビット
 pub mod fw_state {
-    /// NIC インタフェースサポートビット
-    pub const NIC_INTERFACE_SUPPORTED: u32 = 1 << 24;
-
-    /// ブートフェーズ: 初期化中
-    pub const BOOT_PHASE_INIT: u32 = 0;
-    /// ブートフェーズ: FWロード中
-    pub const BOOT_PHASE_FW_LOADING: u32 = 1;
-    /// ブートフェーズ: ドライバレディ
-    pub const BOOT_PHASE_DRIVER_READY: u32 = 2;
+    /// 初期化中フラグ（1=初期化中, 0=ready）
+    pub const INITIALIZING_BIT: u32 = 1 << 31;
+    /// cmdq_addr_l_sz の NIC interface support bit
+    pub const NIC_INTERFACE_SUPPORTED_BIT: u32 = 1 << 8;
 
     /// 健全性: OK
     pub const HEALTH_OK: u32 = 0;

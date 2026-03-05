@@ -71,10 +71,7 @@ impl Eqe {
 
     /// ページ要求イベント: 関数ID
     pub fn function_id(&self) -> u16 {
-        u16::from_be_bytes([
-            self.data[eqe::FUNC_ID],
-            self.data[eqe::FUNC_ID + 1],
-        ])
+        u16::from_be_bytes([self.data[eqe::FUNC_ID], self.data[eqe::FUNC_ID + 1]])
     }
 }
 
@@ -163,7 +160,7 @@ impl EventQueue {
     pub unsafe fn update_doorbell(&self) {
         // EQ ARM ドアベル: EQ番号とコンシューマカウンタを書き込み
         let db_val: u32 = (self.eqn & 0xFF) | ((self.consumer_counter & 0x00FF_FFFF) << 8);
-        hal::mmio::mmio_write_u32(self.uar_base as usize + uar::EQ_DOORBELL, db_val);
+        crate::mmio_write_be32(self.uar_base as usize + uar::EQ_DOORBELL, db_val);
     }
 
     /// EQ内の全保留イベントを処理する

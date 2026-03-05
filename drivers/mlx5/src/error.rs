@@ -36,6 +36,8 @@ pub enum Mlx5Error {
     NoResources,
     /// 不正なパラメータ
     InvalidParameter,
+    /// このデバイス/FWで未対応
+    NotSupported,
     /// 内部エラー
     Internal,
 }
@@ -57,6 +59,7 @@ impl fmt::Display for Mlx5Error {
             Self::IommuError => write!(f, "IOMMU error"),
             Self::NoResources => write!(f, "no resources"),
             Self::InvalidParameter => write!(f, "invalid parameter"),
+            Self::NotSupported => write!(f, "not supported"),
             Self::Internal => write!(f, "internal error"),
         }
     }

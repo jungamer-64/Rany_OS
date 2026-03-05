@@ -36,13 +36,14 @@ impl FwInfo {
     /// - `bar0_base` が有効なMMIOマッピングであること
     pub unsafe fn read_from_bar0(bar0_base: u64) -> Self {
         let base = bar0_base as usize;
-        let fw_rev_raw = hal::mmio::mmio_read_u32(base + init_seg::FW_REV_MAJOR);
+        let fw_rev_raw = crate::mmio_read_be32(base + init_seg::FW_REV);
+        let cmdif_rev_fw_sub = crate::mmio_read_be32(base + init_seg::CMDIF_REV_FW_SUB);
 
         Self {
             major: (fw_rev_raw >> 16) as u16,
-            minor: fw_rev_raw as u16,
-            subminor: hal::mmio::mmio_read_u32(base + init_seg::FW_REV_SUBMINOR) as u16,
-            cmd_if_rev: hal::mmio::mmio_read_u32(base + init_seg::CMD_IF_REV) as u16,
+            minor: (fw_rev_raw & 0xFFFF) as u16,
+            subminor: (cmdif_rev_fw_sub & 0xFFFF) as u16,
+            cmd_if_rev: (cmdif_rev_fw_sub >> 16) as u16,
         }
     }
 }
@@ -58,8 +59,7 @@ impl FwInfo {
 pub unsafe fn wait_fw_ready(bar0_base: u64) -> Mlx5Result<FwInfo> {
     let base = bar0_base as usize;
 
-    // ポーリング: NIC_INTERFACE のブート完了を待つ
-    // FW_STATE レジスタの健全性をチェック
+    // ポーリング: INITIALIZING(bit31) が 0 になるまで待機
     // NOTE:
     //   This runs inside an async executor task context in the kernel.
     //   Large unbounded spin loops can stall the whole executor and block boot.
@@ -68,26 +68,26 @@ pub unsafe fn wait_fw_ready(bar0_base: u64) -> Mlx5Result<FwInfo> {
     let mut invalid_reads = 0u64;
 
     for _ in 0..max_iters {
-        let nic_iface = hal::mmio::mmio_read_u32(base + init_seg::NIC_INTERFACE);
+        let initializing = crate::mmio_read_be32(base + init_seg::INITIALIZING);
+        let cmdif_rev_fw_sub = crate::mmio_read_be32(base + init_seg::CMDIF_REV_FW_SUB);
 
-        // MMIO read returning all-zeros/all-ones repeatedly indicates inaccessible BAR
-        // or not-ready VF path; fail fast instead of stalling the executor.
-        if nic_iface == 0 || nic_iface == u32::MAX {
+        // MMIO read returning all-zeros/all-ones on both registers repeatedly
+        // indicates inaccessible BAR or not-ready VF path.
+        if (initializing == 0 || initializing == u32::MAX)
+            && (cmdif_rev_fw_sub == 0 || cmdif_rev_fw_sub == u32::MAX)
+        {
             invalid_reads = invalid_reads.saturating_add(1);
             if invalid_reads >= 4096 {
                 return Err(Mlx5Error::DeviceNotReady);
             }
             core::hint::spin_loop();
             continue;
-        } else {
-            invalid_reads = 0;
         }
+        invalid_reads = 0;
 
-        // ブートフェーズ確認
-        let boot_phase = nic_iface & 0x03;
-        if boot_phase == fw_state::BOOT_PHASE_DRIVER_READY {
+        if (initializing & fw_state::INITIALIZING_BIT) == 0 {
             // ヘルスチェック
-            let health = hal::mmio::mmio_read_u32(base + init_seg::HEALTH_COUNTER);
+            let health = crate::mmio_read_be32(base + init_seg::HEALTH_COUNTER);
             if health == fw_state::HEALTH_FATAL {
                 return Err(Mlx5Error::FirmwareInitFailed);
             }
@@ -107,7 +107,7 @@ pub unsafe fn wait_fw_ready(bar0_base: u64) -> Mlx5Result<FwInfo> {
 /// # Safety
 /// - `bar0_base` が有効なMMIOマッピングであること
 pub unsafe fn check_health(bar0_base: u64) -> bool {
-    let health = hal::mmio::mmio_read_u32(bar0_base as usize + init_seg::HEALTH_COUNTER);
+    let health = crate::mmio_read_be32(bar0_base as usize + init_seg::HEALTH_COUNTER);
     health != fw_state::HEALTH_FATAL
 }
 

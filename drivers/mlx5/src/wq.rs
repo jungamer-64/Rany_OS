@@ -217,9 +217,8 @@ impl SendQueue {
     /// # Safety
     /// - uar_base が有効であること
     unsafe fn ring_doorbell(&self) {
-        let db_val: u32 = ((self.sqn & 0x00FF_FFFF) << 8)
-            | (self.producer_counter as u32 & 0xFF);
-        hal::mmio::mmio_write_u32(
+        let db_val: u32 = ((self.sqn & 0x00FF_FFFF) << 8) | (self.producer_counter as u32 & 0xFF);
+        crate::mmio_write_be32(
             self.uar_base as usize + crate::regs::uar::SQ_DOORBELL,
             db_val,
         );
@@ -325,12 +324,7 @@ impl ReceiveQueue {
     ///
     /// # Returns
     /// 投入したWQEインデックス
-    pub unsafe fn post_recv(
-        &mut self,
-        buf_phys: u64,
-        buf_virt: u64,
-        buf_size: u32,
-    ) -> Option<u16> {
+    pub unsafe fn post_recv(&mut self, buf_phys: u64, buf_virt: u64, buf_size: u32) -> Option<u16> {
         let wqe_idx = self.producer_counter;
         let buf_idx = (wqe_idx as u32 % self.rq_depth) as usize;
 
@@ -380,10 +374,7 @@ impl ReceiveQueue {
 
     /// RQの空きスロット数
     pub fn available_slots(&self) -> u32 {
-        self.rx_buffers
-            .iter()
-            .filter(|b| !b.in_use)
-            .count() as u32
+        self.rx_buffers.iter().filter(|b| !b.in_use).count() as u32
     }
 
     /// RQバッファの物理アドレス

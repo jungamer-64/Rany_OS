@@ -216,120 +216,120 @@ pub const MLX5_FW_BOOT_TIMEOUT_MS: u64 = 30_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmdOpcode {
     /// FW状態クエリ
-    QueryHcaCap               = 0x0100,
+    QueryHcaCap = 0x0100,
     /// HCA初期化
-    InitHca                   = 0x0102,
+    InitHca = 0x0102,
     /// HCA停止
-    TeardownHca               = 0x0103,
+    TeardownHca = 0x0103,
     /// HCA有効化
-    EnableHca                 = 0x0104,
+    EnableHca = 0x0104,
     /// HCA無効化
-    DisableHca                = 0x0105,
+    DisableHca = 0x0105,
 
     /// ページ要求クエリ
-    QueryPages                = 0x0107,
+    QueryPages = 0x0107,
     /// ページ管理
-    ManagePages               = 0x0108,
+    ManagePages = 0x0108,
 
     /// ISSI（Interface Stepping-Stone Identifier）クエリ
-    QueryIssi                 = 0x010A,
+    QueryIssi = 0x010A,
     /// ISSI設定
-    SetIssi                   = 0x010B,
+    SetIssi = 0x010B,
 
     /// EQ作成
-    CreateEq                  = 0x0301,
+    CreateEq = 0x0301,
     /// EQ破棄
-    DestroyEq                 = 0x0302,
+    DestroyEq = 0x0302,
 
     /// CQ作成
-    CreateCq                  = 0x0400,
+    CreateCq = 0x0400,
     /// CQ破棄
-    DestroyCq                 = 0x0401,
+    DestroyCq = 0x0401,
 
     /// SQ作成
-    CreateSq                  = 0x0904,
+    CreateSq = 0x0904,
     /// SQ破棄
-    DestroySq                 = 0x0905,
+    DestroySq = 0x0905,
     /// SQ状態変更
-    ModifySq                  = 0x0906,
+    ModifySq = 0x0906,
 
     /// RQ作成
-    CreateRq                  = 0x0908,
+    CreateRq = 0x0908,
     /// RQ破棄
-    DestroyRq                 = 0x0909,
+    DestroyRq = 0x0909,
     /// RQ状態変更
-    ModifyRq                  = 0x090A,
+    ModifyRq = 0x090A,
 
     /// TIR (Transport Interface Receive) 作成
-    CreateTir                 = 0x0900,
+    CreateTir = 0x0900,
     /// TIR破棄
-    DestroyTir                = 0x0901,
+    DestroyTir = 0x0901,
 
     /// TIS (Transport Interface Send) 作成
-    CreateTis                 = 0x0912,
+    CreateTis = 0x0912,
     /// TIS破棄
-    DestroyTis                = 0x0913,
+    DestroyTis = 0x0913,
 
     /// MACアドレスクエリ
-    QueryNicVportContext      = 0x0754,
+    QueryNicVportContext = 0x0754,
     /// VPORT状態変更
-    ModifyNicVportContext     = 0x0755,
+    ModifyNicVportContext = 0x0755,
 
     /// ポート状態クエリ
-    QueryVportState           = 0x0750,
+    QueryVportState = 0x0750,
 
     /// MKEYアロケーション
-    CreateMkey                = 0x0200,
+    CreateMkey = 0x0200,
     /// MKEY破棄
-    DestroyMkey               = 0x0201,
+    DestroyMkey = 0x0201,
 
     /// アクセスレジスタ
-    AccessRegister            = 0x0805,
+    AccessRegister = 0x0805,
 
     /// UAR (User Access Region) 割り当て
-    AllocUar                  = 0x0802,
+    AllocUar = 0x0802,
     /// UAR解放
-    DeallocUar                = 0x0803,
+    DeallocUar = 0x0803,
 
     /// Protection Domain 割り当て
-    AllocPd                   = 0x0800,
+    AllocPd = 0x0800,
     /// Protection Domain解放
-    DeallocPd                 = 0x0801,
+    DeallocPd = 0x0801,
 
     /// Transport Domain 割り当て
-    AllocTransportDomain      = 0x0816,
+    AllocTransportDomain = 0x0816,
     /// Transport Domain解放
-    DeallocTransportDomain    = 0x0817,
+    DeallocTransportDomain = 0x0817,
 
     /// RQT (Receive Queue Table) 作成
-    CreateRqt                 = 0x0916,
+    CreateRqt = 0x0916,
     /// RQT破棄
-    DestroyRqt                = 0x0917,
+    DestroyRqt = 0x0917,
 
     /// フローテーブル作成
-    CreateFlowTable           = 0x0930,
+    CreateFlowTable = 0x0930,
     /// フローテーブル破棄
-    DestroyFlowTable          = 0x0931,
+    DestroyFlowTable = 0x0931,
     /// フローグループ作成
-    CreateFlowGroup           = 0x0933,
+    CreateFlowGroup = 0x0933,
     /// フローグループ破棄
-    DestroyFlowGroup          = 0x0934,
+    DestroyFlowGroup = 0x0934,
     /// フローテーブルエントリ設定
-    SetFlowTableEntry         = 0x0936,
+    SetFlowTableEntry = 0x0936,
     /// フローテーブルエントリ削除
-    DeleteFlowTableEntry      = 0x0938,
+    DeleteFlowTableEntry = 0x0938,
 
     /// VPORTカウンタクエリ
-    QueryVportCounter         = 0x0770,
+    QueryVportCounter = 0x0770,
 
     /// ドライババージョン設定
-    SetDriverVersion          = 0x010D,
+    SetDriverVersion = 0x010D,
 
     /// CQモデレーション設定
-    ModifyCq                  = 0x0402,
+    ModifyCq = 0x0402,
 
     /// NOP (テスト用)
-    Nop                       = 0x80FD,
+    Nop = 0x80FD,
 }
 
 // ============================================================================
@@ -341,29 +341,29 @@ pub enum CmdOpcode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmdStatus {
     /// 成功
-    Ok                   = 0x00,
+    Ok = 0x00,
     /// 内部エラー
-    InternalError        = 0x01,
+    InternalError = 0x01,
     /// 不正なオペコード
-    BadOpcode            = 0x02,
+    BadOpcode = 0x02,
     /// 不正な引数
-    BadParam             = 0x03,
+    BadParam = 0x03,
     /// 不正なリソース状態
-    BadResourceState     = 0x04,
+    BadResourceState = 0x04,
     /// リソース不足
-    NoResources          = 0x05,
+    NoResources = 0x05,
     /// リソースが使用中
-    ResourceBusy         = 0x06,
+    ResourceBusy = 0x06,
     /// 入力長エラー
-    InputLenErr          = 0x07,
+    InputLenErr = 0x07,
     /// 出力長エラー
-    OutputLenErr         = 0x08,
+    OutputLenErr = 0x08,
     /// 不正なリソースID
-    BadResource          = 0x09,
+    BadResource = 0x09,
     /// 不正なサイズ
-    BadInputLen          = 0x0A,
+    BadInputLen = 0x0A,
     /// 不正な出力サイズ
-    BadOutputLen         = 0x0B,
+    BadOutputLen = 0x0B,
 }
 
 impl CmdStatus {
@@ -396,21 +396,21 @@ impl CmdStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
     /// CQ完了通知
-    CompletionEvent      = 0x00,
+    CompletionEvent = 0x00,
     /// ポート状態変更
-    PortStateChange      = 0x09,
+    PortStateChange = 0x09,
     /// コマンド完了
-    CommandCompletion    = 0x0A,
+    CommandCompletion = 0x0A,
     /// ページ要求
-    PageRequest          = 0x0B,
+    PageRequest = 0x0B,
     /// NICアラート
-    NicVportChange       = 0x0D,
+    NicVportChange = 0x0D,
     /// ポートモジュールイベント
-    PortModule           = 0x0F,
+    PortModule = 0x0F,
     /// 温度アラート
-    TempWarning          = 0x17,
+    TempWarning = 0x17,
     /// 一般イベント
-    GeneralEvent         = 0x22,
+    GeneralEvent = 0x22,
 }
 
 impl EventType {
@@ -501,15 +501,15 @@ pub const CQE_SIZE: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CqeOpcode {
     /// 要求完了（成功）
-    ReqOk         = 0x00,
+    ReqOk = 0x00,
     /// 受信完了
-    RespOk        = 0x01,
+    RespOk = 0x01,
     /// 要求エラー
-    ReqErr        = 0x0D,
+    ReqErr = 0x0D,
     /// 受信エラー
-    RespErr       = 0x0E,
+    RespErr = 0x0E,
     /// 無効
-    Invalid       = 0x0F,
+    Invalid = 0x0F,
 }
 
 impl CqeOpcode {
@@ -539,9 +539,9 @@ pub const MAX_SQ_WQEBBS: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WqeOpcode {
     /// NOP
-    Nop           = 0x00,
+    Nop = 0x00,
     /// Ethernet送信
-    EthSend       = 0x0A,
+    EthSend = 0x0A,
 }
 
 // ============================================================================
@@ -553,9 +553,9 @@ pub enum WqeOpcode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MkeyType {
     /// 間接的MR
-    Indirect    = 0x00,
+    Indirect = 0x00,
     /// 物理ブロックリスト
-    Klm         = 0x01,
+    Klm = 0x01,
 }
 
 // ============================================================================
@@ -567,11 +567,11 @@ pub enum MkeyType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WqState {
     /// リセット状態（初期状態）
-    Reset   = 0x00,
+    Reset = 0x00,
     /// Ready to Send/Receive
-    Ready   = 0x01,
+    Ready = 0x01,
     /// エラー状態
-    Error   = 0x03,
+    Error = 0x03,
 }
 
 // ============================================================================
@@ -594,8 +594,8 @@ pub mod eq_event_mask {
     pub const NIC_VPORT_CHANGE: u64 = 1 << (EventType::NicVportChange as u64);
 
     /// 全受信イベント（標準的な組み合わせ）
-    pub const STANDARD: u64 = COMPLETION | PORT_STATE_CHANGE | COMMAND_COMPLETION
-        | PAGE_REQUEST | NIC_VPORT_CHANGE;
+    pub const STANDARD: u64 =
+        COMPLETION | PORT_STATE_CHANGE | COMMAND_COMPLETION | PAGE_REQUEST | NIC_VPORT_CHANGE;
 }
 
 // ============================================================================

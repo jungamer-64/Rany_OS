@@ -177,8 +177,8 @@ impl CompletionQueue {
     /// - uar_base が有効であること
     pub unsafe fn arm(&self) {
         // ARM CQ ドアベル: CQ番号とコンシューマカウンタを書き込み
-        let arm_val: u64 = ((self.cqn as u64) << 32)
-            | ((self.consumer_counter as u64) & 0x00FF_FFFF);
+        let arm_val: u64 =
+            ((self.cqn as u64) << 32) | ((self.consumer_counter as u64) & 0x00FF_FFFF);
         let arm_ptr = (self.uar_base as usize + uar::CQ_ARM_DOORBELL) as *mut u64;
         core::ptr::write_volatile(arm_ptr, arm_val.to_be());
     }
@@ -193,10 +193,7 @@ impl CompletionQueue {
     ///
     /// # Returns
     /// 処理したCQEの情報（WQEインデックス, バイト数, オペコード）
-    pub unsafe fn poll_batch(
-        &mut self,
-        max_batch: u32,
-    ) -> alloc::vec::Vec<CqeInfo> {
+    pub unsafe fn poll_batch(&mut self, max_batch: u32) -> alloc::vec::Vec<CqeInfo> {
         let mut results = alloc::vec::Vec::new();
         let mut count = 0u32;
 

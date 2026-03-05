@@ -35,35 +35,42 @@ extern crate alloc;
 #[cfg(feature = "standalone")]
 kernel_api::register_cell_runtime!();
 
-pub mod regs;
-pub mod defs;
 pub mod cmd;
-pub mod eq;
 pub mod cq;
-pub mod wq;
-pub mod port;
-pub mod fw;
+pub mod defs;
 pub mod device;
+pub mod eq;
 pub mod error;
 pub mod flow;
-pub mod pages;
-pub mod resources;
-pub mod polling;
+pub mod fw;
 pub mod health;
+pub mod pages;
+pub mod polling;
+pub mod port;
+pub mod regs;
+pub mod resources;
+pub mod wq;
+
+#[inline]
+pub(crate) fn mmio_read_be32(addr: usize) -> u32 {
+    u32::from_be(hal::mmio::mmio_read_u32(addr))
+}
+
+#[inline]
+pub(crate) fn mmio_write_be32(addr: usize, value: u32) {
+    hal::mmio::mmio_write_u32(addr, value.to_be());
+}
 
 // Re-export core types
 pub use defs::{
-    MELLANOX_VENDOR_ID, CONNECTX4_LX_DEVICE_ID,
-    CONNECTX4_LX_VF_DEVICE_ID, CONNECTX4_DEVICE_ID,
-    CONNECTX5_DEVICE_ID, CONNECTX5_EX_DEVICE_ID,
-    CONNECTX6_DEVICE_ID, CONNECTX6_DX_DEVICE_ID, CONNECTX6_LX_DEVICE_ID,
-    CONNECTX7_DEVICE_ID,
-    SUPPORTED_DEVICE_IDS, ConnectXVariant,
-    MLX5_MAX_PORTS,
+    ConnectXVariant, CONNECTX4_DEVICE_ID, CONNECTX4_LX_DEVICE_ID, CONNECTX4_LX_VF_DEVICE_ID,
+    CONNECTX5_DEVICE_ID, CONNECTX5_EX_DEVICE_ID, CONNECTX6_DEVICE_ID, CONNECTX6_DX_DEVICE_ID,
+    CONNECTX6_LX_DEVICE_ID, CONNECTX7_DEVICE_ID, MELLANOX_VENDOR_ID, MLX5_MAX_PORTS,
+    SUPPORTED_DEVICE_IDS,
 };
-pub use error::Mlx5Error;
 pub use device::Mlx5Device;
-pub use port::Mlx5Port;
-pub use polling::{AdaptivePollingState, PollingMode};
-pub use resources::{TirInfo, TisInfo, MkeyInfo};
+pub use error::Mlx5Error;
 pub use health::HealthMonitor;
+pub use polling::{AdaptivePollingState, PollingMode};
+pub use port::Mlx5Port;
+pub use resources::{MkeyInfo, TirInfo, TisInfo};
