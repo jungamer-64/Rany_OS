@@ -409,53 +409,6 @@ impl Ipv4Header {
         }
         result
     }
-
-    /// Calculate header checksum (instance method, only works for IHL=5)
-    /// Deprecated: Use Ipv4Packet::verify_checksum or Ipv4PacketMut::update_checksum instead.
-    pub fn compute_checksum(&self) -> u16 {
-        let header_len = self.header_len();
-        if header_len > Self::MIN_SIZE {
-            // Cannot compute checksum for options via struct reference
-            return 0; 
-        }
-        let header_bytes = crate::util::struct_as_bytes(self);
-        Self::compute_checksum_static(header_bytes)
-    }
-
-    /// Update checksum
-    /// Deprecated: Use Ipv4PacketMut::update_checksum instead.
-    pub fn update_checksum(&mut self) {
-        if self.ihl() > 5 { return; } // Cannot update if options present
-        self.checksum = [0, 0];
-        let checksum = self.compute_checksum();
-        self.set_checksum(checksum);
-    }
-
-    /// Verify checksum
-    /// Deprecated: Use Ipv4Packet::verify_checksum instead.
-    pub fn verify_checksum(&self) -> bool {
-        let header_len = self.header_len();
-        if header_len > Self::MIN_SIZE {
-            return false; // Cannot verify if options present via struct reference
-        }
-        let header_bytes = crate::util::struct_as_bytes(self);
-        
-        let mut sum: u32 = 0;
-        for i in (0..header_len).step_by(2) {
-            let word = if i + 1 < header_len {
-                u16::from_be_bytes([header_bytes[i], header_bytes[i + 1]])
-            } else {
-                u16::from_be_bytes([header_bytes[i], 0])
-            };
-            sum += word as u32;
-        }
-
-        while sum >> 16 != 0 {
-            sum = (sum & 0xFFFF) + (sum >> 16);
-        }
-
-        sum as u16 == 0xFFFF
-    }
 }
 
 /// Zero-copy IPv4 packet view

@@ -5,9 +5,9 @@ This document lists symbols that have been marked deprecated and recommended mig
 ## Kernel
 
 - `kernel/src/application/mod.rs`
-  - `AppHandle` ✅ **deprecated**
+  - `AppHandle` ❌ **removed**
     - Migration: Use `crate::domain_system::DomainId` and the canonical domain APIs.
-  - `app_count()` ✅ **deprecated**
+  - `app_count()` ❌ **removed**
     - Migration: Use `domain_count()`.
 
 - `kernel/src/lib.rs` (test shim)
@@ -23,9 +23,9 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `SafePackedRead::from_bytes_safe` or the high-level parser APIs in `filesystems::fat32`.
 
 - `kernel/src/io/log.rs`
-  - `LOG_AGGREGATOR_PRIORITY`, `AGGREGATOR_STARTED`, `spawn_log_aggregator()` ✅ **deprecated**
+  - `LOG_AGGREGATOR_PRIORITY`, `AGGREGATOR_STARTED`, `spawn_log_aggregator()` ❌ **removed**
     - Migration: Aggregation is performed from the executor idle loop. Use `kick_serial_tx()` to request aggregation from non-idle contexts.
-  - `io_log_info!`, `io_log_warn!`, `io_log_debug!`, `io_log_error!` ✅ **deprecated**
+  - `io_log_info!`, `io_log_warn!`, `io_log_debug!`, `io_log_error!` ❌ **removed**
     - Migration: Use `log::info!`, `log::warn!`, `log::debug!`, `log::error!`.
 
 - `kernel/src/graphics/global.rs`
@@ -33,11 +33,11 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `crate::console::with_console(console_id, f)` or `crate::console::write()` and ConsoleManager APIs.
 
 - `kernel/src/io/hid/mod.rs`
-  - Compatibility aliases (`InputKeyCode`, `InputKeyEvent`, `InputKeyState`, `InputModifiers`) ✅ **deprecated**
+  - Compatibility aliases (`InputKeyCode`, `InputKeyEvent`, `InputKeyState`, `InputModifiers`) ❌ **removed**
     - Migration: Use `KeyCode`, `KeyEvent`, `KeyState`, `Modifiers` directly.
-  - `has_key_event()` ✅ **deprecated**
+  - `has_key_event()` ❌ **removed**
     - Migration: Use `keyboard::has_event()` or the `KeyboardStream` async API.
-  - `MouseBtn`, `MouseEvt` ✅ **deprecated**
+  - `MouseBtn`, `MouseEvt` ❌ **removed**
     - Migration: Use `MouseButton` and `MouseEvent` directly.
   - PS/2 helpers (`get_key_event`, `get_modifiers`, `get_mouse_event`) ❌ **removed**
     - Migration: Prefer `KeyboardStream` or unified HID driver APIs; use `keyboard::take_stream()` or `keyboard::has_event()` instead.
@@ -125,7 +125,7 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use the token-aware API: `UdpSocketTable::bind_with_token(port, Some(token))`. For the no-token case use `UdpSocketTable::bind_with_token(port, None)` or the stack helper `bind_udp(port)`/`bind_udp_with_token(port, token)` as appropriate.
 
 - `kernel/src/io/mod.rs`
-  - `parse_dmar_table()` ✅ **deprecated**
+  - `parse_dmar_table()` ❌ **removed**
     - Migration: Call `acpi::dmar::parse_dmar` directly.
 
 - `kernel/src/shell/graphical/render.rs`
@@ -204,6 +204,6 @@ This document lists symbols that have been marked deprecated and recommended mig
 
 ### 残存する deprecated 項目（呼び出し元あり、要段階的移行）
 - `submit_tx()` — ブートストラップ用フォールバック。呼び出し元なしだが意図的に保持
-- `Ipv4Header::compute_checksum()`, `update_checksum()`, `verify_checksum()` — 内部・外部から使用中
+- `Ipv4Header::compute_checksum()`, `update_checksum()`, `verify_checksum()` ❌ **removed**
 - `notify_addr` フィールド — virtio transport で現役使用中
 - IO scheduler の `#[allow(deprecated)]` — 内部パターン互換性のため保持
