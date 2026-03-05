@@ -203,20 +203,44 @@ pub fn build_create_tis_input(in_mbox: &mut CmdMailbox, params: &TisParams) {
     // - tisc context starts at 0x20
     let ctx = 0x20usize;
 
-    // Keep lag affinity fields cleared here and program only traffic class priority.
-    // Linux mlx5 path sets affinity through MODIFY_TIS when needed.
-    let tisc0 = ((params.prio as u32) & 0x0F) << 16;
+    // tisc first dword:
+    // - lag_tx_port_affinity[3:0] at bits 27:24
+    // - prio[3:0] at bits 19:16
+    // Keep strict_lag_tx_port_affinity/tls_en cleared for regular Ethernet VF path.
+    let lag_affinity = (params.port as u32) & 0x0F;
+    let tisc0 = (lag_affinity << 24) | (((params.prio as u32) & 0x0F) << 16);
     in_mbox.write_be32(ctx, tisc0);
     // tisc.transport_domain[23:0] in dword @ ctx+0x24
     in_mbox.write_be32(ctx + 0x24, params.td & 0x00FF_FFFF);
-    // tisc.pd[23:0] in dword @ ctx+0x2C
-    in_mbox.write_be32(ctx + 0x2C, params.pd & 0x00FF_FFFF);
+    // For regular Ethernet TIS, leave tisc.pd cleared.
+    // Linux only programs this field for TLS-enabled TIS objects.
+    let _ = params.pd;
 }
 
 /// CREATE_TIS 出力からTIS番号を解析
 pub fn parse_create_tis_output(out_mbox: &CmdMailbox) -> u32 {
     // mlx5_ifc_create_tis_out_bits: tisn[23:0] at byte offset 0x09.
     out_mbox.read_be24(0x09)
+}
+
+/// QUERY_TIS コマンド入力の構築
+pub fn build_query_tis_input(in_mbox: &mut CmdMailbox, tisn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    // mlx5_ifc_query_tis_in_bits: tisn[23:0] at dword offset 0x04.
+    in_mbox.write_be32(0x04, tisn & 0x00FF_FFFF);
+}
+
+/// QUERY_TIS 出力から TIS context の主要フィールドを解析
+///
+/// Returns: (prio, transport_domain, underlay_qpn, pd)
+pub fn parse_query_tis_output(out_mbox: &CmdMailbox) -> (u8, u32, u32, u32) {
+    // mlx5_ifc_query_tis_out_bits has tisc at byte offset 0x10.
+    let ctx = 0x10usize;
+    let prio = ((out_mbox.read_be32(ctx) >> 16) & 0x0F) as u8;
+    let td = out_mbox.read_be32(ctx + 0x24) & 0x00FF_FFFF;
+    let underlay_qpn = out_mbox.read_be32(ctx + 0x28) & 0x00FF_FFFF;
+    let pd = out_mbox.read_be32(ctx + 0x2C) & 0x00FF_FFFF;
+    (prio, td, underlay_qpn, pd)
 }
 
 /// CREATE_TIR コマンド入力の構築

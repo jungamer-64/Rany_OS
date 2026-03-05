@@ -277,12 +277,15 @@ impl CmdQueueTransport {
                 | CmdOpcode::DestroyRq
                 | CmdOpcode::ModifyRq
                 | CmdOpcode::CreateTis
+                | CmdOpcode::ModifyTis
                 | CmdOpcode::DestroyTis
                 | CmdOpcode::CreateTir
+                | CmdOpcode::ModifyTir
                 | CmdOpcode::DestroyTir
                 | CmdOpcode::CreateMkey
                 | CmdOpcode::DestroyMkey
                 | CmdOpcode::CreateRqt
+                | CmdOpcode::ModifyRqt
                 | CmdOpcode::DestroyRqt
                 | CmdOpcode::CreateFlowTable
         )
@@ -1029,9 +1032,8 @@ pub fn build_create_sq_input(
     in_mbox.write_be32(ctx, 1 << 28);
     // sqc.cqn[23:0] at ctx+0x08
     in_mbox.write_be32(ctx + 0x08, cqn & 0x00FF_FFFF);
-    // sqc.packet_pacing_rate_limit_index[15:0] sits at ctx+0x1C (low 16 bits).
-    // 0xFFFF disables packet pacing and matches Linux mlx5 SQ bring-up defaults.
-    in_mbox.write_be32(ctx + 0x1C, 0x0000_FFFF);
+    // Keep packet pacing fields at reset defaults (zero) during CREATE_SQ.
+    // Linux programs RL index later via MODIFY_SQ only when rate limiting is enabled.
     // sqc.tis_lst_sz[15:0] is at ctx+0x20 high 16 bits.
     let tis_list_size = 1u32;
     in_mbox.write_be32(ctx + 0x20, (tis_list_size & 0xFFFF) << 16);
@@ -1054,11 +1056,11 @@ pub fn build_create_sq_input(
     let wq_sz_word = ((log_wq_stride & 0x0F) << 16) | ((log_wq_pg_sz & 0x1F) << 8) | log_wq_sz;
     in_mbox.write_be32(wq + 0x20, wq_sz_word);
 
-    // sqc.wq.pas[] starts at wq+0x40.
+    // sqc.wq.pas[] starts at wq+0xC0 (create_sq_in byte offset 0x110).
     let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
     let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
     for i in 0..sq_pages {
-        let off = wq + 0x40 + i * 8;
+        let off = wq + 0xC0 + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
             in_mbox.write_be64(off, sq_buf_pa + (i as u64) * (crate::defs::MLX5_PAGE_SIZE as u64));
         }
@@ -1136,11 +1138,11 @@ pub fn build_create_rq_input(
     let wq_sz_word = ((log_wq_stride & 0x0F) << 16) | ((log_wq_pg_sz & 0x1F) << 8) | log_wq_sz;
     in_mbox.write_be32(wq + 0x20, wq_sz_word);
 
-    // rqc.wq.pas[] starts at wq+0x40.
+    // rqc.wq.pas[] starts at wq+0xC0 (create_rq_in byte offset 0x110).
     let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
     let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
     for i in 0..rq_pages {
-        let off = wq + 0x40 + i * 8;
+        let off = wq + 0xC0 + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
             in_mbox.write_be64(off, rq_buf_pa + (i as u64) * (crate::defs::MLX5_PAGE_SIZE as u64));
         }
@@ -1333,4 +1335,53 @@ pub fn build_delete_flow_table_entry_input(
     *in_mbox = CmdMailbox::zeroed();
     in_mbox.write_be32(0x04, table_id & 0x00FF_FFFF);
     in_mbox.write_be32(0x08, flow_index);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::defs::{MLX5_PAGE_SIZE, WQEBB_SIZE};
+
+    #[test]
+    fn create_sq_pas_starts_at_0x110() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let sq_pa = 0x1234_5678_0000u64;
+        let log_sq_size = 7u8; // 128 SQ entries * 64B stride = 8KiB => 2 pages
+
+        build_create_sq_input(
+            &mut in_mbox,
+            log_sq_size,
+            sq_pa,
+            0x2000,
+            0x10,
+            0x20,
+            0x30,
+            0x40,
+        );
+
+        let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
+        let sq_pages = (sq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
+        assert_eq!(sq_pages, 2);
+        assert_eq!(in_mbox.read_be64(0x110), sq_pa);
+        assert_eq!(in_mbox.read_be64(0x118), sq_pa + (MLX5_PAGE_SIZE as u64));
+        assert_eq!(in_mbox.read_be64(0x90), 0);
+        assert_eq!(in_mbox.read_be64(0x98), 0);
+    }
+
+    #[test]
+    fn create_rq_pas_starts_at_0x110() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let rq_pa = 0x2345_6789_0000u64;
+        let log_rq_size = 9u8; // 512 WQEBB * 16B = 8KiB => 2 pages
+
+        build_create_rq_input(&mut in_mbox, log_rq_size, rq_pa, 0x3000, 0x10, 0x40);
+
+        let rq_bytes = (1usize << (log_rq_size as usize)) * WQEBB_SIZE;
+        let rq_pages = (rq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
+        assert_eq!(rq_pages, 2);
+        assert_eq!(in_mbox.read_be64(0x110), rq_pa);
+        assert_eq!(in_mbox.read_be64(0x118), rq_pa + (MLX5_PAGE_SIZE as u64));
+        assert_eq!(in_mbox.read_be64(0x90), 0);
+        assert_eq!(in_mbox.read_be64(0x98), 0);
+    }
 }

@@ -498,8 +498,17 @@ impl Mlx5Device {
             let caps = fw::parse_hca_caps(&out_mbox.data);
             log::info!(
                 target: "mlx5",
-                "HCA caps: ports={}, max_cq={}, max_sq={}, max_rq={}, csum={}",
-                caps.num_ports, caps.max_cq, caps.max_sq, caps.max_rq, caps.csum_cap
+                "HCA caps: ports={} max_cq={} max_sq={} max_rq={} csum={} log_max_tir={} log_max_tis={} log_max_tis_per_sq={} log_max_td={} tis_tir_td_order={}",
+                caps.num_ports,
+                caps.max_cq,
+                caps.max_sq,
+                caps.max_rq,
+                caps.csum_cap,
+                caps.log_max_tir,
+                caps.log_max_tis,
+                caps.log_max_tis_per_sq,
+                caps.log_max_transport_domain,
+                caps.tis_tir_td_order
             );
 
             let num_ports = caps.num_ports.max(1).min(MLX5_MAX_PORTS as u8);
@@ -857,6 +866,13 @@ impl Mlx5Device {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
         let vhca_uid = self.sw_vhca_id;
+        log::debug!(
+            target: "mlx5",
+            "[mlx5-diag] CREATE_TIS uid-base prev_uid={} vhca_uid={} is_vf={}",
+            prev_uid,
+            vhca_uid,
+            is_vf
+        );
 
         let mut uid_candidates = [0u16; 3];
         let mut uid_count = 0usize;
@@ -889,36 +905,29 @@ impl Mlx5Device {
         };
 
         for &uid in &uid_candidates[..uid_count] {
-            // Baseline path first, then relaxed variants for VF firmware differences.
-            push_attempt(uid, params.td, params.pd);
-            if params.pd != 0 {
-                push_attempt(uid, params.td, 0);
-            }
-            if params.td != 0 {
-                push_attempt(uid, 0, params.pd);
-            }
-            if params.td != 0 || params.pd != 0 {
-                push_attempt(uid, 0, 0);
+            if is_vf {
+                // Keep VF CREATE_TIS probing minimal and deterministic.
+                push_attempt(uid, params.td, params.pd);
+            } else {
+                // Baseline path first, then relaxed variants for broader FW compatibility.
+                push_attempt(uid, params.td, params.pd);
+                if params.pd != 0 {
+                    push_attempt(uid, params.td, 0);
+                }
+                if params.td != 0 {
+                    push_attempt(uid, 0, params.pd);
+                }
+                if params.td != 0 || params.pd != 0 {
+                    push_attempt(uid, 0, 0);
+                }
             }
         }
 
-        let mut in_len_candidates = [0xC0u32; 3];
-        let mut in_len_count = 1usize;
-        if is_vf {
-            // Some VF firmware revisions accept full mailbox-sized command payloads.
-            in_len_candidates[in_len_count] = 0x110;
-            in_len_count += 1;
-            in_len_candidates[in_len_count] = MLX5_CMD_MBOX_SIZE as u32;
-            in_len_count += 1;
-        }
+        let mut in_len_candidates = [0xC0u32; 1];
+        let in_len_count = 1usize;
 
-        let mut underlay_qpn_candidates = [0u32; 2];
-        let mut underlay_qpn_count = 1usize;
-        if is_vf {
-            // Some VF firmware variants require explicit "no underlay QPN" sentinel.
-            underlay_qpn_candidates[underlay_qpn_count] = 0x00FF_FFFF;
-            underlay_qpn_count += 1;
-        }
+        let mut underlay_qpn_candidates = [0u32; 1];
+        let underlay_qpn_count = 1usize;
 
         let total_attempts = attempt_count * underlay_qpn_count * in_len_count;
         let mut executed = 0usize;
@@ -1011,6 +1020,80 @@ impl Mlx5Device {
 
         log::info!(target: "mlx5", "TIS created: tisn={}", tisn);
         Ok(tisn)
+    }
+
+    /// QUERY_TIS で既存 TISN を探索する（VF fallback用）
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    unsafe fn discover_existing_tisn(&mut self) -> Mlx5Result<Option<u32>> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let mut candidates = [0u32; 80];
+        let mut candidate_count = 0usize;
+        let mut push_candidate = |tisn: u32| {
+            if candidate_count >= candidates.len() {
+                return;
+            }
+            if candidates[..candidate_count].contains(&tisn) {
+                return;
+            }
+            candidates[candidate_count] = tisn;
+            candidate_count += 1;
+        };
+
+        // Probe common low IDs first.
+        for tisn in 0..64u32 {
+            push_candidate(tisn);
+        }
+        for &tisn in &[64u32, 128, 256, 512, 1024, 2048, 4095] {
+            push_candidate(tisn);
+        }
+        if let Some(caps) = self.hca_caps {
+            let max_tis = 1u32
+                .checked_shl((caps.log_max_tis as u32).min(12))
+                .unwrap_or(0);
+            if max_tis > 0 {
+                push_candidate(max_tis / 2);
+                push_candidate(max_tis.saturating_sub(1));
+            }
+        }
+
+        for &tisn in &candidates[..candidate_count] {
+            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+            crate::resources::build_query_tis_input(in_mbox, tisn);
+            match cmd.execute(
+                CmdOpcode::QueryTis,
+                self.cmd_in_mbox_phys,
+                0x10,
+                self.cmd_out_mbox_phys,
+                MLX5_CMD_MBOX_SIZE as u32,
+            ) {
+                Ok(()) => {
+                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    let (prio, td, underlay_qpn, pd) = crate::resources::parse_query_tis_output(out_mbox);
+                    log::debug!(
+                        target: "mlx5",
+                        "QUERY_TIS found tisn={} prio={} td={} underlay_qpn={:#x} pd={}",
+                        tisn,
+                        prio,
+                        td,
+                        underlay_qpn,
+                        pd
+                    );
+                    return Ok(Some(tisn));
+                }
+                Err(Mlx5Error::CommandFailed(status)) if status == CmdStatus::BadOpcode as u8 => {
+                    // FW does not support QUERY_TIS in this mode.
+                    return Ok(None);
+                }
+                Err(Mlx5Error::CommandFailed(_)) => {}
+                Err(Mlx5Error::CommandTimeout) => return Ok(None),
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(None)
     }
 
     /// TIR (Transport Interface Receive) を作成
@@ -1522,7 +1605,17 @@ impl Mlx5Device {
         cqn: u32,
         tisn: u32,
     ) -> Mlx5Result<u32> {
+        let is_vf = self.is_virtual_function();
+        let vhca_uid = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let prev_uid = cmd.uid();
+        log::debug!(
+            target: "mlx5",
+            "[mlx5-diag] CREATE_SQ uid-base prev_uid={} vhca_uid={} is_vf={}",
+            prev_uid,
+            vhca_uid,
+            is_vf
+        );
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::build_create_sq_input(
@@ -1536,23 +1629,69 @@ impl Mlx5Device {
             self.pd,
         );
 
-        // mlx5_ifc_create_sq_in_bits has a fixed size of 0x110 bytes.
-        let sq_in_len = 0x110u32;
+        let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
+        let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+        let sq_in_len = (0x110 + sq_pages * 8) as u32;
         log::debug!(
             target: "mlx5",
-            "[mlx5-diag] CREATE_SQ in_len={:#x} cqn={} tisn={} log_sq_size={}",
+            "[mlx5-diag] CREATE_SQ in_len={:#x} pages={} cqn={} tisn={} log_sq_size={}",
             sq_in_len,
+            sq_pages,
             cqn,
             tisn,
             log_sq_size
         );
-        cmd.execute(
-            CmdOpcode::CreateSq,
-            self.cmd_in_mbox_phys,
-            sq_in_len,
-            self.cmd_out_mbox_phys,
-            0x10,
-        )?;
+        let mut uid_candidates = [0u16; 3];
+        let mut uid_count = 0usize;
+        let mut push_uid = |uid: u16| {
+            if uid_candidates[..uid_count].contains(&uid) {
+                return;
+            }
+            uid_candidates[uid_count] = uid;
+            uid_count += 1;
+        };
+        push_uid(prev_uid);
+        if is_vf {
+            if vhca_uid != 0 && vhca_uid != 0xFFFF {
+                push_uid(vhca_uid);
+            }
+            push_uid(0xFFFF);
+        }
+
+        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        for i in 0..uid_count {
+            let uid = uid_candidates[i];
+            cmd.set_uid(uid);
+            log::debug!(
+                target: "mlx5",
+                "[mlx5-diag] CREATE_SQ uid-attempt={}/{} uid={}",
+                i + 1,
+                uid_count,
+                uid
+            );
+            let res = cmd.execute(
+                CmdOpcode::CreateSq,
+                self.cmd_in_mbox_phys,
+                sq_in_len,
+                self.cmd_out_mbox_phys,
+                0x10,
+            );
+            match res {
+                Ok(()) => {
+                    exec_res = Ok(());
+                    break;
+                }
+                Err(Mlx5Error::CommandFailed(_)) if is_vf && (i + 1) < uid_count => {
+                    exec_res = res;
+                }
+                other => {
+                    exec_res = other;
+                    break;
+                }
+            }
+        }
+        cmd.set_uid(prev_uid);
+        exec_res?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let sqn = crate::cmd::parse_create_sq_output(out_mbox);
@@ -1636,7 +1775,7 @@ impl Mlx5Device {
 
         let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
         let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
-        let rq_in_len = (0x90 + rq_pages * 8) as u32;
+        let rq_in_len = (0x110 + rq_pages * 8) as u32;
 
         cmd.execute(
             CmdOpcode::CreateRq,
@@ -2669,6 +2808,14 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "[2/8] HCA initialized");
         log::info!(target: "mlx5", "[2/8] Startup/init pages setup complete");
 
+        if self.is_virtual_function() {
+            if let Some(cmd) = self.cmd.as_mut() {
+                // Keep VF resources and object-creation commands in a shared UID domain.
+                // Without this, VF FW can reject CREATE_TIS/CREATE_SQ due to UID mismatch.
+                cmd.set_uid(0xFFFF);
+            }
+        }
+
         // Phase 3: Resource allocation
         self.alloc_uar().map_err(|e| {
             log::error!(target: "mlx5", "alloc_uar failed: {:?}", e);
@@ -2808,9 +2955,24 @@ impl Mlx5Device {
             }
             Err(e) => return Err(e),
         };
-        let mut sq_tisn_candidates = [0u32; 8];
+        let discovered_tisn = if self.is_virtual_function() && !tis_from_fw {
+            match self.discover_existing_tisn() {
+                Ok(found) => found,
+                Err(err) => {
+                    log::debug!(target: "mlx5", "QUERY_TIS discovery failed: {:?}", err);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let mut sq_tisn_candidates = [0u32; 16];
         let mut sq_tisn_count = 0usize;
         let mut push_sq_tisn = |candidate: u32| {
+            if sq_tisn_count >= sq_tisn_candidates.len() {
+                return;
+            }
             if sq_tisn_candidates[..sq_tisn_count].contains(&candidate) {
                 return;
             }
@@ -2820,6 +2982,14 @@ impl Mlx5Device {
         if tis_from_fw || !self.is_virtual_function() {
             push_sq_tisn(tisn);
         } else {
+            if let Some(found) = discovered_tisn {
+                log::warn!(
+                    target: "mlx5",
+                    "[7/8] CREATE_TIS unavailable on VF; trying discovered tisn={}",
+                    found
+                );
+                push_sq_tisn(found);
+            }
             // Probe a small set of candidate TISNs used by some VF firmware defaults.
             push_sq_tisn(0);
             push_sq_tisn(1);
@@ -2829,6 +2999,10 @@ impl Mlx5Device {
             push_sq_tisn(8);
             push_sq_tisn(16);
             push_sq_tisn(32);
+            push_sq_tisn(64);
+            push_sq_tisn(128);
+            push_sq_tisn(256);
+            push_sq_tisn(512);
         }
 
         let mut selected_tisn = tisn;

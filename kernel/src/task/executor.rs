@@ -260,7 +260,9 @@ static EXECUTOR_STATS: ExecutorStats = ExecutorStats::new();
 static EXECUTOR_INITDBG_STAGE: AtomicUsize = AtomicUsize::new(0);
 // Keep RUNDBG poll spam disabled in normal runtime unless this counter is
 // explicitly reset by debug-only instrumentation.
-static EXECUTOR_RUNDBG_POLLS: AtomicUsize = AtomicUsize::new(usize::MAX);
+// `usize::MAX` would wrap to 0 at first `fetch_add`, unintentionally enabling
+// debug spam. Start from the cutoff so default runtime stays quiet.
+static EXECUTOR_RUNDBG_POLLS: AtomicUsize = AtomicUsize::new(1024);
 
 /// アクティブCPU数
 static ACTIVE_CPU_COUNT: AtomicUsize = AtomicUsize::new(1);

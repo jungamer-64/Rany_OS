@@ -146,6 +146,11 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
     let log_max_mkey = read_bits(0xEA, 0x6) as u8;
     let log_max_cq = read_bits(0xDB, 0x5) as u8;
     let log_max_eq = read_bits(0xFC, 0x4) as u8;
+    let log_max_transport_domain = read_bits(0x323, 0x5) as u8;
+    let log_max_tir = read_bits(0x373, 0x5) as u8;
+    let log_max_tis = read_bits(0x37B, 0x5) as u8;
+    let log_max_tis_per_sq = read_bits(0x39B, 0x5) as u8;
+    let tis_tir_td_order = read_bits(0x2A9, 0x1) != 0;
     let num_ports = read_bits(0x1B8, 0x8) as u8;
     let cqe_version = read_bits(0x1FC, 0x4) as u8;
     let csum_cap = read_bits(0x21D, 0x1) != 0; // eth_net_offloads
@@ -166,11 +171,16 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         log_max_cq_sz,
         log_max_sq_sz: log_max_qp_sz,
         log_max_rq_sz: log_max_qp_sz,
+        log_max_tir,
+        log_max_tis,
+        log_max_tis_per_sq,
+        log_max_transport_domain,
         log_max_eq_sz,
         scatter_fcs: false,
         vlan_strip: false,
         csum_cap,
         cqe_compression: false,
         cqe_version,
+        tis_tir_td_order,
     }
 }

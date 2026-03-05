@@ -250,27 +250,33 @@ pub enum CmdOpcode {
 
     /// SQ作成
     CreateSq = 0x0904,
-    /// SQ破棄
-    DestroySq = 0x0905,
     /// SQ状態変更
-    ModifySq = 0x0906,
+    ModifySq = 0x0905,
+    /// SQ破棄
+    DestroySq = 0x0906,
 
     /// RQ作成
     CreateRq = 0x0908,
-    /// RQ破棄
-    DestroyRq = 0x0909,
     /// RQ状態変更
-    ModifyRq = 0x090A,
+    ModifyRq = 0x0909,
+    /// RQ破棄
+    DestroyRq = 0x090A,
 
     /// TIR (Transport Interface Receive) 作成
     CreateTir = 0x0900,
+    /// TIR状態変更
+    ModifyTir = 0x0901,
     /// TIR破棄
-    DestroyTir = 0x0901,
+    DestroyTir = 0x0902,
 
     /// TIS (Transport Interface Send) 作成
     CreateTis = 0x0912,
+    /// TIS状態変更
+    ModifyTis = 0x0913,
     /// TIS破棄
-    DestroyTis = 0x0913,
+    DestroyTis = 0x0914,
+    /// TISクエリ
+    QueryTis = 0x0915,
 
     /// MACアドレスクエリ
     QueryNicVportContext = 0x0754,
@@ -307,8 +313,10 @@ pub enum CmdOpcode {
 
     /// RQT (Receive Queue Table) 作成
     CreateRqt = 0x0916,
+    /// RQT状態変更
+    ModifyRqt = 0x0917,
     /// RQT破棄
-    DestroyRqt = 0x0917,
+    DestroyRqt = 0x0918,
 
     /// フローテーブル作成
     CreateFlowTable = 0x0930,
@@ -333,7 +341,7 @@ pub enum CmdOpcode {
     ModifyCq = 0x0402,
 
     /// NOP (テスト用)
-    Nop = 0x80FD,
+    Nop = 0x080D,
 }
 
 // ============================================================================
@@ -460,6 +468,14 @@ pub struct HcaCaps {
     pub log_max_sq_sz: u8,
     /// ログ最大RQサイズ
     pub log_max_rq_sz: u8,
+    /// ログ最大TIR数
+    pub log_max_tir: u8,
+    /// ログ最大TIS数
+    pub log_max_tis: u8,
+    /// 1SQあたりのログ最大TIS参照数
+    pub log_max_tis_per_sq: u8,
+    /// ログ最大Transport Domain数
+    pub log_max_transport_domain: u8,
     /// ログ最大EQサイズ
     pub log_max_eq_sz: u8,
     /// Scatter FCS 対応
@@ -472,6 +488,8 @@ pub struct HcaCaps {
     pub cqe_compression: bool,
     /// CQEバージョン
     pub cqe_version: u8,
+    /// TIS/TIR/TD ordering capability bit
+    pub tis_tir_td_order: bool,
 }
 
 // ============================================================================
