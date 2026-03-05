@@ -931,6 +931,16 @@ pub mod mm {
                 }
             }
 
+            pub fn allocate_zeroed_on_node_with_info(
+                layout: Layout,
+                _node: Option<usize>,
+            ) -> Option<(NonNull<u8>, usize)> {
+                unsafe {
+                    let ptr = alloc_zeroed(layout);
+                    NonNull::new(ptr).map(|p| (p, 0))
+                }
+            }
+
             pub unsafe fn deallocate_on_node(
                 ptr: NonNull<u8>,
                 layout: Layout,
