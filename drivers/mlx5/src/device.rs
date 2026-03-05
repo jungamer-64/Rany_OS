@@ -1710,11 +1710,107 @@ impl Mlx5Device {
 
     /// HCAティアダウン（シャットダウン）
     ///
+    /// リソースの逆順破壊:
+    /// FlowTableEntry → FlowGroup → FlowTable → SQ → RQ → RQT → TIR → TIS
+    /// → CQ → EQ → MKEY → TD → PD → UAR → Pages → TeardownHCA → DisableHCA
+    ///
     /// # Safety
     /// - コマンドインタフェースが使用可能であること
     pub unsafe fn teardown(&mut self) -> Mlx5Result<()> {
+        log::info!(target: "mlx5", "Starting full teardown sequence...");
+
         if let Some(cmd) = self.cmd.as_mut() {
-            // Destroy TIRs
+            // 1. Destroy Flow Table Entries, Groups, Tables (reverse order)
+            for ft in self.flow_tables.iter().rev() {
+                for entry in &ft.entries {
+                    let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                    crate::cmd::build_delete_flow_table_entry_input(
+                        in_mbox,
+                        ft.table_id,
+                        entry.flow_index,
+                    );
+                    let _ = cmd.execute(
+                        CmdOpcode::DeleteFlowTableEntry,
+                        self.cmd_in_mbox_phys,
+                        MLX5_CMD_MBOX_SIZE as u32,
+                        self.cmd_out_mbox_phys,
+                        MLX5_CMD_MBOX_SIZE as u32,
+                    );
+                }
+                for group in &ft.groups {
+                    let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                    crate::cmd::build_destroy_flow_group_input(
+                        in_mbox,
+                        ft.table_id,
+                        group.group_id,
+                    );
+                    let _ = cmd.execute(
+                        CmdOpcode::DestroyFlowGroup,
+                        self.cmd_in_mbox_phys,
+                        MLX5_CMD_MBOX_SIZE as u32,
+                        self.cmd_out_mbox_phys,
+                        MLX5_CMD_MBOX_SIZE as u32,
+                    );
+                }
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_destroy_flow_table_input(in_mbox, ft.table_id);
+                let _ = cmd.execute(
+                    CmdOpcode::DestroyFlowTable,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.flow_tables.clear();
+            log::trace!(target: "mlx5", "Flow tables destroyed");
+
+            // 2. Destroy SQs
+            for sq in &self.sqs {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_destroy_sq_input(in_mbox, sq.sqn);
+                let _ = cmd.execute(
+                    CmdOpcode::DestroySq,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.sqs.clear();
+            log::trace!(target: "mlx5", "SQs destroyed");
+
+            // 3. Destroy RQs
+            for rq in &self.rqs {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_destroy_rq_input(in_mbox, rq.rqn);
+                let _ = cmd.execute(
+                    CmdOpcode::DestroyRq,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.rqs.clear();
+            log::trace!(target: "mlx5", "RQs destroyed");
+
+            // 4. Destroy RQTs
+            for rqt in &self.rq_tables {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_destroy_rqt_input(in_mbox, rqt.rqtn);
+                let _ = cmd.execute(
+                    CmdOpcode::DestroyRqt,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.rq_tables.clear();
+            log::trace!(target: "mlx5", "RQTs destroyed");
+
+            // 5. Destroy TIRs
             for tir in &self.tir_list {
                 let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
                 crate::resources::build_destroy_tir_input(in_mbox, tir.tirn);
@@ -1727,8 +1823,9 @@ impl Mlx5Device {
                 );
             }
             self.tir_list.clear();
+            log::trace!(target: "mlx5", "TIRs destroyed");
 
-            // Destroy TISs
+            // 6. Destroy TISs
             for tis in &self.tis_list {
                 let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
                 crate::resources::build_destroy_tis_input(in_mbox, tis.tisn);
@@ -1741,8 +1838,40 @@ impl Mlx5Device {
                 );
             }
             self.tis_list.clear();
+            log::trace!(target: "mlx5", "TISs destroyed");
 
-            // Destroy MKEY
+            // 7. Destroy CQs
+            for cq in &self.cqs {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_destroy_cq_input(in_mbox, cq.cqn);
+                let _ = cmd.execute(
+                    CmdOpcode::DestroyCq,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.cqs.clear();
+            self.cq_db_records.clear();
+            log::trace!(target: "mlx5", "CQs destroyed");
+
+            // 8. Destroy EQs
+            for eq in &self.eqs {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_destroy_eq_input(in_mbox, eq.eqn);
+                let _ = cmd.execute(
+                    CmdOpcode::DestroyEq,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.eqs.clear();
+            log::trace!(target: "mlx5", "EQs destroyed");
+
+            // 9. Destroy MKEY
             if let Some(ref mkey_info) = self.mkey_info {
                 let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
                 crate::resources::build_destroy_mkey_input(in_mbox, mkey_info.mkey_index);
@@ -1755,8 +1884,57 @@ impl Mlx5Device {
                 );
             }
             self.mkey_info = None;
+            self.mkey = 0;
+            log::trace!(target: "mlx5", "MKEY destroyed");
 
-            // Reclaim pages from FW
+            // 10. Dealloc Transport Domain
+            if self.td != 0 {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_dealloc_td_input(in_mbox, self.td);
+                let _ = cmd.execute(
+                    CmdOpcode::DeallocTransportDomain,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+                self.td = 0;
+            }
+            log::trace!(target: "mlx5", "TD deallocated");
+
+            // 11. Dealloc Protection Domain
+            if self.pd != 0 {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_dealloc_pd_input(in_mbox, self.pd);
+                let _ = cmd.execute(
+                    CmdOpcode::DeallocPd,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+                self.pd = 0;
+            }
+            log::trace!(target: "mlx5", "PD deallocated");
+
+            // 12. Dealloc UARs
+            for uar in &self.allocated_uars {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::cmd::build_dealloc_uar_input(in_mbox, *uar);
+                let _ = cmd.execute(
+                    CmdOpcode::DeallocUar,
+                    self.cmd_in_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_phys,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                );
+            }
+            self.allocated_uars.clear();
+            self.uar_page = 0;
+            self.uar_base = 0;
+            log::trace!(target: "mlx5", "UARs deallocated");
+
+            // 13. Reclaim pages from FW
             if self.page_manager.total_given_pages() > 0 {
                 let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
                 let num_pages = self.page_manager.total_given_pages();
@@ -1779,8 +1957,9 @@ impl Mlx5Device {
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
+            log::trace!(target: "mlx5", "Pages reclaimed");
 
-            // TEARDOWN_HCA
+            // 14. TEARDOWN_HCA
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             crate::cmd::build_teardown_hca_input(in_mbox, true);
 
@@ -1791,8 +1970,9 @@ impl Mlx5Device {
                 self.cmd_out_mbox_phys,
                 MLX5_CMD_MBOX_SIZE as u32,
             );
+            log::trace!(target: "mlx5", "HCA torn down");
 
-            // DISABLE_HCA
+            // 15. DISABLE_HCA
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             *in_mbox = CmdMailbox::zeroed();
 
@@ -1803,6 +1983,7 @@ impl Mlx5Device {
                 self.cmd_out_mbox_phys,
                 MLX5_CMD_MBOX_SIZE as u32,
             );
+            log::trace!(target: "mlx5", "HCA disabled");
         }
 
         // ポートをダウンに
@@ -1811,8 +1992,198 @@ impl Mlx5Device {
             port.set_link_state(PortLinkState::Down);
         }
 
+        self.resources_allocated = false;
         self.state = DeviceState::Uninitialized;
-        log::info!(target: "mlx5", "Device torn down");
+        log::info!(target: "mlx5", "Full teardown completed");
+        Ok(())
+    }
+
+    // ========================================================================
+    // Phase 9: Full Initialization Orchestration
+    // ========================================================================
+
+    /// デバイスの完全パイプライン初期化
+    ///
+    /// 以下の順序でHCAの初期化を行い、パケット送受信可能な状態にする:
+    ///
+    /// 1. FW待機 → コマンドIF初期化 → HCA有効化&初期化
+    /// 2. UAR割り当て → PD割り当て → TD割り当て
+    /// 3. ドライババージョン通知 → ページ提供
+    /// 4. MACアドレス取得 → MKEY作成
+    /// 5. EQ作成 → CQ(TX/RX)作成
+    /// 6. TIS作成 → SQ作成&RDY遷移
+    /// 7. TIR作成 → RQ作成&RDY遷移
+    /// 8. フローテーブル設定 → ポートUp
+    ///
+    /// # Arguments
+    /// - `eq_buf`: (virt, phys) EQバッファ
+    /// - `tx_cq_buf`: (virt, phys, db_virt, db_phys) TX CQバッファ
+    /// - `rx_cq_buf`: (virt, phys, db_virt, db_phys) RX CQバッファ
+    /// - `sq_buf`: (virt, phys, db_virt, db_phys) SQバッファ
+    /// - `rq_buf`: (virt, phys, db_virt, db_phys) RQバッファ
+    /// - `log_eq_size`: EQエントリ数のlog2
+    /// - `log_cq_size`: CQエントリ数のlog2
+    /// - `log_sq_size`: SQエントリ数のlog2
+    /// - `log_rq_size`: RQエントリ数のlog2
+    ///
+    /// # Safety
+    /// - 全バッファアドレスが有効であること
+    /// - BAR0がマッピング済みであること
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn init_full(
+        &mut self,
+        eq_buf: (u64, u64),
+        tx_cq_buf: (u64, u64, u64, u64),
+        rx_cq_buf: (u64, u64, u64, u64),
+        sq_buf: (u64, u64, u64, u64),
+        rq_buf: (u64, u64, u64, u64),
+        log_eq_size: u8,
+        log_cq_size: u8,
+        log_sq_size: u8,
+        log_rq_size: u8,
+    ) -> Mlx5Result<()> {
+        log::info!(target: "mlx5", "=== Starting full pipeline initialization ===");
+
+        // Phase 1: Boot sequence
+        self.wait_firmware()?;
+        log::info!(target: "mlx5", "[1/8] Firmware ready");
+
+        self.init_command_interface()?;
+        log::info!(target: "mlx5", "[1/8] Command interface initialized");
+
+        self.enable_and_init_hca()?;
+        log::info!(target: "mlx5", "[1/8] HCA enabled and initialized");
+
+        // Phase 2: Resource allocation
+        self.alloc_uar()?;
+        log::info!(target: "mlx5", "[2/8] UAR allocated");
+
+        self.alloc_pd()?;
+        log::info!(target: "mlx5", "[2/8] PD allocated");
+
+        self.alloc_td()?;
+        log::info!(target: "mlx5", "[2/8] TD allocated");
+
+        // Phase 3: FW setup
+        let _ = self.set_driver_version(); // Non-fatal if fails
+        log::info!(target: "mlx5", "[3/8] Driver version set");
+
+        self.provide_pages()?;
+        log::info!(target: "mlx5", "[3/8] Pages provided to FW");
+
+        // Phase 4: Key resources
+        self.query_port_mac(0)?;
+        log::info!(target: "mlx5", "[4/8] MAC address obtained");
+
+        self.create_mkey()?;
+        log::info!(target: "mlx5", "[4/8] MKEY created");
+
+        // Phase 5: Event & Completion queues
+        let event_mask = crate::defs::eq_event_mask::CQ_COMPLETION
+            | crate::defs::eq_event_mask::PORT_STATE_CHANGE
+            | crate::defs::eq_event_mask::CMD_COMPLETION
+            | crate::defs::eq_event_mask::PAGE_REQUEST;
+
+        let eqn = self.create_eq_hw(
+            eq_buf.0,
+            eq_buf.1,
+            log_eq_size,
+            0, // MSI-X vector 0
+            event_mask,
+        )?;
+        log::info!(target: "mlx5", "[5/8] EQ created (eqn={})", eqn);
+
+        let tx_cqn = self.create_cq_hw(
+            tx_cq_buf.0,
+            tx_cq_buf.1,
+            tx_cq_buf.2,
+            tx_cq_buf.3,
+            log_cq_size,
+            eqn,
+        )?;
+        log::info!(target: "mlx5", "[5/8] TX CQ created (cqn={})", tx_cqn);
+
+        let rx_cqn = self.create_cq_hw(
+            rx_cq_buf.0,
+            rx_cq_buf.1,
+            rx_cq_buf.2,
+            rx_cq_buf.3,
+            log_cq_size,
+            eqn,
+        )?;
+        log::info!(target: "mlx5", "[5/8] RX CQ created (cqn={})", rx_cqn);
+
+        // Phase 6: TX path
+        let tis_params = crate::resources::TisParams {
+            td: self.td,
+            prio: 0,
+        };
+        let tisn = self.create_tis(&tis_params)?;
+        log::info!(target: "mlx5", "[6/8] TIS created (tisn={})", tisn);
+
+        let sqn = self.create_sq_hw(
+            sq_buf.0,
+            sq_buf.1,
+            sq_buf.2,
+            sq_buf.3,
+            log_sq_size,
+            tx_cqn,
+            tisn,
+        )?;
+        log::info!(target: "mlx5", "[6/8] SQ created and RDY (sqn={})", sqn);
+
+        // Phase 7: RX path
+        let tir_params = crate::resources::TirParams {
+            receive_type: TirReceiveType::Direct,
+            td: self.td,
+            inline_rqn: 0, // Will be filled after RQ creation
+            rqtn: 0,
+            rss: None,
+            scatter_fcs: false,
+            vlan_strip: false,
+        };
+        let tirn = self.create_tir(&tir_params)?;
+
+        let rqn = self.create_rq_hw(
+            rq_buf.0,
+            rq_buf.1,
+            rq_buf.2,
+            rq_buf.3,
+            log_rq_size,
+            rx_cqn,
+            tirn,
+        )?;
+        log::info!(target: "mlx5", "[7/8] RQ created and RDY (rqn={})", rqn);
+
+        // Phase 8: Flow steering & finalize
+        self.setup_rx_flow_table(tirn)?;
+        log::info!(target: "mlx5", "[8/8] Flow table configured");
+
+        // Set CQ moderation defaults (moderate for latency)
+        let _ = self.set_cq_moderation(0, 16, 64); // TX CQ: 16 CQEs or 64us
+        let _ = self.set_cq_moderation(1, 16, 64); // RX CQ: 16 CQEs or 64us
+
+        // ポートUp
+        if let Some(port) = self.ports.get_mut(0) {
+            port.admin_up();
+            log::info!(target: "mlx5", "[8/8] Port 1 administratively up");
+        }
+
+        self.resources_allocated = true;
+        self.state = DeviceState::Active;
+
+        log::info!(target: "mlx5", "=== Full pipeline initialization complete ===");
+        log::info!(
+            target: "mlx5",
+            "  EQ={} TX_CQ={} RX_CQ={} SQ={} RQ={} TIS={} TIR={}",
+            eqn, tx_cqn, rx_cqn, sqn, rqn, tisn, tirn
+        );
+        log::info!(
+            target: "mlx5",
+            "  UAR={} PD={} TD={} MKEY=0x{:08x}",
+            self.uar_page, self.pd, self.td, self.mkey
+        );
+
         Ok(())
     }
 
