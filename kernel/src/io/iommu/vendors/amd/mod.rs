@@ -8,48 +8,48 @@ pub mod cmd;
 pub mod driver;
 pub mod tables;
 
-pub(super) mod registers;
 pub(super) mod device_table;
+pub(super) mod dma;
+pub(super) mod domain;
 pub(super) mod event_log;
 pub(super) mod fault;
-pub(super) mod invalidation;
-pub(super) mod domain;
-pub(super) mod dma;
 pub(super) mod init;
+pub(super) mod invalidation;
 pub(super) mod irt;
+pub(super) mod registers;
 
 // shared helpers pulled out of the previous `qemu_tests` module
 pub(super) mod ivrs_utils;
 
-#[cfg(test)]
-mod tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
+#[cfg(test)]
+mod tests;
 
 // Re-exports for external callers (driver.rs, backend.rs, etc.)
-pub use self::init::init_iommu_from_ivrs;
-#[allow(unused_imports)]
-pub use self::fault::{drain_deferred_faults, fault_handler_task, spawn_fault_handler_task};
 #[cfg(test)]
 pub(crate) use self::domain::map_ivmd_ranges;
+#[allow(unused_imports)]
+pub use self::fault::{drain_deferred_faults, fault_handler_task, spawn_fault_handler_task};
+pub use self::init::init_iommu_from_ivrs;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::io::acpi::ivrs::{IvhdDeviceEntry, IvmdInfo};
-use crate::io::iommu::runtime::command::queue::CommandQueue;
-use crate::io::iommu::common::tables::phys_to_virt_usize;
-use crate::io::mmio::{mmio_read_u64, mmio_write_u64};
 use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
-use crate::mm::types::PAGE_SIZE_4K;
+use crate::io::iommu::common::tables::phys_to_virt_usize;
+use crate::io::iommu::runtime::command::queue::CommandQueue;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
+use crate::io::mmio::{mmio_read_u64, mmio_write_u64};
+use crate::mm::types::PAGE_SIZE_4K;
 use crate::sync::PoisonLock;
 use hashbrown::HashMap;
 
+use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain as DomainState;
 use crate::io::iommu::runtime::backend::IommuBackend;
-use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::runtime::registry::{get_iommu_driver, init_driver};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 
@@ -277,6 +277,7 @@ impl AmdIommuDriver {
             false,
             false,
             max_addr_bits,
+            4,
             IommuDomainType::Translated,
             page_table_pool.clone(),
             PteFormat::Amd,
@@ -324,13 +325,7 @@ impl AmdIommuDriver {
         if get_iommu_driver().is_some() {
             return Err(IommuError::AlreadyInitialized);
         }
-        let driver = AmdIommuDriver::new(
-            units,
-            ivmd_ranges,
-            cmd_states,
-            event_logs,
-            device_tables,
-        );
+        let driver = AmdIommuDriver::new(units, ivmd_ranges, cmd_states, event_logs, device_tables);
         driver.populate_default_entries()?;
         init_driver(Arc::new(IommuBackend::Amd(driver)));
         Ok(())
@@ -555,7 +550,7 @@ impl AmdIommuDriver {
         table.clear_entry(devid)?;
 
         // Security: Invalidate IOMMU caches.
-        // It is CRITICAL that these invalidations succeed during isolation to prevent 
+        // It is CRITICAL that these invalidations succeed during isolation to prevent
         // a compromised or faulting device from continuing DMA using cached entries.
         self.invalidate_domain_pages(0, 0, u64::MAX)?; // Global domain invalidation for safety
         self.invalidate_iotlb_pages(device, 0, u64::MAX)?;
@@ -597,7 +592,11 @@ impl crate::io::iommu::common::interface::IommuHardwareContext for AmdIommuDrive
         mask: u64,
     ) -> Result<u64, IommuError> {
         self.iova_allocator
-            .allocate_with_limit(size, crate::io::iommu::common::dma::iova_allocator::PageGranularity::Page4K, mask)
+            .allocate_with_limit(
+                size,
+                crate::io::iommu::common::dma::iova_allocator::PageGranularity::Page4K,
+                mask,
+            )
             .ok_or(IommuError::OutOfIova)
     }
 

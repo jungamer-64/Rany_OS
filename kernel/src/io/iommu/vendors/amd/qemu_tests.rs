@@ -10,28 +10,22 @@ use core::sync::atomic::{AtomicBool, AtomicU64};
 use hashbrown::HashMap;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
-use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
-use crate::io::iommu::common::domain::IommuDomain as DomainState;
+use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::common::domain::IommuDomain as DomainState;
+use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
 use crate::io::iommu::runtime::security::SecurityNotifier;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
-use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::sync::PoisonLock;
 
 use super::registers::AMD_DEFAULT_MAX_ADDR_BITS;
 use super::{AmdDomainInfo, AmdIommuDriver, AmdIommuUnit, AmdIvmdRange};
 // helper routines live in a shared utility module now (see ivrs_utils.rs)
 use super::ivrs_utils::{
+    alias_devids_for_entries, ivhd_flags_for_entries, reject_excluded_ivmd_range_for_device,
     unit_covers_devid,
-    alias_devids_for_entries,
-    ivhd_flags_for_entries,
-    reject_excluded_ivmd_range_for_device,
 };
-
-
-
-
 
 fn align_down(value: u64, align: usize) -> u64 {
     crate::util::align_down_u64(value, align as u64)
@@ -214,8 +208,12 @@ pub fn wave0_map_ivmd_ranges_exclusion_splits_smoke() -> bool {
     ];
 
     let segments = split_unity_map_segments(&ranges);
-    segments.iter().any(|(start, end)| *start == 0x1000 && *end == 0x2000)
-        && segments.iter().any(|(start, end)| *start == 0x3000 && *end == 0x5000)
+    segments
+        .iter()
+        .any(|(start, end)| *start == 0x1000 && *end == 0x2000)
+        && segments
+            .iter()
+            .any(|(start, end)| *start == 0x3000 && *end == 0x5000)
         && !segments.iter().any(|(start, _)| *start == 0x2000)
         && segments.len() == 2
 }
@@ -256,10 +254,8 @@ fn make_test_driver() -> AmdIommuDriver {
     };
 
     let page_table_pool = PageTablePool::new(1, 1);
-    let iova_allocator = IovaAllocator::new(
-        PAGE_SIZE_4K as u64,
-        (1u64 << 20) - PAGE_SIZE_4K as u64,
-    );
+    let iova_allocator =
+        IovaAllocator::new(PAGE_SIZE_4K as u64, (1u64 << 20) - PAGE_SIZE_4K as u64);
 
     let default_domain = DomainState::new(
         0,
@@ -267,13 +263,19 @@ fn make_test_driver() -> AmdIommuDriver {
         false,
         false,
         AMD_DEFAULT_MAX_ADDR_BITS,
+        4,
         IommuDomainType::Translated,
         page_table_pool.clone(),
         PteFormat::Amd,
     );
     let default_domain = Arc::new(default_domain);
     let mut domain_map = HashMap::new();
-    domain_map.insert(0, AmdDomainInfo { domain: default_domain });
+    domain_map.insert(
+        0,
+        AmdDomainInfo {
+            domain: default_domain,
+        },
+    );
 
     AmdIommuDriver {
         units: alloc::vec![unit],
@@ -319,12 +321,10 @@ fn wave1_cmdqueue_map_unmap_with_domain_fallback_smoke() -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
-    if cq
-        .process_once(|kind| match kind {
-            IommuCommandKind::MapRegionDevice { .. } => Ok(0),
-            _ => Err(()),
-        })
-        != 1
+    if cq.process_once(|kind| match kind {
+        IommuCommandKind::MapRegionDevice { .. } => Ok(0),
+        _ => Err(()),
+    }) != 1
     {
         return false;
     }
@@ -332,17 +332,15 @@ fn wave1_cmdqueue_map_unmap_with_domain_fallback_smoke() -> bool {
         return false;
     }
 
-    let unmap_completion = match cq.submit(IommuCommandKind::UnmapRegionDevice { device, iova, size })
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    if cq
-        .process_once(|kind| match kind {
-            IommuCommandKind::UnmapRegionDevice { .. } => Ok(0),
-            _ => Err(()),
-        })
-        != 1
+    let unmap_completion =
+        match cq.submit(IommuCommandKind::UnmapRegionDevice { device, iova, size }) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+    if cq.process_once(|kind| match kind {
+        IommuCommandKind::UnmapRegionDevice { .. } => Ok(0),
+        _ => Err(()),
+    }) != 1
     {
         return false;
     }
@@ -366,12 +364,10 @@ fn wave1_map_device_nonblocking_fallback_smoke() -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
-    if cq
-        .process_once(|kind| match kind {
-            IommuCommandKind::MapRegionDevice { .. } => Ok(0),
-            _ => Err(()),
-        })
-        != 1
+    if cq.process_once(|kind| match kind {
+        IommuCommandKind::MapRegionDevice { .. } => Ok(0),
+        _ => Err(()),
+    }) != 1
     {
         return false;
     }
@@ -379,17 +375,15 @@ fn wave1_map_device_nonblocking_fallback_smoke() -> bool {
         return false;
     }
 
-    let unmap_completion = match cq.submit(IommuCommandKind::UnmapRegionDevice { device, iova, size })
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    if cq
-        .process_once(|kind| match kind {
-            IommuCommandKind::UnmapRegionDevice { .. } => Ok(0),
-            _ => Err(()),
-        })
-        != 1
+    let unmap_completion =
+        match cq.submit(IommuCommandKind::UnmapRegionDevice { device, iova, size }) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+    if cq.process_once(|kind| match kind {
+        IommuCommandKind::UnmapRegionDevice { .. } => Ok(0),
+        _ => Err(()),
+    }) != 1
     {
         return false;
     }
@@ -401,7 +395,9 @@ fn wave1_dma_mask_respects_32bit_limit_fallback_smoke() -> bool {
     let mask = 0xFFFF_FFFFu64;
     let iova = 0x00FF_F000u64;
     (iova & !mask) == 0
-        && iova.checked_add(size).is_some_and(|end| end <= 0x1_0000_0000)
+        && iova
+            .checked_add(size)
+            .is_some_and(|end| end <= 0x1_0000_0000)
         && iova < 0x1_0000_0000
 }
 
@@ -493,20 +489,14 @@ pub fn wave1_cmdqueue_map_unmap_with_domain_smoke() -> bool {
     }
 
     // Submit unmap command
-    let comp2 = match cq.submit(IommuCommandKind::UnmapRegionDevice {
-        device,
-        iova,
-        size,
-    }) {
+    let comp2 = match cq.submit(IommuCommandKind::UnmapRegionDevice { device, iova, size }) {
         Ok(c) => c,
         Err(_) => return false,
     };
 
     let processed2 = cq.process_once(|kind| match kind {
         IommuCommandKind::UnmapRegionDevice {
-            device: d,
-            iova: i,
-            ..
+            device: d, iova: i, ..
         } => {
             let did = driver.domain_id_for_device(*d).map_err(|_| ())?;
             let domain = driver.domain_for_id(did).map_err(|_| ())?;
@@ -673,8 +663,8 @@ pub fn wave1_cmdqueue_pressure_smoke() -> bool {
 // Wave5 (Interrupt Remapping) self-contained smoke tests
 // ---------------------------------------------------------------------------
 
-use super::irt::{AmdInterruptRemapTable, AmdIrte, AmdUnitIrt, encode_remap_msi};
 use super::cmd::AmdCommand;
+use super::irt::{encode_remap_msi, AmdInterruptRemapTable, AmdIrte, AmdUnitIrt};
 
 /// Verify AmdIrte bit layout: RemapEn, vector, destination, DM.
 pub fn wave5_irt_entry_construction_smoke() -> bool {

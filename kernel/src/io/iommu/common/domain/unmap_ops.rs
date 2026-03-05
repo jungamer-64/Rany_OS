@@ -10,50 +10,22 @@
 use super::*;
 
 impl IommuDomain {
-
     /// Unmap a contiguous run of 4KB entries within a single PT.
     pub(super) fn unmap_range_4k(&self, iova: u64, pages: usize) -> Result<usize, IommuError> {
         if pages == 0 {
             return Ok(0);
         }
 
-        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
-        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
-        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
-        let pt_idx = ((iova >> 12) & 0x1FF) as usize;
+        let pt_idx = Self::level_index(iova, 1);
         let pages_in_pt = core::cmp::min(pages, PT_ENTRIES - pt_idx);
 
-        let layout =
-            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .expect("Failed to create page table layout");
-
         unsafe {
-            let pml4_entry = self.page_table.add(pml4_idx);
-            if !(*pml4_entry).is_present() {
-                return Err(IommuError::NotMapped);
+            let (pt_table, table_phys_by_level, parent_entry_by_level) =
+                self.walk_table_path_to_level(iova, 1, true)?;
+            let pt_phys = table_phys_by_level[1];
+            if pt_phys == 0 {
+                return Err(IommuError::HardwareError);
             }
-            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
-            let pdp_phys = (*pml4_entry).phys_addr();
-
-            let pdp_entry = pdp_table.add(pdp_idx);
-            if !(*pdp_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            if (*pdp_entry).is_super_page(self.pte_format) {
-                return Err(IommuError::InvalidAlignment);
-            }
-            let pd_table = phys_to_virt_usize((*pdp_entry).phys_addr()) as *mut SlPte;
-            let pd_phys = (*pdp_entry).phys_addr();
-
-            let pd_entry = pd_table.add(pd_idx);
-            if !(*pd_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            if (*pd_entry).is_super_page(self.pte_format) {
-                return Err(IommuError::InvalidAlignment);
-            }
-            let pt_table = phys_to_virt_usize((*pd_entry).phys_addr()) as *mut SlPte;
-            let pt_phys = (*pd_entry).phys_addr();
 
             Self::verify_pt_entries_present(pt_table, pt_idx, pages_in_pt)?;
 
@@ -63,11 +35,9 @@ impl IommuDomain {
                 let _ = dec_ref(pt_phys);
             }
 
-            self.cleanup_empty_page_tables_4k(
-                pml4_entry, pdp_entry, pdp_table, pdp_phys,
-                pd_entry, pd_table, pd_phys,
-                pt_table, pt_phys, layout,
-            );
+            if get_ref_count(pt_phys) == 0 {
+                self.reclaim_empty_table_cascade(1, &table_phys_by_level, &parent_entry_by_level);
+            }
         }
 
         Ok(pages_in_pt)
@@ -76,39 +46,10 @@ impl IommuDomain {
     /// Unmap a single entry at `iova` and return the unmapped size.
     #[allow(dead_code)]
     pub(super) fn unmap_entry(&self, iova: u64) -> Result<u64, IommuError> {
-        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
-        const SIZE_2MB: u64 = 2 * 1024 * 1024;
         const SIZE_4KB: u64 = 4096;
 
-        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
-        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
-        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
-
-        unsafe {
-            let pml4_entry = self.page_table.add(pml4_idx);
-            if !(*pml4_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
-
-            let pdp_entry = pdp_table.add(pdp_idx);
-            if !(*pdp_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            if (*pdp_entry).is_super_page(self.pte_format) {
-                self.unmap_super_page_1gb(iova)?;
-                return Ok(SIZE_1GB);
-            }
-
-            let pd_table = phys_to_virt_usize((*pdp_entry).phys_addr()) as *mut SlPte;
-            let pd_entry = pd_table.add(pd_idx);
-            if !(*pd_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            if (*pd_entry).is_super_page(self.pte_format) {
-                self.unmap_super_page_2mb(iova)?;
-                return Ok(SIZE_2MB);
-            }
+        if let Some(unmapped) = self.try_unmap_superpage(iova)? {
+            return Ok(unmapped);
         }
 
         self.unmap_page(iova)?;
@@ -119,92 +60,11 @@ impl IommuDomain {
     ///
     /// Also reclaims empty page tables (PT, PD, PDP) to prevent memory accumulation
     /// from sparse mappings.
-    #[allow(unused_assignments)]
     pub(super) fn unmap_page(&self, iova: u64) -> Result<(), IommuError> {
-        // Extract indices for each level
-        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
-        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
-        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
-        let pt_idx = ((iova >> 12) & 0x1FF) as usize;
-
-        let _layout =
-            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .expect("Failed to create page table layout");
-
-        unsafe {
-            // Walk down to PT
-            let pml4_entry = self.page_table.add(pml4_idx);
-            if !(*pml4_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
-            let pdp_phys = (*pml4_entry).phys_addr();
-
-            let pdp_entry = pdp_table.add(pdp_idx);
-            if !(*pdp_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            let pd_table = phys_to_virt_usize((*pdp_entry).phys_addr()) as *mut SlPte;
-            let pd_phys = (*pdp_entry).phys_addr();
-
-            let pd_entry = pd_table.add(pd_idx);
-            if !(*pd_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            let pt_table = phys_to_virt_usize((*pd_entry).phys_addr()) as *mut SlPte;
-            let pt_phys = (*pd_entry).phys_addr();
-
-            let pt_entry = pt_table.add(pt_idx);
-            if !(*pt_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            *pt_entry = SlPte::new(); // Clear entry
-
-            // Decrement PT count
-            if dec_ref(pt_phys) {
-                // Remove PT from hierarchy
-                *pd_entry = SlPte::new();
-                
-                // Quarantine PT instead of immediate deallocation
-                if let Some(pt) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pt_phys) {
-                    if let Ok(mut pending) = self.pending_pt_release.lock() {
-                        pending.push(pt);
-                    }
-                }
-
-                // Decrement PD count
-                if dec_ref(pd_phys) {
-                    // Remove PD from hierarchy
-                    *pdp_entry = SlPte::new();
-
-                    // Quarantine PD
-                    if let Some(pd) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
-                        if let Ok(mut pending) = self.pending_pt_release.lock() {
-                            pending.push(pd);
-                        }
-                    }
-
-                    // Decrement PDP count
-                    if dec_ref(pdp_phys) {
-                        // Remove PDP from hierarchy
-                        *pml4_entry = SlPte::new();
-
-                        // Quarantine PDP
-                        if let Some(pdp) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
-                            if let Ok(mut pending) = self.pending_pt_release.lock() {
-                                pending.push(pdp);
-                            }
-                        }
-
-                        // Decrement PML4 count (root)
-                        let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)
-                            .expect("Failed to get pml4 phys");
-                        dec_ref(pml4_phys);
-                    }
-                }
-            }
+        let pages = self.unmap_range_4k(iova, 1)?;
+        if pages != 1 {
+            return Err(IommuError::HardwareError);
         }
-
         Ok(())
     }
 
@@ -225,7 +85,7 @@ impl IommuDomain {
 
     /// Lookup a mapping by its IOVA base.
     pub fn mapping(&self, iova: u64) -> Option<DmaMapping> {
-        let shard = Self::shard_for_iova(iova);
+        let shard = self.shard_for_iova(iova);
         let guard = match self.shards[shard].lock() {
             Ok(guard) => guard,
             Err(_) => return None,
@@ -266,8 +126,7 @@ impl IommuDomain {
         for guard in guards.iter_mut() {
             guard.mappings.remove(iova);
         }
-        self.mapped_size
-            .fetch_sub(mapping.size, Ordering::Relaxed);
+        self.mapped_size.fetch_sub(mapping.size, Ordering::Relaxed);
         Some(mapping)
     }
 
@@ -336,7 +195,11 @@ impl IommuDomain {
         // internal quarantine is safe here and prevents permanent IOVA leaks since
         // the per-domain allocator's epoch is not automatically advanced by the controller.
         if let Err(e) = self.free_iova_immediate(iova, aligned_size) {
-            log::error!("[IommuDomain] IOVA immediate free failed for 0x{:x}: {:?}", iova, e);
+            log::error!(
+                "[IommuDomain] IOVA immediate free failed for 0x{:x}: {:?}",
+                iova,
+                e
+            );
         }
         let _ = context; // context kept for API compatibility
 
@@ -411,7 +274,11 @@ impl IommuDomain {
         // for this range (async). Bypassing the allocator's internal quarantine is safe
         // here and prevents permanent IOVA leaks.
         if let Err(e) = self.free_iova_immediate(iova, aligned_size) {
-            log::error!("[IommuDomain] IOVA async immediate free failed for 0x{:x}: {:?}", iova, e);
+            log::error!(
+                "[IommuDomain] IOVA async immediate free failed for 0x{:x}: {:?}",
+                iova,
+                e
+            );
         }
 
         // Take the RRef from the handle (marks it as unmapped)
@@ -455,7 +322,7 @@ impl IommuDomain {
     ///
     /// This implementation avoids recursion entirely by using a fixed-size
     /// explicit stack. The stack size is bounded by the maximum page table
-    /// depth (PT_LEVELS) multiplied by the fan-out (PT_ENTRIES), but in practice
+    /// depth multiplied by the fan-out (PT_ENTRIES), but in practice
     /// we process tables level-by-level to keep stack usage minimal.
     ///
     /// # Design
@@ -468,92 +335,102 @@ impl IommuDomain {
     ///
     /// # Safety
     /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
-    pub(crate) unsafe fn deallocate_page_tables_iterative(&mut self) { unsafe {
-        let layout =
-            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .expect("invalid page table layout");
+    pub(crate) unsafe fn deallocate_page_tables_iterative(&mut self) {
+        unsafe {
+            let layout = alloc::alloc::Layout::from_size_align(
+                PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                4096,
+            )
+            .expect("invalid page table layout");
 
-        /// Stack entry for iterative page table traversal.
-        /// Using a fixed-size array avoids heap allocation during Drop.
-        #[derive(Clone, Copy)]
-        struct StackEntry {
-            table_ptr: *mut SlPte,
-            level: usize,
-            next_idx: usize, // Next child index to process
-        }
+            /// Stack entry for iterative page table traversal.
+            /// Using a fixed-size array avoids heap allocation during Drop.
+            #[derive(Clone, Copy)]
+            struct StackEntry {
+                table_ptr: *mut SlPte,
+                level: usize,
+                next_idx: usize, // Next child index to process
+            }
 
-        // Maximum stack depth: one entry per level, plus entries being processed
-        // PT_LEVELS is typically 4, so 16 entries is more than enough for worst case
-        const MAX_STACK_DEPTH: usize = 16;
-        let mut stack: [StackEntry; MAX_STACK_DEPTH] = [StackEntry {
-            table_ptr: core::ptr::null_mut(),
-            level: 0,
-            next_idx: 0,
-        }; MAX_STACK_DEPTH];
-        // Push root table
-        stack[0] = StackEntry {
-            table_ptr: self.page_table,
-            level: PT_LEVELS,
-            next_idx: 0,
-        };
-        let mut stack_top: usize = 1;
+            // Maximum stack depth: one entry per level, plus entries being processed.
+            // 5-level page tables still fit well within this bound.
+            const MAX_STACK_DEPTH: usize = 32;
+            let mut stack: [StackEntry; MAX_STACK_DEPTH] = [StackEntry {
+                table_ptr: core::ptr::null_mut(),
+                level: 0,
+                next_idx: 0,
+            }; MAX_STACK_DEPTH];
+            // Push root table
+            stack[0] = StackEntry {
+                table_ptr: self.page_table,
+                level: self.page_table_levels() as usize,
+                next_idx: 0,
+            };
+            let mut stack_top: usize = 1;
 
-        while stack_top > 0 {
-            let entry_idx = stack_top - 1;
+            while stack_top > 0 {
+                let entry_idx = stack_top - 1;
 
-            // Copy current entry values to avoid borrow conflicts
-            let table_ptr = stack[entry_idx].table_ptr;
-            let level = stack[entry_idx].level;
-            let next_idx = stack[entry_idx].next_idx;
+                // Copy current entry values to avoid borrow conflicts
+                let table_ptr = stack[entry_idx].table_ptr;
+                let level = stack[entry_idx].level;
+                let next_idx = stack[entry_idx].next_idx;
 
-            // Leaf level (level 1) or all children processed - free this table
-            if level <= 1 || next_idx >= PT_ENTRIES {
-                stack_top -= 1;
+                // Leaf level (level 1) or all children processed - free this table
+                if level <= 1 || next_idx >= PT_ENTRIES {
+                    stack_top -= 1;
 
-                // Return table to pool (it will unregister if pool is full and truly deallocating)
-                if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
-                    if let Some(pt) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(phys) {
-                        self.page_table_pool.release(pt);
+                    // Return table to pool (it will unregister if pool is full and truly deallocating)
+                    if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
+                        if let Some(pt) =
+                            crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(
+                                phys,
+                            )
+                        {
+                            self.page_table_pool.release(pt);
+                        } else {
+                            // Fallback for direct allocations not in registry
+                            unregister_page_table(phys);
+                            alloc::alloc::dealloc(table_ptr as *mut u8, layout);
+                        }
                     } else {
-                        // Fallback for direct allocations not in registry
-                        unregister_page_table(phys);
                         alloc::alloc::dealloc(table_ptr as *mut u8, layout);
                     }
-                } else {
-                    alloc::alloc::dealloc(table_ptr as *mut u8, layout);
+                    continue;
                 }
-                continue;
-            }
 
-            // Find next child table to process
-            match Self::find_next_child_table(table_ptr, level, next_idx, self.pte_format) {
-                Some((child_ptr, child_level, updated_next_idx)) => {
-                    stack[entry_idx].next_idx = updated_next_idx;
-                    if stack_top < MAX_STACK_DEPTH {
-                        stack[stack_top] = StackEntry {
-                            table_ptr: child_ptr,
-                            level: child_level,
-                            next_idx: 0,
-                        };
-                        stack_top += 1;
-                    } else {
-                        log::error!(
-                            "[IommuDomain] Page table deallocation stack overflow at level {}",
-                            level
-                        );
+                // Find next child table to process
+                match Self::find_next_child_table(table_ptr, level, next_idx, self.pte_format) {
+                    Some((child_ptr, child_level, updated_next_idx)) => {
+                        stack[entry_idx].next_idx = updated_next_idx;
+                        if stack_top < MAX_STACK_DEPTH {
+                            stack[stack_top] = StackEntry {
+                                table_ptr: child_ptr,
+                                level: child_level,
+                                next_idx: 0,
+                            };
+                            stack_top += 1;
+                        } else {
+                            log::error!(
+                                "[IommuDomain] Page table deallocation stack overflow at level {}",
+                                level
+                            );
+                        }
                     }
-                }
-                None => {
-                    stack[entry_idx].next_idx = PT_ENTRIES;
+                    None => {
+                        stack[entry_idx].next_idx = PT_ENTRIES;
+                    }
                 }
             }
         }
-    }}
+    }
 
     /// Legacy recursive deallocation - kept for reference but not used.
     #[allow(dead_code)]
-    unsafe fn deallocate_page_tables_recursive(&mut self) { unsafe {
-        // Delegate to the iterative version
-        self.deallocate_page_tables_iterative();
-    }}
+    unsafe fn deallocate_page_tables_recursive(&mut self) {
+        unsafe {
+            // Delegate to the iterative version
+            self.deallocate_page_tables_iterative();
+        }
+    }
 }

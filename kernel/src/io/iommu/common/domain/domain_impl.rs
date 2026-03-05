@@ -4,8 +4,6 @@
 
 use super::*;
 
-
-
 unsafe impl Send for IommuDomain {}
 unsafe impl Sync for IommuDomain {}
 
@@ -18,6 +16,7 @@ impl IommuDomain {
     /// * `supports_2mb` - Hardware supports 2MB super pages
     /// * `supports_1gb` - Hardware supports 1GB super pages
     /// * `max_addr_bits` - Maximum supported address width (bits)
+    /// * `pt_levels` - Second-level page table depth (2..=5)
     /// * `domain_type` - Domain type (Strict, Passthrough, etc.)
     /// * `page_table_pool` - Shared page table pool for recycling
     pub fn new(
@@ -26,10 +25,12 @@ impl IommuDomain {
         supports_2mb: bool,
         supports_1gb: bool,
         max_addr_bits: u8,
+        pt_levels: u8,
         domain_type: IommuDomainType,
         page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
     ) -> Self {
+        let pt_levels = pt_levels.clamp(MIN_PT_LEVELS, MAX_PT_LEVELS);
         // Allocate page table on the preferred NUMA node when possible.
         // For Passthrough, we still allocate it to simplify logic (or we could skip it)
         // But the hardware won't use it if we set TT=Passthrough.
@@ -62,7 +63,10 @@ impl IommuDomain {
         } else {
             (0x1_0000_0000, 0x8_0000_0000) // 4GB base, 32GB window
         };
-        let per_domain_iova = crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(default_iova_base, default_iova_size);
+        let per_domain_iova = crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(
+            default_iova_base,
+            default_iova_size,
+        );
 
         let new_domain = Self {
             id,
@@ -72,14 +76,17 @@ impl IommuDomain {
             shards: shards.into_boxed_slice(),
             mapped_size: AtomicU64::new(0),
             numa_node: RwLock::new(numa_node),
-            supports_2mb,
-            supports_1gb,
+            supports_2mb: supports_2mb && pt_levels >= 2,
+            supports_1gb: supports_1gb && pt_levels >= 3,
             max_addr_bits: max_addr_bits.clamp(1, 64),
+            pt_levels,
             quarantine: QuarantineQueue::new(),
             // Pre-allocated contexts for zero-allocation flush (Phase 5)
             // CRITICAL: This capacity must never be exceeded. The quarantine's
             // drain_pending_invalidations() asserts this in debug builds.
-            flush_context: PoisonLock::new(crate::io::iommu::runtime::quarantine::FlushContext::new()),
+            flush_context: PoisonLock::new(
+                crate::io::iommu::runtime::quarantine::FlushContext::new(),
+            ),
             page_table_pool,
             pte_format,
             security_notifier: Once::new(),
@@ -107,6 +114,7 @@ impl IommuDomain {
     /// * `supports_2mb` - Hardware supports 2MB super pages
     /// * `supports_1gb` - Hardware supports 1GB super pages
     /// * `max_addr_bits` - Maximum supported address width (bits)
+    /// * `pt_levels` - Second-level page table depth (2..=5)
     /// * `domain_type` - Domain type (Strict, Passthrough, etc.)
     /// * `page_table_pool` - Shared page table pool for recycling
     /// * `pte_format` - PTE format (Intel or AMD)
@@ -134,6 +142,7 @@ impl IommuDomain {
         supports_2mb: bool,
         supports_1gb: bool,
         max_addr_bits: u8,
+        pt_levels: u8,
         domain_type: IommuDomainType,
         page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
@@ -146,13 +155,15 @@ impl IommuDomain {
             supports_2mb,
             supports_1gb,
             max_addr_bits,
+            pt_levels,
             domain_type,
             page_table_pool,
             pte_format,
         );
 
         // Override with custom IOVA range
-        domain.per_domain_iova = crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(iova_base, iova_size);
+        domain.per_domain_iova =
+            crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(iova_base, iova_size);
 
         log::debug!(
             "[IOMMU] Domain {} initialized with custom IOVA: base=0x{:x}, size=0x{:x}",
@@ -171,7 +182,7 @@ impl IommuDomain {
     #[inline]
     pub fn allocate_iova(&self, size: u64) -> Result<u64, crate::io::iommu::types::IommuError> {
         use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
-        
+
         // IovaAllocatorFast is internally lock-free for common paths
         self.per_domain_iova
             .allocate(size, PageGranularity::Page4K)
@@ -182,7 +193,11 @@ impl IommuDomain {
     ///
     /// Uses IovaAllocatorFast with O(1) per-CPU magazine deallocation.
     #[inline]
-    pub fn free_iova(&self, iova: u64, size: u64) -> Result<(), crate::io::iommu::types::IommuError> {
+    pub fn free_iova(
+        &self,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), crate::io::iommu::types::IommuError> {
         // IovaAllocatorFast is internally lock-free for common paths
         self.per_domain_iova.free(iova, size)
     }
@@ -208,7 +223,10 @@ impl IommuDomain {
     /// Unregister a DMA mapping from this domain's resource registry
     ///
     /// Called when a DmaHandle is successfully unmapped.
-    pub fn unregister_dma_mapping(&self, iova: u64) -> Result<Option<DmaRegistryEntry>, IommuError> {
+    pub fn unregister_dma_mapping(
+        &self,
+        iova: u64,
+    ) -> Result<Option<DmaRegistryEntry>, IommuError> {
         self.dma_registry.unregister(iova)
     }
 
@@ -286,7 +304,7 @@ impl IommuDomain {
 impl crate::io::iommu::common::interface::IommuHardwareContext for IommuDomain {
     fn allocate_iova_aligned(&self, size: u64, alignment: u64) -> Result<u64, IommuError> {
         use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
-        
+
         // Map alignment to granularity
         let granularity = if alignment >= 1024 * 1024 * 1024 {
             PageGranularity::Page1G
@@ -308,7 +326,7 @@ impl crate::io::iommu::common::interface::IommuHardwareContext for IommuDomain {
         mask: u64,
     ) -> Result<u64, IommuError> {
         use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
-        
+
         self.per_domain_iova
             .allocate_with_limit(size, PageGranularity::Page4K, mask)
             .ok_or(IommuError::OutOfIova)
@@ -369,7 +387,13 @@ impl IommuDomain {
         &self,
         iova: u64,
         size: u64,
-    ) -> Result<(DmaMapping, Vec<crate::sync::PoisonLockGuard<'_, DomainShard>>), IommuError> {
+    ) -> Result<
+        (
+            DmaMapping,
+            Vec<crate::sync::PoisonLockGuard<'_, DomainShard>>,
+        ),
+        IommuError,
+    > {
         if self.poisoned.load(Ordering::Acquire) {
             return Err(IommuError::Poisoned);
         }
@@ -429,18 +453,23 @@ impl IommuDomain {
             .flush_context
             .lock()
             .map_err(|_| IommuError::Poisoned)?;
-            
+
         fctx.clear();
 
         // 1. Drain pending data page invalidations from quarantine
-        let drained_batch = match self.quarantine.drain_pending_invalidations(&mut fctx.requests) {
+        let drained_batch = match self
+            .quarantine
+            .drain_pending_invalidations(&mut fctx.requests)
+        {
             crate::io::iommu::runtime::quarantine::DrainResult::Drained { batch } => Some(batch),
             crate::io::iommu::runtime::quarantine::DrainResult::NoWork { .. } => None,
             crate::io::iommu::runtime::quarantine::DrainResult::NotReady { batch: _ } => {
                 // Round 9 Safety: Reserved slots pending. Skip for now.
                 return Ok(());
             }
-            crate::io::iommu::runtime::quarantine::DrainResult::Poisoned { .. } => return Err(IommuError::Poisoned),
+            crate::io::iommu::runtime::quarantine::DrainResult::Poisoned { .. } => {
+                return Err(IommuError::Poisoned)
+            }
         };
 
         // 2. Check if we have any empty page tables pending release
@@ -459,7 +488,8 @@ impl IommuDomain {
         // IOTLB invalidation to clear any cached paging-structure entries (Level 2/3/4 caches).
         // Page-selective invalidation is NOT sufficient for clearing intermediate caches.
         if has_pending_pts {
-            fctx.requests.push(InvalidateRequest::domain(self.id).with_ats());
+            fctx.requests
+                .push(InvalidateRequest::domain(self.id).with_ats());
         }
 
         // 4. Process all invalidation requests in a single batch (hardware-optimized)
@@ -499,9 +529,30 @@ impl IommuDomain {
         (addr as u128) < limit && (end as u128) <= limit
     }
 
-    pub(super) fn shard_for_iova(iova: u64) -> usize {
-        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
-        pml4_idx / PML4_ENTRIES_PER_SHARD
+    #[inline]
+    pub(super) fn page_table_levels(&self) -> u8 {
+        self.pt_levels
+    }
+
+    #[inline]
+    pub(super) fn level_shift(level: u8) -> u8 {
+        debug_assert!(level >= 1);
+        12 + (level - 1) * 9
+    }
+
+    #[inline]
+    pub(super) fn level_index(iova: u64, level: u8) -> usize {
+        ((iova >> Self::level_shift(level)) & 0x1FF) as usize
+    }
+
+    #[inline]
+    pub(super) fn root_level_shift(&self) -> u8 {
+        Self::level_shift(self.page_table_levels())
+    }
+
+    pub(super) fn shard_for_iova(&self, iova: u64) -> usize {
+        let root_idx = ((iova >> self.root_level_shift()) & 0x1FF) as usize;
+        root_idx / PML4_ENTRIES_PER_SHARD
     }
 
     pub(super) fn shard_range(&self, iova: u64, size: u64) -> Result<(usize, usize), IommuError> {
@@ -510,8 +561,8 @@ impl IommuDomain {
         }
         let end = iova.checked_add(size).ok_or(IommuError::InvalidAddress)?;
         let last = end.saturating_sub(1);
-        let start = Self::shard_for_iova(iova);
-        let end = Self::shard_for_iova(last);
+        let start = self.shard_for_iova(iova);
+        let end = self.shard_for_iova(last);
         Ok((start, end))
     }
 
@@ -539,7 +590,12 @@ impl IommuDomain {
     }
 
     /// Validate alignment, address width, and poison state for a map operation.
-    pub(super) fn validate_map_args(&self, iova: u64, phys: u64, size: u64) -> Result<(), IommuError> {
+    pub(super) fn validate_map_args(
+        &self,
+        iova: u64,
+        phys: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
         if self.poisoned.load(Ordering::Acquire) {
             return Err(IommuError::Poisoned);
         }
@@ -586,6 +642,7 @@ impl IommuDomain {
     pub(super) fn can_use_1gb_page(&self, iova: u64, phys: u64, remaining: u64) -> bool {
         const SIZE_1GB: u64 = 1024 * 1024 * 1024;
         self.supports_1gb
+            && self.page_table_levels() >= 3
             && remaining >= SIZE_1GB
             && iova % SIZE_1GB == 0
             && phys % SIZE_1GB == 0
@@ -596,6 +653,7 @@ impl IommuDomain {
     pub(super) fn can_use_2mb_page(&self, iova: u64, phys: u64, remaining: u64) -> bool {
         const SIZE_2MB: u64 = 2 * 1024 * 1024;
         self.supports_2mb
+            && self.page_table_levels() >= 2
             && remaining >= SIZE_2MB
             && iova % SIZE_2MB == 0
             && phys % SIZE_2MB == 0
@@ -627,7 +685,7 @@ impl IommuDomain {
         }
 
         let pages_remaining = (remaining / SIZE_4KB) as usize;
-        let pt_idx = ((iova >> 12) & 0x1FF) as usize;
+        let pt_idx = Self::level_index(iova, 1);
         let pages_in_pt = core::cmp::min(pages_remaining, PT_ENTRIES - pt_idx);
         let pages_mapped = self.map_range_4k(iova, phys, pages_in_pt, read, write)?;
         Ok((pages_mapped as u64) * SIZE_4KB)
@@ -636,7 +694,12 @@ impl IommuDomain {
     /// Rollback previously mapped pages and return the appropriate error.
     ///
     /// If rollback itself fails, the domain is poisoned.
-    pub(super) fn rollback_mapping(&self, start_iova: u64, mapped_len: u64, error: IommuError) -> IommuError {
+    pub(super) fn rollback_mapping(
+        &self,
+        start_iova: u64,
+        mapped_len: u64,
+        error: IommuError,
+    ) -> IommuError {
         if mapped_len > 0 {
             if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
                 log::error!(
@@ -764,7 +827,11 @@ impl IommuDomain {
         };
         for guard in guards.iter_mut() {
             if guard.mappings.insert(mapping.clone()).is_err() {
-                log::error!("[IOMMU] Mapping slab full: failed to insert iova={:#x} size={:#x}", iova, size);
+                log::error!(
+                    "[IOMMU] Mapping slab full: failed to insert iova={:#x} size={:#x}",
+                    iova,
+                    size
+                );
                 // Rollback the page table mapping on slab overflow
                 if self.domain_type != IommuDomainType::Passthrough {
                     let _ = self.unmap_range(iova, size);
@@ -780,7 +847,10 @@ impl IommuDomain {
         // SECURITY: Register the mapping in the resource registry to enable force-unmap
         // on domain destruction, preventing DMA-after-free leaks.
         if let Err(e) = self.dma_registry.register(iova, phys, size) {
-            log::error!("[IOMMU] Failed to register DMA mapping in registry: {:?}", e);
+            log::error!(
+                "[IOMMU] Failed to register DMA mapping in registry: {:?}",
+                e
+            );
             // Rollback the mapping if registration fails to maintain consistency
             for guard in guards.iter_mut() {
                 guard.mappings.remove(iova);
@@ -798,65 +868,35 @@ impl IommuDomain {
 
     /// Unmap a 2MB super-page (for rollback)
     pub(super) fn unmap_super_page_2mb(&self, iova: u64) -> Result<(), IommuError> {
-        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
-        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
-        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
-
-        let _layout =
-            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .expect("Failed to create page table layout");
+        if self.page_table_levels() < 2 {
+            return Err(IommuError::NotSupported);
+        }
 
         unsafe {
-            let pml4_entry = self.page_table.add(pml4_idx);
-            if !(*pml4_entry).is_present() {
+            let l2_idx = Self::level_index(iova, 2);
+            let (l2_table, table_phys_by_level, parent_entry_by_level) =
+                if self.page_table_levels() == 2 {
+                    let mut table_phys = [0u64; MAX_TABLE_PATH_DEPTH];
+                    table_phys[2] = self.root_table_phys();
+                    (
+                        self.page_table,
+                        table_phys,
+                        [core::ptr::null_mut::<SlPte>(); MAX_TABLE_PATH_DEPTH],
+                    )
+                } else {
+                    self.walk_table_path_to_level(iova, 2, true)?
+                };
+
+            let l2_entry = l2_table.add(l2_idx);
+            if !(*l2_entry).is_present() || !(*l2_entry).is_super_page(self.pte_format) {
                 return Err(IommuError::NotMapped);
             }
-            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
-            let pdp_phys = (*pml4_entry).phys_addr();
 
-            let pdp_entry = pdp_table.add(pdp_idx);
-            if !(*pdp_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            let pd_table = phys_to_virt_usize((*pdp_entry).phys_addr()) as *mut SlPte;
-            let pd_phys = (*pdp_entry).phys_addr();
+            *l2_entry = SlPte::new();
 
-            let pd_entry = pd_table.add(pd_idx);
-            if !(*pd_entry).is_present() || !(*pd_entry).is_super_page(self.pte_format) {
-                return Err(IommuError::NotMapped);
-            }
-
-            // Clear the entry
-            *pd_entry = SlPte::new();
-
-            // Decrement PD count
-            if dec_ref(pd_phys) {
-                // Remove PD from hierarchy
-                *pdp_entry = SlPte::new();
-
-                // Quarantine PD
-                if let Some(pd) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
-                    if let Ok(mut pending) = self.pending_pt_release.lock() {
-                        pending.push(pd);
-                    }
-                }
-
-                // Decrement PDP count
-                if dec_ref(pdp_phys) {
-                    // Remove PDP from hierarchy
-                    *pml4_entry = SlPte::new();
-
-                    // Quarantine PDP
-                    if let Some(pdp) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
-                        if let Ok(mut pending) = self.pending_pt_release.lock() {
-                            pending.push(pdp);
-                        }
-                    }
-
-                    // Decrement PML4 count (root)
-                    let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
-                    dec_ref(pml4_phys);
-                }
+            let l2_phys = table_phys_by_level[2];
+            if l2_phys != 0 && dec_ref(l2_phys) && self.page_table_levels() > 2 {
+                self.reclaim_empty_table_cascade(2, &table_phys_by_level, &parent_entry_by_level);
             }
         }
         Ok(())
@@ -864,44 +904,23 @@ impl IommuDomain {
 
     /// Unmap a 1GB super-page (for rollback)
     pub(super) fn unmap_super_page_1gb(&self, iova: u64) -> Result<(), IommuError> {
-        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
-        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
-
-        let _layout =
-            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .expect("Failed to create page table layout");
+        if self.page_table_levels() < 3 {
+            return Err(IommuError::NotSupported);
+        }
 
         unsafe {
-            let pml4_entry = self.page_table.add(pml4_idx);
-            if !(*pml4_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
-            let pdp_phys = (*pml4_entry).phys_addr();
-
-            let pdp_entry = pdp_table.add(pdp_idx);
-            if !(*pdp_entry).is_present() || !(*pdp_entry).is_super_page(self.pte_format) {
+            let (l3_table, table_phys_by_level, parent_entry_by_level) =
+                self.walk_table_path_to_level(iova, 3, true)?;
+            let l3_entry = l3_table.add(Self::level_index(iova, 3));
+            if !(*l3_entry).is_present() || !(*l3_entry).is_super_page(self.pte_format) {
                 return Err(IommuError::NotMapped);
             }
 
-            // Clear the entry
-            *pdp_entry = SlPte::new();
+            *l3_entry = SlPte::new();
 
-            // Decrement PDP count
-            if dec_ref(pdp_phys) {
-                // Remove PDP from hierarchy
-                *pml4_entry = SlPte::new();
-
-                // Quarantine PDP
-                if let Some(pdp) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
-                    if let Ok(mut pending) = self.pending_pt_release.lock() {
-                        pending.push(pdp);
-                    }
-                }
-
-                // Decrement PML4 count (root)
-                let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
-                dec_ref(pml4_phys);
+            let l3_phys = table_phys_by_level[3];
+            if l3_phys != 0 && dec_ref(l3_phys) && self.page_table_levels() > 3 {
+                self.reclaim_empty_table_cascade(3, &table_phys_by_level, &parent_entry_by_level);
             }
         }
         Ok(())

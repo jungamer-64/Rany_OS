@@ -13,18 +13,18 @@ use hashbrown::HashMap;
 use x86_64::PhysAddr;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
-use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
-use crate::io::iommu::common::domain::IommuDomain as DomainState;
+use crate::io::iommu::common::dma::iova_allocator::{IovaAllocator, IovaAllocatorFast};
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::common::domain::IommuDomain as DomainState;
+use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
 use crate::io::iommu::runtime::security::SecurityNotifier;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
-use crate::io::iommu::common::dma::iova_allocator::{IovaAllocator, IovaAllocatorFast};
 use crate::sync::PoisonLock;
 
-use crate::io::iommu::common::domain::map_ivmd_ranges;
 use super::registers::AMD_DEFAULT_MAX_ADDR_BITS;
 use super::{AmdDomainInfo, AmdIommuDriver, AmdIommuUnit, AmdIvmdRange};
+use crate::io::iommu::common::domain::map_ivmd_ranges;
 
 fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
     let unit = AmdIommuUnit {
@@ -169,6 +169,7 @@ fn test_map_ivmd_ranges_exclusion_splits() {
         false,
         false,
         AMD_DEFAULT_MAX_ADDR_BITS,
+        4,
         IommuDomainType::Translated,
         pool,
         PteFormat::Amd,
@@ -232,6 +233,7 @@ fn test_map_for_device_rejects_exclusion_range() {
         false,
         false,
         AMD_DEFAULT_MAX_ADDR_BITS,
+        4,
         IommuDomainType::Translated,
         driver.page_table_pool.clone(),
         PteFormat::Amd,
@@ -253,8 +255,7 @@ fn test_map_for_device_rejects_exclusion_range() {
         device_domains.insert(device, domain_id);
     }
 
-    let result =
-        unsafe { driver.map_for_device(&device, PhysAddr::new(0x2000), 0x1000) };
+    let result = unsafe { driver.map_for_device(&device, PhysAddr::new(0x2000), 0x1000) };
     assert_eq!(result, Err(IommuError::InvalidAddress));
 }
 
@@ -282,10 +283,8 @@ fn make_test_driver_small() -> AmdIommuDriver {
     };
 
     let page_table_pool = PageTablePool::new(1, 1);
-    let iova_allocator = IovaAllocatorFast::new(
-        PAGE_SIZE_4K as u64,
-        (1u64 << 20) - PAGE_SIZE_4K as u64,
-    );
+    let iova_allocator =
+        IovaAllocatorFast::new(PAGE_SIZE_4K as u64, (1u64 << 20) - PAGE_SIZE_4K as u64);
 
     let default_domain = DomainState::new(
         0,
@@ -293,13 +292,19 @@ fn make_test_driver_small() -> AmdIommuDriver {
         false,
         false,
         AMD_DEFAULT_MAX_ADDR_BITS,
+        4,
         IommuDomainType::Translated,
         page_table_pool.clone(),
         PteFormat::Amd,
     );
     let default_domain = alloc::sync::Arc::new(default_domain);
     let mut domain_map = HashMap::new();
-    domain_map.insert(0, AmdDomainInfo { domain: default_domain });
+    domain_map.insert(
+        0,
+        AmdDomainInfo {
+            domain: default_domain,
+        },
+    );
 
     AmdIommuDriver {
         units: alloc::vec![unit],
@@ -328,7 +333,9 @@ fn make_test_driver_small() -> AmdIommuDriver {
 fn test_cmdqueue_map_unmap_with_domain() {
     let driver = make_test_driver_small();
 
-    let domain_id = driver.create_domain(None, IommuDomainType::Translated).unwrap();
+    let domain_id = driver
+        .create_domain(None, IommuDomainType::Translated)
+        .unwrap();
     let device = DeviceId::new(0, 1, 0, 0);
     {
         let mut dd = match driver.device_domains.lock() {
@@ -378,18 +385,12 @@ fn test_cmdqueue_map_unmap_with_domain() {
     assert!(domain.mapping(iova).is_some());
 
     let comp2 = cq
-        .submit(IommuCommandKind::UnmapRegionDevice {
-            device,
-            iova,
-            size,
-        })
+        .submit(IommuCommandKind::UnmapRegionDevice { device, iova, size })
         .expect("submit unmap");
 
     let processed2 = cq.process_once(|kind| match kind {
         IommuCommandKind::UnmapRegionDevice {
-            device: d,
-            iova: i,
-            ..
+            device: d, iova: i, ..
         } => {
             let did = driver.domain_id_for_device(*d).map_err(|_| ())?;
             let domain = driver.domain_for_id(did).map_err(|_| ())?;
@@ -406,7 +407,9 @@ fn test_cmdqueue_map_unmap_with_domain() {
 fn test_map_device_nonblocking() {
     let driver = make_test_driver_small();
 
-    let domain_id = driver.create_domain(None, IommuDomainType::Translated).unwrap();
+    let domain_id = driver
+        .create_domain(None, IommuDomainType::Translated)
+        .unwrap();
     let device = DeviceId::new(0, 1, 0, 0);
     {
         let mut dd = match driver.device_domains.lock() {
@@ -443,14 +446,15 @@ fn test_dma_mask_respects_32bit_limit() {
 #[test_case]
 fn test_security_notifier_dispatch() {
     let driver = make_test_driver_small();
-    let notifier: alloc::sync::Arc<dyn SecurityNotifier> =
-        alloc::sync::Arc::new(TestMockNotifier);
+    let notifier: alloc::sync::Arc<dyn SecurityNotifier> = alloc::sync::Arc::new(TestMockNotifier);
 
     assert!(driver.set_security_notifier(alloc::sync::Arc::clone(&notifier)));
     assert!(!driver.set_security_notifier(alloc::sync::Arc::clone(&notifier)));
 
     // Domain created after notifier was set should succeed
-    let _domain_id = driver.create_domain(None, IommuDomainType::Translated).unwrap();
+    let _domain_id = driver
+        .create_domain(None, IommuDomainType::Translated)
+        .unwrap();
 }
 
 #[test_case]
@@ -490,8 +494,8 @@ fn test_cmdqueue_pressure() {
 // Wave5 (Interrupt Remapping) #[test_case] tests
 // ---------------------------------------------------------------------------
 
-use super::irt::{AmdInterruptRemapTable, AmdIrte, AmdUnitIrt, encode_remap_msi};
 use super::cmd::AmdCommand;
+use super::irt::{encode_remap_msi, AmdInterruptRemapTable, AmdIrte, AmdUnitIrt};
 
 #[test_case]
 fn test_wave5_irt_entry_construction() {
@@ -520,7 +524,8 @@ fn test_wave5_irt_alloc_free() {
     assert_ne!(h1, h2);
     assert_ne!(h0, h2);
 
-    irt.set_entry(h0, AmdIrte::fixed(0x30, 1, false, None)).unwrap();
+    irt.set_entry(h0, AmdIrte::fixed(0x30, 1, false, None))
+        .unwrap();
     irt.free(h0).unwrap();
     irt.free(h1).unwrap();
     irt.free(h2).unwrap();

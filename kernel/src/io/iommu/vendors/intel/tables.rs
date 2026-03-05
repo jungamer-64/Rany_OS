@@ -44,7 +44,7 @@ impl RootEntry {
     /// Set context table pointers for scalable mode (lower and upper halves)
     pub fn set_context_table_pair(&mut self, low_addr: u64, high_addr: u64) {
         // SECURITY: Write the high QWORD first, then the low QWORD with a memory fence.
-        // This ensures the IOMMU sees the upper context table pointer before or at 
+        // This ensures the IOMMU sees the upper context table pointer before or at
         // the same time as the lower one.
         self.hi = (high_addr & !0xFFF) | 1; // Present bit
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
@@ -100,10 +100,10 @@ impl ContextEntry {
     }
 
     /// Set passthrough (Translation Type = 10b / 2)
-    pub fn set_passthrough(&mut self, domain_id: u16) {
+    pub fn set_passthrough(&mut self, domain_id: u16, agaw: u8) {
         // SECURITY: Set domain ID first, then Translation Type and Present bit.
         // PT (bit 3:2) = 10b (2). Present (bit 0) = 1.
-        self.hi = ((domain_id as u64) << 8) | 2; // AGAW=2
+        self.hi = ((domain_id as u64) << 8) | ((agaw as u64) & 0x7);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         self.lo = (2 << 2) | 1;
     }
@@ -174,8 +174,13 @@ impl ScalableContextEntry {
 
     /// Set the PASID directory pointer and size
     pub fn set_pasid_dir(&mut self, pasid_dir_addr: u64, pds: u8) {
+        // Preserve control bits in bits [8:0] (Present, FPD, DTE, PASID_EN, PRE)
+        // to avoid fragile dependency on call ordering.
+        let control_mask: u64 = 0x1FF; // bits [8:0]
+        let preserved = self.qwords[0] & control_mask;
         self.qwords[0] = (pasid_dir_addr & Self::PASID_DIR_MASK)
-            | (((pds as u64) & 0x7) << Self::PDS_SHIFT);
+            | (((pds as u64) & 0x7) << Self::PDS_SHIFT)
+            | preserved;
     }
 
     /// Set RID->PASID mapping (for requests without PASID)
@@ -307,7 +312,8 @@ impl PasidTableEntry {
         // SECURITY: Set fields in an order that avoids race conditions.
         // We set other qwords before qwords[0] (which contains the Present bit).
         self.qwords[1] = (domain_id as u64) & Self::DID_MASK;
-        let qw0 = (addr & Self::SLPT_MASK) | Self::PRESENT
+        let qw0 = (addr & Self::SLPT_MASK)
+            | Self::PRESENT
             | (((address_width as u64) & 0x7) << Self::AW_SHIFT)
             | ((Self::PGTT_SL_ONLY & 0x7) << Self::PGTT_SHIFT);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);

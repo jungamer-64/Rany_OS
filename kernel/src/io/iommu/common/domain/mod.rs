@@ -2,30 +2,30 @@
 // kernel/src/io/iommu/common/domain/mod.rs
 // ============================================================================
 
-use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::dma::mapping_slab::MappingSlab;
 use crate::io::iommu::common::dma::page_table_pool::{
     dec_ref, get_ref_count, inc_ref, register_page_table, unregister_page_table,
 };
-use crate::io::iommu::runtime::quarantine::QuarantineQueue;
+use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::tables::{
-    PT_ENTRIES, PT_LEVELS, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
+    phys_to_virt_usize, virt_ptr_to_phys, PageTableScope, SlPte, PT_ENTRIES,
 };
+use crate::io::iommu::runtime::quarantine::QuarantineQueue;
+use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::amd::tables::AmdPte;
-use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
+use crate::sync::{IrqMutex, PoisonLock, PoisonLockGuard};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use crate::sync::{PoisonLock, PoisonLockGuard, IrqMutex};
 use spin::{Once, RwLock};
 mod domain_impl;
-mod mapping;
-mod paging;
 mod identity_mapping;
 mod map_ops;
+mod mapping;
+mod paging;
 mod unmap_ops;
 
 #[cfg(test)]
@@ -233,7 +233,10 @@ pub trait IommuInvalidator: Send + Sync {
     ///
     /// Returns when the IOTLB invalidation is done. The default implementation
     /// delegates to the synchronous path.
-    fn invalidate_async(&self, request: InvalidateRequest) -> impl Future<Output = Result<(), IommuError>> + Send {
+    fn invalidate_async(
+        &self,
+        request: InvalidateRequest,
+    ) -> impl Future<Output = Result<(), IommuError>> + Send {
         async move { self.invalidate(request) }
     }
 }
@@ -318,6 +321,9 @@ impl IommuInvalidator for NoopInvalidator {
 /// This reduces tree pressure for the most common DMA buffer sizes.
 const DOMAIN_SHARD_COUNT: usize = 64;
 const PML4_ENTRIES_PER_SHARD: usize = PT_ENTRIES / DOMAIN_SHARD_COUNT;
+const MIN_PT_LEVELS: u8 = 2;
+const MAX_PT_LEVELS: u8 = 5;
+const MAX_TABLE_PATH_DEPTH: usize = (MAX_PT_LEVELS as usize) + 1;
 
 // ============================================================================
 // DMA Resource Registry (Phase 8: Leak Prevention - Slab-Based)
@@ -392,7 +398,7 @@ impl RegistryState {
         for _ in 0..REGISTRY_HASH_BUCKETS {
             buckets_vec.push(REGISTRY_INVALID_INDEX);
         }
-        
+
         let mut state = Self {
             chunks: Vec::new(),
             hash_buckets: buckets_vec.into_boxed_slice(),
@@ -409,7 +415,7 @@ impl RegistryState {
         let base_idx = (chunk_idx * REGISTRY_CHUNK_CAPACITY) as u32;
 
         let mut chunk = Box::new([RegistrySlot::empty(); REGISTRY_CHUNK_CAPACITY]);
-        
+
         // Link all slots in the new chunk to the free list
         for i in 0..REGISTRY_CHUNK_CAPACITY {
             chunk[i].next = if i < REGISTRY_CHUNK_CAPACITY - 1 {
@@ -418,7 +424,7 @@ impl RegistryState {
                 self.free_head
             };
         }
-        
+
         self.free_head = base_idx;
         self.chunks.push(chunk);
     }
@@ -522,7 +528,7 @@ impl DmaResourceRegistry {
     /// O(1) average time.
     pub fn unregister(&self, iova: u64) -> Result<Option<DmaRegistryEntry>, IommuError> {
         let bucket = Self::hash_iova(iova);
-        
+
         let mut state = self.state.lock().map_err(|_| IommuError::Poisoned)?;
 
         let mut prev_idx = REGISTRY_INVALID_INDEX;
@@ -530,7 +536,7 @@ impl DmaResourceRegistry {
 
         while curr_idx != REGISTRY_INVALID_INDEX {
             let slot = state.get_slot(curr_idx);
-            
+
             if slot.in_use && slot.entry.iova == iova {
                 let entry = slot.entry;
                 let next_idx = slot.next;
@@ -625,7 +631,7 @@ impl DmaResourceRegistry {
         state.free_head = REGISTRY_INVALID_INDEX;
         let mut next_free = REGISTRY_INVALID_INDEX;
         let mut current_idx = (state.chunks.len() * REGISTRY_CHUNK_CAPACITY) as u32;
-        
+
         // Link backwards so free_head is 0
         for chunk in state.chunks.iter_mut().rev() {
             for slot in chunk.iter_mut().rev() {
@@ -718,6 +724,8 @@ pub struct IommuDomain {
     pub(crate) supports_1gb: bool,
     /// Maximum address width (in bits) supported for IOVA/physical addresses
     pub(crate) max_addr_bits: u8,
+    /// Configured second-level page-table depth (2..=5 levels)
+    pub(crate) pt_levels: u8,
     /// Quarantine queue for zero-allocation IOTLB invalidation (Phase 5)
     quarantine: Arc<QuarantineQueue>,
     /// Pre-allocated contexts for zero-allocation flush (Phase 5)
@@ -761,7 +769,8 @@ pub struct IommuDomain {
     ///
     /// When a page table becomes empty during unmap, it is moved here.
     /// The next flush() operation will return them to the page_table_pool.
-    pub(crate) pending_pt_release: PoisonLock<Vec<crate::io::iommu::common::dma::page_table_pool::PooledPt>>,
+    pub(crate) pending_pt_release:
+        PoisonLock<Vec<crate::io::iommu::common::dma::page_table_pool::PooledPt>>,
     /// Global lock for page table hierarchy modifications within this domain.
     ///
     /// Prevents race conditions between concurrent map/unmap operations that

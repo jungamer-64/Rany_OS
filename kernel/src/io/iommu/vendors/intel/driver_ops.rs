@@ -114,10 +114,13 @@ impl IntelIommuDriver {
             (address, data)
         } else {
             // High index case: Use SHV=1 (bit 3) and sub-handle in Data register.
-            // Effective Index = (Interrupt Index in Address[19:5]) + (Sub-handle in Data[15:0]).
-            // Here we set Interrupt Index = 0 and Sub-handle = handle.
-            let address = 0xFEE0_0000 | (1 << 3); // SHV=1
-            let data = handle as u32; // Sub-handle is in lower 16 bits of Data
+            // Intel VT-d Spec §5.1.2.2:
+            //   Effective Index = Address[19:5] (Interrupt Index) + Data[15:0] (Sub-handle)
+            // Split handle: put high 15 bits in Address, low bit in Data sub-handle.
+            let index_hi = (handle_val >> 1) & 0x7FFF;
+            let sub_handle = handle_val & 1;
+            let address = 0xFEE0_0000 | (1u64 << 3) | (index_hi << 5); // SHV=1 + Index
+            let data = sub_handle as u32;
             (address, data)
         }
     }
@@ -341,10 +344,6 @@ impl IntelIommuDriver {
             }
         }
 
-        if let Some(err) = first_err {
-            return Err(err);
-        }
-
         // SECURITY: Only free the IOVA if ALL controllers unmapped and invalidated successfully.
         // If some controllers failed, we leak the IOVA (it remains "zombie") to prevent UAF.
         if success_count == registry.controllers.len() && mapping_size > 0 {
@@ -366,6 +365,12 @@ impl IntelIommuDriver {
                 "[IOMMU][SECURITY] Partial unmap success ({}/{}); IOVA 0x{:x} (size {}) will NOT be freed to prevent UAF.",
                 success_count, registry.controllers.len(), iova, mapping_size
             );
+        }
+
+        // Return the first error AFTER the security log has been emitted,
+        // ensuring partial-failure diagnostics are always visible.
+        if let Some(err) = first_err {
+            return Err(err);
         }
 
         Ok(())
@@ -585,27 +590,26 @@ impl IntelIommuDriver {
         let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
         let pt_removed = pts_after > pts_before;
 
-        if let Some(ref cq) = controller.command_queue {
-            let kind = if pt_removed {
-                IommuCommandKind::InvalidateIotlbDomain { domain: domain_id }
+        if pt_removed {
+            // Domain-level invalidation needed to clear paging-structure caches.
+            // Use CQ path if available for async benefits.
+            if let Some(ref cq) = controller.command_queue {
+                let kind = IommuCommandKind::InvalidateIotlbDomain { domain: domain_id };
+                let comp = cq
+                    .submit_async(kind)
+                    .await
+                    .map_err(|_| IommuError::HardwareError)?;
+                let rc = comp.await;
+                if rc != 0 {
+                    return Err(IommuError::HardwareError);
+                }
             } else {
-                IommuCommandKind::InvalidateIotlbDomain { domain: domain_id } // FIXME: should be page invalidation if possible
-            };
-            let comp = cq
-                .submit_async(kind)
-                .await
-                .map_err(|_| IommuError::HardwareError)?;
-            let rc = comp.await;
-            if rc != 0 {
-                return Err(IommuError::HardwareError);
+                controller.invalidate_iotlb(domain_id, true)?;
             }
         } else {
-            if pt_removed {
-                controller.invalidate_iotlb(domain_id, true)?;
-            } else {
-                // ATS-aware invalidation
-                controller.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
-            }
+            // Page-selective invalidation with ATS awareness.
+            // Always use the direct QI path which supports page-level granularity.
+            controller.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
         }
         
         if pt_removed {

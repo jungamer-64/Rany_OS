@@ -6,9 +6,17 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
+use crate::io::iommu::common::dma::page_table_pool::{
+    get_ref_count, inc_ref, register_page_table, unregister_page_table, PageTablePool,
+};
 use crate::io::iommu::common::domain::IommuDomain;
+use crate::io::iommu::common::tables::{HardwareTable, PageTableScope, SlPte};
 use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::runtime::groups::{IommuGroupManager, PciTopologyProvider};
+use crate::io::iommu::runtime::security::{
+    FaultSummary, IsolationDecision, IsolationReason, SecurityEvent, SecurityNotifier,
+};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 use crate::io::iommu::vendors::intel::controller::fault::{
     drain_deferred_faults_with_controller, push_deferred_fault_for_test, FaultHandler,
@@ -20,18 +28,10 @@ use crate::io::iommu::vendors::intel::controller::pri::PageRequestManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 use crate::io::iommu::vendors::intel::controller::IommuController;
-use crate::io::iommu::vendors::intel::IntelIommuDriver;
 use crate::io::iommu::vendors::intel::qi::InvalidationQueueEntry;
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
-use crate::io::iommu::common::dma::page_table_pool::{
-    get_ref_count, inc_ref, register_page_table, unregister_page_table, PageTablePool,
-};
-use crate::io::iommu::runtime::security::{
-    FaultSummary, IsolationDecision, IsolationReason, SecurityEvent, SecurityNotifier,
-};
-use crate::io::iommu::common::tables::{HardwareTable, PageTableScope, SlPte};
-use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::vendors::intel::IntelIommuDriver;
 
 #[derive(Debug)]
 pub struct MockSecurityNotifier {
@@ -41,8 +41,7 @@ pub struct MockSecurityNotifier {
 }
 
 impl MockSecurityNotifier {
-    pub
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             events: spin::Mutex::new([None; 16]),
             event_count: AtomicUsize::new(0),
@@ -132,6 +131,7 @@ pub fn wave2_iommu_domain_smoke() -> bool {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -161,6 +161,7 @@ pub fn wave2_map_rollback_hidden_mapping_smoke() -> bool {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         format,
@@ -169,7 +170,10 @@ pub fn wave2_map_rollback_hidden_mapping_smoke() -> bool {
     let base_iova = 0x10000;
     let phys_base = 0x20000;
     let mine_iova = base_iova + 0x1000;
-    if domain.map(mine_iova, phys_base + 0x1000, 0x1000, true, true).is_err() {
+    if domain
+        .map(mine_iova, phys_base + 0x1000, 0x1000, true, true)
+        .is_err()
+    {
         return false;
     }
     if !unsafe { is_4k_mapped(&domain, mine_iova, format) } {
@@ -182,7 +186,7 @@ pub fn wave2_map_rollback_hidden_mapping_smoke() -> bool {
         return false;
     }
 
-        !unsafe { is_4k_mapped(&domain, base_iova, format) }
+    !unsafe { is_4k_mapped(&domain, base_iova, format) }
         && unsafe { is_4k_mapped(&domain, mine_iova, format) }
         && !unsafe { is_4k_mapped(&domain, base_iova + 0x2000, format) }
         && domain.mapped_size() == 0x1000
@@ -197,6 +201,7 @@ pub fn wave2_map_rollback_hidden_mapping_amd_smoke() -> bool {
         true,
         true,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         format,
@@ -206,7 +211,10 @@ pub fn wave2_map_rollback_hidden_mapping_amd_smoke() -> bool {
     let phys_base = 0x20000;
     let mine_iova = base_iova + 0x1000;
 
-    if domain.map(mine_iova, phys_base + 0x1000, 0x1000, true, true).is_err() {
+    if domain
+        .map(mine_iova, phys_base + 0x1000, 0x1000, true, true)
+        .is_err()
+    {
         return false;
     }
     if !unsafe { is_4k_mapped(&domain, mine_iova, format) } {
@@ -219,7 +227,7 @@ pub fn wave2_map_rollback_hidden_mapping_amd_smoke() -> bool {
         return false;
     }
 
-        !unsafe { is_4k_mapped(&domain, base_iova, format) }
+    !unsafe { is_4k_mapped(&domain, base_iova, format) }
         && unsafe { is_4k_mapped(&domain, mine_iova, format) }
         && !unsafe { is_4k_mapped(&domain, base_iova + 0x2000, format) }
         && domain.mapped_size() == 0x1000
@@ -234,6 +242,7 @@ pub fn wave2_map_rollback_superpage_2mb_collision_smoke() -> bool {
         true,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         format,
@@ -244,7 +253,10 @@ pub fn wave2_map_rollback_superpage_2mb_collision_smoke() -> bool {
     let phys_base = 0x4000_0000;
     let mine_iova = start_iova + SIZE_2MB;
 
-    if domain.map(mine_iova, phys_base + SIZE_2MB, 0x1000, true, true).is_err() {
+    if domain
+        .map(mine_iova, phys_base + SIZE_2MB, 0x1000, true, true)
+        .is_err()
+    {
         return false;
     }
 
@@ -317,6 +329,7 @@ pub fn wave2_map_for_dma_alloc_non_identity_smoke() -> bool {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -387,6 +400,7 @@ pub fn wave2_unmap_reclaims_empty_tables_smoke() -> bool {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -417,6 +431,7 @@ pub fn wave2_unmap_partial_keeps_tables_smoke() -> bool {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -461,6 +476,7 @@ pub fn wave2_unmap_mixed_superpages_smoke() -> bool {
         true,
         true,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -634,6 +650,7 @@ pub fn wave2_domain_type_not_passthrough_smoke() -> bool {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -653,6 +670,7 @@ pub fn wave2_mapping_iova_phys_distinct_smoke() -> bool {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -692,16 +710,13 @@ pub fn wave2_mapping_iova_phys_distinct_smoke() -> bool {
             return false;
         }
     };
-    let mapping_ok = mapping.iova == iova
-        && mapping.phys == phys
-        && mapping.iova != mapping.phys;
+    let mapping_ok = mapping.iova == iova && mapping.phys == phys && mapping.iova != mapping.phys;
     let _ = domain.unmap(iova);
     let _ = ctrl.free_iova(iova, size);
     mapping_ok
 }
 
 pub fn wave2_process_page_requests_poisoned_returns_empty_smoke() -> bool {
-
     let mut ctrl = IommuController::new(0x0, 0);
     crate::sync::set_panicking(true);
     if let Ok(_g) = ctrl.page_request_queue.lock() {}
@@ -711,7 +726,6 @@ pub fn wave2_process_page_requests_poisoned_returns_empty_smoke() -> bool {
 }
 
 pub fn wave2_create_domain_poisoned_returns_hw_error_smoke() -> bool {
-
     let ctrl = IommuController::new(0x0, 0);
     crate::sync::set_panicking(true);
     if let Ok(_g) = ctrl.domains.lock() {}
@@ -723,7 +737,6 @@ pub fn wave2_create_domain_poisoned_returns_hw_error_smoke() -> bool {
 }
 
 pub fn wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke() -> bool {
-
     let ctrl = IommuController::new(0x0, 0);
     let mut table = match HardwareTable::<ContextEntry>::new(256, None) {
         Ok(table) => table,
@@ -801,7 +814,6 @@ pub fn wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke() -> bool
 }
 
 pub fn wave2_domain_map_poisoned_returns_none_smoke() -> bool {
-
     let ctrl = IommuController::new(0x0, 0);
     let id = match ctrl.create_domain(None, IommuDomainType::Translated) {
         Ok(id) => id,
@@ -816,7 +828,6 @@ pub fn wave2_domain_map_poisoned_returns_none_smoke() -> bool {
 }
 
 pub fn wave2_get_domain_for_device_poisoned_returns_hw_error_smoke() -> bool {
-
     let ctrl = IommuController::new(0x0, 0);
     let id = match ctrl.create_domain(None, IommuDomainType::Translated) {
         Ok(id) => id,
@@ -835,7 +846,6 @@ pub fn wave2_get_domain_for_device_poisoned_returns_hw_error_smoke() -> bool {
 }
 
 pub fn wave2_set_domain_numa_poisoned_returns_hw_error_smoke() -> bool {
-
     let ctrl = IommuController::new(0x0, 0);
     let id = match ctrl.create_domain(None, IommuDomainType::Translated) {
         Ok(id) => id,
@@ -850,7 +860,6 @@ pub fn wave2_set_domain_numa_poisoned_returns_hw_error_smoke() -> bool {
 }
 
 pub fn wave2_init_iova_poisoned_proceeds_with_best_effort_smoke() -> bool {
-
     let ctrl = IommuController::new(0x0, 0);
 
     crate::sync::set_panicking(true);
@@ -868,7 +877,6 @@ pub fn wave2_init_iova_poisoned_proceeds_with_best_effort_smoke() -> bool {
 }
 
 pub fn wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_smoke() -> bool {
-
     let mut ctrl = IommuController::new(0x0, 0);
     ctrl.ecap |= ecap_bits::ECAP_IR;
 
@@ -887,7 +895,6 @@ pub fn wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_smoke()
 }
 
 pub fn wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke() -> bool {
-
     let ctrl = IommuController::new(0x0, 0);
     crate::sync::set_panicking(true);
     if let Ok(_g) = ctrl.invalidation_queue.lock() {}
@@ -897,7 +904,6 @@ pub fn wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke() -> boo
 }
 
 pub fn wave2_submit_invalidation_poisoned_returns_error_smoke() -> bool {
-
     let mut ctrl = IommuController::new(0x0, 0);
     ctrl.ecap = ecap_bits::ECAP_QI;
     if ctrl.init_queued_invalidation(8).is_err() {
@@ -914,7 +920,6 @@ pub fn wave2_submit_invalidation_poisoned_returns_error_smoke() -> bool {
 }
 
 pub fn wave2_qi_wait_sync_poisoned_returns_error_smoke() -> bool {
-
     let mut ctrl = IommuController::new(0x0, 0);
     ctrl.ecap = ecap_bits::ECAP_QI;
     if ctrl.init_queued_invalidation(8).is_err() {
@@ -929,7 +934,6 @@ pub fn wave2_qi_wait_sync_poisoned_returns_error_smoke() -> bool {
 }
 
 pub fn wave2_qi_wait_async_poisoned_returns_error_smoke() -> bool {
-
     let mut ctrl = IommuController::new(0x0, 0);
     ctrl.ecap = ecap_bits::ECAP_QI;
     if ctrl.init_queued_invalidation(8).is_err() {
@@ -1431,7 +1435,7 @@ pub fn wave3_pri_fuel_processing_smoke() -> bool {
     for i in 0..4u64 {
         let entry = PageRequestEntry {
             lo: (i as u64 + 1) | PageRequestEntry::LAST_REQ, // source_id = i+1, last_req set
-            hi: ((i + 1) * 0x1000) & 0x000F_FFFF_FFFF_F000, // page address
+            hi: ((i + 1) * 0x1000) & 0x000F_FFFF_FFFF_F000,  // page address
         };
         unsafe { base.add(i as usize).write(entry) };
     }
@@ -1523,8 +1527,7 @@ pub struct MockPciTopology {
 }
 
 impl MockPciTopology {
-    pub
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             header_types: BTreeMap::new(),
             acs_states: BTreeMap::new(),
@@ -1536,13 +1539,7 @@ impl MockPciTopology {
         self.header_types.insert((bus, device, function), 0x00);
     }
 
-    pub fn add_bridge(
-        &mut self,
-        bus: u8,
-        device: u8,
-        function: u8,
-        acs_enabled: Option<bool>,
-    ) {
+    pub fn add_bridge(&mut self, bus: u8, device: u8, function: u8, acs_enabled: Option<bool>) {
         self.header_types.insert((bus, device, function), 0x01);
         if let Some(acs) = acs_enabled {
             self.acs_states.insert((bus, device, function), acs);
@@ -1581,11 +1578,16 @@ pub fn wave2_group_creation_basic_smoke() -> bool {
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 1, 0);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    let (group, newly_created) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(result) => result,
-        Err(_) => return false,
-    };
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(
+            ctrl,
+        )),
+    );
+    let (group, newly_created) =
+        match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(result) => result,
+            Err(_) => return false,
+        };
 
     if !newly_created {
         return false;
@@ -1608,15 +1610,21 @@ pub fn wave2_group_multifunction_same_group_smoke() -> bool {
     let dev0 = DeviceId::new(0, 0, 2, 0);
     let dev1 = DeviceId::new(0, 0, 2, 1);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    let (group0, created0) = match mgr.find_or_create_group(dev0, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    let (group1, created1) = match mgr.find_or_create_group(dev1, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(
+            ctrl,
+        )),
+    );
+    let (group0, created0) =
+        match mgr.find_or_create_group(dev0, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+    let (group1, created1) =
+        match mgr.find_or_create_group(dev1, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
 
     // Function 0 creates new group; function 1 reuses it (same group ID via func 0 base)
     created0 && !created1 && group0.id == group1.id && group0.domain_id == group1.domain_id
@@ -1640,15 +1648,21 @@ pub fn wave2_group_acs_isolated_separation_smoke() -> bool {
     let dev_a = DeviceId::new(0, 1, 0, 0);
     let dev_b = DeviceId::new(0, 2, 0, 0);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(
+            ctrl,
+        )),
+    );
+    let (group_a, created_a) =
+        match mgr.find_or_create_group(dev_a, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+    let (group_b, created_b) =
+        match mgr.find_or_create_group(dev_b, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
 
     // Both should be new groups with different IDs
     created_a && created_b && group_a.id != group_b.id
@@ -1668,15 +1682,21 @@ pub fn wave2_group_non_acs_bridge_shared_group_smoke() -> bool {
     let dev_b = DeviceId::new(0, 1, 1, 0);
     let expected_group_root = DeviceId::new(0, 0, 1, 0);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(
+            ctrl,
+        )),
+    );
+    let (group_a, created_a) =
+        match mgr.find_or_create_group(dev_a, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+    let (group_b, created_b) =
+        match mgr.find_or_create_group(dev_b, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
 
     created_a
         && !created_b
@@ -1702,11 +1722,16 @@ pub fn wave2_group_non_acs_chain_promotes_highest_nonisolated_bridge_smoke() -> 
     let highest_non_acs_bridge = DeviceId::new(0, 0, 1, 0);
     let lower_bridge = DeviceId::new(0, 1, 2, 0);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    let (group, _created) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(
+            ctrl,
+        )),
+    );
+    let (group, _created) =
+        match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
 
     group.id == highest_non_acs_bridge && group.id != lower_bridge
 }
@@ -1724,11 +1749,16 @@ pub fn wave2_group_topology_gap_conservative_fallback_smoke() -> bool {
     let dev = DeviceId::new(0, 2, 0, 0);
     let expected_group_root = DeviceId::new(0, 1, 2, 0);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    let (group, created) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(
+            ctrl,
+        )),
+    );
+    let (group, created) =
+        match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
 
     created
         && group.id == expected_group_root
@@ -1744,15 +1774,21 @@ pub fn wave2_group_reuse_for_same_group_devices_smoke() -> bool {
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 3, 0);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    let (group_first, created_first) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    let (group_second, created_second) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(
+            ctrl,
+        )),
+    );
+    let (group_first, created_first) =
+        match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+    let (group_second, created_second) =
+        match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
 
     created_first
         && !created_second
@@ -1762,7 +1798,6 @@ pub fn wave2_group_reuse_for_same_group_devices_smoke() -> bool {
 
 /// Poisoned groups lock returns IommuError::Poisoned.
 pub fn wave2_group_poisoned_lock_returns_error_smoke() -> bool {
-
     let mgr = IommuGroupManager::new();
 
     // Poison the groups lock
@@ -1774,8 +1809,14 @@ pub fn wave2_group_poisoned_lock_returns_error_smoke() -> bool {
     topo.add_endpoint(0, 4, 0);
     let ctrl = IommuController::new(0x0, 0);
     let dev = DeviceId::new(0, 0, 4, 0);
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated).err() == Some(IommuError::Poisoned)
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(
+            ctrl,
+        )),
+    );
+    mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated)
+        .err()
+        == Some(IommuError::Poisoned)
 }
 
 // ============================================================================
@@ -1791,12 +1832,15 @@ pub fn wave2_group_full_flow_discovery_to_attach_smoke() -> bool {
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 5, 0);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(IntelIommuDriver::with_controller(ctrl.clone()));
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        IntelIommuDriver::with_controller(ctrl.clone()),
+    );
     // 1. Group discovery creates domain
-    let (group, _) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let (group, _) =
+        match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
 
     // 2. Attach device to context table (best effort in qemu-test-export env)
     if ctrl.attach_device(dev, group.domain_id).is_err() {
@@ -1823,15 +1867,19 @@ pub fn wave2_group_shared_domain_multi_device_smoke() -> bool {
     let dev0 = DeviceId::new(0, 0, 6, 0);
     let dev1 = DeviceId::new(0, 0, 6, 1);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(IntelIommuDriver::with_controller(ctrl.clone()));
-    let (group0, _) = match mgr.find_or_create_group(dev0, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    let (group1, _) = match mgr.find_or_create_group(dev1, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        IntelIommuDriver::with_controller(ctrl.clone()),
+    );
+    let (group0, _) =
+        match mgr.find_or_create_group(dev0, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+    let (group1, _) =
+        match mgr.find_or_create_group(dev1, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
 
     if group0.domain_id != group1.domain_id {
         return false;
@@ -1862,11 +1910,14 @@ pub fn wave2_group_device_detach_smoke() -> bool {
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 7, 0);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(IntelIommuDriver::with_controller(ctrl.clone()));
-    let (group, _) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        IntelIommuDriver::with_controller(ctrl.clone()),
+    );
+    let (group, _) =
+        match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
 
     // Domain should exist
     if ctrl.domain(group.domain_id).is_none() {
@@ -1892,8 +1943,15 @@ pub fn wave2_group_poisoned_device_to_group_returns_error_smoke() -> bool {
     let ctrl = IommuController::new(0x0, 0);
     let dev = DeviceId::new(0, 0, 8, 0);
 
-    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    if mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated).is_err() {
+    let backend = crate::io::iommu::runtime::backend::IommuBackend::Intel(
+        crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(
+            ctrl,
+        )),
+    );
+    if mgr
+        .find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated)
+        .is_err()
+    {
         return false;
     }
 
@@ -1927,7 +1985,10 @@ pub fn wave2_ats_enable_disable_lifecycle_smoke() -> bool {
     }
 
     // Disable ATS
-    ctrl.disable_ats_for_device(dev, crate::io::iommu::runtime::security::AtsChangeReason::AdminRequest);
+    ctrl.disable_ats_for_device(
+        dev,
+        crate::io::iommu::runtime::security::AtsChangeReason::AdminRequest,
+    );
 
     // Verify disabled
     !ctrl.is_ats_enabled(&dev)
@@ -1969,7 +2030,10 @@ pub fn wave2_ats_detach_disables_ats_smoke() -> bool {
         if !ctrl.is_ats_enabled(&dev) {
             return false;
         }
-        ctrl.disable_ats_for_device(dev, crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach);
+        ctrl.disable_ats_for_device(
+            dev,
+            crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach,
+        );
         return !ctrl.is_ats_enabled(&dev);
     }
 
@@ -2057,21 +2121,22 @@ fn wave5_map_for_device_async_and_unmap_impl() -> bool {
     use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
     use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 
-    let controller = if let Some(registry) = crate::io::iommu::runtime::registry::get_iommu_registry() {
-        match registry.controllers.get(0).cloned() {
-            Some(controller) => controller,
-            None => return false,
-        }
-    } else {
-        let controller = Arc::new(IommuController::new(0x0, 0));
-        let registry = crate::io::iommu::runtime::registry::IommuRegistry::new(
-            alloc::vec![controller.clone()],
-            alloc::vec::Vec::new(),
-            crate::io::iommu::runtime::config::IommuConfig::default(),
-        );
-        crate::io::iommu::runtime::registry::init_registry(registry);
-        controller
-    };
+    let controller =
+        if let Some(registry) = crate::io::iommu::runtime::registry::get_iommu_registry() {
+            match registry.controllers.get(0).cloned() {
+                Some(controller) => controller,
+                None => return false,
+            }
+        } else {
+            let controller = Arc::new(IommuController::new(0x0, 0));
+            let registry = crate::io::iommu::runtime::registry::IommuRegistry::new(
+                alloc::vec![controller.clone()],
+                alloc::vec::Vec::new(),
+                crate::io::iommu::runtime::config::IommuConfig::default(),
+            );
+            crate::io::iommu::runtime::registry::init_registry(registry);
+            controller
+        };
 
     if crate::io::iommu::runtime::registry::get_iommu_driver().is_none() {
         crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
@@ -2119,8 +2184,12 @@ fn wave5_map_for_device_async_and_unmap_impl() -> bool {
     let iova = match crate::task::block_on(async {
         // SAFETY: fixed, aligned physical test address used only by deterministic no_std smoke.
         unsafe {
-            crate::io::iommu::api::map_for_device_async(&device, x86_64::PhysAddr::new(0x2000_0000), 0x1000)
-                .await
+            crate::io::iommu::api::map_for_device_async(
+                &device,
+                x86_64::PhysAddr::new(0x2000_0000),
+                0x1000,
+            )
+            .await
         }
     }) {
         Ok(iova) => iova,
@@ -2138,12 +2207,17 @@ fn wave5_map_for_device_async_and_unmap_impl() -> bool {
     };
 
     if domain_arc.mapping(iova).is_none() {
-        let _ =
-            crate::task::block_on(async { crate::io::iommu::api::unmap_for_device_async(&device, iova, 0x1000).await });
+        let _ = crate::task::block_on(async {
+            crate::io::iommu::api::unmap_for_device_async(&device, iova, 0x1000).await
+        });
         return false;
     }
 
-    if crate::task::block_on(async { crate::io::iommu::api::unmap_for_device_async(&device, iova, 0x1000).await }).is_err() {
+    if crate::task::block_on(async {
+        crate::io::iommu::api::unmap_for_device_async(&device, iova, 0x1000).await
+    })
+    .is_err()
+    {
         let _ = domain_arc.unmap(iova);
         let _ = controller.free_iova(iova, 0x1000);
         return false;
@@ -2153,21 +2227,22 @@ fn wave5_map_for_device_async_and_unmap_impl() -> bool {
 }
 
 fn wave5_map_for_device_respects_dma_mask_canonical_impl() -> bool {
-    let controller = if let Some(registry) = crate::io::iommu::runtime::registry::get_iommu_registry() {
-        match registry.controllers.get(0).cloned() {
-            Some(controller) => controller,
-            None => return false,
-        }
-    } else {
-        let controller = Arc::new(IommuController::new(0x0, 0));
-        let registry = crate::io::iommu::runtime::registry::IommuRegistry::new(
-            alloc::vec![controller.clone()],
-            alloc::vec::Vec::new(),
-            crate::io::iommu::runtime::config::IommuConfig::default(),
-        );
-        crate::io::iommu::runtime::registry::init_registry(registry);
-        controller
-    };
+    let controller =
+        if let Some(registry) = crate::io::iommu::runtime::registry::get_iommu_registry() {
+            match registry.controllers.get(0).cloned() {
+                Some(controller) => controller,
+                None => return false,
+            }
+        } else {
+            let controller = Arc::new(IommuController::new(0x0, 0));
+            let registry = crate::io::iommu::runtime::registry::IommuRegistry::new(
+                alloc::vec![controller.clone()],
+                alloc::vec::Vec::new(),
+                crate::io::iommu::runtime::config::IommuConfig::default(),
+            );
+            crate::io::iommu::runtime::registry::init_registry(registry);
+            controller
+        };
 
     if crate::io::iommu::runtime::registry::get_iommu_driver().is_none() {
         crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
@@ -2200,7 +2275,9 @@ fn wave5_map_for_device_respects_dma_mask_canonical_impl() -> bool {
     crate::io::iommu::api::register_device_dma_mask(device, 0xFFFF_FFFF);
     let _mask_guard = DmaMaskGuard(device);
 
-    match unsafe { crate::io::iommu::api::map_for_device(&device, x86_64::PhysAddr::new(0x1_0000_0000), 0x1000) } {
+    match unsafe {
+        crate::io::iommu::api::map_for_device(&device, x86_64::PhysAddr::new(0x1_0000_0000), 0x1000)
+    } {
         Ok(iova) => {
             let within_mask = iova + 0x1000 - 1 <= 0xFFFF_FFFF;
             within_mask && crate::io::iommu::api::unmap_for_device(&device, iova, 0x1000).is_ok()
@@ -2234,14 +2311,16 @@ fn wave5_api_security_notifier_registration_canonical_impl() -> bool {
         crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
     }
 
-    let first = match crate::io::iommu::api::set_security_notifier(Arc::new(MockSecurityNotifier::new())) {
-        Ok(result) => result,
-        Err(_) => return false,
-    };
-    let second = match crate::io::iommu::api::set_security_notifier(Arc::new(MockSecurityNotifier::new())) {
-        Ok(result) => result,
-        Err(_) => return false,
-    };
+    let first =
+        match crate::io::iommu::api::set_security_notifier(Arc::new(MockSecurityNotifier::new())) {
+            Ok(result) => result,
+            Err(_) => return false,
+        };
+    let second =
+        match crate::io::iommu::api::set_security_notifier(Arc::new(MockSecurityNotifier::new())) {
+            Ok(result) => result,
+            Err(_) => return false,
+        };
 
     first && !second
 }

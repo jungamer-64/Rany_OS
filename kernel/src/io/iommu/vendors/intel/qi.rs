@@ -42,9 +42,14 @@ impl InvalidationQueueEntry {
     /// Create a Context-Cache Invalidation descriptor
     /// Granularity: 0=reserved, 1=global, 2=domain, 3=device
     pub fn context_cache_invalidate(granularity: u8, domain_id: u16, source_id: u16) -> Self {
+        // Intel VT-d Spec §6.5.2.1: CC Invalidate Descriptor lo QWORD layout:
+        //   [3:0] Type, [5:4] Granularity, [15:6] Rsvd, [31:16] DID, [47:32] SID, [49:48] FM
         let lo =
-            qi_desc_type::CC_INV | ((granularity as u64 & 0x3) << 4) | ((domain_id as u64) << 16);
-        let hi = source_id as u64;
+            qi_desc_type::CC_INV
+            | ((granularity as u64 & 0x3) << 4)
+            | ((domain_id as u64) << 16)
+            | ((source_id as u64) << 32);
+        let hi = 0; // hi QWORD is reserved
         Self { lo, hi }
     }
 

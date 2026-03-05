@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 impl AmdIommuDriver {
     pub(crate) fn ivhd_flags_for_device(&self, device: DeviceId) -> u8 {
         let mut flags = 0u8;
@@ -42,7 +41,10 @@ impl AmdIommuDriver {
         Ok(info.domain.clone())
     }
 
-    pub(super) fn device_table_for_segment(&self, segment: u16) -> Result<&AmdDeviceTable, IommuError> {
+    pub(super) fn device_table_for_segment(
+        &self,
+        segment: u16,
+    ) -> Result<&AmdDeviceTable, IommuError> {
         self.device_tables
             .get(&segment)
             .ok_or(IommuError::NotPresent)
@@ -91,7 +93,11 @@ impl AmdIommuDriver {
         aliases
     }
 
-    pub(super) fn collect_alias_from_entry(entry: &IvhdDeviceEntry, devid: u16, aliases: &mut Vec<u16>) {
+    pub(super) fn collect_alias_from_entry(
+        entry: &IvhdDeviceEntry,
+        devid: u16,
+        aliases: &mut Vec<u16>,
+    ) {
         match entry {
             IvhdDeviceEntry::Alias {
                 devid: entry_devid,
@@ -241,7 +247,9 @@ impl AmdIommuDriver {
         numa_node: Option<usize>,
         domain_type: IommuDomainType,
     ) -> Result<u16, IommuError> {
-        let raw_id = self.next_domain_id.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let raw_id = self
+            .next_domain_id
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         if raw_id > u16::MAX as u64 {
             return Err(IommuError::OutOfMemory);
         }
@@ -252,6 +260,7 @@ impl AmdIommuDriver {
             false,
             false,
             self.max_addr_bits,
+            4,
             domain_type,
             self.page_table_pool.clone(),
             PteFormat::Amd,
@@ -272,14 +281,19 @@ impl AmdIommuDriver {
     pub(crate) fn destroy_domain(&self, domain_id: u16) -> Result<(), IommuError> {
         // SECURITY: Check if any devices are still attached to this domain
         {
-            let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
+            let device_domains = self
+                .device_domains
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?;
             if device_domains.values().any(|&did| did == domain_id) {
                 return Err(IommuError::AlreadyMapped);
             }
         }
 
         let info = match self.domains.lock() {
-            Ok(mut domains) => domains.remove(&domain_id).ok_or(IommuError::DomainNotFound)?,
+            Ok(mut domains) => domains
+                .remove(&domain_id)
+                .ok_or(IommuError::DomainNotFound)?,
             Err(_) => return Err(IommuError::Poisoned),
         };
 
@@ -303,10 +317,7 @@ impl AmdIommuDriver {
         aliases: &[u16],
         previous: Option<u16>,
     ) {
-        let Ok(mut device_domains) = self
-            .device_domains
-            .lock()
-            .map_err(|_| IommuError::Poisoned)
+        let Ok(mut device_domains) = self.device_domains.lock().map_err(|_| IommuError::Poisoned)
         else {
             return;
         };
@@ -337,11 +348,7 @@ impl AmdIommuDriver {
         Ok(())
     }
 
-    pub(crate) fn attach_device(
-        &self,
-        device: DeviceId,
-        domain_id: u16,
-    ) -> Result<(), IommuError> {
+    pub(crate) fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
         if self.find_unit_for_device(device).is_none() {
             return Err(IommuError::DeviceNotFound);
         }
@@ -390,7 +397,7 @@ impl AmdIommuDriver {
         for alias in aliases {
             self.invalidate_device_entry_by_devid(device.segment, *alias)?;
         }
-        
+
         // Security: Invalidate Device-TLB (ATS) to ensure no stale translations remain in the device.
         // We invalidate the entire range (0 to u64::MAX) for safety.
         let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
@@ -416,7 +423,9 @@ impl AmdIommuDriver {
     ) {
         if let Ok(mut device_domains) = self.device_domains.lock() {
             device_domains.insert(device, previous_domain);
-            if let Err(err) = self.write_device_entries_for_domain(device, aliases, Some(previous_domain)) {
+            if let Err(err) =
+                self.write_device_entries_for_domain(device, aliases, Some(previous_domain))
+            {
                 log::error!("[IOMMU][AMD-Vi] Critical: Failed to restore DTE during rollback for device {:?}: {:?}", device, err);
             }
         }
@@ -468,7 +477,11 @@ impl AmdIommuDriver {
 
     pub(crate) fn dump_diagnostics(&self) {
         let unit_count = self.units.len();
-        let cmd_ready = self.cmd_states.iter().filter(|state| state.is_some()).count();
+        let cmd_ready = self
+            .cmd_states
+            .iter()
+            .filter(|state| state.is_some())
+            .count();
         let evt_ready = self.event_logs.iter().filter(|log| log.is_some()).count();
 
         log::info!(

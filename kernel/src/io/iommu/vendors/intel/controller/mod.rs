@@ -6,8 +6,9 @@
 //!
 //! Contains `IommuController` and its implementation modules.
 
-pub mod cpu_cache;
+pub mod command_queue;
 pub mod context_cache;
+pub mod cpu_cache;
 pub mod dma;
 pub mod fault;
 pub mod init;
@@ -20,7 +21,6 @@ pub mod pi;
 pub mod pri;
 pub mod qi_init;
 pub mod qi_ops;
-pub mod command_queue;
 pub mod utils;
 
 use alloc::collections::BTreeSet;
@@ -32,21 +32,25 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 use hashbrown::HashMap;
 
+use self::init::CapabilityManager;
 use self::iova::IovaManager;
 use self::ir::InterruptRemapTable;
-use self::init::CapabilityManager;
-use crate::io::iommu::vendors::shared::{PageRequestQueue, PostedInterruptPool};
-use crate::io::iommu::common::domain::IommuDomain;
-use crate::io::iommu::runtime::fault_log::FaultLog;
-use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, QiStats};
-use crate::io::iommu::vendors::intel::registers::{fsts_bits, gcmd_bits, gsts_bits, regs, rtaddr_bits};
-use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTable, RootEntry, ScalableContextEntry};
-use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
-use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
+use crate::io::iommu::common::domain::IommuDomain;
+use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::tables::HardwareTable;
+use crate::io::iommu::runtime::fault_log::FaultLog;
+use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DeviceId, IommuDeviceScope, IommuError};
+use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, QiStats};
+use crate::io::iommu::vendors::intel::registers::{
+    fsts_bits, gcmd_bits, gsts_bits, regs, rtaddr_bits,
+};
+use crate::io::iommu::vendors::intel::tables::{
+    ContextEntry, PasidTable, RootEntry, ScalableContextEntry,
+};
+use crate::io::iommu::vendors::shared::{PageRequestQueue, PostedInterruptPool};
 
 use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
 
@@ -108,6 +112,12 @@ pub struct IommuController {
     pub(crate) cap: u64,
     /// Extended capabilities
     pub(crate) ecap: u64,
+    /// Selected adjusted guest address width code (AGAW, 0..=3)
+    selected_agaw_code: u8,
+    /// Selected adjusted guest address width in bits (30/39/48/57)
+    selected_addr_bits: u8,
+    /// Selected second-level page table levels (2..=5)
+    selected_levels: u8,
     /// Hardware/Table Lock (protects root_table and context tables)
     pub(crate) hardware: PoisonLock<HardwareContext>,
     /// Register Lock (protects MMIO command sequences)
@@ -174,6 +184,9 @@ impl IommuController {
             segment,
             cap: 0,
             ecap: 0,
+            selected_agaw_code: 2,
+            selected_addr_bits: 48,
+            selected_levels: 4,
             hardware: PoisonLock::new(HardwareContext::default()),
             register_lock: PoisonLock::new(()),
             domains: PoisonLock::new(HashMap::new()),
@@ -214,6 +227,9 @@ impl IommuController {
             segment,
             cap: 0,
             ecap: 0,
+            selected_agaw_code: 2,
+            selected_addr_bits: 48,
+            selected_levels: 4,
             hardware: PoisonLock::new(HardwareContext::default()),
             register_lock: PoisonLock::new(()),
             domains: PoisonLock::new(HashMap::new()),
@@ -272,7 +288,8 @@ impl IommuController {
         if self.cap == 0 {
             return 0;
         }
-        ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_SAGAW_MASK) >> 8) as u8
+        ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_SAGAW_MASK) >> 8)
+            as u8
     }
 
     /// Get the maximum Address Mask (AM) supported by the hardware (bits 53:48 of CAP).
@@ -280,16 +297,54 @@ impl IommuController {
         if self.cap == 0 {
             return 0;
         }
-        ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_AM_MASK) >> 48) as u8
+        ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_AM_MASK) >> 48)
+            as u8
     }
 
     fn max_guest_address_width(&self) -> u8 {
         if self.cap == 0 {
             return 48;
         }
-        let raw = ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_MGAW_MASK) >> 16)
-            as u8;
+        let raw = ((self.cap
+            & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_MGAW_MASK)
+            >> 16) as u8;
         raw.saturating_add(1).clamp(1, 64)
+    }
+
+    #[inline]
+    pub(crate) fn selected_agaw_code(&self) -> u8 {
+        self.selected_agaw_code
+    }
+
+    #[inline]
+    pub(crate) fn selected_addr_bits(&self) -> u8 {
+        self.selected_addr_bits
+    }
+
+    #[inline]
+    pub(crate) fn selected_levels(&self) -> u8 {
+        self.selected_levels
+    }
+
+    #[inline]
+    fn agaw_code_to_addr_bits(code: u8) -> u8 {
+        30 + code.saturating_mul(9)
+    }
+
+    pub(crate) fn select_agaw(sagaw: u8, mgaw: u8) -> Result<(u8, u8, u8), IommuError> {
+        let mut selected: Option<(u8, u8, u8)> = None;
+        for code in 0u8..=3 {
+            if (sagaw & (1 << code)) == 0 {
+                continue;
+            }
+            let addr_bits = Self::agaw_code_to_addr_bits(code);
+            if addr_bits > mgaw {
+                continue;
+            }
+            let levels = code + 2;
+            selected = Some((code, addr_bits, levels));
+        }
+        selected.ok_or(IommuError::NotSupported)
     }
 
     /// Get QI runtime stats if the queue is initialized.
@@ -326,7 +381,7 @@ impl IommuController {
             fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE,
         );
 
-        self.read_and_log_caps();
+        self.read_and_log_caps()?;
         let scalable_enabled = self.resolve_scalable_mode(enable_scalable_mode);
         self.setup_and_program_root_table()?;
         self.allocate_context_tables(scalable_enabled)?;
@@ -335,7 +390,7 @@ impl IommuController {
     }
 
     /// Read capability registers and log address width information.
-    fn read_and_log_caps(&mut self) {
+    fn read_and_log_caps(&mut self) -> Result<(), IommuError> {
         self.cap = self.read64(regs::CAP);
         log::info!("IOMMU init: CAP read success: {:#x}", self.cap);
 
@@ -344,21 +399,18 @@ impl IommuController {
 
         let sagaw = self.sagaw_mask();
         let mgaw = self.max_guest_address_width();
+        log::info!("IOMMU init: MGAW={} bits, SAGAW=0x{:02x}", mgaw, sagaw);
+        let (agaw_code, addr_bits, levels) = Self::select_agaw(sagaw, mgaw)?;
+        self.selected_agaw_code = agaw_code;
+        self.selected_addr_bits = addr_bits;
+        self.selected_levels = levels;
         log::info!(
-            "IOMMU init: MGAW={} bits, SAGAW=0x{:02x}",
-            mgaw,
-            sagaw
+            "IOMMU init: selected AGAW={} ({} bits, {} levels)",
+            agaw_code,
+            addr_bits,
+            levels
         );
-        if mgaw < 48 {
-            log::warn!(
-                "IOMMU init: MGAW below 48 bits; 4-level page tables may be unsupported"
-            );
-        }
-        if (sagaw & (1 << 2)) == 0 {
-            log::warn!(
-                "IOMMU init: 48-bit AGAW not reported in SAGAW; page table compatibility may be limited"
-            );
-        }
+        Ok(())
     }
 
     /// Resolve whether scalable mode should be enabled.
@@ -369,7 +421,9 @@ impl IommuController {
         let scalable_enabled = enable_scalable_mode && self.supports_scalable_mode();
         self.set_scalable_mode_enabled(scalable_enabled);
         if scalable_enabled {
-            log::warn!("[IOMMU] Scalable mode context tables enabled (translation path is experimental)");
+            log::warn!(
+                "[IOMMU] Scalable mode context tables enabled (translation path is experimental)"
+            );
         }
         scalable_enabled
     }
@@ -377,7 +431,10 @@ impl IommuController {
     /// Allocate root table, program its address, and wait for hardware acknowledgment.
     unsafe fn setup_and_program_root_table(&mut self) -> Result<(), IommuError> {
         let root_table = HardwareTable::new(256, None)?;
-        self.hardware.lock().expect("IOMMU hardware lock poisoned").root_table = Some(root_table);
+        self.hardware
+            .lock()
+            .expect("IOMMU hardware lock poisoned")
+            .root_table = Some(root_table);
 
         let mut root_phys = self
             .hardware
@@ -491,7 +548,7 @@ impl IommuController {
     /// Used for emergency device isolation.
     pub fn invalidate_iotlb_global_sync(&self) -> Result<(), IommuError> {
         use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
-        
+
         // Advance epoch before global invalidation
         let epoch = if let Ok(guard) = self.iova_allocator.lock() {
             guard.as_ref().map(|a| a.advance_epoch())
@@ -569,13 +626,13 @@ impl IommuController {
         }
 
         use crate::io::iommu::vendors::intel::registers::ccmd_bits;
-        
+
         // Global context invalidation command
         let cmd: u64 = ccmd_bits::CCMD_ICC
             | ((ccmd_bits::CCMD_CIRG_GLOBAL as u64) << ccmd_bits::CCMD_CIRG_SHIFT);
-        
+
         self.write64(regs::CCMD, cmd);
-        
+
         // Wait for completion (ICC bit cleared)
         while (self.read64(regs::CCMD) & ccmd_bits::CCMD_ICC) != 0 {
             core::hint::spin_loop();
@@ -586,7 +643,7 @@ impl IommuController {
     pub fn device_to_domain(&self, bus: u8, devfn: u8) -> Option<u16> {
         // Use the device_domains hashmap directly
         let device_id = DeviceId::from_bus_devfn(self.segment, bus, devfn);
-        
+
         match self.device_domains.lock() {
             Ok(device_domains) => device_domains.get(&device_id).copied(),
             Err(_) => None,

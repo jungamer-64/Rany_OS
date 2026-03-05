@@ -6,21 +6,19 @@
 //!
 //! Tests for IOMMU controller functionality, domain management, and invalidation.
 
-use crate::io::iommu::runtime::config::IommuConfig;
 use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
-use crate::io::iommu::common::domain::IommuDomain;
-use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
-use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry, init_registry, IommuRegistry};
-use crate::io::iommu::common::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
+use crate::io::iommu::common::domain::IommuDomain;
+use crate::io::iommu::common::tables::{virt_ptr_to_phys, HardwareTable, PageTableScope, SlPte};
+use crate::io::iommu::runtime::config::IommuConfig;
+use crate::io::iommu::runtime::fault_log::FaultRecord;
+use crate::io::iommu::runtime::registry::{
+    get_iommu_driver, get_iommu_registry, init_registry, IommuRegistry,
+};
+use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
-use crate::io::iommu::vendors::intel::controller::IommuController;
-use crate::io::iommu::vendors::intel::controller::fault::FaultHandler;
-use crate::io::iommu::vendors::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
-use alloc::boxed::Box;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
+use crate::io::iommu::vendors::intel::controller::fault::FaultHandler;
 use crate::io::iommu::vendors::intel::controller::fault::{
     drain_deferred_faults_with_controller, push_deferred_fault_for_test, RawFaultEvent,
 };
@@ -29,9 +27,15 @@ use crate::io::iommu::vendors::intel::controller::ir::InterruptRemapper;
 use crate::io::iommu::vendors::intel::controller::pri::PageRequestManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
+use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
-use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
+use crate::io::iommu::vendors::intel::tables::{
+    ContextEntry, PasidTableEntry, RootEntry, ScalableContextEntry,
+};
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 #[test_case]
@@ -57,6 +61,7 @@ fn test_iommu_domain() {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -80,6 +85,7 @@ fn test_page_table_addr_returns_root_phys() {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -88,6 +94,99 @@ fn test_page_table_addr_returns_root_phys() {
     let expected = virt_ptr_to_phys(domain.page_table as *const u8)
         .expect("failed to translate page table virtual address");
     assert_eq!(domain.page_table_addr(), expected);
+}
+
+#[test_case]
+fn test_intel_select_agaw_prefers_highest_supported() {
+    assert_eq!(IommuController::select_agaw(0b1111, 39), Ok((1, 39, 3)));
+    assert_eq!(IommuController::select_agaw(0b1011, 57), Ok((3, 57, 5)));
+    assert_eq!(IommuController::select_agaw(0b0001, 30), Ok((0, 30, 2)));
+    assert_eq!(
+        IommuController::select_agaw(0b0100, 39),
+        Err(IommuError::NotSupported)
+    );
+}
+
+#[test_case]
+fn test_entry_agaw_encoding_uses_selected_code() {
+    let mut ctx = ContextEntry::default();
+    ctx.set_sl_pt(0x2000, 0x12, 1);
+    assert_eq!(ctx.hi & 0x7, 1);
+
+    ctx.set_passthrough(0x34, 3);
+    assert_eq!(ctx.hi & 0x7, 3);
+
+    let mut pasid = PasidTableEntry::default();
+    pasid.set_sl_pt(0x4000, 3, 0x56);
+    assert_eq!((pasid.qwords[0] >> PasidTableEntry::AW_SHIFT) & 0x7, 3);
+}
+
+#[test_case]
+fn test_domain_map_unmap_4k_for_levels_2_to_5() {
+    for (levels, max_bits) in [(2u8, 30u8), (3, 39), (4, 48), (5, 57)] {
+        let domain = IommuDomain::new(
+            levels as u16,
+            None,
+            true,
+            true,
+            max_bits,
+            levels,
+            IommuDomainType::Translated,
+            PageTablePool::new(1, 32),
+            PteFormat::Intel,
+        );
+        let iova = 0x20_0000;
+        let phys = 0x40_0000;
+        domain
+            .map(iova, phys, 0x1000, true, true)
+            .expect("map failed");
+        assert!(domain.mapping(iova).is_some());
+        domain.unmap(iova).expect("unmap failed");
+        assert!(domain.mapping(iova).is_none());
+    }
+}
+
+#[test_case]
+fn test_superpage_level_guards() {
+    let level2 = IommuDomain::new(
+        20,
+        None,
+        true,
+        true,
+        30,
+        2,
+        IommuDomainType::Translated,
+        PageTablePool::new(1, 32),
+        PteFormat::Intel,
+    );
+    assert_eq!(
+        unsafe { level2.map_page_1gb(0x4000_0000, 0x8000_0000, true, true) },
+        Err(IommuError::NotSupported)
+    );
+    level2
+        .map(0x20_0000, 0x40_0000, 2 * 1024 * 1024, true, true)
+        .expect("2MB map should work at level 2");
+    level2
+        .unmap(0x20_0000)
+        .expect("2MB unmap should work at level 2");
+
+    let level3 = IommuDomain::new(
+        21,
+        None,
+        true,
+        true,
+        39,
+        3,
+        IommuDomainType::Translated,
+        PageTablePool::new(1, 32),
+        PteFormat::Intel,
+    );
+    level3
+        .map(0x4000_0000, 0x8000_0000, 1024 * 1024 * 1024, true, true)
+        .expect("1GB map should work at level 3");
+    level3
+        .unmap(0x4000_0000)
+        .expect("1GB unmap should work at level 3");
 }
 
 #[test_case]
@@ -173,6 +272,7 @@ fn test_map_rollback_on_overlap_hidden_mapping() {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         format,
@@ -212,6 +312,7 @@ fn test_map_rollback_on_overlap_hidden_mapping_amd() {
         true,
         true,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         format,
@@ -258,6 +359,7 @@ fn test_map_rollback_superpage_2mb_collision() {
         true,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         format,
@@ -705,6 +807,7 @@ fn test_map_for_dma_alloc_non_identity() {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -896,13 +999,12 @@ fn test_map_for_device_async_and_unmap() {
     }
 
     // Worker thread: act like executor and service mapping/unmapping commands
-    let worker =
-        std::thread::spawn(move || {
-            let mut map_done = false;
-            let mut unmap_done = false;
-            let mut attempts = 0;
-            while !(map_done && unmap_done) {
-                let processed =
+    let worker = std::thread::spawn(move || {
+        let mut map_done = false;
+        let mut unmap_done = false;
+        let mut attempts = 0;
+        while !(map_done && unmap_done) {
+            let processed =
                     worker_ctrl
                         .command_queue
                         .as_ref()
@@ -952,15 +1054,15 @@ fn test_map_for_device_async_and_unmap() {
                             }
                         });
 
-                if processed > 0 { /* continue */ }
+            if processed > 0 { /* continue */ }
 
-                attempts += 1;
-                if attempts > 2000 {
-                    panic!("CQ worker timed out");
-                }
-                std::thread::yield_now();
+            attempts += 1;
+            if attempts > 2000 {
+                panic!("CQ worker timed out");
             }
-        });
+            std::thread::yield_now();
+        }
+    });
 
     let phys = x86_64::PhysAddr::new(0x2000);
     // Submit MapRegion asynchronously and block-wait for completion
@@ -1125,8 +1227,7 @@ fn test_map_unmap_for_device_does_not_leak_iova() {
             iova,
             mask_limit
         );
-        crate::io::iommu::api::unmap_for_device(&device, iova, 0x1000)
-            .expect("unmap");
+        crate::io::iommu::api::unmap_for_device(&device, iova, 0x1000).expect("unmap");
     }
 }
 /*
@@ -1144,6 +1245,7 @@ fn test_unmap_reclaims_empty_tables() {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -1180,6 +1282,7 @@ fn test_unmap_partial_keeps_tables() {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -1232,6 +1335,7 @@ fn test_unmap_mixed_superpages() {
         true,
         true,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -1389,8 +1493,14 @@ fn test_page_table_scope_commit_preserves_counts() {
     // Commit should not overwrite existing count for scope.phys(), but should increment parent
     scope.commit();
 
-    assert_eq!(crate::io::iommu::common::dma::page_table_pool::get_ref_count(scope_phys), 42);
-    assert_eq!(crate::io::iommu::common::dma::page_table_pool::get_ref_count(parent_phys), 1);
+    assert_eq!(
+        crate::io::iommu::common::dma::page_table_pool::get_ref_count(scope_phys),
+        42
+    );
+    assert_eq!(
+        crate::io::iommu::common::dma::page_table_pool::get_ref_count(parent_phys),
+        1
+    );
 
     crate::io::iommu::common::dma::page_table_pool::unregister_page_table(parent_phys);
     crate::io::iommu::common::dma::page_table_pool::unregister_page_table(scope_phys);
@@ -1470,7 +1580,10 @@ impl crate::io::iommu::runtime::security::SecurityNotifier for MockSecurityNotif
         self.events.lock()[idx] = Some(event);
     }
 
-    fn decide(&self, _fault: &crate::io::iommu::runtime::security::FaultSummary) -> crate::io::iommu::runtime::security::IsolationDecision {
+    fn decide(
+        &self,
+        _fault: &crate::io::iommu::runtime::security::FaultSummary,
+    ) -> crate::io::iommu::runtime::security::IsolationDecision {
         self.isolation_decision
     }
 }
@@ -1492,15 +1605,20 @@ fn test_security_notifier_registration() {
 #[cfg(feature = "qemu-test-export")]
 #[test_case]
 fn test_api_security_notifier_registration() {
-    use crate::io::iommu::vendors::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
-    use crate::io::iommu::runtime::registry::get_iommu_driver;
     use crate::io::iommu::runtime::config::IommuConfig;
+    use crate::io::iommu::runtime::registry::get_iommu_driver;
     use crate::io::iommu::vendors::intel::controller::IommuController;
+    use crate::io::iommu::vendors::intel::registry::{
+        get_iommu_registry, init_registry, IommuRegistry,
+    };
 
     if get_iommu_registry().is_none() {
         let ctrl = IommuController::new(0x0, 0);
-        let registry =
-            IommuRegistry::new(alloc::vec![Arc::new(ctrl)], Vec::new(), IommuConfig::default());
+        let registry = IommuRegistry::new(
+            alloc::vec![Arc::new(ctrl)],
+            Vec::new(),
+            IommuConfig::default(),
+        );
         init_registry(registry);
     }
 
@@ -1640,6 +1758,7 @@ fn test_domain_type_not_passthrough() {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated, // Must be Translated, not PassThrough
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -1666,6 +1785,7 @@ fn test_mapping_iova_phys_distinct() {
         false,
         false,
         48,
+        4,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -1708,31 +1828,42 @@ fn test_mapping_iova_phys_distinct() {
     let mapping = domain.mapping(iova).expect("mapping should exist");
     assert_eq!(mapping.iova, iova);
     assert_eq!(mapping.phys, phys);
-    assert_ne!(mapping.iova, mapping.phys, "Mapping uses identity (IOVA == phys)");
+    assert_ne!(
+        mapping.iova, mapping.phys,
+        "Mapping uses identity (IOVA == phys)"
+    );
 
     // Cleanup
     domain.unmap(iova).expect("unmap");
     ctrl.free_iova(iova, size).expect("free");
 }
 
-
 #[test_case]
 fn test_ats_enable_requires_qi() {
     let mut ctrl = IommuController::new(0x0, 0);
     let device = DeviceId::new(0, 0, 1, 0);
-    
+
     // 1. Try to enable ATS without QI enabled
     ctrl.qi_enabled.store(false, Ordering::Release);
-    let success = ctrl.enable_ats_for_device(device, crate::io::iommu::runtime::security::DeviceTrustLevel::Trusted);
+    let success = ctrl.enable_ats_for_device(
+        device,
+        crate::io::iommu::runtime::security::DeviceTrustLevel::Trusted,
+    );
     assert!(!success, "ATS should not be enabled if QI is disabled");
-    
+
     // 2. Enable QI support (mock)
     ctrl.ecap |= ecap_bits::ECAP_QI;
     ctrl.qi_enabled.store(true, Ordering::Release);
-    
+
     // Now it should succeed
-    let success = ctrl.enable_ats_for_device(device, crate::io::iommu::runtime::security::DeviceTrustLevel::Trusted);
-    assert!(success, "ATS should be enabled if QI is enabled and device is trusted");
+    let success = ctrl.enable_ats_for_device(
+        device,
+        crate::io::iommu::runtime::security::DeviceTrustLevel::Trusted,
+    );
+    assert!(
+        success,
+        "ATS should be enabled if QI is enabled and device is trusted"
+    );
     assert!(ctrl.is_ats_enabled(&device));
 }
 
@@ -1751,7 +1882,7 @@ fn test_iova_quarantine_and_epoch_drain() {
         }
         Err(e) => panic!("alloc: {:?}", e),
     };
-    
+
     // Advance epoch so the free will be associated with a new epoch
     let epoch = if let Ok(guard) = ctrl.iova_allocator.lock() {
         guard.as_ref().unwrap().advance_epoch()
@@ -1769,7 +1900,7 @@ fn test_iova_quarantine_and_epoch_drain() {
     while let Ok(addr) = ctrl.allocate_iova(4096) {
         allocated.push(addr);
     }
-    
+
     // Now space is exhausted. If we complete the epoch, `iova` should become available.
     if let Ok(guard) = ctrl.iova_allocator.lock() {
         guard.as_ref().unwrap().complete_epoch(epoch);
@@ -1792,11 +1923,11 @@ fn test_iova_quarantine_and_epoch_drain() {
 
 #[test_case]
 fn test_invalidate_request_ats_flag() {
-    use crate::io::iommu::common::domain::{InvalidateRequest, InvalidateFlags};
-    
+    use crate::io::iommu::common::domain::{InvalidateFlags, InvalidateRequest};
+
     let req = InvalidateRequest::pages(1, 0x1000, 0x1000).with_ats();
     assert!(req.flags.contains(InvalidateFlags::ATS_AWARE));
-    
+
     let req_no_ats = InvalidateRequest::pages(1, 0x1000, 0x1000);
     assert!(!req_no_ats.flags.contains(InvalidateFlags::ATS_AWARE));
 }
