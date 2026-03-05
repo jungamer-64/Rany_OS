@@ -276,7 +276,9 @@ impl NetNamespace {
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
-        if !manager().has_capability(domain_id, CAP_NET_RAW) {
+        // Kernel domain(0) is trusted control plane; allow diagnostic ping
+        // even when capability tables are not explicitly seeded yet.
+        if domain_id != 0 && !manager().has_capability(domain_id, CAP_NET_RAW) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_RAW required"));
         }
 

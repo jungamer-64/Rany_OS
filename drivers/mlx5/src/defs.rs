@@ -230,6 +230,8 @@ pub enum CmdOpcode {
     QueryPages = 0x0107,
     /// ページ管理
     ManagePages = 0x0108,
+    /// HCA capability 設定
+    SetHcaCap = 0x0109,
 
     /// ISSI（Interface Stepping-Stone Identifier）クエリ
     QueryIssi = 0x010A,
@@ -280,6 +282,8 @@ pub enum CmdOpcode {
 
     /// MKEYアロケーション
     CreateMkey = 0x0200,
+    /// 特殊コンテキスト（reserved lkey 等）クエリ
+    QuerySpecialContexts = 0x0203,
     /// MKEY破棄
     DestroyMkey = 0x0201,
 

@@ -270,8 +270,8 @@ pub fn build_create_flow_table_input(in_mbox: &mut CmdMailbox, config: &FlowTabl
 
 /// CREATE_FLOW_TABLE 出力からテーブルIDを解析
 pub fn parse_create_flow_table_output(out_mbox: &CmdMailbox) -> u32 {
-    // table_id at offset 0x08 (bits [23:0])
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_create_flow_table_out_bits: table_id[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// CREATE_FLOW_GROUP コマンド入力の構築
@@ -307,7 +307,8 @@ pub fn build_create_flow_group_input(
 
 /// CREATE_FLOW_GROUP 出力からグループIDを解析
 pub fn parse_create_flow_group_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_create_flow_group_out_bits: group_id[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// SET_FLOW_TABLE_ENTRY コマンド入力の構築
@@ -380,5 +381,6 @@ pub fn build_create_rqt_input(in_mbox: &mut CmdMailbox, rq_numbers: &[u32], log_
 
 /// CREATE_RQT 出力からRQT番号を解析
 pub fn parse_create_rqt_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_create_rqt_out_bits: rqtn[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }

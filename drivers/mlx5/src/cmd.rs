@@ -9,6 +9,7 @@
 use crate::defs::{CmdOpcode, CmdStatus, MLX5_CMD_MBOX_SIZE};
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::regs::cmd_entry;
+use core::sync::atomic::{fence, Ordering};
 
 /// コマンドメールボックス (512 bytes aligned)
 ///
@@ -68,6 +69,13 @@ impl CmdMailbox {
         bytes.copy_from_slice(&self.data[offset..offset + 8]);
         u64::from_be_bytes(bytes)
     }
+
+    /// 指定オフセットから24bit値を読み取る（ビッグエンディアン）
+    pub fn read_be24(&self, offset: usize) -> u32 {
+        ((self.data[offset] as u32) << 16)
+            | ((self.data[offset + 1] as u32) << 8)
+            | (self.data[offset + 2] as u32)
+    }
 }
 
 // ============================================================================
@@ -84,6 +92,8 @@ pub struct CmdEntry {
 }
 
 impl CmdEntry {
+    const PCI_CMD_XPORT: u8 = 7;
+
     /// ゼロ初期化エントリ
     pub const fn zeroed() -> Self {
         Self {
@@ -117,26 +127,52 @@ impl CmdEntry {
         self.write_be32(cmd_entry::OUT_LENGTH, len);
     }
 
-    /// オペコードとトークンを設定してオーナービットをHWに引き渡す
-    pub fn submit(&mut self, opcode: CmdOpcode, token: u8) {
-        // TOKEN_SIG: byte layout = [token, signature, rsvd, rsvd]
-        self.write_be32(cmd_entry::TOKEN_SIG, (token as u32) << 24);
+    /// 入力インライン領域（16 bytes）を設定
+    pub fn set_input_inline(&mut self, first_16: &[u8]) {
+        let mut buf = [0u8; 16];
+        let copy_len = first_16.len().min(16);
+        buf[..copy_len].copy_from_slice(&first_16[..copy_len]);
+        self.raw[cmd_entry::IN_INLINE..cmd_entry::IN_INLINE + 16].copy_from_slice(&buf);
+    }
 
-        // STATUS_OWN: bit0 = owner (1=HW), bits[23:8] = opcode
-        let val = ((opcode as u32) << 8) | 0x01; // owner=HW
-        self.write_be32(cmd_entry::STATUS_OWN, val);
+    /// 出力インライン領域（16 bytes）を取得
+    pub fn output_inline(&self) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&self.raw[cmd_entry::OUT_INLINE..cmd_entry::OUT_INLINE + 16]);
+        out
+    }
+
+    /// トークンを設定
+    pub fn set_token(&mut self, token: u8) {
+        self.raw[cmd_entry::TOKEN] = token;
+    }
+
+    /// 記述子シグネチャを更新
+    pub fn update_signature(&mut self) {
+        self.raw[cmd_entry::SIG] = 0;
+        let mut sum = 0u8;
+        for b in &self.raw {
+            sum ^= *b;
+        }
+        self.raw[cmd_entry::SIG] = !sum;
+    }
+
+    /// 記述子タイプ/トークンを設定してオーナービットをHWに引き渡す
+    pub fn submit(&mut self, token: u8) {
+        self.raw[cmd_entry::TYPE] = Self::PCI_CMD_XPORT;
+        self.set_token(token);
+        self.raw[cmd_entry::STATUS_OWN] = 0x01; // owner=HW
+        self.update_signature();
     }
 
     /// オーナービットをチェック（0=SW=完了, 1=HW=進行中）
     pub fn is_owned_by_hw(&self) -> bool {
-        let val = self.read_be32(cmd_entry::STATUS_OWN);
-        (val & 0x01) != 0
+        (self.raw[cmd_entry::STATUS_OWN] & 0x01) != 0
     }
 
     /// ステータスを取得
     pub fn status(&self) -> CmdStatus {
-        let val = self.read_be32(cmd_entry::STATUS_OWN);
-        CmdStatus::from_u8(((val >> 24) & 0xFF) as u8)
+        CmdStatus::from_u8(self.raw[cmd_entry::STATUS_OWN] >> 1)
     }
 
     fn write_be32(&mut self, offset: usize, value: u32) {
@@ -173,6 +209,14 @@ pub trait CommandTransport {
         out_mbox_phys: u64,
         out_len: u32,
     ) -> Mlx5Result<()>;
+
+    /// コマンドヘッダに設定するUIDを更新する
+    fn set_uid(&mut self, _uid: u16) {}
+
+    /// 現在のコマンドUIDを取得する
+    fn uid(&self) -> u16 {
+        0
+    }
 }
 
 /// CMDQベースのコマンドインタフェース
@@ -190,8 +234,26 @@ pub struct CmdQueueTransport {
     log_cmd_stride: u8,
     /// BAR0ベース仮想アドレス
     bar0_base: u64,
+    /// コマンド入力メールボックス仮想アドレス（4KB DMAスロット先頭）
+    in_mbox_virt: u64,
+    /// コマンド出力メールボックス仮想アドレス（4KB DMAスロット先頭）
+    out_mbox_virt: u64,
     /// 次のトークン値
     next_token: u8,
+    /// コマンド入力ヘッダ UID (mlx5_ifc command_in.uid)
+    uid: u16,
+}
+
+#[repr(C)]
+struct CmdProtBlock {
+    data: [u8; MLX5_CMD_MBOX_SIZE],
+    rsvd0: [u8; 48],
+    next: u64,
+    block_num: u32,
+    rsvd1: u8,
+    token: u8,
+    ctrl_sig: u8,
+    sig: u8,
 }
 
 impl CmdQueueTransport {
@@ -230,6 +292,8 @@ impl CmdQueueTransport {
         bar0_base: u64,
         cmdq_phys: u64,
         cmdq_virt: u64,
+        in_mbox_virt: u64,
+        out_mbox_virt: u64,
         log_cmdq_size: u8,
         log_cmd_stride: u8,
     ) -> Mlx5Result<Self> {
@@ -240,8 +304,99 @@ impl CmdQueueTransport {
             log_cmdq_size,
             log_cmd_stride,
             bar0_base,
+            in_mbox_virt,
+            out_mbox_virt,
             next_token: 1,
+            uid: 0,
         })
+    }
+
+    /// コマンドヘッダ UID を設定
+    pub fn set_uid(&mut self, uid: u16) {
+        self.uid = uid;
+    }
+
+    /// コマンドヘッダ UID を取得
+    pub fn uid(&self) -> u16 {
+        self.uid
+    }
+
+    fn xor8(buf: &[u8]) -> u8 {
+        let mut sum = 0u8;
+        for b in buf {
+            sum ^= *b;
+        }
+        sum
+    }
+
+    unsafe fn prepare_in_block(&self, token: u8, in_len: usize) -> [u8; 16] {
+        let block = &mut *(self.in_mbox_virt as *mut CmdProtBlock);
+        let mut in_inline = [0u8; 16];
+        let inline_len = in_len.min(16);
+        in_inline[..inline_len].copy_from_slice(&block.data[..inline_len]);
+
+        if in_len > 16 {
+            let payload_len = (in_len - 16).min(MLX5_CMD_MBOX_SIZE);
+            let mut tmp = [0u8; MLX5_CMD_MBOX_SIZE];
+            tmp[..payload_len].copy_from_slice(&block.data[16..16 + payload_len]);
+            block.data.fill(0);
+            block.data[..payload_len].copy_from_slice(&tmp[..payload_len]);
+        } else {
+            block.data.fill(0);
+        }
+
+        block.rsvd0 = [0u8; 48];
+        block.next = 0;
+        block.block_num = 0;
+        block.rsvd1 = 0;
+        block.token = token;
+        block.ctrl_sig = 0;
+        block.sig = 0;
+
+        let raw = core::slice::from_raw_parts_mut(block as *mut CmdProtBlock as *mut u8, 576);
+        // ctrl_sig: XOR over trailer area excluding ctrl_sig/sig.
+        let ctrl_xor = Self::xor8(&raw[512..574]);
+        block.ctrl_sig = !ctrl_xor;
+        raw[574] = block.ctrl_sig;
+        // sig: XOR over entire block excluding sig itself.
+        let sig_xor = Self::xor8(&raw[..575]);
+        block.sig = !sig_xor;
+
+        in_inline
+    }
+
+    unsafe fn prepare_out_block(&self, token: u8) {
+        let block = &mut *(self.out_mbox_virt as *mut CmdProtBlock);
+        block.data.fill(0);
+        block.rsvd0 = [0u8; 48];
+        block.next = 0;
+        block.block_num = 0;
+        block.rsvd1 = 0;
+        block.token = token;
+        block.ctrl_sig = 0;
+        block.sig = 0;
+
+        let raw = core::slice::from_raw_parts_mut(block as *mut CmdProtBlock as *mut u8, 576);
+        let ctrl_xor = Self::xor8(&raw[512..574]);
+        block.ctrl_sig = !ctrl_xor;
+        raw[574] = block.ctrl_sig;
+        let sig_xor = Self::xor8(&raw[..575]);
+        block.sig = !sig_xor;
+    }
+
+    unsafe fn collect_out_data(&self, out_len: usize, inline_out: [u8; 16]) {
+        let block = &mut *(self.out_mbox_virt as *mut CmdProtBlock);
+        if out_len > 16 {
+            let payload_len = (out_len - 16).min(MLX5_CMD_MBOX_SIZE);
+            let mut tmp = [0u8; MLX5_CMD_MBOX_SIZE];
+            tmp[..payload_len].copy_from_slice(&block.data[..payload_len]);
+            let inline_len = out_len.min(16);
+            block.data[..inline_len].copy_from_slice(&inline_out[..inline_len]);
+            block.data[16..16 + payload_len].copy_from_slice(&tmp[..payload_len]);
+        } else {
+            let inline_len = out_len.min(16);
+            block.data[..inline_len].copy_from_slice(&inline_out[..inline_len]);
+        }
     }
 
     /// コマンドキューのエントリ数
@@ -325,29 +480,69 @@ impl CmdQueueTransport {
             self.next_token = 1;
         }
 
+        let in_len_usize = in_len as usize;
+        let out_len_usize = out_len as usize;
+
+        let in_mbox = &mut *(self.in_mbox_virt as *mut CmdMailbox);
+        // opcode[15:0] is at command input offset 0x00.
+        in_mbox.write_be16(0x00, opcode as u16);
+        // uid[15:0] is at command input offset 0x02.
+        in_mbox.write_be16(0x02, self.uid);
+        let in_inline = self.prepare_in_block(token, in_len_usize);
+        if out_len_usize > 16 {
+            self.prepare_out_block(token);
+        }
+
         let entry = self.entry_mut(slot);
         *entry = CmdEntry::zeroed();
+        entry.set_input_inline(&in_inline);
 
         // メールボックスアドレス設定
-        if in_mbox_phys != 0 {
+        if in_mbox_phys != 0 && in_len_usize > 16 {
             entry.set_input_mailbox(in_mbox_phys);
         }
         entry.set_input_length(in_len);
 
-        if out_mbox_phys != 0 {
+        if out_mbox_phys != 0 && out_len_usize > 16 {
             entry.set_output_mailbox(out_mbox_phys);
         }
         entry.set_output_length(out_len);
 
         // オーナービットをHWに引き渡し
-        entry.submit(opcode, token);
+        entry.submit(token);
 
         // ドアベルリング
         self.ring_doorbell();
 
         // ポーリングで完了を待つ（タイムアウト付き）
         match self.poll_completion(slot) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                // Ensure DMA/descriptor writes are visible after ownership handoff.
+                fence(Ordering::Acquire);
+                let completed = self.entry(slot);
+                self.collect_out_data(out_len_usize, completed.output_inline());
+
+                if out_len_usize > 0 {
+                    let out_mbox = &*(self.out_mbox_virt as *const CmdMailbox);
+                    let fw_status = out_mbox.data[0];
+                    if fw_status != 0 {
+                        let syndrome = if out_len_usize >= 8 {
+                            out_mbox.read_be32(0x04)
+                        } else {
+                            0
+                        };
+                        log::error!(
+                            target: "mlx5",
+                            "CMD {:?} FW status error: status={:#x} syndrome={:#x}",
+                            opcode,
+                            fw_status,
+                            syndrome
+                        );
+                        return Err(Mlx5Error::CommandFailed(fw_status));
+                    }
+                }
+                Ok(())
+            }
             Err(err) => {
                 log::error!(
                     target: "mlx5",
@@ -407,6 +602,14 @@ impl CommandTransport for CmdQueueTransport {
     ) -> Mlx5Result<()> {
         CmdQueueTransport::execute(self, opcode, in_mbox_phys, in_len, out_mbox_phys, out_len)
     }
+
+    fn set_uid(&mut self, uid: u16) {
+        CmdQueueTransport::set_uid(self, uid);
+    }
+
+    fn uid(&self) -> u16 {
+        CmdQueueTransport::uid(self)
+    }
 }
 
 // ============================================================================
@@ -415,15 +618,23 @@ impl CommandTransport for CmdQueueTransport {
 
 /// QUERY_ISSI コマンド出力の解析
 pub fn parse_query_issi(out_mbox: &CmdMailbox) -> u32 {
-    // Current ISSI version (offset 0x00 in output)
-    out_mbox.read_be32(0x00)
+    // mlx5_ifc_query_issi_out_bits:
+    // current_issi is at bit offset 0x50 => byte offset 0x0A.
+    out_mbox.read_be16(0x0A) as u32
 }
 
 /// ENABLE_HCA コマンド入力の構築
 pub fn build_enable_hca_input(in_mbox: &mut CmdMailbox, function_id: u16) {
     *in_mbox = CmdMailbox::zeroed();
-    // function_id at offset 0x04 (bits 31:16)
-    in_mbox.write_be32(0x04, (function_id as u32) << 16);
+    // mlx5_ifc_enable_hca_in_bits: function_id at bit 0x50 => byte 0x0A.
+    in_mbox.write_be16(0x0A, function_id);
+}
+
+/// SET_ISSI コマンド入力の構築
+pub fn build_set_issi_input(in_mbox: &mut CmdMailbox, current_issi: u16) {
+    *in_mbox = CmdMailbox::zeroed();
+    // mlx5_ifc_set_issi_in_bits: current_issi at bit 0x50 => byte 0x0A.
+    in_mbox.write_be16(0x0A, current_issi);
 }
 
 /// QUERY_HCA_CAP コマンド入力の構築
@@ -434,8 +645,25 @@ pub fn build_enable_hca_input(in_mbox: &mut CmdMailbox, function_id: u16) {
 ///   0x2 = Atomic Capabilities
 pub fn build_query_hca_cap_input(in_mbox: &mut CmdMailbox, cap_type: u16) {
     *in_mbox = CmdMailbox::zeroed();
-    // opcode modifier contains cap_type
-    in_mbox.write_be16(0x02, cap_type);
+    // mlx5_ifc_query_hca_cap_in_bits: op_mod at byte 0x06.
+    in_mbox.write_be16(0x06, cap_type);
+}
+
+/// SET_HCA_CAP コマンド入力の構築
+///
+/// - `cap_type`: capability type (0x0 = General)
+/// - `capability_payload`: capability union bytes copied from QUERY_HCA_CAP out[0x10..]
+pub fn build_set_hca_cap_input(
+    in_mbox: &mut CmdMailbox,
+    cap_type: u16,
+    capability_payload: &[u8],
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    // mlx5_ifc_set_hca_cap_in_bits: op_mod at byte 0x06.
+    in_mbox.write_be16(0x06, cap_type);
+    // capability union starts at byte 0x10.
+    let copy_len = capability_payload.len().min(MLX5_CMD_MBOX_SIZE - 0x10);
+    in_mbox.data[0x10..0x10 + copy_len].copy_from_slice(&capability_payload[..copy_len]);
 }
 
 /// INIT_HCA コマンド入力の構築
@@ -456,7 +684,8 @@ pub fn build_teardown_hca_input(in_mbox: &mut CmdMailbox, graceful: bool) {
     *in_mbox = CmdMailbox::zeroed();
     // profile: 0x0 = graceful, 0x1 = force
     let profile: u16 = if graceful { 0x0 } else { 0x1 };
-    in_mbox.write_be16(0x02, profile);
+    // mlx5_ifc_teardown_hca_in_bits: profile at byte 0x0A.
+    in_mbox.write_be16(0x0A, profile);
 }
 
 /// MANAGE_PAGES コマンド入力の構築
@@ -473,13 +702,12 @@ pub fn build_manage_pages_input(
     pas: &[u64],
 ) {
     *in_mbox = CmdMailbox::zeroed();
-    // op at offset 0x00 bits[27:24]
-    in_mbox.write_be32(0x00, (op as u32) << 24);
-    // function_id at offset 0x04
-    in_mbox.write_be32(0x04, (function_id as u32) << 16);
-    // num_pages at offset 0x08
-    in_mbox.write_be32(0x08, num_pages);
-    // PAs start at offset 0x10, each 8 bytes
+    // mlx5_ifc_manage_pages_in_bits:
+    // op_mod at byte 0x06, function_id at byte 0x0A, input_num_entries at byte 0x0C.
+    in_mbox.write_be16(0x06, op as u16);
+    in_mbox.write_be16(0x0A, function_id);
+    in_mbox.write_be32(0x0C, num_pages);
+    // PAS list starts at byte 0x10.
     for (i, &pa) in pas.iter().enumerate() {
         let off = 0x10 + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
@@ -511,24 +739,82 @@ pub fn build_create_eq_input(
 
 /// QUERY_NIC_VPORT_CONTEXT コマンド入力の構築
 pub fn build_query_nic_vport_input(in_mbox: &mut CmdMailbox, vport_number: u16) {
+    build_query_nic_vport_input_ex(in_mbox, vport_number, false, None);
+}
+
+/// QUERY_NIC_VPORT_CONTEXT コマンド入力の構築（拡張）
+///
+/// - `other_vport`: query_nic_vport_context_in.other_vport
+/// - `allowed_list_type`: query_nic_vport_context_in.allowed_list_type
+pub fn build_query_nic_vport_input_ex(
+    in_mbox: &mut CmdMailbox,
+    vport_number: u16,
+    other_vport: bool,
+    allowed_list_type: Option<u8>,
+) {
     *in_mbox = CmdMailbox::zeroed();
-    // Other vport bit at offset 0x00 bit 16, vport_number at offset 0x04
-    in_mbox.write_be16(0x04, vport_number);
+    // mlx5_ifc_query_nic_vport_context_in_bits:
+    // vport_number is at bit offset 0x50 => byte offset 0x0A.
+    in_mbox.write_be16(0x0A, vport_number);
+
+    // other_vport is bit 0x40 (byte 0x08, MSB).
+    if other_vport {
+        in_mbox.data[0x08] |= 0x80;
+    }
+
+    // allowed_list_type is at bits [2:0] of byte 0x0C.
+    if let Some(list_type) = allowed_list_type {
+        in_mbox.data[0x0C] = (in_mbox.data[0x0C] & 0xF8) | (list_type & 0x07);
+    }
 }
 
 /// QUERY_NIC_VPORT_CONTEXT 出力からMACアドレスを取得
 pub fn parse_vport_mac(out_mbox: &CmdMailbox) -> [u8; 6] {
-    // MAC is at vport context offset 0x70-0x75 in output (8-byte field, upper 2 reserved)
-    let mac_h = out_mbox.read_be16(0x70 + 0x10); // 上位2バイト
-    let mac_l = out_mbox.read_be32(0x72 + 0x10); // 下位4バイト
-    [
-        (mac_h >> 8) as u8,
-        mac_h as u8,
-        (mac_l >> 24) as u8,
-        (mac_l >> 16) as u8,
-        (mac_l >> 8) as u8,
-        mac_l as u8,
-    ]
+    // mlx5_ifc_query_nic_vport_context_out_bits:
+    // - nic_vport_context starts at byte 0x10
+    // - permanent_address (mac layout) at bit 0x7a0 inside context => +0xF4 bytes
+    // - current_uc_mac_address[0] at bit 0x7e0 inside context => +0xFC bytes
+    // mac_address_layout:
+    //   reserved_at_0[16], mac_addr_47_32[16], mac_addr_31_0[32]
+    const NIC_VPORT_CTX_BASE: usize = 0x10;
+    const PERM_MAC_LAYOUT: usize = NIC_VPORT_CTX_BASE + 0xF4;
+    const CURR_UC0_MAC_LAYOUT: usize = NIC_VPORT_CTX_BASE + 0xFC;
+
+    fn read_mac_layout(mbox: &CmdMailbox, base: usize) -> [u8; 6] {
+        let mac_h = mbox.read_be16(base + 0x02);
+        let mac_l = mbox.read_be32(base + 0x04);
+        [
+            (mac_h >> 8) as u8,
+            mac_h as u8,
+            (mac_l >> 24) as u8,
+            (mac_l >> 16) as u8,
+            (mac_l >> 8) as u8,
+            mac_l as u8,
+        ]
+    }
+
+    let perm = read_mac_layout(out_mbox, PERM_MAC_LAYOUT);
+    if perm != [0; 6] {
+        return perm;
+    }
+
+    let current = read_mac_layout(out_mbox, CURR_UC0_MAC_LAYOUT);
+    if current != [0; 6] {
+        return current;
+    }
+
+    [0; 6]
+}
+
+/// QUERY_SPECIAL_CONTEXTS コマンド入力の構築
+pub fn build_query_special_contexts_input(in_mbox: &mut CmdMailbox) {
+    *in_mbox = CmdMailbox::zeroed();
+}
+
+/// QUERY_SPECIAL_CONTEXTS 出力から reserved lkey を取得
+pub fn parse_query_special_contexts_resd_lkey(out_mbox: &CmdMailbox) -> u32 {
+    // mlx5_ifc_query_special_contexts_out_bits: resd_lkey at byte offset 0x0C.
+    out_mbox.read_be32(0x0C)
 }
 
 // ============================================================================
@@ -543,8 +829,8 @@ pub fn build_alloc_uar_input(in_mbox: &mut CmdMailbox) {
 
 /// ALLOC_UAR 出力からUARページ番号を解析
 pub fn parse_alloc_uar_output(out_mbox: &CmdMailbox) -> u32 {
-    // UAR number at offset 0x08 (bits [23:0])
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_alloc_uar_out_bits: uar[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// DEALLOC_UAR コマンド入力の構築
@@ -560,7 +846,8 @@ pub fn build_alloc_pd_input(in_mbox: &mut CmdMailbox) {
 
 /// ALLOC_PD 出力からPD番号を解析
 pub fn parse_alloc_pd_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_alloc_pd_out_bits: pd[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// DEALLOC_PD コマンド入力の構築
@@ -576,7 +863,8 @@ pub fn build_alloc_td_input(in_mbox: &mut CmdMailbox) {
 
 /// ALLOC_TRANSPORT_DOMAIN 出力からTD番号を解析
 pub fn parse_alloc_td_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_alloc_transport_domain_out_bits: transport_domain[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// DEALLOC_TRANSPORT_DOMAIN コマンド入力の構築
@@ -626,7 +914,8 @@ pub fn build_create_cq_input(
 
 /// CREATE_CQ 出力からCQ番号を解析
 pub fn parse_create_cq_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_create_cq_out_bits: cqn[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// DESTROY_CQ コマンド入力の構築
@@ -686,7 +975,8 @@ pub fn build_create_sq_input(
 
 /// CREATE_SQ 出力からSQ番号を解析
 pub fn parse_create_sq_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_create_sq_out_bits: sqn[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// DESTROY_SQ コマンド入力の構築
@@ -760,7 +1050,8 @@ pub fn build_create_rq_input(
 
 /// CREATE_RQ 出力からRQ番号を解析
 pub fn parse_create_rq_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_create_rq_out_bits: rqn[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// DESTROY_RQ コマンド入力の構築
@@ -793,7 +1084,8 @@ pub fn build_destroy_eq_input(in_mbox: &mut CmdMailbox, eqn: u32) {
 
 /// CREATE_EQ 出力からEQ番号を解析
 pub fn parse_create_eq_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_create_eq_out_bits: eq_number[7:0] at byte offset 0x0B.
+    out_mbox.data[0x0B] as u32
 }
 
 // ============================================================================
@@ -803,7 +1095,8 @@ pub fn parse_create_eq_output(out_mbox: &CmdMailbox) -> u32 {
 /// QUERY_VPORT_STATE コマンド入力の構築
 pub fn build_query_vport_state_input(in_mbox: &mut CmdMailbox, vport_number: u16) {
     *in_mbox = CmdMailbox::zeroed();
-    in_mbox.write_be16(0x04, vport_number);
+    // mlx5_ifc_query_vport_state_in_bits: vport_number at bit offset 0x50 => byte 0x0A.
+    in_mbox.write_be16(0x0A, vport_number);
 }
 
 /// QUERY_VPORT_STATE 出力からリンク状態を解析
@@ -811,7 +1104,9 @@ pub fn build_query_vport_state_input(in_mbox: &mut CmdMailbox, vport_number: u16
 /// # Returns
 /// (admin_state, link_state) — 各2ビットフィールド
 pub fn parse_query_vport_state_output(out_mbox: &CmdMailbox) -> (u8, u8) {
-    let val = out_mbox.read_be32(0x10);
+    // mlx5_ifc_query_vport_state_out_bits:
+    // reserved_at_60[24], admin_state[4], state[4] => dword at byte 0x08.
+    let val = out_mbox.read_be32(0x08);
     let admin_state = ((val >> 4) & 0x0F) as u8;
     let oper_state = (val & 0x0F) as u8;
     (admin_state, oper_state)

@@ -107,7 +107,9 @@ impl Default for PageManager {
 /// # Returns
 /// (function_id, num_pages) — 要求元の関数IDと必要ページ数
 pub fn parse_query_pages_output(out_mbox: &CmdMailbox) -> (u16, i32) {
-    let func_id = out_mbox.read_be16(0x04);
+    // mlx5_ifc_query_pages_out_bits:
+    // function_id at bit offset 0x50 => byte offset 0x0A.
+    let func_id = out_mbox.read_be16(0x0A);
     let num_pages = out_mbox.read_be32(0x0C) as i32;
     (func_id, num_pages)
 }
@@ -117,7 +119,8 @@ pub fn parse_query_pages_output(out_mbox: &CmdMailbox) -> (u16, i32) {
 /// `op_mod`: 0x01 = boot pages, 0x02 = init pages, 0x03 = regular pages
 pub fn build_query_pages_input(in_mbox: &mut CmdMailbox, op_mod: u16) {
     *in_mbox = CmdMailbox::zeroed();
-    in_mbox.write_be16(0x02, op_mod);
+    // mlx5_ifc_query_pages_in_bits: op_mod at byte 0x06.
+    in_mbox.write_be16(0x06, op_mod);
 }
 
 /// FWページ要求に対応するページ数の上限

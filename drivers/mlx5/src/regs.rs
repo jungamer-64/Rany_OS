@@ -54,30 +54,39 @@ pub mod cmd_entry {
     /// エントリサイズ
     pub const ENTRY_SIZE: usize = 64;
 
-    /// 入力メールボックスポインタ(高位)
-    pub const IN_MBOX_PTR_H: usize = 0x00;
-    /// 入力メールボックスポインタ(低位)
-    pub const IN_MBOX_PTR_L: usize = 0x04;
+    /// 記述子タイプ (MLX5_PCI_CMD_XPORT=7)
+    pub const TYPE: usize = 0x00;
 
     /// 入力データ長 (input_length)
-    pub const IN_LENGTH: usize = 0x08;
+    pub const IN_LENGTH: usize = 0x04;
+
+    /// 入力メールボックスポインタ(高位)
+    pub const IN_MBOX_PTR_H: usize = 0x08;
+    /// 入力メールボックスポインタ(低位)
+    pub const IN_MBOX_PTR_L: usize = 0x0C;
+
+    /// 入力インラインデータ（16 bytes）
+    pub const IN_INLINE: usize = 0x10;
+
+    /// 出力インラインデータ（16 bytes）
+    pub const OUT_INLINE: usize = 0x20;
 
     /// 出力メールボックスポインタ(高位)
-    pub const OUT_MBOX_PTR_H: usize = 0x10;
+    pub const OUT_MBOX_PTR_H: usize = 0x30;
     /// 出力メールボックスポインタ(低位)
-    pub const OUT_MBOX_PTR_L: usize = 0x14;
+    pub const OUT_MBOX_PTR_L: usize = 0x34;
 
     /// 出力データ長 (output_length)
-    pub const OUT_LENGTH: usize = 0x18;
+    pub const OUT_LENGTH: usize = 0x38;
 
-    /// コマンドトークンとシグネチャ
-    pub const TOKEN_SIG: usize = 0x1C;
+    /// コマンドトークン
+    pub const TOKEN: usize = 0x3C;
+    /// 記述子シグネチャ
+    pub const SIG: usize = 0x3D;
 
-    /// ステータスとオペコード（オーナービット含む）
-    /// bit 0: ownership (0=SW, 1=HW)
-    /// bits [31:24]: status
-    /// bits [23:8]: opcode
-    pub const STATUS_OWN: usize = 0x3C;
+    /// ステータス/オーナー
+    /// bit0=owner (0=SW,1=HW), bits[7:1]=status
+    pub const STATUS_OWN: usize = 0x3F;
 }
 
 /// UAR (User Access Region) レジスタ

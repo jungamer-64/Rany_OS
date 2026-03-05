@@ -119,43 +119,58 @@ pub unsafe fn check_health(bar0_base: u64) -> bool {
 /// - offset 0x18: max_rq
 /// - etc.
 pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
-    let read_be32 = |off: usize| -> u32 {
-        if off + 4 <= out_data.len() {
-            u32::from_be_bytes([
-                out_data[off],
-                out_data[off + 1],
-                out_data[off + 2],
-                out_data[off + 3],
-            ])
-        } else {
-            0
+    // QUERY_HCA_CAP out layout:
+    // [0x00..0x10): status/syndrome/reserved
+    // [0x10..): capability union (cmd_hca_cap for op_mod=0)
+    let cap = out_data.get(0x10..).unwrap_or(&[]);
+
+    let read_bits = |bit_off: usize, bit_len: usize| -> u32 {
+        let mut v = 0u32;
+        for i in 0..bit_len {
+            let bit = bit_off + i;
+            let byte_idx = bit / 8;
+            let bit_in_byte = 7 - (bit % 8);
+            let b = cap
+                .get(byte_idx)
+                .map(|byte| (byte >> bit_in_byte) & 0x1)
+                .unwrap_or(0);
+            v = (v << 1) | (b as u32);
         }
+        v
     };
 
-    let read_u8 = |off: usize| -> u8 {
-        if off < out_data.len() {
-            out_data[off]
-        } else {
-            0
-        }
-    };
+    // mlx5_ifc_cmd_hca_cap_bits bit fields (Linux mlx5_ifc.h).
+    let log_max_qp_sz = read_bits(0x88, 0x8) as u8;
+    let log_max_cq_sz = read_bits(0xC8, 0x8) as u8;
+    let log_max_eq_sz = read_bits(0xE0, 0x8) as u8;
+    let log_max_mkey = read_bits(0xEA, 0x6) as u8;
+    let log_max_cq = read_bits(0xDB, 0x5) as u8;
+    let log_max_eq = read_bits(0xFC, 0x4) as u8;
+    let num_ports = read_bits(0x1B8, 0x8) as u8;
+    let cqe_version = read_bits(0x1FC, 0x4) as u8;
+    let csum_cap = read_bits(0x21D, 0x1) != 0; // eth_net_offloads
+
+    let max_cq = 1u32.checked_shl(log_max_cq as u32).unwrap_or(0);
+    let max_eq = 1u32.checked_shl(log_max_eq as u32).unwrap_or(0);
+    let max_sq_rq = 1u32.checked_shl(log_max_qp_sz as u32).unwrap_or(0);
+    let max_mkey = 1u32.checked_shl(log_max_mkey as u32).unwrap_or(0);
 
     HcaCaps {
-        max_cq: read_be32(0x10) & 0x00FF_FFFF,
-        max_sq: read_be32(0x14) & 0x00FF_FFFF,
-        max_rq: read_be32(0x18) & 0x00FF_FFFF,
-        max_eq: read_be32(0x1C) & 0x00FF_FFFF,
-        max_mkey: read_be32(0x20) & 0x00FF_FFFF,
-        max_mtu: read_be32(0x28),
-        num_ports: read_u8(0x2C),
-        log_max_cq_sz: read_u8(0x30) & 0x1F,
-        log_max_sq_sz: read_u8(0x31) & 0x1F,
-        log_max_rq_sz: read_u8(0x32) & 0x1F,
-        log_max_eq_sz: read_u8(0x33) & 0x1F,
-        scatter_fcs: (read_u8(0x38) & 0x01) != 0,
-        vlan_strip: (read_u8(0x38) & 0x02) != 0,
-        csum_cap: (read_u8(0x38) & 0x04) != 0,
-        cqe_compression: (read_u8(0x38) & 0x08) != 0,
-        cqe_version: read_u8(0x3A),
+        max_cq,
+        max_sq: max_sq_rq,
+        max_rq: max_sq_rq,
+        max_eq,
+        max_mkey,
+        max_mtu: 1500,
+        num_ports,
+        log_max_cq_sz,
+        log_max_sq_sz: log_max_qp_sz,
+        log_max_rq_sz: log_max_qp_sz,
+        log_max_eq_sz,
+        scatter_fcs: false,
+        vlan_strip: false,
+        csum_cap,
+        cqe_compression: false,
+        cqe_version,
     }
 }

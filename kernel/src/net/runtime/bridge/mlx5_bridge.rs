@@ -22,6 +22,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::sync::PoisonLock;
 use crate::net::runtime::manager::NetIfId;
+use crate::task::interrupt_waker::{wait_for_interrupt, InterruptSource};
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
@@ -53,6 +54,12 @@ static MLX5_TX_ERRORS: AtomicU64 = AtomicU64::new(0);
 
 /// 受信エラーカウンタ
 static MLX5_RX_ERRORS: AtomicU64 = AtomicU64::new(0);
+
+/// 割り込み起床カウンタ
+static MLX5_WAKE_COUNTS: AtomicU64 = AtomicU64::new(0);
+
+/// DMAマッピングエラー
+static MLX5_DMA_ERRORS: AtomicU64 = AtomicU64::new(0);
 
 /// RX CQ ポーリングバッチサイズ
 const MLX5_RX_POLL_BATCH: u32 = 64;
@@ -109,7 +116,7 @@ fn with_mlx5_device<R>(f: impl FnOnce(&mut Mlx5Device) -> R) -> Option<R> {
 ///
 /// 現状、SAS identity mapping を前提とした疑似 DMA を使用。
 /// 将来的には Exchange Heap 経由の正式な DMA バッファに移行する。
-pub fn mlx5_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+pub fn mlx5_transmit(_if_id: Option<NetIfId>, data: &[u8]) -> bool {
     if !MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire) {
         return false;
     }
@@ -124,12 +131,17 @@ pub fn mlx5_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
         let inline_hdr = &data[..inline_hdr_len];
 
         // 残りのデータは DMA バッファとして設定
-        // SAS identity mapping: virt == phys
-        let data_phys = data.as_ptr() as u64;
-        let data_virt = data_phys;
+        let data_virt = data.as_ptr() as u64;
+        let offset = crate::mm::virt::higher_half::physical_memory_offset();
+        let data_phys = if data_virt >= offset {
+            data_virt - offset
+        } else {
+            // オフセット未満（カーネルイメージ内など）は identity mapping とみなす
+            data_virt
+        };
         let data_len = data.len() as u32;
 
-        // Safety: SAS identity mapping 前提でアドレスは有効
+        // Safety: 物理アドレスが正しく計算されていること
         match unsafe { device.transmit(MLX5_SQ_INDEX, data_phys, data_virt, data_len, inline_hdr) } {
             Ok(_wqe_idx) => {
                 MLX5_TX_PACKETS.fetch_add(1, Ordering::Relaxed);
@@ -228,21 +240,34 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
 pub async fn mlx5_poll_task() {
     log::info!(target: "mlx5::bridge", "mlx5 poll task started");
 
+    let mut msix_vector = None;
+
     loop {
         if !MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire) {
-            // 未初期化時は yield して次のポーリングサイクルを待つ
+            // 未初期化時は待機
             core::future::pending::<()>().await;
             continue;
+        }
+
+        // MSI-Xベクタを遅延取得
+        if msix_vector.is_none() {
+            msix_vector = with_mlx5_device(|dev| dev.eqn_msix_vector(0)).flatten();
         }
 
         // Safety: デバイスが初期化済みであること
         let processed = unsafe { mlx5_poll_rx() };
 
         // 適応的ポーリング: 処理があった場合は即座に再ポーリング、
-        // 無い場合は yield してCPUを解放
+        // 無い場合は割り込み待ち
         if processed == 0 {
-            // 空ポーリング → 他のタスクに CPU を譲渡
-            crate::task::yield_now().await;
+            if let Some(vec) = msix_vector {
+                // 割り込み待ち (Interrupt-Waker Bridge)
+                wait_for_interrupt(InterruptSource::Irq(vec as u8)).await;
+                MLX5_WAKE_COUNTS.fetch_add(1, Ordering::Relaxed);
+            } else {
+                // MSI-X未設定時は従来通り yield
+                crate::task::yield_now().await;
+            }
         }
         // processed > 0 → 即座に次のポーリングサイクルへ（ビジーポーリング）
     }
@@ -269,7 +294,7 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
     }
 
     // MAC アドレスを取得
-    let mac = with_mlx5_device(|dev| {
+    let mut mac = with_mlx5_device(|dev| {
         dev.port(0).map(|port| {
             let mac = port.mac_address();
             crate::net::l2::ethernet::MacAddress::from_octets(
@@ -287,6 +312,14 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
         // フォールバック MAC
         crate::net::l2::ethernet::MacAddress::from_octets(0x02, 0x00, 0x5E, 0x00, 0x53, 0x01)
     });
+
+    if mac.as_bytes() == &[0, 0, 0, 0, 0, 0] {
+        log::warn!(
+            target: "mlx5::bridge",
+            "mlx5 reported zero MAC; using locally-administered fallback address"
+        );
+        mac = crate::net::l2::ethernet::MacAddress::from_octets(0x02, 0x00, 0x5E, 0x00, 0x53, 0x01);
+    }
 
     log::info!(
         target: "mlx5::bridge",
@@ -356,14 +389,14 @@ fn prefill_rx_buffers() {
         for _ in 0..RX_PREFILL_COUNT {
             if let Some(pkt) = crate::net::datapath::mempool::alloc_packet() {
                 let buf_virt = pkt.data().as_ptr() as u64;
-                let buf_phys = buf_virt; // SAS identity mapping
+                let buf_phys = pkt.phys_addr().as_u64();
                 let buf_size = RX_BUF_SIZE;
 
                 // PacketRef をリークして所有権をデバイスに移動
                 // (CQ 完了時に回収される)
                 core::mem::forget(pkt);
 
-                // Safety: SAS identity mapping, バッファは有効
+                // Safety: バッファは有効
                 match unsafe { device.post_receive(MLX5_RQ_INDEX, buf_phys, buf_virt, buf_size) } {
                     Ok(_) => filled += 1,
                     Err(_) => break,

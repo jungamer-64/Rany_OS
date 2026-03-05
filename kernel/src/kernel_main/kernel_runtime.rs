@@ -136,11 +136,19 @@ async fn network_bootstrap_task() {
 
     let Some(ping_target) = ping_target else {
         warn!(target: "net_boot", "No gateway available (DHCP not bound); skipping connectivity check");
-        let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
+        let virtio_stats = crate::net::runtime::bridge::get_bridge_stats();
+        let mlx5_stats = crate::net::runtime::bridge::mlx5_bridge::get_mlx5_bridge_stats();
         info!(
             target: "net_boot",
-            "Network bootstrap complete (no DHCP): bridge init={} rx={} tx={}",
-            bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets
+            "Network bootstrap complete (no DHCP): virtio_init={} virtio_rx={} virtio_tx={} mlx5_init={} mlx5_rx={} mlx5_tx={} mlx5_tx_err={} mlx5_rx_err={}",
+            virtio_stats.initialized,
+            virtio_stats.rx_packets,
+            virtio_stats.tx_packets,
+            mlx5_stats.initialized,
+            mlx5_stats.rx_packets,
+            mlx5_stats.tx_packets,
+            mlx5_stats.tx_errors,
+            mlx5_stats.rx_errors
         );
         return;
     };
@@ -151,11 +159,19 @@ async fn network_bootstrap_task() {
         Err(e) => warn!(target: "net_boot", "Async ping failed: {:?}", e),
     }
 
-    let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
+    let virtio_stats = crate::net::runtime::bridge::get_bridge_stats();
+    let mlx5_stats = crate::net::runtime::bridge::mlx5_bridge::get_mlx5_bridge_stats();
     info!(
         target: "net_boot",
-        "Network bootstrap complete: bridge init={} rx={} tx={}",
-        bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets
+        "Network bootstrap complete: virtio_init={} virtio_rx={} virtio_tx={} mlx5_init={} mlx5_rx={} mlx5_tx={} mlx5_tx_err={} mlx5_rx_err={}",
+        virtio_stats.initialized,
+        virtio_stats.rx_packets,
+        virtio_stats.tx_packets,
+        mlx5_stats.initialized,
+        mlx5_stats.rx_packets,
+        mlx5_stats.tx_packets,
+        mlx5_stats.tx_errors,
+        mlx5_stats.rx_errors
     );
 }
 

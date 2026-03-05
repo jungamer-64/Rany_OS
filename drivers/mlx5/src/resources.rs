@@ -189,8 +189,8 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
 
 /// CREATE_MKEY 出力からMKEY値を解析
 pub fn parse_create_mkey_output(out_mbox: &CmdMailbox) -> u32 {
-    // mkey_index at offset 0x08
-    let mkey_index = out_mbox.read_be32(0x08) & 0x00FF_FFFF;
+    // mlx5_ifc_create_mkey_out_bits: mkey_index[23:0] at byte offset 0x09.
+    let mkey_index = out_mbox.read_be24(0x09);
     // Full mkey = (index << 8) — key portion is from HW
     mkey_index
 }
@@ -211,7 +211,8 @@ pub fn build_create_tis_input(in_mbox: &mut CmdMailbox, params: &TisParams) {
 
 /// CREATE_TIS 出力からTIS番号を解析
 pub fn parse_create_tis_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_create_tis_out_bits: tisn[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// CREATE_TIR コマンド入力の構築
@@ -266,7 +267,8 @@ pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
 
 /// CREATE_TIR 出力からTIR番号を解析
 pub fn parse_create_tir_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x08) & 0x00FF_FFFF
+    // mlx5_ifc_create_tir_out_bits: tirn[23:0] at byte offset 0x09.
+    out_mbox.read_be24(0x09)
 }
 
 /// DESTROY_MKEY コマンド入力の構築
