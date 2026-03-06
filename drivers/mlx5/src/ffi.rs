@@ -10,21 +10,18 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
 use kernel_api::driver_abi::{
-    AbiDmaBuffer, AbiMmioHandle, DRIVER_ABI_VERSION, DriverCapabilities, DriverContext,
-    DriverVTable, KernelApiV1, pack_version,
+    AbiDmaBuffer, AbiMmioHandle, DriverContext, KernelApiV1,
 };
 
-use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH};
+use crate::bootstrap::{
+    Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion,
+    Mlx5PciIdentity, Mlx5QueueDmaRegion, Mlx5QueueProfile,
+};
+use crate::defs::MLX5_CMD_MBOX_SIZE;
 use crate::device::Mlx5Device;
-use crate::resources::MkeyParams;
-
-const CMD_LOG_SIZE: u8 = 2; // 4 entries
-const DMA_PAGE_BYTES: usize = MLX5_PAGE_SIZE;
-const FW_BOOT_PAGE_COUNT: usize = 4;
-const MLX5_EQ_SPARE_EQE: u32 = 0x80;
-
-type QueueBuf = (u64, u64, u64, u64);
+use crate::error::Mlx5Error;
 
 // ============================================================================
 // External Kernel API Access
@@ -34,6 +31,57 @@ type QueueBuf = (u64, u64, u64, u64);
 fn kernel_api() -> &'static KernelApiV1 {
     kernel_api::services::kernel_api_v1()
 }
+
+#[cfg(test)]
+extern "C" fn test_kernel_log(_level: u32, _msg_ptr: *const u8, _msg_len: usize) {}
+
+#[cfg(test)]
+extern "C" fn test_kernel_alloc_dma(_size: usize, _align: usize, _out: *mut AbiDmaBuffer) -> i32 {
+    -1
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_free_dma(_handle: *const AbiDmaBuffer) -> i32 {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_map_mmio(_paddr: u64, _size: usize, _out: *mut AbiMmioHandle) -> i32 {
+    -1
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_unmap_mmio(_handle: *const AbiMmioHandle) -> i32 {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_irq_bind(_irq: u32, _cookie: u64) -> i32 {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_irq_unbind(_irq: u32) -> i32 {
+    0
+}
+
+#[cfg(test)]
+#[unsafe(no_mangle)]
+pub static __exorust_kernel_api_v1: KernelApiV1 = KernelApiV1 {
+    abi_version: kernel_api::driver_abi::KERNEL_API_ABI_VERSION,
+    abi_size: core::mem::size_of::<KernelApiV1>() as u32,
+    log: test_kernel_log,
+    alloc_dma: test_kernel_alloc_dma,
+    free_dma: test_kernel_free_dma,
+    map_mmio: test_kernel_map_mmio,
+    unmap_mmio: test_kernel_unmap_mmio,
+    irq_bind: test_kernel_irq_bind,
+    irq_unbind: test_kernel_irq_unbind,
+    heap_alloc: None,
+    heap_dealloc: None,
+    panic_abort: None,
+    reserved: [0; 8],
+};
 
 // ============================================================================
 // DMA Resource Management
@@ -86,8 +134,8 @@ impl DmaSlot {
         self.handle.device_addr
     }
 
-    fn phys_address(&self) -> u64 {
-        self.handle.phys_addr
+    fn as_region(&self) -> Mlx5DmaRegion {
+        Mlx5DmaRegion::new(self.as_ptr_u64(), self.device_address(), self.handle.size)
     }
 
     fn free(self) {
@@ -119,76 +167,48 @@ impl Mlx5DmaResources {
         MLX5_CMD_MBOX_SIZE
     }
 
-    fn virt_device_pairs(slots: &[DmaSlot]) -> Vec<(u64, u64)> {
-        slots
-            .iter()
-            .map(|slot| (slot.as_ptr_u64(), slot.device_address()))
-            .collect()
-    }
-
-    fn virt_device_db_pairs(queues: &[DmaSlot], dbs: &[DmaSlot]) -> Vec<QueueBuf> {
-        queues
-            .iter()
-            .zip(dbs.iter())
-            .map(|(queue, db)| {
-                (
-                    queue.as_ptr_u64(),
-                    queue.device_address(),
-                    db.as_ptr_u64(),
-                    db.device_address(),
-                )
-            })
-            .collect()
-    }
-
     fn device_addresses(slots: &[DmaSlot]) -> Vec<u64> {
         slots.iter().map(DmaSlot::device_address).collect()
     }
 
-    fn allocate(num_queues: usize) -> Result<Self, i32> {
-        let cmdq_size = DMA_PAGE_BYTES.max((1usize << CMD_LOG_SIZE) * 64);
-        let cmd_mbox_size = Self::command_mailbox_allocation_size();
+    fn allocate(plan: &Mlx5BootstrapPlan) -> Result<Self, i32> {
+        let profile = plan.queue_profile();
 
-        let eq_target_depth = MLX5_EQ_DEPTH.saturating_add(MLX5_EQ_SPARE_EQE);
-        let eq_log_size = (32 - (eq_target_depth - 1).leading_zeros()) as u8;
-        let eq_alloc_depth = 1u32 << eq_log_size;
-        let eq_size = (eq_alloc_depth as usize) * 64;
-        let cq_size = (MLX5_CQ_DEPTH as usize) * 64;
-        let sq_size = (MLX5_WQ_DEPTH as usize) * 64;
-        let rq_size = (MLX5_WQ_DEPTH as usize) * 16;
-        let db_record_size = DMA_PAGE_BYTES;
-
-        let mut fw_pages = Vec::with_capacity(FW_BOOT_PAGE_COUNT);
-        for _ in 0..FW_BOOT_PAGE_COUNT {
-            fw_pages.push(DmaSlot::alloc(DMA_PAGE_BYTES, "fw_page")?);
+        let mut fw_pages = Vec::with_capacity(plan.fw_boot_page_count());
+        for _ in 0..plan.fw_boot_page_count() {
+            fw_pages.push(DmaSlot::alloc(plan.fw_page_size(), "fw_page")?);
         }
 
-        let mut eqs = Vec::with_capacity(num_queues);
-        let mut tx_cqs = Vec::with_capacity(num_queues);
-        let mut tx_cq_dbs = Vec::with_capacity(num_queues);
-        let mut rx_cqs = Vec::with_capacity(num_queues);
-        let mut rx_cq_dbs = Vec::with_capacity(num_queues);
-        let mut sqs = Vec::with_capacity(num_queues);
-        let mut sq_dbs = Vec::with_capacity(num_queues);
-        let mut rqs = Vec::with_capacity(num_queues);
-        let mut rq_dbs = Vec::with_capacity(num_queues);
+        let mut eqs = Vec::with_capacity(profile.eq_count);
+        let mut tx_cqs = Vec::with_capacity(profile.tx_queue_count);
+        let mut tx_cq_dbs = Vec::with_capacity(profile.tx_queue_count);
+        let mut rx_cqs = Vec::with_capacity(profile.rx_queue_count);
+        let mut rx_cq_dbs = Vec::with_capacity(profile.rx_queue_count);
+        let mut sqs = Vec::with_capacity(profile.tx_queue_count);
+        let mut sq_dbs = Vec::with_capacity(profile.tx_queue_count);
+        let mut rqs = Vec::with_capacity(profile.rx_queue_count);
+        let mut rq_dbs = Vec::with_capacity(profile.rx_queue_count);
 
-        for _ in 0..num_queues {
-            eqs.push(DmaSlot::alloc(eq_size, "eq")?);
-            tx_cqs.push(DmaSlot::alloc(cq_size, "tx_cq")?);
-            tx_cq_dbs.push(DmaSlot::alloc(db_record_size, "tx_cq_db")?);
-            rx_cqs.push(DmaSlot::alloc(cq_size, "rx_cq")?);
-            rx_cq_dbs.push(DmaSlot::alloc(db_record_size, "rx_cq_db")?);
-            sqs.push(DmaSlot::alloc(sq_size, "sq")?);
-            sq_dbs.push(DmaSlot::alloc(db_record_size, "sq_db")?);
-            rqs.push(DmaSlot::alloc(rq_size, "rq")?);
-            rq_dbs.push(DmaSlot::alloc(db_record_size, "rq_db")?);
+        for _ in 0..profile.eq_count {
+            eqs.push(DmaSlot::alloc(plan.eq_size(), "eq")?);
+        }
+        for _ in 0..profile.tx_queue_count {
+            tx_cqs.push(DmaSlot::alloc(plan.cq_size(), "tx_cq")?);
+            tx_cq_dbs.push(DmaSlot::alloc(plan.db_record_size(), "tx_cq_db")?);
+            sqs.push(DmaSlot::alloc(plan.sq_size(), "sq")?);
+            sq_dbs.push(DmaSlot::alloc(plan.db_record_size(), "sq_db")?);
+        }
+        for _ in 0..profile.rx_queue_count {
+            rx_cqs.push(DmaSlot::alloc(plan.cq_size(), "rx_cq")?);
+            rx_cq_dbs.push(DmaSlot::alloc(plan.db_record_size(), "rx_cq_db")?);
+            rqs.push(DmaSlot::alloc(plan.rq_size(), "rq")?);
+            rq_dbs.push(DmaSlot::alloc(plan.db_record_size(), "rq_db")?);
         }
 
         Ok(Self {
-            cmdq: DmaSlot::alloc(cmdq_size, "cmdq")?,
-            cmd_in_mbox: DmaSlot::alloc(cmd_mbox_size, "cmd_in_mbox")?,
-            cmd_out_mbox: DmaSlot::alloc(cmd_mbox_size, "cmd_out_mbox")?,
+            cmdq: DmaSlot::alloc(plan.command_queue_size(), "cmdq")?,
+            cmd_in_mbox: DmaSlot::alloc(plan.command_mailbox_size(), "cmd_in_mbox")?,
+            cmd_out_mbox: DmaSlot::alloc(plan.command_mailbox_size(), "cmd_out_mbox")?,
             fw_pages,
             eqs,
             tx_cqs,
@@ -204,6 +224,52 @@ impl Mlx5DmaResources {
 
     fn fw_page_device_addrs(&self) -> Vec<u64> {
         Self::device_addresses(&self.fw_pages)
+    }
+
+    fn to_allocated_resources(&self) -> Mlx5AllocatedResources {
+        Mlx5AllocatedResources {
+            cmdq: self.cmdq.as_region(),
+            cmd_in_mbox: self.cmd_in_mbox.as_region(),
+            cmd_out_mbox: self.cmd_out_mbox.as_region(),
+            fw_pages: self.fw_pages.iter().map(DmaSlot::as_region).collect(),
+            eqs: self.eqs.iter().map(DmaSlot::as_region).collect(),
+            tx_cqs: self
+                .tx_cqs
+                .iter()
+                .zip(self.tx_cq_dbs.iter())
+                .map(|(queue, doorbell)| Mlx5QueueDmaRegion {
+                    entries: queue.as_region(),
+                    doorbell: doorbell.as_region(),
+                })
+                .collect(),
+            rx_cqs: self
+                .rx_cqs
+                .iter()
+                .zip(self.rx_cq_dbs.iter())
+                .map(|(queue, doorbell)| Mlx5QueueDmaRegion {
+                    entries: queue.as_region(),
+                    doorbell: doorbell.as_region(),
+                })
+                .collect(),
+            sqs: self
+                .sqs
+                .iter()
+                .zip(self.sq_dbs.iter())
+                .map(|(queue, doorbell)| Mlx5QueueDmaRegion {
+                    entries: queue.as_region(),
+                    doorbell: doorbell.as_region(),
+                })
+                .collect(),
+            rqs: self
+                .rqs
+                .iter()
+                .zip(self.rq_dbs.iter())
+                .map(|(queue, doorbell)| Mlx5QueueDmaRegion {
+                    entries: queue.as_region(),
+                    doorbell: doorbell.as_region(),
+                })
+                .collect(),
+        }
     }
 }
 
@@ -259,148 +325,128 @@ struct Mlx5DriverState {
 // Driver Probe/Remove Functions
 // ============================================================================
 
-extern "C" fn mlx5_probe(ctx: *mut DriverContext) -> i32 {
-    let ctx = unsafe { &mut *ctx };
+pub struct Mlx5AsyncDriver {
+    state: Option<Mlx5DriverState>,
+}
 
-    // BAR0 mapping
-    let mut mmio = AbiMmioHandle::default();
-    let res = (kernel_api().map_mmio)(ctx.device_address, 0x100000, &mut mmio);
-    if res != 0 {
-        log::error!(target: "mlx5", "Failed to map BAR0: {}", res);
-        return res;
+impl Mlx5AsyncDriver {
+    pub const fn new() -> Self {
+        Self { state: None }
+    }
+}
+
+impl Default for Mlx5AsyncDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AsyncDriver for Mlx5AsyncDriver {
+    fn name(&self) -> &str {
+        mlx5_driver_name()
     }
 
-    let num_queues = 4;
-    let dma = match Mlx5DmaResources::allocate(num_queues) {
-        Ok(d) => d,
-        Err(e) => {
-            (kernel_api().unmap_mmio)(&mmio);
-            return e;
-        }
-    };
-
-    let mut device = Mlx5Device::new(mmio.base, mmio.size as usize, ctx.device_id);
-    // PCI BDF info is not passed in `DriverContext`; when running inside the
-    // kernel the registry fills the fields.  In cell/FFI mode we leave them
-    // at zero and avoid accessing them.
-
-    let fw_page_addrs = dma.fw_page_device_addrs();
-    let mkey_params = MkeyParams::default();
-
-    let eq_log_size = 4; // 16 entries
-    let cq_log_size = 4; // 16 entries
-    let sq_log_size = 4; // 16 entries
-    let rq_log_size = 4; // 16 entries
-
-    let eq_bufs = Mlx5DmaResources::virt_device_pairs(&dma.eqs);
-    let tx_cq_bufs = Mlx5DmaResources::virt_device_db_pairs(&dma.tx_cqs, &dma.tx_cq_dbs);
-    let rx_cq_bufs = Mlx5DmaResources::virt_device_db_pairs(&dma.rx_cqs, &dma.rx_cq_dbs);
-    let sq_bufs = Mlx5DmaResources::virt_device_db_pairs(&dma.sqs, &dma.sq_dbs);
-    let rq_bufs = Mlx5DmaResources::virt_device_db_pairs(&dma.rqs, &dma.rq_dbs);
-
-    log::info!(
-        target: "mlx5",
-        "CMD DMA IOVA: cmdq={:#x} in_mbox={:#x} out_mbox={:#x}",
-        dma.cmdq.device_address(),
-        dma.cmd_in_mbox.device_address(),
-        dma.cmd_out_mbox.device_address(),
-    );
-
-    let init_res = unsafe {
-        device.init_multi_queue(
-            dma.cmdq.as_ptr_u64(),
-            dma.cmdq.device_address(),
-            dma.cmd_in_mbox.as_ptr_u64(),
-            dma.cmd_in_mbox.device_address(),
-            dma.cmd_out_mbox.as_ptr_u64(),
-            dma.cmd_out_mbox.device_address(),
-            &fw_page_addrs,
-            &mkey_params,
-            &eq_bufs,
-            &tx_cq_bufs,
-            &rx_cq_bufs,
-            &sq_bufs,
-            &rq_bufs,
-            eq_log_size,
-            cq_log_size,
-            sq_log_size,
-            rq_log_size,
-        )
-    };
-
-    if let Err(e) = init_res {
-        log::error!(target: "mlx5", "Initialization failed: {:?}", e);
-        (kernel_api().unmap_mmio)(&mmio);
-        return -1;
+    fn version(&self) -> DriverVersion {
+        DriverVersion::new(0, 1, 0)
     }
 
-    let state = Box::new(Mlx5DriverState { device, dma, mmio });
-    ctx.driver_data = Box::into_raw(state) as u64;
-
-    0
-}
-
-extern "C" fn mlx5_start(_ctx: *mut DriverContext) -> i32 {
-    0
-}
-
-extern "C" fn mlx5_stop(ctx: *mut DriverContext) -> i32 {
-    let ctx = unsafe { &mut *ctx };
-    if ctx.driver_data == 0 {
-        return 0;
+    fn driver_type(&self) -> DriverType {
+        DriverType::Network
     }
 
-    let state = unsafe { &mut *(ctx.driver_data as *mut Mlx5DriverState) };
-    unsafe {
-        if let Err(e) = state.device.teardown_full() {
-            log::warn!(target: "mlx5", "Teardown error: {:?}", e);
-        }
+    fn probe(&mut self, ctx: &mut DriverContext) -> DriverFuture<'_, kernel_api::error::KapiResult<()>> {
+        let bar0_phys = ctx.device_address;
+        let device_id = ctx.device_id;
+        Box::pin(async move {
+            let config = Mlx5BootstrapConfig {
+                queue_profile: Mlx5QueueProfile::default(),
+                mkey_params: crate::resources::MkeyParams::default(),
+                pci_identity: Mlx5PciIdentity::default(),
+                is_vf: crate::defs::ConnectXVariant::is_vf_device_id(device_id),
+            };
+            let plan = Mlx5BootstrapPlan::new(&config);
+
+            let mut mmio = AbiMmioHandle::default();
+            let res = (kernel_api().map_mmio)(bar0_phys, 0x100000, &mut mmio);
+            if res != 0 {
+                log::error!(target: "mlx5", "Failed to map BAR0: {}", res);
+                return Err(kernel_api::error::KapiError::IoError);
+            }
+
+            let dma = match Mlx5DmaResources::allocate(&plan) {
+                Ok(dma) => dma,
+                Err(_) => {
+                    (kernel_api().unmap_mmio)(&mmio);
+                    return Err(kernel_api::error::KapiError::OutOfMemory);
+                }
+            };
+
+            let mut device = Mlx5Device::new(mmio.base, mmio.size as usize, device_id);
+            let allocated = dma.to_allocated_resources();
+
+            log::info!(
+                target: "mlx5",
+                "CMD DMA IOVA: cmdq={:#x} in_mbox={:#x} out_mbox={:#x}",
+                dma.cmdq.device_address(),
+                dma.cmd_in_mbox.device_address(),
+                dma.cmd_out_mbox.device_address(),
+            );
+
+            match unsafe { device.bootstrap(&config, &allocated) } {
+                Ok(()) => {
+                    self.state = Some(Mlx5DriverState { device, dma, mmio });
+                    Ok(())
+                }
+                Err(err) => {
+                    log::error!(target: "mlx5", "Initialization failed: {:?}", err);
+                    (kernel_api().unmap_mmio)(&mmio);
+                    Err(map_driver_error(err))
+                }
+            }
+        })
     }
 
-    0
-}
-
-extern "C" fn mlx5_remove(ctx: *mut DriverContext) -> i32 {
-    let ctx = unsafe { &mut *ctx };
-    if ctx.driver_data == 0 {
-        return 0;
+    fn start(&mut self) -> DriverFuture<'_, kernel_api::error::KapiResult<()>> {
+        Box::pin(async move { Ok(()) })
     }
 
-    let state = unsafe { Box::from_raw(ctx.driver_data as *mut Mlx5DriverState) };
-    (kernel_api().unmap_mmio)(&state.mmio);
-
-    ctx.driver_data = 0;
-    0
-}
-
-// ============================================================================
-// Driver Metadata Functions
-// ============================================================================
-
-extern "C" fn mlx5_name() -> *const u8 {
-    b"mlx5\0".as_ptr()
-}
-
-extern "C" fn mlx5_name_len() -> usize {
-    4
-}
-
-extern "C" fn mlx5_driver_type() -> u32 {
-    4
-}
-
-extern "C" fn mlx5_version() -> u64 {
-    pack_version(0, 1, 0)
-}
-
-extern "C" fn mlx5_request_capabilities(caps: *mut DriverCapabilities) {
-    if !caps.is_null() {
-        unsafe {
-            (*caps).needs_dma = true;
-            (*caps).needs_irq = true;
-            (*caps).needs_mmio = true;
-        }
+    fn stop(&mut self) -> DriverFuture<'_, kernel_api::error::KapiResult<()>> {
+        Box::pin(async move {
+            if let Some(state) = self.state.as_mut() {
+                unsafe {
+                    if let Err(err) = state.device.teardown_full() {
+                        log::warn!(target: "mlx5", "Teardown error: {:?}", err);
+                    }
+                }
+            }
+            Ok(())
+        })
     }
+
+    fn remove(&mut self) -> DriverFuture<'_, kernel_api::error::KapiResult<()>> {
+        Box::pin(async move {
+            if let Some(mut state) = self.state.take() {
+                unsafe {
+                    let _ = state.device.teardown_full();
+                }
+                let _ = (kernel_api().unmap_mmio)(&state.mmio);
+            }
+            Ok(())
+        })
+    }
+}
+
+fn map_driver_error(err: Mlx5Error) -> kernel_api::error::KapiError {
+    match err {
+        Mlx5Error::NotSupported => kernel_api::error::KapiError::NotSupported,
+        Mlx5Error::NoResources | Mlx5Error::DmaAllocFailed => kernel_api::error::KapiError::OutOfMemory,
+        Mlx5Error::DeviceNotFound => kernel_api::error::KapiError::NotFound,
+        _ => kernel_api::error::KapiError::IoError,
+    }
+}
+
+pub fn mlx5_driver_name() -> &'static str {
+    "mlx5"
 }
 
 #[cfg(test)]
@@ -428,26 +474,31 @@ mod tests {
     }
 
     #[test]
-    fn dma_tuple_helpers_use_device_addresses() {
-        let queues = [
-            slot(0x1000, 0x2000, 0x3000, 0x100),
-            slot(0x4000, 0x5000, 0x6000, 0x100),
-        ];
-        let dbs = [
-            slot(0x7000, 0x8000, 0x9000, 0x100),
-            slot(0xa000, 0xb000, 0xc000, 0x100),
-        ];
+    fn to_allocated_resources_preserves_iova_addresses() {
+        let dma = Mlx5DmaResources {
+            cmdq: slot(0x1000, 0x2000, 0x3000, 0x100),
+            cmd_in_mbox: slot(0x4000, 0x5000, 0x6000, 0x200),
+            cmd_out_mbox: slot(0x7000, 0x8000, 0x9000, 0x200),
+            fw_pages: vec![slot(0xa000, 0xb000, 0xc000, 0x1000)],
+            eqs: vec![slot(0xd000, 0xe000, 0xf000, 0x100)],
+            tx_cqs: vec![slot(0x11_000, 0x12_000, 0x13_000, 0x100)],
+            tx_cq_dbs: vec![slot(0x14_000, 0x15_000, 0x16_000, 0x1000)],
+            rx_cqs: vec![slot(0x17_000, 0x18_000, 0x19_000, 0x100)],
+            rx_cq_dbs: vec![slot(0x1a_000, 0x1b_000, 0x1c_000, 0x1000)],
+            sqs: vec![slot(0x1d_000, 0x1e_000, 0x1f_000, 0x200)],
+            sq_dbs: vec![slot(0x20_000, 0x21_000, 0x22_000, 0x1000)],
+            rqs: vec![slot(0x23_000, 0x24_000, 0x25_000, 0x200)],
+            rq_dbs: vec![slot(0x26_000, 0x27_000, 0x28_000, 0x1000)],
+        };
 
+        let allocated = dma.to_allocated_resources();
+        assert_eq!(allocated.cmdq, Mlx5DmaRegion::new(0x3000, 0x2000, 0x100));
         assert_eq!(
-            Mlx5DmaResources::virt_device_pairs(&queues),
-            vec![(0x3000, 0x2000), (0x6000, 0x5000)]
-        );
-        assert_eq!(
-            Mlx5DmaResources::virt_device_db_pairs(&queues, &dbs),
-            vec![
-                (0x3000, 0x2000, 0x9000, 0x8000),
-                (0x6000, 0x5000, 0xc000, 0xb000),
-            ]
+            allocated.tx_cqs[0],
+            Mlx5QueueDmaRegion {
+                entries: Mlx5DmaRegion::new(0x13_000, 0x12_000, 0x100),
+                doorbell: Mlx5DmaRegion::new(0x16_000, 0x15_000, 0x1000),
+            }
         );
     }
 
@@ -457,37 +508,4 @@ mod tests {
 
         assert_eq!(Mlx5DmaResources::device_addresses(&fw_pages), vec![0x2000, 0x4000]);
     }
-}
-
-// ============================================================================
-// Driver Entry Point
-// ============================================================================
-
-fn mlx5_driver_vtable() -> *const DriverVTable {
-    static VTABLE: DriverVTable = DriverVTable::new(
-        DRIVER_ABI_VERSION,
-        mlx5_probe,
-        mlx5_start,
-        mlx5_stop,
-        mlx5_remove,
-        mlx5_name,
-        mlx5_name_len,
-        mlx5_driver_type,
-        mlx5_version,
-        Some(mlx5_request_capabilities),
-        None,
-    );
-
-    &VTABLE
-}
-
-#[cfg(feature = "export_driver_entry")]
-#[unsafe(export_name = "_exorust_driver_entry")]
-pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
-    mlx5_driver_vtable()
-}
-
-#[cfg(not(feature = "export_driver_entry"))]
-pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
-    mlx5_driver_vtable()
 }

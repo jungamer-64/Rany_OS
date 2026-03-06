@@ -17,9 +17,14 @@
 //! - Async-First: ポーリングタスクは Future ベース
 
 extern crate alloc;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use core::future::Future;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::task::{Context, Poll, Waker};
 
 use crate::net::obs::{
     counters,
@@ -73,6 +78,18 @@ static MLX5_DMA_ERRORS: AtomicU64 = AtomicU64::new(0);
 /// RX CQ ポーリングバッチサイズ
 const MLX5_RX_POLL_BATCH: u32 = 64;
 
+struct Mlx5TransmitRequest {
+    data: Vec<u8>,
+}
+
+struct Mlx5Runtime;
+
+static MLX5_TX_QUEUE: PoisonLock<VecDeque<Mlx5TransmitRequest>> = PoisonLock::new(VecDeque::new());
+static MLX5_TX_QUEUE_WAKER: PoisonLock<Option<Waker>> = PoisonLock::new(None);
+static MLX5_TX_QUEUE_HAS_EVENTS: AtomicBool = AtomicBool::new(false);
+static MLX5_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+static MLX5_TX_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+
 // ============================================================================
 // Device Registration
 // ============================================================================
@@ -100,6 +117,156 @@ fn with_mlx5_device<R>(f: impl FnOnce(&mut Mlx5Device) -> R) -> Option<R> {
         .and_then(|mut guard| guard.as_mut().map(|dev| f(dev)))
 }
 
+fn mlx5_mac_address() -> crate::net::l2::ethernet::MacAddress {
+    let mut mac = with_mlx5_device(|dev| {
+        dev.port(0).map(|port| {
+            let mac = port.mac_address();
+            crate::net::l2::ethernet::MacAddress::from_octets(
+                mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5],
+            )
+        })
+    })
+    .flatten()
+    .unwrap_or_else(|| {
+        crate::net::l2::ethernet::MacAddress::from_octets(0x02, 0x00, 0x5E, 0x00, 0x53, 0x01)
+    });
+
+    if mac.as_bytes() == &[0, 0, 0, 0, 0, 0] {
+        mac = crate::net::l2::ethernet::MacAddress::from_octets(0x02, 0x00, 0x5E, 0x00, 0x53, 0x01);
+    }
+    mac
+}
+
+fn enqueue_mlx5_tx(data: &[u8]) -> bool {
+    let Ok(mut queue) = MLX5_TX_QUEUE.lock() else {
+        return false;
+    };
+    queue.push_back(Mlx5TransmitRequest {
+        data: data.to_vec(),
+    });
+    MLX5_TX_QUEUE_HAS_EVENTS.store(true, Ordering::Release);
+
+    if let Ok(mut waker) = MLX5_TX_QUEUE_WAKER.lock() {
+        if let Some(waker) = waker.take() {
+            waker.wake();
+        }
+    }
+
+    true
+}
+
+fn recv_mlx5_tx() -> Option<Mlx5TransmitRequest> {
+    let Ok(mut queue) = MLX5_TX_QUEUE.lock() else {
+        return None;
+    };
+    let request = queue.pop_front();
+    if queue.is_empty() {
+        MLX5_TX_QUEUE_HAS_EVENTS.store(false, Ordering::Release);
+    }
+    request
+}
+
+struct Mlx5TxEventWaitFuture;
+
+impl Future for Mlx5TxEventWaitFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if MLX5_TX_QUEUE_HAS_EVENTS.load(Ordering::Acquire) {
+            return Poll::Ready(());
+        }
+
+        if let Ok(mut waker) = MLX5_TX_QUEUE_WAKER.lock() {
+            *waker = Some(cx.waker().clone());
+        }
+
+        if MLX5_TX_QUEUE_HAS_EVENTS.load(Ordering::Acquire) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl crate::net::runtime::bridge::shared::NetBridgePort for Mlx5Runtime {
+    fn port_name(&self) -> &'static str {
+        "mlx5"
+    }
+
+    fn mac_address(&self) -> crate::net::l2::ethernet::MacAddress {
+        mlx5_mac_address()
+    }
+
+    fn start(
+        &self,
+        dispatch: crate::net::runtime::bridge::shared::RxDispatchHandle,
+    ) -> Result<(), &'static str> {
+        if let Ok(mut guard) = MLX5_IF_ID.lock() {
+            *guard = Some(dispatch.if_id());
+        }
+
+        if MLX5_BRIDGE_INITIALIZED.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        let num_rqs = with_mlx5_device(|dev| dev.num_rqs()).unwrap_or(1);
+        if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
+            if bufs.is_empty() {
+                bufs.resize_with(num_rqs, || {
+                    let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
+                    v.resize_with(mlx5_driver::defs::MLX5_WQ_DEPTH as usize, || None);
+                    v
+                });
+            }
+        }
+
+        let num_sqs = with_mlx5_device(|dev| dev.num_sqs()).unwrap_or(0);
+        if let Ok(mut bufs) = MLX5_TX_BUFS.lock() {
+            if bufs.is_empty() && num_sqs > 0 {
+                bufs.resize_with(num_sqs, || {
+                    let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
+                    v.resize_with(mlx5_driver::defs::MLX5_WQ_DEPTH as usize, || None);
+                    v
+                });
+            }
+        }
+
+        prefill_rx_buffers();
+
+        if !MLX5_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
+            crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_poll_task()));
+        }
+        if !MLX5_TX_TASK_STARTED.swap(true, Ordering::AcqRel) {
+            crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_tx_worker_task()));
+        }
+
+        Ok(())
+    }
+
+    fn enqueue_tx(&self, data: &[u8]) -> bool {
+        enqueue_mlx5_tx(data)
+    }
+
+    fn stats(&self) -> crate::net::runtime::bridge::shared::BridgePortStats {
+        let stats = get_mlx5_bridge_stats();
+        crate::net::runtime::bridge::shared::BridgePortStats {
+            tx_packets: stats.tx_packets,
+            rx_packets: stats.rx_packets,
+            tx_errors: stats.tx_errors,
+            rx_errors: stats.rx_errors,
+            initialized: stats.initialized,
+        }
+    }
+
+    fn health(&self) -> bool {
+        mlx5_health_check()
+    }
+
+    fn stop(&self) {
+        cleanup_mlx5_bridge();
+    }
+}
+
 pub fn activate_mlx5_vfs(num_vfs: u16) -> Result<(), mlx5_driver::Mlx5Error> {
     with_mlx5_device(|device| unsafe { device.activate_vfs(num_vfs) })
         .unwrap_or(Err(mlx5_driver::Mlx5Error::DeviceNotFound))
@@ -114,20 +281,7 @@ pub fn deactivate_mlx5_vfs(num_vfs: u16) -> Result<(), mlx5_driver::Mlx5Error> {
 // Transmit Path
 // ============================================================================
 
-/// mlx5 送信コールバック（NetworkStack の transmit_fn として登録）
-///
-/// スタックからの送信要求を mlx5 SQ に投入する。
-/// Ethernet フレーム全体（14バイトヘッダ含む）を受け取る。
-///
-/// ## 制限事項
-///
-/// 現状、SAS identity mapping を前提とした疑似 DMA を使用。
-/// 将来的には Exchange Heap 経由の正式な DMA バッファに移行する。
-pub fn mlx5_transmit(_if_id: Option<NetIfId>, data: &[u8]) -> bool {
-    if !MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire) {
-        return false;
-    }
-
+fn submit_mlx5_tx(data: &[u8]) -> bool {
     let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
         Ok(guard) => guard,
         Err(_) => return false,
@@ -194,6 +348,11 @@ pub fn mlx5_transmit(_if_id: Option<NetIfId>, data: &[u8]) -> bool {
     result.unwrap_or(false)
 }
 
+/// mlx5 送信コールバック（互換ラッパ）
+pub fn mlx5_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    super::shared::transmit(if_id, data)
+}
+
 // ============================================================================
 // Receive Path
 // ============================================================================
@@ -243,7 +402,13 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                             meta.set_l4_csum_verified();
                         }
 
-                        super::process_received_packet_zero_copy(pkt, 0, byte_count);
+                        let if_id = MLX5_IF_ID.lock().ok().and_then(|guard| *guard);
+                        if let Some(if_id) = if_id {
+                            super::shared::RxDispatchHandle::new(if_id)
+                                .dispatch_zero_copy(pkt, 0, byte_count);
+                        } else {
+                            super::process_received_packet_zero_copy(pkt, 0, byte_count);
+                        }
 
                         // Replenish
                         if let Some(new_pkt) = crate::net::datapath::mempool::alloc_packet() {
@@ -302,8 +467,7 @@ pub async fn mlx5_poll_task() {
 
     loop {
         if !MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire) {
-            // 未初期化時は待機
-            core::future::pending::<()>().await;
+            crate::task::yield_now().await;
             continue;
         }
 
@@ -331,6 +495,26 @@ pub async fn mlx5_poll_task() {
     }
 }
 
+async fn mlx5_tx_worker_task() {
+    loop {
+        if !MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire) {
+            crate::task::yield_now().await;
+            continue;
+        }
+
+        let mut request = recv_mlx5_tx();
+        if request.is_none() {
+            Mlx5TxEventWaitFuture.await;
+            request = recv_mlx5_tx();
+        }
+
+        while let Some(current) = request {
+            let _ = submit_mlx5_tx(&current.data);
+            request = recv_mlx5_tx();
+        }
+    }
+}
+
 // ============================================================================
 // Initialization
 // ============================================================================
@@ -340,10 +524,6 @@ pub async fn mlx5_poll_task() {
 /// `mlx5_registry.rs` の probe 成功後に呼び出される。
 /// デバイスをネットワークスタックに接続し、ポーリングタスクを起動する。
 pub fn init_mlx5_bridge() -> Result<(), &'static str> {
-    if MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire) {
-        return Ok(());
-    }
-
     // デバイスが登録されているか確認
     let has_device = with_mlx5_device(|dev| dev.is_active()).unwrap_or(false);
     if !has_device {
@@ -352,29 +532,7 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
     }
 
     let _ = with_mlx5_device(|dev| unsafe { dev.refresh_port_runtime_state(0) });
-
-    // MAC アドレスを取得
-    let mut mac = with_mlx5_device(|dev| {
-        dev.port(0).map(|port| {
-            let mac = port.mac_address();
-            crate::net::l2::ethernet::MacAddress::from_octets(
-                mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5],
-            )
-        })
-    })
-    .flatten()
-    .unwrap_or_else(|| {
-        // フォールバック MAC
-        crate::net::l2::ethernet::MacAddress::from_octets(0x02, 0x00, 0x5E, 0x00, 0x53, 0x01)
-    });
-
-    if mac.as_bytes() == &[0, 0, 0, 0, 0, 0] {
-        log::warn!(
-            target: "mlx5::bridge",
-            "mlx5 reported zero MAC; using locally-administered fallback address"
-        );
-        mac = crate::net::l2::ethernet::MacAddress::from_octets(0x02, 0x00, 0x5E, 0x00, 0x53, 0x01);
-    }
+    let mac = mlx5_mac_address();
 
     log::info!(
         target: "mlx5::bridge",
@@ -383,73 +541,28 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
         mac.as_bytes()[3], mac.as_bytes()[4], mac.as_bytes()[5],
     );
 
-    // 注: ブリッジの VirtIO 側が既にスタックを初期化している場合は
-    // 送信コールバックのみを切り替える。
-    // そうでない場合（mlx5 のみの環境）は新規にスタックを初期化する。
-    if !super::is_initialized() {
-        // mempool 初期化
-        if let Err(e) = crate::net::datapath::mempool::init_net_mempool(1024) {
-            log::warn!(target: "mlx5::bridge", "mempool init failed: {}", e);
-        }
+    use crate::net::l3::ipv4::Ipv4Config;
+    use crate::net::runtime::stack::NetworkConfig;
 
-        use crate::net::l3::ipv4::Ipv4Config;
-        use crate::net::runtime::stack::{self, NetworkConfig};
+    let config = NetworkConfig {
+        mac,
+        ipv4: Ipv4Config::default(),
+        ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
+        icmp_echo_enabled: true,
+    };
 
-        let config = NetworkConfig {
-            mac,
-            ipv4: Ipv4Config::default(),
-            ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
-            icmp_echo_enabled: true,
-        };
-
-        stack::init(config);
-
-        // 送信コールバック登録
-        if let Ok(mut guard) = stack::stack().lock() {
-            if let Some(ref mut stack) = *guard {
-                stack.set_transmit_fn(mlx5_transmit);
-            }
-        }
-
-        // DHCP ランタイム初期化
-        if let Err(e) = crate::net::api::dhcp::init_dhcp_runtime() {
-            log::warn!(target: "mlx5::bridge", "DHCP runtime init failed: {}", e);
-        }
-    }
-
-    // RX バッファトラッキングの初期化 (キューごと)
-    let num_rqs = with_mlx5_device(|dev| dev.num_rqs()).unwrap_or(1);
-    if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
-        if bufs.is_empty() {
-            bufs.resize_with(num_rqs, || {
-                let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
-                v.resize_with(mlx5_driver::defs::MLX5_WQ_DEPTH as usize, || None);
-                v
-            });
-        }
-    }
-
-    // TX バッファトラッキングの初期化 (キューごと)
-    let num_sqs = with_mlx5_device(|dev| dev.num_sqs()).unwrap_or(0);
-    if let Ok(mut bufs) = MLX5_TX_BUFS.lock() {
-        if bufs.is_empty() && num_sqs > 0 {
-            bufs.resize_with(num_sqs, || {
-                let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
-                v.resize_with(mlx5_driver::defs::MLX5_WQ_DEPTH as usize, || None);
-                v
-            });
-        }
-    }
-
-    // ポーリングタスクをスポーン
-    crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_poll_task()));
-    log::info!(target: "mlx5::bridge", "mlx5 poll task spawned (RQs={}, SQs={})", num_rqs, num_sqs);
-
-    // RX バッファのプリフィル
-    prefill_rx_buffers();
-
-    MLX5_BRIDGE_INITIALIZED.store(true, Ordering::Release);
-    log::info!(target: "mlx5::bridge", "mlx5 bridge initialized");
+    super::shared::ensure_stack_initialized(config)?;
+    crate::net::runtime::manager::init_network_manager();
+    let if_id = if let Some(if_id) = mlx5_if_id() {
+        if_id
+    } else {
+        crate::net::runtime::manager::register_interface("mlx5")
+            .map_err(|_| "failed to register mlx5 interface")?
+    };
+    let _ = crate::net::runtime::manager::set_interface_config(if_id, config);
+    super::ensure_bridge_if_state(if_id, None);
+    super::shared::install_port(if_id, Arc::new(Mlx5Runtime), super::primary_bridge_if().is_none())?;
+    log::info!(target: "mlx5::bridge", "mlx5 bridge initialized (if={})", if_id.0);
 
     Ok(())
 }
@@ -536,6 +649,10 @@ pub fn is_mlx5_bridge_initialized() -> bool {
     MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire)
 }
 
+pub fn mlx5_if_id() -> Option<NetIfId> {
+    MLX5_IF_ID.lock().ok().and_then(|guard| *guard)
+}
+
 /// ポート統計を取得する
 pub fn get_mlx5_port_stats(port_index: usize) -> Option<mlx5_driver::port::PortStats> {
     with_mlx5_device(|device| {
@@ -551,6 +668,7 @@ pub fn get_mlx5_port_stats(port_index: usize) -> Option<mlx5_driver::port::PortS
 /// mlx5 ブリッジを停止し、リソースを解放する
 pub fn cleanup_mlx5_bridge() {
     MLX5_BRIDGE_INITIALIZED.store(false, Ordering::Release);
+    MLX5_TX_QUEUE_HAS_EVENTS.store(false, Ordering::Release);
 
     // RX バッファの解放
     if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
@@ -572,6 +690,17 @@ pub fn cleanup_mlx5_bridge() {
             queue_bufs.clear();
         }
         bufs.clear();
+    }
+
+    if let Ok(mut queue) = MLX5_TX_QUEUE.lock() {
+        queue.clear();
+    }
+    if let Ok(mut waker) = MLX5_TX_QUEUE_WAKER.lock() {
+        let _ = waker.take();
+    }
+
+    if let Ok(mut if_id) = MLX5_IF_ID.lock() {
+        *if_id = None;
     }
 
     log::info!(target: "mlx5::bridge", "mlx5 bridge cleaned up");

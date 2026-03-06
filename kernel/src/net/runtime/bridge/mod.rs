@@ -21,6 +21,7 @@ use crate::net::runtime::stack::{self, NetworkConfig};
 mod nat;
 use nat::*;
 pub mod mlx5_bridge;
+pub mod shared;
 use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority, hybrid_coordinator,
 };
@@ -32,6 +33,7 @@ use crate::io::virtio::{
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -88,6 +90,7 @@ struct TransmitRequest {
 static TX_QUEUE: PoisonLock<VecDeque<TransmitRequest>> = PoisonLock::new(VecDeque::new());
 static TX_QUEUE_WAKER: PoisonLock<Option<Waker>> = PoisonLock::new(None);
 static TX_QUEUE_HAS_EVENTS: AtomicBool = AtomicBool::new(false);
+static TX_WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Enqueue a transmit request (called from stack's transmit_fn)
 fn enqueue_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
@@ -302,6 +305,61 @@ fn set_primary_bridge_if_for_virtio(if_id: NetIfId, virtio_index: u8) {
     }
 }
 
+struct VirtioNetRuntime {
+    virtio_index: u8,
+    if_id: NetIfId,
+    mac: MacAddress,
+}
+
+impl VirtioNetRuntime {
+    const fn new(virtio_index: u8, if_id: NetIfId, mac: MacAddress) -> Self {
+        Self {
+            virtio_index,
+            if_id,
+            mac,
+        }
+    }
+}
+
+impl shared::NetBridgePort for VirtioNetRuntime {
+    fn port_name(&self) -> &'static str {
+        "virtio-net"
+    }
+
+    fn mac_address(&self) -> MacAddress {
+        self.mac
+    }
+
+    fn start(&self, _dispatch: shared::RxDispatchHandle) -> Result<(), &'static str> {
+        if !TX_WORKER_STARTED.swap(true, Ordering::AcqRel) {
+            crate::task::Executor::spawn_global(crate::task::Task::new(tx_worker_task()));
+        }
+        Ok(())
+    }
+
+    fn enqueue_tx(&self, data: &[u8]) -> bool {
+        enqueue_transmit(Some(self.if_id), data)
+    }
+
+    fn stats(&self) -> shared::BridgePortStats {
+        get_bridge_stats_for_interface(self.if_id)
+            .map(|stats| shared::BridgePortStats {
+                tx_packets: stats.tx_packets,
+                rx_packets: stats.rx_packets,
+                tx_errors: 0,
+                rx_errors: 0,
+                initialized: stats.initialized,
+            })
+            .unwrap_or_default()
+    }
+
+    fn health(&self) -> bool {
+        with_virtio_net_at_index(self.virtio_index, |_| true).unwrap_or(false)
+    }
+
+    fn stop(&self) {}
+}
+
 // ============================================================================
 // Transmit Bridge
 // ============================================================================
@@ -311,25 +369,7 @@ fn set_primary_bridge_if_for_virtio(if_id: NetIfId, virtio_index: u8) {
 /// argument is an optional interface identifier; if the stack supplies `None`
 /// the bridge will fall back to the legacy ``primary_bridge_if`` behaviour.
 fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
-    // 非同期化: スタックからの送信要求はTXキューへエンキューして即時戻す。
-    // これによりデバイスロックを保持したまま同期送信が行われる経路を回避する。
-    if let Some(if_id) = if_id.or_else(primary_bridge_if) {
-        return enqueue_transmit(Some(if_id), data);
-    }
-
-    // No specific interface: enqueue for generic device
-    if enqueue_transmit(None, data) {
-        true
-    } else {
-        // Queue full or error
-        counters::global().record_error();
-        trace::push_event(
-            NetLayer::Driver,
-            NetEventKind::Error,
-            "virtio transmit enqueue failed",
-        );
-        false
-    }
+    shared::transmit(if_id, data)
 }
 
 /// IoScheduler 経由で VirtIO-Net にパケットを非同期送信する。
@@ -1062,23 +1102,10 @@ fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketR
 /// Initialize the network bridge
 /// Connects VirtIO-Net driver to NetworkStack
 pub fn init_bridge() -> Result<(), &'static str> {
-    if BRIDGE_INITIALIZED.load(Ordering::Acquire) {
-        return Ok(()); // Already initialized
-    }
-
     let virtio_present = with_virtio_net(|_| ()).is_some();
     if !virtio_present {
         log::warn!("[NET BRIDGE] VirtIO-Net not initialized; bridge init deferred");
         return Err("VirtIO-Net device not initialized");
-    }
-
-    if BRIDGE_INITIALIZED.swap(true, Ordering::SeqCst) {
-        return Ok(());
-    }
-
-    // Initialize zero-copy packet mempool (required for alloc_packet() in TX path)
-    if let Err(e) = crate::net::datapath::mempool::init_net_mempool(1024) {
-        log::warn!("[NET BRIDGE] mempool init failed: {}", e);
     }
 
     log::info!("[NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...");
@@ -1100,7 +1127,6 @@ pub fn init_bridge() -> Result<(), &'static str> {
         MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01)
     });
 
-    // Initialize NetworkStack with zero-config (DHCP will provide IP/gateway/DNS)
     let config = NetworkConfig {
         mac,
         ipv4: Ipv4Config::default(),
@@ -1108,16 +1134,13 @@ pub fn init_bridge() -> Result<(), &'static str> {
         icmp_echo_enabled: true,
     };
 
-    // Initialize the stack
-    stack::init(config);
+    shared::ensure_stack_initialized(config)?;
 
-    // Transitional multi-NIC groundwork:
-    // register the legacy bridge path as primary vnet0 in NetworkManager.
-    manager::init_network_manager();
     match manager::register_virtio_port(0, Some(config)) {
         Ok(if_id) => {
             ensure_bridge_if_state(if_id, Some(0));
             set_primary_bridge_if_for_virtio(if_id, 0);
+            shared::install_port(if_id, Arc::new(VirtioNetRuntime::new(0, if_id, mac)), true)?;
         }
         Err(err) => {
             log::warn!(
@@ -1132,28 +1155,8 @@ pub fn init_bridge() -> Result<(), &'static str> {
     crate::io::virtio::register_virtio_net_with_io_scheduler(0);
     log::info!("[NET BRIDGE] VirtIO-Net registered with IoScheduler");
 
-    // Set transmit callback
-    match stack::stack().lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut stack) = *guard {
-                stack.set_transmit_fn(virtio_transmit);
-                // Spawn background TX worker to process enqueued transmit requests.
-                // Use the main Executor's global queue so the task is polled by the
-                // primary executor loop (task::Executor::run).
-                crate::task::Executor::spawn_global(crate::task::Task::new(tx_worker_task()));
-            } else {
-                log::warn!("[NET BRIDGE] Stack is None after init - tx_worker NOT spawned");
-            }
-        }
-        Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),
-    }
-
     // Do not seed gateway ARP with the local NIC MAC.
     // Let normal ARP resolution discover the peer MAC to avoid self-MAC misrouting.
-
-    if let Err(e) = crate::net::api::dhcp::init_dhcp_runtime() {
-        log::warn!("[NET BRIDGE] DHCP runtime init failed: {}", e);
-    }
 
     log::info!("[NET BRIDGE] Bridge initialized");
     log::info!(
@@ -1339,6 +1342,23 @@ pub fn register_virtio_port(
     ensure_bridge_if_state(if_id, Some(virtio_index));
     let _ = bind_virtio_net_interface(virtio_index, if_id);
     set_primary_bridge_if_for_virtio(if_id, virtio_index);
+    if let Some(mac) = with_virtio_net_at_index(virtio_index, |device| {
+        let mac_bytes = device.mac_address();
+        MacAddress::from_octets(
+            mac_bytes[0],
+            mac_bytes[1],
+            mac_bytes[2],
+            mac_bytes[3],
+            mac_bytes[4],
+            mac_bytes[5],
+        )
+    }) {
+        let _ = shared::install_port(
+            if_id,
+            Arc::new(VirtioNetRuntime::new(virtio_index, if_id, mac)),
+            virtio_index == 0,
+        );
+    }
     Ok(if_id)
 }
 

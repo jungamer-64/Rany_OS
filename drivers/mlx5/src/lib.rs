@@ -35,6 +35,7 @@ extern crate alloc;
 #[cfg(feature = "standalone")]
 kernel_api::register_cell_runtime!();
 
+pub mod bootstrap;
 pub mod cmd;
 pub mod cq;
 pub mod defs;
@@ -69,9 +70,22 @@ pub use defs::{
     CONNECTX5_EX_DEVICE_ID, CONNECTX6_DEVICE_ID, CONNECTX6_DX_DEVICE_ID, CONNECTX6_LX_DEVICE_ID,
     CONNECTX7_DEVICE_ID, ConnectXVariant, MELLANOX_VENDOR_ID, MLX5_MAX_PORTS, SUPPORTED_DEVICE_IDS,
 };
+pub use bootstrap::{
+    Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion,
+    Mlx5PciIdentity, Mlx5QueueDmaRegion, Mlx5QueueProfile,
+};
 pub use device::Mlx5Device;
 pub use error::Mlx5Error;
 pub use health::HealthMonitor;
 pub use polling::{AdaptivePollingState, PollingMode};
 pub use port::Mlx5Port;
 pub use resources::{MkeyInfo, TirInfo, TisInfo};
+
+#[cfg(feature = "export_driver_entry")]
+kernel_api::export_async_driver!(
+    type: crate::ffi::Mlx5AsyncDriver,
+    constructor: crate::ffi::Mlx5AsyncDriver::new(),
+    name: crate::ffi::mlx5_driver_name,
+    driver_type: kernel_api::driver::DriverType::Network,
+    version: kernel_api::driver_abi::pack_version(0, 1, 0)
+);

@@ -7,20 +7,22 @@
 //! This wraps the existing driver_bridge functionality to work with the
 //! unified DriverRegistry system.
 
-use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
+use alloc::boxed::Box;
+use kernel_api::driver::{AsyncDriver, DeviceId, Driver, DriverFuture, DriverType, DriverVersion};
+use kernel_api::driver_abi::DriverContext;
 use kernel_api::error::{KapiError, KapiResult};
 
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::init_virtio_net_for_device;
 
-/// VirtIO-Net driver wrapper for DriverRegistry
-pub struct VirtioNetDriver {
+/// Async-backed VirtIO-Net driver core.
+pub struct VirtioNetAsyncDriver {
     initialized: bool,
     mmio_base: Option<u64>,
     iommu_id: Option<IommuDeviceId>,
 }
 
-impl VirtioNetDriver {
+impl VirtioNetAsyncDriver {
     /// Create a new VirtIO-Net driver (legacy default)
     pub fn new() -> Self {
         Self {
@@ -40,7 +42,7 @@ impl VirtioNetDriver {
     }
 }
 
-impl Driver for VirtioNetDriver {
+impl AsyncDriver for VirtioNetAsyncDriver {
     fn name(&self) -> &str {
         "virtio-net"
     }
@@ -53,59 +55,58 @@ impl Driver for VirtioNetDriver {
         DriverType::Network
     }
 
-    fn probe(&mut self) -> KapiResult<()> {
-        // debug: show current config (early_print to avoid loss on hang)
-        crate::io::log::early_print(&alloc::format!(
-            "[DEBUG] VirtioNetDriver::probe mmio_base={:?} iommu_id={:?}\n",
-            self.mmio_base,
-            self.iommu_id
-        ));
+    fn probe(&mut self, _ctx: &mut DriverContext) -> DriverFuture<'_, KapiResult<()>> {
+        Box::pin(async move {
+            crate::io::log::early_print(&alloc::format!(
+                "[DEBUG] VirtioNetAsyncDriver::probe mmio_base={:?} iommu_id={:?}\n",
+                self.mmio_base,
+                self.iommu_id
+            ));
 
-        // If specific device info is provided, initialize the device first
-        if let (Some(base), Some(id)) = (self.mmio_base, self.iommu_id) {
-            log::info!(target: "net", "Probing VirtIO-Net at {:#x}", base);
-            match init_virtio_net_for_device(base as usize, id) {
-                Ok(_) => {
-                    log::info!(target: "net", "VirtIO-Net device initialized");
-                }
-                Err(e) => {
-                    log::error!(target: "net", "Failed to initialize VirtIO-Net device: {:?}", e);
-                    return Err(KapiError::IoError);
+            if let (Some(base), Some(id)) = (self.mmio_base, self.iommu_id) {
+                log::info!(target: "net", "Probing VirtIO-Net at {:#x}", base);
+                match init_virtio_net_for_device(base as usize, id) {
+                    Ok(_) => {
+                        log::info!(target: "net", "VirtIO-Net device initialized");
+                    }
+                    Err(e) => {
+                        log::error!(target: "net", "Failed to initialize VirtIO-Net device: {:?}", e);
+                        return Err(KapiError::IoError);
+                    }
                 }
             }
-        }
 
-        // Check if VirtIO-Net device is available (global instance)
-        if crate::net::runtime::bridge::is_initialized() {
-            self.initialized = true;
-            // 接続性確認は呼び出し元（network_bootstrap_task等）に委任する。
-            // probe() 内での同期ping は Async-First 原則に反するため削除。
-            return Ok(());
-        }
-
-        // Initialize the bridge (connects global device to stack)
-        match crate::net::runtime::bridge::init_bridge() {
-            Ok(()) => {
+            if crate::net::runtime::bridge::is_initialized() {
                 self.initialized = true;
-                Ok(())
+                return Ok(());
             }
-            Err(_) => Err(KapiError::NotFound),
-        }
+
+            match crate::net::runtime::bridge::init_bridge() {
+                Ok(()) => {
+                    self.initialized = true;
+                    Ok(())
+                }
+                Err(_) => Err(KapiError::NotFound),
+            }
+        })
     }
 
-    fn start(&mut self) -> KapiResult<()> {
-        if !self.initialized {
-            return Err(KapiError::Internal(-1));
-        }
+    fn start(&mut self) -> DriverFuture<'_, KapiResult<()>> {
+        Box::pin(async move {
+            if !self.initialized {
+                return Err(KapiError::Internal(-1));
+            }
 
-        // Bridge is already started during probe
-        log::info!(target: "net", "VirtIO-Net driver started");
-        Ok(())
+            log::info!(target: "net", "VirtIO-Net driver started");
+            Ok(())
+        })
     }
 
-    fn stop(&mut self) -> KapiResult<()> {
-        log::info!(target: "net", "VirtIO-Net driver stopped");
-        Ok(())
+    fn stop(&mut self) -> DriverFuture<'_, KapiResult<()>> {
+        Box::pin(async move {
+            log::info!(target: "net", "VirtIO-Net driver stopped");
+            Ok(())
+        })
     }
 
     fn supported_devices(&self) -> &[DeviceId] {
@@ -117,6 +118,66 @@ impl Driver for VirtioNetDriver {
             subsystem_device: None,
         }];
         &DEVICES
+    }
+}
+
+impl Default for VirtioNetAsyncDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Sync DriverRegistry wrapper for the async VirtIO-Net core.
+pub struct VirtioNetDriver {
+    inner: VirtioNetAsyncDriver,
+}
+
+impl VirtioNetDriver {
+    pub fn new() -> Self {
+        Self {
+            inner: VirtioNetAsyncDriver::new(),
+        }
+    }
+
+    pub fn new_with_device(mmio_base: u64, iommu_id: IommuDeviceId) -> Self {
+        Self {
+            inner: VirtioNetAsyncDriver::new_with_device(mmio_base, iommu_id),
+        }
+    }
+}
+
+impl Driver for VirtioNetDriver {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn version(&self) -> DriverVersion {
+        self.inner.version()
+    }
+
+    fn driver_type(&self) -> DriverType {
+        self.inner.driver_type()
+    }
+
+    fn probe(&mut self) -> KapiResult<()> {
+        let mut ctx = DriverContext::default();
+        crate::task::block_on(self.inner.probe(&mut ctx))
+    }
+
+    fn start(&mut self) -> KapiResult<()> {
+        crate::task::block_on(self.inner.start())
+    }
+
+    fn stop(&mut self) -> KapiResult<()> {
+        crate::task::block_on(self.inner.stop())
+    }
+
+    fn remove(&mut self) -> KapiResult<()> {
+        crate::task::block_on(self.inner.remove())
+    }
+
+    fn supported_devices(&self) -> &[DeviceId] {
+        self.inner.supported_devices()
     }
 }
 

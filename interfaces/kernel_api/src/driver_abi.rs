@@ -52,6 +52,7 @@
 /// Increment this when making breaking changes to the vtable layout.
 /// Drivers compiled with a different ABI version will be rejected.
 mod export_macro;
+use core::sync::atomic::AtomicBool;
 pub const DRIVER_ABI_VERSION: u64 = 1;
 
 // Include the generated type hash
@@ -229,6 +230,22 @@ impl DriverContext {
 impl Default for DriverContext {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Internal wrapper used by `export_async_driver!` to keep the async driver
+/// instance plus a minimal busy flag alongside the ABI driver context.
+pub struct AsyncDriverWrapper<T: crate::driver::AsyncDriver> {
+    pub driver: T,
+    pub busy: AtomicBool,
+}
+
+impl<T: crate::driver::AsyncDriver> AsyncDriverWrapper<T> {
+    pub fn new(driver: T) -> Self {
+        Self {
+            driver,
+            busy: AtomicBool::new(false),
+        }
     }
 }
 

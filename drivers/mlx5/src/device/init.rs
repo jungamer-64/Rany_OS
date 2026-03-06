@@ -2,6 +2,7 @@
 // drivers/mlx5/src/device/init.rs - MLX5 Device Initialization
 // ============================================================================
 
+use crate::bootstrap::{Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan};
 use crate::cmd::CmdQueueTransport; // needed for layout parsing
 use crate::cmd::hca::{build_enable_hca_input, build_set_issi_input};
 use crate::cmd::{CmdMailbox, CmdQueue};
@@ -162,9 +163,55 @@ impl Mlx5Device {
         Ok(())
     }
 
+    pub unsafe fn bootstrap(
+        &mut self,
+        config: &Mlx5BootstrapConfig,
+        resources: &Mlx5AllocatedResources,
+    ) -> Mlx5Result<()> {
+        if config.is_vf != self.is_vf() {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+
+        let plan = Mlx5BootstrapPlan::new(config);
+        plan.validate_resources(resources)?;
+        self.set_pci_bdf(
+            config.pci_identity.bus,
+            config.pci_identity.device,
+            config.pci_identity.function,
+        );
+
+        let fw_page_addrs = resources.fw_page_device_addrs();
+        let eq_bufs = resources.eq_bufs();
+        let tx_cq_bufs = resources.tx_cq_bufs();
+        let rx_cq_bufs = resources.rx_cq_bufs();
+        let sq_bufs = resources.sq_bufs();
+        let rq_bufs = resources.rq_bufs();
+        let profile = plan.queue_profile();
+
+        self.init_multi_queue(
+            resources.cmdq.virt_addr,
+            resources.cmdq.device_addr,
+            resources.cmd_in_mbox.virt_addr,
+            resources.cmd_in_mbox.device_addr,
+            resources.cmd_out_mbox.virt_addr,
+            resources.cmd_out_mbox.device_addr,
+            &fw_page_addrs,
+            &config.mkey_params,
+            &eq_bufs,
+            &tx_cq_bufs,
+            &rx_cq_bufs,
+            &sq_bufs,
+            &rq_bufs,
+            profile.log_eq_size,
+            profile.log_cq_size,
+            profile.log_sq_size,
+            profile.log_rq_size,
+        )
+    }
+
     /// デバイスの完全パイプライン初期化
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn init_full(
+    pub(crate) unsafe fn init_full(
         &mut self,
         cmdq_virt: u64,
         cmdq_device: u64,
@@ -207,7 +254,7 @@ impl Mlx5Device {
 
     /// マルチキュー対応の完全初期化パイプライン
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn init_multi_queue(
+    pub(crate) unsafe fn init_multi_queue(
         &mut self,
         cmdq_virt: u64,
         cmdq_device: u64,
