@@ -10,15 +10,282 @@ use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 use kernel_api::services::kernel;
 
+use crate::io::pci::{PcieBdf, PcieError, SriovCapability, SriovController, pcie_ext_config};
+use crate::sync::{PoisonLock, PoisonLockGuard};
 use mlx5_driver::defs::{MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH};
 use mlx5_driver::regs::{cmd_entry, cqe, eqe, wqe};
 use mlx5_driver::resources::MkeyParams;
-use mlx5_driver::{ConnectXVariant, MELLANOX_VENDOR_ID, Mlx5Device, SUPPORTED_DEVICE_IDS};
+use mlx5_driver::{
+    ConnectXVariant, MELLANOX_VENDOR_ID, Mlx5Device, Mlx5Error, SUPPORTED_DEVICE_IDS,
+};
 
 const CMD_LOG_SIZE: u8 = 2; // 4 entries
 const DMA_PAGE_BYTES: usize = MLX5_PAGE_SIZE;
 const FW_BOOT_PAGE_COUNT: usize = 4;
 const MLX5_EQ_SPARE_EQE: u32 = 0x80;
+const KAPI_EINVAL: i32 = -22;
+
+type GlobalMlx5SriovState = Mlx5SriovRuntimeState<SriovController>;
+type Mlx5SriovStateGuard = PoisonLockGuard<'static, Option<GlobalMlx5SriovState>>;
+
+static MLX5_SRIOV_STATE: PoisonLock<Option<GlobalMlx5SriovState>> = PoisonLock::new(None);
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Mlx5SriovStatus {
+    pub driver_present: bool,
+    pub bridge_initialized: bool,
+    pub variant: Option<ConnectXVariant>,
+    pub pf_bdf: Option<PcieBdf>,
+    pub sriov_supported: bool,
+    pub total_vfs: u16,
+    pub vf_device_id: Option<u16>,
+    pub active_vfs: u16,
+    pub vf_bdfs: Vec<PcieBdf>,
+}
+
+struct Mlx5SriovRuntimeState<C> {
+    variant: ConnectXVariant,
+    pf_bdf: PcieBdf,
+    controller: Option<C>,
+}
+
+trait SriovOps {
+    fn capability(&self) -> Option<&SriovCapability>;
+    fn enable_vfs(&mut self, num_vfs: u16) -> Result<(), PcieError>;
+    fn disable_vfs(&mut self) -> Result<(), PcieError>;
+    fn active_vf_count(&self) -> u32;
+    fn get_vf_bdf(&self, vf_index: u16) -> Result<PcieBdf, PcieError>;
+}
+
+impl SriovOps for SriovController {
+    fn capability(&self) -> Option<&SriovCapability> {
+        self.capability()
+    }
+
+    fn enable_vfs(&mut self, num_vfs: u16) -> Result<(), PcieError> {
+        SriovController::enable_vfs(self, num_vfs)
+    }
+
+    fn disable_vfs(&mut self) -> Result<(), PcieError> {
+        SriovController::disable_vfs(self)
+    }
+
+    fn active_vf_count(&self) -> u32 {
+        SriovController::active_vf_count(self)
+    }
+
+    fn get_vf_bdf(&self, vf_index: u16) -> Result<PcieBdf, PcieError> {
+        SriovController::get_vf_bdf(self, vf_index)
+    }
+}
+
+fn lock_mlx5_sriov_state(context: &str) -> Mlx5SriovStateGuard {
+    match MLX5_SRIOV_STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            log::warn!(
+                target: "mlx5",
+                "{}: mlx5 SR-IOV state lock poisoned; continuing best-effort",
+                context
+            );
+            poisoned.into_inner()
+        }
+    }
+}
+
+fn current_bridge_initialized() -> bool {
+    crate::net::runtime::bridge::mlx5_bridge::is_mlx5_bridge_initialized()
+}
+
+fn map_pcie_error(err: PcieError) -> KapiError {
+    match err {
+        PcieError::DeviceNotFound => KapiError::NotFound,
+        PcieError::CapabilityNotFound | PcieError::NotSupported => KapiError::NotSupported,
+        PcieError::ResourceExhausted | PcieError::VfAllocationFailed => KapiError::ResourceExhausted,
+        PcieError::ConfigError | PcieError::AerError => KapiError::IoError,
+    }
+}
+
+fn map_mlx5_error(err: Mlx5Error) -> KapiError {
+    match err {
+        Mlx5Error::DeviceNotFound => KapiError::NotFound,
+        Mlx5Error::NotSupported => KapiError::NotSupported,
+        Mlx5Error::NoResources => KapiError::ResourceExhausted,
+        Mlx5Error::InvalidParameter => KapiError::Internal(KAPI_EINVAL),
+        _ => KapiError::IoError,
+    }
+}
+
+fn collect_vf_bdfs<C: SriovOps>(controller: &C) -> Vec<PcieBdf> {
+    let active_vfs = controller.active_vf_count().min(u16::MAX as u32) as u16;
+    let mut vf_bdfs = Vec::with_capacity(active_vfs as usize);
+    for vf in 0..active_vfs {
+        if let Ok(bdf) = controller.get_vf_bdf(vf) {
+            vf_bdfs.push(bdf);
+        }
+    }
+    vf_bdfs
+}
+
+fn sriov_status_from_state<C: SriovOps>(
+    state: Option<&Mlx5SriovRuntimeState<C>>,
+    bridge_initialized: bool,
+) -> Mlx5SriovStatus {
+    let Some(state) = state else {
+        return Mlx5SriovStatus {
+            driver_present: false,
+            bridge_initialized,
+            ..Mlx5SriovStatus::default()
+        };
+    };
+
+    let controller = state.controller.as_ref();
+    let capability = controller.and_then(SriovOps::capability);
+
+    Mlx5SriovStatus {
+        driver_present: true,
+        bridge_initialized,
+        variant: Some(state.variant),
+        pf_bdf: Some(state.pf_bdf),
+        sriov_supported: controller.is_some(),
+        total_vfs: capability.map(|cap| cap.total_vfs).unwrap_or(0),
+        vf_device_id: capability.map(|cap| cap.vf_device_id),
+        active_vfs: controller
+            .map(|ctrl| ctrl.active_vf_count().min(u16::MAX as u32) as u16)
+            .unwrap_or(0),
+        vf_bdfs: controller.map(collect_vf_bdfs).unwrap_or_default(),
+    }
+}
+
+fn enable_vfs_with_runtime_state<C, F>(
+    state: &mut Mlx5SriovRuntimeState<C>,
+    num_vfs: u16,
+    bridge_initialized: bool,
+    mut bridge_activate: F,
+) -> KapiResult<Mlx5SriovStatus>
+where
+    C: SriovOps,
+    F: FnMut(u16) -> KapiResult<()>,
+{
+    let controller = state.controller.as_mut().ok_or(KapiError::NotSupported)?;
+    controller.enable_vfs(num_vfs).map_err(map_pcie_error)?;
+
+    if let Err(err) = bridge_activate(num_vfs) {
+        if let Err(rollback_err) = controller.disable_vfs() {
+            log::warn!(
+                target: "mlx5",
+                "SR-IOV bridge activation failed and PCI rollback also failed: {:?}",
+                rollback_err
+            );
+        }
+        return Err(err);
+    }
+
+    Ok(sriov_status_from_state(Some(state), bridge_initialized))
+}
+
+fn disable_vfs_with_runtime_state<C, F>(
+    state: &mut Mlx5SriovRuntimeState<C>,
+    bridge_initialized: bool,
+    mut bridge_deactivate: F,
+) -> KapiResult<Mlx5SriovStatus>
+where
+    C: SriovOps,
+    F: FnMut(u16) -> KapiResult<()>,
+{
+    let controller = state.controller.as_mut().ok_or(KapiError::NotSupported)?;
+    let active_vfs = controller.active_vf_count().min(u16::MAX as u32) as u16;
+    let vport_err = if active_vfs == 0 {
+        None
+    } else {
+        bridge_deactivate(active_vfs).err()
+    };
+    let pci_err = controller.disable_vfs().err();
+
+    match (vport_err, pci_err) {
+        (Some(vport_err), Some(pci_err)) => {
+            log::warn!(
+                target: "mlx5",
+                "VF vport admin-down failed and PCI VF disable also failed: {:?}",
+                pci_err
+            );
+            Err(vport_err)
+        }
+        (Some(vport_err), None) => Err(vport_err),
+        (None, Some(pci_err)) => Err(map_pcie_error(pci_err)),
+        (None, None) => Ok(sriov_status_from_state(Some(state), bridge_initialized)),
+    }
+}
+
+fn detect_sriov_runtime_state(
+    variant: ConnectXVariant,
+    pf_bdf: PcieBdf,
+    is_pf: bool,
+) -> GlobalMlx5SriovState {
+    let controller = if !is_pf {
+        None
+    } else {
+        pcie_ext_config().and_then(|config| match SriovController::new(config, pf_bdf) {
+            Ok(controller) => Some(controller),
+            Err(PcieError::CapabilityNotFound) | Err(PcieError::NotSupported) => None,
+            Err(err) => {
+                log::warn!(
+                    target: "mlx5",
+                    "SR-IOV capability probe failed for {:02x}:{:02x}.{}: {:?}",
+                    pf_bdf.bus,
+                    pf_bdf.device,
+                    pf_bdf.function,
+                    err
+                );
+                None
+            }
+        })
+    };
+
+    Mlx5SriovRuntimeState {
+        variant,
+        pf_bdf,
+        controller,
+    }
+}
+
+fn set_mlx5_sriov_state(state: Option<GlobalMlx5SriovState>) {
+    let mut guard = lock_mlx5_sriov_state("set_mlx5_sriov_state");
+    *guard = state;
+}
+
+fn clear_mlx5_sriov_state() {
+    set_mlx5_sriov_state(None);
+}
+
+pub fn mlx5_sriov_status() -> Mlx5SriovStatus {
+    let guard = lock_mlx5_sriov_state("mlx5_sriov_status");
+    sriov_status_from_state(guard.as_ref(), current_bridge_initialized())
+}
+
+pub fn mlx5_enable_vfs(num_vfs: u16) -> KapiResult<Mlx5SriovStatus> {
+    if num_vfs == 0 {
+        return Err(KapiError::Internal(KAPI_EINVAL));
+    }
+
+    let bridge_initialized = current_bridge_initialized();
+    let mut guard = lock_mlx5_sriov_state("mlx5_enable_vfs");
+    let state = guard.as_mut().ok_or(KapiError::NotFound)?;
+    enable_vfs_with_runtime_state(state, num_vfs, bridge_initialized, |count| {
+        crate::net::runtime::bridge::mlx5_bridge::activate_mlx5_vfs(count)
+            .map_err(map_mlx5_error)
+    })
+}
+
+pub fn mlx5_disable_vfs() -> KapiResult<Mlx5SriovStatus> {
+    let bridge_initialized = current_bridge_initialized();
+    let mut guard = lock_mlx5_sriov_state("mlx5_disable_vfs");
+    let state = guard.as_mut().ok_or(KapiError::NotFound)?;
+    disable_vfs_with_runtime_state(state, bridge_initialized, |count| {
+        crate::net::runtime::bridge::mlx5_bridge::deactivate_mlx5_vfs(count)
+            .map_err(map_mlx5_error)
+    })
+}
 
 /// ConnectX ファミリのサポートデバイスID一覧を動的構築
 fn build_supported_devices() -> Vec<DeviceId> {
@@ -596,6 +863,15 @@ impl Mlx5ConnectXDriver {
         self.variant = Some(variant);
         self.dma_resources = Some(dma_resources);
         self.initialized = true;
+        set_mlx5_sriov_state(Some(detect_sriov_runtime_state(
+            variant,
+            PcieBdf::new(
+                pci_dev.bdf.bus(),
+                pci_dev.bdf.device(),
+                pci_dev.bdf.function(),
+            ),
+            !ConnectXVariant::is_vf_device_id(pci_dev.device_id.0),
+        )));
 
         log::info!(
             target: "mlx5",
@@ -627,6 +903,7 @@ impl Driver for Mlx5ConnectXDriver {
 
     fn probe(&mut self) -> KapiResult<()> {
         log::info!(target: "mlx5", "Probing for ConnectX family devices...");
+        clear_mlx5_sriov_state();
 
         for &(_vendor_id, device_id) in SUPPORTED_DEVICE_IDS {
             let pci_devices = crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, device_id);
@@ -659,6 +936,13 @@ impl Driver for Mlx5ConnectXDriver {
     fn stop(&mut self) -> KapiResult<()> {
         let variant_name = self.variant.map(|v| v.name()).unwrap_or("ConnectX");
         log::info!(target: "mlx5", "{} driver stopping...", variant_name);
+
+        if mlx5_sriov_status().active_vfs != 0 {
+            if let Err(err) = mlx5_disable_vfs() {
+                log::warn!(target: "mlx5", "Failed to disable active VFs during stop: {:?}", err);
+            }
+        }
+        clear_mlx5_sriov_state();
 
         // ブリッジ側のリソース（PacketRef等）を解放
         crate::net::runtime::bridge::mlx5_bridge::cleanup_mlx5_bridge();
@@ -731,5 +1015,167 @@ fn ensure_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
             );
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+
+    struct FakeSriovController {
+        capability: Option<SriovCapability>,
+        active_vfs: u16,
+        vf_bdfs: Vec<PcieBdf>,
+        fail_enable: Option<PcieError>,
+        fail_disable: Option<PcieError>,
+        events: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl FakeSriovController {
+        fn new(events: Rc<RefCell<Vec<&'static str>>>, active_vfs: u16) -> Self {
+            Self {
+                capability: Some(SriovCapability {
+                    offset: 0x180,
+                    total_vfs: 8,
+                    num_vfs: active_vfs,
+                    first_vf_offset: 2,
+                    vf_stride: 1,
+                    vf_device_id: 0x101e,
+                    supported_page_sizes: 0,
+                    system_page_size: 0,
+                }),
+                active_vfs,
+                vf_bdfs: Vec::from([PcieBdf::new(0, 2, 1), PcieBdf::new(0, 2, 2)]),
+                fail_enable: None,
+                fail_disable: None,
+                events,
+            }
+        }
+    }
+
+    impl SriovOps for FakeSriovController {
+        fn capability(&self) -> Option<&SriovCapability> {
+            self.capability.as_ref()
+        }
+
+        fn enable_vfs(&mut self, num_vfs: u16) -> Result<(), PcieError> {
+            self.events.borrow_mut().push("enable");
+            if let Some(err) = self.fail_enable {
+                return Err(err);
+            }
+            self.active_vfs = num_vfs;
+            if let Some(cap) = self.capability.as_mut() {
+                cap.num_vfs = num_vfs;
+            }
+            Ok(())
+        }
+
+        fn disable_vfs(&mut self) -> Result<(), PcieError> {
+            self.events.borrow_mut().push("disable");
+            if let Some(err) = self.fail_disable {
+                return Err(err);
+            }
+            self.active_vfs = 0;
+            if let Some(cap) = self.capability.as_mut() {
+                cap.num_vfs = 0;
+            }
+            Ok(())
+        }
+
+        fn active_vf_count(&self) -> u32 {
+            self.active_vfs as u32
+        }
+
+        fn get_vf_bdf(&self, vf_index: u16) -> Result<PcieBdf, PcieError> {
+            self.vf_bdfs
+                .get(vf_index as usize)
+                .copied()
+                .ok_or(PcieError::VfAllocationFailed)
+        }
+    }
+
+    #[test_case]
+    fn sriov_status_snapshot_includes_active_vf_bdfs() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let state = Mlx5SriovRuntimeState {
+            variant: ConnectXVariant::CX5,
+            pf_bdf: PcieBdf::new(0, 2, 0),
+            controller: Some(FakeSriovController::new(events, 2)),
+        };
+
+        let status = sriov_status_from_state(Some(&state), true);
+        assert!(status.driver_present);
+        assert!(status.bridge_initialized);
+        assert_eq!(status.variant, Some(ConnectXVariant::CX5));
+        assert_eq!(status.pf_bdf, Some(PcieBdf::new(0, 2, 0)));
+        assert!(status.sriov_supported);
+        assert_eq!(status.total_vfs, 8);
+        assert_eq!(status.vf_device_id, Some(0x101e));
+        assert_eq!(status.active_vfs, 2);
+        assert_eq!(
+            status.vf_bdfs,
+            Vec::from([PcieBdf::new(0, 2, 1), PcieBdf::new(0, 2, 2)])
+        );
+    }
+
+    #[test_case]
+    fn enable_vfs_rolls_back_when_bridge_sync_fails() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut state = Mlx5SriovRuntimeState {
+            variant: ConnectXVariant::CX5,
+            pf_bdf: PcieBdf::new(0, 2, 0),
+            controller: Some(FakeSriovController::new(events.clone(), 0)),
+        };
+
+        let err = enable_vfs_with_runtime_state(&mut state, 2, true, |count| {
+            assert_eq!(count, 2);
+            events.borrow_mut().push("bridge_activate");
+            Err(KapiError::IoError)
+        })
+        .unwrap_err();
+
+        assert_eq!(err, KapiError::IoError);
+        assert_eq!(
+            events.borrow().as_slice(),
+            ["enable", "bridge_activate", "disable"]
+        );
+        assert_eq!(
+            state
+                .controller
+                .as_ref()
+                .map(SriovOps::active_vf_count)
+                .unwrap_or_default(),
+            0
+        );
+    }
+
+    #[test_case]
+    fn disable_vfs_still_disables_pci_when_admin_down_fails() {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut state = Mlx5SriovRuntimeState {
+            variant: ConnectXVariant::CX5,
+            pf_bdf: PcieBdf::new(0, 2, 0),
+            controller: Some(FakeSriovController::new(events.clone(), 2)),
+        };
+
+        let err = disable_vfs_with_runtime_state(&mut state, true, |count| {
+            assert_eq!(count, 2);
+            events.borrow_mut().push("bridge_deactivate");
+            Err(KapiError::IoError)
+        })
+        .unwrap_err();
+
+        assert_eq!(err, KapiError::IoError);
+        assert_eq!(events.borrow().as_slice(), ["bridge_deactivate", "disable"]);
+        assert_eq!(
+            state
+                .controller
+                .as_ref()
+                .map(SriovOps::active_vf_count)
+                .unwrap_or_default(),
+            0
+        );
     }
 }

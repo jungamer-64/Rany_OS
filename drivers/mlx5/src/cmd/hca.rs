@@ -115,6 +115,7 @@ const QUERY_VPORT_STATE_OP_MOD_VNIC_VPORT: u16 = 0;
 const QUERY_VNIC_ENV_OP_MOD_VNIC_VPORT: u16 = 0;
 const QUERY_VPORT_COUNTER_OP_MOD_VPORT_COUNTERS: u16 = 0;
 pub(crate) const MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT: u16 = 1;
+pub(crate) const VPORT_ADMIN_STATE_DOWN: u8 = 0;
 pub(crate) const VPORT_ADMIN_STATE_UP: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

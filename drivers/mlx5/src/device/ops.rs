@@ -107,6 +107,34 @@ impl Mlx5Device {
         Ok(())
     }
 
+    unsafe fn deactivate_vfs_with_transport<T: CommandTransport>(
+        cmd: &mut T,
+        in_mbox: &mut CmdMailbox,
+        in_mbox_phys: u64,
+        out_mbox_phys: u64,
+        num_vfs: u16,
+    ) -> Mlx5Result<()> {
+        for vf in 0..num_vfs {
+            let function_id = vf + 1;
+            build_modify_vport_state_input(
+                in_mbox,
+                MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT,
+                function_id,
+                true,
+                VPORT_ADMIN_STATE_DOWN,
+            );
+            cmd.execute(
+                CmdOpcode::ModifyVportState,
+                in_mbox_phys,
+                0x10,
+                out_mbox_phys,
+                0x10,
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// パケットを送信
     pub unsafe fn transmit(
         &mut self,
@@ -231,6 +259,21 @@ impl Mlx5Device {
             sw_vhca_id,
             num_vfs,
         )
+    }
+
+    pub unsafe fn deactivate_vfs(&mut self, num_vfs: u16) -> Mlx5Result<()> {
+        if self.is_vf() {
+            return Err(Mlx5Error::NotSupported);
+        }
+        let caps = self.hca_caps.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        if !caps.vport_group_manager {
+            return Err(Mlx5Error::NotSupported);
+        }
+        let in_mbox_phys = self.cmd_in_mbox_device;
+        let out_mbox_phys = self.cmd_out_mbox_device;
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        Self::deactivate_vfs_with_transport(cmd, in_mbox, in_mbox_phys, out_mbox_phys, num_vfs)
     }
 
     pub unsafe fn query_port_state(&mut self, port_index: usize) -> Mlx5Result<PortLinkState> {
@@ -726,5 +769,33 @@ mod tests {
             .calls
             .iter()
             .any(|call| call.opcode == CmdOpcode::ModifyVportState));
+    }
+
+    #[test]
+    fn deactivate_vfs_only_admins_down_vports() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let mut out_mbox = CmdMailbox::zeroed();
+        let mut transport = FakeTransport::new(&in_mbox, &mut out_mbox, 0, VhcaState::Allocated);
+
+        unsafe {
+            Mlx5Device::deactivate_vfs_with_transport(&mut transport, &mut in_mbox, 0, 0, 2)
+        }
+        .unwrap();
+
+        assert_eq!(transport.calls.len(), 2);
+        assert!(transport
+            .calls
+            .iter()
+            .all(|call| call.opcode == CmdOpcode::ModifyVportState));
+        assert_eq!(transport.calls[0].op_mod, MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT);
+        assert!(transport.calls[0].other_vport);
+        assert_eq!(transport.calls[0].vport_number, 1);
+        assert_eq!(transport.calls[0].admin_state, VPORT_ADMIN_STATE_DOWN);
+        assert_eq!(transport.calls[1].vport_number, 2);
+        assert_eq!(transport.calls[1].admin_state, VPORT_ADMIN_STATE_DOWN);
+        assert!(!transport
+            .calls
+            .iter()
+            .any(|call| call.opcode == CmdOpcode::QueryVhcaState));
     }
 }

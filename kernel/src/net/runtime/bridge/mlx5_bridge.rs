@@ -100,6 +100,16 @@ fn with_mlx5_device<R>(f: impl FnOnce(&mut Mlx5Device) -> R) -> Option<R> {
         .and_then(|mut guard| guard.as_mut().map(|dev| f(dev)))
 }
 
+pub fn activate_mlx5_vfs(num_vfs: u16) -> Result<(), mlx5_driver::Mlx5Error> {
+    with_mlx5_device(|device| unsafe { device.activate_vfs(num_vfs) })
+        .unwrap_or(Err(mlx5_driver::Mlx5Error::DeviceNotFound))
+}
+
+pub fn deactivate_mlx5_vfs(num_vfs: u16) -> Result<(), mlx5_driver::Mlx5Error> {
+    with_mlx5_device(|device| unsafe { device.deactivate_vfs(num_vfs) })
+        .unwrap_or(Err(mlx5_driver::Mlx5Error::DeviceNotFound))
+}
+
 // ============================================================================
 // Transmit Path
 // ============================================================================
