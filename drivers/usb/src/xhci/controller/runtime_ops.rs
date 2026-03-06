@@ -76,7 +76,7 @@ impl XhciController {
 
         // デバイスコンテキストをDMAバッファで作成
         let ctx_size = core::mem::size_of::<DeviceContext>();
-        let dma_buf = kernel_api::services::kernel()
+        let dma_buf = kernel_api::service::kernel::instance()
             .alloc_dma(ctx_size)
             .map_err(|_| UsbError::Other("Failed to allocate DMA for DeviceContext".into()))?;
         let ctx_ptr = dma_buf.as_ptr() as *mut DeviceContext;
@@ -157,7 +157,7 @@ impl XhciController {
 
         // InputContextをDMAバッファにコピー
         let input_ctx_size = core::mem::size_of::<InputContext>();
-        let input_dma_buf = kernel_api::services::kernel()
+        let input_dma_buf = kernel_api::service::kernel::instance()
             .alloc_dma(input_ctx_size)
             .map_err(|_| UsbError::Other("Failed to allocate DMA for InputContext".into()))?;
         let input_dma_ptr = input_dma_buf.as_ptr() as *mut InputContext;
@@ -244,7 +244,7 @@ impl XhciController {
 
         // InputContextをDMAバッファにコピー
         let input_ctx_size = core::mem::size_of::<InputContext>();
-        let input_dma_buf = kernel_api::services::kernel()
+        let input_dma_buf = kernel_api::service::kernel::instance()
             .alloc_dma(input_ctx_size)
             .map_err(|_| UsbError::Other("Failed to allocate DMA for InputContext".into()))?;
         let input_dma_ptr = input_dma_buf.as_ptr() as *mut InputContext;

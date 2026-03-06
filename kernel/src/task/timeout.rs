@@ -26,7 +26,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use super::timer::current_tick;
 use super::{Executor, Task, TaskId};
-use kernel_api::TimeService;
+use kernel_api::service::time::TimeService;
 use time_driver::TIME_MANAGER;
 
 // ============================================================================

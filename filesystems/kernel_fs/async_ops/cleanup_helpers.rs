@@ -117,7 +117,7 @@ pub(crate) fn prepare_nvme_sgl(
 
 pub(crate) fn nvme_sgl_max_entries() -> Option<usize> {
     // Use kernel_api abstraction instead of direct driver access
-    kernel_api::kernel().nvme_sgl_max_entries(0)
+    kernel_api::service::kernel::instance().nvme_sgl_max_entries(0)
 }
 
 pub(crate) fn sg_total_bytes(list: &TypedSgList<CpuOwned>) -> FsResult<usize> {
@@ -198,7 +198,7 @@ pub(crate) fn nsid_from_device(device_id: u64) -> u32 {
 
 pub(crate) fn nvme_block_size(device_id: u64) -> u64 {
     // Use kernel_api abstraction instead of direct driver access
-    kernel_api::kernel()
+    kernel_api::service::kernel::instance()
         .nvme_block_size(device_id)
         .unwrap_or(NVME_BLOCK_SIZE)
 }

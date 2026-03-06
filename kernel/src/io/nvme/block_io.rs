@@ -8,7 +8,7 @@
 //! 適合させるアダプタ。同期ポーリングモードで単一ブロック I/O を実行する。
 //!
 //! ## フロー
-//! 1. DMA バッファを割り当て (`kernel_api::services::kernel().alloc_dma()`)
+//! 1. DMA バッファを割り当て (`kernel_api::service::kernel::instance().alloc_dma()`)
 //! 2. PRP1 として `device_address()` を設定
 //! 3. `NvmePollingDriver::submit_read/write()` でコマンド発行
 //! 4. `poll_completion_by_cid()` でスピンポーリング待機
@@ -80,7 +80,7 @@ impl NvmeBlockIoAdapter {
         out: Option<&mut [u8]>,
     ) -> Result<(), NsError> {
         let bs = self.block_size as usize;
-        let kernel = kernel_api::services::kernel();
+        let kernel = kernel_api::service::kernel::instance();
 
         // DMA バッファ割り当て
         let mut dma_buf = kernel
@@ -126,7 +126,7 @@ impl NvmeBlockIoAdapter {
                     .flatten()
             {
                 if !cqe.is_success() {
-                    kernel.free_dma(dma_buf);
+                    drop(dma_buf);
                     return Err(NsError::IoError);
                 }
                 completed = true;
@@ -136,7 +136,7 @@ impl NvmeBlockIoAdapter {
         }
 
         if !completed {
-            kernel.free_dma(dma_buf);
+            drop(dma_buf);
             return Err(NsError::Internal(alloc::string::String::from(
                 "NVMe timeout",
             )));
@@ -153,7 +153,7 @@ impl NvmeBlockIoAdapter {
             }
         }
 
-        kernel.free_dma(dma_buf);
+        drop(dma_buf);
         Ok(())
     }
 }

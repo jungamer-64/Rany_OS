@@ -74,7 +74,7 @@
 
 ### Phase 2: kapi_alloc_dma IOMMU統合 ✅ 完了
 
-- ✅ `kernel_api::DmaBuffer` に `device_addr` フィールド追加
+- ✅ `kernel_api::dma::DmaSlice<CpuOwned>` に `device_addr` フィールド追加
 - ✅ `DmaBuffer::device_address()` メソッド追加
 - ✅ `AbiDmaBuffer` に `device_addr` フィールド追加
 - ✅ `kapi_alloc_dma` → `CoherentDmaBuffer` ベースに改修
@@ -166,7 +166,7 @@ let hw_addr = buf.device_addr();   // HWレジスタに書き込む
 
 ```rust
 // kernel_api DmaBuffer パターン
-let dma_buf = kernel_api::services::kernel().alloc_dma(size)?;
+let dma_buf = kernel_api::service::kernel::instance().alloc_dma(size)?;
 let cpu_ptr = dma_buf.as_ptr();           // CPU側アクセス
 let hw_addr = dma_buf.device_address();   // HWレジスタに書き込む
 ```

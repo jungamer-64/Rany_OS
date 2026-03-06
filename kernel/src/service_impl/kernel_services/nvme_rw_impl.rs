@@ -137,11 +137,11 @@ impl KernelServices for ExoKernel {
         }
     }
 
-    fn time_service(&self) -> Option<&dyn kernel_api::time::TimeService> {
+    fn time_service(&self) -> Option<&dyn kernel_api::service::time::TimeService> {
         Some(time_driver::time_service())
     }
 
-    fn gui(&self) -> Option<&dyn kernel_api::gui::GuiServices> {
+    fn gui(&self) -> Option<&dyn kernel_api::service::gui::GuiServices> {
         #[cfg(not(any(test, feature = "bench")))]
         {
             // GUI services are available only if framebuffer exists
@@ -159,7 +159,7 @@ impl KernelServices for ExoKernel {
         }
     }
 
-    fn shell(&self) -> Option<&dyn kernel_api::shell::ShellServices> {
+    fn shell(&self) -> Option<&dyn kernel_api::service::shell::ShellServices> {
         // Shell services are always available
         Some(self)
     }

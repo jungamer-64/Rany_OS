@@ -18,8 +18,8 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 // Re-export from kernel_api
-pub use kernel_api::security::DomainCapabilities;
-pub use kernel_api::{AppContext, Application};
+pub use kernel_api::app::{AppContext, Application};
+pub use kernel_api::capability::DomainCapabilities;
 
 // Re-export from apps crate (when available)
 // pub use exorust_apps::{browser, editor, games, terminal, system_monitor};
@@ -101,7 +101,7 @@ impl DomainManager {
 
         // Spawn the application start future via kernel services
         let start_future = app.on_start(ctx);
-        if let Err(e) = kernel_api::kernel().spawn_task(start_future) {
+        if let Err(e) = kernel_api::service::kernel::instance().spawn_task(start_future) {
             log::info!("[Domain:{}] Failed to spawn app task: {:?}\n", domain_id, e);
         }
     }

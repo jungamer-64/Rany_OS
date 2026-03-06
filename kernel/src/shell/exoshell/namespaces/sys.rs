@@ -51,7 +51,7 @@ impl SysNamespace {
         map.insert(s("arch"), ExoValue::String(Cow::Borrowed(si::arch_name())));
         map.insert(s("version"), ExoValue::String(Cow::Borrowed(si::kernel_version())));
         map.insert(s("kernel"), ExoValue::String(Cow::Borrowed(si::kernel_name())));
-        let ticks = kernel_api::services::kernel()
+        let ticks = kernel_api::service::kernel::instance()
             .shell()
             .map(|sh| sh.current_tick())
             .unwrap_or(0);
@@ -233,7 +233,7 @@ impl SysNamespace {
 
     /// システムモニター情報
     pub fn monitor() -> ExoValue<'static> {
-        let info = kernel_api::services::kernel()
+        let info = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.monitor_info())
             .unwrap_or_default();
@@ -317,7 +317,7 @@ impl SysNamespace {
 
     /// モニターダッシュボードを表示
     pub fn monitor_dashboard() -> ExoValue<'static> {
-        let info = kernel_api::services::kernel()
+        let info = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.monitor_info())
             .unwrap_or_default();
@@ -347,10 +347,10 @@ impl SysNamespace {
 
     /// 温度情報
     pub fn thermal() -> ExoValue<'static> {
-        let info = kernel_api::services::kernel()
+        let info = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.thermal_info())
-            .unwrap_or(kernel_api::shell::ThermalInfo {
+            .unwrap_or(kernel_api::service::shell::ThermalInfo {
                 cpu_celsius: None,
                 polling_count: 0,
                 trip_events: 0,
@@ -406,7 +406,7 @@ impl SysNamespace {
 
     /// ウォッチドッグ情報
     pub fn watchdog() -> ExoValue<'static> {
-        let info = kernel_api::services::kernel()
+        let info = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.watchdog_info())
             .unwrap_or_default();
@@ -434,14 +434,14 @@ impl SysNamespace {
 
     /// 電源情報
     pub fn power() -> ExoValue<'static> {
-        let info = kernel_api::services::kernel()
+        let info = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.power_info())
-            .unwrap_or(kernel_api::shell::PowerInfo {
+            .unwrap_or(kernel_api::service::shell::PowerInfo {
                 state: String::from("Unknown"),
                 power_button_presses: 0,
                 sleep_button_presses: 0,
-                cpu_idle: kernel_api::shell::CpuIdleInfo::default(),
+                cpu_idle: kernel_api::service::shell::CpuIdleInfo::default(),
             });
 
         let mut map = BTreeMap::new();
@@ -502,7 +502,7 @@ impl SysNamespace {
 
         log::info!("[SYS] Shutdown requested via shell\n");
         
-        if let Some(shell) = kernel_api::services::kernel().shell() {
+        if let Some(shell) = kernel_api::service::kernel::instance().shell() {
             shell.shutdown();
         }
         
@@ -518,7 +518,7 @@ impl SysNamespace {
 
         log::info!("[SYS] Reboot requested via shell\n");
         
-        if let Some(shell) = kernel_api::services::kernel().shell() {
+        if let Some(shell) = kernel_api::service::kernel::instance().shell() {
             shell.reboot();
         }
 

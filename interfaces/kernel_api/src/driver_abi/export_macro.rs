@@ -32,7 +32,7 @@ macro_rules! export_async_driver {
         $crate::declare_rany_type_id_section!();
         #[cfg(feature = "export_driver_entry")]
         #[unsafe(no_mangle)]
-        pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
             $crate::export_async_driver!(@common_adapters
                 type = $driver_type,
                 constructor = $constructor,
@@ -42,9 +42,9 @@ macro_rules! export_async_driver {
             );
 
             // IRQ Adapter
-            extern "C" fn irq_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> bool {
+            extern "C" fn irq_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> bool {
                 let ctx_safe = unsafe { &mut *ctx };
-                let driver_ptr = ctx_safe.driver_data as *mut $crate::driver_abi::AsyncDriverWrapper<$driver_type>;
+                let driver_ptr = ctx_safe.driver_data as *mut $crate::abi::driver::AsyncDriverWrapper<$driver_type>;
                 if driver_ptr.is_null() { return false; }
                 let wrapper = unsafe { &mut *driver_ptr };
                 // Optional: Check busy? IRQs usually are high priority.
@@ -54,8 +54,8 @@ macro_rules! export_async_driver {
                 ($irq)(&mut wrapper.driver)
             }
 
-            static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
-                $crate::driver_abi::DRIVER_ABI_VERSION,
+            static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
+                $crate::abi::driver::DRIVER_ABI_VERSION,
                 probe_adapter,
                 start_adapter,
                 stop_adapter,
@@ -82,7 +82,7 @@ macro_rules! export_async_driver {
         $crate::declare_rany_type_id_section!();
         #[cfg(feature = "export_driver_entry")]
         #[unsafe(no_mangle)]
-        pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
             $crate::export_async_driver!(@common_adapters
                 type = $driver_type,
                 constructor = $constructor,
@@ -91,8 +91,8 @@ macro_rules! export_async_driver {
                 version = $version
             );
 
-            static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
-                $crate::driver_abi::DRIVER_ABI_VERSION,
+            static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
+                $crate::abi::driver::DRIVER_ABI_VERSION,
                 probe_adapter,
                 start_adapter,
                 stop_adapter,
@@ -117,8 +117,8 @@ macro_rules! export_async_driver {
         version = $version:expr
     ) => {
             use $crate::driver::{AsyncDriver, DriverType};
-            use $crate::driver_abi::{DriverContext, DriverVTable, DRIVER_ABI_VERSION, AsyncDriverWrapper};
-            use $crate::services::kernel;
+            use $crate::abi::driver::{DriverContext, DriverVTable, DRIVER_ABI_VERSION, AsyncDriverWrapper};
+            use $crate::service::kernel::instance as kernel;
             use alloc::boxed::Box;
             use alloc::format;
             use core::sync::atomic::Ordering;

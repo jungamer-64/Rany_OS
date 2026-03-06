@@ -30,7 +30,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use kernel_api::driver_abi::{
+use kernel_api::abi::driver::{
     DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverEntryFn, DriverExportsV1,
 };
 use spin::Mutex;

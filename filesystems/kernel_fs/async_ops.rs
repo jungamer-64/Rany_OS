@@ -27,7 +27,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
-use kernel_api::DmaBuffer;
+use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice};
 
 use super::cache::{PAGE_SIZE as CACHE_PAGE_SIZE, page_cache};
 use super::fs_abstraction::{
@@ -58,6 +58,8 @@ pub use cleanup_helpers::{
     async_io_scheduler,
     // helper APIs that are internal but still referenced by other parts of the crate
 };
+
+type DmaBuffer = DmaSlice<KapiCpuOwned>;
 
 const NVME_PAGE_SIZE: usize = 4096;
 const NVME_BLOCK_SIZE: u64 = 512;
@@ -114,7 +116,7 @@ pub(crate) struct NvmeIommuMapping {
 impl NvmeIommuMapping {
     fn unmap(self) {
         // Use kernel_api abstraction for IOMMU unmap
-        let _ = kernel_api::kernel().nvme_iommu_unmap(self.mapping_id);
+        let _ = kernel_api::service::kernel::instance().nvme_iommu_unmap(self.mapping_id);
     }
 }
 
@@ -347,7 +349,7 @@ fn align_up(value: usize, align: usize) -> usize {
 
 fn map_nvme_iommu(phys_addr: u64, size: usize) -> FsResult<(u64, Option<NvmeIommuMapping>)> {
     // Use kernel_api abstraction for IOMMU mapping
-    match kernel_api::kernel().nvme_iommu_map(0, phys_addr, size) {
+    match kernel_api::service::kernel::instance().nvme_iommu_map(0, phys_addr, size) {
         Ok((iova, mapping_id)) => {
             if mapping_id == 0 {
                 // Identity mapping (no IOMMU or passthrough)

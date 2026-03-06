@@ -1,10 +1,6 @@
 // ============================================================================
-// kernel_api/src/lib.rs - Pure Interface Definitions for ExoRust OS
+// kernel_api/src/lib.rs - Shared interfaces for Rany OS components
 // ============================================================================
-//!
-//! # Kernel API Interface Crate
-//!
-//! Shared types and traits for the ExoRust OS kernel.
 
 #![no_std]
 #![allow(dead_code)]
@@ -20,49 +16,82 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::semicolon_if_nothing_returned)]
-#![allow(unused_variables)] // API consistency - capability parameters are used for type safety
-#![allow(clippy::derivable_impls)] // Explicit Default impls for clarity
-#![allow(clippy::must_use_candidate)] // Setter methods in security module
+#![allow(unused_variables)]
+#![allow(clippy::derivable_impls)]
+#![allow(clippy::must_use_candidate)]
 
 extern crate alloc;
 
-pub mod application;
+#[path = "application.rs"]
+pub mod app;
+
+#[path = "security.rs"]
+pub mod capability;
+
+pub mod dma;
+
+#[path = "driver.rs"]
 pub mod driver;
-pub mod driver_abi;
+
+#[path = "error.rs"]
 pub mod error;
-pub mod gui;
-pub mod kapi;
-pub mod security;
-pub mod services;
-pub mod shell;
-pub mod time;
-pub mod types;
 
-// Standalone Cell runtime stubs (allocator, panic handler)
+pub mod ipc;
+
+pub mod resource;
+
+#[path = "driver_abi.rs"]
+mod driver_abi_impl;
+
 #[cfg(feature = "cell_runtime")]
-pub mod cell_runtime;
+#[path = "cell_runtime.rs"]
+mod runtime_impl;
 
-// Re-export commonly used types
-pub use application::{AppContext, Application};
-pub use driver::{DeviceId, Driver, DriverInfo, DriverState, DriverType, DriverVersion};
-pub use driver_abi::{
-    AbiDmaBuffer, AbiDriverType, AbiError, AbiMmioHandle, DRIVER_ABI_VERSION, DRIVER_ENTRY_SYMBOL,
-    DRIVER_EXPORTS_ABI_VERSION, DRIVER_EXPORTS_SYMBOL, DriverCapabilities, DriverContext,
-    DriverEntryFn, DriverExportsV1, DriverVTable, KERNEL_API_ABI_VERSION, KernelApiV1,
-    pack_version, unpack_version,
-};
+#[path = "services.rs"]
+mod service_kernel_impl;
+
+#[path = "gui.rs"]
+mod service_gui_impl;
+
+#[path = "shell.rs"]
+mod service_shell_impl;
+
+#[path = "time.rs"]
+mod service_time_impl;
+
+pub mod abi {
+    pub mod driver {
+        pub use crate::driver_abi_impl::*;
+    }
+
+    #[cfg(feature = "cell_runtime")]
+    pub mod runtime {
+        pub use crate::runtime_impl::*;
+    }
+}
+
+pub mod service {
+    pub mod kernel {
+        pub use crate::service_kernel_impl::*;
+    }
+
+    pub mod gui {
+        pub use crate::service_gui_impl::*;
+    }
+
+    pub mod shell {
+        pub use crate::service_shell_impl::*;
+    }
+
+    pub mod time {
+        pub use crate::service_time_impl::*;
+    }
+}
+
+#[path = "types.rs"]
+mod types_impl;
+
 pub use error::{KapiError, KapiResult};
-pub use security::{
-    DmaCapability, DomainCapabilities, FsCapability, InterruptCapability, IoCapability,
-    IpcCapability, MemoryCapability, NetCapability, TaskCapability,
-};
-pub use services::{KernelServices, is_kernel_registered, kernel, register_kernel};
-pub use time::{CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats};
-pub use types::{
-    ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle, NvmeIoHandle,
-    NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest, OpenMode, Packet, RawEndpointHandle,
-    SystemInfo, TaskHandle, TcpEndpoint,
-};
 
 /// Emit a minimal `.rany_type_id` section consumed by kernel-side ABI checks.
 ///
@@ -77,9 +106,9 @@ macro_rules! declare_rany_type_id_section {
             #[used]
             #[unsafe(link_section = ".rany_type_id")]
             static RANY_TYPE_ID_SECTION: [u8; 12] = [
-                b'R', b'T', b'I', b'D', // magic
-                1, 0, 0, 0, // section format version
-                0, 0, 0, 0, // dependency count
+                b'R', b'T', b'I', b'D',
+                1, 0, 0, 0,
+                0, 0, 0, 0,
             ];
         };
     };
@@ -87,7 +116,7 @@ macro_rules! declare_rany_type_id_section {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AbiError, DriverContext, pack_version, unpack_version};
+    use crate::abi::driver::{AbiError, DriverContext, pack_version, unpack_version};
 
     #[test]
     fn version_pack_unpack_smoke() {

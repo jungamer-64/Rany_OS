@@ -11,7 +11,7 @@
 //! - **Capability-based**: Access requires proof of entitlement (DomainCapabilities).
 //! - **Async-Ready**: Input streams are provided via handles for async polling.
 
-use crate::{KapiResult, security::DomainCapabilities};
+use crate::{KapiResult, capability::DomainCapabilities};
 
 /// Pixel format of the framebuffer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

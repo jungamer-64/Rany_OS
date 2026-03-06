@@ -277,12 +277,12 @@ impl Framebuffer {
         self.info.stride
     }
 
-    /// Create a framebuffer from kernel_api::gui::FramebufferInfo
+    /// Create a framebuffer from kernel_api::service::gui::FramebufferInfo
     ///
     /// # Safety
     /// The vaddr in kapi_info must be a valid readable/writable framebuffer address
-    pub unsafe fn from_kapi_info(kapi_info: &kernel_api::gui::FramebufferInfo) -> Self {
-        use kernel_api::gui::PixelFormat as KapiPixelFormat;
+    pub unsafe fn from_kapi_info(kapi_info: &kernel_api::service::gui::FramebufferInfo) -> Self {
+        use kernel_api::service::gui::PixelFormat as KapiPixelFormat;
 
         // Convert pixel format
         let format = match kapi_info.format {

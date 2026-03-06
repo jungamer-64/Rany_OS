@@ -21,11 +21,12 @@ extern crate alloc;
 mod sdk;
 
 // Re-export Application and AppContext from kernel_api (canonical source)
-pub use kernel_api::{AppContext, Application};
+pub use kernel_api::app::{AppContext, Application};
 pub use sdk::{now, now_nanos, print, sleep, yield_now};
 
 // Re-export kernel_api types for convenience
-pub use kernel_api::{
-    DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, KapiError,
-    KapiResult, MemoryCapability, NetCapability, TaskCapability,
+pub use kernel_api::capability::{
+    DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, MemoryCapability,
+    NetCapability, TaskCapability,
 };
+pub use kernel_api::{KapiError, KapiResult};

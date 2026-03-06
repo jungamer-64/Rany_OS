@@ -5,8 +5,9 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
-    // Rerun this script if driver_abi.rs changes
+    // Track the ABI backing implementation used by `abi::driver`.
     println!("cargo:rerun-if-changed=src/driver_abi.rs");
+    println!("cargo:rerun-if-changed=src/driver_abi/export_macro.rs");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let abi_path = Path::new(&manifest_dir).join("src/driver_abi.rs");

@@ -581,7 +581,7 @@ impl CellNamespace {
             Err(e) => return e,
         };
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -787,7 +787,7 @@ impl CellNamespace {
             return ExoValue::Error(format!("DriverCell '{}' already exists", name));
         }
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -841,7 +841,7 @@ impl CellNamespace {
             Err(e) => return e,
         };
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };

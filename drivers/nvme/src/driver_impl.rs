@@ -1,7 +1,7 @@
 use crate::polling_driver::NvmePollingDriver;
 use kernel_api::KapiResult;
 use kernel_api::driver::{Driver, DriverType};
-use kernel_api::driver_abi::DriverContext;
+use kernel_api::abi::driver::DriverContext;
 
 use spin::Mutex;
 
@@ -86,7 +86,7 @@ kernel_api::export_driver!(
     probe: abi_probe,
     remove: abi_remove,
     name: driver_name,
-    driver_type: (kernel_api::driver_abi::AbiDriverType::Block as u32),
+    driver_type: (kernel_api::abi::driver::AbiDriverType::Block as u32),
     version: 0x00010000_u64,
     start: abi_start,
     stop: abi_stop,

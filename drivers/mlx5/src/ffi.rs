@@ -11,7 +11,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
-use kernel_api::driver_abi::{
+use kernel_api::abi::driver::{
     AbiDmaBuffer, AbiMmioHandle, DriverContext, KernelApiV1,
 };
 
@@ -29,7 +29,7 @@ use crate::error::Mlx5Error;
 
 #[inline]
 fn kernel_api() -> &'static KernelApiV1 {
-    kernel_api::services::kernel_api_v1()
+    kernel_api::service::kernel::abi()
 }
 
 #[cfg(test)]
@@ -68,7 +68,7 @@ extern "C" fn test_kernel_irq_unbind(_irq: u32) -> i32 {
 #[cfg(test)]
 #[unsafe(no_mangle)]
 pub static __exorust_kernel_api_v1: KernelApiV1 = KernelApiV1 {
-    abi_version: kernel_api::driver_abi::KERNEL_API_ABI_VERSION,
+    abi_version: kernel_api::abi::driver::KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV1>() as u32,
     log: test_kernel_log,
     alloc_dma: test_kernel_alloc_dma,
@@ -95,7 +95,7 @@ struct DmaSlot {
 impl DmaSlot {
     fn alloc(size: usize, label: &'static str) -> Result<Self, i32> {
         loop {
-            match kernel_api::services::kernel().alloc_dma(size) {
+            match kernel_api::service::kernel::instance().alloc_dma(size) {
                 Ok(buf) => {
                     let handle = AbiDmaBuffer {
                         phys_addr: buf.physical_address(),

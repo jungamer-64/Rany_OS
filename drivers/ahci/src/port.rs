@@ -8,8 +8,10 @@ extern crate alloc;
 use core::ptr;
 use core::slice;
 use core::sync::atomic::AtomicU32;
-use kernel_api::DmaBuffer;
-use kernel_api::services::kernel;
+use kernel_api::dma::{CpuOwned, DmaSlice};
+use kernel_api::service::kernel::instance as kernel;
+
+type DmaBuffer = DmaSlice<CpuOwned>;
 
 use super::command::{CommandHeader, CommandTable, PhysicalRegionDescriptor};
 use super::dma_buffer::{AhciDmaReadBuffer, AhciDmaWriteBuffer, AhciIdentifyBuffer};
@@ -200,9 +202,8 @@ impl AhciPort {
         self.wait_completion(slot)?;
 
         // Free Command Table buffer for this slot (we allocated it above)
-        let kernel = kernel_api::services::kernel();
         if let Some(cmd_buf) = self.command_tables[slot.as_usize()].take() {
-            kernel.free_dma(cmd_buf);
+            drop(cmd_buf);
         }
 
         Ok(IdentifyData::from_words(
@@ -268,9 +269,8 @@ impl AhciPort {
         buf.copy_from_slice(dma_buf.data());
 
         // Free the command table buffer for this slot
-        let kernel = kernel_api::services::kernel();
         if let Some(cmd_buf) = self.command_tables[slot.as_usize()].take() {
-            kernel.free_dma(cmd_buf);
+            drop(cmd_buf);
         }
 
         Ok(())
@@ -330,9 +330,8 @@ impl AhciPort {
         let result = self.wait_completion(slot);
 
         // Free the command table buffer for this slot regardless of result
-        let kernel = kernel_api::services::kernel();
         if let Some(cmd_buf) = self.command_tables[slot.as_usize()].take() {
-            kernel.free_dma(cmd_buf);
+            drop(cmd_buf);
         }
 
         result
@@ -445,9 +444,8 @@ impl AhciPort {
         let transferred = header.prdbc as usize;
 
         // Free command table buffer
-        let kernel = kernel_api::services::kernel();
         if let Some(cmd_buf) = self.command_tables[slot.as_usize()].take() {
-            kernel.free_dma(cmd_buf);
+            drop(cmd_buf);
         }
 
         Ok(transferred)
@@ -516,28 +514,9 @@ impl AhciPort {
 
 impl Drop for AhciPort {
     fn drop(&mut self) {
-        // Release any DMA buffers owned by this port via KernelServices
-        let kernel = kernel_api::services::kernel();
-
-        // command_list
-        let placeholder = DmaBuffer::new(0, core::ptr::null_mut(), 0);
-        let cmd = core::mem::replace(&mut self.command_list, placeholder);
-        if cmd.size() > 0 {
-            kernel.free_dma(cmd);
-        }
-
-        // received_fis
-        let placeholder2 = DmaBuffer::new(0, core::ptr::null_mut(), 0);
-        let fis = core::mem::replace(&mut self.received_fis, placeholder2);
-        if fis.size() > 0 {
-            kernel.free_dma(fis);
-        }
-
-        // Command tables
+        // Option fields and owned DMA slices reclaim themselves on drop.
         for entry in self.command_tables.iter_mut() {
-            if let Some(buf) = entry.take() {
-                kernel.free_dma(buf);
-            }
+            let _ = entry.take();
         }
     }
 }

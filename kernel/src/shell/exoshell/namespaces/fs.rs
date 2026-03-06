@@ -23,7 +23,7 @@ impl FsNamespace {
         // Yield point: 他のタスクに実行機会を与える
         crate::task::yield_now().await;
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -34,12 +34,12 @@ impl FsNamespace {
                     .into_iter()
                     .map(|e| {
                         let file_type = match e.file_type {
-                            kernel_api::shell::FileType::Directory => FileType::Directory,
-                            kernel_api::shell::FileType::Symlink => FileType::Symlink,
-                            kernel_api::shell::FileType::CharDevice | 
-                            kernel_api::shell::FileType::BlockDevice => FileType::Device,
-                            kernel_api::shell::FileType::Socket => FileType::Socket,
-                            kernel_api::shell::FileType::Fifo => FileType::Pipe,
+                            kernel_api::service::shell::FileType::Directory => FileType::Directory,
+                            kernel_api::service::shell::FileType::Symlink => FileType::Symlink,
+                            kernel_api::service::shell::FileType::CharDevice | 
+                            kernel_api::service::shell::FileType::BlockDevice => FileType::Device,
+                            kernel_api::service::shell::FileType::Socket => FileType::Socket,
+                            kernel_api::service::shell::FileType::Fifo => FileType::Pipe,
                             _ => FileType::Regular,
                         };
                         ExoValue::FileEntry(FileEntry {
@@ -55,7 +55,7 @@ impl FsNamespace {
                             permissions: Permissions {
                                 read: true,
                                 write: true,
-                                execute: e.file_type == kernel_api::shell::FileType::Directory,
+                                execute: e.file_type == kernel_api::service::shell::FileType::Directory,
                                 delete: true,
                                 grant: false,
                             },
@@ -77,7 +77,7 @@ impl FsNamespace {
         
         crate::task::yield_now().await;
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -93,7 +93,7 @@ impl FsNamespace {
     pub async fn write(path: &str, data: &[u8]) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -108,7 +108,7 @@ impl FsNamespace {
     pub async fn stat(path: &str) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -137,7 +137,7 @@ impl FsNamespace {
     pub async fn mkdir(path: &str) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -152,7 +152,7 @@ impl FsNamespace {
     pub async fn remove(path: &str) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -174,7 +174,7 @@ impl FsNamespace {
     pub async fn copy(src: &str, dst: &str) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -196,7 +196,7 @@ impl FsNamespace {
     pub async fn touch(path: &str) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
@@ -218,7 +218,7 @@ impl FsNamespace {
     pub async fn mv(src: &str, dst: &str) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        let shell = match kernel_api::services::kernel().shell() {
+        let shell = match kernel_api::service::kernel::instance().shell() {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };

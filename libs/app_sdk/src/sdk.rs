@@ -7,7 +7,7 @@
 extern crate alloc;
 
 use alloc::format;
-use kernel_api::kernel;
+use kernel_api::service::kernel::instance as kernel;
 
 /// Async sleep for specified milliseconds
 ///

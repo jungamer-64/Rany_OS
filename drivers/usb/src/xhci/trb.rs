@@ -12,7 +12,9 @@
 
 #![allow(dead_code)]
 
-use kernel_api::types::DmaBuffer;
+use kernel_api::dma::{CpuOwned, DmaSlice};
+
+type DmaBuffer = DmaSlice<CpuOwned>;
 
 use crate::{SetupPacket, SlotId, TransferStatus};
 
@@ -491,7 +493,7 @@ impl TrbRing {
     /// 取得できないため、セキュリティ上の理由から削除されました。
     pub fn new(size: usize) -> Self {
         let byte_size = size * core::mem::size_of::<Trb>();
-        match kernel_api::services::kernel().alloc_dma(byte_size) {
+        match kernel_api::service::kernel::instance().alloc_dma(byte_size) {
             Ok(dma_buf) => {
                 let device_addr = dma_buf.device_address();
                 let virt_ptr = dma_buf.as_ptr() as *mut Trb;

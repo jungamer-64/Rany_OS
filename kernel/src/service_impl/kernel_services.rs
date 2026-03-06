@@ -25,6 +25,29 @@ pub use self::gui_services::*;
 unsafe impl Send for ExoKernel {}
 unsafe impl Sync for ExoKernel {}
 
+pub(crate) unsafe fn release_dma_buffer(virt_ptr: *mut u8, _size: usize, _phys_addr: u64) {
+    let caller = context::current_subject().domain.as_u64();
+    let virt_ptr = virt_ptr as usize;
+
+    if let Some(owner) = DMA_REGISTRY.get_owner(virt_ptr) {
+        if owner != caller {
+            log::error!(
+                "[KAPI][SECURITY] release_dma_buffer: Domain {} tried to drop buffer owned by Domain {}",
+                caller,
+                owner
+            );
+            return;
+        }
+    }
+
+    if let Some(entry) = DMA_REGISTRY.unregister(virt_ptr) {
+        PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
+        return;
+    }
+
+    log::info!("[KAPI] release_dma_buffer: unknown buffer: {:x}\n", virt_ptr);
+}
+
 impl KernelServices for ExoKernel {
     // ========================================================================
     // Task Management
@@ -72,12 +95,15 @@ impl KernelServices for ExoKernel {
                 // Box up the buffer and register by virtual address so it can be freed later
                 let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
                 DMA_REGISTRY.register_with_key(virt_ptr, boxed, phys, caller);
-                Ok(DmaBuffer::new_with_device_addr(
-                    phys,
-                    dev_addr,
-                    virt_ptr as *mut u8,
-                    size,
-                ))
+                Ok(unsafe {
+                    DmaBuffer::from_raw_parts(
+                        phys,
+                        dev_addr,
+                        virt_ptr as *mut u8,
+                        size,
+                        Some(release_dma_buffer),
+                    )
+                })
             }
             None => Err(KapiError::OutOfMemory),
         }
@@ -98,44 +124,18 @@ impl KernelServices for ExoKernel {
 
                 let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
                 DMA_REGISTRY.register_with_key(virt_ptr, boxed, phys, caller);
-                Ok(DmaBuffer::new_with_device_addr(
-                    phys,
-                    dev_addr,
-                    virt_ptr as *mut u8,
-                    size,
-                ))
+                Ok(unsafe {
+                    DmaBuffer::from_raw_parts(
+                        phys,
+                        dev_addr,
+                        virt_ptr as *mut u8,
+                        size,
+                        Some(release_dma_buffer),
+                    )
+                })
             }
             None => Err(KapiError::OutOfMemory),
         }
-    }
-
-    fn free_dma(&self, buffer: DmaBuffer) {
-        let caller = context::current_subject().domain.as_u64();
-        // Try to lookup the registered buffer by its virtual pointer
-        let virt_ptr = buffer.as_ptr() as usize;
-
-        // SECURITY: Verify that the caller actually owns this buffer before freeing.
-        if let Some(owner) = DMA_REGISTRY.get_owner(virt_ptr) {
-            if owner != caller {
-                log::error!(
-                    "[KAPI][SECURITY] free_dma: Domain {} tried to free buffer owned by Domain {}",
-                    caller,
-                    owner
-                );
-                return;
-            }
-        }
-
-        if let Some(entry) = DMA_REGISTRY.unregister(virt_ptr) {
-            // SECURITY: Unregister using the physical address from the kernel's registry,
-            // NOT the one provided by the potentially malicious caller in the DmaBuffer struct.
-            PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
-            // Successfully unregistered and dropped
-            return;
-        }
-
-        // If we couldn't find it, quietly ignore (or log) — do not panic in kernel
-        log::info!("[KAPI] free_dma: unknown buffer: {:x}\n", virt_ptr);
     }
 
     // ========================================================================
@@ -922,11 +922,11 @@ impl KernelServices for ExoKernel {
         }
     }
 
-    fn time_service(&self) -> Option<&dyn kernel_api::time::TimeService> {
+    fn time_service(&self) -> Option<&dyn kernel_api::service::time::TimeService> {
         Some(time_driver::time_service())
     }
 
-    fn gui(&self) -> Option<&dyn kernel_api::gui::GuiServices> {
+    fn gui(&self) -> Option<&dyn kernel_api::service::gui::GuiServices> {
         #[cfg(not(any(test, feature = "bench")))]
         {
             // GUI services are available only if framebuffer exists
@@ -944,7 +944,7 @@ impl KernelServices for ExoKernel {
         }
     }
 
-    fn shell(&self) -> Option<&dyn kernel_api::shell::ShellServices> {
+    fn shell(&self) -> Option<&dyn kernel_api::service::shell::ShellServices> {
         // Shell services are always available
         Some(self)
     }

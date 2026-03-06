@@ -59,11 +59,11 @@ impl FwInfo {
 /// - `Err(Mlx5Error)`: タイムアウト
 pub unsafe fn wait_fw_ready(bar0_base: u64, timeout_ms: u32) -> Mlx5Result<FwInfo> {
     let base = bar0_base as usize;
-    let start_ms = kernel_api::services::kernel().current_tick();
+    let start_ms = kernel_api::service::kernel::instance().current_tick();
 
     let mut invalid_reads = 0u64;
 
-    while kernel_api::services::kernel().current_tick() - start_ms < timeout_ms as u64 {
+    while kernel_api::service::kernel::instance().current_tick() - start_ms < timeout_ms as u64 {
         let initializing = crate::mmio_read_be32(base + init_seg::INITIALIZING);
         let cmdif_rev_fw_sub = crate::mmio_read_be32(base + init_seg::CMDIF_REV_FW_SUB);
 

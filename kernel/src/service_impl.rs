@@ -26,19 +26,25 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::KapiResult;
+use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice};
 use kernel_api::error::KapiError;
-use kernel_api::services::KernelServices;
-use kernel_api::{
-    ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle, NvmeIoHandle,
-    NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest, OpenMode, Packet, RawEndpointHandle,
-    TaskHandle, TcpEndpoint,
+use kernel_api::ipc::ChannelHandle;
+use kernel_api::resource::fs::{FileHandle, OpenMode};
+use kernel_api::resource::net::{Packet, RawEndpointHandle, TcpEndpoint};
+use kernel_api::resource::storage::{
+    DirectBlockHandle, NvmeDmaHandle, NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType,
+    NvmeRwRequest,
 };
+use kernel_api::resource::task::TaskHandle;
+use kernel_api::service::kernel::KernelServices;
 use spin::Mutex;
 
 use crate::io::dma;
 use crate::task::context;
 use crate::task::per_core_executor::{Priority, Task, executor_manager};
 use crate::task::timer;
+
+type DmaBuffer = DmaSlice<KapiCpuOwned>;
 
 // ============================================================================
 // File Handle Registry

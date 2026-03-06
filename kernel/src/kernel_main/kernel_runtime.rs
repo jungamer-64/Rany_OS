@@ -470,8 +470,8 @@ pub(crate) fn print_system_stats() {
 pub(crate) fn register_kernel_symbols() {
     loader::with_registry_mut(|registry| {
         registry.register_symbol(
-            alloc::string::String::from(kernel_api::driver_abi::KERNEL_API_SYMBOL),
-            crate::driver_registry::kernel_api_v1() as *const kernel_api::driver_abi::KernelApiV1
+            alloc::string::String::from(kernel_api::abi::driver::KERNEL_API_SYMBOL),
+            crate::driver_registry::kernel_api_v1() as *const kernel_api::abi::driver::KernelApiV1
                 as usize,
         );
     });

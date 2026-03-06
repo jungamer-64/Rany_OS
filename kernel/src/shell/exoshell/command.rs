@@ -185,7 +185,7 @@ pub struct WhoamiCommand;
 impl ShellCommand for WhoamiCommand {
     fn name(&self) -> &str { "whoami" }
     fn execute(&self, _shell: &mut ExoShell, _args: &[ExoValue]) -> ExoResult<ExoValue<'static>> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);

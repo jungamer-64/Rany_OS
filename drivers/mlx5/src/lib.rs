@@ -87,5 +87,5 @@ kernel_api::export_async_driver!(
     constructor: crate::ffi::Mlx5AsyncDriver::new(),
     name: crate::ffi::mlx5_driver_name,
     driver_type: kernel_api::driver::DriverType::Network,
-    version: kernel_api::driver_abi::pack_version(0, 1, 0)
+    version: kernel_api::abi::driver::pack_version(0, 1, 0)
 );

@@ -9,7 +9,7 @@
 
 extern crate alloc;
 
-use crate::security::{
+use crate::capability::{
     DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, MemoryCapability,
     NetCapability, TaskCapability,
 };

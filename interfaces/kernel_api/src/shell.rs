@@ -57,9 +57,9 @@ pub struct DomainInfo {
 // System Information
 // ============================================================================
 
-/// System information
+/// Shell-facing system information
 #[derive(Debug, Clone)]
-pub struct SystemInfo {
+pub struct ShellSystemInfo {
     pub uptime_ticks: u64,
     pub cpu_temperature: Option<f32>,
 }
@@ -239,7 +239,7 @@ pub trait ShellServices: Send + Sync {
     // --- System ---
 
     /// Get system information
-    fn system_info(&self) -> SystemInfo;
+    fn system_info(&self) -> ShellSystemInfo;
 
     /// Get detailed system monitor snapshot
     fn monitor_info(&self) -> MonitorInfo;

@@ -320,7 +320,7 @@ impl HdaController {
     /// - `device_addr` is the hardware-visible address (IOVA or physical)
     pub fn alloc_dma_buffer(size: usize) -> HdaResult<(u64, u64)> {
         // Use kernel API for proper DMA allocation with IOMMU support
-        match kernel_api::services::kernel().alloc_dma(size) {
+        match kernel_api::service::kernel::instance().alloc_dma(size) {
             Ok(buf) => {
                 let virt = buf.as_ptr() as u64;
                 let dev = buf.device_address();

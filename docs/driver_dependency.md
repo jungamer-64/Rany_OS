@@ -15,7 +15,7 @@ Drivers are intended to be built separately from the kernel core and must not de
 
 ## What to do when needing kernel capabilities
 
-- Request access via `kernel_api::services::kernel()`, which provides `KernelServices` trait methods such as `alloc_dma()` and `free_dma()`.
+- Request access via `kernel_api::service::kernel::instance()`, which provides `KernelServices` trait methods such as `alloc_dma()` and `free_dma()`.
 - If additional kernel capabilities are required, add them to `interfaces/kernel_api` and implement them inside the kernel service implementation.
 
 ## CI enforcement

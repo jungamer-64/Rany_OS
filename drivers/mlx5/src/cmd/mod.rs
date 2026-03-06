@@ -414,9 +414,9 @@ impl CommandTransport for CmdQueueTransport {
         let doorbell = self.bar0_base as usize + crate::regs::init_seg::CMDQ_DOORBELL;
         crate::mmio_write_be32(doorbell, 1 << 31);
 
-        let start_ms = kernel_api::services::kernel().current_tick();
+        let start_ms = kernel_api::service::kernel::instance().current_tick();
         while entry.is_owned_by_hw() {
-            if kernel_api::services::kernel().current_tick() - start_ms > 5000 {
+            if kernel_api::service::kernel::instance().current_tick() - start_ms > 5000 {
                 log::error!(target: "mlx5", "Command timeout: opcode={:?}", opcode);
                 return Err(Mlx5Error::CommandTimeout);
             }

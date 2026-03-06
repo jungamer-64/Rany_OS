@@ -19,7 +19,9 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use hal::mmio;
-use kernel_api::DmaBuffer;
+use kernel_api::dma::{CpuOwned, DmaSlice};
+
+type DmaBuffer = DmaSlice<CpuOwned>;
 
 use super::commands::{NvmeCommand, NvmeCompletion};
 use super::controller::{
@@ -328,7 +330,7 @@ impl NvmePollingDriver {
         size: usize,
         alloc_err: &'static str,
     ) -> Result<DmaBuffer, &'static str> {
-        let kernel = kernel_api::services::kernel();
+        let kernel = kernel_api::service::kernel::instance();
         let buffer = match self.device_id {
             Some(dev_id) => kernel.alloc_dma_for_device(size, dev_id),
             None => kernel.alloc_dma(size),
@@ -455,7 +457,7 @@ impl NvmePollingDriver {
             .as_ref()
             .ok_or("Admin queue not initialized")?;
 
-        let kernel = kernel_api::services::kernel();
+        let kernel = kernel_api::service::kernel::instance();
         let identify_buffer = match self.device_id {
             Some(dev_id) => kernel.alloc_dma_for_device(4096, dev_id),
             None => kernel.alloc_dma(4096),
@@ -485,18 +487,18 @@ impl NvmePollingDriver {
                         cqe.sc(),
                         cqe.command_id()
                     );
-                    kernel.free_dma(identify_buffer);
+                    drop(identify_buffer);
                     return Err("Identify Controller command failed");
                 }
                 let ctrl = unsafe { &*(identify_buffer.as_ptr() as *const IdentifyController) };
                 self.identify_controller = Some(*ctrl);
-                kernel.free_dma(identify_buffer);
+                drop(identify_buffer);
                 return Ok(());
             }
             core::hint::spin_loop();
         }
 
-        kernel.free_dma(identify_buffer);
+        drop(identify_buffer);
         Err("Identify Controller timeout")
     }
 
@@ -507,7 +509,7 @@ impl NvmePollingDriver {
             .as_ref()
             .ok_or("Admin queue not initialized")?;
 
-        let kernel = kernel_api::services::kernel();
+        let kernel = kernel_api::service::kernel::instance();
         let identify_buffer = match self.device_id {
             Some(dev_id) => kernel.alloc_dma_for_device(4096, dev_id),
             None => kernel.alloc_dma(4096),
@@ -525,7 +527,7 @@ impl NvmePollingDriver {
         let ns_copy = *ns;
 
         if let Some(buf) = self.identify_buffer.take() {
-            kernel.free_dma(buf);
+            drop(buf);
         }
         self.identify_buffer = Some(identify_buffer);
 

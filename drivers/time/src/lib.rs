@@ -35,7 +35,9 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
-use kernel_api::time::{CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats};
+use kernel_api::service::time::{
+    CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats,
+};
 use spin::Mutex;
 
 // ============================================================================

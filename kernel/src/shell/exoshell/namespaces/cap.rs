@@ -30,7 +30,7 @@ impl CapNamespace {
     /// 現在のCapabilityを一覧
     pub fn list() -> ExoValue<'static> {
         // 現在のプロセス（ドメイン）の権限を取得
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -170,7 +170,7 @@ impl CapNamespace {
         expires: Option<u64>,
         delegatable: bool,
     ) -> ExoValue<'static> {
-        let caller_domain = kernel_api::services::kernel()
+        let caller_domain = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -226,7 +226,7 @@ impl CapNamespace {
 
     /// 自分の権限を放棄 (Revoke a grant by token id)
     pub fn revoke(cap_id: u64) -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -258,7 +258,7 @@ impl CapNamespace {
 
     /// ドメインの権限を完全に剥奪 (Requires CAP_SYS_ADMIN)
     pub fn revoke_all(domain_id: u64) -> ExoValue<'static> {
-        let caller_domain = kernel_api::services::kernel()
+        let caller_domain = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -273,7 +273,7 @@ impl CapNamespace {
 
     /// List active grant tokens for a domain
     pub fn tokens(domain: Option<u64>) -> ExoValue<'static> {
-        let caller_domain = kernel_api::services::kernel()
+        let caller_domain = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);

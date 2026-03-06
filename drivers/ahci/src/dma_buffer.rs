@@ -4,12 +4,13 @@
 
 // use x86_64::PhysAddr; // Not used from x86_64 but we use u64 from api
 // use core::slice;
-use kernel_api::DmaBuffer;
-use kernel_api::services::kernel;
-// use kernel_api::types::DmaBuffer as KapiDmaBuffer;
+use kernel_api::dma::{CpuOwned, DmaSlice};
+use kernel_api::service::kernel::instance as kernel;
 use x86_64::PhysAddr; // For type conversions if needed
 
 use super::types::SECTOR_SIZE;
+
+type DmaBuffer = DmaSlice<CpuOwned>;
 
 /// DMA-safe buffer for sector reading
 pub struct AhciDmaReadBuffer {
@@ -52,23 +53,12 @@ impl AhciDmaReadBuffer {
 
     /// Access data slice
     pub fn data(&self) -> &[u8] {
-        unsafe { self.buffer.as_slice() }
+        self.buffer.as_slice()
     }
 
     /// Buffer size
     pub fn size(&self) -> usize {
         self.sector_count * SECTOR_SIZE
-    }
-}
-
-impl Drop for AhciDmaReadBuffer {
-    fn drop(&mut self) {
-        // Replace with placeholder and free original via kernel
-        let placeholder = DmaBuffer::new(0, core::ptr::null_mut(), 0);
-        let buf = core::mem::replace(&mut self.buffer, placeholder);
-        if buf.size() > 0 {
-            kernel().free_dma(buf);
-        }
     }
 }
 
@@ -91,7 +81,7 @@ impl AhciDmaWriteBuffer {
             kernel().alloc_dma(size).ok()?
         };
 
-        unsafe { buffer.as_slice_mut()[..data.len()].copy_from_slice(data) };
+        buffer.as_slice_mut()[..data.len()].copy_from_slice(data);
 
         Some(Self {
             buffer,
@@ -110,16 +100,6 @@ impl AhciDmaWriteBuffer {
 
     /// Finish transfer
     pub fn finish_transfer(&self) {}
-}
-
-impl Drop for AhciDmaWriteBuffer {
-    fn drop(&mut self) {
-        let placeholder = DmaBuffer::new(0, core::ptr::null_mut(), 0);
-        let buf = core::mem::replace(&mut self.buffer, placeholder);
-        if buf.size() > 0 {
-            kernel().free_dma(buf);
-        }
-    }
 }
 
 /// Helper for IDENTIFY command buffer
@@ -145,7 +125,7 @@ impl AhciIdentifyBuffer {
 
     pub fn finish_and_get_words(&self) -> [u16; 256] {
         let mut words = [0u16; 256];
-        let slice = unsafe { self.buffer.as_slice() };
+        let slice = self.buffer.as_slice();
         for (i, word) in words.iter_mut().enumerate() {
             let idx = i * 2;
             if idx + 1 < slice.len() {
@@ -153,16 +133,6 @@ impl AhciIdentifyBuffer {
             }
         }
         words
-    }
-}
-
-impl Drop for AhciIdentifyBuffer {
-    fn drop(&mut self) {
-        let placeholder = DmaBuffer::new(0, core::ptr::null_mut(), 0);
-        let buf = core::mem::replace(&mut self.buffer, placeholder);
-        if buf.size() > 0 {
-            kernel().free_dma(buf);
-        }
     }
 }
 

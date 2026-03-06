@@ -131,7 +131,7 @@ impl Driver for AbiDriver {
 
     fn version(&self) -> kernel_api::driver::DriverVersion {
         let v = (self.vtable().version)();
-        let (major, minor, patch) = kernel_api::driver_abi::unpack_version(v);
+        let (major, minor, patch) = kernel_api::abi::driver::unpack_version(v);
         kernel_api::driver::DriverVersion::new(major, minor, patch)
     }
 

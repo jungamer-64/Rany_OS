@@ -6,23 +6,20 @@ use super::*;
 
 impl Drop for NvmePollingDriver {
     fn drop(&mut self) {
-        // Free any allocated DMA buffers via KernelServices
-        let kernel = kernel_api::services::kernel();
-
         if let Some(buf) = self.admin_sq_buffer.take() {
-            kernel.free_dma(buf);
+            drop(buf);
         }
         if let Some(buf) = self.admin_cq_buffer.take() {
-            kernel.free_dma(buf);
+            drop(buf);
         }
         if let Some(buf) = self.identify_buffer.take() {
-            kernel.free_dma(buf);
+            drop(buf);
         }
         for buf in self.io_sq_buffers.iter_mut().filter_map(|b| b.take()) {
-            kernel.free_dma(buf);
+            drop(buf);
         }
         for buf in self.io_cq_buffers.iter_mut().filter_map(|b| b.take()) {
-            kernel.free_dma(buf);
+            drop(buf);
         }
     }
 }

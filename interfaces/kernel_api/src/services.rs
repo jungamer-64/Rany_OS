@@ -9,8 +9,17 @@
 
 extern crate alloc;
 
-use crate::driver_abi::KernelApiV1;
-use crate::{ChannelHandle, DmaBuffer, FileHandle, KapiResult, TaskHandle, TcpEndpoint};
+use crate::abi::driver::KernelApiV1;
+use crate::dma::{CpuOwned, DmaSlice};
+use crate::ipc::ChannelHandle;
+use crate::resource::fs::{FileHandle, OpenMode};
+use crate::resource::net::{Packet, RawEndpointHandle, TcpEndpoint};
+use crate::resource::storage::{
+    DirectBlockHandle, NvmeDmaHandle, NvmeIoHandle, NvmeIoResult, NvmeIoType, NvmeRwRequest,
+};
+use crate::resource::task::TaskHandle;
+use crate::service::{gui::GuiServices, shell::ShellServices, time::TimeService};
+use crate::KapiResult;
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
@@ -47,12 +56,12 @@ pub trait KernelServices: Send + Sync {
 
     /// Allocate DMA-capable memory
     ///
-    /// Returns a typed `DmaBuffer` that contains the physical and virtual addresses
+    /// Returns a CPU-owned DMA slice.
     /// of the allocated region.
     ///
     /// # Errors
     /// - `KapiError::OutOfMemory` if allocation fails
-    fn alloc_dma(&self, size: usize) -> KapiResult<DmaBuffer>;
+    fn alloc_dma(&self, size: usize) -> KapiResult<DmaSlice<CpuOwned>>;
 
     /// Allocate DMA-capable memory for a specific device (IOMMU-aware)
     ///
@@ -61,15 +70,9 @@ pub trait KernelServices: Send + Sync {
     ///
     /// # Default Behavior
     /// Delegates to `alloc_dma` for backward compatibility.
-    fn alloc_dma_for_device(&self, size: usize, _device_id: u64) -> KapiResult<DmaBuffer> {
+    fn alloc_dma_for_device(&self, size: usize, _device_id: u64) -> KapiResult<DmaSlice<CpuOwned>> {
         self.alloc_dma(size)
     }
-
-    /// Free DMA memory
-    ///
-    /// # Safety
-    /// The provided `DmaBuffer` must have been originally allocated by `alloc_dma` or `alloc_dma_for_device`.
-    fn free_dma(&self, buffer: DmaBuffer);
 
     // ========================================================================
     // I/O Operations
@@ -114,7 +117,7 @@ pub trait KernelServices: Send + Sync {
     fn net_recv_packet(
         &self,
         endpoint: TcpEndpoint,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<crate::Packet>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>>;
 
     /// Send a packet (async). Takes ownership of the `Packet`.
     ///
@@ -123,25 +126,25 @@ pub trait KernelServices: Send + Sync {
     fn net_send_packet(
         &self,
         endpoint: TcpEndpoint,
-        packet: crate::Packet,
+        packet: Packet,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
     /// Create a raw (packet-oriented) endpoint
-    fn net_create_raw_endpoint(&self) -> KapiResult<crate::RawEndpointHandle>;
+    fn net_create_raw_endpoint(&self) -> KapiResult<RawEndpointHandle>;
 
     /// Close a raw endpoint
-    fn net_close_raw_endpoint(&self, endpoint: crate::RawEndpointHandle) -> KapiResult<()>;
+    fn net_close_raw_endpoint(&self, endpoint: RawEndpointHandle) -> KapiResult<()>;
 
     /// Receive a raw packet (async)
     fn net_recv_raw(
         &self,
-        endpoint: crate::RawEndpointHandle,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<crate::Packet>> + Send>>;
+        endpoint: RawEndpointHandle,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>>;
 
     /// Send a raw packet (async)
     fn net_send_raw(
         &self,
-        endpoint: crate::RawEndpointHandle,
-        packet: crate::Packet,
+        endpoint: RawEndpointHandle,
+        packet: Packet,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
     // ========================================================================
     // Filesystem
@@ -154,7 +157,7 @@ pub trait KernelServices: Send + Sync {
     /// # Errors
     /// - `KapiError::NotFound` if the file does not exist and `Create` is not specified
     /// - `KapiError::PermissionDenied` if permissions prevent opening
-    fn fs_open(&self, path: &str, mode: crate::OpenMode) -> KapiResult<FileHandle>;
+    fn fs_open(&self, path: &str, mode: OpenMode) -> KapiResult<FileHandle>;
 
     /// Open a file and associate with an optional token.
     /// If `token` is Some(id) then the token must validate for `CAP_FOWNER`
@@ -162,7 +165,7 @@ pub trait KernelServices: Send + Sync {
     fn fs_open_with_token(
         &self,
         path: &str,
-        mode: crate::OpenMode,
+        mode: OpenMode,
         token: Option<u64>,
     ) -> KapiResult<FileHandle>;
 
@@ -182,7 +185,7 @@ pub trait KernelServices: Send + Sync {
         device_id: u64,
         start_block: u64,
         block_count: u64,
-    ) -> KapiResult<crate::DirectBlockHandle>;
+    ) -> KapiResult<DirectBlockHandle>;
 
     /// Open a direct NVMe block handle and associate it with an optional token.
     /// If `token` is Some(id) the token must validate for `CAP_DMA` and the manager's
@@ -193,37 +196,37 @@ pub trait KernelServices: Send + Sync {
         start_block: u64,
         block_count: u64,
         token: Option<u64>,
-    ) -> KapiResult<crate::DirectBlockHandle>;
+    ) -> KapiResult<DirectBlockHandle>;
 
     /// Close a kernel-registered direct NVMe open.
-    fn nvme_close_direct(&self, handle: crate::DirectBlockHandle) -> KapiResult<()>;
+    fn nvme_close_direct(&self, handle: DirectBlockHandle) -> KapiResult<()>;
 
     /// Read blocks into a DMA buffer (buffer returned on completion)
     fn nvme_read_blocks_dma(
         &self,
-        handle: crate::DirectBlockHandle,
+        handle: DirectBlockHandle,
         block_offset: u64,
-        buffer: DmaBuffer,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>>;
+        buffer: DmaSlice<CpuOwned>,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaSlice<CpuOwned>>> + Send>>;
 
     /// Write blocks from a DMA buffer (buffer returned on completion)
     fn nvme_write_blocks_dma(
         &self,
-        handle: crate::DirectBlockHandle,
+        handle: DirectBlockHandle,
         block_offset: u64,
-        buffer: DmaBuffer,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>>;
+        buffer: DmaSlice<CpuOwned>,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaSlice<CpuOwned>>> + Send>>;
 
     /// Flush pending writes for a direct handle
     fn nvme_flush_direct(
         &self,
-        handle: crate::DirectBlockHandle,
+        handle: DirectBlockHandle,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
 
     /// Discard blocks (TRIM)
     fn nvme_discard_direct(
         &self,
-        handle: crate::DirectBlockHandle,
+        handle: DirectBlockHandle,
         block_offset: u64,
         block_count: u64,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
@@ -255,8 +258,7 @@ pub trait KernelServices: Send + Sync {
     /// # Errors
     /// - `KapiError::OutOfMemory` if DMA allocation fails
     /// - `KapiError::IoError` if IOMMU mapping fails
-    fn nvme_prepare_dma_read(&self, device_id: u64, len: usize)
-    -> KapiResult<crate::NvmeDmaHandle>;
+    fn nvme_prepare_dma_read(&self, device_id: u64, len: usize) -> KapiResult<NvmeDmaHandle>;
 
     /// Prepare DMA context for NVMe write operation
     ///
@@ -266,20 +268,20 @@ pub trait KernelServices: Send + Sync {
         &self,
         device_id: u64,
         data: &[u8],
-    ) -> KapiResult<crate::NvmeDmaHandle>;
+    ) -> KapiResult<NvmeDmaHandle>;
 
     /// Complete DMA context after read I/O finished
     ///
     /// Returns the data read from the device. Releases all DMA resources.
     fn nvme_complete_dma_read(
         &self,
-        handle: crate::NvmeDmaHandle,
+        handle: NvmeDmaHandle,
     ) -> KapiResult<alloc::vec::Vec<u8>>;
 
     /// Complete DMA context after write I/O finished
     ///
     /// Releases all DMA resources. Returns `Ok(())` on success.
-    fn nvme_complete_dma_write(&self, handle: crate::NvmeDmaHandle) -> KapiResult<()>;
+    fn nvme_complete_dma_write(&self, handle: NvmeDmaHandle) -> KapiResult<()>;
 
     /// Get IOMMU device ID for NVMe controller
     ///
@@ -304,23 +306,23 @@ pub trait KernelServices: Send + Sync {
     /// Returns a handle that can be used to wait for completion.
     fn nvme_submit_rw(
         &self,
-        request: crate::NvmeRwRequest,
-        io_type: crate::NvmeIoType,
-    ) -> KapiResult<crate::NvmeIoHandle>;
+        request: NvmeRwRequest,
+        io_type: NvmeIoType,
+    ) -> KapiResult<NvmeIoHandle>;
 
     /// Wait for an NVMe I/O request to complete
     ///
     /// Blocks until the I/O completes and returns the result.
     fn nvme_wait_io(
         &self,
-        handle: crate::NvmeIoHandle,
-    ) -> Pin<Box<dyn Future<Output = crate::NvmeIoResult> + Send>>;
+        handle: NvmeIoHandle,
+    ) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>>;
 
     /// Register a completion callback for an NVMe I/O request
     fn nvme_register_completion_hook(
         &self,
-        handle: crate::NvmeIoHandle,
-        hook: Box<dyn FnOnce(crate::NvmeIoResult) + Send>,
+        handle: NvmeIoHandle,
+        hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
     );
 
     // ========================================================================
@@ -346,17 +348,17 @@ pub trait KernelServices: Send + Sync {
     // ========================================================================
 
     /// Access time management services
-    fn time_service(&self) -> Option<&dyn crate::time::TimeService>;
+    fn time_service(&self) -> Option<&dyn TimeService>;
 
     /// Access GUI services if available
-    fn gui(&self) -> Option<&dyn crate::gui::GuiServices>;
+    fn gui(&self) -> Option<&dyn GuiServices>;
 
     // ========================================================================
     // Shell Services (Optional)
     // ========================================================================
 
     /// Access shell services if available
-    fn shell(&self) -> Option<&dyn crate::shell::ShellServices>;
+    fn shell(&self) -> Option<&dyn ShellServices>;
 }
 
 // ============================================================================
@@ -373,24 +375,24 @@ static KERNEL: Once<&'static dyn KernelServices> = Once::new();
 /// # Safety
 /// Must be called exactly once during kernel initialization,
 /// before any KAPI functions are used.
-pub unsafe fn register_kernel(services: &'static dyn KernelServices) {
+pub unsafe fn install(services: &'static dyn KernelServices) {
     KERNEL.call_once(|| services);
 }
 
 /// Get the registered kernel services
 ///
 /// # Panics
-/// Panics if called before `register_kernel`
+/// Panics if called before `install`
 #[inline]
-pub fn kernel() -> &'static dyn KernelServices {
+pub fn instance() -> &'static dyn KernelServices {
     *KERNEL
         .get()
-        .expect("Kernel not initialized! Call register_kernel first.")
+        .expect("Kernel not initialized! Call install() first.")
 }
 
 /// Check if kernel is registered
 #[inline]
-pub fn is_kernel_registered() -> bool {
+pub fn is_installed() -> bool {
     KERNEL.get().is_some()
 }
 
@@ -408,6 +410,6 @@ unsafe extern "C" {
 /// This is used by drivers and standalone cells to access kernel services
 /// through the ABI-stable interface.
 #[inline]
-pub fn kernel_api_v1() -> &'static KernelApiV1 {
+pub fn abi() -> &'static KernelApiV1 {
     unsafe { &__exorust_kernel_api_v1 }
 }

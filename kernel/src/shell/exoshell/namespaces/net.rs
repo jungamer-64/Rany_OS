@@ -272,7 +272,7 @@ impl NetNamespace {
     /// Requires CAP_NET_RAW
     pub async fn ping(ip: [u8; 4], count: u16) -> ExoValue<'static> {
         // セキュリティチェック
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -429,7 +429,7 @@ impl NetNamespace {
 
     /// インターフェースを有効化（管理権限必要）
     pub async fn if_up_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -448,7 +448,7 @@ impl NetNamespace {
 
     /// インターフェースを無効化（管理権限必要）
     pub async fn if_down_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -537,7 +537,7 @@ impl NetNamespace {
     /// usage: net.route_add("192.168.1.0", 24, "10.0.2.1", 0, 100)
     ///        net.route_add(dest, prefix_len, gateway, if_id, metric)
     pub async fn route_add_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -594,7 +594,7 @@ impl NetNamespace {
     /// usage: net.route_del("192.168.1.0", 24, 0)
     ///        net.route_del(dest, prefix_len, if_id)
     pub async fn route_del_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -648,7 +648,7 @@ impl NetNamespace {
 
     /// ファイアウォール有効化 (管理権限必要)
     pub async fn firewall_enable_async() -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -663,7 +663,7 @@ impl NetNamespace {
 
     /// ファイアウォール無効化 (管理権限必要)
     pub async fn firewall_disable_async() -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -692,7 +692,7 @@ impl NetNamespace {
     ///
     /// usage: net.firewall_add("deny", "in", "10.0.0.0/8", "*", "tcp", "*", "22", 50, "block-ssh")
     pub async fn firewall_add_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -742,7 +742,7 @@ impl NetNamespace {
 
     /// ファイアウォールルール削除 (管理権限必要)
     pub async fn firewall_remove_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -761,7 +761,7 @@ impl NetNamespace {
 
     /// ファイアウォールルール全削除 (管理権限必要)
     pub async fn firewall_clear_async() -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -778,7 +778,7 @@ impl NetNamespace {
     ///
     /// usage: net.firewall_policy("in", "deny")
     pub async fn firewall_policy_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -917,7 +917,7 @@ impl NetNamespace {
                 _ => {}
             }
         }
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);

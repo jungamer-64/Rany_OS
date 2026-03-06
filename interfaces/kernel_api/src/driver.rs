@@ -15,7 +15,7 @@
 //! - **Hot-Swap Ready**: Clean start/stop semantics for dynamic loading
 //! - **Zero-Copy Friendly**: Uses references where possible
 
-use crate::driver_abi::DriverContext;
+use crate::abi::driver::DriverContext;
 use crate::error::KapiResult;
 use alloc::boxed::Box;
 use core::future::Future;
@@ -144,7 +144,7 @@ pub trait AsyncDriver: Send + Sync {
     /// 非同期開始
     ///
     /// 割り込み待ち受けやバックグラウンドタスクの起動を行う。
-    /// `kernel_api::services::kernel().spawn_task()` を使用してタスクを生成できる。
+    /// `kernel_api::service::kernel::instance().spawn_task()` を使用してタスクを生成できる。
     fn start(&mut self) -> DriverFuture<'_, KapiResult<()>> {
         Box::pin(core::future::ready(Ok(())))
     }

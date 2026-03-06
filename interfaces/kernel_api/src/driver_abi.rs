@@ -51,6 +51,7 @@
 ///
 /// Increment this when making breaking changes to the vtable layout.
 /// Drivers compiled with a different ABI version will be rejected.
+#[path = "driver_abi/export_macro.rs"]
 mod export_macro;
 use core::sync::atomic::AtomicBool;
 pub const DRIVER_ABI_VERSION: u64 = 1;
@@ -535,14 +536,14 @@ macro_rules! export_driver {
             $crate::declare_rany_type_id_section!();
             #[cfg(all(feature = "export_driver_entry", not(test)))]
             #[unsafe(no_mangle)]
-        pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
             // --- Mandatory Adapters ---
-            extern "C" fn probe_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn probe_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 // SAFETY: The kernel guarantees ctx is valid when calling probe
                 let ctx_safe = unsafe { &mut *ctx };
                 ($probe)(ctx_safe)
             }
-            extern "C" fn remove_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn remove_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 ($remove)(ctx_safe)
@@ -561,14 +562,14 @@ macro_rules! export_driver {
             }
 
             // --- Optional Adapters (start/stop) ---
-            extern "C" fn start_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn start_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 let mut rv: i32 = 0;
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 $( rv = ($start)(ctx_safe); )?
                 rv
             }
-            extern "C" fn stop_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn stop_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 let mut rv: i32 = 0;
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
@@ -577,14 +578,14 @@ macro_rules! export_driver {
             }
 
             // IRQ adapter that wraps the user's IRQ handler
-            extern "C" fn irq_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> bool {
+            extern "C" fn irq_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> bool {
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 ($irq)(ctx_safe)
             }
 
-            static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
-                $crate::driver_abi::DRIVER_ABI_VERSION,
+            static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
+                $crate::abi::driver::DRIVER_ABI_VERSION,
                 probe_adapter,
                 start_adapter,
                 stop_adapter,
@@ -602,13 +603,13 @@ macro_rules! export_driver {
         // Provide a test-only entry symbol without export/no_mangle to make unit tests
         // able to call the entry function directly without requiring the feature.
         #[cfg(test)]
-        pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
             // --- Mandatory Adapters ---
-            extern "C" fn probe_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn probe_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 let ctx_safe = unsafe { &mut *ctx };
                 ($probe)(ctx_safe)
             }
-            extern "C" fn remove_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn remove_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 let ctx_safe = unsafe { &mut *ctx };
                 ($remove)(ctx_safe)
             }
@@ -626,13 +627,13 @@ macro_rules! export_driver {
             }
 
             // --- Optional Adapters (start/stop) ---
-            extern "C" fn start_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn start_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 let mut rv: i32 = 0;
                 let ctx_safe = unsafe { &mut *ctx };
                 $( rv = ($start)(ctx_safe); )?
                 rv
             }
-            extern "C" fn stop_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn stop_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 let mut rv: i32 = 0;
                 let ctx_safe = unsafe { &mut *ctx };
                 $( rv = ($stop)(ctx_safe); )?
@@ -640,13 +641,13 @@ macro_rules! export_driver {
             }
 
             // IRQ adapter that wraps the user's IRQ handler
-            extern "C" fn irq_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> bool {
+            extern "C" fn irq_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> bool {
                 let ctx_safe = unsafe { &mut *ctx };
                 ($irq)(ctx_safe)
             }
 
-            static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
-                $crate::driver_abi::DRIVER_ABI_VERSION,
+            static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
+                $crate::abi::driver::DRIVER_ABI_VERSION,
                 probe_adapter,
                 start_adapter,
                 stop_adapter,
@@ -676,15 +677,15 @@ macro_rules! export_driver {
         $crate::declare_rany_type_id_section!();
         #[cfg(feature = "export_driver_entry")]
         #[unsafe(no_mangle)]
-        pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
             // --- Mandatory Adapters ---
 
-            extern "C" fn probe_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn probe_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 ($probe)(ctx_safe)
             }
-            extern "C" fn remove_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn remove_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 ($remove)(ctx_safe)
@@ -703,14 +704,14 @@ macro_rules! export_driver {
             }
 
             // --- Optional Adapters (start/stop) ---
-            extern "C" fn start_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn start_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 let mut rv: i32 = 0;
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 $( rv = ($start)(ctx_safe); )?
                 rv
             }
-            extern "C" fn stop_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+            extern "C" fn stop_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
                 let mut rv: i32 = 0;
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
@@ -718,8 +719,8 @@ macro_rules! export_driver {
                 rv
             }
 
-            static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
-                $crate::driver_abi::DRIVER_ABI_VERSION,
+            static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
+                $crate::abi::driver::DRIVER_ABI_VERSION,
                 probe_adapter,
                 start_adapter,
                 stop_adapter,

@@ -5,7 +5,7 @@
 //! FFI adapter for the HID (Human Interface Device) driver.
 
 use kernel_api::driver::DriverType;
-use kernel_api::driver_abi::{
+use kernel_api::abi::driver::{
     DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
 };
 

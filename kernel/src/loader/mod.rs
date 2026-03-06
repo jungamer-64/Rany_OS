@@ -35,7 +35,7 @@ use crate::driver_registry::{DriverHandle, register_abi_driver, register_exports
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use kernel_api::driver_abi::{DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverExportsV1};
+use kernel_api::abi::driver::{DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverExportsV1};
 use spin::Mutex;
 
 /// セルの状態
@@ -504,13 +504,13 @@ pub fn load_driver_pack(
     let signature_verified = driver_pack::verify_driver_pack(&pack)?;
 
     let driver_abi = pack.manifest.driver_abi_version as u64;
-    if driver_abi != kernel_api::driver_abi::DRIVER_ABI_VERSION {
+    if driver_abi != kernel_api::abi::driver::DRIVER_ABI_VERSION {
         return Err(LoadError::AbiIncompatible(
             "Driver ABI version mismatch".into(),
         ));
     }
 
-    if pack.manifest.kernel_api_min_version > kernel_api::driver_abi::KERNEL_API_ABI_VERSION {
+    if pack.manifest.kernel_api_min_version > kernel_api::abi::driver::KERNEL_API_ABI_VERSION {
         return Err(LoadError::AbiIncompatible(
             "Kernel API ABI version too old".into(),
         ));
@@ -617,7 +617,7 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
     crate::io::log::early_print("[LDR] regdrv: abi path\n");
 
     // Cast address to function pointer
-    let entry_fn: kernel_api::driver_abi::DriverEntryFn =
+    let entry_fn: kernel_api::abi::driver::DriverEntryFn =
         unsafe { core::mem::transmute(entry_addr) };
 
     // Register with driver registry

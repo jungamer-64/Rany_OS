@@ -6,11 +6,13 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use kernel_api::DmaBuffer;
+use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DeviceId, Driver, DriverFuture, DriverType, DriverVersion};
-use kernel_api::driver_abi::DriverContext;
+use kernel_api::abi::driver::DriverContext;
 use kernel_api::error::{KapiError, KapiResult};
-use kernel_api::services::kernel;
+use kernel_api::service::kernel::instance as kernel;
+
+type DmaBuffer = DmaSlice<CpuOwned>;
 
 use crate::io::pci::{PcieBdf, PcieError, SriovCapability, SriovController, pcie_ext_config};
 use crate::sync::{PoisonLock, PoisonLockGuard};
@@ -302,15 +304,18 @@ struct DmaSlot {
     device_addr: u64,
     virt_addr: u64,
     size: usize,
+    releaser: Option<unsafe fn(*mut u8, usize, u64)>,
 }
 
 impl DmaSlot {
     fn from_dma_buffer(buffer: DmaBuffer) -> Self {
+        let (phys_addr, device_addr, virt_addr, size, releaser) = buffer.into_raw_parts();
         Self {
-            phys_addr: buffer.physical_address(),
-            device_addr: buffer.device_address(),
-            virt_addr: buffer.as_ptr() as u64,
-            size: buffer.size(),
+            phys_addr,
+            device_addr,
+            virt_addr: virt_addr as u64,
+            size,
+            releaser,
         }
     }
 
@@ -331,12 +336,15 @@ impl DmaSlot {
     }
 
     fn into_dma_buffer(self) -> DmaBuffer {
-        DmaBuffer::new_with_device_addr(
-            self.phys_addr,
-            self.device_addr,
-            self.virt_addr as *mut u8,
-            self.size,
-        )
+        unsafe {
+            DmaBuffer::from_raw_parts(
+                self.phys_addr,
+                self.device_addr,
+                self.virt_addr as *mut u8,
+                self.size,
+                self.releaser,
+            )
+        }
     }
 }
 
@@ -347,7 +355,7 @@ fn release_dma_slot(slot: &mut DmaSlot) {
 
     let owned = core::mem::take(slot);
     if owned.size != 0 {
-        kernel().free_dma(owned.into_dma_buffer());
+        drop(owned.into_dma_buffer());
     }
 }
 

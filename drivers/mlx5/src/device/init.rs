@@ -448,8 +448,8 @@ impl Mlx5Device {
         crate::mmio_write_be32(self.bar0_base as usize + crate::regs::init_seg::SW_RESET, 1);
 
         // initializing bit がセットされるまで待機
-        let start_ms = kernel_api::services::kernel().current_tick();
-        while kernel_api::services::kernel().current_tick() - start_ms < 2000 {
+        let start_ms = kernel_api::service::kernel::instance().current_tick();
+        while kernel_api::service::kernel::instance().current_tick() - start_ms < 2000 {
             let initializing = crate::mmio_read_be32(
                 self.bar0_base as usize + crate::regs::init_seg::INITIALIZING,
             );

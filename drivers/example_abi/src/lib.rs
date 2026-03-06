@@ -4,9 +4,9 @@
 #[cfg(feature = "standalone")]
 kernel_api::register_cell_runtime!();
 
-use kernel_api::driver_abi::DriverContext;
+use kernel_api::abi::driver::DriverContext;
 #[cfg(feature = "export_driver_entry")]
-use kernel_api::driver_abi::{
+use kernel_api::abi::driver::{
     AbiError, DRIVER_EXPORTS_ABI_VERSION, DriverExportsV1, KERNEL_API_ABI_VERSION, KernelApiV1,
 };
 
@@ -36,7 +36,7 @@ kernel_api::export_driver!(
     probe: crate::probe_fn,
     remove: crate::remove_fn,
     name: crate::driver_name,
-    driver_type: (kernel_api::driver_abi::AbiDriverType::Block as u32),
+    driver_type: (kernel_api::abi::driver::AbiDriverType::Block as u32),
     version: 0,
     start: crate::start_fn,
     irq: crate::irq_handler

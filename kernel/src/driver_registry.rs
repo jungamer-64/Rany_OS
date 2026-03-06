@@ -29,8 +29,9 @@ use alloc::string::String;
 
 use alloc::vec::Vec;
 use core::fmt;
+use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
-use kernel_api::driver_abi::{
+use kernel_api::abi::driver::{
     AbiDmaBuffer, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle,
     DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
     DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
@@ -39,6 +40,8 @@ use kernel_api::driver_abi::{
 use kernel_api::error::{KapiError, KapiResult};
 mod registration_api;
 pub use registration_api::*;
+
+type DmaBuffer = DmaSlice<CpuOwned>;
 
 // ============================================================================
 // Driver Registry
@@ -507,7 +510,7 @@ extern "C" fn kapi_alloc_dma(size: usize, _align: usize, out: *mut AbiDmaBuffer)
         return AbiErrorCode::InvalidParam as i32;
     }
 
-    match kernel_api::services::kernel().alloc_dma(size) {
+    match kernel_api::service::kernel::instance().alloc_dma(size) {
         Ok(buffer) => {
             unsafe {
                 *out = AbiDmaBuffer {
@@ -530,8 +533,16 @@ extern "C" fn kapi_free_dma(handle: *const AbiDmaBuffer) -> i32 {
 
     // SAFETY: handleの非nullチェック済み。DMAバッファハンドルはFramework層が割り当てた有効なポインタ。
     let h = unsafe { &*handle };
-    let buf = kernel_api::DmaBuffer::new(h.phys_addr, h.virt_addr as usize as *mut u8, h.size);
-    kernel_api::services::kernel().free_dma(buf);
+    let buf = unsafe {
+        DmaBuffer::from_raw_parts(
+            h.phys_addr,
+            h.device_addr,
+            h.virt_addr as usize as *mut u8,
+            h.size,
+            Some(crate::service_impl::release_dma_buffer),
+        )
+    };
+    drop(buf);
     AbiErrorCode::Success as i32
 }
 

@@ -21,7 +21,7 @@ pub struct ShellControlNamespace;
 impl ShellControlNamespace {
     /// Create a new ShellProxy map
     pub fn spawn_proxy() -> ExoValue<'static> {
-        let domain_id = kernel_api::services::kernel()
+        let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);
@@ -308,7 +308,7 @@ impl ShellControlNamespace {
             _ => return ExoValue::Error(String::from("Invalid proxy parent")),
         };
 
-        let cur = kernel_api::services::kernel()
+        let cur = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
             .unwrap_or(0);

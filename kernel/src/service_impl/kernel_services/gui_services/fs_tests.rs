@@ -77,7 +77,11 @@ mod fs_tests {
         let handle = {
             let _target_guard = set_current_subject(target);
             EXOKERNEL
-                .fs_open_with_token("test_token_file", kernel_api::OpenMode::Write, Some(token))
+                .fs_open_with_token(
+                    "test_token_file",
+                    kernel_api::resource::fs::OpenMode::Write,
+                    Some(token),
+                )
                 .expect("open should succeed")
         };
         assert_eq!(

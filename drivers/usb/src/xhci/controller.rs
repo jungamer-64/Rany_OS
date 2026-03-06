@@ -16,8 +16,10 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Waker;
-use kernel_api::types::DmaBuffer;
+use kernel_api::dma::{CpuOwned, DmaSlice};
 use spin::Mutex;
+
+type DmaBuffer = DmaSlice<CpuOwned>;
 
 use super::context::DeviceContext;
 use super::event_handler::{
@@ -196,7 +198,7 @@ impl XhciController {
         // ERSTをDMAバッファで作成
         let erst_byte_size = core::mem::size_of::<ErstEntry>();
         let (erst_ptr, erst_device_addr, erst_buf) =
-            match kernel_api::services::kernel().alloc_dma(erst_byte_size) {
+            match kernel_api::service::kernel::instance().alloc_dma(erst_byte_size) {
                 Ok(dma_buf) => {
                     let ptr = dma_buf.as_ptr() as *mut ErstEntry;
                     let dev_addr = dma_buf.device_address();
@@ -218,7 +220,7 @@ impl XhciController {
         let dcbaa_entries = max_slots as usize + 1;
         let dcbaa_byte_size = dcbaa_entries * core::mem::size_of::<u64>();
         let (dcbaa_ptr, dcbaa_device_addr, dcbaa_buf) =
-            match kernel_api::services::kernel().alloc_dma(dcbaa_byte_size) {
+            match kernel_api::service::kernel::instance().alloc_dma(dcbaa_byte_size) {
                 Ok(dma_buf) => {
                     let ptr = dma_buf.as_ptr() as *mut u64;
                     let dev_addr = dma_buf.device_address();

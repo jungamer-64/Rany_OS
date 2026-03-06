@@ -49,7 +49,7 @@ impl Mlx5Device {
         if num_pages > 0 {
             let mut page_pas = Vec::with_capacity(num_pages as usize);
             for _ in 0..num_pages {
-                let buf = kernel_api::services::kernel()
+                let buf = kernel_api::service::kernel::instance()
                     .alloc_dma(4096)
                     .map_err(|_| Mlx5Error::DmaAllocFailed)?;
 
