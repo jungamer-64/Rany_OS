@@ -15,6 +15,8 @@ pub mod res;
 pub mod queues;
 pub mod flow;
 
+pub use hca::VportContext;
+
 /// コマンドメールボックス (Page aligned)
 ///
 /// 入出力データを格納するバッファ。物理的に連続したDMAメモリ上に配置される。

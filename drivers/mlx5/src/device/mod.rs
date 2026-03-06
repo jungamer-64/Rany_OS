@@ -3,20 +3,20 @@
 // ============================================================================
 
 extern crate alloc;
-use alloc::vec; // bring `vec!` macro
+use alloc::vec;
 use alloc::vec::Vec;
-use crate::cmd::{CmdQueue, CmdMailbox, CommandTransport};
-// CmdOpcode/Status are defined in defs and are re-exported there.
-use crate::defs::{CmdOpcode, CmdStatus, ConnectXVariant, HcaCaps, MLX5_CMD_MBOX_SIZE, PortLinkState};
+use crate::cmd::{CmdQueue, CommandTransport};
+use crate::defs::{CmdOpcode, ConnectXVariant, HcaCaps};
 use crate::error::{Mlx5Error, Mlx5Result};
-use crate::eq::{EventQueue, decode_eqe};
+use crate::eq::EventQueue;
 use crate::cq::CompletionQueue;
 use crate::flow::{FlowTable, FlowGroup, FlowTableEntry, RqTable};
-use crate::resources::{MkeyInfo, TisInfo, TirInfo, MkeyParams};
+use crate::fw::FwInfo;
 use crate::pages::PageManager;
 use crate::port::Mlx5Port;
 use crate::polling::AdaptivePollingState;
 use crate::health::HealthMonitor;
+use crate::resources::{MkeyInfo, TirInfo, TisInfo};
 use crate::wq::{SendQueue, ReceiveQueue};
 
 pub mod init;
@@ -48,22 +48,23 @@ pub struct Mlx5Device {
     pub(crate) bar0_size: usize,
     pub(crate) device_id: u16,
     pub(crate) variant: ConnectXVariant,
-    
+
     // Core state
     pub(crate) state: DeviceState,
+    pub(crate) fw_info: Option<FwInfo>,
     pub(crate) hca_caps: Option<HcaCaps>,
-    
+
     // Command IF
     pub(crate) cmd: Option<CmdQueue>,
     pub(crate) cmd_in_mbox_virt: u64,
     pub(crate) cmd_in_mbox_device: u64,
     pub(crate) cmd_out_mbox_virt: u64,
     pub(crate) cmd_out_mbox_device: u64,
-    
+
     // Memory/Pages
     pub(crate) fw_function_id: u16,
     pub(crate) page_manager: PageManager,
-    
+
     // Resources
     pub(crate) uar_page: u32,
     pub(crate) uar_base: u64,
@@ -73,7 +74,10 @@ pub struct Mlx5Device {
     pub(crate) mkey_info: Option<MkeyInfo>,
     pub(crate) sw_vhca_id: u16,
     pub(crate) resources_allocated: bool,
-    
+    pub(crate) pci_bus: u8,
+    pub(crate) pci_device: u8,
+    pub(crate) pci_function: u8,
+
     // Queues
     pub(crate) eqs: Vec<EventQueue>,
     pub(crate) cqs: Vec<CompletionQueue>,
@@ -81,7 +85,7 @@ pub struct Mlx5Device {
     pub(crate) rqs: Vec<ReceiveQueue>,
     pub(crate) rq_tables: Vec<RqTable>,
     pub(crate) cq_db_records: Vec<(u64, u64)>,
-    
+
     // Port & Steering
     pub(crate) ports: Vec<Mlx5Port>,
     pub(crate) tis_list: Vec<TisInfo>,
@@ -107,6 +111,7 @@ impl Mlx5Device {
             device_id,
             variant,
             state: DeviceState::Uninitialized,
+            fw_info: None,
             hca_caps: None,
             cmd: None,
             cmd_in_mbox_virt: 0,
@@ -123,6 +128,9 @@ impl Mlx5Device {
             mkey_info: None,
             sw_vhca_id: 0,
             resources_allocated: false,
+            pci_bus: 0,
+            pci_device: 0,
+            pci_function: 0,
             eqs: Vec::new(),
             cqs: Vec::new(),
             sqs: Vec::new(),
@@ -149,6 +157,14 @@ impl Mlx5Device {
         self.variant
     }
 
+    pub fn bar0_base(&self) -> u64 {
+        self.bar0_base
+    }
+
+    pub fn fw_info(&self) -> Option<&FwInfo> {
+        self.fw_info.as_ref()
+    }
+
     pub fn is_vf(&self) -> bool {
         ConnectXVariant::is_vf_device_id(self.device_id)
     }
@@ -157,22 +173,120 @@ impl Mlx5Device {
         self.hca_caps.as_ref()
     }
 
+    pub fn port(&self, index: usize) -> Option<&Mlx5Port> {
+        self.ports.get(index)
+    }
+
+    pub fn port_mut(&mut self, index: usize) -> Option<&mut Mlx5Port> {
+        self.ports.get_mut(index)
+    }
+
+    pub fn num_ports(&self) -> usize {
+        self.ports.len()
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.state == DeviceState::Active
+    }
+
+    pub fn pd(&self) -> u32 {
+        self.pd
+    }
+
+    pub fn td(&self) -> u32 {
+        self.td
+    }
+
+    pub fn eqn_msix_vector(&self, eq_index: usize) -> Option<u32> {
+        self.eqs.get(eq_index).map(|eq| eq.msix_vector)
+    }
+
+    pub fn set_pci_bdf(&mut self, bus: u8, device: u8, function: u8) {
+        self.pci_bus = bus;
+        self.pci_device = device;
+        self.pci_function = function;
+    }
+
+    pub fn num_rqs(&self) -> usize {
+        self.rqs.len()
+    }
+
+    pub fn num_sqs(&self) -> usize {
+        self.sqs.len()
+    }
+
+    pub unsafe fn teardown(&mut self) -> Mlx5Result<()> {
+        self.teardown_full()
+    }
+
+    fn debug_dump_mailbox_words(tag: &str, mbox: &crate::cmd::CmdMailbox, dwords: usize) {
+        let count = dwords.min(32);
+        for i in 0..count {
+            let off = i * 4;
+            log::debug!(
+                target: "mlx5",
+                "[mlx5-diag] {} out[{:#04x}]={:#010x}",
+                tag,
+                off,
+                mbox.read_be32(off)
+            );
+        }
+    }
+
     /// Build the list of UID candidates that should be tried for commands when
     /// running in VF mode.  The first entry is always the previous UID stored
     /// in the transport; additional entries may include the broadcast sentinel
     /// (0xFFFF), zero and the software VHCA ID if available.
-    pub(crate) fn uid_candidates(&self, prev_uid: u16) -> Vec<u16> {
-        let mut uids = Vec::new();
-        uids.push(prev_uid);
-        if self.is_vf() {
-            // common fallbacks observed in vendor driver
-            uids.push(0xFFFF);
-            uids.push(0);
-            if self.sw_vhca_id != 0 && !uids.contains(&self.sw_vhca_id) {
-                uids.push(self.sw_vhca_id);
+    pub(crate) fn uid_candidates(
+        prev_uid: u16,
+        is_vf: bool,
+        sw_vhca_id: u16,
+    ) -> ([u16; 4], usize) {
+        let mut uids = [0u16; 4];
+        let mut len = 0usize;
+
+        let mut push_uid = |uid: u16| {
+            if !uids[..len].contains(&uid) {
+                uids[len] = uid;
+                len += 1;
+            }
+        };
+
+        push_uid(prev_uid);
+        if is_vf {
+            push_uid(0xFFFF);
+            push_uid(0);
+            if sw_vhca_id != 0 {
+                push_uid(sw_vhca_id);
             }
         }
-        uids
+
+        (uids, len)
+    }
+
+    pub(crate) unsafe fn execute_with_uid_candidates<T, F, R>(
+        cmd: &mut T,
+        uid_candidates: &[u16],
+        mut f: F,
+    ) -> Mlx5Result<R>
+    where
+        T: CommandTransport,
+        F: FnMut(&mut T) -> Mlx5Result<R>,
+    {
+        let prev_uid = cmd.uid();
+        let mut last_err = Err(Mlx5Error::NotSupported);
+        for &uid in uid_candidates {
+            cmd.set_uid(uid);
+            match f(cmd) {
+                Ok(value) => {
+                    cmd.set_uid(prev_uid);
+                    return Ok(value);
+                }
+                Err(err) => last_err = Err(err),
+            }
+        }
+        cmd.set_uid(prev_uid);
+        last_err
     }
 
     /// Execute a command, automatically cycling through reasonable UID values
@@ -182,29 +296,20 @@ impl Mlx5Device {
     /// Internal implementation generic over any transport.  Allows tests to
     /// inject a fake `CommandTransport` instance and exercise UID cycling.
     pub(crate) unsafe fn execute_cmd_with_uid_candidates_impl<T: crate::cmd::CommandTransport>(
-        &mut self,
         cmd: &mut T,
         opcode: CmdOpcode,
         in_mbox_phys: u64,
         in_len: u32,
         out_mbox_phys: u64,
         out_len: u32,
+        is_vf: bool,
+        sw_vhca_id: u16,
     ) -> Mlx5Result<()> {
-        // record previous UID and build candidate list before mutably borrowing cmd
         let prev_uid = cmd.uid();
-        let uids = self.uid_candidates(prev_uid);
-        let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
-        for &uid in &uids {
-            cmd.set_uid(uid);
-            let res = cmd.execute(opcode, in_mbox_phys, in_len, out_mbox_phys, out_len);
-            if res.is_ok() {
-                last_err = Ok(());
-                break;
-            }
-            last_err = res;
-        }
-        cmd.set_uid(prev_uid);
-        last_err
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
+            cmd.execute(opcode, in_mbox_phys, in_len, out_mbox_phys, out_len)
+        })
     }
 
     /// Convenience wrapper that uses the device's own command transport.
@@ -216,20 +321,21 @@ impl Mlx5Device {
         out_mbox_phys: u64,
         out_len: u32,
     ) -> Mlx5Result<()> {
-        // avoid holding a borrow across the method call by performing the
-        // borrow inside the argument expression
+        let is_vf = self.is_vf();
+        let sw_vhca_id = self.sw_vhca_id;
         if let Some(cmd) = self.cmd.as_mut() {
-            self.execute_cmd_with_uid_candidates_impl(
+            Self::execute_cmd_with_uid_candidates_impl(
                 cmd,
                 opcode,
                 in_mbox_phys,
                 in_len,
                 out_mbox_phys,
                 out_len,
+                is_vf,
+                sw_vhca_id,
             )
         } else {
             Err(Mlx5Error::DeviceNotReady)
         }
     }
 }
-

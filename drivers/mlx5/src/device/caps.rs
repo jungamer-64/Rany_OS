@@ -2,17 +2,16 @@
 // drivers/mlx5/src/device/caps.rs - MLX5 Device Capabilities
 // ============================================================================
 
-use crate::defs::{CmdOpcode, HcaCaps};
+use crate::defs::{CmdOpcode, HcaCaps, MLX5_CMD_MBOX_SIZE};
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::device::Mlx5Device;
-use crate::device::MLX5_CMD_MBOX_SIZE;
 use crate::cmd::CmdMailbox;
 // unused import removed
 
 impl Mlx5Device {
     /// HCA Capabilities の照会と設定
     pub unsafe fn query_and_set_hca_cap(&mut self) -> Mlx5Result<()> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         
         log::info!(target: "mlx5", "Querying HCA Capabilities...");
@@ -52,6 +51,7 @@ impl Mlx5Device {
         );
 
         self.hca_caps = Some(caps);
+        self.state = crate::device::DeviceState::CapsQueried;
         Ok(())
     }
 

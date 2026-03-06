@@ -115,6 +115,28 @@ pub fn build_query_nic_vport_input(in_mbox: &mut CmdMailbox, vport_number: u16) 
     in_mbox.write_be16(0x0C, vport_number);
 }
 
+/// QUERY_VPORT_CONTEXT コマンド入力の構築
+pub fn build_query_vport_context_input(in_mbox: &mut CmdMailbox, vport_number: u16) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be16(0x0A, vport_number);
+}
+
+/// QUERY_VPORT_CONTEXT 出力からデフォルトのリソース情報を解析
+pub struct VportContext {
+    pub default_tisn: u32,
+    pub default_tis_valid: bool,
+}
+
+pub fn parse_query_vport_context_output(out_mbox: &CmdMailbox) -> VportContext {
+    let ctx = 0x20;
+    let default_tisn = out_mbox.read_be32(ctx + 0x18) & 0x00FF_FFFF;
+    let field_select = out_mbox.read_be32(ctx);
+    VportContext {
+        default_tisn,
+        default_tis_valid: (field_select & (1 << 31)) != 0,
+    }
+}
+
 /// QUERY_NIC_VPORT_CONTEXT コマンド入力の構築（拡張）
 pub fn build_query_nic_vport_input_ex(
     in_mbox: &mut CmdMailbox,
@@ -170,13 +192,69 @@ pub fn build_modify_nic_vport_state_input(in_mbox: &mut CmdMailbox, vhca_id: u16
     in_mbox.write_be32(0x08, if enable { 1 } else { 0 });
 }
 
-/// パケットまたは管理状態を返す構造体 (admin, oper) は実装しなくても良い
-pub fn parse_query_vport_state_output(_out_mbox: &CmdMailbox) -> (u8, u8) {
-    // stubbed; caller may ignore values when running in test environment
-    (0, 0)
+/// QUERY_VPORT_STATE コマンド入力の構築
+pub fn build_query_vport_state_input(in_mbox: &mut CmdMailbox, vport_number: u16) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be16(0x0A, vport_number);
 }
 
-/// VPort の状態を照会するコマンド (alias for build_query_nic_vport_input)
-pub fn build_query_vport_state_input(in_mbox: &mut CmdMailbox, vport_number: u16) {
-    build_query_nic_vport_input(in_mbox, vport_number);
+/// QUERY_VPORT_STATE 出力からリンク状態を解析
+pub fn parse_query_vport_state_output(out_mbox: &CmdMailbox) -> (u8, u8) {
+    let val = out_mbox.read_be32(0x08);
+    let admin_state = ((val >> 4) & 0x0F) as u8;
+    let oper_state = (val & 0x0F) as u8;
+    (admin_state, oper_state)
+}
+
+/// QUERY_VPORT_COUNTER コマンド入力の構築
+pub fn build_query_vport_counter_input(in_mbox: &mut CmdMailbox, port: u8, clear_on_read: bool) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.data[0x09] = port;
+    if clear_on_read {
+        in_mbox.data[0x02] = 0x01;
+    }
+}
+
+/// QUERY_VPORT_COUNTER 出力を解析
+pub fn parse_query_vport_counter_output(out_mbox: &CmdMailbox) -> crate::defs::VportCounters {
+    use crate::defs::VportCounters;
+
+    let base = 0x10;
+    VportCounters {
+        rx_unicast_packets: out_mbox.read_be64(base),
+        rx_unicast_bytes: out_mbox.read_be64(base + 0x08),
+        rx_multicast_packets: out_mbox.read_be64(base + 0x10),
+        rx_multicast_bytes: out_mbox.read_be64(base + 0x18),
+        rx_broadcast_packets: out_mbox.read_be64(base + 0x20),
+        rx_broadcast_bytes: out_mbox.read_be64(base + 0x28),
+        tx_unicast_packets: out_mbox.read_be64(base + 0x30),
+        tx_unicast_bytes: out_mbox.read_be64(base + 0x38),
+        tx_multicast_packets: out_mbox.read_be64(base + 0x40),
+        tx_multicast_bytes: out_mbox.read_be64(base + 0x48),
+        tx_broadcast_packets: out_mbox.read_be64(base + 0x50),
+        tx_broadcast_bytes: out_mbox.read_be64(base + 0x58),
+        rx_error_packets: out_mbox.read_be64(base + 0x60),
+        tx_error_packets: out_mbox.read_be64(base + 0x68),
+        rx_dropped: out_mbox.read_be64(base + 0x70),
+        tx_dropped: out_mbox.read_be64(base + 0x78),
+    }
+}
+
+/// NIC VPORT の MAC アドレスを変更するコマンド入力の構築
+pub fn build_modify_nic_vport_mac_input(
+    in_mbox: &mut CmdMailbox,
+    vport_number: u16,
+    other_vport: bool,
+    mac: [u8; 6],
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be16(0x0A, vport_number);
+    if other_vport {
+        in_mbox.data[0x08] |= 0x80;
+    }
+
+    let field_select = 0x20usize;
+    let ctx_base = 0x40usize;
+    in_mbox.write_be32(field_select, 1 << 31);
+    in_mbox.data[ctx_base + 8..ctx_base + 14].copy_from_slice(&mac);
 }

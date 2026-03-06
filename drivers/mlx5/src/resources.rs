@@ -13,9 +13,7 @@
 //! ## TIR (Transport Interface Receive)
 //! 受信パスのインタフェース。RQまたはRQTに紐づけてRSSなどを設定する。
 
-use crate::cmd::CmdMailbox;
 use crate::flow::RssConfig;
-use crate::structs::cmd::{MkeyContextLayout, TisContextLayout, TirContextLayout};
 
 // ============================================================================
 // Memory Key (MKEY) — DMA Memory Registration

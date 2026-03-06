@@ -19,6 +19,9 @@ impl Mlx5Device {
     /// Event Queueを作成
     pub unsafe fn create_eq_hw(&mut self, eq_buf_virt: u64, eq_buf_pa: u64, log_eq_size: u8, msix_vector: u32, event_bitmask: u64) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
+        let sw_vhca_id = self.sw_vhca_id;
+        let cmd_in_mbox_device = self.cmd_in_mbox_device;
+        let cmd_out_mbox_device = self.cmd_out_mbox_device;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
         let eq_depth = 1u32 << log_eq_size;
@@ -37,35 +40,10 @@ impl Mlx5Device {
         let eq_in_len = (0x110 + eq_pages * 8) as u32;
 
         let prev_uid = cmd.uid();
-        let vhca_uid = self.sw_vhca_id;
-        let mut uid_candidates = [0u16; 4];
-        let mut uid_count = 0usize;
-        let mut push_uid = |u: u16| {
-            if !uid_candidates[..uid_count].contains(&u) {
-                uid_candidates[uid_count] = u;
-                uid_count += 1;
-            }
-        };
-        push_uid(prev_uid);
-        if is_vf {
-            push_uid(0xFFFF);
-            push_uid(0);
-            if vhca_uid != 0 { push_uid(vhca_uid); }
-        }
-
-        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
-        for &uid in &uid_candidates[..uid_count] {
-            cmd.set_uid(uid);
-            let res = cmd.execute(CmdOpcode::CreateEq, self.cmd_in_mbox_device, eq_in_len, self.cmd_out_mbox_device, 0x10);
-            if res.is_ok() {
-                exec_res = Ok(());
-                break;
-            }
-            exec_res = res;
-        }
-
-        cmd.set_uid(prev_uid);
-        exec_res?;
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
+            cmd.execute(CmdOpcode::CreateEq, cmd_in_mbox_device, eq_in_len, cmd_out_mbox_device, 0x10)
+        })?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let eqn = parse_create_eq_output(out_mbox);
@@ -77,7 +55,9 @@ impl Mlx5Device {
     /// Completion Queueを作成
     pub unsafe fn create_cq_hw(&mut self, cq_buf_virt: u64, cq_buf_pa: u64, db_virt: u64, db_pa: u64, log_cq_size: u8, eqn: u32) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
-        let vhca_uid = self.sw_vhca_id;
+        let sw_vhca_id = self.sw_vhca_id;
+        let cmd_in_mbox_device = self.cmd_in_mbox_device;
+        let cmd_out_mbox_device = self.cmd_out_mbox_device;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
 
@@ -96,34 +76,10 @@ impl Mlx5Device {
         let cq_pages = (cq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let cq_in_len = (0x110 + cq_pages * 8) as u32;
 
-        let mut uid_candidates = [0u16; 4];
-        let mut uid_count = 0usize;
-        let mut push_uid = |u: u16| {
-            if !uid_candidates[..uid_count].contains(&u) {
-                uid_candidates[uid_count] = u;
-                uid_count += 1;
-            }
-        };
-        push_uid(prev_uid);
-        if is_vf {
-            push_uid(0xFFFF);
-            push_uid(0);
-            if vhca_uid != 0 { push_uid(vhca_uid); }
-        }
-
-        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
-        for &uid in &uid_candidates[..uid_count] {
-            cmd.set_uid(uid);
-            let res = cmd.execute(CmdOpcode::CreateCq, self.cmd_in_mbox_device, cq_in_len, self.cmd_out_mbox_device, 0x10);
-            if res.is_ok() {
-                exec_res = Ok(());
-                break;
-            }
-            exec_res = res;
-        }
-
-        cmd.set_uid(prev_uid);
-        exec_res?;
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
+            cmd.execute(CmdOpcode::CreateCq, cmd_in_mbox_device, cq_in_len, cmd_out_mbox_device, 0x10)
+        })?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let cqn = parse_create_cq_output(out_mbox);
@@ -172,40 +128,24 @@ impl Mlx5Device {
     /// RQTを作成
     pub unsafe fn create_rqt(&mut self, rq_numbers: &[u32], log_rqt_size: u8) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
-        let vhca_uid = self.sw_vhca_id;
+        let sw_vhca_id = self.sw_vhca_id;
+        let cmd_in_mbox_device = self.cmd_in_mbox_device;
+        let cmd_out_mbox_device = self.cmd_out_mbox_device;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::flow::build_create_rqt_input(in_mbox, rq_numbers, log_rqt_size);
 
-        let mut uid_candidates = [0u16; 4];
-        let mut uid_count = 0usize;
-        let mut push_uid = |u: u16| {
-            if !uid_candidates[..uid_count].contains(&u) {
-                uid_candidates[uid_count] = u;
-                uid_count += 1;
-            }
-        };
-        push_uid(prev_uid);
-        if is_vf {
-            push_uid(0xFFFF);
-            push_uid(0);
-            if vhca_uid != 0 { push_uid(vhca_uid); }
-        }
-
-        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
-        for &uid in &uid_candidates[..uid_count] {
-            cmd.set_uid(uid);
-            let res = cmd.execute(CmdOpcode::CreateRqt, self.cmd_in_mbox_device, MLX5_CMD_MBOX_SIZE as u32, self.cmd_out_mbox_device, MLX5_CMD_MBOX_SIZE as u32);
-            if res.is_ok() {
-                exec_res = Ok(());
-                break;
-            }
-            exec_res = res;
-        }
-
-        cmd.set_uid(prev_uid);
-        exec_res?;
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
+            cmd.execute(
+                CmdOpcode::CreateRqt,
+                cmd_in_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+                cmd_out_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+            )
+        })?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let rqtn = crate::cmd::flow::parse_create_rqt_output(out_mbox);

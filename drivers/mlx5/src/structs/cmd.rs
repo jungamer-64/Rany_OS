@@ -2,7 +2,7 @@
 // drivers/mlx5/src/structs/cmd.rs - Command Mailbox Layouts
 // ============================================================================
 
-use crate::structs::{get_bits_u32, set_bits_u32, get_bits_u64, set_bits_u64};
+use crate::structs::{get_bits_u32, set_bits_u32, set_bits_u64};
 
 /// MKEY Context Layout
 pub struct MkeyContextLayout<'a> {

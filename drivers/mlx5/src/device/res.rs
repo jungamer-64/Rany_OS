@@ -3,17 +3,15 @@
 // ============================================================================
 
 extern crate alloc;
-// unused Vec removed
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE};
 use crate::error::{Mlx5Error, Mlx5Result};
-use crate::device::{Mlx5Device, FlowTable, FlowGroup, FlowTableEntry};
+use crate::device::Mlx5Device;
 use crate::cmd::CmdMailbox;
 use crate::cmd::CommandTransport; // needed to bring execute() method into scope
 use crate::cmd::res::*; // resource command builders/parsers
 use crate::cmd::hca::*; // basic HCA commands (SET_DRIVER_VERSION etc)
+use crate::flow::{FlowGroup, FlowTable, FlowTableConfig, FlowTableEntry};
 use crate::resources::{MkeyInfo, TisInfo, TirInfo, MkeyParams, TisParams, TirParams};
-// unused import MacAddr removed
-use crate::flow::FlowTableConfig;
 
 impl Mlx5Device {
     /// QUERY_SPECIAL_CONTEXTS から reserved lkey を取得
@@ -91,47 +89,25 @@ impl Mlx5Device {
     /// TIR (Transport Interface Receive) を作成
     pub unsafe fn create_tir(&mut self, params: &TirParams) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
-        let vhca_uid = self.sw_vhca_id;
+        let sw_vhca_id = self.sw_vhca_id;
+        let cmd_in_mbox_device = self.cmd_in_mbox_device;
+        let cmd_out_mbox_device = self.cmd_out_mbox_device;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::res::build_create_tir_input(in_mbox, params);
 
-        let mut uid_candidates = [0u16; 4];
-        let mut uid_count = 0usize;
-        let mut push_uid = |u: u16| {
-            if !uid_candidates[..uid_count].contains(&u) {
-                uid_candidates[uid_count] = u;
-                uid_count += 1;
-            }
-        };
-        push_uid(prev_uid);
-        if is_vf {
-            push_uid(0xFFFF);
-            push_uid(0);
-            if vhca_uid != 0 { push_uid(vhca_uid); }
-        }
-
-        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
-        for &uid in &uid_candidates[..uid_count] {
-            cmd.set_uid(uid);
-            let res = cmd.execute(
+        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
+            cmd.execute(
                 CmdOpcode::CreateTir,
-                self.cmd_in_mbox_device,
+                cmd_in_mbox_device,
                 0x110,
-                self.cmd_out_mbox_device,
+                cmd_out_mbox_device,
                 0x10,
-            );
-            if res.is_ok() {
-                exec_res = Ok(());
-                break;
-            }
-            exec_res = res;
-        }
-
-        cmd.set_uid(prev_uid);
-        exec_res?;
+            )
+        })?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let tirn = crate::cmd::res::parse_create_tir_output(out_mbox);
@@ -149,28 +125,13 @@ impl Mlx5Device {
     /// UAR (User Access Region) を割り当て
     pub unsafe fn alloc_uar(&mut self) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
+        let sw_vhca_id = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
-        let vhca_uid = self.sw_vhca_id;
-        let mut uid_candidates = [0u16; 4];
-        let mut uid_count = 0usize;
-        let mut push_uid = |u: u16| {
-            if !uid_candidates[..uid_count].contains(&u) {
-                uid_candidates[uid_count] = u;
-                uid_count += 1;
-            }
-        };
-        push_uid(prev_uid);
-        if is_vf {
-            push_uid(0xFFFF);
-            push_uid(0);
-            if vhca_uid != 0 {
-                push_uid(vhca_uid);
-            }
-        }
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
 
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
-        for &uid in &uid_candidates[..uid_count] {
+        for &uid in &uids[..len] {
             cmd.set_uid(uid);
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             build_alloc_uar_input(in_mbox);
@@ -214,28 +175,13 @@ impl Mlx5Device {
     /// Protection Domain を割り当て
     pub unsafe fn alloc_pd(&mut self) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
+        let sw_vhca_id = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
-        let vhca_uid = self.sw_vhca_id;
-        let mut uid_candidates = [0u16; 4];
-        let mut uid_count = 0usize;
-        let mut push_uid = |u: u16| {
-            if !uid_candidates[..uid_count].contains(&u) {
-                uid_candidates[uid_count] = u;
-                uid_count += 1;
-            }
-        };
-        push_uid(prev_uid);
-        if is_vf {
-            push_uid(0xFFFF);
-            push_uid(0);
-            if vhca_uid != 0 {
-                push_uid(vhca_uid);
-            }
-        }
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
 
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
-        for &uid in &uid_candidates[..uid_count] {
+        for &uid in &uids[..len] {
             cmd.set_uid(uid);
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             build_alloc_pd_input(in_mbox);
@@ -271,28 +217,13 @@ impl Mlx5Device {
     /// Transport Domain を割り当て
     pub unsafe fn alloc_td(&mut self) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
+        let sw_vhca_id = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
-        let vhca_uid = self.sw_vhca_id;
-        let mut uid_candidates = [0u16; 4];
-        let mut uid_count = 0usize;
-        let mut push_uid = |u: u16| {
-            if !uid_candidates[..uid_count].contains(&u) {
-                uid_candidates[uid_count] = u;
-                uid_count += 1;
-            }
-        };
-        push_uid(prev_uid);
-        if is_vf {
-            push_uid(0xFFFF);
-            push_uid(0);
-            if vhca_uid != 0 {
-                push_uid(vhca_uid);
-            }
-        }
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
 
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
-        for &uid in &uid_candidates[..uid_count] {
+        for &uid in &uids[..len] {
             cmd.set_uid(uid);
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             build_alloc_td_input(in_mbox);
@@ -326,7 +257,7 @@ impl Mlx5Device {
     }
 
     pub unsafe fn set_driver_version(&mut self) -> Mlx5Result<()> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         let version = b"RanyOS mlx5 0.1.0";
         build_set_driver_version_input(in_mbox, version);

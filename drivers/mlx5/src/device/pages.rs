@@ -13,7 +13,7 @@ use crate::cmd::hca::*; // manage/query page commands
 impl Mlx5Device {
     /// FW ページを提供
     pub unsafe fn provide_pages(&mut self, function_id: u16, pas: &[u64]) -> Mlx5Result<()> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         
         log::info!(target: "mlx5", "Providing {} pages to function {}", pas.len(), function_id);
@@ -73,7 +73,7 @@ impl Mlx5Device {
     }
 
     unsafe fn give_pages_internal(&mut self, function_id: u16, pas: &[u64]) -> Mlx5Result<()> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         
         build_manage_pages_input(
@@ -96,7 +96,7 @@ impl Mlx5Device {
     }
 
     pub unsafe fn query_required_pages(&mut self, op_mod: u16) -> Mlx5Result<(u16, i32)> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_query_pages_input(in_mbox, op_mod);
         self.execute_cmd_with_uid_candidates(
@@ -113,7 +113,7 @@ impl Mlx5Device {
     }
 
     pub unsafe fn reclaim_pages(&mut self, function_id: u16, num_pages: u32) -> Mlx5Result<()> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
         log::info!(
             target: "mlx5",

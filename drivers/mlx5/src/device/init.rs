@@ -8,7 +8,7 @@ use crate::cmd::CmdQueueTransport; // needed for layout parsing
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::device::{Mlx5Device, DeviceState};
 use crate::cmd::{CmdQueue, CmdMailbox};
-use crate::cmd::hca::*; // bring HCA command builders into scope
+use crate::cmd::hca::{build_enable_hca_input, build_set_issi_input};
 // unused MkeyParams removed
 
 impl Mlx5Device {
@@ -16,9 +16,17 @@ impl Mlx5Device {
     pub unsafe fn wait_firmware(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Waiting for firmware to be ready...");
         match crate::fw::wait_fw_ready(self.bar0_base, 30000) {
-            Ok(_info) => {
+            Ok(info) => {
+                self.fw_info = Some(info.clone());
                 self.state = DeviceState::FirmwareReady;
-                log::info!(target: "mlx5", "Firmware is ready");
+                log::info!(
+                    target: "mlx5",
+                    "Firmware is ready ({}.{}.{}, cmd_if_rev={})",
+                    info.major,
+                    info.minor,
+                    info.subminor,
+                    info.cmd_if_rev
+                );
                 Ok(())
             }
             Err(e) => {
@@ -90,11 +98,11 @@ impl Mlx5Device {
 
     /// HCA の有効化と ISSI セットアップ
     pub unsafe fn enable_hca_and_setup(&mut self) -> Mlx5Result<()> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
         log::info!(target: "mlx5", "Enabling HCA...");
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        crate::cmd::hca::build_enable_hca_input(in_mbox, 0);
+        build_enable_hca_input(in_mbox, 0);
         // enable_hca doesn't return any useful output, but the command can fail
         // when the UID isn't correct on a VF.  Try candidate UIDs.
         self.execute_cmd_with_uid_candidates(
@@ -122,8 +130,7 @@ impl Mlx5Device {
 
         if current_issi == 0 && (supported_issi & 0x01) != 0 {
             log::info!(target: "mlx5", "Setting ISSI to 1...");
-            *in_mbox = CmdMailbox::zeroed();
-            in_mbox.write_be16(0x02, 1);
+            build_set_issi_input(in_mbox, 1);
             self.execute_cmd_with_uid_candidates(
                 CmdOpcode::SetIssi,
                 self.cmd_in_mbox_device,
@@ -300,6 +307,8 @@ impl Mlx5Device {
                 return Err(Mlx5Error::CommandFailed(0xff));
             }
         }
+
+        let _ = self.query_port_mac(0);
 
         // Phase 4: Queues
         let eqn = self.create_eq_hw(eq_bufs[0].0, eq_bufs[0].1, log_eq_size, 0, 0)?;
