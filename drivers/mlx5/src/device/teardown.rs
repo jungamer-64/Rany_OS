@@ -104,17 +104,14 @@ impl Mlx5Device {
     }
 
     pub unsafe fn destroy_sq_hw(&mut self, sqn: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_destroy_sq_input(in_mbox, sqn);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DestroySq,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
@@ -122,34 +119,28 @@ impl Mlx5Device {
 
     // ... added more destroy helpers as needed
     pub unsafe fn destroy_rq_hw(&mut self, rqn: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_destroy_rq_input(in_mbox, rqn);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DestroyRq,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
     }
 
     pub unsafe fn destroy_cq_hw(&mut self, cqn: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_destroy_cq_input(in_mbox, cqn);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DestroyCq,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
@@ -173,53 +164,44 @@ impl Mlx5Device {
     }
 
     pub unsafe fn destroy_tir_hw(&mut self, tirn: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         *in_mbox = CmdMailbox::zeroed();
         in_mbox.write_be32(0x04, tirn & 0x00FF_FFFF);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DestroyTir,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
     }
 
     pub unsafe fn destroy_tis_hw(&mut self, tisn: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         *in_mbox = CmdMailbox::zeroed();
         in_mbox.write_be32(0x04, tisn & 0x00FF_FFFF);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DestroyTis,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
     }
 
     pub unsafe fn destroy_rqt_hw(&mut self, rqtn: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_destroy_rqt_input(in_mbox, rqtn);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DestroyRqt,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
@@ -281,69 +263,57 @@ impl Mlx5Device {
     }
 
     pub unsafe fn destroy_mkey_hw(&mut self, mkey_index: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         *in_mbox = CmdMailbox::zeroed();
         in_mbox.write_be32(0x04, mkey_index & 0x00FF_FFFF);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DestroyMkey,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
     }
 
     pub unsafe fn dealloc_pd_hw(&mut self, pd: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_dealloc_pd_input(in_mbox, pd);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DeallocPd,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
     }
 
     pub unsafe fn dealloc_td_hw(&mut self, td: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_dealloc_td_input(in_mbox, td);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DeallocTransportDomain,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
     }
 
     pub unsafe fn dealloc_uar_hw(&mut self, uar_page: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_dealloc_uar_input(in_mbox, uar_page);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::DeallocUar,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
@@ -384,9 +354,8 @@ impl Mlx5Device {
     }
 
     pub unsafe fn transition_sq_to_error(&mut self, sqn: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_modify_sq_input(
@@ -397,20 +366,17 @@ impl Mlx5Device {
             0,
             false,
         );
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::ModifySq,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
     }
 
     pub unsafe fn transition_rq_to_error(&mut self, rqn: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
+        self.cmd
+            .as_ref()
             .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_modify_rq_input(
@@ -421,11 +387,9 @@ impl Mlx5Device {
             0,
             false,
         );
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::ModifyRq,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())

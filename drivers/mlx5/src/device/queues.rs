@@ -157,7 +157,7 @@ impl Mlx5Device {
         cqn: u32,
         tisn: u32,
     ) -> Mlx5Result<u32> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_create_sq_input(
             in_mbox,
@@ -172,11 +172,9 @@ impl Mlx5Device {
         let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
         let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let sq_in_len = (0x110 + sq_pages * 8) as u32;
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateSq,
-            self.cmd_in_mbox_device,
             sq_in_len,
-            self.cmd_out_mbox_device,
             0x10,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -216,7 +214,7 @@ impl Mlx5Device {
         scatter_fcs: bool,
         vlan_strip: bool,
     ) -> Mlx5Result<u32> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_create_rq_input(
             in_mbox,
@@ -232,11 +230,9 @@ impl Mlx5Device {
         let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
         let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rq_in_len = (0x110 + rq_pages * 8) as u32;
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateRq,
-            self.cmd_in_mbox_device,
             rq_in_len,
-            self.cmd_out_mbox_device,
             0x10,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -294,7 +290,7 @@ impl Mlx5Device {
     }
 
     unsafe fn transition_sq_to_ready(&mut self, sqn: u32) -> Mlx5Result<()> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_modify_sq_input(
             in_mbox,
@@ -304,18 +300,16 @@ impl Mlx5Device {
             0,
             false,
         );
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::ModifySq,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())
     }
 
     unsafe fn transition_rq_to_ready(&mut self, rqn: u32) -> Mlx5Result<()> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_modify_rq_input(
             in_mbox,
@@ -325,11 +319,9 @@ impl Mlx5Device {
             0,
             false,
         );
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::ModifyRq,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         Ok(())

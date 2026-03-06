@@ -341,10 +341,7 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
         return Err("mlx5 device not available");
     }
 
-    let _ = with_mlx5_device(|dev| unsafe {
-        let _ = dev.query_port_mac(0);
-        let _ = dev.query_port_state(0);
-    });
+    let _ = with_mlx5_device(|dev| unsafe { dev.refresh_port_runtime_state(0) });
 
     // MAC アドレスを取得
     let mut mac = with_mlx5_device(|dev| {

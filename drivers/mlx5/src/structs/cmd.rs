@@ -2,7 +2,7 @@
 // drivers/mlx5/src/structs/cmd.rs - Command Mailbox Layouts
 // ============================================================================
 
-use crate::structs::{get_bits_u32, set_bits_u32, set_bits_u64};
+use crate::structs::{get_bits_u32, get_bits_u64, set_bits_u32, set_bits_u64};
 
 /// MKEY Context Layout
 pub struct MkeyContextLayout<'a> {
@@ -296,6 +296,152 @@ impl<'a> QueryVportStateOutputLayout<'a> {
     }
     pub fn state(&self) -> u8 {
         get_bits_u32(self.data, 124, 4) as u8
+    }
+}
+
+/// QUERY_VNIC_ENV Input Layout
+pub struct QueryVnicEnvInputLayout<'a> {
+    pub(crate) data: &'a mut [u8],
+}
+
+impl<'a> QueryVnicEnvInputLayout<'a> {
+    pub fn new(data: &'a mut [u8]) -> Self {
+        Self { data }
+    }
+    pub fn set_op_mod(&mut self, val: u16) {
+        set_bits_u32(self.data, 48, 16, val as u32);
+    }
+    pub fn set_other_vport(&mut self, val: bool) {
+        set_bits_u32(self.data, 64, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_vport_number(&mut self, val: u16) {
+        set_bits_u32(self.data, 80, 16, val as u32);
+    }
+}
+
+/// QUERY_VNIC_ENV Output Layout
+pub struct QueryVnicEnvOutputLayout<'a> {
+    pub(crate) data: &'a [u8],
+}
+
+impl<'a> QueryVnicEnvOutputLayout<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { data }
+    }
+
+    pub fn receive_discard_vport_down(&self) -> u64 {
+        get_bits_u64(self.data, 320)
+    }
+
+    pub fn transmit_discard_vport_down(&self) -> u64 {
+        get_bits_u64(self.data, 384)
+    }
+}
+
+/// MODIFY_VPORT_STATE Input Layout
+pub struct ModifyVportStateInputLayout<'a> {
+    pub(crate) data: &'a mut [u8],
+}
+
+impl<'a> ModifyVportStateInputLayout<'a> {
+    pub fn new(data: &'a mut [u8]) -> Self {
+        Self { data }
+    }
+    pub fn set_op_mod(&mut self, val: u16) {
+        set_bits_u32(self.data, 48, 16, val as u32);
+    }
+    pub fn set_other_vport(&mut self, val: bool) {
+        set_bits_u32(self.data, 64, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_vport_number(&mut self, val: u16) {
+        set_bits_u32(self.data, 80, 16, val as u32);
+    }
+    pub fn set_admin_state(&mut self, val: u8) {
+        set_bits_u32(self.data, 120, 4, val as u32);
+    }
+}
+
+/// QUERY_VHCA_STATE Input Layout
+pub struct QueryVhcaStateInputLayout<'a> {
+    pub(crate) data: &'a mut [u8],
+}
+
+impl<'a> QueryVhcaStateInputLayout<'a> {
+    pub fn new(data: &'a mut [u8]) -> Self {
+        Self { data }
+    }
+    pub fn set_uid(&mut self, val: u16) {
+        set_bits_u32(self.data, 16, 16, val as u32);
+    }
+    pub fn set_op_mod(&mut self, val: u16) {
+        set_bits_u32(self.data, 48, 16, val as u32);
+    }
+    pub fn set_embedded_cpu_function(&mut self, val: bool) {
+        set_bits_u32(self.data, 64, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_function_id(&mut self, val: u16) {
+        set_bits_u32(self.data, 80, 16, val as u32);
+    }
+}
+
+/// QUERY_VHCA_STATE Output Layout
+pub struct QueryVhcaStateOutputLayout<'a> {
+    pub(crate) data: &'a [u8],
+}
+
+impl<'a> QueryVhcaStateOutputLayout<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { data }
+    }
+
+    pub fn arm_change_event(&self) -> bool {
+        get_bits_u32(self.data, 128, 1) != 0
+    }
+
+    pub fn vhca_state(&self) -> u8 {
+        get_bits_u32(self.data, 140, 4) as u8
+    }
+
+    pub fn sw_function_id(&self) -> u32 {
+        get_bits_u32(self.data, 160, 32)
+    }
+}
+
+/// MODIFY_VHCA_STATE Input Layout
+pub struct ModifyVhcaStateInputLayout<'a> {
+    pub(crate) data: &'a mut [u8],
+}
+
+impl<'a> ModifyVhcaStateInputLayout<'a> {
+    pub fn new(data: &'a mut [u8]) -> Self {
+        Self { data }
+    }
+    pub fn set_uid(&mut self, val: u16) {
+        set_bits_u32(self.data, 16, 16, val as u32);
+    }
+    pub fn set_op_mod(&mut self, val: u16) {
+        set_bits_u32(self.data, 48, 16, val as u32);
+    }
+    pub fn set_embedded_cpu_function(&mut self, val: bool) {
+        set_bits_u32(self.data, 64, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_function_id(&mut self, val: u16) {
+        set_bits_u32(self.data, 80, 16, val as u32);
+    }
+    pub fn set_field_select_sw_function_id(&mut self, val: bool) {
+        set_bits_u32(self.data, 126, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_field_select_arm_change_event(&mut self, val: bool) {
+        set_bits_u32(self.data, 127, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_arm_change_event(&mut self, val: bool) {
+        set_bits_u32(self.data, 128, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_vhca_state(&mut self, val: u8) {
+        set_bits_u32(self.data, 140, 4, val as u32);
+    }
+    pub fn set_sw_function_id(&mut self, val: u32) {
+        set_bits_u32(self.data, 160, 32, val);
     }
 }
 

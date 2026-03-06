@@ -286,6 +286,8 @@ pub enum CmdOpcode {
 
     /// ポート状態クエリ
     QueryVportState = 0x0750,
+    /// ポート状態変更
+    ModifyVportState = 0x0751,
 
     /// MKEYアロケーション
     CreateMkey = 0x0200,
@@ -334,11 +336,13 @@ pub enum CmdOpcode {
 
     /// VPORTカウンタクエリ
     QueryVportCounter = 0x0770,
+    /// VNIC environment クエリ
+    QueryVnicEnv = 0x076F,
 
     /// VHCA 状態変更 (SR-IOV VF 有効化等)
-    ModifyVhcaState = 0x010E,
+    ModifyVhcaState = 0x0B0E,
     /// VHCA 状態クエリ
-    QueryVhcaState = 0x010F,
+    QueryVhcaState = 0x0B0D,
 
     /// ドライババージョン設定
     SetDriverVersion = 0x010D,

@@ -112,7 +112,48 @@ const TRAFFIC_COUNTER_SIZE: usize = 0x10;
 const QUERY_VPORT_COUNTER_BASE: usize = 0x10;
 
 const QUERY_VPORT_STATE_OP_MOD_VNIC_VPORT: u16 = 0;
+const QUERY_VNIC_ENV_OP_MOD_VNIC_VPORT: u16 = 0;
 const QUERY_VPORT_COUNTER_OP_MOD_VPORT_COUNTERS: u16 = 0;
+pub(crate) const MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT: u16 = 1;
+pub(crate) const VPORT_ADMIN_STATE_UP: u8 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VnicEnvCounters {
+    pub receive_discard_vport_down: u64,
+    pub transmit_discard_vport_down: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VhcaState {
+    Invalid = 0,
+    Allocated = 1,
+    Active = 2,
+    InUse = 3,
+    TeardownRequest = 4,
+}
+
+impl VhcaState {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            1 => Self::Allocated,
+            2 => Self::Active,
+            3 => Self::InUse,
+            4 => Self::TeardownRequest,
+            _ => Self::Invalid,
+        }
+    }
+
+    pub(crate) fn is_activation_ready(self) -> bool {
+        matches!(self, Self::Allocated | Self::Active | Self::InUse)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VhcaStateContext {
+    pub state: VhcaState,
+    pub sw_function_id: u32,
+    pub arm_change_event: bool,
+}
 
 fn parse_mac_layout(layout: &[u8]) -> [u8; 6] {
     let mut mac = [0u8; 6];
@@ -173,27 +214,6 @@ pub fn build_set_driver_version_input(in_mbox: &mut CmdMailbox, version_str: &[u
     in_mbox.data[0x10..0x10 + len].copy_from_slice(&version_str[..len]);
 }
 
-// ---------------------------------------------------------------------------
-// Additional helpers that were missing earlier. These are rough stubs; the
-// real layout is firmware-specific and not needed for the current unit tests.
-// They exist solely to make the crate build correctly.
-
-/// VHCA state を変更する簡易ビルダー (param/state はコマンド固有の値)
-pub fn build_modify_vhca_state_input(in_mbox: &mut CmdMailbox, vhca_id: u16, param: u8, state: u8) {
-    *in_mbox = CmdMailbox::zeroed();
-    // encode VHCA ID at offset 0x04 (common pattern); widen to u32
-    in_mbox.write_be32(0x04, vhca_id as u32);
-    // put param/state in next word
-    in_mbox.write_be32(0x08, ((param as u32) << 8) | (state as u32));
-}
-
-/// NIC vport の有効/無効を切り替える簡易ビルダー
-pub fn build_modify_nic_vport_state_input(in_mbox: &mut CmdMailbox, vhca_id: u16, enable: bool) {
-    *in_mbox = CmdMailbox::zeroed();
-    in_mbox.write_be32(0x04, vhca_id as u32);
-    in_mbox.write_be32(0x08, if enable { 1 } else { 0 });
-}
-
 /// QUERY_VPORT_STATE コマンド入力の構築
 pub fn build_query_vport_state_input(
     in_mbox: &mut CmdMailbox,
@@ -212,6 +232,44 @@ pub fn build_query_vport_state_input(
 pub fn parse_query_vport_state_output(out_mbox: &CmdMailbox) -> (u8, u8, u16) {
     let layout = QueryVportStateOutputLayout::new(&out_mbox.data[..]);
     (layout.admin_state(), layout.state(), layout.max_tx_speed())
+}
+
+/// QUERY_VNIC_ENV コマンド入力の構築
+pub(crate) fn build_query_vnic_env_input(
+    in_mbox: &mut CmdMailbox,
+    vport_number: u16,
+    other_vport: bool,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    let mut layout = QueryVnicEnvInputLayout::new(&mut in_mbox.data[..]);
+    layout.set_op_mod(QUERY_VNIC_ENV_OP_MOD_VNIC_VPORT);
+    layout.set_other_vport(other_vport);
+    layout.set_vport_number(vport_number);
+}
+
+/// QUERY_VNIC_ENV 出力を解析
+pub(crate) fn parse_query_vnic_env_output(out_mbox: &CmdMailbox) -> VnicEnvCounters {
+    let layout = QueryVnicEnvOutputLayout::new(&out_mbox.data[..]);
+    VnicEnvCounters {
+        receive_discard_vport_down: layout.receive_discard_vport_down(),
+        transmit_discard_vport_down: layout.transmit_discard_vport_down(),
+    }
+}
+
+/// MODIFY_VPORT_STATE コマンド入力の構築
+pub(crate) fn build_modify_vport_state_input(
+    in_mbox: &mut CmdMailbox,
+    op_mod: u16,
+    vport_number: u16,
+    other_vport: bool,
+    admin_state: u8,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    let mut layout = ModifyVportStateInputLayout::new(&mut in_mbox.data[..]);
+    layout.set_op_mod(op_mod);
+    layout.set_other_vport(other_vport);
+    layout.set_vport_number(vport_number);
+    layout.set_admin_state(admin_state);
 }
 
 /// QUERY_VPORT_COUNTER コマンド入力の構築
@@ -266,6 +324,59 @@ pub fn parse_query_vport_counter_output(out_mbox: &CmdMailbox) -> crate::defs::V
     }
 }
 
+/// QUERY_VHCA_STATE コマンド入力の構築
+pub(crate) fn build_query_vhca_state_input(in_mbox: &mut CmdMailbox, uid: u16, function_id: u16) {
+    *in_mbox = CmdMailbox::zeroed();
+    let mut layout = QueryVhcaStateInputLayout::new(&mut in_mbox.data[..]);
+    layout.set_uid(uid);
+    layout.set_op_mod(0);
+    layout.set_embedded_cpu_function(false);
+    layout.set_function_id(function_id);
+}
+
+/// QUERY_VHCA_STATE 出力を解析
+pub(crate) fn parse_query_vhca_state_output(out_mbox: &CmdMailbox) -> VhcaStateContext {
+    let layout = QueryVhcaStateOutputLayout::new(&out_mbox.data[..]);
+    VhcaStateContext {
+        state: VhcaState::from_raw(layout.vhca_state()),
+        sw_function_id: layout.sw_function_id(),
+        arm_change_event: layout.arm_change_event(),
+    }
+}
+
+/// MODIFY_VHCA_STATE コマンド入力の構築 (arm_change_event)
+pub(crate) fn build_modify_vhca_state_arm_input(
+    in_mbox: &mut CmdMailbox,
+    uid: u16,
+    function_id: u16,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    let mut layout = ModifyVhcaStateInputLayout::new(&mut in_mbox.data[..]);
+    layout.set_uid(uid);
+    layout.set_op_mod(0);
+    layout.set_embedded_cpu_function(false);
+    layout.set_function_id(function_id);
+    layout.set_field_select_arm_change_event(true);
+    layout.set_arm_change_event(true);
+}
+
+/// MODIFY_VHCA_STATE コマンド入力の構築 (sw_function_id)
+pub(crate) fn build_modify_vhca_state_sw_id_input(
+    in_mbox: &mut CmdMailbox,
+    uid: u16,
+    function_id: u16,
+    sw_function_id: u32,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    let mut layout = ModifyVhcaStateInputLayout::new(&mut in_mbox.data[..]);
+    layout.set_uid(uid);
+    layout.set_op_mod(0);
+    layout.set_embedded_cpu_function(false);
+    layout.set_function_id(function_id);
+    layout.set_field_select_sw_function_id(true);
+    layout.set_sw_function_id(sw_function_id);
+}
+
 /// NIC VPORT の MAC アドレスを変更するコマンド入力の構築
 pub fn build_modify_nic_vport_mac_input(
     in_mbox: &mut CmdMailbox,
@@ -305,7 +416,8 @@ pub fn query_vport_state_op_mod_vnic_vport() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::structs::get_bits_u32;
+    use crate::defs::CmdOpcode;
+    use crate::structs::{get_bits_u32, set_bits_u32};
 
     #[test]
     fn query_nic_vport_context_mac_decode_uses_padded_layout() {
@@ -354,6 +466,93 @@ mod tests {
         assert_eq!(get_bits_u32(&in_mbox.data[..], 48, 16), 2);
         assert_eq!(get_bits_u32(&in_mbox.data[..], 64, 1), 1);
         assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 7);
+    }
+
+    #[test]
+    fn query_vnic_env_layout_matches_linux_offsets() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_query_vnic_env_input(&mut in_mbox, 9, true);
+
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 48, 16), 0);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 64, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 9);
+
+        let mut out_mbox = CmdMailbox::zeroed();
+        out_mbox.write_be64(0x28, 11);
+        out_mbox.write_be64(0x30, 13);
+        let counters = parse_query_vnic_env_output(&out_mbox);
+
+        assert_eq!(counters.receive_discard_vport_down, 11);
+        assert_eq!(counters.transmit_discard_vport_down, 13);
+    }
+
+    #[test]
+    fn modify_vport_state_admin_up_matches_linux_fields() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_modify_vport_state_input(
+            &mut in_mbox,
+            MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT,
+            4,
+            true,
+            VPORT_ADMIN_STATE_UP,
+        );
+
+        assert_eq!(
+            get_bits_u32(&in_mbox.data[..], 48, 16),
+            MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT as u32
+        );
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 64, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 4);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 120, 4), VPORT_ADMIN_STATE_UP as u32);
+    }
+
+    #[test]
+    fn query_vhca_state_builder_and_parser_match_linux_layout() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_query_vhca_state_input(&mut in_mbox, 0x55aa, 7);
+
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 16, 16), 0x55aa);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 48, 16), 0);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 64, 1), 0);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 7);
+
+        let mut out_mbox = CmdMailbox::zeroed();
+        set_bits_u32(&mut out_mbox.data[..], 128, 1, 1);
+        set_bits_u32(&mut out_mbox.data[..], 140, 4, 2);
+        let parsed = parse_query_vhca_state_output(&out_mbox);
+        assert_eq!(parsed.state, VhcaState::Active);
+        assert_eq!(parsed.arm_change_event, true);
+        assert_eq!(parsed.sw_function_id, 0);
+
+        set_bits_u32(&mut out_mbox.data[..], 160, 32, 0xdead_beef);
+        let parsed = parse_query_vhca_state_output(&out_mbox);
+        assert_eq!(parsed.sw_function_id, 0xdead_beef);
+    }
+
+    #[test]
+    fn modify_vhca_state_builders_set_field_select_bits() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_modify_vhca_state_arm_input(&mut in_mbox, 0x1234, 2);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 16, 16), 0x1234);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 2);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 127, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 128, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 126, 1), 0);
+
+        build_modify_vhca_state_sw_id_input(&mut in_mbox, 0xabcd, 3, 0x1020_3040);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 16, 16), 0xabcd);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 3);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 126, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 127, 1), 0);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 160, 32), 0x1020_3040);
+    }
+
+    #[test]
+    fn opcode_values_match_linux_ifc() {
+        assert_eq!(CmdOpcode::ModifyVportState as u16, 0x0751);
+        assert_eq!(CmdOpcode::QueryVnicEnv as u16, 0x076f);
+        assert_eq!(CmdOpcode::QueryVhcaState as u16, 0x0b0d);
+        assert_eq!(CmdOpcode::ModifyVhcaState as u16, 0x0b0e);
     }
 
     #[test]

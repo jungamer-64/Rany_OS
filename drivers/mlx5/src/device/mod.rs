@@ -324,6 +324,34 @@ impl Mlx5Device {
         })
     }
 
+    /// Execute a command through the standard UID candidate retry path used by
+    /// opcodes whose mailbox UID lives at the fixed transport-managed offset.
+    pub(crate) unsafe fn execute_uid_sensitive_cmd_impl<T: crate::cmd::CommandTransport>(
+        cmd: &mut T,
+        opcode: CmdOpcode,
+        in_mbox_phys: u64,
+        in_len: u32,
+        out_mbox_phys: u64,
+        out_len: u32,
+        is_vf: bool,
+        sw_vhca_id: u16,
+    ) -> Mlx5Result<()> {
+        if !crate::cmd::CmdQueueTransport::opcode_uses_uid(opcode) {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+
+        Self::execute_cmd_with_uid_candidates_impl(
+            cmd,
+            opcode,
+            in_mbox_phys,
+            in_len,
+            out_mbox_phys,
+            out_len,
+            is_vf,
+            sw_vhca_id,
+        )
+    }
+
     /// Convenience wrapper that uses the device's own command transport.
     unsafe fn execute_cmd_with_uid_candidates(
         &mut self,
@@ -349,5 +377,158 @@ impl Mlx5Device {
         } else {
             Err(Mlx5Error::DeviceNotReady)
         }
+    }
+
+    /// Convenience wrapper for UID-sensitive opcodes that use the transport's
+    /// fixed-offset UID injection logic.
+    pub(crate) unsafe fn execute_uid_sensitive_cmd(
+        &mut self,
+        opcode: CmdOpcode,
+        in_len: u32,
+        out_len: u32,
+    ) -> Mlx5Result<()> {
+        let is_vf = self.is_vf();
+        let sw_vhca_id = self.sw_vhca_id;
+        if let Some(cmd) = self.cmd.as_mut() {
+            Self::execute_uid_sensitive_cmd_impl(
+                cmd,
+                opcode,
+                self.cmd_in_mbox_device,
+                in_len,
+                self.cmd_out_mbox_device,
+                out_len,
+                is_vf,
+                sw_vhca_id,
+            )
+        } else {
+            Err(Mlx5Error::DeviceNotReady)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeTransport {
+        uid: u16,
+        success_uid: u16,
+        calls: Vec<(CmdOpcode, u16)>,
+    }
+
+    impl FakeTransport {
+        fn new(initial_uid: u16, success_uid: u16) -> Self {
+            Self {
+                uid: initial_uid,
+                success_uid,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl CommandTransport for FakeTransport {
+        unsafe fn execute(
+            &mut self,
+            opcode: CmdOpcode,
+            _in_mbox_phys: u64,
+            _in_len: u32,
+            _out_mbox_phys: u64,
+            _out_len: u32,
+        ) -> Mlx5Result<()> {
+            self.calls.push((opcode, self.uid));
+            if self.uid == self.success_uid {
+                Ok(())
+            } else {
+                Err(Mlx5Error::CommandFailed(0x03))
+            }
+        }
+
+        fn set_uid(&mut self, uid: u16) {
+            self.uid = uid;
+        }
+
+        fn uid(&self) -> u16 {
+            self.uid
+        }
+    }
+
+    #[test]
+    fn execute_uid_sensitive_cmd_impl_retries_create_sq_and_restores_uid() {
+        let mut transport = FakeTransport::new(0x1234, 0xffff);
+
+        unsafe {
+            Mlx5Device::execute_uid_sensitive_cmd_impl(
+                &mut transport,
+                CmdOpcode::CreateSq,
+                0x1000,
+                0x120,
+                0x2000,
+                0x10,
+                true,
+                0x2222,
+            )
+        }
+        .unwrap();
+
+        assert_eq!(
+            transport.calls,
+            vec![
+                (CmdOpcode::CreateSq, 0x1234),
+                (CmdOpcode::CreateSq, 0xffff),
+            ]
+        );
+        assert_eq!(transport.uid(), 0x1234);
+    }
+
+    #[test]
+    fn execute_uid_sensitive_cmd_impl_retries_destroy_mkey_through_all_candidates() {
+        let mut transport = FakeTransport::new(0x1234, 0x2222);
+
+        unsafe {
+            Mlx5Device::execute_uid_sensitive_cmd_impl(
+                &mut transport,
+                CmdOpcode::DestroyMkey,
+                0x1000,
+                0x10,
+                0x2000,
+                0x10,
+                true,
+                0x2222,
+            )
+        }
+        .unwrap();
+
+        assert_eq!(
+            transport.calls,
+            vec![
+                (CmdOpcode::DestroyMkey, 0x1234),
+                (CmdOpcode::DestroyMkey, 0xffff),
+                (CmdOpcode::DestroyMkey, 0),
+                (CmdOpcode::DestroyMkey, 0x2222),
+            ]
+        );
+        assert_eq!(transport.uid(), 0x1234);
+    }
+
+    #[test]
+    fn execute_uid_sensitive_cmd_impl_rejects_vhca_state_opcodes() {
+        let mut transport = FakeTransport::new(0x1234, 0x1234);
+
+        let err = unsafe {
+            Mlx5Device::execute_uid_sensitive_cmd_impl(
+                &mut transport,
+                CmdOpcode::QueryVhcaState,
+                0x1000,
+                0x10,
+                0x2000,
+                0x20,
+                true,
+                0x2222,
+            )
+        }
+        .unwrap_err();
+
+        assert_eq!(err, Mlx5Error::InvalidParameter);
+        assert!(transport.calls.is_empty());
     }
 }

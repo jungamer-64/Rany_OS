@@ -32,16 +32,14 @@ impl Mlx5Device {
 
     /// Direct Memory Key を作成
     pub unsafe fn create_mkey(&mut self, params: &MkeyParams) -> Mlx5Result<u32> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::res::build_create_mkey_input(in_mbox, params);
 
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateMkey,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -63,18 +61,16 @@ impl Mlx5Device {
 
     /// TIS (Transport Interface Send) を作成
     pub unsafe fn create_tis(&mut self, params: &TisParams) -> Mlx5Result<u32> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
         log::info!(target: "mlx5", "Creating TIS: td={} pd={} port={} prio={}", params.td, params.pd, params.port, params.prio);
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::res::build_create_tis_input(in_mbox, params);
 
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateTis,
-            self.cmd_in_mbox_device,
             0xC0,
-            self.cmd_out_mbox_device,
             0x10,
         )?;
 
@@ -294,14 +290,12 @@ impl Mlx5Device {
     }
 
     pub unsafe fn create_flow_table(&mut self, config: &FlowTableConfig) -> Mlx5Result<u32> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::flow::build_create_flow_table_input(in_mbox, config);
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateFlowTable,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);

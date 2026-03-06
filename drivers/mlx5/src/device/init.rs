@@ -322,8 +322,7 @@ impl Mlx5Device {
             }
         }
 
-        let _ = self.query_port_mac(0);
-        let _ = self.query_port_state(0);
+        let _ = self.refresh_port_runtime_state(0);
 
         // Phase 4: Queues
         let eqn = self.create_eq_hw(eq_bufs[0].0, eq_bufs[0].1, log_eq_size, 0, 0)?;

@@ -15,7 +15,7 @@ use kernel_api::driver_abi::{
     DriverVTable, KernelApiV1, pack_version,
 };
 
-use crate::defs::{MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH};
+use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH};
 use crate::device::Mlx5Device;
 use crate::resources::MkeyParams;
 
@@ -23,6 +23,8 @@ const CMD_LOG_SIZE: u8 = 2; // 4 entries
 const DMA_PAGE_BYTES: usize = MLX5_PAGE_SIZE;
 const FW_BOOT_PAGE_COUNT: usize = 4;
 const MLX5_EQ_SPARE_EQE: u32 = 0x80;
+
+type QueueBuf = (u64, u64, u64, u64);
 
 // ============================================================================
 // External Kernel API Access
@@ -63,8 +65,8 @@ impl DmaSlot {
 
                     log::info!(
                         target: "mlx5",
-                        "DMA allocated for {}: phys={:#x} device={:#x} size={:#x}",
-                        label, handle.phys_addr, handle.device_addr, handle.size
+                        "DMA allocated for {}: device={:#x} phys={:#x} size={:#x}",
+                        label, handle.device_addr, handle.phys_addr, handle.size
                     );
                     return Ok(Self { handle });
                 }
@@ -113,9 +115,39 @@ struct Mlx5DmaResources {
 }
 
 impl Mlx5DmaResources {
+    const fn command_mailbox_allocation_size() -> usize {
+        MLX5_CMD_MBOX_SIZE
+    }
+
+    fn virt_device_pairs(slots: &[DmaSlot]) -> Vec<(u64, u64)> {
+        slots
+            .iter()
+            .map(|slot| (slot.as_ptr_u64(), slot.device_address()))
+            .collect()
+    }
+
+    fn virt_device_db_pairs(queues: &[DmaSlot], dbs: &[DmaSlot]) -> Vec<QueueBuf> {
+        queues
+            .iter()
+            .zip(dbs.iter())
+            .map(|(queue, db)| {
+                (
+                    queue.as_ptr_u64(),
+                    queue.device_address(),
+                    db.as_ptr_u64(),
+                    db.device_address(),
+                )
+            })
+            .collect()
+    }
+
+    fn device_addresses(slots: &[DmaSlot]) -> Vec<u64> {
+        slots.iter().map(DmaSlot::device_address).collect()
+    }
+
     fn allocate(num_queues: usize) -> Result<Self, i32> {
         let cmdq_size = DMA_PAGE_BYTES.max((1usize << CMD_LOG_SIZE) * 64);
-        let cmd_mbox_size = DMA_PAGE_BYTES;
+        let cmd_mbox_size = Self::command_mailbox_allocation_size();
 
         let eq_target_depth = MLX5_EQ_DEPTH.saturating_add(MLX5_EQ_SPARE_EQE);
         let eq_log_size = (32 - (eq_target_depth - 1).leading_zeros()) as u8;
@@ -170,8 +202,8 @@ impl Mlx5DmaResources {
         })
     }
 
-    fn fw_page_phys_addrs(&self) -> Vec<u64> {
-        self.fw_pages.iter().map(|p| p.phys_address()).collect()
+    fn fw_page_device_addrs(&self) -> Vec<u64> {
+        Self::device_addresses(&self.fw_pages)
     }
 }
 
@@ -252,83 +284,36 @@ extern "C" fn mlx5_probe(ctx: *mut DriverContext) -> i32 {
     // kernel the registry fills the fields.  In cell/FFI mode we leave them
     // at zero and avoid accessing them.
 
-    let fw_page_addrs = dma.fw_page_phys_addrs();
-    let mut mkey_params = MkeyParams::default();
-    // Use the first DMA buffer's physical address as the start of our memory region
-    mkey_params.start_addr = dma.cmdq.phys_address();
-    mkey_params.length = 0x1000; // Map at least the first page
+    let fw_page_addrs = dma.fw_page_device_addrs();
+    let mkey_params = MkeyParams::default();
 
     let eq_log_size = 4; // 16 entries
     let cq_log_size = 4; // 16 entries
     let sq_log_size = 4; // 16 entries
     let rq_log_size = 4; // 16 entries
 
-    let eq_bufs: Vec<(u64, u64)> = dma
-        .eqs
-        .iter()
-        .map(|q| (q.as_ptr_u64(), q.phys_address()))
-        .collect();
-    let tx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma
-        .tx_cqs
-        .iter()
-        .zip(dma.tx_cq_dbs.iter())
-        .map(|(q, db)| {
-            (
-                q.as_ptr_u64(),
-                q.phys_address(),
-                db.as_ptr_u64(),
-                db.phys_address(),
-            )
-        })
-        .collect();
-    let rx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma
-        .rx_cqs
-        .iter()
-        .zip(dma.rx_cq_dbs.iter())
-        .map(|(q, db)| {
-            (
-                q.as_ptr_u64(),
-                q.phys_address(),
-                db.as_ptr_u64(),
-                db.phys_address(),
-            )
-        })
-        .collect();
-    let sq_bufs: Vec<(u64, u64, u64, u64)> = dma
-        .sqs
-        .iter()
-        .zip(dma.sq_dbs.iter())
-        .map(|(q, db)| {
-            (
-                q.as_ptr_u64(),
-                q.phys_address(),
-                db.as_ptr_u64(),
-                db.phys_address(),
-            )
-        })
-        .collect();
-    let rq_bufs: Vec<(u64, u64, u64, u64)> = dma
-        .rqs
-        .iter()
-        .zip(dma.rq_dbs.iter())
-        .map(|(q, db)| {
-            (
-                q.as_ptr_u64(),
-                q.phys_address(),
-                db.as_ptr_u64(),
-                db.phys_address(),
-            )
-        })
-        .collect();
+    let eq_bufs = Mlx5DmaResources::virt_device_pairs(&dma.eqs);
+    let tx_cq_bufs = Mlx5DmaResources::virt_device_db_pairs(&dma.tx_cqs, &dma.tx_cq_dbs);
+    let rx_cq_bufs = Mlx5DmaResources::virt_device_db_pairs(&dma.rx_cqs, &dma.rx_cq_dbs);
+    let sq_bufs = Mlx5DmaResources::virt_device_db_pairs(&dma.sqs, &dma.sq_dbs);
+    let rq_bufs = Mlx5DmaResources::virt_device_db_pairs(&dma.rqs, &dma.rq_dbs);
+
+    log::info!(
+        target: "mlx5",
+        "CMD DMA IOVA: cmdq={:#x} in_mbox={:#x} out_mbox={:#x}",
+        dma.cmdq.device_address(),
+        dma.cmd_in_mbox.device_address(),
+        dma.cmd_out_mbox.device_address(),
+    );
 
     let init_res = unsafe {
         device.init_multi_queue(
             dma.cmdq.as_ptr_u64(),
-            dma.cmdq.phys_address(),
+            dma.cmdq.device_address(),
             dma.cmd_in_mbox.as_ptr_u64(),
-            dma.cmd_in_mbox.phys_address(),
+            dma.cmd_in_mbox.device_address(),
             dma.cmd_out_mbox.as_ptr_u64(),
-            dma.cmd_out_mbox.phys_address(),
+            dma.cmd_out_mbox.device_address(),
             &fw_page_addrs,
             &mkey_params,
             &eq_bufs,
@@ -415,6 +400,62 @@ extern "C" fn mlx5_request_capabilities(caps: *mut DriverCapabilities) {
             (*caps).needs_irq = true;
             (*caps).needs_mmio = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    fn slot(phys_addr: u64, device_addr: u64, virt_addr: u64, size: usize) -> DmaSlot {
+        DmaSlot {
+            handle: AbiDmaBuffer {
+                phys_addr,
+                device_addr,
+                virt_addr,
+                size,
+            },
+        }
+    }
+
+    #[test]
+    fn command_mailbox_allocation_size_matches_driver_mailbox_size() {
+        assert_eq!(
+            Mlx5DmaResources::command_mailbox_allocation_size(),
+            MLX5_CMD_MBOX_SIZE
+        );
+    }
+
+    #[test]
+    fn dma_tuple_helpers_use_device_addresses() {
+        let queues = [
+            slot(0x1000, 0x2000, 0x3000, 0x100),
+            slot(0x4000, 0x5000, 0x6000, 0x100),
+        ];
+        let dbs = [
+            slot(0x7000, 0x8000, 0x9000, 0x100),
+            slot(0xa000, 0xb000, 0xc000, 0x100),
+        ];
+
+        assert_eq!(
+            Mlx5DmaResources::virt_device_pairs(&queues),
+            vec![(0x3000, 0x2000), (0x6000, 0x5000)]
+        );
+        assert_eq!(
+            Mlx5DmaResources::virt_device_db_pairs(&queues, &dbs),
+            vec![
+                (0x3000, 0x2000, 0x9000, 0x8000),
+                (0x6000, 0x5000, 0xc000, 0xb000),
+            ]
+        );
+    }
+
+    #[test]
+    fn fw_pages_use_iova_addresses() {
+        let fw_pages = [slot(0x1000, 0x2000, 0, 0x1000), slot(0x3000, 0x4000, 0, 0x1000)];
+
+        assert_eq!(Mlx5DmaResources::device_addresses(&fw_pages), vec![0x2000, 0x4000]);
     }
 }
 

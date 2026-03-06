@@ -15,6 +15,98 @@ use crate::port::MacAddr;
 use alloc::vec::Vec;
 
 impl Mlx5Device {
+    unsafe fn execute_rebuilt_with_uid_candidates<T, B, F, R>(
+        cmd: &mut T,
+        in_mbox: &mut CmdMailbox,
+        is_vf: bool,
+        sw_vhca_id: u16,
+        mut build: B,
+        mut execute: F,
+    ) -> Mlx5Result<R>
+    where
+        T: CommandTransport,
+        B: FnMut(&mut CmdMailbox, u16),
+        F: FnMut(&mut T, &CmdMailbox) -> Mlx5Result<R>,
+    {
+        let prev_uid = cmd.uid();
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        let mut last_err = Err(Mlx5Error::NotSupported);
+
+        for &uid in &uids[..len] {
+            cmd.set_uid(uid);
+            build(in_mbox, uid);
+            match execute(cmd, in_mbox) {
+                Ok(value) => {
+                    cmd.set_uid(prev_uid);
+                    return Ok(value);
+                }
+                Err(err) => last_err = Err(err),
+            }
+        }
+
+        cmd.set_uid(prev_uid);
+        last_err
+    }
+
+    unsafe fn activate_vfs_with_transport<T: CommandTransport>(
+        cmd: &mut T,
+        in_mbox: &mut CmdMailbox,
+        in_mbox_phys: u64,
+        out_mbox: &mut CmdMailbox,
+        out_mbox_phys: u64,
+        is_vf: bool,
+        sw_vhca_id: u16,
+        num_vfs: u16,
+    ) -> Mlx5Result<()> {
+        for vf in 0..num_vfs {
+            let function_id = vf + 1;
+            let vhca_ctx = Self::execute_rebuilt_with_uid_candidates(
+                cmd,
+                in_mbox,
+                is_vf,
+                sw_vhca_id,
+                |in_mbox, uid| build_query_vhca_state_input(in_mbox, uid, function_id),
+                |cmd, _| {
+                    cmd.execute(
+                        CmdOpcode::QueryVhcaState,
+                        in_mbox_phys,
+                        0x10,
+                        out_mbox_phys,
+                        0x20,
+                    )?;
+                    Ok(parse_query_vhca_state_output(out_mbox))
+                },
+            )?;
+
+            if !vhca_ctx.state.is_activation_ready() {
+                log::warn!(
+                    target: "mlx5",
+                    "VF {} VHCA state {:?} is not activation-ready",
+                    function_id,
+                    vhca_ctx.state
+                );
+                return Err(Mlx5Error::InvalidResponse);
+            }
+
+            build_modify_vport_state_input(
+                in_mbox,
+                MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT,
+                function_id,
+                true,
+                VPORT_ADMIN_STATE_UP,
+            );
+            cmd.execute(
+                CmdOpcode::ModifyVportState,
+                in_mbox_phys,
+                0x10,
+                out_mbox_phys,
+                0x10,
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// パケットを送信
     pub unsafe fn transmit(
         &mut self,
@@ -122,44 +214,23 @@ impl Mlx5Device {
         if !caps.vport_group_manager {
             return Err(Mlx5Error::NotSupported);
         }
+        let is_vf = self.is_vf();
+        let sw_vhca_id = self.sw_vhca_id;
+        let in_mbox_phys = self.cmd_in_mbox_device;
+        let out_mbox_phys = self.cmd_out_mbox_device;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
-        for i in 0..num_vfs {
-            let vhca_id = i + 1;
-            {
-                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-                build_modify_vhca_state_input(in_mbox, vhca_id, 0, 1);
-                cmd.execute(
-                    CmdOpcode::ModifyVhcaState,
-                    self.cmd_in_mbox_device,
-                    MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_device,
-                    MLX5_CMD_MBOX_SIZE as u32,
-                )?;
-            }
-            {
-                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-                build_modify_vhca_state_input(in_mbox, vhca_id, 0, 2);
-                cmd.execute(
-                    CmdOpcode::ModifyVhcaState,
-                    self.cmd_in_mbox_device,
-                    MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_device,
-                    MLX5_CMD_MBOX_SIZE as u32,
-                )?;
-            }
-            {
-                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-                build_modify_nic_vport_state_input(in_mbox, vhca_id, true);
-                cmd.execute(
-                    CmdOpcode::ModifyNicVportContext,
-                    self.cmd_in_mbox_device,
-                    MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_device,
-                    MLX5_CMD_MBOX_SIZE as u32,
-                )?;
-            }
-        }
-        Ok(())
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let out_mbox = &mut *(self.cmd_out_mbox_virt as *mut CmdMailbox);
+        Self::activate_vfs_with_transport(
+            cmd,
+            in_mbox,
+            in_mbox_phys,
+            out_mbox,
+            out_mbox_phys,
+            is_vf,
+            sw_vhca_id,
+            num_vfs,
+        )
     }
 
     pub unsafe fn query_port_state(&mut self, port_index: usize) -> Mlx5Result<PortLinkState> {
@@ -271,6 +342,65 @@ impl Mlx5Device {
         Ok(MacAddr::ZERO)
     }
 
+    unsafe fn query_port_mtu(&mut self, port_index: usize) -> Mlx5Result<u32> {
+        self.ports
+            .get(port_index)
+            .ok_or(Mlx5Error::InvalidParameter)?;
+
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_query_nic_vport_context_input(in_mbox, 0, false, None);
+        cmd.execute(
+            CmdOpcode::QueryNicVportContext,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let mtu = parse_query_nic_vport_context_mtu(out_mbox) as u32;
+        if let Some(port) = self.ports.get_mut(port_index) {
+            port.set_mtu(mtu).map_err(|_| Mlx5Error::InvalidResponse)?;
+        }
+        Ok(mtu)
+    }
+
+    unsafe fn query_vnic_env(
+        &mut self,
+        vport_number: u16,
+        other_vport: bool,
+    ) -> Mlx5Result<VnicEnvCounters> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_query_vnic_env_input(in_mbox, vport_number, other_vport);
+        cmd.execute(
+            CmdOpcode::QueryVnicEnv,
+            self.cmd_in_mbox_device,
+            0x10,
+            self.cmd_out_mbox_device,
+            0x40,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        Ok(parse_query_vnic_env_output(out_mbox))
+    }
+
+    pub unsafe fn refresh_port_runtime_state(&mut self, port_index: usize) -> Mlx5Result<()> {
+        let _ = self.query_port_mac(port_index)?;
+        let _ = self.query_port_state(port_index)?;
+        let _ = self.query_port_mtu(port_index)?;
+        let vnic_env = self.query_vnic_env(0, false)?;
+
+        if let Some(port) = self.ports.get_mut(port_index) {
+            let stats = port.stats_mut();
+            stats.rx_dropped = vnic_env.receive_discard_vport_down;
+            stats.tx_dropped = vnic_env.transmit_discard_vport_down;
+        }
+
+        Ok(())
+    }
+
     pub unsafe fn update_port_stats(&mut self, port_index: usize) -> Mlx5Result<()> {
         let port_num = self
             .ports
@@ -279,6 +409,7 @@ impl Mlx5Device {
             .ok_or(Mlx5Error::InvalidParameter)?;
 
         let counters = self.query_vport_counters(port_num, false)?;
+        let vnic_env = self.query_vnic_env(0, false)?;
 
         if let Some(port) = self.ports.get_mut(port_index) {
             let stats = port.stats_mut();
@@ -296,8 +427,8 @@ impl Mlx5Device {
                 + counters.tx_broadcast_bytes;
             stats.rx_errors = counters.rx_error_packets;
             stats.tx_errors = counters.tx_error_packets;
-            stats.rx_dropped = counters.rx_dropped;
-            stats.tx_dropped = counters.tx_dropped;
+            stats.rx_dropped = vnic_env.receive_discard_vport_down;
+            stats.tx_dropped = vnic_env.transmit_discard_vport_down;
         }
 
         Ok(())
@@ -408,5 +539,192 @@ impl Mlx5Device {
 
     pub unsafe fn health_check(&mut self) -> bool {
         !matches!(self.health_status(), HealthStatus::Critical)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::structs::{get_bits_u32, set_bits_u32};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct CallSnapshot {
+        opcode: CmdOpcode,
+        uid: u16,
+        encoded_uid: u16,
+        function_id: u16,
+        op_mod: u16,
+        other_vport: bool,
+        vport_number: u16,
+        admin_state: u8,
+    }
+
+    struct FakeTransport {
+        uid: u16,
+        in_mbox: *const CmdMailbox,
+        out_mbox: *mut CmdMailbox,
+        valid_query_uid: u16,
+        query_state: VhcaState,
+        calls: Vec<CallSnapshot>,
+    }
+
+    impl FakeTransport {
+        fn new(
+            in_mbox: &CmdMailbox,
+            out_mbox: &mut CmdMailbox,
+            valid_query_uid: u16,
+            query_state: VhcaState,
+        ) -> Self {
+            Self {
+                uid: 0,
+                in_mbox: in_mbox as *const CmdMailbox,
+                out_mbox: out_mbox as *mut CmdMailbox,
+                valid_query_uid,
+                query_state,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl CommandTransport for FakeTransport {
+        unsafe fn execute(
+            &mut self,
+            opcode: CmdOpcode,
+            _in_mbox_phys: u64,
+            _in_len: u32,
+            _out_mbox_phys: u64,
+            _out_len: u32,
+        ) -> Mlx5Result<()> {
+            let in_mbox = &*self.in_mbox;
+            match opcode {
+                CmdOpcode::QueryVhcaState => {
+                    let encoded_uid = get_bits_u32(&in_mbox.data[..], 16, 16) as u16;
+                    let function_id = get_bits_u32(&in_mbox.data[..], 80, 16) as u16;
+                    self.calls.push(CallSnapshot {
+                        opcode,
+                        uid: self.uid,
+                        encoded_uid,
+                        function_id,
+                        op_mod: 0,
+                        other_vport: false,
+                        vport_number: 0,
+                        admin_state: 0,
+                    });
+
+                    if self.uid != self.valid_query_uid {
+                        return Err(Mlx5Error::CommandFailed(0x03));
+                    }
+
+                    let out_mbox = &mut *self.out_mbox;
+                    *out_mbox = CmdMailbox::zeroed();
+                    set_bits_u32(&mut out_mbox.data[..], 140, 4, self.query_state as u32);
+                    Ok(())
+                }
+                CmdOpcode::ModifyVportState => {
+                    self.calls.push(CallSnapshot {
+                        opcode,
+                        uid: self.uid,
+                        encoded_uid: 0,
+                        function_id: 0,
+                        op_mod: get_bits_u32(&in_mbox.data[..], 48, 16) as u16,
+                        other_vport: get_bits_u32(&in_mbox.data[..], 64, 1) != 0,
+                        vport_number: get_bits_u32(&in_mbox.data[..], 80, 16) as u16,
+                        admin_state: get_bits_u32(&in_mbox.data[..], 120, 4) as u8,
+                    });
+                    Ok(())
+                }
+                CmdOpcode::ModifyVhcaState => {
+                    self.calls.push(CallSnapshot {
+                        opcode,
+                        uid: self.uid,
+                        encoded_uid: get_bits_u32(&in_mbox.data[..], 16, 16) as u16,
+                        function_id: get_bits_u32(&in_mbox.data[..], 80, 16) as u16,
+                        op_mod: 0,
+                        other_vport: false,
+                        vport_number: 0,
+                        admin_state: 0,
+                    });
+                    Ok(())
+                }
+                _ => Err(Mlx5Error::InvalidParameter),
+            }
+        }
+
+        fn set_uid(&mut self, uid: u16) {
+            self.uid = uid;
+        }
+
+        fn uid(&self) -> u16 {
+            self.uid
+        }
+    }
+
+    #[test]
+    fn activate_vfs_rebuilds_vhca_query_mailboxes_and_only_admins_up_after_validation() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let mut out_mbox = CmdMailbox::zeroed();
+        let mut transport = FakeTransport::new(&in_mbox, &mut out_mbox, 0xffff, VhcaState::Allocated);
+
+        unsafe {
+            Mlx5Device::activate_vfs_with_transport(
+                &mut transport,
+                &mut in_mbox,
+                0,
+                &mut out_mbox,
+                0,
+                true,
+                0x2222,
+                1,
+            )
+        }
+        .unwrap();
+
+        assert_eq!(transport.calls.len(), 3);
+        assert_eq!(transport.calls[0].opcode, CmdOpcode::QueryVhcaState);
+        assert_eq!(transport.calls[0].uid, 0);
+        assert_eq!(transport.calls[0].encoded_uid, 0);
+        assert_eq!(transport.calls[0].function_id, 1);
+        assert_eq!(transport.calls[1].opcode, CmdOpcode::QueryVhcaState);
+        assert_eq!(transport.calls[1].uid, 0xffff);
+        assert_eq!(transport.calls[1].encoded_uid, 0xffff);
+        assert_eq!(transport.calls[1].function_id, 1);
+        assert_eq!(transport.calls[2].opcode, CmdOpcode::ModifyVportState);
+        assert_eq!(transport.calls[2].op_mod, MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT);
+        assert!(transport.calls[2].other_vport);
+        assert_eq!(transport.calls[2].vport_number, 1);
+        assert_eq!(transport.calls[2].admin_state, VPORT_ADMIN_STATE_UP);
+        assert!(!transport
+            .calls
+            .iter()
+            .any(|call| call.opcode == CmdOpcode::ModifyVhcaState));
+    }
+
+    #[test]
+    fn activate_vfs_stops_before_admin_up_when_vhca_state_is_invalid() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let mut out_mbox = CmdMailbox::zeroed();
+        let mut transport = FakeTransport::new(&in_mbox, &mut out_mbox, 0, VhcaState::Invalid);
+
+        let err = unsafe {
+            Mlx5Device::activate_vfs_with_transport(
+                &mut transport,
+                &mut in_mbox,
+                0,
+                &mut out_mbox,
+                0,
+                true,
+                0x2222,
+                1,
+            )
+        }
+        .unwrap_err();
+
+        assert_eq!(err, Mlx5Error::InvalidResponse);
+        assert_eq!(transport.calls.len(), 1);
+        assert_eq!(transport.calls[0].opcode, CmdOpcode::QueryVhcaState);
+        assert!(!transport
+            .calls
+            .iter()
+            .any(|call| call.opcode == CmdOpcode::ModifyVportState));
     }
 }
