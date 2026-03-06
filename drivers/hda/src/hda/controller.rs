@@ -325,7 +325,7 @@ impl HdaController {
                 let virt = buf.as_ptr() as u64;
                 let dev = buf.device_address();
                 // Note: The buffer is managed by the kernel's DMA registry
-                // and will be freed when free_dma is called.
+                // and will be reclaimed automatically when the DMA slice is dropped.
                 // We intentionally forget the buffer to prevent Drop from running,
                 // as the kernel registry holds the actual allocation.
                 core::mem::forget(buf);

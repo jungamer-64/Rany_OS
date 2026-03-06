@@ -19,6 +19,7 @@ let kernel = kernel_api::service::kernel::instance();
 let dma_buf = kernel.alloc_dma(sq_size)?; // returns DmaSlice<CpuOwned>
 let dev_addr = dma_buf.device_address(); // Use for IOMMU compatibility
 let virt_ptr = dma_buf.as_ptr();
+drop(dma_buf); // Drop releases the DMA allocation
 ```
 
 Register the driver with the kernel at boot (in `kernel/src/main.rs`):

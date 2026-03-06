@@ -22,7 +22,7 @@ hal = { path = "../hal" }
 
 If your driver needs to allocate DMA memory:
 
-- Use `kernel_api::service::kernel::instance().alloc_dma(size)` and `kernel_api::service::kernel::instance().free_dma(buffer)`.
+- Use `kernel_api::service::kernel::instance().alloc_dma(size)` and let the returned DMA slice reclaim itself on Drop.
 
 This directory has a verification script that checks for unauthorized kernel dependencies as part of CI: `scripts/check-driver-deps.ps1`.
 

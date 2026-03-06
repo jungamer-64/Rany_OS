@@ -9,7 +9,7 @@
 
 extern crate alloc;
 
-use crate::abi::driver::KernelApiV1;
+use crate::abi::driver::KernelApiV2;
 use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::ChannelHandle;
 use crate::resource::fs::{FileHandle, OpenMode};
@@ -385,9 +385,17 @@ pub unsafe fn install(services: &'static dyn KernelServices) {
 /// Panics if called before `install`
 #[inline]
 pub fn instance() -> &'static dyn KernelServices {
-    *KERNEL
-        .get()
-        .expect("Kernel not initialized! Call install() first.")
+    if let Some(services) = KERNEL.get() {
+        return *services;
+    }
+
+    #[cfg(feature = "cell_runtime")]
+    {
+        return standalone::instance();
+    }
+
+    #[cfg(not(feature = "cell_runtime"))]
+    panic!("Kernel not initialized! Call install() first.")
 }
 
 /// Check if kernel is registered
@@ -401,8 +409,8 @@ pub fn is_installed() -> bool {
 // ============================================================================
 
 unsafe extern "C" {
-    /// The global KernelApiV1 instance exported by the kernel.
-    static __exorust_kernel_api_v1: KernelApiV1;
+    /// The global KernelApiV2 instance exported by the kernel.
+    static __exorust_kernel_api_v2: KernelApiV2;
 }
 
 /// Get the stable ABI kernel API table
@@ -410,6 +418,358 @@ unsafe extern "C" {
 /// This is used by drivers and standalone cells to access kernel services
 /// through the ABI-stable interface.
 #[inline]
-pub fn abi() -> &'static KernelApiV1 {
-    unsafe { &__exorust_kernel_api_v1 }
+pub fn abi() -> &'static KernelApiV2 {
+    unsafe { &__exorust_kernel_api_v2 }
+}
+
+#[cfg(feature = "cell_runtime")]
+mod standalone {
+    use super::*;
+    use crate::abi::driver::{AbiDmaSlice, AbiError};
+    use crate::KapiError;
+
+    static STANDALONE_KERNEL: StandaloneKernelServices = StandaloneKernelServices;
+
+    pub(super) fn instance() -> &'static dyn KernelServices {
+        &STANDALONE_KERNEL
+    }
+
+    fn map_abi_error(code: i32) -> KapiError {
+        match AbiError::from_raw(code) {
+            AbiError::Success => KapiError::Internal(code),
+            AbiError::InvalidParam => KapiError::InvalidHandle,
+            AbiError::OutOfMemory => KapiError::OutOfMemory,
+            AbiError::PermissionDenied => KapiError::PermissionDenied,
+            AbiError::NotSupported => KapiError::NotSupported,
+            AbiError::Timeout => KapiError::Timeout,
+            AbiError::DeviceNotFound => KapiError::NotFound,
+            AbiError::DeviceBusy => KapiError::ResourceExhausted,
+            AbiError::AlreadyInitialized => KapiError::AlreadyExists,
+            AbiError::NotInitialized => KapiError::NotFound,
+            AbiError::IoError | AbiError::Error => KapiError::IoError,
+        }
+    }
+
+    fn unsupported_future<T: Send + 'static>() -> Pin<Box<dyn Future<Output = KapiResult<T>> + Send>>
+    {
+        Box::pin(async { Err(KapiError::NotSupported) })
+    }
+
+    unsafe fn release_dma_from_abi(virt_addr: *mut u8, size: usize, phys_addr: u64) {
+        let status = (super::abi().release_dma_raw)(virt_addr as u64, size, phys_addr);
+        debug_assert_eq!(status, AbiError::Success as i32);
+    }
+
+    fn alloc_from_raw(raw: AbiDmaSlice) -> DmaSlice<CpuOwned> {
+        unsafe {
+            DmaSlice::from_raw_parts(
+                raw.phys_addr,
+                raw.device_addr,
+                raw.virt_addr as usize as *mut u8,
+                raw.size,
+                Some(release_dma_from_abi),
+            )
+        }
+    }
+
+    fn alloc_dma(size: usize) -> KapiResult<DmaSlice<CpuOwned>> {
+        let mut raw = AbiDmaSlice::default();
+        let status = (super::abi().alloc_dma_raw)(size, 1, &mut raw);
+        if AbiError::from_raw(status).is_success() {
+            Ok(alloc_from_raw(raw))
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
+    fn alloc_dma_for_device(size: usize, device_id: u64) -> KapiResult<DmaSlice<CpuOwned>> {
+        let mut raw = AbiDmaSlice::default();
+        let status = (super::abi().alloc_dma_for_device_raw)(size, device_id, 1, &mut raw);
+        if AbiError::from_raw(status).is_success() {
+            Ok(alloc_from_raw(raw))
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
+    struct StandaloneKernelServices;
+
+    impl KernelServices for StandaloneKernelServices {
+        fn spawn_task(
+            &self,
+            future: Pin<Box<dyn Future<Output = ()> + Send>>,
+        ) -> KapiResult<TaskHandle> {
+            let _ = future;
+            Err(KapiError::NotSupported)
+        }
+
+        fn current_tick(&self) -> u64 {
+            0
+        }
+
+        fn current_task_id(&self) -> u64 {
+            0
+        }
+
+        fn alloc_dma(&self, size: usize) -> KapiResult<DmaSlice<CpuOwned>> {
+            alloc_dma(size)
+        }
+
+        fn alloc_dma_for_device(&self, size: usize, device_id: u64) -> KapiResult<DmaSlice<CpuOwned>> {
+            alloc_dma_for_device(size, device_id)
+        }
+
+        fn port_read_u8(&self, port: u16) -> u8 {
+            (super::abi().port_read_u8)(port)
+        }
+
+        fn port_write_u8(&self, port: u16, value: u8) {
+            (super::abi().port_write_u8)(port, value);
+        }
+
+        fn log(&self, message: &str) {
+            if !message.is_empty() {
+                (super::abi().log)(0, message.as_ptr(), message.len());
+            }
+        }
+
+        fn net_create_endpoint(&self) -> KapiResult<TcpEndpoint> {
+            Err(KapiError::NotSupported)
+        }
+
+        fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> KapiResult<()> {
+            let _ = endpoint;
+            Err(KapiError::NotSupported)
+        }
+
+        fn net_recv_packet(
+            &self,
+            endpoint: TcpEndpoint,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
+            let _ = endpoint;
+            unsupported_future()
+        }
+
+        fn net_send_packet(
+            &self,
+            endpoint: TcpEndpoint,
+            packet: Packet,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+            let _ = (endpoint, packet);
+            unsupported_future()
+        }
+
+        fn net_create_raw_endpoint(&self) -> KapiResult<RawEndpointHandle> {
+            Err(KapiError::NotSupported)
+        }
+
+        fn net_close_raw_endpoint(&self, endpoint: RawEndpointHandle) -> KapiResult<()> {
+            let _ = endpoint;
+            Err(KapiError::NotSupported)
+        }
+
+        fn net_recv_raw(
+            &self,
+            endpoint: RawEndpointHandle,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
+            let _ = endpoint;
+            unsupported_future()
+        }
+
+        fn net_send_raw(
+            &self,
+            endpoint: RawEndpointHandle,
+            packet: Packet,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+            let _ = (endpoint, packet);
+            unsupported_future()
+        }
+
+        fn fs_open(&self, path: &str, mode: OpenMode) -> KapiResult<FileHandle> {
+            let _ = (path, mode);
+            Err(KapiError::NotSupported)
+        }
+
+        fn fs_open_with_token(
+            &self,
+            path: &str,
+            mode: OpenMode,
+            token: Option<u64>,
+        ) -> KapiResult<FileHandle> {
+            let _ = (path, mode, token);
+            Err(KapiError::NotSupported)
+        }
+
+        fn fs_close(&self, handle: FileHandle) -> KapiResult<()> {
+            let _ = handle;
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_open_direct(
+            &self,
+            device_id: u64,
+            start_block: u64,
+            block_count: u64,
+        ) -> KapiResult<DirectBlockHandle> {
+            let _ = (device_id, start_block, block_count);
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_open_direct_with_token(
+            &self,
+            device_id: u64,
+            start_block: u64,
+            block_count: u64,
+            token: Option<u64>,
+        ) -> KapiResult<DirectBlockHandle> {
+            let _ = (device_id, start_block, block_count, token);
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_close_direct(&self, handle: DirectBlockHandle) -> KapiResult<()> {
+            let _ = handle;
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_read_blocks_dma(
+            &self,
+            handle: DirectBlockHandle,
+            block_offset: u64,
+            buffer: DmaSlice<CpuOwned>,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<DmaSlice<CpuOwned>>> + Send>> {
+            let _ = (handle, block_offset, buffer);
+            unsupported_future()
+        }
+
+        fn nvme_write_blocks_dma(
+            &self,
+            handle: DirectBlockHandle,
+            block_offset: u64,
+            buffer: DmaSlice<CpuOwned>,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<DmaSlice<CpuOwned>>> + Send>> {
+            let _ = (handle, block_offset, buffer);
+            unsupported_future()
+        }
+
+        fn nvme_flush_direct(
+            &self,
+            handle: DirectBlockHandle,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+            let _ = handle;
+            unsupported_future()
+        }
+
+        fn nvme_discard_direct(
+            &self,
+            handle: DirectBlockHandle,
+            block_offset: u64,
+            block_count: u64,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+            let _ = (handle, block_offset, block_count);
+            unsupported_future()
+        }
+
+        fn nvme_block_size(&self, device_id: u64) -> Option<u64> {
+            let _ = device_id;
+            None
+        }
+
+        fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize> {
+            let _ = device_id;
+            None
+        }
+
+        fn nvme_prepare_dma_read(&self, device_id: u64, len: usize) -> KapiResult<NvmeDmaHandle> {
+            let _ = (device_id, len);
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_prepare_dma_write(
+            &self,
+            device_id: u64,
+            data: &[u8],
+        ) -> KapiResult<NvmeDmaHandle> {
+            let _ = (device_id, data);
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_complete_dma_read(
+            &self,
+            handle: NvmeDmaHandle,
+        ) -> KapiResult<alloc::vec::Vec<u8>> {
+            let _ = handle;
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_complete_dma_write(&self, handle: NvmeDmaHandle) -> KapiResult<()> {
+            let _ = handle;
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_iommu_device_id(&self, device_id: u64) -> Option<u64> {
+            let _ = device_id;
+            None
+        }
+
+        fn nvme_iommu_map(
+            &self,
+            device_id: u64,
+            phys_addr: u64,
+            size: usize,
+        ) -> KapiResult<(u64, u64)> {
+            let _ = (device_id, phys_addr, size);
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_iommu_unmap(&self, mapping_id: u64) -> KapiResult<()> {
+            let _ = mapping_id;
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_submit_rw(
+            &self,
+            request: NvmeRwRequest,
+            io_type: NvmeIoType,
+        ) -> KapiResult<NvmeIoHandle> {
+            let _ = (request, io_type);
+            Err(KapiError::NotSupported)
+        }
+
+        fn nvme_wait_io(
+            &self,
+            handle: NvmeIoHandle,
+        ) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>> {
+            let _ = handle;
+            Box::pin(async { NvmeIoResult::Cancelled })
+        }
+
+        fn nvme_register_completion_hook(
+            &self,
+            handle: NvmeIoHandle,
+            hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
+        ) {
+            let _ = (handle, hook);
+        }
+
+        fn ipc_create_channel(&self) -> KapiResult<(ChannelHandle, ChannelHandle)> {
+            Err(KapiError::NotSupported)
+        }
+
+        fn ipc_close(&self, channel: ChannelHandle) -> KapiResult<()> {
+            let _ = channel;
+            Err(KapiError::NotSupported)
+        }
+
+        fn time_service(&self) -> Option<&dyn TimeService> {
+            None
+        }
+
+        fn gui(&self) -> Option<&dyn GuiServices> {
+            None
+        }
+
+        fn shell(&self) -> Option<&dyn ShellServices> {
+            None
+        }
+    }
 }

@@ -10,10 +10,11 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
-use kernel_api::abi::driver::{
-    AbiDmaBuffer, AbiMmioHandle, DriverContext, KernelApiV1,
-};
+use kernel_api::abi::driver::{AbiMmioHandle, DriverContext, KernelApiV2};
+#[cfg(test)]
+use kernel_api::abi::driver::AbiDmaSlice;
 
 use crate::bootstrap::{
     Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion,
@@ -28,7 +29,7 @@ use crate::error::Mlx5Error;
 // ============================================================================
 
 #[inline]
-fn kernel_api() -> &'static KernelApiV1 {
+fn kernel_api() -> &'static KernelApiV2 {
     kernel_api::service::kernel::abi()
 }
 
@@ -36,12 +37,26 @@ fn kernel_api() -> &'static KernelApiV1 {
 extern "C" fn test_kernel_log(_level: u32, _msg_ptr: *const u8, _msg_len: usize) {}
 
 #[cfg(test)]
-extern "C" fn test_kernel_alloc_dma(_size: usize, _align: usize, _out: *mut AbiDmaBuffer) -> i32 {
+extern "C" fn test_kernel_alloc_dma_raw(
+    _size: usize,
+    _align: usize,
+    _out: *mut AbiDmaSlice,
+) -> i32 {
     -1
 }
 
 #[cfg(test)]
-extern "C" fn test_kernel_free_dma(_handle: *const AbiDmaBuffer) -> i32 {
+extern "C" fn test_kernel_alloc_dma_for_device_raw(
+    _size: usize,
+    _device_id: u64,
+    _align: usize,
+    _out: *mut AbiDmaSlice,
+) -> i32 {
+    -1
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_release_dma_raw(_virt_addr: u64, _size: usize, _phys_addr: u64) -> i32 {
     0
 }
 
@@ -56,6 +71,14 @@ extern "C" fn test_kernel_unmap_mmio(_handle: *const AbiMmioHandle) -> i32 {
 }
 
 #[cfg(test)]
+extern "C" fn test_kernel_port_read_u8(_port: u16) -> u8 {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_port_write_u8(_port: u16, _value: u8) {}
+
+#[cfg(test)]
 extern "C" fn test_kernel_irq_bind(_irq: u32, _cookie: u64) -> i32 {
     0
 }
@@ -67,14 +90,17 @@ extern "C" fn test_kernel_irq_unbind(_irq: u32) -> i32 {
 
 #[cfg(test)]
 #[unsafe(no_mangle)]
-pub static __exorust_kernel_api_v1: KernelApiV1 = KernelApiV1 {
+pub static __exorust_kernel_api_v2: KernelApiV2 = KernelApiV2 {
     abi_version: kernel_api::abi::driver::KERNEL_API_ABI_VERSION,
-    abi_size: core::mem::size_of::<KernelApiV1>() as u32,
+    abi_size: core::mem::size_of::<KernelApiV2>() as u32,
     log: test_kernel_log,
-    alloc_dma: test_kernel_alloc_dma,
-    free_dma: test_kernel_free_dma,
+    alloc_dma_raw: test_kernel_alloc_dma_raw,
+    alloc_dma_for_device_raw: test_kernel_alloc_dma_for_device_raw,
+    release_dma_raw: test_kernel_release_dma_raw,
     map_mmio: test_kernel_map_mmio,
     unmap_mmio: test_kernel_unmap_mmio,
+    port_read_u8: test_kernel_port_read_u8,
+    port_write_u8: test_kernel_port_write_u8,
     irq_bind: test_kernel_irq_bind,
     irq_unbind: test_kernel_irq_unbind,
     heap_alloc: None,
@@ -87,36 +113,45 @@ pub static __exorust_kernel_api_v1: KernelApiV1 = KernelApiV1 {
 // DMA Resource Management
 // ============================================================================
 
-#[derive(Clone, Copy, Debug, Default)]
 struct DmaSlot {
-    handle: AbiDmaBuffer,
+    buffer: Option<DmaSlice<CpuOwned>>,
+    virt_addr: u64,
+    device_addr: u64,
+    size: usize,
 }
+
+// SAFETY: DmaSlot is only exposed through the mlx5 driver's internal state,
+// and safe APIs never provide shared mutable access to the backing DMA memory.
+unsafe impl Sync for DmaSlot {}
 
 impl DmaSlot {
     fn alloc(size: usize, label: &'static str) -> Result<Self, i32> {
         loop {
             match kernel_api::service::kernel::instance().alloc_dma(size) {
                 Ok(buf) => {
-                    let handle = AbiDmaBuffer {
-                        phys_addr: buf.physical_address(),
-                        device_addr: buf.device_address(),
-                        virt_addr: buf.as_ptr() as u64,
-                        size: buf.size(),
-                    };
+                    let phys_addr = buf.physical_address();
+                    let device_addr = buf.device_address();
+                    let virt_addr = buf.as_ptr() as u64;
+                    let size = buf.size();
 
                     // Skip anything below 1MB to avoid legacy/IOMMU reservation conflicts
-                    if handle.device_addr < 0x100000 {
-                        log::warn!(target: "mlx5", "DMA allocated at IOVA {:#x} for {}, skipping (<1MB)", handle.device_addr, label);
-                        core::mem::forget(buf);
+                    if device_addr < 0x100000 {
+                        log::warn!(target: "mlx5", "DMA allocated at IOVA {:#x} for {}, skipping (<1MB)", device_addr, label);
+                        drop(buf);
                         continue;
                     }
 
                     log::info!(
                         target: "mlx5",
                         "DMA allocated for {}: device={:#x} phys={:#x} size={:#x}",
-                        label, handle.device_addr, handle.phys_addr, handle.size
+                        label, device_addr, phys_addr, size
                     );
-                    return Ok(Self { handle });
+                    return Ok(Self {
+                        buffer: Some(buf),
+                        virt_addr,
+                        device_addr,
+                        size,
+                    });
                 }
                 Err(e) => {
                     log::error!(target: "mlx5", "DMA allocation failed for {}: {:?}", label, e);
@@ -127,22 +162,19 @@ impl DmaSlot {
     }
 
     fn as_ptr_u64(&self) -> u64 {
-        self.handle.virt_addr
+        self.virt_addr
     }
 
     fn device_address(&self) -> u64 {
-        self.handle.device_addr
+        self.device_addr
     }
 
     fn as_region(&self) -> Mlx5DmaRegion {
-        Mlx5DmaRegion::new(self.as_ptr_u64(), self.device_address(), self.handle.size)
+        Mlx5DmaRegion::new(self.as_ptr_u64(), self.device_address(), self.size)
     }
 
-    fn free(self) {
-        if self.handle.size != 0 {
-            // Use the low-level ABI free function; simpler than reconstructing a DmaBuffer.
-            (kernel_api().free_dma)(&self.handle);
-        }
+    fn free(&mut self) {
+        let _ = self.buffer.take();
     }
 }
 
@@ -275,36 +307,16 @@ impl Mlx5DmaResources {
 
 impl Drop for Mlx5DmaResources {
     fn drop(&mut self) {
-        for page in self.fw_pages.drain(..) {
-            page.free();
-        }
-        for q in self.rq_dbs.drain(..) {
-            q.free();
-        }
-        for q in self.rqs.drain(..) {
-            q.free();
-        }
-        for q in self.sq_dbs.drain(..) {
-            q.free();
-        }
-        for q in self.sqs.drain(..) {
-            q.free();
-        }
-        for q in self.rx_cq_dbs.drain(..) {
-            q.free();
-        }
-        for q in self.rx_cqs.drain(..) {
-            q.free();
-        }
-        for q in self.tx_cq_dbs.drain(..) {
-            q.free();
-        }
-        for q in self.tx_cqs.drain(..) {
-            q.free();
-        }
-        for q in self.eqs.drain(..) {
-            q.free();
-        }
+        self.fw_pages.clear();
+        self.rq_dbs.clear();
+        self.rqs.clear();
+        self.sq_dbs.clear();
+        self.sqs.clear();
+        self.rx_cq_dbs.clear();
+        self.rx_cqs.clear();
+        self.tx_cq_dbs.clear();
+        self.tx_cqs.clear();
+        self.eqs.clear();
         self.cmd_out_mbox.free();
         self.cmd_in_mbox.free();
         self.cmdq.free();
@@ -454,14 +466,12 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    fn slot(phys_addr: u64, device_addr: u64, virt_addr: u64, size: usize) -> DmaSlot {
+    fn slot(_phys_addr: u64, device_addr: u64, virt_addr: u64, size: usize) -> DmaSlot {
         DmaSlot {
-            handle: AbiDmaBuffer {
-                phys_addr,
-                device_addr,
-                virt_addr,
-                size,
-            },
+            buffer: None,
+            virt_addr,
+            device_addr,
+            size,
         }
     }
 

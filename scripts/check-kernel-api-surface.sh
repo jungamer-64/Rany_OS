@@ -14,6 +14,11 @@ patterns=(
   'kernel_api::shell::'
   'kernel_api::time::'
   'kernel_api::DmaBuffer\b'
+  'kernel_api::service::kernel::instance\(\)\.free_dma'
+  '\.free_dma\('
+  'AbiDmaBuffer\b'
+  'KernelApiV1\b'
+  '__exorust_kernel_api_v1\b'
   'pub unsafe fn grant_'
   'pub const unsafe fn new\('
 )
@@ -21,6 +26,8 @@ patterns=(
 exclude=(
   '-g' '!target'
   '-g' '!scripts/check-kernel-api-surface.sh'
+  '-g' '!docs/archive/**'
+  '-g' '!docs/API_REFERENCE.md'
 )
 
 status=0

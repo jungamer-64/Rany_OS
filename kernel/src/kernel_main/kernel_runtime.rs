@@ -471,7 +471,7 @@ pub(crate) fn register_kernel_symbols() {
     loader::with_registry_mut(|registry| {
         registry.register_symbol(
             alloc::string::String::from(kernel_api::abi::driver::KERNEL_API_SYMBOL),
-            crate::driver_registry::kernel_api_v1() as *const kernel_api::abi::driver::KernelApiV1
+            crate::driver_registry::kernel_api_v2() as *const kernel_api::abi::driver::KernelApiV2
                 as usize,
         );
     });

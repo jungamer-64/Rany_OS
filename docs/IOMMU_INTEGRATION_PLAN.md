@@ -76,7 +76,7 @@
 
 - ✅ `kernel_api::dma::DmaSlice<CpuOwned>` に `device_addr` フィールド追加
 - ✅ `DmaBuffer::device_address()` メソッド追加
-- ✅ `AbiDmaBuffer` に `device_addr` フィールド追加
+- ✅ `AbiDmaSlice` に `device_addr` フィールド追加
 - ✅ `kapi_alloc_dma` → `CoherentDmaBuffer` ベースに改修
 - ✅ `service_impl.rs` → `DmaRegistry` を `Box<dyn Any + Send>` に
 - ✅ HDA, USB全ドライバで `device_address()` を使用
@@ -119,7 +119,7 @@
 | `kernel/src/io/virtio/net.rs` | `RxPacketInflight`/`RxVbufInflight`, IOMMU map/unmap |
 | `kernel/src/net/zero_copy.rs` | `MemoryPool` → `CoherentDmaBuffer`, `device_base_addr` |
 | `interfaces/kernel_api/src/types.rs` | `DmaBuffer.device_addr`, `device_address()` |
-| `interfaces/kernel_api/src/driver_abi.rs` | `AbiDmaBuffer.device_addr` |
+| `interfaces/kernel_api/src/driver_abi.rs` | `AbiDmaSlice.device_addr` |
 | `kernel/src/driver_registry.rs` | `kapi_alloc_dma` → device_addr |
 | `kernel/src/service_impl.rs` | `DmaRegistry`, `alloc_dma()` → `CoherentDmaBuffer` |
 | `drivers/hda/src/hda/controller.rs` | `alloc_dma_buffer()` → `(virt_addr, device_addr)` |

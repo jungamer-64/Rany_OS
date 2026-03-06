@@ -7,7 +7,7 @@
 //! Provides runtime stubs for Cells (dynamically loaded drivers/services)
 //! when compiled as standalone cdylib. Includes:
 //!
-//! - Global allocator delegating to kernel's `KernelApiV1` table
+//! - Global allocator delegating to kernel's `KernelApiV2` table
 //! - Panic handler calling kernel panic abort hook
 //! - Logging via kernel API table
 //!
@@ -24,7 +24,7 @@
 
 #![allow(dead_code)]
 
-use crate::abi::driver::{KERNEL_API_SYMBOL, KernelApiV1};
+use crate::abi::driver::{KERNEL_API_SYMBOL, KernelApiV2};
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::{align_of, size_of};
 use core::ptr;
@@ -37,19 +37,19 @@ use core::ptr;
 // loader via the symbol table.
 
 unsafe extern "C" {
-    static __exorust_kernel_api_v1: KernelApiV1;
+    static __exorust_kernel_api_v2: KernelApiV2;
 }
 
 #[inline]
-fn kernel_api() -> &'static KernelApiV1 {
+fn kernel_api() -> &'static KernelApiV2 {
     // SAFETY: The kernel always exports this symbol before loading standalone
     // cells, and the table is immutable after publication.
-    unsafe { &__exorust_kernel_api_v1 }
+    unsafe { &__exorust_kernel_api_v2 }
 }
 
 #[inline]
-fn has_runtime_entries(api: &KernelApiV1) -> bool {
-    (api.abi_size as usize) >= core::mem::size_of::<KernelApiV1>()
+fn has_runtime_entries(api: &KernelApiV2) -> bool {
+    (api.abi_size as usize) >= core::mem::size_of::<KernelApiV2>()
 }
 
 #[inline]
@@ -101,7 +101,7 @@ fn call_panic_abort(msg: &[u8]) -> ! {
 
 /// Kernel-backed allocator for standalone Cells
 ///
-/// Delegates all allocations to the kernel via `KernelApiV1`.
+/// Delegates all allocations to the kernel via `KernelApiV2`.
 /// This is only used when the Cell is loaded as a standalone cdylib;
 /// when statically linked with the kernel, the kernel's allocator is used.
 pub struct KernelAllocator;

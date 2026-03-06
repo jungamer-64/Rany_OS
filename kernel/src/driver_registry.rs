@@ -29,19 +29,16 @@ use alloc::string::String;
 
 use alloc::vec::Vec;
 use core::fmt;
-use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::abi::driver::{
-    AbiDmaBuffer, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle,
+    AbiDmaSlice, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle,
     DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
     DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
-    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV1,
+    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV2,
 };
 use kernel_api::error::{KapiError, KapiResult};
 mod registration_api;
 pub use registration_api::*;
-
-type DmaBuffer = DmaSlice<CpuOwned>;
 
 // ============================================================================
 // Driver Registry
@@ -505,7 +502,7 @@ extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
     crate::io::log::early_print("[KAPI] log done\n");
 }
 
-extern "C" fn kapi_alloc_dma(size: usize, _align: usize, out: *mut AbiDmaBuffer) -> i32 {
+extern "C" fn kapi_alloc_dma_raw(size: usize, _align: usize, out: *mut AbiDmaSlice) -> i32 {
     if out.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
@@ -513,36 +510,55 @@ extern "C" fn kapi_alloc_dma(size: usize, _align: usize, out: *mut AbiDmaBuffer)
     match kernel_api::service::kernel::instance().alloc_dma(size) {
         Ok(buffer) => {
             unsafe {
-                *out = AbiDmaBuffer {
+                *out = AbiDmaSlice {
                     phys_addr: buffer.physical_address(),
                     device_addr: buffer.device_address(),
                     virt_addr: buffer.as_ptr() as usize as u64,
                     size: buffer.size(),
                 };
             }
+            core::mem::forget(buffer);
             AbiErrorCode::Success as i32
         }
         Err(_) => AbiErrorCode::OutOfMemory as i32,
     }
 }
 
-extern "C" fn kapi_free_dma(handle: *const AbiDmaBuffer) -> i32 {
-    if handle.is_null() {
+extern "C" fn kapi_alloc_dma_for_device_raw(
+    size: usize,
+    device_id: u64,
+    _align: usize,
+    out: *mut AbiDmaSlice,
+) -> i32 {
+    if out.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
 
-    // SAFETY: handleの非nullチェック済み。DMAバッファハンドルはFramework層が割り当てた有効なポインタ。
-    let h = unsafe { &*handle };
-    let buf = unsafe {
-        DmaBuffer::from_raw_parts(
-            h.phys_addr,
-            h.device_addr,
-            h.virt_addr as usize as *mut u8,
-            h.size,
-            Some(crate::service_impl::release_dma_buffer),
-        )
-    };
-    drop(buf);
+    match kernel_api::service::kernel::instance().alloc_dma_for_device(size, device_id) {
+        Ok(buffer) => {
+            unsafe {
+                *out = AbiDmaSlice {
+                    phys_addr: buffer.physical_address(),
+                    device_addr: buffer.device_address(),
+                    virt_addr: buffer.as_ptr() as usize as u64,
+                    size: buffer.size(),
+                };
+            }
+            core::mem::forget(buffer);
+            AbiErrorCode::Success as i32
+        }
+        Err(_) => AbiErrorCode::OutOfMemory as i32,
+    }
+}
+
+extern "C" fn kapi_release_dma_raw(virt_addr: u64, size: usize, phys_addr: u64) -> i32 {
+    if virt_addr == 0 || size == 0 {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+
+    unsafe {
+        crate::service_impl::release_dma_buffer(virt_addr as usize as *mut u8, size, phys_addr);
+    }
     AbiErrorCode::Success as i32
 }
 
@@ -571,6 +587,14 @@ extern "C" fn kapi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) ->
 
 extern "C" fn kapi_unmap_mmio(_handle: *const AbiMmioHandle) -> i32 {
     AbiErrorCode::Success as i32
+}
+
+extern "C" fn kapi_port_read_u8(port: u16) -> u8 {
+    kernel_api::service::kernel::instance().port_read_u8(port)
+}
+
+extern "C" fn kapi_port_write_u8(port: u16, value: u8) {
+    kernel_api::service::kernel::instance().port_write_u8(port, value);
 }
 
 extern "C" fn kapi_irq_bind(_irq: u32, _cookie: u64) -> i32 {
@@ -624,14 +648,17 @@ extern "C" fn kapi_panic_abort(msg_ptr: *const u8, msg_len: usize) -> ! {
 }
 
 #[unsafe(no_mangle)]
-pub static __exorust_kernel_api_v1: KernelApiV1 = KernelApiV1 {
+pub static __exorust_kernel_api_v2: KernelApiV2 = KernelApiV2 {
     abi_version: KERNEL_API_ABI_VERSION,
-    abi_size: core::mem::size_of::<KernelApiV1>() as u32,
+    abi_size: core::mem::size_of::<KernelApiV2>() as u32,
     log: kapi_log,
-    alloc_dma: kapi_alloc_dma,
-    free_dma: kapi_free_dma,
+    alloc_dma_raw: kapi_alloc_dma_raw,
+    alloc_dma_for_device_raw: kapi_alloc_dma_for_device_raw,
+    release_dma_raw: kapi_release_dma_raw,
     map_mmio: kapi_map_mmio,
     unmap_mmio: kapi_unmap_mmio,
+    port_read_u8: kapi_port_read_u8,
+    port_write_u8: kapi_port_write_u8,
     irq_bind: kapi_irq_bind,
     irq_unbind: kapi_irq_unbind,
     heap_alloc: Some(kapi_heap_alloc),
@@ -640,8 +667,8 @@ pub static __exorust_kernel_api_v1: KernelApiV1 = KernelApiV1 {
     reserved: [0; 8],
 };
 
-pub(crate) fn kernel_api_v1() -> &'static KernelApiV1 {
-    &__exorust_kernel_api_v1
+pub(crate) fn kernel_api_v2() -> &'static KernelApiV2 {
+    &__exorust_kernel_api_v2
 }
 
 // ============================================================================
@@ -779,7 +806,7 @@ pub(crate) fn prepare_driver_exports(
         if let Some(init) = exports_ref.init {
             crate::io::log::early_print("[DRIVER] prepare_exports: init()\n");
             crate::io::log::early_print("[DRIVER] kernel_api_v1 ptr=");
-            crate::io::log::early_print_hex(kernel_api_v1() as *const KernelApiV1 as usize as u64);
+            crate::io::log::early_print_hex(kernel_api_v2() as *const KernelApiV2 as usize as u64);
             crate::io::log::early_print("\n");
             let init_addr = init as usize;
             let init_virt = crate::mm::virt::higher_half::VirtAddr::new(init_addr as u64);
@@ -818,7 +845,7 @@ pub(crate) fn prepare_driver_exports(
                 let _ = init_virt;
                 crate::io::log::early_print("[DRIVER] init pte lookup skipped in test shim\n");
             }
-            let res = init(kernel_api_v1() as *const KernelApiV1);
+            let res = init(kernel_api_v2() as *const KernelApiV2);
             crate::io::log::early_print("[DRIVER] prepare_exports: init done\n");
             if !AbiErrorCode::from_raw(res).is_success() {
                 log::error!("[DRIVER] DriverExports init failed: code={}", res);
