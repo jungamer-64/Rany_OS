@@ -24,7 +24,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
 use crate::mm::types::NumaNodeId;
@@ -38,7 +38,7 @@ impl ShrinkerId {
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
-    
+
     pub const fn as_u64(self) -> u64 {
         self.0
     }
@@ -94,18 +94,18 @@ impl Default for ShrinkControl {
 pub trait Shrinker: Send + Sync {
     /// 縮小可能なオブジェクト数を報告
     fn count_objects(&self, sc: &ShrinkControl) -> usize;
-    
+
     /// オブジェクトを縮小し、実際に縮小した数を返す
     fn scan_objects(&self, sc: &ShrinkControl) -> usize;
-    
+
     /// Shrinker名を取得
     fn name(&self) -> &str;
-    
+
     /// 優先度を取得
     fn priority(&self) -> ShrinkerPriority {
         ShrinkerPriority::Normal
     }
-    
+
     /// 縮小可能か確認
     fn can_shrink(&self) -> bool {
         true
@@ -180,18 +180,22 @@ impl ShrinkerManager {
             initialized: AtomicU8::new(0),
         }
     }
-    
+
     /// 初期化
     pub fn init(&self) {
-        if self.initialized.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        if self
+            .initialized
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
             log::info!("[Shrinker] Shrinker manager initialized");
         }
     }
-    
+
     /// Shrinkerを登録
     pub fn register(&self, shrinker: &'static dyn Shrinker) -> ShrinkerId {
         let id = ShrinkerId::new(self.next_id.fetch_add(1, Ordering::Relaxed));
-        
+
         let entry = ShrinkerEntry {
             shrinker,
             priority: shrinker.priority(),
@@ -199,64 +203,73 @@ impl ShrinkerManager {
             call_count: AtomicU64::new(0),
             total_freed: AtomicU64::new(0),
         };
-        
+
         let mut shrinkers = self.shrinkers.write();
         shrinkers.insert(id, entry);
-        
-        log::debug!("[Shrinker] Registered '{}' with id={}", shrinker.name(), id.as_u64());
-        
+
+        log::debug!(
+            "[Shrinker] Registered '{}' with id={}",
+            shrinker.name(),
+            id.as_u64()
+        );
+
         id
     }
-    
+
     /// Shrinkerを登録解除
     pub fn unregister(&self, id: ShrinkerId) {
         let mut shrinkers = self.shrinkers.write();
         if let Some(entry) = shrinkers.remove(&id) {
-            log::debug!("[Shrinker] Unregistered '{}' (id={})", entry.shrinker.name(), id.as_u64());
+            log::debug!(
+                "[Shrinker] Unregistered '{}' (id={})",
+                entry.shrinker.name(),
+                id.as_u64()
+            );
         }
     }
-    
+
     /// 全shrinkerの縮小可能オブジェクト数を取得
     pub fn count_all(&self, sc: &ShrinkControl) -> usize {
         let shrinkers = self.shrinkers.read();
-        shrinkers.values()
+        shrinkers
+            .values()
             .filter(|e| e.shrinker.can_shrink())
             .map(|e| e.shrinker.count_objects(sc))
             .sum()
     }
-    
+
     /// 縮小を実行（優先度順）
     pub fn shrink(&self, sc: &ShrinkControl) -> usize {
         let tsc = read_tsc();
         let shrinkers = self.shrinkers.read();
-        
+
         // 優先度でソート（低優先度から先に縮小）
         let mut entries: Vec<_> = shrinkers.iter().collect();
         entries.sort_by_key(|(_, e)| e.priority);
-        
+
         let mut total_freed = 0;
         let mut remaining = sc.nr_to_scan;
-        
+
         for (id, entry) in entries {
             if remaining == 0 {
                 break;
             }
-            
+
             if !entry.shrinker.can_shrink() {
                 continue;
             }
-            
+
             let mut local_sc = *sc;
             local_sc.nr_to_scan = remaining;
-            
+
             let freed = entry.shrinker.scan_objects(&local_sc);
-            
+
             entry.call_count.fetch_add(1, Ordering::Relaxed);
             entry.total_freed.fetch_add(freed as u64, Ordering::Relaxed);
-            
+
             total_freed += freed;
             remaining = remaining.saturating_sub(freed);
-            
+
             log::trace!(
                 "[Shrinker] {} (id={}) freed {} objects",
                 entry.shrinker.name(),
@@ -264,14 +277,14 @@ impl ShrinkerManager {
                 freed
             );
         }
-        
+
         // グローバル統計更新
         {
             let mut stats = self.global_stats.lock();
             stats.shrink_cycles += 1;
             stats.total_objects_freed += total_freed as u64;
             stats.last_shrink_tsc = tsc;
-            
+
             if sc.urgent {
                 stats.urgent_shrinks += 1;
             }
@@ -279,16 +292,19 @@ impl ShrinkerManager {
                 stats.failed_shrinks += 1;
             }
         }
-        
-        log::debug!("[Shrinker] Shrink cycle completed: freed {} objects", total_freed);
-        
+
+        log::debug!(
+            "[Shrinker] Shrink cycle completed: freed {} objects",
+            total_freed
+        );
+
         total_freed
     }
-    
+
     /// 特定のshrinkerのみ縮小
     pub fn shrink_one(&self, id: ShrinkerId, sc: &ShrinkControl) -> usize {
         let shrinkers = self.shrinkers.read();
-        
+
         if let Some(entry) = shrinkers.get(&id) {
             if entry.shrinker.can_shrink() {
                 let freed = entry.shrinker.scan_objects(sc);
@@ -297,32 +313,33 @@ impl ShrinkerManager {
                 return freed;
             }
         }
-        
+
         0
     }
-    
+
     /// 各shrinkerの統計を取得
     pub fn stats(&self) -> Vec<ShrinkerStats> {
         let sc = ShrinkControl::default();
         let shrinkers = self.shrinkers.read();
-        
-        shrinkers.iter().map(|(&id, entry)| {
-            ShrinkerStats {
+
+        shrinkers
+            .iter()
+            .map(|(&id, entry)| ShrinkerStats {
                 id,
                 name: String::from(entry.shrinker.name()),
                 priority: entry.priority,
                 countable_objects: entry.shrinker.count_objects(&sc),
                 call_count: entry.call_count.load(Ordering::Relaxed),
                 total_freed: entry.total_freed.load(Ordering::Relaxed),
-            }
-        }).collect()
+            })
+            .collect()
     }
-    
+
     /// グローバル統計を取得
     pub fn global_stats(&self) -> GlobalShrinkStats {
         self.global_stats.lock().clone()
     }
-    
+
     /// 登録数を取得
     pub fn count(&self) -> usize {
         self.shrinkers.read().len()
@@ -414,7 +431,7 @@ pub struct MemoryPressureEvent {
 pub trait MemoryPressureCallback: Send + Sync {
     /// 圧力変化通知
     fn on_pressure_change(&self, event: MemoryPressureEvent);
-    
+
     /// 即座に反応する最低レベル
     fn min_level(&self) -> MemoryPressureLevel {
         MemoryPressureLevel::Low
@@ -475,26 +492,30 @@ impl MemoryPressureMonitor {
             initialized: AtomicU8::new(0),
         }
     }
-    
+
     /// 初期化
     pub fn init(&self) {
-        if self.initialized.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        if self
+            .initialized
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
             log::info!("[MemPressure] Memory pressure monitor initialized");
         }
     }
-    
+
     /// 閾値を設定
     pub fn set_thresholds(&self, thresholds: PressureThresholds) {
         let mut t = self.thresholds.write();
         *t = thresholds;
     }
-    
+
     /// コールバックを登録
     pub fn register_callback(&self, callback: &'static dyn MemoryPressureCallback) {
         let mut callbacks = self.callbacks.write();
         callbacks.push(callback);
     }
-    
+
     /// 現在の圧力レベルを取得
     pub fn current_level(&self) -> MemoryPressureLevel {
         match self.current_level.load(Ordering::Acquire) {
@@ -505,7 +526,7 @@ impl MemoryPressureMonitor {
             _ => MemoryPressureLevel::Critical,
         }
     }
-    
+
     fn compute_pressure_level(&self, free_pages: u64) -> MemoryPressureLevel {
         let thresholds = self.thresholds.read();
         if free_pages <= thresholds.critical_threshold {
@@ -539,19 +560,19 @@ impl MemoryPressureMonitor {
     /// メモリ状態を更新（定期的に呼び出し）
     pub fn update(&self, free_pages: u64, available_pages: u64) {
         let new_level = self.compute_pressure_level(free_pages);
-        
+
         let old_level = self.current_level();
-        
+
         if new_level != old_level {
             self.current_level.store(new_level as u8, Ordering::Release);
-            
+
             let event = MemoryPressureEvent {
                 level: new_level,
                 free_pages,
                 available_pages,
                 timestamp: read_tsc(),
             };
-            
+
             // コールバック通知
             let callbacks = self.callbacks.read();
             for cb in callbacks.iter() {
@@ -559,18 +580,20 @@ impl MemoryPressureMonitor {
                     cb.on_pressure_change(event);
                 }
             }
-            
+
             log::debug!(
                 "[MemPressure] Level changed: {:?} -> {:?} (free={} pages)",
-                old_level, new_level, free_pages
+                old_level,
+                new_level,
+                free_pages
             );
-            
+
             Self::auto_shrink_if_needed(new_level);
         }
-        
+
         self.last_check_tsc.store(read_tsc(), Ordering::Release);
     }
-    
+
     /// 圧力レベルを数値で取得（0-100）
     pub fn pressure_percent(&self) -> u8 {
         match self.current_level() {
@@ -622,4 +645,3 @@ pub fn pressure_percent() -> u8 {
 
 #[cfg(test)]
 mod tests;
-

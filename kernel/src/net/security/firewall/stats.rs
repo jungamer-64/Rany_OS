@@ -23,11 +23,7 @@ impl core::fmt::Display for FirewallStats {
         write!(
             f,
             "evaluated={} matched={} allowed={} denied={} default={}",
-            self.evaluated,
-            self.matched,
-            self.allowed,
-            self.denied,
-            self.default_applied,
+            self.evaluated, self.matched, self.allowed, self.denied, self.default_applied,
         )
     }
 }

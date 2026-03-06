@@ -15,8 +15,8 @@ pub mod tables;
 // Re-export commonly used items
 pub use info::{AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo};
 pub use parser::{
-    AcpiParser, init, interrupt_overrides, io_apics, local_apic_address, local_apics,
-    find_table_global, pcie_ecam_regions, processor_count, set_hhdm_offset,
+    AcpiParser, find_table_global, init, interrupt_overrides, io_apics, local_apic_address,
+    local_apics, pcie_ecam_regions, processor_count, set_hhdm_offset,
 };
 pub use tables::{
     AcpiError, AcpiSdtHeader, Fadt, Madt, MadtEntryHeader, MadtEntryType, MadtInterruptOverride,

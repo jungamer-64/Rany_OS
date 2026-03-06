@@ -13,9 +13,9 @@ use crate::io::iommu::common::tables::virt_ptr_to_phys;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
 
-use super::device_table::{apply_ivhd_flags, AmdDeviceTable, AmdDeviceTableEntry};
+use super::device_table::{AmdDeviceTable, AmdDeviceTableEntry, apply_ivhd_flags};
 use super::registers::*;
-use super::{AmdIommuDriver, AmdIvmdRange, AmdDomainInfo};
+use super::{AmdDomainInfo, AmdIommuDriver, AmdIvmdRange};
 
 // ---------------------------------------------------------------------------
 // Alignment helpers
@@ -100,7 +100,10 @@ fn map_unity_segments(
     Ok(())
 }
 
-pub(crate) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> Result<(), IommuError> {
+pub(crate) fn map_ivmd_ranges(
+    domain: &DomainState,
+    ranges: &[AmdIvmdRange],
+) -> Result<(), IommuError> {
     let page_size = PAGE_SIZE_4K;
     let exclusions = collect_exclusion_ranges(ranges, page_size);
 
@@ -136,20 +139,51 @@ pub(super) fn ivhd_entry_flags_for_devid(entry: &IvhdDeviceEntry, devid: u16) ->
     match entry {
         IvhdDeviceEntry::All { flags } => *flags,
         IvhdDeviceEntry::Select { devid: e, flags }
-        | IvhdDeviceEntry::ExtSelect { devid: e, flags, .. }
-        | IvhdDeviceEntry::Special { devid: e, flags, .. }
+        | IvhdDeviceEntry::ExtSelect {
+            devid: e, flags, ..
+        }
+        | IvhdDeviceEntry::Special {
+            devid: e, flags, ..
+        }
         | IvhdDeviceEntry::AcpiHid { devid: e, flags } => {
-            if *e == devid { *flags } else { 0 }
+            if *e == devid {
+                *flags
+            } else {
+                0
+            }
         }
         IvhdDeviceEntry::Range { start, end, flags }
-        | IvhdDeviceEntry::ExtRange { start, end, flags, .. } => {
-            if devid_in_range(devid, *start, *end) { *flags } else { 0 }
+        | IvhdDeviceEntry::ExtRange {
+            start, end, flags, ..
+        } => {
+            if devid_in_range(devid, *start, *end) {
+                *flags
+            } else {
+                0
+            }
         }
-        IvhdDeviceEntry::Alias { devid: e, alias, flags } => {
-            if *e == devid || *alias == devid { *flags } else { 0 }
+        IvhdDeviceEntry::Alias {
+            devid: e,
+            alias,
+            flags,
+        } => {
+            if *e == devid || *alias == devid {
+                *flags
+            } else {
+                0
+            }
         }
-        IvhdDeviceEntry::AliasRange { start, end, alias, flags } => {
-            if devid_in_range(devid, *start, *end) || *alias == devid { *flags } else { 0 }
+        IvhdDeviceEntry::AliasRange {
+            start,
+            end,
+            alias,
+            flags,
+        } => {
+            if devid_in_range(devid, *start, *end) || *alias == devid {
+                *flags
+            } else {
+                0
+            }
         }
     }
 }

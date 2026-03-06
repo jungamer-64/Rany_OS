@@ -17,8 +17,8 @@
 //! - G. Varghese & A. Lauck, "Hashed and Hierarchical Timing Wheels" (1997)
 //! - Linux kernel: `net/core/timer_defs.h`
 
-use alloc::vec::Vec;
 use super::types::EndpointAddr;
+use alloc::vec::Vec;
 
 /// ホイールのスロット数（2のべき乗）
 ///
@@ -229,13 +229,19 @@ pub mod qemu_tests {
         let remote = EndpointAddr::new([10, 0, 0, 2], 2000);
 
         wheel.schedule(local, remote, 100);
-        if wheel.len() != 1 { return false; }
+        if wheel.len() != 1 {
+            return false;
+        }
 
         let expired = wheel.advance(50);
-        if !expired.is_empty() { return false; }
+        if !expired.is_empty() {
+            return false;
+        }
 
         let expired = wheel.advance(100);
-        if expired.len() != 1 { return false; }
+        if expired.len() != 1 {
+            return false;
+        }
 
         wheel.is_empty()
     }

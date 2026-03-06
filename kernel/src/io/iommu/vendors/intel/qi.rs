@@ -2,9 +2,9 @@
 // kernel/src/io/iommu/vendors/intel/qi.rs
 // ============================================================================
 
+use crate::io::iommu::common::tables::virt_ptr_to_phys;
 use alloc::alloc::Layout;
 use alloc::vec::Vec;
-use crate::io::iommu::common::tables::virt_ptr_to_phys;
 
 /// Mandatory for x2APIC interrupt remapping
 #[repr(C, align(16))]
@@ -44,8 +44,7 @@ impl InvalidationQueueEntry {
     pub fn context_cache_invalidate(granularity: u8, domain_id: u16, source_id: u16) -> Self {
         // Intel VT-d Spec §6.5.2.1: CC Invalidate Descriptor lo QWORD layout:
         //   [3:0] Type, [5:4] Granularity, [15:6] Rsvd, [31:16] DID, [47:32] SID, [49:48] FM
-        let lo =
-            qi_desc_type::CC_INV
+        let lo = qi_desc_type::CC_INV
             | ((granularity as u64 & 0x3) << 4)
             | ((domain_id as u64) << 16)
             | ((source_id as u64) << 32);
@@ -60,13 +59,19 @@ impl InvalidationQueueEntry {
 
     /// Create an IOTLB Invalidation descriptor
     /// Granularity: 0=reserved, 1=global, 2=domain, 3=page
-    pub fn iotlb_invalidate(granularity: u8, domain_id: u16, hint: bool, address: u64, am: u8) -> Self {
-        let mut lo = qi_desc_type::IOTLB_INV |
-                 ((granularity as u64 & 0x3) << 4) |
-                 ((domain_id as u64) << 16) |
-                 ((am as u64 & 0x3F) << 48) |
-                 (if hint { 1u64 << 63 } else { 0 }); // IH (Invalidation Hint)
-        
+    pub fn iotlb_invalidate(
+        granularity: u8,
+        domain_id: u16,
+        hint: bool,
+        address: u64,
+        am: u8,
+    ) -> Self {
+        let mut lo = qi_desc_type::IOTLB_INV
+            | ((granularity as u64 & 0x3) << 4)
+            | ((domain_id as u64) << 16)
+            | ((am as u64 & 0x3F) << 48)
+            | (if hint { 1u64 << 63 } else { 0 }); // IH (Invalidation Hint)
+
         // Security: Set DW (Drain Writes) and DR (Drain Reads) bits (Bits 6 and 7).
         // This ensures all pending memory operations are completed before invalidation finishes.
         lo |= (1 << 6) | (1 << 7);
@@ -121,11 +126,7 @@ impl InvalidationQueueEntry {
     /// * `iova` - IOVA to invalidate (when not global)
     /// * `size` - Size of invalidation range in pages (when not global)
     /// * `domain_id` - Domain ID for domain-selective invalidation
-    pub fn device_tlb_invalidate(
-        source_id: u16,
-        iova: u64,
-        size_s: bool,
-    ) -> Self {
+    pub fn device_tlb_invalidate(source_id: u16, iova: u64, size_s: bool) -> Self {
         let lo = qi_desc_type::DEV_TLB_INV
             | ((source_id as u64) << 16)
             | if size_s { 1u64 << 48 } else { 0 }; // S bit
@@ -151,7 +152,7 @@ impl InvalidationQueueEntry {
         } else {
             // PCIe ATS range encoding (Intel VT-d Spec Section 6.5.2.3):
             // Range size is 2^am pages (4KB * 2^am bytes).
-            // Encoding: S=1, Address[63:12] has (am-1) least-significant bits as 1, 
+            // Encoding: S=1, Address[63:12] has (am-1) least-significant bits as 1,
             // and bit (12+(am-1)) as 0.
             let page_addr = iova >> 12;
             let mask = (1u64 << (am - 1)) - 1;
@@ -183,8 +184,7 @@ impl InvalidationQueueEntry {
 
     /// Create a PASID-based IOTLB Invalidation descriptor (VT-d Spec §6.5.2.6)
     pub fn pasid_iotlb_invalidate(domain_id: u16, pasid: u32) -> Self {
-        let lo = qi_desc_type::PASID_IOTLB_INV
-            | ((domain_id as u64) << 16);
+        let lo = qi_desc_type::PASID_IOTLB_INV | ((domain_id as u64) << 16);
         let hi = (pasid as u64) & 0xFFFFF; // PASID is 20 bits
         Self { lo, hi }
     }
@@ -291,7 +291,8 @@ impl InvalidationQueue {
         #[cfg(test)]
         log::info!(
             "[test][IOMMU] allocating queue: total_bytes={} entries={}",
-            total_bytes, size
+            total_bytes,
+            size
         );
 
         // Allocate 4KB-aligned queue
@@ -319,7 +320,9 @@ impl InvalidationQueue {
         #[cfg(test)]
         log::info!(
             "[test][IOMMU] InvalidationQueue::new success base=0x{:x} status_addr=0x{:x} size={}",
-            queue_phys, status_phys, size
+            queue_phys,
+            status_phys,
+            size
         );
 
         // Security: Register the queue and status page as protected from DMA.
@@ -465,7 +468,10 @@ impl InvalidationQueue {
     pub fn wait_entry(&mut self) -> (InvalidationQueueEntry, u32) {
         let seq = self.next_wait_seq;
         self.next_wait_seq = self.next_wait_seq.wrapping_add(1);
-        (InvalidationQueueEntry::wait(self.status_phys, seq, false, true), seq)
+        (
+            InvalidationQueueEntry::wait(self.status_phys, seq, false, true),
+            seq,
+        )
     }
 
     /// Check if a wait has completed (status address updated).
@@ -477,7 +483,6 @@ impl InvalidationQueue {
         status.wrapping_sub(expected) < (1u32 << 31)
     }
 }
-
 
 /// Batched Invalidation for efficient QI usage
 ///

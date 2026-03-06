@@ -54,8 +54,14 @@ const STORAGE_TEST_DISK_TOTAL_SECTORS: u32 = 4096;
 
 #[derive(Debug)]
 pub enum BuildError {
-    CargoLaunch { step: &'static str, source: std::io::Error },
-    CargoFailed { step: &'static str, exit_code: i32 },
+    CargoLaunch {
+        step: &'static str,
+        source: std::io::Error,
+    },
+    CargoFailed {
+        step: &'static str,
+        exit_code: i32,
+    },
     CommandLaunch {
         step: &'static str,
         program: String,
@@ -66,8 +72,14 @@ pub enum BuildError {
         program: String,
         exit_code: i32,
     },
-    ArtifactMissing { step: &'static str, path: PathBuf },
-    Io { step: &'static str, source: std::io::Error },
+    ArtifactMissing {
+        step: &'static str,
+        path: PathBuf,
+    },
+    Io {
+        step: &'static str,
+        source: std::io::Error,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -91,7 +103,10 @@ impl fmt::Display for BuildError {
                 program,
                 exit_code,
             } => {
-                write!(f, "{program} step '{step}' failed with exit code {exit_code}")
+                write!(
+                    f,
+                    "{program} step '{step}' failed with exit code {exit_code}"
+                )
             }
             Self::ArtifactMissing { step, path } => {
                 write!(f, "artifact missing after {step}: {}", path.display())
@@ -264,7 +279,10 @@ fn profile_needs_storage_disk(profile: &str) -> bool {
 }
 
 fn profile_needs_driver_domain_assets(profile: &str) -> bool {
-    matches!(profile, "driver_domain" | "pr-required" | "nightly-required")
+    matches!(
+        profile,
+        "driver_domain" | "pr-required" | "nightly-required"
+    )
 }
 
 fn profile_needs_iommu(profile: &str) -> bool {
@@ -281,11 +299,7 @@ fn profile_needs_iommu(profile: &str) -> bool {
     )
 }
 
-fn copy_file_if_exists(
-    src: &Path,
-    dst: &Path,
-    step: &'static str,
-) -> Result<bool, BuildError> {
+fn copy_file_if_exists(src: &Path, dst: &Path, step: &'static str) -> Result<bool, BuildError> {
     if !src.exists() {
         return Ok(false);
     }
@@ -347,7 +361,11 @@ fn ensure_driver_domain_fixture_assets(root: &Path) -> Result<(), BuildError> {
         root,
         "build driver_domain probe fixtures",
         "bash",
-        &["scripts/build_driver_cell_probe_fixtures.sh", "--profile", "release"],
+        &[
+            "scripts/build_driver_cell_probe_fixtures.sh",
+            "--profile",
+            "release",
+        ],
     )?;
 
     if initramfs_path.exists() && cell_v1.exists() && cell_v2.exists() {
@@ -475,7 +493,12 @@ pub fn build_signer() -> Result<PathBuf, BuildError> {
     run_cargo(
         &root,
         "build kernel-signer",
-        &["build", "--manifest-path", "tools/signer/Cargo.toml", "--release"],
+        &[
+            "build",
+            "--manifest-path",
+            "tools/signer/Cargo.toml",
+            "--release",
+        ],
     )?;
 
     let path = root
@@ -502,7 +525,10 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
     let signer_path = build_signer()?;
 
     let label = fullboot_label(config);
-    let boot_root = root.join("target").join("qemu-boot").join(format!("fullboot-{label}"));
+    let boot_root = root
+        .join("target")
+        .join("qemu-boot")
+        .join(format!("fullboot-{label}"));
     if boot_root.exists() {
         std::fs::remove_dir_all(&boot_root).map_err(|source| BuildError::Io {
             step: "remove old fullboot image",
@@ -547,10 +573,12 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         ],
     )?;
 
-    let kernel_out_dir = kernel_elf_path.parent().ok_or_else(|| BuildError::ArtifactMissing {
-        step: "locate kernel output directory",
-        path: kernel_elf_path.clone(),
-    })?;
+    let kernel_out_dir = kernel_elf_path
+        .parent()
+        .ok_or_else(|| BuildError::ArtifactMissing {
+            step: "locate kernel output directory",
+            path: kernel_elf_path.clone(),
+        })?;
     let kernel_fat_root = kernel_out_dir.join("fat_root");
     let needs_driver_domain_assets = profile_needs_driver_domain_assets(&config.profile);
     if needs_driver_domain_assets {
@@ -618,11 +646,14 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         }
     })?;
 
-    std::fs::write(boot_root.join("exoloader.cmdline"), format!("{}\n", kernel_cmdline(config)))
-        .map_err(|source| BuildError::Io {
-            step: "write exoloader.cmdline",
-            source,
-        })?;
+    std::fs::write(
+        boot_root.join("exoloader.cmdline"),
+        format!("{}\n", kernel_cmdline(config)),
+    )
+    .map_err(|source| BuildError::Io {
+        step: "write exoloader.cmdline",
+        source,
+    })?;
 
     Ok(PackagedImage {
         boot_root,
@@ -770,7 +801,8 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
     let log_path = log_dir.join(format!("fullboot-{label}.log"));
     std::fs::File::create(&log_path).map_err(RunError::QemuLaunch)?;
     let qemu_stderr_path = log_dir.join(format!("fullboot-{label}-qemu-stderr.log"));
-    let qemu_stderr_file = std::fs::File::create(&qemu_stderr_path).map_err(RunError::QemuLaunch)?;
+    let qemu_stderr_file =
+        std::fs::File::create(&qemu_stderr_path).map_err(RunError::QemuLaunch)?;
 
     let vars_copy_path = root
         .join("target")
@@ -823,13 +855,18 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
     if let Some(storage_disk) = &storage_disk_path {
         qemu_cmd
             .arg("-drive")
-            .arg(format!("file={},if=none,id=storage0,format=raw", storage_disk.display()))
+            .arg(format!(
+                "file={},if=none,id=storage0,format=raw",
+                storage_disk.display()
+            ))
             .arg("-device")
             .arg("virtio-blk-pci,drive=storage0");
     }
 
     if profile_needs_iommu(&config.profile) {
-        qemu_cmd.arg("-device").arg("intel-iommu,intremap=on,caching-mode=on,device-iotlb=on");
+        qemu_cmd
+            .arg("-device")
+            .arg("intel-iommu,intremap=on,caching-mode=on,device-iotlb=on");
     }
 
     for extra in &config.extra_args {

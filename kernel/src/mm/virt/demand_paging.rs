@@ -23,20 +23,18 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::RwLock;
 
-use crate::mm::phys::frame_allocator::alloc_frame;
-use super::higher_half::{
-    global_map_page, PageFlags, MapError, VirtAddr, PhysAddr,
-};
-use crate::mm::meta::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType, MemcgId};
-use crate::mm::types::FrameIndex;
-use super::cow::{cow_map_zero_page, zero_page_phys, CowResult};
-use crate::mm::reclaim::page_reclaim::{lru_add_page, PageType as LruPageType};
+use super::cow::{CowResult, cow_map_zero_page, zero_page_phys};
 use super::fault_handler::PageSetup;
+use super::higher_half::{MapError, PageFlags, PhysAddr, VirtAddr, global_map_page};
+use crate::mm::meta::memcg::{ChargeType, MemcgId, memcg_charge, memcg_track_page, memcg_uncharge};
+use crate::mm::phys::frame_allocator::alloc_frame;
+use crate::mm::reclaim::page_reclaim::{PageType as LruPageType, lru_add_page};
+use crate::mm::types::FrameIndex;
 
 // ============================================================================
 // Demand Paging Configuration
@@ -128,22 +126,22 @@ impl ProtFlags {
     pub const READ: ProtFlags = ProtFlags(1);
     pub const WRITE: ProtFlags = ProtFlags(2);
     pub const EXEC: ProtFlags = ProtFlags(4);
-    
+
     #[inline]
     pub fn readable(&self) -> bool {
         self.0 & Self::READ.0 != 0
     }
-    
+
     #[inline]
     pub fn writable(&self) -> bool {
         self.0 & Self::WRITE.0 != 0
     }
-    
+
     #[inline]
     pub fn executable(&self) -> bool {
         self.0 & Self::EXEC.0 != 0
     }
-    
+
     /// PageFlagsに変換
     pub fn to_page_flags(&self) -> PageFlags {
         let mut base_flags = PageFlags::PRESENT | PageFlags::USER;
@@ -179,7 +177,7 @@ impl VmRegion {
     /// 新しい匿名領域を作成
     pub fn new_anonymous(start: VirtAddr, end: VirtAddr, prot: ProtFlags) -> Self {
         let page_count = ((end.as_u64() - start.as_u64()) / 4096) as usize;
-        
+
         Self {
             start,
             end,
@@ -189,7 +187,7 @@ impl VmRegion {
             populated_pages: alloc::vec![false; page_count],
         }
     }
-    
+
     /// 新しいファイルマッピング領域を作成
     pub fn new_file(
         start: VirtAddr,
@@ -199,7 +197,7 @@ impl VmRegion {
         file_info: FileBackingInfo,
     ) -> Self {
         let page_count = ((end.as_u64() - start.as_u64()) / 4096) as usize;
-        
+
         Self {
             start,
             end,
@@ -213,19 +211,19 @@ impl VmRegion {
             populated_pages: alloc::vec![false; page_count],
         }
     }
-    
+
     /// アドレスがこの領域に含まれるか
     #[inline]
     pub fn contains(&self, addr: VirtAddr) -> bool {
         addr >= self.start && addr < self.end
     }
-    
+
     /// ページインデックスを取得
     #[inline]
     fn page_index(&self, addr: VirtAddr) -> usize {
         ((addr.as_u64() - self.start.as_u64()) / 4096) as usize
     }
-    
+
     /// ページが既に割り当て済みか
     pub fn is_populated(&self, addr: VirtAddr) -> bool {
         let idx = self.page_index(addr);
@@ -235,7 +233,7 @@ impl VmRegion {
             false
         }
     }
-    
+
     /// ページを割り当て済みとしてマーク
     pub fn mark_populated(&mut self, addr: VirtAddr) {
         let idx = self.page_index(addr);
@@ -261,31 +259,33 @@ impl DemandPagingManager {
             regions: BTreeMap::new(),
         }
     }
-    
+
     /// 領域を登録
     pub fn register_region(&mut self, task_id: u64, region: VmRegion) {
         self.regions
             .entry(task_id)
             .or_insert_with(Vec::new)
             .push(region);
-        
-        DEMAND_STATS.regions_registered.fetch_add(1, Ordering::Relaxed);
+
+        DEMAND_STATS
+            .regions_registered
+            .fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// アドレスに対応する領域を検索
     pub fn find_region(&self, task_id: u64, addr: VirtAddr) -> Option<&VmRegion> {
         self.regions
             .get(&task_id)
             .and_then(|regions| regions.iter().find(|r| r.contains(addr)))
     }
-    
+
     /// アドレスに対応する領域を検索（可変）
     pub fn find_region_mut(&mut self, task_id: u64, addr: VirtAddr) -> Option<&mut VmRegion> {
         self.regions
             .get_mut(&task_id)
             .and_then(|regions| regions.iter_mut().find(|r| r.contains(addr)))
     }
-    
+
     /// 領域を削除
     pub fn remove_region(&mut self, task_id: u64, start: VirtAddr) -> Option<VmRegion> {
         if let Some(regions) = self.regions.get_mut(&task_id) {
@@ -296,7 +296,7 @@ impl DemandPagingManager {
         }
         None
     }
-    
+
     /// タスクの全領域を削除
     pub fn remove_all_regions(&mut self, task_id: u64) -> Vec<VmRegion> {
         self.regions.remove(&task_id).unwrap_or_default()
@@ -375,29 +375,27 @@ pub enum DemandResult {
 pub fn handle_demand_fault(task_id: u64, fault_addr: VirtAddr, is_write: bool) -> DemandResult {
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
     let config = get_config();
-    
+
     // 領域を検索
     let mut manager = DEMAND_MANAGER.write();
     let region = match manager.find_region_mut(task_id, page_addr) {
         Some(r) => r,
         None => return DemandResult::RegionNotFound,
     };
-    
+
     // 権限チェック
     if is_write && !region.prot.writable() {
         return DemandResult::PermissionDenied;
     }
-    
+
     // 既にマッピング済みか
     if region.is_populated(page_addr) {
         return DemandResult::AlreadyMapped;
     }
-    
+
     // 領域タイプに応じた処理
     let result = match region.region_type {
-        VmRegionType::Anonymous => {
-            populate_anonymous_page(page_addr, &region.prot, &config)
-        }
+        VmRegionType::Anonymous => populate_anonymous_page(page_addr, &region.prot, &config),
         VmRegionType::FilePrivate | VmRegionType::FileShared => {
             populate_file_page(page_addr, region)
         }
@@ -410,13 +408,13 @@ pub fn handle_demand_fault(task_id: u64, fault_addr: VirtAddr, is_write: bool) -
             DemandResult::AlreadyMapped
         }
     };
-    
+
     if result == DemandResult::Ok {
         region.mark_populated(page_addr);
     } else {
         DEMAND_STATS.fault_failures.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     result
 }
 
@@ -486,8 +484,12 @@ fn prepare_file_page_data(
     }
     let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
     let page_num = (file_offset / crate::mm::types::PAGE_SIZE_4K as u64) as u64;
-    crate::mm::meta::frame_backing::track_frame_backing(frame_idx, file_info.inode as crate::fs::InodeNum, page_num);
-    
+    crate::mm::meta::frame_backing::track_frame_backing(
+        frame_idx,
+        file_info.inode as crate::fs::InodeNum,
+        page_num,
+    );
+
     let mut memcg_charged = false;
     let mut memcg_id = MemcgId::ROOT;
     if CONFIG.read().memcg_enabled {
@@ -506,40 +508,45 @@ fn populate_file_page(page_addr: VirtAddr, region: &VmRegion) -> DemandResult {
         Some(info) => info,
         None => return DemandResult::IoError,
     };
-    
+
     // 新しいフレームを割り当て
     let frame = match alloc_frame() {
         Some(f) => f,
         None => return DemandResult::OutOfMemory,
     };
-    
+
     let frame_phys = PhysAddr::new(frame.start_address().as_u64());
     let file_offset = _file_info.offset + (page_addr.as_u64() - region.start.as_u64());
 
-    let (memcg_charged, memcg_id) = match prepare_file_page_data(frame_phys, _file_info, file_offset) {
-        Ok(v) => v,
-        Err(result) => {
-            crate::mm::phys::frame_allocator::dealloc_frame(frame);
-            return result;
-        }
-    };
-    
+    let (memcg_charged, memcg_id) =
+        match prepare_file_page_data(frame_phys, _file_info, file_offset) {
+            Ok(v) => v,
+            Err(result) => {
+                crate::mm::phys::frame_allocator::dealloc_frame(frame);
+                return result;
+            }
+        };
+
     // ページマッピング
     let flags = region.prot.to_page_flags();
     match unsafe { global_map_page(page_addr, frame_phys, flags) } {
         Ok(()) => {}
         Err(MapError::AlreadyMapped) => {
-            if memcg_charged { memcg_uncharge(memcg_id, 1, ChargeType::Cache); }
+            if memcg_charged {
+                memcg_uncharge(memcg_id, 1, ChargeType::Cache);
+            }
             crate::mm::phys::frame_allocator::dealloc_frame(frame);
             return DemandResult::AlreadyMapped;
         }
         Err(_) => {
-            if memcg_charged { memcg_uncharge(memcg_id, 1, ChargeType::Cache); }
+            if memcg_charged {
+                memcg_uncharge(memcg_id, 1, ChargeType::Cache);
+            }
             crate::mm::phys::frame_allocator::dealloc_frame(frame);
             return DemandResult::OutOfMemory;
         }
     }
-    
+
     // LRUに追加
     lru_add_page(frame, LruPageType::FileBacked);
 
@@ -548,9 +555,9 @@ fn populate_file_page(page_addr: VirtAddr, region: &VmRegion) -> DemandResult {
         let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
         memcg_track_page(frame_idx, memcg_id, ChargeType::Cache);
     }
-    
+
     DEMAND_STATS.file_read_pages.fetch_add(1, Ordering::Relaxed);
-    
+
     DemandResult::Ok
 }
 
@@ -575,9 +582,9 @@ pub fn prefault_pages(task_id: u64, center_addr: VirtAddr, count: usize) -> usiz
     let config = get_config();
     let max_pages = config.prefault_pages.min(count);
     let mut populated = 0;
-    
+
     let mut manager = DEMAND_MANAGER.write();
-    
+
     // 中心アドレスの前後にプリフォルト
     for i in 0..max_pages {
         let offset = (i as i64 - (max_pages as i64 / 2)) * 4096;
@@ -585,33 +592,31 @@ pub fn prefault_pages(task_id: u64, center_addr: VirtAddr, count: usize) -> usiz
             Some(a) => VirtAddr::new(a),
             None => continue,
         };
-        
+
         // 領域を検索
         let region = match manager.find_region_mut(task_id, addr) {
             Some(r) => r,
             None => continue,
         };
-        
+
         // 既にマッピング済みならスキップ
         if region.is_populated(addr) {
             continue;
         }
-        
+
         // ページを割り当て
         let result = match region.region_type {
-            VmRegionType::Anonymous => {
-                populate_anonymous_page(addr, &region.prot, &config)
-            }
+            VmRegionType::Anonymous => populate_anonymous_page(addr, &region.prot, &config),
             _ => continue, // ファイルマッピングはプリフォルトしない
         };
-        
+
         if result == DemandResult::Ok {
             region.mark_populated(addr);
             populated += 1;
             DEMAND_STATS.prefault_pages.fetch_add(1, Ordering::Relaxed);
         }
     }
-    
+
     populated
 }
 
@@ -623,7 +628,7 @@ pub fn prefault_pages(task_id: u64, center_addr: VirtAddr, count: usize) -> usiz
 pub fn register_anonymous(task_id: u64, start: VirtAddr, size: u64, prot: ProtFlags) {
     let end = VirtAddr::new(start.as_u64() + size);
     let region = VmRegion::new_anonymous(start, end, prot);
-    
+
     DEMAND_MANAGER.write().register_region(task_id, region);
 }
 
@@ -645,7 +650,7 @@ pub fn register_file_mapping(
         file_size,
     };
     let region = VmRegion::new_file(start, end, prot, shared, file_info);
-    
+
     DEMAND_MANAGER.write().register_region(task_id, region);
 }
 
@@ -707,7 +712,7 @@ pub fn reset_stats() {
 pub fn init_demand_paging() {
     // ゼロページを初期化
     super::cow::init_zero_page();
-    
+
     log::info!("[mm] Demand paging initialized");
 }
 
@@ -719,15 +724,18 @@ pub fn init_demand_paging() {
 pub fn demand_debug_info() {
     let stats = demand_stats();
     let config = get_config();
-    
+
     log::info!("=== Demand Paging Debug Info ===");
     log::info!("Config:");
     log::info!("  Zero page CoW: {}", config.use_zero_page_cow);
     log::info!("  Prefault pages: {}", config.prefault_pages);
     log::info!("  Max prefault size: {} bytes", config.max_prefault_size);
     log::info!("Statistics:");
-    log::info!("  Regions: {} registered, {} removed",
-        stats.regions_registered, stats.regions_removed);
+    log::info!(
+        "  Regions: {} registered, {} removed",
+        stats.regions_registered,
+        stats.regions_removed
+    );
     log::info!("  Zero fill pages: {}", stats.zero_fill_pages);
     log::info!("  File read pages: {}", stats.file_read_pages);
     log::info!("  Zero page CoW: {}", stats.zero_page_cow);

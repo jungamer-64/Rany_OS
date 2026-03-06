@@ -34,7 +34,11 @@ fn check_arp_flap_log_rate(current_time: u64) -> bool {
         true
     } else {
         if count == ARP_FLAP_MAX_LOGS {
-            log::warn!("[NET-ARP] MAC flap log suppressed (>{}/{}ms window)", ARP_FLAP_MAX_LOGS, ARP_FLAP_WINDOW_MS);
+            log::warn!(
+                "[NET-ARP] MAC flap log suppressed (>{}/{}ms window)",
+                ARP_FLAP_MAX_LOGS,
+                ARP_FLAP_WINDOW_MS
+            );
         }
         ARP_FLAP_SUPPRESSED.fetch_add(1, AtomicOrdering::Relaxed);
         false
@@ -45,7 +49,6 @@ fn check_arp_flap_log_rate(current_time: u64) -> bool {
 pub fn arp_flap_suppressed_count() -> u64 {
     ARP_FLAP_SUPPRESSED.load(AtomicOrdering::Relaxed)
 }
-
 
 impl ArpProcessor {
     /// Create a new ARP processor
@@ -118,7 +121,7 @@ impl ArpProcessor {
         }
 
         // Decide whether we're allowed to update the cache. (RFC 826 logic)
-        // RFC 826: "If the pair <protocol type, sender protocol address> is already in 
+        // RFC 826: "If the pair <protocol type, sender protocol address> is already in
         // my translation table, update that sender's entry... and then check the opcode."
         let mut should_update = false;
         if !sender_ip.is_any() && !sender_mac.is_broadcast() {
@@ -128,13 +131,17 @@ impl ArpProcessor {
                 if let Some(existing_mac) = self.cache.lookup(sender_ip, current_time) {
                     if existing_mac != sender_mac {
                         if check_arp_flap_log_rate(current_time) {
-                            log::info!("[NET-ARP] MAC changed for {}: {} -> {} (updating per RFC 826)", 
-                                sender_ip, existing_mac, sender_mac);
+                            log::info!(
+                                "[NET-ARP] MAC changed for {}: {} -> {} (updating per RFC 826)",
+                                sender_ip,
+                                existing_mac,
+                                sender_mac
+                            );
                         }
                     }
                 }
                 should_update = true;
-            } 
+            }
             // Rule 2: Create new entry if it's a request for US or a reply we are waiting for.
             else if packet.operation() == ArpOperation::Request && target_ip == self.local_ip {
                 should_update = true;
@@ -142,7 +149,11 @@ impl ArpProcessor {
                 if self.cache.is_pending(sender_ip, current_time) {
                     should_update = true;
                 } else {
-                    log::warn!("[NET-ARP] Dropping unsolicited ARP reply from {} ({})", sender_ip, sender_mac);
+                    log::warn!(
+                        "[NET-ARP] Dropping unsolicited ARP reply from {} ({})",
+                        sender_ip,
+                        sender_mac
+                    );
                 }
             }
         }
@@ -156,7 +167,10 @@ impl ArpProcessor {
                 // RFC 5227: Check for ARP probe (sender_ip is unspecified)
                 if sender_ip.is_any() {
                     if target_ip == self.local_ip {
-                        log::info!("[NET-ARP] Received ARP probe for our IP {} - sending gratuitous ARP to defend (RFC 5227)", target_ip);
+                        log::info!(
+                            "[NET-ARP] Received ARP probe for our IP {} - sending gratuitous ARP to defend (RFC 5227)",
+                            target_ip
+                        );
                         return ArpResult::SendGratuitous;
                     }
                     return ArpResult::Ignored;
@@ -273,5 +287,3 @@ impl ArpProcessor {
         self.cache.mark_incomplete(ip, current_time);
     }
 }
-
-

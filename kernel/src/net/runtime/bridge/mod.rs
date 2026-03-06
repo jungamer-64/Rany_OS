@@ -5,39 +5,38 @@
 //! VirtIO-NetドライバとNetworkStackを接続するブリッジモジュール。
 //! 送信コールバック設定と受信パケット処理を統合します。
 
-
+use crate::net::api::config::NetworkConfigSnapshot;
+use crate::net::api::config::NetworkStatsSnapshot;
+use crate::net::api::connections::ArpCacheEntry;
 use crate::net::datapath::optimization::{BatchConfig, BatchProcessor};
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::{Ipv4Address, Ipv4Config};
-use crate::net::runtime::manager::{self, NetIfId};
-use crate::net::runtime::stack::{self, NetworkConfig};
-use crate::net::api::connections::ArpCacheEntry;
-use crate::net::api::config::NetworkConfigSnapshot;
-use crate::net::api::config::NetworkStatsSnapshot;
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
 };
+use crate::net::runtime::manager::{self, NetIfId};
+use crate::net::runtime::stack::{self, NetworkConfig};
 
 mod nat;
 use nat::*;
 pub mod mlx5_bridge;
-use crate::io::virtio::{
-    VirtioNetDevice, bind_virtio_net_interface, with_virtio_net, with_virtio_net_at_index,
-    VIRTIO_NET_IOCTL_TX,
-};
 use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority, hybrid_coordinator,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::{
+    VIRTIO_NET_IOCTL_TX, VirtioNetDevice, bind_virtio_net_interface, with_virtio_net,
+    with_virtio_net_at_index,
+};
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::task::{Context, Poll, Waker};
 use spin::RwLock;
 
 extern crate alloc;
@@ -92,8 +91,13 @@ static TX_QUEUE_HAS_EVENTS: AtomicBool = AtomicBool::new(false);
 
 /// Enqueue a transmit request (called from stack's transmit_fn)
 fn enqueue_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
-    let req = TransmitRequest { if_id, data: data.to_vec() };
-    let Ok(mut q) = TX_QUEUE.lock() else { return false; };
+    let req = TransmitRequest {
+        if_id,
+        data: data.to_vec(),
+    };
+    let Ok(mut q) = TX_QUEUE.lock() else {
+        return false;
+    };
     if q.len() >= TX_QUEUE_CAPACITY {
         return false;
     }
@@ -111,7 +115,9 @@ fn enqueue_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
 
 /// Pop a transmit request (non-blocking)
 fn tx_queue_recv() -> Option<TransmitRequest> {
-    let Ok(mut q) = TX_QUEUE.lock() else { return None; };
+    let Ok(mut q) = TX_QUEUE.lock() else {
+        return None;
+    };
     let r = q.pop_front();
     if q.is_empty() {
         TX_QUEUE_HAS_EVENTS.store(false, Ordering::Release);
@@ -121,7 +127,9 @@ fn tx_queue_recv() -> Option<TransmitRequest> {
 
 /// Drain all queued transmit requests
 fn tx_queue_drain_all() -> Vec<TransmitRequest> {
-    let Ok(mut q) = TX_QUEUE.lock() else { return Vec::new(); };
+    let Ok(mut q) = TX_QUEUE.lock() else {
+        return Vec::new();
+    };
     TX_QUEUE_HAS_EVENTS.store(false, Ordering::Release);
     q.drain(..).collect()
 }
@@ -222,8 +230,7 @@ pub fn drain_deferred_rx_packets() {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 /// Records routing events (if_id,destination) for unit tests.
-static FORWARD_EVENTS: RwLock<Vec<(NetIfId, Ipv4Address)>> =
-    RwLock::new(Vec::new());
+static FORWARD_EVENTS: RwLock<Vec<(NetIfId, Ipv4Address)>> = RwLock::new(Vec::new());
 
 /// Determine if the given IPv4 address is assigned to any local interface.
 fn is_local_ipv4(addr: Ipv4Address) -> bool {
@@ -316,7 +323,11 @@ fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
     } else {
         // Queue full or error
         counters::global().record_error();
-        trace::push_event(NetLayer::Driver, NetEventKind::Error, "virtio transmit enqueue failed");
+        trace::push_event(
+            NetLayer::Driver,
+            NetEventKind::Error,
+            "virtio transmit enqueue failed",
+        );
         false
     }
 }
@@ -332,35 +343,41 @@ fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
 async fn submit_tx_via_io_scheduler(device_index: u8, data: &[u8]) -> Result<usize, &'static str> {
     use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 
-    log::debug!("[IO-TX] submit_tx_via_io_scheduler: dev={}, len={}", device_index, data.len());
+    log::debug!(
+        "[IO-TX] submit_tx_via_io_scheduler: dev={}, len={}",
+        device_index,
+        data.len()
+    );
 
     // IOMMU デバイスIDを取得（デバイスコールバック内で Clone して返す）
-    let iommu_dev: Option<IommuDeviceId> = with_virtio_net_at_index(device_index, |dev| {
-        dev.iommu_device_id()
-    }).flatten();
+    let iommu_dev: Option<IommuDeviceId> =
+        with_virtio_net_at_index(device_index, |dev| dev.iommu_device_id()).flatten();
 
     log::debug!("[IO-TX] iommu_dev={:?}", iommu_dev.is_some());
 
     // IoScheduler にデバイス登録済みか確認（PollHandler の存在で判定）
     if crate::io::virtio::get_poll_handler(device_index).is_none() {
-        log::warn!("[IO-TX] PollHandler not registered for dev={}", device_index);
+        log::warn!(
+            "[IO-TX] PollHandler not registered for dev={}",
+            device_index
+        );
         return Err("IoScheduler: device not registered");
     }
 
     // DMA バッファ割り当て
     let mut buffer = match iommu_dev {
-        Some(ref dev_id) => CoherentDmaBuffer::new_for_device(
-            data.len(),
-            DmaMemoryAttributes::MMIO,
-            dev_id,
-        ),
-        None => CoherentDmaBuffer::new(
-            data.len(),
-            DmaMemoryAttributes::MMIO,
-        ),
-    }.ok_or("IoScheduler: DMA buffer allocation failed")?;
+        Some(ref dev_id) => {
+            CoherentDmaBuffer::new_for_device(data.len(), DmaMemoryAttributes::MMIO, dev_id)
+        }
+        None => CoherentDmaBuffer::new(data.len(), DmaMemoryAttributes::MMIO),
+    }
+    .ok_or("IoScheduler: DMA buffer allocation failed")?;
 
-    log::debug!("[IO-TX] DMA buffer allocated: iova=0x{:x}, len={}", buffer.device_addr(), data.len());
+    log::debug!(
+        "[IO-TX] DMA buffer allocated: iova=0x{:x}, len={}",
+        buffer.device_addr(),
+        data.len()
+    );
 
     // ペイロードを DMA バッファにコピー
     {
@@ -374,7 +391,9 @@ async fn submit_tx_via_io_scheduler(device_index: u8, data: &[u8]) -> Result<usi
         len: data.len(),
     };
 
-    let device = IoDeviceId::VirtioNet { index: device_index };
+    let device = IoDeviceId::VirtioNet {
+        index: device_index,
+    };
     let command = IoCommand::Ioctl {
         code: VIRTIO_NET_IOCTL_TX,
         buf: handle,
@@ -426,7 +445,11 @@ async fn tx_worker_task() {
         for req in drained.into_iter() {
             let device_index = resolve_virtio_index(req.if_id);
 
-            log::debug!("[TX-WORKER] processing req: dev={}, len={}", device_index, req.data.len());
+            log::debug!(
+                "[TX-WORKER] processing req: dev={}, len={}",
+                device_index,
+                req.data.len()
+            );
 
             // Try IoScheduler path first
             let sent = match submit_tx_via_io_scheduler(device_index, &req.data).await {
@@ -435,7 +458,10 @@ async fn tx_worker_task() {
                     true
                 }
                 Err(reason) => {
-                    log::debug!("[TX-WORKER] IoScheduler path unavailable: {}, using zero-copy async fallback", reason);
+                    log::debug!(
+                        "[TX-WORKER] IoScheduler path unavailable: {}, using zero-copy async fallback",
+                        reason
+                    );
                     // 【完全非同期化】ゼロコピー非同期経路でフォールバック
                     // 旧来の同期 submit_tx() は完全に排除
                     transmit_packet_zero_copy_async(device_index, req.if_id, &req.data)
@@ -448,7 +474,11 @@ async fn tx_worker_task() {
                 trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio async tx");
             } else {
                 counters::global().record_error();
-                trace::push_event(NetLayer::Driver, NetEventKind::Error, "virtio async tx failed");
+                trace::push_event(
+                    NetLayer::Driver,
+                    NetEventKind::Error,
+                    "virtio async tx failed",
+                );
             }
         }
     }
@@ -464,8 +494,8 @@ fn transmit_packet_zero_copy(device: &VirtioNetDevice, data: &[u8]) -> Result<()
     }
 
     // Mempool からバッファを確保してペイロードをコピー
-    let mut packet = crate::net::datapath::mempool::alloc_packet()
-        .ok_or("PacketRef alloc failed")?;
+    let mut packet =
+        crate::net::datapath::mempool::alloc_packet().ok_or("PacketRef alloc failed")?;
 
     // capacity() で書き込み可能サイズを取得し、先に set_len で論理長を設定する。
     // 注意: alloc() 直後の PacketRef は meta.len=0 であるため、
@@ -478,11 +508,9 @@ fn transmit_packet_zero_copy(device: &VirtioNetDevice, data: &[u8]) -> Result<()
     buf[..len].copy_from_slice(&data[..len]);
 
     // ゼロコピーでDMAキューに投入（非同期完了は割り込みハンドラで処理）
-    device.enqueue_send_zero_copy(packet).map_err(|e| {
-        match e {
-            crate::io::virtio::net::VirtioNetError::QueueFull => "TX queue full",
-            _ => "enqueue_send_zero_copy failed",
-        }
+    device.enqueue_send_zero_copy(packet).map_err(|e| match e {
+        crate::io::virtio::net::VirtioNetError::QueueFull => "TX queue full",
+        _ => "enqueue_send_zero_copy failed",
     })
 }
 
@@ -497,7 +525,10 @@ fn transmit_packet_zero_copy_async(_device_index: u8, if_id: Option<NetIfId>, da
         match virtio_index {
             Some(idx) => with_virtio_net_at_index(idx, |dev| transmit_packet_zero_copy(dev, data)),
             None => {
-                log::warn!("[TX-WORKER] VirtIO mapping not found for interface if_id={}", if_id.0);
+                log::warn!(
+                    "[TX-WORKER] VirtIO mapping not found for interface if_id={}",
+                    if_id.0
+                );
                 None
             }
         }
@@ -525,10 +556,15 @@ fn lookup_virtio_index_for_interface(if_id: NetIfId) -> Option<u8> {
         .and_then(|iface| iface.virtio_index)
 }
 
-fn transmit_packet_for_interface_zero_copy(if_id: NetIfId, data: &[u8]) -> Result<(), &'static str> {
+fn transmit_packet_for_interface_zero_copy(
+    if_id: NetIfId,
+    data: &[u8],
+) -> Result<(), &'static str> {
     let virtio_index =
         lookup_virtio_index_for_interface(if_id).ok_or("VirtIO mapping not found for interface")?;
-    match with_virtio_net_at_index(virtio_index, |device| transmit_packet_zero_copy(device, data)) {
+    match with_virtio_net_at_index(virtio_index, |device| {
+        transmit_packet_zero_copy(device, data)
+    }) {
         Some(result) => result,
         None => Err("VirtIO-Net device not initialized for interface"),
     }
@@ -543,7 +579,11 @@ pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
         Ok(()) => {
             TX_PACKETS.fetch_add(1, Ordering::Relaxed);
             counters::global().record_tx(data.len());
-            trace::push_event(NetLayer::Driver, NetEventKind::Tx, "interface transmit (zero-copy)");
+            trace::push_event(
+                NetLayer::Driver,
+                NetEventKind::Tx,
+                "interface transmit (zero-copy)",
+            );
             record_bridge_if_tx(if_id);
             true
         }
@@ -570,13 +610,21 @@ pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
 // Compatibility wrapper `process_received_packet` has been removed.
 // Use `process_received_packet_zero_copy` directly instead.
 
-
 /// Process a completed RX buffer without copying: use the provided PacketRef (zero-copy)
-pub fn process_received_packet_zero_copy(mut packet: crate::net::datapath::mempool::PacketRef, header_size: usize, payload_len: usize) {
+pub fn process_received_packet_zero_copy(
+    mut packet: crate::net::datapath::mempool::PacketRef,
+    header_size: usize,
+    payload_len: usize,
+) {
     // Deferred mode: buffer packet for later dispatch to avoid deadlock
     if RX_DEFERRED_MODE.load(Ordering::Acquire) {
         if let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() {
-            guard.push(DeferredRxPacket { packet, header_size, payload_len, if_id: None });
+            guard.push(DeferredRxPacket {
+                packet,
+                header_size,
+                payload_len,
+                if_id: None,
+            });
         }
         return;
     }
@@ -619,7 +667,12 @@ pub fn process_received_packet_zero_copy_for_interface(
     // Deferred mode: buffer packet for later dispatch to avoid deadlock
     if RX_DEFERRED_MODE.load(Ordering::Acquire) {
         if let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() {
-            guard.push(DeferredRxPacket { packet, header_size, payload_len, if_id: Some(if_id) });
+            guard.push(DeferredRxPacket {
+                packet,
+                header_size,
+                payload_len,
+                if_id: Some(if_id),
+            });
         }
         return;
     }
@@ -661,38 +714,48 @@ pub fn process_received_packet_zero_copy_for_interface(
 
                 let mut translated_dst = None;
                 if let Some((proto, header_len, src_ip, mut dst_ip)) = parsed {
-                   if (proto == crate::net::l3::ipv4::IpProtocol::Udp
-                       || proto == crate::net::l3::ipv4::IpProtocol::Tcp)
-                       && header_len <= ip_buf.len().saturating_sub(4)
-                   {
-                       let (_, transport) = ip_buf.split_at_mut(header_len);
-                       let src_port = u16::from_be_bytes([transport[0], transport[1]]);
-                       let mut dst_port = u16::from_be_bytes([transport[2], transport[3]]);
-                       
-                       let mut tcp_flags = 0u8;
-                       if proto == crate::net::l3::ipv4::IpProtocol::Tcp && transport.len() >= 14 {
-                           tcp_flags = transport[13]; // TCP flags (SYN, FIN, RST, etc)
-                       }
+                    if (proto == crate::net::l3::ipv4::IpProtocol::Udp
+                        || proto == crate::net::l3::ipv4::IpProtocol::Tcp)
+                        && header_len <= ip_buf.len().saturating_sub(4)
+                    {
+                        let (_, transport) = ip_buf.split_at_mut(header_len);
+                        let src_port = u16::from_be_bytes([transport[0], transport[1]]);
+                        let mut dst_port = u16::from_be_bytes([transport[2], transport[3]]);
 
-                       if nat_translate_in(proto, src_ip, src_port, &mut dst_ip, &mut dst_port, tcp_flags) {
-                           transport[2..4].copy_from_slice(&dst_port.to_be_bytes());
-                           recompute_ipv4_transport_checksum(transport, src_ip, dst_ip, proto);
-                           translated_dst = Some(dst_ip);
-                       }
-                   } else if proto == crate::net::l3::ipv4::IpProtocol::Icmp && header_len <= ip_buf.len().saturating_sub(8) {
-                       let (_, transport) = ip_buf.split_at_mut(header_len);
-                       if let Some(new_dst) = nat_translate_in_icmp(src_ip, &mut dst_ip, transport) {
-                           // ICMP checksum needs to be recomputed. 
-                           // Since we might have modified the payload (for ICMP errors), 
-                           // we just clear and recompute the whole thing.
-                           transport[2] = 0;
-                           transport[3] = 0;
-                           let checksum = crate::net::l3::ipv4::data_checksum(transport, 0);
-                           transport[2] = (checksum >> 8) as u8;
-                           transport[3] = (checksum & 0xff) as u8;
-                           translated_dst = Some(new_dst);
-                       }
-                   }
+                        let mut tcp_flags = 0u8;
+                        if proto == crate::net::l3::ipv4::IpProtocol::Tcp && transport.len() >= 14 {
+                            tcp_flags = transport[13]; // TCP flags (SYN, FIN, RST, etc)
+                        }
+
+                        if nat_translate_in(
+                            proto,
+                            src_ip,
+                            src_port,
+                            &mut dst_ip,
+                            &mut dst_port,
+                            tcp_flags,
+                        ) {
+                            transport[2..4].copy_from_slice(&dst_port.to_be_bytes());
+                            recompute_ipv4_transport_checksum(transport, src_ip, dst_ip, proto);
+                            translated_dst = Some(dst_ip);
+                        }
+                    } else if proto == crate::net::l3::ipv4::IpProtocol::Icmp
+                        && header_len <= ip_buf.len().saturating_sub(8)
+                    {
+                        let (_, transport) = ip_buf.split_at_mut(header_len);
+                        if let Some(new_dst) = nat_translate_in_icmp(src_ip, &mut dst_ip, transport)
+                        {
+                            // ICMP checksum needs to be recomputed.
+                            // Since we might have modified the payload (for ICMP errors),
+                            // we just clear and recompute the whole thing.
+                            transport[2] = 0;
+                            transport[3] = 0;
+                            let checksum = crate::net::l3::ipv4::data_checksum(transport, 0);
+                            transport[2] = (checksum >> 8) as u8;
+                            transport[3] = (checksum & 0xff) as u8;
+                            translated_dst = Some(new_dst);
+                        }
+                    }
                 }
 
                 if let Some(dst_ip) = translated_dst {
@@ -716,14 +779,16 @@ pub fn process_received_packet_zero_copy_for_interface(
                     let dst = ip_pkt.destination();
 
                     // Security: Ingress Filtering (BCP 38 / RFC 2827)
-                    // If the source IP belongs to a local network, it MUST arrive on the 
-                    // interface associated with that network. If it arrives on a different 
+                    // If the source IP belongs to a local network, it MUST arrive on the
+                    // interface associated with that network. If it arrives on a different
                     // interface, it's a spoofed packet.
                     if let Ok(Some(src_route)) = manager::lookup_ipv4_route(src) {
                         if src_route.if_id != if_id && src_route.flags.connected {
                             log::warn!(
                                 "[NET BRIDGE] Ingress filtering drop: src {} on if {} (expected if {})",
-                                src, if_id.0, src_route.if_id.0
+                                src,
+                                if_id.0,
+                                src_route.if_id.0
                             );
                             return;
                         }
@@ -751,7 +816,9 @@ pub fn process_received_packet_zero_copy_for_interface(
                                 // need to parse transport header for ports
                                 let translated = match proto {
                                     crate::net::l3::ipv4::IpProtocol::Udp => {
-                                        if let Some(udp) = crate::net::l4::udp::UdpPacket::parse(transport) {
+                                        if let Some(udp) =
+                                            crate::net::l4::udp::UdpPacket::parse(transport)
+                                        {
                                             nat_translate_out(
                                                 crate::net::l3::ipv4::IpProtocol::Udp,
                                                 src,
@@ -795,7 +862,10 @@ pub fn process_received_packet_zero_copy_for_interface(
                                     Some(pair) => pair,
                                     None => {
                                         // If NAT is enabled but failed (table full, etc), drop to prevent internal IP leak
-                                        log::warn!("[NET BRIDGE] NAT failed for {:?}, dropping packet", proto);
+                                        log::warn!(
+                                            "[NET BRIDGE] NAT failed for {:?}, dropping packet",
+                                            proto
+                                        );
                                         return;
                                     }
                                 };
@@ -829,7 +899,9 @@ pub fn process_received_packet_zero_copy_for_interface(
                                     // イベントキュー経由でNAT転送（デッドロック回避）
                                     match proto {
                                         crate::net::l3::ipv4::IpProtocol::Udp => {
-                                            if let Some(udp) = crate::net::l4::udp::UdpPacket::parse(transport) {
+                                            if let Some(udp) =
+                                                crate::net::l4::udp::UdpPacket::parse(transport)
+                                            {
                                                 let payload = Vec::from(udp.payload());
                                                 let src_port = _new_port;
                                                 let dst_port = udp.dst_port();
@@ -849,7 +921,8 @@ pub fn process_received_packet_zero_copy_for_interface(
                                         crate::net::l3::ipv4::IpProtocol::Tcp => {
                                             let mut nat_segment = Vec::from(transport);
                                             if _new_port != 0 && nat_segment.len() >= 18 {
-                                                nat_segment[0..2].copy_from_slice(&_new_port.to_be_bytes());
+                                                nat_segment[0..2]
+                                                    .copy_from_slice(&_new_port.to_be_bytes());
                                                 recompute_ipv4_transport_checksum(
                                                     &mut nat_segment,
                                                     _new_src,
@@ -917,24 +990,29 @@ fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketR
         }
         let protocol = data[ip_start + 9];
         let src_ip = u32::from_be_bytes([
-            data[ip_start + 12], data[ip_start + 13],
-            data[ip_start + 14], data[ip_start + 15],
+            data[ip_start + 12],
+            data[ip_start + 13],
+            data[ip_start + 14],
+            data[ip_start + 15],
         ]);
         let dst_ip = u32::from_be_bytes([
-            data[ip_start + 16], data[ip_start + 17],
-            data[ip_start + 18], data[ip_start + 19],
+            data[ip_start + 16],
+            data[ip_start + 17],
+            data[ip_start + 18],
+            data[ip_start + 19],
         ]);
 
         let l4_start = ip_start + ihl;
         // TCP (6) / UDP (17) のみポート情報を抽出
-        let (src_port, dst_port) = if (protocol == 6 || protocol == 17) && data.len() >= l4_start + 4 {
-            (
-                u16::from_be_bytes([data[l4_start], data[l4_start + 1]]),
-                u16::from_be_bytes([data[l4_start + 2], data[l4_start + 3]]),
-            )
-        } else {
-            (0, 0)
-        };
+        let (src_port, dst_port) =
+            if (protocol == 6 || protocol == 17) && data.len() >= l4_start + 4 {
+                (
+                    u16::from_be_bytes([data[l4_start], data[l4_start + 1]]),
+                    u16::from_be_bytes([data[l4_start + 2], data[l4_start + 3]]),
+                )
+            } else {
+                (0, 0)
+            };
 
         // L4ヘッダ長の計算
         let l4_hdr_len = if protocol == 6 || protocol == 17 {
@@ -950,7 +1028,9 @@ fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketR
         };
 
         // 借用はここで終了
-        (src_ip, dst_ip, src_port, dst_port, protocol, ihl as u8, l4_hdr_len)
+        (
+            src_ip, dst_ip, src_port, dst_port, protocol, ihl as u8, l4_hdr_len,
+        )
     };
 
     let (src_ip, dst_ip, src_port, dst_port, protocol, ihl, l4_hdr_len) = parsed;
@@ -974,7 +1054,6 @@ fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketR
         meta.set_l4_csum_verified();
     }
 }
-
 
 // ============================================================================
 // Initialization
@@ -1041,7 +1120,10 @@ pub fn init_bridge() -> Result<(), &'static str> {
             set_primary_bridge_if_for_virtio(if_id, 0);
         }
         Err(err) => {
-            log::warn!("[NET BRIDGE] failed to register primary vnet0 in NetworkManager: {:?}", err);
+            log::warn!(
+                "[NET BRIDGE] failed to register primary vnet0 in NetworkManager: {:?}",
+                err
+            );
         }
     }
 
@@ -1160,7 +1242,7 @@ pub fn flush_batch() {
 /// 長時間のロック保持を防止する。上限を超えたイベントはキューに残留し、
 /// 次回の呼び出しで処理される。
 pub fn sync_process_network_events() {
-    use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
+    use crate::net::l4::endpoint::event::{NetworkEvent, event_queue};
     use crate::net::l4::endpoint::handler::NetworkEventHandler;
 
     /// 同期コンテキストでの1回あたりの最大処理イベント数
@@ -1195,7 +1277,10 @@ pub fn sync_process_network_events() {
                         log::trace!("[NET-SYNC] processing IngressPacket event");
                     }
                     other => {
-                        log::trace!("[NET-SYNC] processing {:?} event", core::mem::discriminant(other));
+                        log::trace!(
+                            "[NET-SYNC] processing {:?} event",
+                            core::mem::discriminant(other)
+                        );
                     }
                 }
                 handler.handle_event_with_stack(event, stack);
@@ -1303,7 +1388,6 @@ pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
 #[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "tests.rs"]
 pub(crate) mod tests;
-
 
 // ============================================================================
 // 非同期ブリッジAPI（推奨）— イベントキュー経由でスタックアクセス

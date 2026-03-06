@@ -5,6 +5,7 @@
 //!
 //! NetworkEvent, NetworkEventQueue, EventWaitFuture
 
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::future::Future;
@@ -12,7 +13,6 @@ use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
-use crate::sync::PoisonLock;
 
 use super::types::{EndpointAddr, EndpointFd, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
@@ -55,15 +55,9 @@ pub enum NetworkEvent {
         remote: EndpointAddr,
     },
     /// TCP_NODELAY 設定
-    SetNoDelay {
-        fd: EndpointFd,
-        nodelay: bool,
-    },
+    SetNoDelay { fd: EndpointFd, nodelay: bool },
     /// QoS 優先度設定
-    SetPriority {
-        fd: EndpointFd,
-        priority: u8,
-    },
+    SetPriority { fd: EndpointFd, priority: u8 },
     /// Raw UDP送信（ソケット非経由・スタック直接）
     ///
     /// `src_ip` が `Some` の場合、指定されたIPをソースアドレスとして使用する。
@@ -99,10 +93,7 @@ pub enum NetworkEvent {
         segment: Vec<u8>,
     },
     /// ICMP Echo Request（非同期ping）
-    IcmpEchoRequest {
-        target: [u8; 4],
-        sequence: u16,
-    },
+    IcmpEchoRequest { target: [u8; 4], sequence: u16 },
     /// 非同期 ICMP Echo 応答通知
     IcmpEchoReply {
         source: [u8; 4],
@@ -127,14 +118,9 @@ pub enum NetworkEvent {
     ///
     /// ARP要求を送信し、解決完了時にWakerで通知する。
     /// ISR/ポーリングコンテキストからのロック取得を回避する。
-    ArpResolveRequest {
-        target_ip: [u8; 4],
-    },
+    ArpResolveRequest { target_ip: [u8; 4] },
     /// ARP解決完了通知（ARPキャッシュ更新時に発火）
-    ArpResolved {
-        ip: [u8; 4],
-        mac: [u8; 6],
-    },
+    ArpResolved { ip: [u8; 4], mac: [u8; 6] },
     /// 非同期TCP connect（イベントキュー経由・ロック競合回避）
     AsyncTcpConnect {
         local: EndpointAddr,
@@ -225,20 +211,32 @@ pub enum NetworkEvent {
     AsyncTcpConnectStream {
         local: EndpointAddr,
         remote: EndpointAddr,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<crate::net::l4::tcp::TcpStream, crate::net::l4::tcp::TcpError>>>>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<
+                Option<Result<crate::net::l4::tcp::TcpStream, crate::net::l4::tcp::TcpError>>,
+            >,
+        >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP bind（TcpListenerを返す完全非同期版）
     AsyncTcpBindListener {
         local: EndpointAddr,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>>>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<
+                Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>,
+            >,
+        >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP bind with token（TcpListenerを返す完全非同期版）
     AsyncTcpBindListenerWithToken {
         local: EndpointAddr,
         token: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>>>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<
+                Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>,
+            >,
+        >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期UDP bind（UdpEndpointを返す完全非同期版）
@@ -258,7 +256,6 @@ pub enum NetworkEvent {
     // ====================================================================
     // NAT forwarding events (bridge → event queue → handler)
     // ====================================================================
-
     /// NAT転送: TTL超過ICMPエラー送信（bridge RXパスから非同期オフロード）
     NatIcmpTimeExceeded {
         src_ip: [u8; 4],
@@ -292,7 +289,6 @@ pub enum NetworkEvent {
     // ====================================================================
     // Async utility events (bridge/API → event queue → handler)
     // ====================================================================
-
     /// 非同期ICMP Echo送信（send_real_icmp_echo の非同期版）
     AsyncIcmpEcho {
         target: [u8; 4],
@@ -301,9 +297,7 @@ pub enum NetworkEvent {
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ARP Probe送信（DHCPからのARPプローブ要求）
-    AsyncArpProbe {
-        target_ip: [u8; 4],
-    },
+    AsyncArpProbe { target_ip: [u8; 4] },
     /// 非同期ARPキャッシュ解決チェック（DHCP衝突検出用）
     AsyncArpResolveCheck {
         target_ip: [u8; 4],
@@ -328,37 +322,39 @@ pub enum NetworkEvent {
     // ====================================================================
     // Async config/stats query events (API layer → event queue → handler)
     // ====================================================================
-
     /// 非同期ネットワーク設定取得
     AsyncGetConfig {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::api::config::NetworkConfigSnapshot>>>>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Option<crate::net::api::config::NetworkConfigSnapshot>>>,
+        >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ネットワーク統計取得
     AsyncGetStats {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::api::config::NetworkStatsSnapshot>>>>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Option<crate::net::api::config::NetworkStatsSnapshot>>>,
+        >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ARPキャッシュ取得
     AsyncGetArpCache {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::connections::ArpCacheEntry>>>>,
+        result_slot:
+            alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::connections::ArpCacheEntry>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ARPキャッシュ挿入
-    AsyncArpInsert {
-        ip: [u8; 4],
-        mac: [u8; 6],
-    },
+    AsyncArpInsert { ip: [u8; 4], mac: [u8; 6] },
     /// 非同期UDPエンドポイント一覧取得
     AsyncGetUdpEndpoints {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::connections::UdpEndpointInfo>>>>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Vec<crate::net::api::connections::UdpEndpointInfo>>>,
+        >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
 
     // ====================================================================
     // Async DHCP / TCP query events (complete async conversion)
     // ====================================================================
-
     /// 非同期DHCP状態取得
     AsyncGetDhcpState {
         result_slot: alloc::sync::Arc<PoisonLock<Option<crate::net::api::dhcp::DhcpRuntimeState>>>,
@@ -376,7 +372,8 @@ pub enum NetworkEvent {
     },
     /// 非同期DHCPディスカバー
     AsyncDhcpDiscover {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::api::dhcp::DhcpOfferInfo>>>>,
+        result_slot:
+            alloc::sync::Arc<PoisonLock<Option<Option<crate::net::api::dhcp::DhcpOfferInfo>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCP最終拒否IP取得
@@ -391,7 +388,9 @@ pub enum NetworkEvent {
     },
     /// 非同期TCP接続一覧取得
     AsyncGetTcpConnections {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::connections::TcpConnectionInfo>>>>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Vec<crate::net::api::connections::TcpConnectionInfo>>>,
+        >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
 }

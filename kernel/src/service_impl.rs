@@ -25,13 +25,13 @@ use alloc::string::String;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
-use kernel_api::error::KapiError;
 use kernel_api::KapiResult;
+use kernel_api::error::KapiError;
 use kernel_api::services::KernelServices;
 use kernel_api::{
-    ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle,
-    NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,
-    OpenMode, Packet, RawEndpointHandle, TaskHandle, TcpEndpoint,
+    ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle, NvmeIoHandle,
+    NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest, OpenMode, Packet, RawEndpointHandle,
+    TaskHandle, TcpEndpoint,
 };
 use spin::Mutex;
 
@@ -119,7 +119,6 @@ impl FileHandleRegistry {
     fn unregister(&self, id: u64) -> Option<FileHandleEntry> {
         self.handles.lock().remove(&id)
     }
-
 }
 
 /// Global file handle registry
@@ -154,13 +153,17 @@ impl DmaRegistry {
         phys: u64,
         owner: u64,
     ) {
-        self.buffers.lock().insert(key, DmaEntry { buffer, phys, owner });
+        self.buffers.lock().insert(
+            key,
+            DmaEntry {
+                buffer,
+                phys,
+                owner,
+            },
+        );
     }
 
-    fn unregister(
-        &self,
-        virt_ptr: usize,
-    ) -> Option<DmaEntry> {
+    fn unregister(&self, virt_ptr: usize) -> Option<DmaEntry> {
         self.buffers.lock().remove(&virt_ptr)
     }
 
@@ -195,7 +198,10 @@ impl PhysOwnershipRegistry {
         let ranges = self.ranges.lock();
         // Find the range that starts at or before 'phys'
         if let Some((&start, &(r_size, r_owner))) = ranges.range(..=phys).next_back() {
-            if r_owner == domain_id && phys >= start && (phys + size as u64) <= (start + r_size as u64) {
+            if r_owner == domain_id
+                && phys >= start
+                && (phys + size as u64) <= (start + r_size as u64)
+            {
                 return true;
             }
         }
@@ -281,7 +287,7 @@ impl NvmeDmaContextEntry {
         if let Some(m) = self.data_map.take() {
             m.unmap();
         }
-        
+
         // SECURITY: Physical ownership is unregistered in the service call
         // using the phys field.
         data
@@ -369,7 +375,14 @@ fn map_for_iommu(
     }
     .map_err(|_| KapiError::IoError)?;
 
-    Ok((iova, Some(IommuMapping { device: dev, iova, size: map_len as u64 })))
+    Ok((
+        iova,
+        Some(IommuMapping {
+            device: dev,
+            iova,
+            size: map_len as u64,
+        }),
+    ))
 }
 
 // Helper: build PRP list for multi-page transfers
@@ -400,7 +413,12 @@ fn build_prp_list_internal(
     let mut prp_pages = alloc::vec::Vec::with_capacity(list_buffers.len());
     for ((list, map), iova) in list_buffers.into_iter().zip(list_maps).zip(list_iovas) {
         let (dev, guard) = list.start_dma();
-        prp_pages.push(PrpListPage { dev, guard, map, iova });
+        prp_pages.push(PrpListPage {
+            dev,
+            guard,
+            map,
+            iova,
+        });
     }
 
     let chain = PrpListChain { pages: prp_pages };
@@ -412,17 +430,19 @@ fn build_prp_list_internal(
 fn allocate_prp_list_buffers(
     device: Option<IommuDeviceId>,
     total_entries: usize,
-) -> Result<(
-    alloc::vec::Vec<TypedDmaSlice<CpuOwned>>,
-    alloc::vec::Vec<u64>,
-    alloc::vec::Vec<Option<IommuMapping>>,
-), KapiError> {
+) -> Result<
+    (
+        alloc::vec::Vec<TypedDmaSlice<CpuOwned>>,
+        alloc::vec::Vec<u64>,
+        alloc::vec::Vec<Option<IommuMapping>>,
+    ),
+    KapiError,
+> {
     let mut remaining = total_entries;
     let mut list_buffers = alloc::vec::Vec::new();
 
     while remaining > 0 {
-        let list = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE)
-            .ok_or(KapiError::OutOfMemory)?;
+        let list = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(KapiError::OutOfMemory)?;
         list_buffers.push(list);
         remaining = if remaining > 512 { remaining - 511 } else { 0 };
     }

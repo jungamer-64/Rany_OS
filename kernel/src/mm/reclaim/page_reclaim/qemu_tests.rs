@@ -43,7 +43,11 @@ pub fn wave7_pressure_level_smoke() -> bool {
 
 pub fn wave7_mglru_list_add_smoke() -> bool {
     let lru = MglruList::new();
-    lru.add_page(MglruEntry::new(FrameIndex::new(100), PageType::Anonymous, 0));
+    lru.add_page(MglruEntry::new(
+        FrameIndex::new(100),
+        PageType::Anonymous,
+        0,
+    ));
     lru.stats().gen_sizes[0] == 1
 }
 
@@ -259,7 +263,8 @@ pub fn wave7_notsupported_anonymous_dirty_requeues_without_writeback_skipped_smo
     ok
 }
 
-pub fn wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke() -> bool {
+pub fn wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke() -> bool
+{
     let _guard = init_wave7_overrides();
     crate::mm::reclaim::async_swapout::qemu_test_set_enqueue_override(Some(
         crate::mm::reclaim::async_swapout::SwapError::NotSupported,
@@ -298,7 +303,8 @@ pub fn wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_suc
     ok
 }
 
-pub fn wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke() -> bool {
+pub fn wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke() -> bool
+{
     let _guard = init_wave7_overrides();
     crate::mm::reclaim::async_swapout::qemu_test_set_enqueue_override(Some(
         crate::mm::reclaim::async_swapout::SwapError::NotSupported,
@@ -348,13 +354,19 @@ pub fn wave7_already_pending_does_not_count_writeback_skipped_smoke() -> bool {
     entry.flags = LruFlags::DIRTY;
 
     controller.enqueue_pending_async(&entry, 0);
-    crate::mm::meta::page_flags::set_flag(frame_idx, crate::mm::meta::page_flags::PageMetaFlags::SwapPending);
+    crate::mm::meta::page_flags::set_flag(
+        frame_idx,
+        crate::mm::meta::page_flags::PageMetaFlags::SwapPending,
+    );
 
     let before = controller.stats();
     let outcome = controller.reclaim_page(&entry, 0);
     let after = controller.stats();
 
-    crate::mm::meta::page_flags::clear_flag(frame_idx, crate::mm::meta::page_flags::PageMetaFlags::SwapPending);
+    crate::mm::meta::page_flags::clear_flag(
+        frame_idx,
+        crate::mm::meta::page_flags::PageMetaFlags::SwapPending,
+    );
     controller.on_async_swapout_complete(frame_idx, false);
     cleanup_frame_if_allocated(frame_idx);
 
@@ -388,7 +400,8 @@ pub fn wave7_already_pending_without_registered_pending_requeues_smoke() -> bool
         && after.writeback_skipped == before.writeback_skipped
 }
 
-pub fn wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke() -> bool {
+pub fn wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke()
+-> bool {
     let _guard = init_wave7_overrides();
     crate::mm::reclaim::async_swapout::qemu_test_set_enqueue_override(Some(
         crate::mm::reclaim::async_swapout::SwapError::AlreadyPending,

@@ -6,7 +6,7 @@
 //! ConnectX ファミリのイーサネットポート設定とリンク管理。
 //! デュアルポート構成のNICではポートごとに独立して管理する。
 
-use crate::defs::{PortAdminState, PortLinkState, MLX5_DEFAULT_MTU, MLX5_MAX_MTU};
+use crate::defs::{MLX5_DEFAULT_MTU, MLX5_MAX_MTU, PortAdminState, PortLinkState};
 
 /// MACアドレス（6バイト）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

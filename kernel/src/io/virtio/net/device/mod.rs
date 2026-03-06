@@ -1,14 +1,13 @@
 use super::*;
 use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
 
-
 mod dma;
 pub use dma::*;
-mod tx;
-mod rx;
 mod irq;
 mod mac;
 mod registry;
+mod rx;
+mod tx;
 pub use registry::*;
 impl Drop for NetVirtQueue {
     fn drop(&mut self) {
@@ -254,7 +253,8 @@ impl VirtioNetDevice {
         self.mut_transport().reset();
 
         // 3. ACKNOWLEDGE ステータスビットを設定
-        self.mut_transport().set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
+        self.mut_transport()
+            .set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
 
         // 4. DRIVER ステータスビットを設定
         self.mut_transport()
@@ -283,7 +283,8 @@ impl VirtioNetDevice {
 
         // FEATURES_OK が設定されたか確認
         if (self.transport.get_status() & status::VIRTIO_STATUS_FEATURES_OK) == 0 {
-            self.mut_transport().set_status(status::VIRTIO_STATUS_FAILED);
+            self.mut_transport()
+                .set_status(status::VIRTIO_STATUS_FAILED);
             return Err(VirtioNetError::DeviceError);
         }
 
@@ -295,7 +296,8 @@ impl VirtioNetDevice {
         // 8. キューの設定
         if let Err(e) = self.setup_queues() {
             log::error!("[VIRTIO-NET] Failed to setup queues: {:?}", e);
-            self.mut_transport().set_status(status::VIRTIO_STATUS_FAILED);
+            self.mut_transport()
+                .set_status(status::VIRTIO_STATUS_FAILED);
             return Err(e);
         }
 
@@ -317,7 +319,8 @@ impl VirtioNetDevice {
         // Initialize bounce buffer pools for IOMMU paths (performance optimization)
         if let Err(e) = self.init_bounce_pools() {
             log::error!("[VIRTIO-NET] Failed to init bounce pools: {:?}", e);
-            self.mut_transport().set_status(status::VIRTIO_STATUS_FAILED);
+            self.mut_transport()
+                .set_status(status::VIRTIO_STATUS_FAILED);
             return Err(e);
         }
 
@@ -329,11 +332,7 @@ impl VirtioNetDevice {
     pub fn refill_rx_queues(&self) {
         for rx_queue in &self.rx_queues {
             let mut count = 0;
-            let queue_size = rx_queue
-                .vq
-                .lock()
-                .expect("virtqueue lock poisoned")
-                .size();
+            let queue_size = rx_queue.vq.lock().expect("virtqueue lock poisoned").size();
             // API drift fallback: post until the queue rejects new buffers.
             while count < queue_size {
                 match self.try_post_rx_packet(rx_queue) {
@@ -346,11 +345,7 @@ impl VirtioNetDevice {
                 log::info!(
                     "[VIRTIO-NET] Refilled {} RX buffers for queue {}",
                     count,
-                    rx_queue
-                        .vq
-                        .lock()
-                        .expect("virtqueue lock poisoned")
-                        .index()
+                    rx_queue.vq.lock().expect("virtqueue lock poisoned").index()
                 );
                 rx_queue.notify(self.transport.as_ref());
             }
@@ -361,27 +356,45 @@ impl VirtioNetDevice {
         // Pre-allocate 128 bounce buffers for TX and RX (4KB each)
         let pool_size = 128;
         let buffer_size = 4096;
-        let mut tx_guard = self.tx_bounce_pool.lock().map_err(|_| VirtioNetError::DeviceError)?;
-        let mut rx_guard = self.rx_bounce_pool.lock().map_err(|_| VirtioNetError::DeviceError)?;
+        let mut tx_guard = self
+            .tx_bounce_pool
+            .lock()
+            .map_err(|_| VirtioNetError::DeviceError)?;
+        let mut rx_guard = self
+            .rx_bounce_pool
+            .lock()
+            .map_err(|_| VirtioNetError::DeviceError)?;
 
         for _ in 0..pool_size {
             let tx_buf = match self.iommu_device_id {
-                Some(dev) => CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &dev),
+                Some(dev) => {
+                    CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &dev)
+                }
                 None => CoherentDmaBuffer::new(buffer_size, DmaMemoryAttributes::MMIO),
-            }.ok_or(VirtioNetError::DeviceError)?;
+            }
+            .ok_or(VirtioNetError::DeviceError)?;
             tx_guard.push(tx_buf);
 
             let rx_buf = match self.iommu_device_id {
-                Some(dev) => CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &dev),
+                Some(dev) => {
+                    CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &dev)
+                }
                 None => CoherentDmaBuffer::new(buffer_size, DmaMemoryAttributes::MMIO),
-            }.ok_or(VirtioNetError::DeviceError)?;
+            }
+            .ok_or(VirtioNetError::DeviceError)?;
             rx_guard.push(rx_buf);
         }
         Ok(())
     }
 
-    pub(crate) fn get_tx_bounce_buffer(&self, size: usize) -> Result<crate::io::dma::CoherentDmaBuffer, VirtioNetError> {
-        let mut guard = self.tx_bounce_pool.lock().map_err(|_| VirtioNetError::DeviceError)?;
+    pub(crate) fn get_tx_bounce_buffer(
+        &self,
+        size: usize,
+    ) -> Result<crate::io::dma::CoherentDmaBuffer, VirtioNetError> {
+        let mut guard = self
+            .tx_bounce_pool
+            .lock()
+            .map_err(|_| VirtioNetError::DeviceError)?;
         if let Some(buf) = guard.pop() {
             if buf.size() >= size {
                 return Ok(buf);
@@ -390,9 +403,17 @@ impl VirtioNetDevice {
         }
         let alloc_size = core::cmp::max(size, 4096);
         match self.iommu_device_id {
-            Some(dev) => crate::io::dma::CoherentDmaBuffer::new_for_device(alloc_size, crate::io::dma::DmaMemoryAttributes::MMIO, &dev),
-            None => crate::io::dma::CoherentDmaBuffer::new(alloc_size, crate::io::dma::DmaMemoryAttributes::MMIO),
-        }.ok_or(VirtioNetError::DeviceError)
+            Some(dev) => crate::io::dma::CoherentDmaBuffer::new_for_device(
+                alloc_size,
+                crate::io::dma::DmaMemoryAttributes::MMIO,
+                &dev,
+            ),
+            None => crate::io::dma::CoherentDmaBuffer::new(
+                alloc_size,
+                crate::io::dma::DmaMemoryAttributes::MMIO,
+            ),
+        }
+        .ok_or(VirtioNetError::DeviceError)
     }
 
     pub(crate) fn return_tx_bounce_buffer(&self, buffer: crate::io::dma::CoherentDmaBuffer) {
@@ -401,8 +422,14 @@ impl VirtioNetDevice {
         }
     }
 
-    pub(crate) fn get_rx_bounce_buffer(&self, size: usize) -> Result<crate::io::dma::CoherentDmaBuffer, VirtioNetError> {
-        let mut guard = self.rx_bounce_pool.lock().map_err(|_| VirtioNetError::DeviceError)?;
+    pub(crate) fn get_rx_bounce_buffer(
+        &self,
+        size: usize,
+    ) -> Result<crate::io::dma::CoherentDmaBuffer, VirtioNetError> {
+        let mut guard = self
+            .rx_bounce_pool
+            .lock()
+            .map_err(|_| VirtioNetError::DeviceError)?;
         if let Some(buf) = guard.pop() {
             if buf.size() >= size {
                 return Ok(buf);
@@ -411,9 +438,17 @@ impl VirtioNetDevice {
         }
         let alloc_size = core::cmp::max(size, 4096);
         match self.iommu_device_id {
-            Some(dev) => crate::io::dma::CoherentDmaBuffer::new_for_device(alloc_size, crate::io::dma::DmaMemoryAttributes::MMIO, &dev),
-            None => crate::io::dma::CoherentDmaBuffer::new(alloc_size, crate::io::dma::DmaMemoryAttributes::MMIO),
-        }.ok_or(VirtioNetError::DeviceError)
+            Some(dev) => crate::io::dma::CoherentDmaBuffer::new_for_device(
+                alloc_size,
+                crate::io::dma::DmaMemoryAttributes::MMIO,
+                &dev,
+            ),
+            None => crate::io::dma::CoherentDmaBuffer::new(
+                alloc_size,
+                crate::io::dma::DmaMemoryAttributes::MMIO,
+            ),
+        }
+        .ok_or(VirtioNetError::DeviceError)
     }
 
     pub(crate) fn return_rx_bounce_buffer(&self, buffer: crate::io::dma::CoherentDmaBuffer) {
@@ -448,7 +483,10 @@ impl VirtioNetDevice {
     }
 
     /// 単一のキューを設定
-    pub(super) fn setup_single_queue(&mut self, queue_index: u16) -> Result<NetVirtQueue, VirtioNetError> {
+    pub(super) fn setup_single_queue(
+        &mut self,
+        queue_index: u16,
+    ) -> Result<NetVirtQueue, VirtioNetError> {
         // キューを選択
         self.mut_transport().select_queue(queue_index);
 
@@ -463,13 +501,14 @@ impl VirtioNetDevice {
         self.mut_transport().set_queue_size(queue_size);
 
         // Standardized layout calculation
-        let (desc_size, _avail_size, used_offset, vring_total_size) = VirtQueue::calculate_layout(queue_size);
-        
+        let (desc_size, _avail_size, used_offset, vring_total_size) =
+            VirtQueue::calculate_layout(queue_size);
+
         // Add space for network headers if this is a TX queue
         let header_align = core::mem::align_of::<VirtioNetHeader>();
         let header_offset = (vring_total_size + header_align - 1) & !(header_align - 1);
         let header_table_size = VirtioNetHeader::SIZE * queue_size as usize;
-        
+
         let total_size = if (queue_index % 2) == 1 {
             header_offset + header_table_size
         } else {
@@ -517,7 +556,7 @@ impl VirtioNetDevice {
             let mut tracker_vec = Vec::with_capacity(queue_size as usize);
             tracker_vec.resize_with(queue_size as usize, || None);
             self.rx_buffers.push(IrqPoisonLock::new(tracker_vec));
-            
+
             let mut pr_vec = Vec::with_capacity(queue_size as usize);
             pr_vec.resize_with(queue_size as usize, || None);
             self.rx_packetrefs.push(IrqPoisonLock::new(pr_vec));
@@ -526,13 +565,14 @@ impl VirtioNetDevice {
             let mut tracker_vec = Vec::with_capacity(queue_size as usize);
             tracker_vec.resize_with(queue_size as usize, || None);
             self.tx_packetrefs.push(IrqPoisonLock::new(tracker_vec));
-            
+
             let mut inflight_vec = Vec::with_capacity(queue_size as usize);
             inflight_vec.resize_with(queue_size as usize, || None);
             self.tx_inflight.push(IrqPoisonLock::new(inflight_vec));
         }
 
-        let features = self.transport.get_device_features_low() as u64 | ((self.transport.get_device_features_high() as u64) << 32);
+        let features = self.transport.get_device_features_low() as u64
+            | ((self.transport.get_device_features_high() as u64) << 32);
 
         // キューを作成
         let queue = unsafe {
@@ -563,7 +603,10 @@ impl VirtioNetDevice {
     }
 
     /// キューのメモリレイアウトを計算する
-    pub(super) fn compute_queue_memory_layout(queue_index: u16, queue_size: u16) -> QueueMemoryLayout {
+    pub(super) fn compute_queue_memory_layout(
+        queue_index: u16,
+        queue_size: u16,
+    ) -> QueueMemoryLayout {
         let desc_size = (core::mem::size_of::<VringDesc>() * queue_size as usize + 63) & !63;
         let avail_size = 6 + 2 * queue_size as usize;
         let used_size = 6 + 8 * queue_size as usize;
@@ -651,7 +694,6 @@ impl VirtioNetDevice {
         Ok((buffer.device_addr(), None))
     }
 
-
     /// RXバッファ用のIOMMUマッピングを実行する
     ///
     /// Returns (dma_addr, iommu_iova, iommu_map_len).
@@ -669,13 +711,7 @@ impl VirtioNetDevice {
             // Intel VT-d: R=0,W=1 is invalid (W is reserved when R=0)
             // RX buffers need R+W even though device only writes
             match unsafe {
-                map_for_device_with_perms(
-                    device_id,
-                    PhysAddr::new(phys),
-                    map_size,
-                    true,
-                    true,
-                )
+                map_for_device_with_perms(device_id, PhysAddr::new(phys), map_size, true, true)
             } {
                 Ok(iova) => Ok((iova, Some(iova), map_size)),
                 Err(e) => {
@@ -693,10 +729,7 @@ impl VirtioNetDevice {
     /// Returns: Ok(true) = posted successfully (continue to next),
     ///          Ok(false) = not posted (fall through to vbuf),
     ///          Err = skip this iteration (e.g. IOMMU failure)
-    pub(super) fn try_post_rx_packet(
-        &self,
-        rxq: &NetVirtQueue,
-    ) -> Result<bool, VirtioNetError> {
+    pub(super) fn try_post_rx_packet(&self, rxq: &NetVirtQueue) -> Result<bool, VirtioNetError> {
         // キューに空きディスクリプタがなければ、PacketRef割り当てを回避する
         if rxq.available_descriptors() == 0 {
             return Ok(false);
@@ -714,7 +747,11 @@ impl VirtioNetDevice {
 
         match rxq.add_rx_buffer_zero_copy(dma_addr, buf_len) {
             Ok(desc_idx) => {
-                let q_idx = self.rx_queues.iter().position(|q| core::ptr::eq(q, rxq)).unwrap_or(0);
+                let q_idx = self
+                    .rx_queues
+                    .iter()
+                    .position(|q| core::ptr::eq(q, rxq))
+                    .unwrap_or(0);
                 if let Some(lock) = self.rx_packetrefs.get(q_idx) {
                     if let Ok(mut guard) = lock.lock() {
                         if let Some(slot) = guard.get_mut(desc_idx as usize) {
@@ -744,10 +781,7 @@ impl VirtioNetDevice {
     /// Returns: Ok(true) = posted successfully,
     ///          Ok(false) = not posted (continue),
     ///          Err = no more buffers available (stop)
-    pub(super) fn try_post_rx_vbuf(
-        &self,
-        rxq: &NetVirtQueue,
-    ) -> Result<bool, VirtioNetError> {
+    pub(super) fn try_post_rx_vbuf(&self, rxq: &NetVirtQueue) -> Result<bool, VirtioNetError> {
         // キューに空きディスクリプタがなければ、バッファ割り当てを回避する
         if rxq.available_descriptors() == 0 {
             return Ok(false);
@@ -777,7 +811,11 @@ impl VirtioNetDevice {
 
         match rxq.add_rx_buffer_zero_copy(dma_addr, buf_len) {
             Ok(desc_idx) => {
-                let q_idx = self.rx_queues.iter().position(|q| core::ptr::eq(q, rxq)).unwrap_or(0);
+                let q_idx = self
+                    .rx_queues
+                    .iter()
+                    .position(|q| core::ptr::eq(q, rxq))
+                    .unwrap_or(0);
                 if let Some(lock) = self.rx_buffers.get(q_idx) {
                     if let Ok(mut guard) = lock.lock() {
                         if let Some(slot) = guard.get_mut(desc_idx as usize) {
@@ -806,14 +844,23 @@ impl VirtioNetDevice {
         let mut added = 0usize;
         for _ in 0..8 {
             match self.try_post_rx_packet(rxq) {
-                Ok(true) => { added += 1; continue; }
+                Ok(true) => {
+                    added += 1;
+                    continue;
+                }
                 Ok(false) => {}
-                Err(_) => { continue; }
+                Err(_) => {
+                    continue;
+                }
             }
             match self.try_post_rx_vbuf(rxq) {
-                Ok(true) => { added += 1; }
+                Ok(true) => {
+                    added += 1;
+                }
                 Ok(false) => {}
-                Err(_) => { break; }
+                Err(_) => {
+                    break;
+                }
             }
         }
         log::info!("[VIRTIO-NET] posted {} initial RX buffers", added);

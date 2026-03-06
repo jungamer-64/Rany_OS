@@ -64,8 +64,8 @@ impl SecurityEventQueue {
             return None;
         }
         let event = unsafe {
-            let ptr = &self.events as *const _
-                as *mut [Option<SecurityEvent>; SECURITY_EVENT_QUEUE_SIZE];
+            let ptr =
+                &self.events as *const _ as *mut [Option<SecurityEvent>; SECURITY_EVENT_QUEUE_SIZE];
             (*ptr)[head].take()
         };
         self.head

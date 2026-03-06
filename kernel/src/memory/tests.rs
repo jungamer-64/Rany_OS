@@ -29,7 +29,9 @@ fn test_global_alloc_quota_charge_and_uncharge_with_header() {
     let heap_base = unsafe { core::ptr::addr_of_mut!(TEST_HEAP.0).cast::<u8>() as usize };
     {
         let mut guard = allocator.0.lock().expect("heap lock poisoned");
-        unsafe { guard.init(heap_base, 256 * 1024); }
+        unsafe {
+            guard.init(heap_base, 256 * 1024);
+        }
     }
 
     let domain = create_domain(String::from("alloc_quota_header")).expect("create_domain failed");
@@ -66,7 +68,9 @@ fn test_global_alloc_quota_charge_and_uncharge_with_header() {
         "quota charge should increase used bytes"
     );
 
-    unsafe { allocator.dealloc(ptr, layout); }
+    unsafe {
+        allocator.dealloc(ptr, layout);
+    }
 
     let after = quota_manager()
         .get_stats(domain)

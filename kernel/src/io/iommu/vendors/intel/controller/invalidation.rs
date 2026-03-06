@@ -29,10 +29,9 @@ impl IommuController {
         any_ats: bool,
     ) -> Result<(), IommuError> {
         match req.kind {
-            InvalidateKind::Pages {
-                start_iova,
-                bytes,
-            } => self.invalidate_pages_nosync(req.domain_id, start_iova, bytes, any_ats),
+            InvalidateKind::Pages { start_iova, bytes } => {
+                self.invalidate_pages_nosync(req.domain_id, start_iova, bytes, any_ats)
+            }
             InvalidateKind::Domain => self.invalidate_domain_nosync(req.domain_id, any_ats),
             InvalidateKind::Global => self.invalidate_global_nosync(),
             InvalidateKind::Context { source_id } => self.invalidate_context_nosync(source_id),
@@ -81,7 +80,9 @@ impl IommuController {
             // Security: Use saturating addition to prevent overflow when calculating num_pages.
             // A wrapped small size would cause partial invalidation and potential UAF.
             let num_pages = size.saturating_add(4095) / 4096;
-            if num_pages == 0 { return Ok(()); }
+            if num_pages == 0 {
+                return Ok(());
+            }
 
             let am = if num_pages > 1 {
                 // Find log2 of next power of two
@@ -89,7 +90,7 @@ impl IommuController {
             } else {
                 0
             };
-            
+
             // Security: Fallback to domain-selective if the mask is not supported by hardware
             // or if the range is not naturally aligned to the mask size.
             let cap_am = self.cap_am();
@@ -112,7 +113,9 @@ impl IommuController {
                 }
             }
         } else {
-            unsafe { self.invalidate_iotlb_direct(domain_id); }
+            unsafe {
+                self.invalidate_iotlb_direct(domain_id);
+            }
         }
         Ok(())
     }
@@ -123,9 +126,15 @@ impl IommuController {
         iova: Option<u64>,
         am: Option<u8>,
     ) -> Result<(), IommuError> {
-        let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
-        let ats_devices = self.ats_enabled_devices.lock().map_err(|_| IommuError::Poisoned)?;
-        
+        let device_domains = self
+            .device_domains
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        let ats_devices = self
+            .ats_enabled_devices
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+
         for device in ats_devices.iter() {
             if let Some(&did) = device_domains.get(device) {
                 if did == domain_id {
@@ -147,7 +156,11 @@ impl IommuController {
         Ok(())
     }
 
-    pub(crate) fn invalidate_domain(&self, domain_id: u16, any_ats: bool) -> Result<(), IommuError> {
+    pub(crate) fn invalidate_domain(
+        &self,
+        domain_id: u16,
+        any_ats: bool,
+    ) -> Result<(), IommuError> {
         self.invalidate_domain_nosync(domain_id, any_ats)?;
         if self.is_queued_invalidation_enabled() {
             self.qi_wait_sync()?;
@@ -155,7 +168,11 @@ impl IommuController {
         Ok(())
     }
 
-    pub(crate) fn invalidate_domain_nosync(&self, domain_id: u16, any_ats: bool) -> Result<(), IommuError> {
+    pub(crate) fn invalidate_domain_nosync(
+        &self,
+        domain_id: u16,
+        any_ats: bool,
+    ) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_domain(domain_id)?;
             if any_ats {
@@ -178,10 +195,13 @@ impl IommuController {
     pub(crate) fn invalidate_global_nosync(&self) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_global()?;
-            // For global, we should ideally invalidate ALL Device-TLBs, 
+            // For global, we should ideally invalidate ALL Device-TLBs,
             // but usually a global IOTLB flush is enough if followed by domain flushes.
             // To be safe, iterate over all ATS devices.
-            let ats_devices = self.ats_enabled_devices.lock().map_err(|_| IommuError::Poisoned)?;
+            let ats_devices = self
+                .ats_enabled_devices
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?;
             for device in ats_devices.iter() {
                 let _ = self.qi_invalidate_device_tlb_all(device.requester_id());
             }
@@ -224,7 +244,7 @@ impl IommuController {
         if global {
             self.qi_invalidate_iec_global()?;
         } else {
-            self.qi_invalidate_iec_indexed(index)?; 
+            self.qi_invalidate_iec_indexed(index)?;
         }
         Ok(())
     }
@@ -273,9 +293,12 @@ impl IommuInvalidator for IommuController {
         Ok(())
     }
 
-    fn invalidate_async(&self, request: InvalidateRequest) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
+    fn invalidate_async(
+        &self,
+        request: InvalidateRequest,
+    ) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
         let any_ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
-        
+
         // Advance epoch before invalidation
         let epoch = if let Ok(guard) = self.iova_allocator.lock() {
             guard.as_ref().map(|a| a.advance_epoch())
@@ -284,13 +307,13 @@ impl IommuInvalidator for IommuController {
         };
 
         let res = self.process_single_invalidation_nosync(&request, any_ats);
-        
+
         async move {
             res?;
             if self.is_queued_invalidation_enabled() {
                 self.qi_wait_async().await?;
             }
-            
+
             // Complete epoch after async invalidation finishes
             if let Some(e) = epoch {
                 if let Ok(guard) = self.iova_allocator.lock() {

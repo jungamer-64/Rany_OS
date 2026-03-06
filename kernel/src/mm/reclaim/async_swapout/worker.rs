@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod enqueue;
 pub use enqueue::*;
 mod kernel_worker;
@@ -10,16 +9,16 @@ mod test_impl {
     use super::*;
     use alloc::collections::BTreeSet;
     use alloc::sync::Arc;
-    use std::collections::VecDeque;
-    use std::sync::{Mutex as StdMutex, Condvar};
     use spin::Once;
+    use std::collections::VecDeque;
+    use std::sync::{Condvar, Mutex as StdMutex};
     use std::thread;
 
     /// キュー容量／バッチサイズはテスト向けに控えめに設定可能
     pub(super) const QUEUE_CAPACITY: usize = 64;
     pub(super) const BATCH_SIZE: usize = 8;
 
-    use core::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     pub(super) static TEST_FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
     pub(super) static TEST_PROCESSING_DELAY_MS: AtomicU64 = AtomicU64::new(0);
@@ -34,12 +33,14 @@ mod test_impl {
     pub(super) const TEST_REFILL_PER_BATCH: usize = BATCH_SIZE / 2; // tokens added per processed batch
 
     // Allow dynamic test-time override of token capacity and reserved slots
-    pub(super) static TEST_TOKEN_CAPACITY_DYNAMIC: AtomicUsize = AtomicUsize::new(TEST_TOKEN_CAPACITY);
+    pub(super) static TEST_TOKEN_CAPACITY_DYNAMIC: AtomicUsize =
+        AtomicUsize::new(TEST_TOKEN_CAPACITY);
     pub(super) static TEST_TOKENS: AtomicUsize = AtomicUsize::new(TEST_TOKEN_CAPACITY);
 
     // Dynamic reserved file slots
     pub(super) const RESERVED_FILE_SLOTS_TEST: usize = QUEUE_CAPACITY / 8;
-    pub(super) static TEST_RESERVED_FILE_SLOTS_DYNAMIC: AtomicUsize = AtomicUsize::new(RESERVED_FILE_SLOTS_TEST);
+    pub(super) static TEST_RESERVED_FILE_SLOTS_DYNAMIC: AtomicUsize =
+        AtomicUsize::new(RESERVED_FILE_SLOTS_TEST);
 
     pub(super) struct WorkerInner {
         queue: StdMutex<VecDeque<SwapEntry>>,
@@ -70,12 +71,16 @@ mod test_impl {
     }
 
     pub(super) fn process_file_swap_fallback(entry: &SwapEntry) {
-        if crate::fs::page_cache().sync_all(|ino, offset, data| {
-            match crate::fs::write_inode_by_number(ino, offset, data) {
-                Ok(_) => Ok(()),
-                Err(_) => Err(()),
-            }
-        }).unwrap_or(0) > 0 {
+        if crate::fs::page_cache()
+            .sync_all(|ino, offset, data| {
+                match crate::fs::write_inode_by_number(ino, offset, data) {
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(()),
+                }
+            })
+            .unwrap_or(0)
+            > 0
+        {
             release_frame_and_untrack(entry.frame);
             TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
             crate::mm::reclaim::page_reclaim::notify_async_swapout_success(entry.frame);
@@ -85,7 +90,10 @@ mod test_impl {
         }
     }
 
-    pub(super) fn process_anon_swap_entry(entry: &SwapEntry, reuse_buf: &mut crate::mm::reclaim::async_swapout::Buffer4K) {
+    pub(super) fn process_anon_swap_entry(
+        entry: &SwapEntry,
+        reuse_buf: &mut crate::mm::reclaim::async_swapout::Buffer4K,
+    ) {
         if try_zswap_store_and_dealloc_any(entry.frame, reuse_buf) {
             TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
             crate::mm::reclaim::page_reclaim::notify_async_swapout_success(entry.frame);
@@ -103,7 +111,11 @@ mod test_impl {
         cvar.notify_all();
 
         // pending を解除
-        thread_inner.pending.lock().unwrap().remove(&entry.frame.as_usize());
+        thread_inner
+            .pending
+            .lock()
+            .unwrap()
+            .remove(&entry.frame.as_usize());
 
         // decrement file queue count when file processed (saturating)
         if let SwapKind::File { .. } = entry.kind {
@@ -122,7 +134,9 @@ mod test_impl {
         loop {
             let cur = TEST_TOKENS.load(Ordering::Acquire);
             let cap = TEST_TOKEN_CAPACITY_DYNAMIC.load(Ordering::Acquire);
-            if cur >= cap { break; }
+            if cur >= cap {
+                break;
+            }
             let new = (cur + add).min(cap);
             match TEST_TOKENS.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
@@ -131,7 +145,9 @@ mod test_impl {
         }
     }
 
-    pub(super) fn drain_batch(q_guard: &mut std::sync::MutexGuard<'_, VecDeque<SwapEntry>>) -> Vec<SwapEntry> {
+    pub(super) fn drain_batch(
+        q_guard: &mut std::sync::MutexGuard<'_, VecDeque<SwapEntry>>,
+    ) -> Vec<SwapEntry> {
         let mut batch = Vec::new();
         for _ in 0..BATCH_SIZE {
             if let Some(entry) = q_guard.pop_front() {
@@ -189,7 +205,10 @@ mod test_impl {
         let worker = WORKER.get().as_ref().unwrap().clone(); // Arc clone
 
         // Spawn worker thread if not already running
-        if TEST_WORKER_RUNNING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        if TEST_WORKER_RUNNING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
             let thread_inner = worker.clone();
             std::thread::spawn(move || {
                 worker_thread_body(thread_inner);
@@ -228,7 +247,11 @@ mod test_impl {
             pending.insert(frame.as_usize());
 
             let completion = Arc::new((StdMutex::new(false), Condvar::new()));
-            let entry = SwapEntry { frame, kind, completion: completion.clone() };
+            let entry = SwapEntry {
+                frame,
+                kind,
+                completion: completion.clone(),
+            };
 
             // Consume a token for anon entries
             if let SwapKind::Anon = entry.kind {
@@ -331,7 +354,9 @@ mod test_impl {
         loop {
             let cur = TEST_TOKENS.load(Ordering::Acquire);
             let cap = TEST_TOKEN_CAPACITY_DYNAMIC.load(Ordering::Acquire);
-            if cur >= cap { break; }
+            if cur >= cap {
+                break;
+            }
             let new = (cur + n).min(cap);
             match TEST_TOKENS.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
@@ -353,7 +378,9 @@ mod test_impl {
         loop {
             let cur = TEST_TOKENS.load(Ordering::Acquire);
             let new = cur.min(cap);
-            if cur == new { break; }
+            if cur == new {
+                break;
+            }
             match TEST_TOKENS.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
                 Err(_) => continue,
@@ -366,7 +393,6 @@ mod test_impl {
         let v = n.min(QUEUE_CAPACITY);
         TEST_RESERVED_FILE_SLOTS_DYNAMIC.store(v, Ordering::Release);
     }
-
 
     #[cfg(test)]
     pub fn _dealloc_count() -> usize {

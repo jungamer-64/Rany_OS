@@ -1,7 +1,6 @@
 use super::*;
 use crate::sync::PoisonLock;
 
-
 /// IOMMUマッピングを一括解放する
 mod read_future_impl;
 pub use self::read_future_impl::*;
@@ -122,12 +121,10 @@ pub(crate) fn nvme_sgl_max_entries() -> Option<usize> {
 }
 
 pub(crate) fn sg_total_bytes(list: &TypedSgList<CpuOwned>) -> FsResult<usize> {
-    list.entries()
-        .iter()
-        .try_fold(0usize, |acc, entry| {
-            acc.checked_add(entry.size as usize)
-                .ok_or(FsError::InvalidArgument)
-        })
+    list.entries().iter().try_fold(0usize, |acc, entry| {
+        acc.checked_add(entry.size as usize)
+            .ok_or(FsError::InvalidArgument)
+    })
 }
 
 /// SG DMAブロックパラメータを検証
@@ -156,13 +153,9 @@ pub(crate) fn sg_copy_to_vec(list: &TypedSgList<CpuOwned>) -> FsResult<Vec<u8>> 
     let mut offset = 0usize;
 
     for idx in 0..list.len() {
-        let slice = list
-            .buffer(idx)
-            .ok_or(FsError::InvalidArgument)?;
+        let slice = list.buffer(idx).ok_or(FsError::InvalidArgument)?;
         let len = slice.len();
-        let end = offset
-            .checked_add(len)
-            .ok_or(FsError::InvalidArgument)?;
+        let end = offset.checked_add(len).ok_or(FsError::InvalidArgument)?;
         buf[offset..end].copy_from_slice(slice.as_slice());
         offset = end;
     }
@@ -175,13 +168,9 @@ pub(crate) fn sg_copy_from_vec(list: &mut TypedSgList<CpuOwned>, buf: &[u8]) -> 
     let total = sg_total_bytes(list)?;
 
     for idx in 0..list.len() {
-        let slice = list
-            .buffer_mut(idx)
-            .ok_or(FsError::InvalidArgument)?;
+        let slice = list.buffer_mut(idx).ok_or(FsError::InvalidArgument)?;
         let len = slice.len();
-        let end = offset
-            .checked_add(len)
-            .ok_or(FsError::InvalidArgument)?;
+        let end = offset.checked_add(len).ok_or(FsError::InvalidArgument)?;
         let dst = slice.as_mut_slice();
         if offset >= buf.len() {
             dst.fill(0);
@@ -204,16 +193,13 @@ pub(crate) fn sg_copy_from_vec(list: &mut TypedSgList<CpuOwned>, buf: &[u8]) -> 
 
 pub(crate) fn nsid_from_device(device_id: u64) -> u32 {
     let nsid = device_id as u32;
-    if nsid == 0 {
-        1
-    } else {
-        nsid
-    }
+    if nsid == 0 { 1 } else { nsid }
 }
 
 pub(crate) fn nvme_block_size(device_id: u64) -> u64 {
     // Use kernel_api abstraction instead of direct driver access
-    kernel_api::kernel().nvme_block_size(device_id)
+    kernel_api::kernel()
+        .nvme_block_size(device_id)
         .unwrap_or(NVME_BLOCK_SIZE)
 }
 
@@ -240,8 +226,8 @@ pub(crate) fn read_via_page_cache(
         let page_start = page_num * CACHE_PAGE_SIZE as u64;
         let mut page_data = alloc::vec![0u8; CACHE_PAGE_SIZE];
         if page_start < file_size {
-            let read_len =
-                read_inode_by_number(ino, page_start, &mut page_data).map_err(|_| FsError::IoError)?;
+            let read_len = read_inode_by_number(ino, page_start, &mut page_data)
+                .map_err(|_| FsError::IoError)?;
             if read_len < CACHE_PAGE_SIZE {
                 page_data[read_len..].fill(0);
             }
@@ -271,8 +257,7 @@ pub(crate) fn write_via_page_cache(
         let page_offset = (cur_offset % CACHE_PAGE_SIZE as u64) as usize;
         let chunk = (CACHE_PAGE_SIZE - page_offset).min(buf.len() - total);
 
-        if let Some(written) = cache.write(ino, cur_offset, &buf[total..total + chunk], file_size)
-        {
+        if let Some(written) = cache.write(ino, cur_offset, &buf[total..total + chunk], file_size) {
             total += written;
             continue;
         }
@@ -281,8 +266,8 @@ pub(crate) fn write_via_page_cache(
         let mut page_data = alloc::vec![0u8; CACHE_PAGE_SIZE];
         let needs_preserve = page_offset != 0 || chunk != CACHE_PAGE_SIZE;
         if needs_preserve && page_start < file_size {
-            let read_len =
-                read_inode_by_number(ino, page_start, &mut page_data).map_err(|_| FsError::IoError)?;
+            let read_len = read_inode_by_number(ino, page_start, &mut page_data)
+                .map_err(|_| FsError::IoError)?;
             if read_len < CACHE_PAGE_SIZE {
                 page_data[read_len..].fill(0);
             }

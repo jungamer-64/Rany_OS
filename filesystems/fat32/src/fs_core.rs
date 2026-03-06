@@ -1,15 +1,6 @@
 use crate::{
-    Arc,
-    Cluster,
-    ClusterChain,
-    DirectoryIterator,
-    DirEntryRaw,
-    Fat32FileSystem,
-    FsResult,
-    String,
-    Vec,
-    TimeProvider,
-    ZeroCopyBufferMut,
+    Arc, Cluster, ClusterChain, DirEntryRaw, DirectoryIterator, Fat32FileSystem, FsResult, String,
+    TimeProvider, Vec, ZeroCopyBufferMut,
 };
 
 impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {

@@ -1,10 +1,4 @@
-use crate::{
-    Cluster,
-    Sector,
-    BlockError,
-    FsError,
-    Box,
-};
+use crate::{BlockError, Box, Cluster, FsError, Sector};
 
 use core::fmt;
 

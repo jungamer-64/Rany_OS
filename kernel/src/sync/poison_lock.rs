@@ -379,7 +379,6 @@ pub fn is_panicking_for_debug() -> bool {
     is_panicking()
 }
 
-
 // ============================================================================
 // Lock acquisition metrics (軽量計測用)
 // - acquire_count: ロック取得呼び出し回数
@@ -501,7 +500,6 @@ impl<T> IrqPoisonLock<T> {
 }
 
 impl<T: ?Sized> IrqPoisonLock<T> {
-
     /// ロックを取得（割り込み禁止付き）
     pub fn lock(&self) -> LockResult<IrqPoisonLockGuard<'_, T>> {
         // 1. 割り込みを禁止
@@ -543,7 +541,10 @@ impl<T: ?Sized> IrqPoisonLock<T> {
     /// 初期化時用のロック（毒入れされていても無視して取得し、初期化後に毒をクリアする）
     pub fn lock_for_init(&self, context: &str) -> IrqPoisonLockGuard<'_, T> {
         if self.is_poisoned() {
-            log::warn!("[IrqPoisonLock] Recovering poisoned lock during init: {}", context);
+            log::warn!(
+                "[IrqPoisonLock] Recovering poisoned lock during init: {}",
+                context
+            );
             self.clear_poison();
         }
         match self.lock() {
@@ -609,11 +610,11 @@ impl<T: fmt::Debug + ?Sized> fmt::Debug for IrqPoisonLock<T> {
         d.field("poisoned", &self.is_poisoned());
         // We use load to check if it's locked to avoid deadlocks in Debug
         if self.locked.load(Ordering::Relaxed) {
-             d.field("data", &"<locked>");
+            d.field("data", &"<locked>");
         } else if let Ok(guard) = self.lock() {
-             d.field("data", &&*guard);
+            d.field("data", &&*guard);
         } else {
-             d.field("data", &"<locked or poisoned>");
+            d.field("data", &"<locked or poisoned>");
         }
         d.finish()
     }

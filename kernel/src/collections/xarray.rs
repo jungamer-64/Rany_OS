@@ -156,7 +156,7 @@ impl<T> XArray<T> {
     pub fn store(&mut self, index: usize, value: T) -> Option<T> {
         // 必要に応じてツリーを拡張
         self.grow_for_index(index);
-        
+
         let old = self.store_at(index, value);
         if old.is_none() {
             self.len += 1;
@@ -169,7 +169,7 @@ impl<T> XArray<T> {
         if index > self.max_index() {
             return None;
         }
-        
+
         self.get_at(index)
     }
 
@@ -178,7 +178,7 @@ impl<T> XArray<T> {
         if index > self.max_index() {
             return None;
         }
-        
+
         self.get_at_mut(index)
     }
 
@@ -187,7 +187,7 @@ impl<T> XArray<T> {
         if index > self.max_index() {
             return None;
         }
-        
+
         let old = self.remove_at(index);
         if old.is_some() {
             self.len -= 1;
@@ -236,17 +236,17 @@ impl<T> XArray<T> {
         if index > self.max_index() {
             return None;
         }
-        
+
         if self.height == 0 {
             return self.root.as_ref();
         }
 
         let mut current = self.root.as_ref()?;
-        
+
         for level in (1..self.height).rev() {
             let shift = level as usize * XA_CHUNK_SHIFT;
             let slot_idx = (index >> shift) & XA_CHUNK_MASK;
-            
+
             match current {
                 XASlot::Node(node) => {
                     current = node.slots[slot_idx].as_ref()?;
@@ -267,17 +267,17 @@ impl<T> XArray<T> {
         if index > self.max_index() {
             return None;
         }
-        
+
         if self.height == 0 {
             return self.root.as_mut();
         }
 
         let mut current = self.root.as_mut()?;
-        
+
         for level in (1..self.height).rev() {
             let shift = level as usize * XA_CHUNK_SHIFT;
             let slot_idx = (index >> shift) & XA_CHUNK_MASK;
-            
+
             match current {
                 XASlot::Node(node) => {
                     current = node.slots[slot_idx].as_mut()?;
@@ -296,7 +296,7 @@ impl<T> XArray<T> {
     /// ツリーを拡張
     fn grow_for_index(&mut self, index: usize) {
         let required = Self::required_height(index);
-        
+
         while self.height < required {
             match self.root.take() {
                 None => {
@@ -319,7 +319,10 @@ impl<T> XArray<T> {
     /// リーフノードのスロットにエントリを挿入し、旧エントリを返す
     fn insert_into_leaf_slot(node: &mut XANode<T>, slot_idx: usize, value: T) -> Option<T> {
         let old = node.slots[slot_idx].take();
-        node.slots[slot_idx] = Some(XASlot::Entry { value: Box::new(value), marks: 0 });
+        node.slots[slot_idx] = Some(XASlot::Entry {
+            value: Box::new(value),
+            marks: 0,
+        });
         if old.is_none() {
             node.count += 1;
         }
@@ -335,7 +338,10 @@ impl<T> XArray<T> {
             // 高さ0 = インデックス0のみ
             debug_assert_eq!(index, 0);
             let old = self.root.take();
-            self.root = Some(XASlot::Entry { value: Box::new(value), marks: 0 });
+            self.root = Some(XASlot::Entry {
+                value: Box::new(value),
+                marks: 0,
+            });
             return match old {
                 Some(XASlot::Entry { value: e, .. }) => Some(*e),
                 _ => None,
@@ -348,12 +354,12 @@ impl<T> XArray<T> {
         }
 
         let mut current: &mut Option<XASlot<T>> = &mut self.root;
-        
+
         // 上位レベルから下位レベルへ
         for level in (1..self.height).rev() {
             let shift = level as usize * XA_CHUNK_SHIFT;
             let slot_idx = (index >> shift) & XA_CHUNK_MASK;
-            
+
             // ノードを取得/作成
             match current {
                 Some(XASlot::Node(node)) => {
@@ -369,7 +375,7 @@ impl<T> XArray<T> {
 
         // 最下位レベル
         let slot_idx = index & XA_CHUNK_MASK;
-        
+
         match current {
             Some(XASlot::Node(node)) => Self::insert_into_leaf_slot(node, slot_idx, value),
             _ => unreachable!("Expected node at leaf level"),
@@ -418,12 +424,10 @@ impl<T> XArray<T> {
     fn extract_entry_at(slot: &XASlot<T>, index: usize) -> Option<&T> {
         let slot_idx = index & XA_CHUNK_MASK;
         match slot {
-            XASlot::Node(node) => {
-                match node.slots[slot_idx].as_ref()? {
-                    XASlot::Entry { value: e, .. } => Some(e.as_ref()),
-                    _ => None,
-                }
-            }
+            XASlot::Node(node) => match node.slots[slot_idx].as_ref()? {
+                XASlot::Entry { value: e, .. } => Some(e.as_ref()),
+                _ => None,
+            },
             XASlot::Entry { value: e, .. } if index == 0 => Some(e.as_ref()),
             _ => None,
         }
@@ -433,12 +437,10 @@ impl<T> XArray<T> {
     fn extract_entry_at_mut(slot: &mut XASlot<T>, index: usize) -> Option<&mut T> {
         let slot_idx = index & XA_CHUNK_MASK;
         match slot {
-            XASlot::Node(node) => {
-                match node.slots[slot_idx].as_mut()? {
-                    XASlot::Entry { value: e, .. } => Some(e.as_mut()),
-                    _ => None,
-                }
-            }
+            XASlot::Node(node) => match node.slots[slot_idx].as_mut()? {
+                XASlot::Entry { value: e, .. } => Some(e.as_mut()),
+                _ => None,
+            },
             XASlot::Entry { value: e, .. } if index == 0 => Some(e.as_mut()),
             _ => None,
         }
@@ -483,11 +485,11 @@ impl<T> XArray<T> {
         }
 
         let mut current = self.root.as_mut()?;
-        
+
         for level in (1..self.height).rev() {
             let shift = level as usize * XA_CHUNK_SHIFT;
             let slot_idx = (index >> shift) & XA_CHUNK_MASK;
-            
+
             match current {
                 XASlot::Node(node) => {
                     current = node.slots[slot_idx].as_mut()?;
@@ -497,7 +499,7 @@ impl<T> XArray<T> {
         }
 
         let slot_idx = index & XA_CHUNK_MASK;
-        
+
         match current {
             XASlot::Node(node) => Self::remove_from_leaf_slot(node, slot_idx),
             _ => None,
@@ -542,7 +544,7 @@ impl<'a, T> Iterator for XArrayIter<'a, T> {
         while self.next_index <= self.max_index {
             let idx = self.next_index;
             self.next_index += 1;
-            
+
             if let Some(entry) = self.xa.load(idx) {
                 return Some((idx, entry));
             }
@@ -616,14 +618,14 @@ impl XArrayUsize {
         if index >= XA_CHUNK_SIZE {
             return None;
         }
-        
+
         let old = if self.slots[index].value != 0 {
             Some(self.slots[index].value - 1)
         } else {
             self.len += 1;
             None
         };
-        
+
         // value + 1 で格納（0 を空と区別）
         self.slots[index].value = value.checked_add(1)?;
         old
@@ -634,7 +636,7 @@ impl XArrayUsize {
         if index >= XA_CHUNK_SIZE {
             return None;
         }
-        
+
         if self.slots[index].value != 0 {
             Some(self.slots[index].value - 1)
         } else {
@@ -647,7 +649,7 @@ impl XArrayUsize {
         if index >= XA_CHUNK_SIZE {
             return None;
         }
-        
+
         if self.slots[index].value != 0 {
             let old = self.slots[index].value - 1;
             self.slots[index] = UsizeSlot::default();

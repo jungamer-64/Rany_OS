@@ -105,10 +105,7 @@ impl VirtioBlkPollHandler {
                 };
 
                 if let Some(queue_arc) = device.queue(queue_idx) {
-                    queue_arc
-                        .lock()
-                        .expect("lock poisoned")
-                        .free_desc(desc_id);
+                    queue_arc.lock().expect("lock poisoned").free_desc(desc_id);
                 }
 
                 results.push((req.io_id, result));
@@ -118,13 +115,7 @@ impl VirtioBlkPollHandler {
     }
 
     /// リクエストを保留マップに追加（submit 成功後に呼ぶ）
-    pub fn add_pending(
-        &self,
-        io_id: IoRequestId,
-        queue_idx: usize,
-        desc_id: u16,
-        bytes: usize,
-    ) {
+    pub fn add_pending(&self, io_id: IoRequestId, queue_idx: usize, desc_id: u16, bytes: usize) {
         if let Some(pending_queue) = self.pending.get(queue_idx) {
             pending_queue.lock().insert(
                 desc_id,
@@ -267,8 +258,7 @@ impl DeviceOps for VirtioBlkOps {
                 }
                 .map_err(Self::map_block_error)?;
 
-                self.handler
-                    .add_pending(req.id, queue_idx, desc_id, *bytes);
+                self.handler.add_pending(req.id, queue_idx, desc_id, *bytes);
                 Ok(())
             }
             IoCommand::Flush => {
@@ -316,10 +306,7 @@ static VIRTIO_BLK_POLL_HANDLERS: RwLock<BTreeMap<u8, Arc<VirtioBlkPollHandler>>>
 
 /// 指定デバイスの PollHandler を取得（割り込みハンドラから使用）
 pub fn get_poll_handler(device_index: u8) -> Option<Arc<VirtioBlkPollHandler>> {
-    VIRTIO_BLK_POLL_HANDLERS
-        .read()
-        .get(&device_index)
-        .cloned()
+    VIRTIO_BLK_POLL_HANDLERS.read().get(&device_index).cloned()
 }
 
 // ============================================================================
@@ -337,7 +324,8 @@ pub fn register_virtio_blk_with(
     };
 
     // 1. 共有 PollHandler を作成
-    let device = get_virtio_blk_device().expect("VirtIO-blk device must be initialized before registration");
+    let device =
+        get_virtio_blk_device().expect("VirtIO-blk device must be initialized before registration");
     let queue_count = device.queue_count();
     let handler = Arc::new(VirtioBlkPollHandler::new(device_index, queue_count));
 

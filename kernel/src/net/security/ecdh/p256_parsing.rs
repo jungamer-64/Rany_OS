@@ -1,4 +1,4 @@
-use super::p256::{P256FieldElement, P256Point, N};
+use super::p256::{N, P256FieldElement, P256Point};
 
 /// 非圧縮公開鍵（04 || x || y）をパースしてP256Pointに変換
 ///
@@ -81,12 +81,24 @@ pub fn scalar_add_mod_n(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     let mut b_limbs = [0u64; 4];
     for i in 0..4 {
         a_limbs[3 - i] = u64::from_be_bytes([
-            a[i * 8], a[i * 8 + 1], a[i * 8 + 2], a[i * 8 + 3],
-            a[i * 8 + 4], a[i * 8 + 5], a[i * 8 + 6], a[i * 8 + 7],
+            a[i * 8],
+            a[i * 8 + 1],
+            a[i * 8 + 2],
+            a[i * 8 + 3],
+            a[i * 8 + 4],
+            a[i * 8 + 5],
+            a[i * 8 + 6],
+            a[i * 8 + 7],
         ]);
         b_limbs[3 - i] = u64::from_be_bytes([
-            b[i * 8], b[i * 8 + 1], b[i * 8 + 2], b[i * 8 + 3],
-            b[i * 8 + 4], b[i * 8 + 5], b[i * 8 + 6], b[i * 8 + 7],
+            b[i * 8],
+            b[i * 8 + 1],
+            b[i * 8 + 2],
+            b[i * 8 + 3],
+            b[i * 8 + 4],
+            b[i * 8 + 5],
+            b[i * 8 + 6],
+            b[i * 8 + 7],
         ]);
     }
 
@@ -130,12 +142,24 @@ pub fn scalar_mul_mod_n(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     let mut b_limbs = [0u64; 4];
     for i in 0..4 {
         a_limbs[3 - i] = u64::from_be_bytes([
-            a[i * 8], a[i * 8 + 1], a[i * 8 + 2], a[i * 8 + 3],
-            a[i * 8 + 4], a[i * 8 + 5], a[i * 8 + 6], a[i * 8 + 7],
+            a[i * 8],
+            a[i * 8 + 1],
+            a[i * 8 + 2],
+            a[i * 8 + 3],
+            a[i * 8 + 4],
+            a[i * 8 + 5],
+            a[i * 8 + 6],
+            a[i * 8 + 7],
         ]);
         b_limbs[3 - i] = u64::from_be_bytes([
-            b[i * 8], b[i * 8 + 1], b[i * 8 + 2], b[i * 8 + 3],
-            b[i * 8 + 4], b[i * 8 + 5], b[i * 8 + 6], b[i * 8 + 7],
+            b[i * 8],
+            b[i * 8 + 1],
+            b[i * 8 + 2],
+            b[i * 8 + 3],
+            b[i * 8 + 4],
+            b[i * 8 + 5],
+            b[i * 8 + 6],
+            b[i * 8 + 7],
         ]);
     }
 
@@ -251,17 +275,13 @@ pub(crate) fn scalar_pow_mod_n(base: &[u8; 32], exp: &[u8; 32]) -> [u8; 32] {
 // ========================================================================
 
 /// 検証ポイントのx座標をrと比較
-pub(crate) fn verify_r_equals_x(
-    r_bytes: &[u8; 32],
-    r_point: &P256Point,
-) -> Result<(), EcdsaError> {
+pub(crate) fn verify_r_equals_x(r_bytes: &[u8; 32], r_point: &P256Point) -> Result<(), EcdsaError> {
     if r_point.is_identity() {
         return Err(EcdsaError::InvalidSignature);
     }
 
     // x座標を取得
-    let (rx, _ry) = r_point.to_affine()
-        .ok_or(EcdsaError::InvalidSignature)?;
+    let (rx, _ry) = r_point.to_affine().ok_or(EcdsaError::InvalidSignature)?;
 
     let rx_bytes = rx.to_be_bytes();
 
@@ -302,8 +322,7 @@ pub fn ecdsa_p256_verify(
     signature_der: &[u8],
 ) -> Result<(), EcdsaError> {
     // 公開鍵をパース
-    let q = parse_uncompressed_point(public_key)
-        .ok_or(EcdsaError::InvalidPublicKey)?;
+    let q = parse_uncompressed_point(public_key).ok_or(EcdsaError::InvalidPublicKey)?;
 
     if !q.is_on_curve() || q.is_identity() {
         return Err(EcdsaError::InvalidPublicKey);
@@ -335,7 +354,10 @@ pub fn ecdsa_p256_verify(
 }
 
 /// DER INTEGER フィールドを1つパースし、位置を進める
-pub(crate) fn parse_der_integer<'a>(der: &'a [u8], pos: &mut usize) -> Result<&'a [u8], EcdsaError> {
+pub(crate) fn parse_der_integer<'a>(
+    der: &'a [u8],
+    pos: &mut usize,
+) -> Result<&'a [u8], EcdsaError> {
     if *pos >= der.len() || der[*pos] != 0x02 {
         return Err(EcdsaError::InvalidSignature);
     }

@@ -37,7 +37,7 @@ mod state {
 
 /// Lock-free Waker storage using atomic state machine.
 ///
-/// This implementation provides completely lock-free operation, making it safe 
+/// This implementation provides completely lock-free operation, making it safe
 /// to use from ISR contexts without any risk of deadlock or priority inversion.
 ///
 /// # Thread Safety
@@ -65,7 +65,10 @@ unsafe impl Sync for AtomicWaker {}
 impl core::fmt::Debug for AtomicWaker {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("AtomicWaker")
-            .field("state", &self.state.load(core::sync::atomic::Ordering::Relaxed))
+            .field(
+                "state",
+                &self.state.load(core::sync::atomic::Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -353,7 +356,6 @@ pub fn process_deferred_wakes() {
     }
 }
 
-
 // ============================================================================
 // Multi-Waker Queue (supports multiple concurrent waiters)
 // ============================================================================
@@ -560,8 +562,6 @@ impl DeferredWakerQueue {
         }
     }
 }
-
-
 
 // ============================================================================
 // Tests

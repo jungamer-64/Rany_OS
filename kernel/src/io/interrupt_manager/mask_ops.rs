@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// 割り込みをマスク
 pub fn mask_interrupt(vector: u8) -> Result<(), InterruptError> {
     if let Some(allocation) = INTERRUPT_MANAGER.allocations.write().get_mut(&vector) {
@@ -310,7 +309,8 @@ pub type InterruptHandler = Box<dyn Fn() + Send + Sync>;
 ///
 /// ISRコンテキストで実行されるため、IrqMutexで保護する必要がある。
 /// これにより、ISR内でのロック取得時のデッドロックを防ぐ。
-pub(crate) static DIRECT_HANDLERS: OnceBox<IrqMutex<Vec<Option<InterruptHandler>>>> = OnceBox::new();
+pub(crate) static DIRECT_HANDLERS: OnceBox<IrqMutex<Vec<Option<InterruptHandler>>>> =
+    OnceBox::new();
 
 /// ハンドラレジストリを取得（必要に応じて初期化）
 #[inline]
@@ -375,4 +375,3 @@ define_interrupt!(
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

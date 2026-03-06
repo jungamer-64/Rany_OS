@@ -464,9 +464,7 @@ fn apply_dwarf_application(
         DwarfPointerApplication::Textrel
         | DwarfPointerApplication::Datarel
         | DwarfPointerApplication::Funcrel
-        | DwarfPointerApplication::Aligned => {
-            Err(UnwindError::InvalidDwarf)
-        }
+        | DwarfPointerApplication::Aligned => Err(UnwindError::InvalidDwarf),
     }
 }
 
@@ -558,4 +556,3 @@ mod tests {
         assert_eq!(reader.read_u8().unwrap_err(), UnwindError::MemoryReadError);
     }
 }
-

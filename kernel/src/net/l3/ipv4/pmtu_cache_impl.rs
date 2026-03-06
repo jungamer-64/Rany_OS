@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl PmtuCache {
     /// Default maximum entries
     pub const DEFAULT_MAX_ENTRIES: usize = 256;
@@ -47,7 +46,8 @@ impl PmtuCache {
             if self.entries.len() >= self.max_entries {
                 self.evict_oldest();
             }
-            self.entries.insert(dst, PmtuEntry::new(clamped_mtu, current_time));
+            self.entries
+                .insert(dst, PmtuEntry::new(clamped_mtu, current_time));
             self.stats.discoveries += 1;
         }
     }
@@ -198,12 +198,7 @@ impl FragmentBuffer {
     /// Add a fragment to the buffer (RFC 815 hole-filling algorithm)
     ///
     /// Returns true if the fragment was accepted, false if invalid/overlapping
-    pub fn add_fragment(
-        &mut self,
-        header: &Ipv4Header,
-        payload: &[u8],
-        current_time: u64,
-    ) -> bool {
+    pub fn add_fragment(&mut self, header: &Ipv4Header, payload: &[u8], current_time: u64) -> bool {
         let fragment_offset = (header.fragment_offset() as u32) * 8; // Convert to bytes
         let fragment_len = payload.len() as u32;
         let fragment_end = fragment_offset + fragment_len;
@@ -233,20 +228,26 @@ impl FragmentBuffer {
         if fragment_offset == 0 && header.more_fragments() {
             let min_len = match header.protocol() {
                 super::IpProtocol::Tcp => 20, // TCP: must contain the entire 20-byte base header (RFC 3128)
-                super::IpProtocol::Udp => 8, // UDP: must contain at least the 8-byte header
-                super::IpProtocol::Icmp => 8,  // ICMP: must contain at least the 8-byte header
+                super::IpProtocol::Udp => 8,  // UDP: must contain at least the 8-byte header
+                super::IpProtocol::Icmp => 8, // ICMP: must contain at least the 8-byte header
                 _ => 8,
             };
             if fragment_len < min_len {
-                log::warn!("[NET-IPV4] Tiny fragment (offset 0, protocol {:?}, len {}) detected, dropping datagram", 
-                    header.protocol(), fragment_len);
+                log::warn!(
+                    "[NET-IPV4] Tiny fragment (offset 0, protocol {:?}, len {}) detected, dropping datagram",
+                    header.protocol(),
+                    fragment_len
+                );
                 return false;
             }
         }
 
         // RFC 791: 8-octet multiple check for non-last fragments
         if header.more_fragments() && (fragment_len % 8 != 0) {
-            log::warn!("[NET-IPV4] Fragment length ({}) not a multiple of 8 while MF=1, dropping", fragment_len);
+            log::warn!(
+                "[NET-IPV4] Fragment length ({}) not a multiple of 8 while MF=1, dropping",
+                fragment_len
+            );
             return false;
         }
 
@@ -254,14 +255,22 @@ impl FragmentBuffer {
         if !header.more_fragments() {
             if let Some(existing_total) = self.total_len {
                 if existing_total != fragment_end {
-                    log::warn!("[NET-IPV4] Inconsistent total length in fragments: expected {}, got {}", existing_total, fragment_end);
+                    log::warn!(
+                        "[NET-IPV4] Inconsistent total length in fragments: expected {}, got {}",
+                        existing_total,
+                        fragment_end
+                    );
                     return false;
                 }
             }
             self.total_len = Some(fragment_end);
         } else if let Some(total) = self.total_len {
             if fragment_end > total {
-                log::warn!("[NET-IPV4] Fragment beyond end of datagram: {} > {}", fragment_end, total);
+                log::warn!(
+                    "[NET-IPV4] Fragment beyond end of datagram: {} > {}",
+                    fragment_end,
+                    total
+                );
                 return false;
             }
         }
@@ -274,7 +283,7 @@ impl FragmentBuffer {
         }
 
         // Security: Check for overlapping fragments.
-        // We detect overlap by checking if the fragment range [offset, end) 
+        // We detect overlap by checking if the fragment range [offset, end)
         // covers any byte that is not currently in a hole.
         let mut covered_hole_bytes: u32 = 0;
         for hole in &self.holes {
@@ -286,10 +295,13 @@ impl FragmentBuffer {
         }
 
         if covered_hole_bytes == 0 {
-            // Duplicate fragment - RFC 5722 (for IPv6) recommends dropping the entire 
-            // datagram to prevent IDS evasion attacks. We apply this to IPv4 for 
+            // Duplicate fragment - RFC 5722 (for IPv6) recommends dropping the entire
+            // datagram to prevent IDS evasion attacks. We apply this to IPv4 for
             // enhanced security.
-            log::warn!("[NET-IPV4] Duplicate fragment detected at offset {}, dropping datagram per RFC 5722 policy", fragment_offset);
+            log::warn!(
+                "[NET-IPV4] Duplicate fragment detected at offset {}, dropping datagram per RFC 5722 policy",
+                fragment_offset
+            );
             return false;
         }
 
@@ -297,7 +309,10 @@ impl FragmentBuffer {
             // Overlap detected (partially covers filled data and partially covers holes).
             // RFC 5722 (for IPv6) and general security best practices
             // recommend discarding the entire datagram to prevent IDS evasion.
-            log::warn!("[NET-IPV4] Overlapping fragment detected at offset {}, dropping datagram", fragment_offset);
+            log::warn!(
+                "[NET-IPV4] Overlapping fragment detected at offset {}, dropping datagram",
+                fragment_offset
+            );
             return false;
         }
 
@@ -318,14 +333,23 @@ impl FragmentBuffer {
     }
 
     /// Store the first fragment header for later reassembly
-    pub(super) fn store_first_header_if_needed(&mut self, header_data: &[u8], fragment_offset: u16) {
+    pub(super) fn store_first_header_if_needed(
+        &mut self,
+        header_data: &[u8],
+        fragment_offset: u16,
+    ) {
         if fragment_offset == 0 && self.first_header.is_none() {
             self.first_header = Some(header_data.to_vec());
         }
     }
 
     /// RFC 815 hole-list update with a fragment range
-    pub(super) fn update_holes(&mut self, fragment_offset: u16, fragment_end: u16, more_fragments: bool) {
+    pub(super) fn update_holes(
+        &mut self,
+        fragment_offset: u16,
+        fragment_end: u16,
+        more_fragments: bool,
+    ) {
         let mut new_holes = Vec::new();
 
         for hole in self.holes.drain(..) {
@@ -375,7 +399,10 @@ impl FragmentBuffer {
 
         // Check if reassembled length fits in IPv4 Total Length field (16 bits)
         if header_len + total_len > 65535 {
-            log::warn!("[NET-IPV4] Reassembled packet too large for u16 Total Length: {} bytes", header_len + total_len);
+            log::warn!(
+                "[NET-IPV4] Reassembled packet too large for u16 Total Length: {} bytes",
+                header_len + total_len
+            );
             return None;
         }
 
@@ -474,7 +501,9 @@ impl FragmentReassembler {
             // Check buffer limit
             if self.buffers.len() >= self.max_buffers {
                 // Evict the oldest buffer to prevent Reassembly Buffer Exhaustion DoS
-                let oldest = self.buffers.iter()
+                let oldest = self
+                    .buffers
+                    .iter()
                     .min_by_key(|(_, buf)| buf.created_at)
                     .map(|(&k, _)| k);
                 if let Some(oldest_key) = oldest {
@@ -655,7 +684,12 @@ impl Ipv4Processor {
         // Use cryptographically secure random for initial ID and secret
         let random_bytes = crate::net::security::tls::generate_random();
         let id_init = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
-        let secret = u32::from_le_bytes([random_bytes[2], random_bytes[3], random_bytes[4], random_bytes[5]]);
+        let secret = u32::from_le_bytes([
+            random_bytes[2],
+            random_bytes[3],
+            random_bytes[4],
+            random_bytes[5],
+        ]);
 
         Ipv4Processor {
             config,
@@ -709,7 +743,11 @@ impl Ipv4Processor {
     }
 
     /// Process an incoming IPv4 packet with timestamp for fragment timeout handling
-    pub fn process_with_time<'a>(&mut self, data: &'a [u8], mut current_time: u64) -> Ipv4ProcessResult<'a> {
+    pub fn process_with_time<'a>(
+        &mut self,
+        data: &'a [u8],
+        mut current_time: u64,
+    ) -> Ipv4ProcessResult<'a> {
         // Security: Ensure we have a valid timestamp for fragment timeout handling.
         // If 0 is provided, fall back to the system uptime.
         if current_time == 0 {
@@ -745,10 +783,13 @@ impl Ipv4Processor {
         // Discarding packets where source and destination addresses are the same.
         if src == dst && !src.is_any() && !src.is_loopback() {
             self.stats.rx_dropped += 1;
-            log::warn!("[NET-IPV4] Dropping packet with src == dst (Land Attack) from {}", src);
+            log::warn!(
+                "[NET-IPV4] Dropping packet with src == dst (Land Attack) from {}",
+                src
+            );
             return Ipv4ProcessResult::Dropped;
         }
-        
+
         // Security: Prevent Source IP spoofing (Martian packets)
         // RFC 1812: Source IP must not be a multicast or broadcast address.
         // RFC 6890: Filter other reserved/special-purpose ranges.
@@ -768,21 +809,26 @@ impl Ipv4Processor {
 
         if is_fragment {
             // Security: RFC 1858 Tiny Fragment Filtering
-            // If FO=0 and protocol is TCP, the fragment MUST be large enough 
+            // If FO=0 and protocol is TCP, the fragment MUST be large enough
             // to contain the entire TCP header (20 bytes).
             // If FO=1 (offset 8), it might contain part of the TCP header, which is also suspicious.
             if packet.protocol() == IpProtocol::Tcp {
                 let fragment_offset = header.fragment_offset();
                 let payload_len = packet.payload().len();
-                
+
                 if fragment_offset == 0 && payload_len < 20 {
-                    log::warn!("[NET-IPV4] Dropping tiny fragment (FO=0, len={}) - RFC 1858 violation", payload_len);
+                    log::warn!(
+                        "[NET-IPV4] Dropping tiny fragment (FO=0, len={}) - RFC 1858 violation",
+                        payload_len
+                    );
                     self.stats.rx_errors += 1;
                     return Ipv4ProcessResult::Dropped;
                 }
-                
+
                 if fragment_offset == 1 {
-                    log::warn!("[NET-IPV4] Dropping suspicious fragment (FO=1) - RFC 1858 violation");
+                    log::warn!(
+                        "[NET-IPV4] Dropping suspicious fragment (FO=1) - RFC 1858 violation"
+                    );
                     self.stats.rx_errors += 1;
                     return Ipv4ProcessResult::Dropped;
                 }
@@ -792,8 +838,10 @@ impl Ipv4Processor {
             let header_len = header.header_len();
             let header_data = &data[..header_len];
             let payload = packet.payload();
-            let (reassembled, expired) = self.reassembler.process_fragment(header, header_data, payload, current_time);
-            
+            let (reassembled, expired) =
+                self.reassembler
+                    .process_fragment(header, header_data, payload, current_time);
+
             if let Some(data) = reassembled {
                 // Reassembly complete - return the reassembled packet
                 return Ipv4ProcessResult::Reassembled(data);
@@ -836,29 +884,29 @@ impl Ipv4Processor {
     /// Get next packet ID (unpredictable per-destination to prevent Idle Scan and Traffic Analysis)
     pub fn next_id(&mut self, dst: Ipv4Address) -> u16 {
         // RFC 6864/7739 compliant secure ID generation.
-        // We use a keyed hash (FNV-1a) mixing the destination, our boot secret, 
+        // We use a keyed hash (FNV-1a) mixing the destination, our boot secret,
         // and a global counter to produce an unpredictable ID sequence.
-        
+
         // Increment global counter
         self.next_id = self.next_id.wrapping_add(1);
-        
+
         let mut hash: u32 = 0x811c9dc5;
         const FNV_PRIME: u32 = 0x01000193;
-        
+
         // Mix in destination address
         for &byte in &dst.octets() {
             hash ^= byte as u32;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
-        
+
         // Mix in the secret (per-boot)
         hash ^= self.id_secret;
         hash = hash.wrapping_mul(FNV_PRIME);
-        
+
         // Mix in the counter
         hash ^= self.next_id as u32;
         hash = hash.wrapping_mul(FNV_PRIME);
-        
+
         // Final folding to 16 bits
         let scramble = (hash ^ (hash >> 16)) as u16;
         scramble
@@ -931,4 +979,3 @@ pub fn data_checksum(data: &[u8], initial: u32) -> u16 {
 
     !(sum as u16)
 }
-

@@ -6,9 +6,9 @@
 
 use x86_64::PhysAddr;
 
+use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
 use crate::io::iommu::runtime::command::queue::IommuCommandKind;
 use crate::io::iommu::types::{DeviceId, IommuError};
-use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
 
 use super::AmdIommuDriver;
 
@@ -22,7 +22,10 @@ impl AmdIommuDriver {
     /// The IovaAllocatorFast is lock-free internally with per-CPU magazine caching.
     pub(super) fn allocate_iova(&self, size: u64, mask: Option<u64>) -> Result<u64, IommuError> {
         let iova = match mask {
-            Some(limit) => self.iova_allocator.allocate_with_limit(size, PageGranularity::Page4K, limit),
+            Some(limit) => {
+                self.iova_allocator
+                    .allocate_with_limit(size, PageGranularity::Page4K, limit)
+            }
             None => self.iova_allocator.allocate(size, PageGranularity::Page4K),
         };
         iova.ok_or(IommuError::OutOfMemory)
@@ -32,7 +35,11 @@ impl AmdIommuDriver {
     ///
     /// IovaAllocatorFast already provides O(1) allocation with per-CPU magazine,
     /// so this just delegates to allocate_iova.
-    pub(super) fn allocate_iova_fast(&self, size: u64, mask: Option<u64>) -> Result<u64, IommuError> {
+    pub(super) fn allocate_iova_fast(
+        &self,
+        size: u64,
+        mask: Option<u64>,
+    ) -> Result<u64, IommuError> {
         self.allocate_iova(size, mask)
     }
 
@@ -99,19 +106,30 @@ impl AmdIommuDriver {
         let domain = self.domain_for_id(0)?;
 
         // 1. Monitor page table releases
-        let pts_before = domain.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pts_before = domain
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
 
         let mapping = domain.unmap(iova)?;
         let mapped_size = mapping.size;
-        
-        let pts_after = domain.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+
+        let pts_after = domain
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
         let pt_removed = pts_after > pts_before;
 
         // 2. Invalidate domain pages across all units
         if pt_removed {
             // SECURITY: Domain-wide invalidation to clear paging-structure caches
             if let Err(err) = self.invalidate_domain_pages(0, 0, u64::MAX) {
-                log::error!("[IOMMU][AMD-Vi] unmap_dma domain-wide invalidation failed: {:?}. Poisoning domain.", err);
+                log::error!(
+                    "[IOMMU][AMD-Vi] unmap_dma domain-wide invalidation failed: {:?}. Poisoning domain.",
+                    err
+                );
                 domain.poison();
                 return Err(err);
             }
@@ -119,7 +137,10 @@ impl AmdIommuDriver {
             if let Err(err) = self.invalidate_domain_pages(0, iova, mapped_size) {
                 if err != IommuError::NotSupported {
                     // SECURITY: Inconsistent state between software and hardware
-                    log::error!("[IOMMU][AMD-Vi] unmap_dma invalidation failed: {:?}. Poisoning domain.", err);
+                    log::error!(
+                        "[IOMMU][AMD-Vi] unmap_dma invalidation failed: {:?}. Poisoning domain.",
+                        err
+                    );
                     domain.poison();
                     return Err(err);
                 }
@@ -182,7 +203,12 @@ impl AmdIommuDriver {
         let (domain_id, iova) = self.validate_and_allocate_device_iova(device, phys_addr, size)?;
         if let Some(ref cq) = self.command_queue {
             let cmd = IommuCommandKind::MapRegionDevice {
-                device: *device, iova, phys: phys_addr.as_u64(), size, read, write,
+                device: *device,
+                iova,
+                phys: phys_addr.as_u64(),
+                size,
+                read,
+                write,
             };
             let comp = match cq.submit(cmd) {
                 Ok(comp) => comp,
@@ -192,10 +218,20 @@ impl AmdIommuDriver {
                 }
             };
             let rc = comp.wait_blocking();
-            if rc == 0 { return Ok(iova); }
+            if rc == 0 {
+                return Ok(iova);
+            }
             return Err(IommuError::HardwareError);
         }
-        self.direct_map_device(domain_id, device, iova, phys_addr.as_u64(), size, read, write)
+        self.direct_map_device(
+            domain_id,
+            device,
+            iova,
+            phys_addr.as_u64(),
+            size,
+            read,
+            write,
+        )
     }
 
     /// コマンドキューなしでの直接 DMA マッピング (同期)
@@ -241,7 +277,12 @@ impl AmdIommuDriver {
         let (domain_id, iova) = self.validate_and_allocate_device_iova(device, phys_addr, size)?;
         if let Some(ref cq) = self.command_queue {
             let cmd = IommuCommandKind::MapRegionDevice {
-                device: *device, iova, phys: phys_addr.as_u64(), size, read, write,
+                device: *device,
+                iova,
+                phys: phys_addr.as_u64(),
+                size,
+                read,
+                write,
             };
             let comp = match cq.submit_async(cmd).await {
                 Ok(comp) => comp,
@@ -251,10 +292,21 @@ impl AmdIommuDriver {
                 }
             };
             let rc = comp.await;
-            if rc == 0 { return Ok(iova); }
+            if rc == 0 {
+                return Ok(iova);
+            }
             return Err(IommuError::HardwareError);
         }
-        self.direct_map_device_async(domain_id, device, iova, phys_addr.as_u64(), size, read, write).await
+        self.direct_map_device_async(
+            domain_id,
+            device,
+            iova,
+            phys_addr.as_u64(),
+            size,
+            read,
+            write,
+        )
+        .await
     }
 
     /// コマンドキューなしでの直接 DMA マッピング (非同期)
@@ -274,7 +326,10 @@ impl AmdIommuDriver {
             return Err(err);
         }
 
-        if let Err(err) = self.invalidate_iommu_pages_async(*device, domain_id, iova, size).await {
+        if let Err(err) = self
+            .invalidate_iommu_pages_async(*device, domain_id, iova, size)
+            .await
+        {
             let _ = domain.unmap(iova);
             let _ = self.free_iova_fast(iova, size);
             return Err(err);
@@ -295,7 +350,10 @@ impl AmdIommuDriver {
         phys_addr: PhysAddr,
         size: u64,
     ) -> Result<u64, IommuError> {
-        unsafe { self.map_for_device_with_perms_async(device, phys_addr, size, true, true).await }
+        unsafe {
+            self.map_for_device_with_perms_async(device, phys_addr, size, true, true)
+                .await
+        }
     }
 
     /// コマンドキュー経由で同期アンマップを実行する
@@ -312,14 +370,15 @@ impl AmdIommuDriver {
             iova,
             size: mapping.size,
         };
-        let comp = cq
-            .submit(cmd)
-            .map_err(|_| IommuError::HardwareError)?;
+        let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
         let rc = comp.wait_blocking();
         if rc == 0 {
             return Ok(());
         }
-        log::error!("[IOMMU][AMD-Vi] unmap_via_command_queue failed (rc={}). Poisoning domain.", rc);
+        log::error!(
+            "[IOMMU][AMD-Vi] unmap_via_command_queue failed (rc={}). Poisoning domain.",
+            rc
+        );
         domain.poison();
         Err(IommuError::HardwareError)
     }
@@ -337,30 +396,47 @@ impl AmdIommuDriver {
         }
 
         // 1. Monitor page table releases
-        let pts_before = domain.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pts_before = domain
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
 
         let mapping = domain.unmap(iova)?;
 
-        let pts_after = domain.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pts_after = domain
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
         let pt_removed = pts_after > pts_before;
 
         if pt_removed {
             // SECURITY: Domain-wide invalidation to clear paging-structure caches
             if let Err(err) = self.invalidate_domain_pages(domain_id, 0, u64::MAX) {
-                log::error!("[IOMMU][AMD-Vi] unmap_for_device domain-wide invalidation failed: {:?}. Poisoning domain.", err);
+                log::error!(
+                    "[IOMMU][AMD-Vi] unmap_for_device domain-wide invalidation failed: {:?}. Poisoning domain.",
+                    err
+                );
                 domain.poison();
                 return Err(err);
             }
         } else {
             if let Err(err) = self.invalidate_iommu_pages(*device, domain_id, iova, mapping.size) {
-                log::error!("[IOMMU][AMD-Vi] unmap_for_device IOMMU invalidation failed: {:?}. Poisoning domain.", err);
+                log::error!(
+                    "[IOMMU][AMD-Vi] unmap_for_device IOMMU invalidation failed: {:?}. Poisoning domain.",
+                    err
+                );
                 domain.poison();
                 return Err(err);
             }
         }
 
         if let Err(err) = self.invalidate_iotlb_pages(*device, iova, mapping.size) {
-            log::error!("[IOMMU][AMD-Vi] unmap_for_device IOTLB invalidation failed: {:?}. Poisoning domain.", err);
+            log::error!(
+                "[IOMMU][AMD-Vi] unmap_for_device IOTLB invalidation failed: {:?}. Poisoning domain.",
+                err
+            );
             domain.poison();
             return Err(err);
         }
@@ -369,7 +445,7 @@ impl AmdIommuDriver {
         if pt_removed {
             let _ = domain.flush(self, self);
         }
-        
+
         if let Err(IommuError::OutOfMemory) = self.free_iova_fast(iova, mapping.size) {
             let _ = self.invalidate_all_entries();
             let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
@@ -403,7 +479,10 @@ impl AmdIommuDriver {
         if rc == 0 {
             return Ok(());
         }
-        log::error!("[IOMMU][AMD-Vi] unmap_via_command_queue_async failed (rc={}). Poisoning domain.", rc);
+        log::error!(
+            "[IOMMU][AMD-Vi] unmap_via_command_queue_async failed (rc={}). Poisoning domain.",
+            rc
+        );
         domain.poison();
         Err(IommuError::HardwareError)
     }
@@ -417,38 +496,66 @@ impl AmdIommuDriver {
         let domain_id = self.domain_id_for_device(*device)?;
         let domain = self.domain_for_id(domain_id)?;
         if let Some(ref cq) = self.command_queue {
-            return self.unmap_via_command_queue_async(cq, device, &domain, iova).await;
+            return self
+                .unmap_via_command_queue_async(cq, device, &domain, iova)
+                .await;
         }
 
         // 1. Monitor page table releases
-        let pts_before = domain.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pts_before = domain
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
 
         let mapping = domain.unmap(iova)?;
 
-        let pts_after = domain.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pts_after = domain
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
         let pt_removed = pts_after > pts_before;
 
         if pt_removed {
             // SECURITY: Domain-wide invalidation (async)
-            if let Err(err) = self.invalidate_domain_pages_async(domain_id, 0, u64::MAX).await {
-                log::error!("[IOMMU][AMD-Vi] unmap_for_device_async domain-wide invalidation failed: {:?}. Poisoning domain.", err);
+            if let Err(err) = self
+                .invalidate_domain_pages_async(domain_id, 0, u64::MAX)
+                .await
+            {
+                log::error!(
+                    "[IOMMU][AMD-Vi] unmap_for_device_async domain-wide invalidation failed: {:?}. Poisoning domain.",
+                    err
+                );
                 domain.poison();
                 return Err(err);
             }
         } else {
-            if let Err(err) = self.invalidate_iommu_pages_async(*device, domain_id, iova, mapping.size).await {
-                log::error!("[IOMMU][AMD-Vi] unmap_for_device_async IOMMU invalidation failed: {:?}. Poisoning domain.", err);
+            if let Err(err) = self
+                .invalidate_iommu_pages_async(*device, domain_id, iova, mapping.size)
+                .await
+            {
+                log::error!(
+                    "[IOMMU][AMD-Vi] unmap_for_device_async IOMMU invalidation failed: {:?}. Poisoning domain.",
+                    err
+                );
                 domain.poison();
                 return Err(err);
             }
         }
 
-        if let Err(err) = self.invalidate_iotlb_pages_async(*device, iova, mapping.size).await {
-            log::error!("[IOMMU][AMD-Vi] unmap_for_device_async IOTLB invalidation failed: {:?}. Poisoning domain.", err);
+        if let Err(err) = self
+            .invalidate_iotlb_pages_async(*device, iova, mapping.size)
+            .await
+        {
+            log::error!(
+                "[IOMMU][AMD-Vi] unmap_for_device_async IOTLB invalidation failed: {:?}. Poisoning domain.",
+                err
+            );
             domain.poison();
             return Err(err);
         }
-        
+
         // 3. Reclaim released page tables
         if pt_removed {
             let _ = domain.flush(self, self);
@@ -464,5 +571,4 @@ impl AmdIommuDriver {
         }
         Ok(())
     }
-
 }

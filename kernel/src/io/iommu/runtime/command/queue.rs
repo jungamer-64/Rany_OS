@@ -217,14 +217,16 @@ impl CommandCompletion {
                 q_ref.notify_slot_available();
                 return r;
             }
-            
+
             // Try to make progress by processing the queue manually
             let processed = q.process_up_to(&mut handler, 1);
             if processed == 0 {
                 backoff.spin();
                 spins += 1;
                 if spins % 1000000 == 0 {
-                    crate::io::log::early_print("[IOMMU] wait_sync_with_worker stuck spin warning\n");
+                    crate::io::log::early_print(
+                        "[IOMMU] wait_sync_with_worker stuck spin warning\n",
+                    );
                 }
             } else {
                 backoff = Backoff::new(); // reset backoff
@@ -317,9 +319,18 @@ impl core::fmt::Debug for CommandQueue {
         f.debug_struct("CommandQueue")
             .field("next_alloc", &self.next_alloc.load(Ordering::Relaxed))
             .field("numa_node", &self.numa_node)
-            .field("processed_count", &self.processed_count.load(Ordering::Relaxed))
-            .field("cancelled_count", &self.cancelled_count.load(Ordering::Relaxed))
-            .field("reclaimed_count", &self.reclaimed_count.load(Ordering::Relaxed))
+            .field(
+                "processed_count",
+                &self.processed_count.load(Ordering::Relaxed),
+            )
+            .field(
+                "cancelled_count",
+                &self.cancelled_count.load(Ordering::Relaxed),
+            )
+            .field(
+                "reclaimed_count",
+                &self.reclaimed_count.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -330,30 +341,31 @@ impl CommandQueue {
 
         // Try to allocate slots on the given NUMA node for locality benefits.
         let layout = Layout::array::<CompletionSlot>(DEFAULT_QUEUE_SIZE).expect("layout");
-        let slots: &'static [CompletionSlot] =
-            if let Some(nonnull) = crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_node) {
-                unsafe {
-                    let ptr = nonnull.as_ptr() as *mut CompletionSlot;
-                    for i in 0..DEFAULT_QUEUE_SIZE {
-                        core::ptr::write(ptr.add(i), CompletionSlot::new());
-                    }
-                    let slice = core::slice::from_raw_parts_mut(ptr, DEFAULT_QUEUE_SIZE);
-                    let boxed = Box::from_raw(slice as *mut [CompletionSlot]);
-                    let slot_mut_ref: &'static mut [CompletionSlot] = Box::leak(boxed);
-                    let slot_ref: &'static [CompletionSlot] = &*slot_mut_ref;
-                    slot_ref
+        let slots: &'static [CompletionSlot] = if let Some(nonnull) =
+            crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_node)
+        {
+            unsafe {
+                let ptr = nonnull.as_ptr() as *mut CompletionSlot;
+                for i in 0..DEFAULT_QUEUE_SIZE {
+                    core::ptr::write(ptr.add(i), CompletionSlot::new());
                 }
-            } else {
-                // Fallback to global allocator
-                let mut v: Vec<CompletionSlot> = Vec::with_capacity(DEFAULT_QUEUE_SIZE);
-                for _ in 0..DEFAULT_QUEUE_SIZE {
-                    v.push(CompletionSlot::new());
-                }
-                let boxed = v.into_boxed_slice();
+                let slice = core::slice::from_raw_parts_mut(ptr, DEFAULT_QUEUE_SIZE);
+                let boxed = Box::from_raw(slice as *mut [CompletionSlot]);
                 let slot_mut_ref: &'static mut [CompletionSlot] = Box::leak(boxed);
                 let slot_ref: &'static [CompletionSlot] = &*slot_mut_ref;
                 slot_ref
-            };
+            }
+        } else {
+            // Fallback to global allocator
+            let mut v: Vec<CompletionSlot> = Vec::with_capacity(DEFAULT_QUEUE_SIZE);
+            for _ in 0..DEFAULT_QUEUE_SIZE {
+                v.push(CompletionSlot::new());
+            }
+            let boxed = v.into_boxed_slice();
+            let slot_mut_ref: &'static mut [CompletionSlot] = Box::leak(boxed);
+            let slot_ref: &'static [CompletionSlot] = &*slot_mut_ref;
+            slot_ref
+        };
 
         Self {
             sender: s,
@@ -495,7 +507,11 @@ impl CommandQueue {
     }
 
     /// Synchronous submit with polling worker implementation to prevent deadlocks
-    pub fn submit_sync_with_worker<F>(&self, kind: IommuCommandKind, mut handler: F) -> Result<(), ()>
+    pub fn submit_sync_with_worker<F>(
+        &self,
+        kind: IommuCommandKind,
+        mut handler: F,
+    ) -> Result<(), ()>
     where
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
     {

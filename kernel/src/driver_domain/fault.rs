@@ -32,7 +32,9 @@ use alloc::string::String;
 
 use crate::domain_system::DomainId;
 
-use super::{DriverDomainError, DriverDomainId, DriverDomainState, HotSwapState, driver_domain_manager};
+use super::{
+    DriverDomainError, DriverDomainId, DriverDomainState, HotSwapState, driver_domain_manager,
+};
 
 // ============================================================================
 // Restart Policy
@@ -82,19 +84,15 @@ impl RestartPolicy {
     pub fn should_restart(&self, fault_kind: FaultKind, consecutive_faults: u32) -> bool {
         match self {
             RestartPolicy::Never => false,
-            RestartPolicy::OnPanic {
-                max_retries,
-                ..
-            } => {
+            RestartPolicy::OnPanic { max_retries, .. } => {
                 if !matches!(fault_kind, FaultKind::Panic(_)) {
                     return false;
                 }
                 *max_retries == 0 || consecutive_faults <= *max_retries
             }
-            RestartPolicy::Always {
-                max_retries,
-                ..
-            } => *max_retries == 0 || consecutive_faults <= *max_retries,
+            RestartPolicy::Always { max_retries, .. } => {
+                *max_retries == 0 || consecutive_faults <= *max_retries
+            }
         }
     }
 
@@ -201,24 +199,25 @@ pub fn handle_fault(
     let manager = driver_domain_manager();
 
     // 障害情報を記録
-    let (restart_policy, consecutive, domain_id, hot_swap_state, cell_id) = manager.with_cell_mut(id, |cell| {
-        cell.consecutive_faults += 1;
-        let consecutive = cell.consecutive_faults;
+    let (restart_policy, consecutive, domain_id, hot_swap_state, cell_id) =
+        manager.with_cell_mut(id, |cell| {
+            cell.consecutive_faults += 1;
+            let consecutive = cell.consecutive_faults;
 
-        let record = FaultRecord::new(fault_kind.clone(), consecutive);
-        cell.fault_history.push(record);
+            let record = FaultRecord::new(fault_kind.clone(), consecutive);
+            cell.fault_history.push(record);
 
-        cell.transition_to(DriverDomainState::Faulted);
-        cell.stats.record_fault();
+            cell.transition_to(DriverDomainState::Faulted);
+            cell.stats.record_fault();
 
-        (
-            cell.restart_policy,
-            consecutive,
-            cell.domain_id,
-            cell.hot_swap_state,
-            cell.cell_id,
-        )
-    })?;
+            (
+                cell.restart_policy,
+                consecutive,
+                cell.domain_id,
+                cell.hot_swap_state,
+                cell.cell_id,
+            )
+        })?;
     super::stats::global_stats().on_fault();
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
@@ -298,11 +297,7 @@ pub fn handle_fault(
             }
             Err(e) => {
                 super::stats::global_stats().on_restart_failed();
-                log::warn!(
-                    "[DriverDomain] Restart failed for '{}': {}\n",
-                    name,
-                    e
-                );
+                log::warn!("[DriverDomain] Restart failed for '{}': {}\n", name, e);
                 Ok(FaultAction::RestartFailed(format!("{}", e)))
             }
         }
@@ -412,9 +407,11 @@ fn attempt_restart(id: DriverDomainId) -> Result<(), DriverDomainError> {
         Ok(h) => h,
         Err(e) => {
             let msg = format!("{}", e);
-            manager.with_cell_mut(id, |cell| {
-                cell.transition_to(DriverDomainState::Faulted);
-            }).ok();
+            manager
+                .with_cell_mut(id, |cell| {
+                    cell.transition_to(DriverDomainState::Faulted);
+                })
+                .ok();
             return Err(DriverDomainError::DriverInitFailed(msg));
         }
     };
@@ -423,9 +420,11 @@ fn attempt_restart(id: DriverDomainId) -> Result<(), DriverDomainError> {
     let registry = crate::driver_registry::driver_registry();
     if let Err(e) = registry.probe_and_start(handle) {
         let msg = format!("{}", e);
-        manager.with_cell_mut(id, |cell| {
-            cell.transition_to(DriverDomainState::Faulted);
-        }).ok();
+        manager
+            .with_cell_mut(id, |cell| {
+                cell.transition_to(DriverDomainState::Faulted);
+            })
+            .ok();
         return Err(DriverDomainError::DriverInitFailed(msg));
     }
 
@@ -565,10 +564,17 @@ pub fn inject_test_fault(
         TestFaultKind::Panic => {
             crate::io::log::early_print("[DCF] inject_test_fault: panic path\n");
             if let Some(did) = domain_id {
-                crate::io::log::early_print("[DCF] inject_test_fault: notify_domain_panic_inner begin\n");
-                match notify_domain_panic_inner(did, format!("qemu-test injected panic for {}", id.as_u64()))? {
+                crate::io::log::early_print(
+                    "[DCF] inject_test_fault: notify_domain_panic_inner begin\n",
+                );
+                match notify_domain_panic_inner(
+                    did,
+                    format!("qemu-test injected panic for {}", id.as_u64()),
+                )? {
                     Some(a) => {
-                        crate::io::log::early_print("[DCF] inject_test_fault: notify_domain_panic_inner handled\n");
+                        crate::io::log::early_print(
+                            "[DCF] inject_test_fault: notify_domain_panic_inner handled\n",
+                        );
                         a
                     }
                     None => handle_fault(
@@ -576,18 +582,24 @@ pub fn inject_test_fault(
                         FaultKind::Panic(format!("qemu-test injected panic for {}", id.as_u64())),
                     )
                     .map(|a| {
-                        crate::io::log::early_print("[DCF] inject_test_fault: direct handle_fault done\n");
+                        crate::io::log::early_print(
+                            "[DCF] inject_test_fault: direct handle_fault done\n",
+                        );
                         a
                     })?,
                 }
             } else {
-                crate::io::log::early_print("[DCF] inject_test_fault: no domain direct handle_fault\n");
+                crate::io::log::early_print(
+                    "[DCF] inject_test_fault: no domain direct handle_fault\n",
+                );
                 handle_fault(
                     id,
                     FaultKind::Panic(format!("qemu-test injected panic for {}", id.as_u64())),
                 )
                 .map(|a| {
-                    crate::io::log::early_print("[DCF] inject_test_fault: direct handle_fault done\n");
+                    crate::io::log::early_print(
+                        "[DCF] inject_test_fault: direct handle_fault done\n",
+                    );
                     a
                 })?
             }
@@ -599,15 +611,19 @@ pub fn inject_test_fault(
         )?,
     };
 
-    let (driver_domain_state_after, hot_swap_state_after, consecutive_faults_after, last_health_failure_after) =
-        manager.with_cell(id, |cell| {
-            (
-                cell.state,
-                cell.hot_swap_state,
-                cell.consecutive_faults,
-                cell.last_health_failure.clone(),
-            )
-        })?;
+    let (
+        driver_domain_state_after,
+        hot_swap_state_after,
+        consecutive_faults_after,
+        last_health_failure_after,
+    ) = manager.with_cell(id, |cell| {
+        (
+            cell.state,
+            cell.hot_swap_state,
+            cell.consecutive_faults,
+            cell.last_health_failure.clone(),
+        )
+    })?;
     crate::io::log::early_print("[DCF] inject_test_fault: snapshot done\n");
 
     Ok(TestFaultOutcome {

@@ -219,7 +219,13 @@ pub fn wave6_draw_hline_32bit_backbuffer_smoke() -> bool {
     fb_naive.enable_double_buffering_from_vec(back);
 
     let color = Color::with_alpha(10, 20, 30, 255);
-    let test_lines = [(0, 0, 15, 15), (0, 0, 15, 0), (0, 0, 0, 15), (5, 1, 10, 12), (2, 14, 13, 3)];
+    let test_lines = [
+        (0, 0, 15, 15),
+        (0, 0, 15, 0),
+        (0, 0, 0, 15),
+        (5, 1, 10, 12),
+        (2, 14, 13, 3),
+    ];
     for &(x1, y1, x2, y2) in &test_lines {
         fb_opt.draw_line(x1, y1, x2, y2, color);
         let mut x = x1;

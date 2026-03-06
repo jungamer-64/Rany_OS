@@ -1,7 +1,7 @@
+use crate::mm::cache::slab_cache::SlabCache;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use spin::Mutex;
-use crate::mm::cache::slab_cache::SlabCache;
 
 /// Flags configuring Slab Cache behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,11 +52,7 @@ impl SlabCacheRegistry {
     }
 
     /// Get an existing compatible cache or create a new one
-    pub fn get_or_create(
-        &mut self,
-        object_size: usize,
-        flags: SlabFlags,
-    ) -> Arc<Mutex<SlabCache>> {
+    pub fn get_or_create(&mut self, object_size: usize, flags: SlabFlags) -> Arc<Mutex<SlabCache>> {
         // 1. Clean up dead references
         self.cleanup();
 
@@ -73,7 +69,7 @@ impl SlabCacheRegistry {
 
         // 3. Create new cache
         let cache = Arc::new(Mutex::new(SlabCache::new(object_size)));
-        
+
         // 4. Register if mergeable
         if flags.mergeable {
             self.entries.push(RegistryEntry {

@@ -2,8 +2,7 @@ use super::*;
 
 pub fn migrate_type_fallback_smoke() -> bool {
     let fallbacks = MigrateType::Movable.fallback_order();
-    fallbacks.contains(&MigrateType::Reclaimable)
-        && fallbacks.contains(&MigrateType::Unmovable)
+    fallbacks.contains(&MigrateType::Reclaimable) && fallbacks.contains(&MigrateType::Unmovable)
 }
 
 pub fn frame_to_color_smoke() -> bool {
@@ -15,14 +14,22 @@ pub fn frame_to_color_smoke() -> bool {
 
 pub fn page_flags_smoke() -> bool {
     let mut flags = PageFlags::NONE;
-    if flags.contains(PageFlags::FREE) { return false; }
+    if flags.contains(PageFlags::FREE) {
+        return false;
+    }
 
     flags.insert(PageFlags::FREE);
-    if !flags.contains(PageFlags::FREE) { return false; }
+    if !flags.contains(PageFlags::FREE) {
+        return false;
+    }
 
     flags.insert(PageFlags::ZEROED);
-    if !flags.contains(PageFlags::FREE) { return false; }
-    if !flags.contains(PageFlags::ZEROED) { return false; }
+    if !flags.contains(PageFlags::FREE) {
+        return false;
+    }
+    if !flags.contains(PageFlags::ZEROED) {
+        return false;
+    }
 
     flags.remove(PageFlags::FREE);
     !flags.contains(PageFlags::FREE) && flags.contains(PageFlags::ZEROED)

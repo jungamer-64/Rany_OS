@@ -330,19 +330,41 @@ pub mod qemu_tests {
     pub fn magazine_basic_smoke() -> bool {
         let mut mag: Magazine<u64, 4> = Magazine::new();
 
-        if !mag.is_empty() { return false; }
-        if mag.is_full() { return false; }
-        if mag.len() != 0 { return false; }
-        if mag.capacity() != 4 { return false; }
+        if !mag.is_empty() {
+            return false;
+        }
+        if mag.is_full() {
+            return false;
+        }
+        if mag.len() != 0 {
+            return false;
+        }
+        if mag.capacity() != 4 {
+            return false;
+        }
 
-        if !mag.push(1) { return false; }
-        if !mag.push(2) { return false; }
-        if !mag.push(3) { return false; }
-        if !mag.push(4) { return false; }
-        if mag.push(5) { return false; } // Full
+        if !mag.push(1) {
+            return false;
+        }
+        if !mag.push(2) {
+            return false;
+        }
+        if !mag.push(3) {
+            return false;
+        }
+        if !mag.push(4) {
+            return false;
+        }
+        if mag.push(5) {
+            return false;
+        } // Full
 
-        if !mag.is_full() { return false; }
-        if mag.len() != 4 { return false; }
+        if !mag.is_full() {
+            return false;
+        }
+        if mag.len() != 4 {
+            return false;
+        }
 
         // LIFO
         mag.pop() == Some(4)
@@ -356,11 +378,17 @@ pub mod qemu_tests {
     pub fn magazine_peek_smoke() -> bool {
         let mut mag: Magazine<u64, 4> = Magazine::new();
 
-        if mag.peek().is_some() { return false; }
+        if mag.peek().is_some() {
+            return false;
+        }
 
         mag.push(42);
-        if mag.peek() != Some(42) { return false; }
-        if mag.len() != 1 { return false; }
+        if mag.peek() != Some(42) {
+            return false;
+        }
+        if mag.len() != 1 {
+            return false;
+        }
 
         mag.push(43);
         mag.peek() == Some(43)
@@ -393,9 +421,15 @@ pub mod qemu_tests {
     pub fn magazine_set_smoke() -> bool {
         let mut set: MagazineSet<u64, 4, 3> = MagazineSet::new();
 
-        if !set.push(0, 100) { return false; }
-        if !set.push(1, 200) { return false; }
-        if !set.push(2, 300) { return false; }
+        if !set.push(0, 100) {
+            return false;
+        }
+        if !set.push(1, 200) {
+            return false;
+        }
+        if !set.push(2, 300) {
+            return false;
+        }
 
         set.pop(0) == Some(100)
             && set.pop(1) == Some(200)
@@ -499,4 +533,3 @@ mod tests {
         assert_eq!(set.pop(3), None); // Invalid class
     }
 }
-

@@ -12,10 +12,10 @@ use super::IommuController;
 use super::init::CapabilityManager;
 use super::qi_ops::InvalidationOps;
 use super::utils::IommuUtils;
+use crate::io::iommu::types::IommuError;
 use crate::io::iommu::vendors::intel::qi::InvalidationQueueEntry;
 use crate::io::iommu::vendors::intel::registers::regs;
 use crate::io::iommu::vendors::shared::{PageRequestEntry, PageRequestQueue};
-use crate::io::iommu::types::IommuError;
 
 pub trait PageRequestManager: InvalidationOps {
     /// Initialize the Page Request Queue
@@ -25,10 +25,7 @@ pub trait PageRequestManager: InvalidationOps {
     fn process_page_requests(&mut self) -> Vec<PageRequestEntry>;
 
     /// Process up to `fuel` page requests, returning (entries, has_more).
-    fn process_page_requests_with_fuel(
-        &mut self,
-        fuel: usize,
-    ) -> (Vec<PageRequestEntry>, bool);
+    fn process_page_requests_with_fuel(&mut self, fuel: usize) -> (Vec<PageRequestEntry>, bool);
 
     /// Send a Page Response via Queued Invalidation
     fn send_page_response(
@@ -132,10 +129,7 @@ impl PageRequestManager for IommuController {
         requests
     }
 
-    fn process_page_requests_with_fuel(
-        &mut self,
-        fuel: usize,
-    ) -> (Vec<PageRequestEntry>, bool) {
+    fn process_page_requests_with_fuel(&mut self, fuel: usize) -> (Vec<PageRequestEntry>, bool) {
         let mut requests = Vec::new();
         let mut has_more = false;
 
@@ -183,12 +177,8 @@ impl PageRequestManager for IommuController {
         }
 
         // Page Group Response descriptor (VT-d Spec §6.5.2.9)
-        let desc = InvalidationQueueEntry::page_group_response(
-            source_id,
-            pasid,
-            prg_index,
-            response_code,
-        );
+        let desc =
+            InvalidationQueueEntry::page_group_response(source_id, pasid, prg_index, response_code);
 
         log::trace!(
             "[IOMMU] Page Response: source_id={:04x} pasid={:?} prg={} code={}\n",

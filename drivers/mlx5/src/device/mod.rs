@@ -3,28 +3,28 @@
 // ============================================================================
 
 extern crate alloc;
+use crate::cmd::{CmdQueue, CommandTransport};
+use crate::cq::CompletionQueue;
+use crate::defs::{CmdOpcode, ConnectXVariant, HcaCaps};
+use crate::eq::EventQueue;
+use crate::error::{Mlx5Error, Mlx5Result};
+use crate::flow::{FlowGroup, FlowTable, FlowTableEntry, RqTable};
+use crate::fw::FwInfo;
+use crate::health::HealthMonitor;
+use crate::pages::PageManager;
+use crate::polling::AdaptivePollingState;
+use crate::port::Mlx5Port;
+use crate::resources::{MkeyInfo, TirInfo, TisInfo};
+use crate::wq::{ReceiveQueue, SendQueue};
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::cmd::{CmdQueue, CommandTransport};
-use crate::defs::{CmdOpcode, ConnectXVariant, HcaCaps};
-use crate::error::{Mlx5Error, Mlx5Result};
-use crate::eq::EventQueue;
-use crate::cq::CompletionQueue;
-use crate::flow::{FlowTable, FlowGroup, FlowTableEntry, RqTable};
-use crate::fw::FwInfo;
-use crate::pages::PageManager;
-use crate::port::Mlx5Port;
-use crate::polling::AdaptivePollingState;
-use crate::health::HealthMonitor;
-use crate::resources::{MkeyInfo, TirInfo, TisInfo};
-use crate::wq::{SendQueue, ReceiveQueue};
 
-pub mod init;
 pub mod caps;
-pub mod res;
+pub mod init;
+pub mod ops;
 pub mod pages;
 pub mod queues;
-pub mod ops;
+pub mod res;
 pub mod teardown;
 
 /// デバイスの初期化状態
@@ -85,6 +85,8 @@ pub struct Mlx5Device {
     pub(crate) rqs: Vec<ReceiveQueue>,
     pub(crate) rq_tables: Vec<RqTable>,
     pub(crate) cq_db_records: Vec<(u64, u64)>,
+    pub(crate) tx_cq_by_sq: Vec<usize>,
+    pub(crate) rx_cq_by_rq: Vec<usize>,
 
     // Port & Steering
     pub(crate) ports: Vec<Mlx5Port>,
@@ -137,6 +139,8 @@ impl Mlx5Device {
             rqs: Vec::new(),
             rq_tables: Vec::new(),
             cq_db_records: Vec::new(),
+            tx_cq_by_sq: Vec::new(),
+            rx_cq_by_rq: Vec::new(),
             ports: vec![Mlx5Port::new(1)],
             tis_list: Vec::new(),
             tir_list: Vec::new(),
@@ -215,6 +219,18 @@ impl Mlx5Device {
         self.sqs.len()
     }
 
+    pub fn tx_cq_index_for_sq(&self, sq_index: usize) -> Option<usize> {
+        self.tx_cq_by_sq.get(sq_index).copied()
+    }
+
+    pub fn rx_cq_index_for_rq(&self, rq_index: usize) -> Option<usize> {
+        self.rx_cq_by_rq.get(rq_index).copied()
+    }
+
+    pub(crate) fn cq_index_by_cqn(&self, cqn: u32) -> Option<usize> {
+        self.cqs.iter().position(|cq| cq.cqn == cqn)
+    }
+
     pub unsafe fn teardown(&mut self) -> Mlx5Result<()> {
         self.teardown_full()
     }
@@ -237,11 +253,7 @@ impl Mlx5Device {
     /// running in VF mode.  The first entry is always the previous UID stored
     /// in the transport; additional entries may include the broadcast sentinel
     /// (0xFFFF), zero and the software VHCA ID if available.
-    pub(crate) fn uid_candidates(
-        prev_uid: u16,
-        is_vf: bool,
-        sw_vhca_id: u16,
-    ) -> ([u16; 4], usize) {
+    pub(crate) fn uid_candidates(prev_uid: u16, is_vf: bool, sw_vhca_id: u16) -> ([u16; 4], usize) {
         let mut uids = [0u16; 4];
         let mut len = 0usize;
 

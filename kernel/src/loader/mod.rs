@@ -6,8 +6,8 @@
 // ============================================================================
 #![allow(dead_code)]
 
-pub mod elf;
 pub mod driver_pack;
+pub mod elf;
 #[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod initramfs; // Initramfs TAR アーカイブからのセルロード
 pub mod live_update; // 新: ライブアップデート・Epoch-based Reclamation (設計書 3.5)
@@ -35,7 +35,7 @@ use crate::driver_registry::{DriverHandle, register_abi_driver, register_exports
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use kernel_api::driver_abi::{DriverExportsV1, DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL};
+use kernel_api::driver_abi::{DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverExportsV1};
 use spin::Mutex;
 
 /// セルの状態
@@ -179,11 +179,12 @@ impl CellRegistry {
         // mutate the global symbol table yet; touching it has been a hot crash point
         // in the driver_domain runtime path, while per-cell exports remain available
         // via `entry.exports`.
-        let is_shadow_staging =
-            entry.name.starts_with("update-")
-                || self.cells.values().any(|cell| cell.name == entry.name);
+        let is_shadow_staging = entry.name.starts_with("update-")
+            || self.cells.values().any(|cell| cell.name == entry.name);
         if is_shadow_staging {
-            crate::io::log::early_print("[LDBG] registry.register: staging duplicate-name, skip symtab\n");
+            crate::io::log::early_print(
+                "[LDBG] registry.register: staging duplicate-name, skip symtab\n",
+            );
         }
         // シンボルテーブルにエクスポートを追加
         if !is_shadow_staging {
@@ -223,7 +224,10 @@ impl CellRegistry {
         if let Some(entry) = self.cells.remove(&id) {
             // シンボルテーブルからエクスポートを削除
             let live_update_shadow_involved = entry.name.starts_with("update-")
-                || self.cells.values().any(|cell| cell.name.starts_with("update-"));
+                || self
+                    .cells
+                    .values()
+                    .any(|cell| cell.name.starts_with("update-"));
             if live_update_shadow_involved {
                 crate::io::log::early_print(
                     "[LDBG] registry.unload: live-update shadow involved, skip symtab remove\n",
@@ -663,19 +667,20 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     }
 
     // セルのメモリ情報と PKEY を取得（unload前に必要）
-    let (load_address, load_size, allocation_base, allocation_size, pkey_opt) = with_registry(|r| {
-        r.get(id)
-            .map(|c| {
-                (
-                    c.load_address,
-                    c.load_size,
-                    c.allocation_base,
-                    c.allocation_size,
-                    c.pkey,
-                )
-            })
-            .ok_or(LoadError::CellNotFound)
-    })?;
+    let (load_address, load_size, allocation_base, allocation_size, pkey_opt) =
+        with_registry(|r| {
+            r.get(id)
+                .map(|c| {
+                    (
+                        c.load_address,
+                        c.load_size,
+                        c.allocation_base,
+                        c.allocation_size,
+                        c.pkey,
+                    )
+                })
+                .ok_or(LoadError::CellNotFound)
+        })?;
 
     // Epoch-based Reclamation: グローバルエポックをインクリメント
     let old_epoch = live_update::current_epoch();

@@ -1,13 +1,6 @@
 use crate::time::{get_current_dos_date, get_current_dos_time};
 
-use crate::{
-    Cluster,
-    FileAttributes,
-    DirEntryRaw,
-    TimeProvider,
-    FsResult,
-    FsError,
-};
+use crate::{Cluster, DirEntryRaw, FileAttributes, FsError, FsResult, TimeProvider};
 
 // DirEntryBuilder - Builder Pattern
 // ============================================================================

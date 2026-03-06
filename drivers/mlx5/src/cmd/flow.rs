@@ -3,7 +3,7 @@
 // ============================================================================
 
 use crate::cmd::CmdMailbox;
-use crate::flow::{FlowTableConfig, MatchCriteria, FlowAction, MatchValue};
+use crate::flow::{FlowAction, FlowTableConfig, MatchCriteria, MatchValue};
 
 /// CREATE_FLOW_TABLE コマンド入力の構築
 pub fn build_create_flow_table_input(in_mbox: &mut CmdMailbox, config: &FlowTableConfig) {
@@ -39,9 +39,15 @@ pub fn build_create_flow_group_input(
     in_mbox.write_be32(ctx_base, start_index);
     in_mbox.write_be32(ctx_base + 0x04, end_index);
     let mut criteria_enable: u8 = 0;
-    if criteria.outer_l2 { criteria_enable |= 0x01; }
-    if criteria.outer_l3 { criteria_enable |= 0x02; }
-    if criteria.outer_l4 { criteria_enable |= 0x04; }
+    if criteria.outer_l2 {
+        criteria_enable |= 0x01;
+    }
+    if criteria.outer_l3 {
+        criteria_enable |= 0x02;
+    }
+    if criteria.outer_l4 {
+        criteria_enable |= 0x04;
+    }
     in_mbox.write_be32(ctx_base + 0x08, criteria_enable as u32);
 }
 

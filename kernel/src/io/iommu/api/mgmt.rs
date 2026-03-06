@@ -8,10 +8,10 @@
 
 use core::sync::atomic::Ordering;
 
+use crate::io::iommu::IOMMU_REQUIRED;
 use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::runtime::registry::{get_iommu_driver, is_iommu_enabled};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
-use crate::io::iommu::IOMMU_REQUIRED;
 
 /// IOMMUを必須に設定する
 ///
@@ -52,9 +52,12 @@ pub fn enable_iommu() -> Result<(), IommuError> {
         None => {
             // Global driver pointer not available – fall back to the
             // Intel registry which is populated before the pointer.
-            if let Some(registry) = crate::io::iommu::vendors::intel::registry::get_iommu_registry() {
+            if let Some(registry) = crate::io::iommu::vendors::intel::registry::get_iommu_registry()
+            {
                 for controller in &registry.controllers {
-                    unsafe { controller.enable()?; }
+                    unsafe {
+                        controller.enable()?;
+                    }
                 }
                 return Ok(());
             }

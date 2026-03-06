@@ -20,7 +20,9 @@ pub fn dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke() -> bool {
 }
 
 pub fn dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke() -> bool {
-    run_case!(dhcp::qemu_v4_tests::test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip)
+    run_case!(
+        dhcp::qemu_v4_tests::test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip
+    )
 }
 
 pub fn dhcp_v4_build_request_requesting_includes_serverid_and_requestedip_smoke() -> bool {
@@ -68,10 +70,12 @@ pub fn dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke() -> bool {
 }
 
 pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
-    use crate::net::services::dhcp::{DhcpClient, DhcpHeader, DhcpMessageType, DhcpOperation, DhcpOption, DHCP_MAGIC_COOKIE};
     use crate::net::l2::ethernet::MacAddress;
     use crate::net::runtime::stack;
-    
+    use crate::net::services::dhcp::{
+        DHCP_MAGIC_COOKIE, DhcpClient, DhcpHeader, DhcpMessageType, DhcpOperation, DhcpOption,
+    };
+
     stack::init_default();
 
     let client = DhcpClient::new(MacAddress::new([7, 7, 7, 7, 7, 7]));
@@ -127,17 +131,17 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
         if let Some(ref client) = *guard {
             // simulate lease and then release via internal API
             let lease = crate::net::services::dhcp::DhcpLease {
-                ip_address: crate::net::l3::ipv4::Ipv4Address::new([1,2,3,4]),
-                subnet_mask: crate::net::l3::ipv4::Ipv4Address::new([255,255,255,0]),
+                ip_address: crate::net::l3::ipv4::Ipv4Address::new([1, 2, 3, 4]),
+                subnet_mask: crate::net::l3::ipv4::Ipv4Address::new([255, 255, 255, 0]),
                 gateway: None,
                 dns_servers: alloc::vec![],
-                server_ip: crate::net::l3::ipv4::Ipv4Address::new([1,2,3,1]),
+                server_ip: crate::net::l3::ipv4::Ipv4Address::new([1, 2, 3, 1]),
                 lease_time: 0,
-                t1:0,
-                t2:0,
-                obtained_at:0,
-                hostname:None,
-                domain_name:None,
+                t1: 0,
+                t2: 0,
+                obtained_at: 0,
+                hostname: None,
+                domain_name: None,
             };
             client.set_lease_for_test(lease.clone());
             // release via internal client method
@@ -146,18 +150,18 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     }
 
     let st2 = crate::net::api::dhcp::dhcp_state();
-    if st2.v4_last_released != Some([1,2,3,4]) {
+    if st2.v4_last_released != Some([1, 2, 3, 4]) {
         return false;
     }
 
     // simulate a decline
     if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
-            let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5,6,7,8]), None);
+            let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5, 6, 7, 8]), None);
         }
     }
     let st3 = crate::net::api::dhcp::dhcp_state();
-    if st3.v4_last_declined != Some([5,6,7,8]) {
+    if st3.v4_last_declined != Some([5, 6, 7, 8]) {
         return false;
     }
 

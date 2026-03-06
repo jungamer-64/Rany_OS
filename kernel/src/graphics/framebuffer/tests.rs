@@ -50,10 +50,18 @@ fn draw_line_naive(fb: &mut Framebuffer, x1: i32, y1: i32, x2: i32, y2: i32, col
     let mut err = dx + dy;
     loop {
         fb.set_pixel(x, y, color);
-        if x == x2 && y == y2 { break; }
+        if x == x2 && y == y2 {
+            break;
+        }
         let e2 = 2 * err;
-        if e2 >= dy { err += dy; x += sx; }
-        if e2 <= dx { err += dx; y += sy; }
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
     }
 }
 
@@ -73,7 +81,9 @@ fn assert_simd_matches_scalar(
         }
         let mut dst_simd = vec![0u8; src.len()];
         let mut dst_scalar = vec![0u8; src.len()];
-        unsafe { simd_fn(src.as_ptr(), dst_simd.as_mut_ptr(), src.len()); }
+        unsafe {
+            simd_fn(src.as_ptr(), dst_simd.as_mut_ptr(), src.len());
+        }
         scalar_fn(&src, &mut dst_scalar);
         assert_eq!(dst_simd, dst_scalar, "mismatch at size {len}");
     }
@@ -98,7 +108,9 @@ fn assert_bgr24_8px_matches_scalar(
         *b = (i * seed_mul % 251) as u8;
     }
     let mut dst_simd = vec![0u8; len * 3];
-    unsafe { simd_fn(src.as_ptr(), dst_simd.as_mut_ptr(), is_bgr); }
+    unsafe {
+        simd_fn(src.as_ptr(), dst_simd.as_mut_ptr(), is_bgr);
+    }
     let mut dst_scalar = vec![0u8; len * 3];
     for p in 0..len {
         let s = p * 4;
@@ -469,8 +481,8 @@ fn test_write_bgr_run_small_mmio_generic_unaligned() {
 
 #[cfg(test)]
 pub fn _test_get_packer_mode() -> u8 {
-    use core::sync::atomic::Ordering;
     use crate::graphics::packer::PACKER_MODE;
+    use core::sync::atomic::Ordering;
     PACKER_MODE.load(Ordering::Relaxed)
 }
 
@@ -478,16 +490,20 @@ pub fn _test_get_packer_mode() -> u8 {
 #[cfg(feature = "std")]
 fn test_packer_env_override() {
     // Reset cached mode so get_packer_mode() re-detects with env override
-    use core::sync::atomic::Ordering;
     use crate::graphics::packer::PACKER_MODE;
+    use core::sync::atomic::Ordering;
     PACKER_MODE.store(0, Ordering::Relaxed);
     // Ensure RANY_PACKER override sets the PACKER_MODE
-    unsafe { std::env::set_var("RANY_PACKER", "scalar"); }
+    unsafe {
+        std::env::set_var("RANY_PACKER", "scalar");
+    }
     let src = vec![0u8; 1024];
     let mut dst = vec![0u8; 1024];
     Framebuffer::pack_rgba_to_bgra(&src, &mut dst);
     assert_eq!(_test_get_packer_mode(), 1);
-    unsafe { std::env::remove_var("RANY_PACKER"); }
+    unsafe {
+        std::env::remove_var("RANY_PACKER");
+    }
 }
 
 #[test_case]

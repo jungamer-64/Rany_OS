@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ============================================================================
 // AsyncRead / AsyncWrite トレイト（POSIXソケット代替）
 // ============================================================================
@@ -74,17 +73,16 @@ impl TcpStream {
         // NETWORK_STACKロックはイベントハンドラ側で取得するため、
         // asyncタスクからの同期ロック取得を完全に回避する。
         let local_addr = EndpointAddr::new([0, 0, 0, 0], 0);
-        
+
         // フェーズ1: イベントキュー経由でTCB作成とSYN送信を非同期リクエスト
         let stream = crate::net::runtime::stack::connect_tcp_stream_async(local_addr, addr).await?;
-        
+
         // フェーズ2: 接続完了を非同期で待つ（SYN-ACK応答待機）
         let tcb = stream.tcb.clone();
         ConnectFuture { tcb }.await?;
 
         Ok(stream)
     }
-
 
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> EndpointAddr {
@@ -156,7 +154,6 @@ impl TcpStream {
                 }
 
                 if let Some(mut queued) = tcb.pop_recv_copy_fallback_front() {
-
                     if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
                         let data_slice = packet.data_mut();
                         let copy_len = queued.len().min(data_slice.len());
@@ -176,7 +173,8 @@ impl TcpStream {
                         crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(queued.len())
                     {
                         dma_buf.as_mut_slice().copy_from_slice(&queued);
-                        let mut packet = crate::net::datapath::mempool::PacketRef::from_dma_slice(dma_buf);
+                        let mut packet =
+                            crate::net::datapath::mempool::PacketRef::from_dma_slice(dma_buf);
                         packet.set_len(queued.len());
                         tcb.record_rx_delivered_stats(queued.len());
                         return Poll::Ready(Some(packet));
@@ -214,7 +212,6 @@ impl TcpStream {
         FlushFuture { stream: self }
     }
 
-
     /// 【設計書 6.2】ゼロコピー書き込み
     ///
     /// 事前に割り当てたパケットバッファの所有権をTCPスタックに移動します。
@@ -242,7 +239,9 @@ impl TcpStream {
 
 impl Clone for TcpStream {
     fn clone(&self) -> Self {
-        TcpStream { tcb: self.tcb.clone() }
+        TcpStream {
+            tcb: self.tcb.clone(),
+        }
     }
 }
 
@@ -261,7 +260,9 @@ impl Drop for TcpStream {
                             local,
                             remote,
                             result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
-                            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+                            waker: alloc::sync::Arc::new(
+                                crate::sync::atomic_waker::AtomicWaker::new(),
+                            ),
                         },
                     );
                 }
@@ -301,7 +302,6 @@ impl AsyncRead for TcpStream {
 
                     Poll::Ready(Ok(len))
                 } else if let Some(mut queued) = tcb.pop_recv_copy_fallback_front() {
-
                     let len = queued.len().min(buf.len());
                     buf[..len].copy_from_slice(&queued[..len]);
                     tcb.record_rx_delivered_stats(len);
@@ -367,7 +367,8 @@ impl AsyncWrite for TcpStream {
                     crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(len)
                 {
                     dma_buf.as_mut_slice()[..len].copy_from_slice(&buf[..len]);
-                    let mut packet = crate::net::datapath::mempool::PacketRef::from_dma_slice(dma_buf);
+                    let mut packet =
+                        crate::net::datapath::mempool::PacketRef::from_dma_slice(dma_buf);
                     packet.set_len(len);
                     tcb.enqueue_send_packet(packet);
                     tcb.record_tx_enqueued_stats(len);
@@ -391,7 +392,7 @@ impl AsyncWrite for TcpStream {
                 // Get current time for retransmit tracking (microseconds)
                 let current_time = crate::time::precise_time_nanos() / 1000;
                 let remote = tcb.remote_addr();
-                
+
                 // 送信バッファ内のパケットを送信（RFC 1122 Sender SWS avoidance + Nagle 遵守）
                 while let Some(packet) = tcb.dequeue_send_packet() {
                     let data = packet.data();
@@ -421,7 +422,12 @@ impl AsyncWrite for TcpStream {
 
                     if sent {
                         // Queue for retransmission (PSH+ACK)
-                        tcb.queue_unacked(seq, data.to_vec(), current_time, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+                        tcb.queue_unacked(
+                            seq,
+                            data.to_vec(),
+                            current_time,
+                            TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
+                        );
                         tcb.set_last_retransmit_time(current_time);
 
                         tcb.advance_snd_nxt(len as u32);
@@ -449,11 +455,17 @@ impl AsyncWrite for TcpStream {
                     // FIN送信
                     if let Some(remote) = tcb.remote_addr() {
                         let current_time = crate::time::precise_time_nanos() / 1000;
-                        let sent = send_fin_packet(tcb.local_addr(), remote, tcb.snd_nxt(), tcb.rcv_nxt());
+                        let sent =
+                            send_fin_packet(tcb.local_addr(), remote, tcb.snd_nxt(), tcb.rcv_nxt());
                         if sent {
                             // Queue FIN as unacked (FIN consumes 1 seq)
                             let snd_nxt = tcb.snd_nxt();
-                            tcb.queue_unacked(snd_nxt, Vec::new(), current_time, TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK);
+                            tcb.queue_unacked(
+                                snd_nxt,
+                                Vec::new(),
+                                current_time,
+                                TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK,
+                            );
                             tcb.advance_snd_nxt(1);
                             tcb.set_last_retransmit_time(current_time);
                         } else {
@@ -515,7 +527,6 @@ impl TcpListener {
 
     // Legacy constructor `TcpListener::new` removed; use `TcpListener::bind(addr)` instead.
 
-
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> EndpointAddr {
         self.local_addr
@@ -527,7 +538,6 @@ impl TcpListener {
     pub async fn next_connection(&self) -> Result<(TcpStream, EndpointAddr), TcpError> {
         AcceptFuture { listener: self }.await
     }
-
 
     /// 新しい接続をバックログに追加（内部使用）
     pub(crate) fn push_connection(&self, stream: TcpStream, _addr: EndpointAddr) {
@@ -581,7 +591,9 @@ impl Future for ConnectFuture {
                 _ => Poll::Ready(Err(TcpError::InvalidState)),
             },
             Err(_) => {
-                log::error!("[NET] TCP TCB poisoned in connect future - returning ConnectionRefused");
+                log::error!(
+                    "[NET] TCP TCB poisoned in connect future - returning ConnectionRefused"
+                );
                 Poll::Ready(Err(TcpError::ConnectionRefused))
             }
         }
@@ -620,7 +632,9 @@ impl Future for ConnectTimeoutFuture {
                 _ => Poll::Ready(Err(TcpError::InvalidState)),
             },
             Err(_) => {
-                log::error!("[NET] TCP TCB poisoned in connect timeout future - returning ConnectionRefused");
+                log::error!(
+                    "[NET] TCP TCB poisoned in connect timeout future - returning ConnectionRefused"
+                );
                 Poll::Ready(Err(TcpError::ConnectionRefused))
             }
         }
@@ -635,7 +649,12 @@ impl TcpStream {
         let stream = crate::net::runtime::stack::connect_tcp_stream_async(local_addr, addr).await?;
         let start = crate::time::precise_time_nanos() / 1000;
         let tcb = stream.tcb.clone();
-        ConnectTimeoutFuture { tcb, start_us: start, timeout_us }.await?;
+        ConnectTimeoutFuture {
+            tcb,
+            start_us: start,
+            timeout_us,
+        }
+        .await?;
         Ok(stream)
     }
 }

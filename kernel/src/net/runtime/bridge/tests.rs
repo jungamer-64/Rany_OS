@@ -1,11 +1,13 @@
 use super::*;
 use crate::net::datapath::mempool;
+use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};
+use crate::net::l4::tcp::{
+    EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpControlBlock,
+};
+use crate::net::runtime::manager;
 use crate::net::runtime::stack;
-use crate::net::l3::ipv4::{Ipv4PacketMut, Ipv4Address, IpProtocol};
-use crate::net::l4::tcp::{TcpControlBlock, EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::net::runtime::manager;
 
 struct BridgeStateGuard {
     prev_if_stats: BTreeMap<NetIfId, BridgeInterfaceStats>,
@@ -50,7 +52,10 @@ impl Drop for BridgeStateGuard {
         *BRIDGE_IF_STATS.write() = core::mem::take(&mut self.prev_if_stats);
         *PRIMARY_BRIDGE_IF.write() = self.prev_primary_if.take();
         *NAT_TABLE.write() = core::mem::take(&mut self.prev_nat_table);
-        NAT_NEXT_PORT.store(self.prev_nat_next_port, core::sync::atomic::Ordering::Relaxed);
+        NAT_NEXT_PORT.store(
+            self.prev_nat_next_port,
+            core::sync::atomic::Ordering::Relaxed,
+        );
         *FORWARD_EVENTS.write() = core::mem::take(&mut self.prev_forward_events);
         let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
             .lock_for_init("[TEST][NET BRIDGE] manager restore");
@@ -136,7 +141,8 @@ fn qemu_zero_copy_prereq_ipv6_heapless_smoke() -> bool {
     stack::init(config);
 
     let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 1000);
-    let remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
+    let remote =
+        TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
     let tcb_arc = match qemu_insert_established_tcb(local, remote) {
         Some(tcb) => tcb,
         None => return false,
@@ -280,7 +286,9 @@ pub fn test_zero_copy_via_bridge() {
     assert!(buf.len() >= needed, "Packet buffer too small for test");
 
     // Virtio header (zero)
-    for i in 0..header_size { buf[i] = 0; }
+    for i in 0..header_size {
+        buf[i] = 0;
+    }
 
     // Ethernet header
     let eth_off = header_size;
@@ -351,10 +359,10 @@ pub fn test_routing_and_nat() {
     let if2 = manager::register_interface("if2").expect("register if2");
     // configure addresses
     let cfg1 = NetworkConfig {
-        mac: MacAddress::from_octets(0,1,2,3,4,5),
+        mac: MacAddress::from_octets(0, 1, 2, 3, 4, 5),
         ipv4: Ipv4Config {
-            address: Ipv4Address::new([10,0,0,1]),
-            subnet_mask: Ipv4Address::new([255,255,255,0]),
+            address: Ipv4Address::new([10, 0, 0, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
             gateway: Ipv4Address::ANY,
             dns: None,
         },
@@ -362,10 +370,10 @@ pub fn test_routing_and_nat() {
         icmp_echo_enabled: true,
     };
     let cfg2 = NetworkConfig {
-        mac: MacAddress::from_octets(0,1,2,3,4,6),
+        mac: MacAddress::from_octets(0, 1, 2, 3, 4, 6),
         ipv4: Ipv4Config {
-            address: Ipv4Address::new([10,0,1,1]),
-            subnet_mask: Ipv4Address::new([255,255,255,0]),
+            address: Ipv4Address::new([10, 0, 1, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
             gateway: Ipv4Address::ANY,
             dns: None,
         },
@@ -377,7 +385,7 @@ pub fn test_routing_and_nat() {
 
     // add route 10.0.1.0/24 via if2
     let route = manager::Ipv4Route {
-        destination: Ipv4Address::new([10,0,1,0]),
+        destination: Ipv4Address::new([10, 0, 1, 0]),
         prefix_len: 24,
         gateway: None,
         if_id: if2,
@@ -398,47 +406,50 @@ pub fn test_routing_and_nat() {
     // fill with minimal sizes
     buf[0..header_size].fill(0);
     // eth header
-    buf[eth_off..eth_off+6].fill(0xff);
-    buf[eth_off+6..eth_off+12].copy_from_slice(&[0,1,2,3,4,5]);
-    buf[eth_off+12..eth_off+14].copy_from_slice(&[0x08,0x00]); // IPv4
+    buf[eth_off..eth_off + 6].fill(0xff);
+    buf[eth_off + 6..eth_off + 12].copy_from_slice(&[0, 1, 2, 3, 4, 5]);
+    buf[eth_off + 12..eth_off + 14].copy_from_slice(&[0x08, 0x00]); // IPv4
     // ip header
     {
-        let mut ipm = Ipv4PacketMut::new(&mut buf[ip_off..ip_off+20]).unwrap();
+        let mut ipm = Ipv4PacketMut::new(&mut buf[ip_off..ip_off + 20]).unwrap();
         ipm.init_header()
-            .set_source(Ipv4Address::new([10,0,0,2]))
-            .set_destination(Ipv4Address::new([10,0,1,5]))
+            .set_source(Ipv4Address::new([10, 0, 0, 2]))
+            .set_destination(Ipv4Address::new([10, 0, 1, 5]))
             .set_protocol(IpProtocol::Udp);
         ipm.set_total_length(28); // 20 ip + 8 udp
         ipm.update_checksum();
     }
     // udp header
     let udp_off = ip_off + 20;
-    buf[udp_off..udp_off+2].copy_from_slice(&1234u16.to_be_bytes());
-    buf[udp_off+2..udp_off+4].copy_from_slice(&80u16.to_be_bytes());
-    buf[udp_off+4..udp_off+6].copy_from_slice(&8u16.to_be_bytes());
-    buf[udp_off+6..udp_off+8].copy_from_slice(&0u16.to_be_bytes());
+    buf[udp_off..udp_off + 2].copy_from_slice(&1234u16.to_be_bytes());
+    buf[udp_off + 2..udp_off + 4].copy_from_slice(&80u16.to_be_bytes());
+    buf[udp_off + 4..udp_off + 6].copy_from_slice(&8u16.to_be_bytes());
+    buf[udp_off + 6..udp_off + 8].copy_from_slice(&0u16.to_be_bytes());
 
     let total_len = header_size + 14 + 28;
     packet.set_len(total_len);
 
     // clear forward events
-    #[cfg(any(test, feature = "qemu-test-export"))]{
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    {
         FORWARD_EVENTS.write().clear();
     }
 
-    process_received_packet_zero_copy_for_interface(if1, packet, header_size, 14+28);
+    process_received_packet_zero_copy_for_interface(if1, packet, header_size, 14 + 28);
 
     // verify forwarded to if2 and NAT table contains entry
-    #[cfg(any(test, feature = "qemu-test-export"))]{
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    {
         let ev = FORWARD_EVENTS.read();
-        assert!(ev.iter().any(|(id, dst)| *id == if2 && *dst == Ipv4Address::new([10,0,1,5])));
+        assert!(
+            ev.iter()
+                .any(|(id, dst)| *id == if2 && *dst == Ipv4Address::new([10, 0, 1, 5]))
+        );
         // check NAT entry exists for internal port 1234
         let table = NAT_TABLE.read();
-        assert!(table.values().any(|e|
-            e.protocol == IpProtocol::Udp
-                && e.internal_addr == Ipv4Address::new([10,0,0,2])
-                && e.internal_port == 1234
-        ));
+        assert!(table.values().any(|e| e.protocol == IpProtocol::Udp
+            && e.internal_addr == Ipv4Address::new([10, 0, 0, 2])
+            && e.internal_port == 1234));
     }
 }
 
@@ -480,8 +491,16 @@ pub fn test_nat_inbound_roundtrip_is_protocol_scoped() {
     let internal_port = 1234;
     let remote_ip = Ipv4Address::new([198, 51, 100, 10]);
     let remote_port = 43210;
-    let (ext_ip, ext_port) =
-        nat_translate_out(IpProtocol::Udp, internal_ip, internal_port, remote_ip, remote_port, wan_if, 0).expect("NAT allocation failed");
+    let (ext_ip, ext_port) = nat_translate_out(
+        IpProtocol::Udp,
+        internal_ip,
+        internal_port,
+        remote_ip,
+        remote_port,
+        wan_if,
+        0,
+    )
+    .expect("NAT allocation failed");
 
     assert_eq!(ext_ip, Ipv4Address::new([10, 0, 1, 1]));
     assert!(ext_port >= NAT_EPHEMERAL_START);
@@ -571,7 +590,8 @@ pub fn test_nat_gc_expires_idle_entries() {
         50001,
         wan_if,
         0,
-    ).expect("NAT allocation failed");
+    )
+    .expect("NAT allocation failed");
     let (_, fresh_port) = nat_translate_out(
         IpProtocol::Udp,
         Ipv4Address::new([10, 0, 0, 3]),
@@ -580,7 +600,8 @@ pub fn test_nat_gc_expires_idle_entries() {
         50002,
         wan_if,
         0,
-    ).expect("NAT allocation failed");
+    )
+    .expect("NAT allocation failed");
 
     {
         let mut table = NAT_TABLE.write();
@@ -624,9 +645,10 @@ pub fn test_nat_icmp_echo() {
     icmp_req[4] = 0x12; // Identifier
     icmp_req[5] = 0x34;
 
-    let (ext_ip, ext_port) = nat_translate_out_icmp(internal_ip, remote_ip, &icmp_req, wan_if).expect("NAT allocation failed");
+    let (ext_ip, ext_port) = nat_translate_out_icmp(internal_ip, remote_ip, &icmp_req, wan_if)
+        .expect("NAT allocation failed");
     assert_eq!(ext_ip, Ipv4Address::new([10, 0, 1, 1]));
-    
+
     // Response
     let mut icmp_reply = [0u8; 8];
     icmp_reply[0] = 0; // Echo Reply
@@ -634,7 +656,8 @@ pub fn test_nat_icmp_echo() {
     icmp_reply[5] = (ext_port & 0xff) as u8;
 
     let mut dst_ip = ext_ip;
-    let new_dst = nat_translate_in_icmp(remote_ip, &mut dst_ip, &mut icmp_reply).expect("NAT lookup failed");
+    let new_dst =
+        nat_translate_in_icmp(remote_ip, &mut dst_ip, &mut icmp_reply).expect("NAT lookup failed");
     assert_eq!(new_dst, internal_ip);
     assert_eq!(icmp_reply[4], 0x12);
     assert_eq!(icmp_reply[5], 0x34);
@@ -674,19 +697,20 @@ pub fn test_nat_icmp_error() {
         remote_port,
         wan_if,
         0,
-    ).expect("NAT allocation failed");
+    )
+    .expect("NAT allocation failed");
 
     // ICMP Error (Time Exceeded) from an intermediate router (1.1.1.1)
     let mut icmp_err = [0u8; 8 + 20 + 8];
     icmp_err[0] = 11; // Time Exceeded
-    icmp_err[1] = 0;  // Code: TTL exceeded in transit
-    
+    icmp_err[1] = 0; // Code: TTL exceeded in transit
+
     // Original IP header
     let inner_ip_off = 8;
     icmp_err[inner_ip_off + 9] = 6; // TCP
     icmp_err[inner_ip_off + 12..inner_ip_off + 16].copy_from_slice(_ext_ip.as_bytes()); // was sent as translated IP
     icmp_err[inner_ip_off + 16..inner_ip_off + 20].copy_from_slice(remote_ip.as_bytes());
-    
+
     // Original transport (first 8 bytes)
     let inner_tcp_off = inner_ip_off + 20;
     icmp_err[inner_tcp_off..inner_tcp_off + 2].copy_from_slice(&ext_port.to_be_bytes());
@@ -694,13 +718,25 @@ pub fn test_nat_icmp_error() {
 
     let mut dst_ip = _ext_ip;
     let router_ip = Ipv4Address::new([1, 1, 1, 1]);
-    let new_dst = nat_translate_in_icmp(router_ip, &mut dst_ip, &mut icmp_err).expect("NAT lookup failed for ICMP error");
-    
+    let new_dst = nat_translate_in_icmp(router_ip, &mut dst_ip, &mut icmp_err)
+        .expect("NAT lookup failed for ICMP error");
+
     assert_eq!(new_dst, internal_ip);
     // Inner IP should be rewritten back to internal IP
-    assert_eq!(Ipv4Address::from_octets(icmp_err[inner_ip_off + 12], icmp_err[inner_ip_off + 13], icmp_err[inner_ip_off + 14], icmp_err[inner_ip_off + 15]), internal_ip);
+    assert_eq!(
+        Ipv4Address::from_octets(
+            icmp_err[inner_ip_off + 12],
+            icmp_err[inner_ip_off + 13],
+            icmp_err[inner_ip_off + 14],
+            icmp_err[inner_ip_off + 15]
+        ),
+        internal_ip
+    );
     // Inner port should be rewritten back to internal port
-    assert_eq!(u16::from_be_bytes([icmp_err[inner_tcp_off], icmp_err[inner_tcp_off + 1]]), internal_port);
+    assert_eq!(
+        u16::from_be_bytes([icmp_err[inner_tcp_off], icmp_err[inner_tcp_off + 1]]),
+        internal_port
+    );
 }
 
 #[cfg_attr(test, test_case)]
@@ -713,12 +749,15 @@ pub fn test_zero_copy_via_bridge_v6() {
 
     // Configure stack with IPv6 enabled for tests
     let mut config = NetworkConfig::default();
-    config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
+    config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
+    ]));
     stack::init(config);
 
     // Prepare a TCB and register it in the global stack (IPv6)
     let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 1000);
-    let remote = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
+    let remote =
+        TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
@@ -752,7 +791,9 @@ pub fn test_zero_copy_via_bridge_v6() {
     assert!(buf.len() >= needed, "Packet buffer too small for test");
 
     // Virtio header (zero)
-    for i in 0..header_size { buf[i] = 0; }
+    for i in 0..header_size {
+        buf[i] = 0;
+    }
 
     // Ethernet header
     let eth_off = header_size;
@@ -763,7 +804,8 @@ pub fn test_zero_copy_via_bridge_v6() {
     // IPv6 header
     let ip_off = eth_off + 14;
     {
-        let mut ipv6_mut = crate::net::l3::ipv6::Ipv6PacketMut::new(&mut buf[ip_off..ip_off + 40]).expect("ipv6 mut");
+        let mut ipv6_mut = crate::net::l3::ipv6::Ipv6PacketMut::new(&mut buf[ip_off..ip_off + 40])
+            .expect("ipv6 mut");
         ipv6_mut.init_header();
         ipv6_mut.set_source(&crate::net::l3::ipv6::Ipv6Address::LOOPBACK);
         ipv6_mut.set_destination(&crate::net::l3::ipv6::Ipv6Address::LOOPBACK);

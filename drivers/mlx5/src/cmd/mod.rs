@@ -8,14 +8,12 @@
 use crate::defs::{CmdOpcode, CmdStatus, MLX5_CMD_DATA_BLOCK_SIZE, MLX5_CMD_MBOX_SIZE};
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::regs::cmd_entry;
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{Ordering, fence};
 
-pub mod hca;
-pub mod res;
-pub mod queues;
 pub mod flow;
-
-pub use hca::VportContext;
+pub mod hca;
+pub mod queues;
+pub mod res;
 
 /// コマンドメールボックス (Page aligned)
 ///
@@ -181,7 +179,9 @@ pub trait CommandTransport {
     ) -> Mlx5Result<()>;
 
     fn set_uid(&mut self, _uid: u16) {}
-    fn uid(&self) -> u16 { 0 }
+    fn uid(&self) -> u16 {
+        0
+    }
 }
 
 /// CMDQベースのコマンドインタフェース
@@ -215,16 +215,34 @@ impl CmdQueueTransport {
     pub fn opcode_uses_uid(opcode: CmdOpcode) -> bool {
         matches!(
             opcode,
-            CmdOpcode::AllocUar | CmdOpcode::DeallocUar | CmdOpcode::AllocPd | CmdOpcode::DeallocPd
-            | CmdOpcode::AllocTransportDomain | CmdOpcode::DeallocTransportDomain
-            | CmdOpcode::CreateEq | CmdOpcode::CreateCq | CmdOpcode::DestroyCq | CmdOpcode::ModifyCq
-            | CmdOpcode::CreateSq | CmdOpcode::DestroySq | CmdOpcode::ModifySq
-            | CmdOpcode::CreateRq | CmdOpcode::DestroyRq | CmdOpcode::ModifyRq
-            | CmdOpcode::CreateTis | CmdOpcode::ModifyTis | CmdOpcode::DestroyTis
-            | CmdOpcode::CreateTir | CmdOpcode::ModifyTir | CmdOpcode::DestroyTir
-            | CmdOpcode::CreateMkey | CmdOpcode::DestroyMkey
-            | CmdOpcode::CreateRqt | CmdOpcode::ModifyRqt | CmdOpcode::DestroyRqt
-            | CmdOpcode::CreateFlowTable
+            CmdOpcode::AllocUar
+                | CmdOpcode::DeallocUar
+                | CmdOpcode::AllocPd
+                | CmdOpcode::DeallocPd
+                | CmdOpcode::AllocTransportDomain
+                | CmdOpcode::DeallocTransportDomain
+                | CmdOpcode::CreateEq
+                | CmdOpcode::CreateCq
+                | CmdOpcode::DestroyCq
+                | CmdOpcode::ModifyCq
+                | CmdOpcode::CreateSq
+                | CmdOpcode::DestroySq
+                | CmdOpcode::ModifySq
+                | CmdOpcode::CreateRq
+                | CmdOpcode::DestroyRq
+                | CmdOpcode::ModifyRq
+                | CmdOpcode::CreateTis
+                | CmdOpcode::ModifyTis
+                | CmdOpcode::DestroyTis
+                | CmdOpcode::CreateTir
+                | CmdOpcode::ModifyTir
+                | CmdOpcode::DestroyTir
+                | CmdOpcode::CreateMkey
+                | CmdOpcode::DestroyMkey
+                | CmdOpcode::CreateRqt
+                | CmdOpcode::ModifyRqt
+                | CmdOpcode::DestroyRqt
+                | CmdOpcode::CreateFlowTable
         )
     }
 
@@ -232,14 +250,21 @@ impl CmdQueueTransport {
         let low = cmdq_addr_l_sz & 0xFF;
         let log_cmdq_size = ((low >> 4) & 0x0F) as u8;
         let log_cmd_stride = (low & 0x0F) as u8;
-        let nic_if_supported = (cmdq_addr_l_sz & crate::regs::fw_state::NIC_INTERFACE_SUPPORTED_BIT) != 0;
+        let nic_if_supported =
+            (cmdq_addr_l_sz & crate::regs::fw_state::NIC_INTERFACE_SUPPORTED_BIT) != 0;
         (log_cmdq_size, log_cmd_stride, nic_if_supported)
     }
 
     fn validate_hw_cmdq_layout(log_cmdq_size: u8, log_cmd_stride: u8) -> Mlx5Result<()> {
-        if log_cmdq_size == 0 { return Err(Mlx5Error::NotSupported); }
-        let entry_size = 1usize.checked_shl(log_cmd_stride as u32).ok_or(Mlx5Error::NotSupported)?;
-        if entry_size != cmd_entry::ENTRY_SIZE { return Err(Mlx5Error::NotSupported); }
+        if log_cmdq_size == 0 {
+            return Err(Mlx5Error::NotSupported);
+        }
+        let entry_size = 1usize
+            .checked_shl(log_cmd_stride as u32)
+            .ok_or(Mlx5Error::NotSupported)?;
+        if entry_size != cmd_entry::ENTRY_SIZE {
+            return Err(Mlx5Error::NotSupported);
+        }
         Ok(())
     }
 
@@ -266,31 +291,44 @@ impl CmdQueueTransport {
         })
     }
 
-    pub fn set_uid(&mut self, uid: u16) { self.uid = uid; }
-    pub fn uid(&self) -> u16 { self.uid }
+    pub fn set_uid(&mut self, uid: u16) {
+        self.uid = uid;
+    }
+    pub fn uid(&self) -> u16 {
+        self.uid
+    }
 
     fn xor8(buf: &[u8]) -> u8 {
         let mut sum = 0u8;
-        for b in buf { sum ^= *b; }
+        for b in buf {
+            sum ^= *b;
+        }
         sum
     }
 
     unsafe fn prepare_in_block(&self, token: u8, in_len: usize, _in_mbox_phys: u64) -> [u8; 16] {
         let mut in_inline = [0u8; 16];
-        if in_len == 0 { return in_inline; }
+        if in_len == 0 {
+            return in_inline;
+        }
         let src = core::slice::from_raw_parts(self.in_mbox_virt as *const u8, in_len.min(16));
         in_inline[..src.len()].copy_from_slice(src);
 
         if in_len > 16 {
             let total_payload = in_len - 16;
-            let num_blocks = (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
+            let num_blocks =
+                (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
             if num_blocks * 512 > MLX5_CMD_MBOX_SIZE {
                 log::error!(target: "mlx5", "Input mailbox overflow: {} blocks requested", num_blocks);
                 return in_inline;
             }
             let mut tmp_payload = [0u8; MLX5_CMD_MBOX_SIZE];
             let copy_len = total_payload.min(MLX5_CMD_MBOX_SIZE);
-            core::ptr::copy_nonoverlapping((self.in_mbox_virt as *const u8).add(16), tmp_payload.as_mut_ptr(), copy_len);
+            core::ptr::copy_nonoverlapping(
+                (self.in_mbox_virt as *const u8).add(16),
+                tmp_payload.as_mut_ptr(),
+                copy_len,
+            );
 
             for i in 0..num_blocks {
                 let block_ptr = (self.in_mbox_virt as *mut CmdProtBlock).add(i);
@@ -298,10 +336,15 @@ impl CmdQueueTransport {
                 let offset = i * MLX5_CMD_DATA_BLOCK_SIZE;
                 let payload_len = (total_payload - offset).min(MLX5_CMD_DATA_BLOCK_SIZE);
                 block.data.fill(0);
-                block.data[..payload_len].copy_from_slice(&tmp_payload[offset..offset + payload_len]);
+                block.data[..payload_len]
+                    .copy_from_slice(&tmp_payload[offset..offset + payload_len]);
                 block.token = token;
                 block.block_num = i as u32;
-                block.next = if i + 1 < num_blocks { _in_mbox_phys + ((i + 1) * 512) as u64 } else { 0 };
+                block.next = if i + 1 < num_blocks {
+                    _in_mbox_phys + ((i + 1) * 512) as u64
+                } else {
+                    0
+                };
                 block.ctrl_sig = 0;
                 block.sig = 0;
                 let block_bytes = core::slice::from_raw_parts(block_ptr as *const u8, 512);
@@ -317,9 +360,15 @@ impl CmdQueueTransport {
         let l = (self.cmdq_phys as u32)
             | ((self.log_cmdq_size as u32) << 4)
             | (self.log_cmd_stride as u32);
-        crate::mmio_write_be32(self.bar0_base as usize + crate::regs::init_seg::CMDQ_ADDR_H, h);
+        crate::mmio_write_be32(
+            self.bar0_base as usize + crate::regs::init_seg::CMDQ_ADDR_H,
+            h,
+        );
         fence(Ordering::Release);
-        crate::mmio_write_be32(self.bar0_base as usize + crate::regs::init_seg::CMDQ_ADDR_L_SZ, l);
+        crate::mmio_write_be32(
+            self.bar0_base as usize + crate::regs::init_seg::CMDQ_ADDR_L_SZ,
+            l,
+        );
     }
 }
 
@@ -333,7 +382,11 @@ impl CommandTransport for CmdQueueTransport {
         out_len: u32,
     ) -> Mlx5Result<()> {
         let token = self.next_token;
-        self.next_token = if self.next_token == 0xFF { 1 } else { self.next_token + 1 };
+        self.next_token = if self.next_token == 0xFF {
+            1
+        } else {
+            self.next_token + 1
+        };
 
         if Self::opcode_uses_uid(opcode) {
             let in_mbox = &mut *(self.in_mbox_virt as *mut CmdMailbox);
@@ -344,7 +397,9 @@ impl CommandTransport for CmdQueueTransport {
         let entry_ptr = self.cmdq_virt as *mut CmdEntry;
         let entry = &mut *entry_ptr;
 
-        while entry.is_owned_by_hw() { core::hint::spin_loop(); }
+        while entry.is_owned_by_hw() {
+            core::hint::spin_loop();
+        }
 
         *entry = CmdEntry::zeroed();
         entry.write_be32(cmd_entry::OPCODE, (opcode as u32) << 16);
@@ -381,16 +436,22 @@ impl CommandTransport for CmdQueueTransport {
 
         if out_len > 16 {
             let total_payload = out_len as usize - 16;
-            let num_blocks = (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
+            let num_blocks =
+                (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
             let mut out_payload = [0u8; MLX5_CMD_MBOX_SIZE];
             for i in 0..num_blocks {
                 let block = &*(self.out_mbox_virt as *const CmdProtBlock).add(i);
                 let offset = i * MLX5_CMD_DATA_BLOCK_SIZE;
                 let payload_len = (total_payload - offset).min(MLX5_CMD_DATA_BLOCK_SIZE);
-                out_payload[offset..offset + payload_len].copy_from_slice(&block.data[..payload_len]);
+                out_payload[offset..offset + payload_len]
+                    .copy_from_slice(&block.data[..payload_len]);
             }
             let dest = (self.out_mbox_virt as *mut u8).add(16);
-            core::ptr::copy_nonoverlapping(out_payload.as_ptr(), dest, total_payload.min(MLX5_CMD_MBOX_SIZE - 16));
+            core::ptr::copy_nonoverlapping(
+                out_payload.as_ptr(),
+                dest,
+                total_payload.min(MLX5_CMD_MBOX_SIZE - 16),
+            );
         }
         let out_inline = entry.output_inline();
         core::ptr::copy_nonoverlapping(out_inline.as_ptr(), self.out_mbox_virt as *mut u8, 16);
@@ -398,6 +459,10 @@ impl CommandTransport for CmdQueueTransport {
         Ok(())
     }
 
-    fn set_uid(&mut self, uid: u16) { self.uid = uid; }
-    fn uid(&self) -> u16 { self.uid }
+    fn set_uid(&mut self, uid: u16) {
+        self.uid = uid;
+    }
+    fn uid(&self) -> u16 {
+        self.uid
+    }
 }

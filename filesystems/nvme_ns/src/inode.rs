@@ -13,12 +13,10 @@ use alloc::vec::Vec;
 use core::any::Any;
 
 use exorust_sync::PoisonLock;
-use vfs::{
-    FileAttr, FileType, FsStats, OpenFlags, UnixFileMode, VfsError, VfsResult,
-};
+use vfs::{FileAttr, FileType, FsStats, OpenFlags, UnixFileMode, VfsError, VfsResult};
 
 use crate::error::NsError;
-use crate::ondisk::{DiskInode, InodeKind, DIRECT_BLOCKS};
+use crate::ondisk::{DIRECT_BLOCKS, DiskInode, InodeKind};
 
 // ============================================================================
 // NsInode
@@ -137,11 +135,7 @@ impl NsInode {
         // 三重間接
         let triple_cap = ptrs_per_block * ptrs_per_block * ptrs_per_block;
         if remaining < triple_cap {
-            return self.resolve_triple_indirect(
-                disk.triple_indirect,
-                remaining,
-                ptrs_per_block,
-            );
+            return self.resolve_triple_indirect(disk.triple_indirect, remaining, ptrs_per_block);
         }
 
         Err(NsError::InvalidArgument)
@@ -277,7 +271,11 @@ impl vfs::Inode for NsInode {
         for entry in &entries {
             if entry.name == name {
                 let child_disk = self.fs.read_inode(entry.ino).map_err(VfsError::from)?;
-                return Ok(Arc::new(NsInode::new(entry.ino, child_disk, self.fs.clone())));
+                return Ok(Arc::new(NsInode::new(
+                    entry.ino,
+                    child_disk,
+                    self.fs.clone(),
+                )));
             }
         }
         Err(VfsError::NotFound)
@@ -347,7 +345,9 @@ impl vfs::Inode for NsInode {
             match self.resolve_block(file_block)? {
                 Some(lba) => {
                     let mut block_buf = alloc::vec![0u8; bs as usize];
-                    self.fs.read_block(lba, &mut block_buf).map_err(VfsError::from)?;
+                    self.fs
+                        .read_block(lba, &mut block_buf)
+                        .map_err(VfsError::from)?;
                     buf[total..total + chunk_len]
                         .copy_from_slice(&block_buf[block_offset..block_offset + chunk_len]);
                 }
@@ -394,10 +394,14 @@ impl vfs::Inode for NsInode {
             } else {
                 // パーシャル書き込み: RMW
                 let mut block_buf = alloc::vec![0u8; bs as usize];
-                self.fs.read_block(lba, &mut block_buf).map_err(VfsError::from)?;
+                self.fs
+                    .read_block(lba, &mut block_buf)
+                    .map_err(VfsError::from)?;
                 block_buf[block_offset..block_offset + chunk_len]
                     .copy_from_slice(&buf[total..total + chunk_len]);
-                self.fs.write_block(lba, &block_buf).map_err(VfsError::from)?;
+                self.fs
+                    .write_block(lba, &block_buf)
+                    .map_err(VfsError::from)?;
             }
 
             pos += chunk_len as u64;
@@ -411,7 +415,9 @@ impl vfs::Inode for NsInode {
                 disk.size = end;
             }
             disk.blocks = (disk.size + bs - 1) / bs;
-            self.fs.write_inode(self.ino, &disk).map_err(VfsError::from)?;
+            self.fs
+                .write_inode(self.ino, &disk)
+                .map_err(VfsError::from)?;
         }
 
         Ok(total)
@@ -421,13 +427,17 @@ impl vfs::Inode for NsInode {
         let mut disk = self.disk.lock().map_err(|_| VfsError::IoError)?;
         disk.size = size;
         disk.blocks = (size + self.fs.block_size() - 1) / self.fs.block_size();
-        self.fs.write_inode(self.ino, &disk).map_err(VfsError::from)?;
+        self.fs
+            .write_inode(self.ino, &disk)
+            .map_err(VfsError::from)?;
         Ok(())
     }
 
     fn fsync(&self, _datasync: bool) -> VfsResult<()> {
         let disk = self.disk.lock().map_err(|_| VfsError::IoError)?;
-        self.fs.write_inode(self.ino, &disk).map_err(VfsError::from)?;
+        self.fs
+            .write_inode(self.ino, &disk)
+            .map_err(VfsError::from)?;
         Ok(())
     }
 }
@@ -586,7 +596,11 @@ impl NsInode {
         let dir_size = disk.size;
 
         // 現在の最終ブロックに空きがあるか確認
-        let last_file_block = if dir_size == 0 { 0 } else { (dir_size - 1) / bs };
+        let last_file_block = if dir_size == 0 {
+            0
+        } else {
+            (dir_size - 1) / bs
+        };
         let offset_in_block = if dir_size == 0 {
             0usize
         } else {
@@ -609,13 +623,17 @@ impl NsInode {
             // エントリを書き込み
             let mut block_buf = alloc::vec![0u8; bs as usize];
             block_buf[..entry_bytes.len()].copy_from_slice(&entry_bytes);
-            self.fs.write_block(new_lba, &block_buf).map_err(VfsError::from)?;
+            self.fs
+                .write_block(new_lba, &block_buf)
+                .map_err(VfsError::from)?;
 
             // サイズ更新
             let mut disk = self.disk.lock().map_err(|_| VfsError::IoError)?;
             disk.size = new_file_block * bs + entry_bytes.len() as u64;
             disk.blocks = new_file_block + 1;
-            self.fs.write_inode(self.ino, &disk).map_err(VfsError::from)?;
+            self.fs
+                .write_inode(self.ino, &disk)
+                .map_err(VfsError::from)?;
         } else {
             // 既存ブロックに追記
             let lba = match self.resolve_block_inner(&disk, last_file_block)? {
@@ -623,13 +641,19 @@ impl NsInode {
                 None => return Err(VfsError::IoError),
             };
             let mut block_buf = alloc::vec![0u8; bs as usize];
-            self.fs.read_block(lba, &mut block_buf).map_err(VfsError::from)?;
+            self.fs
+                .read_block(lba, &mut block_buf)
+                .map_err(VfsError::from)?;
             block_buf[offset_in_block..offset_in_block + entry_bytes.len()]
                 .copy_from_slice(&entry_bytes);
-            self.fs.write_block(lba, &block_buf).map_err(VfsError::from)?;
+            self.fs
+                .write_block(lba, &block_buf)
+                .map_err(VfsError::from)?;
 
             disk.size += entry_bytes.len() as u64;
-            self.fs.write_inode(self.ino, &disk).map_err(VfsError::from)?;
+            self.fs
+                .write_inode(self.ino, &disk)
+                .map_err(VfsError::from)?;
         }
 
         Ok(())
@@ -651,7 +675,9 @@ impl NsInode {
             };
 
             let mut block_buf = alloc::vec![0u8; bs as usize];
-            self.fs.read_block(lba, &mut block_buf).map_err(VfsError::from)?;
+            self.fs
+                .read_block(lba, &mut block_buf)
+                .map_err(VfsError::from)?;
 
             let mut pos = (offset % bs) as usize;
             while pos + crate::dir::DIR_ENTRY_HEADER_SIZE <= bs as usize {
@@ -684,7 +710,9 @@ impl NsInode {
         if file_block < DIRECT_BLOCKS as u64 {
             let mut disk = self.disk.lock().map_err(|_| VfsError::IoError)?;
             disk.direct[file_block as usize] = lba;
-            self.fs.write_inode(self.ino, &disk).map_err(VfsError::from)?;
+            self.fs
+                .write_inode(self.ino, &disk)
+                .map_err(VfsError::from)?;
             return Ok(());
         }
         // 間接ブロックの割り当ては将来拡張

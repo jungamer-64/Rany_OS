@@ -2,12 +2,15 @@ pub fn net_peripheral_dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke() -
     crate::net::qemu_tests::dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke()
 }
 
-pub fn net_peripheral_dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke() -> bool {
+pub fn net_peripheral_dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke()
+-> bool {
     crate::net::qemu_tests::dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke()
 }
 
-pub fn net_peripheral_dhcp_v4_build_request_requesting_includes_serverid_and_requestedip_smoke() -> bool {
-    crate::net::qemu_tests::dhcp_v4_build_request_requesting_includes_serverid_and_requestedip_smoke()
+pub fn net_peripheral_dhcp_v4_build_request_requesting_includes_serverid_and_requestedip_smoke()
+-> bool {
+    crate::net::qemu_tests::dhcp_v4_build_request_requesting_includes_serverid_and_requestedip_smoke(
+    )
 }
 
 pub fn net_peripheral_dhcp_v4_build_discover_reuse_xid_on_retransmit_smoke() -> bool {
@@ -254,7 +257,8 @@ pub fn net_peripheral_driver_bridge_per_interface_bridge_stats_are_separated_smo
     crate::net::qemu_tests::driver_bridge_per_interface_bridge_stats_are_separated_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_register_virtio_port_is_idempotent_and_records_mapping_smoke() -> bool {
+pub fn net_peripheral_driver_bridge_register_virtio_port_is_idempotent_and_records_mapping_smoke()
+-> bool {
     crate::net::qemu_tests::driver_bridge_register_virtio_port_is_idempotent_and_records_mapping_smoke()
 }
 

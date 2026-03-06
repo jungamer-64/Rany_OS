@@ -282,9 +282,7 @@ impl IgmpProcessor {
 
         // Process by type
         match IgmpType::from_u8(msg_type) {
-            Some(IgmpType::MembershipQuery) => {
-                self.handle_query(group_addr, max_resp_time, src_ip)
-            }
+            Some(IgmpType::MembershipQuery) => self.handle_query(group_addr, max_resp_time, src_ip),
             Some(IgmpType::V1MembershipReport) | Some(IgmpType::V2MembershipReport) => {
                 self.handle_report(group_addr, src_ip)
             }
@@ -322,7 +320,10 @@ impl IgmpProcessor {
             if let Some(group) = self.groups.iter_mut().find(|g| g.address == group_addr) {
                 let current_time = self.current_time;
                 Self::set_response_timer(current_time, group, max_delay_ms);
-                IgmpResult::GroupQueryReceived { group: group_addr, max_resp_time }
+                IgmpResult::GroupQueryReceived {
+                    group: group_addr,
+                    max_resp_time,
+                }
             } else {
                 IgmpResult::Ignored
             }
@@ -337,12 +338,18 @@ impl IgmpProcessor {
 
         // Security: Generate better random delay to avoid synchronized multicast storms.
         let random_bytes = crate::net::security::tls::crypto::random::generate_random();
-        let rand_val = u32::from_le_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
+        let rand_val = u32::from_le_bytes([
+            random_bytes[0],
+            random_bytes[1],
+            random_bytes[2],
+            random_bytes[3],
+        ]);
         let random_delay = (rand_val as u64 % max_delay_ms) + 1;
 
         // Only set timer if not already running or new delay is shorter
-        if group.state == GroupState::IdleMember || 
-           (group.state == GroupState::DelayingMember && random_delay < group.timer) {
+        if group.state == GroupState::IdleMember
+            || (group.state == GroupState::DelayingMember && random_delay < group.timer)
+        {
             group.timer = random_delay;
             group.state = GroupState::DelayingMember;
         }
@@ -423,7 +430,10 @@ pub enum IgmpResult {
     /// General Query received - respond for all groups
     GeneralQueryReceived { max_resp_time: u8 },
     /// Group-Specific Query received
-    GroupQueryReceived { group: Ipv4Address, max_resp_time: u8 },
+    GroupQueryReceived {
+        group: Ipv4Address,
+        max_resp_time: u8,
+    },
     /// Membership Report received from another host
     ReportReceived { group: Ipv4Address },
     /// Message was ignored (not relevant to us)
@@ -484,7 +494,7 @@ pub fn compute_igmp_checksum(data: &[u8]) -> u16 {
 use crate::net::l2::ethernet::MacAddress;
 
 /// Convert IPv4 multicast address to Ethernet multicast MAC address
-/// 
+///
 /// The mapping is: 01:00:5E:0X:XX:XX where the lower 23 bits of the
 /// IP address are mapped to the lower 23 bits of the MAC address.
 pub fn multicast_ip_to_mac(ip: Ipv4Address) -> MacAddress {
@@ -493,7 +503,7 @@ pub fn multicast_ip_to_mac(ip: Ipv4Address) -> MacAddress {
         0x01,
         0x00,
         0x5e,
-        octets[1] & 0x7f,  // Lower 7 bits
+        octets[1] & 0x7f, // Lower 7 bits
         octets[2],
         octets[3],
     )
@@ -519,7 +529,7 @@ pub(crate) mod tests {
     pub fn test_multicast_validation() {
         let multicast = Ipv4Address::new([224, 0, 0, 1]);
         let unicast = Ipv4Address::new([192, 168, 1, 1]);
-        
+
         assert!(multicast.is_multicast());
         assert!(!unicast.is_multicast());
     }
@@ -528,14 +538,14 @@ pub(crate) mod tests {
     pub fn test_join_group() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
-        
+
         // Join should succeed
         assert!(processor.join_group(group).is_ok());
         assert!(processor.is_member(group));
-        
+
         // Duplicate join should also succeed (idempotent)
         assert!(processor.join_group(group).is_ok());
-        
+
         // Pending report should be queued
         let reports = processor.take_pending_reports();
         assert!(!reports.is_empty());
@@ -546,23 +556,26 @@ pub(crate) mod tests {
     pub fn test_join_invalid_address() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let unicast = Ipv4Address::new([192, 168, 1, 1]);
-        
-        assert_eq!(processor.join_group(unicast), Err(IgmpError::InvalidGroupAddress));
+
+        assert_eq!(
+            processor.join_group(unicast),
+            Err(IgmpError::InvalidGroupAddress)
+        );
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_leave_group() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
-        
+
         // Join first
         processor.join_group(group).unwrap();
         processor.take_pending_reports(); // Clear pending reports
-        
+
         // Leave should succeed
         assert!(processor.leave_group(group).is_ok());
         assert!(!processor.is_member(group));
-        
+
         // Leave message should be queued
         let reports = processor.take_pending_reports();
         assert_eq!(reports.len(), 1);
@@ -573,7 +586,7 @@ pub(crate) mod tests {
     pub fn test_leave_nonmember() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
-        
+
         assert_eq!(processor.leave_group(group), Err(IgmpError::NotMember));
     }
 
@@ -582,7 +595,7 @@ pub(crate) mod tests {
         // IGMP message: Query for all groups
         let message = [0x11, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let _checksum = compute_igmp_checksum(&message);
-        
+
         // Checksum of valid packet should be 0
         let mut valid_message = message;
         let cs = compute_igmp_checksum(&message);
@@ -595,12 +608,12 @@ pub(crate) mod tests {
     pub fn test_build_report() {
         let group = Ipv4Address::new([224, 1, 2, 3]);
         let mut buffer = [0u8; 8];
-        
+
         let len = IgmpProcessor::build_report(group, &mut buffer);
         assert_eq!(len, Some(8));
         assert_eq!(buffer[0], IgmpType::V2MembershipReport as u8);
         assert_eq!(&buffer[4..8], group.as_bytes());
-        
+
         // Verify checksum
         assert_eq!(compute_igmp_checksum(&buffer), 0);
     }
@@ -609,11 +622,11 @@ pub(crate) mod tests {
     pub fn test_build_leave() {
         let group = Ipv4Address::new([224, 1, 2, 3]);
         let mut buffer = [0u8; 8];
-        
+
         let len = IgmpProcessor::build_leave(group, &mut buffer);
         assert_eq!(len, Some(8));
         assert_eq!(buffer[0], IgmpType::LeaveGroup as u8);
-        
+
         // Verify checksum
         assert_eq!(compute_igmp_checksum(&buffer), 0);
     }
@@ -623,12 +636,18 @@ pub(crate) mod tests {
         // 224.0.0.1 -> 01:00:5E:00:00:01
         let ip1 = Ipv4Address::new([224, 0, 0, 1]);
         let mac1 = multicast_ip_to_mac(ip1);
-        assert_eq!(mac1, MacAddress::from_octets(0x01, 0x00, 0x5e, 0x00, 0x00, 0x01));
-        
+        assert_eq!(
+            mac1,
+            MacAddress::from_octets(0x01, 0x00, 0x5e, 0x00, 0x00, 0x01)
+        );
+
         // 239.255.255.250 -> 01:00:5E:7F:FF:FA (note: bit 8 of second octet is masked)
         let ip2 = Ipv4Address::new([239, 255, 255, 250]);
         let mac2 = multicast_ip_to_mac(ip2);
-        assert_eq!(mac2, MacAddress::from_octets(0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa));
+        assert_eq!(
+            mac2,
+            MacAddress::from_octets(0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa)
+        );
     }
 
     #[cfg_attr(test, test_case)]
@@ -637,7 +656,7 @@ pub(crate) mod tests {
         let group = Ipv4Address::new([224, 1, 2, 3]);
         processor.join_group(group).unwrap();
         processor.take_pending_reports();
-        
+
         // Build a general query
         let mut query = [0u8; 8];
         IgmpProcessor::build_message(
@@ -646,7 +665,7 @@ pub(crate) mod tests {
             Ipv4Address::ANY,
             &mut query,
         );
-        
+
         let result = processor.process(&query, Ipv4Address::new([192, 168, 1, 1]));
         match result {
             IgmpResult::GeneralQueryReceived { max_resp_time } => {
@@ -654,7 +673,7 @@ pub(crate) mod tests {
             }
             _ => panic!("Expected GeneralQueryReceived"),
         }
-        
+
         // Group should be in DelayingMember state
         assert_eq!(processor.groups[0].state, GroupState::DelayingMember);
     }
@@ -665,23 +684,23 @@ pub(crate) mod tests {
         let group = Ipv4Address::new([224, 1, 2, 3]);
         processor.join_group(group).unwrap();
         processor.take_pending_reports();
-        
+
         // Set up delaying state with timer
         processor.groups[0].state = GroupState::DelayingMember;
         processor.groups[0].timer = 5000;
         processor.pending_reports.push((group, false));
-        
+
         // Receive report from another host
         let mut report = [0u8; 8];
         IgmpProcessor::build_report(group, &mut report);
-        
+
         let result = processor.process(&report, Ipv4Address::new([192, 168, 1, 200]));
         assert!(matches!(result, IgmpResult::ReportReceived { .. }));
-        
+
         // Timer should be cancelled
         assert_eq!(processor.groups[0].timer, 0);
         assert_eq!(processor.groups[0].state, GroupState::IdleMember);
-        
+
         // Pending report should be removed
         assert!(processor.pending_reports.is_empty());
     }

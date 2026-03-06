@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 impl QuarantineQueue {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -321,7 +320,9 @@ impl QuarantineQueue {
             inner.current_batch = 1;
         }
 
-        DrainResult::Drained { batch: drained_batch }
+        DrainResult::Drained {
+            batch: drained_batch,
+        }
     }
 
     /// Round 7+8: Commit invalidation (after PTE clear)
@@ -361,7 +362,9 @@ impl QuarantineQueue {
                     // The only safe option is to HALT operations to prevent data corruption.
                     drop(inner); // drop lock before calling helper (avoids recursion if helper took lock)
                     self.poison_system();
-                    panic!("CRITICAL: Quarantine batch advanced before commit_invalidation. Queue POISONED.");
+                    panic!(
+                        "CRITICAL: Quarantine batch advanced before commit_invalidation. Queue POISONED."
+                    );
                 }
                 *slot = InvSlot::Ready(req);
                 inner.ready_count += 1;
@@ -555,8 +558,7 @@ impl QuarantineQueue {
             let entry = &mut inner.entries[slot as usize];
             if entry.in_use && current_slot_gen == slot_gen {
                 let w = cx.waker();
-                let should_replace =
-                    entry.waker.as_ref().map_or(true, |old| !old.will_wake(w));
+                let should_replace = entry.waker.as_ref().map_or(true, |old| !old.will_wake(w));
                 if should_replace {
                     entry.waker = Some(w.clone());
                 }
@@ -676,7 +678,12 @@ impl QuarantineQueue {
     /// - Compute scan_threshold = max(old, completed_batch) inside lock
     /// - Zero IOVA on collect (idempotent, prevents double free)
     /// - Heavy operations (free_iova, drop_erased) OUTSIDE lock
-    pub fn reap_completed(&self, completed_batch: u64, fctx: &mut FlushContext, context: &dyn IommuHardwareContext) {
+    pub fn reap_completed(
+        &self,
+        completed_batch: u64,
+        fctx: &mut FlushContext,
+        context: &dyn IommuHardwareContext,
+    ) {
         let mut capacity_waker: Option<Waker> = None;
         let mut freed_slots = false;
 
@@ -713,7 +720,13 @@ impl QuarantineQueue {
             }
         }
 
-        flush_reaped_resources(&mut fctx.to_free_iova, &mut fctx.to_drop, &mut fctx.to_wake, capacity_waker, context);
+        flush_reaped_resources(
+            &mut fctx.to_free_iova,
+            &mut fctx.to_drop,
+            &mut fctx.to_wake,
+            capacity_waker,
+            context,
+        );
     }
 
     /// Check if any part of the given IOVA range is currently in the quarantine.
@@ -723,7 +736,7 @@ impl QuarantineQueue {
         }
         let end = iova.saturating_add(size);
         let inner = self.inner.lock();
-        
+
         for entry in inner.entries.iter() {
             if entry.in_use && entry.iova != 0 {
                 let entry_end = entry.iova.saturating_add(entry.iova_size);

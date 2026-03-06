@@ -32,11 +32,11 @@
 //! ```
 #![allow(dead_code)]
 
-use spin::Mutex;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use spin::Mutex;
 
 use super::atomic_utils::{AtomicU8, AtomicU16};
-use super::types::{FixedVec, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+use super::types::{FixedVec, PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K};
 
 // ============================================================================
 // Constants
@@ -89,7 +89,7 @@ impl RemoteFreeEntry {
             size_class: 0,
         }
     }
-    
+
     /// Create a single-page entry
     #[inline]
     pub const fn single(addr: u64, size_class: u8) -> Self {
@@ -99,7 +99,7 @@ impl RemoteFreeEntry {
             size_class,
         }
     }
-    
+
     /// Create a range entry for multiple contiguous pages
     #[inline]
     pub const fn range(addr: u64, count: u16, size_class: u8) -> Self {
@@ -109,13 +109,13 @@ impl RemoteFreeEntry {
             size_class,
         }
     }
-    
+
     /// Check if this is an empty/invalid entry
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
-    
+
     /// Get the page size for this entry's size class
     #[inline]
     pub const fn page_size(&self) -> u64 {
@@ -126,13 +126,13 @@ impl RemoteFreeEntry {
             _ => PAGE_SIZE_4K as u64,
         }
     }
-    
+
     /// Get total bytes covered by this entry
     #[inline]
     pub fn total_bytes(&self) -> u64 {
         self.page_size() * (self.count as u64)
     }
-    
+
     /// Get the end address (exclusive)
     #[inline]
     pub fn end_addr(&self) -> u64 {
@@ -195,7 +195,7 @@ pub struct RemoteFreeRing<const N: usize = DEFAULT_REMOTE_FREE_CAPACITY> {
     overflow_count: AtomicU64,
     /// Total pages freed via range entries (for statistics)
     range_pages_freed: AtomicU64,
-    
+
     /// Fallback overflow list (protected by lock, used when ring is full)
     /// This prevents extensive spinning or falling back to the main allocator lock.
     /// Uses fixed capacity to avoid heap allocation.
@@ -208,7 +208,10 @@ impl<const N: usize> core::fmt::Debug for RemoteFreeRing<N> {
             .field("capacity", &N)
             .field("head", &self.head.load(Ordering::Relaxed))
             .field("tail", &self.tail.load(Ordering::Relaxed))
-            .field("overflow_count", &self.overflow_count.load(Ordering::Relaxed))
+            .field(
+                "overflow_count",
+                &self.overflow_count.load(Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -220,13 +223,16 @@ impl<const N: usize> RemoteFreeRing<N> {
     ///
     /// Debug-asserts that N is a power of 2.
     pub const fn new() -> Self {
-        debug_assert!(N.is_power_of_two(), "RemoteFreeRing capacity must be power of 2");
-        
+        debug_assert!(
+            N.is_power_of_two(),
+            "RemoteFreeRing capacity must be power of 2"
+        );
+
         const EMPTY_ENTRY: AtomicU64 = AtomicU64::new(0);
         const EMPTY_SIZE: AtomicU8 = AtomicU8::new(0);
         const EMPTY_COUNT: AtomicU16 = AtomicU16::new(0);
         const INIT_SEQ: AtomicUsize = AtomicUsize::new(0);
-        
+
         Self {
             entries: [EMPTY_ENTRY; N],
             size_classes: [EMPTY_SIZE; N],
@@ -240,7 +246,7 @@ impl<const N: usize> RemoteFreeRing<N> {
             overflow: Mutex::new(FixedVec::new()),
         }
     }
-    
+
     /// Initialize sequence numbers (call once after construction)
     ///
     /// Each slot i starts with sequence = i, meaning "ready for producer at pos i".
@@ -250,13 +256,13 @@ impl<const N: usize> RemoteFreeRing<N> {
             self.sequences[i].store(i, Ordering::Relaxed);
         }
     }
-    
+
     /// Get the ring capacity
     #[inline]
     pub const fn capacity(&self) -> usize {
         N
     }
-    
+
     /// Try to push a single entry (lock-free Vyukov MPSC)
     ///
     /// Returns true if pushed successfully, false if ring is full.
@@ -264,7 +270,7 @@ impl<const N: usize> RemoteFreeRing<N> {
     pub fn try_push(&self, addr: u64, size_class: u8) -> bool {
         self.try_push_range(addr, 1, size_class)
     }
-    
+
     /// Try to push a range entry (multiple contiguous pages)
     ///
     /// # Arguments
@@ -284,14 +290,14 @@ impl<const N: usize> RemoteFreeRing<N> {
         if count == 0 {
             return true; // Nothing to free
         }
-        
+
         let mut pos = self.head.load(Ordering::Relaxed);
-        
+
         loop {
             let idx = pos & (N - 1); // Fast modulo for power-of-2
             let seq = self.sequences[idx].load(Ordering::Acquire);
             let diff = seq as isize - pos as isize;
-            
+
             if diff == 0 {
                 // Slot is ready for this position, try to claim it
                 match self.head.compare_exchange_weak(
@@ -305,12 +311,13 @@ impl<const N: usize> RemoteFreeRing<N> {
                         self.size_classes[idx].store(size_class, Ordering::Relaxed);
                         self.counts[idx].store(count, Ordering::Relaxed);
                         self.entries[idx].store(addr, Ordering::Relaxed);
-                        
+
                         // Update range statistics
                         if count > 1 {
-                            self.range_pages_freed.fetch_add(count as u64, Ordering::Relaxed);
+                            self.range_pages_freed
+                                .fetch_add(count as u64, Ordering::Relaxed);
                         }
-                        
+
                         // Commit: set seq = pos + 1 to signal consumer
                         self.sequences[idx].store(pos.wrapping_add(1), Ordering::Release);
                         return true;
@@ -330,7 +337,6 @@ impl<const N: usize> RemoteFreeRing<N> {
             core::hint::spin_loop();
         }
     }
-    
 
     /// Push a single entry, using fallback if ring is full
     /// Always succeeds (unless OOM in fallback Vec, which is unlikely/panic)
@@ -341,11 +347,15 @@ impl<const N: usize> RemoteFreeRing<N> {
 
     /// Push a range entry, using fallback if ring is full
     pub fn push_range(&self, addr: u64, count: u16, size_class: u8) {
-         if !self.try_push_range(addr, count, size_class) {
-             // Ring full, use fallback
-             let mut lock = self.overflow.lock();
-             lock.push(RemoteFreeEntry { addr, count, size_class });
-         }
+        if !self.try_push_range(addr, count, size_class) {
+            // Ring full, use fallback
+            let mut lock = self.overflow.lock();
+            lock.push(RemoteFreeEntry {
+                addr,
+                count,
+                size_class,
+            });
+        }
     }
 
     /// Drain entries from the ring AND the overflow fallback
@@ -359,15 +369,15 @@ impl<const N: usize> RemoteFreeRing<N> {
     fn drain_overflow(&self, out: &mut [RemoteFreeEntry], start: usize) -> usize {
         let mut drained = start;
         if !self.overflow.lock().is_empty() {
-             let mut lock = self.overflow.lock();
-             while drained < out.len() {
-                 if let Some(entry) = lock.pop() {
-                     out[drained] = entry;
-                     drained += 1;
-                 } else {
-                     break;
-                 }
-             }
+            let mut lock = self.overflow.lock();
+            while drained < out.len() {
+                if let Some(entry) = lock.pop() {
+                    out[drained] = entry;
+                    drained += 1;
+                } else {
+                    break;
+                }
+            }
         }
         drained
     }
@@ -381,67 +391,71 @@ impl<const N: usize> RemoteFreeRing<N> {
 
         // 2. Drain from ring
         let mut pos = self.tail.load(Ordering::Relaxed);
-        
+
         while drained < out.len() {
             let idx = pos & (N - 1);
             let seq = self.sequences[idx].load(Ordering::Acquire);
             let expected_seq = pos.wrapping_add(1);
-            
+
             if seq != expected_seq {
                 // Slot not ready (either empty or producer still writing)
                 break;
             }
-            
+
             // Read data (order doesn't matter, seq acquire already synchronized)
             let addr = self.entries[idx].load(Ordering::Relaxed);
             let size_class = self.size_classes[idx].load(Ordering::Relaxed);
             let count = self.counts[idx].load(Ordering::Relaxed);
-            
+
             // Reset sequence for next producer: seq = pos + N
             self.sequences[idx].store(pos.wrapping_add(N), Ordering::Release);
-            
-            out[drained] = RemoteFreeEntry { addr, count, size_class };
+
+            out[drained] = RemoteFreeEntry {
+                addr,
+                count,
+                size_class,
+            };
             drained += 1;
             pos = pos.wrapping_add(1);
         }
-        
+
         // Update tail if we drained anything from the ring
         if drained > 0 {
-             // We can't distinguish easily how many came from ring vs overflow here due to single `drained` counter
-             // But we only updated `pos` for ring entries.
-             // Wait, current logic: `pos` is local var, updated only in loop.
-             // We should only store `pos` if it changed.
-             
-             // Check if we advanced pos
-             let old_tail = self.tail.load(Ordering::Relaxed);
-             if pos != old_tail {
-                 self.tail.store(pos, Ordering::Release);
-             }
+            // We can't distinguish easily how many came from ring vs overflow here due to single `drained` counter
+            // But we only updated `pos` for ring entries.
+            // Wait, current logic: `pos` is local var, updated only in loop.
+            // We should only store `pos` if it changed.
+
+            // Check if we advanced pos
+            let old_tail = self.tail.load(Ordering::Relaxed);
+            if pos != old_tail {
+                self.tail.store(pos, Ordering::Release);
+            }
         }
-        
+
         drained
     }
-    
+
     /// Drain entries and merge contiguous ranges for batch free
-    /// 
+    ///
     /// This method drains entries, sorts them by address, and merges
     /// contiguous entries into larger ranges. This reduces overhead
     /// when freeing memory back to the allocator.
-    /// 
+    ///
     /// # Algorithm
-    /// 
+    ///
     /// 1. Drain up to `out.len()` entries from ring
     /// 2. Sort by (size_class, addr) - same size class entries together
     /// 3. Merge adjacent entries with same size_class into larger ranges
-    /// 
+    ///
     /// # Arguments
     /// * `out` - Output buffer for merged entries (reused for efficiency)
-    /// 
+    ///
     /// # Returns
     /// Number of merged entries (≤ original drain count)
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// Input (drained): [0x1000, 0x2000, 0x3000] (size_class=0, count=1 each)
     /// Output (merged): [0x1000] (size_class=0, count=3)
     pub fn drain_and_merge(&self, out: &mut [RemoteFreeEntry]) -> usize {
@@ -450,22 +464,24 @@ impl<const N: usize> RemoteFreeRing<N> {
         if drained <= 1 {
             return drained;
         }
-        
+
         // Step 2: Sort by (size_class, addr) for efficient merging
         // Use simple insertion sort for small arrays (typical case)
         let entries = &mut out[..drained];
         for i in 1..entries.len() {
             let mut j = i;
-            while j > 0 && Self::entry_cmp(&entries[j - 1], &entries[j]) == core::cmp::Ordering::Greater {
+            while j > 0
+                && Self::entry_cmp(&entries[j - 1], &entries[j]) == core::cmp::Ordering::Greater
+            {
                 entries.swap(j - 1, j);
                 j -= 1;
             }
         }
-        
+
         // Step 3: Merge adjacent entries with same size_class
         Self::merge_sorted_entries(entries)
     }
-    
+
     /// Compare entries for sorting: (size_class, addr)
     #[inline]
     fn entry_cmp(a: &RemoteFreeEntry, b: &RemoteFreeEntry) -> core::cmp::Ordering {
@@ -474,7 +490,7 @@ impl<const N: usize> RemoteFreeRing<N> {
             other => other,
         }
     }
-    
+
     /// Drain all entries, calling a closure for each
     ///
     /// More efficient than `drain()` when you don't need to store entries.
@@ -491,34 +507,38 @@ impl<const N: usize> RemoteFreeRing<N> {
     {
         let mut drained = 0;
         let mut pos = self.tail.load(Ordering::Relaxed);
-        
+
         while drained < max {
             let idx = pos & (N - 1);
             let seq = self.sequences[idx].load(Ordering::Acquire);
             let expected_seq = pos.wrapping_add(1);
-            
+
             if seq != expected_seq {
                 break;
             }
-            
+
             let addr = self.entries[idx].load(Ordering::Relaxed);
             let size_class = self.size_classes[idx].load(Ordering::Relaxed);
             let count = self.counts[idx].load(Ordering::Relaxed);
-            
+
             self.sequences[idx].store(pos.wrapping_add(N), Ordering::Release);
-            
-            f(RemoteFreeEntry { addr, count, size_class });
+
+            f(RemoteFreeEntry {
+                addr,
+                count,
+                size_class,
+            });
             drained += 1;
             pos = pos.wrapping_add(1);
         }
-        
+
         if drained > 0 {
             self.tail.store(pos, Ordering::Release);
         }
-        
+
         drained
     }
-    
+
     /// Get approximate number of pending entries
     ///
     /// This is approximate because head and tail are read non-atomically.
@@ -528,31 +548,31 @@ impl<const N: usize> RemoteFreeRing<N> {
         let tail = self.tail.load(Ordering::Relaxed);
         head.wrapping_sub(tail).min(N)
     }
-    
+
     /// Check if ring appears empty
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.head.load(Ordering::Relaxed) == self.tail.load(Ordering::Relaxed)
     }
-    
+
     /// Check if ring appears full
     #[inline]
     pub fn is_full(&self) -> bool {
         self.len() >= N
     }
-    
+
     /// Get overflow count (failed pushes due to full ring)
     #[inline]
     pub fn overflow_count(&self) -> u64 {
         self.overflow_count.load(Ordering::Relaxed)
     }
-    
+
     /// Get total pages freed via range entries (statistics)
     #[inline]
     pub fn range_pages_freed(&self) -> u64 {
         self.range_pages_freed.load(Ordering::Relaxed)
     }
-    
+
     /// Reset statistics counters
     pub fn reset_stats(&self) {
         self.overflow_count.store(0, Ordering::Relaxed);
@@ -626,14 +646,14 @@ impl AdaptiveBatchStats {
             total_drained: AtomicU64::new(0),
         }
     }
-    
+
     /// 平均バッチサイズを取得（小数点2桁）
     pub fn avg_batch_size(&self) -> f64 {
         let total = self.total_drained.load(Ordering::Relaxed);
         let drains = self.low_load_drains.load(Ordering::Relaxed)
             + self.high_load_drains.load(Ordering::Relaxed)
             + self.urgent_drains.load(Ordering::Relaxed);
-        
+
         if drains == 0 {
             0.0
         } else {
@@ -647,82 +667,101 @@ pub static ADAPTIVE_BATCH_STATS: AdaptiveBatchStats = AdaptiveBatchStats::new();
 
 impl<const N: usize> RemoteFreeRing<N> {
     /// 負荷に応じた適応的バッチドレイン
-    /// 
+    ///
     /// ## アルゴリズム
-    /// 
+    ///
     /// リングの充填率に応じてバッチサイズを動的に調整：
-    /// 
+    ///
     /// | 充填率           | バッチサイズ | 理由                       |
     /// |------------------|--------------|----------------------------|
     /// | < 50%            | min_batch    | 低負荷：CPU消費を抑える    |
     /// | 50% - 80%        | 補間         | 中負荷：徐々にバッチ増加   |
     /// | > 80%            | 全ドレイン   | 高負荷：オーバーフロー防止 |
-    /// 
+    ///
     /// ## 利点
-    /// 
+    ///
     /// - 低負荷時: 不要なドレインを減らしCPUオーバーヘッド削減
     /// - 高負荷時: オーバーフローを防ぎデータロスを回避
     /// - スムーズな遷移: 急激な動作変更を避ける
-    /// 
+    ///
     /// ## 戻り値
-    /// 
+    ///
     /// ドレインされたエントリ数
     pub fn adaptive_drain(&self, out: &mut [RemoteFreeEntry]) -> usize {
         let current_len = self.len();
         let capacity = self.capacity();
-        
+
         if current_len == 0 || out.is_empty() {
             return 0;
         }
-        
+
         // 充填率計算（0-100%）
         let fill_percent = (current_len * 100) / capacity;
-        
+
         // 適応的バッチサイズ決定
         let config = &ADAPTIVE_BATCH_CONFIG;
         let batch_size = if fill_percent >= config.urgent_threshold_percent {
             // 緊急: 全てドレイン
-            ADAPTIVE_BATCH_STATS.urgent_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .urgent_drains
+                .fetch_add(1, Ordering::Relaxed);
             out.len().min(current_len)
         } else if fill_percent >= config.load_threshold_percent {
             // 高負荷: 線形補間でバッチサイズ増加
             // batch = min + (max - min) * (fill% - load_threshold) / (urgent - load_threshold)
             let range = config.urgent_threshold_percent - config.load_threshold_percent;
             let progress = fill_percent - config.load_threshold_percent;
-            let scaled = config.min_batch 
+            let scaled = config.min_batch
                 + ((config.max_batch - config.min_batch) * progress) / range.max(1);
-            ADAPTIVE_BATCH_STATS.high_load_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .high_load_drains
+                .fetch_add(1, Ordering::Relaxed);
             out.len().min(scaled).min(current_len)
         } else {
             // 低負荷: 最小バッチ
-            ADAPTIVE_BATCH_STATS.low_load_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .low_load_drains
+                .fetch_add(1, Ordering::Relaxed);
             out.len().min(config.min_batch).min(current_len)
         };
-        
+
         // 実際のドレイン実行
         let drained = self.drain(&mut out[..batch_size]);
-        ADAPTIVE_BATCH_STATS.total_drained.fetch_add(drained as u64, Ordering::Relaxed);
-        
+        ADAPTIVE_BATCH_STATS
+            .total_drained
+            .fetch_add(drained as u64, Ordering::Relaxed);
+
         drained
     }
-    
+
     /// 負荷に応じたバッチサイズを計算する
-    fn compute_adaptive_batch_size(&self, current_len: usize, capacity: usize, max_out: usize) -> usize {
+    fn compute_adaptive_batch_size(
+        &self,
+        current_len: usize,
+        capacity: usize,
+        max_out: usize,
+    ) -> usize {
         let fill_percent = (current_len * 100) / capacity;
         let config = &ADAPTIVE_BATCH_CONFIG;
 
         if fill_percent >= config.urgent_threshold_percent {
-            ADAPTIVE_BATCH_STATS.urgent_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .urgent_drains
+                .fetch_add(1, Ordering::Relaxed);
             max_out.min(current_len)
         } else if fill_percent >= config.load_threshold_percent {
             let range = config.urgent_threshold_percent - config.load_threshold_percent;
             let progress = fill_percent - config.load_threshold_percent;
-            let scaled = config.min_batch 
+            let scaled = config.min_batch
                 + ((config.max_batch - config.min_batch) * progress) / range.max(1);
-            ADAPTIVE_BATCH_STATS.high_load_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .high_load_drains
+                .fetch_add(1, Ordering::Relaxed);
             max_out.min(scaled).min(current_len)
         } else {
-            ADAPTIVE_BATCH_STATS.low_load_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .low_load_drains
+                .fetch_add(1, Ordering::Relaxed);
             max_out.min(config.min_batch).min(current_len)
         }
     }
@@ -741,7 +780,9 @@ impl<const N: usize> RemoteFreeRing<N> {
 
             if current.size_class == next.size_class {
                 let page_size = current.page_size();
-                let current_end = current.addr.saturating_add(page_size * (current.count as u64));
+                let current_end = current
+                    .addr
+                    .saturating_add(page_size * (current.count as u64));
 
                 if current_end == next.addr {
                     let new_count = current.count.saturating_add(next.count);
@@ -766,41 +807,47 @@ impl<const N: usize> RemoteFreeRing<N> {
     }
 
     /// 適応的バッチドレイン + マージ
-    /// 
+    ///
     /// `adaptive_drain` + `drain_and_merge` の組み合わせ。
     /// 負荷適応バッチサイズで取得後、連続アドレスをマージ。
     pub fn adaptive_drain_and_merge(&self, out: &mut [RemoteFreeEntry]) -> usize {
         let current_len = self.len();
         let capacity = self.capacity();
-        
+
         if current_len == 0 || out.is_empty() {
             return 0;
         }
-        
+
         let batch_size = self.compute_adaptive_batch_size(current_len, capacity, out.len());
-        
+
         // ドレイン
         let drained = self.drain(&mut out[..batch_size]);
         if drained <= 1 {
-            ADAPTIVE_BATCH_STATS.total_drained.fetch_add(drained as u64, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .total_drained
+                .fetch_add(drained as u64, Ordering::Relaxed);
             return drained;
         }
-        
+
         // ソート（insertion sort for small arrays）
         let entries = &mut out[..drained];
         for i in 1..entries.len() {
             let mut j = i;
-            while j > 0 && Self::entry_cmp(&entries[j - 1], &entries[j]) == core::cmp::Ordering::Greater {
+            while j > 0
+                && Self::entry_cmp(&entries[j - 1], &entries[j]) == core::cmp::Ordering::Greater
+            {
                 entries.swap(j - 1, j);
                 j -= 1;
             }
         }
-        
+
         let merged_count = Self::merge_sorted_entries(entries);
-        ADAPTIVE_BATCH_STATS.total_drained.fetch_add(merged_count as u64, Ordering::Relaxed);
+        ADAPTIVE_BATCH_STATS
+            .total_drained
+            .fetch_add(merged_count as u64, Ordering::Relaxed);
         merged_count
     }
-    
+
     /// 充填率を取得（0-100）
     #[inline]
     pub fn fill_percent(&self) -> usize {
@@ -810,13 +857,13 @@ impl<const N: usize> RemoteFreeRing<N> {
         }
         (len * 100) / N
     }
-    
+
     /// 高負荷状態かどうか
     #[inline]
     pub fn is_high_load(&self) -> bool {
         self.fill_percent() >= ADAPTIVE_BATCH_CONFIG.load_threshold_percent
     }
-    
+
     /// 緊急状態かどうか（オーバーフロー危険）
     #[inline]
     pub fn is_urgent(&self) -> bool {

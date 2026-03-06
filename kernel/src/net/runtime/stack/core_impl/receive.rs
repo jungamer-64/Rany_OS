@@ -15,7 +15,7 @@ impl NetworkStack {
         // Offload ALL packet processing to the asynchronous endpoint stack.
         // This minimizes time spent in the interrupt/polling context.
         crate::net::l4::endpoint::event::send_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet }
+            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet },
         );
     }
 
@@ -32,7 +32,13 @@ impl NetworkStack {
     }
 
     /// Process IPv4 packet
-    pub(crate) fn process_ipv4(&mut self, data: &[u8], current_time: u64, packet: PacketRef, _src_mac: MacAddress) {
+    pub(crate) fn process_ipv4(
+        &mut self,
+        data: &[u8],
+        current_time: u64,
+        packet: PacketRef,
+        _src_mac: MacAddress,
+    ) {
         let result = self.ipv4.process_with_time(data, current_time);
 
         match result {
@@ -42,8 +48,10 @@ impl NetworkStack {
                     self.stats.record_dropped();
                     return;
                 }
-                if payload.as_ptr() < data.as_ptr() || 
-                   payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
+                if payload.as_ptr() < data.as_ptr()
+                    || payload.as_ptr() as usize + payload.len()
+                        > data.as_ptr() as usize + data.len()
+                {
                     self.stats.record_rx_error();
                     return;
                 }
@@ -61,40 +69,55 @@ impl NetworkStack {
                     self.stats.record_dropped();
                     return;
                 }
-                
+
                 // Offload to asynchronous endpoint stack
                 crate::net::l4::endpoint::event::send_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet: packet.clone() }
+                    crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+                        packet: packet.clone(),
+                    },
                 );
             }
             Ipv4ProcessResult::Tcp(_payload, _src_ip, dst_ip, _orig) => {
                 // Security: TCP multicast/broadcast is generally not allowed/supported (RFC 793 / RFC 1122)
-                if dst_ip.is_multicast() || dst_ip.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst_ip == self.config().ipv4.broadcast_address()) {
+                if dst_ip.is_multicast()
+                    || dst_ip.is_broadcast()
+                    || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0
+                        && dst_ip == self.config().ipv4.broadcast_address())
+                {
                     self.stats.record_dropped();
                     return;
                 }
-                
+
                 // Offload to asynchronous endpoint stack
                 crate::net::l4::endpoint::event::send_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet: packet.clone() }
+                    crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+                        packet: packet.clone(),
+                    },
                 );
             }
             Ipv4ProcessResult::Reassembled(reassembled_data) => {
                 // Security Fix: Offload reassembled packets to the asynchronous endpoint stack
                 // instead of processing them directly. This ensures fragmented packets are
                 // handled by the same stack as normal packets, preventing DoS and state bypass.
-                
+
                 // We perform basic filtering here as well
                 if let Some(packet) = Ipv4Packet::parse(&reassembled_data) {
                     let dst = packet.destination();
-                    if packet.protocol() == IpProtocol::Tcp && (dst.is_multicast() || dst.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst == self.config().ipv4.broadcast_address())) {
+                    if packet.protocol() == IpProtocol::Tcp
+                        && (dst.is_multicast()
+                            || dst.is_broadcast()
+                            || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0
+                                && dst == self.config().ipv4.broadcast_address()))
+                    {
                         self.stats.record_dropped();
                         return;
                     }
                 }
 
                 crate::net::l4::endpoint::event::send_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket { data: reassembled_data }
+                    crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
+                        data: reassembled_data,
+                    },
                 );
             }
             Ipv4ProcessResult::FragmentPending => {
@@ -103,13 +126,30 @@ impl NetworkStack {
             }
             Ipv4ProcessResult::ReassemblyTimeout(src, header_data) => {
                 // RFC 792: Send ICMP Time Exceeded (Fragment Reassembly Time Exceeded)
-                log::info!("IPv4: Reassembly timeout for {} - sending ICMP Time Exceeded", src);
-                self.send_icmp_time_exceeded(src, crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded, &header_data);
+                log::info!(
+                    "IPv4: Reassembly timeout for {} - sending ICMP Time Exceeded",
+                    src
+                );
+                self.send_icmp_time_exceeded(
+                    src,
+                    crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
+                    &header_data,
+                );
             }
             Ipv4ProcessResult::UnknownProtocol(proto, src, _dst, orig_packet) => {
                 // RFC 792: Send ICMP Destination Unreachable (Protocol Unreachable, Code 2)
-                log::warn!("IPv4: Unknown protocol {} from {} - sending ICMP Protocol Unreachable", proto, src);
-                self.send_icmp_error(src, crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable, None, orig_packet, current_time);
+                log::warn!(
+                    "IPv4: Unknown protocol {} from {} - sending ICMP Protocol Unreachable",
+                    proto,
+                    src
+                );
+                self.send_icmp_error(
+                    src,
+                    crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable,
+                    None,
+                    orig_packet,
+                    current_time,
+                );
             }
             Ipv4ProcessResult::Dropped => {
                 self.stats.record_dropped();
@@ -122,7 +162,12 @@ impl NetworkStack {
     }
 
     /// Process a reassembled IP packet
-    pub fn process_reassembled_packet(&mut self, data: &[u8], current_time: u64, _src_mac: MacAddress) {
+    pub fn process_reassembled_packet(
+        &mut self,
+        data: &[u8],
+        current_time: u64,
+        _src_mac: MacAddress,
+    ) {
         // Parse the reassembled packet
         if let Some(packet) = Ipv4Packet::parse(data) {
             let src = packet.source();
@@ -130,7 +175,11 @@ impl NetworkStack {
             let payload = packet.payload();
 
             // Security: Only process multicast/broadcast packets if intended (RFC 1122)
-            if (dst.is_multicast() && !self.is_multicast_allowed(dst)) || dst.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst == self.config().ipv4.broadcast_address()) {
+            if (dst.is_multicast() && !self.is_multicast_allowed(dst))
+                || dst.is_broadcast()
+                || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0
+                    && dst == self.config().ipv4.broadcast_address())
+            {
                 self.stats.record_dropped();
                 return;
             }
@@ -138,12 +187,20 @@ impl NetworkStack {
             match packet.protocol() {
                 IpProtocol::Tcp => {
                     // Security Fix: TCP multicast/broadcast is not allowed
-                    if dst.is_multicast() || dst.is_broadcast() || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0 && dst == self.config().ipv4.broadcast_address()) {
+                    if dst.is_multicast()
+                        || dst.is_broadcast()
+                        || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0
+                            && dst == self.config().ipv4.broadcast_address())
+                    {
                         self.stats.record_dropped();
                         return;
                     }
                     // Security Fix: Process TCP through the endpoint stack
-                    crate::net::l4::endpoint::tcp_rx::process_tcp_segment(src.octets(), dst.octets(), payload);
+                    crate::net::l4::endpoint::tcp_rx::process_tcp_segment(
+                        src.octets(),
+                        dst.octets(),
+                        payload,
+                    );
                 }
                 IpProtocol::Igmp => {
                     // Process IGMP for multicast group management
@@ -199,7 +256,10 @@ impl NetworkStack {
                 };
                 self.send_icmp_echo_reply(src_ip, identifier, sequence, echo_data, current_time);
             }
-            IcmpResult::EchoReplyReceived { identifier, sequence } => {
+            IcmpResult::EchoReplyReceived {
+                identifier,
+                sequence,
+            } => {
                 // ICMP Echo応答を非同期Futureレジストリに通知
                 let _ = identifier;
                 // RTTを概算（正確なタイムスタンプは別途管理が必要）
@@ -222,7 +282,11 @@ impl NetworkStack {
                 // Handle ICMP errors for PMTUD (RFC 1191)
                 self.handle_icmp_error(data, icmp_type, code, current_time);
             }
-            IcmpResult::Redirect { code, gateway, destination } => {
+            IcmpResult::Redirect {
+                code,
+                gateway,
+                destination,
+            } => {
                 // Handle ICMP Redirect for route optimization (RFC 792)
                 self.handle_icmp_redirect(code, gateway, destination, src_ip);
             }
@@ -235,7 +299,13 @@ impl NetworkStack {
     // =========================================================================
 
     /// Process IPv6 packet data
-    pub fn process_ipv6_data(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress, _reassembled: bool) {
+    pub fn process_ipv6_data(
+        &mut self,
+        data: &[u8],
+        current_time: u64,
+        src_mac: MacAddress,
+        _reassembled: bool,
+    ) {
         let ipv6 = match self.ipv6 {
             Some(ref mut ipv6) => ipv6,
             None => return,
@@ -258,15 +328,20 @@ impl NetworkStack {
             Ipv6ProcessResult::Reassembled(reassembled_data) => {
                 // Security Fix: Offload reassembled IPv6 packets to the asynchronous endpoint stack
                 crate::net::l4::endpoint::event::send_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket { data: reassembled_data }
+                    crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
+                        data: reassembled_data,
+                    },
                 );
             }
             Ipv6ProcessResult::FragmentPending => {}
             Ipv6ProcessResult::ReassemblyTimeout(src, _dst, unfragmentable, frag_header) => {
                 // RFC 8200: Send ICMPv6 Time Exceeded (Fragment Reassembly Time Exceeded)
-                log::info!("IPv6: Reassembly timeout for {} - sending ICMPv6 Time Exceeded", src);
-                
-                // Security/RFC Compliance: Include the fragment header in the quoted packet 
+                log::info!(
+                    "IPv6: Reassembly timeout for {} - sending ICMPv6 Time Exceeded",
+                    src
+                );
+
+                // Security/RFC Compliance: Include the fragment header in the quoted packet
                 // so the sender can identify the datagram via the Identification field.
                 let mut quoted = unfragmentable;
                 if let Some(fh) = frag_header {
@@ -278,38 +353,62 @@ impl NetworkStack {
                 match err {
                     crate::net::l3::ipv6::Ipv6ReassemblyError::Overlap => {
                         // RFC 8200/5722: Silent discard for overlapping fragments (no ICMP error required)
-                        log::warn!("IPv6: Fragment overlap from {} - discarding (RFC 8200)", src);
+                        log::warn!(
+                            "IPv6: Fragment overlap from {} - discarding (RFC 8200)",
+                            src
+                        );
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::InvalidSize => {
                         // RFC 8200: Send ICMPv6 Parameter Problem (Code 0), pointing to Payload Length
                         // Payload Length is at offset 4 in IPv6 header
-                        log::warn!("IPv6: Invalid fragment size (not multiple of 8) from {} - sending ICMPv6 Parameter Problem (RFC 8200)", src);
+                        log::warn!(
+                            "IPv6: Invalid fragment size (not multiple of 8) from {} - sending ICMPv6 Parameter Problem (RFC 8200)",
+                            src
+                        );
                         self.send_icmpv6_parameter_problem(src, 0, 4, &quoted_packet);
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
                         // RFC 8200: If the reassembled packet would be larger than 65,535 octets,
                         // send ICMPv6 Parameter Problem Code 0 pointing to Payload Length field.
-                        log::warn!("IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem (RFC 8200)", src);
+                        log::warn!(
+                            "IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem (RFC 8200)",
+                            src
+                        );
                         self.send_icmpv6_parameter_problem(src, 0, 4, &quoted_packet);
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::IncompleteHeaderChain => {
                         // RFC 7112: Send ICMPv6 Parameter Problem (Code 0), pointing to the first octet
                         // of the Fragment Header.
                         // quoted_packet contains unfragmentable + 8-byte fragment header.
-                        let fragment_header_pointer = (quoted_packet.len() as u32).saturating_sub(8);
-                        log::warn!("IPv6: Incomplete header chain in first fragment from {} - sending ICMPv6 Parameter Problem (RFC 7112)", src);
-                        self.send_icmpv6_parameter_problem(src, 0, fragment_header_pointer, &quoted_packet);
+                        let fragment_header_pointer =
+                            (quoted_packet.len() as u32).saturating_sub(8);
+                        log::warn!(
+                            "IPv6: Incomplete header chain in first fragment from {} - sending ICMPv6 Parameter Problem (RFC 7112)",
+                            src
+                        );
+                        self.send_icmpv6_parameter_problem(
+                            src,
+                            0,
+                            fragment_header_pointer,
+                            &quoted_packet,
+                        );
                     }
                 }
             }
             Ipv6ProcessResult::UnknownNextHeader(_proto, pointer, src, _dst, orig_packet) => {
                 // RFC 4443 Section 3.4: Send ICMPv6 Parameter Problem (Code 1)
-                log::warn!("IPv6: Unknown Next Header from {} - sending ICMPv6 Parameter Problem", src);
+                log::warn!(
+                    "IPv6: Unknown Next Header from {} - sending ICMPv6 Parameter Problem",
+                    src
+                );
                 self.send_icmpv6_parameter_problem(src, 1, pointer, orig_packet);
             }
             Ipv6ProcessResult::HopLimitExceeded(src, _dst, orig_packet) => {
                 // RFC 4443 Section 3.3: Send ICMPv6 Time Exceeded (Code 0)
-                log::warn!("IPv6: Hop Limit exceeded from {} - sending ICMPv6 Time Exceeded", src);
+                log::warn!(
+                    "IPv6: Hop Limit exceeded from {} - sending ICMPv6 Time Exceeded",
+                    src
+                );
                 self.send_icmpv6_time_exceeded(src, 0, orig_packet);
             }
             Ipv6ProcessResult::Dropped => {
@@ -350,7 +449,7 @@ impl NetworkStack {
                     return;
                 }
 
-                // Choose source address: if the original request was to our global address, 
+                // Choose source address: if the original request was to our global address,
                 // use that as source for the reply.
                 let mut reply_src = None;
                 if let Some(ref ipv6) = self.ipv6 {
@@ -366,7 +465,9 @@ impl NetworkStack {
                 }
 
                 if let Some(src_addr) = reply_src {
-                    self.send_icmpv6_echo_reply_with_src(src_addr, reply_dst, identifier, sequence, &echo_data);
+                    self.send_icmpv6_echo_reply_with_src(
+                        src_addr, reply_dst, identifier, sequence, &echo_data,
+                    );
                 }
             }
             Icmpv6Result::EchoReplyReceived {
@@ -374,7 +475,11 @@ impl NetworkStack {
                 identifier,
                 sequence,
             } => {
-                log::info!("ICMPv6: Echo Reply received id={} seq={}", identifier, sequence);
+                log::info!(
+                    "ICMPv6: Echo Reply received id={} seq={}",
+                    identifier,
+                    sequence
+                );
             }
             Icmpv6Result::NdpMessage {
                 msg_type,
@@ -384,10 +489,23 @@ impl NetworkStack {
                 src_mac: ndp_src_mac,
                 hop_limit,
             } => {
-                self.process_ndp_message(msg_type, &ndp_data, ndp_src, ndp_dst, ndp_src_mac, hop_limit, current_time);
+                self.process_ndp_message(
+                    msg_type,
+                    &ndp_data,
+                    ndp_src,
+                    ndp_dst,
+                    ndp_src_mac,
+                    hop_limit,
+                    current_time,
+                );
             }
-            Icmpv6Result::PacketTooBig { quoted_src, dst, mtu, quoted_packet } => {
-                // Security check (RFC 8201 / RFC 5927): Verify that the ICMPv6 message quotes 
+            Icmpv6Result::PacketTooBig {
+                quoted_src,
+                dst,
+                mtu,
+                quoted_packet,
+            } => {
+                // Security check (RFC 8201 / RFC 5927): Verify that the ICMPv6 message quotes
                 // a packet that we actually sent and corresponds to an active connection.
                 let mut is_our_packet = false;
                 if let Some(ref ipv6) = self.ipv6 {
@@ -410,30 +528,52 @@ impl NetworkStack {
 
                         // Skip extension headers to find the upper-layer header
                         use crate::net::l3::ipv6::skip_extension_headers;
-                        let (final_proto, transport_data) = skip_extension_headers(IpProtocol::from(next_header), payload);
+                        let (final_proto, transport_data) =
+                            skip_extension_headers(IpProtocol::from(next_header), payload);
 
                         match final_proto {
                             IpProtocol::Tcp => {
                                 if transport_data.len() >= 8 {
-                                    let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
-                                    let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
-                                    let seq_num = u32::from_be_bytes([transport_data[4], transport_data[5], transport_data[6], transport_data[7]]);
+                                    let src_port =
+                                        u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                                    let dst_port =
+                                        u16::from_be_bytes([transport_data[2], transport_data[3]]);
+                                    let seq_num = u32::from_be_bytes([
+                                        transport_data[4],
+                                        transport_data[5],
+                                        transport_data[6],
+                                        transport_data[7],
+                                    ]);
 
                                     use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
-                                    let local_addr = TcpEndpointAddr::new_v6(quoted_src.octets(), src_port);
-                                    let remote_addr = TcpEndpointAddr::new_v6(dst.octets(), dst_port);
+                                    let local_addr =
+                                        TcpEndpointAddr::new_v6(quoted_src.octets(), src_port);
+                                    let remote_addr =
+                                        TcpEndpointAddr::new_v6(dst.octets(), dst_port);
 
-                                    if !self.tcp.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
-                                        log::warn!("[NET] ICMPv6: PMTU error for {} rejected due to invalid TCP seq", dst);
+                                    if !self.tcp.validate_icmp_sequence(
+                                        local_addr,
+                                        remote_addr,
+                                        seq_num,
+                                    ) {
+                                        log::warn!(
+                                            "[NET] ICMPv6: PMTU error for {} rejected due to invalid TCP seq",
+                                            dst
+                                        );
                                         return;
                                     }
                                 }
                             }
                             IpProtocol::Udp => {
                                 if transport_data.len() >= 4 {
-                                    let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                                    let src_port =
+                                        u16::from_be_bytes([transport_data[0], transport_data[1]]);
                                     if !self.udp.has_endpoint(src_port) {
-                                        log::warn!("[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})", dst, src_port);
+                                        log::warn!(
+                                            "[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})",
+                                            dst,
+                                            src_port
+                                        );
                                         return;
                                     }
                                 }
@@ -451,31 +591,73 @@ impl NetworkStack {
                 } else {
                     log::warn!(
                         "ICMPv6: Packet Too Big for {} rejected (quoted src {} is not local)",
-                        dst, quoted_src
+                        dst,
+                        quoted_src
                     );
                 }
             }
 
-            Icmpv6Result::DestinationUnreachable { code, quoted_src, quoted_dst, quoted_packet } => {
+            Icmpv6Result::DestinationUnreachable {
+                code,
+                quoted_src,
+                quoted_dst,
+                quoted_packet,
+            } => {
                 log::warn!(
                     "ICMPv6: Destination Unreachable (code={}) src={} dst={}",
-                    code, quoted_src, quoted_dst
+                    code,
+                    quoted_src,
+                    quoted_dst
                 );
-                self.handle_icmpv6_error_transport_notification(quoted_src, quoted_dst, Icmpv6Type::DestinationUnreachable, code, &quoted_packet);
+                self.handle_icmpv6_error_transport_notification(
+                    quoted_src,
+                    quoted_dst,
+                    Icmpv6Type::DestinationUnreachable,
+                    code,
+                    &quoted_packet,
+                );
             }
-            Icmpv6Result::TimeExceeded { code, quoted_src, quoted_dst, quoted_packet } => {
+            Icmpv6Result::TimeExceeded {
+                code,
+                quoted_src,
+                quoted_dst,
+                quoted_packet,
+            } => {
                 log::warn!(
                     "ICMPv6: Time Exceeded (code={}) src={} dst={}",
-                    code, quoted_src, quoted_dst
+                    code,
+                    quoted_src,
+                    quoted_dst
                 );
-                self.handle_icmpv6_error_transport_notification(quoted_src, quoted_dst, Icmpv6Type::TimeExceeded, code, &quoted_packet);
+                self.handle_icmpv6_error_transport_notification(
+                    quoted_src,
+                    quoted_dst,
+                    Icmpv6Type::TimeExceeded,
+                    code,
+                    &quoted_packet,
+                );
             }
-            Icmpv6Result::ParameterProblem { code, pointer, quoted_src, quoted_dst, quoted_packet } => {
+            Icmpv6Result::ParameterProblem {
+                code,
+                pointer,
+                quoted_src,
+                quoted_dst,
+                quoted_packet,
+            } => {
                 log::warn!(
                     "ICMPv6: Parameter Problem (code={}, pointer={}) src={} dst={}",
-                    code, pointer, quoted_src, quoted_dst
+                    code,
+                    pointer,
+                    quoted_src,
+                    quoted_dst
                 );
-                self.handle_icmpv6_error_transport_notification(quoted_src, quoted_dst, Icmpv6Type::ParameterProblem, code, &quoted_packet);
+                self.handle_icmpv6_error_transport_notification(
+                    quoted_src,
+                    quoted_dst,
+                    Icmpv6Type::ParameterProblem,
+                    code,
+                    &quoted_packet,
+                );
             }
             Icmpv6Result::Dropped | Icmpv6Result::Error => {}
         }
@@ -516,45 +698,44 @@ impl NetworkStack {
                 // Get our link-local address
                 if let Some(ref ipv6) = self.ipv6 {
                     let our_addr = ipv6.config().link_local;
-                    let na_msg = NdpProcessor::build_na(
-                        &our_addr,
-                        &na_dst,
-                        &target,
-                        &our_mac,
-                        solicited,
-                    );
+                    let na_msg =
+                        NdpProcessor::build_na(&our_addr, &na_dst, &target, &our_mac, solicited);
                     self.send_ipv6_icmpv6(&our_addr, &na_dst, &na_msg);
                     log::info!("NDP: Sent NA for {} to {}", target, na_dst);
                 }
             }
-            NdpResult::SendNeighborAdvertisementMulticast {
-                target,
-                our_mac,
-            } => {
+            NdpResult::SendNeighborAdvertisementMulticast { target, our_mac } => {
                 // Get our link-local address
                 if let Some(ref ipv6) = self.ipv6 {
                     let our_addr = ipv6.config().link_local;
                     let mcast_dst = Ipv6Address::ALL_NODES_LINK_LOCAL;
                     let na_msg = NdpProcessor::build_na(
-                        &our_addr,
-                        &mcast_dst,
-                        &target,
-                        &our_mac,
+                        &our_addr, &mcast_dst, &target, &our_mac,
                         false, // solicited = false for multicast defense
                     );
                     self.send_ipv6_icmpv6(&our_addr, &mcast_dst, &na_msg);
-                    log::info!("NDP: Sent Multicast NA for {} to defend address (DAD)", target);
+                    log::info!(
+                        "NDP: Sent Multicast NA for {} to defend address (DAD)",
+                        target
+                    );
                 }
             }
             NdpResult::SendNeighborSolicitation { src, dst, target } => {
-                let ns_msg = NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes());
+                let ns_msg =
+                    NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes());
                 self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
                 log::info!("NDP: Sent NS from {} to {} for target {}", src, dst, target);
             }
             NdpResult::NeighborUpdated { ip, mac } => {
                 log::info!(
                     "NDP: Neighbor {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                    ip, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                    ip,
+                    mac[0],
+                    mac[1],
+                    mac[2],
+                    mac[3],
+                    mac[4],
+                    mac[5]
                 );
                 // Drain any pending packets for this now-resolved neighbor
                 self.drain_ndp_pending(&ip);
@@ -564,7 +745,11 @@ impl NetworkStack {
                 router_mac: _,
                 prefixes,
             } => {
-                log::info!("NDP: Router Advertisement from {}, {} prefixes", router, prefixes.len());
+                log::info!(
+                    "NDP: Router Advertisement from {}, {} prefixes",
+                    router,
+                    prefixes.len()
+                );
                 // SLAAC (RFC 4862): Apply prefix information
                 for prefix_opt in &prefixes {
                     if let crate::net::l3::ndp::NdpOption::PrefixInfo {
@@ -580,24 +765,36 @@ impl NetworkStack {
                         if *autonomous && *prefix_len == 64 && *valid_lifetime > 0 {
                             if let Some(ref mut ipv6) = self.ipv6 {
                                 let mac_bytes = self.config.mac.as_bytes();
-                                let global_addr =
-                                    Ipv6Address::from_prefix_eui64(prefix, mac_bytes);
+                                let global_addr = Ipv6Address::from_prefix_eui64(prefix, mac_bytes);
                                 // Only set if we don't already have this address
                                 if ipv6.config().global != Some(global_addr) {
                                     ipv6.set_global_address(global_addr);
                                     log::info!(
                                         "SLAAC: Configured global address {} from prefix {}",
-                                        global_addr, prefix
+                                        global_addr,
+                                        prefix
                                     );
-                                    
+
                                     // Initiate Duplicate Address Detection (RFC 4862)
                                     if let Some(ref mut ndp_proc) = self.ndp {
                                         let dad_res = ndp_proc.initiate_dad(&global_addr);
                                         match dad_res {
-                                            NdpResult::SendNeighborSolicitation { src, dst, target } => {
-                                                let ns_msg = NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes());
+                                            NdpResult::SendNeighborSolicitation {
+                                                src,
+                                                dst,
+                                                target,
+                                            } => {
+                                                let ns_msg = NdpProcessor::build_ns(
+                                                    &src,
+                                                    &dst,
+                                                    &target,
+                                                    self.config.mac.as_bytes(),
+                                                );
                                                 self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
-                                                log::info!("NDP: Sent DAD NS for target {}", target);
+                                                log::info!(
+                                                    "NDP: Sent DAD NS for target {}",
+                                                    target
+                                                );
                                             }
                                             _ => {}
                                         }
@@ -606,8 +803,7 @@ impl NetworkStack {
                             }
                             if let Some(ref mut ndp) = self.ndp {
                                 let mac_bytes = self.config.mac.as_bytes();
-                                let global_addr =
-                                    Ipv6Address::from_prefix_eui64(prefix, mac_bytes);
+                                let global_addr = Ipv6Address::from_prefix_eui64(prefix, mac_bytes);
                                 ndp.add_global_address(global_addr);
                             }
                         }
@@ -632,8 +828,15 @@ impl NetworkStack {
                     }
                 }
             }
-            NdpResult::Redirect { target, destination } => {
-                log::info!("NDP: Redirect for {} to target router {}", destination, target);
+            NdpResult::Redirect {
+                target,
+                destination,
+            } => {
+                log::info!(
+                    "NDP: Redirect for {} to target router {}",
+                    destination,
+                    target
+                );
                 // Update IPv6 Path MTU or routing table with redirect info
                 // Currently we don't have a separate IPv6 redirect cache like IPv4,
                 // but we could theoretically update the neighbor cache (already done in process_redirect).
@@ -660,14 +863,17 @@ impl NetworkStack {
 
         let current_time = self.current_time();
         self.igmp.update_time(current_time);
-        
+
         let result = self.igmp.process(data, src_ip);
-        
+
         match result {
             IgmpResult::GeneralQueryReceived { max_resp_time: _ } => {
                 // Timers are set internally, reports will be sent on timer expiry
             }
-            IgmpResult::GroupQueryReceived { group: _, max_resp_time: _ } => {
+            IgmpResult::GroupQueryReceived {
+                group: _,
+                max_resp_time: _,
+            } => {
                 // Timer set for specific group
             }
             IgmpResult::ReportReceived { group: _ } => {
@@ -681,7 +887,7 @@ impl NetworkStack {
                 self.stats.record_dropped();
             }
         }
-        
+
         // Process and send any pending IGMP reports
         self.send_pending_igmp_reports();
     }

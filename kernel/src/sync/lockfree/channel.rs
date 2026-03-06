@@ -70,7 +70,9 @@ impl<T: 'static, const N: usize> BoundedChannel<T, N> {
     }
 
     /// Create a channel from a caller-provided static buffer.
-    pub const fn from_static(inner: &'static MpscRingBuffer<T, N>) -> (BoundedSender<T, N>, BoundedReceiver<T, N>) {
+    pub const fn from_static(
+        inner: &'static MpscRingBuffer<T, N>,
+    ) -> (BoundedSender<T, N>, BoundedReceiver<T, N>) {
         (BoundedSender { inner }, BoundedReceiver { inner })
     }
 }
@@ -157,7 +159,12 @@ impl<T: 'static, const N: usize> BoundedReceiverStatic<T, N> {
 impl<T: 'static, const N: usize> BoundedChannel<T, N> {
     /// Convenience constructor to create Static sender/receiver wrappers from
     /// a `'static` buffer
-    pub const fn into_static_wrappers(inner: &'static MpscRingBuffer<T, N>) -> (BoundedSenderStatic<T, N>, BoundedReceiverStatic<T, N>) {
-        (BoundedSenderStatic { inner }, BoundedReceiverStatic { inner })
+    pub const fn into_static_wrappers(
+        inner: &'static MpscRingBuffer<T, N>,
+    ) -> (BoundedSenderStatic<T, N>, BoundedReceiverStatic<T, N>) {
+        (
+            BoundedSenderStatic { inner },
+            BoundedReceiverStatic { inner },
+        )
     }
 }

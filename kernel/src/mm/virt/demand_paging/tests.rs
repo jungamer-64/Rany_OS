@@ -15,7 +15,7 @@ fn test_vm_region_contains() {
         VirtAddr::new(0x5000),
         ProtFlags::READ | ProtFlags::WRITE,
     );
-    
+
     assert!(region.contains(VirtAddr::new(0x1000)));
     assert!(region.contains(VirtAddr::new(0x3000)));
     assert!(!region.contains(VirtAddr::new(0x5000)));

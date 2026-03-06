@@ -12,9 +12,9 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::ops::Range;
 use crate::util::debug_check_ptr_range;
 use alloc::format;
+use core::ops::Range;
 use gimli::{
     BaseAddresses, CieOrFde, EhFrame, EndianSlice, LittleEndian, UninitializedUnwindContext,
     UnwindSection,
@@ -451,7 +451,10 @@ impl DomainUnwinder {
     /// 3. ドメインが所有するExchange Heapリソースを解放
     /// 4. ドメインを終了状態に移行
     pub fn recover_from_panic(&self) -> Result<(), GimliUnwindError> {
-        crate::io::log::early_print(&alloc::format!("Domain {} panic recovery initiated\n", self.domain_id));
+        crate::io::log::early_print(&alloc::format!(
+            "Domain {} panic recovery initiated\n",
+            self.domain_id
+        ));
 
         // スタック範囲の有効性チェック
         if self.stack_range.is_empty() {
@@ -467,7 +470,10 @@ impl DomainUnwinder {
         // 3. ドメインが保持するロックを解放
         self.release_domain_locks();
 
-        crate::io::log::early_print(&alloc::format!("Domain {} panic recovery completed\n", self.domain_id));
+        crate::io::log::early_print(&alloc::format!(
+            "Domain {} panic recovery completed\n",
+            self.domain_id
+        ));
         Ok(())
     }
 
@@ -488,7 +494,10 @@ impl DomainUnwinder {
                         (drop_fn)(guard.data_ptr);
                     }
                 }
-                crate::io::log::early_print(&alloc::format!("  Executed drop guard at {:#x}\n", guard.stack_addr));
+                crate::io::log::early_print(&alloc::format!(
+                    "  Executed drop guard at {:#x}\n",
+                    guard.stack_addr
+                ));
             }
         }
 

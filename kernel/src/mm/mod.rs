@@ -23,10 +23,10 @@
 // ============================================================================
 
 // === Foundation (共通型・ユーティリティ) ===
-pub mod types;        // 共通型定義（FrameIndex, NumaNodeId, AddressUnit）
 pub mod atomic_utils; // アトミック操作ユーティリティ（AtomicU8, AtomicU16）
-pub mod bitmap;       // 階層ビットマップ（IOVA_MM_MIGRATION_PLAN Phase 1.2）
-pub mod remote_free;  // リモートフリーリング（IOVA_MM_MIGRATION_PLAN Phase 1.3）
+pub mod bitmap; // 階層ビットマップ（IOVA_MM_MIGRATION_PLAN Phase 1.2）
+pub mod remote_free;
+pub mod types; // 共通型定義（FrameIndex, NumaNodeId, AddressUnit） // リモートフリーリング（IOVA_MM_MIGRATION_PLAN Phase 1.3）
 
 // === Physical Frame Allocators (物理フレームアロケータ) ===
 pub mod phys;

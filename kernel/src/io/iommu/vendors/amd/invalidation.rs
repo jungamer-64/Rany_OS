@@ -12,9 +12,9 @@ use core::task::Poll;
 
 use crate::io::iommu::types::{DeviceId, IommuError};
 
+use super::AmdIommuDriver;
 use super::cmd;
 use super::fault::AMD_CMD_WAITERS;
-use super::AmdIommuDriver;
 
 // ---------------------------------------------------------------------------
 // AmdCommandWaitToken
@@ -105,12 +105,15 @@ unsafe impl Sync for AmdCommandState {}
 impl Drop for AmdCommandState {
     fn drop(&mut self) {
         // Security: Unregister from DMA protection
-        crate::security::dma::unregister_protected_range(self.buffer.phys_base, (self.frame_count * 4096) as u64);
+        crate::security::dma::unregister_protected_range(
+            self.buffer.phys_base,
+            (self.frame_count * 4096) as u64,
+        );
         crate::security::dma::unregister_protected_range(self.sync_phys, 4096);
 
         // Deallocate frames
         use x86_64::structures::paging::{PhysFrame, Size4KiB};
-        
+
         // Command buffer frames
         for i in 0..self.frame_count {
             let addr = self.buffer.phys_base + (i as u64 * 4096);
@@ -118,7 +121,8 @@ impl Drop for AmdCommandState {
             crate::mm::phys::frame_allocator::dealloc_frame(frame);
         }
         // Sync page frame
-        let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(self.sync_phys));
+        let frame =
+            PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(self.sync_phys));
         crate::mm::phys::frame_allocator::dealloc_frame(frame);
     }
 }
@@ -218,7 +222,7 @@ impl AmdIommuDriver {
         };
 
         let res = token.wait_async().await;
-        
+
         // Complete epoch after async invalidation finishes
         self.iova_allocator.complete_epoch(epoch);
         res
@@ -260,12 +264,20 @@ impl AmdIommuDriver {
         })
     }
 
-    pub(crate) fn invalidate_device_entry_by_devid(&self, segment: u16, devid: u16) -> Result<(), IommuError> {
+    pub(crate) fn invalidate_device_entry_by_devid(
+        &self,
+        segment: u16,
+        devid: u16,
+    ) -> Result<(), IommuError> {
         let device = Self::device_id_from_devid(segment, devid);
         self.invalidate_device_entry(device)
     }
 
-    pub(crate) fn invalidate_interrupt_table(&self, segment: u16, device_id: u16) -> Result<(), IommuError> {
+    pub(crate) fn invalidate_interrupt_table(
+        &self,
+        segment: u16,
+        device_id: u16,
+    ) -> Result<(), IommuError> {
         let device = Self::device_id_from_devid(segment, device_id);
         let unit_idx = self
             .find_unit_index_for_device(device)
@@ -293,7 +305,7 @@ impl AmdIommuDriver {
             .find_unit_index_for_device(device)
             .ok_or(IommuError::DeviceNotFound)?;
         let devid = device.requester_id();
-        
+
         self.with_cmd_state(unit_idx, |state| {
             state.submit_and_wait(cmd::AmdCommand::invalidate_iotlb_pages(
                 devid, 0, iova, size, None,
@@ -311,7 +323,7 @@ impl AmdIommuDriver {
         let unit_idx = self
             .find_unit_index_for_device(device)
             .ok_or(IommuError::DeviceNotFound)?;
-        
+
         self.with_cmd_state(unit_idx, |state| {
             state.submit_and_wait(cmd::AmdCommand::invalidate_iommu_pages(
                 domain_id, iova, size, None,
@@ -367,7 +379,7 @@ impl AmdIommuDriver {
                 continue;
             }
             has_state = true;
-            
+
             let cmd = cmd::AmdCommand::invalidate_iommu_pages(domain_id, iova, size, None);
             futures.push(self.submit_cmd_async(idx, cmd));
         }
@@ -406,11 +418,12 @@ impl AmdIommuDriver {
                 continue;
             }
             has_state = true;
-            
+
             let res = self.with_cmd_state(idx, |state| {
-                state.submit_and_wait_token(cmd::AmdCommand::invalidate_iommu_pages(
-                    domain_id, iova, size, None,
-                ), false)
+                state.submit_and_wait_token(
+                    cmd::AmdCommand::invalidate_iommu_pages(domain_id, iova, size, None),
+                    false,
+                )
             })?;
             tokens.push(res);
         }
@@ -439,11 +452,11 @@ impl AmdIommuDriver {
         any_ats: bool,
     ) -> Result<(), IommuError> {
         let epoch = self.iova_allocator.advance_epoch();
-        
+
         // AMD-Vi uses INVALIDATE_IOMMU_PAGES command
         // For emergency isolation, we invalidate all pages in the domain
         let res = self.invalidate_domain_all(domain_id);
-        
+
         if res.is_ok() && any_ats {
             let _ = self.invalidate_domain_device_tlbs(domain_id, iova, None);
         }
@@ -455,7 +468,7 @@ impl AmdIommuDriver {
     /// Invalidate all IOTLB entries globally.
     pub(crate) fn invalidate_iotlb_global(&self) -> Result<(), IommuError> {
         let epoch = self.iova_allocator.advance_epoch();
-        
+
         // Invalidate all domains - AMD-Vi doesn't have a single global invalidation
         // so we iterate through known domains
         let domain_ids: Vec<u16> = match self.domains.lock() {
@@ -484,16 +497,15 @@ impl AmdIommuDriver {
     /// Invalidate context cache globally.
     pub(crate) fn invalidate_context_global(&self) -> Result<(), IommuError> {
         let epoch = self.iova_allocator.advance_epoch();
-        
+
         // AMD-Vi uses device table entries; invalidation is done via
         // INVALIDATE_DEVTAB_ENTRY command
         // For global invalidation, we flush all known devices
         let res = self.invalidate_all_device_entries();
-        
+
         self.iova_allocator.complete_epoch(epoch);
         res
     }
-
 
     /// Invalidate all pages in a domain.
     fn invalidate_domain_all(&self, domain_id: u16) -> Result<(), IommuError> {
@@ -507,9 +519,9 @@ impl AmdIommuDriver {
                     Ok(mut state) => {
                         let command = cmd::AmdCommand::invalidate_iommu_pages(
                             domain_id,
-                            0,         // address
-                            u64::MAX,  // size = all pages
-                            None,      // pasid
+                            0,        // address
+                            u64::MAX, // size = all pages
+                            None,     // pasid
                         );
                         match state.submit_and_wait_token(command, false) {
                             Ok(token) => tokens.push(token),
@@ -517,7 +529,10 @@ impl AmdIommuDriver {
                         }
                     }
                     Err(_) => {
-                        log::error!("[IOMMU][AMD-Vi] cmd_state lock poisoned during domain {} invalidation", domain_id);
+                        log::error!(
+                            "[IOMMU][AMD-Vi] cmd_state lock poisoned during domain {} invalidation",
+                            domain_id
+                        );
                         last_err = Some(IommuError::Poisoned);
                     }
                 }
@@ -544,7 +559,10 @@ impl AmdIommuDriver {
         iova: Option<u64>,
         size: Option<u64>,
     ) -> Result<(), IommuError> {
-        let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
+        let device_domains = self
+            .device_domains
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
         for (&device, &did) in device_domains.iter() {
             if did == domain_id {
                 // For ATS-aware invalidation, we must send INVALIDATE_IOTLB_PAGES to the device
@@ -564,10 +582,13 @@ impl AmdIommuDriver {
     /// Invalidate Device-TLBs for all attached devices (global).
     pub(crate) fn invalidate_global_device_tlbs(&self) -> Result<(), IommuError> {
         let devices: Vec<DeviceId> = {
-            let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
+            let device_domains = self
+                .device_domains
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?;
             device_domains.keys().cloned().collect()
         };
-        
+
         for device in devices {
             let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
         }
@@ -583,16 +604,17 @@ impl AmdIommuDriver {
     ) -> Result<(), IommuError> {
         let mut futures = Vec::new();
         {
-            let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
+            let device_domains = self
+                .device_domains
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?;
             for (&device, &did) in device_domains.iter() {
                 if did == domain_id {
                     let fut = match (iova, size) {
                         (Some(iova_val), Some(size_val)) => {
                             self.invalidate_iotlb_pages_async(device, iova_val, size_val)
                         }
-                        _ => {
-                            self.invalidate_iotlb_pages_async(device, 0, u64::MAX)
-                        }
+                        _ => self.invalidate_iotlb_pages_async(device, 0, u64::MAX),
                     };
                     futures.push(fut);
                 }
@@ -612,7 +634,6 @@ impl AmdIommuDriver {
             Ok(())
         }
     }
-
 
     /// Invalidate all device table entries.
     fn invalidate_all_device_entries(&self) -> Result<(), IommuError> {
@@ -635,13 +656,12 @@ impl AmdIommuDriver {
                                 break;
                             }
                         }
-                        
+
                         if last_err.is_none() {
                             // Submit a completion wait and wait for it
                             match state.submit_and_wait_token(
                                 cmd::AmdCommand::completion_wait(
-                                    sync_phys,
-                                    0, // Dummy
+                                    sync_phys, 0, // Dummy
                                     false,
                                 ),
                                 false,
@@ -650,7 +670,7 @@ impl AmdIommuDriver {
                                     if let Err(err) = token.wait_blocking() {
                                         last_err = Some(err);
                                     }
-                                },
+                                }
                                 Err(err) => {
                                     last_err = Some(err);
                                 }
@@ -658,7 +678,9 @@ impl AmdIommuDriver {
                         }
                     }
                     Err(_) => {
-                        log::error!("[IOMMU][AMD-Vi] cmd_state lock poisoned during all-device-entries invalidation");
+                        log::error!(
+                            "[IOMMU][AMD-Vi] cmd_state lock poisoned during all-device-entries invalidation"
+                        );
                         last_err = Some(IommuError::Poisoned);
                     }
                 }
@@ -676,7 +698,9 @@ impl AmdIommuDriver {
 // IommuInvalidator implementation for AmdIommuDriver
 // ---------------------------------------------------------------------------
 
-use crate::io::iommu::common::domain::{IommuInvalidator, InvalidateKind, InvalidateRequest, InvalidateFlags};
+use crate::io::iommu::common::domain::{
+    InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
+};
 
 impl IommuInvalidator for AmdIommuDriver {
     fn process_invalidations(&self, requests: &[InvalidateRequest]) -> Result<(), IommuError> {
@@ -727,8 +751,8 @@ impl IommuInvalidator for AmdIommuDriver {
                     // IEC, PasidIotlb, etc. are not yet fully supported on AMD backend
                     // Fall back to global flush for safety if requested and unsupported
                     if ats {
-                         self.invalidate_all_entries()?;
-                         self.invalidate_global_device_tlbs()?;
+                        self.invalidate_all_entries()?;
+                        self.invalidate_global_device_tlbs()?;
                     }
                 }
             }
@@ -739,20 +763,31 @@ impl IommuInvalidator for AmdIommuDriver {
         Ok(())
     }
 
-    fn invalidate_async(&self, request: InvalidateRequest) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
+    fn invalidate_async(
+        &self,
+        request: InvalidateRequest,
+    ) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
         async move {
             let ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
             match request.kind {
                 InvalidateKind::Pages { start_iova, bytes } => {
-                    self.invalidate_domain_pages_async(request.domain_id, start_iova, bytes).await?;
+                    self.invalidate_domain_pages_async(request.domain_id, start_iova, bytes)
+                        .await?;
                     if ats {
-                        self.invalidate_domain_device_tlbs_async(request.domain_id, Some(start_iova), Some(bytes)).await?;
+                        self.invalidate_domain_device_tlbs_async(
+                            request.domain_id,
+                            Some(start_iova),
+                            Some(bytes),
+                        )
+                        .await?;
                     }
                 }
                 InvalidateKind::Domain => {
-                    self.invalidate_domain_pages_async(request.domain_id, 0, u64::MAX).await?;
+                    self.invalidate_domain_pages_async(request.domain_id, 0, u64::MAX)
+                        .await?;
                     if ats {
-                        self.invalidate_domain_device_tlbs_async(request.domain_id, None, None).await?;
+                        self.invalidate_domain_device_tlbs_async(request.domain_id, None, None)
+                            .await?;
                     }
                 }
                 InvalidateKind::Global => {

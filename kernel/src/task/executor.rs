@@ -193,9 +193,7 @@ impl PerCoreTaskStore {
                 self.task_count.fetch_add(1, Ordering::Relaxed);
             }
             Err(_) => {
-                log::error!(
-                    "[EXECUTOR] Per-core tasks lock poisoned during insert; dropping task"
-                );
+                log::error!("[EXECUTOR] Per-core tasks lock poisoned during insert; dropping task");
             }
         }
     }
@@ -681,8 +679,12 @@ impl Executor {
             return Some(task);
         }
         for (cpu_id, store) in PER_CORE_STORES.iter().enumerate() {
-            if cpu_id == self.cpu_id { continue; }
-            if check_active && !store.active.load(Ordering::Acquire) { continue; }
+            if cpu_id == self.cpu_id {
+                continue;
+            }
+            if check_active && !store.active.load(Ordering::Acquire) {
+                continue;
+            }
             if let Some(task) = store.remove(&task_id) {
                 return Some(task);
             }

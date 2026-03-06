@@ -82,7 +82,11 @@ impl SuperBlock {
 
     /// ボリュームラベルを文字列として取得
     pub fn label_str(&self) -> &str {
-        let end = self.label.iter().position(|&b| b == 0).unwrap_or(self.label.len());
+        let end = self
+            .label
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.label.len());
         core::str::from_utf8(&self.label[..end]).unwrap_or("")
     }
 }

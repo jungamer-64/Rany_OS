@@ -14,7 +14,6 @@
 //! - Parameter Problem
 //! - NDP messages (delegated to ndp.rs)
 
-
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -310,7 +309,7 @@ impl Icmpv6Processor {
         let last_time = self.last_token_time.load(Ordering::Relaxed);
         let elapsed = current_time.saturating_sub(last_time);
         let new_tokens = (elapsed / 50) as u32;
-        
+
         if new_tokens > 0 {
             // Atomic update of tokens and time
             // Note: simple load/store is usually fine for rate limiting in a kernel,
@@ -323,10 +322,12 @@ impl Icmpv6Processor {
 
         let current_tokens = self.tx_tokens.load(Ordering::Relaxed);
         if current_tokens == 0 {
-            self.stats.dropped_rate_limit.fetch_add(1, Ordering::Relaxed);
+            self.stats
+                .dropped_rate_limit
+                .fetch_add(1, Ordering::Relaxed);
             return false;
         }
-        
+
         self.tx_tokens.fetch_sub(1, Ordering::Relaxed);
         true
     }
@@ -391,9 +392,7 @@ impl Icmpv6Processor {
                     }
                 })
             }
-            Icmpv6Type::PacketTooBig => {
-                self.handle_packet_too_big(data)
-            }
+            Icmpv6Type::PacketTooBig => self.handle_packet_too_big(data),
             Icmpv6Type::TimeExceeded => {
                 self.handle_quoted_error(data, |code, _arg, src, dst, packet| {
                     Icmpv6Result::TimeExceeded {
@@ -432,7 +431,10 @@ impl Icmpv6Processor {
             }
             Icmpv6Type::Redirect => {
                 self.stats.rx_ndp.fetch_add(1, Ordering::Relaxed);
-                log::warn!("ICMPv6: Ignoring Redirect from {} (Security: disabled by default)", src);
+                log::warn!(
+                    "ICMPv6: Ignoring Redirect from {} (Security: disabled by default)",
+                    src
+                );
                 Icmpv6Result::Dropped
             }
             _ => {
@@ -543,7 +545,6 @@ impl Icmpv6Processor {
             }
         })
     }
-
 }
 
 impl Default for Icmpv6Processor {
@@ -570,7 +571,14 @@ impl Icmpv6Builder {
         sequence: u16,
         payload: &[u8],
     ) -> Vec<u8> {
-        Self::build_echo(src, dst, Icmpv6Type::EchoReply, identifier, sequence, payload)
+        Self::build_echo(
+            src,
+            dst,
+            Icmpv6Type::EchoReply,
+            identifier,
+            sequence,
+            payload,
+        )
     }
 
     /// Build an ICMPv6 Echo Request
@@ -583,7 +591,14 @@ impl Icmpv6Builder {
         sequence: u16,
         payload: &[u8],
     ) -> Vec<u8> {
-        Self::build_echo(src, dst, Icmpv6Type::EchoRequest, identifier, sequence, payload)
+        Self::build_echo(
+            src,
+            dst,
+            Icmpv6Type::EchoRequest,
+            identifier,
+            sequence,
+            payload,
+        )
     }
 
     /// Build ICMPv6 Echo message (shared by Request and Reply)
@@ -648,7 +663,14 @@ impl Icmpv6Builder {
         code: u8,
         trigger_packet: &[u8],
     ) -> Vec<u8> {
-        Self::build_error(src, dst, Icmpv6Type::DestinationUnreachable, code, 0, trigger_packet)
+        Self::build_error(
+            src,
+            dst,
+            Icmpv6Type::DestinationUnreachable,
+            code,
+            0,
+            trigger_packet,
+        )
     }
 
     /// Build a Time Exceeded message
@@ -669,7 +691,14 @@ impl Icmpv6Builder {
         pointer: u32,
         trigger_packet: &[u8],
     ) -> Vec<u8> {
-        Self::build_error(src, dst, Icmpv6Type::ParameterProblem, code, pointer, trigger_packet)
+        Self::build_error(
+            src,
+            dst,
+            Icmpv6Type::ParameterProblem,
+            code,
+            pointer,
+            trigger_packet,
+        )
     }
 
     /// Internal helper to build ICMPv6 error messages
@@ -683,7 +712,7 @@ impl Icmpv6Builder {
     ) -> Vec<u8> {
         // ICMPv6 header (4) + arg/unused (4) + as much of trigger as fits
         // stay under minimum MTU of 1280 (RFC 4443)
-        let max_trigger = 1232.min(trigger_packet.len()); 
+        let max_trigger = 1232.min(trigger_packet.len());
         let total_len = 8 + max_trigger;
         let mut message = vec![0u8; total_len];
 
@@ -693,7 +722,7 @@ impl Icmpv6Builder {
         // Bytes 4-7 = argument (e.g. pointer for parameter problem)
         let arg_bytes = arg.to_be_bytes();
         message[4..8].copy_from_slice(&arg_bytes);
-        
+
         // Trigger packet
         message[8..8 + max_trigger].copy_from_slice(&trigger_packet[..max_trigger]);
 
@@ -792,7 +821,12 @@ pub mod tests {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
         let result = processor.process(&msg, src, dst, mac, 64, 100);
         match result {
-            Icmpv6Result::SendEchoReply { dst: reply_dst, identifier, sequence, data } => {
+            Icmpv6Result::SendEchoReply {
+                dst: reply_dst,
+                identifier,
+                sequence,
+                data,
+            } => {
                 assert_eq!(reply_dst, src);
                 assert_eq!(identifier, 100);
                 assert_eq!(sequence, 5);
@@ -839,7 +873,7 @@ pub mod tests {
         // Must have valid checksum
         let mut msg = vec![0u8; 24]; // NS is at least 24 bytes
         msg[0] = 135; // Neighbor Solicitation
-        msg[1] = 0;   // code
+        msg[1] = 0; // code
         // bytes 4-7: reserved
         // bytes 8-23: target address (zeros = ::)
 

@@ -25,12 +25,12 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::sync::IrqMutex;
 use crate::mm::types::{FrameIndex, PAGE_SIZE_4K};
+use crate::sync::IrqMutex;
 
 // ============================================================================
 // Configuration
@@ -61,7 +61,7 @@ impl PageHash {
     pub fn compute(page_data: &[u8; PAGE_SIZE_4K]) -> Self {
         PageHash(crate::util::fnv1a_page_hash(page_data))
     }
-    
+
     /// バケットインデックスを取得
     #[inline]
     pub fn bucket_index(&self) -> usize {
@@ -130,22 +130,22 @@ pub struct KsmStats {
 pub struct KsmManager {
     /// 安定ページテーブル（ハッシュ -> ページ情報）
     stable_tree: BTreeMap<PageHash, StablePage>,
-    
+
     /// 不安定ページテーブル（マージ候補）
     unstable_tree: BTreeMap<PageHash, Vec<UnstablePage>>,
-    
+
     /// スキャン位置
     scan_position: FrameIndex,
-    
+
     /// 最大フレーム番号
     max_frame: FrameIndex,
-    
+
     /// 統計情報
     stats: KsmStats,
-    
+
     /// 有効化フラグ
     enabled: bool,
-    
+
     /// スキャン実行中フラグ
     scanning: AtomicBool,
 }
@@ -171,7 +171,7 @@ impl KsmManager {
             scanning: AtomicBool::new(false),
         }
     }
-    
+
     /// 初期化
     pub fn init(&mut self, max_frame: FrameIndex) {
         self.max_frame = max_frame;
@@ -180,47 +180,47 @@ impl KsmManager {
         self.unstable_tree.clear();
         self.enabled = true;
     }
-    
+
     /// 有効化/無効化
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
-    
+
     /// ページをスキャンしてマージ候補を検出
     pub fn scan_pages(&mut self, current_time: u64) -> usize {
         if !self.enabled {
             return 0;
         }
-        
+
         // 再入防止
         if self.scanning.swap(true, Ordering::SeqCst) {
             return 0;
         }
-        
+
         let mut scanned = 0;
         let start = self.scan_position.as_usize();
         let end = (start + KSM_SCAN_BATCH_SIZE).min(self.max_frame.as_usize());
-        
+
         for frame_idx in start..end {
             if self.try_merge_page(FrameIndex::new(frame_idx), current_time) {
                 self.stats.pages_merged += 1;
             }
             scanned += 1;
         }
-        
+
         // スキャン位置を更新
         self.scan_position = if end >= self.max_frame.as_usize() {
             FrameIndex::new(0)
         } else {
             FrameIndex::new(end)
         };
-        
+
         self.stats.pages_scanned += scanned as u64;
         self.scanning.store(false, Ordering::SeqCst);
-        
+
         scanned
     }
-    
+
     /// 単一ページのマージを試行
     fn try_merge_page(&mut self, frame: FrameIndex, current_time: u64) -> bool {
         // ページデータを読み取り
@@ -228,10 +228,10 @@ impl KsmManager {
             Some(data) => data,
             None => return false,
         };
-        
+
         // ハッシュを計算
         let hash = PageHash::compute(&page_data);
-        
+
         // 1. 安定ツリーで完全一致を検索
         if let Some(stable) = self.stable_tree.get(&hash) {
             let stable_frame = stable.frame;
@@ -246,14 +246,15 @@ impl KsmManager {
                 return true;
             }
         }
-        
+
         // 2. 不安定ツリーで候補を検索
         // まず候補フレームのみを抽出
-        let candidate_frames: Vec<FrameIndex> = self.unstable_tree
+        let candidate_frames: Vec<FrameIndex> = self
+            .unstable_tree
             .get(&hash)
             .map(|entries| entries.iter().map(|e| e.frame).collect())
             .unwrap_or_default();
-        
+
         // 候補と比較
         for candidate_frame in candidate_frames {
             if Self::pages_equal_static(frame, candidate_frame) {
@@ -261,7 +262,7 @@ impl KsmManager {
                 let stable = StablePage {
                     frame: candidate_frame,
                     hash,
-                    ref_count: 2,  // 元のページ + 新しいページ
+                    ref_count: 2, // 元のページ + 新しいページ
                     created_at: current_time,
                 };
                 self.stable_tree.insert(hash, stable);
@@ -271,13 +272,12 @@ impl KsmManager {
                 return true;
             }
         }
-        
+
         // 3. 不安定ツリーに追加
-        let unstable_entry = self.unstable_tree
-            .entry(hash)
-            .or_insert_with(Vec::new);
-        
-        if unstable_entry.len() < 16 {  // 同一ハッシュの上限
+        let unstable_entry = self.unstable_tree.entry(hash).or_insert_with(Vec::new);
+
+        if unstable_entry.len() < 16 {
+            // 同一ハッシュの上限
             unstable_entry.push(UnstablePage {
                 frame,
                 hash,
@@ -286,38 +286,34 @@ impl KsmManager {
             });
             self.stats.unstable_pages += 1;
         }
-        
+
         false
     }
-    
+
     /// ページデータを読み取り
     fn read_page_data(&self, frame: FrameIndex) -> Option<[u8; PAGE_SIZE_4K]> {
         let phys_addr = (frame.as_usize() * PAGE_SIZE_4K) as u64;
         let virt_addr = phys_addr + crate::mm::virt::mapping::physical_memory_offset();
-        
+
         let mut data = [0u8; PAGE_SIZE_4K];
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                virt_addr as *const u8,
-                data.as_mut_ptr(),
-                PAGE_SIZE_4K,
-            );
+            core::ptr::copy_nonoverlapping(virt_addr as *const u8, data.as_mut_ptr(), PAGE_SIZE_4K);
         }
         Some(data)
     }
-    
+
     /// 2つのページが完全に一致するか比較（静的版）
     fn pages_equal_static(frame1: FrameIndex, frame2: FrameIndex) -> bool {
         if frame1 == frame2 {
             return true;
         }
-        
+
         let phys1 = (frame1.as_usize() * PAGE_SIZE_4K) as u64;
         let phys2 = (frame2.as_usize() * PAGE_SIZE_4K) as u64;
         let offset = crate::mm::virt::mapping::physical_memory_offset();
         let virt1 = (phys1 + offset) as *const u64;
         let virt2 = (phys2 + offset) as *const u64;
-        
+
         // 64ビットごとに比較（高速化）
         for i in 0..(PAGE_SIZE_4K / 8) {
             unsafe {
@@ -326,17 +322,17 @@ impl KsmManager {
                 }
             }
         }
-        
+
         true
     }
-    
+
     /// ページのマージを解除（CoW時に呼び出し）
     pub fn unmerge_page(&mut self, hash: PageHash) -> bool {
         if let Some(stable) = self.stable_tree.get_mut(&hash) {
             stable.ref_count -= 1;
             self.stats.current_merged -= 1;
             self.stats.pages_unmerged += 1;
-            
+
             // 参照がなくなったら安定ツリーから削除
             if stable.ref_count == 0 {
                 self.stable_tree.remove(&hash);
@@ -346,7 +342,7 @@ impl KsmManager {
         }
         false
     }
-    
+
     /// 古い不安定エントリを削除
     pub fn cleanup_unstable(&mut self, max_age: u64, current_time: u64) {
         for (_hash, entries) in self.unstable_tree.iter_mut() {
@@ -358,16 +354,16 @@ impl KsmManager {
                 keep
             });
         }
-        
+
         // 空のバケットを削除
         self.unstable_tree.retain(|_, v| !v.is_empty());
     }
-    
+
     /// 統計情報を取得
     pub fn stats(&self) -> KsmStats {
         self.stats
     }
-    
+
     /// 統計をリセット
     pub fn reset_stats(&mut self) {
         self.stats = KsmStats::default();
@@ -407,14 +403,14 @@ pub fn ksm_stats() -> KsmStats {
 }
 
 /// アイドル時のKSM処理
-/// 
+///
 /// スキャンと古いエントリのクリーンアップを実行
 pub fn ksm_idle_work(current_time: u64) -> usize {
     let mut manager = KSM_MANAGER.lock();
-    
+
     // 古いエントリをクリーンアップ（60秒以上古いもの）
     manager.cleanup_unstable(60000, current_time);
-    
+
     // スキャンを実行
     manager.scan_pages(current_time)
 }
@@ -426,32 +422,31 @@ pub fn ksm_idle_work(current_time: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test_case]
     fn test_page_hash_compute() {
         let mut data1 = [0u8; PAGE_SIZE_4K];
         let mut data2 = [0u8; PAGE_SIZE_4K];
         let mut data3 = [0u8; PAGE_SIZE_4K];
-        
+
         data1[0] = 1;
         data2[0] = 1;
         data3[0] = 2;
-        
+
         let hash1 = PageHash::compute(&data1);
         let hash2 = PageHash::compute(&data2);
         let hash3 = PageHash::compute(&data3);
-        
+
         assert_eq!(hash1, hash2);
         assert_ne!(hash1, hash3);
     }
-    
+
     #[test_case]
     fn test_page_hash_bucket() {
         let data = [0u8; PAGE_SIZE_4K];
         let hash = PageHash::compute(&data);
         let bucket = hash.bucket_index();
-        
+
         assert!(bucket < KSM_HASH_BUCKETS);
     }
 }
-

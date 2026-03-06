@@ -2,7 +2,6 @@
 use super::*;
 use crate::sync::PoisonLock;
 
-
 mod sg_io_future;
 pub use self::sg_io_future::*;
 impl<'a> Future for AsyncFlushFuture<'a> {
@@ -131,7 +130,11 @@ impl DirectBlockHandle {
     }
 
     /// Validate read_blocks parameters and return block count
-    pub(super) fn validate_read_block_params(&self, block_offset: u64, buf_len: usize) -> FsResult<usize> {
+    pub(super) fn validate_read_block_params(
+        &self,
+        block_offset: u64,
+        buf_len: usize,
+    ) -> FsResult<usize> {
         if block_offset >= self.block_count {
             return Err(FsError::InvalidArgument);
         }
@@ -148,10 +151,12 @@ impl DirectBlockHandle {
     }
 
     /// Complete a DMA read by copying data from the slot to the user buffer
-    pub(super) fn complete_dma_read(slot: &Arc<PoisonLock<Option<(TypedDmaSlice<CpuOwned>, usize)>>>, dma_len: usize, buf: &mut [u8]) -> FsResult<usize> {
-        let mut guard = slot
-            .lock()
-            .map_err(|_| FsError::IoError)?;
+    pub(super) fn complete_dma_read(
+        slot: &Arc<PoisonLock<Option<(TypedDmaSlice<CpuOwned>, usize)>>>,
+        dma_len: usize,
+        buf: &mut [u8],
+    ) -> FsResult<usize> {
+        let mut guard = slot.lock().map_err(|_| FsError::IoError)?;
         let (data, bytes_received) = guard.take().ok_or(FsError::IoError)?;
         let bytes_received: usize = bytes_received;
         let copy_len = bytes_received.min(dma_len).min(buf.len());
@@ -184,10 +189,18 @@ impl DirectBlockHandle {
         let slot_clone = slot.clone();
         let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
         let future = {
-            let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+            let buf = DmaBufHandle {
+                iova: prp1,
+                len: alloc_len,
+            };
             crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
                 self.io_device(),
-                IoCommand::BlockRead { lba, blocks: blocks as u16, bytes: dma_len, buf },
+                IoCommand::BlockRead {
+                    lba,
+                    blocks: blocks as u16,
+                    bytes: dma_len,
+                    buf,
+                },
                 IoPriority::Normal,
             )
         };
@@ -255,10 +268,18 @@ impl DirectBlockHandle {
         let bytes = blocks * self.block_size as usize;
         let alloc_len = align_up(bytes, NVME_PAGE_SIZE);
         let future = {
-            let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+            let buf = DmaBufHandle {
+                iova: prp1,
+                len: alloc_len,
+            };
             crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
                 self.io_device(),
-                IoCommand::BlockRead { lba, blocks: blocks as u16, bytes, buf },
+                IoCommand::BlockRead {
+                    lba,
+                    blocks: blocks as u16,
+                    bytes,
+                    buf,
+                },
                 IoPriority::Normal,
             )
         };
@@ -330,10 +351,18 @@ impl DirectBlockHandle {
         let lba = self.start_block + block_offset;
         let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
         let future = {
-            let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+            let buf = DmaBufHandle {
+                iova: prp1,
+                len: alloc_len,
+            };
             crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
                 self.io_device(),
-                IoCommand::BlockWrite { lba, blocks: blocks as u16, bytes: dma_len, buf },
+                IoCommand::BlockWrite {
+                    lba,
+                    blocks: blocks as u16,
+                    bytes: dma_len,
+                    buf,
+                },
                 IoPriority::Normal,
             )
         };
@@ -382,7 +411,10 @@ impl DirectBlockHandle {
     }
 
     /// SG I/Oリクエストのパラメータを検証する
-    pub(super) fn validate_sg_request(&self, request: &SgIoRequest) -> Result<(usize, u64), FsError> {
+    pub(super) fn validate_sg_request(
+        &self,
+        request: &SgIoRequest,
+    ) -> Result<(usize, u64), FsError> {
         if request.entries.is_empty() {
             return Ok((0, 0));
         }
@@ -418,7 +450,11 @@ impl DirectBlockHandle {
     }
 
     /// Validate write_blocks_dma parameters and return block count
-    pub(super) fn validate_write_block_params(&self, block_offset: u64, buf_size: usize) -> FsResult<usize> {
+    pub(super) fn validate_write_block_params(
+        &self,
+        block_offset: u64,
+        buf_size: usize,
+    ) -> FsResult<usize> {
         if block_offset >= self.block_count {
             return Err(FsError::InvalidArgument);
         }
@@ -462,16 +498,32 @@ impl DirectBlockHandle {
             (bytes as u64) <= (NVME_PAGE_SIZE as u64) && start_page == end_page
         };
         let future = if use_command {
-            let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+            let buf = DmaBufHandle {
+                iova: prp1,
+                len: alloc_len,
+            };
             crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
                 self.io_device(),
-                IoCommand::BlockWrite { lba, blocks: blocks as u16, bytes, buf },
+                IoCommand::BlockWrite {
+                    lba,
+                    blocks: blocks as u16,
+                    bytes,
+                    buf,
+                },
                 IoPriority::Normal,
             )
         } else {
             crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
                 self.io_device(),
-                IoCommand::BlockWrite { lba, blocks: blocks as u16, bytes: bytes, buf: DmaBufHandle { iova: prp1, len: bytes } },
+                IoCommand::BlockWrite {
+                    lba,
+                    blocks: blocks as u16,
+                    bytes: bytes,
+                    buf: DmaBufHandle {
+                        iova: prp1,
+                        len: bytes,
+                    },
+                },
                 IoPriority::Normal,
             )
         };
@@ -493,11 +545,7 @@ impl DirectBlockHandle {
     /// フラッシュ
     pub async fn flush(&self) -> FsResult<()> {
         let result = crate::io::io_scheduler::hybrid_coordinator()
-            .submit_io_command(
-                self.io_device(),
-                IoCommand::Flush,
-                IoPriority::High,
-            )
+            .submit_io_command(self.io_device(), IoCommand::Flush, IoPriority::High)
             .await;
 
         match result {
@@ -520,12 +568,8 @@ impl DirectBlockHandle {
             return Err(FsError::InvalidArgument);
         }
 
-        let mut dsm = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE)
-            .ok_or(FsError::NoSpace)?;
-        let range = LocalDsmRange::new(
-            self.start_block + block_offset,
-            count as u32,
-        );
+        let mut dsm = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(FsError::NoSpace)?;
+        let range = LocalDsmRange::new(self.start_block + block_offset, count as u32);
 
         // Use kernel_api abstractions - device param is now ignored
         let (_prp1_unused, prp_map) = map_nvme_iommu(dsm.phys_addr().as_u64(), dsm.len())?;
@@ -545,9 +589,12 @@ impl DirectBlockHandle {
             self.io_device(),
             IoCommand::Ioctl {
                 code: 0x09, // Dataset Management
-                buf: DmaBufHandle { iova: prp1, len: dsm_len }
+                buf: DmaBufHandle {
+                    iova: prp1,
+                    len: dsm_len,
+                },
             },
-            IoPriority::High
+            IoPriority::High,
         );
         let request_id = future.request_id();
         let hook: CompletionHook = Box::new(move |_result| {

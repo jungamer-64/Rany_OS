@@ -48,9 +48,9 @@ pub mod environ;
 mod executor;
 pub mod fuel;
 pub mod interrupt_waker;
+pub mod io;
 pub mod per_core_executor;
 pub mod preemption;
-pub mod io;
 pub mod timeout;
 pub mod timer;
 pub mod waker;
@@ -61,17 +61,11 @@ pub mod work_stealing_advanced;
 
 #[allow(unused_imports)]
 pub use context::{
-    CpuContext,
-    KernelStack,
-    Subject,
-    TaskControlBlock,
-    TaskState,
-    current_subject,
-    current_task_id,
+    CpuContext, KernelStack, Subject, TaskControlBlock, TaskState, current_subject, current_task_id,
 };
 #[allow(unused_imports)]
 pub use environ::{
-    EnvError, EnvKey, EnvValue, Environment, get_home, get_path, get_pwd, get_user, get_term,
+    EnvError, EnvKey, EnvValue, Environment, get_home, get_path, get_pwd, get_term, get_user,
     kernel_env, set_pwd,
 };
 pub use executor::Executor;

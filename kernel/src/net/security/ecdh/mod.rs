@@ -16,7 +16,6 @@
 //! - 弱い鍵の自動検出・拒否
 //! - 秘密データの自動ワイプ（`DHOutput::Drop`）
 
-
 use alloc::vec::Vec;
 use ed25519_compact::x25519::{PublicKey as X25519PublicKey, SecretKey as X25519SecretKey};
 
@@ -142,11 +141,11 @@ pub mod p256 {
                 sub[i] = diff as u64;
                 borrow = (diff >> 127) as u64;
             }
-            
+
             // carry > 0 OR borrow == 0
             // carry is either 0 or 1. borrow is either 0 or 1.
             let use_sub = (carry as u8) | (1 - borrow as u8);
-            
+
             let res_fe = Self { limbs: result };
             let sub_fe = Self { limbs: sub };
             Self::ct_select(&res_fe, &sub_fe, use_sub)
@@ -192,8 +191,7 @@ pub mod p256 {
             for i in 0..4 {
                 let mut carry: u64 = 0;
                 for j in 0..4 {
-                    let wide =
-                        (self.limbs[i] as u128) * (other.limbs[j] as u128)
+                    let wide = (self.limbs[i] as u128) * (other.limbs[j] as u128)
                         + (product[i + j] as u128)
                         + (carry as u128);
                     product[i + j] = wide as u64;
@@ -233,10 +231,10 @@ pub mod p256 {
                 for _ in 0..64 {
                     let bit = (word & 1) as u8;
                     let multiplied = result.mul(&base);
-                    
+
                     // result = (bit == 1) ? multiplied : result
                     result = Self::ct_select(&result, &multiplied, bit);
-                    
+
                     base = base.square();
                     word >>= 1;
                 }
@@ -331,7 +329,7 @@ pub mod p256 {
 
         // NISTリダクションの結果は -4p < res < 6p の範囲に収まる。
         // キャリー (2^256の倍数) を定数時間で処理する。
-        
+
         // 1. carry * 2^256 を加算/減算するのと同等の処理
         // 実際には carry は limbs の外側にあるため、
         // val = val - carry * p (mod p) を計算すればよい (carry * 2^256 = carry * p mod p)
@@ -517,7 +515,7 @@ pub mod p256 {
         /// M = 3*(X + Z^2)*(X - Z^2) （3X^2 + aZ^4の代わりに）
         pub fn double(&self) -> Self {
             let is_id = self.is_identity();
-            
+
             // a = p - 3 ショートカット: M = 3(X + Z²)(X - Z²)
             let z2 = self.z.square();
             let xpz2 = self.x.add(&z2);
@@ -602,13 +600,13 @@ pub mod p256 {
             // U1 == U2 の場合
             let is_equal = h_is_zero & r_is_zero;
             let is_opposite = h_is_zero & (1 - r_is_zero);
-            
+
             // 2倍算の結果（自己加算時）
             let doubled = self.double();
-            
+
             let res = Self::ct_select(&res, &doubled, is_equal);
             let res = Self::ct_select(&res, &Self::identity(), is_opposite);
-            
+
             // 単位元の処理
             let res = Self::ct_select(&res, other, is_self_id);
             let res = Self::ct_select(&res, self, is_other_id);
@@ -675,11 +673,4 @@ pub mod p256 {
     // p256_parsing モジュールの公開関数を p256 名前空間から再エクスポート
     pub use crate::net::security::ecdh::ecdsa_p256_verify;
     pub use crate::net::security::ecdh::parse_uncompressed_point;
-    
-    
-    
-    
-    
-    
-    
 }

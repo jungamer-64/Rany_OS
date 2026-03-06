@@ -196,22 +196,86 @@ impl NumaTopology {
 
         // デフォルトの距離キャッシュ（自ノードが最初、他は番号順）
         let distance_cache = [
-            [NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2), NumaNodeId::new(3),
-             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
-            [NumaNodeId::new(1), NumaNodeId::new(0), NumaNodeId::new(2), NumaNodeId::new(3),
-             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
-            [NumaNodeId::new(2), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(3),
-             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
-            [NumaNodeId::new(3), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
-             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
-            [NumaNodeId::new(4), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
-             NumaNodeId::new(3), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
-            [NumaNodeId::new(5), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
-             NumaNodeId::new(3), NumaNodeId::new(4), NumaNodeId::new(6), NumaNodeId::new(7)],
-            [NumaNodeId::new(6), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
-             NumaNodeId::new(3), NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(7)],
-            [NumaNodeId::new(7), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
-             NumaNodeId::new(3), NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6)],
+            [
+                NumaNodeId::new(0),
+                NumaNodeId::new(1),
+                NumaNodeId::new(2),
+                NumaNodeId::new(3),
+                NumaNodeId::new(4),
+                NumaNodeId::new(5),
+                NumaNodeId::new(6),
+                NumaNodeId::new(7),
+            ],
+            [
+                NumaNodeId::new(1),
+                NumaNodeId::new(0),
+                NumaNodeId::new(2),
+                NumaNodeId::new(3),
+                NumaNodeId::new(4),
+                NumaNodeId::new(5),
+                NumaNodeId::new(6),
+                NumaNodeId::new(7),
+            ],
+            [
+                NumaNodeId::new(2),
+                NumaNodeId::new(0),
+                NumaNodeId::new(1),
+                NumaNodeId::new(3),
+                NumaNodeId::new(4),
+                NumaNodeId::new(5),
+                NumaNodeId::new(6),
+                NumaNodeId::new(7),
+            ],
+            [
+                NumaNodeId::new(3),
+                NumaNodeId::new(0),
+                NumaNodeId::new(1),
+                NumaNodeId::new(2),
+                NumaNodeId::new(4),
+                NumaNodeId::new(5),
+                NumaNodeId::new(6),
+                NumaNodeId::new(7),
+            ],
+            [
+                NumaNodeId::new(4),
+                NumaNodeId::new(0),
+                NumaNodeId::new(1),
+                NumaNodeId::new(2),
+                NumaNodeId::new(3),
+                NumaNodeId::new(5),
+                NumaNodeId::new(6),
+                NumaNodeId::new(7),
+            ],
+            [
+                NumaNodeId::new(5),
+                NumaNodeId::new(0),
+                NumaNodeId::new(1),
+                NumaNodeId::new(2),
+                NumaNodeId::new(3),
+                NumaNodeId::new(4),
+                NumaNodeId::new(6),
+                NumaNodeId::new(7),
+            ],
+            [
+                NumaNodeId::new(6),
+                NumaNodeId::new(0),
+                NumaNodeId::new(1),
+                NumaNodeId::new(2),
+                NumaNodeId::new(3),
+                NumaNodeId::new(4),
+                NumaNodeId::new(5),
+                NumaNodeId::new(7),
+            ],
+            [
+                NumaNodeId::new(7),
+                NumaNodeId::new(0),
+                NumaNodeId::new(1),
+                NumaNodeId::new(2),
+                NumaNodeId::new(3),
+                NumaNodeId::new(4),
+                NumaNodeId::new(5),
+                NumaNodeId::new(6),
+            ],
         ];
 
         Self {
@@ -403,9 +467,13 @@ impl NumaAllocator {
     ///
     /// # Returns
     /// 割り当てられたメモリへのポインタと実際のノードID
-    pub fn allocate(&self, layout: Layout, preferred_node: Option<usize>) -> Option<(NonNull<u8>, usize)> {
+    pub fn allocate(
+        &self,
+        layout: Layout,
+        preferred_node: Option<usize>,
+    ) -> Option<(NonNull<u8>, usize)> {
         let target_node = preferred_node.unwrap_or_else(current_node);
-        
+
         // 1. 優先ノードから割り当てを試みる
         if let Some(ptr) = self.try_allocate_from_node(layout, target_node) {
             if let Some(node) = self.get_node(target_node) {
@@ -467,22 +535,22 @@ static NUMA_ALLOCATOR: Mutex<NumaAllocator> = Mutex::new(NumaAllocator::new());
 /// ACPI SRATテーブルからNUMAトポロジを検出し、ノードを登録する
 pub fn init_numa_allocator() {
     let mut allocator = NUMA_ALLOCATOR.lock();
-    
+
     // NumaTopologyから情報を取得
     let topology = SchedulerNumaTopology::get();
     let num_nodes = topology.num_nodes();
-    
+
     for node_id in 0..num_nodes {
         let mut node = NumaNode::new(NumaNodeId::new(node_id as u8));
-        
+
         // このノードに属するCPUコアを登録
         for &cpu in topology.get_cores_in_node(node_id) {
             node.add_cpu(cpu as u8);
         }
-        
+
         allocator.register_node(node);
     }
-    
+
     allocator.mark_initialized();
     log::info!("[NUMA] Initialized with {} nodes", num_nodes);
 }
@@ -499,8 +567,7 @@ pub fn num_nodes() -> usize {
 /// Return the NUMA node for the current CPU if available
 pub fn current_node() -> usize {
     if let Some(cpu) = crate::per_cpu::try_current_cpu_id() {
-        SchedulerNumaTopology::get()
-            .get_numa_node(cpu as u32)
+        SchedulerNumaTopology::get().get_numa_node(cpu as u32)
     } else {
         0
     }
@@ -594,7 +661,7 @@ pub fn get_total_stats() -> (u64, u64, u64) {
 //
 // ============================================================================
 
-use crate::mm::sync::rcu::{rcu_read_lock, RcuReadGuard};
+use crate::mm::sync::rcu::{RcuReadGuard, rcu_read_lock};
 
 /// RCU保護されたNUMAノード数の読み取り
 ///

@@ -317,6 +317,9 @@ mod tests {
 
         persist_ordered_with_ops(log_ptr, 64, data_ptr, 64, &mut trace)
             .expect("ordered persist should succeed");
-        assert_eq!(trace.events, alloc::vec!["flush", "fence", "flush", "fence"]);
+        assert_eq!(
+            trace.events,
+            alloc::vec!["flush", "fence", "flush", "fence"]
+        );
     }
 }

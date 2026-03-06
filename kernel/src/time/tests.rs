@@ -9,7 +9,7 @@ fn test_decode_hour_24h_mode() {
     assert_eq!(Rtc::decode_hour(18, true, true), 18); // Input 18 (0x12) -> 18
     assert_eq!(Rtc::decode_hour(12, true, true), 12);
     assert_eq!(Rtc::decode_hour(23, true, true), 23);
-    
+
     // BCD mode: is_binary=false
     assert_eq!(Rtc::decode_hour(0x00, false, true), 0);
     assert_eq!(Rtc::decode_hour(0x12, false, true), 12); // BCD 0x12 -> 12
@@ -20,11 +20,11 @@ fn test_decode_hour_24h_mode() {
 fn test_decode_hour_12h_mode_edge_cases() {
     // 12 AM (midnight) → 0
     assert_eq!(Rtc::decode_hour(0x12, false, false), 0); // BCD 12, no PM bit
-    assert_eq!(Rtc::decode_hour(12, true, false), 0);    // Binary 12, no PM bit
+    assert_eq!(Rtc::decode_hour(12, true, false), 0); // Binary 12, no PM bit
 
     // 12 PM (noon) → 12
     assert_eq!(Rtc::decode_hour(0x92, false, false), 12); // BCD 12 with PM bit (0x80 | 0x12)
-    assert_eq!(Rtc::decode_hour(0x8C, true, false), 12);  // Binary 12 with PM bit (0x80 | 12)
+    assert_eq!(Rtc::decode_hour(0x8C, true, false), 12); // Binary 12 with PM bit (0x80 | 12)
 
     // 1-11 AM → 1-11
     assert_eq!(Rtc::decode_hour(0x01, false, false), 1);
@@ -43,12 +43,21 @@ fn test_tsc_to_nanos_overflow_safe() {
     // Large TSC value that would overflow with naive u64 multiplication
     let tsc = 10_000_000_000_000u64; // 10 trillion ticks
     let nanos = info.tsc_to_nanos(tsc);
-    
+
     // Expected: 10e12 / 3e9 = 3333.33... seconds = 3333333333333 ns
     // Allow small rounding error due to fixed-point approximation
     let expected = 3_333_333_333_333u64;
-    let error = if nanos > expected { nanos - expected } else { expected - nanos };
-    assert!(error < 1_000_000, "Error too large: {} (expected ~{})", nanos, expected);
+    let error = if nanos > expected {
+        nanos - expected
+    } else {
+        expected - nanos
+    };
+    assert!(
+        error < 1_000_000,
+        "Error too large: {} (expected ~{})",
+        nanos,
+        expected
+    );
 }
 
 #[test_case]
@@ -57,28 +66,47 @@ fn test_compute_tsc_mult_shift() {
     let (mult, shift) = compute_tsc_mult_shift(3_000_000_000); // 3 GHz
     assert!(mult > 0, "mult should be non-zero");
     assert!(shift > 0, "shift should be non-zero");
-    
+
     // Verify conversion accuracy: 1 second of TSC ticks
     let tsc = 3_000_000_000u64;
     let nanos = ((tsc as u128 * mult as u128) >> shift) as u64;
     let expected = NANOS_PER_SEC;
-    let error = if nanos > expected { nanos - expected } else { expected - nanos };
+    let error = if nanos > expected {
+        nanos - expected
+    } else {
+        expected - nanos
+    };
     // Allow up to 0.1% error
-    assert!(error < expected / 1000, "Conversion error too large: {} vs {}", nanos, expected);
+    assert!(
+        error < expected / 1000,
+        "Conversion error too large: {} vs {}",
+        nanos,
+        expected
+    );
 }
 
 #[test_case]
 fn test_tsc_to_nanos_precise_vs_optimized() {
     let info = TscInfo::new(2_500_000_000, true); // 2.5 GHz
-    
+
     // Compare precise vs optimized for various TSC values
     for &tsc in &[1_000_000u64, 1_000_000_000, 10_000_000_000, 100_000_000_000] {
         let precise = info.tsc_to_nanos_precise(tsc);
         let optimized = info.tsc_to_nanos(tsc);
-        let error = if optimized > precise { optimized - precise } else { precise - optimized };
+        let error = if optimized > precise {
+            optimized - precise
+        } else {
+            precise - optimized
+        };
         // Allow up to 0.1% relative error or 1000 ns absolute error
         let max_error = (precise / 1000).max(1000);
-        assert!(error <= max_error, "tsc={}: precise={}, optimized={}, error={}", 
-                tsc, precise, optimized, error);
+        assert!(
+            error <= max_error,
+            "tsc={}: precise={}, optimized={}, error={}",
+            tsc,
+            precise,
+            optimized,
+            error
+        );
     }
 }

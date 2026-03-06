@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Initialize the global VirtIO input device from an existing VirtioTransport (MMIO or PCI) at a specific index.
 pub unsafe fn init_virtio_input_with_transport_at_index(
     index: u8,
@@ -15,9 +14,17 @@ pub unsafe fn init_virtio_input_with_transport_at_index(
 
     if let Some(name_bytes) = name {
         if let Ok(name_str) = core::str::from_utf8(&name_bytes) {
-            log::info!("VirtIO-input index={} initialized: \"{}\"\n", index, name_str);
+            log::info!(
+                "VirtIO-input index={} initialized: \"{}\"\n",
+                index,
+                name_str
+            );
         } else {
-            log::info!("VirtIO-input index={} initialized: (non-UTF8 name, {} bytes)\n", index, name_bytes.len());
+            log::info!(
+                "VirtIO-input index={} initialized: (non-UTF8 name, {} bytes)\n",
+                index,
+                name_bytes.len()
+            );
         }
     } else {
         log::info!("VirtIO-input index={} initialized\n", index);

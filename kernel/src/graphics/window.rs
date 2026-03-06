@@ -157,8 +157,6 @@ pub enum WindowState {
 // Window Events
 // ============================================================================
 
-
-
 /// キーコード
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyCode(pub u8);
@@ -187,7 +185,6 @@ pub struct Modifiers {
 /// ウィンドウイベント
 #[derive(Clone, Debug)]
 pub enum WindowEvent {
-
     /// キー押下
     KeyDown { key: KeyCode, modifiers: Modifiers },
     /// キー解放
@@ -464,8 +461,6 @@ pub struct WindowManager {
     desktop_color: Color,
 }
 
-
-
 impl WindowManager {
     /// 新しいウィンドウマネージャを作成
     pub fn new(screen_width: u32, screen_height: u32) -> Self {
@@ -511,8 +506,6 @@ impl WindowManager {
         if self.focused == Some(id) {
             self.focused = self.z_order_list.last().copied();
         }
-
-
     }
 
     /// ウィンドウを取得
@@ -572,8 +565,6 @@ impl WindowManager {
         }
         None
     }
-
-
 
     /// キー押下を処理
     pub fn handle_key_down(&mut self, key: KeyCode, modifiers: Modifiers) {

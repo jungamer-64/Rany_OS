@@ -468,7 +468,7 @@ impl IommuDomain {
                 return Ok(());
             }
             crate::io::iommu::runtime::quarantine::DrainResult::Poisoned { .. } => {
-                return Err(IommuError::Poisoned)
+                return Err(IommuError::Poisoned);
             }
         };
 
@@ -631,7 +631,11 @@ impl IommuDomain {
 
         // 2. SECURITY: Check quarantine queue to prevent IOVA reuse before IOTLB invalidation
         if self.quarantine.is_range_quarantined(iova, size) {
-            log::warn!("[IOMMU][SECURITY] Attempted to map IOVA range {:#x}-{:#x} that is still in quarantine", iova, iova + size);
+            log::warn!(
+                "[IOMMU][SECURITY] Attempted to map IOVA range {:#x}-{:#x} that is still in quarantine",
+                iova,
+                iova + size
+            );
             return Err(IommuError::AlreadyMapped);
         }
 
@@ -783,11 +787,21 @@ impl IommuDomain {
         // SECURITY: Still perform basic alignment and width checks for stability and safety.
         // Privileged mappings must still be page-aligned to prevent unexpected hardware behavior.
         if (iova | phys | size) & 0xFFF != 0 {
-            log::error!("[IOMMU][SECURITY] Unaligned privileged mapping attempt: iova={:#x}, phys={:#x}, size={:#x}", iova, phys, size);
+            log::error!(
+                "[IOMMU][SECURITY] Unaligned privileged mapping attempt: iova={:#x}, phys={:#x}, size={:#x}",
+                iova,
+                phys,
+                size
+            );
             return Err(IommuError::InvalidAlignment);
         }
         if !self.within_addr_width(iova, size) || !self.within_addr_width(phys, size) {
-            log::error!("[IOMMU][SECURITY] Out-of-bounds privileged mapping attempt: iova={:#x}, phys={:#x}, size={:#x}", iova, phys, size);
+            log::error!(
+                "[IOMMU][SECURITY] Out-of-bounds privileged mapping attempt: iova={:#x}, phys={:#x}, size={:#x}",
+                iova,
+                phys,
+                size
+            );
             return Err(IommuError::InvalidAddress);
         }
 

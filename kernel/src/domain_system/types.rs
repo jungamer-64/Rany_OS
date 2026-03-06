@@ -6,8 +6,8 @@
 //! `CpuQuotaAction`, `DomainCredentials`, `DomainSecurity`, `RequestedCap`）
 //! とその実装を集約するモジュール。
 
-use alloc::sync::Arc;
 use crate::security::CapabilitySet;
+use alloc::sync::Arc;
 use spin::Once;
 
 // ============================================================================

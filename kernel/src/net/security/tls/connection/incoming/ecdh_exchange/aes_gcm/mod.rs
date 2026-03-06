@@ -2,9 +2,12 @@ use super::*;
 
 mod signature_verify;
 impl TlsConnection {
-
     /// AES-GCM レコード暗号化 (TLS 1.2)
-    pub(super) fn encrypt_aes_gcm_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_aes_gcm_record(
+        &mut self,
+        content_type: u8,
+        data: &[u8],
+    ) -> TlsResult<Vec<u8>> {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         if self.write_key.is_empty() || self.write_iv.len() < 4 {
@@ -26,7 +29,8 @@ impl TlsConnection {
         let record_len = 8 + ciphertext.len() + 16;
         let mut record = vec![
             content_type,
-            0x03, 0x03,
+            0x03,
+            0x03,
             (record_len >> 8) as u8,
             record_len as u8,
         ];
@@ -39,7 +43,11 @@ impl TlsConnection {
     }
 
     /// ChaCha20-Poly1305 レコード暗号化 (TLS 1.2)
-    pub(super) fn encrypt_chacha20_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_chacha20_record(
+        &mut self,
+        content_type: u8,
+        data: &[u8],
+    ) -> TlsResult<Vec<u8>> {
         if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
             return Err(TlsError::CryptoError);
         }
@@ -65,7 +73,8 @@ impl TlsConnection {
         let record_len = ciphertext.len() + 16;
         let mut record = vec![
             content_type,
-            0x03, 0x03,
+            0x03,
+            0x03,
             (record_len >> 8) as u8,
             record_len as u8,
         ];
@@ -98,13 +107,19 @@ impl TlsConnection {
             // SHA-384ベース鍵スケジュール
             let transcript_ch_sh = crate::crypto::sha384::compute(&self.handshake_messages);
 
-            let psk_ref = if self.tls13_using_psk { self.tls13_psk.as_deref() } else { None };
+            let psk_ref = if self.tls13_using_psk {
+                self.tls13_psk.as_deref()
+            } else {
+                None
+            };
             let early_secret = tls13_early_secret_sha384(psk_ref);
             let handshake_secret =
                 tls13_handshake_secret_sha384(&early_secret, &self.pre_master_secret);
 
-            let chs = tls13_derive_secret_sha384(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
-            let shs = tls13_derive_secret_sha384(&handshake_secret, b"s hs traffic", &transcript_ch_sh);
+            let chs =
+                tls13_derive_secret_sha384(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
+            let shs =
+                tls13_derive_secret_sha384(&handshake_secret, b"s hs traffic", &transcript_ch_sh);
             self.client_hs_traffic_secret = chs;
             self.server_hs_traffic_secret = shs;
 
@@ -134,10 +149,13 @@ impl TlsConnection {
                 hasher.finalize()
             };
 
-            let psk_ref_256 = if self.tls13_using_psk { self.tls13_psk.as_deref() } else { None };
+            let psk_ref_256 = if self.tls13_using_psk {
+                self.tls13_psk.as_deref()
+            } else {
+                None
+            };
             let early_secret = tls13_early_secret(psk_ref_256);
-            let handshake_secret =
-                tls13_handshake_secret(&early_secret, &self.pre_master_secret);
+            let handshake_secret = tls13_handshake_secret(&early_secret, &self.pre_master_secret);
 
             let chs = tls13_derive_secret(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
             let shs = tls13_derive_secret(&handshake_secret, b"s hs traffic", &transcript_ch_sh);
@@ -260,7 +278,11 @@ impl TlsConnection {
     }
 
     /// Dispatch a single TLS 1.3 handshake message to its handler.
-    pub(super) fn tls13_dispatch_handshake_msg(&mut self, msg_type: u8, payload: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_dispatch_handshake_msg(
+        &mut self,
+        msg_type: u8,
+        payload: &[u8],
+    ) -> TlsResult<()> {
         match msg_type {
             8 => {
                 // EncryptedExtensions
@@ -357,7 +379,11 @@ impl TlsConnection {
     }
 
     /// Parse and skip certificate request extensions (we only need to detect signature_algorithms).
-    pub(super) fn tls13_skip_cert_request_extensions(&self, data: &[u8], start: usize) -> TlsResult<()> {
+    pub(super) fn tls13_skip_cert_request_extensions(
+        &self,
+        data: &[u8],
+        start: usize,
+    ) -> TlsResult<()> {
         let mut off = start;
         if data.len() < off + 2 {
             return Err(TlsError::DecodeError);
@@ -430,7 +456,7 @@ impl TlsConnection {
             }
             let ext_len = ((data[offset] as usize) << 8) | data[offset + 1] as usize;
             offset += 2 + ext_len;
-            
+
             if offset > cert_list_end {
                 return Err(TlsError::DecodeError);
             }
@@ -485,7 +511,12 @@ impl TlsConnection {
 
         if !self.config.should_skip_verify() {
             // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致、およびルートCAへの信頼)
-            let ca_ders: Vec<&[u8]> = self.config.ca_certs.iter().map(|c| c.der.as_slice()).collect();
+            let ca_ders: Vec<&[u8]> = self
+                .config
+                .ca_certs
+                .iter()
+                .map(|c| c.der.as_slice())
+                .collect();
             if let Some(spki) = crate::net::security::x509::validate_certificate_chain(
                 &certs,
                 self.config.server_name.as_deref(),
@@ -529,9 +560,8 @@ impl TlsConnection {
             return Ok(());
         }
 
-        let verify_content = self.build_tls13_cv_verify_content(
-            b"TLS 1.3, server CertificateVerify",
-        );
+        let verify_content =
+            self.build_tls13_cv_verify_content(b"TLS 1.3, server CertificateVerify");
 
         self.dispatch_tls13_signature_verification(sig_algorithm, &verify_content, signature)?;
 
@@ -569,9 +599,21 @@ impl TlsConnection {
         match sig_algorithm {
             // RFC 8446 Section 4.2.3: RSASSA-PKCS1-v1_5 (0x0*01) is NOT supported for CertificateVerify in TLS 1.3.
             // Only PSS or ECDSA are allowed for RSA/EC keys.
-            0x0804 => self.verify_rsa_pss_signature(content, signature, crate::net::security::rsa::HashAlgorithm::Sha256),
-            0x0805 => self.verify_rsa_pss_signature(content, signature, crate::net::security::rsa::HashAlgorithm::Sha384),
-            0x0806 => self.verify_rsa_pss_signature(content, signature, crate::net::security::rsa::HashAlgorithm::Sha512),
+            0x0804 => self.verify_rsa_pss_signature(
+                content,
+                signature,
+                crate::net::security::rsa::HashAlgorithm::Sha256,
+            ),
+            0x0805 => self.verify_rsa_pss_signature(
+                content,
+                signature,
+                crate::net::security::rsa::HashAlgorithm::Sha384,
+            ),
+            0x0806 => self.verify_rsa_pss_signature(
+                content,
+                signature,
+                crate::net::security::rsa::HashAlgorithm::Sha512,
+            ),
             0x0403 => self.verify_ecdsa_p256_signature(content, signature),
             0x0503 => self.verify_ecdsa_p384_signature(content, signature),
             _ => Err(TlsError::UnsupportedCipherSuite),
@@ -587,10 +629,7 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         let pubkey = match &self.server_public_key {
             Some(ServerPublicKey::Rsa { modulus, exponent }) => {
-                crate::net::security::rsa::RsaPublicKey {
-                    modulus,
-                    exponent,
-                }
+                crate::net::security::rsa::RsaPublicKey { modulus, exponent }
             }
             _ => return Err(TlsError::CertificateError),
         };

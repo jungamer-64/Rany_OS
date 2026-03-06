@@ -4,10 +4,10 @@
 
 //! Posted Interrupt structures and operations
 
+use crate::io::iommu::common::tables::{phys_to_virt_usize, virt_ptr_to_phys};
+use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU64;
-use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
-use crate::io::iommu::common::tables::{phys_to_virt_usize, virt_ptr_to_phys};
 
 // ============================================================================
 // Posted Interrupt Descriptor (PID)
@@ -76,8 +76,7 @@ impl PostedInterruptPool {
         let num_pages = (total_bytes + 4095) / 4096;
 
         // Allocate contiguous physical frames for hardware requirements
-        let phys = alloc_contiguous_frames(num_pages)?
-            .as_u64();
+        let phys = alloc_contiguous_frames(num_pages)?.as_u64();
         let base = phys_to_virt_usize(phys);
 
         // Security: Mark the range as protected from DMA
@@ -149,7 +148,7 @@ impl Drop for PostedInterruptPool {
         let num_pages = (total_bytes + 4095) / 4096;
         if let Ok(phys) = virt_ptr_to_phys(self.base as *const u8) {
             crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
-            
+
             // Free the contiguous region
             dealloc_contiguous_frames(x86_64::PhysAddr::new(phys), num_pages);
         }

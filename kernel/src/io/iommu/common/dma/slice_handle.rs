@@ -2,14 +2,15 @@
 // kernel/src/io/iommu/common/dma/slice_handle.rs
 // ============================================================================
 
-use crate::io::iommu::types::DeviceId;
-use core::marker::PhantomData;
-use crate::ipc::RRef;
-use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MappingKind, MapError, MapErrorKind, UnmapError, UnmapErrorKind};
-use crate::io::iommu::common::domain::{IommuDomain, IommuInvalidator, InvalidateRequest};
+use crate::io::iommu::common::dma::handle::{
+    DmaDirection, DmaHandle, MapError, MapErrorKind, MappingKind, UnmapError, UnmapErrorKind,
+};
+use crate::io::iommu::common::domain::{InvalidateRequest, IommuDomain, IommuInvalidator};
 use crate::io::iommu::common::interface::IommuHardwareContext;
+use crate::io::iommu::types::DeviceId;
 use crate::io::iommu::types::IommuError;
-
+use crate::ipc::RRef;
+use core::marker::PhantomData;
 
 impl<T> DmaHandle<[T]> {
     /// Create a new DmaHandle for slices (internal use only)
@@ -169,7 +170,8 @@ impl<T> DmaHandle<[T]> {
         if let Err(e) = crate::io::iommu::runtime::security::validate_dma_region(phys, size) {
             log::error!(
                 "[IOMMU][SECURITY] Identity slice mapping rejected: overlaps protected region {:#x}-{:#x}",
-                phys, phys + size
+                phys,
+                phys + size
             );
             return Err(MapError::new(rref, MapErrorKind::IommuError(e)));
         }
@@ -425,7 +427,10 @@ impl<T> DmaHandle<T> {
         mut self,
         domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
-    ) -> Result<crate::io::iommu::runtime::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
+    ) -> Result<
+        crate::io::iommu::runtime::quarantine::QuarantineTicket<T>,
+        QuarantineLazyUnmapError<T>,
+    >
     where
         T: 'static,
     {
@@ -509,12 +514,14 @@ impl<T> DmaHandle<T> {
             .expect("Quarantine commit failed despite reservation");
 
         // Step 7: Create and return ticket
-        Ok(crate::io::iommu::runtime::quarantine::QuarantineTicket::new(
-            queue.clone(),
-            slot_idx,
-            slot_gen,
-            batch_id,
-        ))
+        Ok(
+            crate::io::iommu::runtime::quarantine::QuarantineTicket::new(
+                queue.clone(),
+                slot_idx,
+                slot_gen,
+                batch_id,
+            ),
+        )
     }
 
     /// Lazy unmap with quarantine - auto-flush if queue full
@@ -531,7 +538,10 @@ impl<T> DmaHandle<T> {
         domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::io::iommu::runtime::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
+    ) -> Result<
+        crate::io::iommu::runtime::quarantine::QuarantineTicket<T>,
+        QuarantineLazyUnmapError<T>,
+    >
     where
         T: 'static,
     {
@@ -549,7 +559,10 @@ impl<T> DmaHandle<T> {
         domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::io::iommu::runtime::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
+    ) -> Result<
+        crate::io::iommu::runtime::quarantine::QuarantineTicket<T>,
+        QuarantineLazyUnmapError<T>,
+    >
     where
         T: 'static,
     {

@@ -1,7 +1,6 @@
 #![allow(clippy::wildcard_imports)]
 use super::*;
 
-
 /// Scatter-Gather I/O Future
 pub struct SgIoFuture {
     request: Arc<SgIoRequest>,
@@ -67,9 +66,7 @@ pub(crate) fn sg_request_to_dma_list(request: &SgIoRequest) -> FsResult<TypedSgL
         if !request.is_read {
             // Safety: caller provides valid source buffers in SgEntry.
             let src = unsafe { core::slice::from_raw_parts(entry.addr as *const u8, entry.len) };
-            let dst = list
-                .buffer_mut(idx)
-                .ok_or(FsError::InvalidArgument)?;
+            let dst = list.buffer_mut(idx).ok_or(FsError::InvalidArgument)?;
             dst.as_mut_slice().copy_from_slice(src);
         }
     }
@@ -240,4 +237,3 @@ pub fn async_io_scheduler() -> &'static AsyncIoScheduler {
 #[cfg(test)]
 #[path = "../../../tests.rs"]
 mod tests;
-

@@ -1,9 +1,11 @@
 // tls/crypto/aes_gcm.rs - AES-GCM AEAD
 
+use super::aes_core::{
+    AesRoundKeySchedule, aes_encrypt_block_with_schedule, aes_expand_key_schedule,
+};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
-use super::aes_core::{AesRoundKeySchedule, aes_expand_key_schedule, aes_encrypt_block_with_schedule};
 
 /// Constant-time 16-byte tag comparison to prevent timing side-channels.
 /// The comparison always iterates through all 16 bytes and uses bitwise
@@ -15,14 +17,14 @@ fn ct_eq_16(a: &[u8; 16], b: &[u8; 16]) -> bool {
         // Security: XOR all bytes to accumulate differences without branching.
         diff |= a[i] ^ b[i];
     }
-    
+
     // Security: Constant-time check if diff == 0.
     // If diff is 0, (diff-1) will have the high bit set (underflow).
     // If diff is > 0, (diff-1) will NOT have the high bit set.
     // We use u32 to ensure we have enough bits for the shift.
     let diff_u32 = diff as u32;
     let is_zero = ((diff_u32.wrapping_sub(1) >> 31) & 1) as u8;
-    
+
     // The volatile read helps prevent the compiler from optimizing away the
     // constant-time property of the arithmetic above.
     unsafe { ptr::read_volatile(&is_zero) == 1 }
@@ -104,7 +106,7 @@ impl AesGcmKey {
         if !ct_eq_16(tag, &expected_tag) {
             return Err(());
         }
-        
+
         // perform decryption now that tag has been verified
         // Security: avoid heap allocation in the data path
         plaintext_out[..ciphertext.len()].copy_from_slice(ciphertext);
@@ -117,7 +119,6 @@ impl AesGcmKey {
         Ok(())
     }
 }
-
 
 /// GCM GHASH演算
 fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
@@ -238,8 +239,8 @@ mod tests {
 
         assert_eq!(ct.len(), 0);
         let expected_tag = [
-            0x58, 0xe2, 0xfc, 0xce, 0xfa, 0x7e, 0x30, 0x61,
-            0x36, 0x7f, 0x1d, 0x57, 0xa4, 0xe7, 0x45, 0x5a
+            0x58, 0xe2, 0xfc, 0xce, 0xfa, 0x7e, 0x30, 0x61, 0x36, 0x7f, 0x1d, 0x57, 0xa4, 0xe7,
+            0x45, 0x5a,
         ];
         assert_eq!(tag, expected_tag);
 
@@ -267,12 +268,12 @@ mod tests {
         let (ct, tag) = aes_gcm_encrypt(&key, &nonce, &aad, &plaintext);
 
         let expected_ct = [
-            0x03, 0x88, 0xda, 0xce, 0x60, 0xb6, 0xa3, 0x92,
-            0xf3, 0x28, 0xc2, 0xb9, 0x71, 0xb2, 0xfe, 0x78
+            0x03, 0x88, 0xda, 0xce, 0x60, 0xb6, 0xa3, 0x92, 0xf3, 0x28, 0xc2, 0xb9, 0x71, 0xb2,
+            0xfe, 0x78,
         ];
         let expected_tag = [
-            0xab, 0x6e, 0x47, 0xd4, 0x2c, 0xec, 0x13, 0xbd,
-            0xf5, 0x3a, 0x67, 0xb2, 0x12, 0x51, 0xb3, 0x97
+            0xab, 0x6e, 0x47, 0xd4, 0x2c, 0xec, 0x13, 0xbd, 0xf5, 0x3a, 0x67, 0xb2, 0x12, 0x51,
+            0xb3, 0x97,
         ];
 
         assert_eq!(ct, expected_ct);

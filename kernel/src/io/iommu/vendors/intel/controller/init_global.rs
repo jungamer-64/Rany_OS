@@ -10,19 +10,19 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::io::iommu::runtime::config::{IommuConfig, ReservedMemoryRegion};
 use crate::io::iommu::common::tables::phys_to_virt_usize;
-use crate::io::iommu::types::{DeviceId, IommuError, IommuDomainType};
+use crate::io::iommu::runtime::config::{IommuConfig, ReservedMemoryRegion};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 // Intel-specific imports
 use super::super::registry::{IommuRegistry, init_registry};
 use super::IommuController;
 
+#[cfg(not(test))]
+use super::dma::DomainManager;
 use super::fault::FaultHandler;
 use super::init::CapabilityManager;
 use super::iova::IovaManager;
 use super::qi_init::QIManager;
-#[cfg(not(test))]
-use super::dma::DomainManager;
 // use crate::io::acpi::dmar; // For parse_dmar - verified this path exists in kernel/src/io/acpi/dmar.rs
 
 fn align_down(value: u64, align: usize) -> u64 {
@@ -255,7 +255,12 @@ fn apply_rmrr_reservations(registry: &IommuRegistry) {
 }
 
 /// Reserve a single RMRR range on a controller's IOVA allocator.
-fn reserve_rmrr_on_controller(controller: &Arc<IommuController>, segment: u16, start: u64, end: u64) {
+fn reserve_rmrr_on_controller(
+    controller: &Arc<IommuController>,
+    segment: u16,
+    start: u64,
+    end: u64,
+) {
     let guard = match controller.iova_allocator.lock() {
         Ok(guard) => guard,
         Err(_) => {

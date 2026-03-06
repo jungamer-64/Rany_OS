@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl PacketPool {
     /// Create a new packet pool
     pub fn new(capacity: usize, buffer_size: usize) -> Self {
@@ -60,7 +59,9 @@ impl PacketPool {
                     buffers.push(buffer);
                 }
             }
-            Err(_) => log::error!("[NET] PacketPool buffers lock poisoned (free) - dropping buffer"),
+            Err(_) => {
+                log::error!("[NET] PacketPool buffers lock poisoned (free) - dropping buffer")
+            }
         }
         // Otherwise drop the buffer
     }
@@ -241,4 +242,3 @@ pub fn alloc_packet() -> Option<PacketRef> {
 
 #[cfg(test)]
 mod tests;
-

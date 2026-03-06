@@ -33,15 +33,15 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 mod mglru_tuning;
-pub use mglru_tuning::*;
-#[cfg(any(test, feature = "qemu-test-export"))]
-use core::sync::atomic::AtomicU8;
+use crate::sync::IrqMutex;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
-use crate::sync::IrqMutex;
+#[cfg(any(test, feature = "qemu-test-export"))]
+use core::sync::atomic::AtomicU8;
+pub use mglru_tuning::*;
 
-use crate::mm::types::FrameIndex;
 use crate::mm::types::AddressUnit;
+use crate::mm::types::FrameIndex;
 
 /// 一度に若返らせる最大エントリ数
 const MAX_REJUVENATE_BATCH: usize = 64;
@@ -57,25 +57,25 @@ const PAGEVEC_SIZE: usize = 15;
 const MAX_CPUS: usize = 256;
 
 /// Per-CPU PageVec for batched LRU additions
-/// 
+///
 /// ## 概要
-/// 
+///
 /// LRUリストへの追加をPer-CPUでバッファリングし、一定数溜まったら
 /// 一括でフラッシュする。これにより、ロック取得回数を最大15分の1に削減。
-/// 
+///
 /// ## 使用パターン
-/// 
+///
 /// ```ignore
 /// // ページをバッファに追加
 /// pagevec_add(cpu_id, entry);
-/// 
+///
 /// // バッファが満杯なら自動フラッシュ
 /// // または明示的にフラッシュ
 /// pagevec_lru_add_flush(cpu_id);
 /// ```
-/// 
+///
 /// ## パフォーマンス
-/// 
+///
 /// - ロック取得: 15回のadd → 1回のロック取得
 /// - キャッシュ効率: エントリがL1に載った状態でまとめて処理
 #[repr(C, align(64))]
@@ -197,27 +197,31 @@ impl PageVec {
 
         // Phase 6.2: Batch pages per NUMA node for reduced lock contention
         for node_idx in 0..8 {
-             for i in 0..self.count {
-                 let entry = &self.entries[i];
-                 if entry.is_empty() { continue; }
-                 
-                 let e_node = (entry.numa_node as usize).min(7);
-                 if e_node != node_idx { continue; }
+            for i in 0..self.count {
+                let entry = &self.entries[i];
+                if entry.is_empty() {
+                    continue;
+                }
 
-                 // Check for tail pages early
-                 if crate::mm::meta::page_flags::test_flag(FrameIndex::from_phys_addr(entry.frame), crate::mm::meta::page_flags::PageMetaFlags::CompoundTail) {
-                     continue;
-                 }
+                let e_node = (entry.numa_node as usize).min(7);
+                if e_node != node_idx {
+                    continue;
+                }
 
-                 let mglru_entry = MglruEntry::new(
-                     entry.frame_index(),
-                     entry.page_type(),
-                     entry.timestamp,
-                 );
+                // Check for tail pages early
+                if crate::mm::meta::page_flags::test_flag(
+                    FrameIndex::from_phys_addr(entry.frame),
+                    crate::mm::meta::page_flags::PageMetaFlags::CompoundTail,
+                ) {
+                    continue;
+                }
 
-                 // Active/Inactive distinction is handled by Generation 0 (Active-like)
-                 lru_lists[node_idx].add_page(mglru_entry);
-             }
+                let mglru_entry =
+                    MglruEntry::new(entry.frame_index(), entry.page_type(), entry.timestamp);
+
+                // Active/Inactive distinction is handled by Generation 0 (Active-like)
+                lru_lists[node_idx].add_page(mglru_entry);
+            }
         }
 
         self.flush_count += 1;
@@ -249,7 +253,7 @@ static mut PER_CPU_PAGEVEC: [PageVec; MAX_CPUS] = {
 };
 
 /// 現在のCPUのPageVecにエントリを追加
-/// 
+///
 /// # Safety
 /// 割り込み禁止状態で呼び出すこと
 #[inline]
@@ -261,13 +265,11 @@ pub unsafe fn pagevec_add(cpu_id: usize, entry: PageVecEntry) -> bool {
 /// 現在のCPUのPageVecが満杯か
 #[inline]
 pub fn pagevec_is_full(cpu_id: usize) -> bool {
-    unsafe {
-        PER_CPU_PAGEVEC[cpu_id.min(MAX_CPUS - 1)].is_full()
-    }
+    unsafe { PER_CPU_PAGEVEC[cpu_id.min(MAX_CPUS - 1)].is_full() }
 }
 
 /// 現在のCPUのPageVecをフラッシュ
-/// 
+///
 /// # Safety
 /// 割り込み禁止状態で呼び出すこと
 pub unsafe fn pagevec_lru_add_flush(cpu_id: usize) {
@@ -308,11 +310,11 @@ impl Watermarks {
     /// 総メモリサイズから適切なウォーターマークを計算
     pub fn calculate(total_pages: usize) -> Self {
         // 典型的な比率（調整可能）
-        let min = (total_pages * 1) / 100;      // 1%
-        let low = (total_pages * 2) / 100;      // 2%
-        let high = (total_pages * 3) / 100;     // 3%
+        let min = (total_pages * 1) / 100; // 1%
+        let low = (total_pages * 2) / 100; // 2%
+        let high = (total_pages * 3) / 100; // 3%
         let critical = (total_pages * 5) / 1000; // 0.5%
-        
+
         Self {
             high: high.max(128),
             low: low.max(64),
@@ -320,7 +322,7 @@ impl Watermarks {
             critical: critical.max(16),
         }
     }
-    
+
     /// 現在の空きページ数からメモリ圧迫レベルを判定
     pub fn pressure_level(&self, free_pages: usize) -> MemoryPressure {
         if free_pages <= self.critical {
@@ -407,7 +409,7 @@ impl MglruGen {
             _ => Self::Gen3,
         }
     }
-    
+
     /// 次の世代（古い方向へ）
     #[inline]
     pub fn age(self) -> Self {
@@ -418,13 +420,13 @@ impl MglruGen {
             Self::Gen3 => Self::Gen3, // 既に最も古い
         }
     }
-    
+
     /// 若返り（アクセス検出時）
     #[inline]
     pub fn rejuvenate(self) -> Self {
         Self::Gen0
     }
-    
+
     /// 数値として取得
     #[inline]
     pub fn as_u8(self) -> u8 {
@@ -466,13 +468,13 @@ pub struct LruFlags(u32);
 
 impl LruFlags {
     pub const NONE: Self = Self(0);
-    pub const DIRTY: Self = Self(1 << 0);      // ダーティ（書き込み必要）
-    pub const LOCKED: Self = Self(1 << 1);     // ロック中
-    pub const WRITEBACK: Self = Self(1 << 2);  // ライトバック中
-    pub const RECLAIM: Self = Self(1 << 3);    // 回収中
+    pub const DIRTY: Self = Self(1 << 0); // ダーティ（書き込み必要）
+    pub const LOCKED: Self = Self(1 << 1); // ロック中
+    pub const WRITEBACK: Self = Self(1 << 2); // ライトバック中
+    pub const RECLAIM: Self = Self(1 << 3); // 回収中
     pub const UNEVICTABLE: Self = Self(1 << 4); // 回収不可
-    pub const MLOCKED: Self = Self(1 << 5);    // mlock()済み
-    
+    pub const MLOCKED: Self = Self(1 << 5); // mlock()済み
+
     #[inline]
     pub fn contains(self, flag: Self) -> bool {
         (self.0 & flag.0) != 0
@@ -517,13 +519,13 @@ impl MglruEntry {
             flags: LruFlags::NONE,
         }
     }
-    
+
     /// 参照ビットをテスト＆クリア
     #[inline]
     pub fn test_clear_referenced(&self) -> bool {
         self.referenced.swap(false, Ordering::AcqRel)
     }
-    
+
     /// 回収可能か
     pub fn is_reclaimable(&self) -> bool {
         !self.flags.contains(LruFlags::LOCKED)
@@ -543,7 +545,7 @@ pub struct MglruStats {
 }
 
 /// Multi-Generational LRU リスト
-/// 
+///
 /// 世代ごとに分離されたリストを管理し、効率的なaging/reclaimを実現。
 pub struct MglruList {
     /// 世代ごとのページリスト [Gen0, Gen1, Gen2, Gen3]
@@ -574,7 +576,7 @@ impl MglruList {
             rejuvenated: AtomicU64::new(0),
         }
     }
-    
+
     /// 新しいページを追加（Gen0へ）
     pub fn add_page(&self, entry: MglruEntry) {
         self.add_page_to_generation(entry, 0);
@@ -653,14 +655,14 @@ impl MglruList {
 
         (aged, rejuvenated)
     }
-    
+
     /// Aging cycle: 全世代を1つずつ古くする
-    /// 
+    ///
     /// 参照ビットが立っているページはGen0に戻す（若返り）
     pub fn run_aging_cycle(&self) -> MglruAgingStats {
         let mut aged = 0usize;
         let mut rejuvenated = 0usize;
-        
+
         // Gen2 → Gen3, Gen1 → Gen2, Gen0 → Gen1 の順で処理
         // (逆順で処理して世代間の移動を効率化)
         for gen_idx in (0..MGLRU_GENERATIONS - 1).rev() {
@@ -668,24 +670,25 @@ impl MglruList {
             aged += gen_aged;
             rejuvenated += gen_rejuvenated;
         }
-        
+
         // サイズを再計算
         for (i, generation) in self.generations.iter().enumerate() {
             let len = generation.lock().len();
             self.gen_sizes[i].store(len, Ordering::Relaxed);
         }
-        
+
         self.aging_cycles.fetch_add(1, Ordering::Relaxed);
-        self.rejuvenated.fetch_add(rejuvenated as u64, Ordering::Relaxed);
-        
+        self.rejuvenated
+            .fetch_add(rejuvenated as u64, Ordering::Relaxed);
+
         MglruAgingStats { aged, rejuvenated }
     }
-    
+
     /// Gen3から回収可能なページを取得
     pub fn reclaim_from_oldest(&self, count: usize) -> Vec<MglruEntry> {
         let mut gen3 = self.generations[3].lock();
         let mut victims = Vec::with_capacity(count.min(gen3.len()));
-        
+
         let mut i = 0;
         while victims.len() < count && i < gen3.len() {
             if let Some(entry) = gen3.get(i) {
@@ -698,9 +701,9 @@ impl MglruList {
             }
             i += 1;
         }
-        
+
         self.gen_sizes[3].fetch_sub(victims.len(), Ordering::Relaxed);
-        
+
         victims
     }
 
@@ -722,7 +725,7 @@ impl MglruList {
             rejuvenated: self.rejuvenated.load(Ordering::Relaxed),
         }
     }
-    
+
     /// 各世代のサイズを取得
     pub fn generation_sizes(&self) -> [usize; MGLRU_GENERATIONS] {
         [
@@ -742,8 +745,6 @@ pub struct MglruAgingStats {
     /// 若返ったページ数
     pub rejuvenated: usize,
 }
-
-
 
 // ============================================================================
 // MGLRU Dynamic Tuning (Phase 1.2)

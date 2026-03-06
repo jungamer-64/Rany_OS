@@ -23,7 +23,9 @@ pub fn set_ipv4_servers(servers: Vec<Ipv4Address>) {
                 client.set_ipv4_servers(servers);
             }
         }
-        Err(_) => log::error!("[NET] DNS Global lock poisoned (set_ipv4_servers) - operation skipped"),
+        Err(_) => {
+            log::error!("[NET] DNS Global lock poisoned (set_ipv4_servers) - operation skipped")
+        }
     }
 }
 
@@ -35,7 +37,9 @@ pub fn set_ipv6_servers(servers: Vec<Ipv6Address>) {
                 client.set_ipv6_servers(servers);
             }
         }
-        Err(_) => log::error!("[NET] DNS Global lock poisoned (set_ipv6_servers) - operation skipped"),
+        Err(_) => {
+            log::error!("[NET] DNS Global lock poisoned (set_ipv6_servers) - operation skipped")
+        }
     }
 }
 
@@ -47,14 +51,18 @@ pub fn add_ipv6_server(server: Ipv6Address) {
                 client.add_ipv6_server(server);
             }
         }
-        Err(_) => log::error!("[NET] DNS Global lock poisoned (add_ipv6_server) - operation skipped"),
+        Err(_) => {
+            log::error!("[NET] DNS Global lock poisoned (add_ipv6_server) - operation skipped")
+        }
     }
 }
 
 /// キャッシュからIPアドレスを解決
 pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
     match DNS_CLIENT.lock() {
-        Ok(g) => g.as_ref().and_then(|c| c.resolve_cached(name, current_tick)),
+        Ok(g) => g
+            .as_ref()
+            .and_then(|c| c.resolve_cached(name, current_tick)),
         Err(_) => {
             log::error!("[NET] DNS Global lock poisoned (resolve_cached) - treating as cache miss");
             None

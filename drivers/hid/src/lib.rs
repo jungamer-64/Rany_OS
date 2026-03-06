@@ -625,7 +625,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod smoke_tests {
     use super::tests;

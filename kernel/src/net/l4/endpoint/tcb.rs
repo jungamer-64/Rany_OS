@@ -5,7 +5,6 @@
 //!
 //! TcpConnectionState, TcpControlBlockEntry, TcbTable, tcp_flags
 
-
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -14,7 +13,7 @@ use spin::RwLock;
 use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
 use super::flow_control::FlowController;
 use super::retransmit::check_retransmit_timeouts;
-use super::types::{EndpointAddr, EndpointFd, EndpointError, seq_after, conn_key_hash};
+use super::types::{EndpointAddr, EndpointError, EndpointFd, conn_key_hash, seq_after};
 use super::window_scale::WindowScaleOption;
 
 /// TCPフラグ
@@ -173,7 +172,7 @@ impl TcpControlBlockEntry {
     }
 
     /// 送信を遅延させるべきか判定 (Nagleアルゴリズム + Sender SWS avoidance)
-    /// 
+    ///
     /// Following RFC 1122 Section 4.2.3.4 (Sender SWS Avoidance) and Section 4.2.3.2 (Nagle's).
     pub fn should_delay_send(&self, data_len: usize) -> bool {
         // --- 1. Maximum-sized segment can be sent ---
@@ -237,9 +236,15 @@ impl TcpControlBlockEntry {
     ///
     /// `current_time_ms`: 現在時刻（ミリ秒）。CUBICやBBRが正確な時刻を必要とする。
     /// `rtt_sample_ms`: RTTサンプル（ミリ秒）。BBRが帯域推定に使用。0なら無効。
-    pub fn on_ack_received(&mut self, ack_num: u32, is_dup: bool, current_time_ms: u64, rtt_sample_ms: u64) {
+    pub fn on_ack_received(
+        &mut self,
+        ack_num: u32,
+        is_dup: bool,
+        current_time_ms: u64,
+        rtt_sample_ms: u64,
+    ) {
         // RFC 793 validation: SND.UNA < SEG.ACK =< SND.NXT
-        let is_valid_ack = (ack_num.wrapping_sub(self.snd_una) as i32) > 0 
+        let is_valid_ack = (ack_num.wrapping_sub(self.snd_una) as i32) > 0
             && (ack_num.wrapping_sub(self.snd_nxt) as i32) <= 0;
 
         let bytes_acked = if is_valid_ack && !is_dup {
@@ -248,8 +253,13 @@ impl TcpControlBlockEntry {
             0
         };
 
-        self.congestion
-            .on_ack(bytes_acked, is_dup, self.snd_una, current_time_ms, rtt_sample_ms);
+        self.congestion.on_ack(
+            bytes_acked,
+            is_dup,
+            self.snd_una,
+            current_time_ms,
+            rtt_sample_ms,
+        );
 
         if !is_dup && is_valid_ack {
             self.snd_una = ack_num;
@@ -300,7 +310,7 @@ impl TcpControlBlockEntry {
     // === Urgent Data Handling (RFC 793/6093) ===
 
     /// Set urgent pointer for sending urgent data
-    /// 
+    ///
     /// The urgent pointer points to the sequence number of the last byte
     /// of urgent data + 1 (per RFC 6093 clarification).
     pub fn set_urgent(&mut self, urgent_offset: u32) {
@@ -335,7 +345,7 @@ impl TcpControlBlockEntry {
     }
 
     /// Process incoming URG flag and urgent pointer
-    /// 
+    ///
     /// Returns true if there is new urgent data to process
     pub fn on_urgent_received(&mut self, seg_seq: u32, urgent_ptr: u16) -> bool {
         // Calculate absolute urgent pointer position
@@ -369,11 +379,7 @@ impl TcpControlBlockEntry {
         }
         // Offset to the byte immediately before the urgent pointer
         let offset = self.rcv_up.wrapping_sub(self.rcv_nxt);
-        if offset > 0 {
-            Some(offset - 1)
-        } else {
-            None
-        }
+        if offset > 0 { Some(offset - 1) } else { None }
     }
 
     /// Clear receive urgent mode after processing
@@ -446,14 +452,14 @@ impl TcbTable {
     }
 
     /// 初期シーケンス番号生成（RFC 6528準拠）
-    /// 
+    ///
     /// 以前の実装はRDTSCのみに依存しており予測可能でしたが、
     /// この実装は暗号論的に安全な乱数（generate_random）と
     /// 5-tuple情報を組み合わせることで、シーケンス番号予測攻撃を防ぎます。
     pub fn generate_isn(&self, local: EndpointAddr, remote: EndpointAddr) -> u32 {
         // 暗号論的に安全な乱数を取得
         let random_bytes = crate::net::security::tls::generate_random();
-        
+
         // FNV-1aハッシュで5-tupleと乱数を混合
         let mut hash: u32 = 0x811c9dc5;
         const FNV_PRIME: u32 = 0x01000193;
@@ -558,9 +564,9 @@ impl TcbTable {
     /// 全ての確立済み接続をスキャンし、相手のウィンドウが0でデータ送信待ちがある場合、
     /// 定期的に1バイトのプローブパケットを送信する。
     fn check_zero_window_probes(&self, current_tick: u64) {
-        use super::segment::{TcpSegmentBuilder, send_tcp_segment};
-        use super::retransmit::retransmit_queue_push;
         use super::manager::ENDPOINT_MANAGER;
+        use super::retransmit::retransmit_queue_push;
+        use super::segment::{TcpSegmentBuilder, send_tcp_segment};
 
         for shard in &self.shards {
             let mut entries = shard.write();
@@ -577,7 +583,8 @@ impl TcbTable {
                         let manager = ENDPOINT_MANAGER.read();
                         if let Some(ref mgr) = *manager {
                             if let Some(socket) = mgr.get(entry.fd) {
-                                let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                                let mut inner =
+                                    socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                                 if !inner.send_buffer.is_empty() {
                                     // 1バイト取得 (SWS回避ルールにより、通常は here に到達するのは snd_wnd=0 の時のみ)
                                     let probe_byte = inner.send_buffer.pop_front().unwrap();
@@ -588,22 +595,30 @@ impl TcbTable {
                                     let seq = entry.snd_nxt;
 
                                     // セグメント構築 (ACKフラグ付きデータパケット)
-                                    let mut builder = TcpSegmentBuilder::new(key.0.port(), key.1.port())
-                                        .seq(seq)
-                                        .ack(entry.rcv_nxt)
-                                        .ack_flag()
-                                        .psh() // 通常データと同様にPSHを立てる
-                                        .window(entry.advertised_recv_window())
-                                        .data(payload.clone());
-                                    
+                                    let mut builder =
+                                        TcpSegmentBuilder::new(key.0.port(), key.1.port())
+                                            .seq(seq)
+                                            .ack(entry.rcv_nxt)
+                                            .ack_flag()
+                                            .psh() // 通常データと同様にPSHを立てる
+                                            .window(entry.advertised_recv_window())
+                                            .data(payload.clone());
+
                                     if entry.ts_enabled {
                                         let ts_val = (current_tick / 10) as u32;
-                                        builder = builder.nop().nop().timestamp(ts_val, entry.ts_ecr);
+                                        builder =
+                                            builder.nop().nop().timestamp(ts_val, entry.ts_ecr);
                                     }
 
                                     let mut segment = builder.build();
-                                    if let (Some(lv4), Some(rv4)) = (key.0.as_ipv4(), key.1.as_ipv4()) {
-                                        TcpSegmentBuilder::calculate_checksum(&mut segment, lv4, rv4);
+                                    if let (Some(lv4), Some(rv4)) =
+                                        (key.0.as_ipv4(), key.1.as_ipv4())
+                                    {
+                                        TcpSegmentBuilder::calculate_checksum(
+                                            &mut segment,
+                                            lv4,
+                                            rv4,
+                                        );
                                     } else {
                                         TcpSegmentBuilder::calculate_checksum_v6(
                                             &mut segment,
@@ -620,7 +635,10 @@ impl TcbTable {
                                         entry.flow_control.on_probe_sent(current_tick);
                                     } else {
                                         // 送信失敗（ARP未解決等）。バッファに戻す。
-                                        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                                        let mut inner = socket
+                                            .inner()
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
                                         inner.send_buffer.push_front(probe_byte);
                                     }
                                 }
@@ -633,7 +651,7 @@ impl TcbTable {
     }
 
     /// TIME_WAIT状態の期限切れエントリを掃除する
-    /// 
+    ///
     /// 2MSL（Maximum Segment Lifetime）の待機時間を経過した接続を完全に削除する。
     /// RFC 793 では 2MSL = 4分（240秒）を推奨。
     fn scavenge_time_wait(&self, current_tick: u64) {
@@ -718,7 +736,7 @@ impl TcbTable {
     }
 
     /// 接続追加
-    /// 
+    ///
     /// # Returns
     /// - `Ok(())` : 成功
     /// - `Err(&'static str)` : テーブル満杯などのエラー
@@ -738,7 +756,7 @@ impl TcbTable {
         let idx = shard_index(&entry.local, &entry.remote);
         let key = (entry.local, entry.remote);
         let mut shard = self.shards[idx].write();
-        
+
         // すでに存在するかチェック
         let is_syn_recv = entry.state == TcpConnectionState::SynReceived;
         if shard.insert(key, entry).is_none() {
@@ -767,7 +785,7 @@ impl TcbTable {
             let old_state = entry.state;
             f(entry);
             let new_state = entry.state;
-            
+
             // 状態が変化した場合、SynReceivedカウンタを更新
             if old_state != new_state {
                 if old_state == TcpConnectionState::SynReceived {
@@ -784,7 +802,11 @@ impl TcbTable {
     }
 
     /// 接続削除
-    pub fn remove(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlockEntry> {
+    pub fn remove(
+        &self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+    ) -> Option<TcpControlBlockEntry> {
         let idx = shard_index(&local, &remote);
         let mut shard = self.shards[idx].write();
         if let Some(entry) = shard.remove(&(local, remote)) {
@@ -828,7 +850,11 @@ impl TcbTable {
     }
 
     /// 接続参照取得（イミュータブル）
-    pub fn lookup(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlockEntry> {
+    pub fn lookup(
+        &self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+    ) -> Option<TcpControlBlockEntry> {
         let idx = shard_index(&local, &remote);
         self.shards[idx].read().get(&(local, remote)).cloned()
     }
@@ -871,7 +897,12 @@ impl TcbTable {
     ///
     /// オフパス攻撃者による PMTU 毒入れ攻撃を防ぐため、引用されたパケットの
     /// シーケンス番号が現在の送信ウィンドウ内にあることを確認します。
-    pub fn validate_icmp_sequence(&self, local: EndpointAddr, remote: EndpointAddr, seq: u32) -> bool {
+    pub fn validate_icmp_sequence(
+        &self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        seq: u32,
+    ) -> bool {
         if let Some(tcb) = self.get(local, remote) {
             // RFC 5927 Section 4.1: "The TCP sequence number should be checked
             // to see if it's within the current window"
@@ -1001,7 +1032,6 @@ pub mod tests {
         assert_eq!(syn_ack, 0x12);
     }
 }
-
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {

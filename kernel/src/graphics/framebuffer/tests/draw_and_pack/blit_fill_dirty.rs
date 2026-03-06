@@ -1,18 +1,21 @@
 use super::*;
 
-
 mod shapes_and_copy;
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 pub(crate) fn test_pack_rgba_to_bgr24_neon_matches_scalar() {
-    if !std::is_aarch64_feature_detected!("neon") { return; }
+    if !std::is_aarch64_feature_detected!("neon") {
+        return;
+    }
     assert_bgr24_8px_matches_scalar(97, true, Framebuffer::pack_rgba_to_bgr24_neon_8pixels);
 }
 
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 pub(crate) fn test_pack_rgba_to_bgr24_neon_matches_scalar_rgb() {
-    if !std::is_aarch64_feature_detected!("neon") { return; }
+    if !std::is_aarch64_feature_detected!("neon") {
+        return;
+    }
     assert_bgr24_8px_matches_scalar(113, false, Framebuffer::pack_rgba_to_bgr24_neon_8pixels);
 }
 

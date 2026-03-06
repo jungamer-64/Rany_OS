@@ -16,7 +16,9 @@ impl IntelIommuDriver {
 
     pub(crate) fn enable(&self) -> Result<(), IommuError> {
         if let Some(ref controller) = self.controller {
-            unsafe { return controller.enable(); }
+            unsafe {
+                return controller.enable();
+            }
         }
         let registry = self.registry()?;
         for (_idx, controller) in registry.controllers.iter().enumerate() {
@@ -29,7 +31,9 @@ impl IntelIommuDriver {
 
     pub(crate) fn disable(&self) -> Result<(), IommuError> {
         if let Some(ref controller) = self.controller {
-            unsafe { return controller.disable(); }
+            unsafe {
+                return controller.disable();
+            }
         }
         let registry = self.registry()?;
         for (_idx, controller) in registry.controllers.iter().enumerate() {
@@ -105,7 +109,7 @@ impl IntelIommuDriver {
         // Intel VT-d MSI/MSI-X format for Interrupt Remapping.
         // Spec Section 5.1.2.1: MSI and MSI-X Register Programming
         let handle_val = handle as u64;
-        
+
         if handle_val < 0x8000 {
             // Standard case: Index fits in 15 bits of address (bits 19:5).
             // SHV=0 (Sub-handle Valid is bit 3).
@@ -127,7 +131,9 @@ impl IntelIommuDriver {
 
     pub(crate) fn domain_id_for_device(&self, device: &DeviceId) -> Result<u16, IommuError> {
         if let Some(ref controller) = self.controller {
-            return controller.get_domain_for_device(*device).map(|d| d.unwrap_or(0));
+            return controller
+                .get_domain_for_device(*device)
+                .map(|d| d.unwrap_or(0));
         }
         let registry = self.registry()?;
         if registry.controllers.is_empty() {
@@ -201,9 +207,7 @@ impl IntelIommuDriver {
     ) -> Result<(), IommuError> {
         let mut mapped_indices: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
         for (idx, controller) in registry.controllers.iter().enumerate() {
-            let domain_arc = controller
-                .domain(0)
-                .ok_or(IommuError::DomainNotFound)?;
+            let domain_arc = controller.domain(0).ok_or(IommuError::DomainNotFound)?;
             if let Err(err) = domain_arc.map(iova, phys_addr.as_u64(), size, read, write) {
                 let unmap_ok = Self::rollback_dma_mappings(registry, &mapped_indices, iova);
                 if unmap_ok {
@@ -279,12 +283,19 @@ impl IntelIommuDriver {
             .ok_or(IommuError::NotPresent)?;
         let iova = default_controller.allocate_iova(size)?;
 
-        let reserved_indices = unsafe {
-            self.reserve_iova_on_secondary(registry, default_controller, iova, size)?
-        };
+        let reserved_indices =
+            unsafe { self.reserve_iova_on_secondary(registry, default_controller, iova, size)? };
 
         if let Err(err) = unsafe {
-            self.map_on_all_controllers(registry, &reserved_indices, iova, phys_addr, size, read, write)
+            self.map_on_all_controllers(
+                registry,
+                &reserved_indices,
+                iova,
+                phys_addr,
+                size,
+                read,
+                write,
+            )
         } {
             let _ = default_controller.free_iova(iova, size);
             return Err(err);
@@ -305,7 +316,7 @@ impl IntelIommuDriver {
         let mut success_count = 0;
 
         // SECURITY: Unmap from ALL controllers that have Domain 0.
-        // Failing to unmap from any controller while freeing the IOVA would leave a 
+        // Failing to unmap from any controller while freeing the IOVA would leave a
         // stale mapping that could be exploited for DMA Use-After-Free.
         for (idx, controller) in registry.controllers.iter().enumerate() {
             if let Some(domain_arc) = controller.domain(0) {
@@ -315,7 +326,8 @@ impl IntelIommuDriver {
                         if let Err(err) = controller.invalidate_iotlb(0, true) {
                             log::error!(
                                 "[IOMMU][SECURITY] unmap_dma invalidation failed on controller {}: {:?}. Poisoning domain.",
-                                idx, err
+                                idx,
+                                err
                             );
                             domain_arc.poison();
                             if first_err.is_none() {
@@ -363,7 +375,10 @@ impl IntelIommuDriver {
         } else if mapping_size > 0 {
             log::warn!(
                 "[IOMMU][SECURITY] Partial unmap success ({}/{}); IOVA 0x{:x} (size {}) will NOT be freed to prevent UAF.",
-                success_count, registry.controllers.len(), iova, mapping_size
+                success_count,
+                registry.controllers.len(),
+                iova,
+                mapping_size
             );
         }
 
@@ -400,7 +415,13 @@ impl IntelIommuDriver {
                 if let Some(domain_arc) = controller.domain(domain_id) {
                     let iova = allocate_iova_for_device(controller, device, size)?;
                     return apply_mapping_sync(
-                        controller, &domain_arc, iova, phys_addr.as_u64(), size, read, write,
+                        controller,
+                        &domain_arc,
+                        iova,
+                        phys_addr.as_u64(),
+                        size,
+                        read,
+                        write,
                     );
                 }
             }
@@ -417,7 +438,13 @@ impl IntelIommuDriver {
                 if let Some(domain_arc) = controller.domain(domain_id) {
                     let iova = allocate_iova_for_device(controller, device, size)?;
                     return apply_mapping_sync(
-                        controller, &domain_arc, iova, phys_addr.as_u64(), size, read, write,
+                        controller,
+                        &domain_arc,
+                        iova,
+                        phys_addr.as_u64(),
+                        size,
+                        read,
+                        write,
                     );
                 }
             }
@@ -444,7 +471,11 @@ impl IntelIommuDriver {
                 if let Some(domain_arc) = controller.domain(domain_id) {
                     let iova = allocate_iova_for_device(controller, device, size)?;
                     return apply_mapping_async(
-                        controller, &domain_arc, iova, phys_addr.as_u64(), size,
+                        controller,
+                        &domain_arc,
+                        iova,
+                        phys_addr.as_u64(),
+                        size,
                     )
                     .await;
                 }
@@ -494,7 +525,11 @@ impl IntelIommuDriver {
         size: u64,
     ) -> Result<(), IommuError> {
         // 1. Monitor page table releases to detect if paging-structure caches need clearing
-        let pts_before = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pts_before = domain_arc
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
 
         if let Some(ref _cq) = controller.command_queue {
             let cmd = IommuCommandKind::UnmapRegionDevice {
@@ -502,24 +537,37 @@ impl IntelIommuDriver {
                 iova,
                 size,
             };
-            controller.execute_sync_command(cmd).map_err(|_| IommuError::HardwareError)?;
-            
+            controller
+                .execute_sync_command(cmd)
+                .map_err(|_| IommuError::HardwareError)?;
+
             // Check if unmap removed a PT (via mapping lookups since CQ is used)
-            let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+            let pts_after = domain_arc
+                .pending_pt_release
+                .lock()
+                .map(|p| p.len())
+                .unwrap_or(0);
             if pts_after > pts_before {
                 // SECURITY: If a page table was removed, we MUST perform a domain-wide
                 // invalidation. CQ UnmapRegionDevice only does page-level invalidation.
-                controller.execute_sync_command(IommuCommandKind::InvalidateIotlbDomain { domain: domain_arc.id() })
+                controller
+                    .execute_sync_command(IommuCommandKind::InvalidateIotlbDomain {
+                        domain: domain_arc.id(),
+                    })
                     .map_err(|_| IommuError::HardwareError)?;
                 let _ = domain_arc.flush(controller, controller);
             }
-            return Ok(())
+            return Ok(());
         }
 
         let mapping = domain_arc.unmap(iova)?;
         let domain_id = domain_arc.id();
 
-        let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pts_after = domain_arc
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
         let pt_removed = pts_after > pts_before;
 
         if pt_removed {
@@ -535,11 +583,12 @@ impl IntelIommuDriver {
             // Quarantine full: Force global flush and immediate free.
             // This is safe because the global flush ensures no stale entries remain.
             if let Ok(_) = controller.invalidate_iotlb_global_sync() {
-                let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                    controller,
-                    iova,
-                    mapping.size,
-                );
+                let _ =
+                    crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
+                        controller,
+                        iova,
+                        mapping.size,
+                    );
             }
         }
         Ok(())
@@ -556,19 +605,27 @@ impl IntelIommuDriver {
     ) -> Result<(), IommuError> {
         let mapping = domain_arc.mapping(iova).ok_or(IommuError::NotMapped)?;
         let mapping_size = mapping.size;
-        let cmd = IommuCommandKind::UnmapRegionDevice { device: *device, iova, size };
-        let comp = cq.submit_async(cmd).await.map_err(|_| IommuError::HardwareError)?;
+        let cmd = IommuCommandKind::UnmapRegionDevice {
+            device: *device,
+            iova,
+            size,
+        };
+        let comp = cq
+            .submit_async(cmd)
+            .await
+            .map_err(|_| IommuError::HardwareError)?;
         let rc = comp.await;
         if rc != 0 {
             return Err(IommuError::HardwareError);
         }
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping_size) {
             if let Ok(_) = controller.invalidate_iotlb_global_sync() {
-                let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                    controller,
-                    iova,
-                    mapping_size,
-                );
+                let _ =
+                    crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
+                        controller,
+                        iova,
+                        mapping_size,
+                    );
             }
         }
         Ok(())
@@ -582,12 +639,20 @@ impl IntelIommuDriver {
         iova: u64,
     ) -> Result<(), IommuError> {
         // 1. Monitor page table releases
-        let pts_before = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pts_before = domain_arc
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
 
         let mapping = domain_arc.unmap(iova)?;
         let domain_id = domain_arc.id();
 
-        let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pts_after = domain_arc
+            .pending_pt_release
+            .lock()
+            .map(|p| p.len())
+            .unwrap_or(0);
         let pt_removed = pts_after > pts_before;
 
         if pt_removed {
@@ -611,7 +676,7 @@ impl IntelIommuDriver {
             // Always use the direct QI path which supports page-level granularity.
             controller.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
         }
-        
+
         if pt_removed {
             let _ = domain_arc.flush(controller, controller);
         }
@@ -620,11 +685,12 @@ impl IntelIommuDriver {
             // Quarantine full: Force global flush and immediate free.
             // This is safe because the global flush ensures no stale entries remain.
             if let Ok(_) = controller.invalidate_iotlb_global_sync() {
-                let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                    controller,
-                    iova,
-                    mapping.size,
-                );
+                let _ =
+                    crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
+                        controller,
+                        iova,
+                        mapping.size,
+                    );
             }
         }
         Ok(())
@@ -651,9 +717,18 @@ impl IntelIommuDriver {
                 None => continue,
             };
             if let Some(ref cq) = controller.command_queue {
-                return Self::try_cq_unmap_device_async(cq, &domain_arc, controller, device, iova, size).await;
+                return Self::try_cq_unmap_device_async(
+                    cq,
+                    &domain_arc,
+                    controller,
+                    device,
+                    iova,
+                    size,
+                )
+                .await;
             }
-            return Self::direct_unmap_invalidate_async(&domain_arc, controller, device, iova).await;
+            return Self::direct_unmap_invalidate_async(&domain_arc, controller, device, iova)
+                .await;
         }
 
         Err(IommuError::DomainNotFound)
@@ -673,7 +748,7 @@ impl IntelIommuDriver {
         }
 
         // SECURITY: Create the domain on ALL controllers to ensure Domain ID consistency
-        // across the entire IOMMU topology. This is critical for global DMA (Domain 0) 
+        // across the entire IOMMU topology. This is critical for global DMA (Domain 0)
         // to function correctly on multi-controller systems.
         let mut first_id = None;
         for (idx, controller) in registry.controllers.iter().enumerate() {
@@ -683,7 +758,9 @@ impl IntelIommuDriver {
             } else if first_id != Some(id) {
                 log::error!(
                     "[IOMMU][SECURITY] Domain ID mismatch during creation on controller {}: expected {}, got {}. Consistency broken.",
-                    idx, first_id.unwrap(), id
+                    idx,
+                    first_id.unwrap(),
+                    id
                 );
                 // SECURITY: Refuse to proceed with inconsistent domain IDs across controllers.
                 // This prevents subtle isolation bypasses on multi-IOMMU systems.

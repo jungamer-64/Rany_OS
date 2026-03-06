@@ -6,9 +6,10 @@
 //! This module implements zero-copy UDP packet processing
 //! for the ExoRust networking stack.
 
-
+use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
 use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
+use crate::net::types::NetworkError;
 use crate::sync::PoisonLock;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -16,13 +17,16 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use crate::net::datapath::mempool::PacketRef;
-use crate::net::types::NetworkError;
 
 extern crate alloc;
 
 #[inline]
-fn ipv6_checksum(src: &Ipv6Address, dst: &Ipv6Address, next_header: IpProtocol, data: &[u8]) -> u16 {
+fn ipv6_checksum(
+    src: &Ipv6Address,
+    dst: &Ipv6Address,
+    next_header: IpProtocol,
+    data: &[u8],
+) -> u16 {
     let pseudo = ipv6_pseudo_header_checksum(src, dst, next_header, data.len() as u32);
     data_checksum(data, pseudo)
 }
@@ -170,7 +174,12 @@ impl<'a> UdpPacket<'a> {
             return false;
         }
 
-        ipv6_checksum(&src_ip, &dst_ip, IpProtocol::Udp, &self.data[..length as usize]) == 0
+        ipv6_checksum(
+            &src_ip,
+            &dst_ip,
+            IpProtocol::Udp,
+            &self.data[..length as usize],
+        ) == 0
     }
 }
 
@@ -199,13 +208,17 @@ impl<'a> UdpPacketMut<'a> {
 
     /// Set source port
     pub fn set_src_port(&mut self, port: u16) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_src_port(port); }
+        if let Some(h) = self.header_mut() {
+            h.set_src_port(port);
+        }
         self
     }
 
     /// Set destination port
     pub fn set_dst_port(&mut self, port: u16) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_dst_port(port); }
+        if let Some(h) = self.header_mut() {
+            h.set_dst_port(port);
+        }
         self
     }
 
@@ -266,7 +279,12 @@ impl<'a> UdpPacketMut<'a> {
         }
 
         // Calculate checksum with IPv6 pseudo-header (mandatory per RFC 8200)
-        let checksum = ipv6_checksum(&src_ip, &dst_ip, IpProtocol::Udp, &self.buffer[..total_len as usize]);
+        let checksum = ipv6_checksum(
+            &src_ip,
+            &dst_ip,
+            IpProtocol::Udp,
+            &self.buffer[..total_len as usize],
+        );
 
         // In IPv6, a checksum of 0 is transmitted as 0xFFFF.
         let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
@@ -367,7 +385,9 @@ pub struct UdpEndpoint {
 
 impl Clone for UdpEndpoint {
     fn clone(&self) -> Self {
-        UdpEndpoint { inner: self.inner.clone() }
+        UdpEndpoint {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -473,7 +493,9 @@ impl UdpEndpoint {
                 }
 
                 let pkt_len = packet.len();
-                if inner.rx_packet_queue.len() < 64 && inner.rx_queue_bytes + pkt_len <= MAX_UDP_RX_QUEUE_BYTES {
+                if inner.rx_packet_queue.len() < 64
+                    && inner.rx_queue_bytes + pkt_len <= MAX_UDP_RX_QUEUE_BYTES
+                {
                     inner.rx_queue_bytes += pkt_len;
                     inner.rx_packet_queue.push_back((src, ttl, packet));
 
@@ -481,7 +503,11 @@ impl UdpEndpoint {
                         waker.wake();
                     }
                 } else {
-                    log::warn!("[NET] UDP socket queue full, dropping packet (len={}, queue_bytes={})", pkt_len, inner.rx_queue_bytes);
+                    log::warn!(
+                        "[NET] UDP socket queue full, dropping packet (len={}, queue_bytes={})",
+                        pkt_len,
+                        inner.rx_queue_bytes
+                    );
                 }
             }
             Err(_) => log::error!("[NET] UDP Endpoint poisoned during deliver - dropping packet"),
@@ -517,14 +543,20 @@ impl UdpEndpoint {
     /// Join a multicast group (async, event-queue based)
     ///
     /// NETWORK_STACKロックを取得せず、イベントキュー経由で処理する。
-    pub fn join_multicast_group(&self, group: Ipv4Address) -> crate::net::runtime::stack::MulticastJoinFuture {
+    pub fn join_multicast_group(
+        &self,
+        group: Ipv4Address,
+    ) -> crate::net::runtime::stack::MulticastJoinFuture {
         crate::net::runtime::stack::join_multicast_async(group)
     }
 
     /// Leave a multicast group (async, event-queue based)
     ///
     /// NETWORK_STACKロックを取得せず、イベントキュー経由で処理する。
-    pub fn leave_multicast_group(&self, group: Ipv4Address) -> crate::net::runtime::stack::MulticastLeaveFuture {
+    pub fn leave_multicast_group(
+        &self,
+        group: Ipv4Address,
+    ) -> crate::net::runtime::stack::MulticastLeaveFuture {
         crate::net::runtime::stack::leave_multicast_async(group)
     }
 
@@ -540,11 +572,11 @@ impl UdpEndpoint {
     }
 
     /// Send a datagram to the specified address (async-friendly, non-blocking)
-    /// 
+    ///
     /// The send request is posted to the async event queue instead of synchronously
     /// locking the global network stack. This avoids lock contention and potential
     /// deadlocks when called from async contexts (e.g., within DHCP, mDNS, DNS tasks).
-    /// 
+    ///
     /// Returns the number of bytes sent, or an error.
     pub fn send_to(&self, data: &[u8], dst: UdpAddr) -> Result<usize, NetworkError> {
         let (local_port, ttl) = match self.inner.lock() {
@@ -567,7 +599,14 @@ impl UdpEndpoint {
                 }
             }
             UdpAddr::V6 { ip, port } => {
-                if crate::net::runtime::stack::send_udp_v6_async(local_port, Ipv6Address::UNSPECIFIED, ip, port, data, ttl) {
+                if crate::net::runtime::stack::send_udp_v6_async(
+                    local_port,
+                    Ipv6Address::UNSPECIFIED,
+                    ip,
+                    port,
+                    data,
+                    ttl,
+                ) {
                     Ok(data.len())
                 } else {
                     Err(NetworkError::TransmitFailed)
@@ -613,7 +652,6 @@ impl UdpEndpoint {
         }
     }
 }
-
 
 /// Future for receiving UDP datagrams
 pub struct UdpRecvFuture {
@@ -678,16 +716,14 @@ impl<'a> Future for UdpSendFuture<'a> {
             UdpAddr::V4 { ip, port } => {
                 crate::net::runtime::stack::send_udp_async(local_port, ip, port, this.data, ttl)
             }
-            UdpAddr::V6 { ip, port } => {
-                crate::net::runtime::stack::send_udp_v6_async(
-                    local_port,
-                    Ipv6Address::UNSPECIFIED,
-                    ip,
-                    port,
-                    this.data,
-                    ttl,
-                )
-            }
+            UdpAddr::V6 { ip, port } => crate::net::runtime::stack::send_udp_v6_async(
+                local_port,
+                Ipv6Address::UNSPECIFIED,
+                ip,
+                port,
+                this.data,
+                ttl,
+            ),
         };
 
         if sent {
@@ -734,16 +770,14 @@ impl Future for UdpSendZeroCopyFuture {
                 UdpAddr::V4 { ip, port } => {
                     crate::net::runtime::stack::send_udp_async(local_port, ip, port, data, ttl)
                 }
-                UdpAddr::V6 { ip, port } => {
-                    crate::net::runtime::stack::send_udp_v6_async(
-                        local_port,
-                        Ipv6Address::UNSPECIFIED,
-                        ip,
-                        port,
-                        data,
-                        ttl,
-                    )
-                }
+                UdpAddr::V6 { ip, port } => crate::net::runtime::stack::send_udp_v6_async(
+                    local_port,
+                    Ipv6Address::UNSPECIFIED,
+                    ip,
+                    port,
+                    data,
+                    ttl,
+                ),
             };
 
             if sent {

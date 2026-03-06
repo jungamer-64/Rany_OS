@@ -279,7 +279,7 @@ fn parse_generalizedtime(data: &[u8]) -> Option<u64> {
 fn parse_asn1_time(parser: &mut DerParser<'_>) -> Option<u64> {
     let (tag, value) = parser.read_tlv()?;
     match tag {
-        0x17 => parse_utctime(value),    // UTCTime
+        0x17 => parse_utctime(value),         // UTCTime
         0x18 => parse_generalizedtime(value), // GeneralizedTime
         _ => None,
     }
@@ -520,8 +520,8 @@ fn parse_tbs_fields<'a>(
     SubjectPublicKeyInfo<'a>,
     u64,
     u64,
-    bool, // is_ca
-    Option<u32>, // path_len_constraint
+    bool,             // is_ca
+    Option<u32>,      // path_len_constraint
     Option<&'a [u8]>, // san_raw
 )> {
     let mut tbs = DerParser::new(tbs_content);
@@ -558,10 +558,11 @@ fn parse_tbs_fields<'a>(
                 while let Some(ext_item_content) = seq_parser.read_sequence() {
                     let mut item_parser = DerParser::new(ext_item_content);
                     let oid = item_parser.read_oid()?;
-                    
+
                     // Skip optional BOOLEAN critical field if present
                     if let Some(peek_tag) = item_parser.read_tag() {
-                        if peek_tag == 0x01 { // BOOLEAN
+                        if peek_tag == 0x01 {
+                            // BOOLEAN
                             let _len = item_parser.read_length()?;
                             item_parser.pos += _len;
                         } else {
@@ -576,20 +577,23 @@ fn parse_tbs_fields<'a>(
                             if let Some(bc_seq) = bc_parser.read_sequence() {
                                 let mut bc_inner = DerParser::new(bc_seq);
                                 if let Some(tag) = bc_inner.read_tag() {
-                                    if tag == 0x01 { // cA BOOLEAN
+                                    if tag == 0x01 {
+                                        // cA BOOLEAN
                                         let len = bc_inner.read_length()?;
                                         if len == 1 {
-                                            is_ca = bc_inner.remaining().get(0).copied().unwrap_or(0) != 0;
+                                            is_ca =
+                                                bc_inner.remaining().get(0).copied().unwrap_or(0)
+                                                    != 0;
                                             bc_inner.pos += 1;
                                         }
                                     } else if tag == 0x02 {
                                         // Some certs might omit cA if it's False but have pathLen
                                         // Though RFC 5280 says it's only for CAs.
                                         // Fall through to parse integer below.
-                                        bc_inner.pos -= 1; 
+                                        bc_inner.pos -= 1;
                                     }
                                 }
-                                
+
                                 // Optional pathLenConstraint INTEGER
                                 if let Some(int_val) = bc_inner.read_integer() {
                                     let mut val: u32 = 0;
@@ -707,9 +711,13 @@ fn parse_ec_spki<'a>(
 ) -> Option<SubjectPublicKeyInfo<'a>> {
     let curve_oid = alg_parser.read_oid()?;
     if curve_oid == OID_SECP256R1 {
-        Some(SubjectPublicKeyInfo::EcdsaP256 { public_key: pubkey_bits })
+        Some(SubjectPublicKeyInfo::EcdsaP256 {
+            public_key: pubkey_bits,
+        })
     } else if curve_oid == OID_SECP384R1 {
-        Some(SubjectPublicKeyInfo::EcdsaP384 { public_key: pubkey_bits })
+        Some(SubjectPublicKeyInfo::EcdsaP384 {
+            public_key: pubkey_bits,
+        })
     } else {
         Some(SubjectPublicKeyInfo::Unknown(pubkey_bits))
     }
@@ -748,49 +756,29 @@ fn parse_spki<'a>(spki_content: &'a [u8]) -> Option<SubjectPublicKeyInfo<'a>> {
 /// - Signature: ダミー4バイト (0xDEADBEEF)
 const TEST_CERT_DER: [u8; 154] = [
     // === Certificate SEQUENCE (tag 0x30, long-form length 151) ===
-    0x30, 0x81, 0x97,
-    // === TBS Certificate SEQUENCE (tag 0x30, length 127) ===
-    0x30, 0x7F,
-    // -- Version [0] EXPLICIT: v3 (INTEGER 2) --
-    0xA0, 0x03, 0x02, 0x01, 0x02,
-    // -- Serial Number: INTEGER 1 --
-    0x02, 0x01, 0x01,
-    // -- Signature Algorithm: sha256WithRSAEncryption --
-    0x30, 0x0D,
-    0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B,
-    0x05, 0x00,
+    0x30, 0x81, 0x97, // === TBS Certificate SEQUENCE (tag 0x30, length 127) ===
+    0x30, 0x7F, // -- Version [0] EXPLICIT: v3 (INTEGER 2) --
+    0xA0, 0x03, 0x02, 0x01, 0x02, // -- Serial Number: INTEGER 1 --
+    0x02, 0x01, 0x01, // -- Signature Algorithm: sha256WithRSAEncryption --
+    0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B, 0x05, 0x00,
     // -- Issuer: CN=Test --
-    0x30, 0x0F, 0x31, 0x0D, 0x30, 0x0B,
-    0x06, 0x03, 0x55, 0x04, 0x03,
-    0x0C, 0x04, 0x54, 0x65, 0x73, 0x74,
-    // -- Validity: 2020-01-01 ~ 2030-01-01 --
-    0x30, 0x1E,
-    0x17, 0x0D, 0x32, 0x30, 0x30, 0x31, 0x30, 0x31,
-    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5A,
-    0x17, 0x0D, 0x33, 0x30, 0x30, 0x31, 0x30, 0x31,
-    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5A,
+    0x30, 0x0F, 0x31, 0x0D, 0x30, 0x0B, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0C, 0x04, 0x54, 0x65, 0x73,
+    0x74, // -- Validity: 2020-01-01 ~ 2030-01-01 --
+    0x30, 0x1E, 0x17, 0x0D, 0x32, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+    0x5A, 0x17, 0x0D, 0x33, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x5A,
     // -- Subject: CN=Test --
-    0x30, 0x0F, 0x31, 0x0D, 0x30, 0x0B,
-    0x06, 0x03, 0x55, 0x04, 0x03,
-    0x0C, 0x04, 0x54, 0x65, 0x73, 0x74,
-    // -- SubjectPublicKeyInfo: RSA --
-    0x30, 0x24,
-    // Algorithm: rsaEncryption
-    0x30, 0x0D,
-    0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01,
-    0x05, 0x00,
+    0x30, 0x0F, 0x31, 0x0D, 0x30, 0x0B, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0C, 0x04, 0x54, 0x65, 0x73,
+    0x74, // -- SubjectPublicKeyInfo: RSA --
+    0x30, 0x24, // Algorithm: rsaEncryption
+    0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01, 0x05, 0x00,
     // BIT STRING (public key, 0 unused bits)
-    0x03, 0x13, 0x00,
-    // RSA public key SEQUENCE
-    0x30, 0x10,
-    // Modulus INTEGER (leading 0x00 + 8 bytes of 0xFF)
+    0x03, 0x13, 0x00, // RSA public key SEQUENCE
+    0x30, 0x10, // Modulus INTEGER (leading 0x00 + 8 bytes of 0xFF)
     0x02, 0x09, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     // Exponent INTEGER (65537 = 0x010001)
     0x02, 0x03, 0x01, 0x00, 0x01,
     // === Outer Signature Algorithm: sha256WithRSAEncryption ===
-    0x30, 0x0D,
-    0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B,
-    0x05, 0x00,
+    0x30, 0x0D, 0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B, 0x05, 0x00,
     // === Signature Value: BIT STRING (0 unused bits, dummy 4 bytes) ===
     0x03, 0x05, 0x00, 0xDE, 0xAD, 0xBE, 0xEF,
 ];
@@ -852,7 +840,8 @@ pub fn validate_certificate_chain<'a>(
         return None;
     }
 
-    let mut certs: [Option<X509Certificate<'_>>; 8] = [None, None, None, None, None, None, None, None];
+    let mut certs: [Option<X509Certificate<'_>>; 8] =
+        [None, None, None, None, None, None, None, None];
     parse_chain_to_array(chain, &mut certs)?;
 
     // Get current time for validity check
@@ -868,7 +857,7 @@ pub fn validate_certificate_chain<'a>(
     }
 
     let leaf = certs[0].as_ref()?;
-    
+
     // Security: Secure hostname verification (CN and SAN matching with wildcards)
     if let Some(name) = server_name {
         if !match_hostname(leaf, name) {
@@ -878,7 +867,7 @@ pub fn validate_certificate_chain<'a>(
 
     if chain.len() > 1 {
         verify_chain_links(&certs, chain.len())?;
-        
+
         // Security: Verify CA constraints for intermediate/root certificates
         // certificates[0] is leaf, [1..] are intermediates/root
         let mut max_path_len = u32::MAX;
@@ -888,12 +877,12 @@ pub fn validate_certificate_chain<'a>(
                 if !cert.is_ca {
                     return None;
                 }
-                
+
                 // pathLenConstraint check
                 if let Some(constraint) = cert.path_len_constraint {
                     max_path_len = core::cmp::min(max_path_len, constraint);
                 }
-                
+
                 // Current path length (number of non-self-issued intermediate certs below this one)
                 // Simplified check: i-1 is the number of certs below certs[i]
                 if (i - 1) as u32 > max_path_len {
@@ -905,7 +894,7 @@ pub fn validate_certificate_chain<'a>(
         // Security: The root of the chain (last cert) must be issued by a trusted anchor,
         // or be a trusted anchor itself.
         let chain_tip = certs[chain.len() - 1].as_ref()?;
-        
+
         let mut trusted = false;
         for &trust_der in trusted_roots {
             if let Some(trust_cert) = parse_x509(trust_der) {
@@ -916,10 +905,11 @@ pub fn validate_certificate_chain<'a>(
                         break;
                     }
                 }
-                
+
                 // Case 2: The chain tip IS this trust anchor (exact match)
-                if chain_tip.subject_raw == trust_cert.subject_raw && 
-                   chain_tip.subject_public_key_info == trust_cert.subject_public_key_info {
+                if chain_tip.subject_raw == trust_cert.subject_raw
+                    && chain_tip.subject_public_key_info == trust_cert.subject_public_key_info
+                {
                     // Usually self-signed, verify it anyway to be sure
                     if verify_signature(chain_tip, &trust_cert.subject_public_key_info) {
                         trusted = true;
@@ -946,14 +936,15 @@ pub fn validate_certificate_chain<'a>(
                     }
                 }
                 // Exact match
-                if leaf.subject_raw == trust_cert.subject_raw && 
-                   leaf.subject_public_key_info == trust_cert.subject_public_key_info {
+                if leaf.subject_raw == trust_cert.subject_raw
+                    && leaf.subject_public_key_info == trust_cert.subject_public_key_info
+                {
                     trusted = true;
                     break;
                 }
             }
         }
-        
+
         if !trusted {
             return None;
         }
@@ -1015,31 +1006,44 @@ fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
     // A wildcard is only allowed as the left-most label.
     if pattern.starts_with(b"*.") && pattern.len() > 2 {
         let suffix = &pattern[1..]; // ".domain.com"
-        
+
         // Security: Prevent wildcard matches on top-level domains (e.g. *.com)
         // or broad public suffixes (e.g. *.co.jp).
         let Ok(suffix_str) = core::str::from_utf8(&suffix[1..]) else {
             return false;
         };
         let mut labels = suffix_str.split('.');
-        
+
         // Check labels count
         let labels_count = suffix_str.split('.').count();
         if labels_count < 2 {
             return false; // Rejects *.com
         }
-        
+
         // Security: Reject common public suffixes.
         // This list includes common multi-label TLDs and public suffixes.
         if labels_count == 2 {
             let s0 = labels.next().unwrap_or("");
             let s1 = labels.next().unwrap_or("");
             let is_public = match s0 {
-                "co" | "com" | "net" | "org" | "or" | "ac" | "gov" | "edu" | "ad" | "biz" | "info" | "name" => {
+                "co" | "com" | "net" | "org" | "or" | "ac" | "gov" | "edu" | "ad" | "biz"
+                | "info" | "name" => {
                     // Check if the second part is a 2-letter ccTLD or common gTLD
-                    s1.len() == 2 || s1 == "jp" || s1 == "uk" || s1 == "au" || s1 == "cn" || s1 == "de" || s1 == "fr" || s1 == "ru" || s1 == "kr" || s1 == "br" || s1 == "in" || s1 == "ca"
+                    s1.len() == 2
+                        || s1 == "jp"
+                        || s1 == "uk"
+                        || s1 == "au"
+                        || s1 == "cn"
+                        || s1 == "de"
+                        || s1 == "fr"
+                        || s1 == "ru"
+                        || s1 == "kr"
+                        || s1 == "br"
+                        || s1 == "in"
+                        || s1 == "ca"
                 }
-                "amazonaws" | "github" | "githubusercontent" | "cloudfront" | "herokuapp" | "azurewebsites" | "appspot" => {
+                "amazonaws" | "github" | "githubusercontent" | "cloudfront" | "herokuapp"
+                | "azurewebsites" | "appspot" => {
                     // Specific public suffixes with 2 labels (e.g. amazonaws.com)
                     true
                 }
@@ -1050,9 +1054,10 @@ fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
             }
         } else if labels_count == 3 {
             // Check for 3-label public suffixes like compute.amazonaws.com
-            if suffix_str.ends_with(".compute.amazonaws.com") || 
-               suffix_str.ends_with(".s3.amazonaws.com") ||
-               suffix_str.ends_with(".github.io") {
+            if suffix_str.ends_with(".compute.amazonaws.com")
+                || suffix_str.ends_with(".s3.amazonaws.com")
+                || suffix_str.ends_with(".github.io")
+            {
                 return false;
             }
         }
@@ -1108,7 +1113,9 @@ fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
 
 /// 証明書の署名を発行者の公開鍵で検証する
 fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKeyInfo<'_>) -> bool {
-    use crate::net::security::rsa::{rsa_pkcs1_verify, rsa_pss_verify, RsaPublicKey, HashAlgorithm};
+    use crate::net::security::rsa::{
+        HashAlgorithm, RsaPublicKey, rsa_pkcs1_verify, rsa_pss_verify,
+    };
 
     match cert.signature_algorithm {
         SignatureAlgorithmId::Sha256WithRsa => {
@@ -1155,7 +1162,8 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
                     public_key,
                     &digest,
                     cert.signature_value,
-                ).is_ok()
+                )
+                .is_ok()
             } else {
                 false
             }
@@ -1167,7 +1175,8 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
                     public_key,
                     &digest,
                     cert.signature_value,
-                ).is_ok()
+                )
+                .is_ok()
             } else {
                 false
             }
@@ -1273,14 +1282,12 @@ pub mod qemu_tests {
     ///
     /// 既知のOIDが正しいSignatureAlgorithmIdにマッピングされることを検証する。
     pub fn x509_signature_algorithm_oid_smoke() -> bool {
-        parse_signature_algorithm_id(OID_SHA256_WITH_RSA)
-            == SignatureAlgorithmId::Sha256WithRsa
+        parse_signature_algorithm_id(OID_SHA256_WITH_RSA) == SignatureAlgorithmId::Sha256WithRsa
             && parse_signature_algorithm_id(OID_SHA384_WITH_RSA)
                 == SignatureAlgorithmId::Sha384WithRsa
             && parse_signature_algorithm_id(OID_ECDSA_WITH_SHA256)
                 == SignatureAlgorithmId::EcdsaWithSha256
-            && parse_signature_algorithm_id(&[0x01, 0x02, 0x03])
-                == SignatureAlgorithmId::Unknown
+            && parse_signature_algorithm_id(&[0x01, 0x02, 0x03]) == SignatureAlgorithmId::Unknown
     }
 }
 

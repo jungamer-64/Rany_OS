@@ -1,13 +1,5 @@
 use crate::{
-    Box,
-    Cluster,
-    String,
-    Fat32FileSystem,
-    Fat32Inode,
-    FsError,
-    FsResult,
-    FileSystem,
-    Inode,
+    Box, Cluster, Fat32FileSystem, Fat32Inode, FileSystem, FsError, FsResult, Inode, String,
     ZeroCopyBufferMut,
 };
 

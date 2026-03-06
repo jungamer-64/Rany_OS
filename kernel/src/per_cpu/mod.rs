@@ -13,8 +13,8 @@ use core::sync::atomic::AtomicU64;
 // IOVA_MM_MIGRATION_PLAN Phase 1.1: 汎用Magazineを使用
 use crate::mm::cache::magazine::Magazine;
 // NUMA zonelist support
-use crate::mm::types::NumaNodeId;
 use crate::mm::numa::topology::MAX_NUMA_NODES;
+use crate::mm::types::NumaNodeId;
 // Remote Free batch support
 use crate::mm::remote_free::RemoteFreeEntry;
 // Buddy Allocator Cache
@@ -98,7 +98,6 @@ pub const MAX_IOMMU_CONTROLLERS: usize = 8;
 /// Per-controller IOVA cache (per CPU).
 /// IOVA_MM_MIGRATION_PLAN Phase 1.1: Magazine<T, N>の型エイリアスとして定義
 pub type IovaMagazine = Magazine<u64, IOVA_MAG_CAPACITY>;
-
 
 // ============================================================================
 // Per-CPU Page Table Magazine (for PageTablePool fast path)
@@ -250,7 +249,7 @@ pub struct RemoteFreeBatchEntry {
 impl RemoteFreeBatchEntry {
     pub const fn new() -> Self {
         Self {
-            target_cpu: u16::MAX,  // Invalid - indicates unused slot
+            target_cpu: u16::MAX, // Invalid - indicates unused slot
             entries: [const { RemoteFreeEntry::empty() }; REMOTE_FREE_BATCH_SIZE],
             len: 0,
         }
@@ -354,19 +353,19 @@ impl RemoteFreeBatchBuffer {
     /// - `Ok(Some(entries))` - Buffer is full, returns entries to flush
     /// - `Err(entry)` - No slot available, caller should push immediately
     pub fn add_entry(
-        &mut self, 
-        target_cpu: u16, 
-        entry: RemoteFreeEntry
+        &mut self,
+        target_cpu: u16,
+        entry: RemoteFreeEntry,
     ) -> Result<Option<(u16, &[RemoteFreeEntry])>, RemoteFreeEntry> {
         if let Some(slot_idx) = self.find_or_allocate_slot(target_cpu) {
             let slot = &mut self.targets[slot_idx];
-            
+
             if slot.is_full() {
                 // Return full buffer for flushing
                 // Caller will flush and retry
                 return Ok(Some((slot.target_cpu, &slot.entries[..slot.len as usize])));
             }
-            
+
             slot.push(entry);
             self.batched_count += 1;
             Ok(None)
@@ -437,7 +436,7 @@ impl RemoteFreeBatchBuffer {
 use core::ptr::NonNull;
 
 /// Hot per-CPU data - GSBase points here directly
-/// 
+///
 /// Must fit in a single cache line (64 bytes) for optimal performance.
 /// Contains only the most frequently accessed fields.
 #[repr(C, align(64))]
@@ -487,7 +486,7 @@ impl PerCpuHot {
     }
 
     /// Link to cold data
-    /// 
+    ///
     /// # Safety
     /// cold_ptr must point to valid PerCpuCold that outlives this PerCpuHot
     pub unsafe fn set_cold(&mut self, cold_ptr: *mut PerCpuCold) {
@@ -495,7 +494,7 @@ impl PerCpuHot {
     }
 
     /// Get reference to cold data
-    /// 
+    ///
     /// # Panics
     /// Panics if cold is not set (should never happen after proper initialization)
     #[inline]
@@ -507,7 +506,7 @@ impl PerCpuHot {
     }
 
     /// Get mutable reference to cold data
-    /// 
+    ///
     /// # Safety
     /// Caller must ensure exclusive access
     #[inline]
@@ -527,37 +526,46 @@ impl PerCpuHot {
     /// Check if in interrupt context
     #[inline]
     pub fn in_interrupt(&self) -> bool {
-        self.interrupt_depth.load(core::sync::atomic::Ordering::Relaxed) > 0
+        self.interrupt_depth
+            .load(core::sync::atomic::Ordering::Relaxed)
+            > 0
     }
 
     /// Enter interrupt context
     #[inline]
     pub fn enter_interrupt(&self) {
-        self.interrupt_depth.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.interrupt_depth
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// Exit interrupt context
     #[inline]
     pub fn exit_interrupt(&self) {
-        self.interrupt_depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+        self.interrupt_depth
+            .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// Check if preemption is disabled
     #[inline]
     pub fn is_preempt_disabled(&self) -> bool {
-        self.preempt_disable_count.load(core::sync::atomic::Ordering::Relaxed) > 0
+        self.preempt_disable_count
+            .load(core::sync::atomic::Ordering::Relaxed)
+            > 0
     }
 
     /// Disable preemption on this CPU
     #[inline]
     pub fn preempt_disable(&self) {
-        self.preempt_disable_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.preempt_disable_count
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// Enable preemption on this CPU
     #[inline]
     pub fn preempt_enable(&self) {
-        let old = self.preempt_disable_count.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+        let old = self
+            .preempt_disable_count
+            .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
         if old == 0 {
             panic!("preempt_enable() called when preempt_disable_count was already 0");
         }
@@ -565,7 +573,7 @@ impl PerCpuHot {
 }
 
 /// Cold per-CPU data - accessed via indirection from PerCpuHot
-/// 
+///
 /// Contains less-frequently accessed fields like caches and statistics.
 pub struct PerCpuCold {
     /// Per-CPU heap statistics
@@ -632,7 +640,9 @@ impl PerCpuCold {
     /// Get zonelist iterator
     #[inline]
     pub fn zonelist_iter(&self) -> impl Iterator<Item = NumaNodeId> + '_ {
-        self.numa_zonelist[..self.numa_zonelist_len as usize].iter().copied()
+        self.numa_zonelist[..self.numa_zonelist_len as usize]
+            .iter()
+            .copied()
     }
 
     /// Get nth zonelist node
@@ -740,7 +750,7 @@ impl PerCpuData {
     ) {
         self.local_numa_node = local_node;
         self.numa_zonelist_len = (node_count as u8).min(MAX_NUMA_NODES as u8);
-        
+
         // Copy the pre-sorted zonelist
         for i in 0..self.numa_zonelist_len as usize {
             self.numa_zonelist[i] = sorted_nodes[i];
@@ -759,7 +769,9 @@ impl PerCpuData {
     /// This enables efficient fallback allocation without runtime distance lookups.
     #[inline]
     pub fn zonelist_iter(&self) -> impl Iterator<Item = NumaNodeId> + '_ {
-        self.numa_zonelist[..self.numa_zonelist_len as usize].iter().copied()
+        self.numa_zonelist[..self.numa_zonelist_len as usize]
+            .iter()
+            .copied()
     }
 
     /// Get the nth preferred NUMA node from the zonelist.
@@ -780,7 +792,9 @@ impl PerCpuData {
     /// handler (ISR), `false` otherwise.
     #[inline]
     pub fn in_interrupt(&self) -> bool {
-        self.interrupt_depth.load(core::sync::atomic::Ordering::Relaxed) > 0
+        self.interrupt_depth
+            .load(core::sync::atomic::Ordering::Relaxed)
+            > 0
     }
 
     /// Increment interrupt nesting depth.
@@ -788,7 +802,8 @@ impl PerCpuData {
     /// Must be called at the beginning of every interrupt handler.
     #[inline]
     pub fn enter_interrupt(&self) {
-        self.interrupt_depth.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.interrupt_depth
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// Decrement interrupt nesting depth.
@@ -796,7 +811,8 @@ impl PerCpuData {
     /// Must be called at the end of every interrupt handler.
     #[inline]
     pub fn exit_interrupt(&self) {
-        self.interrupt_depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+        self.interrupt_depth
+            .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 

@@ -30,11 +30,11 @@ const IRTE_INT_TYPE_MASK: u64 = 0x07 << IRTE_INT_TYPE_SHIFT;
 const IRTE_VECTOR_SHIFT: u32 = 8; // bits [15:8]: Vector
 #[allow(dead_code)]
 const IRTE_VECTOR_MASK: u64 = 0xFF << IRTE_VECTOR_SHIFT;
-const IRTE_SVT_SHIFT: u32 = 11;   // bits [13:11] of HI: Source Validation Type (SVT) (IRTE bits 77:75)
-const IRTE_SQ_SHIFT: u32 = 14;    // bits [15:14] of HI: Source Quantifier (SQ) (IRTE bits 79:78)
+const IRTE_SVT_SHIFT: u32 = 11; // bits [13:11] of HI: Source Validation Type (SVT) (IRTE bits 77:75)
+const IRTE_SQ_SHIFT: u32 = 14; // bits [15:14] of HI: Source Quantifier (SQ) (IRTE bits 79:78)
 const IRTE_DESTINATION_SHIFT: u32 = 32; // bits [63:32]: Destination (APIC ID)
 
-const IRTE_SID_SHIFT: u32 = 16;   // bits [31:16] of HI: Source Device ID (SID) (IRTE bits 95:80)
+const IRTE_SID_SHIFT: u32 = 16; // bits [31:16] of HI: Source Device ID (SID) (IRTE bits 95:80)
 
 /// AMD-Vi IRT size encoding for the table base register.
 /// Stored in bits [3:0] of the IRT Base Address register.
@@ -214,20 +214,30 @@ impl AmdInterruptRemapTable {
 
         if was_present && is_present {
             // Modifying a present entry. Clear RemapEn first.
-            unsafe { core::ptr::write_volatile(&mut entry.lo, 0); }
+            unsafe {
+                core::ptr::write_volatile(&mut entry.lo, 0);
+            }
             core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         }
 
         if is_present {
             // Setting to Present=1: Write hi first, then lo.
-            unsafe { core::ptr::write_volatile(&mut entry.hi, irte.hi); }
+            unsafe {
+                core::ptr::write_volatile(&mut entry.hi, irte.hi);
+            }
             core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-            unsafe { core::ptr::write_volatile(&mut entry.lo, irte.lo); }
+            unsafe {
+                core::ptr::write_volatile(&mut entry.lo, irte.lo);
+            }
         } else {
             // Clearing to Present=0: Write lo first, then hi.
-            unsafe { core::ptr::write_volatile(&mut entry.lo, irte.lo); }
+            unsafe {
+                core::ptr::write_volatile(&mut entry.lo, irte.lo);
+            }
             core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-            unsafe { core::ptr::write_volatile(&mut entry.hi, irte.hi); }
+            unsafe {
+                core::ptr::write_volatile(&mut entry.hi, irte.hi);
+            }
         }
         Ok(())
     }

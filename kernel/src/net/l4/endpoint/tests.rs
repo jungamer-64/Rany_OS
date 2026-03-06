@@ -9,7 +9,9 @@
 pub mod tests {
     use super::super::endpoint_core::Endpoint;
     use super::super::tcb::TcpControlBlockEntry;
-    use super::super::types::{AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType};
+    use super::super::types::{
+        AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
+    };
     use alloc::vec::Vec;
 
     #[cfg_attr(test, test_case)]
@@ -68,7 +70,10 @@ pub mod tests {
 
         // Bound -> Listening
         {
-            let mut inner = listen_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(EndpointAddr::new([0, 0, 0, 0], 8080));
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Listening);
@@ -82,7 +87,10 @@ pub mod tests {
         let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
 
         {
-            let mut inner = listen_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
@@ -106,21 +114,32 @@ pub mod tests {
 
         // Bound -> Listening
         {
-            let mut inner = listen_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080));
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(EndpointAddr::new_v6(
+                crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(),
+                8080,
+            ));
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Listening);
         }
 
         // 接続をAcceptキューに追加
         let accepted_fd = EndpointFd::from_raw(201);
-        let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
-        let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 54001);
+        let local =
+            EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
+        let remote =
+            EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 54001);
         let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
         let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
 
         {
-            let mut inner = listen_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
@@ -143,82 +162,102 @@ pub mod tests {
         if let Some(conn) = inner.tcp_mut().and_then(|t| t.accept_queue.pop_front()) {
             let new_endpoint = Endpoint::new_with_fd(EndpointType::Tcp, conn.fd);
             {
-                let mut new_inner = new_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                let mut new_inner = new_endpoint
+                    .inner()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 new_inner.ensure_tcp().nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を引き継ぐ
                 let _ = new_inner.transition_to(EndpointState::Connected);
             }
             return Some((new_endpoint, conn.remote_addr));
-            }
+        }
 
-            None
-            }
+        None
+    }
 
-            #[cfg_attr(test, test_case)]
-            pub fn test_tcp_nodelay_inheritance() {
-            let listen_endpoint = Endpoint::new(EndpointType::Tcp);
-            listen_endpoint.set_nodelay(true).unwrap();
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_nodelay_inheritance() {
+        let listen_endpoint = Endpoint::new(EndpointType::Tcp);
+        listen_endpoint.set_nodelay(true).unwrap();
 
-            // Listening状態に
-            {
-            let mut inner = listen_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        // Listening状態に
+        {
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(EndpointAddr::new([0, 0, 0, 0], 8080));
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Listening);
-            }
+        }
 
-            // 接続を追加
-            let accepted_fd = EndpointFd::from_raw(500);
-            let local = EndpointAddr::new([192, 168, 1, 1], 8080);
-            let remote = EndpointAddr::new([10, 0, 0, 1], 50000);
-            let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
-            let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
+        // 接続を追加
+        let accepted_fd = EndpointFd::from_raw(500);
+        let local = EndpointAddr::new([192, 168, 1, 1], 8080);
+        let remote = EndpointAddr::new([10, 0, 0, 1], 50000);
+        let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
+        let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
 
-            {
-            let mut inner = listen_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().accept_queue.push_back(conn);
-            }
+        }
 
-            // Accept
-            let (new_endpoint, _) = endpoint_accept_internal(&listen_endpoint).unwrap();
+        // Accept
+        let (new_endpoint, _) = endpoint_accept_internal(&listen_endpoint).unwrap();
 
-            // 設定が引き継がれているか確認
-            let inner = new_endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            assert!(inner.tcp().map_or(false, |t| t.nodelay));
-            }
+        // 設定が引き継がれているか確認
+        let inner = new_endpoint
+            .inner()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(inner.tcp().map_or(false, |t| t.nodelay));
+    }
 
-            #[cfg_attr(test, test_case)]
-            pub fn test_tcp_nodelay_tcb_update() {
-            crate::net::l4::endpoint::manager::init_endpoint_manager();
-            let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_nodelay_tcb_update() {
+        crate::net::l4::endpoint::manager::init_endpoint_manager();
+        let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
 
-            let sock = crate::net::l4::endpoint::create_tcp_endpoint();
-            let fd = sock.fd();
-            let local = EndpointAddr::new([127, 0, 0, 1], 10000);
-            let remote = EndpointAddr::new([127, 0, 0, 1], 10001);
+        let sock = crate::net::l4::endpoint::create_tcp_endpoint();
+        let fd = sock.fd();
+        let local = EndpointAddr::new([127, 0, 0, 1], 10000);
+        let remote = EndpointAddr::new([127, 0, 0, 1], 10001);
 
-            // 接続済み状態のTCBを作成
-            let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
-            tcb.state = crate::net::l4::endpoint::tcb::TcpConnectionState::Established;
-            tcb.set_nodelay(false); // 初期値: 偽
-            crate::net::l4::endpoint::tcb::tcb_table().insert(tcb);
+        // 接続済み状態のTCBを作成
+        let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
+        tcb.state = crate::net::l4::endpoint::tcb::TcpConnectionState::Established;
+        tcb.set_nodelay(false); // 初期値: 偽
+        crate::net::l4::endpoint::tcb::tcb_table().insert(tcb);
 
-            // ソケット側のアドレス情報を設定（handlerがTCB検索に使用）
-            if let Some(s) = sock.endpoint() {
+        // ソケット側のアドレス情報を設定（handlerがTCB検索に使用）
+        if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
-            }
+        }
 
-            // イベントを処理
-            let res = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::SetNoDelay { fd, nodelay: true });
-            assert!(matches!(res, crate::net::l4::endpoint::handler::EventHandleResult::Success));
+        // イベントを処理
+        let res = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::SetNoDelay {
+            fd,
+            nodelay: true,
+        });
+        assert!(matches!(
+            res,
+            crate::net::l4::endpoint::handler::EventHandleResult::Success
+        ));
 
-            // TCBに反映されているか確認
-            let updated_tcb = crate::net::l4::endpoint::tcb::tcb_table().get(local, remote).unwrap();
-            assert!(updated_tcb.is_nodelay_enabled());
-            }
+        // TCBに反映されているか確認
+        let updated_tcb = crate::net::l4::endpoint::tcb::tcb_table()
+            .get(local, remote)
+            .unwrap();
+        assert!(updated_tcb.is_nodelay_enabled());
+    }
 
     #[cfg_attr(test, test_case)]
     pub fn test_accept_backlog_limit() {
@@ -242,7 +281,10 @@ pub mod tests {
             let conn = AcceptedConnection::new(fd, local, remote, tcb);
 
             let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            if inner.tcp().map_or(true, |t| t.accept_queue.len() < t.accept_backlog) {
+            if inner
+                .tcp()
+                .map_or(true, |t| t.accept_queue.len() < t.accept_backlog)
+            {
                 inner.ensure_tcp().accept_queue.push_back(conn);
             }
         }
@@ -258,7 +300,8 @@ pub mod tests {
         crate::net::l4::endpoint::manager::init_endpoint_manager();
 
         let sock = crate::net::l4::endpoint::create_tcp_endpoint();
-        let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+        let local =
+            EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
         assert!(sock.set_local_addr(local).is_ok());
         assert!(sock.start_listening(4).is_ok());
 
@@ -278,8 +321,10 @@ pub mod tests {
 
         let sock = crate::net::l4::endpoint::create_tcp_endpoint();
         let fd = sock.fd();
-        let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
-        let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 3000);
+        let local =
+            EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
+        let remote =
+            EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 3000);
 
         if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -287,11 +332,21 @@ pub mod tests {
             inner.remote_addr = Some(remote);
         }
 
-        let res = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::Connect { fd, local, remote });
-        assert!(matches!(res, crate::net::l4::endpoint::handler::EventHandleResult::Success));
+        let res = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::Connect {
+            fd,
+            local,
+            remote,
+        });
+        assert!(matches!(
+            res,
+            crate::net::l4::endpoint::handler::EventHandleResult::Success
+        ));
 
         let tcb = crate::net::l4::endpoint::tcb::tcb_table().get(local, remote);
         assert!(tcb.is_some());
-        assert_eq!(tcb.unwrap().state, crate::net::l4::endpoint::tcb::TcpConnectionState::SynSent);
+        assert_eq!(
+            tcb.unwrap().state,
+            crate::net::l4::endpoint::tcb::TcpConnectionState::SynSent
+        );
     }
 }

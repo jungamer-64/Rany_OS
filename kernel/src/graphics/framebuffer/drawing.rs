@@ -35,7 +35,10 @@ impl Framebuffer {
         let (bytes_per_pixel, stride) = if self.back_buffer.is_some() {
             (4, (self.info.width * 4) as usize)
         } else {
-            (self.info.format.bytes_per_pixel(), self.info.stride as usize)
+            (
+                self.info.format.bytes_per_pixel(),
+                self.info.stride as usize,
+            )
         };
         let x_start = start_x as usize;
         let run_len = (end_x - start_x + 1) as usize;
@@ -88,7 +91,14 @@ impl Framebuffer {
     }
 
     /// 4bpp垂直線描画ヘルパー
-    fn draw_vline_4bpp(&mut self, x_off: usize, start_y: usize, run_len: usize, stride: usize, color: Color) {
+    fn draw_vline_4bpp(
+        &mut self,
+        x_off: usize,
+        start_y: usize,
+        run_len: usize,
+        stride: usize,
+        color: Color,
+    ) {
         let color_u32 = color.to_u32();
         let mut off = start_y * stride + x_off * 4;
         if self.back_buffer.is_some() {
@@ -116,7 +126,14 @@ impl Framebuffer {
     }
 
     /// 3bpp垂直線描画ヘルパー
-    fn draw_vline_3bpp(&mut self, x_off: usize, start_y: usize, run_len: usize, stride: usize, color: Color) {
+    fn draw_vline_3bpp(
+        &mut self,
+        x_off: usize,
+        start_y: usize,
+        run_len: usize,
+        stride: usize,
+        color: Color,
+    ) {
         let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
         let (c0, c1, c2) = if is_bgr {
             (color.blue, color.green, color.red)
@@ -144,7 +161,14 @@ impl Framebuffer {
     }
 
     /// 2bpp垂直線描画ヘルパー
-    fn draw_vline_2bpp(&mut self, x_off: usize, start_y: usize, run_len: usize, stride: usize, color: Color) {
+    fn draw_vline_2bpp(
+        &mut self,
+        x_off: usize,
+        start_y: usize,
+        run_len: usize,
+        stride: usize,
+        color: Color,
+    ) {
         let pixel = Self::color_to_rgb565(color);
         if let Some(ref mut _back) = self.back_buffer {
             debug_assert!(false, "16bpp vline called on u32 backbuffer");
@@ -168,7 +192,10 @@ impl Framebuffer {
         let (bytes_per_pixel, stride) = if self.back_buffer.is_some() {
             (4, (self.info.width * 4) as usize)
         } else {
-            (self.info.format.bytes_per_pixel(), self.info.stride as usize)
+            (
+                self.info.format.bytes_per_pixel(),
+                self.info.stride as usize,
+            )
         };
         let x_off = x as usize;
         let run_len = (end_y - start_y + 1) as usize;
@@ -202,7 +229,12 @@ impl Framebuffer {
         let min_y = y1.min(y2);
         let max_x = x1.max(x2);
         let max_y = y1.max(y2);
-        self.mark_dirty(Rect::new(min_x, min_y, (max_x - min_x + 1) as u32, (max_y - min_y + 1) as u32));
+        self.mark_dirty(Rect::new(
+            min_x,
+            min_y,
+            (max_x - min_x + 1) as u32,
+            (max_y - min_y + 1) as u32,
+        ));
 
         let abs_dx = (x2 - x1).abs();
         let abs_dy = (y2 - y1).abs();
@@ -401,25 +433,33 @@ impl Framebuffer {
         if y0 >= self.clip.y && y0 < self.clip.bottom() {
             let s = x0.max(self.clip.x);
             let e = x1.min(self.clip.right() - 1);
-            if s <= e { self.draw_hline_raw(s, e, y0, color); }
+            if s <= e {
+                self.draw_hline_raw(s, e, y0, color);
+            }
         }
         // Bottom hline
         if y1 >= self.clip.y && y1 < self.clip.bottom() && y1 != y0 {
             let s = x0.max(self.clip.x);
             let e = x1.min(self.clip.right() - 1);
-            if s <= e { self.draw_hline_raw(s, e, y1, color); }
+            if s <= e {
+                self.draw_hline_raw(s, e, y1, color);
+            }
         }
         // Left vline (exclude corners already drawn by hlines)
         if x0 >= self.clip.x && x0 < self.clip.right() {
             let vs = (y0 + 1).max(self.clip.y);
             let ve = (y1 - 1).min(self.clip.bottom() - 1);
-            if vs <= ve { self.draw_vline_raw(x0, vs, ve, color); }
+            if vs <= ve {
+                self.draw_vline_raw(x0, vs, ve, color);
+            }
         }
         // Right vline (exclude corners)
         if x1 >= self.clip.x && x1 < self.clip.right() && x1 != x0 {
             let vs = (y0 + 1).max(self.clip.y);
             let ve = (y1 - 1).min(self.clip.bottom() - 1);
-            if vs <= ve { self.draw_vline_raw(x1, vs, ve, color); }
+            if vs <= ve {
+                self.draw_vline_raw(x1, vs, ve, color);
+            }
         }
     }
 
@@ -503,7 +543,10 @@ impl Framebuffer {
         }
 
         let buffer = self.draw_buffer();
-        let (stride, bpp) = (self.info.stride as usize, self.info.format.bytes_per_pixel());
+        let (stride, bpp) = (
+            self.info.stride as usize,
+            self.info.format.bytes_per_pixel(),
+        );
         let copy_bytes = s.width as usize * bpp;
         // When source and destination rows are different, row slices do not overlap
         // in the normal framebuffer layout (stride >= row bytes). In that case we
@@ -560,7 +603,11 @@ impl Framebuffer {
         let bottom = r.bottom().min(self.clip.bottom());
         r.width = (right - r.x).max(0) as u32;
         r.height = (bottom - r.y).max(0) as u32;
-        if r.width == 0 || r.height == 0 { None } else { Some(r) }
+        if r.width == 0 || r.height == 0 {
+            None
+        } else {
+            Some(r)
+        }
     }
 
     /// Fill a clipped rectangle into the u32 backbuffer.
@@ -704,8 +751,10 @@ impl Framebuffer {
         }
         // Pre-mark bounding box dirty once instead of per-pixel
         self.mark_dirty(Rect::new(
-            cx - radius, cy - radius,
-            (radius * 2 + 1) as u32, (radius * 2 + 1) as u32,
+            cx - radius,
+            cy - radius,
+            (radius * 2 + 1) as u32,
+            (radius * 2 + 1) as u32,
         ));
         let mut x = radius;
         let mut y = 0;
@@ -715,10 +764,14 @@ impl Framebuffer {
             // Use set_pixel_raw (skip per-pixel dirty mark + clip re-check)
             // Only draw if within clip bounds
             let pts = [
-                (cx + x, cy + y), (cx + y, cy + x),
-                (cx - y, cy + x), (cx - x, cy + y),
-                (cx - x, cy - y), (cx - y, cy - x),
-                (cx + y, cy - x), (cx + x, cy - y),
+                (cx + x, cy + y),
+                (cx + y, cy + x),
+                (cx - y, cy + x),
+                (cx - x, cy + y),
+                (cx - x, cy - y),
+                (cx - y, cy - x),
+                (cx + y, cy - x),
+                (cx + x, cy - y),
             ];
             for &(px, py) in &pts {
                 if self.clip_contains_point(px, py) {
@@ -745,8 +798,10 @@ impl Framebuffer {
         }
         // Pre-mark bounding box dirty once
         self.mark_dirty(Rect::new(
-            cx - radius, cy - radius,
-            (radius * 2 + 1) as u32, (radius * 2 + 1) as u32,
+            cx - radius,
+            cy - radius,
+            (radius * 2 + 1) as u32,
+            (radius * 2 + 1) as u32,
         ));
 
         let mut x = radius;

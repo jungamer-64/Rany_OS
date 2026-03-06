@@ -317,7 +317,12 @@ fn validate_elf_sections(elf_data: &[u8]) -> Option<(usize, usize, usize, usize)
 }
 
 /// セクション名文字列テーブルの範囲を取得
-fn get_shstrtab_range(elf_data: &[u8], sh_offset: usize, sh_entsize: usize, shstrtab_idx: usize) -> Option<(usize, usize)> {
+fn get_shstrtab_range(
+    elf_data: &[u8],
+    sh_offset: usize,
+    sh_entsize: usize,
+    shstrtab_idx: usize,
+) -> Option<(usize, usize)> {
     use crate::loader::elf::Elf64SectionHeader;
 
     let shstrtab_header_offset = sh_offset + shstrtab_idx * sh_entsize;
@@ -383,11 +388,16 @@ fn find_named_section_data<'a>(
 /// セルのメタデータセクション（.rany_type_id）からハッシュ情報を読み取ります。
 pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
     let (sh_offset, sh_entsize, sh_num, shstrtab_idx) = validate_elf_sections(elf_data)?;
-    let (shstrtab_start, shstrtab_size) = get_shstrtab_range(elf_data, sh_offset, sh_entsize, shstrtab_idx)?;
+    let (shstrtab_start, shstrtab_size) =
+        get_shstrtab_range(elf_data, sh_offset, sh_entsize, shstrtab_idx)?;
 
     let section_data = find_named_section_data(
-        elf_data, sh_offset, sh_entsize, sh_num,
-        shstrtab_start, shstrtab_size,
+        elf_data,
+        sh_offset,
+        sh_entsize,
+        sh_num,
+        shstrtab_start,
+        shstrtab_size,
         ".rany_type_id",
     )?;
 
@@ -650,5 +660,3 @@ mod tests {
         assert!(matches!(err, TypeIdError::HashMismatch { .. }));
     }
 }
-
-

@@ -3,8 +3,8 @@
 // ============================================================================
 
 use crate::cmd::CmdMailbox;
-use crate::resources::{MkeyParams, TisParams, TirParams, TirReceiveType};
-use crate::structs::cmd::{MkeyContextLayout, TisContextLayout, TirContextLayout};
+use crate::resources::{MkeyParams, TirParams, TirReceiveType, TisParams};
+use crate::structs::cmd::{MkeyContextLayout, TirContextLayout, TisContextLayout};
 
 /// ALLOC_UAR コマンド入力の構築
 pub fn build_alloc_uar_input(in_mbox: &mut CmdMailbox) {
@@ -58,7 +58,7 @@ pub fn build_dealloc_td_input(in_mbox: &mut CmdMailbox, td: u32) {
 pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = MkeyContextLayout::new(&mut in_mbox.data[0x10..]);
-    
+
     layout.set_access_flags(params.access_flags);
     layout.set_translations_octword_size(1);
     layout.set_pd(params.pd);
@@ -67,7 +67,7 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
     layout.set_log_page_size(12); // 4KB
     layout.set_mkey_7_0(0x42);
 
-    // PAS[0] at context + 0x40. 
+    // PAS[0] at context + 0x40.
     in_mbox.write_be64(0x10 + 0x40, params.start_addr);
 }
 
@@ -146,8 +146,7 @@ pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
     if let Some(ref rss) = params.rss {
         let key_off = 0x20 + 0x28; // Context + 0x28
         let copy_len = rss.hash_key.len().min(40);
-        in_mbox.data[key_off..key_off + copy_len]
-            .copy_from_slice(&rss.hash_key[..copy_len]);
+        in_mbox.data[key_off..key_off + copy_len].copy_from_slice(&rss.hash_key[..copy_len]);
     }
 }
 

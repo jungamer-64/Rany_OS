@@ -1,8 +1,7 @@
 use super::*;
-use alloc::sync::Arc;
 use crate::io::virtio::TransportType;
 use crate::util::align_up_usize as align_up;
-
+use alloc::sync::Arc;
 
 mod graphics_manager;
 pub use self::graphics_manager::*;
@@ -123,7 +122,8 @@ impl VirtioGpu {
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 
-        let buffer = self.alloc_coherent(total_size, DmaMemoryAttributes::MMIO)
+        let buffer = self
+            .alloc_coherent(total_size, DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
 
         let dev_base = buffer.device_addr();
@@ -179,9 +179,11 @@ impl VirtioGpu {
         let queue = self.ctrl_queue.as_ref().ok_or(GpuError::InitFailed)?;
         let queue_guard = queue.lock();
 
-        let mut req_buf = self.alloc_coherent(req_bytes.len(), DmaMemoryAttributes::MMIO)
+        let mut req_buf = self
+            .alloc_coherent(req_bytes.len(), DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
-        let resp_buf = self.alloc_coherent(resp_size, DmaMemoryAttributes::MMIO)
+        let resp_buf = self
+            .alloc_coherent(resp_size, DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
 
         unsafe {
@@ -228,16 +230,11 @@ impl VirtioGpu {
     /// Send a typed command struct and expect a GpuCtrlHdr response.
     pub(super) fn send_command<Req: Copy>(&self, req: &Req) -> GpuResult<GpuCtrlHdr> {
         let req_bytes = unsafe {
-            core::slice::from_raw_parts(
-                req as *const Req as *const u8,
-                core::mem::size_of::<Req>(),
-            )
+            core::slice::from_raw_parts(req as *const Req as *const u8, core::mem::size_of::<Req>())
         };
-        let resp_buf =
-            self.send_command_raw(req_bytes, core::mem::size_of::<GpuCtrlHdr>())?;
-        let hdr = unsafe {
-            core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr)
-        };
+        let resp_buf = self.send_command_raw(req_bytes, core::mem::size_of::<GpuCtrlHdr>())?;
+        let hdr =
+            unsafe { core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr) };
         if hdr.cmd_type >= GpuCmd::RespErrUnspec as u32 {
             return Err(GpuError::DeviceError);
         }
@@ -250,7 +247,8 @@ impl VirtioGpu {
         let queue_guard = queue.lock();
 
         let req_size = core::mem::size_of::<Req>();
-        let mut req_buf = self.alloc_coherent(req_size, DmaMemoryAttributes::MMIO)
+        let mut req_buf = self
+            .alloc_coherent(req_size, DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
 
         unsafe {
@@ -291,11 +289,14 @@ impl VirtioGpu {
         data_bytes: &[u8],
         resp_size: usize,
     ) -> GpuResult<(CoherentDmaBuffer, CoherentDmaBuffer, CoherentDmaBuffer)> {
-        let mut req_buf = self.alloc_coherent(req_bytes.len(), DmaMemoryAttributes::MMIO)
+        let mut req_buf = self
+            .alloc_coherent(req_bytes.len(), DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
-        let mut data_buf = self.alloc_coherent(data_bytes.len(), DmaMemoryAttributes::MMIO)
+        let mut data_buf = self
+            .alloc_coherent(data_bytes.len(), DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
-        let resp_buf = self.alloc_coherent(resp_size, DmaMemoryAttributes::MMIO)
+        let resp_buf = self
+            .alloc_coherent(resp_size, DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
         unsafe {
             req_buf.as_mut_slice()[..req_bytes.len()].copy_from_slice(req_bytes);
@@ -315,7 +316,8 @@ impl VirtioGpu {
         let queue = self.ctrl_queue.as_ref().ok_or(GpuError::InitFailed)?;
         let queue_guard = queue.lock();
 
-        let (req_buf, data_buf, resp_buf) = self.alloc_command_buffers(req_bytes, data_bytes, resp_size)?;
+        let (req_buf, data_buf, resp_buf) =
+            self.alloc_command_buffers(req_bytes, data_bytes, resp_size)?;
 
         let desc0 = queue_guard.alloc_desc().ok_or(GpuError::OutOfMemory)?;
         let desc1 = queue_guard.alloc_desc().ok_or_else(|| {
@@ -385,8 +387,7 @@ impl VirtioGpu {
         };
 
         // Response: GpuCtrlHdr + DisplayInfo
-        let resp_size =
-            core::mem::size_of::<GpuCtrlHdr>() + core::mem::size_of::<DisplayInfo>();
+        let resp_size = core::mem::size_of::<GpuCtrlHdr>() + core::mem::size_of::<DisplayInfo>();
         let resp_buf = self.send_command_raw(hdr_bytes, resp_size)?;
 
         let resp_slice = unsafe { resp_buf.as_slice() };
@@ -401,9 +402,7 @@ impl VirtioGpu {
         let info_offset = core::mem::size_of::<GpuCtrlHdr>();
         if resp_slice.len() >= info_offset + core::mem::size_of::<DisplayInfo>() {
             let info = unsafe {
-                core::ptr::read_volatile(
-                    resp_slice.as_ptr().add(info_offset) as *const DisplayInfo,
-                )
+                core::ptr::read_volatile(resp_slice.as_ptr().add(info_offset) as *const DisplayInfo)
             };
             *self.display_info.write() = Some(info);
         }
@@ -482,21 +481,15 @@ impl VirtioGpu {
             core::mem::size_of::<GpuCtrlHdr>(),
         )?;
 
-        let hdr = unsafe {
-            core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr)
-        };
+        let hdr =
+            unsafe { core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr) };
         if hdr.cmd_type >= GpuCmd::RespErrUnspec as u32 {
             return Err(GpuError::DeviceError);
         }
         Ok(())
     }
 
-    pub fn transfer_to_host_2d(
-        &self,
-        resource_id: u32,
-        rect: &Rect,
-        offset: u64,
-    ) -> GpuResult<()> {
+    pub fn transfer_to_host_2d(&self, resource_id: u32, rect: &Rect, offset: u64) -> GpuResult<()> {
         let req = TransferToHost2D {
             hdr: GpuCtrlHdr::new(GpuCmd::TransferToHost2D),
             rect: *rect,

@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// 連続した (4KiB) フレームを指定NUMAノードからアライン指定で割り当てる
 pub fn alloc_contiguous_frames_aligned_on_node(
     node: NumaNodeId,
@@ -52,7 +51,10 @@ pub fn dealloc_contiguous_frames(start: PhysAddr, frames: usize) {
                 pmm.free_4k(frame);
                 continue;
             }
-            FRAME_ALLOCATOR.lock().expect("lock poisoned").deallocate_4k_frame(frame);
+            FRAME_ALLOCATOR
+                .lock()
+                .expect("lock poisoned")
+                .deallocate_4k_frame(frame);
         }
     }
 }
@@ -90,7 +92,10 @@ pub fn alloc_frame_1g() -> Option<PhysFrame<Size1GiB>> {
         return pmm.alloc_1g();
     }
 
-    FRAME_ALLOCATOR.lock().expect("lock poisoned").allocate_1g_frame()
+    FRAME_ALLOCATOR
+        .lock()
+        .expect("lock poisoned")
+        .allocate_1g_frame()
 }
 
 /// 2MiB フレームを解放
@@ -103,7 +108,10 @@ pub fn dealloc_frame_2m(frame: PhysFrame<Size2MiB>) {
         pmm.free_2m(frame);
         return;
     }
-    FRAME_ALLOCATOR.lock().expect("lock poisoned").deallocate_2m_frame(frame);
+    FRAME_ALLOCATOR
+        .lock()
+        .expect("lock poisoned")
+        .deallocate_2m_frame(frame);
 }
 
 /// 1GiB フレームを解放
@@ -116,7 +124,10 @@ pub fn dealloc_frame_1g(frame: PhysFrame<Size1GiB>) {
         pmm.free_1g(frame);
         return;
     }
-    FRAME_ALLOCATOR.lock().expect("lock poisoned").deallocate_1g_frame(frame);
+    FRAME_ALLOCATOR
+        .lock()
+        .expect("lock poisoned")
+        .deallocate_1g_frame(frame);
 }
 
 /// 4KiB フレームを解放（後方互換）
@@ -129,7 +140,10 @@ pub fn dealloc_frame(frame: PhysFrame<Size4KiB>) {
         pmm.free_4k(frame);
         return;
     }
-    FRAME_ALLOCATOR.lock().expect("lock poisoned").deallocate_4k_frame(frame);
+    FRAME_ALLOCATOR
+        .lock()
+        .expect("lock poisoned")
+        .deallocate_4k_frame(frame);
 }
 
 /// NUMAアロケータでフレームを解放
@@ -167,11 +181,19 @@ pub fn get_cpu_numa_node(cpu_id: u8) -> NumaNodeId {
     if let Some(numa) = pmm_numa() {
         return numa.topology().cpu_to_node(cpu_id);
     }
-    NUMA_FRAME_ALLOCATOR.lock().expect("lock poisoned").topology().cpu_to_node(cpu_id)
+    NUMA_FRAME_ALLOCATOR
+        .lock()
+        .expect("lock poisoned")
+        .topology()
+        .cpu_to_node(cpu_id)
 }
 
 /// Check if a range is contained within any NUMA node's memory ranges.
-pub(crate) fn is_range_in_numa_topology(topo: &crate::mm::numa::topology::NumaTopology, start: u64, end: u64) -> bool {
+pub(crate) fn is_range_in_numa_topology(
+    topo: &crate::mm::numa::topology::NumaTopology,
+    start: u64,
+    end: u64,
+) -> bool {
     for node_idx in 0..topo.node_count() {
         let node = &topo.nodes[node_idx];
         for i in 0..node.range_count {
@@ -283,7 +305,10 @@ pub(crate) fn release_range_from_numa(numa: &NumaPmmAllocator, start: u64, end: 
 }
 
 /// NUMA情報からメモリ領域を収集
-pub(crate) fn collect_numa_memory_regions(numa_info: &NumaInfo, node_count: usize) -> Vec<(PhysAddr, u64, NumaNodeId)> {
+pub(crate) fn collect_numa_memory_regions(
+    numa_info: &NumaInfo,
+    node_count: usize,
+) -> Vec<(PhysAddr, u64, NumaNodeId)> {
     let mut regions: Vec<(PhysAddr, u64, NumaNodeId)> = Vec::new();
     for node_idx in 0..node_count {
         let node = &numa_info.nodes[node_idx];
@@ -344,4 +369,3 @@ pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
 #[cfg(test)]
 #[path = "../tests.rs"]
 mod tests;
-

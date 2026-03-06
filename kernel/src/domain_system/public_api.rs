@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// ドメインからタスクを削除
 pub fn remove_task_from_domain(domain_id: DomainId, task_id: u64) {
     match REGISTRY.lock() {
@@ -294,4 +293,3 @@ pub fn current_domain() -> DomainId {
 pub fn is_kernel_domain() -> bool {
     current_domain() == DomainId::KERNEL
 }
-

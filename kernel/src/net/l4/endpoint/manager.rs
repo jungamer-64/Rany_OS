@@ -58,7 +58,11 @@ impl EndpointManager {
 
         // 最大でrange_size回試行
         for i in 0..range_size {
-            let port = EPHEMERAL_PORT_START + ((start_port.wrapping_sub(EPHEMERAL_PORT_START).wrapping_add(i)) % range_size);
+            let port = EPHEMERAL_PORT_START
+                + ((start_port
+                    .wrapping_sub(EPHEMERAL_PORT_START)
+                    .wrapping_add(i))
+                    % range_size);
 
             if !ports_guard.contains_key(&port) {
                 return Some(port);
@@ -101,7 +105,12 @@ impl EndpointManager {
     }
 
     /// ポートバインド
-    pub fn bind_port(&self, socket_type: EndpointType, port: u16, fd: EndpointFd) -> EndpointResult<()> {
+    pub fn bind_port(
+        &self,
+        socket_type: EndpointType,
+        port: u16,
+        fd: EndpointFd,
+    ) -> EndpointResult<()> {
         let ports = match socket_type {
             EndpointType::Tcp => &self.tcp_ports,
             EndpointType::Udp => &self.udp_ports,

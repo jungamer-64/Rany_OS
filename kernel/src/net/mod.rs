@@ -29,14 +29,14 @@ pub mod api;
 pub mod obs;
 pub mod types;
 
+pub mod datapath;
+pub mod drivers;
 pub mod l2;
 pub mod l3;
 pub mod l4;
-pub mod services;
-pub mod security;
-pub mod datapath;
 pub mod runtime;
-pub mod drivers;
+pub mod security;
+pub mod services;
 pub mod tests;
 
 #[cfg(feature = "qemu-test-export")]

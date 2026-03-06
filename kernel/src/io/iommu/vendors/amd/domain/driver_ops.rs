@@ -426,7 +426,11 @@ impl AmdIommuDriver {
             if let Err(err) =
                 self.write_device_entries_for_domain(device, aliases, Some(previous_domain))
             {
-                log::error!("[IOMMU][AMD-Vi] Critical: Failed to restore DTE during rollback for device {:?}: {:?}", device, err);
+                log::error!(
+                    "[IOMMU][AMD-Vi] Critical: Failed to restore DTE during rollback for device {:?}: {:?}",
+                    device,
+                    err
+                );
             }
         }
     }

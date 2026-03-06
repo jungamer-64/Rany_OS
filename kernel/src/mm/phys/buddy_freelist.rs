@@ -32,13 +32,13 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use alloc::vec::Vec;
 use crate::sync::IrqPoisonLock;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
-use crate::mm::types::{FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+use crate::mm::types::{FrameIndex, PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K};
 
 /// 最大オーダー（2^MAX_ORDER * 4KiB = 1GiB）
 mod stats_and_flags;
@@ -63,22 +63,13 @@ pub enum MigrateType {
 
 impl MigrateType {
     pub const COUNT: usize = 4;
-    
+
     /// フォールバック順序: 要求タイプで見つからない時の代替
     pub fn fallback_order(self) -> &'static [MigrateType] {
         match self {
-            MigrateType::Unmovable => &[
-                MigrateType::Reclaimable,
-                MigrateType::Movable,
-            ],
-            MigrateType::Movable => &[
-                MigrateType::Reclaimable,
-                MigrateType::Unmovable,
-            ],
-            MigrateType::Reclaimable => &[
-                MigrateType::Unmovable,
-                MigrateType::Movable,
-            ],
+            MigrateType::Unmovable => &[MigrateType::Reclaimable, MigrateType::Movable],
+            MigrateType::Movable => &[MigrateType::Reclaimable, MigrateType::Unmovable],
+            MigrateType::Reclaimable => &[MigrateType::Unmovable, MigrateType::Movable],
             MigrateType::HighAtomic => &[
                 MigrateType::Unmovable,
                 MigrateType::Reclaimable,
@@ -99,7 +90,7 @@ impl Default for MigrateType {
 // ============================================================================
 
 /// ページ構造体
-/// 
+///
 /// Linux kernel の `struct page` に相当。
 /// 空きページの場合、物理メモリ上のページ自体にリンクポインタを埋め込む。
 /// これにより追加のメモリ割り当てなしでフリーリストを構築できる。
@@ -139,17 +130,17 @@ impl PageFlags {
     pub const LRU: Self = Self(1 << 5);
     pub const LOCKED: Self = Self(1 << 6);
     pub const SLAB: Self = Self(1 << 7);
-    
+
     #[inline]
     pub fn contains(self, flag: Self) -> bool {
         (self.0 & flag.0) != 0
     }
-    
+
     #[inline]
     pub fn insert(&mut self, flag: Self) {
         self.0 |= flag.0;
     }
-    
+
     #[inline]
     pub fn remove(&mut self, flag: Self) {
         self.0 &= !flag.0;
@@ -172,12 +163,12 @@ impl PageDescriptor {
             _padding: [0; 5],
         }
     }
-    
+
     #[inline]
     pub fn is_free(&self) -> bool {
         self.flags.contains(PageFlags::FREE)
     }
-    
+
     #[inline]
     pub fn is_zeroed(&self) -> bool {
         self.flags.contains(PageFlags::ZEROED)
@@ -189,7 +180,7 @@ impl PageDescriptor {
 // ============================================================================
 
 /// フリーエリア
-/// 
+///
 /// 各オーダー・各モビリティタイプごとに双方向連結リストを保持。
 /// head/tailは物理フレームインデックスを格納（LIST_END = 空）。
 #[repr(C)]
@@ -210,12 +201,12 @@ impl FreeArea {
             nr_free: AtomicUsize::new(0),
         }
     }
-    
+
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.head.load(Ordering::Acquire) == LIST_END
     }
-    
+
     #[inline]
     pub fn count(&self) -> usize {
         self.nr_free.load(Ordering::Relaxed)
@@ -227,12 +218,12 @@ impl FreeArea {
 // ============================================================================
 
 /// キャッシュカラー数（典型的なL3キャッシュ構成に基づく）
-/// 
+///
 /// 計算例: 8MB L3キャッシュ、64Bラインサイズ、16-way連想
 /// セット数 = 8MB / (64B * 16) = 8192 セット
 /// 4KB ページでは 4KB / 64B = 64 ライン
 /// カラー数 = 8192 / 64 = 128
-/// 
+///
 /// 実用上は32〜128程度で十分な効果が得られる
 pub const NUM_CACHE_COLORS: usize = 64;
 
@@ -249,9 +240,9 @@ pub fn frame_to_color(frame_idx: usize) -> u8 {
 // ============================================================================
 
 /// フリーリストベースのBuddy Allocator
-/// 
+///
 /// ## 主な改善点
-/// 
+///
 /// 1. **O(1) 割り当て/解放**: ビットスキャン不要
 /// 2. **ページモビリティ**: 断片化防止、THP成功率向上
 /// 3. **キャッシュカラーリング**: L2/L3競合回避
@@ -259,32 +250,32 @@ pub fn frame_to_color(frame_idx: usize) -> u8 {
 pub struct FreeListBuddyAllocator {
     /// [モビリティタイプ][オーダー] のフリーエリア
     free_areas: [[FreeArea; MAX_ORDER + 1]; MigrateType::COUNT],
-    
+
     /// ページ記述子配列（mem_map相当）
     /// 物理フレームインデックス → PageDescriptor
     page_descriptors: Option<&'static mut [PageDescriptor]>,
-    
+
     /// 総フレーム数
     total_frames: usize,
-    
+
     /// 空きフレーム数（4KiB換算）
     free_frames: AtomicU64,
-    
+
     /// 統計: 分割回数
     split_count: AtomicU64,
-    
+
     /// 統計: 結合回数  
     coalesce_count: AtomicU64,
-    
+
     /// 統計: モビリティタイプごとの割り当て数
     migrate_allocs: [AtomicU64; MigrateType::COUNT],
-    
+
     /// 統計: フォールバック回数
     fallback_count: AtomicU64,
-    
+
     /// カラーごとの空きフレーム数（カラーリング統計用）
     color_free_counts: [AtomicUsize; NUM_CACHE_COLORS],
-    
+
     /// 2MBブロックのモビリティタイプ追跡
     /// インデックス = 物理フレーム / 512 (2MB境界)
     /// 値 = そのブロック内で支配的なMigrateType

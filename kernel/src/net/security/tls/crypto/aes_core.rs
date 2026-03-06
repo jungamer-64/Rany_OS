@@ -241,7 +241,10 @@ pub(crate) fn aes_expand_key_schedule(key: &[u8]) -> Option<AesRoundKeySchedule>
 }
 
 /// Encrypt one AES block using a pre-expanded key schedule.
-pub(crate) fn aes_encrypt_block_with_schedule(block: &[u8; 16], schedule: &AesRoundKeySchedule) -> [u8; 16] {
+pub(crate) fn aes_encrypt_block_with_schedule(
+    block: &[u8; 16],
+    schedule: &AesRoundKeySchedule,
+) -> [u8; 16] {
     let mut state = *block;
 
     aes_add_round_key(&mut state, &schedule.round_keys[0]);
@@ -276,7 +279,9 @@ pub(crate) fn aes_ctr_with_schedule(
     counter_block[0..12].copy_from_slice(nonce);
 
     for (chunk_idx, chunk) in data.chunks(16).enumerate() {
-        let counter = (chunk_idx as u32).wrapping_add(initial_counter).to_be_bytes();
+        let counter = (chunk_idx as u32)
+            .wrapping_add(initial_counter)
+            .to_be_bytes();
         counter_block[12..16].copy_from_slice(&counter);
 
         let keystream = aes_encrypt_block_with_schedule(&counter_block, schedule);
@@ -304,7 +309,9 @@ pub(crate) fn aes_ctr_with_schedule_in_place(
     counter_block[0..12].copy_from_slice(nonce);
 
     for (chunk_idx, chunk) in data.chunks_mut(16).enumerate() {
-        let counter = (chunk_idx as u32).wrapping_add(initial_counter).to_be_bytes();
+        let counter = (chunk_idx as u32)
+            .wrapping_add(initial_counter)
+            .to_be_bytes();
         counter_block[12..16].copy_from_slice(&counter);
 
         let keystream = aes_encrypt_block_with_schedule(&counter_block, schedule);

@@ -2,17 +2,16 @@
 // kernel/src/io/iommu/testkit/qemu/group_tests.rs
 // ============================================================================
 
-use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 use crate::io::iommu::runtime::backend::IommuBackend;
+use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 
+use crate::io::iommu::runtime::groups::*;
 use crate::io::iommu::types::*;
 use crate::io::iommu::vendors::intel::controller::*;
-use crate::io::iommu::runtime::groups::*;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
 use super::*;
-
 
 /// Shared domain: multiple devices in same group map DMA independently.
 pub fn wave2_group_shared_domain_multi_device_smoke() -> bool {
@@ -25,11 +24,27 @@ pub fn wave2_group_shared_domain_multi_device_smoke() -> bool {
     let dev0 = crate::io::iommu::types::DeviceId::new(0, 0, 6, 0);
     let dev1 = crate::io::iommu::types::DeviceId::new(0, 0, 6, 1);
 
-    let (group0, _) = match mgr.find_or_create_group(dev0, &IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
+    let (group0, _) = match mgr.find_or_create_group(
+        dev0,
+        &IommuBackend::Intel(
+            crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl)),
+        ),
+        0,
+        &topo,
+        IommuDomainType::Translated,
+    ) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group1, _) = match mgr.find_or_create_group(dev1, &IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
+    let (group1, _) = match mgr.find_or_create_group(
+        dev1,
+        &IommuBackend::Intel(
+            crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl)),
+        ),
+        0,
+        &topo,
+        IommuDomainType::Translated,
+    ) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -63,7 +78,15 @@ pub fn wave2_group_device_detach_smoke() -> bool {
     let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
     let dev = crate::io::iommu::types::DeviceId::new(0, 0, 7, 0);
 
-    let (group, _) = match mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
+    let (group, _) = match mgr.find_or_create_group(
+        dev,
+        &IommuBackend::Intel(
+            crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl)),
+        ),
+        0,
+        &topo,
+        IommuDomainType::Translated,
+    ) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -92,7 +115,20 @@ pub fn wave2_group_poisoned_device_to_group_returns_error_smoke() -> bool {
     let ctrl = Arc::new(crate::io::iommu::vendors::intel::controller::IommuController::new(0x0, 0));
     let dev = crate::io::iommu::types::DeviceId::new(0, 0, 8, 0);
 
-    if mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated).is_err() {
+    if mgr
+        .find_or_create_group(
+            dev,
+            &IommuBackend::Intel(
+                crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(
+                    &ctrl,
+                )),
+            ),
+            0,
+            &topo,
+            IommuDomainType::Translated,
+        )
+        .is_err()
+    {
         return false;
     }
 
@@ -126,7 +162,10 @@ pub fn wave2_ats_enable_disable_lifecycle_smoke() -> bool {
     }
 
     // Disable ATS
-    ctrl.disable_ats_for_device(dev, crate::io::iommu::runtime::security::AtsChangeReason::AdminRequest);
+    ctrl.disable_ats_for_device(
+        dev,
+        crate::io::iommu::runtime::security::AtsChangeReason::AdminRequest,
+    );
 
     // Verify disabled
     !ctrl.is_ats_enabled(&dev)
@@ -154,10 +193,11 @@ pub fn wave2_ats_detach_disables_ats_smoke() -> bool {
     let dev = crate::io::iommu::types::DeviceId::new(0, 0, 3, 0);
 
     // Create domain and attach device
-    let domain_id = match ctrl.create_domain(None, crate::io::iommu::types::IommuDomainType::Translated) {
-        Ok(id) => id,
-        Err(_) => return false,
-    };
+    let domain_id =
+        match ctrl.create_domain(None, crate::io::iommu::types::IommuDomainType::Translated) {
+            Ok(id) => id,
+            Err(_) => return false,
+        };
 
     // Attach can fail in qemu-test-export env where full hw tables are absent.
     if ctrl.attach_device(dev, domain_id).is_err() {
@@ -168,7 +208,10 @@ pub fn wave2_ats_detach_disables_ats_smoke() -> bool {
         if !ctrl.is_ats_enabled(&dev) {
             return false;
         }
-        ctrl.disable_ats_for_device(dev, crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach);
+        ctrl.disable_ats_for_device(
+            dev,
+            crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach,
+        );
         return !ctrl.is_ats_enabled(&dev);
     }
 
@@ -202,10 +245,11 @@ pub(crate) fn wave5_cmdqueue_map_unmap_with_domain_canonical_impl() -> bool {
     let cq = CommandQueue::new();
 
     // Create domain
-    let domain_id = match ctrl.create_domain(None, crate::io::iommu::types::IommuDomainType::Translated) {
-        Ok(id) => id,
-        Err(_) => return false,
-    };
+    let domain_id =
+        match ctrl.create_domain(None, crate::io::iommu::types::IommuDomainType::Translated) {
+            Ok(id) => id,
+            Err(_) => return false,
+        };
 
     // Submit MapRegion (non-blocking)
     let map_cmd = IommuCommandKind::MapRegion {
@@ -267,10 +311,12 @@ pub(crate) fn wave5_cmdqueue_map_unmap_with_domain_canonical_impl() -> bool {
 pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
     use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
     use crate::io::iommu::runtime::config::IommuConfig;
+    use crate::io::iommu::runtime::registry::get_iommu_driver;
     use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
     use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
-    use crate::io::iommu::vendors::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
-    use crate::io::iommu::runtime::registry::get_iommu_driver;
+    use crate::io::iommu::vendors::intel::registry::{
+        IommuRegistry, get_iommu_registry, init_registry,
+    };
 
     let controller = if let Some(registry) = get_iommu_registry() {
         match registry.controllers.get(0).cloned() {
@@ -278,7 +324,8 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
             None => return false,
         }
     } else {
-        let ctrl = Arc::new(crate::io::iommu::vendors::intel::controller::IommuController::new(0x0, 0));
+        let ctrl =
+            Arc::new(crate::io::iommu::vendors::intel::controller::IommuController::new(0x0, 0));
         let registry = IommuRegistry::new(
             alloc::vec![ctrl.clone()],
             alloc::vec::Vec::new(),
@@ -295,7 +342,10 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
     let Some(driver) = get_iommu_driver() else {
         return false;
     };
-    if !matches!(driver.as_ref(), crate::io::iommu::runtime::backend::IommuBackend::Intel(_)) {
+    if !matches!(
+        driver.as_ref(),
+        crate::io::iommu::runtime::backend::IommuBackend::Intel(_)
+    ) {
         return false;
     }
 
@@ -306,7 +356,9 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
         return false;
     }
 
-    let domain_id = match controller.create_domain(None, crate::io::iommu::types::IommuDomainType::Translated) {
+    let domain_id = match controller
+        .create_domain(None, crate::io::iommu::types::IommuDomainType::Translated)
+    {
         Ok(id) => id,
         Err(_) => return false,
     };
@@ -330,7 +382,9 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
     let result = (|| {
         let iova = match crate::task::block_on(async {
             // SAFETY: deterministic test mapping of fixed aligned test address.
-            unsafe { map_for_device_async(&device, x86_64::PhysAddr::new(0x2000_0000), 0x1000).await }
+            unsafe {
+                map_for_device_async(&device, x86_64::PhysAddr::new(0x2000_0000), 0x1000).await
+            }
         }) {
             Ok(iova) => iova,
             Err(_) => return false,
@@ -351,7 +405,8 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
     })();
 
     if let Some(iova) = mapped_iova {
-        let _ = crate::task::block_on(async { unmap_for_device_async(&device, iova, 0x1000).await });
+        let _ =
+            crate::task::block_on(async { unmap_for_device_async(&device, iova, 0x1000).await });
     }
     match controller.device_domains.lock() {
         Ok(mut dmap) => {
@@ -374,8 +429,8 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_residual_impl() -> bool {
 /// DMA mask validation: register 32-bit mask → allocate IOVA → verify within mask bounds.
 /// Migrated from test_map_for_device_respects_dma_mask (removed global singleton dependency).
 pub(crate) fn wave5_map_for_device_respects_dma_mask_canonical_impl() -> bool {
+    use crate::io::iommu::runtime::registry::{clear_device_dma_mask, register_device_dma_mask};
     use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
-    use crate::io::iommu::runtime::registry::{register_device_dma_mask, clear_device_dma_mask};
 
     let ctrl = Arc::new(crate::io::iommu::vendors::intel::controller::IommuController::new(0x0, 0));
     // Initialize IOVA space starting high (above 32-bit boundary)
@@ -398,7 +453,8 @@ pub(crate) fn wave5_map_for_device_respects_dma_mask_canonical_impl() -> bool {
     let _mask_guard = DmaMaskGuard(device);
 
     // Validate mask pre-allocation
-    let mask_check = crate::io::iommu::runtime::registry::validate_dma_mask_pre_allocation(&device, 0x1000);
+    let mask_check =
+        crate::io::iommu::runtime::registry::validate_dma_mask_pre_allocation(&device, 0x1000);
     let mask_ok = match mask_check {
         Ok(Some(m)) => m == mask_32bit,
         _ => false,
@@ -516,7 +572,9 @@ pub(crate) fn wave5_qi_metrics_pressure_canonical_impl() -> bool {
         Ok(Some(s)) => s,
         _ => return false,
     };
-    stats.full_checks > 0 && stats.waits > 0 && stats.wait_timeouts > 0
+    stats.full_checks > 0
+        && stats.waits > 0
+        && stats.wait_timeouts > 0
         && stats.submits == safe_submissions as u64
 }
 

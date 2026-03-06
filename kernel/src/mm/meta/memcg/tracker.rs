@@ -1,25 +1,30 @@
 use super::*;
 
-
 impl PageMemcgTracker {
     pub const fn new() -> Self {
         Self {
             mapping: RwLock::new(BTreeMap::new()),
         }
     }
-    
+
     /// ページを追跡開始
     pub fn track(&self, frame: FrameIndex, memcg_id: MemcgId, charge_type: ChargeType) {
         let mut mapping = self.mapping.write();
-        mapping.insert(frame, PageMemcgInfo { memcg_id, charge_type });
+        mapping.insert(
+            frame,
+            PageMemcgInfo {
+                memcg_id,
+                charge_type,
+            },
+        );
     }
-    
+
     /// ページの追跡を解除
     pub fn untrack(&self, frame: FrameIndex) -> Option<PageMemcgInfo> {
         let mut mapping = self.mapping.write();
         mapping.remove(&frame)
     }
-    
+
     /// ページのCgroup情報を取得
     pub fn get(&self, frame: FrameIndex) -> Option<PageMemcgInfo> {
         let mapping = self.mapping.read();
@@ -57,4 +62,3 @@ pub fn memcg_get_page_info(frame: FrameIndex) -> Option<PageMemcgInfo> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

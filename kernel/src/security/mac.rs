@@ -516,4 +516,3 @@ mod tests {
         assert!(policy.check_access(&low, &high, AccessType::Write).is_ok());
     }
 }
-

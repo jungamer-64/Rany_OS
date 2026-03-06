@@ -1,8 +1,8 @@
 use super::*;
 
+use crate::io::dma::CoherentDmaBuffer;
 use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
 use x86_64::PhysAddr;
-use crate::io::dma::CoherentDmaBuffer;
 
 // ============================================================================
 // 型安全 DMA バッファ (VirtIO Network)
@@ -77,7 +77,9 @@ impl VirtioNetRxDmaBuffer {
     /// Take ownership of the CPU-owned TypedDmaSlice when completed.
     /// This consumes the internal buffer and returns it, allowing the caller to
     /// take ownership and avoid copying (true zero-copy path).
-    pub fn take_cpu_buffer(&mut self) -> Option<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>> {
+    pub fn take_cpu_buffer(
+        &mut self,
+    ) -> Option<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>> {
         self.buffer.take()
     }
 
@@ -186,9 +188,12 @@ impl VirtQueueDmaBuffers {
         let avail_size = 6 + queue_size as usize * 2; // header + entries
         let used_size = 6 + queue_size as usize * 8; // header + entries
 
-        let desc_table = CoherentDmaBuffer::new(desc_size, crate::io::dma::DmaMemoryAttributes::MMIO)?;
-        let avail_ring = CoherentDmaBuffer::new(avail_size, crate::io::dma::DmaMemoryAttributes::MMIO)?;
-        let used_ring = CoherentDmaBuffer::new(used_size, crate::io::dma::DmaMemoryAttributes::FROM_DEVICE)?;
+        let desc_table =
+            CoherentDmaBuffer::new(desc_size, crate::io::dma::DmaMemoryAttributes::MMIO)?;
+        let avail_ring =
+            CoherentDmaBuffer::new(avail_size, crate::io::dma::DmaMemoryAttributes::MMIO)?;
+        let used_ring =
+            CoherentDmaBuffer::new(used_size, crate::io::dma::DmaMemoryAttributes::FROM_DEVICE)?;
 
         Some(Self {
             desc_table,

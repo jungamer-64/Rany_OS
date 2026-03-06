@@ -26,11 +26,11 @@ use super::ipv4::IpProtocol;
 // IPv6 Address
 // =====================================================
 
+pub mod fragment;
 /// IPv6 address (16 bytes)
 mod processor_impl;
-pub mod fragment;
-pub use processor_impl::*;
 pub use fragment::{Ipv6FragmentHeader, Ipv6FragmentReassembler};
+pub use processor_impl::*;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Ipv6Address([u8; 16]);
 
@@ -65,8 +65,8 @@ impl Ipv6Address {
         let h = high.to_be_bytes();
         let l = low.to_be_bytes();
         Self([
-            h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7],
-            l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7],
+            h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], l[0], l[1], l[2], l[3], l[4], l[5],
+            l[6], l[7],
         ])
     }
 
@@ -75,9 +75,22 @@ impl Ipv6Address {
     /// fe80::xxxx:xxff:fexx:xxxx (with 7th bit flipped)
     pub const fn from_eui64(mac: &[u8; 6]) -> Self {
         Self([
-            0xfe, 0x80, 0, 0, 0, 0, 0, 0,
-            mac[0] ^ 0x02, mac[1], mac[2], 0xff,
-            0xfe, mac[3], mac[4], mac[5],
+            0xfe,
+            0x80,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            mac[0] ^ 0x02,
+            mac[1],
+            mac[2],
+            0xff,
+            0xfe,
+            mac[3],
+            mac[4],
+            mac[5],
         ])
     }
 
@@ -88,9 +101,22 @@ impl Ipv6Address {
     pub fn from_prefix_eui64(prefix: &Ipv6Address, mac: &[u8; 6]) -> Self {
         let p = prefix.as_bytes();
         Self([
-            p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
-            mac[0] ^ 0x02, mac[1], mac[2], 0xff,
-            0xfe, mac[3], mac[4], mac[5],
+            p[0],
+            p[1],
+            p[2],
+            p[3],
+            p[4],
+            p[5],
+            p[6],
+            p[7],
+            mac[0] ^ 0x02,
+            mac[1],
+            mac[2],
+            0xff,
+            0xfe,
+            mac[3],
+            mac[4],
+            mac[5],
         ])
     }
 
@@ -101,15 +127,15 @@ impl Ipv6Address {
         let p = prefix.as_bytes();
         // Generate 8 bytes of entropy for the interface identifier
         let rand = crate::net::security::tls::crypto::random::generate_random();
-        
+
         let mut addr = [0u8; 16];
         addr[0..8].copy_from_slice(&p[0..8]);
         addr[8..16].copy_from_slice(&rand[0..8]);
-        
+
         // Security: Ensure the "universal/local" bit is set to 0 (local)
         // per RFC 4941, although many implementations just use full randomness.
         addr[8] &= !0x02;
-        
+
         Self(addr)
     }
 
@@ -129,20 +155,44 @@ impl Ipv6Address {
     #[inline]
     pub const fn is_unspecified(&self) -> bool {
         let o = &self.0;
-        o[0] == 0 && o[1] == 0 && o[2] == 0 && o[3] == 0
-            && o[4] == 0 && o[5] == 0 && o[6] == 0 && o[7] == 0
-            && o[8] == 0 && o[9] == 0 && o[10] == 0 && o[11] == 0
-            && o[12] == 0 && o[13] == 0 && o[14] == 0 && o[15] == 0
+        o[0] == 0
+            && o[1] == 0
+            && o[2] == 0
+            && o[3] == 0
+            && o[4] == 0
+            && o[5] == 0
+            && o[6] == 0
+            && o[7] == 0
+            && o[8] == 0
+            && o[9] == 0
+            && o[10] == 0
+            && o[11] == 0
+            && o[12] == 0
+            && o[13] == 0
+            && o[14] == 0
+            && o[15] == 0
     }
 
     /// Check if loopback (::1)
     #[inline]
     pub const fn is_loopback(&self) -> bool {
         let o = &self.0;
-        o[0] == 0 && o[1] == 0 && o[2] == 0 && o[3] == 0
-            && o[4] == 0 && o[5] == 0 && o[6] == 0 && o[7] == 0
-            && o[8] == 0 && o[9] == 0 && o[10] == 0 && o[11] == 0
-            && o[12] == 0 && o[13] == 0 && o[14] == 0 && o[15] == 1
+        o[0] == 0
+            && o[1] == 0
+            && o[2] == 0
+            && o[3] == 0
+            && o[4] == 0
+            && o[5] == 0
+            && o[6] == 0
+            && o[7] == 0
+            && o[8] == 0
+            && o[9] == 0
+            && o[10] == 0
+            && o[11] == 0
+            && o[12] == 0
+            && o[13] == 0
+            && o[14] == 0
+            && o[15] == 1
     }
 
     /// Check if multicast (ff00::/8)
@@ -178,9 +228,7 @@ impl Ipv6Address {
     #[inline]
     pub const fn solicited_node(&self) -> Self {
         Self([
-            0xff, 0x02, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0x01, 0xff,
-            self.0[13], self.0[14], self.0[15],
+            0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0xff, self.0[13], self.0[14], self.0[15],
         ])
     }
 
@@ -195,12 +243,18 @@ impl Ipv6Address {
     /// Check if this is a solicited-node multicast address (ff02::1:ff00:0/104)
     #[inline]
     pub const fn is_solicited_node_multicast(&self) -> bool {
-        self.0[0] == 0xff && self.0[1] == 0x02
-            && self.0[2] == 0 && self.0[3] == 0
-            && self.0[4] == 0 && self.0[5] == 0
-            && self.0[6] == 0 && self.0[7] == 0
-            && self.0[8] == 0 && self.0[9] == 0
-            && self.0[10] == 0 && self.0[11] == 0x01
+        self.0[0] == 0xff
+            && self.0[1] == 0x02
+            && self.0[2] == 0
+            && self.0[3] == 0
+            && self.0[4] == 0
+            && self.0[5] == 0
+            && self.0[6] == 0
+            && self.0[7] == 0
+            && self.0[8] == 0
+            && self.0[9] == 0
+            && self.0[10] == 0
+            && self.0[11] == 0x01
             && self.0[12] == 0xff
     }
 }
@@ -249,7 +303,12 @@ fn write_ipv6_word(f: &mut fmt::Formatter<'_>, word: u16, first: bool) -> fmt::R
 }
 
 /// Write IPv6 address words with :: compression
-fn write_ipv6_compressed(f: &mut fmt::Formatter<'_>, words: &[u16; 8], best_start: usize, best_len: usize) -> fmt::Result {
+fn write_ipv6_compressed(
+    f: &mut fmt::Formatter<'_>,
+    words: &[u16; 8],
+    best_start: usize,
+    best_len: usize,
+) -> fmt::Result {
     let mut i = 0;
     let mut first = true;
     while i < 8 {
@@ -549,31 +608,41 @@ impl<'a> Ipv6PacketMut<'a> {
     /// Set source address
     #[inline]
     pub fn set_source(&mut self, addr: &Ipv6Address) {
-        if let Some(h) = self.header_mut() { h.set_source(addr); }
+        if let Some(h) = self.header_mut() {
+            h.set_source(addr);
+        }
     }
 
     /// Set destination address
     #[inline]
     pub fn set_destination(&mut self, addr: &Ipv6Address) {
-        if let Some(h) = self.header_mut() { h.set_destination(addr); }
+        if let Some(h) = self.header_mut() {
+            h.set_destination(addr);
+        }
     }
 
     /// Set next header (protocol)
     #[inline]
     pub fn set_next_header(&mut self, protocol: IpProtocol) {
-        if let Some(h) = self.header_mut() { h.set_next_header(protocol); }
+        if let Some(h) = self.header_mut() {
+            h.set_next_header(protocol);
+        }
     }
 
     /// Set hop limit
     #[inline]
     pub fn set_hop_limit(&mut self, limit: u8) {
-        if let Some(h) = self.header_mut() { h.set_hop_limit(limit); }
+        if let Some(h) = self.header_mut() {
+            h.set_hop_limit(limit);
+        }
     }
 
     /// Set payload length
     #[inline]
     pub fn set_payload_length(&mut self, len: u16) {
-        if let Some(h) = self.header_mut() { h.set_payload_length(len); }
+        if let Some(h) = self.header_mut() {
+            h.set_payload_length(len);
+        }
     }
 
     /// Get mutable payload slice
@@ -585,7 +654,10 @@ impl<'a> Ipv6PacketMut<'a> {
     /// Get the full buffer as bytes
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
-        let payload_len = self.header().map(|h| h.payload_length() as usize).unwrap_or(0);
+        let payload_len = self
+            .header()
+            .map(|h| h.payload_length() as usize)
+            .unwrap_or(0);
         let total_len = IPV6_HEADER_SIZE + payload_len;
         // Security: Clamp to physical buffer size to prevent panic
         &self.data[..core::cmp::min(total_len, self.data.len())]
@@ -597,7 +669,9 @@ impl<'a> Ipv6PacketMut<'a> {
         let max_payload = self.data.len().saturating_sub(IPV6_HEADER_SIZE).min(65535);
         let actual_payload = payload_len.min(max_payload);
 
-        if let Some(h) = self.header_mut() { h.set_payload_length(actual_payload as u16); }
+        if let Some(h) = self.header_mut() {
+            h.set_payload_length(actual_payload as u16);
+        }
     }
 }
 
@@ -646,10 +720,12 @@ pub fn skip_extension_headers<'a>(
                 if data.len() < 2 {
                     return (next_header, data);
                 }
-                
+
                 // Security (RFC 5095): Reject Routing Header Type 0
                 if nh == EXT_HEADER_ROUTING && data.len() >= 3 && data[2] == 0 {
-                    log::warn!("[NET-IPV6] Dropping packet with deprecated Routing Header Type 0 (RFC 5095)");
+                    log::warn!(
+                        "[NET-IPV6] Dropping packet with deprecated Routing Header Type 0 (RFC 5095)"
+                    );
                     // Stop traversal and treat as malformed/dropped
                     return (IpProtocol::from(EXT_HEADER_NO_NEXT), &[]);
                 }
@@ -726,7 +802,7 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
                 if data.len() < 8 {
                     return false;
                 }
-                
+
                 // Security (RFC 5095): Reject Routing Header Type 0
                 if next_header == EXT_HEADER_ROUTING && data[2] == 0 {
                     return false;
@@ -764,13 +840,13 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
                 return true;
             }
             _ => {
-                // Upper-layer protocol found. 
+                // Upper-layer protocol found.
                 // RFC 7112: The first fragment MUST contain the entire IPv6 header chain,
                 // up to and including the first upper-layer header.
                 let min_len = match next_header {
-                    6 => 20,  // TCP: 20 bytes
-                    17 => 8,  // UDP: 8 bytes
-                    58 => 8,  // ICMPv6: 8 bytes
+                    6 => 20, // TCP: 20 bytes
+                    17 => 8, // UDP: 8 bytes
+                    58 => 8, // ICMPv6: 8 bytes
                     _ => 0,
                 };
                 return data.len() >= min_len;
@@ -812,24 +888,43 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
     loop {
         headers_seen += 1;
         if headers_seen > MAX_EXTENSION_HEADERS {
-            return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
+            return ExtHeaderResult::NoFragment(
+                IpProtocol::from(next_header),
+                &raw_packet[offset..],
+                next_header_ptr as u32,
+            );
         }
 
         match next_header {
             EXT_HEADER_HOP_BY_HOP | EXT_HEADER_ROUTING | EXT_HEADER_DESTINATION => {
                 if offset + 2 > raw_packet.len() {
-                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
+                    return ExtHeaderResult::NoFragment(
+                        IpProtocol::from(next_header),
+                        &raw_packet[offset..],
+                        next_header_ptr as u32,
+                    );
                 }
-                
+
                 // Security (RFC 5095): Reject Routing Header Type 0
-                if next_header == EXT_HEADER_ROUTING && offset + 3 <= raw_packet.len() && raw_packet[offset + 2] == 0 {
-                    return ExtHeaderResult::NoFragment(IpProtocol::from(EXT_HEADER_NO_NEXT), &[], next_header_ptr as u32);
+                if next_header == EXT_HEADER_ROUTING
+                    && offset + 3 <= raw_packet.len()
+                    && raw_packet[offset + 2] == 0
+                {
+                    return ExtHeaderResult::NoFragment(
+                        IpProtocol::from(EXT_HEADER_NO_NEXT),
+                        &[],
+                        next_header_ptr as u32,
+                    );
                 }
 
                 let ext_next = raw_packet[offset];
                 let ext_len = (raw_packet[offset + 1] as usize + 1) * 8;
                 if offset + ext_len > raw_packet.len() {
-                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
+                    return ExtHeaderResult::NoFragment(
+                        IpProtocol::from(next_header),
+                        &raw_packet[offset..],
+                        next_header_ptr as u32,
+                    );
                 }
                 next_header_ptr = offset;
                 next_header = ext_next;
@@ -837,7 +932,11 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
             }
             EXT_HEADER_FRAGMENT => {
                 if offset + 8 > raw_packet.len() {
-                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
+                    return ExtHeaderResult::NoFragment(
+                        IpProtocol::from(next_header),
+                        &raw_packet[offset..],
+                        next_header_ptr as u32,
+                    );
                 }
                 if let Some(frag) = Ipv6FragmentHeader::parse(&raw_packet[offset..]) {
                     // RFC 6946: Atomic Fragment (Offset=0, M=0)
@@ -854,11 +953,17 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                     }
 
                     // Security (RFC 8200): Nested fragmentation check.
-                    // If the Fragment Header's Next Header is also 44 (Fragment), 
+                    // If the Fragment Header's Next Header is also 44 (Fragment),
                     // it MUST be discarded.
                     if frag.next_header == EXT_HEADER_FRAGMENT {
-                        log::warn!("[NET-IPV6] Nested fragmentation detected (Next Header=44 in Fragment Header), dropping");
-                        return ExtHeaderResult::NoFragment(IpProtocol::from(EXT_HEADER_NO_NEXT), &[], next_header_ptr as u32);
+                        log::warn!(
+                            "[NET-IPV6] Nested fragmentation detected (Next Header=44 in Fragment Header), dropping"
+                        );
+                        return ExtHeaderResult::NoFragment(
+                            IpProtocol::from(EXT_HEADER_NO_NEXT),
+                            &[],
+                            next_header_ptr as u32,
+                        );
                     }
 
                     let unfragmentable = &raw_packet[..offset];
@@ -870,13 +975,25 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                     };
                 }
                 // Failed to parse — treat as no fragment
-                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
+                return ExtHeaderResult::NoFragment(
+                    IpProtocol::from(next_header),
+                    &raw_packet[offset..],
+                    next_header_ptr as u32,
+                );
             }
             EXT_HEADER_NO_NEXT => {
-                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
+                return ExtHeaderResult::NoFragment(
+                    IpProtocol::from(next_header),
+                    &raw_packet[offset..],
+                    next_header_ptr as u32,
+                );
             }
             _ => {
-                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..], next_header_ptr as u32);
+                return ExtHeaderResult::NoFragment(
+                    IpProtocol::from(next_header),
+                    &raw_packet[offset..],
+                    next_header_ptr as u32,
+                );
             }
         }
     }
@@ -1148,7 +1265,8 @@ impl Ipv6PmtuCache {
             if self.entries.len() >= self.max_entries {
                 self.evict_oldest();
             }
-            self.entries.insert(dst, Ipv6PmtuEntry::new(clamped_mtu, current_time));
+            self.entries
+                .insert(dst, Ipv6PmtuEntry::new(clamped_mtu, current_time));
             self.lru.insert((current_time, dst));
             self.stats.discoveries += 1;
         }

@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ============================================================================
 // 型安全版 .eh_frame パーサー（MemoryReader使用）
 // ============================================================================
@@ -103,7 +102,12 @@ impl<'a> SafeEhFrameParser<'a> {
     /// 特定のPCに対応するFDEを検索
     /// 単一の eh_frame エントリを解析し、CIEならキャッシュ、FDEなら返す。
     /// pc にマッチしなFDEは `Ok(None)` 、マッチするものは `Ok(Some(fde))`。
-    pub(super) fn process_eh_frame_entry(&mut self, entry_start: usize, length: u64, pc: u64) -> Option<Option<SafeFde>> {
+    pub(super) fn process_eh_frame_entry(
+        &mut self,
+        entry_start: usize,
+        length: u64,
+        pc: u64,
+    ) -> Option<Option<SafeFde>> {
         let entry_end = self.reader.position() + length as usize;
 
         let cie_id = self.reader.read_u32().ok()?;
@@ -552,7 +556,7 @@ pub(crate) static PANIC_CATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub(crate) static PANIC_CAUGHT: AtomicBool = AtomicBool::new(false);
 
 /// 捕捉されたパニックメッセージ（簡易版: 固定長バッファ）
-/// 
+///
 /// 注意: パニックコンテキストでの動的メモリ確保を避けるため固定長バッファを使用
 pub(crate) const PANIC_MESSAGE_BUFFER_SIZE: usize = 256;
 pub(crate) static PANIC_MESSAGE_BUFFER: spin::Mutex<[u8; PANIC_MESSAGE_BUFFER_SIZE]> =
@@ -582,7 +586,7 @@ impl PanicPayload {
             column: None,
         }
     }
-    
+
     /// メッセージからペイロードを作成
     pub fn from_message(message: String) -> Self {
         Self {
@@ -611,7 +615,7 @@ impl core::fmt::Display for PanicPayload {
 pub type CatchResult<T> = Result<T, PanicPayload>;
 
 /// パニック捕捉が有効かどうかをチェック
-/// 
+///
 /// パニックハンドラから呼び出される
 #[inline]
 pub fn is_panic_catch_active() -> bool {
@@ -619,23 +623,28 @@ pub fn is_panic_catch_active() -> bool {
 }
 
 /// パニックを記録（パニックハンドラから呼び出される）
-/// 
+///
 /// # 安全性
 /// この関数はパニックハンドラのコンテキストから呼び出されるため、
 /// 動的メモリ確保を避け、固定長バッファを使用する。
-pub fn record_caught_panic(message: &str, file: Option<&str>, line: Option<u32>, column: Option<u32>) {
+pub fn record_caught_panic(
+    message: &str,
+    file: Option<&str>,
+    line: Option<u32>,
+    column: Option<u32>,
+) {
     PANIC_CAUGHT.store(true, Ordering::SeqCst);
-    
+
     // メッセージを固定長バッファにコピー
     let bytes = message.as_bytes();
     let copy_len = bytes.len().min(PANIC_MESSAGE_BUFFER_SIZE - 1);
-    
+
     if let Some(mut guard) = PANIC_MESSAGE_BUFFER.try_lock() {
         guard[..copy_len].copy_from_slice(&bytes[..copy_len]);
         guard[copy_len] = 0; // null終端
         PANIC_MESSAGE_LEN.store(copy_len, Ordering::Release);
     }
-    
+
     // ファイル情報は現時点では破棄（将来的には別バッファに保存）
     let _ = (file, line, column);
 }
@@ -645,7 +654,7 @@ pub(crate) fn take_caught_panic() -> Option<PanicPayload> {
     if !PANIC_CAUGHT.swap(false, Ordering::SeqCst) {
         return None;
     }
-    
+
     let len = PANIC_MESSAGE_LEN.load(Ordering::Acquire);
     let message = if let Some(guard) = PANIC_MESSAGE_BUFFER.try_lock() {
         let bytes = &guard[..len];
@@ -653,9 +662,9 @@ pub(crate) fn take_caught_panic() -> Option<PanicPayload> {
     } else {
         String::from("(panic message unavailable)")
     };
-    
+
     // バッファをクリア
     PANIC_MESSAGE_LEN.store(0, Ordering::Release);
-    
+
     Some(PanicPayload::from_message(message))
 }

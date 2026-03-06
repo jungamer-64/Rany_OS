@@ -58,7 +58,7 @@ impl PcidAllocator {
     pub const fn new() -> Self {
         Self {
             map: [0; MAX_PCID / 64],
-            next_hint: 1, // 0はカーネル予約
+            next_hint: 1,  // 0はカーネル予約
             used_count: 1, // カーネル分
             generation: 0,
         }
@@ -70,7 +70,7 @@ impl PcidAllocator {
     }
 
     /// 新しいPCIDを割り当て
-    /// 
+    ///
     /// 空きがない場合は None を返す（呼び出し元で全フラッシュ等の対応が必要）
     pub fn allocate(&mut self) -> Option<u16> {
         if self.used_count >= MAX_PCID {
@@ -80,7 +80,9 @@ impl PcidAllocator {
         // Hintから検索開始
         for i in 0..MAX_PCID {
             let idx = (self.next_hint + i) % MAX_PCID;
-            if idx == 0 { continue; } // Skip kernel PCID
+            if idx == 0 {
+                continue;
+            } // Skip kernel PCID
 
             let word_idx = idx / 64;
             let bit_idx = idx % 64;
@@ -99,7 +101,9 @@ impl PcidAllocator {
 
     /// PCIDを解放
     pub fn deallocate(&mut self, pcid: u16) {
-        if pcid == 0 { return; } // Cannot deallocate kernel PCID
+        if pcid == 0 {
+            return;
+        } // Cannot deallocate kernel PCID
 
         let idx = pcid as usize;
         let word_idx = idx / 64;
@@ -112,7 +116,7 @@ impl PcidAllocator {
     }
 
     /// 全PCIDをリセット（空間枯渇時の対応）
-    /// 
+    ///
     /// 世代番号をインクリメントし、マップをクリアする。
     /// カーネルPCID(0)は維持される。
     pub fn reset_all(&mut self) {
@@ -122,7 +126,7 @@ impl PcidAllocator {
         self.next_hint = 1;
         self.generation += 1;
     }
-    
+
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -149,15 +153,15 @@ pub fn init_features() {
         let cpuid1 = core::arch::x86_64::__cpuid(1);
         let pcid = (cpuid1.ecx >> 17) & 1 != 0;
         PCID_AVAILABLE.store(pcid, Ordering::Release);
-        
+
         // CPUID.07H:EBX.INVPCID[bit 10]
         let cpuid7 = core::arch::x86_64::__cpuid_count(7, 0);
         let invpcid = (cpuid7.ebx >> 10) & 1 != 0;
         INVPCID_AVAILABLE.store(invpcid, Ordering::Release);
     }
-    
+
     PCID_INITIALIZED.store(true, Ordering::Release);
-    
+
     // アロケータ初期化
     PCID_ALLOCATOR.lock().init();
 }

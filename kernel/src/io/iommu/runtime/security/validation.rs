@@ -57,8 +57,8 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
 
     let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);
     if max_phys == 0 {
-        // Early boot check: RAM layout is unknown, but we already confirmed it 
-        // doesn't overlap the kernel image (above). 
+        // Early boot check: RAM layout is unknown, but we already confirmed it
+        // doesn't overlap the kernel image (above).
         // Still, we must restrict early boot mappings to below 4GB (firmware space).
         if end <= 0x1_0000_0000 {
             log::warn!(
@@ -69,7 +69,9 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
             return Ok(());
         }
 
-        log::error!("[IOMMU][SECURITY] DMA mapping attempted before RAM layout is known outside low-mem");
+        log::error!(
+            "[IOMMU][SECURITY] DMA mapping attempted before RAM layout is known outside low-mem"
+        );
         return Err(IommuError::NotInitialized);
     }
 

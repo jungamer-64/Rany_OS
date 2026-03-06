@@ -23,9 +23,8 @@ pub fn init() {
     #[cfg(not(test))]
     {
         // This is required by setup_iommu_for_pci_device regardless of backend.
-        crate::io::iommu::runtime::groups::IOMMU_GROUP_MANAGER.call_once(|| {
-            crate::io::iommu::runtime::groups::IommuGroupManager::new()
-        });
+        crate::io::iommu::runtime::groups::IOMMU_GROUP_MANAGER
+            .call_once(|| crate::io::iommu::runtime::groups::IommuGroupManager::new());
     }
 
     register_protected_region(0xFEE0_0000, 0x1000, "Local APIC");
@@ -132,21 +131,16 @@ pub(crate) fn kernel_phys_range() -> Option<(u64, u64)> {
     }
 
     // --- phys_start ---
-    let phys_start = linker_virt_to_phys(kstart_virt.as_u64())
-        .or_else(|| {
-            crate::mm::virt::higher_half::global_translate(kstart_virt)
-                .map(|p| p.as_u64())
-        })?;
+    let phys_start = linker_virt_to_phys(kstart_virt.as_u64()).or_else(|| {
+        crate::mm::virt::higher_half::global_translate(kstart_virt).map(|p| p.as_u64())
+    })?;
 
     // --- phys_end ---
     let last_virt_val = kend_virt.as_u64().saturating_sub(1);
-    let last_virt =
-        crate::mm::virt::higher_half::VirtAddr::new(last_virt_val);
-    let phys_last = linker_virt_to_phys(last_virt_val)
-        .or_else(|| {
-            crate::mm::virt::higher_half::global_translate(last_virt)
-                .map(|p| p.as_u64())
-        })?;
+    let last_virt = crate::mm::virt::higher_half::VirtAddr::new(last_virt_val);
+    let phys_last = linker_virt_to_phys(last_virt_val).or_else(|| {
+        crate::mm::virt::higher_half::global_translate(last_virt).map(|p| p.as_u64())
+    })?;
     let phys_end = phys_last.saturating_add(1);
 
     if phys_end <= phys_start {

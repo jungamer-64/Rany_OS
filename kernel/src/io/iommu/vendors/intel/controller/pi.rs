@@ -11,8 +11,8 @@ use core::sync::atomic::Ordering;
 use super::IommuController;
 use super::init::CapabilityManager;
 use super::ir::InterruptRemapEntry;
-use crate::io::iommu::vendors::shared::{PostedInterruptDescriptor, PostedInterruptPool};
 use crate::io::iommu::types::{DeviceId, IommuError};
+use crate::io::iommu::vendors::shared::{PostedInterruptDescriptor, PostedInterruptPool};
 
 pub trait PostedInterruptManager {
     /// Initialize the Posted Interrupt Descriptor pool

@@ -1,7 +1,7 @@
 use super::*;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 struct TestEntry {
     link: RBLink,

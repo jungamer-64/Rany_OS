@@ -2,7 +2,6 @@ use super::*;
 
 mod encrypt_decrypt;
 impl TlsConnection {
-
     /// ECDSA P-384 署名検証ヘルパー
     pub(super) fn verify_ecdsa_p384_signature(
         &self,
@@ -86,7 +85,8 @@ impl TlsConnection {
             return Ok(None);
         }
 
-        let cipher = self.negotiated_cipher
+        let cipher = self
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
 
         let mut inner = Vec::with_capacity(5);
@@ -250,7 +250,9 @@ impl TlsConnection {
         } else {
             // フォールバック: 以前の挙動
             let client_finished_len = 4 + hash_len;
-            self.handshake_messages.len().saturating_sub(client_finished_len)
+            self.handshake_messages
+                .len()
+                .saturating_sub(client_finished_len)
         };
         let msgs_before_cf = &self.handshake_messages[..sf_offset];
 
@@ -325,7 +327,11 @@ impl TlsConnection {
     // TLS 1.3 Record Layer
     // ========================================================================
 
-    pub(super) fn build_tls13_nonce_and_aad(iv: &[u8], seq: u64, data_len: usize) -> ([u8; 12], Vec<u8>) {
+    pub(super) fn build_tls13_nonce_and_aad(
+        iv: &[u8],
+        seq: u64,
+        data_len: usize,
+    ) -> ([u8; 12], Vec<u8>) {
         let mut nonce = [0u8; 12];
         nonce.copy_from_slice(&iv[..12]);
         let seq_bytes = seq.to_be_bytes();
@@ -353,8 +359,7 @@ impl TlsConnection {
             chacha20_poly1305_decrypt(&key_arr, nonce, aad, ciphertext, tag)
                 .ok_or(TlsError::DecryptError)
         } else {
-            aes_gcm_decrypt(key, nonce, aad, ciphertext, tag)
-                .ok_or(TlsError::DecryptError)
+            aes_gcm_decrypt(key, nonce, aad, ciphertext, tag).ok_or(TlsError::DecryptError)
         }
     }
 
@@ -364,7 +369,11 @@ impl TlsConnection {
     /// AAD = TLS record header（5バイト: type || legacy_version || length）
     ///
     /// `is_handshake`: trueの場合ハンドシェイク鍵、falseの場合アプリケーション鍵を使用
-    pub(crate) fn tls13_decrypt_record(&mut self, data: &[u8], is_handshake: bool) -> TlsResult<Vec<u8>> {
+    pub(crate) fn tls13_decrypt_record(
+        &mut self,
+        data: &[u8],
+        is_handshake: bool,
+    ) -> TlsResult<Vec<u8>> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
@@ -491,7 +500,8 @@ impl TlsConnection {
             cache.insert(SessionCacheEntry {
                 session_id: self.session_id.0,
                 master_secret: self.master_secret,
-                cipher_suite: self.negotiated_cipher
+                cipher_suite: self
+                    .negotiated_cipher
                     .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256),
                 server_name: self.config.server_name.clone(),
                 version: self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2),
@@ -617,7 +627,11 @@ impl TlsConnection {
     /// Nonce construction (RFC 7905 Section 2):
     /// - Write the sequence number as a 64-bit big-endian value, left-padded with zeros to 12 bytes
     /// - XOR with the IV from key derivation (12 bytes)
-    pub(super) fn decrypt_chacha20_poly1305(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
+    pub(super) fn decrypt_chacha20_poly1305(
+        &mut self,
+        data: &[u8],
+        content_type: u8,
+    ) -> TlsResult<Vec<u8>> {
         if data.len() < 16 {
             // Minimum: tag(16), no ciphertext is allowed (empty message)
             return Err(TlsError::DecodeError);

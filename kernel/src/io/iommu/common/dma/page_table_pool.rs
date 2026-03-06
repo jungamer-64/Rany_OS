@@ -143,7 +143,8 @@ struct PageTableRegistryEntry {
 
 /// Global registry mapping page table physical addresses to their metadata.
 /// This replaces the BTreeMap<u64, u16> in IommuDomain with O(1) lookup.
-static PAGE_TABLE_REGISTRY: spin::Once<IrqMutex<BTreeMap<u64, PageTableRegistryEntry>>> = spin::Once::new();
+static PAGE_TABLE_REGISTRY: spin::Once<IrqMutex<BTreeMap<u64, PageTableRegistryEntry>>> =
+    spin::Once::new();
 
 /// Get or initialize the page table registry
 fn page_table_registry() -> &'static IrqMutex<BTreeMap<u64, PageTableRegistryEntry>> {
@@ -153,15 +154,18 @@ fn page_table_registry() -> &'static IrqMutex<BTreeMap<u64, PageTableRegistryEnt
 /// Register a page table's metadata in the global registry
 pub fn register_page_table(phys: u64, virt: usize, node: usize) {
     let mut registry = page_table_registry().lock();
-    registry.insert(phys, PageTableRegistryEntry {
-        ref_count: 0,
-        virt,
-        node: node as u8,
-    });
+    registry.insert(
+        phys,
+        PageTableRegistryEntry {
+            ref_count: 0,
+            virt,
+            node: node as u8,
+        },
+    );
     // Drop the registry lock BEFORE calling register_protected_page
     // to avoid nested IrqMutex acquisition which can deadlock.
     drop(registry);
-    
+
     // Security: Mark the page table as protected from DMA
     crate::io::iommu::runtime::security::register_protected_page(phys);
 }
@@ -450,8 +454,9 @@ impl PageTablePool {
                 .map_err(|_| IommuError::HardwareError)?;
 
         // Allocate zeroed page on the specified NUMA node
-        let (ptr, actual_node) = crate::mm::numa::topology::allocate_zeroed_on_node_with_info(layout, Some(node))
-            .ok_or(IommuError::OutOfMemory)?;
+        let (ptr, actual_node) =
+            crate::mm::numa::topology::allocate_zeroed_on_node_with_info(layout, Some(node))
+                .ok_or(IommuError::OutOfMemory)?;
 
         // Get physical address
         let phys = crate::io::iommu::common::tables::virt_ptr_to_phys(ptr.as_ptr())?;

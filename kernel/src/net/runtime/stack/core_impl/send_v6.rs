@@ -19,15 +19,17 @@ impl NetworkStack {
         echo_data: &[u8],
     ) {
         // Build ICMPv6 Echo Reply message (with checksum)
-        let icmpv6_msg = Icmpv6Builder::build_echo_reply(
-            &src, &dst, identifier, sequence, echo_data,
-        );
+        let icmpv6_msg =
+            Icmpv6Builder::build_echo_reply(&src, &dst, identifier, sequence, echo_data);
 
         self.send_ipv6_icmpv6(&src, &dst, &icmpv6_msg);
 
         log::info!(
             "ICMPv6: Echo Reply sent from {} to {} id={} seq={}",
-            src, dst, identifier, sequence
+            src,
+            dst,
+            identifier,
+            sequence
         );
     }
 
@@ -44,7 +46,8 @@ impl NetworkStack {
             let our_addr = ipv6_proc.config().link_local;
 
             // Security: RFC 4443 compliance check
-            if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::PacketTooBig, 0) {
+            if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::PacketTooBig, 0)
+            {
                 return false;
             }
 
@@ -60,7 +63,7 @@ impl NetworkStack {
                 &our_addr,
                 &dst_v6,
                 mtu,
-                original_packet
+                original_packet,
             );
             self.send_ipv6_icmpv6(&our_addr, &dst_v6, &icmp_msg);
             true
@@ -78,9 +81,14 @@ impl NetworkStack {
     ) -> bool {
         if let Some(ref mut ipv6_proc) = self.ipv6 {
             let our_addr = ipv6_proc.config().link_local;
-            
+
             // Security: RFC 4443 compliance check (no errors for multicast etc)
-            if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::TimeExceeded, code) {
+            if !self.should_send_icmp_v6_error(
+                original_packet,
+                dst_v6,
+                Icmpv6Type::TimeExceeded,
+                code,
+            ) {
                 return false;
             }
 
@@ -96,7 +104,7 @@ impl NetworkStack {
                 &our_addr,
                 &dst_v6,
                 code,
-                original_packet
+                original_packet,
             );
             self.send_ipv6_icmpv6(&our_addr, &dst_v6, &icmp_msg);
             true
@@ -106,7 +114,12 @@ impl NetworkStack {
     }
 
     /// Send an IPv6 packet containing ICMPv6 payload
-    pub(crate) fn send_ipv6_icmpv6(&mut self, src: &Ipv6Address, dst: &Ipv6Address, icmpv6_data: &[u8]) {
+    pub(crate) fn send_ipv6_icmpv6(
+        &mut self,
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        icmpv6_data: &[u8],
+    ) {
         let config = self.config;
         let current_time = self.current_time.load(Ordering::Relaxed);
 
@@ -121,7 +134,8 @@ impl NetworkStack {
                         Some(mac) => mac,
                         None => {
                             // Queue packet for later delivery
-                            self.ndp_pending_queue.enqueue(*src, *dst, icmpv6_data, current_time);
+                            self.ndp_pending_queue
+                                .enqueue(*src, *dst, icmpv6_data, current_time);
 
                             // Start NDP resolution (send NS)
                             let ns_msg = ndp.start_resolution(dst, current_time);
@@ -185,7 +199,12 @@ impl NetworkStack {
     ///
     /// NDP NS送信など、NDP解決自体の送信パスで再帰を避けるために使用。
     /// 宛先はマルチキャストアドレスのみ想定。
-    pub(crate) fn send_ipv6_icmpv6_raw(&mut self, src: &Ipv6Address, dst: &Ipv6Address, icmpv6_data: &[u8]) {
+    pub(crate) fn send_ipv6_icmpv6_raw(
+        &mut self,
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        icmpv6_data: &[u8],
+    ) {
         let config = self.config;
 
         // Multicast MAC resolution (no NDP needed)
@@ -223,12 +242,27 @@ impl NetworkStack {
     }
 
     /// Send a UDP/IPv6 datagram (with NDP resolution)
-    pub fn send_udp_v6_raw(&mut self, src_port: u16, src_ip: Ipv6Address, dst: Ipv6Address, dst_port: u16, data: &[u8]) -> bool {
+    pub fn send_udp_v6_raw(
+        &mut self,
+        src_port: u16,
+        src_ip: Ipv6Address,
+        dst: Ipv6Address,
+        dst_port: u16,
+        data: &[u8],
+    ) -> bool {
         self.send_udp_v6_raw_with_ttl(src_port, src_ip, dst, dst_port, data, 64)
     }
 
     /// Send a UDP/IPv6 datagram with explicit hop limit (TTL)
-    pub fn send_udp_v6_raw_with_ttl(&mut self, src_port: u16, src_ip: Ipv6Address, dst: Ipv6Address, dst_port: u16, data: &[u8], ttl: u8) -> bool {
+    pub fn send_udp_v6_raw_with_ttl(
+        &mut self,
+        src_port: u16,
+        src_ip: Ipv6Address,
+        dst: Ipv6Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
         let config = self.config;
         let current_time = self.current_time.load(Ordering::Relaxed);
 
@@ -245,7 +279,8 @@ impl NetworkStack {
                         // Build minimal IPv6+UDP packet for queuing (reuse payload area)
                         // For queuing, store as icmpv6_data-like structure: src/dst/payload
                         // Use same pending queue as ICMPv6 (it stores raw icmpv6_data), so place UDP data there
-                        self.ndp_pending_queue.enqueue(src_ip, dst, data, current_time);
+                        self.ndp_pending_queue
+                            .enqueue(src_ip, dst, data, current_time);
 
                         // Start NDP resolution
                         let ns_msg = ndp.start_resolution(&dst, current_time);
@@ -291,8 +326,14 @@ impl NetworkStack {
                 payload_buf[8..8 + data.len()].copy_from_slice(data);
 
                 // Compute UDP checksum (IPv6 pseudo-header)
-                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(&src_ip, &dst, IpProtocol::Udp, udp_len as u32);
-                let checksum = crate::net::l3::ipv4::data_checksum(&payload_buf[..udp_len as usize], pseudo);
+                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(
+                    &src_ip,
+                    &dst,
+                    IpProtocol::Udp,
+                    udp_len as u32,
+                );
+                let checksum =
+                    crate::net::l3::ipv4::data_checksum(&payload_buf[..udp_len as usize], pseudo);
                 let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
                 payload_buf[6..8].copy_from_slice(&final_checksum.to_be_bytes());
 
@@ -366,7 +407,12 @@ impl NetworkStack {
     }
 
     /// Send a TCP segment over IPv6 (with NDP resolution)
-    pub fn send_tcp_v6_raw(&mut self, src_ip: Ipv6Address, dst: Ipv6Address, tcp_segment: &[u8]) -> bool {
+    pub fn send_tcp_v6_raw(
+        &mut self,
+        src_ip: Ipv6Address,
+        dst: Ipv6Address,
+        tcp_segment: &[u8],
+    ) -> bool {
         let config = self.config;
         let current_time = self.current_time.load(Ordering::Relaxed);
 
@@ -379,7 +425,8 @@ impl NetworkStack {
                     Some(mac) => MacAddress::new(mac),
                     None => {
                         // Queue packet for later and trigger NDP resolution
-                        self.ndp_pending_queue.enqueue(src_ip, dst, tcp_segment, current_time);
+                        self.ndp_pending_queue
+                            .enqueue(src_ip, dst, tcp_segment, current_time);
 
                         let ns_msg = ndp.start_resolution(&dst, current_time);
                         let sn_mcast = dst.solicited_node();
@@ -450,7 +497,7 @@ impl NetworkStack {
     pub(crate) fn send_pending_igmp_reports(&mut self) {
         let pending = self.igmp.take_pending_reports();
         let current_time = self.current_time();
-        
+
         for (group_addr, is_leave) in pending {
             if is_leave {
                 self.send_igmp_leave(group_addr, current_time);
@@ -459,12 +506,12 @@ impl NetworkStack {
             }
         }
     }
-    
+
     /// Send an IGMP Membership Report
     pub(crate) fn send_igmp_report(&mut self, group_addr: Ipv4Address, _current_time: u64) {
         let mut buffer = [0u8; MAX_PACKET_SIZE];
         let config = self.config.clone();
-        
+
         // Build Ethernet frame
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
             // Destination is the multicast MAC address for the group
@@ -473,9 +520,9 @@ impl NetworkStack {
                 .set_destination(dst_mac)
                 .set_source(config.mac)
                 .set_ether_type(EtherType::Ipv4);
-            
+
             let payload = frame.payload_mut();
-            
+
             // Build IPv4 header
             // IGMPv2 reports are sent to the group address
             if let Some(mut ip_pkt) = Ipv4PacketMut::new(payload) {
@@ -491,7 +538,9 @@ impl NetworkStack {
                 // Build IGMP message into IPv4 payload.
                 let ip_payload = ip_pkt.payload_mut();
                 if ip_payload.len() >= 8 {
-                    if let Some(len) = crate::net::l3::igmp::IgmpProcessor::build_report(group_addr, ip_payload) {
+                    if let Some(len) =
+                        crate::net::l3::igmp::IgmpProcessor::build_report(group_addr, ip_payload)
+                    {
                         let total_len = (20 + len) as u16;
                         ip_pkt.set_total_length(total_len).update_checksum();
 

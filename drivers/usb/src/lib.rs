@@ -617,9 +617,18 @@ mod tests {
             DoorbellTarget::from_endpoint(0),
             DoorbellTarget::ControlEndpoint0
         );
-        assert_eq!(DoorbellTarget::from_endpoint(1), DoorbellTarget::OutEndpoint(1));
-        assert_eq!(DoorbellTarget::from_endpoint(0x81), DoorbellTarget::InEndpoint(1));
-        assert_eq!(DoorbellTarget::from_endpoint(0x82), DoorbellTarget::InEndpoint(2));
+        assert_eq!(
+            DoorbellTarget::from_endpoint(1),
+            DoorbellTarget::OutEndpoint(1)
+        );
+        assert_eq!(
+            DoorbellTarget::from_endpoint(0x81),
+            DoorbellTarget::InEndpoint(1)
+        );
+        assert_eq!(
+            DoorbellTarget::from_endpoint(0x82),
+            DoorbellTarget::InEndpoint(2)
+        );
     }
 
     #[test]

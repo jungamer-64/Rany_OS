@@ -6,11 +6,11 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use super::raw;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use super::raw;
 use core::arch::naked_asm;
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
 /// タスク状態
@@ -167,7 +167,7 @@ pub unsafe extern "C" fn switch_context(_old: *mut CpuContext, _new: *const CpuC
 /// カーネルタスク用のスタック
 ///
 /// Per-Task スタック管理。各タスクは独自のカーネルスタックを持つ。
-/// 
+///
 /// 【設計書 8.3】各タスクスタックの下端（低アドレス側）にガードページを配置し、
 /// スタックオーバーフローを検出可能にする。
 pub struct KernelStack {
@@ -185,9 +185,9 @@ impl KernelStack {
     pub const GUARD_SIZE: usize = 4096;
 
     /// 新しいスタックを割り当て
-    /// 
+    ///
     /// 【設計書 8.3】ガードページによるスタックオーバーフロー検出
-    /// 
+    ///
     /// スタックの下端（低アドレス側）にガードページ（Present=0）を自動的に
     /// 配置する。スタックオーバーフローが発生すると、ガードページへの
     /// アクセスによりPage Fault (#PF) が発生し、検出可能になる。
@@ -204,11 +204,13 @@ impl KernelStack {
         // We translate the virtual address to physical address for registration.
         let virt_start = ptr as u64;
         let size = Self::SIZE;
-        if let Some(phys_start) = crate::mm::virt::higher_half::global_translate(crate::mm::virt::higher_half::VirtAddr::new(virt_start)) {
+        if let Some(phys_start) = crate::mm::virt::higher_half::global_translate(
+            crate::mm::virt::higher_half::VirtAddr::new(virt_start),
+        ) {
             crate::security::dma::register_protected_range(phys_start.as_u64(), size as u64);
         }
 
-        let mut stack = Self { 
+        let mut stack = Self {
             memory,
             guard_page_set: false,
         };
@@ -220,7 +222,7 @@ impl KernelStack {
     }
 
     /// 【設計書 8.3】ガードページを設定
-    /// 
+    ///
     /// スタックの下端にガードページを配置する。
     /// ガードページへのアクセスはPage Faultを発生させる。
     fn setup_guard_page(&mut self) {
@@ -229,12 +231,12 @@ impl KernelStack {
         }
 
         let bottom = self.bottom().as_u64() as usize;
-        
+
         // panic_handler モジュールのガードページ設定関数を使用
         crate::panic_handler::setup_task_stack_guard(bottom, Self::SIZE);
-        
+
         self.guard_page_set = true;
-        
+
         log::debug!(
             "[KernelStack] Guard page set at 0x{:x} for stack [0x{:x}..0x{:x}]",
             bottom,
@@ -265,7 +267,9 @@ impl Drop for KernelStack {
     fn drop(&mut self) {
         let virt_start = self.memory.as_ptr() as u64;
         let size = Self::SIZE;
-        if let Some(phys_start) = crate::mm::virt::higher_half::global_translate(crate::mm::virt::higher_half::VirtAddr::new(virt_start)) {
+        if let Some(phys_start) = crate::mm::virt::higher_half::global_translate(
+            crate::mm::virt::higher_half::VirtAddr::new(virt_start),
+        ) {
             crate::security::dma::unregister_protected_range(phys_start.as_u64(), size as u64);
         }
     }
@@ -354,7 +358,6 @@ impl TaskControlBlock {
 // Per-CPU 現在タスク管理
 // ============================================================================
 
-
 /// 現在のCPUで実行中のタスクを設定
 ///
 /// # Safety
@@ -362,8 +365,10 @@ impl TaskControlBlock {
 pub unsafe fn set_current_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
     if cpu_id < crate::per_cpu::MAX_CPUS {
         let per_cpu = crate::per_cpu::get_per_cpu_data_mut(cpu_id);
-        per_cpu.current_task_ptr.store(tcb as u64, Ordering::Release);
-        
+        per_cpu
+            .current_task_ptr
+            .store(tcb as u64, Ordering::Release);
+
         // Legacy support: update ID if needed
         if !tcb.is_null() {
             per_cpu.current_task_id = (*tcb).id.0;
@@ -372,7 +377,6 @@ pub unsafe fn set_current_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
         }
     }
 }
-
 
 /// 現在のCPUで実行中のタスクを取得
 pub fn get_current_task(cpu_id: usize) -> Option<*mut TaskControlBlock> {
@@ -447,7 +451,8 @@ pub struct Subject {
 
 impl Subject {
     pub fn kernel() -> Self {
-        let security = crate::domain_system::domain_security_handle(crate::domain_system::DomainId::KERNEL);
+        let security =
+            crate::domain_system::domain_security_handle(crate::domain_system::DomainId::KERNEL);
         Self {
             domain: crate::domain_system::DomainId::KERNEL,
             // current_task_id() falls back to 0 when no task is active
@@ -493,4 +498,3 @@ mod tests {
         assert_eq!(core::mem::align_of::<CpuContext>(), 8);
     }
 }
-

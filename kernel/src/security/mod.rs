@@ -224,14 +224,30 @@ impl AccessControlManager {
         let actual = self.get_capabilities(domain_id);
 
         let checks: [(&str, bool, bool); 8] = [
-            ("kernel API call", required.can_call_kernel_api, actual.can_call_kernel_api),
-            ("memory mapping", required.can_map_memory, actual.can_map_memory),
+            (
+                "kernel API call",
+                required.can_call_kernel_api,
+                actual.can_call_kernel_api,
+            ),
+            (
+                "memory mapping",
+                required.can_map_memory,
+                actual.can_map_memory,
+            ),
             ("I/O access", required.can_access_io, actual.can_access_io),
-            ("interrupt registration", required.can_register_interrupts, actual.can_register_interrupts),
+            (
+                "interrupt registration",
+                required.can_register_interrupts,
+                actual.can_register_interrupts,
+            ),
             ("IPC", required.can_ipc, actual.can_ipc),
             ("unsafe code", required.allows_unsafe, actual.allows_unsafe),
             ("network access", required.can_network, actual.can_network),
-            ("filesystem access", required.can_filesystem, actual.can_filesystem),
+            (
+                "filesystem access",
+                required.can_filesystem,
+                actual.can_filesystem,
+            ),
         ];
 
         for (op, req, act) in checks {
@@ -664,4 +680,3 @@ mod tests {
         );
     }
 }
-

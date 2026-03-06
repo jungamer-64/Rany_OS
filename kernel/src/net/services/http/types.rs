@@ -127,7 +127,10 @@ impl HttpRequest {
     }
 
     pub fn body(mut self, data: Vec<u8>) -> Self {
-        self.headers.push(HttpHeader::new("Content-Length", data.len().to_string().as_str()));
+        self.headers.push(HttpHeader::new(
+            "Content-Length",
+            data.len().to_string().as_str(),
+        ));
         self.body = Some(data);
         self
     }
@@ -135,22 +138,27 @@ impl HttpRequest {
     /// バイト列にシリアライズ
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = String::new();
-        out.push_str(&alloc::format!("{} {} {}\r\n", self.method, self.uri, self.version));
-        
+        out.push_str(&alloc::format!(
+            "{} {} {}\r\n",
+            self.method,
+            self.uri,
+            self.version
+        ));
+
         for header in &self.headers {
             out.push_str(&alloc::format!("{}: {}\r\n", header.name, header.value));
         }
-        
+
         out.push_str("\r\n");
         let mut bytes = out.into_bytes();
-        
+
         if let Some(body) = &self.body {
             bytes.extend_from_slice(body);
         }
-        
+
         bytes
     }
-    
+
     /// 特定のヘッダの値を取得（大文字小文字を区別しない）
     pub fn get_header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find_map(|h| {
@@ -191,26 +199,34 @@ impl HttpResponse {
 
     pub fn body(mut self, data: impl Into<Vec<u8>>) -> Self {
         let body_data = data.into();
-        self.headers.push(HttpHeader::new("Content-Length", body_data.len().to_string().as_str()));
+        self.headers.push(HttpHeader::new(
+            "Content-Length",
+            body_data.len().to_string().as_str(),
+        ));
         self.body = body_data;
         self
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = String::new();
-        out.push_str(&alloc::format!("{} {} {}\r\n", self.version, self.status_code, self.reason_phrase));
-        
+        out.push_str(&alloc::format!(
+            "{} {} {}\r\n",
+            self.version,
+            self.status_code,
+            self.reason_phrase
+        ));
+
         for header in &self.headers {
             out.push_str(&alloc::format!("{}: {}\r\n", header.name, header.value));
         }
-        
+
         out.push_str("\r\n");
         let mut bytes = out.into_bytes();
-        
+
         if !self.body.is_empty() {
             bytes.extend_from_slice(&self.body);
         }
-        
+
         bytes
     }
 

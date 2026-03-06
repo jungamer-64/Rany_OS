@@ -25,12 +25,12 @@
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
+use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
-use crate::mm::types::NumaNodeId;
-use super::per_node_buddy;
 use super::buddy_allocator;
+use super::per_node_buddy;
+use crate::mm::types::NumaNodeId;
 
 // ============================================================================
 // Configuration
@@ -74,7 +74,7 @@ const ADAPTIVE_ADJUST_INTERVAL: u64 = 64;
 const ADAPTIVE_HIGH_FREQUENCY_THRESHOLD: u64 = 4;
 
 /// Adaptive batch configuration for dynamic refill/drain sizing
-/// 
+///
 /// Adjusts batch size based on allocation frequency:
 /// - High frequency allocation → larger batches (reduce Buddy lock contention)
 /// - Low frequency allocation → smaller batches (reduce memory waste)
@@ -92,28 +92,28 @@ impl AdaptiveBatchConfig {
     /// Create new adaptive config with default batch size
     pub const fn new() -> Self {
         Self {
-            current_batch: REFILL_BATCH,  // Start with default
+            current_batch: REFILL_BATCH, // Start with default
             refills_in_window: 0,
             allocs_since_adjust: 0,
         }
     }
-    
+
     /// Record an allocation and potentially adjust batch size
     #[inline]
     pub fn record_alloc(&mut self) {
         self.allocs_since_adjust += 1;
-        
+
         if self.allocs_since_adjust >= ADAPTIVE_ADJUST_INTERVAL {
             self.adjust();
         }
     }
-    
+
     /// Record a refill event
     #[inline]
     pub fn record_refill(&mut self) {
         self.refills_in_window += 1;
     }
-    
+
     /// Adjust batch size based on recent activity
     fn adjust(&mut self) {
         if self.refills_in_window >= ADAPTIVE_HIGH_FREQUENCY_THRESHOLD {
@@ -124,12 +124,12 @@ impl AdaptiveBatchConfig {
             self.current_batch = self.current_batch.saturating_sub(2).max(ADAPTIVE_BATCH_MIN);
         }
         // else: moderate frequency, keep current batch size
-        
+
         // Reset window
         self.refills_in_window = 0;
         self.allocs_since_adjust = 0;
     }
-    
+
     /// Get current effective batch size
     #[inline]
     pub fn batch_size(&self) -> usize {
@@ -210,10 +210,14 @@ impl SubFrameMagazine {
 
         // Calculate physical address
         let addr = self.base_addr + (bit_idx as u64) * PAGE_SIZE_4K;
-        
+
         // Safety check: address must be 4KiB aligned
-        debug_assert_eq!(addr % PAGE_SIZE_4K, 0, "SubFrameMagazine address is not aligned");
-        
+        debug_assert_eq!(
+            addr % PAGE_SIZE_4K,
+            0,
+            "SubFrameMagazine address is not aligned"
+        );
+
         Some(unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) })
     }
 
@@ -360,17 +364,17 @@ impl Default for LocalFreeWordStack {
 // ============================================================================
 
 /// Per-CPU ゼロクリア済みフレームキャッシュ
-/// 
+///
 /// グローバルな `ZeroedFramePool` へのロック取得を減らすため、
 /// 各CPUが少量のゼロクリア済みフレームをローカルにキャッシュする。
-/// 
+///
 /// ## 用途
-/// 
+///
 /// - ユーザー空間へのページ割り当て（COW、mmap、スタック拡張等）
 /// - ページテーブルの割り当て
-/// 
+///
 /// ## 動作
-/// 
+///
 /// 1. `alloc_zeroed` で要求時、まずローカルキャッシュから取得
 /// 2. キャッシュが空なら `ZeroedFramePool` からバッチ補充
 /// 3. プールも空ならオンデマンドでゼロクリア
@@ -580,14 +584,14 @@ impl Default for FrameMagazine {
 // ============================================================================
 
 /// CPUごとのマガジンセット（Active + Spare）
-/// 
+///
 /// Double-Buffering方式を採用:
 /// - Activeが空になったらSpareと即座にswap
 /// - バックグラウンドでSpareを非同期リフィル
 /// - ホットパスでのBuddyロック競合を最小化
-/// 
+///
 /// ## ゼロクリア済みキャッシュ
-/// 
+///
 /// ユーザー空間へのページ割り当て（常にゼロクリアが必要）の高速化のため、
 /// Per-CPU の zeroed_cache を保持。グローバル ZeroedFramePool へのロック取得を削減。
 #[repr(C)]
@@ -647,7 +651,7 @@ impl PerCpuMagazineSet {
     }
 
     /// フレームを割り当て（ロックフリー fast path）
-    /// 
+    ///
     /// Priority (optimized for burst allocation):
     /// 1. **Fastest**: SubMagazine - 64 allocs per atomic, pure arithmetic
     /// 2. **Fast**: Active magazine pop
@@ -677,7 +681,8 @@ impl PerCpuMagazineSet {
                 self.alloc_count += 1;
                 self.adaptive_batch.record_alloc();
                 // バックグラウンドリフィルをスケジュール（Spareが空になった）
-                self.refill_pending.store(true, core::sync::atomic::Ordering::Release);
+                self.refill_pending
+                    .store(true, core::sync::atomic::Ordering::Release);
                 return Some(frame);
             }
         }
@@ -692,7 +697,7 @@ impl PerCpuMagazineSet {
     }
 
     /// ゼロクリア済みフレームを割り当て（ユーザー空間向け）
-    /// 
+    ///
     /// Priority:
     /// 1. **Fastest**: Per-CPU zeroed cache (ロックなし)
     /// 2. **Fast**: グローバル ZeroedFramePool からバッチ補充してから取得
@@ -707,7 +712,8 @@ impl PerCpuMagazineSet {
         }
 
         // Medium path: グローバルプールからバッチ補充
-        self.zeroed_cache.refill_from_global(self.numa_node.as_u8() as usize);
+        self.zeroed_cache
+            .refill_from_global(self.numa_node.as_u8() as usize);
         if let Some(frame) = self.zeroed_cache.pop() {
             self.zeroed_cache_hits += 1;
             self.alloc_count += 1;
@@ -789,7 +795,7 @@ impl PerCpuMagazineSet {
 
         // Spareの半分を返却
         let drain_count = self.spare.len() / 2;
-        
+
         if per_node_buddy::is_per_node_initialized() {
             if let Some(allocator) = per_node_buddy::get_node_allocator(self.numa_node) {
                 for frame in self.spare.pop_batch(drain_count) {

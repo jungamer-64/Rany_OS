@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl CapabilityManager {
     /// Create a new capability manager
     pub const fn new() -> Self {
@@ -90,7 +89,9 @@ impl CapabilityManager {
             return true;
         }
         let grants = self.grants.lock();
-        grants.iter().any(|t| t.target == caller_domain && t.cap == cap && t.delegatable)
+        grants
+            .iter()
+            .any(|t| t.target == caller_domain && t.cap == cap && t.delegatable)
     }
 
     /// Grant capability with options (expires, delegatable) and return a token id
@@ -143,18 +144,24 @@ impl CapabilityManager {
 
         // Audit
         crate::security::audit::log_event(
-            AuditEvent::new(AuditEventType::CapabilityCheck, caller_domain)
-                .message(format!(
-                    "grant cap {} -> domain {} (token={})",
-                    capability_name(cap), target_domain, token_id
-                )),
+            AuditEvent::new(AuditEventType::CapabilityCheck, caller_domain).message(format!(
+                "grant cap {} -> domain {} (token={})",
+                capability_name(cap),
+                target_domain,
+                token_id
+            )),
         );
 
         Ok(token_id)
     }
 
     /// Revoke a grant by token id (issuer or CAP_SYS_ADMIN may revoke)
-    pub fn revoke_grant(&self, caller_domain: u64, token_id: u64, force: bool) -> Result<(), CapabilityError> {
+    pub fn revoke_grant(
+        &self,
+        caller_domain: u64,
+        token_id: u64,
+        force: bool,
+    ) -> Result<(), CapabilityError> {
         // Clean expired first
         self.expire_grants();
 
@@ -162,7 +169,9 @@ impl CapabilityManager {
         let mut grants = self.grants.lock();
         if let Some(pos) = grants.iter().position(|t| t.id == token_id) {
             // Authorization: issuer or sysadmin
-            if caller_domain != grants[pos].issuer && !self.has_capability(caller_domain, CAP_SYS_ADMIN) {
+            if caller_domain != grants[pos].issuer
+                && !self.has_capability(caller_domain, CAP_SYS_ADMIN)
+            {
                 return Err(CapabilityError::NotPermitted);
             }
 
@@ -183,13 +192,14 @@ impl CapabilityManager {
                 self.set_capabilities(token.target, caps);
 
                 crate::security::audit::log_event(
-                    AuditEvent::new(AuditEventType::CapabilityCheck, caller_domain)
-                        .message(format!(
+                    AuditEvent::new(AuditEventType::CapabilityCheck, caller_domain).message(
+                        format!(
                             "revoke token {} cap {} from domain {} (force)",
                             token_id,
                             capability_name(token.cap),
                             token.target
-                        )),
+                        ),
+                    ),
                 );
 
                 Ok(())
@@ -206,13 +216,14 @@ impl CapabilityManager {
                 self.set_capabilities(token.target, caps);
 
                 crate::security::audit::log_event(
-                    AuditEvent::new(AuditEventType::CapabilityCheck, caller_domain)
-                        .message(format!(
+                    AuditEvent::new(AuditEventType::CapabilityCheck, caller_domain).message(
+                        format!(
                             "mark token {} cap {} revoked for domain {}",
                             token_id,
                             capability_name(token.cap),
                             token.target
-                        )),
+                        ),
+                    ),
                 );
 
                 Ok(())
@@ -226,7 +237,11 @@ impl CapabilityManager {
     pub fn list_grants(&self, domain_id: u64) -> Vec<GrantToken> {
         self.expire_grants();
         let grants = self.grants.lock();
-        grants.iter().filter(|t| t.target == domain_id).cloned().collect()
+        grants
+            .iter()
+            .filter(|t| t.target == domain_id)
+            .cloned()
+            .collect()
     }
 
     /// Expire grants whose expiry <= current tick
@@ -258,13 +273,12 @@ impl CapabilityManager {
             self.set_capabilities(token.target, caps);
 
             crate::security::audit::log_event(
-                AuditEvent::new(AuditEventType::CapabilityCheck, 0)
-                    .message(format!(
-                        "expired token {} cap {} for domain {}",
-                        token.id,
-                        capability_name(token.cap),
-                        token.target
-                    )),
+                AuditEvent::new(AuditEventType::CapabilityCheck, 0).message(format!(
+                    "expired token {} cap {} for domain {}",
+                    token.id,
+                    capability_name(token.cap),
+                    token.target
+                )),
             );
         }
     }
@@ -311,7 +325,9 @@ impl CapabilityManager {
         let grants = self.grants.lock();
         grants.iter().find(|t| t.id == token_id).map(|t| {
             if t.revoked {
-                ReclamationStatus::Revoked { revoked_at: t.revoked_at.unwrap_or(0) }
+                ReclamationStatus::Revoked {
+                    revoked_at: t.revoked_at.unwrap_or(0),
+                }
             } else {
                 ReclamationStatus::Active
             }
@@ -321,7 +337,13 @@ impl CapabilityManager {
     /// Forcefully reclaim a revoked token (physically remove it); returns Err if not revoked or not found
     pub fn reclaim_token(&self, token_id: u64) -> Result<(), CapabilityError> {
         // Can't reclaim while there are in-flight users
-        let in_flight = { let m = self.in_flight.lock(); m.iter().find(|(id,_)| *id == token_id).map(|(_,cnt)| *cnt).unwrap_or(0) };
+        let in_flight = {
+            let m = self.in_flight.lock();
+            m.iter()
+                .find(|(id, _)| *id == token_id)
+                .map(|(_, cnt)| *cnt)
+                .unwrap_or(0)
+        };
         if in_flight > 0 {
             return Err(CapabilityError::ReclamationBusy);
         }
@@ -334,7 +356,9 @@ impl CapabilityManager {
             grants.remove(pos);
             // Clean up any residual in-flight entry
             let mut m = self.in_flight.lock();
-            if let Some(p) = m.iter().position(|(id,_)| *id == token_id) { m.remove(p); }
+            if let Some(p) = m.iter().position(|(id, _)| *id == token_id) {
+                m.remove(p);
+            }
             Ok(())
         } else {
             Err(CapabilityError::InvalidCapability)
@@ -356,7 +380,7 @@ impl CapabilityManager {
         }
 
         let mut m = self.in_flight.lock();
-        if let Some(pair) = m.iter_mut().find(|(id,_)| *id == token_id) {
+        if let Some(pair) = m.iter_mut().find(|(id, _)| *id == token_id) {
             pair.1 += 1;
         } else {
             m.push((token_id, 1));
@@ -367,7 +391,7 @@ impl CapabilityManager {
     /// Decrement the in-flight counter for a token. Fails if no in-flight count exists.
     pub fn decrement_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
         let mut m = self.in_flight.lock();
-        if let Some(pos) = m.iter().position(|(id,_)| *id == token_id) {
+        if let Some(pos) = m.iter().position(|(id, _)| *id == token_id) {
             if m[pos].1 == 0 {
                 return Err(CapabilityError::InvalidCapability);
             }
@@ -384,7 +408,10 @@ impl CapabilityManager {
     /// Current in-flight count for a token
     pub fn in_flight_count(&self, token_id: u64) -> u64 {
         let m = self.in_flight.lock();
-        m.iter().find(|(id,_)| *id == token_id).map(|(_,cnt)| *cnt).unwrap_or(0)
+        m.iter()
+            .find(|(id, _)| *id == token_id)
+            .map(|(_, cnt)| *cnt)
+            .unwrap_or(0)
     }
 
     /// Reclaim revoked tokens that have no in-flight users. Safe to call repeatedly.
@@ -396,7 +423,11 @@ impl CapabilityManager {
             let in_flight = self.in_flight.lock();
             for t in grants.iter() {
                 if t.revoked {
-                    let cnt = in_flight.iter().find(|(id,_)| *id == t.id).map(|(_,c)| *c).unwrap_or(0);
+                    let cnt = in_flight
+                        .iter()
+                        .find(|(id, _)| *id == t.id)
+                        .map(|(_, c)| *c)
+                        .unwrap_or(0);
                     if cnt == 0 {
                         to_reclaim.push(t.id);
                     }
@@ -409,7 +440,9 @@ impl CapabilityManager {
             if let Some(pos) = grants.iter().position(|t| t.id == id && t.revoked) {
                 grants.remove(pos);
                 let mut m = self.in_flight.lock();
-                if let Some(p) = m.iter().position(|(tid,_)| *tid == id) { m.remove(p); }
+                if let Some(p) = m.iter().position(|(tid, _)| *tid == id) {
+                    m.remove(p);
+                }
 
                 crate::security::audit::log_event(
                     AuditEvent::new(AuditEventType::CapabilityCheck, 0)
@@ -418,7 +451,7 @@ impl CapabilityManager {
             }
         }
     }
-    
+
     /// Validate if a token is valid for a given capability
     pub fn validate_token(&self, _pid: u64, token_id: u64, required_cap: Capability) -> bool {
         // Check if token exists and grants the required capability
@@ -426,15 +459,17 @@ impl CapabilityManager {
         let grants = self.grants.lock();
         if let Some(token) = grants.iter().find(|t| t.id == token_id) {
             if token.cap == required_cap && !token.revoked {
-                 // Check expiry
-                 if let Some(exp) = token.expires {
-                     #[cfg(not(test))]
-                     let now = crate::task::timer::current_tick();
-                     #[cfg(test)]
-                     let now = 0;
-                     if now >= exp { return false; }
-                 }
-                 return true;
+                // Check expiry
+                if let Some(exp) = token.expires {
+                    #[cfg(not(test))]
+                    let now = crate::task::timer::current_tick();
+                    #[cfg(test)]
+                    let now = 0;
+                    if now >= exp {
+                        return false;
+                    }
+                }
+                return true;
             }
         }
         false

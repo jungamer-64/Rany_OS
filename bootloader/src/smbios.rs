@@ -3,10 +3,10 @@
 //! UEFI Configuration Tableから SMBIOS 3.x/2.x テーブルを検出し、
 //! システムハードウェア情報を取得する。
 
-use core::ptr;
-use uefi::guid;
 #[cfg(feature = "serial_log")]
 use crate::serial_println;
+use core::ptr;
+use uefi::guid;
 
 /// SMBIOS 3.x Entry Point GUID
 /// F2FD1544-9794-4A2C-992E-E5BBCF20E394
@@ -328,7 +328,6 @@ fn log_system_uuid(uuid: &[u8; 16]) {
 
 #[cfg(feature = "serial_log")]
 pub fn log_smbios_info(info: &SmbiosInfo) {
-
     serial_println!("[SMBIOS] Detection results:");
 
     if info.flags & smbios_flags::SMBIOS3_AVAILABLE != 0 {

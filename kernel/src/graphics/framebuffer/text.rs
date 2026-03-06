@@ -7,14 +7,17 @@
 //! clipping/run helpers extracted from the main framebuffer implementation.
 
 use super::*;
-use hal::mmio;
 use core::ptr;
+use hal::mmio;
 
 impl Framebuffer {
     /// Check if a rectangle is fully contained in the clip rectangle.
     #[inline]
     fn clip_contains_rect(&self, x: i32, y: i32, w: i32, h: i32) -> bool {
-        x >= self.clip.x && (x + w) <= self.clip.right() && y >= self.clip.y && (y + h) <= self.clip.bottom()
+        x >= self.clip.x
+            && (x + w) <= self.clip.right()
+            && y >= self.clip.y
+            && (y + h) <= self.clip.bottom()
     }
 
     /// Check if a Y coordinate is within the clip vertical range.
@@ -47,7 +50,12 @@ impl Framebuffer {
 
     /// Find a run of ON bits with extra width bound: `(byte_idx * 8 + col) < width`.
     #[inline]
-    fn next_on_run_bounded(byte: u8, mut col: usize, byte_idx: usize, width: usize) -> (usize, usize, usize) {
+    fn next_on_run_bounded(
+        byte: u8,
+        mut col: usize,
+        byte_idx: usize,
+        width: usize,
+    ) -> (usize, usize, usize) {
         while col < 8 && (byte_idx * 8 + col) < width {
             if (byte >> (7 - col)) & 1 != 0 {
                 break;
@@ -169,20 +177,14 @@ impl Framebuffer {
                 continue;
             }
             let dst_x = px_start + run_start as i32;
-            wrote_mmio |= self.write_clipped_rgb565_run_nofence(dst_x, run_len, dst_y, stride, color);
+            wrote_mmio |=
+                self.write_clipped_rgb565_run_nofence(dst_x, run_len, dst_y, stride, color);
         }
         wrote_mmio
     }
 
     /// Flush a horizontal run during Bresenham line drawing.
-    fn flush_hrun(
-        &mut self,
-        run_start: i32,
-        run_len: usize,
-        run_y: i32,
-        sx: i32,
-        color: Color,
-    ) {
+    fn flush_hrun(&mut self, run_start: i32, run_len: usize, run_y: i32, sx: i32, color: Color) {
         if run_y < self.clip.y || run_y >= self.clip.bottom() {
             return;
         }
@@ -233,9 +235,7 @@ impl Framebuffer {
                 self.glyph_byte_runs_24bpp(byte, byte_idx, width, px_start, dst_y, stride, color);
                 false
             }
-            2 => {
-                self.glyph_byte_runs_16bpp(byte, byte_idx, width, px_start, dst_y, stride, color)
-            }
+            2 => self.glyph_byte_runs_16bpp(byte, byte_idx, width, px_start, dst_y, stride, color),
             _ => {
                 self.glyph_byte_fallback(byte, px_start, dst_y, glyph_x, width, color);
                 false
@@ -469,7 +469,15 @@ impl Framebuffer {
             if !self.clip_y_visible(dst_y) {
                 continue;
             }
-            need_fence |= self.draw_text_glyph_row(byte, font.width() as usize, cx, dst_y, stride, bpp, color);
+            need_fence |= self.draw_text_glyph_row(
+                byte,
+                font.width() as usize,
+                cx,
+                dst_y,
+                stride,
+                bpp,
+                color,
+            );
         }
         need_fence
     }
@@ -485,7 +493,7 @@ impl Framebuffer {
     pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: Color, bg_color: Color) {
         let font = BitmapFont::default_8x16();
         let (stride, format, bpp) = self.draw_text_setup();
-        
+
         let char_count = text.chars().filter(|&c| c != '\n').count() as i32;
         let total_w = char_count * font.width() as i32;
         let char_h = font.height() as u32;
@@ -513,17 +521,21 @@ impl Framebuffer {
             if fully_visible && use_single_pass {
                 match bpp {
                     4 => {
-                        need_fence |= self.draw_text_char_32bpp_fast(cx, y, c, &font, stride, format, color, bg_color);
+                        need_fence |= self.draw_text_char_32bpp_fast(
+                            cx, y, c, &font, stride, format, color, bg_color,
+                        );
                         cx += char_w;
                         continue;
                     }
                     2 => {
-                        need_fence |= self.draw_text_char_16bpp_fast(cx, y, c, &font, stride, color, bg_color);
+                        need_fence |= self
+                            .draw_text_char_16bpp_fast(cx, y, c, &font, stride, color, bg_color);
                         cx += char_w;
                         continue;
                     }
                     3 => {
-                        need_fence |= self.draw_text_char_24bpp_fast(cx, y, c, &font, stride, color, bg_color);
+                        need_fence |= self
+                            .draw_text_char_24bpp_fast(cx, y, c, &font, stride, color, bg_color);
                         cx += char_w;
                         continue;
                     }
@@ -562,7 +574,10 @@ impl Framebuffer {
         let (stride, bpp) = if self.back_buffer.is_some() {
             ((self.info.width * 4) as usize, 4)
         } else {
-            (self.info.stride as usize, self.info.format.bytes_per_pixel())
+            (
+                self.info.stride as usize,
+                self.info.format.bytes_per_pixel(),
+            )
         };
 
         // Mark dirty
@@ -595,7 +610,18 @@ impl Framebuffer {
             for (byte_idx, &byte) in row_data.iter().enumerate() {
                 let px_start = x + (byte_idx * 8) as i32;
                 mmio_wrote |= self.glyph_process_byte(
-                    byte, byte_idx, bpp, stride, px_start, dst_y, x, width, color, bg.is_some(), fg_u32, bg_u32,
+                    byte,
+                    byte_idx,
+                    bpp,
+                    stride,
+                    px_start,
+                    dst_y,
+                    x,
+                    width,
+                    color,
+                    bg.is_some(),
+                    fg_u32,
+                    bg_u32,
                 );
             }
         }
@@ -612,7 +638,8 @@ impl Framebuffer {
             } else {
                 (
                     self.info.format.encode_u32(color).unwrap_or(color.to_u32()),
-                    bg.map(|c| self.info.format.encode_u32(c).unwrap_or(c.to_u32())).unwrap_or(0),
+                    bg.map(|c| self.info.format.encode_u32(c).unwrap_or(c.to_u32()))
+                        .unwrap_or(0),
                 )
             }
         } else {
@@ -623,7 +650,11 @@ impl Framebuffer {
     /// Pre-encode foreground/background colors for the 32bpp MMIO path.
     fn preencode_colors_32(&self, color: Color, bg_color: Color) -> (u32, u32) {
         let fg = self.info.format.encode_u32(color).unwrap_or(color.to_u32());
-        let bg_v = self.info.format.encode_u32(bg_color).unwrap_or(bg_color.to_u32());
+        let bg_v = self
+            .info
+            .format
+            .encode_u32(bg_color)
+            .unwrap_or(bg_color.to_u32());
         (fg, bg_v)
     }
 
@@ -707,9 +738,15 @@ impl Framebuffer {
         }
 
         // Stream 24 bytes: 3 u64 writes (covers 24 bytes exactly)
-        let v0 = u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
-        let v1 = u64::from_le_bytes([buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]);
-        let v2 = u64::from_le_bytes([buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23]]);
+        let v0 = u64::from_le_bytes([
+            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        ]);
+        let v1 = u64::from_le_bytes([
+            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+        ]);
+        let v2 = u64::from_le_bytes([
+            buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
+        ]);
         mmio::stream_write_u64(addr, v0);
         mmio::stream_write_u64(addr + 8, v1);
         mmio::stream_write_u64(addr + 16, v2);
@@ -737,7 +774,8 @@ impl Framebuffer {
             }
             if use_fast_path_32 {
                 let dst_offset = (dst_y as usize * stride) + (x as usize * 4);
-                mmio_written |= self.write_glyph_row_32bit_nofence(byte, dst_offset, fg_u32, bg_u32);
+                mmio_written |=
+                    self.write_glyph_row_32bit_nofence(byte, dst_offset, fg_u32, bg_u32);
             } else {
                 mmio_written |= self.draw_char_8x16_row(byte, bpp, x, dst_y, stride, color);
             }
@@ -787,7 +825,9 @@ impl Framebuffer {
         let mut wrote = false;
         for (row, &byte) in glyph.iter().enumerate() {
             let dst_y = y + row as i32;
-            if !self.clip_y_visible(dst_y) { continue; }
+            if !self.clip_y_visible(dst_y) {
+                continue;
+            }
             let offset = (dst_y as usize * stride) + (x as usize * 2);
             wrote |= self.write_glyph_row_16bit_nofence(byte, offset, fg_u16, bg_u16);
         }
@@ -809,7 +849,9 @@ impl Framebuffer {
         let mut wrote = false;
         for (row, &byte) in glyph.iter().enumerate() {
             let dst_y = y + row as i32;
-            if !self.clip_y_visible(dst_y) { continue; }
+            if !self.clip_y_visible(dst_y) {
+                continue;
+            }
             let offset = (dst_y as usize * stride) + (x as usize * 3);
             wrote |= self.write_glyph_row_24bit_nofence(byte, offset, fg_bytes, bg_bytes);
         }
@@ -848,9 +890,7 @@ impl Framebuffer {
             }
             2 => self.render_glyph_16bit(glyph, x, y, stride, color, bg.unwrap()),
             3 => self.render_glyph_24bit(glyph, x, y, stride, color, bg.unwrap()),
-            _ => {
-                self.render_char_rows(glyph, x, y, false, 0, 0, bpp, stride, color)
-            }
+            _ => self.render_char_rows(glyph, x, y, false, 0, 0, bpp, stride, color),
         };
 
         if mmio_written {
@@ -904,7 +944,8 @@ impl Framebuffer {
                     if dst_x >= self.clip.right() {
                         continue;
                     }
-                    wrote_mmio |= self.write_clipped_rgb565_run_nofence(dst_x, run_len, dst_y, stride, color);
+                    wrote_mmio |=
+                        self.write_clipped_rgb565_run_nofence(dst_x, run_len, dst_y, stride, color);
                 }
                 wrote_mmio
             }

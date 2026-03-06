@@ -7,9 +7,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-use alloc::format;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 use crate::domain::quota::quota_manager;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+use alloc::format;
 
 // DomainPriority は domain::quota の正規定義を使用する。
 // 以前はローカルに3段階版(Low/Normal/Critical)を定義していたが、
@@ -19,7 +19,11 @@ use crate::domain::quota::quota_manager;
 pub use crate::domain::quota::DomainPriority;
 
 // テストビルド用フォールバック: domain モジュールが存在しない構成向け
-#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "qemu-test-export")))]
+#[cfg(all(
+    test,
+    not(feature = "full_mm_tests"),
+    not(feature = "qemu-test-export")
+))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DomainPriority {
     Low,
@@ -103,8 +107,14 @@ impl OomKiller {
     }
 
     fn kill_domain(&self, domain_id: u64, domain_name: &str, freed: u64) -> u64 {
-        if let Err(e) = crate::domain_system::terminate_domain(crate::domain_system::DomainId::new(domain_id)) {
-            log::warn!("[OOM] Domain {} termination hook failed: {}\n", domain_id, e);
+        if let Err(e) =
+            crate::domain_system::terminate_domain(crate::domain_system::DomainId::new(domain_id))
+        {
+            log::warn!(
+                "[OOM] Domain {} termination hook failed: {}\n",
+                domain_id,
+                e
+            );
         }
 
         log::info!(
@@ -179,13 +189,13 @@ pub fn list_domains() -> Vec<DomainMemoryInfo> {
 #[cfg(all(test, any(feature = "full_mm_tests", feature = "qemu-test-export")))]
 mod tests {
     use super::*;
-    use alloc::string::String;
     use crate::domain::quota::DomainPriority;
     use crate::domain::quota::quota_manager;
     use crate::domain_system::{
         create_domain, get_domain_snapshot, set_domain_priority, set_domain_resource_limits,
         terminate_domain,
     };
+    use alloc::string::String;
 
     #[test_case]
     fn test_oom_killer_uses_quota_victim_selection() {
@@ -209,11 +219,17 @@ mod tests {
         let expected = quota_manager()
             .select_oom_victim()
             .expect("expected an OOM victim");
-        assert_eq!(expected.domain_id, low, "quota manager should pick low domain");
+        assert_eq!(
+            expected.domain_id, low,
+            "quota manager should pick low domain"
+        );
 
         let before = stats().kill_count;
         assert!(try_free_memory(), "oom killer should free memory");
-        assert!(get_domain_snapshot(low).is_none(), "low domain should be terminated");
+        assert!(
+            get_domain_snapshot(low).is_none(),
+            "low domain should be terminated"
+        );
         assert!(
             stats().kill_count >= before + 1,
             "kill count should increase after victim termination"

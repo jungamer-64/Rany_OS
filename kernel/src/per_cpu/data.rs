@@ -1,11 +1,10 @@
 use super::*;
-use alloc::vec::Vec;
 use crate::sync::poison_lock::PoisonLock;
+use alloc::vec::Vec;
 
 // Required for inline assembly macros and atomic ordering constants
 use core::arch::asm;
 use core::sync::atomic::Ordering;
-
 
 #[inline]
 fn is_valid_hot_gs_base(gs_base: u64) -> bool {
@@ -30,7 +29,6 @@ fn is_valid_hot_gs_base(gs_base: u64) -> bool {
     }
     true
 }
-
 
 /// 静的に確保されたPer-CPUデータ配列 (Legacy - for backward compatibility)
 /// 各CPUに対応するデータが格納される
@@ -64,11 +62,11 @@ pub fn can_use_fsgsbase() -> bool {
 }
 
 /// Read GSBase using the appropriate method for this CPU
-/// 
+///
 /// Uses rdgsbase if fastpath is adopted AND this CPU has CR4.FSGSBASE enabled,
 /// otherwise falls back to MSR read. This prevents #UD on APs before their CR4 is set.
 /// Returns 0 if BSP GSBase has not been initialized yet (prevents MSR garbage).
-/// 
+///
 /// # Safety
 /// Must be called in kernel mode
 #[inline]
@@ -85,10 +83,10 @@ pub unsafe fn read_gsbase_any() -> u64 {
 }
 
 /// Write GSBase using the appropriate method for this CPU
-/// 
+///
 /// Uses wrgsbase if fastpath is adopted AND this CPU has CR4.FSGSBASE enabled,
 /// otherwise falls back to MSR write. This prevents #UD on APs before their CR4 is set.
-/// 
+///
 /// # Safety
 /// - Must be called in kernel mode
 /// - Value must point to valid Per-CPU data
@@ -102,7 +100,7 @@ pub unsafe fn write_gsbase_any(value: u64) {
 }
 
 /// Get reference to Per-CPU data for a specific CPU ID
-/// 
+///
 /// # Safety
 /// Caller must ensure cpu_id is valid (< MAX_CPUS)
 pub unsafe fn get_per_cpu_data(cpu_id: usize) -> &'static PerCpuData {
@@ -110,7 +108,7 @@ pub unsafe fn get_per_cpu_data(cpu_id: usize) -> &'static PerCpuData {
 }
 
 /// Get mutable reference to Per-CPU data for a specific CPU ID
-/// 
+///
 /// # Safety
 /// - Caller must ensure cpu_id is valid (< MAX_CPUS)
 /// - Caller must ensure exclusive access (no concurrent mutable access)
@@ -123,7 +121,7 @@ pub unsafe fn get_per_cpu_data_mut(cpu_id: usize) -> &'static mut PerCpuData {
 // ============================================================================
 
 /// Get reference to hot per-CPU data for a specific CPU ID
-/// 
+///
 /// # Safety
 /// Caller must ensure cpu_id is valid (< MAX_CPUS)
 #[inline]
@@ -132,7 +130,7 @@ pub unsafe fn get_per_cpu_hot(cpu_id: usize) -> &'static PerCpuHot {
 }
 
 /// Get mutable reference to hot per-CPU data
-/// 
+///
 /// # Safety
 /// - cpu_id must be valid (< MAX_CPUS)
 /// - Caller must ensure exclusive access
@@ -142,7 +140,7 @@ pub unsafe fn get_per_cpu_hot_mut(cpu_id: usize) -> &'static mut PerCpuHot {
 }
 
 /// Get reference to cold per-CPU data for a specific CPU ID
-/// 
+///
 /// # Safety
 /// Caller must ensure cpu_id is valid (< MAX_CPUS)
 #[inline]
@@ -151,7 +149,7 @@ pub unsafe fn get_per_cpu_cold(cpu_id: usize) -> &'static PerCpuCold {
 }
 
 /// Get mutable reference to cold per-CPU data
-/// 
+///
 /// # Safety
 /// - cpu_id must be valid (< MAX_CPUS)
 /// - Caller must ensure exclusive access
@@ -161,7 +159,7 @@ pub unsafe fn get_per_cpu_cold_mut(cpu_id: usize) -> &'static mut PerCpuCold {
 }
 
 /// Get the current CPU's hot data via GSBase
-/// 
+///
 /// Returns None if GSBase is not initialized or validation fails
 #[inline]
 pub unsafe fn current_per_cpu_hot() -> Option<&'static PerCpuHot> {
@@ -178,7 +176,7 @@ pub unsafe fn current_per_cpu_hot() -> Option<&'static PerCpuHot> {
 }
 
 /// Get the current CPU's hot data (mutable) via GSBase
-/// 
+///
 /// # Safety
 /// Caller must ensure exclusive access
 #[inline]
@@ -195,10 +193,11 @@ pub unsafe fn current_per_cpu_hot_mut() -> Option<&'static mut PerCpuHot> {
     Some(hot)
 }
 
-
 /// Check if a CPU is online
 pub fn is_cpu_online(cpu_id: usize) -> bool {
-    if cpu_id >= 64 { return false; }
+    if cpu_id >= 64 {
+        return false;
+    }
     let mask = ONLINE_CPU_MASK.load(Ordering::Acquire);
     (mask & (1 << cpu_id)) != 0
 }
@@ -591,12 +590,14 @@ pub unsafe fn setup_current_cpu(cpu_id: usize) {
     // If fastpath is adopted globally, enable CR4.FSGSBASE on THIS CPU
     // (CR4 is per-core, so each AP must enable it independently)
     if can_use_fsgsbase() && !is_fsgsbase_enabled() {
-        unsafe { enable_fsgsbase(); }
+        unsafe {
+            enable_fsgsbase();
+        }
     }
 
     // Use addr_of! to avoid creating a reference to static mut
     let hot_slot_ptr = core::ptr::addr_of!(PER_CPU_HOT[cpu_id]) as usize;
-    
+
     // Idempotent: only initialize if not already done (check self_ptr)
     if unsafe { PER_CPU_HOT[cpu_id].self_ptr } != hot_slot_ptr {
         unsafe {
@@ -613,7 +614,9 @@ pub unsafe fn setup_current_cpu(cpu_id: usize) {
     }
 
     // Set GSBase to PER_CPU_HOT for this CPU (Phase 3 optimization)
-    unsafe { write_gsbase_any(hot_slot_ptr as u64); }
+    unsafe {
+        write_gsbase_any(hot_slot_ptr as u64);
+    }
 
     mark_cpu_online(cpu_id);
 }

@@ -11,7 +11,6 @@
 //! - 受信側: HWが検証済みならスキップ (RX offload)
 //! - 送信側: HWに委譲可能ならプレースホルダのみ書き込み (TX offload)
 
-
 use core::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
@@ -251,7 +250,7 @@ impl ChecksumOffloadManager {
             tcp_data[16] = 0;
             tcp_data[17] = 0;
             let cksum = tcp_udp_checksum(src_ip, dst_ip, 6, tcp_data);
-            
+
             let bytes = cksum.to_be_bytes();
             tcp_data[16] = bytes[0];
             tcp_data[17] = bytes[1];
@@ -286,16 +285,16 @@ impl ChecksumOffloadManager {
                 csum_offset: 6,
             }
         } else {
-    // ソフトウェア計算
-    udp_data[6] = 0;
-    udp_data[7] = 0;
-    let cksum = tcp_udp_checksum(src_ip, dst_ip, 17, udp_data);
-    
-    let bytes = cksum.to_be_bytes();
-    udp_data[6] = bytes[0];
-    udp_data[7] = bytes[1];
-    self.stats.tx_sw_computed.fetch_add(1, Ordering::Relaxed);
-    TxChecksumAction::Computed
+            // ソフトウェア計算
+            udp_data[6] = 0;
+            udp_data[7] = 0;
+            let cksum = tcp_udp_checksum(src_ip, dst_ip, 17, udp_data);
+
+            let bytes = cksum.to_be_bytes();
+            udp_data[6] = bytes[0];
+            udp_data[7] = bytes[1];
+            self.stats.tx_sw_computed.fetch_add(1, Ordering::Relaxed);
+            TxChecksumAction::Computed
         }
     }
 
@@ -308,11 +307,7 @@ impl ChecksumOffloadManager {
     /// `hw_status`: HWからの検証ステータス
     /// `header`: IPv4ヘッダ
     /// 戻り値: true = 有効, false = 不正
-    pub fn verify_rx_ipv4(
-        &self,
-        hw_status: RxChecksumStatus,
-        header: &[u8],
-    ) -> bool {
+    pub fn verify_rx_ipv4(&self, hw_status: RxChecksumStatus, header: &[u8]) -> bool {
         match hw_status {
             RxChecksumStatus::HwValid => {
                 self.stats.rx_hw_verified.fetch_add(1, Ordering::Relaxed);
@@ -467,12 +462,7 @@ pub fn pseudo_header_partial_sum(
 }
 
 /// TCP/UDPチェックサム (疑似ヘッダ含む)
-fn tcp_udp_checksum(
-    src_ip: &[u8; 4],
-    dst_ip: &[u8; 4],
-    protocol: u8,
-    data: &[u8],
-) -> u16 {
+fn tcp_udp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], protocol: u8, data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
 
     // 疑似ヘッダ
@@ -506,12 +496,7 @@ fn tcp_udp_checksum(
 }
 
 /// TCP/UDPチェックサム検証
-fn verify_tcp_udp_checksum(
-    src_ip: &[u8; 4],
-    dst_ip: &[u8; 4],
-    protocol: u8,
-    data: &[u8],
-) -> bool {
+fn verify_tcp_udp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], protocol: u8, data: &[u8]) -> bool {
     let mut sum: u32 = 0;
 
     // 疑似ヘッダ
@@ -562,7 +547,7 @@ mod tests {
         let mut header = [0u8; 20];
         header[0] = 0x45;
         header[8] = 64; // TTL
-        header[9] = 6;  // TCP
+        header[9] = 6; // TCP
         // Set some addresses
         header[12..16].copy_from_slice(&[192, 168, 1, 1]);
         header[16..20].copy_from_slice(&[192, 168, 1, 2]);

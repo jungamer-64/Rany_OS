@@ -1,6 +1,5 @@
 use super::*;
-use crate::net::l3::ipv6::{Ipv6Packet, skip_extension_headers_fraginfo, ExtHeaderResult};
-
+use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
 
 impl Ipv6Processor {
     /// Create a new IPv6 processor
@@ -45,7 +44,7 @@ impl Ipv6Processor {
         self.stats.record_rx();
 
         let src = packet.source();
-        
+
         // Security: Drop Martian packets
         // 1. Source IP cannot be multicast (RFC 4291 Section 2.7)
         // 2. Source IP cannot be the loopback address unless it's truly a loopback packet
@@ -54,7 +53,7 @@ impl Ipv6Processor {
             log::warn!("[NET-IPV6] Dropping Martian packet with source {}", src);
             return Ipv6ProcessResult::Dropped;
         }
-        
+
         let dst = packet.destination();
 
         // Check if the packet is for us
@@ -74,19 +73,40 @@ impl Ipv6Processor {
             ExtHeaderResult::NoFragment(final_protocol, upper_payload, next_header_ptr) => {
                 // Dispatch based on upper-layer protocol
                 match final_protocol {
-                    IpProtocol::Icmpv6 => Ipv6ProcessResult::Icmpv6(upper_payload, src, dst, packet.hop_limit()),
-                    IpProtocol::Tcp => Ipv6ProcessResult::Tcp(upper_payload, src, dst, packet.hop_limit()),
-                    IpProtocol::Udp => Ipv6ProcessResult::Udp(upper_payload, src, dst, packet.hop_limit()),
+                    IpProtocol::Icmpv6 => {
+                        Ipv6ProcessResult::Icmpv6(upper_payload, src, dst, packet.hop_limit())
+                    }
+                    IpProtocol::Tcp => {
+                        Ipv6ProcessResult::Tcp(upper_payload, src, dst, packet.hop_limit())
+                    }
+                    IpProtocol::Udp => {
+                        Ipv6ProcessResult::Udp(upper_payload, src, dst, packet.hop_limit())
+                    }
                     p => {
                         // RFC 4443 Section 3.4: Parameter Problem Code 1 for unrecognized Next Header
                         // The pointer indicates the octet of the unrecognized Next Header type
-                        Ipv6ProcessResult::UnknownNextHeader(p.into(), next_header_ptr, src, dst, data)
+                        Ipv6ProcessResult::UnknownNextHeader(
+                            p.into(),
+                            next_header_ptr,
+                            src,
+                            dst,
+                            data,
+                        )
                     }
                 }
             }
-            ExtHeaderResult::Fragment { unfragmentable, frag_header, frag_payload } => {
+            ExtHeaderResult::Fragment {
+                unfragmentable,
+                frag_header,
+                frag_payload,
+            } => {
                 let (res, expired) = self.reassembler.process_fragment(
-                    src, dst, unfragmentable, &frag_header, frag_payload, current_time
+                    src,
+                    dst,
+                    unfragmentable,
+                    &frag_header,
+                    frag_payload,
+                    current_time,
                 );
 
                 match res {
@@ -94,7 +114,12 @@ impl Ipv6Processor {
                     Ok(None) => {
                         if !expired.is_empty() {
                             let (e_src, e_dst, e_unfrag, e_frag_header) = expired[0].clone();
-                            Ipv6ProcessResult::ReassemblyTimeout(e_src, e_dst, e_unfrag, e_frag_header)
+                            Ipv6ProcessResult::ReassemblyTimeout(
+                                e_src,
+                                e_dst,
+                                e_unfrag,
+                                e_frag_header,
+                            )
                         } else {
                             Ipv6ProcessResult::FragmentPending
                         }
@@ -105,7 +130,9 @@ impl Ipv6Processor {
                         let mut quoted = unfragmentable.to_vec();
                         let frag_header_offset = unfragmentable.len();
                         if data.len() >= frag_header_offset + 8 {
-                            quoted.extend_from_slice(&data[frag_header_offset..frag_header_offset + 8]);
+                            quoted.extend_from_slice(
+                                &data[frag_header_offset..frag_header_offset + 8],
+                            );
                         }
                         Ipv6ProcessResult::ReassemblyError(e, src, dst, quoted)
                     }

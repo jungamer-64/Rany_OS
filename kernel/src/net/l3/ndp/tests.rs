@@ -1,5 +1,5 @@
-use super::*;
 use super::processor_impl::ipv6_multicast_to_mac;
+use super::*;
 
 #[cfg_attr(test, test_case)]
 pub fn test_neighbor_cache_basic() {
@@ -75,21 +75,36 @@ pub fn test_parse_slla_option() {
 pub fn test_parse_prefix_info_option() {
     // Prefix Information: type=3, len=4 (32 bytes)
     let mut data = [0u8; 32];
-    data[0] = 3;  // type
-    data[1] = 4;  // length (4 * 8 = 32 bytes)
+    data[0] = 3; // type
+    data[1] = 4; // length (4 * 8 = 32 bytes)
     data[2] = 64; // prefix length
     data[3] = 0xC0; // flags: on-link + autonomous
-    data[4] = 0; data[5] = 0; data[6] = 0x0E; data[7] = 0x10; // valid lifetime = 3600
-    data[8] = 0; data[9] = 0; data[10] = 0x07; data[11] = 0x08; // preferred lifetime = 1800
+    data[4] = 0;
+    data[5] = 0;
+    data[6] = 0x0E;
+    data[7] = 0x10; // valid lifetime = 3600
+    data[8] = 0;
+    data[9] = 0;
+    data[10] = 0x07;
+    data[11] = 0x08; // preferred lifetime = 1800
     // bytes 12-15: reserved
     // prefix: 2001:db8:: at bytes 16-31
-    data[16] = 0x20; data[17] = 0x01;
-    data[18] = 0x0d; data[19] = 0xb8;
+    data[16] = 0x20;
+    data[17] = 0x01;
+    data[18] = 0x0d;
+    data[19] = 0xb8;
 
     let options = parse_ndp_options(&data);
     assert_eq!(options.len(), 1);
     match &options[0] {
-        NdpOption::PrefixInfo { prefix_len, on_link, autonomous, valid_lifetime, preferred_lifetime, prefix } => {
+        NdpOption::PrefixInfo {
+            prefix_len,
+            on_link,
+            autonomous,
+            valid_lifetime,
+            preferred_lifetime,
+            prefix,
+        } => {
             assert_eq!(*prefix_len, 64);
             assert!(*on_link);
             assert!(*autonomous);
@@ -104,7 +119,9 @@ pub fn test_parse_prefix_info_option() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_build_ns() {
-    let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0x00, 0xff, 0xfe, 0x12, 0x34, 0x56]);
+    let src = Ipv6Address::new([
+        0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0x00, 0xff, 0xfe, 0x12, 0x34, 0x56,
+    ]);
     let target = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let dst = target.solicited_node();
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
@@ -202,7 +219,12 @@ pub fn test_ns_processing() {
     );
 
     match result {
-        NdpResult::SendNeighborAdvertisement { dst, target, our_mac: na_mac, solicited } => {
+        NdpResult::SendNeighborAdvertisement {
+            dst,
+            target,
+            our_mac: na_mac,
+            solicited,
+        } => {
             assert_eq!(dst, sender_ip);
             assert_eq!(target, our_ip);
             assert_eq!(na_mac, our_mac);
@@ -225,12 +247,12 @@ pub fn test_ndp_spoofing_detection() {
 
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let dst = our_ip.solicited_node();
-    
-    // Attacker sends NS with SLLA option containing their MAC, 
+
+    // Attacker sends NS with SLLA option containing their MAC,
     // but the actual Ethernet source MAC is different (spoofed).
     let slla_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let actual_eth_mac = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
-    
+
     let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &slla_mac);
 
     let result = processor.process(
@@ -244,7 +266,7 @@ pub fn test_ndp_spoofing_detection() {
 
     // Should return Error due to spoofing detection
     assert!(matches!(result, NdpResult::Error));
-    
+
     // Cache should NOT be updated
     assert!(processor.cache().lookup(&sender_ip).is_none());
 }
@@ -257,7 +279,7 @@ pub fn test_na_multicast_target_rejection() {
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-    
+
     // Build an NA with a MULTICAST target address (invalid per RFC 4861)
     let mcast_target = Ipv6Address::ALL_NODES_LINK_LOCAL;
     let na = NdpProcessor::build_na(&sender_ip, &our_ip, &mcast_target, &sender_mac, true);
@@ -273,7 +295,7 @@ pub fn test_na_multicast_target_rejection() {
 
     // Should return Error
     assert!(matches!(result, NdpResult::Error));
-    
+
     // Cache should NOT be updated with multicast address
     assert!(processor.cache().lookup(&mcast_target).is_none());
 }
@@ -302,7 +324,7 @@ pub fn test_na_discard_unknown_target() {
 
     // Should return None because it was discarded
     assert!(matches!(result, NdpResult::None));
-    
+
     // Cache should NOT have the target
     assert!(processor.cache().lookup(&target_ip).is_none());
 }
@@ -321,7 +343,7 @@ pub fn test_ra_processing() {
     ra[0] = u8::from(Icmpv6Type::RouterAdvertisement);
     ra[4] = 64; // Hop limit
     // bytes 8-23 are router info... for RA processing it's just raw bytes
-    
+
     // Add SLLA option
     ra.push(1); // type=SourceLinkLayerAddress
     ra.push(1); // len=1
@@ -337,7 +359,11 @@ pub fn test_ra_processing() {
     );
 
     match result {
-        NdpResult::RouterAdvertisement { router, router_mac: learned_mac, .. } => {
+        NdpResult::RouterAdvertisement {
+            router,
+            router_mac: learned_mac,
+            ..
+        } => {
             assert_eq!(router, router_ip);
             assert_eq!(learned_mac, Some(router_mac));
         }
@@ -345,7 +371,10 @@ pub fn test_ra_processing() {
     }
 
     // Router should be in cache as STALE
-    let entry = processor.cache().lookup(&router_ip).expect("Router should be in cache");
+    let entry = processor
+        .cache()
+        .lookup(&router_ip)
+        .expect("Router should be in cache");
     assert_eq!(entry.mac, router_mac);
     assert_eq!(entry.state, NeighborState::Stale);
 }

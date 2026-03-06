@@ -14,9 +14,9 @@
 #[cfg(not(test))]
 use core::arch::asm;
 use core::cell::UnsafeCell;
+use core::fmt;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
-use core::fmt;
 
 // テスト環境で特権命令 (CLI/STI) を実行できないため、テスト用の割り込み状態を模擬する
 #[cfg(test)]
@@ -117,7 +117,6 @@ impl<T> IrqMutex<T> {
 }
 
 impl<T: ?Sized> IrqMutex<T> {
-
     /// ロックを取得
     ///
     /// 割り込みを禁止してからスピンロックを取得する。

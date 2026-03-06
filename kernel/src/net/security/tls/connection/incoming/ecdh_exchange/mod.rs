@@ -2,7 +2,6 @@ use super::*;
 
 mod aes_gcm;
 impl TlsConnection {
-
     /// NamedGroup値をEcdhGroupに変換する
     pub(super) fn named_curve_to_ecdh_group(named_curve: u16) -> TlsResult<ecdh::EcdhGroup> {
         match named_curve {
@@ -127,9 +126,11 @@ impl TlsConnection {
         self.write_encryption_active = true;
         vec![
             ContentType::ChangeCipherSpec as u8,
-            0x03, 0x03, // TLS 1.2
-            0x00, 0x01, // length = 1
-            0x01,       // change_cipher_spec
+            0x03,
+            0x03, // TLS 1.2
+            0x00,
+            0x01, // length = 1
+            0x01, // change_cipher_spec
         ]
     }
 
@@ -142,7 +143,8 @@ impl TlsConnection {
             return;
         }
         let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
-        let cipher = self.negotiated_cipher
+        let cipher = self
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         self.master_secret = if version <= TlsVersion::TLS_1_1 {
             derive_master_secret_tls10(
@@ -168,7 +170,8 @@ impl TlsConnection {
     /// TLS 1.2のverify_dataを計算する共通ヘルパー
     pub(super) fn compute_tls12_verify_data(&self, label: &[u8]) -> [u8; 12] {
         let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
-        let cipher = self.negotiated_cipher
+        let cipher = self
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         let handshake_hash = if cipher.uses_sha384() {
@@ -179,11 +182,26 @@ impl TlsConnection {
 
         let mut verify_data = [0u8; 12];
         if version <= TlsVersion::TLS_1_1 {
-            tls10_prf(&self.master_secret, label, &handshake_hash, &mut verify_data);
+            tls10_prf(
+                &self.master_secret,
+                label,
+                &handshake_hash,
+                &mut verify_data,
+            );
         } else if cipher.uses_sha384() {
-            tls12_prf_sha384(&self.master_secret, label, &handshake_hash, &mut verify_data);
+            tls12_prf_sha384(
+                &self.master_secret,
+                label,
+                &handshake_hash,
+                &mut verify_data,
+            );
         } else {
-            tls12_prf(&self.master_secret, label, &handshake_hash, &mut verify_data);
+            tls12_prf(
+                &self.master_secret,
+                label,
+                &handshake_hash,
+                &mut verify_data,
+            );
         }
         verify_data
     }
@@ -199,7 +217,8 @@ impl TlsConnection {
 
     /// Finishedメッセージを暗号スイートに応じて暗号化する (TLS 1.2)
     pub(super) fn encrypt_finished_tls12(&mut self, finished_msg: &[u8]) -> TlsResult<Vec<u8>> {
-        let cipher = self.negotiated_cipher
+        let cipher = self
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         if cipher.is_cbc() {
             self.encrypt_cbc_handshake(finished_msg)
@@ -248,7 +267,11 @@ impl TlsConnection {
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
         let iv_len = cipher.iv_len();
-        let mac_key_len = if cipher.is_cbc() { cipher.mac_key_len() } else { 0 };
+        let mac_key_len = if cipher.is_cbc() {
+            cipher.mac_key_len()
+        } else {
+            0
+        };
 
         // CBC key block: mac_key(2) + enc_key(2) + iv(2)
         // AEAD key block: enc_key(2) + iv(2) (no MAC keys)
@@ -304,9 +327,11 @@ impl TlsConnection {
         offset += key_len;
 
         if cipher.is_cbc() && iv_len == 16 {
-            self.write_cbc_iv.copy_from_slice(&key_block[offset..offset + 16]);
+            self.write_cbc_iv
+                .copy_from_slice(&key_block[offset..offset + 16]);
             offset += 16;
-            self.read_cbc_iv.copy_from_slice(&key_block[offset..offset + 16]);
+            self.read_cbc_iv
+                .copy_from_slice(&key_block[offset..offset + 16]);
         } else {
             self.write_iv = key_block[offset..offset + iv_len].to_vec();
             offset += iv_len;
@@ -343,7 +368,8 @@ impl TlsConnection {
         let record_len = 8 + ciphertext.len() + 16;
         let mut record = vec![
             ContentType::Handshake as u8,
-            0x03, 0x03,
+            0x03,
+            0x03,
             (record_len >> 8) as u8,
             record_len as u8,
         ];
@@ -356,7 +382,10 @@ impl TlsConnection {
     }
 
     /// ChaCha20-Poly1305 ハンドシェイクメッセージ暗号化（TLS 1.2 Finished用）
-    pub(super) fn encrypt_chacha20_poly1305_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_chacha20_poly1305_handshake(
+        &mut self,
+        data: &[u8],
+    ) -> TlsResult<Vec<u8>> {
         if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
             return Err(TlsError::CryptoError);
         }
@@ -382,7 +411,8 @@ impl TlsConnection {
         let record_len = ciphertext.len() + 16;
         let mut record = vec![
             ContentType::Handshake as u8,
-            0x03, 0x03,
+            0x03,
+            0x03,
             (record_len >> 8) as u8,
             record_len as u8,
         ];
@@ -408,13 +438,18 @@ impl TlsConnection {
     /// 1. MAC を計算: HMAC(mac_key, seq_num || type || version || length || fragment)
     /// 2. パディングを追加
     /// 3. CBC暗号化
-    pub(super) fn encrypt_cbc_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_cbc_record(
+        &mut self,
+        content_type: u8,
+        data: &[u8],
+    ) -> TlsResult<Vec<u8>> {
         if self.write_key.is_empty() {
             return Err(TlsError::CryptoError);
         }
 
         let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
-        let cipher = self.negotiated_cipher
+        let cipher = self
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA);
         let use_sha1 = cipher.uses_sha1_mac();
 
@@ -445,7 +480,8 @@ impl TlsConnection {
             explicit_iv
         } else {
             // TLS 1.0: 暗黙IV（前レコードの最終暗号文ブロック or 初期IV）
-            self.last_write_ciphertext_block.unwrap_or(self.write_cbc_iv)
+            self.last_write_ciphertext_block
+                .unwrap_or(self.write_cbc_iv)
         };
 
         // Step 5: CBC暗号化
@@ -519,8 +555,12 @@ impl TlsConnection {
         // regardless of whether padding was valid or not. If padding is invalid,
         // we use a dummy fragment (the entire decrypted data up to where the MAC would be
         // if padding length was 0) to ensure the HMAC function takes the same time.
-        let safe_content_len = if padding_ok { content_len } else { decrypted.len() };
-        
+        let safe_content_len = if padding_ok {
+            content_len
+        } else {
+            decrypted.len()
+        };
+
         // Prevent underflow if even the "safe" length is too short
         let safe_fragment_len = safe_content_len.saturating_sub(mac_len);
         let fragment = &decrypted[..safe_fragment_len];
@@ -564,7 +604,11 @@ impl TlsConnection {
     /// 2. パディング検証
     /// 3. MACを分離して検証
     /// TLS 1.0のCBC暗号文最終ブロックを次のIVとして記憶する
-    pub(super) fn store_last_ciphertext_block_if_tls10(&mut self, version: TlsVersion, ciphertext: &[u8]) {
+    pub(super) fn store_last_ciphertext_block_if_tls10(
+        &mut self,
+        version: TlsVersion,
+        ciphertext: &[u8],
+    ) {
         if version == TlsVersion::TLS_1_0 && ciphertext.len() >= 16 {
             let mut last_block = [0u8; 16];
             last_block.copy_from_slice(&ciphertext[ciphertext.len() - 16..]);
@@ -572,13 +616,18 @@ impl TlsConnection {
         }
     }
 
-    pub(super) fn decrypt_cbc_record(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
+    pub(super) fn decrypt_cbc_record(
+        &mut self,
+        data: &[u8],
+        content_type: u8,
+    ) -> TlsResult<Vec<u8>> {
         if self.read_key.is_empty() {
             return Err(TlsError::CryptoError);
         }
 
         let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
-        let cipher = self.negotiated_cipher
+        let cipher = self
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA);
         let use_sha1 = cipher.uses_sha1_mac();
         let mac_len = cipher.mac_len();
@@ -591,12 +640,11 @@ impl TlsConnection {
 
         self.store_last_ciphertext_block_if_tls10(version, ciphertext);
 
-        let decrypted = aes_cbc_decrypt(&self.read_key, &iv, ciphertext)
-            .ok_or(TlsError::DecryptError)?;
+        let decrypted =
+            aes_cbc_decrypt(&self.read_key, &iv, ciphertext).ok_or(TlsError::DecryptError)?;
 
-        let fragment_len = self.verify_cbc_padding_and_mac(
-            &decrypted, content_type, version, use_sha1, mac_len,
-        )?;
+        let fragment_len =
+            self.verify_cbc_padding_and_mac(&decrypted, content_type, version, use_sha1, mac_len)?;
 
         self.read_seq += 1;
         Ok(decrypted[..fragment_len].to_vec())
@@ -677,7 +725,8 @@ impl TlsConnection {
 
     /// アプリケーションデータを暗号化して送信レコードを構築
     pub fn encrypt_application_data(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
-        let cipher = self.negotiated_cipher
+        let cipher = self
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         if self.is_tls13 {

@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ========================================================================
 // TLS MAC Tests
 // ========================================================================
@@ -9,14 +8,22 @@ use super::*;
 pub(crate) fn test_tls_mac_sha1() {
     let key = [0x0Au8; 20];
     let mac = compute_tls_mac(
-        &key, 0, ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_0, b"hello", true,
+        &key,
+        0,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_0,
+        b"hello",
+        true,
     );
     assert_eq!(mac.len(), 20); // SHA-1 output
     // Should be deterministic
     let mac2 = compute_tls_mac(
-        &key, 0, ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_0, b"hello", true,
+        &key,
+        0,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_0,
+        b"hello",
+        true,
     );
     assert_eq!(mac, mac2);
 }
@@ -25,8 +32,12 @@ pub(crate) fn test_tls_mac_sha1() {
 pub(crate) fn test_tls_mac_sha256() {
     let key = [0x0Bu8; 32];
     let mac = compute_tls_mac(
-        &key, 0, ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_2, b"hello", false,
+        &key,
+        0,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_2,
+        b"hello",
+        false,
     );
     assert_eq!(mac.len(), 32); // SHA-256 output
 }
@@ -35,12 +46,20 @@ pub(crate) fn test_tls_mac_sha256() {
 pub(crate) fn test_tls_mac_seq_affects_output() {
     let key = [0x0Au8; 20];
     let mac1 = compute_tls_mac(
-        &key, 0, ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_0, b"hello", true,
+        &key,
+        0,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_0,
+        b"hello",
+        true,
     );
     let mac2 = compute_tls_mac(
-        &key, 1, ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_0, b"hello", true,
+        &key,
+        1,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_0,
+        b"hello",
+        true,
     );
     assert_ne!(mac1, mac2);
 }

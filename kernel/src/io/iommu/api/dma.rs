@@ -8,12 +8,14 @@
 
 use x86_64::PhysAddr;
 
-use crate::io::iommu::runtime::registry::{get_iommu_driver, validate_dma_mask_pre_allocation, is_iommu_enabled};
-use crate::io::iommu::runtime::security::is_global_dma_mapping_allowed;
-use crate::io::iommu::types::{DeviceId, IommuError};
-use crate::io::iommu::runtime::stats::{inc_map_count, inc_unmap_count};
-use crate::ipc::RRef;
 use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MapError};
+use crate::io::iommu::runtime::registry::{
+    get_iommu_driver, is_iommu_enabled, validate_dma_mask_pre_allocation,
+};
+use crate::io::iommu::runtime::security::is_global_dma_mapping_allowed;
+use crate::io::iommu::runtime::stats::{inc_map_count, inc_unmap_count};
+use crate::io::iommu::types::{DeviceId, IommuError};
+use crate::ipc::RRef;
 
 /// Map an `RRef<T>` for DMA access scoped to a specific device.
 ///
@@ -73,10 +75,7 @@ pub fn map_rref_slice_for_domain<T>(
 /// - `phys_addr` and `size` are 4K-aligned when IOMMU translation is enabled
 ///
 /// **ExoRust Guideline**: Prefer safe wrappers like `map_rref()` over this raw API.
-pub(crate) unsafe fn map_for_dma(
-    phys_addr: PhysAddr,
-    size: u64,
-) -> Result<u64, IommuError> {
+pub(crate) unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
     if is_iommu_enabled() && !is_global_dma_mapping_allowed() {
         return Err(IommuError::NotSupported);
     }
@@ -168,10 +167,10 @@ pub(crate) unsafe fn map_for_device_with_perms(
 /// and `await`s completion when configured.
 ///
 /// # Async Behavior
-/// This method does not busy-wait. It submits the mapping request to the hardware's 
-/// Command Queue and yields execution. The hardware generates an MSI/interrupt upon 
-/// completion, which invokes an ISR that pushes an event to a lock-free queue and 
-/// wakes the executor. The executor then resumes this Future, adhering to the 
+/// This method does not busy-wait. It submits the mapping request to the hardware's
+/// Command Queue and yields execution. The hardware generates an MSI/interrupt upon
+/// completion, which invokes an ISR that pushes an event to a lock-free queue and
+/// wakes the executor. The executor then resumes this Future, adhering to the
 /// ExoRust async-first guidelines.
 ///
 /// # TOCTOU Safety

@@ -2,7 +2,6 @@
 use super::*;
 use crate::sync::PoisonLock;
 
-
 mod flush_future_impl;
 pub use self::flush_future_impl::*;
 impl<'a> AsyncReadFuture<'a> {
@@ -52,10 +51,18 @@ impl<'a> AsyncReadFuture<'a> {
 
         let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
         let future = {
-            let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+            let buf = DmaBufHandle {
+                iova: prp1,
+                len: alloc_len,
+            };
             crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
                 self.file.io_device(),
-                IoCommand::BlockRead { lba, blocks, bytes: dma_len, buf },
+                IoCommand::BlockRead {
+                    lba,
+                    blocks,
+                    bytes: dma_len,
+                    buf,
+                },
                 IoPriority::Normal,
             )
         };
@@ -79,8 +86,7 @@ impl<'a> AsyncReadFuture<'a> {
                 }
             }
         });
-        crate::io::io_scheduler::io_scheduler()
-            .register_completion_hook(request_id, hook);
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
 
         self.io_future = Some(future);
         self.dma_user_len = to_read;
@@ -290,8 +296,7 @@ impl<'a> AsyncWriteFuture<'a> {
         let offset_in_block = (position % block_size) as usize;
         let end_pos = position + len as u64;
         let aligned_start = position / block_size;
-        let aligned_end =
-            (end_pos + block_size - 1) / block_size;
+        let aligned_end = (end_pos + block_size - 1) / block_size;
         let blocks_u64 = aligned_end.saturating_sub(aligned_start);
 
         if blocks_u64 > u16::MAX as u64 {
@@ -311,7 +316,15 @@ impl<'a> AsyncWriteFuture<'a> {
         let slot = data_slot.clone();
         let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
             self.file.io_device(),
-            IoCommand::BlockRead { lba, blocks, bytes: dma_len, buf: DmaBufHandle { iova: prp1, len: dma_len } },
+            IoCommand::BlockRead {
+                lba,
+                blocks,
+                bytes: dma_len,
+                buf: DmaBufHandle {
+                    iova: prp1,
+                    len: dma_len,
+                },
+            },
             IoPriority::Normal,
         );
         let request_id = future.request_id();
@@ -361,10 +374,18 @@ impl<'a> AsyncWriteFuture<'a> {
 
         let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
         let future = {
-            let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+            let buf = DmaBufHandle {
+                iova: prp1,
+                len: alloc_len,
+            };
             crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
                 self.file.io_device(),
-                IoCommand::BlockWrite { lba, blocks, bytes: dma_len, buf },
+                IoCommand::BlockWrite {
+                    lba,
+                    blocks,
+                    bytes: dma_len,
+                    buf,
+                },
                 IoPriority::Normal,
             )
         };
@@ -383,7 +404,10 @@ impl<'a> AsyncWriteFuture<'a> {
     }
 
     /// アラインDMAライトの完了ポーリング
-    pub(super) fn poll_aligned_completion(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
+    pub(super) fn poll_aligned_completion(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<FsResult<usize>> {
         let future = self.io_future.as_mut().unwrap();
         match Pin::new(future).poll(cx) {
             Poll::Ready(Ok(_)) => {
@@ -451,10 +475,18 @@ impl<'a> AsyncWriteFuture<'a> {
                 };
                 let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
                 let future = {
-                    let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+                    let buf = DmaBufHandle {
+                        iova: prp1,
+                        len: alloc_len,
+                    };
                     crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
                         self.file.io_device(),
-                        IoCommand::BlockWrite { lba, blocks, bytes: dma_len, buf },
+                        IoCommand::BlockWrite {
+                            lba,
+                            blocks,
+                            bytes: dma_len,
+                            buf,
+                        },
                         IoPriority::Normal,
                     )
                 };
@@ -464,8 +496,7 @@ impl<'a> AsyncWriteFuture<'a> {
                 let hook: CompletionHook = Box::new(move |_result| {
                     let _ = write_ctx.complete();
                 });
-                crate::io::io_scheduler::io_scheduler()
-                    .register_completion_hook(request_id, hook);
+                crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
 
                 self.unaligned = Some(UnalignedWriteState::Writing {
                     io_future: future,

@@ -10,20 +10,20 @@
 
 extern crate alloc;
 
-use boot_proto::NumaInfo;
+use crate::mm::phys::fast_allocator::{FastBitmapAllocator, PageGranularity};
+use crate::sync::IrqPoisonLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use boot_proto::NumaInfo;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use crate::sync::IrqPoisonLock;
-use crate::mm::phys::fast_allocator::{FastBitmapAllocator, PageGranularity};
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
 // 共通型定義をインポート（IOVA_MM_MIGRATION_PLAN Phase 0.1）
+use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
 use crate::mm::numa::topology::{MAX_NUMA_NODES, NumaTopology};
-use crate::mm::types::{FrameIndex, NumaNodeId, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
-use crate::loader::type_id::{TypeIdHash, TypeHash, SemVer, const_hash};
+use crate::mm::types::{FrameIndex, NumaNodeId, PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K};
 
 // ============================================================================
 // 型安全性: フレーム番号のNewtype
@@ -90,9 +90,10 @@ impl BitmapFrameAllocator {
         for &(start, size) in usable_regions {
             // 脆弱性修正: ページ境界にアライン。開始は切り上げ、終了は切り下げ。
             // これにより、部分的に予約されているページが空きとしてマークされるのを防ぐ。
-            let start_addr = (start.as_u64() + PAGE_SIZE_4K as u64 - 1) & !(PAGE_SIZE_4K as u64 - 1);
+            let start_addr =
+                (start.as_u64() + PAGE_SIZE_4K as u64 - 1) & !(PAGE_SIZE_4K as u64 - 1);
             let end_addr = (start.as_u64() + size) & !(PAGE_SIZE_4K as u64 - 1);
-            
+
             if start_addr >= end_addr {
                 continue;
             }
@@ -193,7 +194,7 @@ impl BitmapFrameAllocator {
         // 脆弱性修正: alignmentが0の場合の除算ゼロを防止
         let alignment = alignment.max(PAGE_SIZE_4K);
         let aligned_frames = alignment / PAGE_SIZE_4K;
-        
+
         if aligned_frames == 0 {
             return None;
         }
@@ -202,8 +203,9 @@ impl BitmapFrameAllocator {
             let start_frame = start_word * 64;
 
             // アライメントに合わせる (Checked arithmetic to avoid overflow)
-            let aligned_start = (start_frame.checked_add(aligned_frames)?
-                .saturating_sub(1) / aligned_frames) * aligned_frames;
+            let aligned_start = (start_frame.checked_add(aligned_frames)?.saturating_sub(1)
+                / aligned_frames)
+                * aligned_frames;
 
             if aligned_start.saturating_add(frame_count) > self.total_frames {
                 break;
@@ -253,7 +255,10 @@ impl BitmapFrameAllocator {
 
         // 脆弱性修正: 二重解放の防止
         if self.is_frame_free(frame_idx) {
-            log::warn!("[PMM] Double free detected for 4KiB frame {:#x}", frame.start_address().as_u64());
+            log::warn!(
+                "[PMM] Double free detected for 4KiB frame {:#x}",
+                frame.start_address().as_u64()
+            );
             return;
         }
 
@@ -271,7 +276,10 @@ impl BitmapFrameAllocator {
 
         // 脆弱性修正: 二重解放の防止（先頭ページで代表チェック）
         if self.is_frame_free(start_frame) {
-            log::warn!("[PMM] Double free detected for 2MiB frame {:#x}", frame.start_address().as_u64());
+            log::warn!(
+                "[PMM] Double free detected for 2MiB frame {:#x}",
+                frame.start_address().as_u64()
+            );
             return;
         }
 
@@ -291,7 +299,10 @@ impl BitmapFrameAllocator {
 
         // 脆弱性修正: 二重解放の防止（先頭ページで代表チェック）
         if self.is_frame_free(start_frame) {
-            log::warn!("[PMM] Double free detected for 1GiB frame {:#x}", frame.start_address().as_u64());
+            log::warn!(
+                "[PMM] Double free detected for 1GiB frame {:#x}",
+                frame.start_address().as_u64()
+            );
             return;
         }
 
@@ -407,23 +418,17 @@ impl PmmAllocatorFast {
 
     fn free_4k(&self, frame: PhysFrame<Size4KiB>) {
         let addr = frame.start_address().as_u64();
-        let _ = self
-            .inner
-            .free_immediate(addr, PageGranularity::Page4K);
+        let _ = self.inner.free_immediate(addr, PageGranularity::Page4K);
     }
 
     fn free_2m(&self, frame: PhysFrame<Size2MiB>) {
         let addr = frame.start_address().as_u64();
-        let _ = self
-            .inner
-            .free_immediate(addr, PageGranularity::Page2M);
+        let _ = self.inner.free_immediate(addr, PageGranularity::Page2M);
     }
 
     fn free_1g(&self, frame: PhysFrame<Size1GiB>) {
         let addr = frame.start_address().as_u64();
-        let _ = self
-            .inner
-            .free_immediate(addr, PageGranularity::Page1G);
+        let _ = self.inner.free_immediate(addr, PageGranularity::Page1G);
     }
 
     fn reserve_range(&self, start: u64, size: u64) {
@@ -482,11 +487,7 @@ impl PmmAllocatorFast {
         }
 
         let len = range_end - range_start;
-        if self
-            .inner
-            .free_range_immediate(range_start, len)
-            .is_ok()
-        {
+        if self.inner.free_range_immediate(range_start, len).is_ok() {
             len / (PAGE_SIZE_4K as u64)
         } else {
             0
@@ -495,7 +496,6 @@ impl PmmAllocatorFast {
 }
 
 use crate::util::{align_down_u64 as align_down, align_up_u64 as align_up};
-
 
 fn align_size_to_page(size: usize) -> usize {
     if size <= PAGE_SIZE_4K {

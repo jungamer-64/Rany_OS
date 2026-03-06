@@ -17,14 +17,16 @@
 
 #![allow(dead_code)]
 
+use crate::interrupts;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence};
-use core::ptr;
 use core::cell::UnsafeCell;
+use core::ptr;
+use core::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
+};
 use spin::{Mutex, Once};
-use crate::interrupts;
 
 // ============================================================================
 // Configuration
@@ -333,7 +335,7 @@ impl WorkStealingDeque {
     pub fn new(capacity: usize) -> Self {
         // Capacity must be power of 2
         let cap = capacity.next_power_of_two();
-        
+
         // Initialize buffer with null pointers
         let mut buffer = Vec::with_capacity(cap);
         for _ in 0..cap {
@@ -355,16 +357,16 @@ impl WorkStealingDeque {
     pub unsafe fn push(&self, task: Box<StealableTask>) -> Result<(), Box<StealableTask>> {
         let b = self.bottom.load(Ordering::Relaxed);
         let t = self.top.load(Ordering::Acquire);
-        
+
         if b.wrapping_sub(t) >= self.buffer.len() {
             return Err(task);
         }
 
         let idx = b & self.mask;
         self.buffer[idx].store(Box::into_raw(task), Ordering::Relaxed);
-        
+
         fence(Ordering::Release);
-        
+
         self.bottom.store(b.wrapping_add(1), Ordering::Relaxed);
         Ok(())
     }
@@ -380,17 +382,17 @@ impl WorkStealingDeque {
             // Wait, b starts at 0. b-1 checks are needed.
             // If b > 0 or wrapped? wrapping_sub(1) handles logic.
         }
-        
+
         // Check "empty" based on t vs b logic?
         // Standard Chase-Lev:
         let b = b.wrapping_sub(1);
         self.bottom.store(b, Ordering::Relaxed);
-        
+
         fence(Ordering::SeqCst);
-        
+
         let t = self.top.load(Ordering::Relaxed);
         let size = b.wrapping_sub(t);
-        
+
         if (size as isize) < 0 {
             // Empty
             self.bottom.store(b.wrapping_add(1), Ordering::Relaxed);
@@ -399,7 +401,7 @@ impl WorkStealingDeque {
 
         let idx = b & self.mask;
         let task_ptr = self.buffer[idx].load(Ordering::Relaxed);
-        
+
         if size > 0 {
             // Normal case: at least one task left
             if !task_ptr.is_null() {
@@ -409,12 +411,11 @@ impl WorkStealingDeque {
         }
 
         // size == 0: Race with steal
-        if !self.top.compare_exchange(
-            t, 
-            t.wrapping_add(1), 
-            Ordering::SeqCst, 
-            Ordering::Relaxed
-        ).is_ok() {
+        if !self
+            .top
+            .compare_exchange(t, t.wrapping_add(1), Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+        {
             // Fail (lost race)
             self.bottom.store(b.wrapping_add(1), Ordering::Relaxed);
             return None;
@@ -433,7 +434,7 @@ impl WorkStealingDeque {
             let t = self.top.load(Ordering::Acquire);
             fence(Ordering::SeqCst);
             let b = self.bottom.load(Ordering::Acquire);
-            
+
             let size = b.wrapping_sub(t);
             if (size as isize) <= 0 {
                 return None; // Empty
@@ -441,13 +442,12 @@ impl WorkStealingDeque {
 
             let idx = t & self.mask;
             let task_ptr = self.buffer[idx].load(Ordering::Relaxed);
-            
-            if !self.top.compare_exchange(
-                t, 
-                t.wrapping_add(1), 
-                Ordering::SeqCst, 
-                Ordering::Relaxed
-            ).is_ok() {
+
+            if !self
+                .top
+                .compare_exchange(t, t.wrapping_add(1), Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
                 continue; // Retry
             }
 
@@ -505,7 +505,7 @@ pub struct PerCoreWorker {
     idle: AtomicBool,
 }
 
-// SAFETY: 
+// SAFETY:
 // - local_queue: steal() is thread-safe. push/pop are protected by checking core_id (ownership) and disabling interrupts.
 // - current_task: Only accessed by owner thread/core.
 unsafe impl Sync for PerCoreWorker {}
@@ -525,24 +525,20 @@ impl PerCoreWorker {
     /// タスクをローカルキューにプッシュ
     pub fn push_task(&self, task: Box<StealableTask>) -> Result<(), Box<StealableTask>> {
         // SAFETY: Only called by owner, interrupt suppressed to prevent re-entrancy
-        interrupts::without_interrupts(|| unsafe {
-            (*self.local_queue.get()).push(task)
-        })
+        interrupts::without_interrupts(|| unsafe { (*self.local_queue.get()).push(task) })
     }
 
     /// タスクをポップ
     pub fn pop_task(&self) -> Option<Box<StealableTask>> {
         // SAFETY: Only called by owner, interrupt suppressed
-        interrupts::without_interrupts(|| unsafe {
-            (*self.local_queue.get()).pop()
-        })
+        interrupts::without_interrupts(|| unsafe { (*self.local_queue.get()).pop() })
     }
 
     /// タスクをスチール (Safe to call from any thread)
     pub fn steal_task(&self) -> Option<Box<StealableTask>> {
         // SAFETY: steal() is lock-free and thread-safe
         let result = unsafe { (*self.local_queue.get()).steal() };
-        
+
         if result.is_some() {
             self.stats.tasks_stolen.fetch_add(1, Ordering::Relaxed);
         }
@@ -559,17 +555,17 @@ impl PerCoreWorker {
     pub fn schedule_next(&self) -> Option<Box<StealableTask>> {
         let task = self.pop_task()?;
         self.idle.store(false, Ordering::Release);
-        
+
         // Update current_task
         // SAFETY: Only owner updates current_task
         interrupts::without_interrupts(|| unsafe {
             // Drop old current task if any (should be None or handled)
-            *self.current_task.get() = None; 
+            *self.current_task.get() = None;
         });
-        
+
         Some(task)
     }
-    
+
     /// 現在のタスクを設定（実行中）
     pub fn set_current(&self, task: Option<Box<StealableTask>>) {
         interrupts::without_interrupts(|| unsafe {

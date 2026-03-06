@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod device_context;
 pub use device_context::*;
 impl IommuDmaBuffer {
@@ -55,7 +54,9 @@ impl IommuDmaBuffer {
                 return None;
             }
             // SAFETY: CoherentDmaBuffer owns this memory, safe for device DMA
-            match unsafe { crate::io::iommu::api::map_for_device(&device, inner.phys_addr(), size as u64) } {
+            match unsafe {
+                crate::io::iommu::api::map_for_device(&device, inner.phys_addr(), size as u64)
+            } {
                 Ok(iova) => Some(iova),
                 Err(e) => {
                     log::error!("[DMA] IOMMU map_for_device failed: {:?}", e);
@@ -95,7 +96,10 @@ impl IommuDmaBuffer {
                 return None;
             }
             // SAFETY: CoherentDmaBuffer owns this memory, safe for async device DMA
-            match unsafe { crate::io::iommu::api::map_for_device_async(&device, inner.phys_addr(), size as u64).await } {
+            match unsafe {
+                crate::io::iommu::api::map_for_device_async(&device, inner.phys_addr(), size as u64)
+                    .await
+            } {
                 Ok(iova) => Some(iova),
                 Err(e) => {
                     log::error!("[DMA] IOMMU map_for_device_async failed: {:?}", e);
@@ -313,22 +317,30 @@ impl GlobalDmaAllocator {
         let host_addr = buffer.as_ptr();
         let size = buffer.len();
 
-        if crate::io::iommu::api::is_iommu_enabled() && iommu_needs_bounce(phys_addr.as_u64(), size) {
+        if crate::io::iommu::api::is_iommu_enabled() && iommu_needs_bounce(phys_addr.as_u64(), size)
+        {
             let mut rref = allocate_iommu_bounce_bytes(size).map_err(|err| match err {
                 IommuBounceAllocError::InvalidLen => DmaError::InvalidAlignment,
                 IommuBounceAllocError::AllocFailed => DmaError::OutOfMemory,
             })?;
 
-            if matches!(direction, DmaDirection::ToDevice | DmaDirection::Bidirectional) {
+            if matches!(
+                direction,
+                DmaDirection::ToDevice | DmaDirection::Bidirectional
+            ) {
                 rref[..size].copy_from_slice(buffer);
                 flush_cache_range(rref.as_ptr(), rref.len());
             }
 
-            let bounce_phys = crate::memory::virt_to_phys(x86_64::VirtAddr::new(rref.as_ptr() as u64));
+            let bounce_phys =
+                crate::memory::virt_to_phys(x86_64::VirtAddr::new(rref.as_ptr() as u64));
             let mapped_len = rref.len();
             Ok((bounce_phys, mapped_len, Some(rref)))
         } else {
-            if matches!(direction, DmaDirection::ToDevice | DmaDirection::Bidirectional) {
+            if matches!(
+                direction,
+                DmaDirection::ToDevice | DmaDirection::Bidirectional
+            ) {
                 flush_cache_range(host_addr, size);
             }
             Ok((phys_addr, size, None))
@@ -392,7 +404,9 @@ impl DmaAllocator for GlobalDmaAllocator {
         let (device_addr, iova_mapped) = match self.resolve_iommu_device_addr(phys_addr, size) {
             Ok(result) => result,
             Err(e) => {
-                unsafe { dealloc(ptr, layout); }
+                unsafe {
+                    dealloc(ptr, layout);
+                }
                 return Err(e);
             }
         };

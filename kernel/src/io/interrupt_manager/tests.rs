@@ -65,7 +65,6 @@ fn test_interrupt_queue_push_pop() {
     assert!(queue.push(32)); // Timer
     assert!(queue.push(33)); // Keyboard
 
-
     // Pop in FIFO order
     assert_eq!(queue.pop(), Some(32));
     assert_eq!(queue.pop(), Some(33));

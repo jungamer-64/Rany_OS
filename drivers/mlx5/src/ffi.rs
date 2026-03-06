@@ -11,8 +11,8 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use kernel_api::driver_abi::{
-    pack_version, AbiDmaBuffer, AbiMmioHandle, DriverCapabilities, DriverContext, DriverVTable,
-    KernelApiV1, DRIVER_ABI_VERSION,
+    AbiDmaBuffer, AbiMmioHandle, DRIVER_ABI_VERSION, DriverCapabilities, DriverContext,
+    DriverVTable, KernelApiV1, pack_version,
 };
 
 use crate::defs::{MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH};
@@ -53,7 +53,7 @@ impl DmaSlot {
                         virt_addr: buf.as_ptr() as u64,
                         size: buf.size(),
                     };
-                    
+
                     // Skip anything below 1MB to avoid legacy/IOMMU reservation conflicts
                     if handle.device_addr < 0x100000 {
                         log::warn!(target: "mlx5", "DMA allocated at IOVA {:#x} for {}, skipping (<1MB)", handle.device_addr, label);
@@ -180,15 +180,33 @@ impl Drop for Mlx5DmaResources {
         for page in self.fw_pages.drain(..) {
             page.free();
         }
-        for q in self.rq_dbs.drain(..) { q.free(); }
-        for q in self.rqs.drain(..) { q.free(); }
-        for q in self.sq_dbs.drain(..) { q.free(); }
-        for q in self.sqs.drain(..) { q.free(); }
-        for q in self.rx_cq_dbs.drain(..) { q.free(); }
-        for q in self.rx_cqs.drain(..) { q.free(); }
-        for q in self.tx_cq_dbs.drain(..) { q.free(); }
-        for q in self.tx_cqs.drain(..) { q.free(); }
-        for q in self.eqs.drain(..) { q.free(); }
+        for q in self.rq_dbs.drain(..) {
+            q.free();
+        }
+        for q in self.rqs.drain(..) {
+            q.free();
+        }
+        for q in self.sq_dbs.drain(..) {
+            q.free();
+        }
+        for q in self.sqs.drain(..) {
+            q.free();
+        }
+        for q in self.rx_cq_dbs.drain(..) {
+            q.free();
+        }
+        for q in self.rx_cqs.drain(..) {
+            q.free();
+        }
+        for q in self.tx_cq_dbs.drain(..) {
+            q.free();
+        }
+        for q in self.tx_cqs.drain(..) {
+            q.free();
+        }
+        for q in self.eqs.drain(..) {
+            q.free();
+        }
         self.cmd_out_mbox.free();
         self.cmd_in_mbox.free();
         self.cmdq.free();
@@ -233,7 +251,7 @@ extern "C" fn mlx5_probe(ctx: *mut DriverContext) -> i32 {
     // PCI BDF info is not passed in `DriverContext`; when running inside the
     // kernel the registry fills the fields.  In cell/FFI mode we leave them
     // at zero and avoid accessing them.
-    
+
     let fw_page_addrs = dma.fw_page_phys_addrs();
     let mut mkey_params = MkeyParams::default();
     // Use the first DMA buffer's physical address as the start of our memory region
@@ -245,15 +263,63 @@ extern "C" fn mlx5_probe(ctx: *mut DriverContext) -> i32 {
     let sq_log_size = 4; // 16 entries
     let rq_log_size = 4; // 16 entries
 
-    let eq_bufs: Vec<(u64, u64)> = dma.eqs.iter().map(|q| (q.as_ptr_u64(), q.phys_address())).collect();
-    let tx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma.tx_cqs.iter().zip(dma.tx_cq_dbs.iter())
-        .map(|(q, db)| (q.as_ptr_u64(), q.phys_address(), db.as_ptr_u64(), db.phys_address())).collect();
-    let rx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma.rx_cqs.iter().zip(dma.rx_cq_dbs.iter())
-        .map(|(q, db)| (q.as_ptr_u64(), q.phys_address(), db.as_ptr_u64(), db.phys_address())).collect();
-    let sq_bufs: Vec<(u64, u64, u64, u64)> = dma.sqs.iter().zip(dma.sq_dbs.iter())
-        .map(|(q, db)| (q.as_ptr_u64(), q.phys_address(), db.as_ptr_u64(), db.phys_address())).collect();
-    let rq_bufs: Vec<(u64, u64, u64, u64)> = dma.rqs.iter().zip(dma.rq_dbs.iter())
-        .map(|(q, db)| (q.as_ptr_u64(), q.phys_address(), db.as_ptr_u64(), db.phys_address())).collect();
+    let eq_bufs: Vec<(u64, u64)> = dma
+        .eqs
+        .iter()
+        .map(|q| (q.as_ptr_u64(), q.phys_address()))
+        .collect();
+    let tx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma
+        .tx_cqs
+        .iter()
+        .zip(dma.tx_cq_dbs.iter())
+        .map(|(q, db)| {
+            (
+                q.as_ptr_u64(),
+                q.phys_address(),
+                db.as_ptr_u64(),
+                db.phys_address(),
+            )
+        })
+        .collect();
+    let rx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma
+        .rx_cqs
+        .iter()
+        .zip(dma.rx_cq_dbs.iter())
+        .map(|(q, db)| {
+            (
+                q.as_ptr_u64(),
+                q.phys_address(),
+                db.as_ptr_u64(),
+                db.phys_address(),
+            )
+        })
+        .collect();
+    let sq_bufs: Vec<(u64, u64, u64, u64)> = dma
+        .sqs
+        .iter()
+        .zip(dma.sq_dbs.iter())
+        .map(|(q, db)| {
+            (
+                q.as_ptr_u64(),
+                q.phys_address(),
+                db.as_ptr_u64(),
+                db.phys_address(),
+            )
+        })
+        .collect();
+    let rq_bufs: Vec<(u64, u64, u64, u64)> = dma
+        .rqs
+        .iter()
+        .zip(dma.rq_dbs.iter())
+        .map(|(q, db)| {
+            (
+                q.as_ptr_u64(),
+                q.phys_address(),
+                db.as_ptr_u64(),
+                db.phys_address(),
+            )
+        })
+        .collect();
 
     let init_res = unsafe {
         device.init_multi_queue(
@@ -317,7 +383,7 @@ extern "C" fn mlx5_remove(ctx: *mut DriverContext) -> i32 {
 
     let state = unsafe { Box::from_raw(ctx.driver_data as *mut Mlx5DriverState) };
     (kernel_api().unmap_mmio)(&state.mmio);
-    
+
     ctx.driver_data = 0;
     0
 }

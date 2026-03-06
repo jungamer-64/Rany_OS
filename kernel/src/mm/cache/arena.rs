@@ -33,9 +33,9 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 // ============================================================================
 // Constants
@@ -59,7 +59,7 @@ pub const ARENA_STEAL_THRESHOLD: u32 = 8;
 // ============================================================================
 
 /// Arena ownership state
-/// 
+///
 /// Each arena can be in one of these states:
 /// - Owned: A specific CPU owns this arena (fast path for owner)
 /// - Contested: Multiple CPUs want this arena (slower path)
@@ -110,7 +110,7 @@ impl ArenaOwnership {
         } else {
             1
         };
-        
+
         // Create owner array with initial ownership
         let mut owners = Vec::with_capacity(num_arenas);
         for arena_id in 0..num_arenas {
@@ -122,13 +122,13 @@ impl ArenaOwnership {
             };
             owners.push(AtomicU16::new(initial_owner));
         }
-        
+
         // Create steal counters (all zero)
         let mut steal_counts = Vec::with_capacity(num_arenas);
         for _ in 0..num_arenas {
             steal_counts.push(AtomicU32::new(0));
         }
-        
+
         Self {
             owners: owners.into_boxed_slice(),
             words_per_arena,
@@ -136,7 +136,7 @@ impl ArenaOwnership {
             steal_counts: steal_counts.into_boxed_slice(),
         }
     }
-    
+
     /// Get arena ID for a word index
     #[inline]
     pub fn arena_for_word(&self, word_idx: usize) -> usize {
@@ -145,7 +145,7 @@ impl ArenaOwnership {
         }
         word_idx / self.words_per_arena
     }
-    
+
     /// Check if current CPU owns the arena containing this word
     #[inline]
     pub fn is_owner(&self, word_idx: usize, current_cpu: usize) -> bool {
@@ -155,7 +155,7 @@ impl ArenaOwnership {
         }
         self.owners[arena_id].load(Ordering::Relaxed) == current_cpu as u16
     }
-    
+
     /// Try to claim ownership of an arena
     /// Returns true if successfully claimed
     #[inline]
@@ -163,7 +163,7 @@ impl ArenaOwnership {
         if arena_id >= self.owners.len() {
             return false;
         }
-        
+
         // Only claim if currently unowned
         self.owners[arena_id]
             .compare_exchange(
@@ -174,14 +174,14 @@ impl ArenaOwnership {
             )
             .is_ok()
     }
-    
+
     /// Release ownership of an arena
     #[inline]
     pub fn release(&self, arena_id: usize, cpu_id: usize) {
         if arena_id >= self.owners.len() {
             return;
         }
-        
+
         let _ = self.owners[arena_id].compare_exchange(
             cpu_id as u16,
             ARENA_NO_OWNER,
@@ -189,7 +189,7 @@ impl ArenaOwnership {
             Ordering::Relaxed,
         );
     }
-    
+
     /// Record a steal attempt and check if ownership should transfer
     /// Returns true if ownership should transfer to the stealer
     #[inline]
@@ -197,11 +197,11 @@ impl ArenaOwnership {
         if arena_id >= self.steal_counts.len() {
             return false;
         }
-        
+
         let count = self.steal_counts[arena_id].fetch_add(1, Ordering::Relaxed);
         count + 1 >= ARENA_STEAL_THRESHOLD
     }
-    
+
     /// Reset steal counter (after ownership transfer)
     #[inline]
     pub fn reset_steal_count(&self, arena_id: usize) {
@@ -209,7 +209,7 @@ impl ArenaOwnership {
             self.steal_counts[arena_id].store(0, Ordering::Relaxed);
         }
     }
-    
+
     /// Get current owner of an arena
     #[inline]
     pub fn get_owner(&self, arena_id: usize) -> Option<u16> {
@@ -223,19 +223,19 @@ impl ArenaOwnership {
             Some(owner)
         }
     }
-    
+
     /// Force transfer ownership (for adaptive rebalancing)
     #[inline]
     pub fn transfer_ownership(&self, arena_id: usize, old_owner: u16, new_owner: u16) -> bool {
         if arena_id >= self.owners.len() {
             return false;
         }
-        
+
         self.owners[arena_id]
             .compare_exchange(old_owner, new_owner, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
     }
-    
+
     /// Reconfigure arena ownership for a new CPU count
     ///
     /// Called when the actual CPU count is known (after bootstrap).
@@ -251,12 +251,12 @@ impl ArenaOwnership {
         } else {
             1
         };
-        
+
         // Resize owner and steal_count arrays if needed
         if new_num_arenas != self.num_arenas {
             let mut new_owners = Vec::with_capacity(new_num_arenas);
             let mut new_steal_counts = Vec::with_capacity(new_num_arenas);
-            
+
             for arena_id in 0..new_num_arenas {
                 let initial_owner = if num_cpus > 0 {
                     (arena_id % num_cpus) as u16
@@ -266,7 +266,7 @@ impl ArenaOwnership {
                 new_owners.push(AtomicU16::new(initial_owner));
                 new_steal_counts.push(AtomicU32::new(0));
             }
-            
+
             self.owners = new_owners.into_boxed_slice();
             self.steal_counts = new_steal_counts.into_boxed_slice();
         } else {
@@ -281,7 +281,7 @@ impl ArenaOwnership {
                 self.steal_counts[arena_id].store(0, Ordering::Release);
             }
         }
-        
+
         self.words_per_arena = new_words_per_arena;
         self.num_arenas = new_num_arenas;
     }
@@ -330,13 +330,13 @@ impl ArenaOwnership {
         self.words_per_arena = new_words_per_arena;
         self.num_arenas = new_num_arenas;
     }
-    
+
     /// Get words per arena
     #[inline]
     pub fn words_per_arena(&self) -> usize {
         self.words_per_arena
     }
-    
+
     /// Get number of arenas
     #[inline]
     pub fn num_arenas(&self) -> usize {
@@ -443,7 +443,7 @@ impl PerArenaDetail {
         let mut bits = [0u64; MAX_WORDS_PER_ARENA];
         let mut summary = 0u64;
         let mut free_count = 0usize;
-        
+
         // Copy initial bits and build summary (first window)
         for i in 0..num_words {
             let b = if i < initial_bits.len() {
@@ -457,7 +457,7 @@ impl PerArenaDetail {
                 free_count += b.count_ones() as usize;
             }
         }
-        
+
         Self {
             bits,
             arena_id,
@@ -474,62 +474,62 @@ impl PerArenaDetail {
             _pad: [0; 4],
         }
     }
-    
+
     /// Check if this window has any free pages
     #[inline]
     pub fn has_free_pages(&self) -> bool {
         self.summary != 0
     }
-    
+
     /// Get free page count in current window
     #[inline]
     pub fn free_count(&self) -> usize {
         self.free_count
     }
-    
+
     /// Check if the full arena is larger than one window
     #[inline]
     pub fn is_windowed(&self) -> bool {
         (self.word_end - self.word_start) > MAX_WORDS_PER_ARENA
     }
-    
+
     /// Get the full arena size in words
     #[inline]
     pub fn full_arena_words(&self) -> usize {
         self.word_end.saturating_sub(self.word_start)
     }
-    
+
     /// Check if there are more windows to load after current
     #[inline]
     pub fn has_next_window(&self) -> bool {
         self.window_base_word + MAX_WORDS_PER_ARENA < self.word_end
     }
-    
+
     /// Check if there are windows before current
     #[inline]
     pub fn has_prev_window(&self) -> bool {
         self.window_base_word > self.word_start
     }
-    
+
     /// Check if arena is frozen (ownership transfer in progress)
     #[inline]
     pub fn is_frozen(&self) -> bool {
         self.frozen
     }
-    
+
     /// Freeze the arena for ownership transfer
     #[inline]
     pub fn freeze(&mut self) {
         self.frozen = true;
     }
-    
+
     /// Unfreeze the arena after ownership transfer
     #[inline]
     pub fn unfreeze(&mut self, new_owner: u16) {
         self.owner_cpu = new_owner;
         self.frozen = false;
     }
-    
+
     /// Allocate a single page from this window (O(1), no atomics!)
     ///
     /// # Safety
@@ -537,7 +537,7 @@ impl PerArenaDetail {
     ///
     /// # Returns
     /// Some(global_page_idx) if successful, None if window is empty or frozen
-    /// 
+    ///
     /// # Note
     /// If window is exhausted but arena has more windows, caller should
     /// call `needs_reload()` and reload via `sync_and_reload_window()`.
@@ -546,13 +546,13 @@ impl PerArenaDetail {
         if self.frozen || self.summary == 0 {
             return None;
         }
-        
+
         // Find first word with free pages using tzcnt (O(1))
         let word_in_window = self.summary.trailing_zeros() as usize;
         if word_in_window >= self.num_words {
             return None;
         }
-        
+
         let bits = self.bits[word_in_window];
         if bits == 0 {
             // Summary was stale, update it
@@ -560,32 +560,32 @@ impl PerArenaDetail {
             // Retry with corrected summary
             return self.allocate_page();
         }
-        
+
         // Find first free bit using tzcnt (O(1))
         let bit_idx = bits.trailing_zeros() as usize;
-        
+
         // Clear the bit (allocate the page) - NO ATOMIC!
         self.bits[word_in_window] &= !(1u64 << bit_idx);
         self.free_count -= 1;
-        
+
         // Update summary if word is now empty
         if self.bits[word_in_window] == 0 {
             self.summary &= !(1u64 << word_in_window);
         }
-        
+
         // Calculate global page index using window_base_word
         let global_word_idx = self.window_base_word + word_in_window;
         let global_page_idx = global_word_idx * BITS_PER_WORD + bit_idx;
-        
+
         Some(global_page_idx)
     }
-    
+
     /// Check if window needs reload (exhausted but more windows exist)
     #[inline]
     pub fn needs_reload(&self) -> bool {
         self.summary == 0 && self.is_windowed()
     }
-    
+
     /// Claim an entire word from this window (for sub-magazine refill)
     ///
     /// # Returns
@@ -595,28 +595,28 @@ impl PerArenaDetail {
         if self.frozen || self.summary == 0 {
             return None;
         }
-        
+
         // Find first word with free pages
         let word_in_window = self.summary.trailing_zeros() as usize;
         if word_in_window >= self.num_words {
             return None;
         }
-        
+
         let bits = self.bits[word_in_window];
         if bits == 0 {
             self.summary &= !(1u64 << word_in_window);
             return self.claim_word();
         }
-        
+
         // Take all bits from this word - NO ATOMIC!
         self.bits[word_in_window] = 0;
         self.summary &= !(1u64 << word_in_window);
         self.free_count -= bits.count_ones() as usize;
-        
+
         let global_word_idx = self.window_base_word + word_in_window;
         Some((global_word_idx, bits))
     }
-    
+
     /// Free a single page back to this window
     ///
     /// # Arguments
@@ -624,7 +624,7 @@ impl PerArenaDetail {
     ///
     /// # Returns
     /// true if the page was in this window and freed, false otherwise
-    /// 
+    ///
     /// # Note
     /// If the page is not in the current window but is in the arena,
     /// the caller should use RemoteFreeRing or defer until window is reloaded.
@@ -633,9 +633,9 @@ impl PerArenaDetail {
         if self.frozen {
             return false;
         }
-        
+
         let global_word_idx = global_page_idx / BITS_PER_WORD;
-        
+
         // Check if in current window
         if global_word_idx < self.window_base_word {
             return false;
@@ -644,33 +644,33 @@ impl PerArenaDetail {
         if window_offset >= self.num_words {
             return false;
         }
-        
+
         let bit_idx = global_page_idx % BITS_PER_WORD;
         let mask = 1u64 << bit_idx;
-        
+
         // Check for double-free
         if (self.bits[window_offset] & mask) != 0 {
             // Already free - double-free detected
             return false;
         }
-        
+
         // Set the bit - NO ATOMIC!
         self.bits[window_offset] |= mask;
         self.free_count += 1;
-        
+
         // Update summary
         self.summary |= 1u64 << window_offset;
-        
+
         true
     }
-    
+
     /// Check if a global page index belongs to this arena (full arena, not just window)
     #[inline]
     pub fn contains_page(&self, global_page_idx: usize) -> bool {
         let global_word_idx = global_page_idx / BITS_PER_WORD;
         global_word_idx >= self.word_start && global_word_idx < self.word_end
     }
-    
+
     /// Check if a global page index is in the current window
     #[inline]
     pub fn in_current_window(&self, global_page_idx: usize) -> bool {
@@ -678,25 +678,25 @@ impl PerArenaDetail {
         let window_end = self.window_base_word + self.num_words;
         global_word_idx >= self.window_base_word && global_word_idx < window_end
     }
-    
+
     /// Get the global word index for a local word index
     #[inline]
     pub fn global_word_idx(&self, local_idx: usize) -> usize {
         self.window_base_word + local_idx
     }
-    
+
     /// Get arena ID
     #[inline]
     pub fn arena_id(&self) -> usize {
         self.arena_id
     }
-    
+
     /// Get owner CPU
     #[inline]
     pub fn owner_cpu(&self) -> u16 {
         self.owner_cpu
     }
-    
+
     /// Sync local bits back to global atomic bitmap
     ///
     /// # Safety
@@ -710,7 +710,7 @@ impl PerArenaDetail {
             }
         }
     }
-    
+
     /// Load bits from global atomic bitmap
     ///
     /// # Safety
@@ -718,7 +718,7 @@ impl PerArenaDetail {
     pub fn sync_from_global(&mut self, global_detail: &[AtomicU64]) {
         self.summary = 0;
         self.free_count = 0;
-        
+
         for i in 0..self.num_words {
             let global_idx = self.window_base_word + i;
             let bits = if global_idx < global_detail.len() {
@@ -732,10 +732,10 @@ impl PerArenaDetail {
                 self.free_count += bits.count_ones() as usize;
             }
         }
-        
+
         self.frozen = false;
     }
-    
+
     /// Move window forward and reload from global bitmap
     ///
     /// Syncs current window back, advances `window_base_word`, loads new data.
@@ -747,20 +747,20 @@ impl PerArenaDetail {
         if !self.has_next_window() {
             return false;
         }
-        
+
         // Sync current window back to global
         self.sync_to_global(global_detail);
-        
+
         // Advance window position
         self.window_base_word += self.num_words;
-        
+
         // Reload from global bitmap
         self.sync_from_global(global_detail);
         self.reloaded = true;
-        
+
         true
     }
-    
+
     /// Move window backward and reload from global bitmap
     ///
     /// Syncs current window back, moves `window_base_word` back, loads previous data.
@@ -772,25 +772,25 @@ impl PerArenaDetail {
         if !self.has_prev_window() {
             return false;
         }
-        
+
         // Sync current window back to global
         self.sync_to_global(global_detail);
-        
+
         // Move window position backward
         self.window_base_word = self.window_base_word.saturating_sub(self.num_words);
-        
+
         // Clamp to arena start
         if self.window_base_word < self.word_start {
             self.window_base_word = self.word_start;
         }
-        
+
         // Reload from global bitmap
         self.sync_from_global(global_detail);
         self.reloaded = true;
-        
+
         true
     }
-    
+
     /// Jump to a specific window base (e.g., after scan_best_window)
     ///
     /// Syncs current window and loads the new one.
@@ -799,17 +799,17 @@ impl PerArenaDetail {
         if new_base < self.word_start || new_base >= self.word_end {
             return false;
         }
-        
+
         // Sync current window back
         self.sync_to_global(global_detail);
-        
+
         // Move to new window
         self.window_base_word = new_base;
-        
+
         // Reload
         self.sync_from_global(global_detail);
         self.reloaded = true;
-        
+
         true
     }
 }

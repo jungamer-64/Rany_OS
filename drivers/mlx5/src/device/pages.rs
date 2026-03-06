@@ -3,19 +3,19 @@
 // ============================================================================
 
 extern crate alloc;
-use alloc::vec::Vec;
-use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE};
-use crate::error::{Mlx5Error, Mlx5Result};
-use crate::device::Mlx5Device;
 use crate::cmd::CmdMailbox;
-use crate::cmd::hca::*; // manage/query page commands
+use crate::cmd::hca::*;
+use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE};
+use crate::device::Mlx5Device;
+use crate::error::{Mlx5Error, Mlx5Result};
+use alloc::vec::Vec; // manage/query page commands
 
 impl Mlx5Device {
     /// FW ページを提供
     pub unsafe fn provide_pages(&mut self, function_id: u16, pas: &[u64]) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        
+
         log::info!(target: "mlx5", "Providing {} pages to function {}", pas.len(), function_id);
 
         build_manage_pages_input(
@@ -52,18 +52,19 @@ impl Mlx5Device {
                 let buf = kernel_api::services::kernel()
                     .alloc_dma(4096)
                     .map_err(|_| Mlx5Error::DmaAllocFailed)?;
-                
+
                 let pa = buf.device_address();
                 let va = buf.as_ptr() as u64;
-                
-                self.page_manager.record_allocation(crate::pages::PageAllocation {
-                    phys_addr: pa,
-                    virt_addr: va,
-                    function_id: func_id,
-                });
+
+                self.page_manager
+                    .record_allocation(crate::pages::PageAllocation {
+                        phys_addr: pa,
+                        virt_addr: va,
+                        function_id: func_id,
+                    });
                 page_pas.push(pa);
             }
-            
+
             self.give_pages_internal(func_id, &page_pas)?;
         } else {
             self.reclaim_pages(func_id, num_pages.unsigned_abs())?;
@@ -75,7 +76,7 @@ impl Mlx5Device {
     unsafe fn give_pages_internal(&mut self, function_id: u16, pas: &[u64]) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        
+
         build_manage_pages_input(
             in_mbox,
             crate::pages::ManagePagesOp::GivePages as u8,
@@ -137,7 +138,7 @@ impl Mlx5Device {
             self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
-        
+
         log::info!(target: "mlx5", "Reclaimed pages from FW");
         Ok(())
     }

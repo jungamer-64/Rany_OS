@@ -19,7 +19,6 @@ fn unpack_device_id(id: u64) -> IommuDeviceId {
     }
 }
 
-
 // SAFETY: ExoKernel is stateless and accesses thread-safe globals
 mod gui_services;
 pub use self::gui_services::*;
@@ -66,14 +65,19 @@ impl KernelServices for ExoKernel {
                 let phys = buffer.phys_addr().as_u64();
                 let dev_addr = buffer.device_addr();
                 let virt_ptr = unsafe { buffer.as_slice().as_ptr() } as usize;
-                
+
                 // SECURITY: Track physical address ownership
                 PHYS_OWNERSHIP_REGISTRY.register(phys, size, caller);
 
                 // Box up the buffer and register by virtual address so it can be freed later
                 let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
                 DMA_REGISTRY.register_with_key(virt_ptr, boxed, phys, caller);
-                Ok(DmaBuffer::new_with_device_addr(phys, dev_addr, virt_ptr as *mut u8, size))
+                Ok(DmaBuffer::new_with_device_addr(
+                    phys,
+                    dev_addr,
+                    virt_ptr as *mut u8,
+                    size,
+                ))
             }
             None => Err(KapiError::OutOfMemory),
         }
@@ -82,18 +86,24 @@ impl KernelServices for ExoKernel {
     fn alloc_dma_for_device(&self, size: usize, device_id: u64) -> Result<DmaBuffer, KapiError> {
         let caller = context::current_subject().domain.as_u64();
         let dev_id = unpack_device_id(device_id);
-        match dma::CoherentDmaBuffer::new_for_device(size, dma::DmaMemoryAttributes::MMIO, &dev_id) {
+        match dma::CoherentDmaBuffer::new_for_device(size, dma::DmaMemoryAttributes::MMIO, &dev_id)
+        {
             Some(buffer) => {
                 let phys = buffer.phys_addr().as_u64();
                 let dev_addr = buffer.device_addr();
                 let virt_ptr = unsafe { buffer.as_slice().as_ptr() } as usize;
-                
+
                 // SECURITY: Track physical address ownership
                 PHYS_OWNERSHIP_REGISTRY.register(phys, size, caller);
 
                 let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
                 DMA_REGISTRY.register_with_key(virt_ptr, boxed, phys, caller);
-                Ok(DmaBuffer::new_with_device_addr(phys, dev_addr, virt_ptr as *mut u8, size))
+                Ok(DmaBuffer::new_with_device_addr(
+                    phys,
+                    dev_addr,
+                    virt_ptr as *mut u8,
+                    size,
+                ))
             }
             None => Err(KapiError::OutOfMemory),
         }
@@ -107,7 +117,11 @@ impl KernelServices for ExoKernel {
         // SECURITY: Verify that the caller actually owns this buffer before freeing.
         if let Some(owner) = DMA_REGISTRY.get_owner(virt_ptr) {
             if owner != caller {
-                log::error!("[KAPI][SECURITY] free_dma: Domain {} tried to free buffer owned by Domain {}", caller, owner);
+                log::error!(
+                    "[KAPI][SECURITY] free_dma: Domain {} tried to free buffer owned by Domain {}",
+                    caller,
+                    owner
+                );
                 return;
             }
         }
@@ -177,7 +191,10 @@ impl KernelServices for ExoKernel {
         Err(KapiError::InvalidHandle)
     }
 
-    fn net_recv_packet(&self, endpoint: TcpEndpoint) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
+    fn net_recv_packet(
+        &self,
+        endpoint: TcpEndpoint,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
@@ -188,7 +205,10 @@ impl KernelServices for ExoKernel {
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
                         // Create and await RecvFuture
-                        let fut = crate::net::l4::endpoint::futures::RecvFuture::new(socket.clone(), crate::net::runtime::stack::MAX_PACKET_SIZE);
+                        let fut = crate::net::l4::endpoint::futures::RecvFuture::new(
+                            socket.clone(),
+                            crate::net::runtime::stack::MAX_PACKET_SIZE,
+                        );
                         match fut.await {
                             Ok(vec) => Ok(Packet::new(vec)),
                             Err(_) => Err(KapiError::IoError),
@@ -205,7 +225,11 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_send_packet(&self, endpoint: TcpEndpoint, packet: Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+    fn net_send_packet(
+        &self,
+        endpoint: TcpEndpoint,
+        packet: Packet,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
@@ -217,7 +241,10 @@ impl KernelServices for ExoKernel {
                     if let Some(socket) = mgr.get(fd) {
                         // Clone/convert packet data for socket send
                         let data = packet.data().to_vec();
-                        let fut = crate::net::l4::endpoint::futures::SendFuture::new(socket.clone(), data);
+                        let fut = crate::net::l4::endpoint::futures::SendFuture::new(
+                            socket.clone(),
+                            data,
+                        );
                         match fut.await {
                             Ok(_) => Ok(()),
                             Err(_) => Err(KapiError::IoError),
@@ -263,7 +290,10 @@ impl KernelServices for ExoKernel {
         Err(KapiError::InvalidHandle)
     }
 
-    fn net_recv_raw(&self, endpoint: RawEndpointHandle) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
+    fn net_recv_raw(
+        &self,
+        endpoint: RawEndpointHandle,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
@@ -273,7 +303,10 @@ impl KernelServices for ExoKernel {
                 let guard = mgr_lock.read();
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
-                        let fut = crate::net::l4::endpoint::futures::RecvFuture::new(socket.clone(), crate::net::runtime::stack::MAX_PACKET_SIZE);
+                        let fut = crate::net::l4::endpoint::futures::RecvFuture::new(
+                            socket.clone(),
+                            crate::net::runtime::stack::MAX_PACKET_SIZE,
+                        );
                         match fut.await {
                             Ok(vec) => Ok(Packet::new(vec)),
                             Err(_) => Err(KapiError::IoError),
@@ -290,7 +323,11 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_send_raw(&self, endpoint: RawEndpointHandle, packet: Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+    fn net_send_raw(
+        &self,
+        endpoint: RawEndpointHandle,
+        packet: Packet,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
@@ -301,7 +338,10 @@ impl KernelServices for ExoKernel {
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
                         let data = packet.data().to_vec();
-                        let fut = crate::net::l4::endpoint::futures::SendFuture::new(socket.clone(), data);
+                        let fut = crate::net::l4::endpoint::futures::SendFuture::new(
+                            socket.clone(),
+                            data,
+                        );
                         match fut.await {
                             Ok(_) => Ok(()),
                             Err(_) => Err(KapiError::IoError),
@@ -327,7 +367,12 @@ impl KernelServices for ExoKernel {
         self.fs_open_with_token(path, mode, None)
     }
 
-    fn fs_open_with_token(&self, path: &str, mode: OpenMode, token: Option<u64>) -> Result<FileHandle, KapiError> {
+    fn fs_open_with_token(
+        &self,
+        path: &str,
+        mode: OpenMode,
+        token: Option<u64>,
+    ) -> Result<FileHandle, KapiError> {
         use crate::fs::memfs;
 
         // Check if file exists
@@ -354,7 +399,11 @@ impl KernelServices for ExoKernel {
 
         // If token provided, validate and increment in-flight counter
         if let Some(t) = token {
-            if !crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_FOWNER) {
+            if !crate::security::capability::manager().validate_token(
+                caller,
+                t,
+                crate::security::capability::CAP_FOWNER,
+            ) {
                 return Err(KapiError::PermissionDenied);
             }
 
@@ -410,14 +459,17 @@ impl KernelServices for ExoKernel {
 
         let nsid = if device_id == 0 { 1 } else { device_id as u32 };
         let block_size =
-            crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid))
-                .unwrap_or(512);
+            crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid)).unwrap_or(512);
 
         let caller = context::current_subject().domain.as_u64();
 
         // If token provided, validate and increment in-flight counter
         if let Some(t) = token {
-            if !crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_DMA) {
+            if !crate::security::capability::manager().validate_token(
+                caller,
+                t,
+                crate::security::capability::CAP_DMA,
+            ) {
                 return Err(KapiError::PermissionDenied);
             }
             if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
@@ -426,8 +478,21 @@ impl KernelServices for ExoKernel {
         }
 
         // Register the open in kernel registry and return a handle with open_id
-        let id = NVME_DIRECT_REGISTRY.register(device_id, start_block, block_count, block_size, caller, token);
-        Ok(DirectBlockHandle::new_with_id(device_id, start_block, block_count, block_size, id))
+        let id = NVME_DIRECT_REGISTRY.register(
+            device_id,
+            start_block,
+            block_count,
+            block_size,
+            caller,
+            token,
+        );
+        Ok(DirectBlockHandle::new_with_id(
+            device_id,
+            start_block,
+            block_count,
+            block_size,
+            id,
+        ))
     }
 
     fn nvme_close_direct(&self, handle: DirectBlockHandle) -> Result<(), KapiError> {
@@ -544,8 +609,7 @@ impl KernelServices for ExoKernel {
 
         let caller = context::current_subject().domain.as_u64();
         let alloc_len = align_up_page(len);
-        let data = TypedDmaSlice::<CpuOwned>::new(alloc_len)
-            .ok_or(KapiError::OutOfMemory)?;
+        let data = TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(KapiError::OutOfMemory)?;
         let data_phys = data.phys_addr().as_u64();
 
         // SECURITY: Track physical address ownership
@@ -578,8 +642,8 @@ impl KernelServices for ExoKernel {
 
         let caller = context::current_subject().domain.as_u64();
         let alloc_len = align_up_page(data.len());
-        let mut dma_buf = TypedDmaSlice::<CpuOwned>::new(alloc_len)
-            .ok_or(KapiError::OutOfMemory)?;
+        let mut dma_buf =
+            TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(KapiError::OutOfMemory)?;
 
         // Copy data into DMA buffer
         dma_buf.as_mut_slice()[..data.len()].copy_from_slice(data);
@@ -613,13 +677,18 @@ impl KernelServices for ExoKernel {
     }
 
     fn nvme_complete_dma_read(&self, handle: NvmeDmaHandle) -> KapiResult<alloc::vec::Vec<u8>> {
-        let entry = NVME_DMA_CONTEXT_REGISTRY.unregister(handle.id())
+        let entry = NVME_DMA_CONTEXT_REGISTRY
+            .unregister(handle.id())
             .ok_or(KapiError::InvalidHandle)?;
-        
+
         // SECURITY: Verify owner
         let caller = context::current_subject().domain.as_u64();
         if entry.owner != caller {
-            log::error!("[KAPI][SECURITY] nvme_complete_dma_read: Domain {} tried to complete DMA owned by Domain {}", caller, entry.owner);
+            log::error!(
+                "[KAPI][SECURITY] nvme_complete_dma_read: Domain {} tried to complete DMA owned by Domain {}",
+                caller,
+                entry.owner
+            );
             // Re-register to avoid losing it? No, better fail.
             return Err(KapiError::PermissionDenied);
         }
@@ -637,13 +706,18 @@ impl KernelServices for ExoKernel {
     }
 
     fn nvme_complete_dma_write(&self, handle: NvmeDmaHandle) -> KapiResult<()> {
-        let entry = NVME_DMA_CONTEXT_REGISTRY.unregister(handle.id())
+        let entry = NVME_DMA_CONTEXT_REGISTRY
+            .unregister(handle.id())
             .ok_or(KapiError::InvalidHandle)?;
 
         // SECURITY: Verify owner
         let caller = context::current_subject().domain.as_u64();
         if entry.owner != caller {
-            log::error!("[KAPI][SECURITY] nvme_complete_dma_write: Domain {} tried to complete DMA owned by Domain {}", caller, entry.owner);
+            log::error!(
+                "[KAPI][SECURITY] nvme_complete_dma_write: Domain {} tried to complete DMA owned by Domain {}",
+                caller,
+                entry.owner
+            );
             return Err(KapiError::PermissionDenied);
         }
 
@@ -658,7 +732,10 @@ impl KernelServices for ExoKernel {
         crate::io::nvme::iommu_device().map(|d| {
             // Pack IommuDeviceId into u64 for API boundary
             // DeviceId has public fields: segment, bus, device, function
-            ((d.segment as u64) << 32) | ((d.bus as u64) << 16) | ((d.device as u64) << 8) | (d.function as u64)
+            ((d.segment as u64) << 32)
+                | ((d.bus as u64) << 16)
+                | ((d.device as u64) << 8)
+                | (d.function as u64)
         })
     }
 
@@ -673,14 +750,18 @@ impl KernelServices for ExoKernel {
         // SECURITY: Verify that the caller actually owns the physical range being mapped.
         // This prevents a malicious driver from mapping kernel memory or other drivers' memory.
         if !PHYS_OWNERSHIP_REGISTRY.is_owned_by(phys_addr, size, caller) {
-            log::error!("[KAPI][SECURITY] nvme_iommu_map: Domain {} tried to map unowned physical range {:#x}-{:#x}", 
-                caller, phys_addr, phys_addr + size as u64);
+            log::error!(
+                "[KAPI][SECURITY] nvme_iommu_map: Domain {} tried to map unowned physical range {:#x}-{:#x}",
+                caller,
+                phys_addr,
+                phys_addr + size as u64
+            );
             return Err(KapiError::PermissionDenied);
         }
 
         let device = crate::io::nvme::iommu_device();
         let (iova, mapping) = map_for_iommu(device, phys_addr, size)?;
-        
+
         // If we have a mapping, register it and return the ID
         if let Some(m) = mapping {
             let id = IOMMU_MAPPING_REGISTRY.register(m);
@@ -696,7 +777,7 @@ impl KernelServices for ExoKernel {
             // Identity mapping, nothing to unmap
             return Ok(());
         }
-        
+
         if let Some(mapping) = IOMMU_MAPPING_REGISTRY.unregister(mapping_id) {
             mapping.unmap();
         }
@@ -709,7 +790,7 @@ impl KernelServices for ExoKernel {
         io_type: NvmeIoType,
     ) -> KapiResult<NvmeIoHandle> {
         use crate::io::io_scheduler::{
-            DeviceId as IoDeviceId, IoPriority, IoCommand, DmaBufHandle,
+            DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority,
         };
 
         let device = IoDeviceId::Nvme {
@@ -752,9 +833,8 @@ impl KernelServices for ExoKernel {
             },
         };
 
-        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
-            device, command, priority,
-        );
+        let future = crate::io::io_scheduler::hybrid_coordinator()
+            .submit_io_command(device, command, priority);
         let request_id = future.request_id().0;
 
         Ok(NvmeIoHandle::new(request_id))
@@ -767,17 +847,21 @@ impl KernelServices for ExoKernel {
         use crate::io::io_scheduler::{IoRequestId, IoResult as SchedIoResult};
 
         let request_id = IoRequestId(handle.request_id());
-        
+
         Box::pin(async move {
             // Poll the io_scheduler for completion
             loop {
-                if let Some(result) = crate::io::io_scheduler::io_scheduler().take_result(request_id) {
+                if let Some(result) =
+                    crate::io::io_scheduler::io_scheduler().take_result(request_id)
+                {
                     return match result {
                         SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
                         SchedIoResult::Error(e) => match e {
                             crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
                             crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
-                            crate::io::io_scheduler::IoError::InvalidParameter => NvmeIoResult::InvalidParameter,
+                            crate::io::io_scheduler::IoError::InvalidParameter => {
+                                NvmeIoResult::InvalidParameter
+                            }
                             _ => NvmeIoResult::DeviceError,
                         },
                     };
@@ -796,14 +880,16 @@ impl KernelServices for ExoKernel {
         use crate::io::io_scheduler::{CompletionHook, IoRequestId, IoResult as SchedIoResult};
 
         let request_id = IoRequestId(handle.request_id());
-        
+
         let wrapper: CompletionHook = Box::new(move |result: SchedIoResult| {
             let converted = match result {
                 SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
                 SchedIoResult::Error(e) => match e {
                     crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
                     crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
-                    crate::io::io_scheduler::IoError::InvalidParameter => NvmeIoResult::InvalidParameter,
+                    crate::io::io_scheduler::IoError::InvalidParameter => {
+                        NvmeIoResult::InvalidParameter
+                    }
                     _ => NvmeIoResult::DeviceError,
                 },
             };

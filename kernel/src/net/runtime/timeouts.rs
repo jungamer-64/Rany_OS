@@ -11,7 +11,6 @@
 //! - `KeepaliveTimer`: TCPキープアライブタイマー
 //! - `TimeWaitTimer`: TIME_WAIT (2MSL) タイマー
 
-
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -91,7 +90,11 @@ impl TimeoutWheel {
             slots: [EMPTY_VEC; WHEEL_SLOTS],
             current_slot: 0,
             last_tick: 0,
-            resolution_ms: if resolution_ms == 0 { 10 } else { resolution_ms },
+            resolution_ms: if resolution_ms == 0 {
+                10
+            } else {
+                resolution_ms
+            },
             next_id: AtomicU64::new(1),
         }
     }
@@ -107,11 +110,7 @@ impl TimeoutWheel {
         let ticks_ahead = delay_ms / self.resolution_ms;
         let slot = (self.current_slot + ticks_ahead as usize) & WHEEL_MASK;
 
-        self.slots[slot].push(TimerEntry {
-            id,
-            deadline,
-            kind,
-        });
+        self.slots[slot].push(TimerEntry { id, deadline, kind });
 
         id
     }

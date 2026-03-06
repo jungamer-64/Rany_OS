@@ -1,11 +1,15 @@
-use alloc::vec;
-use alloc::vec::Vec;
 use super::*;
 use crate::sync::set_panicking;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 fn dhcp_options_contain(opts_with_cookie: &[u8], target: DhcpOption) -> bool {
-    let mut i = if opts_with_cookie.starts_with(&DHCP_MAGIC_COOKIE) { 4 } else { 0 };
+    let mut i = if opts_with_cookie.starts_with(&DHCP_MAGIC_COOKIE) {
+        4
+    } else {
+        0
+    };
     while i < opts_with_cookie.len() {
         let code = opts_with_cookie[i];
         if code == DhcpOption::End as u8 {
@@ -35,7 +39,9 @@ pub fn test_check_timeout_poisoned_state_reset_skips() {
         *s = DhcpState::Selecting;
     }
     client.state_time.store(0, Ordering::SeqCst);
-    client.retry_count.store(DhcpClient::MAX_RETRIES - 1, Ordering::SeqCst);
+    client
+        .retry_count
+        .store(DhcpClient::MAX_RETRIES - 1, Ordering::SeqCst);
 
     set_panicking(true);
     // Should not panic even if state lock is poisoned
@@ -63,7 +69,9 @@ pub fn test_dhcp_header_encode_into_serializes_network_order_bytes() {
     };
 
     let mut buf = vec![0u8; DhcpHeader::SIZE];
-    header.encode_into(&mut buf).expect("encode_into should succeed");
+    header
+        .encode_into(&mut buf)
+        .expect("encode_into should succeed");
 
     assert_eq!(buf.len(), DhcpHeader::SIZE);
     assert_eq!(&buf[0..4], &[DhcpOperation::Request as u8, 1, 6, 0]);
@@ -104,7 +112,9 @@ pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
     }
 
     let mut buf = vec![0u8; 512];
-    let len = client.build_request(&mut buf, 123).expect("build_request failed");
+    let len = client
+        .build_request(&mut buf, 123)
+        .expect("build_request failed");
 
     // ciaddr should be set to the current IP
     assert_eq!(&buf[12..16], lease.ip_address.as_bytes());
@@ -143,7 +153,9 @@ pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
     }
 
     let mut buf = vec![0u8; 512];
-    let len = client.build_request(&mut buf, 42).expect("build_request failed");
+    let len = client
+        .build_request(&mut buf, 42)
+        .expect("build_request failed");
     let opts = &buf[DhcpHeader::SIZE..len];
     assert!(dhcp_options_contain(opts, DhcpOption::ServerIdentifier));
     assert!(dhcp_options_contain(opts, DhcpOption::RequestedIp));
@@ -161,12 +173,16 @@ pub fn test_build_discover_reuse_xid_on_retransmit() {
     }
 
     let mut buf1 = vec![0u8; 512];
-    let _ = client.build_discover(&mut buf1, 10).expect("build_discover failed");
+    let _ = client
+        .build_discover(&mut buf1, 10)
+        .expect("build_discover failed");
     let xid1 = u32::from_be_bytes(buf1[4..8].try_into().unwrap());
     assert_eq!(xid1, 0x1234_5678);
 
     let mut buf2 = vec![0u8; 512];
-    let _ = client.build_discover(&mut buf2, 20).expect("build_discover failed");
+    let _ = client
+        .build_discover(&mut buf2, 20)
+        .expect("build_discover failed");
     let xid2 = u32::from_be_bytes(buf2[4..8].try_into().unwrap());
     assert_eq!(xid2, 0x1234_5678);
 }
@@ -219,7 +235,6 @@ pub fn test_process_response_chaddr_mismatch() {
     offset += 6;
     buf[offset] = DhcpOption::End as u8;
 
-
     assert!(client.process_response(&buf, 100).is_err());
 }
 
@@ -249,7 +264,6 @@ pub fn test_process_response_offer_missing_serverid_returns_err() {
 
     // No Server Identifier option
     buf[offset] = DhcpOption::End as u8;
-
 
     assert!(client.process_response(&buf, 200).is_err());
 }
@@ -285,7 +299,6 @@ pub fn test_process_response_siaddr_serverid_mismatch() {
     buf[offset + 2..offset + 6].copy_from_slice(&[192, 168, 0, 1]);
     offset += 6;
     buf[offset] = DhcpOption::End as u8;
-
 
     assert!(client.process_response(&buf, 300).is_err());
 }
@@ -345,7 +358,6 @@ pub fn test_process_response_ack_requesting_mismatch() {
     offset += 6;
     buf[offset] = DhcpOption::End as u8;
 
-
     assert!(client.process_response(&buf, 400).is_err());
 }
 
@@ -403,8 +415,9 @@ pub fn test_process_response_ack_renewal_success() {
     offset += 6;
     buf[offset] = DhcpOption::End as u8;
 
-
-    let res = client.process_response(&buf, 500).expect("ACK should be accepted");
+    let res = client
+        .process_response(&buf, 500)
+        .expect("ACK should be accepted");
     match res {
         DhcpResponseResult::Ack(l) => {
             assert_eq!(l.ip_address, lease.ip_address);
@@ -417,29 +430,46 @@ pub fn test_process_response_ack_renewal_success() {
 pub fn test_build_decline_and_build_release_contents() {
     use crate::net::l2::ethernet::MacAddress;
 
-    let client = DhcpClient::new(MacAddress::new([1,2,3,4,5,6]));
+    let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
     client.xid.store(0xabab_cdef, Ordering::SeqCst);
 
     // build_decline
     let mut dbuf = [0u8; 512];
-    let declined_ip = Ipv4Address::new([10,0,0,99]);
-    let server_ip = Some(Ipv4Address::new([10,0,0,1]));
-    let len = client.build_decline(&mut dbuf, declined_ip, server_ip, 0).expect("build_decline failed");
+    let declined_ip = Ipv4Address::new([10, 0, 0, 99]);
+    let server_ip = Some(Ipv4Address::new([10, 0, 0, 1]));
+    let len = client
+        .build_decline(&mut dbuf, declined_ip, server_ip, 0)
+        .expect("build_decline failed");
     let opts = &dbuf[DhcpHeader::SIZE..len];
     // check MessageType Decline present
-    assert!(opts.windows(3).any(|w| w[0] == DhcpOption::MessageType as u8 && w[1] == 1 && w[2] == DhcpMessageType::Decline as u8));
+    assert!(
+        opts.windows(3)
+            .any(|w| w[0] == DhcpOption::MessageType as u8
+                && w[1] == 1
+                && w[2] == DhcpMessageType::Decline as u8)
+    );
     // check Requested IP option present
-    assert!(opts.windows(6).any(|w| w[0] == DhcpOption::RequestedIp as u8 && w[1] == 4 && &w[2..6] == declined_ip.as_bytes()));
+    assert!(
+        opts.windows(6)
+            .any(|w| w[0] == DhcpOption::RequestedIp as u8
+                && w[1] == 4
+                && &w[2..6] == declined_ip.as_bytes())
+    );
     // check Server Identifier present
-    assert!(opts.windows(6).any(|w| w[0] == DhcpOption::ServerIdentifier as u8 && w[1] == 4 && &w[2..6] == server_ip.unwrap().as_bytes()));
+    assert!(
+        opts.windows(6)
+            .any(|w| w[0] == DhcpOption::ServerIdentifier as u8
+                && w[1] == 4
+                && &w[2..6] == server_ip.unwrap().as_bytes())
+    );
 
     // build_release
     let lease = DhcpLease {
-        ip_address: Ipv4Address::new([172,16,0,5]),
-        subnet_mask: Ipv4Address::new([255,255,0,0]),
+        ip_address: Ipv4Address::new([172, 16, 0, 5]),
+        subnet_mask: Ipv4Address::new([255, 255, 0, 0]),
         gateway: None,
         dns_servers: Vec::new(),
-        server_ip: Ipv4Address::new([10,0,0,1]),
+        server_ip: Ipv4Address::new([10, 0, 0, 1]),
         lease_time: 1200,
         t1: 600,
         t2: 900,
@@ -453,25 +483,39 @@ pub fn test_build_decline_and_build_release_contents() {
     }
 
     let mut rbuf = [0u8; 512];
-    let rlen = client.build_release(&mut rbuf, 0).expect("build_release failed");
+    let rlen = client
+        .build_release(&mut rbuf, 0)
+        .expect("build_release failed");
     // ciaddr should be set
     assert_eq!(&rbuf[12..16], lease.ip_address.as_bytes());
     let ropts = &rbuf[DhcpHeader::SIZE..rlen];
-    assert!(ropts.windows(3).any(|w| w[0] == DhcpOption::MessageType as u8 && w[1] == 1 && w[2] == DhcpMessageType::Release as u8));
-    assert!(ropts.windows(6).any(|w| w[0] == DhcpOption::ServerIdentifier as u8 && w[1] == 4 && &w[2..6] == lease.server_ip.as_bytes()));
+    assert!(
+        ropts
+            .windows(3)
+            .any(|w| w[0] == DhcpOption::MessageType as u8
+                && w[1] == 1
+                && w[2] == DhcpMessageType::Release as u8)
+    );
+    assert!(
+        ropts
+            .windows(6)
+            .any(|w| w[0] == DhcpOption::ServerIdentifier as u8
+                && w[1] == 4
+                && &w[2..6] == lease.server_ip.as_bytes())
+    );
 }
 
 #[cfg_attr(test, test_case)]
 pub fn test_release_clears_lease_and_sets_last_released() {
     use crate::net::l2::ethernet::MacAddress;
 
-    let client = DhcpClient::new(MacAddress::new([5,5,5,5,5,5]));
+    let client = DhcpClient::new(MacAddress::new([5, 5, 5, 5, 5, 5]));
     let lease = DhcpLease {
-        ip_address: Ipv4Address::new([192,168,10,10]),
-        subnet_mask: Ipv4Address::new([255,255,255,0]),
+        ip_address: Ipv4Address::new([192, 168, 10, 10]),
+        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: None,
         dns_servers: Vec::new(),
-        server_ip: Ipv4Address::new([10,0,0,1]),
+        server_ip: Ipv4Address::new([10, 0, 0, 1]),
         lease_time: 3600,
         t1: 1800,
         t2: 3150,
@@ -542,8 +586,9 @@ pub fn test_parse_t1_t2_and_timeout_transitions() {
     offset += 6;
     buf[offset] = DhcpOption::End as u8;
 
-
-    let res = client.process_response(&buf, 0).expect("ACK should be accepted");
+    let res = client
+        .process_response(&buf, 0)
+        .expect("ACK should be accepted");
     match res {
         DhcpResponseResult::Ack(lease) => {
             assert_eq!(lease.lease_time, 100);
@@ -570,8 +615,8 @@ pub fn test_parse_t1_t2_and_timeout_transitions() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_offer_probe_and_decline_flow() {
-    use crate::net::runtime::stack;
     use crate::net::l2::ethernet::MacAddress;
+    use crate::net::runtime::stack;
 
     // Initialize global stack for ARP facilities (best-effort)
     stack::init_default();
@@ -604,16 +649,21 @@ pub fn test_offer_probe_and_decline_flow() {
     offset += 6;
     buf[offset] = DhcpOption::End as u8;
 
-
     // Process offer (should send ARP probe and set probe timestamp)
-    let _ = client.process_response(&buf, 100).expect("Offer should be processed");
+    let _ = client
+        .process_response(&buf, 100)
+        .expect("Offer should be processed");
     assert!(client.offered_lease.lock().unwrap().is_some());
     assert!(client.offered_probe_at.load(Ordering::SeqCst) != 0);
 
     // Simulate ARP reply from another host for the offered IP
     if let Ok(mut s) = stack::stack().lock() {
         if let Some(ref mut st) = s.as_mut() {
-            st.arp_cache_insert(Ipv4Address::new([10, 0, 0, 9]), MacAddress::from_octets(0xaa,0xbb,0xcc,0xdd,0xee,0xff), 200);
+            st.arp_cache_insert(
+                Ipv4Address::new([10, 0, 0, 9]),
+                MacAddress::from_octets(0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff),
+                200,
+            );
         }
     }
 
@@ -622,7 +672,10 @@ pub fn test_offer_probe_and_decline_flow() {
     // Offer should have been cleared due to conflict
     assert!(client.offered_lease.lock().unwrap().is_none());
     // Decline should have been recorded
-    assert_eq!(client.last_declined_ip(), Some(Ipv4Address::new([10, 0, 0, 9])));
+    assert_eq!(
+        client.last_declined_ip(),
+        Some(Ipv4Address::new([10, 0, 0, 9]))
+    );
 }
 
 #[cfg_attr(test, test_case)]

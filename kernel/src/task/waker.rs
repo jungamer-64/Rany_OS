@@ -56,7 +56,7 @@ impl LockFreeWakeQueue {
     /// Enqueue a task ID (lock-free, ISR-safe)
     fn push(&self, task_id: TaskId) -> bool {
         let id_val = task_id.as_u64() as usize;
-        
+
         loop {
             let head = self.head.load(Ordering::Acquire);
             let tail = self.tail.load(Ordering::Acquire);

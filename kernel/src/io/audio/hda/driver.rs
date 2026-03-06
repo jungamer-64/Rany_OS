@@ -9,8 +9,8 @@ use core::sync::atomic::Ordering;
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
-use crate::io::pci::PciDeviceInfo;
 use crate::io::audio::hda::{HdaController, global};
+use crate::io::pci::PciDeviceInfo;
 
 /// Intel HD Audio Driver
 pub struct HdaDriver {
@@ -55,7 +55,7 @@ impl Driver for HdaDriver {
             Ok(_) => {
                 // Register global instance
                 *global::HDA_DRIVER.lock() = Some(controller);
-                
+
                 // Store IRQ
                 if irq > 0 && irq < 16 {
                     global::HDA_IRQ.store(irq, Ordering::SeqCst);
@@ -76,10 +76,10 @@ impl Driver for HdaDriver {
         if !self.initialized {
             return Err(KapiError::Internal(-1));
         }
-        
+
         // Ensure interrupts are enabled if needed, usually done in init
         global::enable_irq();
-        
+
         Ok(())
     }
 
@@ -91,14 +91,12 @@ impl Driver for HdaDriver {
     fn supported_devices(&self) -> &[DeviceId] {
         // HDA generic class match is usually preferred, but we can list specific IDs if known.
         // Since integration module finds by class, this list is informational or for precise matching.
-        static DEVICES: [DeviceId; 1] = [
-            DeviceId {
-                vendor: 0x8086, // Intel
-                device: 0x2668, // ICH6 (example)
-                subsystem_vendor: None,
-                subsystem_device: None,
-            },
-        ];
+        static DEVICES: [DeviceId; 1] = [DeviceId {
+            vendor: 0x8086, // Intel
+            device: 0x2668, // ICH6 (example)
+            subsystem_vendor: None,
+            subsystem_device: None,
+        }];
         &DEVICES
     }
 }

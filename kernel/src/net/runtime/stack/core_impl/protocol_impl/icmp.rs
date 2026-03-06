@@ -5,7 +5,7 @@
 //! ICMP Redirect processing, and ICMP echo request/reply.
 
 use super::*;
-use crate::net::l3::icmp::{IcmpBuilder, IcmpType, IcmpPacket};
+use crate::net::l3::icmp::{IcmpBuilder, IcmpPacket, IcmpType};
 
 impl NetworkStack {
     /// Process ICMP packet
@@ -65,7 +65,11 @@ impl NetworkStack {
                 // Handle ICMP errors for PMTUD (RFC 1191)
                 self.handle_icmp_error(data, icmp_type, code, current_time);
             }
-            IcmpResult::Redirect { code, gateway, destination } => {
+            IcmpResult::Redirect {
+                code,
+                gateway,
+                destination,
+            } => {
                 // Handle ICMP Redirect for route optimization (RFC 792)
                 self.handle_icmp_redirect(code, gateway, destination, src_ip);
             }
@@ -147,9 +151,7 @@ impl NetworkStack {
 
                 // Build ICMP Timestamp Reply
                 if let Some(mut icmp_builder) = IcmpBuilder::new(ip_payload) {
-                    icmp_builder
-                        .set_type(IcmpType::TimestampReply)
-                        .set_code(0);
+                    icmp_builder.set_type(IcmpType::TimestampReply).set_code(0);
 
                     let payload = icmp_builder.payload_mut();
                     // Identifier (2) + Sequence (2) + Originate (4) + Receive (4) + Transmit (4) = 16 bytes
@@ -174,9 +176,13 @@ impl NetworkStack {
     }
 
     /// Resolve the next-hop IPv4 address for a destination, considering redirects.
-    pub(crate) fn resolve_ipv4_next_hop(&mut self, dst_ip: Ipv4Address, current_time: u64) -> Ipv4Address {
+    pub(crate) fn resolve_ipv4_next_hop(
+        &mut self,
+        dst_ip: Ipv4Address,
+        current_time: u64,
+    ) -> Ipv4Address {
         let config = self.config.clone();
-        
+
         if config.ipv4.is_local(&dst_ip) {
             dst_ip
         } else {
@@ -213,7 +219,11 @@ impl NetworkStack {
 
             // 2. MUST NOT send ICMP error for a packet sent to an IP broadcast or multicast address.
             let orig_dst = ip.destination();
-            if orig_dst.is_broadcast() || orig_dst.is_multicast() || (config.ipv4.subnet_mask.as_bytes()[0] != 0 && orig_dst == config.ipv4.broadcast_address()) {
+            if orig_dst.is_broadcast()
+                || orig_dst.is_multicast()
+                || (config.ipv4.subnet_mask.as_bytes()[0] != 0
+                    && orig_dst == config.ipv4.broadcast_address())
+            {
                 return false;
             }
 
@@ -228,7 +238,8 @@ impl NetworkStack {
 
         // 4. MUST NOT send ICMP error for a packet whose source address is not a single host.
         // (e.g. 0.0.0.0, broadcast, multicast, or martian addresses)
-        if dst_ip.is_any() || dst_ip.is_broadcast() || dst_ip.is_multicast() || dst_ip.is_martian() {
+        if dst_ip.is_any() || dst_ip.is_broadcast() || dst_ip.is_multicast() || dst_ip.is_martian()
+        {
             return false;
         }
 
@@ -294,10 +305,15 @@ impl NetworkStack {
                 let ip_payload = ip_packet.payload_mut();
 
                 // Build ICMP packet (Type 3: Destination Unreachable)
-                if let Some(len) = IcmpProcessor::build_dest_unreachable(ip_payload, code, next_hop_mtu, original_packet) {
+                if let Some(len) = IcmpProcessor::build_dest_unreachable(
+                    ip_payload,
+                    code,
+                    next_hop_mtu,
+                    original_packet,
+                ) {
                     ip_packet.finalize(len);
                     let total_len = EthernetHeader::SIZE + ip_packet.total_len();
-                    
+
                     if let Some(ref transmit) = self.transmit_fn {
                         transmit(None, &buffer[..total_len]);
                         self.stats.record_tx(total_len);
@@ -397,7 +413,7 @@ impl NetworkStack {
         }
 
         let config = self.config.clone();
-        
+
         // Resolve next-hop gateway (considering redirects)
         let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
 
@@ -426,9 +442,11 @@ impl NetworkStack {
                     .set_ttl(64);
 
                 let ip_payload = ip_packet.payload_mut();
-                if let Some(icmp_len) =
-                    crate::net::l3::icmp::IcmpProcessor::build_time_exceeded(ip_payload, code, original_packet)
-                {
+                if let Some(icmp_len) = crate::net::l3::icmp::IcmpProcessor::build_time_exceeded(
+                    ip_payload,
+                    code,
+                    original_packet,
+                ) {
                     ip_packet.finalize(icmp_len);
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
@@ -459,7 +477,7 @@ impl NetworkStack {
         }
 
         let config = self.config.clone();
-        
+
         // Resolve next-hop gateway (considering redirects)
         let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
 
@@ -488,9 +506,11 @@ impl NetworkStack {
                     .set_ttl(64);
 
                 let ip_payload = ip_packet.payload_mut();
-                if let Some(icmp_len) =
-                    crate::net::l3::icmp::IcmpProcessor::build_parameter_problem(ip_payload, pointer, original_packet)
-                {
+                if let Some(icmp_len) = crate::net::l3::icmp::IcmpProcessor::build_parameter_problem(
+                    ip_payload,
+                    pointer,
+                    original_packet,
+                ) {
                     ip_packet.finalize(icmp_len);
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
@@ -512,7 +532,12 @@ impl NetworkStack {
         let current_time = self.current_time();
 
         // Security: RFC 4443 compliance check (e.g. no errors for multicast)
-        if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::DestinationUnreachable, code) {
+        if !self.should_send_icmp_v6_error(
+            original_packet,
+            dst_v6,
+            Icmpv6Type::DestinationUnreachable,
+            code,
+        ) {
             return false;
         }
 
@@ -533,7 +558,10 @@ impl NetworkStack {
 
         // Build ICMPv6 Destination Unreachable (Type 1)
         let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6Builder::build_dest_unreachable(
-            &src_v6, &dst_v6, code, original_packet
+            &src_v6,
+            &dst_v6,
+            code,
+            original_packet,
         );
 
         self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
@@ -551,7 +579,12 @@ impl NetworkStack {
         let current_time = self.current_time();
 
         // Security: RFC 4443 compliance check
-        if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::ParameterProblem, code) {
+        if !self.should_send_icmp_v6_error(
+            original_packet,
+            dst_v6,
+            Icmpv6Type::ParameterProblem,
+            code,
+        ) {
             return false;
         }
 
@@ -570,7 +603,11 @@ impl NetworkStack {
         };
 
         let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6Builder::build_parameter_problem(
-            &src_v6, &dst_v6, code, pointer, original_packet
+            &src_v6,
+            &dst_v6,
+            code,
+            pointer,
+            original_packet,
         );
 
         self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
@@ -593,16 +630,25 @@ impl NetworkStack {
     }
 
     /// Check if an ICMPv6 error message should be sent (RFC 4443 Section 2.4(e))
-    pub(crate) fn should_send_icmp_v6_error(&self, original_packet: &[u8], dst_ip: Ipv6Address, error_type: Icmpv6Type, error_code: u8) -> bool {
+    pub(crate) fn should_send_icmp_v6_error(
+        &self,
+        original_packet: &[u8],
+        dst_ip: Ipv6Address,
+        error_type: Icmpv6Type,
+        error_code: u8,
+    ) -> bool {
         // (e.1) An ICMPv6 error message.
         // (e.2) An ICMPv6 redirect message.
         if original_packet.len() >= 40 {
             let next_header = original_packet[6];
             use crate::net::l3::ipv6::skip_extension_headers;
-            let (final_proto, icmp_data) = skip_extension_headers(IpProtocol::from(next_header), &original_packet[40..]);
+            let (final_proto, icmp_data) =
+                skip_extension_headers(IpProtocol::from(next_header), &original_packet[40..]);
             if final_proto == IpProtocol::Icmpv6 && icmp_data.len() >= 1 {
                 let icmp_type = icmp_data[0];
-                if icmp_type < 128 || icmp_type == 137 /* Redirect */ {
+                if icmp_type < 128 || icmp_type == 137
+                /* Redirect */
+                {
                     return false;
                 }
             }
@@ -611,18 +657,31 @@ impl NetworkStack {
         // (e.3, e.4, e.5) A packet destined to a multicast address (with exceptions)
         if original_packet.len() >= 40 {
             let orig_dst = Ipv6Address::new([
-                original_packet[24], original_packet[25], original_packet[26], original_packet[27],
-                original_packet[28], original_packet[29], original_packet[30], original_packet[31],
-                original_packet[32], original_packet[33], original_packet[34], original_packet[35],
-                original_packet[36], original_packet[37], original_packet[38], original_packet[39],
+                original_packet[24],
+                original_packet[25],
+                original_packet[26],
+                original_packet[27],
+                original_packet[28],
+                original_packet[29],
+                original_packet[30],
+                original_packet[31],
+                original_packet[32],
+                original_packet[33],
+                original_packet[34],
+                original_packet[35],
+                original_packet[36],
+                original_packet[37],
+                original_packet[38],
+                original_packet[39],
             ]);
             if orig_dst.is_multicast() {
                 // RFC 4443 Section 2.4(e.3) Exceptions:
                 // 1. Packet Too Big is allowed for multicast
                 let is_ptb = error_type == Icmpv6Type::PacketTooBig;
-                
+
                 // 2. Parameter Problem (Code 2: unrecognized Next Header) is allowed for multicast
-                let is_pp_unrecognized_header = error_type == Icmpv6Type::ParameterProblem && error_code == 2;
+                let is_pp_unrecognized_header =
+                    error_type == Icmpv6Type::ParameterProblem && error_code == 2;
 
                 if !is_ptb && !is_pp_unrecognized_header {
                     return false;
@@ -647,7 +706,13 @@ impl NetworkStack {
     /// The Next-Hop MTU is encoded in bytes 6-7 of the ICMP message (after the
     /// 4-byte ICMP header). This value indicates the maximum MTU that should be
     /// used for that path.
-    pub(crate) fn handle_icmp_error(&mut self, data: &[u8], icmp_type: IcmpType, code: u8, current_time: u64) {
+    pub(crate) fn handle_icmp_error(
+        &mut self,
+        data: &[u8],
+        icmp_type: IcmpType,
+        code: u8,
+        current_time: u64,
+    ) {
         // Support ICMP errors (RFC 792/1122/1191):
         // - Destination Unreachable (Fragmentation Needed for PMTUD, Port Unreachable for transport)
         // - Source Quench (Flow control)
@@ -666,7 +731,7 @@ impl NetworkStack {
         // Bytes 0-3: ICMP header (type, code, checksum)
         // Bytes 4-7: Contents depend on type (e.g. Next-Hop MTU for Type 3 Code 4)
         // Bytes 8+: Original IP header + first 8 bytes of payload
-        
+
         const ORIGINAL_IP_OFFSET: usize = 8;
         if data.len() < ORIGINAL_IP_OFFSET + 20 {
             return;
@@ -675,8 +740,18 @@ impl NetworkStack {
         // Extract original source/destination from embedded IP header
         let src_offset = ORIGINAL_IP_OFFSET + 12;
         let dst_offset = ORIGINAL_IP_OFFSET + 16;
-        let original_src = Ipv4Address::from_octets(data[src_offset], data[src_offset+1], data[src_offset+2], data[src_offset+3]);
-        let original_dst = Ipv4Address::from_octets(data[dst_offset], data[dst_offset+1], data[dst_offset+2], data[dst_offset+3]);
+        let original_src = Ipv4Address::from_octets(
+            data[src_offset],
+            data[src_offset + 1],
+            data[src_offset + 2],
+            data[src_offset + 3],
+        );
+        let original_dst = Ipv4Address::from_octets(
+            data[dst_offset],
+            data[dst_offset + 1],
+            data[dst_offset + 2],
+            data[dst_offset + 3],
+        );
 
         // Security check: Verify original source matches our address
         if original_src != self.config.ipv4.address && !original_src.is_any() {
@@ -697,9 +772,17 @@ impl NetworkStack {
 
         // Protocol-specific handling and validation
         match protocol {
-            6 => { // TCP
-                if data.len() < transport_offset + 8 { return; }
-                let seq_num = u32::from_be_bytes([data[transport_offset+4], data[transport_offset+5], data[transport_offset+6], data[transport_offset+7]]);
+            6 => {
+                // TCP
+                if data.len() < transport_offset + 8 {
+                    return;
+                }
+                let seq_num = u32::from_be_bytes([
+                    data[transport_offset + 4],
+                    data[transport_offset + 5],
+                    data[transport_offset + 6],
+                    data[transport_offset + 7],
+                ]);
                 let local = TcpEndpointAddr::new(original_src.octets(), src_port);
                 let remote = TcpEndpointAddr::new(original_dst.octets(), dst_port);
 
@@ -721,15 +804,24 @@ impl NetworkStack {
                         // handle_source_quench in endpoint
                         crate::net::l4::endpoint::tcp_rx::handle_source_quench(local, remote);
                     } else if icmp_type == IcmpType::DestinationUnreachable {
-                        crate::net::l4::endpoint::tcp_rx::handle_icmp_error(local, remote, icmp_type, code);
+                        crate::net::l4::endpoint::tcp_rx::handle_icmp_error(
+                            local, remote, icmp_type, code,
+                        );
                     }
                 } else if !old_stack_valid {
-                    log::warn!("[NET] ICMP: error for {} rejected due to invalid TCP seq {} (RFC 5927)", original_dst, seq_num);
+                    log::warn!(
+                        "[NET] ICMP: error for {} rejected due to invalid TCP seq {} (RFC 5927)",
+                        original_dst,
+                        seq_num
+                    );
                     return;
                 }
             }
-            17 => { // UDP
-                if !self.udp.has_endpoint(src_port) { return; }
+            17 => {
+                // UDP
+                if !self.udp.has_endpoint(src_port) {
+                    return;
+                }
                 // Source Quench for UDP: We don't have per-socket congestion control for UDP,
                 // but we could theoretically signal the application.
             }
@@ -737,7 +829,9 @@ impl NetworkStack {
         }
 
         // PMTUD specific handling
-        if icmp_type == IcmpType::DestinationUnreachable && code == DestUnreachCode::FragmentationNeeded as u8 {
+        if icmp_type == IcmpType::DestinationUnreachable
+            && code == DestUnreachCode::FragmentationNeeded as u8
+        {
             let next_hop_mtu = u16::from_be_bytes([data[6], data[7]]);
             let mtu = if next_hop_mtu == 0 {
                 // RFC 1191: If Next-Hop MTU is 0, use next smaller plateau
@@ -751,11 +845,11 @@ impl NetworkStack {
     }
 
     /// Handle ICMP Redirect message (RFC 792)
-    /// 
+    ///
     /// ICMP Redirect is sent by a router when it detects that a better route
     /// exists for a destination. The host should update its routing table
     /// to use the new gateway for future packets to that destination.
-    /// 
+    ///
     /// Security considerations:
     /// - Only accept redirects from the current first-hop router
     /// - Validate that the new gateway is on a directly connected network
@@ -780,7 +874,7 @@ impl NetworkStack {
         let local_mask = self.config.ipv4.subnet_mask;
         let local_network = local_ip.apply_mask(local_mask);
         let gateway_network = gateway.apply_mask(local_mask);
-        
+
         if local_network != gateway_network {
             // New gateway is not on the same network - reject
             return;
@@ -855,7 +949,11 @@ impl NetworkStack {
             log::info!("[NET-PING] Sent ICMP echo to {} seq={}", target, sequence);
             Ok(send_time)
         } else {
-            log::warn!("[NET-PING] Failed to transmit ICMP echo to {} seq={}", target, sequence);
+            log::warn!(
+                "[NET-PING] Failed to transmit ICMP echo to {} seq={}",
+                target,
+                sequence
+            );
             Err(())
         }
     }
@@ -875,8 +973,14 @@ impl NetworkStack {
         let dst_mac = match self.resolve_mac(target, &config, current_time) {
             Some(mac) => mac,
             None => {
-                log::info!("[NET-PING] Resolution required for {}.{}.{}.{} seq={} - resolution started",
-                    target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
+                log::info!(
+                    "[NET-PING] Resolution required for {}.{}.{}.{} seq={} - resolution started",
+                    target.as_bytes()[0],
+                    target.as_bytes()[1],
+                    target.as_bytes()[2],
+                    target.as_bytes()[3],
+                    sequence
+                );
                 return Err(());
             }
         };
@@ -914,10 +1018,20 @@ impl NetworkStack {
                         drop(frame);
                         packet.set_len(total_len);
 
-                        if crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet).is_ok() {
+                        if crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(
+                            packet,
+                        )
+                        .is_ok()
+                        {
                             self.stats.record_tx(total_len);
-                            log::info!("[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}", 
-                                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
+                            log::info!(
+                                "[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}",
+                                target.as_bytes()[0],
+                                target.as_bytes()[1],
+                                target.as_bytes()[2],
+                                target.as_bytes()[3],
+                                sequence
+                            );
                             return Ok(send_time);
                         }
                     }
@@ -939,7 +1053,8 @@ impl NetworkStack {
         quoted_packet: &[u8],
     ) {
         // Quoted packet starts with an IPv6 header (40 bytes)
-        if quoted_packet.len() < 48 { // Header(40) + minimum transport(8)
+        if quoted_packet.len() < 48 {
+            // Header(40) + minimum transport(8)
             return;
         }
 
@@ -948,7 +1063,8 @@ impl NetworkStack {
 
         // Skip extension headers to find the upper-layer header
         use crate::net::l3::ipv6::skip_extension_headers;
-        let (final_proto, transport_data) = skip_extension_headers(IpProtocol::from(next_header), payload);
+        let (final_proto, transport_data) =
+            skip_extension_headers(IpProtocol::from(next_header), payload);
 
         if transport_data.len() < 8 {
             return;
@@ -958,7 +1074,12 @@ impl NetworkStack {
             IpProtocol::Tcp => {
                 let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
                 let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
-                let seq_num = u32::from_be_bytes([transport_data[4], transport_data[5], transport_data[6], transport_data[7]]);
+                let seq_num = u32::from_be_bytes([
+                    transport_data[4],
+                    transport_data[5],
+                    transport_data[6],
+                    transport_data[7],
+                ]);
 
                 use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
                 let local_addr = TcpEndpointAddr::new_v6(quoted_src.octets(), src_port);
@@ -968,9 +1089,19 @@ impl NetworkStack {
                 let tcb_table = crate::net::l4::endpoint::tcb_table();
                 if tcb_table.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
                     // Notify TCP stack
-                    crate::net::l4::endpoint::tcp_rx::handle_icmpv6_error(local_addr, remote_addr, icmp_type, code);
+                    crate::net::l4::endpoint::tcp_rx::handle_icmpv6_error(
+                        local_addr,
+                        remote_addr,
+                        icmp_type,
+                        code,
+                    );
                 } else {
-                    log::warn!("[NET] ICMPv6: error type {:?} for {} rejected due to invalid TCP seq {} (RFC 5927)", icmp_type, quoted_dst, seq_num);
+                    log::warn!(
+                        "[NET] ICMPv6: error type {:?} for {} rejected due to invalid TCP seq {} (RFC 5927)",
+                        icmp_type,
+                        quoted_dst,
+                        seq_num
+                    );
                 }
             }
             IpProtocol::Udp => {

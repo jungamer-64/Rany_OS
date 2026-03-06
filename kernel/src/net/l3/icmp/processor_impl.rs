@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl IcmpProcessor {
     /// Create a new ICMP processor
     pub fn new(_local_ip: Ipv4Address) -> Self {
@@ -35,16 +34,21 @@ impl IcmpProcessor {
 
         // Per-IP rate limit: Add 1 token per 100ms, max 20 tokens per IP.
         const MAX_RATE_LIMIT_ENTRIES: usize = 1024;
-        
+
         // If entry doesn't exist and map is full, we need to evict.
         // We check this before taking the entry to avoid borrow checker issues.
-        if !self.per_ip_rate_limits.contains_key(&ip) && self.per_ip_rate_limits.len() >= MAX_RATE_LIMIT_ENTRIES {
+        if !self.per_ip_rate_limits.contains_key(&ip)
+            && self.per_ip_rate_limits.len() >= MAX_RATE_LIMIT_ENTRIES
+        {
             if let Some(&first_key) = self.per_ip_rate_limits.keys().next() {
                 self.per_ip_rate_limits.remove(&first_key);
             }
         }
 
-        let (last_time, tokens) = self.per_ip_rate_limits.entry(ip).or_insert((current_time, 10));
+        let (last_time, tokens) = self
+            .per_ip_rate_limits
+            .entry(ip)
+            .or_insert((current_time, 10));
         let elapsed = current_time.saturating_sub(*last_time);
         if elapsed >= 100 {
             let new_tokens = (elapsed / 100) as u32;
@@ -55,14 +59,20 @@ impl IcmpProcessor {
         if *tokens == 0 {
             return false;
         }
-        
+
         *tokens -= 1;
         self.global_tokens -= 1;
         true
     }
 
     /// Process an incoming ICMP packet
-    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) -> IcmpResult {
+    pub fn process(
+        &mut self,
+        data: &[u8],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        current_time: u64,
+    ) -> IcmpResult {
         // Security: Check rate limit BEFORE expensive operations (like checksum)
         if !self.check_rate_limit(src_ip, current_time) {
             return IcmpResult::Ignored;
@@ -129,12 +139,8 @@ impl IcmpProcessor {
                 self.stats.errors_rx += 1;
                 self.process_redirect(&packet, src_ip)
             }
-            IcmpType::TimestampRequest => {
-                self.process_timestamp_request(&packet, src_ip)
-            }
-            IcmpType::TimestampReply => {
-                IcmpResult::Ignored
-            }
+            IcmpType::TimestampRequest => self.process_timestamp_request(&packet, src_ip),
+            IcmpType::TimestampReply => IcmpResult::Ignored,
             _ => IcmpResult::Ignored,
         }
     }
@@ -236,9 +242,7 @@ impl IcmpProcessor {
         }
 
         let mut builder = IcmpBuilder::new(buffer)?;
-        builder
-            .set_type(IcmpType::ParameterProblem)
-            .set_code(0);
+        builder.set_type(IcmpType::ParameterProblem).set_code(0);
 
         let payload = builder.payload_mut();
         payload[0] = pointer; // Pointer to the byte in the original header where the error was detected
@@ -281,7 +285,11 @@ impl IcmpProcessor {
     }
 
     /// Process an ICMP Redirect packet.
-    pub(super) fn process_redirect(&self, packet: &IcmpPacket<'_>, src_ip: Ipv4Address) -> IcmpResult {
+    pub(super) fn process_redirect(
+        &self,
+        packet: &IcmpPacket<'_>,
+        src_ip: Ipv4Address,
+    ) -> IcmpResult {
         // Security: ICMP Redirects are dangerous.
         // Even if we don't apply them here, we extract information for the stack to decide.
         let payload = packet.payload();
@@ -289,7 +297,12 @@ impl IcmpProcessor {
             let gateway = Ipv4Address::from_octets(payload[0], payload[1], payload[2], payload[3]);
             // The destination address is in the quoted packet in the payload after byte 4
             if payload.len() >= 4 + 20 {
-                let dest_ip = Ipv4Address::from_octets(payload[4+16], payload[4+17], payload[4+18], payload[4+19]);
+                let dest_ip = Ipv4Address::from_octets(
+                    payload[4 + 16],
+                    payload[4 + 17],
+                    payload[4 + 18],
+                    payload[4 + 19],
+                );
                 return IcmpResult::Redirect {
                     code: RedirectCode::from(packet.code()),
                     gateway,
@@ -297,20 +310,25 @@ impl IcmpProcessor {
                 };
             }
         }
-        
-        log::warn!("[NET] ICMP: Ignoring Redirect from {} (Security: disabled by default)", src_ip);
+
+        log::warn!(
+            "[NET] ICMP: Ignoring Redirect from {} (Security: disabled by default)",
+            src_ip
+        );
         IcmpResult::Ignored
     }
 
     /// Process an ICMP Timestamp Request packet.
-    pub(super) fn process_timestamp_request(&mut self, packet: &IcmpPacket<'_>, src_ip: Ipv4Address) -> IcmpResult {
+    pub(super) fn process_timestamp_request(
+        &mut self,
+        packet: &IcmpPacket<'_>,
+        src_ip: Ipv4Address,
+    ) -> IcmpResult {
         let payload = packet.payload();
         if payload.len() >= 12 {
             let identifier = u16::from_be_bytes([payload[0], payload[1]]);
             let sequence = u16::from_be_bytes([payload[2], payload[3]]);
-            let originate_ts = u32::from_be_bytes([
-                payload[4], payload[5], payload[6], payload[7],
-            ]);
+            let originate_ts = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
 
             // RFC 792: Time is milliseconds since midnight UT.
             let now_ms = crate::task::timer::current_tick() as u32;
@@ -329,5 +347,3 @@ impl IcmpProcessor {
         }
     }
 }
-
-

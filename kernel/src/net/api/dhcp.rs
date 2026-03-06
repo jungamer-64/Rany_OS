@@ -95,12 +95,24 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         Ok(guard) => match guard.as_ref() {
             Some(stack_guard) => {
                 let cfg = stack_guard.config();
-                let dns = if let Some(d) = cfg.ipv4.dns { vec![d] } else { vec![] };
+                let dns = if let Some(d) = cfg.ipv4.dns {
+                    vec![d]
+                } else {
+                    vec![]
+                };
                 (String::from("ranyos"), cfg.ipv4.address, dns)
             }
-            None => (String::from("ranyos"), Ipv4Address::new([0, 0, 0, 0]), vec![]),
+            None => (
+                String::from("ranyos"),
+                Ipv4Address::new([0, 0, 0, 0]),
+                vec![],
+            ),
         },
-        Err(_) => (String::from("ranyos"), Ipv4Address::new([0, 0, 0, 0]), vec![]),
+        Err(_) => (
+            String::from("ranyos"),
+            Ipv4Address::new([0, 0, 0, 0]),
+            vec![],
+        ),
     };
     crate::net::services::mdns::init(hostname, ip);
 

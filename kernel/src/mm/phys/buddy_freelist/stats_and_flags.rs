@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// FreeListBuddy統計情報
 #[derive(Debug, Clone, Copy)]
 pub struct FreeListBuddyStats {
@@ -47,7 +46,7 @@ impl AllocFlags {
     pub const HIGH: Self = Self(1 << 5);
     /// Reclaimable
     pub const RECLAIMABLE: Self = Self(1 << 6);
-    
+
     #[inline]
     pub fn migrate_type(self) -> MigrateType {
         if self.0 & Self::USER.0 != 0 {
@@ -83,7 +82,7 @@ mod tests;
 // ============================================================================
 
 /// スピンロック（割り込み禁止）で保護されたBuddy Allocator
-/// 
+///
 /// `FreeListBuddyAllocator` は内部可変性を持たない（`&mut self`を要求する）ため、
 /// マルチコア環境で共有するにはロックが必要。
 /// カーネルアロケータとして使用する場合、割り込みコンテキストからの呼び出しも
@@ -102,33 +101,36 @@ impl LockedFreeListBuddyAllocator {
     /// - `usable_regions` は正しい使用可能メモリ領域を示す必要がある
     /// - カーネル初期化時に一度だけ呼ばれること
     pub unsafe fn init_from_regions(&self, usable_regions: &[(PhysAddr, u64)]) {
-        unsafe { self.0.lock().expect("lock poisoned").init(usable_regions); }
+        unsafe {
+            self.0.lock().expect("lock poisoned").init(usable_regions);
+        }
     }
 
     /// ページ記述子配列を設定（初期化）
     ///
     /// # Safety
     /// `FreeListBuddyAllocator::set_page_descriptors` を参照
-    pub unsafe fn init(
-        &self,
-        descriptors: &'static mut [PageDescriptor],
-        total_frames: usize,
-    ) {
-        self.0.lock().expect("lock poisoned").set_page_descriptors(descriptors, total_frames);
+    pub unsafe fn init(&self, descriptors: &'static mut [PageDescriptor], total_frames: usize) {
+        self.0
+            .lock()
+            .expect("lock poisoned")
+            .set_page_descriptors(descriptors, total_frames);
     }
 
     /// フレームを割り当て
-    pub fn allocate(
-        &self,
-        order: usize,
-        migrate_type: MigrateType,
-    ) -> Option<FrameIndex> {
-        self.0.lock().expect("lock poisoned").allocate(order, migrate_type)
+    pub fn allocate(&self, order: usize, migrate_type: MigrateType) -> Option<FrameIndex> {
+        self.0
+            .lock()
+            .expect("lock poisoned")
+            .allocate(order, migrate_type)
     }
 
     /// フレームを解放
     pub fn deallocate(&self, frame: FrameIndex, order: usize) {
-        self.0.lock().expect("lock poisoned").deallocate(frame, order)
+        self.0
+            .lock()
+            .expect("lock poisoned")
+            .deallocate(frame, order)
     }
 
     /// カラーリング対応割り当て
@@ -138,7 +140,11 @@ impl LockedFreeListBuddyAllocator {
         migrate_type: MigrateType,
         preferred_color: u8,
     ) -> Option<FrameIndex> {
-        self.0.lock().expect("lock poisoned").allocate_with_color(order, migrate_type, preferred_color)
+        self.0.lock().expect("lock poisoned").allocate_with_color(
+            order,
+            migrate_type,
+            preferred_color,
+        )
     }
 
     /// 4KiBフレームを割り当て
@@ -158,17 +164,26 @@ impl LockedFreeListBuddyAllocator {
 
     /// 4KiBフレームを解放
     pub fn deallocate_4k_frame(&self, frame: PhysFrame<Size4KiB>) {
-        self.0.lock().expect("lock poisoned").deallocate_4k_frame(frame);
+        self.0
+            .lock()
+            .expect("lock poisoned")
+            .deallocate_4k_frame(frame);
     }
 
     /// 2MiBフレームを解放
     pub fn deallocate_2m_frame(&self, frame: PhysFrame<Size2MiB>) {
-        self.0.lock().expect("lock poisoned").deallocate_2m_frame(frame);
+        self.0
+            .lock()
+            .expect("lock poisoned")
+            .deallocate_2m_frame(frame);
     }
 
     /// 1GiBフレームを解放
     pub fn deallocate_1g_frame(&self, frame: PhysFrame<Size1GiB>) {
-        self.0.lock().expect("lock poisoned").deallocate_1g_frame(frame);
+        self.0
+            .lock()
+            .expect("lock poisoned")
+            .deallocate_1g_frame(frame);
     }
 
     /// 統計: 空きフレーム数
@@ -192,7 +207,8 @@ impl LockedFreeListBuddyAllocator {
 // ============================================================================
 
 /// グローバルなFreeListBuddy Allocator
-pub(crate) static FREELIST_BUDDY: LockedFreeListBuddyAllocator = LockedFreeListBuddyAllocator::new();
+pub(crate) static FREELIST_BUDDY: LockedFreeListBuddyAllocator =
+    LockedFreeListBuddyAllocator::new();
 
 /// FreeListBuddy Allocatorを初期化
 ///
@@ -200,7 +216,9 @@ pub(crate) static FREELIST_BUDDY: LockedFreeListBuddyAllocator = LockedFreeListB
 /// - `usable_regions` は正しい使用可能メモリ領域を示すこと
 /// - カーネル初期化時に一度だけ呼ばれること
 pub unsafe fn init_freelist_buddy(usable_regions: &[(PhysAddr, u64)]) {
-    unsafe { FREELIST_BUDDY.init_from_regions(usable_regions); }
+    unsafe {
+        FREELIST_BUDDY.init_from_regions(usable_regions);
+    }
 }
 
 /// 4KiBフレームを割り当て

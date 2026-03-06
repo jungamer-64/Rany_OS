@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod demoted_alloc;
 impl HugePageBitmap {
     /// Create a new HugePageBitmap
@@ -13,21 +12,21 @@ impl HugePageBitmap {
     /// Trailing partial blocks are tracked but not marked as fully-free.
     pub fn new(total_pages: usize) -> Self {
         let base = HierarchicalBitmap::new(total_pages);
-        
+
         // Calculate block counts
         let complete_2m_blocks = total_pages / PAGES_PER_2MB;
         let total_2m_blocks = (total_pages.saturating_add(PAGES_PER_2MB - 1)) / PAGES_PER_2MB;
         let complete_1g_blocks = complete_2m_blocks / BLOCKS_2MB_PER_1GB;
-        let total_1g_blocks = (total_2m_blocks.saturating_add(BLOCKS_2MB_PER_1GB - 1)) / BLOCKS_2MB_PER_1GB;
-        
+        let total_1g_blocks =
+            (total_2m_blocks.saturating_add(BLOCKS_2MB_PER_1GB - 1)) / BLOCKS_2MB_PER_1GB;
+
         // 2MB level
         let bitmap_2m_words = (total_2m_blocks.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
-        
+
         // Initialize used_count_2m (all 0 = all free)
-        let used_count_2m: Vec<AtomicU16> = (0..total_2m_blocks)
-            .map(|_| AtomicU16::new(0))
-            .collect();
-        
+        let used_count_2m: Vec<AtomicU16> =
+            (0..total_2m_blocks).map(|_| AtomicU16::new(0)).collect();
+
         // Initialize bitmap_2m (only complete blocks are fully-free)
         let mut bitmap_2m = Vec::with_capacity(bitmap_2m_words);
         for i in 0..bitmap_2m_words {
@@ -40,30 +39,25 @@ impl HugePageBitmap {
             };
             bitmap_2m.push(AtomicU64::new(bits));
         }
-        
+
         // Initialize bitmap_2m_partial (all 0 initially)
-        let bitmap_2m_partial: Vec<AtomicU64> = (0..bitmap_2m_words)
-            .map(|_| AtomicU64::new(0))
-            .collect();
-        
+        let bitmap_2m_partial: Vec<AtomicU64> =
+            (0..bitmap_2m_words).map(|_| AtomicU64::new(0)).collect();
+
         // Initialize demoted_2m (all 0)
-        let demoted_2m: Vec<AtomicU64> = (0..bitmap_2m_words)
-            .map(|_| AtomicU64::new(0))
-            .collect();
-        
+        let demoted_2m: Vec<AtomicU64> = (0..bitmap_2m_words).map(|_| AtomicU64::new(0)).collect();
+
         // Initialize free_word_mask_2m (all 0xFF = all words have free pages)
-        let free_word_mask_2m: Vec<AtomicU8> = (0..total_2m_blocks)
-            .map(|_| AtomicU8::new(0xFF))
-            .collect();
-        
+        let free_word_mask_2m: Vec<AtomicU8> =
+            (0..total_2m_blocks).map(|_| AtomicU8::new(0xFF)).collect();
+
         // 1GB level
         let bitmap_1g_words = (total_1g_blocks + BITS_PER_WORD - 1) / BITS_PER_WORD;
-        
+
         // Initialize used_count_1g (all 0)
-        let used_count_1g: Vec<AtomicU16> = (0..total_1g_blocks)
-            .map(|_| AtomicU16::new(0))
-            .collect();
-        
+        let used_count_1g: Vec<AtomicU16> =
+            (0..total_1g_blocks).map(|_| AtomicU16::new(0)).collect();
+
         // Initialize bitmap_1g (only complete blocks)
         let mut bitmap_1g = Vec::with_capacity(bitmap_1g_words);
         for i in 0..bitmap_1g_words {
@@ -76,7 +70,7 @@ impl HugePageBitmap {
             };
             bitmap_1g.push(AtomicU64::new(bits));
         }
-        
+
         Self {
             base,
             used_count_2m: used_count_2m.into_boxed_slice(),
@@ -96,63 +90,63 @@ impl HugePageBitmap {
             free_count_1g: AtomicUsize::new(complete_1g_blocks),
         }
     }
-    
+
     // ========================================================================
     // Getters
     // ========================================================================
-    
+
     /// Get total 4KB pages
     #[inline]
     pub fn total_pages(&self) -> usize {
         self.base.total_units()
     }
-    
+
     /// Get free 4KB page count
     #[inline]
     pub fn free_count_4k(&self) -> usize {
         self.base.free_count()
     }
-    
+
     /// Get free 2MB block count
     #[inline]
     pub fn free_count_2m(&self) -> usize {
         self.free_count_2m.load(Ordering::Relaxed)
     }
-    
+
     /// Get partial 2MB block count
     #[inline]
     pub fn partial_count_2m(&self) -> usize {
         self.partial_count_2m.load(Ordering::Relaxed)
     }
-    
+
     /// Get free 1GB block count
     #[inline]
     pub fn free_count_1g(&self) -> usize {
         self.free_count_1g.load(Ordering::Relaxed)
     }
-    
+
     /// Get total 2MB blocks
     #[inline]
     pub fn total_2m_blocks(&self) -> usize {
         self.total_2m_blocks
     }
-    
+
     /// Get total 1GB blocks
     #[inline]
     pub fn total_1g_blocks(&self) -> usize {
         self.total_1g_blocks
     }
-    
+
     /// Access base 4KB bitmap
     #[inline]
     pub fn base(&self) -> &HierarchicalBitmap {
         &self.base
     }
-    
+
     // ========================================================================
     // 4KB Allocation (delegates to base)
     // ========================================================================
-    
+
     /// Allocate a single 4KB page
     ///
     /// This is a simple allocation that doesn't consider hugepage preservation.
@@ -162,7 +156,7 @@ impl HugePageBitmap {
         self.on_page_allocated(page_idx);
         Some(page_idx)
     }
-    
+
     /// Free a 4KB page
     pub fn free_4k(&self, page_idx: usize) -> bool {
         if self.base.mark_free(page_idx) {
@@ -172,35 +166,35 @@ impl HugePageBitmap {
             false
         }
     }
-    
+
     /// Check if a 4KB page is free
     #[inline]
     pub fn is_page_free(&self, page_idx: usize) -> bool {
         self.base.is_free(page_idx)
     }
-    
+
     // ========================================================================
     // 2MB Allocation
     // ========================================================================
-    
+
     /// Allocate a fully-free 2MB block
     ///
     /// Returns the block index, or None if no fully-free 2MB blocks available.
     pub fn allocate_2m(&self) -> Option<usize> {
         let hint = self.hint_2m.load(Ordering::Relaxed) % self.bitmap_2m.len().max(1);
-        
+
         for offset in 0..self.bitmap_2m.len() {
             let word_idx = (hint + offset) % self.bitmap_2m.len();
-            
+
             loop {
                 let word = self.bitmap_2m[word_idx].load(Ordering::Acquire);
                 if word == 0 {
                     break; // No free blocks in this word
                 }
-                
+
                 let bit_idx = word.trailing_zeros() as usize;
                 let bit_mask = 1u64 << bit_idx;
-                
+
                 // Try to clear the bit
                 match self.bitmap_2m[word_idx].compare_exchange_weak(
                     word,
@@ -210,41 +204,51 @@ impl HugePageBitmap {
                 ) {
                     Ok(_) => {
                         let block_idx = word_idx * BITS_PER_WORD + bit_idx;
-                        
+
                         // 脆弱性修正: used_count_2m が 0 であることをアトミックに確認し、512 に設定する。
                         // これにより、4KB 割当が同時に行われていた場合に、この 2MB ブロックを
                         // 誤って確保してしまう（二重割当）を防止する。
-                        if self.used_count_2m[block_idx].compare_exchange(0, PAGES_PER_2MB as u16, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                        if self.used_count_2m[block_idx]
+                            .compare_exchange(
+                                0,
+                                PAGES_PER_2MB as u16,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_err()
+                        {
                             // すでに一部が使われているため、このブロックの確保は断念。
                             // ビットは既にクリアしているので、そのまま次を探す。
                             continue;
                         }
-                        
+
                         // Mark all 512 pages as allocated in base bitmap
                         let page_start = block_idx * PAGES_PER_2MB;
                         for i in 0..PAGES_PER_2MB {
                             self.base.mark_allocated(page_start + i);
                         }
-                        
+
                         // Update free word mask
                         self.free_word_mask_2m[block_idx].store(0, Ordering::Release);
-                        
+
                         // Update 1GB tracking
                         let block_1g = block_idx / BLOCKS_2MB_PER_1GB;
                         if block_1g < self.used_count_1g.len() {
-                            let old_used = self.used_count_1g[block_1g].fetch_add(1, Ordering::AcqRel);
+                            let old_used =
+                                self.used_count_1g[block_1g].fetch_add(1, Ordering::AcqRel);
                             if old_used == 0 {
                                 // 1GB block was fully free, now it's not
                                 let word_1g = block_1g / BITS_PER_WORD;
                                 let bit_1g = block_1g % BITS_PER_WORD;
-                                self.bitmap_1g[word_1g].fetch_and(!(1u64 << bit_1g), Ordering::AcqRel);
+                                self.bitmap_1g[word_1g]
+                                    .fetch_and(!(1u64 << bit_1g), Ordering::AcqRel);
                                 self.free_count_1g.fetch_sub(1, Ordering::Relaxed);
                             }
                         }
-                        
+
                         self.free_count_2m.fetch_sub(1, Ordering::Relaxed);
                         self.hint_2m.store(word_idx, Ordering::Relaxed);
-                        
+
                         return Some(block_idx);
                     }
                     Err(_) => {
@@ -253,10 +257,10 @@ impl HugePageBitmap {
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// Free a 2MB block
     ///
     /// All 512 pages in the block must be allocated (used_count == 512).
@@ -264,28 +268,31 @@ impl HugePageBitmap {
         if block_idx >= self.total_2m_blocks {
             return false;
         }
-        
+
         // 脆弱性修正: used_count_2m が 512 であることをアトミックに確認し、0 に設定する。
         // これにより、不完全なブロックの解放や二重解放を防止する。
-        if self.used_count_2m[block_idx].compare_exchange(PAGES_PER_2MB as u16, 0, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        if self.used_count_2m[block_idx]
+            .compare_exchange(PAGES_PER_2MB as u16, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
             return false; // 全てが確保されていない、または既に解放処理中
         }
-        
+
         // Mark all pages as free in base bitmap
         let page_start = block_idx * PAGES_PER_2MB;
         for i in 0..PAGES_PER_2MB {
             self.base.mark_free(page_start + i);
         }
-        
+
         // Update free word mask
         self.free_word_mask_2m[block_idx].store(0xFF, Ordering::Release);
-        
+
         // Set 2MB fully-free bit
         let word_idx = block_idx / BITS_PER_WORD;
         let bit_idx = block_idx % BITS_PER_WORD;
         self.bitmap_2m[word_idx].fetch_or(1u64 << bit_idx, Ordering::AcqRel);
         self.free_count_2m.fetch_add(1, Ordering::Relaxed);
-        
+
         // Update 1GB tracking
         let block_1g = block_idx / BLOCKS_2MB_PER_1GB;
         if block_1g < self.used_count_1g.len() {
@@ -298,10 +305,10 @@ impl HugePageBitmap {
                 self.free_count_1g.fetch_add(1, Ordering::Relaxed);
             }
         }
-        
+
         true
     }
-    
+
     /// Check if a 2MB block is fully free
     #[inline]
     pub fn is_2m_free(&self, block_idx: usize) -> bool {
@@ -313,7 +320,7 @@ impl HugePageBitmap {
         let word = self.bitmap_2m[word_idx].load(Ordering::Acquire);
         (word & (1u64 << bit_idx)) != 0
     }
-    
+
     /// Check if a 2MB block is demoted
     #[inline]
     pub fn is_block_demoted(&self, block_idx: usize) -> bool {
@@ -325,11 +332,11 @@ impl HugePageBitmap {
         let word = self.demoted_2m[word_idx].load(Ordering::Acquire);
         (word & (1u64 << bit_idx)) != 0
     }
-    
+
     // ========================================================================
     // 1GB Allocation
     // ========================================================================
-    
+
     /// Allocate a fully-free 1GB block
     ///
     /// Returns the block index, or None if no fully-free 1GB blocks available.
@@ -340,10 +347,10 @@ impl HugePageBitmap {
                 if word == 0 {
                     break;
                 }
-                
+
                 let bit_idx = word.trailing_zeros() as usize;
                 let bit_mask = 1u64 << bit_idx;
-                
+
                 match self.bitmap_1g[word_idx].compare_exchange_weak(
                     word,
                     word & !bit_mask,
@@ -352,9 +359,17 @@ impl HugePageBitmap {
                 ) {
                     Ok(_) => {
                         let block_1g_idx = word_idx * BITS_PER_WORD + bit_idx;
-                        
+
                         // 脆弱性修正: 1GB ブロックの確保時にも used_count_1g のアトミックチェックを行う
-                        if self.used_count_1g[block_1g_idx].compare_exchange(0, BLOCKS_2MB_PER_1GB as u16, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                        if self.used_count_1g[block_1g_idx]
+                            .compare_exchange(
+                                0,
+                                BLOCKS_2MB_PER_1GB as u16,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_err()
+                        {
                             // すでに一部の 2MB ブロックが使われている
                             continue;
                         }
@@ -365,18 +380,19 @@ impl HugePageBitmap {
                             let block_2m = block_2m_start + i;
                             if block_2m < self.total_2m_blocks {
                                 // 脆弱性修正: 各 2MB ブロックの状態も 512 (Full) に更新
-                                self.used_count_2m[block_2m].store(PAGES_PER_2MB as u16, Ordering::Release);
+                                self.used_count_2m[block_2m]
+                                    .store(PAGES_PER_2MB as u16, Ordering::Release);
 
                                 // Clear 2MB fully-free bit
                                 let w2m = block_2m / BITS_PER_WORD;
                                 let b2m = block_2m % BITS_PER_WORD;
                                 self.bitmap_2m[w2m].fetch_and(!(1u64 << b2m), Ordering::AcqRel);
-                                
+
                                 // Clear free word mask
                                 self.free_word_mask_2m[block_2m].store(0, Ordering::Release);
                             }
                         }
-                        
+
                         // Mark all pages as allocated
                         let page_start = block_1g_idx * BLOCKS_2MB_PER_1GB * PAGES_PER_2MB;
                         let page_count = BLOCKS_2MB_PER_1GB * PAGES_PER_2MB;
@@ -386,11 +402,14 @@ impl HugePageBitmap {
                                 self.base.mark_allocated(page);
                             }
                         }
-                        
+
                         // Update counts
                         self.free_count_1g.fetch_sub(1, Ordering::Relaxed);
-                        self.free_count_2m.fetch_sub(BLOCKS_2MB_PER_1GB.min(self.total_2m_blocks - block_2m_start), Ordering::Relaxed);
-                        
+                        self.free_count_2m.fetch_sub(
+                            BLOCKS_2MB_PER_1GB.min(self.total_2m_blocks - block_2m_start),
+                            Ordering::Relaxed,
+                        );
+
                         return Some(block_1g_idx);
                     }
                     Err(_) => {
@@ -399,10 +418,10 @@ impl HugePageBitmap {
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// Check if a 1GB block is fully free
     #[inline]
     pub fn is_1g_free(&self, block_idx: usize) -> bool {
@@ -422,18 +441,18 @@ impl HugePageBitmap {
         if block_idx >= self.total_1g_blocks {
             return false;
         }
-        
+
         // Free all 512 2MB blocks
         let block_2m_start = block_idx * BLOCKS_2MB_PER_1GB;
         let block_2m_end = (block_2m_start + BLOCKS_2MB_PER_1GB).min(self.total_2m_blocks);
-        
+
         let mut success = true;
         for block_2m in block_2m_start..block_2m_end {
             if !self.free_2m(block_2m) {
                 success = false;
             }
         }
-        
+
         success
     }
 
@@ -445,15 +464,15 @@ impl HugePageBitmap {
     pub fn allocate_4k_below(&self, limit_page_idx: usize) -> Option<usize> {
         // Try partial blocks first (but restricted by limit)
         if let Some(page) = self.allocate_4k_from_partial_below(limit_page_idx) {
-             return Some(page);
+            return Some(page);
         }
-        
+
         // Try base bitmap
         if let Some(page) = self.base.allocate_one_below(limit_page_idx) {
-             self.on_page_allocated(page);
-             return Some(page);
+            self.on_page_allocated(page);
+            return Some(page);
         }
-        
+
         None
     }
 
@@ -463,18 +482,25 @@ impl HugePageBitmap {
         let limit_word = (limit_block + BITS_PER_WORD - 1) / BITS_PER_WORD;
 
         // 1. Try demoted blocks (linear scan 0..limit)
-        if let Some(page) = self.scan_bitmap_below(&self.demoted_2m, limit_word, limit_block, limit_page_idx) {
+        if let Some(page) =
+            self.scan_bitmap_below(&self.demoted_2m, limit_word, limit_block, limit_page_idx)
+        {
             return Some(page);
         }
 
         // 2. Try partial blocks (linear scan 0..limit)
-        if let Some(page) = self.scan_bitmap_below(&self.bitmap_2m_partial, limit_word, limit_block, limit_page_idx) {
+        if let Some(page) = self.scan_bitmap_below(
+            &self.bitmap_2m_partial,
+            limit_word,
+            limit_block,
+            limit_page_idx,
+        ) {
             return Some(page);
         }
 
         // 3. Demote fully free block (linear scan 0..limit)
         if let Some(block) = self.demote_2m_block_below(limit_block) {
-             return self.allocate_from_block(block);
+            return self.allocate_from_block(block);
         }
 
         None
@@ -491,10 +517,14 @@ impl HugePageBitmap {
     ) -> Option<usize> {
         for bit in 0..BITS_PER_WORD {
             let block_idx = word_idx * BITS_PER_WORD + bit;
-            if block_idx >= limit_block { return None; }
+            if block_idx >= limit_block {
+                return None;
+            }
             if (word & (1u64 << bit)) != 0 {
                 if let Some(page) = self.allocate_from_block(block_idx) {
-                    if page < limit_page_idx { return Some(page); }
+                    if page < limit_page_idx {
+                        return Some(page);
+                    }
                 }
             }
         }
@@ -511,11 +541,17 @@ impl HugePageBitmap {
         let scan_end = limit_word.min(bitmap.len());
 
         for word_idx in 0..scan_end {
-            if word_idx * BITS_PER_WORD >= limit_block { break; }
+            if word_idx * BITS_PER_WORD >= limit_block {
+                break;
+            }
             let word = bitmap[word_idx].load(Ordering::Acquire);
-            if word == 0 { continue; }
+            if word == 0 {
+                continue;
+            }
 
-            if let Some(page) = self.scan_word_bits_below(word, word_idx, limit_block, limit_page_idx) {
+            if let Some(page) =
+                self.scan_word_bits_below(word, word_idx, limit_block, limit_page_idx)
+            {
                 return Some(page);
             }
         }
@@ -528,17 +564,23 @@ impl HugePageBitmap {
         let scan_end = limit_word.min(self.bitmap_2m.len());
 
         for word_idx in 0..scan_end {
-            if word_idx * BITS_PER_WORD >= limit_block { return None; }
+            if word_idx * BITS_PER_WORD >= limit_block {
+                return None;
+            }
             loop {
                 let word = self.bitmap_2m[word_idx].load(Ordering::Acquire);
-                if word == 0 { break; }
-                
+                if word == 0 {
+                    break;
+                }
+
                 let bit_idx = word.trailing_zeros() as usize;
                 let block_idx = word_idx * BITS_PER_WORD + bit_idx;
-                if block_idx >= limit_block { return None; }
+                if block_idx >= limit_block {
+                    return None;
+                }
 
                 let bit_mask = 1u64 << bit_idx;
-                
+
                 // Check demoted
                 let demoted = self.demoted_2m[word_idx].load(Ordering::Acquire);
                 if (demoted & bit_mask) != 0 {
@@ -552,8 +594,13 @@ impl HugePageBitmap {
                     );
                     continue;
                 }
-                
-                match self.bitmap_2m[word_idx].compare_exchange_weak(word, word & !bit_mask, Ordering::AcqRel, Ordering::Acquire) {
+
+                match self.bitmap_2m[word_idx].compare_exchange_weak(
+                    word,
+                    word & !bit_mask,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
                     Ok(_) => {
                         self.demoted_2m[word_idx].fetch_or(bit_mask, Ordering::AcqRel);
                         self.bitmap_2m_partial[word_idx].fetch_or(bit_mask, Ordering::AcqRel);
@@ -562,7 +609,9 @@ impl HugePageBitmap {
                         self.demoted_count_2m.fetch_add(1, Ordering::Relaxed);
                         return Some(block_idx);
                     }
-                    Err(_) => { core::hint::spin_loop(); }
+                    Err(_) => {
+                        core::hint::spin_loop();
+                    }
                 }
             }
         }
@@ -575,27 +624,41 @@ impl HugePageBitmap {
         let scan_end = limit_word.min(self.bitmap_2m.len());
 
         for word_idx in 0..scan_end {
-            if word_idx * BITS_PER_WORD >= limit_block_idx { return None; }
+            if word_idx * BITS_PER_WORD >= limit_block_idx {
+                return None;
+            }
             loop {
                 let word = self.bitmap_2m[word_idx].load(Ordering::Acquire);
-                if word == 0 { break; }
-                
+                if word == 0 {
+                    break;
+                }
+
                 let bit_idx = word.trailing_zeros() as usize;
                 let block_idx = word_idx * BITS_PER_WORD + bit_idx;
-                if block_idx >= limit_block_idx { return None; }
-                
+                if block_idx >= limit_block_idx {
+                    return None;
+                }
+
                 let bit_mask = 1u64 << bit_idx;
-                match self.bitmap_2m[word_idx].compare_exchange_weak(word, word & !bit_mask, Ordering::AcqRel, Ordering::Acquire) {
+                match self.bitmap_2m[word_idx].compare_exchange_weak(
+                    word,
+                    word & !bit_mask,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
                     Ok(_) => {
-                         // Init block logic (duplicated from allocate_2m)
-                        self.base.mark_allocated_range(block_idx * PAGES_PER_2MB, PAGES_PER_2MB);
-                        self.used_count_2m[block_idx].store(PAGES_PER_2MB as u16, Ordering::Release);
+                        // Init block logic (duplicated from allocate_2m)
+                        self.base
+                            .mark_allocated_range(block_idx * PAGES_PER_2MB, PAGES_PER_2MB);
+                        self.used_count_2m[block_idx]
+                            .store(PAGES_PER_2MB as u16, Ordering::Release);
                         self.free_word_mask_2m[block_idx].store(0, Ordering::Release);
-                        
+
                         // Update 1GB tracking
                         let block_1g = block_idx / BLOCKS_2MB_PER_1GB;
                         if block_1g < self.used_count_1g.len() {
-                            let old_used = self.used_count_1g[block_1g].fetch_add(1, Ordering::AcqRel);
+                            let old_used =
+                                self.used_count_1g[block_1g].fetch_add(1, Ordering::AcqRel);
                             if old_used == 0 {
                                 // Was fully free (should have been caught by 1G alloc? No)
                                 // If it was 0, it means 1GB was empty.
@@ -606,11 +669,13 @@ impl HugePageBitmap {
                                 self.free_count_1g.fetch_sub(1, Ordering::Relaxed);
                             }
                         }
-                        
+
                         self.free_count_2m.fetch_sub(1, Ordering::Relaxed);
                         return Some(block_idx);
                     }
-                    Err(_) => { core::hint::spin_loop(); }
+                    Err(_) => {
+                        core::hint::spin_loop();
+                    }
                 }
             }
         }
@@ -623,52 +688,73 @@ impl HugePageBitmap {
         let scan_end = limit_word.min(self.bitmap_1g.len());
 
         for word_idx in 0..scan_end {
-            if word_idx * BITS_PER_WORD >= limit_block_idx { return None; }
+            if word_idx * BITS_PER_WORD >= limit_block_idx {
+                return None;
+            }
             loop {
                 let word = self.bitmap_1g[word_idx].load(Ordering::Acquire);
-                if word == 0 { break; }
-                
+                if word == 0 {
+                    break;
+                }
+
                 let bit_idx = word.trailing_zeros() as usize;
                 let block_idx = word_idx * BITS_PER_WORD + bit_idx;
-                if block_idx >= limit_block_idx { return None; }
+                if block_idx >= limit_block_idx {
+                    return None;
+                }
 
                 let bit_mask = 1u64 << bit_idx;
-                match self.bitmap_1g[word_idx].compare_exchange_weak(word, word & !bit_mask, Ordering::AcqRel, Ordering::Acquire) {
+                match self.bitmap_1g[word_idx].compare_exchange_weak(
+                    word,
+                    word & !bit_mask,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
                     Ok(_) => {
-                         // Initialize 1GB block (duplicated from allocate_1g)
-                         // Mark 2MB blocks as allocated
+                        // Initialize 1GB block (duplicated from allocate_1g)
+                        // Mark 2MB blocks as allocated
                         let block_2m_start = block_idx * BLOCKS_2MB_PER_1GB;
                         for i in 0..BLOCKS_2MB_PER_1GB {
-                             let block_2m = block_2m_start + i;
-                             if block_2m < self.total_2m_blocks {
-                                  // Clear 2MB free bit
-                                  let w2m = block_2m / BITS_PER_WORD;
-                                  let b2m = block_2m % BITS_PER_WORD;
-                                  self.bitmap_2m[w2m].fetch_and(!(1u64 << b2m), Ordering::AcqRel);
-                                  self.used_count_2m[block_2m].store(PAGES_PER_2MB as u16, Ordering::Release);
-                                  self.free_word_mask_2m[block_2m].store(0, Ordering::Release);
-                             }
+                            let block_2m = block_2m_start + i;
+                            if block_2m < self.total_2m_blocks {
+                                // Clear 2MB free bit
+                                let w2m = block_2m / BITS_PER_WORD;
+                                let b2m = block_2m % BITS_PER_WORD;
+                                self.bitmap_2m[w2m].fetch_and(!(1u64 << b2m), Ordering::AcqRel);
+                                self.used_count_2m[block_2m]
+                                    .store(PAGES_PER_2MB as u16, Ordering::Release);
+                                self.free_word_mask_2m[block_2m].store(0, Ordering::Release);
+                            }
                         }
                         // Mark pages
-                        self.base.mark_allocated_range(block_idx * BLOCKS_2MB_PER_1GB * PAGES_PER_2MB, BLOCKS_2MB_PER_1GB * PAGES_PER_2MB);
-                        
-                        self.used_count_1g[block_idx].store(BLOCKS_2MB_PER_1GB as u16, Ordering::Release);
+                        self.base.mark_allocated_range(
+                            block_idx * BLOCKS_2MB_PER_1GB * PAGES_PER_2MB,
+                            BLOCKS_2MB_PER_1GB * PAGES_PER_2MB,
+                        );
+
+                        self.used_count_1g[block_idx]
+                            .store(BLOCKS_2MB_PER_1GB as u16, Ordering::Release);
                         self.free_count_1g.fetch_sub(1, Ordering::Relaxed);
-                        self.free_count_2m.fetch_sub(BLOCKS_2MB_PER_1GB.min(self.total_2m_blocks - block_2m_start), Ordering::Relaxed);
+                        self.free_count_2m.fetch_sub(
+                            BLOCKS_2MB_PER_1GB.min(self.total_2m_blocks - block_2m_start),
+                            Ordering::Relaxed,
+                        );
 
                         return Some(block_idx);
                     }
-                    Err(_) => { core::hint::spin_loop(); }
+                    Err(_) => {
+                        core::hint::spin_loop();
+                    }
                 }
             }
         }
         None
     }
-    
+
     // ========================================================================
     // Hugepage-Preserving 4KB Allocation
     // ========================================================================
-    
+
     /// Allocate 4KB from partial 2MB blocks
     ///
     /// This preserves fully-free 2MB blocks for hugepage allocation by
@@ -678,37 +764,38 @@ impl HugePageBitmap {
         if let Some(page) = self.allocate_4k_from_demoted() {
             return Some(page);
         }
-        
+
         // Then try partial blocks
-        let hint = self.hint_2m_partial.load(Ordering::Relaxed) % self.bitmap_2m_partial.len().max(1);
-        
+        let hint =
+            self.hint_2m_partial.load(Ordering::Relaxed) % self.bitmap_2m_partial.len().max(1);
+
         for offset in 0..self.bitmap_2m_partial.len() {
             let word_idx = (hint + offset) % self.bitmap_2m_partial.len();
             let word = self.bitmap_2m_partial[word_idx].load(Ordering::Acquire);
             if word == 0 {
                 continue;
             }
-            
+
             // Find a partial block
             let bit_idx = word.trailing_zeros() as usize;
             let block_idx = word_idx * BITS_PER_WORD + bit_idx;
-            
+
             if block_idx >= self.total_2m_blocks {
                 continue;
             }
-            
+
             // Try to allocate from this block's free words
             if let Some(page) = self.allocate_from_block(block_idx) {
                 self.hint_2m_partial.store(word_idx, Ordering::Relaxed);
                 return Some(page);
             }
         }
-        
+
         // Finally, demote a fully-free 2MB block
         if let Some(block) = self.demote_2m_block() {
             return self.allocate_from_block(block);
         }
-        
+
         None
     }
 }
@@ -728,4 +815,3 @@ pub mod qemu_tests;
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

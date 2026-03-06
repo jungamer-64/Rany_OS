@@ -128,10 +128,7 @@ impl PagedContent {
             let to_write = remaining_in_page.min(data.len() - bytes_written);
 
             // CoW: ページを取得または作成、共有されていればコピー
-            let page = self
-                .pages
-                .entry(page_idx)
-                .or_insert_with(new_zero_page);
+            let page = self.pages.entry(page_idx).or_insert_with(new_zero_page);
 
             // Arc::make_mut は参照カウント > 1 の場合のみコピーを作成
             let page_mut = Arc::make_mut(page);
@@ -194,7 +191,6 @@ impl Default for PagedContent {
 // ============================================================================
 
 #[allow(clippy::wildcard_imports)]
-
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::*;
@@ -289,4 +285,3 @@ pub mod tests {
         assert!(content.get_page(100).is_none());
     }
 }
-

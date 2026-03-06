@@ -34,34 +34,32 @@
 //! - `futures`        — async TcpStream/TcpListener の Future 実装
 #![allow(dead_code)]
 // ── 汎用ソケット基盤 ───────────────────────────────────
-pub mod types;
 pub mod endpoint_core;
+pub mod event;
 pub mod inner;
 pub mod manager;
-pub mod event;
+pub mod types;
 
 // ── TCP 固有サブモジュール ──────────────────────────────
-pub mod tcb;
-pub mod tcp_rx;
-pub mod segment;
-pub mod handler;
 pub mod congestion;
 pub mod flow_control;
-pub mod retransmit;
-pub mod ooo_queue;
-pub mod window_scale;
-pub mod timer_wheel;
 pub mod futures;
+pub mod handler;
+pub mod ooo_queue;
+pub mod retransmit;
+pub mod segment;
+pub mod tcb;
+pub mod tcp_rx;
+pub mod timer_wheel;
+pub mod window_scale;
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-mod tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+mod tests;
 
 // Re-exports: types
-pub use types::{
-    EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
-};
+pub use types::{EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType};
 
 // Re-exports: tcb
 pub use tcb::{TcpConnectionState, tcb_table};
@@ -71,14 +69,12 @@ pub use tcb::{TcpConnectionState, tcb_table};
 // Re-exports: segment
 
 // Re-exports: manager
-pub use manager::{
-    init_endpoint_manager, is_endpoint_manager_initialized, endpoint_manager,
-};
+pub use manager::{endpoint_manager, init_endpoint_manager, is_endpoint_manager_initialized};
 
 // Re-exports: endpoint
 pub use endpoint_core::{
-    OwnedEndpoint, create_raw_endpoint, create_tcp_endpoint,
-    create_tcp_server_async, create_udp_endpoint, create_udp_endpoint_bound,
+    OwnedEndpoint, create_raw_endpoint, create_tcp_endpoint, create_tcp_server_async,
+    create_udp_endpoint, create_udp_endpoint_bound,
 };
 // Re-exports: futures
 

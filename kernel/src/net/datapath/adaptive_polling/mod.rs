@@ -14,10 +14,9 @@
 //! - 動的閾値調整
 //! - 統計収集
 
-
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use crate::sync::PoisonLock;
 
 // ============================================================================
 // Configuration

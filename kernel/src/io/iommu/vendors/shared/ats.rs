@@ -7,11 +7,8 @@
 //! This module contains structures for
 //! Page Request handling, which are part of the ATS/PRI extensions.
 
-
 // Convenience wrappers for contiguous frame allocation
 use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
-
-
 
 // ============================================================================
 // Page Request Interface (PRI) Structures
@@ -103,8 +100,7 @@ impl PageRequestQueue {
         let num_pages = (total_bytes + 4095) / 4096;
 
         // Allocate contiguous physical frames for hardware requirements
-        let phys = alloc_contiguous_frames(num_pages)?
-            .as_u64();
+        let phys = alloc_contiguous_frames(num_pages)?.as_u64();
         let base = crate::io::iommu::common::tables::phys_to_virt_usize(phys);
 
         // Security: Mark the range as protected from DMA
@@ -161,7 +157,8 @@ impl Drop for PageRequestQueue {
     fn drop(&mut self) {
         let total_bytes = self.size * core::mem::size_of::<PageRequestEntry>();
         let num_pages = (total_bytes + 4095) / 4096;
-        if let Ok(phys) = crate::io::iommu::common::tables::virt_ptr_to_phys(self.base as *const u8) {
+        if let Ok(phys) = crate::io::iommu::common::tables::virt_ptr_to_phys(self.base as *const u8)
+        {
             crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
 
             // free contiguous region

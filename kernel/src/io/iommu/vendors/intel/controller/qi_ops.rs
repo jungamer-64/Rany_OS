@@ -12,7 +12,7 @@ use super::utils::IommuUtils;
 use super::{InvalidationWaiter, IommuController};
 use crate::io::iommu::types::IommuError;
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
-use crate::io::iommu::vendors::intel::registers::{regs, fsts_bits};
+use crate::io::iommu::vendors::intel::registers::{fsts_bits, regs};
 
 fn submit_invalidation_locked(
     controller: &IommuController,
@@ -23,7 +23,10 @@ fn submit_invalidation_locked(
     // If the queue is in an error state (IQE/ICE/ITE), it will not process new entries.
     let fsts = controller.read32(regs::FSTS);
     if (fsts & (fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE)) != 0 {
-        log::error!("[IOMMU][QI] Cannot submit: hardware fault detected in FSTS: {:#x}", fsts);
+        log::error!(
+            "[IOMMU][QI] Cannot submit: hardware fault detected in FSTS: {:#x}",
+            fsts
+        );
         return Err(IommuError::HardwareError);
     }
 
@@ -74,18 +77,18 @@ pub trait InvalidationOps {
     fn qi_invalidate_iotlb_domain(&self, domain_id: u16) -> Result<(), IommuError>;
 
     /// Submit a page-selective IOTLB invalidation via queued invalidation
-    fn qi_invalidate_iotlb_page(
-        &self,
-        domain_id: u16,
-        addr: u64,
-        am: u8,
-    ) -> Result<(), IommuError>;
+    fn qi_invalidate_iotlb_page(&self, domain_id: u16, addr: u64, am: u8)
+    -> Result<(), IommuError>;
 
     /// Submit a global context-cache invalidation via queued invalidation
     fn qi_invalidate_context_global(&self) -> Result<(), IommuError>;
 
     /// Submit a device-selective context-cache invalidation via queued invalidation
-    fn qi_invalidate_context_device(&self, source_id: u16, domain_id: u16) -> Result<(), IommuError>;
+    fn qi_invalidate_context_device(
+        &self,
+        source_id: u16,
+        domain_id: u16,
+    ) -> Result<(), IommuError>;
 
     /// Submit a global IEC invalidation via queued invalidation
     fn qi_invalidate_iec_global(&self) -> Result<(), IommuError>;
@@ -105,11 +108,7 @@ pub trait InvalidationOps {
     ) -> Result<(), IommuError>;
 
     /// Submit a page-selective Device-TLB invalidation
-    fn qi_invalidate_device_tlb_page(
-        &self,
-        source_id: u16,
-        iova: u64,
-    ) -> Result<(), IommuError>;
+    fn qi_invalidate_device_tlb_page(&self, source_id: u16, iova: u64) -> Result<(), IommuError>;
 
     /// Submit a global PASID cache invalidation
     fn qi_invalidate_pasid_cache_global(&self) -> Result<(), IommuError>;
@@ -180,7 +179,11 @@ impl InvalidationOps for IommuController {
     }
 
     #[inline]
-    fn qi_invalidate_context_device(&self, source_id: u16, domain_id: u16) -> Result<(), IommuError> {
+    fn qi_invalidate_context_device(
+        &self,
+        source_id: u16,
+        domain_id: u16,
+    ) -> Result<(), IommuError> {
         let entry = InvalidationQueueEntry::context_cache_invalidate(3, domain_id, source_id);
         self.submit_invalidation(entry)
     }
@@ -216,11 +219,7 @@ impl InvalidationOps for IommuController {
     }
 
     #[inline]
-    fn qi_invalidate_device_tlb_page(
-        &self,
-        source_id: u16,
-        iova: u64,
-    ) -> Result<(), IommuError> {
+    fn qi_invalidate_device_tlb_page(&self, source_id: u16, iova: u64) -> Result<(), IommuError> {
         let entry = InvalidationQueueEntry::device_tlb_invalidate_page(source_id, iova);
         self.submit_invalidation(entry)
     }
@@ -276,7 +275,10 @@ impl InvalidationOps for IommuController {
         // Final validation: Ensure it actually completed and didn't just exit due to a fault.
         let fsts = self.read32(regs::FSTS);
         if (fsts & (fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE)) != 0 {
-            log::error!("[IOMMU][QI] Wait failed: hardware fault detected in FSTS: {:#x}", fsts);
+            log::error!(
+                "[IOMMU][QI] Wait failed: hardware fault detected in FSTS: {:#x}",
+                fsts
+            );
             return Err(IommuError::HardwareError);
         }
 
@@ -296,7 +298,7 @@ impl InvalidationOps for IommuController {
                     // This requires setting `interrupt=true` in the wait descriptor.
                     let (mut entry, expected_data) = iq.wait_entry();
                     // Set FN (Fence Notify) bit (bit 6 of lo)
-                    entry.lo |= 1 << 6; 
+                    entry.lo |= 1 << 6;
 
                     let status_virt = iq.status_virtual_address();
                     let submit_result = submit_invalidation_locked(self, iq, entry);
@@ -305,7 +307,7 @@ impl InvalidationOps for IommuController {
                     Err(IommuError::NotPresent)
                 }
             }
-            Err(_err) => Err(IommuError::HardwareError)
+            Err(_err) => Err(IommuError::HardwareError),
         };
 
         match result {
@@ -328,4 +330,3 @@ impl InvalidationOps for IommuController {
         self.pending_waiters.wake_all_from_isr();
     }
 }
-

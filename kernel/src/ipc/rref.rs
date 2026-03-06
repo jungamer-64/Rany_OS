@@ -196,7 +196,6 @@ impl<T> RRef<T> {
 
         value
     }
-
 }
 
 impl<T: ?Sized> RRef<T> {
@@ -253,7 +252,10 @@ impl<T> RRef<[T]> {
             crate::sas::DomainId::new(owner.as_u64()),
         );
         let slice_ptr = NonNull::slice_from_raw_parts(ptr, len);
-        Some(Self { ptr: slice_ptr, owner })
+        Some(Self {
+            ptr: slice_ptr,
+            owner,
+        })
     }
 
     /// アラインメント付きレイアウトを計算し、メモリを割り当てる
@@ -297,7 +299,10 @@ impl<T> RRef<[T]> {
             crate::sas::DomainId::new(owner.as_u64()),
         );
         let slice_ptr = NonNull::slice_from_raw_parts(typed_ptr, len);
-        Some(Self { ptr: slice_ptr, owner })
+        Some(Self {
+            ptr: slice_ptr,
+            owner,
+        })
     }
 }
 
@@ -311,7 +316,10 @@ impl<T: Default> RRef<[T]> {
             crate::sas::DomainId::new(owner.as_u64()),
         );
         let slice_ptr = NonNull::slice_from_raw_parts(ptr, len);
-        Some(Self { ptr: slice_ptr, owner })
+        Some(Self {
+            ptr: slice_ptr,
+            owner,
+        })
     }
 
     /// Create a new slice-backed RRef with a custom alignment.
@@ -506,7 +514,10 @@ impl RRefRawParts {
                 return Err(RawPartsError::SizeMismatch);
             }
         }
-        Ok(RRef::from_raw(NonNull::new_unchecked(typed_ptr), self.owner))
+        Ok(RRef::from_raw(
+            NonNull::new_unchecked(typed_ptr),
+            self.owner,
+        ))
     }
 
     /// Type-erased Drop - Queue can drop without knowing T
@@ -520,7 +531,12 @@ impl RRefRawParts {
 
     pub(crate) fn into_components(
         self,
-    ) -> (NonNull<u8>, DomainId, usize, unsafe fn(NonNull<u8>, DomainId, usize)) {
+    ) -> (
+        NonNull<u8>,
+        DomainId,
+        usize,
+        unsafe fn(NonNull<u8>, DomainId, usize),
+    ) {
         (self.ptr, self.owner, self.meta, self.drop_fn)
     }
 

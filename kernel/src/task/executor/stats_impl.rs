@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl ExecutorStats {
     pub(super) const fn new() -> Self {
         Self {

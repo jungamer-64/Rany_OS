@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Slab統計情報
 mod per_core;
 #[derive(Debug, Clone)]
@@ -306,10 +305,7 @@ impl<const SIZE: usize> PerCpuMagazineCache<SIZE> {
     pub fn refill_from_depot(&mut self, depot: &mut MagazineDepot<SIZE>) -> bool {
         // loadedが空の場合、Depotから満杯マガジンを取得
         if self.loaded.is_empty() {
-            let empty_mag = core::mem::replace(
-                &mut self.loaded,
-                Magazine::new(self.object_size)
-            );
+            let empty_mag = core::mem::replace(&mut self.loaded, Magazine::new(self.object_size));
             if let Some(full_mag) = depot.exchange_for_full(empty_mag) {
                 self.loaded = full_mag;
                 return true;
@@ -322,10 +318,7 @@ impl<const SIZE: usize> PerCpuMagazineCache<SIZE> {
     pub fn flush_to_depot(&mut self, depot: &mut MagazineDepot<SIZE>) -> bool {
         // loadedが満杯の場合、Depotに返却して空マガジンを取得
         if self.loaded.is_full() {
-            let full_mag = core::mem::replace(
-                &mut self.loaded,
-                Magazine::new(self.object_size)
-            );
+            let full_mag = core::mem::replace(&mut self.loaded, Magazine::new(self.object_size));
             if let Some(empty_mag) = depot.exchange_for_empty(full_mag) {
                 self.loaded = empty_mag;
                 return true;
@@ -490,7 +483,8 @@ impl<const MAG_SIZE: usize> MagazineSlabCache<MAG_SIZE> {
 
     /// Per-CPUマガジンの統計を取得
     pub fn per_cpu_stats(&self, cpu_id: usize) -> Option<PerCpuMagazineStats> {
-        self.per_cpu_mags.get(cpu_id)
+        self.per_cpu_mags
+            .get(cpu_id)
             .and_then(|m| m.as_ref())
             .map(|m| m.stats())
     }
@@ -733,10 +727,12 @@ pub fn slab_remote_free_push(owner_cpu: usize, ptr: u64, size_class: u8) -> bool
     if owner_cpu >= MAX_CPUS {
         return false;
     }
-    
+
     // Always succeeds (internally falls back to overflow list)
     SLAB_REMOTE_FREE_RINGS[owner_cpu].push(ptr, size_class);
-    REMOTE_FREE_STATS.remote_pushes.fetch_add(1, Ordering::Relaxed);
+    REMOTE_FREE_STATS
+        .remote_pushes
+        .fetch_add(1, Ordering::Relaxed);
     true
 }
 
@@ -752,15 +748,15 @@ pub(crate) fn drain_remote_frees(cpu_id: usize, cache: &mut PerCoreCache) {
     if cpu_id >= MAX_CPUS {
         return;
     }
-    
+
     let ring = &SLAB_REMOTE_FREE_RINGS[cpu_id];
     let mut drained = 0u64;
-    
+
     // リングから全エントリをドレイン（最大256エントリ）
     ring.drain_with(SLAB_REMOTE_FREE_CAPACITY, |entry| {
         let ptr_addr = entry.addr;
         let size_class = entry.size_class as usize;
-        
+
         if size_class < SLAB_SIZES.len() {
             if let Some(ptr) = NonNull::new(ptr_addr as *mut u8) {
                 // SAFETY: ポインタはこのCPUのSlabから割り当てられたもの
@@ -771,10 +767,14 @@ pub(crate) fn drain_remote_frees(cpu_id: usize, cache: &mut PerCoreCache) {
             }
         }
     });
-    
+
     if drained > 0 {
-        REMOTE_FREE_STATS.drain_count.fetch_add(1, Ordering::Relaxed);
-        REMOTE_FREE_STATS.drained_entries.fetch_add(drained, Ordering::Relaxed);
+        REMOTE_FREE_STATS
+            .drain_count
+            .fetch_add(1, Ordering::Relaxed);
+        REMOTE_FREE_STATS
+            .drained_entries
+            .fetch_add(drained, Ordering::Relaxed);
     }
 }
 

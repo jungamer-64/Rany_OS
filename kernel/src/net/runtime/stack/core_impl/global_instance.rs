@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Global network stack instance
 pub(crate) static NETWORK_STACK: PoisonLock<Option<NetworkStack>> = PoisonLock::new(None);
 
@@ -77,7 +76,13 @@ pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) 
 ///
 /// ソースIPはスタックの設定IPアドレスを使用する。
 /// DHCP等でソースIPを明示的に指定する場合は `send_udp_async_with_src` を使用すること。
-pub fn send_udp_async(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8], ttl: u8) -> bool {
+pub fn send_udp_async(
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    data: &[u8],
+    ttl: u8,
+) -> bool {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
             src_port,
@@ -95,7 +100,14 @@ pub fn send_udp_async(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &
 ///
 /// RFC 2131 準拠: DHCP DISCOVER/初期REQUEST では src_ip = 0.0.0.0 を指定する。
 /// リニューアルでは取得済みIPを指定する。
-pub fn send_udp_async_with_src(src_ip: Ipv4Address, src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8], ttl: u8) -> bool {
+pub fn send_udp_async_with_src(
+    src_ip: Ipv4Address,
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    data: &[u8],
+    ttl: u8,
+) -> bool {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
             src_port,
@@ -360,7 +372,9 @@ pub fn leave_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
 /// イベントハンドラ側でスタックロックを取得して処理する。
 /// 呼び出し元でのロック競合を回避する。
 pub struct TcpBindFuture {
-    result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), crate::net::l4::endpoint::types::EndpointError>>>>,
+    result_slot: alloc::sync::Arc<
+        PoisonLock<Option<Result<(), crate::net::l4::endpoint::types::EndpointError>>>,
+    >,
     waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     sent: bool,
     addr: TcpEndpointAddr,
@@ -369,7 +383,10 @@ pub struct TcpBindFuture {
 impl core::future::Future for TcpBindFuture {
     type Output = Result<(), crate::net::l4::endpoint::types::EndpointError>;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         // 初回ポーリング時にイベントを送信
         if !self.sent {
             self.waker.register(cx.waker());
@@ -423,7 +440,10 @@ pub struct UdpBindFuture {
 impl core::future::Future for UdpBindFuture {
     type Output = bool;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
@@ -471,7 +491,9 @@ pub fn bind_udp_async(port: u16) -> UdpBindFuture {
 /// `NetworkEventQueue`経由でconnectリクエストを送信し、
 /// イベントハンドラ側でスタックロックを取得して処理する。
 pub struct TcpConnectFuture {
-    result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), crate::net::l4::endpoint::types::EndpointError>>>>,
+    result_slot: alloc::sync::Arc<
+        PoisonLock<Option<Result<(), crate::net::l4::endpoint::types::EndpointError>>>,
+    >,
     waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     sent: bool,
     local: TcpEndpointAddr,
@@ -481,7 +503,10 @@ pub struct TcpConnectFuture {
 impl core::future::Future for TcpConnectFuture {
     type Output = Result<(), crate::net::l4::endpoint::types::EndpointError>;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpConnect {
@@ -542,7 +567,10 @@ pub struct TcpConnectStreamFuture {
 impl core::future::Future for TcpConnectStreamFuture {
     type Output = Result<TcpStream, TcpError>;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpConnectStream {
@@ -572,7 +600,10 @@ impl core::future::Future for TcpConnectStreamFuture {
 ///
 /// イベントキュー経由でconnectリクエストを送信し、イベントハンドラ側で
 /// スタックロックを取得してTcpStreamを作成する。
-pub fn connect_tcp_stream_async(local: TcpEndpointAddr, remote: TcpEndpointAddr) -> TcpConnectStreamFuture {
+pub fn connect_tcp_stream_async(
+    local: TcpEndpointAddr,
+    remote: TcpEndpointAddr,
+) -> TcpConnectStreamFuture {
     TcpConnectStreamFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
@@ -597,7 +628,10 @@ pub struct TcpBindListenerFuture {
 impl core::future::Future for TcpBindListenerFuture {
     type Output = Result<TcpListener, TcpError>;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindListener {
@@ -644,15 +678,19 @@ pub struct TcpBindListenerWithTokenFuture {
 impl core::future::Future for TcpBindListenerWithTokenFuture {
     type Output = Result<TcpListener, TcpError>;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindListenerWithToken {
-                local: self.addr,
-                token: self.token,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
+            let event =
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindListenerWithToken {
+                    local: self.addr,
+                    token: self.token,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                };
             if crate::net::l4::endpoint::event::send_event(event).is_err() {
                 return core::task::Poll::Ready(Err(TcpError::InvalidState));
             }
@@ -671,7 +709,10 @@ impl core::future::Future for TcpBindListenerWithTokenFuture {
 }
 
 /// 非同期TCP bind with token（TcpListenerを返す完全非同期版）
-pub fn bind_tcp_listener_with_token_async(addr: TcpEndpointAddr, token: Option<u64>) -> TcpBindListenerWithTokenFuture {
+pub fn bind_tcp_listener_with_token_async(
+    addr: TcpEndpointAddr,
+    token: Option<u64>,
+) -> TcpBindListenerWithTokenFuture {
     TcpBindListenerWithTokenFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
@@ -696,7 +737,10 @@ pub struct UdpBindEndpointFuture {
 impl core::future::Future for UdpBindEndpointFuture {
     type Output = Option<UdpEndpoint>;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindEndpoint {
@@ -746,15 +790,19 @@ pub struct UdpBindEndpointWithTokenFuture {
 impl core::future::Future for UdpBindEndpointWithTokenFuture {
     type Output = Option<UdpEndpoint>;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindEndpointWithToken {
-                port: self.port,
-                token: self.token,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
+            let event =
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindEndpointWithToken {
+                    port: self.port,
+                    token: self.token,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                };
             if crate::net::l4::endpoint::event::send_event(event).is_err() {
                 return core::task::Poll::Ready(None);
             }
@@ -773,7 +821,10 @@ impl core::future::Future for UdpBindEndpointWithTokenFuture {
 }
 
 /// 非同期UDP bind with token（UdpEndpointを返す完全非同期版）
-pub fn bind_udp_endpoint_with_token_async(port: u16, token: Option<u64>) -> UdpBindEndpointWithTokenFuture {
+pub fn bind_udp_endpoint_with_token_async(
+    port: u16,
+    token: Option<u64>,
+) -> UdpBindEndpointWithTokenFuture {
     UdpBindEndpointWithTokenFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
@@ -798,7 +849,10 @@ pub struct MulticastJoinFuture {
 impl core::future::Future for MulticastJoinFuture {
     type Output = bool;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastJoin {
@@ -834,7 +888,10 @@ pub struct MulticastLeaveFuture {
 impl core::future::Future for MulticastLeaveFuture {
     type Output = bool;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastLeave {
@@ -895,10 +952,15 @@ struct AsyncBoolFuture<F: FnOnce() -> crate::net::l4::endpoint::event::NetworkEv
     event_fn: Option<F>,
 }
 
-impl<F: FnOnce() -> crate::net::l4::endpoint::event::NetworkEvent + Unpin> core::future::Future for AsyncBoolFuture<F> {
+impl<F: FnOnce() -> crate::net::l4::endpoint::event::NetworkEvent + Unpin> core::future::Future
+    for AsyncBoolFuture<F>
+{
     type Output = bool;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             if let Some(f) = self.event_fn.take() {
@@ -932,7 +994,10 @@ pub struct UnbindUdpFuture {
 impl core::future::Future for UnbindUdpFuture {
     type Output = bool;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindUdp {
@@ -982,7 +1047,10 @@ pub struct UnbindTcpFuture {
 impl core::future::Future for UnbindTcpFuture {
     type Output = bool;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcp {
@@ -1030,7 +1098,10 @@ pub struct UnbindTcpListenerFuture {
 impl core::future::Future for UnbindTcpListenerFuture {
     type Output = bool;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcpListener {
@@ -1071,7 +1142,9 @@ pub fn unbind_tcp_listener_async(local: TcpEndpointAddr) -> UnbindTcpListenerFut
 
 /// 非同期TCP bind with token Future
 pub struct TcpBindWithTokenFuture {
-    result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), crate::net::l4::endpoint::types::EndpointError>>>>,
+    result_slot: alloc::sync::Arc<
+        PoisonLock<Option<Result<(), crate::net::l4::endpoint::types::EndpointError>>>,
+    >,
     waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     sent: bool,
     addr: TcpEndpointAddr,
@@ -1081,7 +1154,10 @@ pub struct TcpBindWithTokenFuture {
 impl core::future::Future for TcpBindWithTokenFuture {
     type Output = Result<(), crate::net::l4::endpoint::types::EndpointError>;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindWithToken {
@@ -1110,7 +1186,10 @@ impl core::future::Future for TcpBindWithTokenFuture {
 }
 
 /// 非同期TCP bind with token: イベントキュー経由でbindリクエストを送信
-pub fn bind_tcp_with_token_async(addr: TcpEndpointAddr, token: Option<u64>) -> TcpBindWithTokenFuture {
+pub fn bind_tcp_with_token_async(
+    addr: TcpEndpointAddr,
+    token: Option<u64>,
+) -> TcpBindWithTokenFuture {
     TcpBindWithTokenFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
@@ -1132,7 +1211,10 @@ pub struct UdpBindWithTokenFuture {
 impl core::future::Future for UdpBindWithTokenFuture {
     type Output = bool;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindWithToken {
@@ -1184,7 +1266,10 @@ pub struct ApplyIpv6AddressFuture {
 impl core::future::Future for ApplyIpv6AddressFuture {
     type Output = bool;
 
-    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
         if !self.sent {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncApplyIpv6Address {
@@ -1210,7 +1295,9 @@ impl core::future::Future for ApplyIpv6AddressFuture {
 }
 
 /// 非同期IPv6グローバルアドレス適用: イベントキュー経由
-pub fn apply_ipv6_global_address_async(addr: crate::net::l3::ipv6::Ipv6Address) -> ApplyIpv6AddressFuture {
+pub fn apply_ipv6_global_address_async(
+    addr: crate::net::l3::ipv6::Ipv6Address,
+) -> ApplyIpv6AddressFuture {
     ApplyIpv6AddressFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
@@ -1227,7 +1314,13 @@ pub fn apply_ipv6_global_address_async(addr: crate::net::l3::ipv6::Ipv6Address) 
 ///
 /// 同期版`send_udp_on()`と異なり、呼び出し元でNETWORK_STACKのロックを
 /// 取得しない。イベントキュー経由でハンドラ側にオフロードする。
-pub fn send_udp_on_async(if_id: super::NetIfId, src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
+pub fn send_udp_on_async(
+    if_id: super::NetIfId,
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    data: &[u8],
+) -> bool {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSendOn {
             if_id: if_id.0,
@@ -1242,7 +1335,12 @@ pub fn send_udp_on_async(if_id: super::NetIfId, src_port: u16, dst_ip: Ipv4Addre
 }
 
 /// インターフェース指定TCP送信（非同期版・イベントキュー経由）
-pub fn send_tcp_on_async(_if_id: super::NetIfId, src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
+pub fn send_tcp_on_async(
+    _if_id: super::NetIfId,
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+    tcp_segment: &[u8],
+) -> bool {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawTcpSendOn {
             if_id: _if_id.0,

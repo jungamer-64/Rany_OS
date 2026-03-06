@@ -16,8 +16,8 @@
 //! - ウォッチドッグタイマーでハング検出
 
 use crate::fw;
-use crate::structs::health::HealthLayout;
 use crate::regs::init_seg;
+use crate::structs::health::HealthLayout;
 
 /// 健全性チェックの結果
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,7 @@ impl HealthMonitor {
 
             let h_buf = self.read_health_buffer(bar0_base);
             let layout = HealthLayout::new(&h_buf);
-            
+
             log::warn!(
                 target: "mlx5::health",
                 "FW health error: syndrome={:#x}, ext_syndrome={:#x}, full_reset={}, stuck={}",
@@ -106,7 +106,10 @@ impl HealthMonitor {
                 stuck
             );
 
-            if self.consecutive_errors >= self.error_threshold || layout.full_reset_required() || stuck {
+            if self.consecutive_errors >= self.error_threshold
+                || layout.full_reset_required()
+                || stuck
+            {
                 HealthStatus::Critical
             } else {
                 HealthStatus::Degraded
@@ -119,7 +122,7 @@ impl HealthMonitor {
         let base = bar0_base as usize + init_seg::HEALTH_BUFFER;
         for i in 0..16 {
             let val = crate::mmio_read_be32(base + i * 4);
-            buf[i*4..i*4+4].copy_from_slice(&val.to_be_bytes());
+            buf[i * 4..i * 4 + 4].copy_from_slice(&val.to_be_bytes());
         }
         buf
     }
@@ -152,5 +155,7 @@ pub struct HealthStats {
 }
 
 impl Default for HealthMonitor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

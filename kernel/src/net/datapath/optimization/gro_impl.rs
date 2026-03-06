@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(crate) const GRO_TABLE_SIZE: usize = 16;
 pub(crate) const GRO_MAX_PACKETS: u16 = 64;
 
@@ -70,7 +69,10 @@ impl GroTable {
     ///
     /// 固定配列を使用し、動的メモリ割り当てを回避する。
     /// 戻り値は `(配列, 有効エントリ数)` のタプル。
-    pub fn flush_aged(&mut self, current_tsc: u64) -> ([Option<GroSegment>; GRO_TABLE_SIZE], usize) {
+    pub fn flush_aged(
+        &mut self,
+        current_tsc: u64,
+    ) -> ([Option<GroSegment>; GRO_TABLE_SIZE], usize) {
         const NONE: Option<GroSegment> = None;
         let mut flushed = [NONE; GRO_TABLE_SIZE];
         let mut flushed_count = 0;
@@ -268,7 +270,10 @@ impl TsoEngine {
             data_offset: self.offset,
             data_len: seg_len,
             seq: self.template.seq_start.wrapping_add(self.offset),
-            ip_id: self.template.ip_id_start.wrapping_add(self.segments_generated as u16),
+            ip_id: self
+                .template
+                .ip_id_start
+                .wrapping_add(self.segments_generated as u16),
             is_last,
         };
 

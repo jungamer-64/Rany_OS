@@ -14,7 +14,7 @@
 //! バッファの所有権をSW↔HW間で明示的に移動する。
 //! DMAバッファの物理アドレスをWQEに直接設定する。
 
-use crate::defs::{WqeOpcode, WQEBB_SIZE};
+use crate::defs::{WQEBB_SIZE, WqeOpcode};
 use crate::regs::wqe;
 
 /// Work Queue Entry Buffer Block (WQEBB) — 16バイト
@@ -154,11 +154,7 @@ impl SendQueue {
     ///
     /// # Returns
     /// 投入したWQEインデックス
-    pub unsafe fn post_send(
-        &mut self,
-        segments: &[DmaSegment],
-        inline_hdr: &[u8],
-    ) -> Option<u16> {
+    pub unsafe fn post_send(&mut self, segments: &[DmaSegment], inline_hdr: &[u8]) -> Option<u16> {
         if !self.has_space() || segments.is_empty() || segments.len() > 2 {
             return None;
         }
@@ -309,7 +305,7 @@ impl ReceiveQueue {
         cqn: u32,
         mkey: u32,
         csum_offload: bool,
-        ) -> Self {
+    ) -> Self {
         let depth = 1u32 << log_rq_size;
         let mut rx_buffers = alloc::vec::Vec::with_capacity(depth as usize);
         rx_buffers.resize(depth as usize, RxBufferInfo::default());
@@ -343,7 +339,12 @@ impl ReceiveQueue {
     ///
     /// # Returns
     /// 投入したWQEインデックス
-    pub unsafe fn post_recv(&mut self, device_addr: u64, buf_virt: u64, buf_size: u32) -> Option<u16> {
+    pub unsafe fn post_recv(
+        &mut self,
+        device_addr: u64,
+        buf_virt: u64,
+        buf_size: u32,
+    ) -> Option<u16> {
         let wqe_idx = self.producer_counter;
         let buf_idx = (wqe_idx as u32 % self.rq_depth) as usize;
 

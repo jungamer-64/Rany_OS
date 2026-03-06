@@ -1,20 +1,23 @@
 use super::*;
 
-
 // ============================================================================
 // Global Device Instance
 // ============================================================================
 
 /// Primary (legacy) VirtIO console device slot kept for compatibility (`index=0`).
-pub(crate) static VIRTIO_CONSOLE_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioConsoleDevice>>> = crate::sync::PoisonLock::new(None);
+pub(crate) static VIRTIO_CONSOLE_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioConsoleDevice>>> =
+    crate::sync::PoisonLock::new(None);
 
 /// Additional VirtIO console devices (`index != 0`).
-pub(crate) static VIRTIO_CONSOLE_DEVICES: spin::RwLock<alloc::collections::BTreeMap<u8, Arc<VirtioConsoleDevice>>> =
-    spin::RwLock::new(alloc::collections::BTreeMap::new());
+pub(crate) static VIRTIO_CONSOLE_DEVICES: spin::RwLock<
+    alloc::collections::BTreeMap<u8, Arc<VirtioConsoleDevice>>,
+> = spin::RwLock::new(alloc::collections::BTreeMap::new());
 
 fn install_virtio_console_device(index: u8, device_arc: Arc<VirtioConsoleDevice>) {
     if index == 0 {
-        *VIRTIO_CONSOLE_DEVICE.lock().expect("VIRTIO_CONSOLE_DEVICE lock poisoned") = Some(device_arc);
+        *VIRTIO_CONSOLE_DEVICE
+            .lock()
+            .expect("VIRTIO_CONSOLE_DEVICE lock poisoned") = Some(device_arc);
     } else {
         VIRTIO_CONSOLE_DEVICES.write().insert(index, device_arc);
     }
@@ -23,7 +26,10 @@ fn install_virtio_console_device(index: u8, device_arc: Arc<VirtioConsoleDevice>
 /// Get a shared reference to the VirtIO console device by index.
 pub fn get_virtio_console_device_at_index(index: u8) -> Option<Arc<VirtioConsoleDevice>> {
     if index == 0 {
-        VIRTIO_CONSOLE_DEVICE.lock().expect("VIRTIO_CONSOLE_DEVICE lock poisoned").clone()
+        VIRTIO_CONSOLE_DEVICE
+            .lock()
+            .expect("VIRTIO_CONSOLE_DEVICE lock poisoned")
+            .clone()
     } else {
         VIRTIO_CONSOLE_DEVICES.read().get(&index).cloned()
     }
@@ -137,7 +143,6 @@ pub fn handle_virtio_console_interrupt() {
 pub fn get_virtio_console_device() -> Option<Arc<VirtioConsoleDevice>> {
     get_virtio_console_device_at_index(0)
 }
-
 
 // ============================================================================
 // Tests

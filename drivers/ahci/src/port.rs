@@ -211,12 +211,7 @@ impl AhciPort {
     }
 
     /// Synchronous read (existing)
-    pub fn read_sectors(
-        &mut self,
-        lba: Lba,
-        count: SectorCount,
-        buf: &mut [u8],
-    ) -> AhciResult<()> {
+    pub fn read_sectors(&mut self, lba: Lba, count: SectorCount, buf: &mut [u8]) -> AhciResult<()> {
         if buf.len() < count.to_bytes() as usize {
             return Err(AhciError::InvalidParameter);
         }
@@ -461,9 +456,13 @@ impl AhciPort {
     fn get_or_alloc_command_table(&mut self, slot: SlotNumber) -> AhciResult<&mut CommandTable> {
         if self.command_tables[slot.as_usize()].is_none() {
             let buffer = if let Some(id) = self.device_id {
-                kernel().alloc_dma_for_device(core::mem::size_of::<CommandTable>(), id).ok()
+                kernel()
+                    .alloc_dma_for_device(core::mem::size_of::<CommandTable>(), id)
+                    .ok()
             } else {
-                kernel().alloc_dma(core::mem::size_of::<CommandTable>()).ok()
+                kernel()
+                    .alloc_dma(core::mem::size_of::<CommandTable>())
+                    .ok()
             };
             self.command_tables[slot.as_usize()] = buffer;
         }

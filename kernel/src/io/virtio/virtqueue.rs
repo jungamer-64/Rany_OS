@@ -1,12 +1,12 @@
+use crate::io::dma::CoherentDmaBuffer;
+use crate::io::iommu::types::DmaAddr;
+use crate::sync::IrqPoisonLock;
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU16, Ordering};
-use alloc::vec::Vec;
-use crate::sync::IrqPoisonLock;
-use crate::io::dma::CoherentDmaBuffer;
-use crate::io::iommu::types::DmaAddr;
 
-pub use virtio_driver::defs::{VringUsedElem, VIRTQUEUE_MAX_SIZE};
+pub use virtio_driver::defs::{VIRTQUEUE_MAX_SIZE, VringUsedElem};
 
 /// Virtqueue descriptor
 #[repr(C)]
@@ -86,14 +86,15 @@ impl VirtQueue {
     pub fn calculate_layout(queue_size: u16) -> (usize, usize, usize, usize) {
         let queue_size = queue_size as usize;
         let desc_table_size = core::mem::size_of::<VringDesc>() * queue_size;
-        
+
         // Avail: flags(2) + idx(2) + ring[queue_size](2*qs) + used_event(2)
         let avail_ring_size = 2 + 2 + 2 * queue_size + 2;
-        
+
         // Used: flags(2) + idx(2) + ring[queue_size](8*qs) + avail_event(2)
         let used_ring_size = 2 + 2 + core::mem::size_of::<VringUsedElem>() * queue_size + 2;
 
-        let used_offset = (desc_table_size + avail_ring_size + Self::VRING_USED_ALIGN - 1) & !(Self::VRING_USED_ALIGN - 1);
+        let used_offset = (desc_table_size + avail_ring_size + Self::VRING_USED_ALIGN - 1)
+            & !(Self::VRING_USED_ALIGN - 1);
         let total_size = used_offset + used_ring_size;
 
         (desc_table_size, avail_ring_size, used_offset, total_size)
@@ -172,7 +173,8 @@ impl VirtQueue {
 
     /// Returns the last used_idx tracked by the driver
     pub fn get_last_used_idx(&self) -> u16 {
-        self.last_used_idx.load(core::sync::atomic::Ordering::Acquire)
+        self.last_used_idx
+            .load(core::sync::atomic::Ordering::Acquire)
     }
 
     /// Allocate a descriptor from the free list
@@ -214,7 +216,8 @@ impl VirtQueue {
 
     /// Safely get an element from the used ring
     fn get_used_elem(&self, ring_index: u16) -> VringUsedElem {
-        let ring_ptr = unsafe { (self.used_ring.as_ptr() as *const u8).add(4) as *const VringUsedElem };
+        let ring_ptr =
+            unsafe { (self.used_ring.as_ptr() as *const u8).add(4) as *const VringUsedElem };
         unsafe { core::ptr::read_volatile(ring_ptr.add(ring_index as usize)) }
     }
 
@@ -223,17 +226,17 @@ impl VirtQueue {
     /// # Safety
     /// Caller must ensure the descriptor chain starting at `head` is valid.
     pub unsafe fn submit(&mut self, head: u16) -> u16 {
-        // Step 1: Write available ring entry. 
+        // Step 1: Write available ring entry.
         // We use Ordering::Release fence to ensure descriptor table writes are visible.
         core::sync::atomic::fence(Ordering::Release);
-        
+
         let avail_idx = self.get_avail_idx();
         self.set_avail_ring_entry(avail_idx % self.queue_size, head);
 
         // Step 2: Update avail.idx.
         // We need another Release fence to ensure the ring entry update is visible before idx update.
         core::sync::atomic::fence(Ordering::Release);
-        
+
         self.set_avail_idx(avail_idx.wrapping_add(1));
 
         // Note: The caller is responsible for notifying the device (doorbell).
@@ -244,7 +247,11 @@ impl VirtQueue {
     ///
     /// # Safety
     /// Caller must ensure the indirect table is valid and DMA-accessible.
-    pub unsafe fn submit_indirect(&mut self, indirect_table_dma: DmaAddr, count: u16) -> Option<u16> {
+    pub unsafe fn submit_indirect(
+        &mut self,
+        indirect_table_dma: DmaAddr,
+        count: u16,
+    ) -> Option<u16> {
         if (self.features & VIRTIO_F_INDIRECT_DESC) == 0 {
             return None;
         }
@@ -252,9 +259,18 @@ impl VirtQueue {
         let head = self.alloc_desc()?;
         let desc_ptr = self.desc_table.as_ptr().add(head as usize);
 
-        core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), indirect_table_dma.as_u64());
-        core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), (count as u32) * (core::mem::size_of::<VringDesc>() as u32));
-        core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), VringDesc::F_INDIRECT);
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!((*desc_ptr).addr),
+            indirect_table_dma.as_u64(),
+        );
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!((*desc_ptr).len),
+            (count as u32) * (core::mem::size_of::<VringDesc>() as u32),
+        );
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!((*desc_ptr).flags),
+            VringDesc::F_INDIRECT,
+        );
         core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), 0);
 
         self.submit(head);
@@ -275,13 +291,14 @@ impl VirtQueue {
     pub fn poll_completion(&mut self) -> Option<(u16, u32)> {
         let last_used = self.last_used_idx.load(Ordering::Acquire);
         let used_idx = self.get_used_idx();
-        
+
         if last_used == used_idx {
             return None;
         }
 
         let elem = self.get_used_elem(last_used % self.queue_size);
-        self.last_used_idx.store(last_used.wrapping_add(1), Ordering::Release);
+        self.last_used_idx
+            .store(last_used.wrapping_add(1), Ordering::Release);
 
         Some((elem.id as u16, elem.len))
     }

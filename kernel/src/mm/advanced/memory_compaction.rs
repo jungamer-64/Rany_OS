@@ -26,14 +26,14 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use crate::sync::IrqMutex;
 use alloc::vec::Vec;
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
+use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::PhysAddr;
+use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
-use crate::mm::types::{FixedVec, FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M};
 use crate::mm::phys::buddy_allocator;
+use crate::mm::types::{FixedVec, FrameIndex, PAGE_SIZE_2M, PAGE_SIZE_4K};
 
 // ============================================================================
 // Configuration
@@ -101,9 +101,9 @@ impl CompactionZone {
     /// コンパクションが必要かどうか
     pub fn needs_compaction(&self) -> bool {
         // 2MB以上の連続空き領域がない場合はコンパクション候補
-        self.max_contiguous_free < PAGES_PER_2MB && 
-            self.free_count >= PAGES_PER_2MB &&
-            self.fragmentation_ratio() > COMPACTION_THRESHOLD
+        self.max_contiguous_free < PAGES_PER_2MB
+            && self.free_count >= PAGES_PER_2MB
+            && self.fragmentation_ratio() > COMPACTION_THRESHOLD
     }
 }
 
@@ -204,7 +204,7 @@ impl CompactionManager {
         let end = (start + PAGES_PER_2MB * 4).min(self.max_frame.as_usize());
 
         let mut pos = (start + PAGES_PER_2MB - 1) & !(PAGES_PER_2MB - 1);
-        
+
         while pos + PAGES_PER_2MB <= end {
             if let Some(zone) = self.analyze_zone(FrameIndex::new(pos)) {
                 if zone.needs_compaction() {
@@ -228,7 +228,7 @@ impl CompactionManager {
     /// ゾーンを分析
     fn analyze_zone(&self, start: FrameIndex) -> Option<CompactionZone> {
         let end = FrameIndex::new(start.as_usize() + PAGES_PER_2MB);
-        
+
         if end.as_usize() > self.max_frame.as_usize() {
             return None;
         }
@@ -241,7 +241,7 @@ impl CompactionManager {
         // 各フレームをチェック
         for i in 0..PAGES_PER_2MB {
             let frame_idx = start.as_usize() + i;
-            
+
             // Buddyアロケータで空きかどうかをチェック
             if buddy_allocator::is_frame_allocated(frame_idx) {
                 // 使用中
@@ -303,7 +303,7 @@ impl CompactionManager {
 
         // 完了したゾーンを削除
         self.zones.retain(|z| z.needs_compaction());
-        
+
         self.in_progress.store(false, Ordering::SeqCst);
         compacted
     }
@@ -319,11 +319,7 @@ impl CompactionManager {
         let mut pages_moved = 0;
 
         // 後半から移動候補を収集
-        let candidates = self.find_movable_pages(
-            FrameIndex::new(mid),
-            zone.end,
-            MAX_PAGES_PER_RUN,
-        );
+        let candidates = self.find_movable_pages(FrameIndex::new(mid), zone.end, MAX_PAGES_PER_RUN);
 
         // 前半の空き領域に移動
         for source in candidates {
@@ -339,12 +335,12 @@ impl CompactionManager {
 
         if pages_moved > 0 {
             self.stats.migration_success += 1;
-            
+
             // 2MB連続領域が作成できたかチェック
             if self.check_contiguous_region(zone) {
                 self.stats.huge_regions_created += 1;
             }
-            
+
             true
         } else {
             false
@@ -359,31 +355,31 @@ impl CompactionManager {
         max_count: usize,
     ) -> Vec<PhysFrame<Size4KiB>> {
         let mut movable = Vec::new();
-        
+
         for frame_idx in start.as_usize()..end.as_usize() {
             if movable.len() >= max_count {
                 break;
             }
-            
+
             // 使用中のフレームのみ移動対象
             if !buddy_allocator::is_frame_allocated(frame_idx) {
                 continue;
             }
-            
+
             // ページ属性をチェック
             if !self.is_page_movable(frame_idx) {
                 continue;
             }
-            
+
             let phys_addr = PhysAddr::new((frame_idx * PAGE_SIZE_4K) as u64);
             if let Some(frame) = PhysFrame::from_start_address(phys_addr).ok() {
                 movable.push(frame);
             }
         }
-        
+
         movable
     }
-    
+
     /// ページが移動可能かどうかをチェック
     #[inline]
     fn is_page_movable(&self, frame_idx: usize) -> bool {
@@ -392,23 +388,27 @@ impl CompactionManager {
         // 2. ページテーブル自体
         // 3. DMAバッファ（デバイスが参照中）
         // 4. ピン留めされたページ
-        
+
         // カーネル領域のチェック（16MBまでをカーネル領域とみなす）
         const KERNEL_END_FRAME: usize = 0x1000000 / PAGE_SIZE_4K; // 16MB / 4KB = 4096
         if frame_idx < KERNEL_END_FRAME {
             return false;
         }
-        
+
         // TODO: より詳細なページ属性チェック
         // - ページテーブルのフラグを確認
         // - DMAバッファ登録テーブルを確認
         // - ピン留めカウンタを確認
-        
+
         true
     }
 
     /// 空きスロットを検索
-    fn find_free_slot(&mut self, start: FrameIndex, end: FrameIndex) -> Option<PhysFrame<Size4KiB>> {
+    fn find_free_slot(
+        &mut self,
+        start: FrameIndex,
+        end: FrameIndex,
+    ) -> Option<PhysFrame<Size4KiB>> {
         // 指定範囲内で空きフレームを探す
         for frame_idx in start.as_usize()..end.as_usize() {
             // 空きフレームを発見
@@ -417,7 +417,7 @@ impl CompactionManager {
                 if let Some(frame) = buddy_allocator::buddy_alloc_frame() {
                     // 割り当てられたフレームが指定範囲内かチェック
                     if frame.start_address().as_u64() >= (start.as_usize() * PAGE_SIZE_4K) as u64
-                       && frame.start_address().as_u64() < (end.as_usize() * PAGE_SIZE_4K) as u64
+                        && frame.start_address().as_u64() < (end.as_usize() * PAGE_SIZE_4K) as u64
                     {
                         return Some(frame);
                     }
@@ -438,22 +438,18 @@ impl CompactionManager {
     /// 4. ページテーブルエントリを更新（全参照先）
     /// 5. TLBをフラッシュ（必要なら IPI で全CPU）
     /// 6. ソースページを解放
-    fn migrate_page(
-        &mut self,
-        source: PhysFrame<Size4KiB>,
-        dest: PhysFrame<Size4KiB>,
-    ) -> bool {
+    fn migrate_page(&mut self, source: PhysFrame<Size4KiB>, dest: PhysFrame<Size4KiB>) -> bool {
         self.stats.migration_attempts += 1;
 
         // 1. ソース/デスト アドレス取得
         let src_phys = source.start_address().as_u64();
         let _dst_phys = dest.start_address().as_u64();
-        
+
         // 2. カーネル直接マッピングを使用してコピー
         unsafe {
             let src_virt = phys_to_virt(source.start_address());
             let dst_virt = phys_to_virt(dest.start_address());
-            
+
             // 4KB コピー
             core::ptr::copy_nonoverlapping(
                 src_virt as *const u8,
@@ -477,7 +473,7 @@ impl CompactionManager {
 
         // 5. ソースページを解放
         buddy_allocator::buddy_dealloc_frame(source);
-        
+
         self.stats.migration_success += 1;
         true
     }
@@ -490,7 +486,7 @@ impl CompactionManager {
 
         for i in 0..PAGES_PER_2MB {
             let frame_idx = zone.start.as_usize() + i;
-            
+
             if buddy_allocator::is_frame_allocated(frame_idx) {
                 if current_contiguous > max_contiguous {
                     max_contiguous = current_contiguous;
@@ -525,8 +521,7 @@ impl CompactionManager {
 // ============================================================================
 
 /// グローバルコンパクションマネージャ
-static COMPACTION_MANAGER: IrqMutex<CompactionManager> = 
-    IrqMutex::new(CompactionManager::new());
+static COMPACTION_MANAGER: IrqMutex<CompactionManager> = IrqMutex::new(CompactionManager::new());
 
 /// コンパクションマネージャを初期化
 pub fn init_compaction(max_frame: FrameIndex) {
@@ -587,14 +582,10 @@ pub unsafe fn migrate_single_page(
     let dst_ptr = phys_to_virt(dest.start_address());
 
     // 2. コピー（4KiB = 4096バイト）
-    core::ptr::copy_nonoverlapping(
-        src_ptr as *const u8,
-        dst_ptr as *mut u8,
-        PAGE_SIZE_4K,
-    );
+    core::ptr::copy_nonoverlapping(src_ptr as *const u8, dst_ptr as *mut u8, PAGE_SIZE_4K);
 
     // 3. ページテーブル更新は呼び出し元の責任
-    
+
     Ok(())
 }
 
@@ -622,7 +613,7 @@ fn phys_to_virt(phys: PhysAddr) -> usize {
 fn flush_tlb_page(phys_addr: u64) {
     // 直接マッピングの仮想アドレスを計算
     let virt_addr = crate::mm::virt::mapping::phys_to_virt(PhysAddr::new(phys_addr)).as_u64();
-    
+
     // x86_64: INVLPG 命令でTLBエントリを無効化
     unsafe {
         core::arch::asm!(
@@ -642,10 +633,11 @@ fn flush_tlb_page(phys_addr: u64) {
 /// これは高コストな操作。可能な限りバッチ処理すること。
 fn broadcast_tlb_flush(phys_addr: u64) {
     use x86_64::VirtAddr;
-    
+
     // 直接マッピングの仮想アドレスを計算
-    let virt_addr = VirtAddr::new(crate::mm::virt::mapping::phys_to_virt(PhysAddr::new(phys_addr)).as_u64());
-    
+    let virt_addr =
+        VirtAddr::new(crate::mm::virt::mapping::phys_to_virt(PhysAddr::new(phys_addr)).as_u64());
+
     // TLBバッチシステムを使用して全CPUにフラッシュを送信
     // flush_tlb_immediateは:
     // 1. ローカルCPUのTLBをフラッシュ
@@ -685,7 +677,7 @@ impl FragmentationIndex {
             // 低オーダーに空きが集中していると断片化が進んでいる
             let weight = 1.0 / (1 << order) as f64; // 高オーダーほど重要
             let expected = buddy_stats.free_frames as f64 / (1 << order) as f64;
-            
+
             if expected > 0.0 {
                 let actual = free_blocks as f64;
                 // 実際の空きブロック数 vs 期待値
@@ -705,14 +697,18 @@ impl FragmentationIndex {
         // 2MB (Order 9) の確保可能性
         let order_9_blocks = buddy_stats.order_stats.get(9).map(|&(b, _)| b).unwrap_or(0);
         let huge_page_availability = if buddy_stats.free_frames >= 512 {
-            (order_9_blocks as f64).min(buddy_stats.free_frames as f64 / 512.0) 
+            (order_9_blocks as f64).min(buddy_stats.free_frames as f64 / 512.0)
                 / (buddy_stats.free_frames as f64 / 512.0)
         } else {
             0.0
         };
 
         // 1GB (Order 18) の確保可能性
-        let order_18_blocks = buddy_stats.order_stats.get(18).map(|&(b, _)| b).unwrap_or(0);
+        let order_18_blocks = buddy_stats
+            .order_stats
+            .get(18)
+            .map(|&(b, _)| b)
+            .unwrap_or(0);
         let gigantic_page_availability = if buddy_stats.free_frames >= 262144 {
             (order_18_blocks as f64).min(buddy_stats.free_frames as f64 / 262144.0)
                 / (buddy_stats.free_frames as f64 / 262144.0)
@@ -841,7 +837,7 @@ pub enum CompactionAction {
 }
 
 /// グローバルプロアクティブコンパクションマネージャ
-static PROACTIVE_MANAGER: IrqMutex<ProactiveCompactionManager> = 
+static PROACTIVE_MANAGER: IrqMutex<ProactiveCompactionManager> =
     IrqMutex::new(ProactiveCompactionManager::new());
 
 /// 断片化指数を更新

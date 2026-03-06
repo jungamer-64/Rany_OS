@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// フォルト結果を人間可読な文字列に変換
 pub fn fault_result_str(result: FaultResult) -> &'static str {
     match result {
@@ -37,14 +36,14 @@ pub fn fault_result_str(result: FaultResult) -> &'static str {
 /// * `false` - フォルト解決不可、プロセス終了または panic が必要
 pub fn try_handle_page_fault(error_code: u64, current_rsp: VirtAddr) -> bool {
     let result = handle_page_fault(error_code, current_rsp);
-    
+
     match result {
         FaultResult::Resolved
         | FaultResult::CowHandled
         | FaultResult::DemandPaged
         | FaultResult::StackGrown
         | FaultResult::FilePageLoaded => true,
-        
+
         FaultResult::NoVma
         | FaultResult::PermissionDenied
         | FaultResult::OutOfMemory

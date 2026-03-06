@@ -2,13 +2,13 @@
 // drivers/mlx5/src/device/init.rs - MLX5 Device Initialization
 // ============================================================================
 
-use alloc::vec; // bring `vec!` macro into scope for candidate lists
-use crate::defs::CmdOpcode;
 use crate::cmd::CmdQueueTransport; // needed for layout parsing
-use crate::error::{Mlx5Error, Mlx5Result};
-use crate::device::{Mlx5Device, DeviceState};
-use crate::cmd::{CmdQueue, CmdMailbox};
 use crate::cmd::hca::{build_enable_hca_input, build_set_issi_input};
+use crate::cmd::{CmdMailbox, CmdQueue};
+use crate::defs::CmdOpcode;
+use crate::device::{DeviceState, Mlx5Device};
+use crate::error::{Mlx5Error, Mlx5Result};
+use alloc::vec; // bring `vec!` macro into scope for candidate lists
 // unused MkeyParams removed
 
 impl Mlx5Device {
@@ -122,7 +122,7 @@ impl Mlx5Device {
             self.cmd_out_mbox_device,
             64,
         )?;
-        
+
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let current_issi = out_mbox.read_be16(0x02);
         let supported_issi = out_mbox.read_be16(0x04);
@@ -148,7 +148,7 @@ impl Mlx5Device {
     pub unsafe fn init_hca(&mut self) -> Mlx5Result<()> {
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         *in_mbox = CmdMailbox::zeroed();
-        
+
         log::info!(target: "mlx5", "Executing INIT_HCA...");
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::InitHca,
@@ -236,7 +236,14 @@ impl Mlx5Device {
             Err(e) => return Err(e),
         }
 
-        self.init_command_interface(cmdq_virt, cmdq_device, cmd_in_mbox_virt, cmd_in_mbox_device, cmd_out_mbox_virt, cmd_out_mbox_device)?;
+        self.init_command_interface(
+            cmdq_virt,
+            cmdq_device,
+            cmd_in_mbox_virt,
+            cmd_in_mbox_device,
+            cmd_out_mbox_virt,
+            cmd_out_mbox_device,
+        )?;
 
         // For VFs the majority of commands will only succeed when a proper UID
         // is present.  Set a sensible default before making any further calls so
@@ -244,7 +251,11 @@ impl Mlx5Device {
         // without having to retry inside each helper.
         if self.is_vf() {
             if let Some(cmd) = self.cmd.as_mut() {
-                let default_uid = if self.sw_vhca_id != 0 { self.sw_vhca_id } else { 0xFFFF };
+                let default_uid = if self.sw_vhca_id != 0 {
+                    self.sw_vhca_id
+                } else {
+                    0xFFFF
+                };
                 cmd.set_uid(default_uid);
                 log::debug!(target: "mlx5", "VF detected, initial UID set to {:#x}", default_uid);
             }
@@ -259,7 +270,10 @@ impl Mlx5Device {
         let (func_id, requested_pages) = self.query_required_pages(0x01).unwrap_or((0, 0));
         self.fw_function_id = func_id;
         if !self.is_vf() && requested_pages > 0 && !fw_page_addrs.is_empty() {
-            self.provide_pages(func_id, &fw_page_addrs[.. (requested_pages as usize).min(fw_page_addrs.len())])?;
+            self.provide_pages(
+                func_id,
+                &fw_page_addrs[..(requested_pages as usize).min(fw_page_addrs.len())],
+            )?;
         }
         self.query_all_caps()?;
         self.init_hca()?;
@@ -269,7 +283,7 @@ impl Mlx5Device {
         self.alloc_pd()?;
         self.alloc_td()?;
         let _ = self.set_driver_version();
-        
+
         // VF probe: try a short list of PD values when creating MKEY, falling
         // back to the reserved lkey only if none succeed.
         let mut pd_candidates = vec![0, 1];
@@ -309,16 +323,44 @@ impl Mlx5Device {
         }
 
         let _ = self.query_port_mac(0);
+        let _ = self.query_port_state(0);
 
         // Phase 4: Queues
         let eqn = self.create_eq_hw(eq_bufs[0].0, eq_bufs[0].1, log_eq_size, 0, 0)?;
-        
-        let tx_cqn = self.create_cq_hw(tx_cq_bufs[0].0, tx_cq_bufs[0].1, tx_cq_bufs[0].2, tx_cq_bufs[0].3, log_cq_size, eqn)?;
-        let rx_cqn = self.create_cq_hw(rx_cq_bufs[0].0, rx_cq_bufs[0].1, rx_cq_bufs[0].2, rx_cq_bufs[0].3, log_cq_size, eqn)?;
 
-        let tisn = self.create_tis(&crate::resources::TisParams { pd: self.pd, td: self.td, port: 1, prio: 0 })?;
-        let _sqn = self.create_sq_hw(sq_bufs[0].0, sq_bufs[0].1, sq_bufs[0].2, sq_bufs[0].3, log_sq_size, tx_cqn, tisn)?;
-        
+        let tx_cqn = self.create_cq_hw(
+            tx_cq_bufs[0].0,
+            tx_cq_bufs[0].1,
+            tx_cq_bufs[0].2,
+            tx_cq_bufs[0].3,
+            log_cq_size,
+            eqn,
+        )?;
+        let rx_cqn = self.create_cq_hw(
+            rx_cq_bufs[0].0,
+            rx_cq_bufs[0].1,
+            rx_cq_bufs[0].2,
+            rx_cq_bufs[0].3,
+            log_cq_size,
+            eqn,
+        )?;
+
+        let tisn = self.create_tis(&crate::resources::TisParams {
+            pd: self.pd,
+            td: self.td,
+            port: 1,
+            prio: 0,
+        })?;
+        let _sqn = self.create_sq_hw(
+            sq_bufs[0].0,
+            sq_bufs[0].1,
+            sq_bufs[0].2,
+            sq_bufs[0].3,
+            log_sq_size,
+            tx_cqn,
+            tisn,
+        )?;
+
         let scatter_fcs = self.hca_caps().map(|c| c.scatter_fcs).unwrap_or(false);
         let vlan_strip = self.hca_caps().map(|c| c.vlan_strip).unwrap_or(false);
         let tirn = self.create_tir(&crate::resources::TirParams {
@@ -331,12 +373,24 @@ impl Mlx5Device {
             vlan_strip,
         })?;
 
-        let _rqn = self.create_rq_hw(rq_bufs[0].0, rq_bufs[0].1, rq_bufs[0].2, rq_bufs[0].3, log_rq_size, rx_cqn, tirn, scatter_fcs, vlan_strip)?;
-        
+        let _rqn = self.create_rq_hw(
+            rq_bufs[0].0,
+            rq_bufs[0].1,
+            rq_bufs[0].2,
+            rq_bufs[0].3,
+            log_rq_size,
+            rx_cqn,
+            tirn,
+            scatter_fcs,
+            vlan_strip,
+        )?;
+
         // Finalize
         let _ = self.setup_rx_flow_table(tirn);
-        if let Some(port) = self.ports.get_mut(0) { port.admin_up(); }
-        
+        if let Some(port) = self.ports.get_mut(0) {
+            port.admin_up();
+        }
+
         self.resources_allocated = true;
         self.state = DeviceState::Active;
         Ok(())
@@ -346,11 +400,13 @@ impl Mlx5Device {
     pub unsafe fn trigger_sw_reset(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Triggering software reset via SW_RESET register...");
         crate::mmio_write_be32(self.bar0_base as usize + crate::regs::init_seg::SW_RESET, 1);
-        
+
         // initializing bit がセットされるまで待機
         let start_ms = kernel_api::services::kernel().current_tick();
         while kernel_api::services::kernel().current_tick() - start_ms < 2000 {
-            let initializing = crate::mmio_read_be32(self.bar0_base as usize + crate::regs::init_seg::INITIALIZING);
+            let initializing = crate::mmio_read_be32(
+                self.bar0_base as usize + crate::regs::init_seg::INITIALIZING,
+            );
             if (initializing & crate::regs::fw_state::INITIALIZING_BIT) != 0 {
                 log::info!(target: "mlx5", "Software reset in progress (initializing bit set)");
                 self.state = DeviceState::Uninitialized;
@@ -358,7 +414,7 @@ impl Mlx5Device {
             }
             core::hint::spin_loop();
         }
-        
+
         log::warn!(target: "mlx5", "SW reset bit check timeout (HCA might already be in reset or not responding)");
         self.state = DeviceState::Uninitialized;
         Ok(())
@@ -367,7 +423,7 @@ impl Mlx5Device {
     /// デバイスのリカバリ試行
     pub unsafe fn recover(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Attempting device recovery...");
-        
+
         // 1. まずは正常なティアダウンを試みる
         // コマンドIFが生きている場合はこれが最も安全
         match self.teardown_full() {
@@ -380,10 +436,10 @@ impl Mlx5Device {
                 self.trigger_sw_reset()?;
             }
         }
-        
+
         // 3. FW 再起動待ち
         self.wait_firmware()?;
-        
+
         log::info!(target: "mlx5", "Device recovery successful: ready for re-initialization");
         Ok(())
     }

@@ -9,13 +9,12 @@
 
 use x86_64::structures::paging::{PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
+use super::buddy_allocator::buddy_allocator_stats;
 use super::frame_allocator::{
-    alloc_frame, alloc_frame_1g, alloc_frame_2m,
-    dealloc_frame, dealloc_frame_1g, dealloc_frame_2m,
+    alloc_frame, alloc_frame_1g, alloc_frame_2m, dealloc_frame, dealloc_frame_1g, dealloc_frame_2m,
     frame_allocator_stats,
 };
-use super::buddy_allocator::buddy_allocator_stats;
-use crate::loader::type_id::{TypeIdHash, TypeHash, SemVer, const_hash};
+use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
 
 /// フレームアロケータの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +147,9 @@ impl UnifiedFrameAllocator {
 
 impl TypeIdHash for UnifiedFrameAllocator {
     fn type_id_hash() -> TypeHash {
-        const_hash(b"UnifiedFrameAllocator:v1:alloc_4k,alloc_2m,alloc_1g,dealloc_4k,dealloc_2m,dealloc_1g")
+        const_hash(
+            b"UnifiedFrameAllocator:v1:alloc_4k,alloc_2m,alloc_1g,dealloc_4k,dealloc_2m,dealloc_1g",
+        )
     }
 
     fn type_name() -> &'static str {
@@ -226,8 +227,11 @@ pub fn memory_pressure_level() -> u8 {
     }
 
     // Calculate usage percentage
-    let used = stats.total_frames.saturating_sub(stats.free_frames as usize);
-    let usage_percent = ((used as u64).saturating_mul(100) / (stats.total_frames as u64).max(1)) as u8;
+    let used = stats
+        .total_frames
+        .saturating_sub(stats.free_frames as usize);
+    let usage_percent =
+        ((used as u64).saturating_mul(100) / (stats.total_frames as u64).max(1)) as u8;
 
     // Apply thresholds for more nuanced pressure detection
     // If we have less than 1GB free (262144 4KB frames), increase pressure

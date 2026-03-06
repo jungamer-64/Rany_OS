@@ -11,7 +11,9 @@ use alloc::sync::Arc;
 
 use crate::io::iommu::runtime::backend::IommuBackend;
 #[allow(unused_imports)]
-pub use crate::io::iommu::vendors::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
+pub use crate::io::iommu::vendors::intel::registry::{
+    IommuRegistry, get_iommu_registry, init_registry,
+};
 
 // Global IOMMU driver stored in a lock-free spin::Once.
 // Written exactly once during boot via init_driver(), then read-only.
@@ -40,7 +42,10 @@ pub fn is_iommu_enabled() -> bool {
     if let Some(registry) = get_iommu_registry() {
         if !registry.controllers.is_empty() {
             // Check if at least one controller has translation enabled
-            return registry.controllers.iter().any(|c| c.is_translation_enabled());
+            return registry
+                .controllers
+                .iter()
+                .any(|c| c.is_translation_enabled());
         }
     }
     false
@@ -58,9 +63,9 @@ pub fn init_driver(driver: Arc<IommuBackend>) {
 // Device DMA Address Mask Registry
 // ========================================================================
 
+use crate::io::iommu::types::{DeviceId, IommuError};
 use alloc::collections::BTreeMap;
 use spin::RwLock;
-use crate::io::iommu::types::{DeviceId, IommuError};
 
 // Per-device DMA address masks (inclusive).
 static DEVICE_DMA_MASKS: RwLock<BTreeMap<DeviceId, u64>> = RwLock::new(BTreeMap::new());
@@ -112,7 +117,11 @@ fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
 }
 
 #[allow(dead_code)]
-pub(crate) fn validate_device_dma_mask(device: &DeviceId, addr: u64, size: u64) -> Result<(), IommuError> {
+pub(crate) fn validate_device_dma_mask(
+    device: &DeviceId,
+    addr: u64,
+    size: u64,
+) -> Result<(), IommuError> {
     let Some(mask) = get_device_dma_mask(device) else {
         return Ok(());
     };
@@ -141,7 +150,10 @@ pub(crate) fn validate_device_dma_mask(device: &DeviceId, addr: u64, size: u64) 
 /// * `Ok(Some(mask))` - Device has a DMA mask, returned for use in allocation
 /// * `Ok(None)` - No mask registered, no constraint
 /// * `Err(IommuError::InvalidAddress)` - Size exceeds maximum addressable range
-pub(crate) fn validate_dma_mask_pre_allocation(device: &DeviceId, size: u64) -> Result<Option<u64>, IommuError> {
+pub(crate) fn validate_dma_mask_pre_allocation(
+    device: &DeviceId,
+    size: u64,
+) -> Result<Option<u64>, IommuError> {
     let Some(mask) = get_device_dma_mask(device) else {
         return Ok(None);
     };
@@ -152,11 +164,12 @@ pub(crate) fn validate_dma_mask_pre_allocation(device: &DeviceId, size: u64) -> 
     if (size as u128) > max_addressable {
         log::warn!(
             "[IOMMU] DMA mapping size {} exceeds device {:?} mask limit {}",
-            size, device, max_addressable
+            size,
+            device,
+            max_addressable
         );
         return Err(IommuError::InvalidAddress);
     }
 
     Ok(Some(mask))
 }
-

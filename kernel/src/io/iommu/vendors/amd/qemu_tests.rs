@@ -664,7 +664,7 @@ pub fn wave1_cmdqueue_pressure_smoke() -> bool {
 // ---------------------------------------------------------------------------
 
 use super::cmd::AmdCommand;
-use super::irt::{encode_remap_msi, AmdInterruptRemapTable, AmdIrte, AmdUnitIrt};
+use super::irt::{AmdInterruptRemapTable, AmdIrte, AmdUnitIrt, encode_remap_msi};
 
 /// Verify AmdIrte bit layout: RemapEn, vector, destination, DM.
 pub fn wave5_irt_entry_construction_smoke() -> bool {

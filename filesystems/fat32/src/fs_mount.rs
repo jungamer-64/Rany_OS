@@ -1,31 +1,12 @@
 use crate::{
-    Arc,
-    Cluster,
-    DefaultZeroCopyBuffer,
-    BlockDevice,
-    ZeroCopyBlockDevice,
+    Arc, AsyncMutex, BLOCK_SIZE, BOOT_SECTOR_SIZE, BlockDevice, BootSector, Cluster,
+    ClusterBufferAllocator, ClusterBufferPool, DEFAULT_DIR_CACHE_SIZE,
+    DEFAULT_FAT_SECTOR_CACHE_SIZE, DefaultZeroCopyBuffer, DirEntryCache, DummyTimeProvider,
+    Fat32FileSystem, FatSectorCache, FsError, FsResult, LRUBlockCache, Sector, ZeroCopyBlockDevice,
     ZeroCopyBufferMut,
-    Fat32FileSystem,
-    FsResult,
-    FsError,
-    BootSector,
-    BOOT_SECTOR_SIZE,
-    FatSectorCache,
-    DEFAULT_FAT_SECTOR_CACHE_SIZE,
-    AsyncMutex,
-    DummyTimeProvider,
-    Sector,
-    DirEntryCache,
-    DEFAULT_DIR_CACHE_SIZE,
-    LRUBlockCache,
-    BLOCK_SIZE,
-    ClusterBufferPool,
-    ClusterBufferAllocator,
 };
 
-use vfs::block::{
-    BlockDeviceZeroCopyAdapter,
-};
+use vfs::block::BlockDeviceZeroCopyAdapter;
 
 impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
     /// FAT32ファイルシステムをマウント（ゼロコピー/Async）

@@ -62,7 +62,7 @@ impl<'a> Write for StackFmtWriter<'a> {
         let remaining = self.buffer.len() - self.offset;
         let bytes = s.as_bytes();
         let len = bytes.len().min(remaining);
-        
+
         if len > 0 {
             unsafe {
                 core::ptr::copy_nonoverlapping(
@@ -129,12 +129,28 @@ impl<'a> BsodInfo<'a> {
 
 #[derive(Clone, Debug, Copy)]
 pub struct RegisterDump {
-    pub rax: u64, pub rbx: u64, pub rcx: u64, pub rdx: u64,
-    pub rsi: u64, pub rdi: u64, pub rbp: u64, pub rsp: u64,
-    pub r8: u64,  pub r9: u64,  pub r10: u64, pub r11: u64,
-    pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
-    pub rip: u64, pub rflags: u64,
-    pub cr0: u64, pub cr2: u64, pub cr3: u64, pub cr4: u64,
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub rsp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rip: u64,
+    pub rflags: u64,
+    pub cr0: u64,
+    pub cr2: u64,
+    pub cr3: u64,
+    pub cr4: u64,
 }
 
 impl RegisterDump {
@@ -188,9 +204,28 @@ impl RegisterDump {
         }
 
         Self {
-            rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp,
-            r8, r9, r10, r11, r12, r13, r14, r15,
-            rip, rflags, cr0, cr2, cr3, cr4,
+            rax,
+            rbx,
+            rcx,
+            rdx,
+            rsi,
+            rdi,
+            rbp,
+            rsp,
+            r8,
+            r9,
+            r10,
+            r11,
+            r12,
+            r13,
+            r14,
+            r15,
+            rip,
+            rflags,
+            cr0,
+            cr2,
+            cr3,
+            cr4,
         }
     }
 }
@@ -200,7 +235,7 @@ impl RegisterDump {
 // ============================================================================
 
 pub fn dump_bsod_info_to_serial(info: &BsodInfo) {
-    use crate::io::log::{early_print, early_print_hex, early_print_dec};
+    use crate::io::log::{early_print, early_print_dec, early_print_hex};
 
     early_print("\n[PANIC] ");
     early_print(info.message);
@@ -219,31 +254,73 @@ pub fn dump_bsod_info_to_serial(info: &BsodInfo) {
     if let Some(regs) = &info.registers {
         early_print("[PANIC] Registers:\n");
         // Row 1
-        early_print("RAX="); early_print_hex(regs.rax); early_print(" RBX="); early_print_hex(regs.rbx); early_print(" RCX="); early_print_hex(regs.rcx); early_print("\n");
+        early_print("RAX=");
+        early_print_hex(regs.rax);
+        early_print(" RBX=");
+        early_print_hex(regs.rbx);
+        early_print(" RCX=");
+        early_print_hex(regs.rcx);
+        early_print("\n");
         // Row 2
-        early_print("RDX="); early_print_hex(regs.rdx); early_print(" RSI="); early_print_hex(regs.rsi); early_print(" RDI="); early_print_hex(regs.rdi); early_print("\n");
+        early_print("RDX=");
+        early_print_hex(regs.rdx);
+        early_print(" RSI=");
+        early_print_hex(regs.rsi);
+        early_print(" RDI=");
+        early_print_hex(regs.rdi);
+        early_print("\n");
         // Row 3
-        early_print("RBP="); early_print_hex(regs.rbp); early_print(" RSP="); early_print_hex(regs.rsp); early_print(" RIP="); early_print_hex(regs.rip); early_print("\n");
+        early_print("RBP=");
+        early_print_hex(regs.rbp);
+        early_print(" RSP=");
+        early_print_hex(regs.rsp);
+        early_print(" RIP=");
+        early_print_hex(regs.rip);
+        early_print("\n");
         // Row 4
-        early_print("R8 ="); early_print_hex(regs.r8);  early_print(" R9 ="); early_print_hex(regs.r9);  early_print(" R10="); early_print_hex(regs.r10); early_print("\n");
+        early_print("R8 =");
+        early_print_hex(regs.r8);
+        early_print(" R9 =");
+        early_print_hex(regs.r9);
+        early_print(" R10=");
+        early_print_hex(regs.r10);
+        early_print("\n");
         // Row 5
-        early_print("R11="); early_print_hex(regs.r11); early_print(" R12="); early_print_hex(regs.r12); early_print(" R13="); early_print_hex(regs.r13); early_print("\n");
+        early_print("R11=");
+        early_print_hex(regs.r11);
+        early_print(" R12=");
+        early_print_hex(regs.r12);
+        early_print(" R13=");
+        early_print_hex(regs.r13);
+        early_print("\n");
         // Row 6
-        early_print("R14="); early_print_hex(regs.r14); early_print(" R15="); early_print_hex(regs.r15); early_print(" FLG="); early_print_hex(regs.rflags); early_print("\n");
+        early_print("R14=");
+        early_print_hex(regs.r14);
+        early_print(" R15=");
+        early_print_hex(regs.r15);
+        early_print(" FLG=");
+        early_print_hex(regs.rflags);
+        early_print("\n");
         // CRs
-        early_print("CR0="); early_print_hex(regs.cr0); early_print(" CR2="); early_print_hex(regs.cr2); early_print(" CR3="); early_print_hex(regs.cr3); early_print("\n");
+        early_print("CR0=");
+        early_print_hex(regs.cr0);
+        early_print(" CR2=");
+        early_print_hex(regs.cr2);
+        early_print(" CR3=");
+        early_print_hex(regs.cr3);
+        early_print("\n");
     }
 
     if let Some(bt) = &info.backtrace {
         early_print("[PANIC] Stack Trace:\n");
         for entry in bt.iter().take(10) {
-             early_print("  #");
-             early_print_dec(entry.frame_number as u64);
-             early_print(" IP=");
-             early_print_hex(entry.frame.instruction_pointer as u64);
-             early_print(" SP=");
-             early_print_hex(entry.frame.stack_pointer as u64);
-             early_print("\n");
+            early_print("  #");
+            early_print_dec(entry.frame_number as u64);
+            early_print(" IP=");
+            early_print_hex(entry.frame.instruction_pointer as u64);
+            early_print(" SP=");
+            early_print_hex(entry.frame.stack_pointer as u64);
+            early_print("\n");
         }
         if bt.len() > 10 {
             early_print("  ... and more\n");
@@ -316,16 +393,46 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
     draw_sad_face(fb, margin_x, y, face_scale);
 
     let text_x = margin_x + (face_scale * 70) as i32;
-    font.draw_string(fb, text_x, y + 10, "Your PC ran into a problem and needs to restart.", colors::TEXT_PRIMARY, None);
-    font.draw_string(fb, text_x, y + 30, "We're just collecting some error info, and then we'll", colors::TEXT_SECONDARY, None);
-    font.draw_string(fb, text_x, y + 50, "restart for you.", colors::TEXT_SECONDARY, None);
+    font.draw_string(
+        fb,
+        text_x,
+        y + 10,
+        "Your PC ran into a problem and needs to restart.",
+        colors::TEXT_PRIMARY,
+        None,
+    );
+    font.draw_string(
+        fb,
+        text_x,
+        y + 30,
+        "We're just collecting some error info, and then we'll",
+        colors::TEXT_SECONDARY,
+        None,
+    );
+    font.draw_string(
+        fb,
+        text_x,
+        y + 50,
+        "restart for you.",
+        colors::TEXT_SECONDARY,
+        None,
+    );
 
     y += (face_scale * 70) as i32 + 20;
 
     y = draw_error_message_section(fb, &font, info, margin_x, y, content_width);
     y = draw_stack_trace_section(fb, &font, info, margin_x, y, content_width, height);
     draw_registers_section(fb, &font, info, margin_x, y, content_width);
-    draw_bsod_footer(fb, &font, info, margin_x, margin_y, width, height, content_width);
+    draw_bsod_footer(
+        fb,
+        &font,
+        info,
+        margin_x,
+        margin_y,
+        width,
+        height,
+        content_width,
+    );
 }
 
 fn draw_error_message_section(
@@ -430,8 +537,11 @@ fn draw_stack_trace_section(
         for entry in bt.iter().take(max_frames) {
             let mut buf = [0u8; 64];
             let mut w = StackFmtWriter::new(&mut buf);
-            let _ = write!(w, "#{:2} {:#018x} (SP: {:#018x})", 
-                entry.frame_number, entry.frame.instruction_pointer, entry.frame.stack_pointer);
+            let _ = write!(
+                w,
+                "#{:2} {:#018x} (SP: {:#018x})",
+                entry.frame_number, entry.frame.instruction_pointer, entry.frame.stack_pointer
+            );
             font.draw_string(fb, margin_x, y, w.as_str(), colors::TEXT_SECONDARY, None);
             y += 18;
         }
@@ -443,7 +553,14 @@ fn draw_stack_trace_section(
             y += 18;
         }
     } else {
-        font.draw_string(fb, margin_x, y, "  (no backtrace available)", colors::TEXT_SECONDARY, None);
+        font.draw_string(
+            fb,
+            margin_x,
+            y,
+            "  (no backtrace available)",
+            colors::TEXT_SECONDARY,
+            None,
+        );
         y += 18;
     }
 
@@ -470,12 +587,19 @@ fn draw_registers_section(
         let regs_row5 = [("R11", regs.r11), ("R12", regs.r12), ("R13", regs.r13)];
         let regs_row6 = [("R14", regs.r14), ("R15", regs.r15), ("FLG", regs.rflags)];
 
-        for (i, row) in [regs_row1, regs_row2, regs_row3, regs_row4, regs_row5, regs_row6].iter().enumerate() {
+        for (i, row) in [
+            regs_row1, regs_row2, regs_row3, regs_row4, regs_row5, regs_row6,
+        ]
+        .iter()
+        .enumerate()
+        {
             for (j, (name, value)) in row.iter().enumerate() {
                 draw_register(fb, margin_x + (j as i32 * col_width), y, name, *value);
             }
             y += 18;
-            if i >= 3 { break; }
+            if i >= 3 {
+                break;
+            }
         }
         y += 5;
         let cr_row = [("CR0", regs.cr0), ("CR2", regs.cr2), ("CR3", regs.cr3)];
@@ -483,7 +607,14 @@ fn draw_registers_section(
             draw_register(fb, margin_x + (j as i32 * col_width), y, name, *value);
         }
     } else {
-        font.draw_string(fb, margin_x, y, "  (registers not captured)", colors::TEXT_SECONDARY, None);
+        font.draw_string(
+            fb,
+            margin_x,
+            y,
+            "  (registers not captured)",
+            colors::TEXT_SECONDARY,
+            None,
+        );
     }
 }
 
@@ -497,7 +628,7 @@ fn draw_bsod_footer(
     height: u32,
     _content_width: u32,
 ) {
-    let qr_total_size = (21 + 4) * 4; 
+    let qr_total_size = (21 + 4) * 4;
     let qr_x = (width - qr_total_size - margin_x as u32) as i32;
     let qr_y = (height - qr_total_size - margin_y as u32) as i32;
 
@@ -511,7 +642,14 @@ fn draw_bsod_footer(
             colors::QR_LIGHT,
         );
     } else {
-        font.draw_string(fb, qr_x, qr_y, "QR Gen Failed", colors::TEXT_SECONDARY, None);
+        font.draw_string(
+            fb,
+            qr_x,
+            qr_y,
+            "QR Gen Failed",
+            colors::TEXT_SECONDARY,
+            None,
+        );
     }
 
     let stop_y = (height - margin_y as u32 - 40) as i32;
@@ -519,7 +657,14 @@ fn draw_bsod_footer(
     let mut w = StackFmtWriter::new(&mut buf);
     let _ = write!(w, "Stop code: {}", info.error_code);
     font.draw_string(fb, margin_x, stop_y, w.as_str(), colors::TEXT_PRIMARY, None);
-    font.draw_string(fb, margin_x, stop_y + 20, "100% complete", colors::TEXT_SECONDARY, None);
+    font.draw_string(
+        fb,
+        margin_x,
+        stop_y + 20,
+        "100% complete",
+        colors::TEXT_SECONDARY,
+        None,
+    );
 }
 
 // ============================================================================
@@ -537,9 +682,9 @@ pub fn show_double_fault_bsod(
     let mut msg_buf = [0u8; 128];
     let mut w = StackFmtWriter::new(&mut msg_buf);
     let _ = write!(w, "DOUBLE FAULT: Error code {:#x}", error_code);
-    
+
     let registers = RegisterDump::capture();
-    
+
     let info = BsodInfo::new(w.as_str())
         .with_registers(registers)
         .with_error_code("DOUBLE_FAULT");

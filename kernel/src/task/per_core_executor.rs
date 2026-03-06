@@ -433,8 +433,7 @@ impl PerCoreExecutor {
                 if !crate::domain_system::is_domain_runnable_now(domain_id, now_ns) {
                     let deadline = crate::domain_system::quota_suspend_deadline_ns(domain_id)
                         .unwrap_or_else(|| {
-                            now_ns
-                                .saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
+                            now_ns.saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
                         });
                     match self.suspended_queue.lock() {
                         Ok(mut q) => q.push_back((deadline, task)),
@@ -485,11 +484,8 @@ impl PerCoreExecutor {
         if let Some(domain_raw) = task.metadata.domain_id {
             let domain_id = crate::domain_system::DomainId::new(domain_raw);
             if domain_id != crate::domain_system::DomainId::KERNEL {
-                let exceeded = crate::domain::quota::quota_manager().consume_cpu_time(
-                    domain_id,
-                    elapsed_ns,
-                    end_ns,
-                );
+                let exceeded = crate::domain::quota::quota_manager()
+                    .consume_cpu_time(domain_id, elapsed_ns, end_ns);
                 if exceeded {
                     quota_action =
                         crate::domain_system::report_cpu_quota_exceeded(domain_id, end_ns);

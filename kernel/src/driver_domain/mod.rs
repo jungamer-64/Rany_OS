@@ -167,9 +167,7 @@ impl DriverDomainState {
     pub fn can_stop(&self) -> bool {
         matches!(
             self,
-            DriverDomainState::Running
-                | DriverDomainState::Starting
-                | DriverDomainState::Faulted
+            DriverDomainState::Running | DriverDomainState::Starting | DriverDomainState::Faulted
         )
     }
 
@@ -293,7 +291,7 @@ impl DriverDomain {
             allow_unsafe: false,
             cpu_limit_percent: 100,
             memory_limit_bytes: 64 * 1024 * 1024, // 64MB デフォルト
-            io_bandwidth_limit: 0,                 // 0 = 制限なし
+            io_bandwidth_limit: 0,                // 0 = 制限なし
             fault_history: Vec::new(),
             consecutive_faults: 0,
             hot_swap_state: HotSwapState::Idle,
@@ -467,11 +465,7 @@ impl DriverDomainManager {
             return Err(DriverDomainError::AlreadyExists(id));
         }
 
-        log::info!(
-            "[DriverDomainManager] Registered: {} ({})\n",
-            cell.name,
-            id
-        );
+        log::info!("[DriverDomainManager] Registered: {} ({})\n", cell.name, id);
         cells.insert(id, cell);
         Ok(id)
     }
@@ -621,12 +615,10 @@ impl DriverDomainManager {
     /// 障害発生中のDriverCell数
     pub fn faulted_count(&self) -> usize {
         match self.cells.lock() {
-            Ok(cells) => {
-                cells
-                    .values()
-                    .filter(|c| c.state == DriverDomainState::Faulted)
-                    .count()
-            }
+            Ok(cells) => cells
+                .values()
+                .filter(|c| c.state == DriverDomainState::Faulted)
+                .count(),
             Err(_) => 0,
         }
     }
@@ -659,10 +651,7 @@ pub enum DriverDomainError {
     /// ドライバの停止に失敗
     DriverStopFailed(String),
     /// 再起動ポリシーで再起動回数を超過
-    RestartLimitExceeded {
-        max_retries: u32,
-        current: u32,
-    },
+    RestartLimitExceeded { max_retries: u32, current: u32 },
     /// ホットスワップ失敗
     HotSwapFailed(String),
     /// リソースクォータ超過
@@ -686,7 +675,10 @@ impl core::fmt::Display for DriverDomainError {
             Self::DomainCreationFailed(msg) => write!(f, "Domain creation failed: {}", msg),
             Self::DriverInitFailed(msg) => write!(f, "Driver init failed: {}", msg),
             Self::DriverStopFailed(msg) => write!(f, "Driver stop failed: {}", msg),
-            Self::RestartLimitExceeded { max_retries, current } => {
+            Self::RestartLimitExceeded {
+                max_retries,
+                current,
+            } => {
                 write!(
                     f,
                     "Restart limit exceeded: {}/{} retries",

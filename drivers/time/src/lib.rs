@@ -85,7 +85,11 @@ impl ShardedSleepRegistry {
 
     fn insert(&self, tick: u64, waker: Waker) {
         let idx = Self::shard_index(tick);
-        self.shards[idx].lock().entry(tick).or_insert_with(Vec::new).push(waker);
+        self.shards[idx]
+            .lock()
+            .entry(tick)
+            .or_insert_with(Vec::new)
+            .push(waker);
     }
 
     fn remove(&self, tick: u64) -> Option<Waker> {

@@ -52,9 +52,7 @@ impl Driver for VirtioBlkDriver {
         // Initialize the device
         // Note: This relies on the unsafe init function from blk.rs for now.
         // In the future, we should move the initialization logic here or make it safer.
-        let res = unsafe {
-            init_virtio_blk_for_device(self.mmio_base, self.iommu_id)
-        };
+        let res = unsafe { init_virtio_blk_for_device(self.mmio_base, self.iommu_id) };
 
         match res {
             Ok(_) => {
@@ -101,6 +99,6 @@ impl Driver for VirtioBlkDriver {
         ];
         &DEVICES
     }
-    
+
     // fn as_any removed - not in trait
 }

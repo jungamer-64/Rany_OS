@@ -14,8 +14,8 @@
 
 #![allow(dead_code)]
 
-use spin::Mutex;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use spin::Mutex;
 
 // Kernel-local modules
 pub mod block_io;
@@ -45,11 +45,7 @@ pub fn iommu_device() -> Option<IommuDeviceId> {
 
 // Global driver access
 pub use nvme_driver::global;
-pub use nvme_driver::global::{
-    init as init_nvme_polling,
-    with_driver,
-    with_driver_mut,
-};
+pub use nvme_driver::global::{init as init_nvme_polling, with_driver, with_driver_mut};
 
 // Per-core queue management
 pub use nvme_driver::per_core;
@@ -67,4 +63,4 @@ pub use scheduler::{NvmePollHandler, register_with_io_scheduler};
 
 // NVMe Namespace FS integration
 pub use block_io::NvmeBlockIoAdapter;
-pub use ns_mount::{mount_nvme_ns_fs, unmount_nvme_ns_fs, nvme_ns_fs};
+pub use ns_mount::{mount_nvme_ns_fs, nvme_ns_fs, unmount_nvme_ns_fs};

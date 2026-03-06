@@ -24,25 +24,33 @@ use super::AmdIvmdRange;
 pub(super) fn unit_covers_devid(entries: &[IvhdDeviceEntry], devid: u16) -> bool {
     entries.iter().any(|entry| match entry {
         IvhdDeviceEntry::All { .. } => true,
-        IvhdDeviceEntry::Select { devid: entry_devid, .. } => *entry_devid == devid,
+        IvhdDeviceEntry::Select {
+            devid: entry_devid, ..
+        } => *entry_devid == devid,
         IvhdDeviceEntry::Range { start, end, .. } => devid >= *start && devid <= *end,
-        IvhdDeviceEntry::Alias { devid: entry_devid, alias, .. } => {
-            *entry_devid == devid || *alias == devid
-        }
-        IvhdDeviceEntry::AliasRange { start, end, alias, .. } =>
-            (devid >= *start && devid <= *end) || *alias == devid,
-        IvhdDeviceEntry::ExtSelect { devid: entry_devid, .. } => *entry_devid == devid,
+        IvhdDeviceEntry::Alias {
+            devid: entry_devid,
+            alias,
+            ..
+        } => *entry_devid == devid || *alias == devid,
+        IvhdDeviceEntry::AliasRange {
+            start, end, alias, ..
+        } => (devid >= *start && devid <= *end) || *alias == devid,
+        IvhdDeviceEntry::ExtSelect {
+            devid: entry_devid, ..
+        } => *entry_devid == devid,
         IvhdDeviceEntry::ExtRange { start, end, .. } => devid >= *start && devid <= *end,
-        IvhdDeviceEntry::Special { devid: entry_devid, .. } => *entry_devid == devid,
-        IvhdDeviceEntry::AcpiHid { devid: entry_devid, .. } => *entry_devid == devid,
+        IvhdDeviceEntry::Special {
+            devid: entry_devid, ..
+        } => *entry_devid == devid,
+        IvhdDeviceEntry::AcpiHid {
+            devid: entry_devid, ..
+        } => *entry_devid == devid,
     })
 }
 
 /// Collects alias IDs from `entries` that apply to `device`.
-pub(super) fn alias_devids_for_entries(
-    entries: &[IvhdDeviceEntry],
-    device: DeviceId,
-) -> Vec<u16> {
+pub(super) fn alias_devids_for_entries(entries: &[IvhdDeviceEntry], device: DeviceId) -> Vec<u16> {
     let mut aliases = Vec::new();
     let devid = device.requester_id();
 
@@ -52,12 +60,18 @@ pub(super) fn alias_devids_for_entries(
 
     for entry in entries {
         match entry {
-            IvhdDeviceEntry::Alias { devid: entry_devid, alias, .. } => {
+            IvhdDeviceEntry::Alias {
+                devid: entry_devid,
+                alias,
+                ..
+            } => {
                 if *entry_devid == devid && *alias != devid {
                     aliases.push(*alias);
                 }
             }
-            IvhdDeviceEntry::AliasRange { start, end, alias, .. } => {
+            IvhdDeviceEntry::AliasRange {
+                start, end, alias, ..
+            } => {
                 if devid >= *start && devid <= *end && *alias != devid {
                     aliases.push(*alias);
                 }
@@ -72,10 +86,7 @@ pub(super) fn alias_devids_for_entries(
 }
 
 /// Compute the combined IVHD flags for a particular device ID.
-pub(super) fn ivhd_flags_for_entries(
-    entries: &[IvhdDeviceEntry],
-    device: DeviceId,
-) -> u8 {
+pub(super) fn ivhd_flags_for_entries(entries: &[IvhdDeviceEntry], device: DeviceId) -> u8 {
     let devid = device.requester_id();
     let mut flags = 0u8;
 
@@ -86,42 +97,74 @@ pub(super) fn ivhd_flags_for_entries(
     for entry in entries {
         match entry {
             IvhdDeviceEntry::All { flags: entry_flags } => flags |= *entry_flags,
-            IvhdDeviceEntry::Select { devid: entry_devid, flags: entry_flags } => {
+            IvhdDeviceEntry::Select {
+                devid: entry_devid,
+                flags: entry_flags,
+            } => {
                 if *entry_devid == devid {
                     flags |= *entry_flags;
                 }
             }
-            IvhdDeviceEntry::Range { start, end, flags: entry_flags } => {
+            IvhdDeviceEntry::Range {
+                start,
+                end,
+                flags: entry_flags,
+            } => {
                 if devid >= *start && devid <= *end {
                     flags |= *entry_flags;
                 }
             }
-            IvhdDeviceEntry::Alias { devid: entry_devid, alias, flags: entry_flags } => {
+            IvhdDeviceEntry::Alias {
+                devid: entry_devid,
+                alias,
+                flags: entry_flags,
+            } => {
                 if *entry_devid == devid || *alias == devid {
                     flags |= *entry_flags;
                 }
             }
-            IvhdDeviceEntry::AliasRange { start, end, alias, flags: entry_flags } => {
+            IvhdDeviceEntry::AliasRange {
+                start,
+                end,
+                alias,
+                flags: entry_flags,
+            } => {
                 if (devid >= *start && devid <= *end) || *alias == devid {
                     flags |= *entry_flags;
                 }
             }
-            IvhdDeviceEntry::ExtSelect { devid: entry_devid, flags: entry_flags, .. } => {
+            IvhdDeviceEntry::ExtSelect {
+                devid: entry_devid,
+                flags: entry_flags,
+                ..
+            } => {
                 if *entry_devid == devid {
                     flags |= *entry_flags;
                 }
             }
-            IvhdDeviceEntry::ExtRange { start, end, flags: entry_flags, .. } => {
+            IvhdDeviceEntry::ExtRange {
+                start,
+                end,
+                flags: entry_flags,
+                ..
+            } => {
                 if devid >= *start && devid <= *end {
                     flags |= *entry_flags;
                 }
             }
-            IvhdDeviceEntry::Special { devid: entry_devid, flags: entry_flags, .. } => {
+            IvhdDeviceEntry::Special {
+                devid: entry_devid,
+                flags: entry_flags,
+                ..
+            } => {
                 if *entry_devid == devid {
                     flags |= *entry_flags;
                 }
             }
-            IvhdDeviceEntry::AcpiHid { devid: entry_devid, flags: entry_flags } => {
+            IvhdDeviceEntry::AcpiHid {
+                devid: entry_devid,
+                flags: entry_flags,
+            } => {
                 if *entry_devid == devid {
                     flags |= *entry_flags;
                 }

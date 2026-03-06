@@ -11,12 +11,12 @@
 //!   非同期デーモン連携付き）、`resource_mapping` ユーティリティ
 //! - **テスト用**: `tools/cap_harness/src/lib.rs` (QEMUテスト用stub)
 
+use crate::security::audit::{AuditEvent, AuditEventType};
 use alloc::format;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use spin::Once;
-use core::sync::atomic::{AtomicU64, Ordering};
-use crate::security::audit::{AuditEvent, AuditEventType};
 
 extern crate alloc;
 
@@ -24,35 +24,11 @@ extern crate alloc;
 // 共通型・定数は libs/security クレートから再エクスポート
 // ============================================================================
 pub use security::{
-    Capability,
-    CapabilitySet,
-    CapabilityError,
-    GrantToken,
-    ReclamationStatus,
-    CAP_NET_BIND,
-    CAP_NET_RAW,
-    CAP_SYS_ADMIN,
-    CAP_SYS_BOOT,
-    CAP_SYS_TIME,
-    CAP_SYS_PTRACE,
-    CAP_DAC_OVERRIDE,
-    CAP_KILL,
-    CAP_SETUID,
-    CAP_SETGID,
-    CAP_CHOWN,
-    CAP_FOWNER,
-    CAP_SYS_RAWIO,
-    CAP_IPC_LOCK,
-    CAP_SYS_NICE,
-    CAP_NET_ADMIN,
-    CAP_SYS_MODULE,
-    CAP_SYS_PHYSMEM,
-    CAP_DMA,
-    CAP_IOMMU,
-    CAP_INTERRUPT,
-    CAP_ALL,
-    CAP_NONE,
-    CAPABILITY_EXPIRY_INTERVAL_MS,
+    CAP_ALL, CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_DMA, CAP_FOWNER, CAP_INTERRUPT, CAP_IOMMU,
+    CAP_IPC_LOCK, CAP_KILL, CAP_NET_ADMIN, CAP_NET_BIND, CAP_NET_RAW, CAP_NONE, CAP_SETGID,
+    CAP_SETUID, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PHYSMEM,
+    CAP_SYS_PTRACE, CAP_SYS_RAWIO, CAP_SYS_TIME, CAPABILITY_EXPIRY_INTERVAL_MS, Capability,
+    CapabilityError, CapabilitySet, GrantToken, ReclamationStatus,
 };
 
 /// Capability bit flags

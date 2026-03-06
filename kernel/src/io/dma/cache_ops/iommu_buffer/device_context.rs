@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl DeviceDmaContext {
     /// 新しいデバイスDMAコンテキストを作成
     pub fn new() -> Self {
@@ -100,11 +99,7 @@ impl DeviceDmaContext {
             crate::io::iommu::api::map_rref_slice_for_device(rref, &device, iommu_direction)
         } else {
             let domain_id = self.domain_id.unwrap_or(0);
-            crate::io::iommu::api::map_rref_slice_for_domain(
-                rref,
-                domain_id,
-                iommu_direction,
-            )
+            crate::io::iommu::api::map_rref_slice_for_domain(rref, domain_id, iommu_direction)
         }
     }
 

@@ -6,7 +6,6 @@
 //! This module implements zero-copy Ethernet frame handling
 //! as specified in Section 6.2 of the ExoRust specification.
 
-
 use core::fmt;
 
 /// Ethernet frame type (EtherType)
@@ -244,19 +243,25 @@ impl<'a> EthernetFrameMut<'a> {
 
     /// Set destination MAC address
     pub fn set_destination(&mut self, mac: MacAddress) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_destination(mac); }
+        if let Some(h) = self.header_mut() {
+            h.set_destination(mac);
+        }
         self
     }
 
     /// Set source MAC address
     pub fn set_source(&mut self, mac: MacAddress) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_source(mac); }
+        if let Some(h) = self.header_mut() {
+            h.set_source(mac);
+        }
         self
     }
 
     /// Set EtherType
     pub fn set_ether_type(&mut self, ether_type: EtherType) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_ether_type(ether_type); }
+        if let Some(h) = self.header_mut() {
+            h.set_ether_type(ether_type);
+        }
         self
     }
 
@@ -340,7 +345,14 @@ pub enum ProcessResult<'a> {
     /// ARP packet to process
     Arp(&'a [u8], MacAddress),
     /// VLAN tagged frame - contains (VLAN ID, inner payload, inner EtherType)
-    VlanTagged { vlan_id: u16, pcp: u8, dei: bool, inner_type: EtherType, payload: &'a [u8], src_mac: MacAddress },
+    VlanTagged {
+        vlan_id: u16,
+        pcp: u8,
+        dei: bool,
+        inner_type: EtherType,
+        payload: &'a [u8],
+        src_mac: MacAddress,
+    },
     /// Frame was dropped (not for us)
     Dropped,
     /// Frame was invalid
@@ -409,7 +421,11 @@ impl EthernetProcessor {
     }
 
     /// Process a VLAN-tagged frame (802.1Q)
-    fn process_vlan_tag<'a>(&mut self, payload: &'a [u8], src_mac: MacAddress) -> ProcessResult<'a> {
+    fn process_vlan_tag<'a>(
+        &mut self,
+        payload: &'a [u8],
+        src_mac: MacAddress,
+    ) -> ProcessResult<'a> {
         // VLAN tag is 4 bytes: TPID (2) + TCI (2)
         // After VLAN tag, we have the inner EtherType (2 bytes) + inner payload
         if payload.len() < 4 {
@@ -503,9 +519,8 @@ impl VlanTag {
 
     /// Create a new VLAN tag
     pub const fn new(vlan_id: u16, pcp: u8, dei: bool) -> Self {
-        let tci_val = (vlan_id & 0x0FFF)
-            | ((pcp as u16 & 0x07) << 13)
-            | if dei { 0x1000 } else { 0 };
+        let tci_val =
+            (vlan_id & 0x0FFF) | ((pcp as u16 & 0x07) << 13) | if dei { 0x1000 } else { 0 };
         Self {
             tpid: [0x81, 0x00],
             tci: tci_val.to_be_bytes(),
@@ -715,4 +730,3 @@ pub mod tests {
         assert_eq!(u16::from(EtherType::Ipv4), 0x0800);
     }
 }
-

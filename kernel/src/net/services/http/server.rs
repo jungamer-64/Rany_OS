@@ -82,14 +82,22 @@ async fn run_service() {
             TimeoutResult::Completed(Ok((client, peer))) => {
                 let active = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
                 if active >= MAX_CONCURRENT_CONNECTIONS {
-                    log::warn!("[HOST-HTTP] connection limit reached ({}), rejecting {:?}", active, peer);
+                    log::warn!(
+                        "[HOST-HTTP] connection limit reached ({}), rejecting {:?}",
+                        active,
+                        peer
+                    );
                     // 接続を閉じて次を受け付ける
                     let mut rejected = client;
                     let _ = rejected.shutdown().await;
                     continue;
                 }
 
-                log::info!("[HOST-HTTP] accepted connection from {:?} (active: {})", peer, active + 1);
+                log::info!(
+                    "[HOST-HTTP] accepted connection from {:?} (active: {})",
+                    peer,
+                    active + 1
+                );
 
                 // 【設計書準拠】各接続を独立タスクとしてspawn（並行処理）
                 crate::task::Executor::spawn_global(Task::new(async move {
@@ -116,17 +124,27 @@ async fn handle_client(mut client: TcpStream) {
         // まずバッファ内のデータだけでパースできるか試す（パイプライン処理対応）
         match parser.try_parse_request() {
             Ok(Some(request)) => {
-                let req_keep_alive = request.get_header("Connection").map(|v| v.eq_ignore_ascii_case("keep-alive")).unwrap_or(false);
+                let req_keep_alive = request
+                    .get_header("Connection")
+                    .map(|v| v.eq_ignore_ascii_case("keep-alive"))
+                    .unwrap_or(false);
                 let default_keep_alive = request.version == super::types::HttpVersion::Http1_1;
-                let conn_close = request.get_header("Connection").map(|v| v.eq_ignore_ascii_case("close")).unwrap_or(false);
+                let conn_close = request
+                    .get_header("Connection")
+                    .map(|v| v.eq_ignore_ascii_case("close"))
+                    .unwrap_or(false);
                 keep_alive = (req_keep_alive || default_keep_alive) && !conn_close;
-                
+
                 response_bytes = Some(build_response_for_request(&request, keep_alive));
             }
             Ok(None) => {} // データ不足
             Err(err) => {
                 log::warn!("[HOST-HTTP] parse error: {:?}", err);
-                response_bytes = Some(build_json_response("400 Bad Request", "{\"status\":\"bad_request\"}", false));
+                response_bytes = Some(build_json_response(
+                    "400 Bad Request",
+                    "{\"status\":\"bad_request\"}",
+                    false,
+                ));
             }
         }
 
@@ -145,7 +163,11 @@ async fn handle_client(mut client: TcpStream) {
                     }
                     TimeoutResult::Completed(Err(_)) => {
                         log::warn!("[HOST-HTTP] read error");
-                        response_bytes = Some(build_json_response("500 Internal Server Error", "{\"status\":\"error\"}", false));
+                        response_bytes = Some(build_json_response(
+                            "500 Internal Server Error",
+                            "{\"status\":\"error\"}",
+                            false,
+                        ));
                         break;
                     }
                     TimeoutResult::Completed(Ok(0)) => {
@@ -157,12 +179,20 @@ async fn handle_client(mut client: TcpStream) {
                         parser.push_data(&buffer[..len]);
                         match parser.try_parse_request() {
                             Ok(Some(request)) => {
-                                let req_keep_alive = request.get_header("Connection").map(|v| v.eq_ignore_ascii_case("keep-alive")).unwrap_or(false);
-                                let default_keep_alive = request.version == super::types::HttpVersion::Http1_1;
-                                let conn_close = request.get_header("Connection").map(|v| v.eq_ignore_ascii_case("close")).unwrap_or(false);
+                                let req_keep_alive = request
+                                    .get_header("Connection")
+                                    .map(|v| v.eq_ignore_ascii_case("keep-alive"))
+                                    .unwrap_or(false);
+                                let default_keep_alive =
+                                    request.version == super::types::HttpVersion::Http1_1;
+                                let conn_close = request
+                                    .get_header("Connection")
+                                    .map(|v| v.eq_ignore_ascii_case("close"))
+                                    .unwrap_or(false);
                                 keep_alive = (req_keep_alive || default_keep_alive) && !conn_close;
-                                
-                                response_bytes = Some(build_response_for_request(&request, keep_alive));
+
+                                response_bytes =
+                                    Some(build_response_for_request(&request, keep_alive));
                                 break;
                             }
                             Ok(None) => {
@@ -170,7 +200,11 @@ async fn handle_client(mut client: TcpStream) {
                             }
                             Err(err) => {
                                 log::warn!("[HOST-HTTP] parse error: {:?}", err);
-                                response_bytes = Some(build_json_response("400 Bad Request", "{\"status\":\"bad_request\"}", false));
+                                response_bytes = Some(build_json_response(
+                                    "400 Bad Request",
+                                    "{\"status\":\"bad_request\"}",
+                                    false,
+                                ));
                                 break;
                             }
                         }
@@ -284,8 +318,7 @@ fn build_response_for_request(request: &super::types::HttpRequest, keep_alive: b
             "/memory" => return build_memory_info_response(keep_alive),
             _ => {}
         }
-    }
- else if request.method == super::types::HttpMethod::Post {
+    } else if request.method == super::types::HttpMethod::Post {
         if request.uri.as_str() == "/echo" {
             return build_echo_response(request, keep_alive);
         }
@@ -296,11 +329,17 @@ fn build_response_for_request(request: &super::types::HttpRequest, keep_alive: b
 
 fn build_echo_response(request: &super::types::HttpRequest, keep_alive: bool) -> Vec<u8> {
     if let Some(body) = &request.body {
-        let content_type = request.get_header("Content-Type").unwrap_or("application/json");
+        let content_type = request
+            .get_header("Content-Type")
+            .unwrap_or("application/json");
         let body_str = core::str::from_utf8(body).unwrap_or("{\"error\": \"invalid utf-8\"}");
         build_custom_response("200 OK", content_type, body_str, keep_alive)
     } else {
-        build_json_response("400 Bad Request", "{\"status\":\"missing_body\"}", keep_alive)
+        build_json_response(
+            "400 Bad Request",
+            "{\"status\":\"missing_body\"}",
+            keep_alive,
+        )
     }
 }
 
@@ -353,7 +392,7 @@ fn build_log_response(keep_alive: bool) -> Vec<u8> {
     let max_len = core::cmp::min(len, 16 * 1024);
     let mut buf = vec![0u8; max_len];
     let actual = crate::io::log::peek_global_log(&mut buf);
-    
+
     // Valid UTF-8 な部分のみを返却
     let logs = match core::str::from_utf8(&buf[..actual]) {
         Ok(s) => s,
@@ -362,28 +401,38 @@ fn build_log_response(keep_alive: bool) -> Vec<u8> {
             core::str::from_utf8(&buf[..valid_len]).unwrap_or("[INVALID LOG DATA]")
         }
     };
-    
+
     build_custom_response("200 OK", "text/plain; charset=utf-8", logs, keep_alive)
 }
 
 fn build_executor_stats_response(keep_alive: bool) -> Vec<u8> {
     let manager = crate::task::executor_manager();
     let all_stats = manager.all_stats();
-    
+
     let mut json = alloc::string::String::from("[\n");
     for (i, stats) in all_stats.iter().enumerate() {
-        if i > 0 { json.push_str(",\n"); }
-        json.push_str(&format!(r#"  {{
+        if i > 0 {
+            json.push_str(",\n");
+        }
+        json.push_str(&format!(
+            r#"  {{
     "core_id": {},
     "tasks_executed": {},
     "tasks_stolen": {},
     "tasks_stolen_from": {},
     "queue_length": {},
     "running_count": {}
-  }}"#, stats.core_id, stats.tasks_executed, stats.tasks_stolen, stats.tasks_stolen_from, stats.queue_length, stats.running_count));
+  }}"#,
+            stats.core_id,
+            stats.tasks_executed,
+            stats.tasks_stolen,
+            stats.tasks_stolen_from,
+            stats.queue_length,
+            stats.running_count
+        ));
     }
     json.push_str("\n]");
-    
+
     build_json_response("200 OK", &json, keep_alive)
 }
 
@@ -392,10 +441,11 @@ fn build_memory_info_response(keep_alive: bool) -> Vec<u8> {
     let total_kb = (stats.total_frames as u64) * 4;
     let free_kb = (stats.free_frames as u64) * 4;
     let used_kb = total_kb.saturating_sub(free_kb);
-    
+
     let (heap_used, heap_free) = crate::memory::heap_stats();
-    
-    let mut json = format!(r#"{{
+
+    let mut json = format!(
+        r#"{{
     "physical_memory": {{
         "total_kb": {},
         "free_kb": {},
@@ -407,17 +457,21 @@ fn build_memory_info_response(keep_alive: bool) -> Vec<u8> {
         "used_bytes": {},
         "free_bytes": {}
     }},
-    "order_stats": ["#, 
-        total_kb, free_kb, used_kb, stats.split_count, stats.coalesce_count,
-        heap_used, heap_free
+    "order_stats": ["#,
+        total_kb, free_kb, used_kb, stats.split_count, stats.coalesce_count, heap_used, heap_free
     );
 
     for (i, (blocks, frames)) in stats.order_stats.iter().enumerate() {
-        if i > 0 { json.push_str(", "); }
-        json.push_str(&format!(r#"{{"order": {}, "blocks": {}, "frames": {}}}"#, i, blocks, frames));
+        if i > 0 {
+            json.push_str(", ");
+        }
+        json.push_str(&format!(
+            r#"{{"order": {}, "blocks": {}, "frames": {}}}"#,
+            i, blocks, frames
+        ));
     }
     json.push_str("]}\n");
-    
+
     build_json_response("200 OK", &json, keep_alive)
 }
 
@@ -426,11 +480,12 @@ fn build_stats_response(keep_alive: bool) -> Vec<u8> {
     let bytes_rx = BYTES_RX.load(Ordering::Relaxed);
     let bytes_tx = BYTES_TX.load(Ordering::Relaxed);
     let connections = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
-    
+
     let (heap_used, heap_free) = crate::memory::heap_stats();
     let timer_ticks = crate::interrupts::get_timer_ticks();
-    
-    let json = format!(r#"{{
+
+    let json = format!(
+        r#"{{
     "server": "ExoRust HTTP",
     "version": "0.3.0",
     "stats": {{
@@ -444,8 +499,10 @@ fn build_stats_response(keep_alive: bool) -> Vec<u8> {
         "heap_free": {},
         "timer_ticks": {}
     }}
-}}"#, requests, bytes_rx, bytes_tx, connections, heap_used, heap_free, timer_ticks);
-    
+}}"#,
+        requests, bytes_rx, bytes_tx, connections, heap_used, heap_free, timer_ticks
+    );
+
     build_json_response("200 OK", &json, keep_alive)
 }
 
@@ -453,8 +510,9 @@ fn build_info_response(keep_alive: bool) -> Vec<u8> {
     let domain_stats = crate::domain_system::get_domain_stats();
     let sas_stats = crate::sas::stats();
     let spectre = crate::security::spectre::status_summary();
-    
-    let json = format!(r#"{{
+
+    let json = format!(
+        r#"{{
     "kernel": {{
         "name": "ExoRust",
         "version": "0.3.0",
@@ -477,12 +535,19 @@ fn build_info_response(keep_alive: bool) -> Vec<u8> {
         "ssbd": {},
         "retpoline": {}
     }}
-}}"#, 
-        domain_stats.total, domain_stats.running, domain_stats.stopped,
-        sas_stats.total_regions, sas_stats.total_objects, sas_stats.domains,
-        spectre.ibrs_enabled, spectre.stibp_enabled, spectre.ssbd_enabled, spectre.using_retpoline
+}}"#,
+        domain_stats.total,
+        domain_stats.running,
+        domain_stats.stopped,
+        sas_stats.total_regions,
+        sas_stats.total_objects,
+        sas_stats.domains,
+        spectre.ibrs_enabled,
+        spectre.stibp_enabled,
+        spectre.ssbd_enabled,
+        spectre.using_retpoline
     );
-    
+
     build_json_response("200 OK", &json, keep_alive)
 }
 
@@ -494,7 +559,12 @@ fn build_html_response(status: &str, body: &str, keep_alive: bool) -> Vec<u8> {
     build_custom_response(status, "text/html; charset=utf-8", body, keep_alive)
 }
 
-fn build_custom_response(status: &str, content_type: &str, body: &str, keep_alive: bool) -> Vec<u8> {
+fn build_custom_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    keep_alive: bool,
+) -> Vec<u8> {
     let connection_header = if keep_alive { "keep-alive" } else { "close" };
     let mut parts = status.splitn(2, ' ');
     let status_code: u16 = parts.next().unwrap_or("200").parse().unwrap_or(200);

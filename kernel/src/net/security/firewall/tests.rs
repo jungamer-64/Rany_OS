@@ -21,8 +21,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                6, 12345, 80,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                6,
+                12345,
+                80,
             ),
             FirewallVerdict::Allow
         );
@@ -35,8 +38,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                6, 12345, 80,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                6,
+                12345,
+                80,
             ),
             FirewallVerdict::Allow
         );
@@ -49,8 +55,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                6, 12345, 80,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                6,
+                12345,
+                80,
             ),
             FirewallVerdict::Deny
         );
@@ -72,8 +81,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                6, 55555, 22,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                6,
+                55555,
+                22,
             ),
             FirewallVerdict::Deny
         );
@@ -82,8 +94,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                6, 55555, 80,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                6,
+                55555,
+                80,
             ),
             FirewallVerdict::Allow
         );
@@ -106,8 +121,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [192, 168, 1, 100], [10, 0, 0, 1],
-                6, 55555, 80,
+                [192, 168, 1, 100],
+                [10, 0, 0, 1],
+                6,
+                55555,
+                80,
             ),
             FirewallVerdict::Allow
         );
@@ -116,8 +134,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [8, 8, 8, 8], [10, 0, 0, 1],
-                6, 55555, 80,
+                [8, 8, 8, 8],
+                [10, 0, 0, 1],
+                6,
+                55555,
+                80,
             ),
             FirewallVerdict::Deny
         );
@@ -155,8 +176,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 5], [192, 168, 1, 1],
-                6, 55555, 22,
+                [10, 0, 0, 5],
+                [192, 168, 1, 1],
+                6,
+                55555,
+                22,
             ),
             FirewallVerdict::Allow
         );
@@ -165,8 +189,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [8, 8, 8, 8], [192, 168, 1, 1],
-                6, 55555, 22,
+                [8, 8, 8, 8],
+                [192, 168, 1, 1],
+                6,
+                55555,
+                22,
             ),
             FirewallVerdict::Deny
         );
@@ -188,8 +215,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                6, 55555, 80,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                6,
+                55555,
+                80,
             ),
             FirewallVerdict::Allow
         );
@@ -198,8 +228,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                6, 55555, 8080,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                6,
+                55555,
+                8080,
             ),
             FirewallVerdict::Deny
         );
@@ -219,8 +252,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [203, 0, 113, 42], [10, 0, 0, 1],
-                6, 55555, 80,
+                [203, 0, 113, 42],
+                [10, 0, 0, 1],
+                6,
+                55555,
+                80,
             ),
             FirewallVerdict::Deny
         );
@@ -228,8 +264,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [203, 0, 113, 43], [10, 0, 0, 1],
-                6, 55555, 80,
+                [203, 0, 113, 43],
+                [10, 0, 0, 1],
+                6,
+                55555,
+                80,
             ),
             FirewallVerdict::Allow
         );
@@ -251,8 +290,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Egress,
-                [192, 168, 1, 1], [8, 8, 8, 8],
-                17, 55555, 53,
+                [192, 168, 1, 1],
+                [8, 8, 8, 8],
+                17,
+                55555,
+                53,
             ),
             FirewallVerdict::Deny
         );
@@ -261,8 +303,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [8, 8, 8, 8], [192, 168, 1, 1],
-                17, 53, 55555,
+                [8, 8, 8, 8],
+                [192, 168, 1, 1],
+                17,
+                53,
+                55555,
             ),
             FirewallVerdict::Allow
         );
@@ -283,8 +328,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                1, 0, 0,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                1,
+                0,
+                0,
             ),
             FirewallVerdict::Deny
         );
@@ -293,8 +341,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Egress,
-                [192, 168, 1, 1], [10, 0, 0, 1],
-                1, 0, 0,
+                [192, 168, 1, 1],
+                [10, 0, 0, 1],
+                1,
+                0,
+                0,
             ),
             FirewallVerdict::Deny
         );
@@ -304,16 +355,23 @@ mod tests {
     fn test_remove_rule() {
         let mut engine = make_engine();
         let id = engine.add_rule(
-            FirewallRule::builder().ingress().deny().tcp()
-                .dst_port(PortMatch::Exact(22)).build()
+            FirewallRule::builder()
+                .ingress()
+                .deny()
+                .tcp()
+                .dst_port(PortMatch::Exact(22))
+                .build(),
         );
 
         // ルール有効: Deny
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                6, 55555, 22,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                6,
+                55555,
+                22,
             ),
             FirewallVerdict::Deny
         );
@@ -325,8 +383,11 @@ mod tests {
         assert_eq!(
             engine.evaluate(
                 FirewallDirection::Ingress,
-                [10, 0, 0, 1], [192, 168, 1, 1],
-                6, 55555, 22,
+                [10, 0, 0, 1],
+                [192, 168, 1, 1],
+                6,
+                55555,
+                22,
             ),
             FirewallVerdict::Allow
         );
@@ -336,12 +397,20 @@ mod tests {
     fn test_clear_rules() {
         let mut engine = make_engine();
         engine.add_rule(
-            FirewallRule::builder().ingress().deny().tcp()
-                .dst_port(PortMatch::Exact(22)).build()
+            FirewallRule::builder()
+                .ingress()
+                .deny()
+                .tcp()
+                .dst_port(PortMatch::Exact(22))
+                .build(),
         );
         engine.add_rule(
-            FirewallRule::builder().ingress().deny().tcp()
-                .dst_port(PortMatch::Exact(80)).build()
+            FirewallRule::builder()
+                .ingress()
+                .deny()
+                .tcp()
+                .dst_port(PortMatch::Exact(80))
+                .build(),
         );
         assert_eq!(engine.rule_count(), 2);
 
@@ -371,20 +440,30 @@ mod tests {
     fn test_stats_tracking() {
         let mut engine = make_engine();
         engine.add_rule(
-            FirewallRule::builder().ingress().deny().tcp()
-                .dst_port(PortMatch::Exact(22)).build()
+            FirewallRule::builder()
+                .ingress()
+                .deny()
+                .tcp()
+                .dst_port(PortMatch::Exact(22))
+                .build(),
         );
 
         // パケットを評価
         engine.evaluate_mut(
             FirewallDirection::Ingress,
-            [10, 0, 0, 1], [192, 168, 1, 1],
-            6, 55555, 22,
+            [10, 0, 0, 1],
+            [192, 168, 1, 1],
+            6,
+            55555,
+            22,
         );
         engine.evaluate_mut(
             FirewallDirection::Ingress,
-            [10, 0, 0, 1], [192, 168, 1, 1],
-            6, 55555, 80,
+            [10, 0, 0, 1],
+            [192, 168, 1, 1],
+            6,
+            55555,
+            80,
         );
 
         let stats = engine.stats();
@@ -401,7 +480,10 @@ mod tests {
     fn test_ip_match_display() {
         assert_eq!(format!("{}", IpMatch::Any), "*");
         assert_eq!(format!("{}", IpMatch::Exact([10, 0, 2, 15])), "10.0.2.15");
-        assert_eq!(format!("{}", IpMatch::Cidr([192, 168, 1, 0], 24)), "192.168.1.0/24");
+        assert_eq!(
+            format!("{}", IpMatch::Cidr([192, 168, 1, 0], 24)),
+            "192.168.1.0/24"
+        );
     }
 
     #[test]

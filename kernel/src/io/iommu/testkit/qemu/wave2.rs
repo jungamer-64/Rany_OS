@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use crate::io::iommu::common::dma::page_table_pool::{
-    get_ref_count, inc_ref, register_page_table, unregister_page_table, PageTablePool,
+    PageTablePool, get_ref_count, inc_ref, register_page_table, unregister_page_table,
 };
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::common::tables::{HardwareTable, PageTableScope, SlPte};
@@ -17,21 +17,21 @@ use crate::io::iommu::runtime::security::{
     FaultSummary, IsolationDecision, IsolationReason, SecurityEvent, SecurityNotifier,
 };
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::vendors::intel::IntelIommuDriver;
+use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 use crate::io::iommu::vendors::intel::controller::fault::{
-    drain_deferred_faults_with_controller, push_deferred_fault_for_test, FaultHandler,
-    RawFaultEvent,
+    FaultHandler, RawFaultEvent, drain_deferred_faults_with_controller,
+    push_deferred_fault_for_test,
 };
 use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 use crate::io::iommu::vendors::intel::controller::ir::InterruptRemapper;
 use crate::io::iommu::vendors::intel::controller::pri::PageRequestManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
-use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::qi::InvalidationQueueEntry;
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
-use crate::io::iommu::vendors::intel::IntelIommuDriver;
 
 #[derive(Debug)]
 pub struct MockSecurityNotifier {

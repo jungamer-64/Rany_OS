@@ -43,8 +43,8 @@ pub use atomic_waker::AtomicWaker;
 pub use atomic_waker::WakerQueue;
 
 // Process deferred wake notifications (ISR -> Executor deferred wake queue)
-pub use atomic_waker::process_deferred_wakes;
 pub use atomic_waker::process_deferred_waker_queue_wakes;
+pub use atomic_waker::process_deferred_wakes;
 
 #[allow(unused_imports)]
 pub use irq_mutex::{IrqMutex, IrqMutexGuard};
@@ -52,7 +52,7 @@ pub use irq_mutex::{IrqMutex, IrqMutexGuard};
 #[allow(unused_imports)]
 pub use poison_lock::{
     IrqPoisonLock, IrqPoisonLockGuard, LockResult, PoisonError, PoisonLock, PoisonLockGuard,
-    set_panicking, get_current_core_id_for_debug, is_panicking_for_debug,
+    get_current_core_id_for_debug, is_panicking_for_debug, set_panicking,
 };
 
 #[allow(unused_imports)]

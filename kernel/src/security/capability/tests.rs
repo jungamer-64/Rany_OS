@@ -53,7 +53,9 @@ fn test_revoke_grant() {
 
     manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
 
-    let token = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false).unwrap();
+    let token = manager()
+        .grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false)
+        .unwrap();
     assert!(manager().has_capability(target, CAP_NET_BIND));
 
     // Revoke by issuer (mark revoked but keep token for reclamation)
@@ -75,7 +77,9 @@ fn test_expire_grants() {
     manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
 
     // Grant with expiry equal to 0 -- in tests 'now' is defined as 0, so this should expire immediately
-    let token = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false).unwrap();
+    let token = manager()
+        .grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false)
+        .unwrap();
     // Immediately expire internal list
     manager().expire_grants();
 
@@ -91,7 +95,9 @@ fn test_expire_grants_wrapper() {
     let target: u64 = 2300;
 
     manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-    let token = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false).unwrap();
+    let token = manager()
+        .grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false)
+        .unwrap();
     assert!(manager().has_capability(target, CAP_NET_BIND));
 
     // Use public wrapper
@@ -126,7 +132,9 @@ fn test_reclaim_token() {
     let target: u64 = 2200;
 
     manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-    let token = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false).unwrap();
+    let token = manager()
+        .grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false)
+        .unwrap();
     assert!(manager().has_capability(target, CAP_NET_BIND));
 
     // Revoke (mark revoked)
@@ -151,7 +159,9 @@ fn test_in_flight_blocks_reclaim() {
     let target: u64 = 2400;
 
     manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-    let token = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false).unwrap();
+    let token = manager()
+        .grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false)
+        .unwrap();
 
     // Simulate an in-flight user
     assert!(manager().increment_in_flight(token).is_ok());

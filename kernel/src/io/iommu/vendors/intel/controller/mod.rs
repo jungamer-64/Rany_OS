@@ -264,11 +264,7 @@ impl IommuController {
 
     pub(crate) fn controller_idx(&self) -> Option<usize> {
         let idx = self.controller_idx.load(Ordering::Relaxed);
-        if idx == usize::MAX {
-            None
-        } else {
-            Some(idx)
-        }
+        if idx == usize::MAX { None } else { Some(idx) }
     }
 
     pub(crate) fn is_scalable_mode_enabled(&self) -> bool {

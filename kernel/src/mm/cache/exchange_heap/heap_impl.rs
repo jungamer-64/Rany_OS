@@ -1,6 +1,5 @@
 use super::*;
 
-
 // SegregatedFreeListHeap は PoisonLock で保護されるため Send/Sync は安全
 unsafe impl Send for SegregatedFreeListHeap {}
 unsafe impl Sync for SegregatedFreeListHeap {}
@@ -83,7 +82,7 @@ impl SegregatedFreeListHeap {
 
         // Try to coalesce with previous block
         let (final_addr, final_size) = self.try_coalesce_prev(addr, size);
-        
+
         // Try to coalesce with next block
         let (final_addr, final_size) = self.try_coalesce_next(final_addr, final_size);
 
@@ -92,13 +91,23 @@ impl SegregatedFreeListHeap {
 
         unsafe {
             // Set header (use checked store for debug)
-            crate::memory::checked_store_usize(block_ptr as usize, final_size, "ExHeap header size store");
+            crate::memory::checked_store_usize(
+                block_ptr as usize,
+                final_size,
+                "ExHeap header size store",
+            );
             (*block_ptr).next = self.free_lists[class];
 
-            #[cfg(debug_assertions)] {
-                let next_val = match (*block_ptr).next { Some(nn) => nn.as_ptr() as usize, None => 0usize };
+            #[cfg(debug_assertions)]
+            {
+                let next_val = match (*block_ptr).next {
+                    Some(nn) => nn.as_ptr() as usize,
+                    None => 0usize,
+                };
                 if next_val == crate::memory::EXCHANGE_HEAP_SIZE {
-                    crate::io::log::early_print("[ExHeap] WARNING: next pointer equal to EXCHANGE_HEAP_SIZE!\n");
+                    crate::io::log::early_print(
+                        "[ExHeap] WARNING: next pointer equal to EXCHANGE_HEAP_SIZE!\n",
+                    );
                     let bt = crate::unwind::Backtrace::capture();
                     for entry in bt.iter() {
                         crate::io::log::early_print("[ExHeap][BT] IP=");
@@ -118,106 +127,106 @@ impl SegregatedFreeListHeap {
         self.free_lists[class] = NonNull::new(block_ptr);
         self.free_bitmap |= 1u32 << class;
     }
-    
+
     /// Try to coalesce with the previous block (using its footer)
     pub(super) fn try_coalesce_prev(&mut self, addr: usize, size: usize) -> (usize, usize) {
         if addr <= self.heap_start + core::mem::size_of::<BlockFooter>() {
             return (addr, size);
         }
-        
+
         let prev_footer_addr = addr - core::mem::size_of::<BlockFooter>();
         if prev_footer_addr < self.heap_start {
             return (addr, size);
         }
-        
+
         let prev_footer = unsafe { &*(prev_footer_addr as *const BlockFooter) };
-        
+
         if !prev_footer.is_free {
             return (addr, size);
         }
-        
+
         let prev_size = prev_footer.size;
         if prev_size == 0 || prev_size > addr - self.heap_start {
             return (addr, size);
         }
-        
+
         let prev_addr = addr - prev_size;
         if prev_addr < self.heap_start {
             return (addr, size);
         }
-        
+
         // Remove previous block from its free list
         if self.remove_from_free_list(prev_addr, prev_size) {
             self.coalesce_count += 1;
             return (prev_addr, prev_size + size);
         }
-        
+
         (addr, size)
     }
-    
+
     /// Try to coalesce with the next block
     pub(super) fn try_coalesce_next(&mut self, addr: usize, size: usize) -> (usize, usize) {
         let next_addr = addr + size;
         if next_addr >= self.heap_end {
             return (addr, size);
         }
-        
+
         let next_block = unsafe { &*(next_addr as *const FreeBlock) };
         let next_size = next_block.size;
-        
+
         if next_size == 0 || next_addr + next_size > self.heap_end {
             return (addr, size);
         }
-        
+
         // Check if next block is free by checking its footer
         let next_footer_addr = next_addr + next_size - core::mem::size_of::<BlockFooter>();
         if next_footer_addr >= self.heap_end {
             return (addr, size);
         }
-        
+
         let next_footer = unsafe { &*(next_footer_addr as *const BlockFooter) };
         if !next_footer.is_free {
             return (addr, size);
         }
-        
+
         // Remove next block from its free list
         if self.remove_from_free_list(next_addr, next_size) {
             self.coalesce_count += 1;
             return (addr, size + next_size);
         }
-        
+
         (addr, size)
     }
-    
+
     /// Remove a block from its free list
     pub(super) fn remove_from_free_list(&mut self, addr: usize, size: usize) -> bool {
         let class = Self::size_to_class(size);
         let target_ptr = addr as *mut FreeBlock;
-        
+
         let mut prev: Option<NonNull<FreeBlock>> = None;
         let mut current = self.free_lists[class];
-        
+
         while let Some(block) = current {
             if block.as_ptr() == target_ptr {
                 // Found the block, remove it
                 let next = unsafe { (*block.as_ptr()).next };
-                
+
                 match prev {
                     Some(p) => unsafe { (*p.as_ptr()).next = next },
                     None => self.free_lists[class] = next,
                 }
-                
+
                 if self.free_lists[class].is_none() {
                     self.free_bitmap &= !(1u32 << class);
                 }
-                
+
                 return true;
             }
-            
+
             prev = current;
             current = unsafe { (*block.as_ptr()).next };
         }
-        
+
         false
     }
 
@@ -228,7 +237,10 @@ impl SegregatedFreeListHeap {
 
         // Security check: Validate pointer (High-risk vulnerability fix)
         if block_addr < self.heap_start || block_addr >= self.heap_end {
-            panic!("[ExHeap] Security Fault: Corrupted free list (head) at class {}", class);
+            panic!(
+                "[ExHeap] Security Fault: Corrupted free list (head) at class {}",
+                class
+            );
         }
 
         unsafe {
@@ -237,7 +249,10 @@ impl SegregatedFreeListHeap {
             if let Some(next_nn) = next {
                 let next_addr = next_nn.as_ptr() as usize;
                 if next_addr < self.heap_start || next_addr >= self.heap_end {
-                    panic!("[ExHeap] Security Fault: Corrupted free list (next) at class {}", class);
+                    panic!(
+                        "[ExHeap] Security Fault: Corrupted free list (next) at class {}",
+                        class
+                    );
                 }
             }
             self.free_lists[class] = next;
@@ -299,10 +314,12 @@ impl SegregatedFreeListHeap {
 
         self.allocated_bytes += total_needed;
         self.alloc_count += 1;
-        
+
         // Mark block as allocated in footer
         let footer_addr = aligned_addr + size - core::mem::size_of::<BlockFooter>();
-        if footer_addr >= aligned_addr && footer_addr + core::mem::size_of::<BlockFooter>() <= self.heap_end {
+        if footer_addr >= aligned_addr
+            && footer_addr + core::mem::size_of::<BlockFooter>() <= self.heap_end
+        {
             unsafe {
                 let footer_ptr = footer_addr as *mut BlockFooter;
                 (*footer_ptr).size = size;
@@ -323,21 +340,30 @@ impl SegregatedFreeListHeap {
 
         // 境界チェック (Security Check)
         if addr < self.heap_start || addr >= self.heap_end {
-            panic!("[ExHeap] Security Fault: deallocate got invalid ptr {:#x} (heap: {:#x}-{:#x})", 
-                addr, self.heap_start, self.heap_end);
+            panic!(
+                "[ExHeap] Security Fault: deallocate got invalid ptr {:#x} (heap: {:#x}-{:#x})",
+                addr, self.heap_start, self.heap_end
+            );
         }
 
         // アライメントチェック (Security Check)
         if addr % MIN_BLOCK_SIZE != 0 {
-            panic!("[ExHeap] Security Fault: deallocate got unaligned ptr {:#x}", addr);
+            panic!(
+                "[ExHeap] Security Fault: deallocate got unaligned ptr {:#x}",
+                addr
+            );
         }
 
         // Double-free check via boundary tag (Security Check)
         let footer_addr = addr + size - core::mem::size_of::<BlockFooter>();
-        if footer_addr >= addr && footer_addr + core::mem::size_of::<BlockFooter>() <= self.heap_end {
+        if footer_addr >= addr && footer_addr + core::mem::size_of::<BlockFooter>() <= self.heap_end
+        {
             let footer = unsafe { &*(footer_addr as *const BlockFooter) };
             if footer.is_free {
-                panic!("[ExHeap] Security Fault: Double free detected at {:#x}", addr);
+                panic!(
+                    "[ExHeap] Security Fault: Double free detected at {:#x}",
+                    addr
+                );
             }
         }
 

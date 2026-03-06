@@ -20,10 +20,11 @@ use crate::io::dma::{
     iommu_needs_bounce,
 };
 use crate::io::iommu::api::{
-    DmaDirection, DmaHandle, map_rref_slice_for_device,
-    is_iommu_enabled, is_iommu_required,
+    DmaDirection, DmaHandle, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::transport::{VirtioMmioTransport, VirtioTransport};
+use crate::io::virtio::virtqueue::*;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -31,9 +32,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::io::virtio::virtqueue::*;
 use core::task::{Context, Poll, Waker};
-use crate::io::virtio::transport::{VirtioMmioTransport, VirtioTransport};
 mod device_impl;
 pub use device_impl::*;
 use vfs::block::{
@@ -118,7 +117,6 @@ pub enum VirtioBlkStatus {
     Unsupported = 2,
 }
 
-
 // ============================================================================
 // Block Request Format
 // ============================================================================
@@ -195,7 +193,9 @@ impl BlkRequestDma {
             status_offset + 1
         };
         let mut buffer = match device_id {
-            Some(dev_id) => CoherentDmaBuffer::new_for_device(total, DmaMemoryAttributes::MMIO, dev_id)?,
+            Some(dev_id) => {
+                CoherentDmaBuffer::new_for_device(total, DmaMemoryAttributes::MMIO, dev_id)?
+            }
             None => CoherentDmaBuffer::new(total, DmaMemoryAttributes::MMIO)?,
         };
         let base_dev = buffer.device_addr();
@@ -230,10 +230,7 @@ impl BlkRequestDma {
         let indirect_offset =
             crate::util::align_up_usize(header_size + 1, core::mem::align_of::<VringDesc>());
         self.indirect_table_phys.map(|_| unsafe {
-            self.buffer
-                .as_mut_slice()
-                .as_mut_ptr()
-                .add(indirect_offset) as *mut VringDesc
+            self.buffer.as_mut_slice().as_mut_ptr().add(indirect_offset) as *mut VringDesc
         })
     }
 }

@@ -7,10 +7,16 @@
 #![feature(custom_test_frameworks)]
 #![cfg_attr(test, test_runner(crate::test_runner))]
 #![reexport_test_harness_main = "test_main"]
-#![cfg_attr(any(not(test), feature = "full_mm_tests"), allow(unsafe_op_in_unsafe_fn))]
+#![cfg_attr(
+    any(not(test), feature = "full_mm_tests"),
+    allow(unsafe_op_in_unsafe_fn)
+)]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(const_heap))]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
-#![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(alloc_error_handler))]
+#![cfg_attr(
+    any(not(test), feature = "full_mm_tests"),
+    feature(alloc_error_handler)
+)]
 #![feature(format_args_nl)]
 #![feature(ptr_metadata)]
 
@@ -21,9 +27,6 @@ extern crate alloc;
 // `main.rs`). See `interrupt_macros.rs` for the implementation.
 #[macro_use]
 mod interrupt_macros;
-
-
-
 
 // ========== Test Runner & Entry Point ==========
 
@@ -72,10 +75,14 @@ mod test_bump_alloc {
     pub struct BumpAlloc;
 
     impl BumpAlloc {
-        pub const fn new() -> Self { Self }
+        pub const fn new() -> Self {
+            Self
+        }
 
         /// Compatibility shim: the kernel sometimes checks `ALLOCATOR.is_initialized()`.
-        pub fn is_initialized(&self) -> Option<bool> { Some(true) }
+        pub fn is_initialized(&self) -> Option<bool> {
+            Some(true)
+        }
     }
 
     unsafe impl GlobalAlloc for BumpAlloc {
@@ -126,7 +133,12 @@ pub extern "C" fn _start() -> ! {
     exit_qemu(QemuExitCode::Success);
 }
 
-#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std"), not(target_os = "linux")))]
+#[cfg(all(
+    test,
+    not(feature = "full_mm_tests"),
+    not(feature = "std"),
+    not(target_os = "linux")
+))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe {
@@ -140,7 +152,12 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     exit_qemu(QemuExitCode::Failed);
 }
 
-#[cfg(all(test, feature = "full_mm_tests", not(feature = "std"), not(target_os = "linux")))]
+#[cfg(all(
+    test,
+    feature = "full_mm_tests",
+    not(feature = "std"),
+    not(target_os = "linux")
+))]
 #[panic_handler]
 pub fn panic(info: &core::panic::PanicInfo) -> ! {
     crate::panic_handler::panic(info)
@@ -261,7 +278,9 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
         crate::io::log::early_print("[test] failed indices: ");
         let show = if failed < 64 { failed } else { 64 };
         for fi in 0..show {
-            if fi > 0 { crate::io::log::early_print(", "); }
+            if fi > 0 {
+                crate::io::log::early_print(", ");
+            }
             crate::io::log::early_print_dec(failed_indices[fi] as u64);
         }
         crate::io::log::early_print("\n");
@@ -293,7 +312,6 @@ pub fn exit_qemu(code: QemuExitCode) -> ! {
     }
     loop {}
 }
-
 
 // For unit testing we expose a small set of modules via the library entry
 // point. This keeps most of the kernel as a binary-only crate while still
@@ -334,194 +352,79 @@ pub static __tls_end: u8 = 0;
 
 // Minimal test/bench `mm::numa` shim to satisfy IOMMU tests and benchmark builds
 // without pulling in the full memory subsystem and its heavy dependencies.
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 #[path = "../../filesystems/kernel_fs/mod.rs"]
 pub mod fs;
 
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod durability;
 
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod debug;
 
 // Intrusive collections for kernel use (always available)
 pub mod collections;
 
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod mm;
 // The real `per_cpu` module is not compiled when running tests or benches
 // because we provide a lightweight stub later in this file that satisfies
 // the few symbols needed by unit tests.  Without this guard the crate ends up
 // defining `per_cpu` twice during `cargo test`, which triggers a compile
 // error.
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "qemu-test-export"
-))]
-pub mod per_cpu;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod io;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod task;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod sync;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod ipc;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod net;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod console;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod crypto;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod domain;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod driver_domain;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod error;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod interrupts;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod io;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod ipc;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod loader;
+pub mod memory;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod monitor;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod net;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod panic_handler;
+#[cfg(any(not(any(test, feature = "bench")), feature = "qemu-test-export"))]
+pub mod per_cpu;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod power;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod sas;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod security;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod service_impl;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod util;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod smp;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod sync;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod system_info;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod task;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod thermal;
 #[cfg(any(not(test), test, feature = "full_mm_tests"))]
 pub mod time;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod unwind;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod error;
-pub mod memory;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod smp;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod interrupts;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod sas;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod panic_handler;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod thermal;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod monitor;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod util;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod watchdog;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod power;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod loader;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod crypto;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod driver_domain;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod console;
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub mod system_info;
 
 #[cfg(not(feature = "full_mm_tests"))]
 #[cfg(any(test, feature = "bench"))]
@@ -550,7 +453,7 @@ pub mod mm {
                 Self::new()
             }
         }
-        impl<T, const N: usize> Copy for Magazine<T, N> {} 
+        impl<T, const N: usize> Copy for Magazine<T, N> {}
     }
 
     pub mod memcg {
@@ -561,10 +464,8 @@ pub mod mm {
         }
     }
 
-
     // Minimal fast allocator shim used by IOMMU tests
     pub mod fast_allocator {
-        
 
         pub const PAGE_SIZE_4K: u64 = 4096;
         pub const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
@@ -598,12 +499,22 @@ pub mod mm {
 
         impl FastBitmapAllocator {
             pub fn new(base: u64, size: u64) -> Self {
-                Self { base, size, next: AtomicU64::new(0) }
+                Self {
+                    base,
+                    size,
+                    next: AtomicU64::new(0),
+                }
             }
 
-            pub fn allocate_4k(&self) -> Option<u64> { self.allocate_with_size(PAGE_SIZE_4K) }
-            pub fn allocate_2m(&self) -> Option<u64> { self.allocate_with_size(PAGE_SIZE_2M) }
-            pub fn allocate_1g(&self) -> Option<u64> { self.allocate_with_size(PAGE_SIZE_1G) }
+            pub fn allocate_4k(&self) -> Option<u64> {
+                self.allocate_with_size(PAGE_SIZE_4K)
+            }
+            pub fn allocate_2m(&self) -> Option<u64> {
+                self.allocate_with_size(PAGE_SIZE_2M)
+            }
+            pub fn allocate_1g(&self) -> Option<u64> {
+                self.allocate_with_size(PAGE_SIZE_1G)
+            }
 
             fn allocate_with_size(&self, sz: u64) -> Option<u64> {
                 // Simple atomic bump allocator
@@ -612,15 +523,25 @@ pub mod mm {
                     if cur + sz > self.size {
                         return None;
                     }
-                    if self.next.compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                    if self
+                        .next
+                        .compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                    {
                         return Some(self.base + cur);
                     }
                 }
             }
 
-            pub fn allocate_4k_below(&self, limit: u64) -> Option<u64> { self.allocate_below(PAGE_SIZE_4K, limit) }
-            pub fn allocate_2m_below(&self, limit: u64) -> Option<u64> { self.allocate_below(PAGE_SIZE_2M, limit) }
-            pub fn allocate_1g_below(&self, limit: u64) -> Option<u64> { self.allocate_below(PAGE_SIZE_1G, limit) }
+            pub fn allocate_4k_below(&self, limit: u64) -> Option<u64> {
+                self.allocate_below(PAGE_SIZE_4K, limit)
+            }
+            pub fn allocate_2m_below(&self, limit: u64) -> Option<u64> {
+                self.allocate_below(PAGE_SIZE_2M, limit)
+            }
+            pub fn allocate_1g_below(&self, limit: u64) -> Option<u64> {
+                self.allocate_below(PAGE_SIZE_1G, limit)
+            }
 
             fn allocate_below(&self, sz: u64, limit: u64) -> Option<u64> {
                 loop {
@@ -628,7 +549,11 @@ pub mod mm {
                     if cur + sz > self.size || self.base + cur + sz > limit {
                         return None;
                     }
-                    if self.next.compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                    if self
+                        .next
+                        .compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                    {
                         return Some(self.base + cur);
                     }
                 }
@@ -642,23 +567,35 @@ pub mod mm {
                     if aligned + _size > self.size {
                         return None;
                     }
-                    if self.next.compare_exchange(cur, aligned + _size, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                    if self
+                        .next
+                        .compare_exchange(cur, aligned + _size, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                    {
                         return Some(self.base + aligned);
                     }
                 }
             }
 
-            pub fn free_immediate(&self, _addr: u64, _gran: PageGranularity) -> Result<(), ()> { Ok(()) }
+            pub fn free_immediate(&self, _addr: u64, _gran: PageGranularity) -> Result<(), ()> {
+                Ok(())
+            }
 
-            pub fn reserve(&self, _start: u64, _size: u64) -> Result<(), ()> { Ok(()) }
+            pub fn reserve(&self, _start: u64, _size: u64) -> Result<(), ()> {
+                Ok(())
+            }
 
             pub fn reconfigure_for_cpu_ids(&mut self, _cpu_ids: &[usize]) {}
 
             pub fn enable_single_writer_arenas(&self) {}
 
             pub fn drain_remote_frees(&self) {}
-            pub fn base(&self) -> u64 { self.base }
-            pub fn size(&self) -> u64 { self.size }
+            pub fn base(&self) -> u64 {
+                self.base
+            }
+            pub fn size(&self) -> u64 {
+                self.size
+            }
         }
     }
 
@@ -679,11 +616,21 @@ pub mod mm {
         }
 
         impl<const CAP: usize> QuarantineRing<CAP> {
-            pub const fn new() -> Self { Self { buf: VecDeque::new() } }
+            pub const fn new() -> Self {
+                Self {
+                    buf: VecDeque::new(),
+                }
+            }
 
             pub fn push(&mut self, addr: u64, size_class: u8, epoch: u32) -> bool {
-                if self.buf.len() >= CAP { false } else {
-                    self.buf.push_back(QuarantineEntry { addr, epoch, size_class });
+                if self.buf.len() >= CAP {
+                    false
+                } else {
+                    self.buf.push_back(QuarantineEntry {
+                        addr,
+                        epoch,
+                        size_class,
+                    });
                     true
                 }
             }
@@ -692,7 +639,12 @@ pub mod mm {
                 self.push(entry.addr, entry.size_class, entry.epoch)
             }
 
-            pub fn drain_older_than(&mut self, completed_epoch: u32, limit: usize, out: &mut [QuarantineEntry]) -> usize {
+            pub fn drain_older_than(
+                &mut self,
+                completed_epoch: u32,
+                limit: usize,
+                out: &mut [QuarantineEntry],
+            ) -> usize {
                 let mut count = 0usize;
                 while count < limit {
                     if let Some(front) = self.buf.front() {
@@ -700,8 +652,12 @@ pub mod mm {
                             let e = self.buf.pop_front().unwrap();
                             out[count] = e;
                             count += 1;
-                        } else { break; }
-                    } else { break; }
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
                 }
                 count
             }
@@ -709,7 +665,12 @@ pub mod mm {
             pub fn drain_all(&mut self, out: &mut [QuarantineEntry]) -> usize {
                 let mut count = 0usize;
                 while count < out.len() {
-                    if let Some(e) = self.buf.pop_front() { out[count] = e; count += 1; } else { break; }
+                    if let Some(e) = self.buf.pop_front() {
+                        out[count] = e;
+                        count += 1;
+                    } else {
+                        break;
+                    }
                 }
                 count
             }
@@ -720,8 +681,12 @@ pub mod mm {
         #[derive(Clone, Copy)]
         pub struct NumaNodeId(pub u8);
         impl NumaNodeId {
-            pub fn new(n: u8) -> Self { Self(n) }
-            pub fn as_usize(&self) -> usize { self.0 as usize }
+            pub fn new(n: u8) -> Self {
+                Self(n)
+            }
+            pub fn as_usize(&self) -> usize {
+                self.0 as usize
+            }
         }
         pub const PAGE_SIZE_4K: usize = 4096;
         pub const PAGE_SIZE_2M: usize = 2 * 1024 * 1024;
@@ -729,14 +694,16 @@ pub mod mm {
     }
 
     pub mod frame_allocator {
-        use x86_64::structures::paging::{PhysFrame, Size4KiB};
         use x86_64::PhysAddr;
+        use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
         pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
             super::buddy_alloc_frame()
         }
 
-        pub fn alloc_frame_on_numa_node(node: super::types::NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
+        pub fn alloc_frame_on_numa_node(
+            node: super::types::NumaNodeId,
+        ) -> Option<PhysFrame<Size4KiB>> {
             super::buddy_alloc_frame_on_node(node)
         }
 
@@ -761,7 +728,9 @@ pub mod mm {
         }
 
         /// Memory pressure hint for tests (0 = no pressure)
-        pub fn memory_pressure_level() -> u8 { 0 }
+        pub fn memory_pressure_level() -> u8 {
+            0
+        }
     }
 
     // Re-export frame allocator helpers at `crate::mm::phys::frame_allocator::dealloc_frame` etc.
@@ -773,20 +742,30 @@ pub mod mm {
         #[derive(Clone, Copy, Debug)]
         pub struct VirtAddr(u64);
         impl VirtAddr {
-            pub const fn new(addr: u64) -> Self { Self(addr) }
-            pub const fn as_u64(&self) -> u64 { self.0 }
+            pub const fn new(addr: u64) -> Self {
+                Self(addr)
+            }
+            pub const fn as_u64(&self) -> u64 {
+                self.0
+            }
         }
 
         #[derive(Clone, Copy, Debug)]
         pub struct PhysAddr(u64);
         impl PhysAddr {
-            pub const fn new(addr: u64) -> Self { Self(addr) }
-            pub const fn as_u64(&self) -> u64 { self.0 }
+            pub const fn new(addr: u64) -> Self {
+                Self(addr)
+            }
+            pub const fn as_u64(&self) -> u64 {
+                self.0
+            }
         }
     }
 
     // Global translate helper for tests (use kernel `higher_half` types)
-    pub fn global_translate(virt: crate::mm::virt::higher_half::VirtAddr) -> Option<crate::mm::virt::higher_half::PhysAddr> {
+    pub fn global_translate(
+        virt: crate::mm::virt::higher_half::VirtAddr,
+    ) -> Option<crate::mm::virt::higher_half::PhysAddr> {
         let v = x86_64::VirtAddr::new(virt.as_u64());
         let p = mapping::virt_to_phys(v);
         Some(crate::mm::virt::higher_half::PhysAddr::new(p.as_u64()))
@@ -888,7 +867,9 @@ pub mod mm {
             }
         }
         pub mod unified_alloc {
-            pub fn memory_pressure_level() -> u8 { 0 }
+            pub fn memory_pressure_level() -> u8 {
+                0
+            }
         }
     }
 
@@ -918,8 +899,12 @@ pub mod mm {
 
             pub const MAX_NUMA_NODES: usize = 8;
 
-            pub fn num_nodes() -> usize { 1 }
-            pub fn current_node() -> usize { 0 }
+            pub fn num_nodes() -> usize {
+                1
+            }
+            pub fn current_node() -> usize {
+                0
+            }
 
             pub fn allocate_zeroed_on_node(
                 layout: Layout,
@@ -946,7 +931,9 @@ pub mod mm {
                 layout: Layout,
                 _node: Option<usize>,
             ) {
-                unsafe { dealloc(ptr.as_ptr(), layout); }
+                unsafe {
+                    dealloc(ptr.as_ptr(), layout);
+                }
             }
         }
     }
@@ -1037,7 +1024,11 @@ pub mod per_cpu {
 
     impl PtMagEntry {
         pub const fn empty() -> Self {
-            Self { phys: 0, virt: 0, node: 0 }
+            Self {
+                phys: 0,
+                virt: 0,
+                node: 0,
+            }
         }
         pub const fn is_valid(&self) -> bool {
             self.phys != 0
@@ -1060,7 +1051,9 @@ pub mod per_cpu {
         }
 
         pub fn pop(&mut self) -> Option<PtMagEntry> {
-            if self.len == 0 { None } else {
+            if self.len == 0 {
+                None
+            } else {
                 self.len -= 1;
                 let entry = self.entries[self.len];
                 self.entries[self.len] = PtMagEntry::empty();
@@ -1069,7 +1062,9 @@ pub mod per_cpu {
         }
 
         pub fn push(&mut self, entry: PtMagEntry) -> bool {
-            if self.len >= PT_MAG_CAPACITY { false } else {
+            if self.len >= PT_MAG_CAPACITY {
+                false
+            } else {
                 self.entries[self.len] = entry;
                 self.len += 1;
                 true
@@ -1121,25 +1116,29 @@ pub mod per_cpu {
     static PER_CPU_INIT: AtomicBool = AtomicBool::new(false);
     static mut PER_CPU_PTR: *mut PerCpuData = core::ptr::null_mut();
 
-    pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> { unsafe {
-        if !PER_CPU_INIT.load(Ordering::SeqCst) {
-            let boxed = Box::new(PerCpuData::new());
-            let ptr = Box::into_raw(boxed);
-            PER_CPU_PTR = ptr;
-            PER_CPU_INIT.store(true, Ordering::SeqCst);
+    pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> {
+        unsafe {
+            if !PER_CPU_INIT.load(Ordering::SeqCst) {
+                let boxed = Box::new(PerCpuData::new());
+                let ptr = Box::into_raw(boxed);
+                PER_CPU_PTR = ptr;
+                PER_CPU_INIT.store(true, Ordering::SeqCst);
+            }
+            (PER_CPU_PTR as *mut PerCpuData).as_mut()
         }
-        (PER_CPU_PTR as *mut PerCpuData).as_mut()
-    }}
+    }
 
-    pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> { unsafe {
-        if !PER_CPU_INIT.load(Ordering::SeqCst) {
-            let boxed = Box::new(PerCpuData::new());
-            let ptr = Box::into_raw(boxed);
-            PER_CPU_PTR = ptr;
-            PER_CPU_INIT.store(true, Ordering::SeqCst);
+    pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> {
+        unsafe {
+            if !PER_CPU_INIT.load(Ordering::SeqCst) {
+                let boxed = Box::new(PerCpuData::new());
+                let ptr = Box::into_raw(boxed);
+                PER_CPU_PTR = ptr;
+                PER_CPU_INIT.store(true, Ordering::SeqCst);
+            }
+            (PER_CPU_PTR as *mut PerCpuData).as_ref()
         }
-        (PER_CPU_PTR as *mut PerCpuData).as_ref()
-    }}
+    }
 }
 
 // Minimal IPC/RRef shims for tests (avoid pulling full IPC/SAS stack).
@@ -1191,7 +1190,11 @@ pub mod ipc {
 
             pub unsafe fn from_raw_parts_for_zombie(parts: RRefRawParts) -> Self {
                 // Test shim only supports sized types; panic on mismatch in debug mode.
-                unsafe { parts.into_rref::<T>().expect("RRefRawParts type mismatch in test shim") }
+                unsafe {
+                    parts
+                        .into_rref::<T>()
+                        .expect("RRefRawParts type mismatch in test shim")
+                }
             }
         }
 
@@ -1269,7 +1272,8 @@ pub mod ipc {
                 unsafe fn drop_impl<T: Sized>(ptr: NonNull<u8>, owner: DomainId, _meta: usize) {
                     // For sized types we can reconstruct the typed pointer directly.
                     let data_ptr = ptr.as_ptr() as *mut T;
-                    let rref: RRef<T> = unsafe { RRef::from_raw(NonNull::new_unchecked(data_ptr), owner) };
+                    let rref: RRef<T> =
+                        unsafe { RRef::from_raw(NonNull::new_unchecked(data_ptr), owner) };
                     drop(rref);
                 }
 
@@ -1311,7 +1315,12 @@ pub mod ipc {
 
             pub(crate) fn into_components(
                 self,
-            ) -> (NonNull<u8>, DomainId, usize, unsafe fn(NonNull<u8>, DomainId, usize)) {
+            ) -> (
+                NonNull<u8>,
+                DomainId,
+                usize,
+                unsafe fn(NonNull<u8>, DomainId, usize),
+            ) {
                 (self.ptr, self.owner, self.meta, self.drop_fn)
             }
 
@@ -1370,7 +1379,7 @@ pub mod task {
     /// Synchronous helper to drive a Future to completion in tests
     pub fn block_on<F: core::future::Future>(future: F) -> F::Output {
         use alloc::sync::Arc;
-        
+
         use core::sync::atomic::{AtomicBool, Ordering};
         use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
@@ -1441,10 +1450,10 @@ pub mod task {
                 if !FUEL_ACTIVE.load(Ordering::Relaxed) {
                     return true;
                 }
-                
+
                 let mut current = CURRENT_FUEL.load(Ordering::Relaxed);
                 loop {
-                     if let Some(remaining) = current.checked_sub(amount) {
+                    if let Some(remaining) = current.checked_sub(amount) {
                         match CURRENT_FUEL.compare_exchange_weak(
                             current,
                             remaining,
@@ -1455,7 +1464,7 @@ pub mod task {
                             Err(v) => current = v,
                         }
                     } else {
-                         match CURRENT_FUEL.compare_exchange_weak(
+                        match CURRENT_FUEL.compare_exchange_weak(
                             current,
                             0,
                             Ordering::Relaxed,
@@ -1467,7 +1476,7 @@ pub mod task {
                     }
                 }
             }
-            
+
             pub fn is_active() -> bool {
                 FUEL_ACTIVE.load(Ordering::Relaxed)
             }
@@ -1481,7 +1490,7 @@ pub mod task {
                 CURRENT_FUEL.store(0, Ordering::Relaxed);
             }
         }
-        
+
         pub struct FuelConfig {
             pub default_fuel: u64,
         }
@@ -1605,9 +1614,15 @@ pub mod task {
 
     // Basic smp shim for test builds
     pub mod smp {
-        pub fn current_cpu() -> u32 { 0 }
-        pub fn cpu_count() -> usize { 1 }
-        pub fn try_current_cpu_id() -> Option<u32> { Some(0) }
+        pub fn current_cpu() -> u32 {
+            0
+        }
+        pub fn cpu_count() -> usize {
+            1
+        }
+        pub fn try_current_cpu_id() -> Option<u32> {
+            Some(0)
+        }
     }
 
     // Minimal work_stealing_advanced shim used by NUMA helpers in tests
@@ -1619,27 +1634,39 @@ pub mod task {
                 &T
             }
 
-            pub fn num_nodes(&self) -> usize { 1 }
+            pub fn num_nodes(&self) -> usize {
+                1
+            }
 
             pub fn get_cores_in_node(&self, _node: usize) -> &'static [u32] {
                 static CORES: [u32; 1] = [0];
                 &CORES
             }
 
-            pub fn get_numa_node(&self, _cpu: u32) -> usize { 0 }
+            pub fn get_numa_node(&self, _cpu: u32) -> usize {
+                0
+            }
         }
     }
 
     // Minimal memory helpers for tests
     pub mod memory {
-        pub fn physical_memory_offset() -> u64 { 0 }
-        pub fn total_memory_kb() -> u64 { 1024 * 1024 }
-        pub fn free_memory_kb() -> u64 { 512 * 1024 }
+        pub fn physical_memory_offset() -> u64 {
+            0
+        }
+        pub fn total_memory_kb() -> u64 {
+            1024 * 1024
+        }
+        pub fn free_memory_kb() -> u64 {
+            512 * 1024
+        }
     }
 
     // Minimal interrupts shim
     pub mod interrupts {
-        pub fn get_timer_ticks() -> u64 { 0 }
+        pub fn get_timer_ticks() -> u64 {
+            0
+        }
     }
 
     // Minimal domain system stub (正規版 domain_system.rs と互換)
@@ -1692,15 +1719,29 @@ pub mod task {
             Some(DomainId(id))
         }
         pub fn set_domain_state(_id: DomainId, _state: DomainState) {}
-        pub fn get_domain_stats() -> DomainStats { DomainStats::default() }
-        pub fn get_stats() -> DomainStats { DomainStats::default() }
+        pub fn get_domain_stats() -> DomainStats {
+            DomainStats::default()
+        }
+        pub fn get_stats() -> DomainStats {
+            DomainStats::default()
+        }
         pub fn handle_domain_panic(_id: DomainId, _msg: alloc::string::String) {}
-        pub fn start_domain(_id: DomainId) -> Result<(), &'static str> { Ok(()) }
-        pub fn stop_domain(_id: DomainId) -> Result<(), &'static str> { Ok(()) }
-        pub fn resume_domain(_id: DomainId) -> Result<(), &'static str> { Ok(()) }
-        pub fn terminate_domain(_id: DomainId) -> Result<(), &'static str> { Ok(()) }
+        pub fn start_domain(_id: DomainId) -> Result<(), &'static str> {
+            Ok(())
+        }
+        pub fn stop_domain(_id: DomainId) -> Result<(), &'static str> {
+            Ok(())
+        }
+        pub fn resume_domain(_id: DomainId) -> Result<(), &'static str> {
+            Ok(())
+        }
+        pub fn terminate_domain(_id: DomainId) -> Result<(), &'static str> {
+            Ok(())
+        }
         pub fn set_domain_numa(_id: DomainId, _node: usize) {}
-        pub fn get_domain_numa(_id: DomainId) -> Option<usize> { None }
+        pub fn get_domain_numa(_id: DomainId) -> Option<usize> {
+            None
+        }
         pub fn add_task_to_domain(_domain_id: DomainId, _task_id: u64) {}
     }
 
@@ -1730,8 +1771,12 @@ pub mod task {
             }
 
             impl NvmeCompletion {
-                pub fn is_success(&self) -> bool { (self.status & 0x1) != 0 }
-                pub fn command_id(&self) -> u16 { self.cid }
+                pub fn is_success(&self) -> bool {
+                    (self.status & 0x1) != 0
+                }
+                pub fn command_id(&self) -> u16 {
+                    self.cid
+                }
             }
 
             /// Minimal driver handle stub used in `with_driver` closures.
@@ -1739,21 +1784,43 @@ pub mod task {
             pub struct NvmePollingDriver;
 
             impl NvmePollingDriver {
-                pub fn new() -> Self { NvmePollingDriver }
+                pub fn new() -> Self {
+                    NvmePollingDriver
+                }
 
                 /// Submit a read command (test stub)
-                pub unsafe fn submit_read(&self, _core_id: u32, _nsid: u32, _lba: u64, _blocks: u16, _prp1: u64, _prp2: u64) -> Result<u16, &'static str> {
+                pub unsafe fn submit_read(
+                    &self,
+                    _core_id: u32,
+                    _nsid: u32,
+                    _lba: u64,
+                    _blocks: u16,
+                    _prp1: u64,
+                    _prp2: u64,
+                ) -> Result<u16, &'static str> {
                     Err("no-driver")
                 }
 
                 /// Submit a write command (test stub)
-                pub unsafe fn submit_write(&self, _core_id: u32, _nsid: u32, _lba: u64, _blocks: u16, _prp1: u64, _prp2: u64) -> Result<u16, &'static str> {
+                pub unsafe fn submit_write(
+                    &self,
+                    _core_id: u32,
+                    _nsid: u32,
+                    _lba: u64,
+                    _blocks: u16,
+                    _prp1: u64,
+                    _prp2: u64,
+                ) -> Result<u16, &'static str> {
                     Err("no-driver")
                 }
 
-                pub fn check_completion(&self, _core_id: u32, _cid: u16) -> Option<NvmeCompletion> { None }
+                pub fn check_completion(&self, _core_id: u32, _cid: u16) -> Option<NvmeCompletion> {
+                    None
+                }
                 pub fn register_waker(&self, _core_id: u32, _cid: u16, _waker: core::task::Waker) {}
-                pub fn namespace_block_size(&self, _nsid: u32) -> u32 { 512 }
+                pub fn namespace_block_size(&self, _nsid: u32) -> u32 {
+                    512
+                }
             }
 
             pub mod global {
@@ -1823,7 +1890,7 @@ pub mod io {
         pub fn early_print_dec(n: u64) {
             std::print!("{}", n);
         }
-        
+
         pub fn early_print_hex(n: u64) {
             std::print!("0x{:016x}", n);
         }
@@ -1948,7 +2015,9 @@ pub mod io {
 
         /// Generic volatile write for test builds.
         pub fn volatile_write<T>(addr: usize, val: T) {
-            unsafe { core::ptr::write_volatile(addr as *mut T, val); }
+            unsafe {
+                core::ptr::write_volatile(addr as *mut T, val);
+            }
         }
     }
 
@@ -1976,7 +2045,6 @@ pub mod io;
 #[cfg(any(test, feature = "bench"))]
 pub use hal;
 
-
 #[cfg(all(
     test,
     not(feature = "full_mm_tests"),
@@ -1984,6 +2052,15 @@ pub use hal;
 ))]
 pub mod unwind;
 
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
+pub mod crypto;
 #[cfg(any(not(test), test, feature = "bench", feature = "full_mm_tests"))]
 pub mod driver_registry;
 #[cfg(any(
@@ -1995,15 +2072,6 @@ pub mod driver_registry;
     feature = "bench"
 ))]
 pub mod loader;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-pub mod crypto;
 #[cfg(any(
     all(
         test,
@@ -2050,6 +2118,24 @@ pub mod nvme {
     ),
     feature = "bench"
 ))]
+pub use crate::task::domain_system;
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
+pub use crate::task::interrupts;
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 // pub use crate::task::memory as memory;
 #[cfg(any(
     all(
@@ -2059,39 +2145,17 @@ pub mod nvme {
     ),
     feature = "bench"
 ))]
-pub use crate::task::smp as smp;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-pub use crate::task::interrupts as interrupts;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-pub use crate::task::domain_system as domain_system;
+pub use crate::task::smp;
 
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod domain_system;
 
 #[cfg(all(test, feature = "std", not(target_os = "none")))]
 mod async_swapout_sim_lib {
     use super::*;
     use std::collections::{HashSet, VecDeque};
-    use std::sync::{Arc, Condvar, Mutex};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -2111,16 +2175,40 @@ mod async_swapout_sim_lib {
     fn async_swapout_sim_short_baseline() {
         // Simulation parameters (short baseline run)
         // Allow overriding via environment variables for quick parameter sweeps
-        let channel_size: usize = std::env::var("ASYNC_SWAPOUT_CHANNEL_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(512);
-        let batch_size: usize = std::env::var("ASYNC_SWAPOUT_BATCH_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
-        let reserved_file_slots: usize = std::env::var("ASYNC_SWAPOUT_RESERVED_FILE_SLOTS").ok().and_then(|v| v.parse().ok()).unwrap_or(channel_size / 8);
-        let token_bucket_capacity: usize = std::env::var("ASYNC_SWAPOUT_TOKEN_CAPACITY").ok().and_then(|v| v.parse().ok()).unwrap_or(channel_size / 4);
-        let token_refill_per_batch: usize = std::env::var("ASYNC_SWAPOUT_TOKEN_REFILL").ok().and_then(|v| v.parse().ok()).unwrap_or(batch_size / 2);
+        let channel_size: usize = std::env::var("ASYNC_SWAPOUT_CHANNEL_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(512);
+        let batch_size: usize = std::env::var("ASYNC_SWAPOUT_BATCH_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(16);
+        let reserved_file_slots: usize = std::env::var("ASYNC_SWAPOUT_RESERVED_FILE_SLOTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(channel_size / 8);
+        let token_bucket_capacity: usize = std::env::var("ASYNC_SWAPOUT_TOKEN_CAPACITY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(channel_size / 4);
+        let token_refill_per_batch: usize = std::env::var("ASYNC_SWAPOUT_TOKEN_REFILL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(batch_size / 2);
 
-        let threads: usize = std::env::var("ASYNC_SWAPOUT_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
-        let iters: usize = std::env::var("ASYNC_SWAPOUT_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(400); // each thread iterations
+        let threads: usize = std::env::var("ASYNC_SWAPOUT_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let iters: usize = std::env::var("ASYNC_SWAPOUT_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(400); // each thread iterations
         // Optional processing delay (ms) to simulate slower I/O via env var
-        let proc_delay_ms: u64 = std::env::var("ASYNC_SWAPOUT_PROCESSING_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        let proc_delay_ms: u64 = std::env::var("ASYNC_SWAPOUT_PROCESSING_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
 
         // Shared state
         let queue = Arc::new((Mutex::new(VecDeque::<SwapEntry>::new()), Condvar::new()));
@@ -2171,7 +2259,11 @@ mod async_swapout_sim_lib {
                         let cur = q.len();
                         loop {
                             let old = queue_len_max.load(Ordering::Acquire);
-                            if cur <= old || queue_len_max.compare_exchange(old, cur, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                            if cur <= old
+                                || queue_len_max
+                                    .compare_exchange(old, cur, Ordering::AcqRel, Ordering::Acquire)
+                                    .is_ok()
+                            {
                                 break;
                             }
                         }
@@ -2203,9 +2295,16 @@ mod async_swapout_sim_lib {
                     // refill tokens after processing batch
                     loop {
                         let cur = tokens.load(Ordering::Acquire);
-                        if cur >= token_bucket_capacity { break; }
+                        if cur >= token_bucket_capacity {
+                            break;
+                        }
                         let new = (cur + token_refill_per_batch).min(token_bucket_capacity);
-                        if tokens.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire).is_ok() { break; }
+                        if tokens
+                            .compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                        {
+                            break;
+                        }
                     }
                 }
             });
@@ -2262,11 +2361,21 @@ mod async_swapout_sim_lib {
                                     enqueue_failures.fetch_add(1, Ordering::AcqRel);
                                     break false;
                                 }
-                                if tokens.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                                if tokens
+                                    .compare_exchange(
+                                        cur,
+                                        cur - 1,
+                                        Ordering::AcqRel,
+                                        Ordering::Acquire,
+                                    )
+                                    .is_ok()
+                                {
                                     break true;
                                 }
                             };
-                            if !ok { continue; }
+                            if !ok {
+                                continue;
+                            }
                         }
 
                         // all checks passed: insert
@@ -2274,7 +2383,14 @@ mod async_swapout_sim_lib {
                         if is_file {
                             file_queue_count.fetch_add(1, Ordering::AcqRel);
                         }
-                        q.push_back(SwapEntry { frame, kind: if is_file { SwapKind::File } else { SwapKind::Anon } });
+                        q.push_back(SwapEntry {
+                            frame,
+                            kind: if is_file {
+                                SwapKind::File
+                            } else {
+                                SwapKind::Anon
+                            },
+                        });
                         cvar.notify_one();
                         enqueue_success.fetch_add(1, Ordering::AcqRel);
                     }
@@ -2283,13 +2399,17 @@ mod async_swapout_sim_lib {
             joiners.push(j);
         }
 
-        for j in joiners { j.join().unwrap(); }
+        for j in joiners {
+            j.join().unwrap();
+        }
 
         // Give worker time to finish processing
         loop {
             let (lock, _) = &*queue;
             let q = lock.lock().unwrap();
-            if q.is_empty() { break; }
+            if q.is_empty() {
+                break;
+            }
             drop(q);
             thread::sleep(Duration::from_millis(10));
         }
@@ -2303,7 +2423,9 @@ mod async_swapout_sim_lib {
         }
         // Wait for workers to finish processing enqueued items (respect proc_delay_ms)
         let wait_deadline = Instant::now() + Duration::from_secs(5);
-        while processed.load(Ordering::Acquire) < enqueue_success.load(Ordering::Acquire) && Instant::now() < wait_deadline {
+        while processed.load(Ordering::Acquire) < enqueue_success.load(Ordering::Acquire)
+            && Instant::now() < wait_deadline
+        {
             thread::sleep(Duration::from_millis(10));
         }
 
@@ -2314,8 +2436,14 @@ mod async_swapout_sim_lib {
         let tokens_left = tokens.load(Ordering::Acquire);
         let max_q = queue_len_max.load(Ordering::Acquire);
 
-        println!("async_swapout_sim_short_baseline: threads={} iters={} time={:?}", threads, iters, elapsed);
-        println!("enq_success={}, enq_failures={}, processed={}, tokens_left={}, max_queue_len={}", success, failures, processed, tokens_left, max_q);
+        println!(
+            "async_swapout_sim_short_baseline: threads={} iters={} time={:?}",
+            threads, iters, elapsed
+        );
+        println!(
+            "enq_success={}, enq_failures={}, processed={}, tokens_left={}, max_queue_len={}",
+            success, failures, processed, tokens_left, max_q
+        );
 
         // Basic sanity checks
         assert_eq!(processed, success);

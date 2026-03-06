@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod io_future;
 pub use io_future::*;
 impl IoScheduler {
@@ -100,8 +99,6 @@ impl IoScheduler {
         id
     }
 
-
-
     /// デバイス中立コマンドでI/Oをサブミット（新API）
     ///
     /// `IoCommand` を使用し、デバイス固有形式（PRP/SGL等）は
@@ -138,11 +135,24 @@ impl IoScheduler {
         let queue_idx = priority as usize;
         self.queues[queue_idx].lock().push_back(id);
         self.stats.total_submitted.fetch_add(1, Ordering::Relaxed);
-        let depth = self.stats.current_queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        let depth = self
+            .stats
+            .current_queue_depth
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
         loop {
             let max = self.stats.max_queue_depth.load(Ordering::Relaxed);
-            if depth <= max { break; }
-            if self.stats.max_queue_depth.compare_exchange_weak(max, depth, Ordering::Relaxed, Ordering::Relaxed).is_ok() { break; }
+            if depth <= max {
+                break;
+            }
+            if self
+                .stats
+                .max_queue_depth
+                .compare_exchange_weak(max, depth, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
         }
         id
     }
@@ -158,7 +168,6 @@ impl IoScheduler {
     pub fn get_waker(&self, id: IoRequestId) -> Option<Waker> {
         self.requests.read().get(&id).and_then(|r| r.waker.clone())
     }
-
 
     /// 次のリクエストを取得（優先度順）
     pub fn next_request(&self) -> Option<IoRequestId> {
@@ -292,7 +301,9 @@ impl IoScheduler {
             request.state = IoState::Cancelled;
             request.result = Some(result.clone());
             request.abandoned = true; // drop 由来なので即回収OK
-            self.stats.current_queue_depth.fetch_sub(1, Ordering::Relaxed);
+            self.stats
+                .current_queue_depth
+                .fetch_sub(1, Ordering::Relaxed);
             (request.waker.take(), true)
         };
 
@@ -341,7 +352,12 @@ impl IoScheduler {
         let mut requests = self.requests.write();
         let should_remove = requests
             .get(&id)
-            .map(|r| matches!(r.state, IoState::Completed | IoState::Failed | IoState::Cancelled))
+            .map(|r| {
+                matches!(
+                    r.state,
+                    IoState::Completed | IoState::Failed | IoState::Cancelled
+                )
+            })
             .unwrap_or(false);
         if should_remove {
             let result = requests.get(&id).and_then(|r| r.result.clone());
@@ -371,7 +387,10 @@ impl IoScheduler {
         match req.state {
             IoState::Completed | IoState::Failed | IoState::Cancelled => {
                 // 完了済み: 結果を取り出して削除
-                let result = req.result.take().unwrap_or(IoResult::Error(IoError::DeviceError));
+                let result = req
+                    .result
+                    .take()
+                    .unwrap_or(IoResult::Error(IoError::DeviceError));
                 reqs.remove(&id);
                 Poll::Ready(match result {
                     IoResult::Success(n) => Ok(n),
@@ -381,7 +400,10 @@ impl IoScheduler {
             IoState::Pending | IoState::InProgress => {
                 // Waker 更新が必要か判定
                 let needs_update = if *registered {
-                    req.waker.as_ref().map(|old| !old.will_wake(waker)).unwrap_or(true)
+                    req.waker
+                        .as_ref()
+                        .map(|old| !old.will_wake(waker))
+                        .unwrap_or(true)
                 } else {
                     true
                 };

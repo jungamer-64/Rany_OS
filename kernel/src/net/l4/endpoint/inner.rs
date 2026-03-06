@@ -17,7 +17,9 @@ use crate::net::l4::tcp::{TcpListener as TcpListenerImpl, TcpStream};
 use crate::net::l4::udp::UdpEndpoint as RawUdpSocket;
 
 use super::congestion::CongestionAlgorithm;
-use super::types::{AcceptedConnection, EndpointAddr, EndpointError, EndpointResult, EndpointState};
+use super::types::{
+    AcceptedConnection, EndpointAddr, EndpointError, EndpointResult, EndpointState,
+};
 
 // ============================================================================
 // プロトコル固有の状態
@@ -398,7 +400,6 @@ pub mod tests {
     }
 }
 
-
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
@@ -406,11 +407,14 @@ pub mod qemu_tests {
     pub fn socket_state_transitions_smoke() -> bool {
         let mut inner = EndpointInner::new();
 
-        if inner.transition_to(EndpointState::Bound).is_err() || inner.state != EndpointState::Bound {
+        if inner.transition_to(EndpointState::Bound).is_err() || inner.state != EndpointState::Bound
+        {
             return false;
         }
 
-        if inner.transition_to(EndpointState::Listening).is_err() || inner.state != EndpointState::Listening {
+        if inner.transition_to(EndpointState::Listening).is_err()
+            || inner.state != EndpointState::Listening
+        {
             return false;
         }
 

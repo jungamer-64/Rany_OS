@@ -194,7 +194,8 @@ impl HeapRegistry {
     fn lock_shards(
         &self,
         idxs: &[usize],
-    ) -> Result<alloc::vec::Vec<crate::sync::PoisonLockGuard<'_, RegistryShard>>, RegistryError> {
+    ) -> Result<alloc::vec::Vec<crate::sync::PoisonLockGuard<'_, RegistryShard>>, RegistryError>
+    {
         let mut guards = alloc::vec::Vec::new();
         for idx in idxs {
             match self.shards[*idx].lock() {
@@ -250,8 +251,7 @@ impl HeapRegistry {
             }
         }
         #[cfg(any(test, feature = "bench"))]
-        {
-        }
+        {}
 
         let mut guards = self.lock_shards(&idxs)?;
         self.validate_no_overlap(&guards, address, size)?;
@@ -288,7 +288,13 @@ impl HeapRegistry {
         address: usize,
         owner: DomainId,
         op_name: &str,
-    ) -> Result<(alloc::vec::Vec<crate::sync::PoisonLockGuard<'_, RegistryShard>>, usize), RegistryError> {
+    ) -> Result<
+        (
+            alloc::vec::Vec<crate::sync::PoisonLockGuard<'_, RegistryShard>>,
+            usize,
+        ),
+        RegistryError,
+    > {
         let primary = self.get_shard_index(address);
         let primary_guard = match self.shards[primary].lock() {
             Ok(g) => g,

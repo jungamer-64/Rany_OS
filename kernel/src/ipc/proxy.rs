@@ -134,7 +134,9 @@ impl DomainProxy for BasicProxy {
             let message = match PROXY_PANIC_MESSAGE.lock() {
                 Ok(mut guard) => guard.take().unwrap_or_default(),
                 Err(_) => {
-                    log::error!("[Proxy] PROXY_PANIC_MESSAGE lock poisoned while retrieving message - using default");
+                    log::error!(
+                        "[Proxy] PROXY_PANIC_MESSAGE lock poisoned while retrieving message - using default"
+                    );
                     String::new()
                 }
             };
@@ -210,7 +212,7 @@ where
         Err(payload) => {
             // パニックが捕捉された場合、PROXY_PANIC_STATEを設定
             record_proxy_panic(payload.message);
-            
+
             // 注意: ここに到達した場合、関数は完了していないため
             // 戻り値を生成できない。この問題は呼び出し元で
             // PROXY_PANIC_STATEをチェックすることで対処する。
@@ -218,7 +220,7 @@ where
             // 現在の設計では、catch_panic後にここに到達することは
             // 実際には起こらない（パニックハンドラがHALTするため）。
             // 将来的にsetjmp/longjmpを実装した場合、ここでの処理が必要になる。
-            
+
             // 暫定的にデフォルト値を返す（実際には到達しない）
             // TODO: 将来的にはunsafe { core::mem::zeroed() } または
             // MaybeUninitを使用する
@@ -401,4 +403,3 @@ mod tests {
         assert!(config.exponential_backoff);
     }
 }
-

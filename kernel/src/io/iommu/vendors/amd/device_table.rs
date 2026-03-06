@@ -10,14 +10,14 @@ use core::ptr::{self, NonNull};
 use x86_64::PhysAddr;
 
 use crate::io::iommu::common::tables::phys_to_virt_usize;
-use crate::mm::types::PAGE_SIZE_4K;
 use crate::io::mmio::mmio_write_u64;
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
+use crate::mm::types::PAGE_SIZE_4K;
 use crate::mm::virt::mapping::phys_to_virt;
 use crate::sync::PoisonLock;
 
-use super::registers::*;
 use super::AmdIommuUnit;
+use super::registers::*;
 
 use crate::io::iommu::types::IommuError;
 
@@ -97,8 +97,7 @@ impl AmdDeviceTable {
         size_bytes = size_bytes.next_power_of_two();
 
         let frame_count = (size_bytes / (PAGE_SIZE_4K as u64)) as usize;
-        let phys_base =
-            alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
+        let phys_base = alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
         let entry_ptr = NonNull::new(virt_base.as_u64() as *mut AmdDeviceTableEntry)
             .ok_or(IommuError::HardwareError)?;
@@ -137,7 +136,11 @@ impl AmdDeviceTable {
         Ok(())
     }
 
-    pub(super) fn write_entry(&self, devid: u16, entry: AmdDeviceTableEntry) -> Result<(), IommuError> {
+    pub(super) fn write_entry(
+        &self,
+        devid: u16,
+        entry: AmdDeviceTableEntry,
+    ) -> Result<(), IommuError> {
         let _guard = self.lock.lock().map_err(|_| IommuError::Poisoned)?;
         let index = devid as usize;
         if index >= self.entry_count {

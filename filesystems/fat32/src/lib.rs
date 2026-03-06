@@ -102,8 +102,7 @@ use irq_lock::IrqPoisonLock;
 use ondisk::FSINFO_UNKNOWN;
 
 use vfs::block::{
-    BlockDevice,  BlockError, OwnedBytes, ZeroCopyBlockDevice,
-    ZeroCopyBuffer, ZeroCopyBufferMut,
+    BlockDevice, BlockError, OwnedBytes, ZeroCopyBlockDevice, ZeroCopyBuffer, ZeroCopyBufferMut,
 };
 use vfs::cache::LRUBlockCache;
 use vfs::{

@@ -8,9 +8,9 @@
 //! This is used by the IOMMU subsystem to prevent malicious or faulty devices
 //! from accessing sensitive memory like page tables, kernel stacks, etc.
 
+use crate::sync::IrqMutex;
 use alloc::vec::Vec;
 use spin::{Once, RwLock};
-use crate::sync::IrqMutex;
 
 /// Bitmap for protecting individual physical pages (4KB granularity).
 /// Covers up to 1TB of RAM by default (32MB bitmap).
@@ -86,10 +86,12 @@ pub fn is_page_protected(phys: u64) -> bool {
 
 /// Register a physical memory range as protected.
 pub fn register_protected_range(start: u64, size: u64) {
-    if size == 0 { return; }
+    if size == 0 {
+        return;
+    }
     let end = start.saturating_add(size);
     let boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
-    
+
     // For large regions (> 1MB) or if ANY part is above the bitmap range,
     // use the regions list to ensure coverage of the high-memory part.
     if size > 1024 * 1024 || end > boundary {
@@ -113,11 +115,13 @@ pub fn register_protected_range(start: u64, size: u64) {
 
 /// Unregister a physical memory range from protection.
 pub fn unregister_protected_range(start: u64, size: u64) {
-    if size == 0 { return; }
+    if size == 0 {
+        return;
+    }
     let end = start.saturating_add(size);
     let _boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
 
-    // Always check the regions list to ensure consistency, 
+    // Always check the regions list to ensure consistency,
     // as even small ranges could be part of a larger region in the list.
     {
         let mut regions = PROTECTED_REGIONS.write();
@@ -157,11 +161,14 @@ pub fn unregister_protected_range(start: u64, size: u64) {
             // Case 4: Unregistered range is in the middle of the region - split it
             if start > r_start && end < r_end {
                 regions[i].end = start;
-                regions.insert(i + 1, ProtectedRegion {
-                    start: end,
-                    end: r_end,
-                    name: r_name,
-                });
+                regions.insert(
+                    i + 1,
+                    ProtectedRegion {
+                        start: end,
+                        end: r_end,
+                        name: r_name,
+                    },
+                );
                 i += 2;
                 continue;
             }
@@ -188,13 +195,13 @@ pub fn unregister_protected_range(start: u64, size: u64) {
 fn register_protected_region_internal(start: u64, size: u64, name: &'static str) {
     let end = start.saturating_add(size);
     let mut regions = PROTECTED_REGIONS.write();
-    
+
     match regions.binary_search_by(|r| r.start.cmp(&start)) {
         Ok(idx) => {
             // Already exists or overlaps at start
             if regions[idx].end < end {
                 regions[idx].end = end; // Extend existing
-                
+
                 // After extending, it might now overlap with the next one(s)
                 let mut new_end = end;
                 let next_idx = idx + 1;
@@ -207,20 +214,20 @@ fn register_protected_region_internal(start: u64, size: u64, name: &'static str)
         }
         Err(idx) => {
             // 1. Check if it overlaps with previous region and can be merged
-            if idx > 0 && regions[idx-1].end >= start {
-                if regions[idx-1].end < end {
-                    regions[idx-1].end = end;
+            if idx > 0 && regions[idx - 1].end >= start {
+                if regions[idx - 1].end < end {
+                    regions[idx - 1].end = end;
                     // After merging with previous, it might now overlap with the next one
                     let mut new_end = end;
                     while idx < regions.len() && regions[idx].start <= new_end {
                         new_end = new_end.max(regions[idx].end);
                         regions.remove(idx);
                     }
-                    regions[idx-1].end = new_end;
+                    regions[idx - 1].end = new_end;
                 }
                 return;
             }
-            
+
             // 2. Check if it overlaps with next region(s) and can be merged
             let mut current_end = end;
             let insert_idx = idx;
@@ -230,8 +237,15 @@ fn register_protected_region_internal(start: u64, size: u64, name: &'static str)
             }
 
             // Insert at idx to keep sorted
-            regions.insert(idx, ProtectedRegion { start, end: current_end, name });
-            
+            regions.insert(
+                idx,
+                ProtectedRegion {
+                    start,
+                    end: current_end,
+                    name,
+                },
+            );
+
             // Scalability Warning: If we have too many regions, it impacts performance
             if regions.len() > 2048 && regions.len() % 1024 == 0 {
                 log::warn!(
@@ -245,22 +259,24 @@ fn register_protected_region_internal(start: u64, size: u64, name: &'static str)
 
 /// Check if a range overlaps with any protected region.
 pub fn range_overlaps_protected(start: u64, size: u64) -> bool {
-    if size == 0 { return false; }
+    if size == 0 {
+        return false;
+    }
     let end = start.saturating_add(size);
 
     // 1. Check bitmap for pages in range
     let start_page = (start / 4096) as usize;
     let end_page = ((end.saturating_add(4095)) / 4096) as usize;
-    
+
     // Limit check to what the bitmap covers
     let check_end_page = end_page.min(PROTECTED_BITMAP_PAGES);
-    
+
     if start_page < check_end_page {
         let bitmap = get_protected_bitmap().lock();
-        
+
         // Fast path: check bytes instead of bits for most of the range
         let mut curr_page = start_page;
-        
+
         // Align to byte boundary
         while curr_page < check_end_page && (curr_page % 8) != 0 {
             if (bitmap[curr_page / 8] & (1 << (curr_page % 8))) != 0 {
@@ -268,7 +284,7 @@ pub fn range_overlaps_protected(start: u64, size: u64) -> bool {
             }
             curr_page += 1;
         }
-        
+
         // Check whole bytes
         while curr_page + 8 <= check_end_page {
             if bitmap[curr_page / 8] != 0 {
@@ -281,7 +297,7 @@ pub fn range_overlaps_protected(start: u64, size: u64) -> bool {
             }
             curr_page += 8;
         }
-        
+
         // Check remaining pages
         while curr_page < check_end_page {
             if (bitmap[curr_page / 8] & (1 << (curr_page % 8))) != 0 {
@@ -317,15 +333,18 @@ mod tests {
         let boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
         let start = boundary - 4096;
         let size = 8192;
-        
+
         register_protected_range(start, size);
-        
+
         let p1 = is_page_protected(start);
         let p2 = is_page_protected(boundary);
-        
+
         unregister_protected_range(start, size);
 
         assert!(p1, "Page below boundary should be protected");
-        assert!(p2, "Page at boundary should be protected (VULNERABILITY REPRODUCTION)");
+        assert!(
+            p2,
+            "Page at boundary should be protected (VULNERABILITY REPRODUCTION)"
+        );
     }
 }

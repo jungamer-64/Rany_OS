@@ -16,11 +16,11 @@
 
 #![allow(dead_code)]
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,20 +29,19 @@ use spin::Mutex;
 
 use kernel_api::DmaBuffer;
 
-use super::cache::{page_cache, PAGE_SIZE as CACHE_PAGE_SIZE};
+use super::cache::{PAGE_SIZE as CACHE_PAGE_SIZE, page_cache};
 use super::fs_abstraction::{
-    read_inode_by_number, write_inode_by_number, FileAttr, FsError, FsResult, SeekFrom,
+    FileAttr, FsError, FsResult, SeekFrom, read_inode_by_number, write_inode_by_number,
 };
 
 // NVme per-core API
-use crate::io::io_scheduler::{
-    CompletionHook,
-    DeviceId as IoDeviceId,
-    IoCommand,
-    DmaBufHandle, IoResult,
-    IoPriority, NvmeSglDescriptor,
+use crate::io::dma::{
+    CpuOwned, DeviceOwned, SgDmaGuard, SliceDmaGuard, TypedDmaSlice, TypedSgList,
 };
-use crate::io::dma::{CpuOwned, DeviceOwned, SgDmaGuard, SliceDmaGuard, TypedDmaSlice, TypedSgList};
+use crate::io::io_scheduler::{
+    CompletionHook, DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority, IoResult,
+    NvmeSglDescriptor,
+};
 mod cleanup_helpers;
 
 // re-export only the public types/functions kernel relies on instead of a wildcard
@@ -165,7 +164,10 @@ impl NvmeDmaContext {
         if let Some(prp) = self.prp_list.take() {
             prp.complete();
         }
-        let data_dev = self.data_dev.take().expect("NvmeDmaContext missing data_dev");
+        let data_dev = self
+            .data_dev
+            .take()
+            .expect("NvmeDmaContext missing data_dev");
         let data_guard = self
             .data_guard
             .take()
@@ -229,13 +231,18 @@ impl NvmeSglContext {
             map.unmap();
         }
 
-        if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take())
-        {
+        if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take()) {
             let _ = list_guard.complete(list_dev);
         }
 
-        let data_list = self.data_list.take().expect("NvmeSglContext missing data_list");
-        let data_guard = self.data_guard.take().expect("NvmeSglContext missing data_guard");
+        let data_list = self
+            .data_list
+            .take()
+            .expect("NvmeSglContext missing data_list");
+        let data_guard = self
+            .data_guard
+            .take()
+            .expect("NvmeSglContext missing data_guard");
         data_guard.complete_all(data_list)
     }
 }
@@ -258,8 +265,7 @@ impl Drop for NvmeSglContext {
             map.unmap();
         }
 
-        if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take())
-        {
+        if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take()) {
             let _ = list_guard.complete(list_dev);
         }
 
@@ -282,9 +288,7 @@ impl Drop for NvmeDmaContext {
         if let Some(prp) = self.prp_list.take() {
             prp.complete();
         }
-        if let (Some(data_dev), Some(data_guard)) =
-            (self.data_dev.take(), self.data_guard.take())
-        {
+        if let (Some(data_dev), Some(data_guard)) = (self.data_dev.take(), self.data_guard.take()) {
             let _ = data_guard.complete(data_dev);
         }
         if let Some(map) = self.data_map.take() {
@@ -341,10 +345,7 @@ fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }
 
-fn map_nvme_iommu(
-    phys_addr: u64,
-    size: usize,
-) -> FsResult<(u64, Option<NvmeIommuMapping>)> {
+fn map_nvme_iommu(phys_addr: u64, size: usize) -> FsResult<(u64, Option<NvmeIommuMapping>)> {
     // Use kernel_api abstraction for IOMMU mapping
     match kernel_api::kernel().nvme_iommu_map(0, phys_addr, size) {
         Ok((iova, mapping_id)) => {
@@ -364,8 +365,7 @@ fn allocate_prp_list_pages(total_entries: usize) -> FsResult<Vec<TypedDmaSlice<C
     let mut remaining = total_entries;
     let mut list_buffers = Vec::new();
     while remaining > 0 {
-        let list =
-            TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(FsError::NoSpace)?;
+        let list = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(FsError::NoSpace)?;
         list_buffers.push(list);
         if remaining > 512 {
             remaining = remaining.saturating_sub(511);
@@ -402,11 +402,7 @@ fn fill_prp_list_entries(
     for idx in 0..list_buffers.len() {
         let remaining_entries = total_entries - filled;
         let needs_chain = remaining_entries > 512;
-        let data_capacity = if needs_chain {
-            511
-        } else {
-            remaining_entries
-        };
+        let data_capacity = if needs_chain { 511 } else { remaining_entries };
 
         let entries = unsafe {
             core::slice::from_raw_parts_mut(
@@ -420,9 +416,7 @@ fn fill_prp_list_entries(
         }
 
         if needs_chain {
-            let next_iova = *list_iovas
-                .get(idx + 1)
-                .ok_or(FsError::InvalidArgument)?;
+            let next_iova = *list_iovas.get(idx + 1).ok_or(FsError::InvalidArgument)?;
             entries[511] = next_iova;
         }
 
@@ -431,10 +425,7 @@ fn fill_prp_list_entries(
     Ok(())
 }
 
-fn build_prp_list(
-    base_addr: u64,
-    len: usize,
-) -> FsResult<(u64, Option<NvmePrpListChain>)> {
+fn build_prp_list(base_addr: u64, len: usize) -> FsResult<(u64, Option<NvmePrpListChain>)> {
     if len == 0 {
         return Err(FsError::InvalidArgument);
     }
@@ -453,11 +444,7 @@ fn build_prp_list(
     fill_prp_list_entries(&mut list_buffers, &list_iovas, base_addr, total_entries)?;
 
     let mut pages_vec = Vec::with_capacity(list_buffers.len());
-    for ((list, map), iova) in list_buffers
-        .into_iter()
-        .zip(list_maps)
-        .zip(list_iovas)
-    {
+    for ((list, map), iova) in list_buffers.into_iter().zip(list_maps).zip(list_iovas) {
         let (dev, guard) = list.start_dma();
         pages_vec.push(NvmePrpListPage {
             dev,
@@ -564,10 +551,7 @@ fn prepare_dma_from_kapi_buffer(
 }
 
 /// SGLエントリの検証と合計バイト数の計算
-fn validate_sgl_total_bytes(
-    list: &TypedSgList<CpuOwned>,
-    max_entries: usize,
-) -> FsResult<usize> {
+fn validate_sgl_total_bytes(list: &TypedSgList<CpuOwned>, max_entries: usize) -> FsResult<usize> {
     if list.is_empty() || list.len() > max_entries {
         return Err(FsError::InvalidArgument);
     }

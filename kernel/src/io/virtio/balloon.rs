@@ -18,13 +18,13 @@
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
+use crate::io::virtio::virtqueue::*;
+use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::io::virtio::virtqueue::*;
-use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
-use crate::sync::PoisonLock;
 
 // ============================================================================
 // VirtIO Balloon Feature Bits
@@ -217,7 +217,8 @@ impl VirtioBalloonDevice {
         let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // Standardized layout calculation
-        let (desc_size, _avail_size, used_offset, total_size) = VirtQueue::calculate_layout(queue_size);
+        let (desc_size, _avail_size, used_offset, total_size) =
+            VirtQueue::calculate_layout(queue_size);
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -329,7 +330,10 @@ impl VirtioBalloonDevice {
         }
 
         // Retain DMA buffer until completion
-        self.inflight_buffers.lock().expect("inflight_buffers lock poisoned").insert(desc_idx, dma_buf);
+        self.inflight_buffers
+            .lock()
+            .expect("inflight_buffers lock poisoned")
+            .insert(desc_idx, dma_buf);
 
         // Notify device
         queue_guard.notify(&*self.transport);
@@ -342,10 +346,7 @@ impl VirtioBalloonDevice {
     /// The driver sends page frame numbers to the inflateq, telling the host
     /// to reclaim those pages from the guest (4K page granularity).
     pub fn inflate_pages(&self, pfns: &[u32]) -> Result<(), BalloonError> {
-        let queue = self
-            .inflate_queue
-            .as_ref()
-            .ok_or(BalloonError::NotReady)?;
+        let queue = self.inflate_queue.as_ref().ok_or(BalloonError::NotReady)?;
         self.submit_pfns(queue, pfns)
     }
 
@@ -354,10 +355,7 @@ impl VirtioBalloonDevice {
     /// The driver sends page frame numbers to the deflateq, telling the host
     /// to return those pages to the guest (4K page granularity).
     pub fn deflate_pages(&self, pfns: &[u32]) -> Result<(), BalloonError> {
-        let queue = self
-            .deflate_queue
-            .as_ref()
-            .ok_or(BalloonError::NotReady)?;
+        let queue = self.deflate_queue.as_ref().ok_or(BalloonError::NotReady)?;
         self.submit_pfns(queue, pfns)
     }
 
@@ -373,7 +371,8 @@ impl VirtioBalloonDevice {
     ///
     /// The driver updates `actual` to report how many pages it currently holds.
     pub fn write_actual(&self, pages: u32) {
-        self.transport.write_config_u32(config_offsets::ACTUAL, pages);
+        self.transport
+            .write_config_u32(config_offsets::ACTUAL, pages);
     }
 
     /// Handle interrupt from the balloon device.
@@ -403,7 +402,10 @@ impl VirtioBalloonDevice {
                 let mut queue_guard = queue.lock().expect("inflate_queue lock poisoned");
                 while let Some((desc_id, _len)) = queue_guard.poll_completion() {
                     // Free the inflight DMA buffer
-                    self.inflight_buffers.lock().expect("inflight_buffers lock poisoned").remove(&desc_id);
+                    self.inflight_buffers
+                        .lock()
+                        .expect("inflight_buffers lock poisoned")
+                        .remove(&desc_id);
                     // Free descriptor
                     queue_guard.free_desc(desc_id);
                 }
@@ -414,7 +416,10 @@ impl VirtioBalloonDevice {
                 let mut queue_guard = queue.lock().expect("deflate_queue lock poisoned");
                 while let Some((desc_id, _len)) = queue_guard.poll_completion() {
                     // Free the inflight DMA buffer
-                    self.inflight_buffers.lock().expect("inflight_buffers lock poisoned").remove(&desc_id);
+                    self.inflight_buffers
+                        .lock()
+                        .expect("inflight_buffers lock poisoned")
+                        .remove(&desc_id);
                     // Free descriptor
                     queue_guard.free_desc(desc_id);
                 }
@@ -438,15 +443,19 @@ impl VirtioBalloonDevice {
 // ============================================================================
 
 /// Primary (legacy) VirtIO balloon device slot kept for compatibility (`index=0`).
-pub(crate) static VIRTIO_BALLOON_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioBalloonDevice>>> = crate::sync::PoisonLock::new(None);
+pub(crate) static VIRTIO_BALLOON_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioBalloonDevice>>> =
+    crate::sync::PoisonLock::new(None);
 
 /// Additional VirtIO balloon devices (`index != 0`).
-pub(crate) static VIRTIO_BALLOON_DEVICES: spin::RwLock<alloc::collections::BTreeMap<u8, Arc<VirtioBalloonDevice>>> =
-    spin::RwLock::new(alloc::collections::BTreeMap::new());
+pub(crate) static VIRTIO_BALLOON_DEVICES: spin::RwLock<
+    alloc::collections::BTreeMap<u8, Arc<VirtioBalloonDevice>>,
+> = spin::RwLock::new(alloc::collections::BTreeMap::new());
 
 fn install_virtio_balloon_device(index: u8, device_arc: Arc<VirtioBalloonDevice>) {
     if index == 0 {
-        *VIRTIO_BALLOON_DEVICE.lock().expect("VIRTIO_BALLOON_DEVICE lock poisoned") = Some(device_arc);
+        *VIRTIO_BALLOON_DEVICE
+            .lock()
+            .expect("VIRTIO_BALLOON_DEVICE lock poisoned") = Some(device_arc);
     } else {
         VIRTIO_BALLOON_DEVICES.write().insert(index, device_arc);
     }
@@ -455,7 +464,10 @@ fn install_virtio_balloon_device(index: u8, device_arc: Arc<VirtioBalloonDevice>
 /// Get a shared reference to the VirtIO balloon device by index.
 pub fn get_virtio_balloon_device_at_index(index: u8) -> Option<Arc<VirtioBalloonDevice>> {
     if index == 0 {
-        VIRTIO_BALLOON_DEVICE.lock().expect("VIRTIO_BALLOON_DEVICE lock poisoned").clone()
+        VIRTIO_BALLOON_DEVICE
+            .lock()
+            .expect("VIRTIO_BALLOON_DEVICE lock poisoned")
+            .clone()
     } else {
         VIRTIO_BALLOON_DEVICES.read().get(&index).cloned()
     }
@@ -574,8 +586,6 @@ pub fn handle_virtio_balloon_interrupt() {
 pub fn get_virtio_balloon_device() -> Option<Arc<VirtioBalloonDevice>> {
     get_virtio_balloon_device_at_index(0)
 }
-
-
 
 // ============================================================================
 // Tests

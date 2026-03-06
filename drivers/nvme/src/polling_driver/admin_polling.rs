@@ -7,7 +7,10 @@ impl NvmePollingDriver {
     }
 
     /// Admin完了をポーリング（コマンド名付き診断ログ出力）
-    pub(super) fn poll_admin_completion_named(&self, cmd_name: &str) -> Result<NvmeCompletion, &'static str> {
+    pub(super) fn poll_admin_completion_named(
+        &self,
+        cmd_name: &str,
+    ) -> Result<NvmeCompletion, &'static str> {
         let admin_queue = self
             .admin_queue
             .as_ref()

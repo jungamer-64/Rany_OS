@@ -38,7 +38,8 @@ pub mod block {
     //! ブロックデバイス抽象化（vfsから再エクスポート）
     pub use vfs::block::{
         // Core types
-        BlockDevice, BlockRequest,
+        BlockDevice,
+        BlockRequest,
         RequestType,
     };
 }
@@ -46,12 +47,32 @@ pub mod block {
 // Kernel-provided page-backed cluster allocator
 #[allow(unused_imports)]
 pub use page_cluster_buffer::PageClusterBufferAllocator;
-pub mod memfs;
 pub mod async_memfs;
+pub mod memfs;
 pub mod page;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 
+#[allow(unused_imports)]
+pub use async_memfs::{
+    // Async Inode trait and wrapper
+    AsyncInode,
+    AsyncMemoryFs,
+    AsyncMemoryInode,
+    Bytes,
+    // Async shell integration APIs
+    copy_file_async,
+    list_directory_async,
+    make_directory_async,
+    read_file_content_async,
+    read_file_zero_copy_async,
+    remove_directory_async,
+    remove_file_async,
+    resolve_path_async,
+    stat_file_async,
+    touch_file_async,
+    write_file_content_async,
+};
 #[allow(unused_imports)]
 pub use async_ops::{
     // 非同期ファイル操作
@@ -72,13 +93,13 @@ pub use async_ops::{
 #[allow(unused_imports)]
 pub use block::{BlockDevice, BlockRequest, RequestType};
 #[allow(unused_imports)]
-pub use cache::{CacheStats, CachedPage, PageCache, page_cache, init_page_cache};
+pub use cache::{CacheStats, CachedPage, PageCache, init_page_cache, page_cache};
 #[allow(unused_imports)]
 #[allow(unused_imports)]
 pub use fs_abstraction::{
     AsyncReadFuture, AsyncWriteFuture, DirEntry, FileAttr, FileHandle, FileMode, FileSystem,
-    FileType, FsError, FsResult, FsStats, Inode, InodeNum, MountTable, OpenFlags, PathResolver, SeekFrom,
-    write_inode_by_number, mount_table,
+    FileType, FsError, FsResult, FsStats, Inode, InodeNum, MountTable, OpenFlags, PathResolver,
+    SeekFrom, mount_table, write_inode_by_number,
 };
 #[allow(unused_imports)]
 pub use memfs::{
@@ -87,16 +108,6 @@ pub use memfs::{
     shell_fs, stat_file, touch_file, write_file_content,
 };
 #[allow(unused_imports)]
-pub use async_memfs::{
-    // Async Inode trait and wrapper
-    AsyncInode, AsyncMemoryInode, AsyncMemoryFs, Bytes,
-    // Async shell integration APIs
-    copy_file_async, list_directory_async, make_directory_async,
-    read_file_content_async, read_file_zero_copy_async, remove_directory_async,
-    remove_file_async, resolve_path_async, stat_file_async, touch_file_async,
-    write_file_content_async,
-};
-#[allow(unused_imports)]
-pub use page::{Page, PagedContent, PAGE_SIZE, PAGE_SHIFT, PAGE_MASK, new_zero_page};
-#[allow(unused_imports)]
 pub use nvme_ns_adapter::{NvmeNsFileSystemAdapter, NvmeNsInodeAdapter};
+#[allow(unused_imports)]
+pub use page::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, Page, PagedContent, new_zero_page};

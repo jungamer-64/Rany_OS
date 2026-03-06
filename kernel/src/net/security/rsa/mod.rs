@@ -197,11 +197,15 @@ impl BigUint {
         let mut result_len = 0;
 
         for i in 0..self.len {
-            if self.limbs[i] == 0 { continue; }
+            if self.limbs[i] == 0 {
+                continue;
+            }
             let mut carry: u64 = 0;
             for j in 0..other.len {
                 let pos = i + j;
-                if pos >= MAX_LIMBS { break; }
+                if pos >= MAX_LIMBS {
+                    break;
+                }
                 let wide = (self.limbs[i] as u128) * (other.limbs[j] as u128)
                     + (product[pos] as u128)
                     + (carry as u128);
@@ -278,7 +282,9 @@ impl BigUint {
             let bit_pos = bit_idx % 64;
             if (self.limbs[limb_idx] >> bit_pos) & 1 == 1 {
                 remainder.limbs[0] |= 1;
-                if remainder.len == 0 { remainder.len = 1; }
+                if remainder.len == 0 {
+                    remainder.len = 1;
+                }
             }
 
             if remainder.cmp_internal(divisor) != Ordering::Less {
@@ -286,7 +292,9 @@ impl BigUint {
                 let q_limb = bit_idx / 64;
                 let q_bit = bit_idx % 64;
                 quotient.limbs[q_limb] |= 1u64 << q_bit;
-                if q_limb >= quotient.len { quotient.len = q_limb + 1; }
+                if q_limb >= quotient.len {
+                    quotient.len = q_limb + 1;
+                }
             }
         }
 
@@ -302,8 +310,12 @@ impl BigUint {
 
     /// モジュラ冪乗
     pub fn mod_exp(&self, exp: &Self, modulus: &Self) -> Self {
-        if modulus.is_zero() { return Self::zero(); }
-        if exp.is_zero() { return Self::one().rem(modulus); }
+        if modulus.is_zero() {
+            return Self::zero();
+        }
+        if exp.is_zero() {
+            return Self::one().rem(modulus);
+        }
 
         let mut result = Self::one();
         let base = self.rem(modulus);
@@ -335,14 +347,20 @@ impl BigUint {
 }
 
 impl PartialEq for BigUint {
-    fn eq(&self, other: &Self) -> bool { self.cmp_internal(other) == Ordering::Equal }
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp_internal(other) == Ordering::Equal
+    }
 }
 impl Eq for BigUint {}
 impl PartialOrd for BigUint {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp_internal(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp_internal(other))
+    }
 }
 impl Ord for BigUint {
-    fn cmp(&self, other: &Self) -> Ordering { self.cmp_internal(other) }
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.cmp_internal(other)
+    }
 }
 
 impl core::fmt::Debug for BigUint {
@@ -381,10 +399,21 @@ pub struct RsaPublicKey<'a> {
 }
 
 // DigestInfo DER Prefixes
-const DIGEST_INFO_SHA1_PREFIX: [u8; 15] = [0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14];
-const DIGEST_INFO_SHA256_PREFIX: [u8; 19] = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
-const DIGEST_INFO_SHA384_PREFIX: [u8; 19] = [0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05, 0x00, 0x04, 0x30];
-const DIGEST_INFO_SHA512_PREFIX: [u8; 19] = [0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00, 0x04, 0x40];
+const DIGEST_INFO_SHA1_PREFIX: [u8; 15] = [
+    0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
+];
+const DIGEST_INFO_SHA256_PREFIX: [u8; 19] = [
+    0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+    0x00, 0x04, 0x20,
+];
+const DIGEST_INFO_SHA384_PREFIX: [u8; 19] = [
+    0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05,
+    0x00, 0x04, 0x30,
+];
+const DIGEST_INFO_SHA512_PREFIX: [u8; 19] = [
+    0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05,
+    0x00, 0x04, 0x40,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RsaError {
@@ -406,31 +435,53 @@ fn find_pkcs1_separator(em: &[u8]) -> Result<usize, RsaError> {
             separator_pos = Some(i);
             break;
         }
-        if em[i] != 0xFF { return Err(RsaError::InvalidPadding); }
+        if em[i] != 0xFF {
+            return Err(RsaError::InvalidPadding);
+        }
     }
     let sep = separator_pos.ok_or(RsaError::InvalidPadding)?;
-    if sep < 10 { return Err(RsaError::InvalidPadding); } // PS must be at least 8 bytes
+    if sep < 10 {
+        return Err(RsaError::InvalidPadding);
+    } // PS must be at least 8 bytes
     Ok(sep)
 }
 
-fn verify_digest_info(t_data: &[u8], prefix: &[u8], digest: &[u8], t_len: usize) -> Result<(), RsaError> {
+fn verify_digest_info(
+    t_data: &[u8],
+    prefix: &[u8],
+    digest: &[u8],
+    t_len: usize,
+) -> Result<(), RsaError> {
     if t_data.len() != t_len || &t_data[..prefix.len()] != prefix {
         return Err(RsaError::DigestInfoMismatch);
     }
     let extracted = &t_data[prefix.len()..];
-    if extracted.len() != digest.len() { return Err(RsaError::DigestMismatch); }
+    if extracted.len() != digest.len() {
+        return Err(RsaError::DigestMismatch);
+    }
     let mut diff = 0u8;
-    for i in 0..digest.len() { diff |= extracted[i] ^ digest[i]; }
-    if diff != 0 { Err(RsaError::DigestMismatch) } else { Ok(()) }
+    for i in 0..digest.len() {
+        diff |= extracted[i] ^ digest[i];
+    }
+    if diff != 0 {
+        Err(RsaError::DigestMismatch)
+    } else {
+        Ok(())
+    }
 }
 
-pub fn rsa_pkcs1_verify(key: &RsaPublicKey, hash_alg: HashAlgorithm, digest: &[u8], signature: &[u8]) -> Result<(), RsaError> {
+pub fn rsa_pkcs1_verify(
+    key: &RsaPublicKey,
+    hash_alg: HashAlgorithm,
+    digest: &[u8],
+    signature: &[u8],
+) -> Result<(), RsaError> {
     let k = key.modulus.len();
     // Security: Limit modulus size to prevent DoS via large allocations.
     if k > 1024 {
         return Err(RsaError::ModulusTooSmall); // Or a new error variant
     }
-    
+
     let n = BigUint::from_be_bytes(key.modulus);
     let e = BigUint::from_be_bytes(key.exponent);
     let prefix = match hash_alg {
@@ -440,9 +491,13 @@ pub fn rsa_pkcs1_verify(key: &RsaPublicKey, hash_alg: HashAlgorithm, digest: &[u
         HashAlgorithm::Sha512 => &DIGEST_INFO_SHA512_PREFIX[..],
     };
     let t_len = prefix.len() + hash_alg.digest_len();
-    if k < t_len + 11 || signature.len() != k { return Err(RsaError::ModulusTooSmall); }
+    if k < t_len + 11 || signature.len() != k {
+        return Err(RsaError::ModulusTooSmall);
+    }
     let s = BigUint::from_be_bytes(signature);
-    if s >= n { return Err(RsaError::InvalidSignatureValue); }
+    if s >= n {
+        return Err(RsaError::InvalidSignatureValue);
+    }
     let m = s.mod_exp(&e, &n);
     let em = m.to_be_bytes_padded(k);
     let sep = find_pkcs1_separator(&em)?;
@@ -455,11 +510,14 @@ pub fn rsa_pkcs1_encrypt(key: &RsaPublicKey, message: &[u8]) -> Result<Vec<u8>, 
     if k > 1024 {
         return Err(RsaError::ModulusTooSmall);
     }
-    
-    if message.len() > k.saturating_sub(11) { return Err(RsaError::ModulusTooSmall); }
+
+    if message.len() > k.saturating_sub(11) {
+        return Err(RsaError::ModulusTooSmall);
+    }
     let ps_len = k - 3 - message.len();
     let mut em = Vec::with_capacity(k);
-    em.push(0x00); em.push(0x02);
+    em.push(0x00);
+    em.push(0x02);
     let mut ps_remaining = ps_len;
     while ps_remaining > 0 {
         let random_bytes = crate::net::security::tls::crypto::random::generate_random();
@@ -467,44 +525,70 @@ pub fn rsa_pkcs1_encrypt(key: &RsaPublicKey, message: &[u8]) -> Result<Vec<u8>, 
             if b != 0 {
                 em.push(b);
                 ps_remaining -= 1;
-                if ps_remaining == 0 { break; }
+                if ps_remaining == 0 {
+                    break;
+                }
             }
         }
     }
-    em.push(0x00); em.extend_from_slice(message);
+    em.push(0x00);
+    em.extend_from_slice(message);
     let n = BigUint::from_be_bytes(key.modulus);
     let e = BigUint::from_be_bytes(key.exponent);
     let m = BigUint::from_be_bytes(&em);
-    if m >= n { return Err(RsaError::InvalidSignatureValue); }
+    if m >= n {
+        return Err(RsaError::InvalidSignatureValue);
+    }
     let c = m.mod_exp(&e, &n);
     Ok(c.to_be_bytes_padded(k))
 }
 
 fn find_pss_padding_separator(db: &[u8]) -> Result<usize, RsaError> {
     for (i, &b) in db.iter().enumerate() {
-        if b == 0x01 { return Ok(i + 1); }
-        if b != 0x00 { return Err(RsaError::InvalidPadding); }
+        if b == 0x01 {
+            return Ok(i + 1);
+        }
+        if b != 0x00 {
+            return Err(RsaError::InvalidPadding);
+        }
     }
     Err(RsaError::InvalidPadding)
 }
 
-fn unmask_db(masked_db: &[u8], h: &[u8], db_len: usize, hash_alg: HashAlgorithm, em_len: usize, k: usize) -> Vec<u8> {
+fn unmask_db(
+    masked_db: &[u8],
+    h: &[u8],
+    db_len: usize,
+    hash_alg: HashAlgorithm,
+    em_len: usize,
+    k: usize,
+) -> Vec<u8> {
     let db_mask = mgf1(h, db_len, hash_alg);
     let mut db = Vec::with_capacity(db_len);
-    for i in 0..db_len { db.push(masked_db[i] ^ db_mask[i]); }
+    for i in 0..db_len {
+        db.push(masked_db[i] ^ db_mask[i]);
+    }
     let top_bits = 8 * em_len - (k * 8 - 1).min(8 * em_len);
-    if top_bits < 8 && !db.is_empty() { db[0] &= 0xFF >> top_bits; }
+    if top_bits < 8 && !db.is_empty() {
+        db[0] &= 0xFF >> top_bits;
+    }
     db
 }
 
 fn constant_time_hash_eq(a: &[u8], b: &[u8]) -> Result<(), RsaError> {
-    if a.len() != b.len() { return Err(RsaError::DigestMismatch); }
+    if a.len() != b.len() {
+        return Err(RsaError::DigestMismatch);
+    }
     let mut diff = 0u8;
     for i in 0..a.len() {
         // Security: read_volatile prevents the compiler from optimizing
         // this loop into an early-exit comparison (timing side-channel).
-        diff |= unsafe { core::ptr::read_volatile(&a[i]) }
-              ^ unsafe { core::ptr::read_volatile(&b[i]) };
+        diff |=
+            unsafe { core::ptr::read_volatile(&a[i]) } ^ unsafe { core::ptr::read_volatile(&b[i]) };
     }
-    if unsafe { core::ptr::read_volatile(&diff) } != 0 { Err(RsaError::DigestMismatch) } else { Ok(()) }
+    if unsafe { core::ptr::read_volatile(&diff) } != 0 {
+        Err(RsaError::DigestMismatch)
+    } else {
+        Ok(())
+    }
 }

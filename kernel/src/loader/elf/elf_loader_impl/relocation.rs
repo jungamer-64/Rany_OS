@@ -1,7 +1,6 @@
 use super::*;
 
 impl<'a> ElfLoader<'a> {
-
     /// 単一のリロケーションを適用
     pub(super) fn apply_relocation(
         &self,

@@ -47,8 +47,8 @@ impl VirtioTransport for NoopTransport {
     fn set_status(&mut self, _status: u8) {}
 
     fn get_device_features_low(&self) -> u32 {
-        (features::VIRTIO_BALLOON_F_MUST_TELL_HOST
-            | features::VIRTIO_BALLOON_F_DEFLATE_ON_OOM) as u32
+        (features::VIRTIO_BALLOON_F_MUST_TELL_HOST | features::VIRTIO_BALLOON_F_DEFLATE_ON_OOM)
+            as u32
     }
 
     fn get_device_features_high(&self) -> u32 {

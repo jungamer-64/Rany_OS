@@ -12,8 +12,8 @@ use alloc::collections::BTreeMap;
 use core::fmt;
 use spin::RwLock;
 
-use crate::mm::types::FrameIndex;
 use crate::fs::InodeNum;
+use crate::mm::types::FrameIndex;
 
 /// Information describing the backing of a frame
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,7 +37,9 @@ pub struct FrameBackingTracker {
 
 impl FrameBackingTracker {
     pub const fn new() -> Self {
-        Self { mapping: RwLock::new(BTreeMap::new()) }
+        Self {
+            mapping: RwLock::new(BTreeMap::new()),
+        }
     }
 
     /// Track a frame's backing
@@ -96,4 +98,3 @@ mod tests {
         assert!(get_frame_backing(f).is_none());
     }
 }
-

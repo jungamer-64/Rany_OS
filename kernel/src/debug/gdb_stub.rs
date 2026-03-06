@@ -278,7 +278,11 @@ impl GdbServer {
         slots.len() - 1
     }
 
-    fn process_one_packet(&self, idx: usize, slot: &mut TransportSlot) -> Result<bool, GdbStubError> {
+    fn process_one_packet(
+        &self,
+        idx: usize,
+        slot: &mut TransportSlot,
+    ) -> Result<bool, GdbStubError> {
         while let Some(b) = slot.transport.try_read_byte() {
             slot.rx.push(b);
             if slot.rx.len() > MAX_PACKET_BUFFER {
@@ -511,9 +515,7 @@ fn parse_addr_len(text: &str) -> Result<(u64, usize), GdbStubError> {
 }
 
 fn parse_write_memory_payload(text: &str) -> Result<(u64, Vec<u8>), GdbStubError> {
-    let (head, data_hex) = text
-        .split_once(':')
-        .ok_or(GdbStubError::InvalidCommand)?;
+    let (head, data_hex) = text.split_once(':').ok_or(GdbStubError::InvalidCommand)?;
     let (addr, len) = parse_addr_len(head)?;
     let data = decode_hex(data_hex)?;
     if data.len() != len {
@@ -708,7 +710,8 @@ mod tests {
             Some(String::from("aabbcc"))
         );
         assert_eq!(
-            stub.handle_payload("G010203", &mut target).expect("write regs"),
+            stub.handle_payload("G010203", &mut target)
+                .expect("write regs"),
             Some(String::from("OK"))
         );
         assert_eq!(target.regs[..3], [1, 2, 3]);
@@ -719,7 +722,8 @@ mod tests {
             Some(String::from("OK"))
         );
         assert_eq!(
-            stub.handle_payload("m2,3", &mut target).expect("read memory"),
+            stub.handle_payload("m2,3", &mut target)
+                .expect("read memory"),
             Some(String::from("0a0b0c"))
         );
 
@@ -803,7 +807,10 @@ mod tests {
         t0.push_packet(&pkt);
         t1.push_packet(&pkt);
 
-        assert!(server.poll_once(), "first transport packet should be handled");
+        assert!(
+            server.poll_once(),
+            "first transport packet should be handled"
+        );
 
         let tx0 = t0.take_tx();
         assert_eq!(tx0, vec![b'+', b'$', b'S', b'0', b'5', b'#', b'b', b'8']);

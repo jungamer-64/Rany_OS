@@ -5,7 +5,6 @@
 //!
 //! EndpointFd, EndpointType, EndpointState, EndpointError, EndpointAddr, AcceptedConnection等
 
-
 use core::sync::atomic::AtomicU32;
 
 use super::tcb::TcpControlBlockEntry;
@@ -210,20 +209,32 @@ impl EndpointAddr {
     }
 
     /// Any/unspecified (IPv4)
-    pub const ANY: Self = EndpointAddr::V4 { ip: [0, 0, 0, 0], port: 0 };
+    pub const ANY: Self = EndpointAddr::V4 {
+        ip: [0, 0, 0, 0],
+        port: 0,
+    };
 
     /// IPv4 loopback
-    pub const LOCALHOST: Self = EndpointAddr::V4 { ip: [127, 0, 0, 1], port: 0 };
+    pub const LOCALHOST: Self = EndpointAddr::V4 {
+        ip: [127, 0, 0, 1],
+        port: 0,
+    };
 
     /// Any/unspecified (IPv6)
-    pub const ANY_V6: Self = EndpointAddr::V6 { ip: [0u8; 16], port: 0 };
+    pub const ANY_V6: Self = EndpointAddr::V6 {
+        ip: [0u8; 16],
+        port: 0,
+    };
 
     /// IPv6 loopback ::1
-    pub const LOCALHOST_V6: Self = EndpointAddr::V6 { ip: {
-        let mut a = [0u8; 16];
-        a[15] = 1;
-        a
-    }, port: 0 };
+    pub const LOCALHOST_V6: Self = EndpointAddr::V6 {
+        ip: {
+            let mut a = [0u8; 16];
+            a[15] = 1;
+            a
+        },
+        port: 0,
+    };
 
     /// Return true if IPv4
     #[inline(always)]
@@ -305,8 +316,15 @@ impl EndpointAddr {
 impl core::fmt::Display for EndpointAddr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
-            EndpointAddr::V4 { ip, port } => write!(f, "{}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port),
-            EndpointAddr::V6 { ip, port } => write!(f, "[{}]:{}", crate::net::l3::ipv6::Ipv6Address::new(ip), port),
+            EndpointAddr::V4 { ip, port } => {
+                write!(f, "{}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port)
+            }
+            EndpointAddr::V6 { ip, port } => write!(
+                f,
+                "[{}]:{}",
+                crate::net::l3::ipv6::Ipv6Address::new(ip),
+                port
+            ),
         }
     }
 }
@@ -358,27 +376,25 @@ pub fn conn_key_hash(local: &EndpointAddr, remote: &EndpointAddr) -> u32 {
     const FNV_PRIME: u32 = 0x01000193;
 
     let mut h = FNV_OFFSET;
-    let hash_bytes = |h: &mut u32, addr: &EndpointAddr| {
-        match addr {
-            EndpointAddr::V4 { ip, port } => {
-                for &b in ip {
-                    *h ^= b as u32;
-                    *h = h.wrapping_mul(FNV_PRIME);
-                }
-                for b in port.to_le_bytes() {
-                    *h ^= b as u32;
-                    *h = h.wrapping_mul(FNV_PRIME);
-                }
+    let hash_bytes = |h: &mut u32, addr: &EndpointAddr| match addr {
+        EndpointAddr::V4 { ip, port } => {
+            for &b in ip {
+                *h ^= b as u32;
+                *h = h.wrapping_mul(FNV_PRIME);
             }
-            EndpointAddr::V6 { ip, port } => {
-                for &b in ip {
-                    *h ^= b as u32;
-                    *h = h.wrapping_mul(FNV_PRIME);
-                }
-                for b in port.to_le_bytes() {
-                    *h ^= b as u32;
-                    *h = h.wrapping_mul(FNV_PRIME);
-                }
+            for b in port.to_le_bytes() {
+                *h ^= b as u32;
+                *h = h.wrapping_mul(FNV_PRIME);
+            }
+        }
+        EndpointAddr::V6 { ip, port } => {
+            for &b in ip {
+                *h ^= b as u32;
+                *h = h.wrapping_mul(FNV_PRIME);
+            }
+            for b in port.to_le_bytes() {
+                *h ^= b as u32;
+                *h = h.wrapping_mul(FNV_PRIME);
             }
         }
     };
@@ -464,7 +480,6 @@ pub mod tests {
         test_endpoint_addr();
     }
 }
-
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {

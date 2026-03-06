@@ -466,4 +466,3 @@ mod tests {
         assert_eq!(tracker.average_run_time(), 15);
     }
 }
-

@@ -5,7 +5,6 @@
 // ============================================================================
 #![allow(dead_code)]
 
-
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
@@ -16,19 +15,16 @@ use spin::MutexGuard;
 use x86_64::{PhysAddr, VirtAddr};
 
 // Import VirtIO common definitions
+use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes, iommu_align_len};
+use crate::io::iommu::api::{
+    get_device_dma_mask, is_iommu_enabled, is_iommu_required, map_for_device_with_perms, unmap_dma,
+    unmap_for_device,
+};
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::defs::{VirtioDeviceType, status};
 use crate::io::virtio::transport::{TransportType, VirtioTransport};
 use crate::io::virtio::virtqueue::{VirtQueue, VringAvail, VringDesc, VringUsed, vring_flags};
-use crate::io::dma::{
-    iommu_align_len, CoherentDmaBuffer,
-    DmaMemoryAttributes,
-};
 use crate::sync::IrqPoisonLock;
-use crate::io::iommu::api::{
-    get_device_dma_mask, is_iommu_enabled, is_iommu_required,
-    unmap_dma, unmap_for_device, map_for_device_with_perms,
-};
-use crate::io::iommu::types::DeviceId as IommuDeviceId;
 // Import PacketRef for zero-copy
 use crate::net::datapath::mempool::PacketRef;
 
@@ -230,13 +226,7 @@ impl NetVirtQueue {
         features: u64,
     ) -> Self {
         let vq = VirtQueue::new(
-            size,
-            desc_table,
-            avail_ring,
-            used_ring,
-            dma_buffer,
-            index,
-            features,
+            size, desc_table, avail_ring, used_ring, dma_buffer, index, features,
         );
 
         let mut pending = Vec::with_capacity(size as usize);
@@ -285,7 +275,7 @@ impl NetVirtQueue {
         data: &[u8],
     ) -> Result<u16, VirtioNetError> {
         let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
-        
+
         let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
         let data_desc_idx = match vq_guard.alloc_desc() {
             Some(idx) => idx,
@@ -312,15 +302,30 @@ impl NetVirtQueue {
 
             // ヘッダーディスクリプタ
             let desc_ptr = desc_table.add(desc_idx as usize);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64));
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), VirtioNetHeader::SIZE as u32);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), vring_flags::VRING_DESC_F_NEXT);
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).addr),
+                header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64),
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).len),
+                VirtioNetHeader::SIZE as u32,
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).flags),
+                vring_flags::VRING_DESC_F_NEXT,
+            );
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), data_desc_idx);
 
             // データーディスクリプタ
             let data_desc_ptr = desc_table.add(data_desc_idx as usize);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).addr), data.as_ptr() as u64);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).len), data.len() as u32);
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*data_desc_ptr).addr),
+                data.as_ptr() as u64,
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*data_desc_ptr).len),
+                data.len() as u32,
+            );
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).flags), 0);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).next), 0);
 
@@ -339,12 +344,14 @@ impl NetVirtQueue {
     ) -> Result<u16, VirtioNetError> {
         // ゼロサイズバッファの防御チェック（QEMU "zero sized buffers are not allowed" 対策）
         if data_len == 0 {
-            log::warn!("[VIRTIO-NET] add_tx_buffer_zero_copy_with_header: rejected zero-length data descriptor");
+            log::warn!(
+                "[VIRTIO-NET] add_tx_buffer_zero_copy_with_header: rejected zero-length data descriptor"
+            );
             return Err(VirtioNetError::BufferTooSmall);
         }
 
         let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
-        
+
         let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
         let data_desc_idx = match vq_guard.alloc_desc() {
             Some(idx) => idx,
@@ -371,15 +378,27 @@ impl NetVirtQueue {
 
             // ヘッダーディスクリプタ
             let desc_ptr = desc_table.add(desc_idx as usize);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64));
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), VirtioNetHeader::SIZE as u32);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), vring_flags::VRING_DESC_F_NEXT);
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).addr),
+                header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64),
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).len),
+                VirtioNetHeader::SIZE as u32,
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).flags),
+                vring_flags::VRING_DESC_F_NEXT,
+            );
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), data_desc_idx);
 
             // データーディスクリプタ
             let data_desc_ptr = desc_table.add(data_desc_idx as usize);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).addr), phys_addr);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).len), data_len as u32);
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*data_desc_ptr).len),
+                data_len as u32,
+            );
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).flags), 0);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).next), 0);
 
@@ -404,9 +423,18 @@ impl NetVirtQueue {
 
         unsafe {
             let desc_ptr = vq_guard.desc_table.as_ptr().add(desc_idx as usize);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), buffer.as_ptr() as u64);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), buffer.len() as u32);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), vring_flags::VRING_DESC_F_WRITE);
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).addr),
+                buffer.as_ptr() as u64,
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).len),
+                buffer.len() as u32,
+            );
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).flags),
+                vring_flags::VRING_DESC_F_WRITE,
+            );
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), 0);
 
             vq_guard.submit(desc_idx);
@@ -434,7 +462,10 @@ impl NetVirtQueue {
             let desc_ptr = vq_guard.desc_table.as_ptr().add(desc_idx as usize);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), phys_addr);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), buffer_len as u32);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), vring_flags::VRING_DESC_F_WRITE);
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*desc_ptr).flags),
+                vring_flags::VRING_DESC_F_WRITE,
+            );
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), 0);
 
             vq_guard.submit(desc_idx);
@@ -511,9 +542,11 @@ impl NetVirtQueue {
         }
 
         let _ = self.process_used_with(|_, _| {});
-        
+
         if let Ok(mut pending) = self.pending_completions.lock() {
-            let len = pending.get_mut(desc_idx as usize).and_then(|slot| slot.take());
+            let len = pending
+                .get_mut(desc_idx as usize)
+                .and_then(|slot| slot.take());
             if len.is_some() {
                 drop(pending);
                 self.free_desc_chain(desc_idx);
@@ -537,9 +570,9 @@ impl NetVirtQueue {
                 let desc = unsafe { &*desc_table.add(current as usize) };
                 let next = desc.next;
                 let flags = desc.flags;
-                
+
                 vq.free_desc(current);
-                
+
                 if (flags & vring_flags::VRING_DESC_F_NEXT) == 0 {
                     break;
                 }
@@ -550,7 +583,7 @@ impl NetVirtQueue {
 
     pub fn has_pending(&self) -> bool {
         if let Ok(vq) = self.vq.lock() {
-             vq.has_pending()
+            vq.has_pending()
         } else {
             false
         }

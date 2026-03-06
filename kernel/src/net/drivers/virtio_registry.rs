@@ -23,7 +23,7 @@ pub struct VirtioNetDriver {
 impl VirtioNetDriver {
     /// Create a new VirtIO-Net driver (legacy default)
     pub fn new() -> Self {
-        Self { 
+        Self {
             initialized: false,
             mmio_base: None,
             iommu_id: None,
@@ -55,7 +55,11 @@ impl Driver for VirtioNetDriver {
 
     fn probe(&mut self) -> KapiResult<()> {
         // debug: show current config (early_print to avoid loss on hang)
-        crate::io::log::early_print(&alloc::format!("[DEBUG] VirtioNetDriver::probe mmio_base={:?} iommu_id={:?}\n", self.mmio_base, self.iommu_id));
+        crate::io::log::early_print(&alloc::format!(
+            "[DEBUG] VirtioNetDriver::probe mmio_base={:?} iommu_id={:?}\n",
+            self.mmio_base,
+            self.iommu_id
+        ));
 
         // If specific device info is provided, initialize the device first
         if let (Some(base), Some(id)) = (self.mmio_base, self.iommu_id) {

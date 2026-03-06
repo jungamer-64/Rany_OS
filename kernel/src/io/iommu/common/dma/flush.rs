@@ -79,7 +79,10 @@ pub fn invalidate_iotlb_domain(domain_id: u16) -> Result<(), IommuError> {
     // For emergency isolation, we MUST invalidate any ATS Device-TLB entries.
     driver.invalidate_iotlb(domain_id, None, true)?;
 
-    log::debug!("[IOMMU][Flush] Domain {} IOTLB invalidated (ATS-aware)", domain_id);
+    log::debug!(
+        "[IOMMU][Flush] Domain {} IOTLB invalidated (ATS-aware)",
+        domain_id
+    );
 
     Ok(())
 }

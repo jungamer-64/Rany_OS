@@ -21,13 +21,13 @@ use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::sync::PoisonLock;
-use crate::net::runtime::manager::NetIfId;
-use crate::task::interrupt_waker::{wait_for_interrupt, InterruptSource};
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
 };
+use crate::net::runtime::manager::NetIfId;
+use crate::sync::PoisonLock;
+use crate::task::interrupt_waker::{InterruptSource, wait_for_interrupt};
 
 use mlx5_driver::Mlx5Device;
 
@@ -72,18 +72,6 @@ static MLX5_DMA_ERRORS: AtomicU64 = AtomicU64::new(0);
 
 /// RX CQ ポーリングバッチサイズ
 const MLX5_RX_POLL_BATCH: u32 = 64;
-
-/// TX CQ インデックス
-const MLX5_TX_CQ_INDEX: usize = 0;
-
-/// RX CQ インデックス
-const MLX5_RX_CQ_INDEX: usize = 1;
-
-/// SQ インデックス
-const MLX5_SQ_INDEX: usize = 0;
-
-/// RQ インデックス
-const MLX5_RQ_INDEX: usize = 0;
 
 // ============================================================================
 // Device Registration
@@ -220,10 +208,9 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
 
         // すべての RX CQ をポーリング
         for rq_index in 0..rx_bufs_guard.len() {
-            // 現状 CQ と RQ は 1:1 と想定 (RX CQ index = MLX5_RX_CQ_INDEX + rq_index?)
-            // デバイスの実装に合わせて調整が必要。
-            // Mlx5Device::init_multi_queue では RX CQ を Vec に入れている。
-            let rx_cq_index = rq_index; // 0..N
+            let Some(rx_cq_index) = device.rx_cq_index_for_rq(rq_index) else {
+                continue;
+            };
 
             let cqes = device.poll_cq(rx_cq_index, MLX5_RX_POLL_BATCH);
             total_processed += cqes.len() as u32;
@@ -274,28 +261,9 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
 
         // すべての TX CQ をポーリング
         for sq_index in 0..tx_bufs_guard.len() {
-            // Mlx5Device::init_multi_queue では TX CQ も Vec に入れている。
-            // TX CQs follow RX CQs in create order? No, they are separate Vecs in Mlx5Device.
-            // But poll_cq index is absolute across all CQs in the device.
-            // Wait, check Mlx5Device::poll_cq implementation.
-            
-            // In device.rs: self.cqs.get(cqn)
-            // But we need to know the mapping of SQ to CQ.
-            // In init_multi_queue:
-            // tx_cqn_list has CQNs.
-            // sqn_list[i] uses tx_cqn_list[i % tx_cqn_list.len()]
-            
-            // So for now we assume 1:1 mapping and TX CQs start at index 0? 
-            // Wait, let's check init_multi_queue again.
-            // It created TX CQs first, then RX CQs.
-            // So TX CQs are 0..N, RX CQs are N..2N?
-            // No, the cqn is returned by create_cq_hw.
-            
-            // Actually, Mlx5Device stores them in self.cqs (Vec).
-            // We should use the actual CQNs if possible, but bridge currently uses indices.
-            
-            // Let's assume tx_cq_index = sq_index for now.
-            let tx_cq_index = sq_index; 
+            let Some(tx_cq_index) = device.tx_cq_index_for_sq(sq_index) else {
+                continue;
+            };
 
             let tx_cqes = device.poll_cq(tx_cq_index, MLX5_RX_POLL_BATCH);
             for cqe in &tx_cqes {
@@ -373,17 +341,17 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
         return Err("mlx5 device not available");
     }
 
+    let _ = with_mlx5_device(|dev| unsafe {
+        let _ = dev.query_port_mac(0);
+        let _ = dev.query_port_state(0);
+    });
+
     // MAC アドレスを取得
     let mut mac = with_mlx5_device(|dev| {
         dev.port(0).map(|port| {
             let mac = port.mac_address();
             crate::net::l2::ethernet::MacAddress::from_octets(
-                mac.0[0],
-                mac.0[1],
-                mac.0[2],
-                mac.0[3],
-                mac.0[4],
-                mac.0[5],
+                mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5],
             )
         })
     })
@@ -417,8 +385,8 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
             log::warn!(target: "mlx5::bridge", "mempool init failed: {}", e);
         }
 
-        use crate::net::runtime::stack::{self, NetworkConfig};
         use crate::net::l3::ipv4::Ipv4Config;
+        use crate::net::runtime::stack::{self, NetworkConfig};
 
         let config = NetworkConfig {
             mac,
@@ -467,9 +435,7 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
     }
 
     // ポーリングタスクをスポーン
-    crate::task::Executor::spawn_global(
-        crate::task::Task::new(mlx5_poll_task()),
-    );
+    crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_poll_task()));
     log::info!(target: "mlx5::bridge", "mlx5 poll task spawned (RQs={}, SQs={})", num_rqs, num_sqs);
 
     // RX バッファのプリフィル
@@ -567,7 +533,9 @@ pub fn is_mlx5_bridge_initialized() -> bool {
 pub fn get_mlx5_port_stats(port_index: usize) -> Option<mlx5_driver::port::PortStats> {
     with_mlx5_device(|device| {
         // ハードウェアカウンタを同期（Safe Rust の wrapper 経由で unsafe 呼び出し）
-        unsafe { let _ = device.update_port_stats(port_index); }
+        unsafe {
+            let _ = device.update_port_stats(port_index);
+        }
         device.port(port_index).map(|port| port.stats().clone())
     })
     .flatten()

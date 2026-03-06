@@ -436,10 +436,10 @@ impl CubicController {
         if x == 0 {
             return 0;
         }
-        
+
         // Initial guess: x^(1/3) ≈ 2^(log2(x)/3)
         let mut y = 1u64 << ((64 - x.leading_zeros() + 2) / 3);
-        
+
         // Newton-Raphson iterations: y = (2*y + x/y²) / 3
         for _ in 0..6 {
             let y_squared = y.saturating_mul(y);
@@ -470,11 +470,7 @@ impl CubicController {
         let t = current_time_ms.saturating_sub(self.epoch_start);
 
         // Calculate |t - K| in milliseconds
-        let t_k_diff = if t > self.k {
-            t - self.k
-        } else {
-            self.k - t
-        };
+        let t_k_diff = if t > self.k { t - self.k } else { self.k - t };
 
         // Use u128 for cube calculation to prevent overflow
         // (t_k_diff in ms)^3 can easily exceed u64 for diffs > ~2642ms
@@ -503,21 +499,30 @@ impl CubicController {
     }
 
     /// ACK received - CUBIC window update
-    pub fn on_ack(&mut self, bytes_acked: u32, is_dup_ack: bool, snd_una: u32, current_time_ms: u64) {
+    pub fn on_ack(
+        &mut self,
+        bytes_acked: u32,
+        is_dup_ack: bool,
+        snd_una: u32,
+        current_time_ms: u64,
+    ) {
         self.base.bytes_in_flight = self.base.bytes_in_flight.saturating_sub(bytes_acked);
-        
+
         if is_dup_ack {
             self.on_dup_ack(snd_una, current_time_ms);
             return;
         }
-        
+
         self.base.dup_ack_count = 0;
-        
+
         match self.base.state {
             CongestionState::SlowStart => {
                 // Use standard slow start from base
-                self.base.cwnd = self.base.cwnd.saturating_add(min(bytes_acked, self.base.mss));
-                
+                self.base.cwnd = self
+                    .base
+                    .cwnd
+                    .saturating_add(min(bytes_acked, self.base.mss));
+
                 if self.base.cwnd >= self.base.ssthresh {
                     self.base.state = CongestionState::CongestionAvoidance;
                     self.epoch_start = current_time_ms;
@@ -530,9 +535,9 @@ impl CubicController {
                     self.epoch_start = current_time_ms;
                     self.reset_epoch();
                 }
-                
+
                 let w_cubic = self.cubic_update(current_time_ms);
-                
+
                 // TCP-friendly region: linear increase
                 let mss = self.base.mss;
                 self.ack_cnt = self.ack_cnt.saturating_add(bytes_acked);
@@ -540,10 +545,10 @@ impl CubicController {
                     self.w_tcp = self.w_tcp.saturating_add(mss);
                     self.ack_cnt = 0;
                 }
-                
+
                 // Use max of CUBIC and TCP-friendly window
                 let target = max(w_cubic, self.w_tcp);
-                
+
                 if target > self.base.cwnd {
                     // Increase by at most 1 MSS per RTT
                     let increase = min(target - self.base.cwnd, mss);
@@ -568,28 +573,29 @@ impl CubicController {
     /// Reset epoch parameters
     fn reset_epoch(&mut self) {
         let mss = self.base.mss as u64;
-        
+
         // Set origin point
         if self.w_max > self.base.cwnd {
             // Fast convergence: use reduced W_max
-            self.origin_point = (self.w_max as u64 * cubic_constants::FAST_CONVERGENCE as u64 / 100) as u32;
+            self.origin_point =
+                (self.w_max as u64 * cubic_constants::FAST_CONVERGENCE as u64 / 100) as u32;
         } else {
             self.origin_point = self.base.cwnd;
         }
-        
+
         // Calculate K = cubic_root(W_max * (1 - β) / C)
         // K in milliseconds
         let w_max_segments = self.origin_point as u64 / mss;
         let beta_factor = 100 - cubic_constants::BETA as u64; // 30%
         let numerator = w_max_segments * beta_factor * cubic_constants::C_DENOMINATOR;
         let denominator = cubic_constants::C_NUMERATOR * 100;
-        
+
         if denominator > 0 {
             self.k = Self::cubic_root(numerator * 1000 * 1000 * 1000 / denominator);
         } else {
             self.k = 0;
         }
-        
+
         // Initialize TCP-friendly window
         self.w_tcp = self.base.cwnd;
         self.ack_cnt = 0;
@@ -598,7 +604,7 @@ impl CubicController {
     /// Duplicate ACK handling
     fn on_dup_ack(&mut self, snd_una: u32, current_time_ms: u64) {
         self.base.dup_ack_count = self.base.dup_ack_count.saturating_add(1);
-        
+
         match self.base.state {
             CongestionState::SlowStart | CongestionState::CongestionAvoidance => {
                 if self.base.dup_ack_count >= 3 {
@@ -615,16 +621,16 @@ impl CubicController {
     fn enter_fast_recovery(&mut self, snd_una: u32, current_time_ms: u64) {
         // Save W_max before reduction
         self.w_max = self.base.cwnd;
-        
+
         // ssthresh = cwnd * β
         self.base.ssthresh = (self.base.cwnd as u64 * cubic_constants::BETA as u64 / 100) as u32;
         self.base.ssthresh = max(self.base.ssthresh, MIN_CWND * self.base.mss);
-        
+
         // cwnd = ssthresh + 3*MSS
         self.base.cwnd = self.base.ssthresh + 3 * self.base.mss;
         self.base.recover = snd_una;
         self.base.state = CongestionState::FastRecovery;
-        
+
         // Reset epoch
         self.epoch_start = current_time_ms;
         self.last_congestion = current_time_ms;
@@ -634,10 +640,10 @@ impl CubicController {
     pub fn on_timeout(&mut self, current_time_ms: u64) {
         // Save W_max
         self.w_max = self.base.cwnd;
-        
+
         // Reset to slow start
         self.base.on_timeout();
-        
+
         // Reset epoch
         self.epoch_start = 0;
         self.last_congestion = current_time_ms;

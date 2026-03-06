@@ -5,7 +5,6 @@
 use super::*;
 
 impl IntelIommuDriver {
-
     /// Get domain by ID
     pub(crate) fn get_domain(&self, domain_id: u16) -> Result<Arc<IommuDomain>, IommuError> {
         let registry = self.registry()?;
@@ -27,8 +26,6 @@ impl IntelIommuDriver {
 
         Err(IommuError::DomainNotFound)
     }
-
-
 
     /// Lookup the domain ID for a device.
     pub(crate) fn lookup_device_domain(&self, source_id: u16) -> Option<u16> {

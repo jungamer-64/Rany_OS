@@ -10,7 +10,7 @@
 #![allow(unused_variables)]
 
 use crate::sync::irq_mutex::IrqMutex;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use hal::port_io::{IoPort, PortU8};
 use spin::Mutex;
 
@@ -100,7 +100,7 @@ impl TscInfo {
     }
 
     /// TSCカウントをナノ秒に変換 (固定小数点最適化版)
-    /// 
+    ///
     /// `nanos = (tsc * mult) >> shift` で高速変換
     #[inline]
     pub fn tsc_to_nanos(&self, tsc: u64) -> u64 {
@@ -156,23 +156,23 @@ fn compute_tsc_mult_shift(frequency: u64) -> (u64, u8) {
     //
     // mult = (1e9 << shift) / frequency
     // mult が u64::MAX を超えないように shift を決定
-    
+
     let mut shift: u8 = 63;
     loop {
         // (NANOS_PER_SEC << shift) / frequency が u64 に収まるかチェック
         let numerator = (NANOS_PER_SEC as u128) << shift;
         let mult = numerator / frequency as u128;
-        
+
         if mult <= u64::MAX as u128 {
             return (mult as u64, shift);
         }
-        
+
         if shift == 0 {
             // シフト 0 でもオーバーフローする場合 (非常に低い周波数)
             // フォールバック: 精度は落ちるが動作はする
             return ((NANOS_PER_SEC / frequency), 0);
         }
-        
+
         shift -= 1;
     }
 }
@@ -291,12 +291,12 @@ static CMOS_LOCK: IrqMutex<()> = IrqMutex::new(());
 
 /// RTCドライバ
 pub struct Rtc;
-    
-    impl Rtc {
-        /// 新しいRTCドライバを作成
-        pub const fn new() -> Self {
-            Self
-        }
+
+impl Rtc {
+    /// 新しいRTCドライバを作成
+    pub const fn new() -> Self {
+        Self
+    }
 
     /// CMOSレジスタを読み込み (IRQ-safe)
     fn read_cmos(&self, reg: u8) -> u8 {
@@ -332,7 +332,11 @@ pub struct Rtc;
 
     /// BCD または Binary の値をデコード
     fn decode_bcd(value: u8, is_binary: bool) -> u8 {
-        if is_binary { value } else { Self::bcd_to_binary(value) }
+        if is_binary {
+            value
+        } else {
+            Self::bcd_to_binary(value)
+        }
     }
 
     /// 時刻をデコード (12h/24h, BCD/Binary 両対応)
@@ -355,10 +359,10 @@ pub struct Rtc;
         } else {
             // 12時間表記: AM/PM 変換
             match (hour_val, pm) {
-                (12, false) => 0,      // 12 AM = 真夜中
-                (12, true) => 12,      // 12 PM = 正午
-                (h, false) => h,       // AM: 1-11 はそのまま
-                (h, true) => h + 12,   // PM: 1-11 → 13-23
+                (12, false) => 0,    // 12 AM = 真夜中
+                (12, true) => 12,    // 12 PM = 正午
+                (h, false) => h,     // AM: 1-11 はそのまま
+                (h, true) => h + 12, // PM: 1-11 → 13-23
             }
         }
     }
@@ -367,14 +371,14 @@ pub struct Rtc;
     pub fn read_datetime(&self) -> DateTime {
         const MAX_RETRIES: u32 = 3; // 2回一致しなければ3回目で諦める
         const MAX_UPDATE_WAIT: u32 = 10000;
-        
+
         // 更新中は待機 (タイムアウト付き)
         let mut wait_count = 0;
         while self.update_in_progress() {
             core::hint::spin_loop();
             wait_count += 1;
             if wait_count > MAX_UPDATE_WAIT {
-                break; 
+                break;
             }
         }
 
@@ -387,13 +391,13 @@ pub struct Rtc;
             if first == second {
                 return first;
             }
-            
+
             retries += 1;
             if retries >= MAX_RETRIES {
                 // 最後に読んだ値を返す
                 return second;
             }
-            
+
             core::hint::spin_loop();
         }
     }
@@ -401,7 +405,7 @@ pub struct Rtc;
     fn read_datetime_internal(&self) -> DateTime {
         // バッチ読み取り (1回のロックで全レジスタを読む)
         let _guard = CMOS_LOCK.lock();
-        
+
         let mut addr_port: PortU8 = IoPort::new(rtc::CMOS_ADDR);
         let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
 
@@ -421,7 +425,7 @@ pub struct Rtc;
         let day_raw = read_cmos_raw(rtc::DAY_OF_MONTH);
         let month_raw = read_cmos_raw(rtc::MONTH);
         let year_raw = read_cmos_raw(rtc::YEAR);
-        
+
         // Century は ACPI FADT が有効な場合のみ信頼できるが、ここでは簡易的チェック
         let century_raw = read_cmos_raw(rtc::CENTURY);
 
@@ -440,7 +444,7 @@ pub struct Rtc;
             // 推定: 70以上なら1900年代、それ以外は2000年代
             year += if year >= 70 { 1900 } else { 2000 };
         }
-        
+
         DateTime {
             year,
             month,
@@ -458,7 +462,7 @@ pub struct SystemClock {
     boot_time: AtomicU64,
     /// 稼働時間 (ナノ秒, PITベースのmonotonic counter)
     uptime_nanos: AtomicU64,
-    
+
     // === Lock-free fast path fields ===
     /// TSC Epoch: TSC切り替え時点の uptime_nanos (monotonic基準点)
     tsc_epoch_nanos: AtomicU64,
@@ -540,14 +544,16 @@ impl SystemClock {
 
         self.tsc_epoch_nanos.store(epoch_ns, Ordering::Release);
         self.tsc_epoch_tsc.store(epoch_tsc, Ordering::Release);
-        
+
         // 周波数を Atomic に格納 (lock-free fast path 用)
         self.tsc_freq_hz.store(info.frequency, Ordering::Release);
-        
+
         // 固定小数点変換係数を Atomic に格納
-        self.tsc_mult.store(info.tsc_to_nanos_mult, Ordering::Release);
-        self.tsc_shift.store(info.tsc_to_nanos_shift, Ordering::Release);
-        
+        self.tsc_mult
+            .store(info.tsc_to_nanos_mult, Ordering::Release);
+        self.tsc_shift
+            .store(info.tsc_to_nanos_shift, Ordering::Release);
+
         // invariant TSC の場合のみ fast path を有効化
         if info.invariant {
             self.tsc_available.store(true, Ordering::Release);
@@ -577,14 +583,14 @@ impl SystemClock {
             let base_tsc = self.tsc_epoch_tsc.load(Ordering::Relaxed);
             let mult = self.tsc_mult.load(Ordering::Relaxed);
             let shift = self.tsc_shift.load(Ordering::Relaxed);
-            
+
             // monotonic な現在時刻 = epoch_ns + (delta_tsc * mult >> shift)
             // serialized不要 (monotonicity is guaranteed by epoch + delta logic, and we prize speed here)
             // Note: rdtsc() enforces ordering, rdtsc_unserialized() does not.
             // We use unserialized here for performance as suggested by review.
             let now_tsc = rdtsc_unserialized();
             let delta = now_tsc.wrapping_sub(base_tsc);
-            
+
             // u128 で計算してオーバーフロー防止
             let ns_delta = ((delta as u128 * mult as u128) >> shift) as u64;
             return base_ns + ns_delta;
@@ -619,7 +625,7 @@ impl Pit {
     }
 
     /// PITを指定周波数で初期化 (Channel 0 のみ)
-    /// 
+    ///
     /// Channel 0 は OS の周期 tick 専用。calibration や delay では使用しない。
     pub fn init(&self, frequency: u64) {
         if frequency == 0 {
@@ -652,7 +658,7 @@ impl Pit {
             // u128 で計算してオーバーフロー防止
             let ticks_needed = (freq as u128 * microseconds as u128) / 1_000_000;
             let ticks_needed = ticks_needed as u64;
-            
+
             let start = rdtsc_unserialized();
             while rdtsc_unserialized().wrapping_sub(start) < ticks_needed {
                 core::hint::spin_loop();
@@ -675,14 +681,14 @@ impl Pit {
 
         // Speaker port: disable speaker (bit 1), enable timer gate (bit 0)
         let old_speaker = speaker_port.read();
-        
+
         // OUT2 を確実に Low にする: Gate=0 (bit0=0) にして待機
         speaker_port.write(old_speaker & 0xFC);
         core::hint::spin_loop();
 
         // Channel 2, Mode 0 (One-shot), 16-bit
         cmd_port.write(pit::CH2_MODE_ONE_SHOT);
-        
+
         // Gate=1 (enable) にするが、カウンタ書くまでカウントは始まらない
         speaker_port.write((old_speaker & 0xFC) | 0x01);
 
@@ -718,7 +724,9 @@ fn perform_single_pit_measurement(
     while (speaker_port.read() & 0x20) != 0 {
         core::hint::spin_loop();
         timeout -= 1;
-        if timeout == 0 { return None; }
+        if timeout == 0 {
+            return None;
+        }
     }
     cmd_port.write(pit::CH2_MODE_ONE_SHOT);
     speaker_port.write((old_speaker & 0xFC) | 0x01);
@@ -735,7 +743,9 @@ fn perform_single_pit_measurement(
         }
         core::hint::spin_loop();
         timeout -= 1;
-        if timeout == 0 { return None; }
+        if timeout == 0 {
+            return None;
+        }
     }
     let end_tsc = unsafe {
         core::arch::x86_64::_mm_lfence();

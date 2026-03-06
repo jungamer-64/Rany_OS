@@ -1,18 +1,11 @@
 use crate::{
-    DIR_ENTRY_SIZE,
-    END_OF_DIR,
-    DELETED_ENTRY,
-    FileAttributes,
-    FsError,
-    FsResult,
-    BOOT_SECTOR_SIZE,
-    FAT32_SIGNATURE,
-    Cluster,
+    BOOT_SECTOR_SIZE, Cluster, DELETED_ENTRY, DIR_ENTRY_SIZE, END_OF_DIR, FAT32_SIGNATURE,
+    FileAttributes, FsError, FsResult,
 };
 
+use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::borrow::Cow;
 use core::fmt;
 
 // Sealed Trait Pattern

@@ -22,9 +22,9 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use crate::mm::types::FrameIndex;
 use super::page_reclaim::MglruGen;
+use crate::mm::types::FrameIndex;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 // ============================================================================
 // Configuration
@@ -76,7 +76,12 @@ impl ShadowEntry {
 
     /// 新しい shadow entry を作成
     #[inline]
-    pub fn new(eviction_timestamp: u64, generation: MglruGen, page_type: u8, numa_node: u8) -> Self {
+    pub fn new(
+        eviction_timestamp: u64,
+        generation: MglruGen,
+        page_type: u8,
+        numa_node: u8,
+    ) -> Self {
         Self {
             eviction_timestamp,
             generation: generation.as_u8(),
@@ -208,7 +213,7 @@ impl ShadowTable {
         // Linear probing (最大 8 スロット)
         for _ in 0..8 {
             let current = self.entries[slot].key.load(Ordering::Relaxed);
-            
+
             if current == 0 || current == frame_key {
                 // 空きスロット or 同じ frame の更新
                 self.entries[slot].key.store(frame_key, Ordering::Relaxed);
@@ -216,20 +221,22 @@ impl ShadowTable {
                 unsafe {
                     core::ptr::write_volatile(self.entries[slot].entry.get(), shadow);
                 }
-                
+
                 if current == 0 {
                     self.count.fetch_add(1, Ordering::Relaxed);
                 }
                 self.insertions.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-            
+
             slot = (slot + 1) % MAX_SHADOW_ENTRIES;
         }
-        
+
         // 満杯の場合は古いエントリを上書き
         let evict_slot = Self::hash_slot(frame_idx);
-        self.entries[evict_slot].key.store(frame_key, Ordering::Relaxed);
+        self.entries[evict_slot]
+            .key
+            .store(frame_key, Ordering::Relaxed);
         unsafe {
             core::ptr::write_volatile(self.entries[evict_slot].entry.get(), shadow);
         }
@@ -246,25 +253,23 @@ impl ShadowTable {
 
         for _ in 0..8 {
             let current = self.entries[slot].key.load(Ordering::Relaxed);
-            
+
             if current == frame_key {
                 // 見つかった: 削除してエントリを返す
                 self.entries[slot].key.store(0, Ordering::Relaxed);
                 self.count.fetch_sub(1, Ordering::Relaxed);
                 self.hits.fetch_add(1, Ordering::Relaxed);
-                
+
                 // SAFETY: UnsafeCell経由、エントリは前の insert で書かれている
-                let shadow = unsafe {
-                    core::ptr::read_volatile(self.entries[slot].entry.get())
-                };
+                let shadow = unsafe { core::ptr::read_volatile(self.entries[slot].entry.get()) };
                 return Some(shadow);
             }
-            
+
             if current == 0 {
                 // 空きに到達 = 見つからない
                 break;
             }
-            
+
             slot = (slot + 1) % MAX_SHADOW_ENTRIES;
         }
 
@@ -364,9 +369,9 @@ impl WorkingsetController {
     /// Refault 時に working set 判定を行う
     ///
     /// Page fault handler から呼び出す。
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// - `WorkingSet`: Active LRU 世代に直接追加推奨
     /// - `NotWorkingSet`: 通常通り Inactive から開始
     /// - `NoShadow`: shadow entry なし (初回 fault)
@@ -378,7 +383,7 @@ impl WorkingsetController {
 
         let current_clock = self.current_clock();
         let eviction_clock = shadow.eviction_timestamp();
-        
+
         // Refault distance = eviction からの経過時間
         let refault_distance = current_clock.saturating_sub(eviction_clock);
         let threshold = self.refault_threshold.load(Ordering::Relaxed);
@@ -386,10 +391,10 @@ impl WorkingsetController {
         if refault_distance <= threshold {
             // Working set 内: すぐに戻ってきたページ
             self.workingset_refaults.fetch_add(1, Ordering::Relaxed);
-            
+
             // Evict 時より 1 世代若い世代から開始 (より長く居座れる)
             let target_gen = shadow.generation().rejuvenate();
-            
+
             RefaultResult::WorkingSet {
                 target_generation: target_gen,
             }
@@ -412,7 +417,7 @@ impl WorkingsetController {
     pub fn adjust_threshold(&self) {
         let ws_refaults = self.workingset_refaults.load(Ordering::Relaxed);
         let normal_refaults = self.normal_refaults.load(Ordering::Relaxed);
-        
+
         if ws_refaults + normal_refaults < 100 {
             return; // 十分なサンプルがない
         }
@@ -430,8 +435,9 @@ impl WorkingsetController {
             current
         };
 
-        self.refault_threshold.store(new_threshold, Ordering::Relaxed);
-        
+        self.refault_threshold
+            .store(new_threshold, Ordering::Relaxed);
+
         // カウンタをリセット
         self.workingset_refaults.store(0, Ordering::Relaxed);
         self.normal_refaults.store(0, Ordering::Relaxed);
@@ -528,15 +534,15 @@ mod tests {
         let table = ShadowTable::new();
         let frame = FrameIndex::new(1234);
         let shadow = ShadowEntry::new(500, MglruGen::Gen2, 1, 0);
-        
+
         table.insert(frame, shadow);
-        
+
         let result = table.lookup_and_remove(frame);
         assert!(result.is_some());
         let found = result.unwrap();
         assert_eq!(found.eviction_timestamp(), 500);
         assert_eq!(found.generation(), MglruGen::Gen2);
-        
+
         // 2回目の lookup は None
         assert!(table.lookup_and_remove(frame).is_none());
     }
@@ -545,16 +551,16 @@ mod tests {
     fn test_workingset_controller() {
         let ctrl = WorkingsetController::new();
         let frame = FrameIndex::new(9999);
-        
+
         // Evict を記録
         let evict_time = ctrl.current_clock();
         ctrl.on_evict(frame, MglruGen::Gen1, 0, 0);
-        
+
         // 少し clock を進める (threshold 以内)
         for _ in 0..100 {
             ctrl.advance_clock();
         }
-        
+
         // Refault: working set 内のはず
         let result = ctrl.on_refault(frame);
         match result {
@@ -570,16 +576,15 @@ mod tests {
     fn test_workingset_not_in_workingset() {
         let ctrl = WorkingsetController::new();
         let frame = FrameIndex::new(8888);
-        
+
         ctrl.on_evict(frame, MglruGen::Gen3, 0, 0);
-        
+
         // Clock を大きく進める (threshold 超過)
         for _ in 0..2000 {
             ctrl.advance_clock();
         }
-        
+
         let result = ctrl.on_refault(frame);
         assert_eq!(result, RefaultResult::NotWorkingSet);
     }
 }
-

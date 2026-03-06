@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod promotion;
 impl ProcessAddressSpace {
     /// 新しいアドレス空間を作成
@@ -18,19 +17,19 @@ impl ProcessAddressSpace {
             initialized: AtomicBool::new(false),
         }
     }
-    
+
     /// ページテーブルを初期化
     pub fn init_page_table(&self) -> Result<(), AddressSpaceError> {
         // 新しいページテーブルを割り当て
         let frame = alloc_frame().ok_or(AddressSpaceError::OutOfMemory)?;
         let pt_phys = frame.start_address().as_u64();
-        
+
         // ゼロクリア
         let virt = crate::mm::virt::mapping::phys_to_virt(frame.start_address());
         unsafe {
             core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, PAGE_SIZE as usize);
         }
-        
+
         // カーネル空間のマッピングをコピー（Higher Half）
         let current_pml4_phys = crate::mm::virt::higher_half::get_cr3();
         let new_pml4_phys = PhysAddr::new(pt_phys);
@@ -45,18 +44,18 @@ impl ProcessAddressSpace {
                 *new_pml4.entry_mut(i) = *current_pml4.entry(i);
             }
         }
-        
+
         self.page_table_root.store(pt_phys, Ordering::Release);
         self.initialized.store(true, Ordering::Release);
-        
+
         Ok(())
     }
-    
+
     /// ASIDを取得
     pub fn asid(&self) -> u64 {
         self.asid
     }
-    
+
     /// ページテーブルルートを取得
     pub fn page_table_root(&self) -> u64 {
         self.page_table_root.load(Ordering::Acquire)
@@ -66,58 +65,60 @@ impl ProcessAddressSpace {
     pub fn vma_list(&self) -> &VmaList {
         &self.vma_list
     }
-    
+
     // ========================================================================
     // Memory Region Management
     // ========================================================================
-    
+
     /// 領域を追加
     pub fn add_region(&self, region: MemoryRegion) -> Result<(), AddressSpaceError> {
         let start = region.start.as_u64();
         let end = region.end.as_u64();
-        
+
         // 範囲チェック
         if start >= end {
             return Err(AddressSpaceError::InvalidRange);
         }
-        
+
         let mut regions = self.regions.write();
-        
+
         // 重複チェック
         for existing in regions.values() {
             if existing.overlaps(region.start, region.end) {
                 return Err(AddressSpaceError::RegionOverlap);
             }
         }
-        
+
         let vma = region.to_vma();
         regions.insert(start, Box::new(region));
         self.vma_list.insert(Box::new(vma));
         Ok(())
     }
-    
+
     /// アドレスに対応する領域を検索
     pub fn find_region(&self, addr: VirtAddr) -> Option<u64> {
         self.vma_list.find(addr).map(|info| info.start.as_u64())
     }
-    
+
     /// 領域を取得
     pub fn get_region(&self, start_addr: u64) -> Option<Protection> {
         let regions = self.regions.read();
         regions.get(&start_addr).map(|r| r.protection)
     }
-    
+
     /// 領域を削除
     pub fn remove_region(&self, start_addr: u64) -> Result<(), AddressSpaceError> {
         let mut regions = self.regions.write();
-        
+
         if let Some(region) = regions.remove(&start_addr) {
             let _ = self.vma_list.remove(region.start);
             // マッピングを解除
             let page_count = region.page_count();
             for i in 0..page_count {
                 let addr = VirtAddr::new(region.start.as_u64() + i * PAGE_SIZE);
-                unsafe { let _ = global_unmap_page(addr); }
+                unsafe {
+                    let _ = global_unmap_page(addr);
+                }
             }
             self.mapped_pages.fetch_sub(page_count, Ordering::Relaxed);
             Ok(())
@@ -125,11 +126,11 @@ impl ProcessAddressSpace {
             Err(AddressSpaceError::RegionNotFound)
         }
     }
-    
+
     // ========================================================================
     // Memory Mapping API (map/unmap/protect)
     // ========================================================================
-    
+
     /// メモリ領域をマッピング
     pub fn map_region(
         &self,
@@ -141,16 +142,22 @@ impl ProcessAddressSpace {
         if size == 0 {
             return Err(AddressSpaceError::InvalidSize);
         }
-        
+
         // 脆弱性修正: ページアラインメント時の整数オーバーフローを防止
-        let aligned_size = size.checked_add(PAGE_SIZE - 1)
-            .ok_or(AddressSpaceError::InvalidSize)? & !(PAGE_SIZE - 1);
-        
+        let aligned_size = size
+            .checked_add(PAGE_SIZE - 1)
+            .ok_or(AddressSpaceError::InvalidSize)?
+            & !(PAGE_SIZE - 1);
+
         // アドレスを決定
         let start_addr = if let Some(hint) = addr_hint {
             let addr = hint.as_u64();
             // ヒントがユーザー空間内かチェック
-            if addr < USER_SPACE_START || addr.checked_add(aligned_size).map_or(true, |end| end > USER_SPACE_END) {
+            if addr < USER_SPACE_START
+                || addr
+                    .checked_add(aligned_size)
+                    .map_or(true, |end| end > USER_SPACE_END)
+            {
                 return Err(AddressSpaceError::InvalidRange);
             }
             addr
@@ -158,43 +165,50 @@ impl ProcessAddressSpace {
             // マッピング領域から割り当て
             loop {
                 let hint = self.mapping_hint.load(Ordering::Acquire);
-                let next_hint = hint.checked_add(aligned_size).ok_or(AddressSpaceError::OutOfMemory)?;
-                
+                let next_hint = hint
+                    .checked_add(aligned_size)
+                    .ok_or(AddressSpaceError::OutOfMemory)?;
+
                 if next_hint > USER_SPACE_END {
                     return Err(AddressSpaceError::OutOfMemory);
                 }
-                
-                if self.mapping_hint.compare_exchange_weak(hint, next_hint, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+
+                if self
+                    .mapping_hint
+                    .compare_exchange_weak(hint, next_hint, Ordering::SeqCst, Ordering::Relaxed)
+                    .is_ok()
+                {
                     break hint;
                 }
             }
         };
-        
+
         let start = VirtAddr::new(start_addr);
         let end = VirtAddr::new(start_addr + aligned_size);
-        
+
         // 領域を作成
         let region = MemoryRegion::new(start, end, region_type, prot);
         self.add_region(region)?;
-        
+
         // Demand Pagingを使用するため、実際のページ割り当ては遅延
         // （ページフォルト時に割り当て）
-        
+
         Ok(start)
     }
-    
+
     /// メモリ領域のマッピングを解除
     pub fn unmap_region(&self, addr: VirtAddr, size: u64) -> Result<(), AddressSpaceError> {
         if size == 0 {
             return Err(AddressSpaceError::InvalidSize);
         }
-        
-        let start_key = self.find_region(addr)
+
+        let start_key = self
+            .find_region(addr)
             .ok_or(AddressSpaceError::RegionNotFound)?;
-        
+
         self.remove_region(start_key)
     }
-    
+
     /// 保護属性更新で必要な領域分割を行い、新領域を登録する
     pub(super) fn split_and_reinsert_regions(
         &self,
@@ -208,11 +222,21 @@ impl ProcessAddressSpace {
 
         let mut new_regions = Vec::new();
         if req_start > region.start {
-            new_regions.push(clone_region_with_range(&region, region.start, req_start, region.protection));
+            new_regions.push(clone_region_with_range(
+                &region,
+                region.start,
+                req_start,
+                region.protection,
+            ));
         }
         new_regions.push(clone_region_with_range(&region, req_start, req_end, prot));
         if req_end < region.end {
-            new_regions.push(clone_region_with_range(&region, req_end, region.end, region.protection));
+            new_regions.push(clone_region_with_range(
+                &region,
+                req_end,
+                region.end,
+                region.protection,
+            ));
         }
 
         for new_region in new_regions {
@@ -224,12 +248,18 @@ impl ProcessAddressSpace {
     }
 
     /// メモリ保護を変更
-    pub fn protect_region(&self, addr: VirtAddr, size: u64, prot: Protection) -> Result<(), AddressSpaceError> {
-        let start_key = self.find_region(addr)
+    pub fn protect_region(
+        &self,
+        addr: VirtAddr,
+        size: u64,
+        prot: Protection,
+    ) -> Result<(), AddressSpaceError> {
+        let start_key = self
+            .find_region(addr)
             .ok_or(AddressSpaceError::RegionNotFound)?;
-        
+
         let mut regions = self.regions.write();
-        
+
         let region = match regions.remove(&start_key) {
             Some(region) => region,
             None => return Err(AddressSpaceError::RegionNotFound),
@@ -254,25 +284,27 @@ impl ProcessAddressSpace {
         for i in 0..page_count {
             let page_addr = VirtAddr::new(addr.as_u64() + i * PAGE_SIZE);
             let flags = prot.to_page_flags();
-            unsafe { let _ = crate::mm::virt::higher_half::global_update_flags(page_addr, flags); }
+            unsafe {
+                let _ = crate::mm::virt::higher_half::global_update_flags(page_addr, flags);
+            }
         }
 
         Ok(())
     }
-    
+
     // ========================================================================
     // Heap Management (brk)
     // ========================================================================
-    
+
     /// ヒープ境界を取得
     pub fn brk(&self) -> u64 {
         self.heap_end.load(Ordering::Acquire)
     }
-    
+
     /// ヒープ境界を設定
     pub fn set_brk(&self, new_brk: u64) -> Result<u64, AddressSpaceError> {
         let current = self.heap_end.load(Ordering::Acquire);
-        
+
         // 脆弱性修正: ヒープ終了アドレスがユーザー空間内かチェック
         if new_brk < DEFAULT_HEAP_START || new_brk > DEFAULT_MAPPING_BASE {
             return Err(AddressSpaceError::InvalidRange);
@@ -283,7 +315,9 @@ impl ProcessAddressSpace {
         // 脆弱性修正: ヒープ拡張が既存の領域と重ならないかチェック
         if new_brk > current {
             for (&start, existing) in regions.iter() {
-                if start == DEFAULT_HEAP_START { continue; }
+                if start == DEFAULT_HEAP_START {
+                    continue;
+                }
                 if existing.overlaps(VirtAddr::new(DEFAULT_HEAP_START), VirtAddr::new(new_brk)) {
                     return Err(AddressSpaceError::RegionOverlap);
                 }
@@ -300,16 +334,18 @@ impl ProcessAddressSpace {
             // ヒープ縮小
             let size = current - new_brk;
             let pages = size / PAGE_SIZE;
-            
+
             // ページを解放
             for i in 0..pages {
                 let addr = VirtAddr::new(new_brk + i * PAGE_SIZE);
                 if let Some(phys) = global_translate(addr) {
-                    unsafe { let _ = global_unmap_page(addr); }
+                    unsafe {
+                        let _ = global_unmap_page(addr);
+                    }
                     page_put(phys.as_u64());
                 }
             }
-            
+
             memcg_uncharge(self.memcg_id, pages, ChargeType::Anon);
         }
 
@@ -320,22 +356,22 @@ impl ProcessAddressSpace {
             RegionType::Heap,
             Protection::READ_WRITE,
         );
-        
+
         let _ = self.vma_list.remove(VirtAddr::new(DEFAULT_HEAP_START));
         if new_brk > DEFAULT_HEAP_START {
             let vma = region.to_vma();
             self.vma_list.insert(Box::new(vma));
         }
         regions.insert(DEFAULT_HEAP_START, Box::new(region));
-        
+
         self.heap_end.store(new_brk, Ordering::Release);
         Ok(new_brk)
     }
-    
+
     // ========================================================================
     // Fork Support (Copy-on-Write)
     // ========================================================================
-    
+
     /// アドレス空間を複製（fork用）
     ///
     /// Copy-on-Writeを使用して効率的に複製する。
@@ -343,12 +379,12 @@ impl ProcessAddressSpace {
     /// フォルト時に実際のコピーを行う。
     pub fn fork(&self) -> Result<Box<ProcessAddressSpace>, AddressSpaceError> {
         let child = Box::new(ProcessAddressSpace::new());
-        
+
         // ページテーブルを初期化
         child.init_page_table()?;
-        
+
         let regions = self.regions.read();
-        
+
         for (&start, region) in regions.iter() {
             // 子プロセス用の新しい領域を作成
             let mut child_region = MemoryRegion::new(
@@ -359,53 +395,59 @@ impl ProcessAddressSpace {
             );
             child_region.cow = true;
             child_region.file_info = region.file_info.clone();
-            
+
             // 親のページをCoWとしてマーク
             if region.protection.write {
                 let page_count = region.page_count();
                 for i in 0..page_count {
                     let addr = VirtAddr::new(region.start.as_u64() + i * PAGE_SIZE);
-                    
+
                     // ページが存在する場合のみ処理
                     if let Some(phys) = global_translate(addr) {
                         // 親をRead-onlyに変更（CoWマーク）
                         let _ = cow_mark_page(addr);
-                        
+
                         // 参照カウントを増加
                         page_get(phys.as_u64());
-                        
+
                         // 子のページテーブルにエントリをコピー
                         let _ = cow_copy_pte(addr, child.page_table_root());
                     }
                 }
             }
-            
+
             // 子に領域を追加
             let mut child_regions = child.regions.write();
             let child_vma = child_region.to_vma();
             child_regions.insert(start, Box::new(child_region));
             child.vma_list.insert(Box::new(child_vma));
         }
-        
+
         // ヒープとスタック境界をコピー
-        child.heap_end.store(self.heap_end.load(Ordering::Acquire), Ordering::Release);
-        child.stack_top.store(self.stack_top.load(Ordering::Acquire), Ordering::Release);
-        child.mapping_hint.store(self.mapping_hint.load(Ordering::Acquire), Ordering::Release);
-        
+        child
+            .heap_end
+            .store(self.heap_end.load(Ordering::Acquire), Ordering::Release);
+        child
+            .stack_top
+            .store(self.stack_top.load(Ordering::Acquire), Ordering::Release);
+        child
+            .mapping_hint
+            .store(self.mapping_hint.load(Ordering::Acquire), Ordering::Release);
+
         Ok(child)
     }
-    
+
     // ========================================================================
     // Exec Support
     // ========================================================================
-    
+
     /// アドレス空間をリセット（exec用）
     ///
     /// 全てのユーザー空間マッピングを解除し、
     /// 新しいプログラムのロード準備をする。
     pub fn exec_reset(&self) -> Result<(), AddressSpaceError> {
         let mut regions = self.regions.write();
-        
+
         // 全領域を削除
         let keys: Vec<u64> = regions.keys().copied().collect();
         for start in keys {
@@ -417,23 +459,26 @@ impl ProcessAddressSpace {
                     for i in 0..page_count {
                         let addr = VirtAddr::new(region.start.as_u64() + i * PAGE_SIZE);
                         if let Some(phys) = global_translate(addr) {
-                            unsafe { let _ = global_unmap_page(addr); }
+                            unsafe {
+                                let _ = global_unmap_page(addr);
+                            }
                             page_put(phys.as_u64());
                         }
                     }
                 }
             }
         }
-        
+
         // 境界をリセット
         self.heap_end.store(DEFAULT_HEAP_START, Ordering::Release);
-        self.mapping_hint.store(DEFAULT_MAPPING_BASE, Ordering::Release);
+        self.mapping_hint
+            .store(DEFAULT_MAPPING_BASE, Ordering::Release);
         self.stack_top.store(DEFAULT_STACK_TOP, Ordering::Release);
         self.mapped_pages.store(0, Ordering::Release);
-        
+
         Ok(())
     }
-    
+
     /// 新しいプログラムセグメントをロード
     pub fn load_segment(
         &self,
@@ -450,16 +495,21 @@ impl ProcessAddressSpace {
         );
         self.add_region(region)
     }
-    
+
     // ========================================================================
     // Stack Management
     // ========================================================================
-    
+
     /// スタックをセットアップ
-    pub fn setup_stack(&self, stack_top: VirtAddr, initial_size: u64, max_size: u64) -> Result<VirtAddr, AddressSpaceError> {
+    pub fn setup_stack(
+        &self,
+        stack_top: VirtAddr,
+        initial_size: u64,
+        max_size: u64,
+    ) -> Result<VirtAddr, AddressSpaceError> {
         // スタック領域を作成
         let stack_bottom = VirtAddr::new(stack_top.as_u64() - initial_size);
-        
+
         let region = MemoryRegion::new(
             stack_bottom,
             stack_top,
@@ -467,7 +517,7 @@ impl ProcessAddressSpace {
             Protection::READ_WRITE,
         );
         self.add_region(region)?;
-        
+
         // スタック管理に登録
         match create_stack(self.asid, stack_top, initial_size, max_size) {
             StackResult::Ok => {
@@ -477,23 +527,23 @@ impl ProcessAddressSpace {
             _ => Err(AddressSpaceError::OutOfMemory),
         }
     }
-    
+
     // ========================================================================
     // Statistics
     // ========================================================================
-    
+
     /// 統計情報を取得
     pub fn stats(&self) -> AddressSpaceStats {
         let regions = self.regions.read();
-        
+
         let mut total_virtual = 0u64;
         let mut region_count = 0usize;
-        
+
         for region in regions.values() {
             total_virtual += region.size();
             region_count += 1;
         }
-        
+
         AddressSpaceStats {
             asid: self.asid,
             total_virtual,
@@ -536,7 +586,11 @@ impl ProcessAddressSpace {
     ///
     /// # Returns
     /// (scanned_pages, faults_set, next_scan_addr)
-    pub fn scan_numa_hints(&self, start_addr: VirtAddr, batch_size: usize) -> (usize, usize, VirtAddr) {
+    pub fn scan_numa_hints(
+        &self,
+        start_addr: VirtAddr,
+        batch_size: usize,
+    ) -> (usize, usize, VirtAddr) {
         let mut scanned = 0;
         let mut faults = 0;
         let mut current_addr = start_addr;
@@ -549,7 +603,11 @@ impl ProcessAddressSpace {
 
             // スキャン対象外の領域（カーネル、デバイスなど）はスキップ
             match region.region_type {
-                RegionType::Data | RegionType::Stack | RegionType::Heap | RegionType::Bss | RegionType::Mapping => {} // OK
+                RegionType::Data
+                | RegionType::Stack
+                | RegionType::Heap
+                | RegionType::Bss
+                | RegionType::Mapping => {} // OK
                 _ => {
                     if current_addr < region.end {
                         current_addr = region.end;
@@ -559,7 +617,10 @@ impl ProcessAddressSpace {
             }
 
             let (s, f, next_addr) = self.scan_region_numa_hints(
-                region.start, region.end, current_addr, batch_size - scanned,
+                region.start,
+                region.end,
+                current_addr,
+                batch_size - scanned,
             );
             scanned += s;
             faults += f;
@@ -585,12 +646,13 @@ impl ProcessAddressSpace {
                 // Presentを落とし、Hintを立てる
                 flags = flags.clear(PageFlags::PRESENT).set(PageFlags::NUMA_HINT);
                 pte.set_flags(flags);
-                
+
                 // TLB Invalidation handled by with_current_pte_mut
                 return true;
             }
             false
-        }).unwrap_or(false)
+        })
+        .unwrap_or(false)
     }
 
     /// THP昇格候補を検索
@@ -614,11 +676,15 @@ impl ProcessAddressSpace {
         cursor
     }
 
-    pub fn find_thp_candidates(&self, start_addr: VirtAddr, limit: usize) -> (Vec<ThpCandidate>, VirtAddr) {
+    pub fn find_thp_candidates(
+        &self,
+        start_addr: VirtAddr,
+        limit: usize,
+    ) -> (Vec<ThpCandidate>, VirtAddr) {
         let mut candidates = Vec::new();
         let mut current_addr = start_addr;
         let regions = self.regions.read();
-        
+
         // Iterate regions starting from start_addr
         for (&_r_start, region) in regions.range(..).filter(|&(&_s, ref r)| r.end > start_addr) {
             if candidates.len() >= limit {
@@ -627,19 +693,30 @@ impl ProcessAddressSpace {
 
             // Skip unsuitable regions (e.g. non-Anon, non-aligned size check?)
             match region.region_type {
-                 RegionType::Heap | RegionType::Bss | RegionType::Data => {}
-                 _ => {
-                     // Determine skip
-                     if current_addr < region.end { current_addr = region.end; }
-                     continue;
-                 }
+                RegionType::Heap | RegionType::Bss | RegionType::Data => {}
+                _ => {
+                    // Determine skip
+                    if current_addr < region.end {
+                        current_addr = region.end;
+                    }
+                    continue;
+                }
             }
-            
+
             // Adjust scan start within this region
-            let region_scan_start = if current_addr < region.start { region.start } else { current_addr };
-            current_addr = self.scan_aligned_range_for_thp(region_scan_start, region.end, limit, &mut candidates);
+            let region_scan_start = if current_addr < region.start {
+                region.start
+            } else {
+                current_addr
+            };
+            current_addr = self.scan_aligned_range_for_thp(
+                region_scan_start,
+                region.end,
+                limit,
+                &mut candidates,
+            );
         }
-        
+
         (candidates, current_addr)
     }
 
@@ -647,7 +724,7 @@ impl ProcessAddressSpace {
     pub(super) fn check_if_thp_candidate(&self, start: VirtAddr) -> Option<ThpCandidate> {
         // Here we need to check if pages are mapped and present
         let mut used_pages = 0;
-        
+
         // Use thread-safe global_translate
         for i in 0..512 {
             let addr = VirtAddr::new(start.as_u64() + i * 4096);
@@ -701,19 +778,19 @@ impl ProcessAddressSpace {
         let pt_root = self.page_table_root.load(Ordering::Acquire);
         if pt_root == 0 {
             buddy_dealloc_frame_2m(huge_frame);
-            return false; 
+            return false;
         }
 
         // Walk to PDE
         let indices = start_addr.page_table_indices();
-        
+
         // Scope for unsafe PT walk and updates
         let result = unsafe { self.perform_promotion(pt_root, indices, huge_phys_x64, protection) };
-        
+
         if !result {
             buddy_dealloc_frame_2m(huge_frame);
         }
-        
+
         result
     }
 }

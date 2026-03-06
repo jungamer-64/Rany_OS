@@ -13,7 +13,6 @@
 //! - Hole-filling algorithm for efficient reassembly
 //! - Protection against fragment overlap attacks
 
-
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -119,19 +118,33 @@ impl Ipv4Address {
     /// as a source address (RFC 1812, RFC 6890)
     pub const fn is_martian(&self) -> bool {
         // 0.0.0.0/8 (Current network)
-        if self.0[0] == 0 { return true; }
+        if self.0[0] == 0 {
+            return true;
+        }
         // 127.0.0.0/8 (Loopback)
-        if self.is_loopback() { return true; }
+        if self.is_loopback() {
+            return true;
+        }
         // 169.254.0.0/16 (Link Local)
-        if self.is_link_local() { return true; }
+        if self.is_link_local() {
+            return true;
+        }
         // 192.0.0.0/24 (IETF Protocol Assignments)
-        if self.0[0] == 192 && self.0[1] == 0 && self.0[2] == 0 { return true; }
+        if self.0[0] == 192 && self.0[1] == 0 && self.0[2] == 0 {
+            return true;
+        }
         // 192.0.2.0/24 (TEST-NET-1)
-        if self.0[0] == 192 && self.0[1] == 0 && self.0[2] == 2 { return true; }
+        if self.0[0] == 192 && self.0[1] == 0 && self.0[2] == 2 {
+            return true;
+        }
         // 198.51.100.0/24 (TEST-NET-2)
-        if self.0[0] == 198 && self.0[1] == 51 && self.0[2] == 100 { return true; }
+        if self.0[0] == 198 && self.0[1] == 51 && self.0[2] == 100 {
+            return true;
+        }
         // 203.0.113.0/24 (TEST-NET-3)
-        if self.0[0] == 203 && self.0[1] == 0 && self.0[2] == 113 { return true; }
+        if self.0[0] == 203 && self.0[1] == 0 && self.0[2] == 113 {
+            return true;
+        }
         // 240.0.0.0/4 (Reserved / Future Use)
         if (self.0[0] & 0xf0) == 240 {
             // 255.255.255.255 is handled separately as broadcast
@@ -375,10 +388,12 @@ impl Ipv4Header {
     /// Calculate header checksum from a raw byte slice.
     /// The slice MUST be at least as long as the header length specified in the first byte.
     pub fn compute_checksum_static(header_bytes: &[u8]) -> u16 {
-        if header_bytes.is_empty() { return 0; }
+        if header_bytes.is_empty() {
+            return 0;
+        }
         let ihl = (header_bytes[0] & 0x0F) as usize;
         let header_len = ihl * 4;
-        
+
         if header_bytes.len() < header_len {
             return 0; // Or panic? Returning 0 is safer for now.
         }
@@ -553,31 +568,41 @@ impl<'a> Ipv4PacketMut<'a> {
 
     /// Set source address
     pub fn set_source(&mut self, addr: Ipv4Address) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_source(addr); }
+        if let Some(h) = self.header_mut() {
+            h.set_source(addr);
+        }
         self
     }
 
     /// Set destination address
     pub fn set_destination(&mut self, addr: Ipv4Address) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_destination(addr); }
+        if let Some(h) = self.header_mut() {
+            h.set_destination(addr);
+        }
         self
     }
 
     /// Set protocol
     pub fn set_protocol(&mut self, protocol: IpProtocol) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_protocol(protocol); }
+        if let Some(h) = self.header_mut() {
+            h.set_protocol(protocol);
+        }
         self
     }
 
     /// Set TTL
     pub fn set_ttl(&mut self, ttl: u8) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_ttl(ttl); }
+        if let Some(h) = self.header_mut() {
+            h.set_ttl(ttl);
+        }
         self
     }
 
     /// Set version (should be 4 for IPv4)
     pub fn set_version(&mut self, version: u8) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.version_ihl = (version << 4) | (h.version_ihl & 0x0f); }
+        if let Some(h) = self.header_mut() {
+            h.version_ihl = (version << 4) | (h.version_ihl & 0x0f);
+        }
         self
     }
 
@@ -585,20 +610,26 @@ impl<'a> Ipv4PacketMut<'a> {
     pub fn set_ihl(&mut self, ihl: u8) -> &mut Self {
         // Valid IHL is 5 (20 bytes) to 15 (60 bytes)
         if ihl >= 5 && ihl <= 15 {
-            if let Some(h) = self.header_mut() { h.version_ihl = (h.version_ihl & 0xf0) | (ihl & 0x0f); }
+            if let Some(h) = self.header_mut() {
+                h.version_ihl = (h.version_ihl & 0xf0) | (ihl & 0x0f);
+            }
         }
         self
     }
 
     /// Set DSCP (Differentiated Services Code Point)
     pub fn set_dscp(&mut self, dscp: u8) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.dscp_ecn = (dscp & 0xfc) | (h.dscp_ecn & 0x03); }
+        if let Some(h) = self.header_mut() {
+            h.dscp_ecn = (dscp & 0xfc) | (h.dscp_ecn & 0x03);
+        }
         self
     }
 
     /// Set total length
     pub fn set_total_length(&mut self, len: u16) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_total_length(len); }
+        if let Some(h) = self.header_mut() {
+            h.set_total_length(len);
+        }
         self
     }
 
@@ -621,13 +652,18 @@ impl<'a> Ipv4PacketMut<'a> {
 
     /// Set identification
     pub fn set_identification(&mut self, id: u16) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.set_identification(id); }
+        if let Some(h) = self.header_mut() {
+            h.set_identification(id);
+        }
         self
     }
 
     /// Get mutable payload buffer
     pub fn payload_mut(&mut self) -> &mut [u8] {
-        let header_len = self.header_mut().map(|h| h.header_len()).unwrap_or(Ipv4Header::MIN_SIZE);
+        let header_len = self
+            .header_mut()
+            .map(|h| h.header_len())
+            .unwrap_or(Ipv4Header::MIN_SIZE);
         if self.data.len() < header_len {
             &mut []
         } else {
@@ -649,7 +685,7 @@ impl<'a> Ipv4PacketMut<'a> {
 
         let total_len_usize = header_len + actual_payload;
         let total_len = total_len_usize.min(65535) as u16;
-        
+
         if let Some(h) = self.header_mut() {
             h.set_total_length(total_len);
         }
@@ -662,7 +698,7 @@ impl<'a> Ipv4PacketMut<'a> {
         let declared_len = crate::util::get_ref::<Ipv4Header>(self.data, 0)
             .map(|h| h.total_length() as usize)
             .unwrap_or(Ipv4Header::MIN_SIZE);
-        
+
         // Security: Clamp to physical buffer size to prevent panic in slice indexing
         core::cmp::min(declared_len, self.data.len())
     }
@@ -682,14 +718,14 @@ mod packet_mut_tests {
         let mut buffer = [0u8; 30]; // 20 bytes header + 10 bytes payload
         let mut packet = Ipv4PacketMut::new(&mut buffer).unwrap();
         packet.init_header();
-        
+
         // Try to finalize with a payload larger than buffer
         packet.finalize(100);
-        
+
         // Check that it was clamped
         assert_eq!(packet.total_len(), 30);
         assert_eq!(packet.as_bytes().len(), 30);
-        
+
         // Check header total length
         if let Some(h) = packet.header_mut() {
             assert_eq!(h.total_length(), 30);
@@ -701,15 +737,15 @@ mod packet_mut_tests {
         let mut buffer = [0u8; 30];
         let mut packet = Ipv4PacketMut::new(&mut buffer).unwrap();
         packet.init_header();
-        
+
         // Manually set a large total length
         if let Some(h) = packet.header_mut() {
             h.set_total_length(100);
         }
-        
+
         // total_len() should still be clamped to buffer size
         assert_eq!(packet.total_len(), 30);
-        
+
         // as_bytes() should not panic
         let bytes = packet.as_bytes();
         assert_eq!(bytes.len(), 30);

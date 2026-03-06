@@ -17,10 +17,7 @@ fn endpoint_ipv4_pair(local: EndpointAddr, remote: EndpointAddr) -> Option<([u8;
 
 #[inline]
 fn endpoint_is_native_v6_pair(local: EndpointAddr, remote: EndpointAddr) -> bool {
-    local.is_ipv6()
-        && remote.is_ipv6()
-        && local.as_ipv4().is_none()
-        && remote.as_ipv4().is_none()
+    local.is_ipv6() && remote.is_ipv6() && local.as_ipv4().is_none() && remote.as_ipv4().is_none()
 }
 
 /// TCPセグメントビルダー
@@ -186,7 +183,7 @@ impl TcpSegmentBuilder {
         }
         let num = blocks.len().min(4); // 最大4ブロック
         let opt_len = 2 + num * 8; // Kind(1) + Length(1) + N*8
-        self.options.push(5);            // Kind = SACK
+        self.options.push(5); // Kind = SACK
         self.options.push(opt_len as u8);
         for (left, right) in blocks.iter().take(num) {
             self.options.extend_from_slice(&left.to_be_bytes());
@@ -198,7 +195,7 @@ impl TcpSegmentBuilder {
     /// Timestamp オプション追加
     /// Kind=8, Length=10, TSval=ts_val, TSecr=ts_ecr
     pub fn timestamp(mut self, ts_val: u32, ts_ecr: u32) -> Self {
-        self.options.push(8);  // Kind
+        self.options.push(8); // Kind
         self.options.push(10); // Length
         self.options.extend_from_slice(&ts_val.to_be_bytes());
         self.options.extend_from_slice(&ts_ecr.to_be_bytes());
@@ -253,7 +250,7 @@ impl TcpSegmentBuilder {
     pub fn build(mut self) -> Vec<u8> {
         // オプションをパディング
         self.pad_options();
-        
+
         let options_len = self.options.len();
         let header_len = 20 + options_len;
         let data_offset = (header_len / 4) as u8; // 4バイト単位
@@ -302,12 +299,14 @@ impl TcpSegmentBuilder {
         segment[16] = 0;
         segment[17] = 0;
 
-        use crate::net::l3::ipv4::{pseudo_header_checksum, data_checksum, Ipv4Address, IpProtocol};
+        use crate::net::l3::ipv4::{
+            IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum,
+        };
         let src = Ipv4Address::new(src_ip);
         let dst = Ipv4Address::new(dst_ip);
         let pseudo = pseudo_header_checksum(src, dst, IpProtocol::Tcp, segment.len() as u16);
         let mut checksum = data_checksum(segment, pseudo);
-        
+
         // RFC 793/1122: If the computed checksum is zero, it is transmitted as all ones (0xFFFF).
         if checksum == 0 {
             checksum = 0xFFFF;
@@ -317,7 +316,11 @@ impl TcpSegmentBuilder {
     }
 
     /// TCPチェックサム計算（IPv6擬似ヘッダ）
-    pub fn calculate_checksum_v6(segment: &mut [u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) {
+    pub fn calculate_checksum_v6(
+        segment: &mut [u8],
+        src_ip: crate::net::l3::ipv6::Ipv6Address,
+        dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    ) {
         if segment.len() < 20 {
             return;
         }
@@ -326,19 +329,20 @@ impl TcpSegmentBuilder {
         segment[16] = 0;
         segment[17] = 0;
 
-        use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
-        use crate::net::l3::ipv4::data_checksum;
         use crate::net::l3::ipv4::IpProtocol;
+        use crate::net::l3::ipv4::data_checksum;
+        use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
 
-        let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
+        let pseudo =
+            ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
         let mut checksum = data_checksum(segment, pseudo);
-        
+
         // RFC 8200: UDP over IPv6 MUST NOT have a zero checksum (it becomes 0xFFFF).
         // For TCP, RFC 793/1122 specify the same for consistency.
         if checksum == 0 {
             checksum = 0xFFFF;
         }
-        
+
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
 }
@@ -356,7 +360,12 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
         // 非同期イベントキュー経由で送信（ロック競合回避）
         let ok = crate::net::runtime::stack::send_tcp_async(src_ip, dst_ip, &segment);
         if ok {
-            log::debug!("TCP TX (async): {} -> {} ({} bytes)", local, remote, segment.len());
+            log::debug!(
+                "TCP TX (async): {} -> {} ({} bytes)",
+                local,
+                remote,
+                segment.len()
+            );
         } else {
             log::debug!("TCP TX enqueue failed: {} -> {}", local, remote);
         }
@@ -388,7 +397,11 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
         return ok;
     }
 
-    log::warn!("[NET][endpoint] mixed TCP address family dropped: {} -> {}", local, remote);
+    log::warn!(
+        "[NET][endpoint] mixed TCP address family dropped: {} -> {}",
+        local,
+        remote
+    );
     false
 }
 
@@ -465,23 +478,23 @@ pub mod tests {
 
         // オプション検証
         // MSS (Kind=2, Length=4, Value=1460)
-        assert_eq!(segment[20], 2);  // Kind
-        assert_eq!(segment[21], 4);  // Length
+        assert_eq!(segment[20], 2); // Kind
+        assert_eq!(segment[21], 4); // Length
         assert_eq!(u16::from_be_bytes([segment[22], segment[23]]), 1460); // MSS
 
         // Window Scale (Kind=3, Length=3, Shift=7)
-        assert_eq!(segment[24], 3);  // Kind
-        assert_eq!(segment[25], 3);  // Length
-        assert_eq!(segment[26], 7);  // Shift
+        assert_eq!(segment[24], 3); // Kind
+        assert_eq!(segment[25], 3); // Length
+        assert_eq!(segment[26], 7); // Shift
 
         // SACK Permitted (Kind=4, Length=2)
-        assert_eq!(segment[27], 4);  // Kind
-        assert_eq!(segment[28], 2);  // Length
+        assert_eq!(segment[27], 4); // Kind
+        assert_eq!(segment[28], 2); // Length
 
         // NOP padding (Kind=1) x 3
-        assert_eq!(segment[29], 1);  // NOP
-        assert_eq!(segment[30], 1);  // NOP
-        assert_eq!(segment[31], 1);  // NOP
+        assert_eq!(segment[29], 1); // NOP
+        assert_eq!(segment[30], 1); // NOP
+        assert_eq!(segment[31], 1); // NOP
     }
 
     #[cfg_attr(test, test_case)]
@@ -493,11 +506,7 @@ pub mod tests {
             .payload(b"abc")
             .build();
 
-        TcpSegmentBuilder::calculate_checksum(
-            &mut segment,
-            [192, 168, 1, 10],
-            [192, 168, 1, 20],
-        );
+        TcpSegmentBuilder::calculate_checksum(&mut segment, [192, 168, 1, 10], [192, 168, 1, 20]);
 
         let checksum = u16::from_be_bytes([segment[16], segment[17]]);
         assert_ne!(checksum, 0);
@@ -519,7 +528,9 @@ pub mod tests {
     pub fn test_send_tcp_segment_rejects_mixed_family() {
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-        let segment = TcpSegmentBuilder::new(local.port(), remote.port()).syn().build();
+        let segment = TcpSegmentBuilder::new(local.port(), remote.port())
+            .syn()
+            .build();
 
         assert!(!send_tcp_segment(local, remote, segment));
     }
@@ -528,16 +539,21 @@ pub mod tests {
     pub fn test_send_tcp_segment_ipv4_no_panic_when_stack_unavailable() {
         let local = EndpointAddr::new([127, 0, 0, 1], 12346);
         let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-        let segment = TcpSegmentBuilder::new(local.port(), remote.port()).syn().build();
+        let segment = TcpSegmentBuilder::new(local.port(), remote.port())
+            .syn()
+            .build();
 
         let _ = send_tcp_segment(local, remote, segment);
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_send_tcp_segment_ipv6_no_panic_when_stack_unavailable() {
-        let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12347);
+        let local =
+            EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12347);
         let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-        let segment = TcpSegmentBuilder::new(local.port(), remote.port()).syn().build();
+        let segment = TcpSegmentBuilder::new(local.port(), remote.port())
+            .syn()
+            .build();
 
         let _ = send_tcp_segment(local, remote, segment);
     }
@@ -627,11 +643,7 @@ pub mod qemu_tests {
             .payload(b"abc")
             .build();
 
-        TcpSegmentBuilder::calculate_checksum(
-            &mut segment,
-            [192, 168, 1, 10],
-            [192, 168, 1, 20],
-        );
+        TcpSegmentBuilder::calculate_checksum(&mut segment, [192, 168, 1, 10], [192, 168, 1, 20]);
 
         let checksum = u16::from_be_bytes([segment[16], segment[17]]);
         checksum != 0

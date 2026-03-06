@@ -37,7 +37,9 @@ fn test_freelist_basic_alloc_dealloc() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 4MB at 1MB
     let regions = [(PhysAddr::new(0x100000), 0x400000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     let frame = allocator.allocate_4k_frame();
     assert!(frame.is_some());
@@ -51,7 +53,9 @@ fn test_freelist_buddy_coalescing() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 2MB at 2MB boundary
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     let initial_free = allocator.free_count();
 
@@ -70,7 +74,9 @@ fn test_freelist_buddy_coalescing() {
 fn test_freelist_split_and_merge() {
     let mut allocator = FreeListBuddyAllocator::new();
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     let initial_free = allocator.free_count();
 
@@ -89,7 +95,9 @@ fn test_freelist_split_and_merge() {
 fn test_freelist_migrate_fallback_alloc() {
     let mut allocator = FreeListBuddyAllocator::new();
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     // 初期メモリは全てMovable。Unmovableの割り当てはフォールバックが発生する。
     let frame = allocator.allocate(0, MigrateType::Unmovable);
@@ -103,7 +111,9 @@ fn test_freelist_migrate_fallback_alloc() {
 fn test_freelist_stats() {
     let mut allocator = FreeListBuddyAllocator::new();
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     let stats = allocator.stats();
     assert!(stats.total_frames > 0);
@@ -115,7 +125,9 @@ fn test_freelist_2m_allocation() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 2MB at 2MB boundary
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     let frame = allocator.allocate_2m_frame();
     assert!(frame.is_some());
@@ -129,7 +141,9 @@ fn test_freelist_contiguous_allocation() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 4MB at 1MB
     let regions = [(PhysAddr::new(0x100000), 0x400000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     // 16ページ連続割り当て（order 4に切り上げ）
     let addr = allocator.allocate_contiguous(16);
@@ -156,7 +170,9 @@ fn test_freelist_allocate_with_color() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 4MB at 2MB boundary — 十分なフレームでカラー分散を確保
     let regions = [(PhysAddr::new(0x200000), 0x400000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     let preferred_color = 3u8;
     let frame = allocator.allocate_with_color(0, MigrateType::Movable, preferred_color);
@@ -170,7 +186,9 @@ fn test_freelist_allocate_with_color() {
 fn test_freelist_max_order_rejection() {
     let mut allocator = FreeListBuddyAllocator::new();
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     // MAX_ORDER + 1 は拒否される
     let result = allocator.allocate(MAX_ORDER + 1, MigrateType::Movable);
@@ -190,7 +208,9 @@ fn test_freelist_multi_order_coalescing() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 2MB at 2MB boundary
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     let initial_free = allocator.free_count();
 
@@ -208,7 +228,11 @@ fn test_freelist_multi_order_coalescing() {
 
     assert_eq!(allocator.free_count(), initial_free);
     let stats = allocator.stats();
-    assert!(stats.coalesce_count >= 3, "coalesce_count={}", stats.coalesce_count);
+    assert!(
+        stats.coalesce_count >= 3,
+        "coalesce_count={}",
+        stats.coalesce_count
+    );
 }
 
 #[test_case]
@@ -216,7 +240,9 @@ fn test_freelist_fragmentation_stress() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 2MB at 2MB boundary
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     // 全ページをorder-0で割り当て
     let mut frames = alloc::vec::Vec::new();
@@ -246,7 +272,9 @@ fn test_freelist_move_freepages_block() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 4MB at 2MB boundary
     let regions = [(PhysAddr::new(0x200000), 0x400000u64)];
-    unsafe { allocator.init(&regions); }
+    unsafe {
+        allocator.init(&regions);
+    }
 
     // 初期メモリは全てMovable。Unmovableの割り当てはフォールバック+pageblock盗用を引き起こす。
     let frame = allocator.allocate(0, MigrateType::Unmovable);

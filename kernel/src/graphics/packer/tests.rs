@@ -27,7 +27,12 @@ fn pack_rgba_to_bgra_matches_scalar_mode() {
         pack_rgba_to_bgra(&src[..pixels * 4], &mut out_dispatch[..pixels * 4]);
         pack_rgba_to_bgra_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 4]);
         PACKER_MODE.store(prev, AOrdering::Relaxed);
-        assert_eq!(&out_dispatch[..pixels * 4], &out_scalar[..pixels * 4], "pixels={}", pixels);
+        assert_eq!(
+            &out_dispatch[..pixels * 4],
+            &out_scalar[..pixels * 4],
+            "pixels={}",
+            pixels
+        );
     }
 }
 
@@ -47,7 +52,12 @@ fn pack_rgba_to_bgra_matches_simd_if_available() {
                 let mut out_scalar = [0u8; 4 * 64];
                 pack_rgba_to_bgra(&src[..pixels * 4], &mut out_dispatch[..pixels * 4]);
                 pack_rgba_to_bgra_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 4]);
-                assert_eq!(&out_dispatch[..pixels * 4], &out_scalar[..pixels * 4], "ssse3 pixels={}", pixels);
+                assert_eq!(
+                    &out_dispatch[..pixels * 4],
+                    &out_scalar[..pixels * 4],
+                    "ssse3 pixels={}",
+                    pixels
+                );
             }
             PACKER_MODE.store(prev, AOrdering::Relaxed);
         }
@@ -62,7 +72,12 @@ fn pack_rgba_to_bgra_matches_simd_if_available() {
                 let mut out_scalar = [0u8; 4 * 64];
                 pack_rgba_to_bgra(&src[..pixels * 4], &mut out_dispatch[..pixels * 4]);
                 pack_rgba_to_bgra_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 4]);
-                assert_eq!(&out_dispatch[..pixels * 4], &out_scalar[..pixels * 4], "avx2 pixels={}", pixels);
+                assert_eq!(
+                    &out_dispatch[..pixels * 4],
+                    &out_scalar[..pixels * 4],
+                    "avx2 pixels={}",
+                    pixels
+                );
             }
             PACKER_MODE.store(prev, AOrdering::Relaxed);
         }
@@ -82,7 +97,12 @@ fn pack_rgba_to_bgr24_matches_scalar_mode() {
         pack_rgba_to_bgr24(&src[..pixels * 4], &mut out_dispatch[..pixels * 3], true);
         pack_rgba_to_bgr24_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 3], true);
         PACKER_MODE.store(prev, AOrdering::Relaxed);
-        assert_eq!(&out_dispatch[..pixels * 3], &out_scalar[..pixels * 3], "pixels={}", pixels);
+        assert_eq!(
+            &out_dispatch[..pixels * 3],
+            &out_scalar[..pixels * 3],
+            "pixels={}",
+            pixels
+        );
     }
 }
 
@@ -101,7 +121,12 @@ fn pack_rgba_to_bgr24_matches_simd_if_available() {
                 let mut out_scalar = [0u8; 3 * 64];
                 pack_rgba_to_bgr24(&src[..pixels * 4], &mut out_dispatch[..pixels * 3], true);
                 pack_rgba_to_bgr24_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 3], true);
-                assert_eq!(&out_dispatch[..pixels * 3], &out_scalar[..pixels * 3], "ssse3 pixels={}", pixels);
+                assert_eq!(
+                    &out_dispatch[..pixels * 3],
+                    &out_scalar[..pixels * 3],
+                    "ssse3 pixels={}",
+                    pixels
+                );
             }
             PACKER_MODE.store(prev, AOrdering::Relaxed);
         }
@@ -115,7 +140,12 @@ fn pack_rgba_to_bgr24_matches_simd_if_available() {
                 let mut out_scalar = [0u8; 3 * 64];
                 pack_rgba_to_bgr24(&src[..pixels * 4], &mut out_dispatch[..pixels * 3], true);
                 pack_rgba_to_bgr24_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 3], true);
-                assert_eq!(&out_dispatch[..pixels * 3], &out_scalar[..pixels * 3], "avx2 pixels={}", pixels);
+                assert_eq!(
+                    &out_dispatch[..pixels * 3],
+                    &out_scalar[..pixels * 3],
+                    "avx2 pixels={}",
+                    pixels
+                );
             }
             PACKER_MODE.store(prev, AOrdering::Relaxed);
         }

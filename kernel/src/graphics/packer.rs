@@ -88,27 +88,35 @@ fn parse_packer_mode_name(name: &str) -> Option<u8> {
 /// Detect and cache the best available SIMD level
 fn detect_simd_mode() -> u8 {
     let mut mode = 1u8; // Default scalar
-    
+
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
         #[cfg(feature = "std")]
         {
-            if std::is_x86_feature_detected!("avx2") { mode = 3; }
-            else if std::is_x86_feature_detected!("ssse3") { mode = 2; }
+            if std::is_x86_feature_detected!("avx2") {
+                mode = 3;
+            } else if std::is_x86_feature_detected!("ssse3") {
+                mode = 2;
+            }
         }
         #[cfg(not(feature = "std"))]
         {
             use hal::mmio;
-            if mmio::get_simd_level() >= mmio::simd_level::AVX2 { mode = 3; }
-            else if mmio::get_simd_level() >= mmio::simd_level::SSSE3 { mode = 2; }
+            if mmio::get_simd_level() >= mmio::simd_level::AVX2 {
+                mode = 3;
+            } else if mmio::get_simd_level() >= mmio::simd_level::SSSE3 {
+                mode = 2;
+            }
         }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     {
-        if cfg!(target_feature = "neon") { mode = 4; }
+        if cfg!(target_feature = "neon") {
+            mode = 4;
+        }
     }
-    
+
     // Environment override (std only) with clamp
     #[cfg(feature = "std")]
     if let Ok(val) = std::env::var("RANY_PACKER") {
@@ -151,23 +159,29 @@ pub fn get_packer_mode() -> u8 {
 pub fn pack_rgba_to_bgra(src: &[u8], dst: &mut [u8]) {
     let pixels = core::cmp::min(src.len(), dst.len()) / 4;
     let bytes = pixels * 4;
-    
+
     if bytes == 0 {
         return;
     }
-    
+
     // Small-run fast-path
     if bytes < 16 {
         pack_rgba_to_bgra_scalar(&src[..bytes], &mut dst[..bytes]);
         return;
     }
-    
+
     let mode = get_packer_mode();
-    
+
     match mode {
-        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
+        #[cfg(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "avx2"
+        ))]
         3 => unsafe { pack_rgba_to_bgra_avx2(src.as_ptr(), dst.as_mut_ptr(), bytes) },
-        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
+        #[cfg(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "ssse3"
+        ))]
         2 => unsafe { pack_rgba_to_bgra_ssse3(src.as_ptr(), dst.as_mut_ptr(), bytes) },
         #[cfg(target_arch = "aarch64")]
         4 => unsafe { pack_rgba_to_bgra_neon(src.as_ptr(), dst.as_mut_ptr(), bytes) },
@@ -214,14 +228,17 @@ pub fn pack_rgba_to_bgra_scalar(src: &[u8], dst: &mut [u8]) {
     }
 }
 
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "avx2"
+))]
 #[target_feature(enable = "avx2")]
 pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
     use core::arch::x86_64::*;
-    
+
     let mask = _mm256_setr_epi8(
-        2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15,
-        18, 17, 16, 19, 22, 21, 20, 23, 26, 25, 24, 27, 30, 29, 28, 31,
+        2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15, 18, 17, 16, 19, 22, 21, 20, 23, 26,
+        25, 24, 27, 30, 29, 28, 31,
     );
 
     let mut i = 0usize;
@@ -277,11 +294,14 @@ pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize)
     }
 }
 
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "ssse3"
+))]
 #[target_feature(enable = "ssse3")]
 pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize) {
     use core::arch::x86_64::*;
-    
+
     let mask = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
     let mut i = 0usize;
 
@@ -350,18 +370,24 @@ pub unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize)
 /// Pack RGBA into BGR24 or RGB24.
 pub fn pack_rgba_to_bgr24(src: &[u8], dst: &mut [u8], is_bgr: bool) {
     let pixels = core::cmp::min(src.len() / 4, dst.len() / 3);
-    
+
     if pixels < 8 {
         pack_rgba_to_bgr24_scalar(src, dst, is_bgr);
         return;
     }
-    
+
     let mode = get_packer_mode();
-    
+
     match mode {
-        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
+        #[cfg(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "avx2"
+        ))]
         3 => unsafe { pack_rgba_to_bgr24_avx2(src, dst, pixels, is_bgr) },
-        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
+        #[cfg(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "ssse3"
+        ))]
         2 => unsafe { pack_rgba_to_bgr24_ssse3(src, dst, pixels, is_bgr) },
         #[cfg(target_arch = "aarch64")]
         4 => unsafe { pack_rgba_to_bgr24_neon(src, dst, pixels, is_bgr) },
@@ -379,16 +405,16 @@ pub fn pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8], is_bgr: bool) {
 
     if is_bgr {
         while i < len {
-            dst[dst_off] = src[src_idx + 2];     // B
+            dst[dst_off] = src[src_idx + 2]; // B
             dst[dst_off + 1] = src[src_idx + 1]; // G
-            dst[dst_off + 2] = src[src_idx];     // R
+            dst[dst_off + 2] = src[src_idx]; // R
             src_idx += 4;
             dst_off += 3;
             i += 1;
         }
     } else {
         while i < len {
-            dst[dst_off] = src[src_idx];         // R
+            dst[dst_off] = src[src_idx]; // R
             dst[dst_off + 1] = src[src_idx + 1]; // G
             dst[dst_off + 2] = src[src_idx + 2]; // B
             src_idx += 4;
@@ -398,14 +424,17 @@ pub fn pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8], is_bgr: bool) {
     }
 }
 
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "avx2"
+))]
 #[target_feature(enable = "avx2")]
 #[inline]
 unsafe fn pack_rgba_to_bgr24_avx2(src: &[u8], dst: &mut [u8], pixels: usize, is_bgr: bool) {
     let mut processed = 0;
     let mut src_ptr = src.as_ptr();
     let mut dst_ptr = dst.as_mut_ptr();
-    
+
     while processed + 8 <= pixels {
         // SAFETY: Caller must ensure `src_ptr`/`dst_ptr` point to valid memory for 8 pixels.
         unsafe {
@@ -415,27 +444,34 @@ unsafe fn pack_rgba_to_bgr24_avx2(src: &[u8], dst: &mut [u8], pixels: usize, is_
         }
         processed += 8;
     }
-    
+
     let end_src = pixels * 4;
     let end_dst = pixels * 3;
-    pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
+    pack_rgba_to_bgr24_scalar(
+        &src[processed * 4..end_src],
+        &mut dst[processed * 3..end_dst],
+        is_bgr,
+    );
 }
 
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "avx2"
+))]
 #[target_feature(enable = "avx2")]
 #[inline]
 pub unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
     use core::arch::x86_64::*;
-    
+
     let shuffle_mask = if is_bgr {
         _mm256_setr_epi8(
-            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
-            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
+            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1, 2, 1, 0, 6, 5, 4, 10, 9, 8, 14,
+            13, 12, -1, -1, -1, -1,
         )
     } else {
         _mm256_setr_epi8(
-            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1,
-            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1,
+            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, 0, 1, 2, 4, 5, 6, 8, 9, 10, 12,
+            13, 14, -1, -1, -1, -1,
         )
     };
 
@@ -444,36 +480,39 @@ pub unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_b
     unsafe {
         let rgba = _mm256_loadu_si256(src as *const __m256i);
         let shuffled = _mm256_shuffle_epi8(rgba, shuffle_mask);
-        
+
         // Extract and merge the two 12-byte results
         let lo = _mm256_extracti128_si256::<0>(shuffled);
         let hi = _mm256_extracti128_si256::<1>(shuffled);
-        
+
         // Store first 12 bytes from each lane
         let lo_val = _mm_cvtsi128_si64(lo) as u64;
         core::ptr::copy_nonoverlapping(&lo_val as *const u64 as *const u8, dst, 8);
-        
+
         let lo_shifted = _mm_srli_si128::<8>(lo);
         let lo_upper = _mm_cvtsi128_si64(lo_shifted) as u32;
         core::ptr::copy_nonoverlapping(&lo_upper as *const u32 as *const u8, dst.add(8), 4);
-        
+
         let hi_val = _mm_cvtsi128_si64(hi) as u64;
         core::ptr::copy_nonoverlapping(&hi_val as *const u64 as *const u8, dst.add(12), 8);
-        
+
         let hi_shifted = _mm_srli_si128::<8>(hi);
         let hi_upper = _mm_cvtsi128_si64(hi_shifted) as u32;
         core::ptr::copy_nonoverlapping(&hi_upper as *const u32 as *const u8, dst.add(20), 4);
     }
 }
 
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "ssse3"
+))]
 #[target_feature(enable = "ssse3")]
 #[inline]
 pub unsafe fn pack_rgba_to_bgr24_ssse3(src: &[u8], dst: &mut [u8], pixels: usize, is_bgr: bool) {
     let mut processed = 0;
     let mut src_ptr = src.as_ptr();
     let mut dst_ptr = dst.as_mut_ptr();
-    
+
     while processed + 8 <= pixels {
         // SAFETY: Caller must ensure `src_ptr`/`dst_ptr` point to valid memory for 8 pixels.
         unsafe {
@@ -483,18 +522,25 @@ pub unsafe fn pack_rgba_to_bgr24_ssse3(src: &[u8], dst: &mut [u8], pixels: usize
         }
         processed += 8;
     }
-    
+
     let end_src = pixels * 4;
     let end_dst = pixels * 3;
-    pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
+    pack_rgba_to_bgr24_scalar(
+        &src[processed * 4..end_src],
+        &mut dst[processed * 3..end_dst],
+        is_bgr,
+    );
 }
 
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "ssse3"
+))]
 #[target_feature(enable = "ssse3")]
 #[inline]
 pub unsafe fn pack_rgba_to_bgr24_ssse3_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
     use core::arch::x86_64::*;
-    
+
     let shuffle_mask = if is_bgr {
         _mm_setr_epi8(2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1)
     } else {
@@ -507,22 +553,22 @@ pub unsafe fn pack_rgba_to_bgr24_ssse3_8pixels(src: *const u8, dst: *mut u8, is_
         // Process first 4 pixels (16 bytes -> 12 bytes)
         let rgba_lo = _mm_loadu_si128(src as *const __m128i);
         let shuffled_lo = _mm_shuffle_epi8(rgba_lo, shuffle_mask);
-        
+
         // Process second 4 pixels
         let rgba_hi = _mm_loadu_si128(src.add(16) as *const __m128i);
         let shuffled_hi = _mm_shuffle_epi8(rgba_hi, shuffle_mask);
-        
+
         // Store 12 bytes from each
         let lo_val = _mm_cvtsi128_si64(shuffled_lo) as u64;
         core::ptr::copy_nonoverlapping(&lo_val as *const u64 as *const u8, dst, 8);
-        
+
         let lo_shifted = _mm_srli_si128::<8>(shuffled_lo);
         let lo_upper = _mm_cvtsi128_si64(lo_shifted) as u32;
         core::ptr::copy_nonoverlapping(&lo_upper as *const u32 as *const u8, dst.add(8), 4);
-        
+
         let hi_val = _mm_cvtsi128_si64(shuffled_hi) as u64;
         core::ptr::copy_nonoverlapping(&hi_val as *const u64 as *const u8, dst.add(12), 8);
-        
+
         let hi_shifted = _mm_srli_si128::<8>(shuffled_hi);
         let hi_upper = _mm_cvtsi128_si64(hi_shifted) as u32;
         core::ptr::copy_nonoverlapping(&hi_upper as *const u32 as *const u8, dst.add(20), 4);
@@ -561,4 +607,3 @@ pub fn get_avx2_available() -> bool {
 
 #[cfg(test)]
 mod tests;
-

@@ -187,7 +187,9 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     // only import what we actually use to avoid wildcard imports
-    use super::{save_and_disable_interrupts, restore_interrupts, IrqPoisonLock, TEST_INTERRUPTS_ENABLED};
+    use super::{
+        IrqPoisonLock, TEST_INTERRUPTS_ENABLED, restore_interrupts, save_and_disable_interrupts,
+    };
     use core::sync::atomic::Ordering;
 
     #[test]

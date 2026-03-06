@@ -17,7 +17,7 @@
 //!
 //! ```ignore
 //! let allocator = FastBitmapAllocator::new(0x1000_0000, 1 << 30); // 1GB
-//! 
+//!
 //! // Allocate 4KB page
 //! if let Some(addr) = allocator.allocate_4k() {
 //!     // Use addr...
@@ -40,24 +40,27 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
-use crate::sync::poison_lock::IrqPoisonLock;
+use super::frame_magazine::{LocalFreeWordStack, SubFrameMagazine};
+use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
 use crate::mm::bitmap::HugePageBitmap;
-use crate::mm::cache::magazine::{Magazine, DEFAULT_MAGAZINE_CAPACITY};
-use crate::mm::cache::arena::{PerArenaDetail, ArenaOwnership, MAX_WORDS_PER_ARENA};
+use crate::mm::cache::arena::{ArenaOwnership, MAX_WORDS_PER_ARENA, PerArenaDetail};
+use crate::mm::cache::magazine::{DEFAULT_MAGAZINE_CAPACITY, Magazine};
 use crate::mm::remote_free::RemoteFreeRing;
-use super::frame_magazine::{SubFrameMagazine, LocalFreeWordStack};
-use crate::loader::type_id::{TypeIdHash, TypeHash, SemVer, const_hash};
+use crate::sync::poison_lock::IrqPoisonLock;
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 // Page size constants - re-exported from types.rs (as u64)
-pub use crate::mm::types::{PAGE_SIZE_4K as PAGE_SIZE_4K_USIZE, PAGE_SIZE_2M as PAGE_SIZE_2M_USIZE, PAGE_SIZE_1G as PAGE_SIZE_1G_USIZE};
+pub use crate::mm::types::{
+    PAGE_SIZE_1G as PAGE_SIZE_1G_USIZE, PAGE_SIZE_2M as PAGE_SIZE_2M_USIZE,
+    PAGE_SIZE_4K as PAGE_SIZE_4K_USIZE,
+};
 
 /// 4KB page size (u64 for address arithmetic)
 mod impl_core;
@@ -252,7 +255,7 @@ impl PerCpuFastMagazine {
     pub fn init_single_writer_arena(&self, global_detail: &[AtomicU64]) {
         let word_start = self.arena_start_4k;
         let word_end = self.arena_end_4k;
-        
+
         if word_end <= word_start {
             return;
         }

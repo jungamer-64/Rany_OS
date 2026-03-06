@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod wave6_simd_smoke;
 pub use wave6_simd_smoke::*;
 mod wave6_bench_smoke;
@@ -506,7 +505,10 @@ pub fn wave6_draw_hline_24bit_rgb888_mmio_smoke() -> bool {
 }
 
 pub fn wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke() -> bool {
-    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "ssse3"
+    ))]
     {
         if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 {
             return true;
@@ -532,7 +534,10 @@ pub fn wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke() -> bool {
         }
         return true;
     }
-    #[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3")))]
+    #[cfg(not(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "ssse3"
+    )))]
     {
         true
     }

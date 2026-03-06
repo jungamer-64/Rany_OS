@@ -1,9 +1,9 @@
 // tls/crypto/prf.rs - TLS 1.2 PRF and Key Derivation (RFC 5246)
 
+use super::hmac::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, hmac_sha256, hmac_sha384};
+use super::legacy::tls10_prf;
 use alloc::vec;
 use alloc::vec::Vec;
-use super::hmac::{hmac_sha256, hmac_sha384, SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
-use super::legacy::tls10_prf;
 
 // ============================================================================
 // TLS 1.2 PRF (RFC 5246 Section 5)

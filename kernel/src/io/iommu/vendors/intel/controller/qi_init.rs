@@ -26,7 +26,6 @@ pub trait QIManager {
     fn enable_queued_invalidation_interrupt(&self, vector: u8);
 }
 
-
 impl QIManager for IommuController {
     fn init_queued_invalidation(&mut self, size_log2: u8) -> Result<(), IommuError> {
         #[cfg(test)]
@@ -203,6 +202,9 @@ impl QIManager for IommuController {
         let iectl = self.read32(regs::IECTL);
         self.write32(regs::IECTL, iectl & !0x8000_0000);
 
-        log::info!("[IOMMU] Invalidation Completion Interrupts enabled (Vector: {:#x})", vector);
+        log::info!(
+            "[IOMMU] Invalidation Completion Interrupts enabled (Vector: {:#x})",
+            vector
+        );
     }
 }

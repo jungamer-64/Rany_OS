@@ -13,8 +13,8 @@
 //! - `ExoValue` への依存を持たない（shellモジュール非依存）
 //! - 上位層（SysNamespace）がExoValueラッピングを担当
 
+use crate::domain_system::{DomainId, DomainState, get_domain_snapshot, list_domain_snapshots};
 use alloc::vec::Vec;
-use crate::domain_system::{get_domain_snapshot, list_domain_snapshots, DomainId, DomainState};
 
 mod cpuinfo_gen;
 use cpuinfo_gen::*;

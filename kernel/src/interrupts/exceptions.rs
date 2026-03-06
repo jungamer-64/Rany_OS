@@ -241,10 +241,7 @@ define_interrupt!(
 ///
 /// これは専用のISTスタックで動作する（スタック破損時でも動く）
 define_interrupt!(
-    pub fn double_fault_handler(
-        stack_frame: InterruptStackFrame,
-        error_code: u64,
-    ) -> ! {
+    pub fn double_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) -> ! {
         EXCEPTION_STATS
             .double_faults
             .fetch_add(1, Ordering::Relaxed);
@@ -277,10 +274,7 @@ define_interrupt!(
 
 /// General Protection Fault (#GP)
 define_interrupt!(
-    pub fn general_protection_fault_handler(
-        stack_frame: InterruptStackFrame,
-        error_code: u64,
-    ) {
+    pub fn general_protection_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) {
         EXCEPTION_STATS
             .general_protection_faults
             .fetch_add(1, Ordering::Relaxed);
@@ -288,54 +282,52 @@ define_interrupt!(
         early_print("\n[EXCEPTION] GENERAL PROTECTION FAULT (#GP)\n");
         early_print("Error Code: ");
         early_print_hex(error_code);
-    early_print("\n");
-
-    // エラーコードの解析
-    if error_code != 0 {
-        let external = (error_code & 0x1) != 0;
-        let table = (error_code >> 1) & 0x3;
-        let index = (error_code >> 3) & 0x1FFF;
-
-        early_print("  External: ");
-        early_print(if external { "true" } else { "false" });
-        early_print("\n  Table: ");
-        early_print_dec(table);
-        early_print(" (0=GDT, 1=IDT, 2=LDT, 3=IDT)\n  Selector Index: ");
-        early_print_dec(index);
         early_print("\n");
+
+        // エラーコードの解析
+        if error_code != 0 {
+            let external = (error_code & 0x1) != 0;
+            let table = (error_code >> 1) & 0x3;
+            let index = (error_code >> 3) & 0x1FFF;
+
+            early_print("  External: ");
+            early_print(if external { "true" } else { "false" });
+            early_print("\n  Table: ");
+            early_print_dec(table);
+            early_print(" (0=GDT, 1=IDT, 2=LDT, 3=IDT)\n  Selector Index: ");
+            early_print_dec(index);
+            early_print("\n");
+        }
+
+        early_print("\nStack Frame:\n");
+        dump_stack_frame(&stack_frame);
+
+        early_print("\nGeneral Registers:\n");
+        dump_registers();
+
+        panic!("General protection fault");
     }
-
-    early_print("\nStack Frame:\n");
-    dump_stack_frame(&stack_frame);
-
-    early_print("\nGeneral Registers:\n");
-    dump_registers();
-
-    panic!("General protection fault");
-}
 );
 
 /// Page Fault (#PF)
 define_interrupt!(
-    pub fn page_fault_handler(
-        stack_frame: InterruptStackFrame,
-        error_code: PageFaultErrorCode,
-    ) {
+    pub fn page_fault_handler(stack_frame: InterruptStackFrame, error_code: PageFaultErrorCode) {
         EXCEPTION_STATS.page_faults.fetch_add(1, Ordering::Relaxed);
 
         // Convert the raw stack pointer into our kernel's higher-half VirtAddr type
-    let rsp: HHVirtAddr = HHVirtAddr::new(stack_frame.stack_pointer.as_u64());
+        let rsp: HHVirtAddr = HHVirtAddr::new(stack_frame.stack_pointer.as_u64());
 
         // 高度なページフォルトハンドラを呼び出し
         let res = crate::mm::virt::fault_handler::handle_page_fault(error_code.bits(), rsp);
-        
-        if matches!(res, 
-            crate::mm::virt::fault_handler::FaultResult::Resolved | 
-            crate::mm::virt::fault_handler::FaultResult::CowHandled | 
-            crate::mm::virt::fault_handler::FaultResult::DemandPaged |
-            crate::mm::virt::fault_handler::FaultResult::StackGrown |
-            crate::mm::virt::fault_handler::FaultResult::FilePageLoaded) 
-        {
+
+        if matches!(
+            res,
+            crate::mm::virt::fault_handler::FaultResult::Resolved
+                | crate::mm::virt::fault_handler::FaultResult::CowHandled
+                | crate::mm::virt::fault_handler::FaultResult::DemandPaged
+                | crate::mm::virt::fault_handler::FaultResult::StackGrown
+                | crate::mm::virt::fault_handler::FaultResult::FilePageLoaded
+        ) {
             // 解決されたので例外から復帰
             return;
         }
@@ -363,26 +355,39 @@ define_interrupt!(
         // エラーコードの詳細解析
         let error_bits = error_code.bits();
         early_print("  Present: ");
-        early_print(if (error_bits & 0x1) != 0 { "true" } else { "false" });
+        early_print(if (error_bits & 0x1) != 0 {
+            "true"
+        } else {
+            "false"
+        });
         early_print("\n  Write: ");
-        early_print(if (error_bits & 0x2) != 0 { "true" } else { "false" });
+        early_print(if (error_bits & 0x2) != 0 {
+            "true"
+        } else {
+            "false"
+        });
         early_print("\n  User Mode: ");
-        early_print(if (error_bits & 0x4) != 0 { "true" } else { "false" });
+        early_print(if (error_bits & 0x4) != 0 {
+            "true"
+        } else {
+            "false"
+        });
         early_print("\n");
 
         early_print("\nStack Frame:\n");
         dump_stack_frame(&stack_frame);
 
-        panic!("Page fault at {:#x} (Result: {:?})", fault_addr.as_u64(), res);
+        panic!(
+            "Page fault at {:#x} (Result: {:?})",
+            fault_addr.as_u64(),
+            res
+        );
     }
 );
 
 /// Alignment Check (#AC)
 define_interrupt!(
-    pub fn alignment_check_handler(
-        stack_frame: InterruptStackFrame,
-        error_code: u64,
-    ) {
+    pub fn alignment_check_handler(stack_frame: InterruptStackFrame, error_code: u64) {
         early_print("\n[EXCEPTION] ALIGNMENT CHECK (#AC)\n");
         early_print("Error Code: ");
         early_print_hex(error_code);

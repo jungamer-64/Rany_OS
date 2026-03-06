@@ -19,15 +19,15 @@
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
+use crate::io::virtio::virtqueue::*;
+use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::io::virtio::virtqueue::*;
-use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
-use crate::sync::PoisonLock;
 
 // ============================================================================
 // VirtIO Input Config Select Constants
@@ -125,7 +125,6 @@ pub enum VirtioDeviceStatus {
 }
 
 // ============================================================================
-
 
 // ============================================================================
 // VirtIO Input Device
@@ -262,7 +261,8 @@ impl VirtioInputDevice {
         let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // Standardized layout calculation
-        let (desc_size, _avail_size, used_offset, total_size) = VirtQueue::calculate_layout(queue_size);
+        let (desc_size, _avail_size, used_offset, total_size) =
+            VirtQueue::calculate_layout(queue_size);
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -321,7 +321,10 @@ impl VirtioInputDevice {
     fn post_event_buffers(&self) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
         let mut queue_guard = event_queue.lock().expect("eventq lock poisoned");
-        let mut buffers = self.event_buffers.lock().expect("event_buffers lock poisoned");
+        let mut buffers = self
+            .event_buffers
+            .lock()
+            .expect("event_buffers lock poisoned");
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
 
@@ -372,7 +375,10 @@ impl VirtioInputDevice {
     fn repost_event_buffer(&self, desc_idx: u16) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
         let mut queue_guard = event_queue.lock().expect("event_queue lock poisoned");
-        let mut buffers = self.event_buffers.lock().expect("event_buffers lock poisoned");
+        let mut buffers = self
+            .event_buffers
+            .lock()
+            .expect("event_buffers lock poisoned");
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
 
@@ -420,8 +426,10 @@ impl VirtioInputDevice {
     /// Returns `None` if the device reports size 0 for the given query.
     pub fn query_config(&self, select: u8, subsel: u8) -> Option<Vec<u8>> {
         // Write select and subsel to config space
-        self.transport.write_config_u8(config_offsets::SELECT, select);
-        self.transport.write_config_u8(config_offsets::SUBSEL, subsel);
+        self.transport
+            .write_config_u8(config_offsets::SELECT, select);
+        self.transport
+            .write_config_u8(config_offsets::SUBSEL, subsel);
 
         // Memory barrier to ensure writes are visible before reading
         core::sync::atomic::fence(Ordering::SeqCst);
@@ -460,7 +468,10 @@ impl VirtioInputDevice {
     /// 3. Repost the buffer so the device can write new events
     /// DMAバッファから入力イベントを抽出する
     fn extract_input_event(&self, desc_id: u16, len: u32) -> Option<VirtioInputEvent> {
-        let buffers = self.event_buffers.lock().expect("event_buffers lock poisoned");
+        let buffers = self
+            .event_buffers
+            .lock()
+            .expect("event_buffers lock poisoned");
         let dma_buf = buffers.get(&desc_id)?;
         let event_size = core::mem::size_of::<VirtioInputEvent>();
         if (len as usize) < event_size {
@@ -478,7 +489,11 @@ impl VirtioInputDevice {
         };
 
         let mut queue_guard = event_queue.lock().expect("event_queue lock poisoned");
-        let handler = self.event_handler.lock().expect("event_handler lock poisoned").clone();
+        let handler = self
+            .event_handler
+            .lock()
+            .expect("event_handler lock poisoned")
+            .clone();
 
         // Collect completions while holding the queue lock
         let mut completions: Vec<(u16, u32)> = Vec::new();
@@ -499,7 +514,10 @@ impl VirtioInputDevice {
 
             // Remove old buffer and free descriptor before reposting
             {
-                let mut buffers = self.event_buffers.lock().expect("event_buffers lock poisoned");
+                let mut buffers = self
+                    .event_buffers
+                    .lock()
+                    .expect("event_buffers lock poisoned");
                 buffers.remove(&desc_id);
             }
             let event_queue = match self.event_queue.as_ref() {
@@ -513,7 +531,10 @@ impl VirtioInputDevice {
             // Repost buffer for this descriptor slot
             if let Err(_) = self.repost_event_buffer(desc_id) {
                 self.dropped_events.fetch_add(1, Ordering::Relaxed);
-                log::warn!("[VIRTIO-INPUT] Failed to repost event buffer for desc {}", desc_id);
+                log::warn!(
+                    "[VIRTIO-INPUT] Failed to repost event buffer for desc {}",
+                    desc_id
+                );
             }
         }
     }
@@ -525,7 +546,10 @@ impl VirtioInputDevice {
 
     /// Register a callback to be invoked for each received input event.
     pub fn set_event_handler(&self, handler: fn(VirtioInputEvent)) {
-        *self.event_handler.lock().expect("event_handler lock poisoned") = Some(handler);
+        *self
+            .event_handler
+            .lock()
+            .expect("event_handler lock poisoned") = Some(handler);
     }
 
     /// Check if the device is initialized and ready.
@@ -539,15 +563,19 @@ impl VirtioInputDevice {
 // ============================================================================
 
 /// Primary (legacy) VirtIO input device slot kept for compatibility (`index=0`).
-pub(crate) static VIRTIO_INPUT_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioInputDevice>>> = crate::sync::PoisonLock::new(None);
+pub(crate) static VIRTIO_INPUT_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioInputDevice>>> =
+    crate::sync::PoisonLock::new(None);
 
 /// Additional VirtIO input devices (`index != 0`).
-pub(crate) static VIRTIO_INPUT_DEVICES: spin::RwLock<alloc::collections::BTreeMap<u8, Arc<VirtioInputDevice>>> =
-    spin::RwLock::new(alloc::collections::BTreeMap::new());
+pub(crate) static VIRTIO_INPUT_DEVICES: spin::RwLock<
+    alloc::collections::BTreeMap<u8, Arc<VirtioInputDevice>>,
+> = spin::RwLock::new(alloc::collections::BTreeMap::new());
 
 pub(crate) fn install_virtio_input_device(index: u8, device_arc: Arc<VirtioInputDevice>) {
     if index == 0 {
-        *VIRTIO_INPUT_DEVICE.lock().expect("VIRTIO_INPUT_DEVICE lock poisoned") = Some(device_arc);
+        *VIRTIO_INPUT_DEVICE
+            .lock()
+            .expect("VIRTIO_INPUT_DEVICE lock poisoned") = Some(device_arc);
     } else {
         VIRTIO_INPUT_DEVICES.write().insert(index, device_arc);
     }
@@ -556,7 +584,10 @@ pub(crate) fn install_virtio_input_device(index: u8, device_arc: Arc<VirtioInput
 /// Get a shared reference to the VirtIO input device by index.
 pub fn get_virtio_input_device_at_index(index: u8) -> Option<Arc<VirtioInputDevice>> {
     if index == 0 {
-        VIRTIO_INPUT_DEVICE.lock().expect("VIRTIO_INPUT_DEVICE lock poisoned").clone()
+        VIRTIO_INPUT_DEVICE
+            .lock()
+            .expect("VIRTIO_INPUT_DEVICE lock poisoned")
+            .clone()
     } else {
         VIRTIO_INPUT_DEVICES.read().get(&index).cloned()
     }
@@ -564,9 +595,8 @@ pub fn get_virtio_input_device_at_index(index: u8) -> Option<Arc<VirtioInputDevi
 
 /// Initialize the global VirtIO input device at a specific index.
 pub unsafe fn init_virtio_input_at_index(index: u8, mmio_base: u64) -> Result<(), InputError> {
-    let transport = unsafe {
-        VirtioMmioTransport::new(mmio_base as usize).map_err(|_| InputError::NotReady)?
-    };
+    let transport =
+        unsafe { VirtioMmioTransport::new(mmio_base as usize).map_err(|_| InputError::NotReady)? };
     let mut dev = VirtioInputDevice::new(Box::new(transport));
     dev.init()?;
 
@@ -575,9 +605,17 @@ pub unsafe fn init_virtio_input_at_index(index: u8, mmio_base: u64) -> Result<()
 
     if let Some(name_bytes) = name {
         if let Ok(name_str) = core::str::from_utf8(&name_bytes) {
-            log::info!("VirtIO-input index={} initialized: \"{}\"\n", index, name_str);
+            log::info!(
+                "VirtIO-input index={} initialized: \"{}\"\n",
+                index,
+                name_str
+            );
         } else {
-            log::info!("VirtIO-input index={} initialized: (non-UTF8 name, {} bytes)\n", index, name_bytes.len());
+            log::info!(
+                "VirtIO-input index={} initialized: (non-UTF8 name, {} bytes)\n",
+                index,
+                name_bytes.len()
+            );
         }
     } else {
         log::info!("VirtIO-input index={} initialized\n", index);
@@ -601,9 +639,8 @@ pub unsafe fn init_virtio_input_for_device_at_index(
     mmio_base: u64,
     device: IommuDeviceId,
 ) -> Result<(), InputError> {
-    let transport = unsafe {
-        VirtioMmioTransport::new(mmio_base as usize).map_err(|_| InputError::NotReady)?
-    };
+    let transport =
+        unsafe { VirtioMmioTransport::new(mmio_base as usize).map_err(|_| InputError::NotReady)? };
     let mut dev = VirtioInputDevice::new_with_device(Box::new(transport), Some(device));
     dev.init()?;
 
@@ -612,9 +649,17 @@ pub unsafe fn init_virtio_input_for_device_at_index(
 
     if let Some(name_bytes) = name {
         if let Ok(name_str) = core::str::from_utf8(&name_bytes) {
-            log::info!("VirtIO-input index={} initialized: \"{}\"\n", index, name_str);
+            log::info!(
+                "VirtIO-input index={} initialized: \"{}\"\n",
+                index,
+                name_str
+            );
         } else {
-            log::info!("VirtIO-input index={} initialized: (non-UTF8 name, {} bytes)\n", index, name_bytes.len());
+            log::info!(
+                "VirtIO-input index={} initialized: (non-UTF8 name, {} bytes)\n",
+                index,
+                name_bytes.len()
+            );
         }
     } else {
         log::info!("VirtIO-input index={} initialized\n", index);

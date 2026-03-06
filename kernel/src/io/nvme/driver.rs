@@ -11,23 +11,23 @@
 #![allow(unused_imports)]
 
 // Re-export from nvme_driver crate directly
-pub use nvme_driver::queue::{CompletionQueue, QueuePair, SubmissionQueue};
-pub use nvme_driver::per_core::{NvmeQueueStats, PerCoreNvmeQueue};
-pub use nvme_driver::polling_driver::{NvmeDriverStats, NvmePollingDriver};
 pub use nvme_driver::async_io::{ReadFuture, WriteFuture};
-pub use nvme_driver::{AsyncIoRequest, IoRequestState, PendingRequests};
 pub use nvme_driver::error::NvmeError;
 pub use nvme_driver::global::{get_stats, init, poll, with_driver, with_driver_mut};
+pub use nvme_driver::per_core::{NvmeQueueStats, PerCoreNvmeQueue};
+pub use nvme_driver::polling_driver::{NvmeDriverStats, NvmePollingDriver};
+pub use nvme_driver::queue::{CompletionQueue, QueuePair, SubmissionQueue};
+pub use nvme_driver::{AsyncIoRequest, IoRequestState, PendingRequests};
 
 // Scheduler (kernel-local)
 pub use super::scheduler::{NvmePollHandler, register_with_io_scheduler};
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use nvme_driver::commands::{NvmeCommand, NvmeCompletion};
     use nvme_driver::controller::NvmeCapabilities;
     use nvme_driver::defs::PrpList;
-    use nvme_driver::commands::{NvmeCommand, NvmeCompletion};
-    use super::*;
 
     #[test_case]
     fn test_nvme_command_read() {

@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// UDP socket snapshot for monitoring
 #[derive(Debug, Clone)]
 pub struct UdpEndpointSnapshot {
@@ -49,7 +48,13 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet (IPv4)
-    pub fn process(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, ttl: u8) -> UdpResult {
+    pub fn process(
+        &self,
+        data: &[u8],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        ttl: u8,
+    ) -> UdpResult {
         use core::sync::atomic::Ordering;
 
         let packet = match UdpPacket::parse(data) {
@@ -78,7 +83,7 @@ impl UdpProcessor {
             pkt_ref.set_len(payload.len());
             let buf = pkt_ref.data_mut();
             buf[..payload.len()].copy_from_slice(payload);
-            
+
             let src = UdpAddr::new(src_ip, packet.src_port());
             let dst_port = packet.dst_port();
 
@@ -94,7 +99,13 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet (IPv6, mandatory checksum)
-    pub fn process_v6(&self, data: &[u8], src_ip: Ipv6Address, dst_ip: Ipv6Address, ttl: u8) -> UdpResult {
+    pub fn process_v6(
+        &self,
+        data: &[u8],
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        ttl: u8,
+    ) -> UdpResult {
         use core::sync::atomic::Ordering;
 
         let packet = match UdpPacket::parse(data) {
@@ -120,7 +131,7 @@ impl UdpProcessor {
             pkt_ref.set_len(payload.len());
             let buf = pkt_ref.data_mut();
             buf[..payload.len()].copy_from_slice(payload);
-            
+
             let src = UdpAddr::new_v6(src_ip, packet.src_port());
             let dst_port = packet.dst_port();
 
@@ -135,7 +146,14 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet with an existing PacketRef (zero-copy, IPv4)
-    pub fn process_with_packet(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, mut packet: PacketRef, ttl: u8) -> UdpResult {
+    pub fn process_with_packet(
+        &self,
+        data: &[u8],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        mut packet: PacketRef,
+        ttl: u8,
+    ) -> UdpResult {
         use core::sync::atomic::Ordering;
 
         let packet_view = match UdpPacket::parse(data) {
@@ -171,7 +189,14 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet with an existing PacketRef (zero-copy, IPv6)
-    pub fn process_with_packet_v6(&self, data: &[u8], src_ip: Ipv6Address, dst_ip: Ipv6Address, mut packet: PacketRef, ttl: u8) -> UdpResult {
+    pub fn process_with_packet_v6(
+        &self,
+        data: &[u8],
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        mut packet: PacketRef,
+        ttl: u8,
+    ) -> UdpResult {
         use core::sync::atomic::Ordering;
 
         let packet_view = match UdpPacket::parse(data) {
@@ -209,15 +234,25 @@ impl UdpProcessor {
     // Legacy `bind` removed; use `bind_with_token(port, None)` instead.
 
     /// Bind to a port with a capability token
-    pub fn bind_with_token(&self, port: u16, token: Option<u64>) -> Result<UdpEndpoint, NetworkError> {
+    pub fn bind_with_token(
+        &self,
+        port: u16,
+        token: Option<u64>,
+    ) -> Result<UdpEndpoint, NetworkError> {
         if let Some(t) = token {
             // Token present - validate ownership and capability
             let caller_domain = crate::task::context::current_subject().domain;
-            if !crate::security::capability::manager().validate_token(caller_domain.as_u64(), t, crate::security::capability::CAP_NET_BIND) {
-                 return Err(NetworkError::PermissionDenied);
+            if !crate::security::capability::manager().validate_token(
+                caller_domain.as_u64(),
+                t,
+                crate::security::capability::CAP_NET_BIND,
+            ) {
+                return Err(NetworkError::PermissionDenied);
             }
         }
-        self.endpoints.bind_with_token(port, token).ok_or(NetworkError::PortInUse)
+        self.endpoints
+            .bind_with_token(port, token)
+            .ok_or(NetworkError::PortInUse)
     }
 
     /// Unbind a socket
@@ -248,4 +283,3 @@ impl Default for UdpProcessor {
         Self::new()
     }
 }
-

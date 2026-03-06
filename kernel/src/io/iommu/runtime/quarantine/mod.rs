@@ -324,16 +324,18 @@ impl Drop for QuarantineSlotGuard {
         if self.pte_cleared {
             // Round 13: Use helper to poison and wake everyone
             self.queue.poison_system();
-            
+
             // SECURITY: Avoid system-wide panic to prevent DoS.
             // Poisoning the queue already prevents further operations on this domain.
-            log::error!("CRITICAL: QuarantineSlotGuard dropped after PTE clear but before commit! Queue POISONED.");
-            
+            log::error!(
+                "CRITICAL: QuarantineSlotGuard dropped after PTE clear but before commit! Queue POISONED."
+            );
+
             // Notify security monitor about the potential vulnerability window
             crate::io::iommu::runtime::security::notify_security_listener(
-                crate::io::iommu::runtime::security::SecurityEvent::QuarantinePoisoned { 
-                    domain_id: 0 // Inferred by monitor
-                }
+                crate::io::iommu::runtime::security::SecurityEvent::QuarantinePoisoned {
+                    domain_id: 0, // Inferred by monitor
+                },
             );
             return;
         }
@@ -398,15 +400,17 @@ impl Drop for InvSlotGuard {
         if self.pte_cleared {
             // Round 13: Use helper to poison and wake everyone
             self.queue.poison_system();
-            
+
             // SECURITY: Avoid system-wide panic to prevent DoS.
-            log::error!("CRITICAL: InvSlotGuard dropped after PTE clear but before commit! Queue POISONED.");
-            
+            log::error!(
+                "CRITICAL: InvSlotGuard dropped after PTE clear but before commit! Queue POISONED."
+            );
+
             // Notify security monitor about the potential vulnerability window
             crate::io::iommu::runtime::security::notify_security_listener(
-                crate::io::iommu::runtime::security::SecurityEvent::QuarantinePoisoned { 
-                    domain_id: 0 // Inferred by monitor
-                }
+                crate::io::iommu::runtime::security::SecurityEvent::QuarantinePoisoned {
+                    domain_id: 0, // Inferred by monitor
+                },
             );
             return;
         }
@@ -446,10 +450,7 @@ fn should_skip_for_reap(entry: &QuarantineEntry, scan_threshold: u64) -> bool {
 
 /// Collect IOVA information from an entry and clear its IOVA fields.
 #[inline]
-fn collect_entry_iova(
-    entry: &mut QuarantineEntry,
-    to_free_iova: &mut alloc::vec::Vec<(u64, u64)>,
-) {
+fn collect_entry_iova(entry: &mut QuarantineEntry, to_free_iova: &mut alloc::vec::Vec<(u64, u64)>) {
     if entry.iova != 0 && entry.iova_size != 0 {
         to_free_iova.push((entry.iova, entry.iova_size));
         entry.iova = 0;

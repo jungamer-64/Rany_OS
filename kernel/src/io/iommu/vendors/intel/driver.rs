@@ -42,7 +42,7 @@ impl Driver for IntelVtDDriver {
 
     fn probe(&mut self) -> KapiResult<()> {
         log::info!(target: "vtd", "Probing Intel VT-d IOMMU at {:#x}", self.dmar_addr);
-        
+
         // Call existing unsafe initialization
         match unsafe { init_iommu_from_acpi(self.dmar_addr, self.config.clone()) } {
             Ok(_) => {
@@ -53,11 +53,11 @@ impl Driver for IntelVtDDriver {
             Err(e) => {
                 log::error!(target: "vtd", "Initialization failed: {:?}", e);
                 // Map IommuError to KapiError
-                Err(KapiError::IoError) 
+                Err(KapiError::IoError)
             }
         }
     }
-    
+
     fn supported_devices(&self) -> &[DeviceId] {
         // IOMMU is a system device, not matched by PCI ID usually (though it appears as one).
         // DriverRegistry loads this manually, so this list can be empty.

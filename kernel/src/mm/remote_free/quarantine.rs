@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl QuarantineEntry {
     /// Create an empty/invalid entry
     #[inline]
@@ -11,7 +10,7 @@ impl QuarantineEntry {
             epoch: 0,
         }
     }
-    
+
     /// Create a new quarantine entry
     #[inline]
     pub const fn new(addr: u64, size_class: u8, epoch: u32) -> Self {
@@ -21,13 +20,13 @@ impl QuarantineEntry {
             epoch,
         }
     }
-    
+
     /// Check if this is an empty/invalid entry
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.addr == 0 && self.size_class == 0
     }
-    
+
     /// Get the page size for this entry's size class
     #[inline]
     pub const fn page_size(&self) -> u64 {
@@ -100,13 +99,13 @@ impl<const N: usize> QuarantineRing<N> {
             count: 0,
         }
     }
-    
+
     /// Get the ring capacity
     #[inline]
     pub const fn capacity(&self) -> usize {
         N
     }
-    
+
     /// Try to add an entry to quarantine (O(1))
     ///
     /// Returns false if the ring is full (caller should drain first).
@@ -115,7 +114,7 @@ impl<const N: usize> QuarantineRing<N> {
         if self.count >= N {
             return false;
         }
-        
+
         self.entries[self.head] = QuarantineEntry {
             addr,
             size_class,
@@ -125,13 +124,13 @@ impl<const N: usize> QuarantineRing<N> {
         self.count += 1;
         true
     }
-    
+
     /// Push a QuarantineEntry directly
     #[inline]
     pub fn push_entry(&mut self, entry: QuarantineEntry) -> bool {
         self.push(entry.addr, entry.size_class, entry.epoch)
     }
-    
+
     /// Pop entries that are older than the given epoch
     ///
     /// Returns up to `max` entries that have `epoch <= completed_epoch`.
@@ -139,12 +138,17 @@ impl<const N: usize> QuarantineRing<N> {
     ///
     /// # Epoch Wrap-around Handling
     /// Uses signed comparison to handle 32-bit epoch wrap-around correctly.
-    pub fn drain_older_than(&mut self, completed_epoch: u32, max: usize, out: &mut [QuarantineEntry]) -> usize {
+    pub fn drain_older_than(
+        &mut self,
+        completed_epoch: u32,
+        max: usize,
+        out: &mut [QuarantineEntry],
+    ) -> usize {
         let mut drained = 0;
-        
+
         while drained < max && drained < out.len() && self.count > 0 {
             let entry = &self.entries[self.tail];
-            
+
             // Only drain if epoch has passed
             // Handle wrap-around: completed_epoch - entry.epoch should be positive
             let age = completed_epoch.wrapping_sub(entry.epoch) as i32;
@@ -152,71 +156,71 @@ impl<const N: usize> QuarantineRing<N> {
                 // Entry is from a future epoch, stop draining
                 break;
             }
-            
+
             out[drained] = *entry;
             self.tail = (self.tail + 1) % N;
             self.count -= 1;
             drained += 1;
         }
-        
+
         drained
     }
-    
+
     /// Drain with a closure (more efficient when you don't need to store entries)
     pub fn drain_older_than_with<F>(&mut self, completed_epoch: u32, max: usize, mut f: F) -> usize
     where
         F: FnMut(QuarantineEntry),
     {
         let mut drained = 0;
-        
+
         while drained < max && self.count > 0 {
             let entry = &self.entries[self.tail];
-            
+
             let age = completed_epoch.wrapping_sub(entry.epoch) as i32;
             if age < 0 {
                 break;
             }
-            
+
             f(*entry);
             self.tail = (self.tail + 1) % N;
             self.count -= 1;
             drained += 1;
         }
-        
+
         drained
     }
-    
+
     /// Force drain all entries (for shutdown or emergency)
     pub fn drain_all(&mut self, out: &mut [QuarantineEntry]) -> usize {
         let mut drained = 0;
-        
+
         while drained < out.len() && self.count > 0 {
             out[drained] = self.entries[self.tail];
             self.tail = (self.tail + 1) % N;
             self.count -= 1;
             drained += 1;
         }
-        
+
         drained
     }
-    
+
     /// Force drain all entries with a closure
     pub fn drain_all_with<F>(&mut self, mut f: F) -> usize
     where
         F: FnMut(QuarantineEntry),
     {
         let mut drained = 0;
-        
+
         while self.count > 0 {
             f(self.entries[self.tail]);
             self.tail = (self.tail + 1) % N;
             self.count -= 1;
             drained += 1;
         }
-        
+
         drained
     }
-    
+
     /// Peek at the oldest entry without removing it
     #[inline]
     pub fn peek(&self) -> Option<&QuarantineEntry> {
@@ -226,37 +230,37 @@ impl<const N: usize> QuarantineRing<N> {
             None
         }
     }
-    
+
     /// Get the epoch of the oldest entry (if any)
     #[inline]
     pub fn oldest_epoch(&self) -> Option<u32> {
         self.peek().map(|e| e.epoch)
     }
-    
+
     /// Get current count
     #[inline]
     pub fn len(&self) -> usize {
         self.count
     }
-    
+
     /// Check if empty
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
-    
+
     /// Check if full
     #[inline]
     pub fn is_full(&self) -> bool {
         self.count >= N
     }
-    
+
     /// Get remaining capacity
     #[inline]
     pub fn remaining(&self) -> usize {
         N.saturating_sub(self.count)
     }
-    
+
     /// Clear all entries
     pub fn clear(&mut self) {
         self.head = 0;
@@ -300,7 +304,7 @@ impl IovaFreeEntry {
             size_class: 0,
         }
     }
-    
+
     /// Create a single-page entry
     #[inline]
     pub const fn single(iova: u64, size_class: u8) -> Self {
@@ -310,7 +314,7 @@ impl IovaFreeEntry {
             size_class,
         }
     }
-    
+
     /// Create a range entry for multiple contiguous pages
     #[inline]
     pub const fn range(iova: u64, count: u16, size_class: u8) -> Self {
@@ -320,13 +324,13 @@ impl IovaFreeEntry {
             size_class,
         }
     }
-    
+
     /// Check if this is an empty/invalid entry
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.count == 0
     }
-    
+
     /// Get the page size for this entry's size class
     #[inline]
     pub const fn page_size(&self) -> u64 {
@@ -337,13 +341,13 @@ impl IovaFreeEntry {
             _ => PAGE_SIZE_4K as u64,
         }
     }
-    
+
     /// Get total bytes covered by this entry
     #[inline]
     pub fn total_bytes(&self) -> u64 {
         self.page_size() * (self.count as u64)
     }
-    
+
     /// Convert from generic RemoteFreeEntry
     #[inline]
     pub const fn from_generic(entry: RemoteFreeEntry) -> Self {
@@ -353,7 +357,7 @@ impl IovaFreeEntry {
             size_class: entry.size_class,
         }
     }
-    
+
     /// Convert to generic RemoteFreeEntry
     #[inline]
     pub const fn to_generic(self) -> RemoteFreeEntry {
@@ -407,7 +411,7 @@ impl IovaQuarantineEntry {
             epoch: 0,
         }
     }
-    
+
     /// Create a new quarantine entry
     #[inline]
     pub const fn new(iova: u64, size_class: u8, epoch: u32) -> Self {
@@ -417,13 +421,13 @@ impl IovaQuarantineEntry {
             epoch,
         }
     }
-    
+
     /// Check if this is an empty/invalid entry
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.iova == 0 && self.size_class == 0
     }
-    
+
     /// Convert from generic QuarantineEntry
     #[inline]
     pub const fn from_generic(entry: QuarantineEntry) -> Self {
@@ -433,7 +437,7 @@ impl IovaQuarantineEntry {
             epoch: entry.epoch,
         }
     }
-    
+
     /// Convert to generic QuarantineEntry
     #[inline]
     pub const fn to_generic(self) -> QuarantineEntry {
@@ -565,16 +569,10 @@ pub mod coalescing {
         }
 
         // エントリをコピーしてソート
-        let mut sorted: Vec<_> = entries.iter()
-            .filter(|e| !e.is_empty())
-            .cloned()
-            .collect();
+        let mut sorted: Vec<_> = entries.iter().filter(|e| !e.is_empty()).cloned().collect();
 
         // サイズクラス→アドレス順でソート
-        sorted.sort_by(|a, b| {
-            a.size_class.cmp(&b.size_class)
-                .then(a.addr.cmp(&b.addr))
-        });
+        sorted.sort_by(|a, b| a.size_class.cmp(&b.size_class).then(a.addr.cmp(&b.addr)));
 
         let mut result = Vec::with_capacity(sorted.len());
         let mut current: Option<CoalescedEntry> = None;
@@ -611,7 +609,7 @@ pub mod coalescing {
     ) -> Vec<CoalescedEntry> {
         let mut entries = alloc::vec![RemoteFreeEntry::empty(); max_entries.min(N)];
         let drained = ring.drain(&mut entries);
-        
+
         if drained == 0 {
             return Vec::new();
         }
@@ -629,10 +627,10 @@ pub mod coalescing {
         }
 
         let pages = entry.count as usize;
-        
+
         // Order 0 = 1ページ, Order 1 = 2ページ, ... Order 9 = 512ページ (2MB)
         // 2のべき乗かつアラインされていれば上位オーダーで解放可能
-        
+
         for order in (1..=9).rev() {
             let block_pages = 1usize << order;
             if pages >= block_pages {
@@ -671,7 +669,7 @@ pub mod coalescing {
     }
 
     /// グローバル結合統計
-    pub(super) static COALESCE_STATS: core::sync::atomic::AtomicU64 = 
+    pub(super) static COALESCE_STATS: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(0);
 
     /// 結合統計を更新
@@ -686,5 +684,3 @@ pub mod coalescing {
         COALESCE_STATS.load(core::sync::atomic::Ordering::Relaxed)
     }
 }
-
-

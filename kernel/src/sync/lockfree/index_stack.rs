@@ -3,10 +3,10 @@
 // ============================================================================
 
 use alloc::{boxed::Box, vec::Vec};
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use super::backoff::Backoff;
 use super::CacheLinePadded;
+use super::backoff::Backoff;
 
 /// Push error for [`LockFreeIndexStack`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

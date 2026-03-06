@@ -25,11 +25,11 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, Ordering};
-use alloc::boxed::Box;
 use super::higher_half::VirtAddr;
+use alloc::boxed::Box;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::mm::sync::rcu::{rcu_read_lock, RcuReadGuard, RcuPointer};
+use crate::mm::sync::rcu::{RcuPointer, RcuReadGuard, rcu_read_lock};
 
 // ============================================================================
 // VMA (Virtual Memory Area) Structure
@@ -90,31 +90,31 @@ impl VmArea {
             refcount: AtomicU64::new(1),
         }
     }
-    
+
     /// アドレスがこのVMAに含まれるか
     #[inline]
     pub fn contains(&self, addr: VirtAddr) -> bool {
         addr >= self.start && addr < self.end
     }
-    
+
     /// サイズを取得
     #[inline]
     pub fn size(&self) -> u64 {
         self.end.as_u64() - self.start.as_u64()
     }
-    
+
     /// 書き込み可能か
     #[inline]
     pub fn is_writable(&self) -> bool {
         self.flags & VmaFlags::Write as u32 != 0
     }
-    
+
     /// 実行可能か
     #[inline]
     pub fn is_executable(&self) -> bool {
         self.flags & VmaFlags::Execute as u32 != 0
     }
-    
+
     /// ファイルバックか
     #[inline]
     pub fn is_file_backed(&self) -> bool {
@@ -132,13 +132,13 @@ impl VmArea {
             file_offset: self.file_offset,
         }
     }
-    
+
     /// 参照カウントを増加
     #[inline]
     pub fn get(&self) {
         self.refcount.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// 参照カウントを減少
     #[inline]
     pub fn put(&self) -> bool {
@@ -185,58 +185,58 @@ impl VmaList {
             count: AtomicU64::new(0),
         }
     }
-    
+
     /// アドレスに対応するVMAを検索（RCU読み取り）
     ///
     /// ロックフリーでO(n)検索。
     /// 実際の実装ではRBツリーやスキップリストを使用する。
     pub fn find(&self, addr: VirtAddr) -> Option<VmaInfo> {
         let guard = rcu_read_lock();
-        
+
         let mut current_ptr = self.head.get_raw(&guard);
         while !current_ptr.is_null() {
             // Safety: RcuReadGuard 内
             let current = unsafe { &*current_ptr };
-            
+
             if current.contains(addr) {
                 return Some(current.info());
             }
-            
+
             if addr < current.start {
                 // ソート済みなのでこれ以降は見つからない
                 break;
             }
-            
+
             current_ptr = current.next.get_raw(&guard);
         }
-        
+
         None
     }
-    
+
     /// 指定範囲と重なるVMAを検索
     pub fn find_intersection(&self, start: VirtAddr, end: VirtAddr) -> Option<VmaInfo> {
         let guard = rcu_read_lock();
-        
+
         let mut current_ptr = self.head.get_raw(&guard);
         while !current_ptr.is_null() {
             let current = unsafe { &*current_ptr };
-            
+
             // 重なりをチェック
             if current.start < end && current.end > start {
                 return Some(current.info());
             }
-            
+
             if start < current.start && end <= current.start {
                 // ソート済みなのでこれ以降は見つからない
                 break;
             }
-            
+
             current_ptr = current.next.get_raw(&guard);
         }
-        
+
         None
     }
-    
+
     /// VMAを挿入（書き込み側、ロックが必要）
     ///
     /// 呼び出し側で適切なロックを取得すること。
@@ -268,7 +268,7 @@ impl VmaList {
 
         self.count.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// VMAを削除（書き込み側、ロックが必要）
     ///
     /// 削除したVMAはcall_rcuで遅延解放される。
@@ -301,12 +301,12 @@ impl VmaList {
 
         false
     }
-    
+
     /// VMA数を取得
     pub fn len(&self) -> u64 {
         self.count.load(Ordering::Acquire)
     }
-    
+
     /// 空かどうか
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -343,44 +343,44 @@ impl PageTableEntry {
     pub const GLOBAL: u64 = 1 << 8;
     /// No-execute ビット
     pub const NO_EXECUTE: u64 = 1 << 63;
-    
+
     /// 物理アドレスマスク
     pub const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
-    
+
     /// 新しいPTEを作成
     pub const fn new(addr: u64, flags: u64) -> Self {
         Self((addr & Self::ADDR_MASK) | flags)
     }
-    
+
     /// 空のPTE
     pub const fn empty() -> Self {
         Self(0)
     }
-    
+
     /// Presentか
     #[inline]
     pub const fn is_present(&self) -> bool {
         self.0 & Self::PRESENT != 0
     }
-    
+
     /// Huge pageか
     #[inline]
     pub const fn is_huge(&self) -> bool {
         self.0 & Self::HUGE != 0
     }
-    
+
     /// 物理アドレスを取得
     #[inline]
     pub const fn addr(&self) -> u64 {
         self.0 & Self::ADDR_MASK
     }
-    
+
     /// フラグを取得
     #[inline]
     pub const fn flags(&self) -> u64 {
         self.0 & !Self::ADDR_MASK
     }
-    
+
     /// 生の値を取得
     #[inline]
     pub const fn raw(&self) -> u64 {
@@ -389,7 +389,7 @@ impl PageTableEntry {
 }
 
 /// RCU保護されたPTE
-/// 
+///
 /// Atomic操作でPTEを読み書きし、RcuReadGuard内での一貫性を保証。
 #[repr(transparent)]
 pub struct RcuPte {
@@ -403,24 +403,24 @@ impl RcuPte {
             entry: AtomicU64::new(pte.raw()),
         }
     }
-    
+
     /// 空のRCU PTEを作成
     pub const fn empty() -> Self {
         Self::new(PageTableEntry::empty())
     }
-    
+
     /// PTEを読み取り（RCU読み取りセクション内）
     #[inline]
     pub fn read(&self, _guard: &RcuReadGuard) -> PageTableEntry {
         PageTableEntry(self.entry.load(Ordering::Acquire))
     }
-    
+
     /// PTEを更新（アトミック）
     #[inline]
     pub fn write(&self, pte: PageTableEntry) {
         self.entry.store(pte.raw(), Ordering::Release);
     }
-    
+
     /// Compare-and-swap
     #[inline]
     pub fn compare_exchange(
@@ -429,7 +429,12 @@ impl RcuPte {
         new: PageTableEntry,
     ) -> Result<PageTableEntry, PageTableEntry> {
         self.entry
-            .compare_exchange(expected.raw(), new.raw(), Ordering::AcqRel, Ordering::Acquire)
+            .compare_exchange(
+                expected.raw(),
+                new.raw(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
             .map(PageTableEntry)
             .map_err(PageTableEntry)
     }
@@ -449,7 +454,7 @@ impl PageTable {
             entries: [EMPTY_PTE; 512],
         }
     }
-    
+
     /// エントリを取得
     #[inline]
     pub fn entry(&self, index: usize) -> &RcuPte {
@@ -487,11 +492,11 @@ pub enum PageSize {
 /// # Returns
 /// 歩行結果、またはPageFaultの場合はNone
 pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResult> {
-    use super::higher_half::{phys_to_virt, PhysAddr};
+    use super::higher_half::{PhysAddr, phys_to_virt};
     let guard = rcu_read_lock();
-    
+
     let addr = virt_addr.as_u64();
-    
+
     // インデックス計算
     let pml4_idx = ((addr >> 39) & 0x1FF) as usize;
     let pdpt_idx = ((addr >> 30) & 0x1FF) as usize;
@@ -500,30 +505,30 @@ pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResu
     let offset_4kb = (addr & 0xFFF) as u64;
     let offset_2mb = (addr & 0x1F_FFFF) as u64;
     let offset_1gb = (addr & 0x3FFF_FFFF) as u64;
-    
+
     let mut pte_values = [0u64; 4];
-    
+
     // PML4
     // 脆弱性修正: 物理アドレスを直接ポインタにキャストせず、phys_to_virt を使用
     let pml4_virt = phys_to_virt(PhysAddr::new(pml4_addr));
     let pml4 = unsafe { &*(pml4_virt.as_ptr::<PageTable>()) };
     let pml4e = pml4.entry(pml4_idx).read(&guard);
     pte_values[0] = pml4e.raw();
-    
+
     if !pml4e.is_present() {
         return None;
     }
-    
+
     // PDPT
     let pdpt_virt = phys_to_virt(PhysAddr::new(pml4e.addr()));
     let pdpt = unsafe { &*(pdpt_virt.as_ptr::<PageTable>()) };
     let pdpte = pdpt.entry(pdpt_idx).read(&guard);
     pte_values[1] = pdpte.raw();
-    
+
     if !pdpte.is_present() {
         return None;
     }
-    
+
     // 1GB Huge Page check
     if pdpte.is_huge() {
         return Some(PageWalkResult {
@@ -533,17 +538,17 @@ pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResu
             pte_values,
         });
     }
-    
+
     // PD
     let pd_virt = phys_to_virt(PhysAddr::new(pdpte.addr()));
     let pd = unsafe { &*(pd_virt.as_ptr::<PageTable>()) };
     let pde = pd.entry(pd_idx).read(&guard);
     pte_values[2] = pde.raw();
-    
+
     if !pde.is_present() {
         return None;
     }
-    
+
     // 2MB Huge Page check
     if pde.is_huge() {
         return Some(PageWalkResult {
@@ -553,17 +558,17 @@ pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResu
             pte_values,
         });
     }
-    
+
     // PT
     let pt_virt = phys_to_virt(PhysAddr::new(pde.addr()));
     let pt = unsafe { &*(pt_virt.as_ptr::<PageTable>()) };
     let pte = pt.entry(pt_idx).read(&guard);
     pte_values[3] = pte.raw();
-    
+
     if !pte.is_present() {
         return None;
     }
-    
+
     Some(PageWalkResult {
         phys_addr: pte.addr() + offset_4kb,
         page_size: PageSize::Size4KB,
@@ -604,69 +609,96 @@ fn verify_speculative_result(
 }
 
 pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResult> {
-    use super::higher_half::{phys_to_virt, PhysAddr};
+    use super::higher_half::{PhysAddr, phys_to_virt};
     let addr = virt_addr.as_u64();
-    
+
     let pml4_idx = ((addr >> 39) & 0x1FF) as usize;
     let pdpt_idx = ((addr >> 30) & 0x1FF) as usize;
     let pd_idx = ((addr >> 21) & 0x1FF) as usize;
     let pt_idx = ((addr >> 12) & 0x1FF) as usize;
     let _offset_4kb = (addr & 0xFFF) as u64;
-    
+
     let mut pte_values = [0u64; 4];
-    
+
     // 投機的読み取り（バリアなし）
     // 脆弱性修正: phys_to_virt を使用
     let pml4_virt = phys_to_virt(PhysAddr::new(pml4_addr));
     let pml4 = unsafe { &*(pml4_virt.as_ptr::<PageTable>()) };
     let pml4e_val = pml4.entry(pml4_idx).entry.load(Ordering::Relaxed);
     pte_values[0] = pml4e_val;
-    
+
     let pml4e = PageTableEntry(pml4e_val);
     if !pml4e.is_present() {
         return None;
     }
-    
+
     let pdpt_virt = phys_to_virt(PhysAddr::new(pml4e.addr()));
     let pdpt = unsafe { &*(pdpt_virt.as_ptr::<PageTable>()) };
     let pdpte_val = pdpt.entry(pdpt_idx).entry.load(Ordering::Relaxed);
     pte_values[1] = pdpte_val;
-    
+
     let pdpte = PageTableEntry(pdpte_val);
     if !pdpte.is_present() {
         return None;
     }
-    
+
     if pdpte.is_huge() {
-        return verify_speculative_result(pml4, pml4_idx, pml4e_val, pdpte, addr, PageSize::Size1GB, 0x3FFF_FFFF, pte_values);
+        return verify_speculative_result(
+            pml4,
+            pml4_idx,
+            pml4e_val,
+            pdpte,
+            addr,
+            PageSize::Size1GB,
+            0x3FFF_FFFF,
+            pte_values,
+        );
     }
-    
+
     let pd_virt = phys_to_virt(PhysAddr::new(pdpte.addr()));
     let pd = unsafe { &*(pd_virt.as_ptr::<PageTable>()) };
     let pde_val = pd.entry(pd_idx).entry.load(Ordering::Relaxed);
     pte_values[2] = pde_val;
-    
+
     let pde = PageTableEntry(pde_val);
     if !pde.is_present() {
         return None;
     }
-    
+
     if pde.is_huge() {
-        return verify_speculative_result(pml4, pml4_idx, pml4e_val, pde, addr, PageSize::Size2MB, 0x1F_FFFF, pte_values);
+        return verify_speculative_result(
+            pml4,
+            pml4_idx,
+            pml4e_val,
+            pde,
+            addr,
+            PageSize::Size2MB,
+            0x1F_FFFF,
+            pte_values,
+        );
     }
-    
+
     let pt_virt = phys_to_virt(PhysAddr::new(pde.addr()));
     let pt = unsafe { &*(pt_virt.as_ptr::<PageTable>()) };
     let pte_val = pt.entry(pt_idx).entry.load(Ordering::Relaxed);
     pte_values[3] = pte_val;
-    
+
     let pte = PageTableEntry(pte_val);
     if !pte.is_present() {
         return None;
     }
-    
+
     // 最終検証
-    verify_speculative_result(pml4, pml4_idx, pml4e_val, pte, addr, PageSize::Size4KB, 0xFFF, pte_values)
+    verify_speculative_result(
+        pml4,
+        pml4_idx,
+        pml4e_val,
+        pte,
+        addr,
+        PageSize::Size4KB,
+        0xFFF,
+        pte_values,
+    )
 }
 
 // ============================================================================
@@ -676,7 +708,7 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test_case]
     fn test_vma_contains() {
         let vma = VmArea::new(
@@ -684,32 +716,35 @@ mod tests {
             VirtAddr::new(0x2000),
             VmaFlags::Read as u32,
         );
-        
+
         assert!(vma.contains(VirtAddr::new(0x1000)));
         assert!(vma.contains(VirtAddr::new(0x1FFF)));
         assert!(!vma.contains(VirtAddr::new(0x2000)));
         assert!(!vma.contains(VirtAddr::new(0x0FFF)));
     }
-    
+
     #[test_case]
     fn test_page_table_entry() {
-        let pte = PageTableEntry::new(0x1234_5000, PageTableEntry::PRESENT | PageTableEntry::WRITABLE);
-        
+        let pte = PageTableEntry::new(
+            0x1234_5000,
+            PageTableEntry::PRESENT | PageTableEntry::WRITABLE,
+        );
+
         assert!(pte.is_present());
         assert!(!pte.is_huge());
         assert_eq!(pte.addr(), 0x1234_5000);
     }
-    
+
     #[test_case]
     fn test_rcu_pte() {
         let pte = RcuPte::new(PageTableEntry::new(0x1000, PageTableEntry::PRESENT));
         let guard = rcu_read_lock();
-        
+
         let entry = pte.read(&guard);
         assert!(entry.is_present());
         assert_eq!(entry.addr(), 0x1000);
     }
-    
+
     #[test_case]
     fn test_vma_list_empty() {
         let list = VmaList::new();
@@ -717,4 +752,3 @@ mod tests {
         assert_eq!(list.len(), 0);
     }
 }
-

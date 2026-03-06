@@ -18,8 +18,8 @@
 // Building block: Zero-copy buffer types
 #![allow(dead_code)]
 
-use alloc::sync::Arc;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Deref;
 use core::ptr::NonNull;
@@ -56,7 +56,6 @@ const LOCAL_FREE_CACHE_CAPACITY: usize = 64;
 const LOCAL_FREE_REFILL_BATCH: usize = 16;
 /// ローカルキャッシュが飽和した際にグローバルへ移すエントリ数
 const LOCAL_FREE_SPILL_BATCH: usize = 16;
-
 
 // ============================================================================
 // Buffer Pool
@@ -1053,7 +1052,9 @@ impl ZeroCopyWriter {
     /// Returns Ok(()) if the packet was successfully queued. This performs no
     /// completion wait — completion and cleanup occurs in the device interrupt
     /// handler which will return the buffer to the mempool.
-    pub fn enqueue_via_virtio(packet: crate::net::datapath::mempool::PacketRef) -> Result<(), &'static str> {
+    pub fn enqueue_via_virtio(
+        packet: crate::net::datapath::mempool::PacketRef,
+    ) -> Result<(), &'static str> {
         // Check device presence first to avoid moving packet into a closure that
         // might not be executed (which would drop the PacketRef unexpectedly).
         if crate::io::virtio::with_virtio_net(|_| ()).is_none() {

@@ -7,8 +7,8 @@
 
 pub mod caps;
 pub mod cmd;
-pub mod queues;
 pub mod health;
+pub mod queues;
 
 /// バイトバッファからビットフィールドを抽出する。
 ///
@@ -19,7 +19,7 @@ pub mod health;
 pub fn get_bits_u32(data: &[u8], bit_off: usize, bit_len: usize) -> u32 {
     let dword_off = (bit_off / 32) * 4;
     let bit_in_dword = bit_off % 32; // 0..31 (from MSB)
-    
+
     // Read the 32-bit value in Big Endian
     let mut val = u32::from_be_bytes([
         data[dword_off],
@@ -27,7 +27,7 @@ pub fn get_bits_u32(data: &[u8], bit_off: usize, bit_len: usize) -> u32 {
         data[dword_off + 2],
         data[dword_off + 3],
     ]);
-    
+
     // Shift and mask
     // bit_in_dword = 0 means starting at MSB (bit 31)
     // Mellanox/Linux MLX5_GET assumes bit 0 is MSB in diagrams but counts from 0.
@@ -43,20 +43,20 @@ pub fn get_bits_u32(data: &[u8], bit_off: usize, bit_len: usize) -> u32 {
 pub fn set_bits_u32(data: &mut [u8], bit_off: usize, bit_len: usize, value: u32) {
     let dword_off = (bit_off / 32) * 4;
     let bit_in_dword = bit_off % 32;
-    
+
     let mut val = u32::from_be_bytes([
         data[dword_off],
         data[dword_off + 1],
         data[dword_off + 2],
         data[dword_off + 3],
     ]);
-    
+
     let shift = 32 - bit_len - bit_in_dword;
     let mask = (((1u64 << bit_len) - 1) as u32) << shift;
-    
+
     val &= !mask;
     val |= (value << shift) & mask;
-    
+
     let bytes = val.to_be_bytes();
     data[dword_off..dword_off + 4].copy_from_slice(&bytes);
 }

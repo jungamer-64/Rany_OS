@@ -5,7 +5,6 @@
 use super::*;
 
 impl IommuController {
-
     /// Enable ATS (Address Translation Services) for a device
     ///
     /// # Security Warning
@@ -42,7 +41,9 @@ impl IommuController {
         if !self.is_queued_invalidation_enabled() {
             log::error!(
                 "[IOMMU] Blocked ATS for device {:04X}:{:02X}.{:X} - QI is disabled",
-                device.bus, device.device, device.function
+                device.bus,
+                device.device,
+                device.function
             );
             return false;
         }
@@ -138,8 +139,8 @@ impl IommuController {
         device: DeviceId,
         reason: crate::io::iommu::runtime::security::AtsChangeReason,
     ) {
-        use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
         use crate::io::iommu::runtime::security::SecurityEvent;
+        use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 
         match self.ats_enabled_devices.lock() {
             Ok(mut set) => {
@@ -165,12 +166,18 @@ impl IommuController {
                     if let Err(err) = self.qi_invalidate_device_tlb_all(device.requester_id()) {
                         log::error!(
                             "[IOMMU][SECURITY] Failed to submit Device-TLB invalidation for device {:04X}:{:02X}.{:X} while disabling ATS: {:?}",
-                            device.bus, device.device, device.function, err
+                            device.bus,
+                            device.device,
+                            device.function,
+                            err
                         );
                     } else if let Err(err) = self.qi_wait_sync() {
                         log::error!(
                             "[IOMMU][SECURITY] Timeout/Error waiting for Device-TLB invalidation for device {:04X}:{:02X}.{:X} while disabling ATS: {:?}",
-                            device.bus, device.device, device.function, err
+                            device.bus,
+                            device.device,
+                            device.function,
+                            err
                         );
                     }
                 }

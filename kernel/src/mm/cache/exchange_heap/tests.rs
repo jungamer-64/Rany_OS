@@ -66,13 +66,19 @@ fn test_block_coalescing() {
     let coalesce_before = stats_before.coalesce_count;
 
     // Free middle block first
-    unsafe { heap.deallocate(ptr2, layout); }
-    
+    unsafe {
+        heap.deallocate(ptr2, layout);
+    }
+
     // Free first block - should coalesce with ptr2's freed block
-    unsafe { heap.deallocate(ptr1, layout); }
-    
+    unsafe {
+        heap.deallocate(ptr1, layout);
+    }
+
     // Free third block - should coalesce with the combined block
-    unsafe { heap.deallocate(ptr3, layout); }
+    unsafe {
+        heap.deallocate(ptr3, layout);
+    }
 
     // Check that coalescing occurred
     let stats_after = heap.extended_stats().unwrap();

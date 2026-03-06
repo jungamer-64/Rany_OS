@@ -13,8 +13,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Once;
 use x86_64::PhysAddr;
 
-use crate::io::iommu::types::IommuError;
 use crate::io::iommu::api;
+use crate::io::iommu::types::IommuError;
 
 /// Default panic DMA pool size (bytes).
 pub const PANIC_DMA_POOL_BYTES: usize = 256 * 1024;
@@ -74,7 +74,7 @@ use crate::util::align_up_u64 as align_up;
 ///
 /// Must be called after the IOMMU backend is initialized and enabled.
 pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
-    use crate::io::log::{early_print, early_print_hex, early_print_dec};
+    use crate::io::log::{early_print, early_print_dec, early_print_hex};
     early_print("[PANIC_DMA] init_panic_dma_pool: bytes=");
     early_print_dec(bytes as u64);
     early_print("\n");
@@ -94,7 +94,8 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
     early_print("[PANIC_DMA] alloc_contiguous_frames: frames=");
     early_print_dec(frames as u64);
     early_print("\n");
-    let phys = crate::mm::phys::frame_allocator::alloc_contiguous_frames(frames).ok_or(IommuError::OutOfMemory)?;
+    let phys = crate::mm::phys::frame_allocator::alloc_contiguous_frames(frames)
+        .ok_or(IommuError::OutOfMemory)?;
     let phys_addr = PhysAddr::new(phys.as_u64());
     early_print("[PANIC_DMA] phys=");
     early_print_hex(phys_addr.as_u64());
@@ -183,9 +184,7 @@ pub fn panic_alloc_dma(bytes: usize) -> Option<PanicDmaRegion> {
         let cursor = pool.cursor.load(Ordering::Acquire);
         let offset = cursor % pool.size;
         let next = if offset + size > pool.size {
-            cursor
-                .wrapping_add(pool.size - offset)
-                .wrapping_add(size)
+            cursor.wrapping_add(pool.size - offset).wrapping_add(size)
         } else {
             cursor.wrapping_add(size)
         };
@@ -277,22 +276,26 @@ pub fn last_panic_record_message() -> Option<&'static str> {
 /// # Safety
 ///
 /// The caller must ensure the record memory remains valid and immutable.
-pub unsafe fn read_panic_record_message(info: &PanicDmaRecordInfo) -> Option<&'static str> { unsafe {
-    if info.total < core::mem::size_of::<PanicDmaRecordHeader>() {
-        return None;
-    }
+pub unsafe fn read_panic_record_message(info: &PanicDmaRecordInfo) -> Option<&'static str> {
+    unsafe {
+        if info.total < core::mem::size_of::<PanicDmaRecordHeader>() {
+            return None;
+        }
 
-    let header_ptr = info.virt as *const PanicDmaRecordHeader;
-    let header = core::ptr::read(header_ptr);
-    if header.magic != PANIC_DMA_MAGIC {
-        return None;
-    }
+        let header_ptr = info.virt as *const PanicDmaRecordHeader;
+        let header = core::ptr::read(header_ptr);
+        if header.magic != PANIC_DMA_MAGIC {
+            return None;
+        }
 
-    let len = (header.len as usize).min(info.total - core::mem::size_of::<PanicDmaRecordHeader>());
-    let payload_ptr = (info.virt as *const u8).add(core::mem::size_of::<PanicDmaRecordHeader>());
-    let payload = core::slice::from_raw_parts(payload_ptr, len);
-    core::str::from_utf8(payload).ok()
-}}
+        let len =
+            (header.len as usize).min(info.total - core::mem::size_of::<PanicDmaRecordHeader>());
+        let payload_ptr =
+            (info.virt as *const u8).add(core::mem::size_of::<PanicDmaRecordHeader>());
+        let payload = core::slice::from_raw_parts(payload_ptr, len);
+        core::str::from_utf8(payload).ok()
+    }
+}
 
 /// Check whether the panic DMA pool is initialized.
 pub fn panic_dma_pool_ready() -> bool {

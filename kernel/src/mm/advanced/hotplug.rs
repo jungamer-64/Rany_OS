@@ -20,11 +20,11 @@
 #![allow(dead_code)]
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use spin::RwLock;
 
-use crate::mm::types::{FrameIndex, NumaNodeId};
 use crate::mm::types::PAGE_SIZE_4K;
+use crate::mm::types::{FrameIndex, NumaNodeId};
 
 /// メモリブロックサイズ（128MB = デフォルトのhotplug単位）
 pub const MEMORY_BLOCK_SIZE: usize = 128 * 1024 * 1024;
@@ -97,34 +97,34 @@ impl MemoryBlock {
             online_timestamp: AtomicU64::new(0),
         }
     }
-    
+
     /// 状態を取得
     pub fn state(&self) -> MemoryBlockState {
         MemoryBlockState::from(self.state.load(Ordering::Acquire))
     }
-    
+
     /// 状態をセット
     fn set_state(&self, state: MemoryBlockState) {
         self.state.store(state as u8, Ordering::Release);
     }
-    
+
     /// 使用中ページ数を取得
     pub fn used_pages(&self) -> u64 {
         self.used_pages.load(Ordering::Relaxed)
     }
-    
+
     /// 空きページ率を取得（0.0 - 1.0）
     pub fn free_ratio(&self) -> f64 {
         let used = self.used_pages() as f64;
         let total = self.total_pages as f64;
         1.0 - (used / total)
     }
-    
+
     /// このブロックがオフライン可能か
     pub fn can_offline(&self) -> bool {
         self.state() == MemoryBlockState::Online
     }
-    
+
     /// ブロック内のフレーム範囲を取得
     pub fn frame_range(&self) -> (FrameIndex, FrameIndex) {
         let start = FrameIndex::new(self.start_addr as usize / PAGE_SIZE_4K);
@@ -143,7 +143,10 @@ pub enum HotplugEvent {
     /// メモリ削除完了通知
     MemoryRemoved { block_id: u64 },
     /// オフライン失敗
-    OfflineFailed { block_id: u64, reason: OfflineFailReason },
+    OfflineFailed {
+        block_id: u64,
+        reason: OfflineFailReason,
+    },
 }
 
 /// オフライン失敗理由
@@ -165,7 +168,7 @@ pub enum OfflineFailReason {
 pub trait HotplugCallback: Send + Sync {
     /// イベント通知
     fn on_hotplug_event(&self, event: HotplugEvent);
-    
+
     /// オフライン可否の確認（falseを返すとオフライン拒否）
     fn can_offline(&self, block_id: u64) -> bool;
 }
@@ -222,20 +225,24 @@ impl HotplugManager {
             initialized: AtomicU8::new(0),
         }
     }
-    
+
     /// 初期化
     pub fn init(&self) {
-        if self.initialized.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        if self
+            .initialized
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
             log::info!("[Hotplug] Memory hotplug manager initialized");
         }
     }
-    
+
     /// コールバックを登録
     pub fn register_callback(&self, callback: &'static dyn HotplugCallback) {
         let mut callbacks = self.callbacks.write();
         callbacks.push(callback);
     }
-    
+
     /// メモリブロックを追加（オンライン化）
     pub fn add_memory_block(
         &self,
@@ -247,53 +254,53 @@ impl HotplugManager {
         if start_addr as usize % MEMORY_BLOCK_SIZE != 0 {
             return Err(HotplugError::InvalidAlignment);
         }
-        
+
         // サイズチェック
         if size < MEMORY_BLOCK_SIZE {
             return Err(HotplugError::InvalidSize);
         }
-        
+
         // 重複チェック
         {
             let blocks = self.blocks.read();
             for block in blocks.values() {
                 let block_end = block.start_addr + block.size as u64;
                 let new_end = start_addr + size as u64;
-                
+
                 if start_addr < block_end && new_end > block.start_addr {
                     return Err(HotplugError::OverlappingRegion);
                 }
             }
         }
-        
+
         let block_id = self.next_block_id.fetch_add(1, Ordering::Relaxed);
         let block = MemoryBlock::new(block_id, start_addr, size, numa_node);
-        
+
         // 状態をGOING_ONLINEに変更
         block.set_state(MemoryBlockState::GoingOnline);
-        
+
         // ブロック追加
         {
             let mut blocks = self.blocks.write();
             blocks.insert(block_id, block);
         }
-        
+
         // 統計更新
         {
             let mut stats = self.stats.write();
             stats.pending_operations += 1;
         }
-        
+
         // PMM（Physical Memory Manager）に通知してフレームを登録
         // この部分は実際のPMM実装と連携する
         self.online_block_internal(block_id)?;
-        
+
         // コールバック通知
         let callbacks = self.callbacks.read();
         for cb in callbacks.iter() {
             cb.on_hotplug_event(HotplugEvent::MemoryAdded { block_id });
         }
-        
+
         // 統計更新
         {
             let mut stats = self.stats.write();
@@ -302,7 +309,7 @@ impl HotplugManager {
             stats.add_success_count += 1;
             stats.pending_operations = stats.pending_operations.saturating_sub(1);
         }
-        
+
         log::info!(
             "[Hotplug] Memory block {} added: addr=0x{:x}, size={}MB, node={}",
             block_id,
@@ -310,29 +317,29 @@ impl HotplugManager {
             size / (1024 * 1024),
             numa_node.as_u8()
         );
-        
+
         Ok(block_id)
     }
-    
+
     /// ブロック内部のオンライン処理
     fn online_block_internal(&self, block_id: u64) -> Result<(), HotplugError> {
         let blocks = self.blocks.read();
         let block = blocks.get(&block_id).ok_or(HotplugError::BlockNotFound)?;
-        
+
         // ゼロクリアを非同期でスケジュール
         // 実際はフレームアロケータへの登録を行う
         let (_start_frame, _end_frame) = block.frame_range();
-        
+
         // ここでbuddy_register_numa_regionを呼び出す
         // 今回は基盤のみなのでTODOとして残す
-        
+
         // 状態をONLINEに変更
         block.set_state(MemoryBlockState::Online);
         block.online_timestamp.store(read_tsc(), Ordering::Release);
-        
+
         Ok(())
     }
-    
+
     /// メモリブロックを削除（オフライン化）
     fn handle_offline_success(&self, block_id: u64) {
         let size = {
@@ -381,7 +388,11 @@ impl HotplugManager {
             cb.on_hotplug_event(HotplugEvent::OfflineFailed { block_id, reason });
         }
 
-        log::warn!("[Hotplug] Memory block {} offline failed: {:?}", block_id, e);
+        log::warn!(
+            "[Hotplug] Memory block {} offline failed: {:?}",
+            block_id,
+            e
+        );
     }
 
     pub fn remove_memory_block(&self, block_id: u64) -> Result<(), HotplugError> {
@@ -389,12 +400,12 @@ impl HotplugManager {
         {
             let blocks = self.blocks.read();
             let block = blocks.get(&block_id).ok_or(HotplugError::BlockNotFound)?;
-            
+
             if !block.can_offline() {
                 return Err(HotplugError::BlockBusy);
             }
         }
-        
+
         // コールバックでオフライン可否を確認
         {
             let callbacks = self.callbacks.read();
@@ -404,7 +415,7 @@ impl HotplugManager {
                 }
             }
         }
-        
+
         // 状態をGOING_OFFLINEに変更
         {
             let blocks = self.blocks.read();
@@ -412,13 +423,13 @@ impl HotplugManager {
                 block.set_state(MemoryBlockState::GoingOffline);
             }
         }
-        
+
         // 統計更新
         {
             let mut stats = self.stats.write();
             stats.pending_operations += 1;
         }
-        
+
         // コールバック通知
         {
             let callbacks = self.callbacks.read();
@@ -426,7 +437,7 @@ impl HotplugManager {
                 cb.on_hotplug_event(HotplugEvent::MemoryGoingOffline { block_id });
             }
         }
-        
+
         // オフライン処理を実行
         match self.offline_block_internal(block_id) {
             Ok(()) => {
@@ -439,19 +450,19 @@ impl HotplugManager {
             }
         }
     }
-    
+
     /// ブロック内部のオフライン処理
     fn offline_block_internal(&self, block_id: u64) -> Result<(), HotplugError> {
         let blocks = self.blocks.read();
         let block = blocks.get(&block_id).ok_or(HotplugError::BlockNotFound)?;
-        
+
         let (start_frame, end_frame) = block.frame_range();
-        
+
         // ページマイグレーション試行
         // 各ページを他のメモリブロックに移動する
         for frame_idx in start_frame.as_usize()..end_frame.as_usize() {
             let frame = FrameIndex::new(frame_idx);
-            
+
             // ページが使用中かチェック
             if self.is_frame_in_use(frame) {
                 // マイグレーション試行
@@ -461,27 +472,27 @@ impl HotplugManager {
                 }
             }
         }
-        
+
         // PMM（Physical Memory Manager）からフレームを登録解除
         // この部分は実際のPMM実装と連携する
-        
+
         Ok(())
     }
-    
+
     /// フレームが使用中かチェック
     fn is_frame_in_use(&self, _frame: FrameIndex) -> bool {
         // TODO: 実際のPMM実装と連携
         // 現在は常にfalse（未使用）を返す
         false
     }
-    
+
     /// フレームのマイグレーション試行
     fn try_migrate_frame(&self, _frame: FrameIndex, _numa_node: NumaNodeId) -> bool {
         // TODO: autonuma::migrate_numa_page と連携
         // 現在は常にtrue（成功）を返す
         true
     }
-    
+
     /// ブロック情報を取得
     pub fn get_block_info(&self, block_id: u64) -> Option<MemoryBlockInfo> {
         let blocks = self.blocks.read();
@@ -496,51 +507,55 @@ impl HotplugManager {
             free_ratio: b.free_ratio(),
         })
     }
-    
+
     /// 全ブロックの一覧を取得
     pub fn list_blocks(&self) -> Vec<MemoryBlockInfo> {
         let blocks = self.blocks.read();
-        blocks.values().map(|b| MemoryBlockInfo {
-            block_id: b.block_id,
-            start_addr: b.start_addr,
-            size: b.size,
-            numa_node: b.numa_node,
-            state: b.state(),
-            total_pages: b.total_pages,
-            used_pages: b.used_pages(),
-            free_ratio: b.free_ratio(),
-        }).collect()
+        blocks
+            .values()
+            .map(|b| MemoryBlockInfo {
+                block_id: b.block_id,
+                start_addr: b.start_addr,
+                size: b.size,
+                numa_node: b.numa_node,
+                state: b.state(),
+                total_pages: b.total_pages,
+                used_pages: b.used_pages(),
+                free_ratio: b.free_ratio(),
+            })
+            .collect()
     }
-    
+
     /// 統計情報を取得
     pub fn stats(&self) -> HotplugStats {
         self.stats.read().clone()
     }
-    
+
     /// 特定NUMAノードのオンラインメモリ合計を取得
     pub fn online_memory_on_node(&self, numa_node: NumaNodeId) -> u64 {
         let blocks = self.blocks.read();
-        blocks.values()
+        blocks
+            .values()
             .filter(|b| b.numa_node == numa_node && b.state() == MemoryBlockState::Online)
             .map(|b| b.size as u64)
             .sum()
     }
-    
+
     /// オフライン失敗したブロックをリトライ
     pub fn retry_failed_offline(&self, block_id: u64) -> Result<(), HotplugError> {
         // 状態チェック
         {
             let blocks = self.blocks.read();
             let block = blocks.get(&block_id).ok_or(HotplugError::BlockNotFound)?;
-            
+
             if block.state() != MemoryBlockState::OfflineFailed {
                 return Err(HotplugError::InvalidState);
             }
-            
+
             // 状態をONLINEに戻す
             block.set_state(MemoryBlockState::Online);
         }
-        
+
         // 再度オフライン試行
         self.remove_memory_block(block_id)
     }
@@ -649,23 +664,25 @@ pub fn hotplug_retry_offline(block_id: u64) -> Result<(), HotplugError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test_case]
     fn test_memory_block_state() {
         let block = MemoryBlock::new(0, 0, MEMORY_BLOCK_SIZE, NumaNodeId::new(0));
         assert_eq!(block.state(), MemoryBlockState::Offline);
-        
+
         block.set_state(MemoryBlockState::Online);
         assert_eq!(block.state(), MemoryBlockState::Online);
     }
-    
+
     #[test_case]
     fn test_frame_range() {
         let block = MemoryBlock::new(0, 0x1000_0000, MEMORY_BLOCK_SIZE, NumaNodeId::new(0));
         let (start, end) = block.frame_range();
-        
+
         assert_eq!(start.as_usize(), 0x1000_0000 / PAGE_SIZE_4K);
-        assert_eq!(end.as_usize(), (0x1000_0000 + MEMORY_BLOCK_SIZE) / PAGE_SIZE_4K);
+        assert_eq!(
+            end.as_usize(),
+            (0x1000_0000 + MEMORY_BLOCK_SIZE) / PAGE_SIZE_4K
+        );
     }
 }
-

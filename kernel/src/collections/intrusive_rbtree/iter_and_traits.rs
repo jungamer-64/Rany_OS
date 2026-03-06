@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl<A: KeyAdapter> Default for RBTree<A> {
     fn default() -> Self {
         Self::new()
@@ -29,13 +28,13 @@ impl<A: KeyAdapter> Iterator for RBTreeIter<A> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let current = self.current?;
-        
+
         // 現在のエントリを取得
         let entry = unsafe { A::entry_from_link(current) };
-        
+
         // 次のノードを見つける（中順走査）
         self.current = unsafe { Self::successor(current) };
-        
+
         Some(entry)
     }
 }
@@ -51,7 +50,7 @@ impl<A: KeyAdapter> RBTreeIter<A> {
             }
             return Some(n);
         }
-        
+
         // 右子がない場合、親を辿る
         let mut n = node;
         loop {
@@ -116,12 +115,16 @@ macro_rules! intrusive_adapter {
             }
 
             #[inline]
-            fn get_link_mut(entry: &mut Self::Entry) -> &mut $crate::collections::intrusive_rbtree::RBLink {
+            fn get_link_mut(
+                entry: &mut Self::Entry,
+            ) -> &mut $crate::collections::intrusive_rbtree::RBLink {
                 &mut entry.$link_field
             }
 
             #[inline]
-            unsafe fn entry_from_link(link: *mut $crate::collections::intrusive_rbtree::RBLink) -> *mut Self::Entry {
+            unsafe fn entry_from_link(
+                link: *mut $crate::collections::intrusive_rbtree::RBLink,
+            ) -> *mut Self::Entry {
                 let offset = $crate::offset_of!($entry, $link_field);
                 (link as *mut u8).sub(offset) as *mut Self::Entry
             }
@@ -144,4 +147,3 @@ pub mod qemu_tests;
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

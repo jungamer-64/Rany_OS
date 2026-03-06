@@ -194,8 +194,7 @@ pub fn decode_record(bytes: &[u8]) -> Result<(WalRecord, usize), WalCodecError> 
                     if payload.len() < 1 + 8 + 4 {
                         return Err(WalCodecError::InvalidPayload);
                     }
-                    let offset =
-                        read_u64_le(payload, 1).ok_or(WalCodecError::InvalidPayload)?;
+                    let offset = read_u64_le(payload, 1).ok_or(WalCodecError::InvalidPayload)?;
                     let data_len =
                         read_u32_le(payload, 9).ok_or(WalCodecError::InvalidPayload)? as usize;
                     if payload.len() != 13 + data_len {
@@ -208,8 +207,7 @@ pub fn decode_record(bytes: &[u8]) -> Result<(WalRecord, usize), WalCodecError> 
                     if payload.len() != 1 + 8 {
                         return Err(WalCodecError::InvalidPayload);
                     }
-                    let new_len =
-                        read_u64_le(payload, 1).ok_or(WalCodecError::InvalidPayload)?;
+                    let new_len = read_u64_le(payload, 1).ok_or(WalCodecError::InvalidPayload)?;
                     WalRecordKind::Append(WalOperation::Trim { new_len })
                 }
                 _ => return Err(WalCodecError::InvalidPayload),

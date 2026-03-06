@@ -28,13 +28,13 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, Ordering};
 use crate::sync::IrqMutex;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::mm::types::{FixedVec, PAGE_SIZE_4K, PAGE_SIZE_2M};
-use crate::mm::virt::higher_half::VirtAddr;
+use crate::mm::types::{FixedVec, PAGE_SIZE_2M, PAGE_SIZE_4K};
 use crate::mm::virt::address_space::ProcessAddressSpace;
+use crate::mm::virt::higher_half::VirtAddr;
 
 // ============================================================================
 // Constants
@@ -208,9 +208,10 @@ impl ThpPromotionManager {
         // Current scan position
         let start_addr = self.scan_addr;
         let current_addr = start_addr;
-        
+
         // Limit scan range per invocation to avoid stalls
-        const SCAN_BYTES: u64 = SCAN_STRIDE as u64 * MAX_CANDIDATES_PER_SCAN as u64 * PAGE_SIZE_4K as u64; 
+        const SCAN_BYTES: u64 =
+            SCAN_STRIDE as u64 * MAX_CANDIDATES_PER_SCAN as u64 * PAGE_SIZE_4K as u64;
         let _end_addr_limit = current_addr.as_u64() + SCAN_BYTES;
 
         // Iterate regions starting from current_addr
@@ -218,35 +219,36 @@ impl ThpPromotionManager {
         // Actually, we can just use `space.find_region` or similar, but iterating is better.
         // Given we can't easily iterate a private BTreeMap from here (it's in address_space.rs),
         // we might need to add a "scan_regions" helper in address_space.rs or expose an iterator.
-        
+
         // For now, let's assume we use a public method `scan_vma_for_thp` on ProcessAddressSpace
         // that accepts a closure or returns candidates?
         // Or we iterate using `brute force` via `find_region`? Brute force is slow.
         // Let's assume we added `scan_numa_hints` style iterator in address_space.rs.
-        // I will implement a `scan_vma_range` helper in address_space.rs next. 
+        // I will implement a `scan_vma_range` helper in address_space.rs next.
         // For this step, I'll write the logic assuming `space.scan_vma_gap(start, limit)` exists or similar.
-        
+
         // Actually, let's use the `space.scan_numa_hints` logic I saw earlier as inspiration.
         // But since I can't modify address_space.rs in the same tool call easily without context,
         // let's define the loop here assuming we can peek into regions if they were pub.
         // They are private.
-        
+
         // Pivot: Let's move the actual iteration logic to `ProcessAddressSpace` and call it here?
         // "scan_for_candidates" -> "space.find_thp_candidates(start, limit)"
-        
+
         // Updating this method to delegate:
-        let (candidates_found, next_addr) = space.find_thp_candidates(current_addr, MAX_CANDIDATES_PER_SCAN);
-        
+        let (candidates_found, next_addr) =
+            space.find_thp_candidates(current_addr, MAX_CANDIDATES_PER_SCAN);
+
         for candidate in candidates_found {
-             self.candidates.push(candidate);
-             self.stats.candidates_found += 1;
-             found += 1;
+            self.candidates.push(candidate);
+            self.stats.candidates_found += 1;
+            found += 1;
         }
-        
+
         self.scan_addr = next_addr;
         // Wrap around if we hit end of user space or didn't advance (end of regions)
         if self.scan_addr.as_u64() >= crate::mm::virt::address_space::USER_SPACE_END {
-             self.scan_addr = VirtAddr::new(crate::mm::virt::address_space::USER_SPACE_START);
+            self.scan_addr = VirtAddr::new(crate::mm::virt::address_space::USER_SPACE_START);
         }
 
         found
@@ -259,7 +261,7 @@ impl ThpPromotionManager {
         // 現在は標準的なユーザーページ属性を返す
         0x7 // Present | Writable | User
     }
-    
+
     /// 昇格優先度を計算
     #[inline]
     fn calculate_priority(&self, used_pages: u16) -> u8 {
@@ -299,16 +301,22 @@ impl ThpPromotionManager {
     }
 
     /// 単一の候補を2MBページに昇格
-    fn promote_to_huge_page(&mut self, space: &ProcessAddressSpace, candidate: &ThpCandidate) -> bool {
+    fn promote_to_huge_page(
+        &mut self,
+        space: &ProcessAddressSpace,
+        candidate: &ThpCandidate,
+    ) -> bool {
         // Delegate to ProcessAddressSpace which holds the page table lock/logic
         let result = space.promote_huge_page(candidate.start_addr);
-        
+
         if result {
             // 3. 統計更新
             PROMOTION_STATS.promotions.fetch_add(1, Ordering::Relaxed);
-            PROMOTION_STATS.pages_promoted.fetch_add(PAGES_PER_HUGE_PAGE as u64, Ordering::Relaxed);
+            PROMOTION_STATS
+                .pages_promoted
+                .fetch_add(PAGES_PER_HUGE_PAGE as u64, Ordering::Relaxed);
         }
-        
+
         result
     }
 
@@ -324,7 +332,8 @@ impl ThpPromotionManager {
         let mut compacted = 0;
 
         // コンパクション候補（部分使用領域）を取得
-        let compaction_candidates: Vec<_> = self.candidates
+        let compaction_candidates: Vec<_> = self
+            .candidates
             .iter()
             .filter(|c| c.needs_compaction())
             .cloned()
@@ -332,7 +341,7 @@ impl ThpPromotionManager {
 
         for candidate in compaction_candidates.iter().take(MAX_COMPACTION_ATTEMPTS) {
             self.stats.compaction_attempts += 1;
-            
+
             if self.compact_region(space, candidate) {
                 self.stats.compaction_success += 1;
                 compacted += 1;

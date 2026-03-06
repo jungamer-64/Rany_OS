@@ -238,28 +238,19 @@ pub fn get_secure_boot_mode(info: &SecureBootInfo) -> SecureBootMode {
 
 /// SHA-256 initial hash values (first 32 bits of fractional parts of sqrt of first 8 primes)
 const SHA256_H: [u32; 8] = [
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
 /// SHA-256 round constants (first 32 bits of fractional parts of cbrt of first 64 primes)
 const SHA256_K: [u32; 64] = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
-    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
-    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
 /// Compute SHA-256 hash of `data` in pure software (no_std).
@@ -307,12 +298,8 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 
         // Extend to 64 words
         for j in 16..64 {
-            let s0 = w[j - 15].rotate_right(7)
-                ^ w[j - 15].rotate_right(18)
-                ^ (w[j - 15] >> 3);
-            let s1 = w[j - 2].rotate_right(17)
-                ^ w[j - 2].rotate_right(19)
-                ^ (w[j - 2] >> 10);
+            let s0 = w[j - 15].rotate_right(7) ^ w[j - 15].rotate_right(18) ^ (w[j - 15] >> 3);
+            let s1 = w[j - 2].rotate_right(17) ^ w[j - 2].rotate_right(19) ^ (w[j - 2] >> 10);
             w[j] = w[j - 16]
                 .wrapping_add(s0)
                 .wrapping_add(w[j - 7])
@@ -367,8 +354,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 
 /// EFI_CERT_SHA256_GUID: {C1C41626-504C-4092-ACA9-41F936934328}
 const EFI_CERT_SHA256_GUID: [u8; 16] = [
-    0x26, 0x16, 0xc4, 0xc1, 0x4c, 0x50, 0x92, 0x40,
-    0xac, 0xa9, 0x41, 0xf9, 0x36, 0x93, 0x43, 0x28,
+    0x26, 0x16, 0xc4, 0xc1, 0x4c, 0x50, 0x92, 0x40, 0xac, 0xa9, 0x41, 0xf9, 0x36, 0x93, 0x43, 0x28,
 ];
 
 /// EFI_SIGNATURE_LIST header (28 bytes)
@@ -422,9 +408,12 @@ fn parse_efi_signature_list_sha256(data: &[u8], out: &mut [[u8; 32]; MAX_DBX_HAS
         // Read header (little-endian fields)
         let header_bytes = &data[offset..offset + SIGNATURE_LIST_HEADER_SIZE];
         let sig_type: [u8; 16] = header_bytes[0..16].try_into().unwrap_or([0u8; 16]);
-        let list_size = u32::from_le_bytes(header_bytes[16..20].try_into().unwrap_or([0; 4])) as usize;
-        let header_size = u32::from_le_bytes(header_bytes[20..24].try_into().unwrap_or([0; 4])) as usize;
-        let sig_size = u32::from_le_bytes(header_bytes[24..28].try_into().unwrap_or([0; 4])) as usize;
+        let list_size =
+            u32::from_le_bytes(header_bytes[16..20].try_into().unwrap_or([0; 4])) as usize;
+        let header_size =
+            u32::from_le_bytes(header_bytes[20..24].try_into().unwrap_or([0; 4])) as usize;
+        let sig_size =
+            u32::from_le_bytes(header_bytes[24..28].try_into().unwrap_or([0; 4])) as usize;
 
         // Sanity checks to avoid infinite loops / out-of-bounds
         if list_size < SIGNATURE_LIST_HEADER_SIZE
@@ -530,58 +519,52 @@ pub fn enforce_policy(
     violation: SecureBootViolation,
 ) -> Result<(), Status> {
     match violation {
-        SecureBootViolation::InsecureBootWithFirmwareSB => {
-            match policy {
-                SecureBootPolicy::Permissive => {
-                    warn!(
-                        "SECURE BOOT WARNING: insecure_boot feature is active \
+        SecureBootViolation::InsecureBootWithFirmwareSB => match policy {
+            SecureBootPolicy::Permissive => {
+                warn!(
+                    "SECURE BOOT WARNING: insecure_boot feature is active \
                          but UEFI Secure Boot is ENABLED by firmware. \
                          This configuration is unsafe in production."
-                    );
-                    Ok(())
-                }
-                SecureBootPolicy::Enforcing | SecureBootPolicy::Strict => {
-                    error!("======================================================");
-                    error!("SECURITY VIOLATION: insecure_boot is compiled in but");
-                    error!("UEFI Secure Boot is ENABLED. Refusing to continue.");
-                    error!("======================================================");
-                    Err(Status::SECURITY_VIOLATION)
-                }
+                );
+                Ok(())
             }
-        }
-        SecureBootViolation::KernelRevokedByDbx => {
-            match policy {
-                SecureBootPolicy::Permissive => {
-                    warn!(
-                        "SECURE BOOT WARNING: Kernel image hash matches a dbx \
+            SecureBootPolicy::Enforcing | SecureBootPolicy::Strict => {
+                error!("======================================================");
+                error!("SECURITY VIOLATION: insecure_boot is compiled in but");
+                error!("UEFI Secure Boot is ENABLED. Refusing to continue.");
+                error!("======================================================");
+                Err(Status::SECURITY_VIOLATION)
+            }
+        },
+        SecureBootViolation::KernelRevokedByDbx => match policy {
+            SecureBootPolicy::Permissive => {
+                warn!(
+                    "SECURE BOOT WARNING: Kernel image hash matches a dbx \
                          revocation entry. Boot continues (Permissive mode)."
-                    );
-                    Ok(())
-                }
-                SecureBootPolicy::Enforcing | SecureBootPolicy::Strict => {
-                    error!("======================================================");
-                    error!("SECURITY VIOLATION: Kernel image is REVOKED (dbx match).");
-                    error!("This kernel must not be booted. System halted.");
-                    error!("======================================================");
-                    Err(Status::SECURITY_VIOLATION)
-                }
+                );
+                Ok(())
             }
-        }
-        SecureBootViolation::SetupModeAnomaly => {
-            match policy {
-                SecureBootPolicy::Permissive | SecureBootPolicy::Enforcing => {
-                    warn!("SECURE BOOT WARNING: Firmware reports Setup Mode anomaly.");
-                    Ok(())
-                }
-                SecureBootPolicy::Strict => {
-                    error!("======================================================");
-                    error!("SECURITY VIOLATION: Setup Mode anomaly detected.");
-                    error!("Strict policy requires fully deployed Secure Boot.");
-                    error!("======================================================");
-                    Err(Status::SECURITY_VIOLATION)
-                }
+            SecureBootPolicy::Enforcing | SecureBootPolicy::Strict => {
+                error!("======================================================");
+                error!("SECURITY VIOLATION: Kernel image is REVOKED (dbx match).");
+                error!("This kernel must not be booted. System halted.");
+                error!("======================================================");
+                Err(Status::SECURITY_VIOLATION)
             }
-        }
+        },
+        SecureBootViolation::SetupModeAnomaly => match policy {
+            SecureBootPolicy::Permissive | SecureBootPolicy::Enforcing => {
+                warn!("SECURE BOOT WARNING: Firmware reports Setup Mode anomaly.");
+                Ok(())
+            }
+            SecureBootPolicy::Strict => {
+                error!("======================================================");
+                error!("SECURITY VIOLATION: Setup Mode anomaly detected.");
+                error!("Strict policy requires fully deployed Secure Boot.");
+                error!("======================================================");
+                Err(Status::SECURITY_VIOLATION)
+            }
+        },
     }
 }
 
@@ -619,8 +602,12 @@ pub fn verify_boot_chain_integrity(
     let kernel_hash = sha256(kernel_data);
     info!(
         "Kernel SHA-256: {:02x}{:02x}{:02x}{:02x}...{:02x}{:02x}",
-        kernel_hash[0], kernel_hash[1], kernel_hash[2], kernel_hash[3],
-        kernel_hash[30], kernel_hash[31]
+        kernel_hash[0],
+        kernel_hash[1],
+        kernel_hash[2],
+        kernel_hash[3],
+        kernel_hash[30],
+        kernel_hash[31]
     );
 
     if sb_info.dbx_present {

@@ -721,4 +721,3 @@ pub fn peek_global_log(dst: &mut [u8]) -> usize {
 pub fn get_log_len() -> usize {
     LOG_BUFFER.lock().len()
 }
-

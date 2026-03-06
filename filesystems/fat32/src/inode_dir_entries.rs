@@ -1,21 +1,7 @@
 use crate::{
-    Cluster,
-    DELETED_ENTRY,
-    DIR_ENTRY_SIZE,
-    DirEntryRaw,
-    DirectoryIterator,
-    END_OF_DIR,
-    Fat32Inode,
-    FileAttributes,
-    FileType,
-    FsError,
-    FsResult,
-    HashSet,
-    LfnEntry,
-    MAX_CLUSTER_CHAIN,
-    PooledClusterBuffer,
-    SafePackedRead,
-    ZeroCopyBufferMut,
+    Cluster, DELETED_ENTRY, DIR_ENTRY_SIZE, DirEntryRaw, DirectoryIterator, END_OF_DIR, Fat32Inode,
+    FileAttributes, FileType, FsError, FsResult, HashSet, LfnEntry, MAX_CLUSTER_CHAIN,
+    PooledClusterBuffer, SafePackedRead, ZeroCopyBufferMut,
 };
 
 use alloc::vec::Vec;

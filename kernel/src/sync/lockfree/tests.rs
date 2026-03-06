@@ -128,10 +128,7 @@ fn test_lock_free_index_stack_new_filled_drains_unique() {
 #[test_case]
 fn test_lock_free_index_stack_push_out_of_range() {
     let stack = LockFreeIndexStack::new_empty(2);
-    assert_eq!(
-        stack.push(2),
-        Err(LockFreeIndexStackPushError::OutOfRange)
-    );
+    assert_eq!(stack.push(2), Err(LockFreeIndexStackPushError::OutOfRange));
     assert_eq!(stack.len(), 0);
 }
 

@@ -50,9 +50,13 @@ pub fn test_processor_ignores_unrequested_reply() {
     let sender_mac = MacAddress::from_octets(0xa, 0xb, 0xc, 0xd, 0xe, 0xf);
 
     let mut buf = [0u8; ArpPacket::SIZE];
-    let packet = crate::util::get_mut_ref::<ArpPacket>(&mut buf, 0)
-        .unwrap();
-    packet.init_reply(sender_mac, sender_ip, MacAddress::BROADCAST, Ipv4Address::ANY);
+    let packet = crate::util::get_mut_ref::<ArpPacket>(&mut buf, 0).unwrap();
+    packet.init_reply(
+        sender_mac,
+        sender_ip,
+        MacAddress::BROADCAST,
+        Ipv4Address::ANY,
+    );
 
     let res = processor.process(&buf, 12345, sender_mac);
     assert_eq!(res, ArpResult::Ignored);

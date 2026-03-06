@@ -6,9 +6,9 @@
 //! 優先度順にソートされたルールリストを線形走査し、最初にマッチしたルールの
 //! アクションを返す。マッチしなかった場合はデフォルトポリシーを適用する。
 
-use alloc::vec::Vec;
 use super::rules::{FirewallAction, FirewallDirection, FirewallRule, RuleId};
 use super::stats::FirewallStats;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 extern crate alloc;
@@ -98,7 +98,11 @@ impl FirewallEngine {
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
         if enabled {
-            log::info!("[FIREWALL] enabled (ingress={}, egress={})", self.default_ingress, self.default_egress);
+            log::info!(
+                "[FIREWALL] enabled (ingress={}, egress={})",
+                self.default_ingress,
+                self.default_egress
+            );
         } else {
             log::info!("[FIREWALL] disabled");
         }
@@ -133,9 +137,12 @@ impl FirewallEngine {
         rule.id = id;
 
         // 挿入位置を探す（安定ソート: 同一優先度なら追加順維持）
-        let pos = self.rules.iter().position(|r| r.priority > rule.priority)
+        let pos = self
+            .rules
+            .iter()
+            .position(|r| r.priority > rule.priority)
             .unwrap_or(self.rules.len());
-        
+
         log::info!("[FIREWALL] rule added: {}", rule);
         self.rules.insert(pos, rule);
         id
@@ -201,10 +208,16 @@ impl FirewallEngine {
                 if rule.action.is_log() {
                     log::info!(
                         "[FIREWALL] {} {} {}:{} -> {}:{} proto={} rule=#{}",
-                        if rule.action.is_allow() { "ALLOW" } else { "DENY" },
+                        if rule.action.is_allow() {
+                            "ALLOW"
+                        } else {
+                            "DENY"
+                        },
                         direction,
-                        format_ip(src_ip), src_port,
-                        format_ip(dst_ip), dst_port,
+                        format_ip(src_ip),
+                        src_port,
+                        format_ip(dst_ip),
+                        dst_port,
                         protocol,
                         rule.id,
                     );
@@ -255,10 +268,16 @@ impl FirewallEngine {
                 if rule.action.is_log() {
                     log::info!(
                         "[FIREWALL] {} {} {}:{} -> {}:{} proto={} rule=#{}",
-                        if rule.action.is_allow() { "ALLOW" } else { "DENY" },
+                        if rule.action.is_allow() {
+                            "ALLOW"
+                        } else {
+                            "DENY"
+                        },
                         direction,
-                        format_ip(src_ip), src_port,
-                        format_ip(dst_ip), dst_port,
+                        format_ip(src_ip),
+                        src_port,
+                        format_ip(dst_ip),
+                        dst_port,
                         protocol,
                         rule.id,
                     );

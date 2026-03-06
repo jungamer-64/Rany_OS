@@ -10,11 +10,11 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use super::endpoint_core::{OwnedEndpoint, Endpoint};
+use super::endpoint_core::{Endpoint, OwnedEndpoint};
 use super::types::{EndpointAddr, EndpointError, EndpointResult, EndpointState, EndpointType};
 
-use crate::net::l4::tcp::TcpStream;
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::l4::tcp::TcpStream;
 
 /// 非同期受信Future
 pub struct RecvFuture {
@@ -38,7 +38,11 @@ impl Future for RecvFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = this
+            .endpoint
+            .inner()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // 状態チェック
         if !inner.state.can_receive() {
@@ -93,7 +97,11 @@ impl Future for SendFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         // Acquire inner to inspect/modify buffers
-        let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = this
+            .endpoint
+            .inner()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // 状態チェック
         if !inner.state.can_send() {
@@ -204,7 +212,7 @@ impl Future for AcceptFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.endpoint.next_incoming() {
-            Ok(( ep, addr)) => Poll::Ready(Ok((OwnedEndpoint::from_endpoint(ep), addr))),
+            Ok((ep, addr)) => Poll::Ready(Ok((OwnedEndpoint::from_endpoint(ep), addr))),
 
             Err(EndpointError::Timeout) => {
                 // Wakerを登録してPending
@@ -332,7 +340,8 @@ impl OwnedEndpoint {
 
     /// 非同期UDP送信
     pub fn send_to_async(&self, data: Vec<u8>, addr: EndpointAddr) -> Option<SendToFuture> {
-        self.endpoint().map(|s| SendToFuture::new(s.clone(), data, addr))
+        self.endpoint()
+            .map(|s| SendToFuture::new(s.clone(), data, addr))
     }
 
     /// 非同期接続受け入れ
@@ -342,12 +351,19 @@ impl OwnedEndpoint {
 
     /// 非同期UDP受信
     pub fn recv_from_async(&self, size: usize) -> Option<RecvFromFuture> {
-        self.endpoint().map(|s| RecvFromFuture::new(s.clone(), size))
+        self.endpoint()
+            .map(|s| RecvFromFuture::new(s.clone(), size))
     }
 
     /// TCPのゼロコピーストリームを取得（`TcpStream`をクローンして返す）
     pub fn tcp_stream(&self) -> Option<TcpStream> {
-        self.endpoint().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).tcp().and_then(|t| t.stream.clone()))
+        self.endpoint().and_then(|s| {
+            s.inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .tcp()
+                .and_then(|t| t.stream.clone())
+        })
     }
 
     /// 非同期ゼロコピー受信（TCP向け） - 成功すると `PacketRef` を返す
@@ -369,7 +385,12 @@ impl OwnedEndpoint {
         }
         self.endpoint().and_then(|s| {
             // Clone the optional UdpEndpoint from the inner state and produce a future
-            let opt = s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp().and_then(|u| u.socket.clone());
+            let opt = s
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .udp()
+                .and_then(|u| u.socket.clone());
             opt.map(|u| u.recv())
         })
     }
@@ -381,7 +402,15 @@ impl OwnedEndpoint {
 
     /// UDP向けゼロコピー受信のストリームラッパーを取得（内部UDPソケットが設定されている場合）
     pub fn udp_packet_stream(&self) -> Option<UdpPacketStream> {
-        self.endpoint().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp().and_then(|u| u.socket.clone())).map(|u| UdpPacketStream::new(u))
+        self.endpoint()
+            .and_then(|s| {
+                s.inner()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .udp()
+                    .and_then(|u| u.socket.clone())
+            })
+            .map(|u| UdpPacketStream::new(u))
     }
 }
 
@@ -428,13 +457,17 @@ impl Future for OpenConnectionFuture {
                 // ローカルアドレスを取得（未設定は0で自動割当）
                 let local_addr;
                 {
-                    let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                    let mut inner = this
+                        .endpoint
+                        .inner()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     if !inner.state.can_connect() {
                         return Poll::Ready(Err(EndpointError::AlreadyConnected));
                     }
-                    local_addr = inner.local_addr.unwrap_or_else(|| {
-                        EndpointAddr::new([0, 0, 0, 0], 0)
-                    });
+                    local_addr = inner
+                        .local_addr
+                        .unwrap_or_else(|| EndpointAddr::new([0, 0, 0, 0], 0));
                     inner.remote_addr = Some(this.remote);
                     if let Err(e) = inner.transition_to(EndpointState::Connecting) {
                         return Poll::Ready(Err(e));
@@ -456,7 +489,11 @@ impl Future for OpenConnectionFuture {
                 Poll::Pending
             }
             OpenConnectionPhase::WaitingEstablished => {
-                let inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                let inner = this
+                    .endpoint
+                    .inner()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 match inner.state {
                     EndpointState::Connected => Poll::Ready(Ok(())),
                     EndpointState::Closed | EndpointState::Closing => {
@@ -465,7 +502,11 @@ impl Future for OpenConnectionFuture {
                     EndpointState::Connecting => {
                         // まだ接続中: Wakerを再登録
                         drop(inner);
-                        let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                        let mut inner = this
+                            .endpoint
+                            .inner()
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         inner.connect_waker = Some(cx.waker().clone());
                         Poll::Pending
                     }
@@ -522,7 +563,11 @@ impl Future for StartListeningFuture {
                     // ソケット状態チェック
                     let local_addr;
                     {
-                        let inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                        let inner = this
+                            .endpoint
+                            .inner()
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         if this.endpoint.socket_type() != EndpointType::Tcp {
                             return Poll::Ready(Err(EndpointError::InvalidArgument));
                         }
@@ -536,7 +581,8 @@ impl Future for StartListeningFuture {
                     }
 
                     // 非同期bind_tcp_listener_asyncを開始
-                    let bind_future = crate::net::runtime::stack::bind_tcp_listener_async(local_addr);
+                    let bind_future =
+                        crate::net::runtime::stack::bind_tcp_listener_async(local_addr);
                     this.phase = StartListeningPhase::WaitingBind { bind_future };
                     // fallthrough to poll bind_future
                 }
@@ -546,7 +592,11 @@ impl Future for StartListeningFuture {
                     match pinned.poll(cx) {
                         Poll::Ready(Ok(listener)) => {
                             // bind成功: EndpointInnerにリスナーを設定
-                            let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                            let mut inner = this
+                                .endpoint
+                                .inner()
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
                             inner.ensure_tcp().listener = Some(listener);
                             if let Err(e) = inner.transition_to(EndpointState::Listening) {
                                 return Poll::Ready(Err(e));
@@ -611,7 +661,11 @@ impl Future for CloseAsyncFuture {
 
         // 内部状態クリーンアップ
         {
-            let mut inner = this.endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = this
+                .endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
 
             inner.clear_protocol();
             inner.recv_buffer.clear();
@@ -645,8 +699,8 @@ impl Future for CloseAsyncFuture {
 // ICMP Echo 非同期Future
 // ============================================================================
 
-use alloc::collections::BTreeMap;
 use crate::sync::PoisonLock;
+use alloc::collections::BTreeMap;
 
 /// ICMP Echo 応答の結果
 #[derive(Debug, Clone, Copy)]
@@ -685,12 +739,15 @@ impl IcmpEchoRegistry {
     fn register(&mut self, target: [u8; 4], sequence: u16, timeout_us: u64) {
         let key = (u32::from_be_bytes(target), sequence);
         let now = crate::task::timer::current_tick();
-        self.waiters.insert(key, PingWaiter {
-            waker: None,
-            result: None,
-            start_tick: now,
-            timeout_us,
-        });
+        self.waiters.insert(
+            key,
+            PingWaiter {
+                waker: None,
+                result: None,
+                start_tick: now,
+                timeout_us,
+            },
+        );
     }
 
     /// wakerを設定
@@ -717,7 +774,11 @@ impl IcmpEchoRegistry {
     }
 
     /// 結果をポーリング
-    fn poll_result(&mut self, target: [u8; 4], sequence: u16) -> Poll<Result<IcmpEchoResult, EndpointError>> {
+    fn poll_result(
+        &mut self,
+        target: [u8; 4],
+        sequence: u16,
+    ) -> Poll<Result<IcmpEchoResult, EndpointError>> {
         let key = (u32::from_be_bytes(target), sequence);
         if let Some(entry) = self.waiters.get(&key) {
             if let Some(result) = entry.result {
@@ -840,7 +901,6 @@ impl Future for IcmpEchoFuture {
     }
 }
 
-
 // ==========================
 // Tests for SendFuture
 // ==========================
@@ -852,9 +912,9 @@ pub mod tests;
 pub mod qemu_tests {
     use super::*;
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
-    use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
+    use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
     use crate::net::l4::endpoint::{EndpointAddr, EndpointState};
-    use crate::net::l4::endpoint::{create_tcp_endpoint, create_udp_endpoint, NetworkEvent};
+    use crate::net::l4::endpoint::{NetworkEvent, create_tcp_endpoint, create_udp_endpoint};
     use crate::net::runtime::stack;
     use core::future::Future;
     use core::pin::Pin;
@@ -866,10 +926,12 @@ pub mod qemu_tests {
         stack::init_default();
         if let Ok(mut guard) = stack::stack().lock() {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
-                    assert!(_if.is_none());
-                    true
-                });
+                s.set_transmit_fn(
+                    |_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
+                        assert!(_if.is_none());
+                        true
+                    },
+                );
             }
         }
 
@@ -939,12 +1001,11 @@ pub mod qemu_tests {
             inner.remote_addr = Some(remote);
         }
 
-        use alloc::sync::Arc;
-        use crate::sync::PoisonLock;
         use crate::net::l4::tcp::{
-            Ipv4Addr as TcpIpv4Addr, EndpointAddr as TcpEndpointAddr, TcpControlBlock,
-            TcpStream,
+            EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpControlBlock, TcpStream,
         };
+        use crate::sync::PoisonLock;
+        use alloc::sync::Arc;
 
         let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
         let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
@@ -953,7 +1014,9 @@ pub mod qemu_tests {
         tcb.set_remote_addr(t_remote);
         tcb.enter_established();
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
-        let stream = TcpStream { tcb: tcb_arc.clone() };
+        let stream = TcpStream {
+            tcb: tcb_arc.clone(),
+        };
 
         if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -987,12 +1050,11 @@ pub mod qemu_tests {
             inner.remote_addr = Some(remote);
         }
 
-        use alloc::sync::Arc;
-        use crate::sync::PoisonLock;
         use crate::net::l4::tcp::{
-            Ipv4Addr as TcpIpv4Addr, EndpointAddr as TcpEndpointAddr, TcpControlBlock,
-            TcpStream,
+            EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpControlBlock, TcpStream,
         };
+        use crate::sync::PoisonLock;
+        use alloc::sync::Arc;
 
         let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
         let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
@@ -1001,7 +1063,9 @@ pub mod qemu_tests {
         tcb.set_remote_addr(t_remote);
         tcb.enter_established();
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
-        let stream = TcpStream { tcb: tcb_arc.clone() };
+        let stream = TcpStream {
+            tcb: tcb_arc.clone(),
+        };
 
         if let Some(s) = sock.endpoint() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());

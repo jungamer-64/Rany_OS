@@ -5,7 +5,6 @@ use crate::net::obs::{
 };
 
 impl VirtioNetDevice {
-
     /// 同期パケット送信（非推奨：send_async または send_zero_copy を使用してください）
     ///
     /// DMAバッファを同期的に割り当て、`notify()` 後に `process_tx_completions()` を
@@ -162,7 +161,10 @@ impl VirtioNetDevice {
     /// Enqueue a zero-copy PacketRef for transmission without waiting for completion.
     /// Ownership of `packet` is moved into the device's inflight map; completion will
     /// perform unmap/cleanup and return the buffer to the pool.
-    pub fn enqueue_send_zero_copy(&self, packet: crate::net::datapath::mempool::PacketRef) -> Result<(), VirtioNetError> {
+    pub fn enqueue_send_zero_copy(
+        &self,
+        packet: crate::net::datapath::mempool::PacketRef,
+    ) -> Result<(), VirtioNetError> {
         let tx_queue = match self.first_tx_queue() {
             Some(q) => q,
             None => {
@@ -204,7 +206,7 @@ impl VirtioNetDevice {
                     dma_len: mapped_len,
                     pool_bounce_buffer: bounce_buffer,
                 };
-                
+
                 let q_idx = 0; // Simplified for first TX queue
                 if let Some(lock) = self.tx_packetrefs.get(q_idx) {
                     if let Ok(mut guard) = lock.lock() {
@@ -213,9 +215,13 @@ impl VirtioNetDevice {
                         }
                     }
                 }
-                
+
                 tx_queue.notify(self.transport.as_ref());
-                trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio zero-copy tx queued");
+                trace::push_event(
+                    NetLayer::Driver,
+                    NetEventKind::Tx,
+                    "virtio zero-copy tx queued",
+                );
                 Ok(())
             }
             Err(e) => {
@@ -249,7 +255,15 @@ impl VirtioNetDevice {
         phys_addr_val: u64,
         data: &[u8],
         data_len: usize,
-    ) -> Result<(u64, Option<u64>, usize, Option<crate::io::dma::CoherentDmaBuffer>), VirtioNetError> {
+    ) -> Result<
+        (
+            u64,
+            Option<u64>,
+            usize,
+            Option<crate::io::dma::CoherentDmaBuffer>,
+        ),
+        VirtioNetError,
+    > {
         if !is_iommu_enabled() {
             if is_iommu_required() {
                 return Err(VirtioNetError::DeviceError);
@@ -261,7 +275,7 @@ impl VirtioNetDevice {
         let page_base = phys_addr_val & !page_mask;
         let page_offset = (phys_addr_val - page_base) as usize;
         let map_len = crate::mm::types::PAGE_SIZE_4K;
-        
+
         // Ensure the data fits within the aligned page.
         // PacketBuffer is designed to be 4K-aligned and contiguous.
         if page_offset + data_len <= map_len {
@@ -299,7 +313,15 @@ impl VirtioNetDevice {
         &self,
         data: &[u8],
         data_len: usize,
-    ) -> Result<(u64, Option<u64>, usize, Option<crate::io::dma::CoherentDmaBuffer>), VirtioNetError> {
+    ) -> Result<
+        (
+            u64,
+            Option<u64>,
+            usize,
+            Option<crate::io::dma::CoherentDmaBuffer>,
+        ),
+        VirtioNetError,
+    > {
         let mut buffer = self.get_tx_bounce_buffer(data_len)?;
         if data_len > 0 {
             let slice = unsafe { buffer.as_mut_slice() };
@@ -318,7 +340,15 @@ impl VirtioNetDevice {
         data_len: usize,
         page_offset: usize,
         map_len: usize,
-    ) -> Result<(u64, Option<u64>, usize, Option<crate::io::dma::CoherentDmaBuffer>), VirtioNetError> {
+    ) -> Result<
+        (
+            u64,
+            Option<u64>,
+            usize,
+            Option<crate::io::dma::CoherentDmaBuffer>,
+        ),
+        VirtioNetError,
+    > {
         let mut buffer = self.get_tx_bounce_buffer(map_len)?;
         if data_len > 0 {
             let slice = unsafe { buffer.as_mut_slice() };
@@ -383,7 +413,8 @@ impl VirtioNetDevice {
                         let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
                             index: self.virtio_index,
                         };
-                        let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
+                        let bridge =
+                            crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
                         bridge.handle_interrupt(device_id, &[(io_id, result)]);
                         continue;
                     }
@@ -415,7 +446,9 @@ impl VirtioNetDevice {
     ) -> bool {
         let buf = if let Some(lock) = self.tx_inflight.get(q_idx) {
             if let Ok(mut guard) = lock.lock() {
-                guard.get_mut(desc_idx as usize).and_then(|slot| slot.take())
+                guard
+                    .get_mut(desc_idx as usize)
+                    .and_then(|slot| slot.take())
             } else {
                 None
             }
@@ -441,7 +474,9 @@ impl VirtioNetDevice {
 
         let entry = if let Some(lock) = self.tx_packetrefs.get(q_idx) {
             if let Ok(mut guard) = lock.lock() {
-                guard.get_mut(desc_idx as usize).and_then(|slot| slot.take())
+                guard
+                    .get_mut(desc_idx as usize)
+                    .and_then(|slot| slot.take())
             } else {
                 None
             }
@@ -476,7 +511,7 @@ impl VirtioNetDevice {
 
         false
     }
-    
+
     /// Release unknown TX completion to avoid descriptor leaks.
     pub(super) fn release_unknown_tx_completion(&self, tx_queue: &NetVirtQueue, desc_idx: u16) {
         if tx_queue.take_completion(desc_idx).is_none() {

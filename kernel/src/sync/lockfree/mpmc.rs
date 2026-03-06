@@ -7,8 +7,8 @@ use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use super::backoff::Backoff;
 use super::CacheLinePadded;
+use super::backoff::Backoff;
 
 /// スロットの状態
 const SLOT_EMPTY: u32 = 0;
@@ -335,4 +335,3 @@ impl<T, const N: usize> Drop for MpmcRingBuffer<T, N> {
 #[cfg(feature = "qemu-test-export")]
 #[path = "qemu_tests.rs"]
 pub mod qemu_tests;
-

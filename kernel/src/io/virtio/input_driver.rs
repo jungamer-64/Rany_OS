@@ -76,14 +76,12 @@ impl Driver for VirtioInputDriver {
     }
 
     fn supported_devices(&self) -> &[DeviceId] {
-        static DEVICES: [DeviceId; 1] = [
-            DeviceId {
-                vendor: 0x1AF4,
-                device: 0x1052, // Input Device (Modern)
-                subsystem_vendor: None,
-                subsystem_device: None,
-            },
-        ];
+        static DEVICES: [DeviceId; 1] = [DeviceId {
+            vendor: 0x1AF4,
+            device: 0x1052, // Input Device (Modern)
+            subsystem_vendor: None,
+            subsystem_device: None,
+        }];
         &DEVICES
     }
 }

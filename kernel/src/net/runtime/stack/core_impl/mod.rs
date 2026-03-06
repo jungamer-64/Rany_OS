@@ -1,6 +1,5 @@
-use super::*;
 use super::NetIfId;
-
+use super::*;
 
 mod global_instance;
 pub use global_instance::*;
@@ -90,7 +89,7 @@ impl NetworkStack {
     /// Process periodic timeouts (call periodically, e.g., every 100ms)
     pub fn process_timeouts(&mut self) {
         let now = self.current_time();
-        
+
         // 1. Process TCP retransmissions
         self.process_tcp_retransmissions(now);
 
@@ -100,7 +99,9 @@ impl NetworkStack {
 
         for res in extra_packets {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
-            if let Some((local, remote, seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
+            if let Some((local, remote, seq, total_len)) =
+                Self::build_tcp_packet_from_result(&res, &mut buffer)
+            {
                 let sent = if local.is_ipv6() && remote.is_ipv6() {
                     let src_v6 = Ipv6Address::new(local.as_ipv6());
                     let dst_v6 = Ipv6Address::new(remote.as_ipv6());
@@ -114,7 +115,8 @@ impl NetworkStack {
                 };
 
                 if sent {
-                    self.tcp.record_sent_packet(local, remote, seq, 0x10 /* ACK */, &[], now);
+                    self.tcp
+                        .record_sent_packet(local, remote, seq, 0x10 /* ACK */, &[], now);
                 }
             }
         }
@@ -138,8 +140,10 @@ impl NetworkStack {
         // Always reschedule DHCP maintenance if not already scheduled
         // (Simplified logic: schedule every 10s for lease checking)
         const DHCP_MAINTENANCE_INTERVAL_MS: u64 = 10_000;
-        self.timeout_wheel.schedule(DHCP_MAINTENANCE_INTERVAL_MS, TimerKind::Dhcpv4Renewal, now);
-        self.timeout_wheel.schedule(DHCP_MAINTENANCE_INTERVAL_MS, TimerKind::Dhcpv6Renewal, now);
+        self.timeout_wheel
+            .schedule(DHCP_MAINTENANCE_INTERVAL_MS, TimerKind::Dhcpv4Renewal, now);
+        self.timeout_wheel
+            .schedule(DHCP_MAINTENANCE_INTERVAL_MS, TimerKind::Dhcpv6Renewal, now);
     }
 
     /// Perform DHCPv4 maintenance (renewal/rebinding)
@@ -167,7 +171,7 @@ impl NetworkStack {
     fn trigger_dhcpv4_request(&mut self, broadcast: bool) {
         let mut buffer = [0u8; 576];
         let now = self.current_time();
-        
+
         let client_opt = crate::net::services::dhcp::DHCP_CLIENT.lock();
         if let Ok(guard) = client_opt {
             if let Some(ref client) = *guard {
@@ -179,9 +183,9 @@ impl NetworkStack {
                     } else {
                         Ipv4Address::BROADCAST
                     };
-                    
+
                     // DHCP uses source port 68, destination port 67
-                    // Note: We use 0.0.0.0 as source IP if not bound yet, 
+                    // Note: We use 0.0.0.0 as source IP if not bound yet,
                     // or current IP for renewal as per RFC 2131.
                     let src_ip = if broadcast {
                         Ipv4Address::ANY

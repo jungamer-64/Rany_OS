@@ -123,8 +123,7 @@ impl CipherSuite {
             // ChaCha20-Poly1305 uses 12-byte IV
             0xCCA8 | 0xCCA9 | 0x1303 => 12,
             // CBC uses 16-byte IV
-            0x002F | 0x0035 | 0x003C | 0x003D |
-            0xC013 | 0xC014 | 0xC027 | 0xC009 | 0xC00A => 16,
+            0x002F | 0x0035 | 0x003C | 0x003D | 0xC013 | 0xC014 | 0xC027 | 0xC009 | 0xC00A => 16,
             // Default to 4
             _ => 4,
         }
@@ -159,9 +158,7 @@ impl CipherSuite {
     pub fn is_cbc(&self) -> bool {
         matches!(
             self.0,
-            0x002F | 0x0035 | 0x003C | 0x003D |
-            0xC013 | 0xC014 | 0xC027 |
-            0xC009 | 0xC00A
+            0x002F | 0x0035 | 0x003C | 0x003D | 0xC013 | 0xC014 | 0xC027 | 0xC009 | 0xC00A
         )
     }
 
@@ -188,10 +185,7 @@ impl CipherSuite {
 
     /// SHA-1 MACを使用するか
     pub fn uses_sha1_mac(&self) -> bool {
-        matches!(
-            self.0,
-            0x002F | 0x0035 | 0xC013 | 0xC014 | 0xC009 | 0xC00A
-        )
+        matches!(self.0, 0x002F | 0x0035 | 0xC013 | 0xC014 | 0xC009 | 0xC00A)
     }
 
     /// CBC暗号スイートのIV長
@@ -481,7 +475,7 @@ impl Default for TlsConfig {
         }
 
         Self {
-            // Security: Use TLS 1.2 as minimum version. 
+            // Security: Use TLS 1.2 as minimum version.
             // TLS 1.0 and 1.1 are deprecated (RFC 8996).
             min_version: TlsVersion::TLS_1_2,
             max_version: TlsVersion::TLS_1_3,
@@ -521,9 +515,13 @@ impl TlsConfig {
     /// プロダクションビルドでは常にfalseを返す（検証を必ず実行）。
     pub fn should_skip_verify(&self) -> bool {
         #[cfg(any(test, feature = "qemu-test-export"))]
-        { self.skip_verify }
+        {
+            self.skip_verify
+        }
         #[cfg(not(any(test, feature = "qemu-test-export")))]
-        { false }
+        {
+            false
+        }
     }
 
     /// サーバー名を設定
@@ -684,7 +682,11 @@ impl SessionCache {
 
     pub fn insert(&mut self, entry: SessionCacheEntry) {
         // 同じセッションIDがあれば上書き
-        if let Some(pos) = self.entries.iter().position(|e| e.session_id == entry.session_id) {
+        if let Some(pos) = self
+            .entries
+            .iter()
+            .position(|e| e.session_id == entry.session_id)
+        {
             self.entries[pos] = entry;
         } else {
             if self.entries.len() >= self.max_entries {
@@ -702,8 +704,9 @@ impl SessionCache {
     }
 
     pub fn find_by_server_name(&self, name: &str) -> Option<&SessionCacheEntry> {
-        self.entries.iter().rev().find(|e| {
-            e.server_name.as_deref() == Some(name)
-        })
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| e.server_name.as_deref() == Some(name))
     }
 }

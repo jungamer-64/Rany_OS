@@ -17,7 +17,7 @@ use super::event::{NetworkEvent, send_event, send_event_ignore};
 use super::inner::EndpointInner;
 use super::manager::ENDPOINT_MANAGER;
 use super::types::{
-    NEXT_FD, EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType,
+    EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType, NEXT_FD,
 };
 
 /// ソケット構造体（細粒度ロック対応）
@@ -77,13 +77,19 @@ impl Endpoint {
     /// ローカルアドレス取得
     #[inline]
     pub fn local_addr(&self) -> Option<EndpointAddr> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).local_addr
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .local_addr
     }
 
     /// リモートアドレス取得
     #[inline]
     pub fn remote_addr(&self) -> Option<EndpointAddr> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).remote_addr
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remote_addr
     }
 
     /// 内部状態への参照取得（高度な操作用）
@@ -106,7 +112,6 @@ impl Endpoint {
         inner.local_addr = Some(addr);
         inner.transition_to(EndpointState::Bound)
     }
-
 
     /// リモートアドレスへ接続を開始
     ///
@@ -139,7 +144,6 @@ impl Endpoint {
             remote: addr,
         })
     }
-
 
     /// リッスンモードを開始（同期TCP bind）
     ///
@@ -177,7 +181,6 @@ impl Endpoint {
         })
     }
 
-
     /// 次の接続を取得（同期バッファ読み取り）
     ///
     /// Acceptキューから接続を取得する。NETWORK_STACKロックは使用しない。
@@ -211,10 +214,7 @@ impl Endpoint {
                 mgr.register(new_socket.clone());
             }
 
-            log::info!(
-                "TCP: Accepted connection from {}",
-                conn.remote_addr
-            );
+            log::info!("TCP: Accepted connection from {}", conn.remote_addr);
 
             return Ok((new_socket, conn.remote_addr));
         }
@@ -222,7 +222,6 @@ impl Endpoint {
         // キューが空の場合はPending（Timeout）を返す
         Err(EndpointError::Timeout)
     }
-
 
     /// Accept用Wakerを登録（非同期用）
     pub fn register_accept_waker(&self, waker: core::task::Waker) {
@@ -426,19 +425,32 @@ impl Endpoint {
     /// 受信バッファのデータ量
     #[inline]
     pub fn recv_buffer_len(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).recv_buffer.len()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recv_buffer
+            .len()
     }
 
     /// 送信バッファのデータ量
     #[inline]
     pub fn send_buffer_len(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).send_buffer.len()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .send_buffer
+            .len()
     }
 
     /// 受信データがあるか
     #[inline]
     pub fn has_data(&self) -> bool {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).recv_buffer.len() > 0
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recv_buffer
+            .len()
+            > 0
     }
 
     /// TCP_NODELAY (Nagleアルゴリズム無効化) を設定
@@ -507,10 +519,7 @@ impl Endpoint {
     /// endpoint.set_local_addr(addr)?;
     /// endpoint.start_listening_async(128).await?;
     /// ```
-    pub fn start_listening_async(
-        &self,
-        backlog: u32,
-    ) -> super::futures::StartListeningFuture {
+    pub fn start_listening_async(&self, backlog: u32) -> super::futures::StartListeningFuture {
         super::futures::StartListeningFuture::new(self.clone(), backlog)
     }
 
@@ -626,9 +635,7 @@ impl OwnedEndpoint {
         if let Some(ref manager) = *ENDPOINT_MANAGER.read() {
             manager.register(ep.clone());
         }
-        Self {
-            endpoint: Some(ep),
-        }
+        Self { endpoint: Some(ep) }
     }
 
     /// 既存ソケットからOwnedEndpoint作成
@@ -669,7 +676,6 @@ impl OwnedEndpoint {
             .set_local_addr(addr)
     }
 
-
     /// リッスンモードを開始（同期版）
     ///
     /// **ブートストラップ/テスト専用**: `bind_tcp()` 経由でNETWORK_STACKロックを取得する。
@@ -680,7 +686,6 @@ impl OwnedEndpoint {
             .ok_or(EndpointError::NotFound)?
             .start_listening(backlog)
     }
-
 
     /// 次の接続を取得（同期版）
     ///
@@ -695,7 +700,6 @@ impl OwnedEndpoint {
         Ok((OwnedEndpoint::from_endpoint(ep), addr))
     }
 
-
     /// 送信（同期）
     pub fn send(&self, data: &[u8]) -> EndpointResult<usize> {
         self.endpoint
@@ -706,7 +710,10 @@ impl OwnedEndpoint {
 
     /// 受信（同期）
     pub fn recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
-        self.endpoint.as_ref().ok_or(EndpointError::NotFound)?.recv(buf)
+        self.endpoint
+            .as_ref()
+            .ok_or(EndpointError::NotFound)?
+            .recv(buf)
     }
 
     /// UDP送信（同期）
@@ -771,9 +778,7 @@ impl OwnedEndpoint {
 
     /// 非同期クローズ（推奨API）
     pub fn close_async(&self) -> Option<super::futures::CloseAsyncFuture> {
-        self.endpoint
-            .as_ref()
-            .map(|ep| ep.close_async())
+        self.endpoint.as_ref().map(|ep| ep.close_async())
     }
 }
 
@@ -832,7 +837,6 @@ pub fn create_udp_endpoint_bound(addr: EndpointAddr) -> EndpointResult<OwnedEndp
     Ok(ep)
 }
 
-
 // =====================================================
 // 非同期便利関数 - Async-First API
 // =====================================================
@@ -873,9 +877,7 @@ pub async fn create_tcp_server_async(
 /// ```ignore
 /// let conn = open_tcp_connection_async(addr).await?;
 /// ```
-pub async fn open_tcp_connection_async(
-    addr: EndpointAddr,
-) -> EndpointResult<OwnedEndpoint> {
+pub async fn open_tcp_connection_async(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
     let ep = create_tcp_endpoint();
     let fut = ep
         .open_connection_async(addr)
@@ -893,15 +895,12 @@ pub async fn open_tcp_connection_async(
 /// ```ignore
 /// let udp = create_udp_endpoint_bound_async(addr).await?;
 /// ```
-pub async fn create_udp_endpoint_bound_async(
-    addr: EndpointAddr,
-) -> EndpointResult<OwnedEndpoint> {
+pub async fn create_udp_endpoint_bound_async(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
     let ep = create_udp_endpoint();
     ep.set_local_addr(addr)?;
 
     // UDPソケットを非同期でbind（イベントキュー経由）
-    let udp_bind_future =
-        crate::net::runtime::stack::bind_udp_endpoint_async(addr.port());
+    let udp_bind_future = crate::net::runtime::stack::bind_udp_endpoint_async(addr.port());
     if let Some(udp_ep) = udp_bind_future.await {
         if let Some(inner_ep) = ep.endpoint() {
             let mut inner = inner_ep.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -911,7 +910,6 @@ pub async fn create_udp_endpoint_bound_async(
 
     Ok(ep)
 }
-
 
 // =====================================================
 // テスト
@@ -931,7 +929,6 @@ pub mod tests {
         // ソケットは自動的にクローズされている
     }
 }
-
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {

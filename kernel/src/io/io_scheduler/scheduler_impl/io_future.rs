@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod coordinator_helpers;
 pub use coordinator_helpers::*;
 impl Future for IoFuture {
@@ -11,11 +10,7 @@ impl Future for IoFuture {
         // Borrow checker回避: self.scheduler(immutable) と &mut self.registered(mutable) が競合するため
         // Arcをクローンして別の所有権/参照パスを作る
         let scheduler = self.scheduler.clone();
-        scheduler.poll_result_or_register_waker(
-            self.request_id,
-            cx.waker(),
-            &mut self.registered,
-        )
+        scheduler.poll_result_or_register_waker(self.request_id, cx.waker(), &mut self.registered)
     }
 }
 
@@ -112,8 +107,7 @@ impl DeferredIoCompletionQueue {
                 self.ids[idx].store(0, Ordering::Release);
                 self.results[idx].store(0, Ordering::Release);
 
-                let device =
-                    decode_device_id(device_raw).unwrap_or(DeviceId::Custom(0));
+                let device = decode_device_id(device_raw).unwrap_or(DeviceId::Custom(0));
                 let id = IoRequestId(id_raw);
                 let result = decode_io_result(result_raw);
                 return Some((device, id, result));
@@ -183,7 +177,8 @@ impl PerCpuDeferredCompletionQueues {
     }
 }
 
-pub(crate) static DEFERRED_IO_COMPLETIONS: PerCpuDeferredCompletionQueues = PerCpuDeferredCompletionQueues::new();
+pub(crate) static DEFERRED_IO_COMPLETIONS: PerCpuDeferredCompletionQueues =
+    PerCpuDeferredCompletionQueues::new();
 
 /// 割り込みコンテキストから完了を遅延キューに追加
 pub(crate) fn defer_io_completion(device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
@@ -233,11 +228,7 @@ pub(crate) fn encode_device_id(device: DeviceId) -> u64 {
         DeviceId::Nvme {
             controller,
             namespace,
-        } => {
-            (KIND_NVME << KIND_SHIFT)
-                | ((controller as u64) << 48)
-                | (namespace as u64)
-        }
+        } => (KIND_NVME << KIND_SHIFT) | ((controller as u64) << 48) | (namespace as u64),
         DeviceId::VirtioBlk { index } => (KIND_VIRTIO_BLK << KIND_SHIFT) | ((index as u64) << 48),
         DeviceId::VirtioNet { index } => (KIND_VIRTIO_NET << KIND_SHIFT) | ((index as u64) << 48),
         DeviceId::Ahci { port } => (KIND_AHCI << KIND_SHIFT) | ((port as u64) << 48),
@@ -510,7 +501,7 @@ impl HybridIoCoordinator {
         if !was_active {
             self.polling_executor.start();
         }
-        
+
         // poll_batch 相当を callback 付きで回す
         // これにより、回収された完了に対して pending_requests の掃除が行われる
         for _ in 0..self.polling_executor.max_poll_iterations {
@@ -607,12 +598,10 @@ impl HybridIoCoordinator {
             };
 
             if let Err(err) = result {
-                self.scheduler
-                    .complete_request(id, IoResult::Error(err));
+                self.scheduler.complete_request(id, IoResult::Error(err));
             }
         }
     }
-
 
     /// グローバルモードを設定
     pub fn set_global_mode(&self, mode: IoMode) {

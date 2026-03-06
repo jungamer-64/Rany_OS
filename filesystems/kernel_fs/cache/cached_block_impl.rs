@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl CachedBlock {
     /// Create a new cached block
     pub fn new(key: BlockCacheKey, data: Vec<u8>, block_size: usize) -> Self {
@@ -765,4 +764,3 @@ pub(crate) mod block_cache_tests {
         assert!(!block.is_dirty());
     }
 }
-

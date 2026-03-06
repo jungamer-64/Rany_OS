@@ -64,7 +64,9 @@ pub struct MapleTree<T> {
 
 impl<T: Clone + PartialEq> MapleTree<T> {
     pub const fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     #[inline]
@@ -79,46 +81,56 @@ impl<T: Clone + PartialEq> MapleTree<T> {
 
     /// 範囲 [start, end) に値を格納
     pub fn store_range(&mut self, start: usize, end: usize, value: T) {
-        if start >= end { return; }
+        if start >= end {
+            return;
+        }
 
         // 重複を削除
         self.entries.retain(|e| !e.overlaps(start, end));
 
         // 挿入位置を見つける（ソート順維持）
-        let pos = self.entries.iter()
+        let pos = self
+            .entries
+            .iter()
             .position(|e| e.start >= start)
             .unwrap_or(self.entries.len());
-        
+
         self.entries.insert(pos, RangeEntry::new(start, end, value));
-        
+
         // 範囲結合
         self.coalesce();
     }
 
     /// 単一インデックスを検索
     pub fn load(&self, index: usize) -> Option<&T> {
-        self.entries.iter()
+        self.entries
+            .iter()
             .find(|e| e.contains(index))
             .map(|e| &e.value)
     }
 
     /// 単一インデックスを可変で検索
     pub fn load_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.entries.iter_mut()
+        self.entries
+            .iter_mut()
             .find(|e| e.contains(index))
             .map(|e| &mut e.value)
     }
 
     /// 範囲を削除
     pub fn erase_range(&mut self, start: usize, end: usize) {
-        if start >= end { return; }
+        if start >= end {
+            return;
+        }
         self.entries.retain(|e| !e.overlaps(start, end));
     }
 
     /// 隣接する同値範囲を結合
     fn coalesce(&mut self) {
-        if self.entries.len() < 2 { return; }
-        
+        if self.entries.len() < 2 {
+            return;
+        }
+
         let mut i = 0;
         while i + 1 < self.entries.len() {
             let merge = {
@@ -126,7 +138,7 @@ impl<T: Clone + PartialEq> MapleTree<T> {
                 let b = &self.entries[i + 1];
                 a.end == b.start && a.value == b.value
             };
-            
+
             if merge {
                 let new_end = self.entries[i + 1].end;
                 self.entries[i].end = new_end;
@@ -140,7 +152,7 @@ impl<T: Clone + PartialEq> MapleTree<T> {
     /// ギャップを検索
     pub fn find_gap(&self, start: usize, min_size: usize) -> Option<(usize, usize)> {
         let mut current = start;
-        
+
         for entry in &self.entries {
             if entry.start > current {
                 let gap_size = entry.start - current;
@@ -150,7 +162,7 @@ impl<T: Clone + PartialEq> MapleTree<T> {
             }
             current = max(current, entry.end);
         }
-        
+
         Some((current, current + min_size))
     }
 
@@ -161,7 +173,9 @@ impl<T: Clone + PartialEq> MapleTree<T> {
 }
 
 impl<T: Clone + PartialEq> Default for MapleTree<T> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 unsafe impl<T: Send> Send for MapleTree<T> {}
@@ -220,9 +234,7 @@ pub mod qemu_tests {
         mt.store_range(200, 300, 2);
         mt.erase_range(0, 100);
 
-        mt.len() == 1
-            && mt.load(50).is_none()
-            && mt.load(250) == Some(&2)
+        mt.len() == 1 && mt.load(50).is_none() && mt.load(250) == Some(&2)
     }
 
     pub fn maple_find_gap_smoke() -> bool {
@@ -243,9 +255,7 @@ pub mod qemu_tests {
         mt.store_range(0, 100, 1);
         mt.store_range(100, 200, 1);
 
-        mt.len() == 1
-            && mt.load(50) == Some(&1)
-            && mt.load(150) == Some(&1)
+        mt.len() == 1 && mt.load(50) == Some(&1) && mt.load(150) == Some(&1)
     }
 
     pub fn maple_many_ranges_smoke() -> bool {
@@ -255,10 +265,14 @@ pub mod qemu_tests {
             mt.store_range((i as usize) * 100, (i as usize) * 100 + 50, i);
         }
 
-        if mt.len() != 50 { return false; }
+        if mt.len() != 50 {
+            return false;
+        }
 
         for i in 0..50u32 {
-            if mt.load((i as usize) * 100 + 25) != Some(&i) { return false; }
+            if mt.load((i as usize) * 100 + 25) != Some(&i) {
+                return false;
+            }
         }
         true
     }
@@ -283,7 +297,7 @@ mod tests {
     fn test_single_range() {
         let mut mt: MapleTree<u32> = MapleTree::new();
         mt.store_range(10, 20, 42);
-        
+
         assert_eq!(mt.len(), 1);
         assert_eq!(mt.load(9), None);
         assert_eq!(mt.load(10), Some(&42));
@@ -294,11 +308,11 @@ mod tests {
     #[test_case]
     fn test_multiple_ranges() {
         let mut mt: MapleTree<u32> = MapleTree::new();
-        
+
         mt.store_range(0, 100, 1);
         mt.store_range(200, 300, 2);
         mt.store_range(500, 600, 3);
-        
+
         assert_eq!(mt.len(), 3);
         assert_eq!(mt.load(50), Some(&1));
         assert_eq!(mt.load(150), None);
@@ -308,10 +322,10 @@ mod tests {
     #[test_case]
     fn test_overlapping_store() {
         let mut mt: MapleTree<u32> = MapleTree::new();
-        
+
         mt.store_range(0, 100, 1);
         mt.store_range(50, 150, 2);
-        
+
         assert_eq!(mt.len(), 1);
         assert_eq!(mt.load(75), Some(&2));
     }
@@ -319,11 +333,11 @@ mod tests {
     #[test_case]
     fn test_erase() {
         let mut mt: MapleTree<u32> = MapleTree::new();
-        
+
         mt.store_range(0, 100, 1);
         mt.store_range(200, 300, 2);
         mt.erase_range(0, 100);
-        
+
         assert_eq!(mt.len(), 1);
         assert_eq!(mt.load(50), None);
         assert_eq!(mt.load(250), Some(&2));
@@ -332,10 +346,10 @@ mod tests {
     #[test_case]
     fn test_find_gap() {
         let mut mt: MapleTree<u32> = MapleTree::new();
-        
+
         mt.store_range(0, 100, 1);
         mt.store_range(200, 300, 2);
-        
+
         let gap = mt.find_gap(0, 50).unwrap();
         assert_eq!(gap, (100, 200));
     }
@@ -343,10 +357,10 @@ mod tests {
     #[test_case]
     fn test_range_coalescing() {
         let mut mt: MapleTree<u32> = MapleTree::new();
-        
+
         mt.store_range(0, 100, 1);
         mt.store_range(100, 200, 1);
-        
+
         // マージされて1つになる
         assert_eq!(mt.len(), 1);
         assert_eq!(mt.load(50), Some(&1));
@@ -356,16 +370,15 @@ mod tests {
     #[test_case]
     fn test_many_ranges() {
         let mut mt: MapleTree<u32> = MapleTree::new();
-        
+
         for i in 0..50 {
             mt.store_range(i * 100, i * 100 + 50, i as u32);
         }
-        
+
         assert_eq!(mt.len(), 50);
-        
+
         for i in 0..50 {
             assert_eq!(mt.load(i * 100 + 25), Some(&(i as u32)));
         }
     }
 }
-

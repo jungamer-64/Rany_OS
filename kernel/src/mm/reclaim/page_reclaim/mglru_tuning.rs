@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod reclaim_core;
 pub use reclaim_core::*;
 mod controller_impl;
@@ -45,13 +44,14 @@ impl MglruTuningController {
     pub fn should_run_aging(&self, current_time_ns: u64) -> bool {
         let last = self.last_aging_time_ns.load(Ordering::Relaxed);
         let interval = self.aging_interval_ns.load(Ordering::Relaxed);
-        
+
         current_time_ns.saturating_sub(last) >= interval
     }
 
     /// aging 実行時刻を更新
     pub fn mark_aging_run(&self, current_time_ns: u64) {
-        self.last_aging_time_ns.store(current_time_ns, Ordering::Relaxed);
+        self.last_aging_time_ns
+            .store(current_time_ns, Ordering::Relaxed);
     }
 
     /// Workingset refault 統計に基づいて interval を調整
@@ -73,7 +73,7 @@ impl MglruTuningController {
 
         let refault_rate = workingset_refaults as f32 / total as f32;
         let current = self.aging_interval_ns.load(Ordering::Relaxed);
-        
+
         let new_interval = if pressure >= MemoryPressure::Direct {
             // 高メモリ圧: interval を強制的に短縮
             (current / 2).max(self.min_interval_ns)
@@ -90,9 +90,10 @@ impl MglruTuningController {
         };
 
         if new_interval != current {
-            self.aging_interval_ns.store(new_interval, Ordering::Relaxed);
+            self.aging_interval_ns
+                .store(new_interval, Ordering::Relaxed);
             self.adjustments.fetch_add(1, Ordering::Relaxed);
-            
+
             if new_interval > current {
                 self.interval_increases.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -101,8 +102,10 @@ impl MglruTuningController {
         }
 
         // 統計を更新
-        self.last_workingset_refaults.store(workingset_refaults, Ordering::Relaxed);
-        self.last_normal_refaults.store(normal_refaults, Ordering::Relaxed);
+        self.last_workingset_refaults
+            .store(workingset_refaults, Ordering::Relaxed);
+        self.last_normal_refaults
+            .store(normal_refaults, Ordering::Relaxed);
     }
 
     /// 統計を取得
@@ -144,7 +147,6 @@ impl MglruTuningStats {
 
 // Legacy LruList removed.
 
-
 // ============================================================================
 // Page Reclaim Controller
 // ============================================================================
@@ -154,25 +156,25 @@ pub struct PageReclaimController {
     /// NUMAノードごとのLRUリスト
     /// インデックス = NUMAノードID
     pub(crate) lru_lists: [MglruList; 8],
-    
+
     /// ウォーターマーク
     watermarks: Watermarks,
-    
+
     /// kswapd起動フラグ
     kswapd_wake: AtomicBool,
-    
+
     /// 現在のメモリ圧迫レベル
     pressure: AtomicU64,
-    
+
     /// MGLRU 動的チューニングコントローラ
     mglru_tuning: MglruTuningController,
-    
+
     /// 統計: 直接回収の回数
     direct_reclaim_count: AtomicU64,
-    
+
     /// 統計: バックグラウンド回収の回数
     background_reclaim_count: AtomicU64,
-    
+
     /// 統計: 回収したページ数（合計）
     total_reclaimed: AtomicU64,
 
@@ -190,7 +192,7 @@ pub struct PageReclaimController {
     async_fail: AtomicU64,
     requeued: AtomicU64,
     blocked_unsafe: AtomicU64,
-    
+
     /// スキャン比率（Active:Inactive）
     scan_ratio: AtomicU64,
 }

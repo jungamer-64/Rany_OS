@@ -14,7 +14,6 @@
 // 参照: `crate::io::nvme` — 本番NVMeカーネル統合
 //       `drivers/nvme/`    — 外部NVMeドライバセル
 
-
 pub mod nvme {
     #[derive(Clone, Copy, Debug)]
     pub struct NvmeCompletion {
@@ -23,8 +22,12 @@ pub mod nvme {
     }
 
     impl NvmeCompletion {
-        pub fn is_success(&self) -> bool { (self.status & 0x1) != 0 }
-        pub fn command_id(&self) -> u16 { self.cid }
+        pub fn is_success(&self) -> bool {
+            (self.status & 0x1) != 0
+        }
+        pub fn command_id(&self) -> u16 {
+            self.cid
+        }
     }
 
     pub mod defs {
@@ -53,7 +56,9 @@ pub mod nvme {
     }
 
     impl NvmePollingDriver {
-        pub fn new() -> Self { NvmePollingDriver }
+        pub fn new() -> Self {
+            NvmePollingDriver
+        }
 
         /// Submit a read command. Minimal test implementation: returns Ok(0).
         /// Safety: matches the real driver's safety contract (caller ensures core and PRP validity)

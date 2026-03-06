@@ -5,10 +5,10 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use kernel_api::DmaBuffer;
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 use kernel_api::services::kernel;
-use kernel_api::DmaBuffer;
 
 use mlx5_driver::defs::{MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH};
 use mlx5_driver::regs::{cmd_entry, cqe, eqe, wqe};
@@ -115,15 +115,33 @@ impl Drop for Mlx5DmaResources {
             release_dma_slot(page);
         }
 
-        for q in self.rq_dbs.iter_mut() { release_dma_slot(q); }
-        for q in self.rqs.iter_mut() { release_dma_slot(q); }
-        for q in self.sq_dbs.iter_mut() { release_dma_slot(q); }
-        for q in self.sqs.iter_mut() { release_dma_slot(q); }
-        for q in self.rx_cq_dbs.iter_mut() { release_dma_slot(q); }
-        for q in self.rx_cqs.iter_mut() { release_dma_slot(q); }
-        for q in self.tx_cq_dbs.iter_mut() { release_dma_slot(q); }
-        for q in self.tx_cqs.iter_mut() { release_dma_slot(q); }
-        for q in self.eqs.iter_mut() { release_dma_slot(q); }
+        for q in self.rq_dbs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.rqs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.sq_dbs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.sqs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.rx_cq_dbs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.rx_cqs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.tx_cq_dbs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.tx_cqs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.eqs.iter_mut() {
+            release_dma_slot(q);
+        }
         release_dma_slot(&mut self.cmd_out_mbox);
         release_dma_slot(&mut self.cmd_in_mbox);
         release_dma_slot(&mut self.cmdq);
@@ -218,20 +236,52 @@ impl Mlx5ConnectXDriver {
 
         for _ in 0..num_queues {
             eqs.push(Self::alloc_dma_for_device(eq_size, packed_device_id, "eq")?);
-            tx_cqs.push(Self::alloc_dma_for_device(cq_size, packed_device_id, "tx_cq")?);
-            tx_cq_dbs.push(Self::alloc_dma_for_device(db_record_size, packed_device_id, "tx_cq_db")?);
-            rx_cqs.push(Self::alloc_dma_for_device(cq_size, packed_device_id, "rx_cq")?);
-            rx_cq_dbs.push(Self::alloc_dma_for_device(db_record_size, packed_device_id, "rx_cq_db")?);
+            tx_cqs.push(Self::alloc_dma_for_device(
+                cq_size,
+                packed_device_id,
+                "tx_cq",
+            )?);
+            tx_cq_dbs.push(Self::alloc_dma_for_device(
+                db_record_size,
+                packed_device_id,
+                "tx_cq_db",
+            )?);
+            rx_cqs.push(Self::alloc_dma_for_device(
+                cq_size,
+                packed_device_id,
+                "rx_cq",
+            )?);
+            rx_cq_dbs.push(Self::alloc_dma_for_device(
+                db_record_size,
+                packed_device_id,
+                "rx_cq_db",
+            )?);
             sqs.push(Self::alloc_dma_for_device(sq_size, packed_device_id, "sq")?);
-            sq_dbs.push(Self::alloc_dma_for_device(db_record_size, packed_device_id, "sq_db")?);
+            sq_dbs.push(Self::alloc_dma_for_device(
+                db_record_size,
+                packed_device_id,
+                "sq_db",
+            )?);
             rqs.push(Self::alloc_dma_for_device(rq_size, packed_device_id, "rq")?);
-            rq_dbs.push(Self::alloc_dma_for_device(db_record_size, packed_device_id, "rq_db")?);
+            rq_dbs.push(Self::alloc_dma_for_device(
+                db_record_size,
+                packed_device_id,
+                "rq_db",
+            )?);
         }
 
         Ok(Mlx5DmaResources {
             cmdq: Self::alloc_dma_for_device(cmdq_size, packed_device_id, "cmdq")?,
-            cmd_in_mbox: Self::alloc_dma_for_device(cmd_mbox_size, packed_device_id, "cmd_in_mbox")?,
-            cmd_out_mbox: Self::alloc_dma_for_device(cmd_mbox_size, packed_device_id, "cmd_out_mbox")?,
+            cmd_in_mbox: Self::alloc_dma_for_device(
+                cmd_mbox_size,
+                packed_device_id,
+                "cmd_in_mbox",
+            )?,
+            cmd_out_mbox: Self::alloc_dma_for_device(
+                cmd_mbox_size,
+                packed_device_id,
+                "cmd_out_mbox",
+            )?,
             fw_pages,
             eqs,
             tx_cqs,
@@ -304,10 +354,10 @@ impl Mlx5ConnectXDriver {
 
         if let Some(msix_offset) = pci_dev.msix_cap_offset {
             log::info!(target: "mlx5", "MSI-X capability at offset {:#x}", msix_offset);
-            
+
             // 必要なベクタ数を見積もる (EQの数など)
             let requested_vectors = 1;
-            
+
             if let Ok(allocs) = crate::io::interrupt_manager::allocate_msix(
                 pci_dev.bdf.to_u16() as u32,
                 requested_vectors,
@@ -318,47 +368,68 @@ impl Mlx5ConnectXDriver {
                     let msix_vectors = allocs;
                     let base_vector = msix_vectors[0].vector;
                     log::info!(target: "mlx5", "Allocated MSI-X base vector: {}", base_vector);
-                    
+
                     let config = &msix_vectors[0].config;
-                    
+
                     // MSI-X テーブルの情報取得とマッピング
                     let table_info = crate::io::pci::pci_read(
-                        pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(), (msix_offset + 4) as u8
+                        pci_dev.bdf.bus(),
+                        pci_dev.bdf.device(),
+                        pci_dev.bdf.function(),
+                        (msix_offset + 4) as u8,
                     );
                     let table_bir = (table_info & 0x7) as usize;
                     let table_offset = table_info & !0x7;
-                    
+
                     if let Some(bar) = pci_dev.bars[table_bir] {
-                        if let Some(table_bar_base) = ensure_bar_mapped(bar.base(), bar.size() as u64) {
+                        if let Some(table_bar_base) =
+                            ensure_bar_mapped(bar.base(), bar.size() as u64)
+                        {
                             let table_base_virt = table_bar_base + table_offset as u64;
                             let entry_ptr = table_base_virt as *mut u32;
-                            
+
                             // Entry 0 を設定 (device.init_full で msix_vector=0 を使用するため)
                             unsafe {
-                                core::ptr::write_volatile(entry_ptr.add(0), config.msi_address() as u32); // Msg Addr Lo
-                                core::ptr::write_volatile(entry_ptr.add(1), (config.msi_address() >> 32) as u32); // Msg Addr Hi
+                                core::ptr::write_volatile(
+                                    entry_ptr.add(0),
+                                    config.msi_address() as u32,
+                                ); // Msg Addr Lo
+                                core::ptr::write_volatile(
+                                    entry_ptr.add(1),
+                                    (config.msi_address() >> 32) as u32,
+                                ); // Msg Addr Hi
                                 core::ptr::write_volatile(entry_ptr.add(2), config.msi_data()); // Msg Data
                                 core::ptr::write_volatile(entry_ptr.add(3), 0); // Vector Control (Unmask)
                             }
-                            
+
                             // MSI-X を有効化し、Function Mask を解除
                             let dword = crate::io::pci::pci_read(
-                                pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(), msix_offset as u8
+                                pci_dev.bdf.bus(),
+                                pci_dev.bdf.device(),
+                                pci_dev.bdf.function(),
+                                msix_offset as u8,
                             );
                             let msg_ctrl = (dword >> 16) as u16;
                             let new_msg_ctrl = (msg_ctrl | 0x8000) & !0x4000; // Enable=1, Function Mask=0
                             crate::io::pci::pci_write(
-                                pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(),
+                                pci_dev.bdf.bus(),
+                                pci_dev.bdf.device(),
+                                pci_dev.bdf.function(),
                                 msix_offset as u8,
-                                (dword & 0x0000FFFF) | ((new_msg_ctrl as u32) << 16)
+                                (dword & 0x0000FFFF) | ((new_msg_ctrl as u32) << 16),
                             );
-                            
+
                             // レガシー INTx を無効化
                             let cmd = crate::io::pci::pci_read(
-                                pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(), crate::io::pci::config_regs::COMMAND as u8
+                                pci_dev.bdf.bus(),
+                                pci_dev.bdf.device(),
+                                pci_dev.bdf.function(),
+                                crate::io::pci::config_regs::COMMAND as u8,
                             );
                             crate::io::pci::pci_write(
-                                pci_dev.bdf.bus(), pci_dev.bdf.device(), pci_dev.bdf.function(),
+                                pci_dev.bdf.bus(),
+                                pci_dev.bdf.device(),
+                                pci_dev.bdf.function(),
                                 crate::io::pci::config_regs::COMMAND as u8,
                                 cmd | (crate::io::pci::command_bits::INTERRUPT_DISABLE as u32),
                             );
@@ -366,13 +437,16 @@ impl Mlx5ConnectXDriver {
                             log::warn!(target: "mlx5", "Failed to map MSI-X table BAR");
                         }
                     }
-                    
+
                     // ハンドラを登録（Interrupt-Waker Bridge連携）
                     for alloc in &msix_vectors {
                         let vec = alloc.vector;
-                        crate::io::interrupt_manager::register_handler(vec, alloc::boxed::Box::new(move || {
-                            crate::io::interrupt_manager::push_interrupt_event(vec);
-                        }));
+                        crate::io::interrupt_manager::register_handler(
+                            vec,
+                            alloc::boxed::Box::new(move || {
+                                crate::io::interrupt_manager::push_interrupt_event(vec);
+                            }),
+                        );
                     }
                 } else {
                     log::warn!(target: "mlx5", "MSI-X allocation returned empty, falling back to polling");
@@ -407,15 +481,63 @@ impl Mlx5ConnectXDriver {
         let sq_log_size = log2_u32(MLX5_WQ_DEPTH);
         let rq_log_size = log2_u32(MLX5_WQ_DEPTH);
 
-        let eq_bufs: Vec<(u64, u64)> = dma_resources.eqs.iter().map(|q| (q.as_ptr_u64(), q.device_address())).collect();
-        let tx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources.tx_cqs.iter().zip(dma_resources.tx_cq_dbs.iter())
-            .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
-        let rx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources.rx_cqs.iter().zip(dma_resources.rx_cq_dbs.iter())
-            .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
-        let sq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources.sqs.iter().zip(dma_resources.sq_dbs.iter())
-            .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
-        let rq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources.rqs.iter().zip(dma_resources.rq_dbs.iter())
-            .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
+        let eq_bufs: Vec<(u64, u64)> = dma_resources
+            .eqs
+            .iter()
+            .map(|q| (q.as_ptr_u64(), q.device_address()))
+            .collect();
+        let tx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources
+            .tx_cqs
+            .iter()
+            .zip(dma_resources.tx_cq_dbs.iter())
+            .map(|(q, db)| {
+                (
+                    q.as_ptr_u64(),
+                    q.device_address(),
+                    db.as_ptr_u64(),
+                    db.device_address(),
+                )
+            })
+            .collect();
+        let rx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources
+            .rx_cqs
+            .iter()
+            .zip(dma_resources.rx_cq_dbs.iter())
+            .map(|(q, db)| {
+                (
+                    q.as_ptr_u64(),
+                    q.device_address(),
+                    db.as_ptr_u64(),
+                    db.device_address(),
+                )
+            })
+            .collect();
+        let sq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources
+            .sqs
+            .iter()
+            .zip(dma_resources.sq_dbs.iter())
+            .map(|(q, db)| {
+                (
+                    q.as_ptr_u64(),
+                    q.device_address(),
+                    db.as_ptr_u64(),
+                    db.device_address(),
+                )
+            })
+            .collect();
+        let rq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources
+            .rqs
+            .iter()
+            .zip(dma_resources.rq_dbs.iter())
+            .map(|(q, db)| {
+                (
+                    q.as_ptr_u64(),
+                    q.device_address(),
+                    db.as_ptr_u64(),
+                    db.device_address(),
+                )
+            })
+            .collect();
 
         log::info!(
             target: "mlx5",
@@ -594,7 +716,8 @@ fn ensure_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
     }
 
     let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
-    let mut manager = unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+    let mut manager =
+        unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
     let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
     match unsafe { manager.map_range(virt_start, phys_start, map_size, flags) } {
         Ok(()) | Err(crate::mm::virt::higher_half::MapError::AlreadyMapped) => Some(base_virt),

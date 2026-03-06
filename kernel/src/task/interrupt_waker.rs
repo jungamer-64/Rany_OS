@@ -13,12 +13,9 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::Waker;
-use core::sync::atomic::AtomicUsize;
-
-
-
 
 // ============================================================================
 // Interrupt Source Types
@@ -209,7 +206,7 @@ impl InterruptWakerRegistry {
         if idx >= MAX_INTERRUPT_INDICES {
             return;
         }
-        
+
         // 初期化済みならクリア
         if let Some(wakers) = self.wakers.get() {
             // AtomicWakerにはclear()がない？
@@ -222,11 +219,11 @@ impl InterruptWakerRegistry {
             // AtomicWakerはWakerを保持し続けるので、メモリリークのリスクはある？）
             // 前の BTreeMap 実装では remove していた。
             // AtomicWakerに clear() メソッドを追加するのも一つの手。
-            
+
             // AtomicWaker.rs (step 796) says:
             // pub fn clear(&self) { ... }
             // So we can use clear().
-            
+
             wakers[idx].clear();
         }
     }

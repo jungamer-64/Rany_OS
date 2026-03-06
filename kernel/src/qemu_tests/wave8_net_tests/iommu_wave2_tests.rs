@@ -47,7 +47,8 @@ pub fn iommu_wave2_domain_map_poisoned_returns_none_smoke() -> bool {
 }
 
 pub fn iommu_wave2_get_domain_for_device_poisoned_returns_hw_error_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_get_domain_for_device_poisoned_returns_hw_error_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_get_domain_for_device_poisoned_returns_hw_error_smoke(
+    )
 }
 
 pub fn iommu_wave2_set_domain_numa_poisoned_returns_hw_error_smoke() -> bool {
@@ -196,11 +197,13 @@ pub fn iommu_wave5_qi_metrics_pressure_canonical_smoke() -> bool {
 }
 
 pub fn iommu_wave5_map_for_device_async_and_unmap_canonical_smoke() -> bool {
-    crate::io::iommu::qemu_tests::group_tests::wave5_map_for_device_async_and_unmap_canonical_smoke()
+    crate::io::iommu::qemu_tests::group_tests::wave5_map_for_device_async_and_unmap_canonical_smoke(
+    )
 }
 
 pub fn iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke() -> bool {
-    crate::io::iommu::qemu_tests::group_tests::wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
+    crate::io::iommu::qemu_tests::group_tests::wave5_cmdqueue_map_unmap_with_domain_canonical_smoke(
+    )
 }
 
 pub fn iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke() -> bool {

@@ -21,17 +21,16 @@
 //! - Egress: `NetworkStack` の送信関数（`send_tcp`, `send_udp_raw` 等）で
 //!   `check_egress()` を呼び出す
 
-mod rules;
 mod engine;
+mod rules;
 mod stats;
 #[cfg(test)]
 mod tests;
 
-pub use rules::{
-    FirewallRule, FirewallAction, FirewallDirection, FirewallProtocol,
-    IpMatch, PortMatch, RuleId,
-};
 pub use engine::{FirewallEngine, FirewallVerdict};
+pub use rules::{
+    FirewallAction, FirewallDirection, FirewallProtocol, FirewallRule, IpMatch, PortMatch, RuleId,
+};
 pub use stats::FirewallStats;
 
 use crate::sync::PoisonLock;
@@ -67,14 +66,16 @@ pub fn check_ingress(
     dst_port: u16,
 ) -> bool {
     match FIREWALL.lock() {
-        Ok(fw) => fw.evaluate(
-            FirewallDirection::Ingress,
-            src_ip,
-            dst_ip,
-            protocol,
-            src_port,
-            dst_port,
-        ) == FirewallVerdict::Allow,
+        Ok(fw) => {
+            fw.evaluate(
+                FirewallDirection::Ingress,
+                src_ip,
+                dst_ip,
+                protocol,
+                src_port,
+                dst_port,
+            ) == FirewallVerdict::Allow
+        }
         Err(_) => {
             // PoisonLock がポイズンされた場合はフェイルオープン（許可）
             // セキュリティポリシー上はフェイルクローズが望ましいが、
@@ -94,14 +95,16 @@ pub fn check_egress(
     dst_port: u16,
 ) -> bool {
     match FIREWALL.lock() {
-        Ok(fw) => fw.evaluate(
-            FirewallDirection::Egress,
-            src_ip,
-            dst_ip,
-            protocol,
-            src_port,
-            dst_port,
-        ) == FirewallVerdict::Allow,
+        Ok(fw) => {
+            fw.evaluate(
+                FirewallDirection::Egress,
+                src_ip,
+                dst_ip,
+                protocol,
+                src_port,
+                dst_port,
+            ) == FirewallVerdict::Allow
+        }
         Err(_) => {
             log::warn!("[FIREWALL] lock poisoned — fail-open");
             true

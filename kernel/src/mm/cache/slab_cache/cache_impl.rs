@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl SlabCache {
     /// 新しいSlabキャッシュを作成
     pub fn new(object_size: usize) -> Self {
@@ -59,11 +58,11 @@ impl SlabCache {
     pub fn allocate(&mut self) -> Option<NonNull<u8>> {
         // MemCG Charge (Placeholder: implement when MemCG is ready)
         // crate::mm::meta::memcg::charge_slab(self.object_size)?;
-        
+
         self.alloc_count += 1;
-        
+
         let ptr = self.allocate_inner()?;
-        
+
         Some(ptr)
     }
 
@@ -71,7 +70,10 @@ impl SlabCache {
     ///
     /// # Safety
     /// `page` は有効で、このSlabCacheに所有されていること
-    unsafe fn alloc_from_page_tracked(&mut self, mut page: NonNull<SlabPageHeader>) -> Option<NonNull<u8>> {
+    unsafe fn alloc_from_page_tracked(
+        &mut self,
+        mut page: NonNull<SlabPageHeader>,
+    ) -> Option<NonNull<u8>> {
         let ptr = page.as_mut().allocate(self.object_size)?;
         if page.as_ref().is_full() {
             self.full_page_count += 1;
@@ -91,7 +93,7 @@ impl SlabCache {
                 return result;
             }
         }
-        
+
         // 2. Partial List
         if let Some(page) = self.pop_partial() {
             self.current_page = Some(page);
@@ -103,12 +105,12 @@ impl SlabCache {
 
         // 3. New Page (Grow)
         self.grow()?;
-        
+
         // Retry allocation from new current_page
         let page = self.current_page?;
         unsafe { self.alloc_from_page_tracked(page) }
     }
-    
+
     /// Pop a page from the partial list
     pub(super) fn pop_partial(&mut self) -> Option<NonNull<SlabPageHeader>> {
         if let Some(mut page) = self.partial_list {
@@ -122,19 +124,19 @@ impl SlabCache {
             }
             Some(page)
         } else if let Some(mut page) = self.empty_list {
-             // Use empty list as fallback partials
-             unsafe {
-                 let next = page.as_ref().next;
-                 if let Some(mut next_ptr) = next {
-                     next_ptr.as_mut().prev = None;
-                 }
-                 self.empty_list = next;
-                 page.as_mut().next = None;
-                 
-                 self.empty_page_count = self.empty_page_count.saturating_sub(1);
-                 self.partial_page_count += 1;
-             }
-             Some(page)
+            // Use empty list as fallback partials
+            unsafe {
+                let next = page.as_ref().next;
+                if let Some(mut next_ptr) = next {
+                    next_ptr.as_mut().prev = None;
+                }
+                self.empty_list = next;
+                page.as_mut().next = None;
+
+                self.empty_page_count = self.empty_page_count.saturating_sub(1);
+                self.partial_page_count += 1;
+            }
+            Some(page)
         } else {
             None
         }
@@ -147,21 +149,21 @@ impl SlabCache {
         let page_addr = (ptr.as_ptr() as u64) & !(SLAB_PAGE_SIZE as u64 - 1);
         let header_ptr = NonNull::new_unchecked(page_addr as *mut SlabPageHeader);
         let header = &mut *header_ptr.as_ptr();
-        
+
         let was_full = header.is_full();
-        
+
         header.free(ptr, self.object_size);
         self.dealloc_count += 1;
-        
+
         // MemCG Uncharge
         // crate::mm::meta::memcg::uncharge_slab(self.object_size);
-        
+
         // State transitions
         if was_full {
             // Full -> Partial
             self.full_page_count = self.full_page_count.saturating_sub(1);
             self.partial_page_count += 1;
-            
+
             // If this is not the current page, add to partial list
             if self.current_page != Some(header_ptr) {
                 self.push_partial(header_ptr);
@@ -169,15 +171,15 @@ impl SlabCache {
         } else if header.is_empty() {
             // Partial -> Empty
             if self.current_page == Some(header_ptr) {
-                 self.current_page = None;
+                self.current_page = None;
             } else {
-                 // Remove from partial list
-                 Self::remove_from_list(header_ptr, &mut self.partial_list);
+                // Remove from partial list
+                Self::remove_from_list(header_ptr, &mut self.partial_list);
             }
-            
+
             self.partial_page_count = self.partial_page_count.saturating_sub(1);
             self.empty_page_count += 1;
-            
+
             // Cache some empty pages, free others
             if self.empty_page_count > 2 {
                 // Free physical memory
@@ -187,10 +189,10 @@ impl SlabCache {
                 self.push_empty(header_ptr);
             }
         }
-        
+
         self.maybe_scale_down_refill();
     }
-    
+
     /// Add to partial list head
     unsafe fn push_partial(&mut self, mut page: NonNull<SlabPageHeader>) {
         let old_head = self.partial_list;
@@ -201,7 +203,7 @@ impl SlabCache {
         }
         self.partial_list = Some(page);
     }
-    
+
     /// Add to empty list head
     unsafe fn push_empty(&mut self, mut page: NonNull<SlabPageHeader>) {
         let old_head = self.empty_list;
@@ -212,27 +214,30 @@ impl SlabCache {
         }
         self.empty_list = Some(page);
     }
-    
+
     /// Remove from arbitrary list
-    unsafe fn remove_from_list(mut page: NonNull<SlabPageHeader>, list_head: &mut Option<NonNull<SlabPageHeader>>) {
+    unsafe fn remove_from_list(
+        mut page: NonNull<SlabPageHeader>,
+        list_head: &mut Option<NonNull<SlabPageHeader>>,
+    ) {
         let prev = page.as_ref().prev;
         let next = page.as_ref().next;
-        
+
         if let Some(mut prev_ptr) = prev {
             prev_ptr.as_mut().next = next;
         } else {
             // Was head
             *list_head = next;
         }
-        
+
         if let Some(mut next_ptr) = next {
             next_ptr.as_mut().prev = prev;
         }
-        
+
         page.as_mut().prev = None;
         page.as_mut().next = None;
     }
-    
+
     /// Free physical page
     unsafe fn free_page_physical(&mut self, page: NonNull<SlabPageHeader>) {
         let virt = x86_64::VirtAddr::new(page.as_ptr() as u64);
@@ -242,12 +247,11 @@ impl SlabCache {
         }
     }
 
-
     /// 適応的リフィル数調整（スケールアップ）
     #[inline]
     pub(super) fn maybe_adjust_refill_pages(&mut self) {
         let allocs_since_last = self.alloc_count.saturating_sub(self.last_scale_alloc_count);
-        
+
         if allocs_since_last >= REFILL_SCALE_UP_THRESHOLD {
             let new_refill = (self.refill_pages * 2).min(MAX_REFILL_PAGES);
             if new_refill > self.refill_pages {
@@ -285,8 +289,10 @@ impl SlabCache {
     /// 単一のSlabページを追加
     pub(super) fn grow_single(&mut self) -> Option<()> {
         let frame = if let Some(node) = self.numa_node {
-            crate::mm::phys::frame_allocator::alloc_frame_on_numa_node(crate::mm::types::NumaNodeId::new(node))
-                .or_else(|| crate::mm::phys::frame_allocator::alloc_frame())?
+            crate::mm::phys::frame_allocator::alloc_frame_on_numa_node(
+                crate::mm::types::NumaNodeId::new(node),
+            )
+            .or_else(|| crate::mm::phys::frame_allocator::alloc_frame())?
         } else {
             crate::mm::phys::frame_allocator::alloc_frame()?
         };
@@ -294,11 +300,12 @@ impl SlabCache {
         let phys_addr = frame.start_address();
         let virt_addr = crate::mm::virt::mapping::phys_to_virt(phys_addr);
 
-        let page_ptr = NonNull::new(virt_addr.as_u64() as *mut u8).expect("virt_addr returned null");
+        let page_ptr =
+            NonNull::new(virt_addr.as_u64() as *mut u8).expect("virt_addr returned null");
 
         // Slab Coloring
         let color_offset = self.calculate_color_offset();
-        
+
         // Header Initialization
         let usable_size = SLAB_PAGE_SIZE - SlabPageHeader::payload_offset(color_offset as u16);
         let total_objects = (usable_size / self.object_size) as u16;
@@ -312,7 +319,7 @@ impl SlabCache {
                 total_objects,
                 color_offset as u16,
             );
-            
+
             // Add to partial list (or current_page if empty)
             if self.current_page.is_none() {
                 self.current_page = Some(header);
@@ -326,31 +333,32 @@ impl SlabCache {
     }
 
     /// Slab Coloringのオフセットを計算
-    /// 
+    ///
     /// ページごとに異なるオフセットを使用して、
     /// 同じサイズのオブジェクトがキャッシュの同じセットに
     /// マッピングされることを防ぐ。
-    /// 
+    ///
     /// ## Enhanced Randomization (v0.6.0)
-    /// 
+    ///
     /// 単純なページ数ローテーションの代わりに、
     /// xorshift PRNGベースの分散を使用してキャッシュ衝突を最小化。
     /// - ページインデックスとオブジェクトサイズを元にシード値を生成
     /// - より均等なキャッシュセット分布を実現
     #[inline]
     /// Slab Coloringのオフセットを計算
-    
+
     pub(super) fn calculate_color_offset(&self) -> usize {
         // Enhanced: Use xorshift-based PRNG for better distribution
-        let page_index = (self.full_page_count + self.partial_page_count + self.empty_page_count) as u32;
+        let page_index =
+            (self.full_page_count + self.partial_page_count + self.empty_page_count) as u32;
         let size_factor = self.object_size as u32;
-        
+
         // Simple xorshift32 for fast pseudo-random generation
         let mut x = page_index.wrapping_add(size_factor).wrapping_add(0x5A5A);
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
-        
+
         // Map to color space: 0 to (MAX_SLAB_COLORS - 1) cache lines
         let color_index = (x as usize) % MAX_SLAB_COLORS;
         color_index * CACHE_LINE_SIZE
@@ -361,24 +369,26 @@ impl SlabCache {
     pub fn stats(&self) -> SlabStats {
         let mut free_count = 0;
         let _objects_per_page = SLAB_PAGE_SIZE / self.object_size; // approx max, accurate for empty
-        
+
         // Calculate free count from empty pages
         // For empty pages, free_count is not strictly objects_per_page because of coloring,
         // but close enough for stats. Or we could track track exactly if we knew total objects per page.
         // We know total_objects is in the header, but we can't access it easily without iterating.
         // Let's iterate lists for accuracy.
-        
+
         // 1. Current Page
         if let Some(page) = self.current_page {
-            unsafe { free_count += page.as_ref().inuse as usize; } // Wait, free_count? "inuse" is used count.
+            unsafe {
+                free_count += page.as_ref().inuse as usize;
+            } // Wait, free_count? "inuse" is used count.
             // Oh, SlabPageMeta had free_count. Header has inuse.
             // Header has total_objects.
-             unsafe {
-                 let p = page.as_ref();
-                 free_count += (p.total_objects - p.inuse) as usize;
-             }
+            unsafe {
+                let p = page.as_ref();
+                free_count += (p.total_objects - p.inuse) as usize;
+            }
         }
-        
+
         // 2. Partial List
         let mut curr = self.partial_list;
         while let Some(page) = curr {
@@ -388,7 +398,7 @@ impl SlabCache {
                 curr = p.next;
             }
         }
-        
+
         // 3. Empty List
         let mut curr = self.empty_list;
         while let Some(page) = curr {
@@ -398,7 +408,7 @@ impl SlabCache {
                 curr = p.next;
             }
         }
-        
+
         let page_count = self.full_page_count + self.partial_page_count + self.empty_page_count;
 
         SlabStats {
@@ -415,7 +425,7 @@ impl SlabCache {
             empty_alloc_count: 0,   // removed field tracking for now
         }
     }
-    
+
     // Helper to get partial count (since we tracked it)
     pub(super) fn start_tracking_partial_count(&self) -> usize {
         self.partial_page_count
@@ -431,26 +441,26 @@ impl SlabCache {
     pub fn set_refill_pages(&mut self, pages: usize) {
         self.refill_pages = pages.clamp(MIN_REFILL_PAGES, MAX_REFILL_PAGES);
     }
-    
+
     /// Partial状態のページ数を取得
     #[inline]
     pub fn partial_page_count(&self) -> usize {
         self.partial_page_count
     }
-    
+
     /// Empty状態のページをPMMに返却
-    /// 
+    ///
     /// メモリ圧迫時に呼び出し、未使用ページを解放する。
     /// 返却したページ数を返す。
-    /// 
+    ///
     /// ## アルゴリズム
-    /// 
+    ///
     /// 1. 全ページをスキャンし、Empty状態（全オブジェクト空き）を特定
     /// 2. 空きリストからそのページのオブジェクトを除去
     /// 3. ページをPMMに返却
-    /// 
+    ///
     /// ## 制限
-    /// 
+    ///
     /// - 最低1ページは保持（完全解放を防止）
     /// - max_pages で返却数を制限
     /// Empty状態のページをPMMに返却
@@ -458,39 +468,38 @@ impl SlabCache {
         if self.empty_list.is_none() || max_pages == 0 {
             return 0;
         }
-        
+
         // 最低1ページは保持 (cache effect)
         let keep_pages = 1;
         if self.empty_page_count <= keep_pages {
             return 0;
         }
-        
+
         let mut returned = 0;
-        
+
         // Remove from empty_list
         while returned < max_pages && self.empty_page_count > keep_pages {
-             if let Some(mut page) = self.empty_list {
-                 unsafe {
-                     let next = page.as_ref().next;
-                     if let Some(mut next_ptr) = next {
-                         next_ptr.as_mut().prev = None;
-                     }
-                     self.empty_list = next;
-                     page.as_mut().next = None; // Detach
-                     
-                     // Free physical
-                     self.free_page_physical(page);
-                 }
-                 self.empty_page_count -= 1;
-                 returned += 1;
-             } else {
-                 break;
-             }
+            if let Some(mut page) = self.empty_list {
+                unsafe {
+                    let next = page.as_ref().next;
+                    if let Some(mut next_ptr) = next {
+                        next_ptr.as_mut().prev = None;
+                    }
+                    self.empty_list = next;
+                    page.as_mut().next = None; // Detach
+
+                    // Free physical
+                    self.free_page_physical(page);
+                }
+                self.empty_page_count -= 1;
+                returned += 1;
+            } else {
+                break;
+            }
         }
-        
+
         returned
     }
-    
 
     /// Register a migrator for this cache
     pub fn register_migrator(&mut self, migrator: Box<dyn ObjectMigrator>) {
@@ -499,43 +508,51 @@ impl SlabCache {
 
     /// Defragment the cache by moving objects from sparsely used pages
     pub fn defrag(&mut self) -> usize {
-        if self.migrator.is_none() { return 0; }
-        
+        if self.migrator.is_none() {
+            return 0;
+        }
+
         let mut moved_count = 0;
         // Limit processing to avoid stalls
         const MAX_PAGES_TO_SCAN: usize = 16;
-        
+
         let count = self.partial_page_count;
         let limit = core::cmp::min(count, MAX_PAGES_TO_SCAN);
-        
+
         for _ in 0..limit {
-             let page_ptr = self.pop_partial(); 
-             if page_ptr.is_none() { break; }
-             let mut page = page_ptr.unwrap();
-             
-             // Check utilization (< 25%)
-             let (inuse, total) = unsafe {
-                 let h = page.as_mut();
-                 (h.inuse, h.total_objects)
-             };
-             
-             if inuse > 0 && (inuse as usize * 4) < (total as usize) {
-                 // Victim found
-                 let moved = self.evacuate_page(page);
-                 moved_count += moved;
-             }
-             
-             // After evacuation, check if empty
-             let is_empty = unsafe { page.as_ref().is_empty() };
-             if is_empty {
-                  unsafe { self.free_page_physical(page); }
-                  // pop_partial decremented counters and detached page.
-                  // We just drop it physically. Correct.
-                  continue;
-             }
-             
-             // Push back if not freed
-             unsafe { self.push_partial(page); }
+            let page_ptr = self.pop_partial();
+            if page_ptr.is_none() {
+                break;
+            }
+            let mut page = page_ptr.unwrap();
+
+            // Check utilization (< 25%)
+            let (inuse, total) = unsafe {
+                let h = page.as_mut();
+                (h.inuse, h.total_objects)
+            };
+
+            if inuse > 0 && (inuse as usize * 4) < (total as usize) {
+                // Victim found
+                let moved = self.evacuate_page(page);
+                moved_count += moved;
+            }
+
+            // After evacuation, check if empty
+            let is_empty = unsafe { page.as_ref().is_empty() };
+            if is_empty {
+                unsafe {
+                    self.free_page_physical(page);
+                }
+                // pop_partial decremented counters and detached page.
+                // We just drop it physically. Correct.
+                continue;
+            }
+
+            // Push back if not freed
+            unsafe {
+                self.push_partial(page);
+            }
         }
         moved_count
     }
@@ -543,16 +560,16 @@ impl SlabCache {
     /// Evacuate all objects from a page
     pub(super) fn evacuate_page(&mut self, mut page: NonNull<SlabPageHeader>) -> usize {
         let mut moved = 0;
-        let object_size = self.object_size; 
-        
+        let object_size = self.object_size;
+
         let header = unsafe { page.as_ref() };
         let total = header.total_objects;
         let color_offset = header.color_offset;
-        
+
         // 1. Identify free slots
         // Max objects per 4KB page (min size 8) is 512.
         let mut free_mask = [0u64; 8];
-        
+
         let mut curr = header.next_free;
         while let Some(idx) = curr {
             let i = idx as usize;
@@ -570,8 +587,10 @@ impl SlabCache {
 
         // 2. Iterate all slots
         for i in 0..total as usize {
-            if i >= 512 { break; } 
-            
+            if i >= 512 {
+                break;
+            }
+
             let is_free = (free_mask[i / 64] & (1 << (i % 64))) != 0;
             if !is_free {
                 // ALLOCATED -> Migrate
@@ -579,13 +598,13 @@ impl SlabCache {
                     let offset = SlabPageHeader::payload_offset(color_offset);
                     let base_ptr = (page.as_ptr() as *mut u8).add(offset);
                     let old_ptr = NonNull::new_unchecked(base_ptr.add(i * object_size));
-                    
+
                     if self.try_migrate_object(old_ptr) {
-                         // Manual deallocate from victim page
-                         let ph = page.as_mut();
-                         ph.free(old_ptr, object_size);
-                         self.dealloc_count += 1;
-                         moved += 1;
+                        // Manual deallocate from victim page
+                        let ph = page.as_mut();
+                        ph.free(old_ptr, object_size);
+                        self.dealloc_count += 1;
+                        moved += 1;
                     }
                 }
             }
@@ -608,5 +627,4 @@ impl SlabCache {
         }
         success
     }
-
 }

@@ -740,19 +740,29 @@ impl<'a> PageTableWalker<'a> {
         // PML4
         let pml4: &PageTable = unsafe { &*self.mapper.phys_as_ptr(self.pml4_phys) };
         let pml4e = pml4.entry(indices[0]);
-        if !pml4e.is_present() { return None; }
+        if !pml4e.is_present() {
+            return None;
+        }
 
         // PDPT
         let pdpt: &PageTable = unsafe { &*self.mapper.phys_as_ptr(pml4e.phys_addr()) };
         let pdpte = pdpt.entry(indices[1]);
-        if !pdpte.is_present() { return None; }
-        if pdpte.is_huge() { return Some(*pdpte); }
+        if !pdpte.is_present() {
+            return None;
+        }
+        if pdpte.is_huge() {
+            return Some(*pdpte);
+        }
 
         // PD
         let pd: &PageTable = unsafe { &*self.mapper.phys_as_ptr(pdpte.phys_addr()) };
         let pde = pd.entry(indices[2]);
-        if !pde.is_present() { return None; }
-        if pde.is_huge() { return Some(*pde); }
+        if !pde.is_present() {
+            return None;
+        }
+        if pde.is_huge() {
+            return Some(*pde);
+        }
 
         // PT
         let pt: &PageTable = unsafe { &*self.mapper.phys_as_ptr(pde.phys_addr()) };
@@ -767,19 +777,29 @@ impl<'a> PageTableWalker<'a> {
         // PML4
         let pml4: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(self.pml4_phys);
         let pml4e = pml4.entry_mut(indices[0]);
-        if !pml4e.is_present() { return None; }
+        if !pml4e.is_present() {
+            return None;
+        }
 
         // PDPT
         let pdpt: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(pml4e.phys_addr());
         let pdpte = pdpt.entry_mut(indices[1]);
-        if !pdpte.is_present() { return None; }
-        if pdpte.is_huge() { return Some(pdpte); }
+        if !pdpte.is_present() {
+            return None;
+        }
+        if pdpte.is_huge() {
+            return Some(pdpte);
+        }
 
         // PD
         let pd: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(pdpte.phys_addr());
         let pde = pd.entry_mut(indices[2]);
-        if !pde.is_present() { return None; }
-        if pde.is_huge() { return Some(pde); }
+        if !pde.is_present() {
+            return None;
+        }
+        if pde.is_huge() {
+            return Some(pde);
+        }
 
         // PT
         let pt: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(pde.phys_addr());

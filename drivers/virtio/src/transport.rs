@@ -706,7 +706,8 @@ impl VirtioTransport for VirtioPciTransport {
         // 設定が成功したか確認
         let configured = self.read_common_u16(pci_common_cfg::QUEUE_MSIX_VECTOR);
         if configured == vector {
-            self.msix_enabled.store(true, core::sync::atomic::Ordering::Relaxed);
+            self.msix_enabled
+                .store(true, core::sync::atomic::Ordering::Relaxed);
             Ok(())
         } else {
             Err(TransportError::ConfigAccessFailed)

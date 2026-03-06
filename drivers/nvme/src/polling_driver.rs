@@ -323,12 +323,17 @@ impl NvmePollingDriver {
     }
 
     /// IOMMU対応DMAバッファを割り当てる（device_id設定時はIOMMUマッピング付き）
-    fn alloc_dma_for_driver(&self, size: usize, alloc_err: &'static str) -> Result<DmaBuffer, &'static str> {
+    fn alloc_dma_for_driver(
+        &self,
+        size: usize,
+        alloc_err: &'static str,
+    ) -> Result<DmaBuffer, &'static str> {
         let kernel = kernel_api::services::kernel();
         let buffer = match self.device_id {
             Some(dev_id) => kernel.alloc_dma_for_device(size, dev_id),
             None => kernel.alloc_dma(size),
-        }.map_err(|_| alloc_err)?;
+        }
+        .map_err(|_| alloc_err)?;
         // Ensure both physical and device addresses are aligned
         if (buffer.physical_address() & 0xFFF != 0) || (buffer.device_address() & 0xFFF != 0) {
             return Err("DMA buffer not 4KB aligned");
@@ -342,7 +347,8 @@ impl NvmePollingDriver {
         let sq_size = (depth as usize) * QUEUE_ENTRY_SIZE;
 
         // CQバッファはホストメモリから確保
-        let cq_buffer = self.alloc_dma_for_driver(cq_size, "Failed to allocate IO CQ DMA buffer")?;
+        let cq_buffer =
+            self.alloc_dma_for_driver(cq_size, "Failed to allocate IO CQ DMA buffer")?;
         let cq_phys = cq_buffer.device_address();
         let cq_ptr = cq_buffer.as_ptr() as *mut NvmeCompletion;
 
@@ -356,7 +362,8 @@ impl NvmePollingDriver {
             }
         }
 
-        let sq_buffer = self.alloc_dma_for_driver(sq_size, "Failed to allocate IO SQ DMA buffer")?;
+        let sq_buffer =
+            self.alloc_dma_for_driver(sq_size, "Failed to allocate IO SQ DMA buffer")?;
         let sq_phys = sq_buffer.device_address();
         let sq_ptr = sq_buffer.as_ptr() as *mut NvmeCommand;
 
@@ -556,7 +563,11 @@ impl NvmePollingDriver {
                 }
                 let allocated_sq = ((cqe.result & 0xFFFF) + 1) as u16;
                 let allocated_cq = (((cqe.result >> 16) & 0xFFFF) + 1) as u16;
-                log::info!("[NVME] Set Features: allocated {} SQ, {} CQ", allocated_sq, allocated_cq);
+                log::info!(
+                    "[NVME] Set Features: allocated {} SQ, {} CQ",
+                    allocated_sq,
+                    allocated_cq
+                );
                 return Ok((allocated_sq, allocated_cq));
             }
             core::hint::spin_loop();
@@ -657,13 +668,24 @@ impl NvmePollingDriver {
         // Create I/O Completion Queue (cid=0 for first admin command of this queue)
         let create_cq_cmd =
             NvmeCommand::create_io_cq(0, qid, depth, cq_phys, entry, self.interrupt_mode);
-        log::debug!("[NVME] Creating I/O CQ qid={} depth={} phys=0x{:x} irq_vec={}", qid, depth, cq_phys, entry);
+        log::debug!(
+            "[NVME] Creating I/O CQ qid={} depth={} phys=0x{:x} irq_vec={}",
+            qid,
+            depth,
+            cq_phys,
+            entry
+        );
         admin_queue.submit(&create_cq_cmd)?;
         self.poll_admin_completion_named("Create I/O CQ")?;
 
         // Create I/O Submission Queue (cid=1 for second admin command of this queue)
         let create_sq_cmd = NvmeCommand::create_io_sq(1, qid, depth, sq_phys, qid, 0);
-        log::debug!("[NVME] Creating I/O SQ qid={} depth={} phys=0x{:x}", qid, depth, sq_phys);
+        log::debug!(
+            "[NVME] Creating I/O SQ qid={} depth={} phys=0x{:x}",
+            qid,
+            depth,
+            sq_phys
+        );
         admin_queue.submit(&create_sq_cmd)?;
         self.poll_admin_completion_named("Create I/O SQ")?;
 

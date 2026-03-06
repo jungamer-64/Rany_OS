@@ -715,4 +715,3 @@ mod tests {
         assert_eq!(victim.domain_id, DomainId::new(2));
     }
 }
-

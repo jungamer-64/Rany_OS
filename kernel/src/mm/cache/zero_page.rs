@@ -1,25 +1,25 @@
 // ============================================================================
 // src/mm/zero_page.rs - 高速ゼロクリア戦略
-// 
+//
 // ## 概要
-// 
+//
 // ページのゼロクリアは頻繁に発生する操作だが、通常の memset は
 // CPUキャッシュを汚染し、有効なデータを追い出してしまう。
-// 
+//
 // ## 戦略
-// 
+//
 // 1. **Non-Temporal (NT) Stores**: キャッシュをバイパスして直接メモリへ書き込み
 // 2. **Zero-on-Free vs Zero-on-Idle**: 状況に応じた動的切り替え
 // 3. **バックグラウンドスクラビング**: アイドル時にページをプリゼロ化
-// 
+//
 // ## x86_64 命令
-// 
+//
 // - MOVNTDQ: 128ビット Non-Temporal Store
 // - MOVNTPS: 128ビット Non-Temporal Store (float)
 // - SFENCE: Store Fence (NT Store完了を保証)
-// 
+//
 // ## 参考
-// 
+//
 // - Intel Optimization Manual: Non-Temporal Store Hints
 // - Linux kernel: clear_page_nt(), clear_huge_page()
 // ============================================================================
@@ -70,9 +70,9 @@ pub static ZERO_PAGE_STATS: ZeroPageStats = ZeroPageStats::new();
 // ============================================================================
 
 /// 4KBページをNon-Temporal Storeでゼロクリア
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効な4KBアラインされたメモリ領域を指す必要がある
 /// - 他のCPUが同時にこの領域にアクセスしていないこと
 #[inline]
@@ -81,22 +81,22 @@ pub unsafe fn clear_page_nt(addr: *mut u8) {
         clear_page_memset(addr);
         return;
     }
-    
+
     // 16バイトアライメントチェック
-    debug_assert!(addr as usize % 16 == 0, "Address must be 16-byte aligned for NT stores");
-    
+    debug_assert!(
+        addr as usize % 16 == 0,
+        "Address must be 16-byte aligned for NT stores"
+    );
+
     // MOVNTDQ を使用して 128ビット（16バイト）ずつゼロクリア
     // 4KB / 16B = 256 iterations
     // アンロールして4つずつ処理（64バイト/iteration、キャッシュライン単位）
     let mut ptr = addr;
     let end = addr.add(PAGE_SIZE_4K);
-    
+
     // XMM0 をゼロクリア
-    asm!(
-        "xorps xmm0, xmm0",
-        options(nomem, nostack, preserves_flags)
-    );
-    
+    asm!("xorps xmm0, xmm0", options(nomem, nostack, preserves_flags));
+
     while ptr < end {
         asm!(
             // 64バイト（1キャッシュライン）をゼロクリア
@@ -109,17 +109,17 @@ pub unsafe fn clear_page_nt(addr: *mut u8) {
         );
         ptr = ptr.add(64);
     }
-    
+
     // SFENCE: NT Storeの完了を保証
     asm!("sfence", options(nostack, preserves_flags));
-    
+
     ZERO_PAGE_STATS.nt_zeroed.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 2MBページ（512 x 4KB）をNon-Temporal Storeでゼロクリア
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効な2MBアラインされたメモリ領域を指す必要がある
 #[inline]
 pub unsafe fn clear_huge_page_nt(addr: *mut u8) {
@@ -127,16 +127,13 @@ pub unsafe fn clear_huge_page_nt(addr: *mut u8) {
         clear_huge_page_memset(addr);
         return;
     }
-    
+
     let mut ptr = addr;
     let end = addr.add(PAGE_SIZE_2M);
-    
+
     // XMM0 をゼロクリア
-    asm!(
-        "xorps xmm0, xmm0",
-        options(nomem, nostack, preserves_flags)
-    );
-    
+    asm!("xorps xmm0, xmm0", options(nomem, nostack, preserves_flags));
+
     // より大きな単位でアンロール（256バイト/iteration）
     while ptr < end {
         asm!(
@@ -162,32 +159,36 @@ pub unsafe fn clear_huge_page_nt(addr: *mut u8) {
         );
         ptr = ptr.add(256);
     }
-    
+
     asm!("sfence", options(nostack, preserves_flags));
-    
+
     ZERO_PAGE_STATS.nt_zeroed.fetch_add(512, Ordering::Relaxed);
 }
 
 /// 通常の memset による4KBページゼロクリア（フォールバック）
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効な4KBメモリ領域を指す必要がある
 #[inline]
 pub unsafe fn clear_page_memset(addr: *mut u8) {
     core::ptr::write_bytes(addr, 0, PAGE_SIZE_4K);
-    ZERO_PAGE_STATS.memset_zeroed.fetch_add(1, Ordering::Relaxed);
+    ZERO_PAGE_STATS
+        .memset_zeroed
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 /// 通常の memset による2MBページゼロクリア（フォールバック）
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効な2MBメモリ領域を指す必要がある
 #[inline]
 pub unsafe fn clear_huge_page_memset(addr: *mut u8) {
     core::ptr::write_bytes(addr, 0, PAGE_SIZE_2M);
-    ZERO_PAGE_STATS.memset_zeroed.fetch_add(512, Ordering::Relaxed);
+    ZERO_PAGE_STATS
+        .memset_zeroed
+        .fetch_add(512, Ordering::Relaxed);
 }
 
 // ============================================================================
@@ -195,12 +196,12 @@ pub unsafe fn clear_huge_page_memset(addr: *mut u8) {
 // ============================================================================
 
 /// REP STOSQ を使用した高速ゼロクリア
-/// 
+///
 /// 4KB未満の小さな領域や、NT Storeが効率的でない場合に使用。
 /// CPU内部で最適化される。
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効なメモリ領域を指す必要がある
 /// - `size` は8の倍数であること
 #[inline]
@@ -235,19 +236,19 @@ pub fn has_erms() -> bool {
 }
 
 /// REP STOSB を使用した高速ゼロクリア（ERMS対応）
-/// 
+///
 /// ERMS（Enhanced REP MOVSB/STOSB）が有効な場合、CPUはREP STOSBを
 /// 内部で最適化し、大きなブロックに対して非常に効率的に動作する。
 /// 特にIvy Bridge以降のIntel CPUで有効。
-/// 
+///
 /// ## パフォーマンス特性
-/// 
+///
 /// - 小さい領域（< 256バイト）: REP MOVSBは高速
 /// - 中程度（256B-4KB）: ERMSにより内部でベクトル化
 /// - 大きい領域（> 4KB）: NT Storeと同等以上の場合も
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効なメモリ領域を指す必要がある
 /// - `size` バイトが書き込み可能であること
 #[inline]
@@ -262,12 +263,12 @@ pub unsafe fn zero_memory_rep_stosb(addr: *mut u8, size: usize) {
 }
 
 /// ERMSを考慮した4KBページのゼロクリア
-/// 
+///
 /// ERMSが有効な場合はREP STOSBを使用。NT Storeとほぼ同等の性能で、
 /// キャッシュをウォームアップする利点がある（すぐにアクセスする場合）。
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効な4KBアラインされたメモリ領域を指す必要がある
 #[inline]
 pub unsafe fn clear_page_erms(addr: *mut u8) {
@@ -277,7 +278,9 @@ pub unsafe fn clear_page_erms(addr: *mut u8) {
         // ERMSなしの場合はREP STOSQ（8バイト単位）
         zero_memory_rep_stosq(addr as *mut u64, PAGE_SIZE_4K / 8);
     }
-    ZERO_PAGE_STATS.memset_zeroed.fetch_add(1, Ordering::Relaxed);
+    ZERO_PAGE_STATS
+        .memset_zeroed
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 // ============================================================================
@@ -298,9 +301,9 @@ pub enum ZeroStrategy {
 }
 
 /// ページサイズとコンテキストに基づいてゼロクリア戦略を選択
-/// 
+///
 /// # 戦略選択基準
-/// 
+///
 /// - 2MB以上: Non-Temporal（キャッシュ汚染が深刻）
 /// - 4KB〜2MB: Non-Temporal（一般的なケース）
 /// - 4KB未満: REP STOSQ or Memset
@@ -310,7 +313,7 @@ pub fn choose_zero_strategy(size: usize, in_interrupt: bool) -> ZeroStrategy {
         // 割り込みコンテキストではXMMレジスタを使用できない
         return ZeroStrategy::Memset;
     }
-    
+
     if size >= PAGE_SIZE_2M {
         ZeroStrategy::NonTemporal
     } else if size >= PAGE_SIZE_4K {
@@ -323,9 +326,9 @@ pub fn choose_zero_strategy(size: usize, in_interrupt: bool) -> ZeroStrategy {
 }
 
 /// 戦略に基づいてページをゼロクリア
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効なアラインされたメモリ領域を指す必要がある
 /// - `size` はページサイズ（4KB or 2MB）であること
 pub unsafe fn zero_page_with_strategy(addr: *mut u8, size: usize, strategy: ZeroStrategy) {
@@ -339,10 +342,9 @@ pub unsafe fn zero_page_with_strategy(addr: *mut u8, size: usize, strategy: Zero
         }
         ZeroStrategy::Memset => {
             core::ptr::write_bytes(addr, 0, size);
-            ZERO_PAGE_STATS.memset_zeroed.fetch_add(
-                (size / PAGE_SIZE_4K).max(1) as u64,
-                Ordering::Relaxed
-            );
+            ZERO_PAGE_STATS
+                .memset_zeroed
+                .fetch_add((size / PAGE_SIZE_4K).max(1) as u64, Ordering::Relaxed);
         }
         ZeroStrategy::RepStosq => {
             zero_memory_rep_stosq(addr as *mut u64, size / 8);
@@ -387,9 +389,9 @@ pub fn get_zero_policy() -> ZeroPolicy {
 }
 
 /// ページ解放時のゼロクリアを実行（ポリシーに従う）
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効なページアラインされたメモリ領域を指す必要がある
 pub unsafe fn zero_on_free_if_policy(addr: *mut u8, size: usize) -> bool {
     match get_zero_policy() {
@@ -404,22 +406,24 @@ pub unsafe fn zero_on_free_if_policy(addr: *mut u8, size: usize) -> bool {
 }
 
 /// ページ割り当て時のゼロクリアを実行（ポリシーに従う）
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効なページアラインされたメモリ領域を指す必要がある
 /// - `already_zeroed` が true の場合はスキップ
 pub unsafe fn zero_on_alloc_if_needed(addr: *mut u8, size: usize, already_zeroed: bool) {
     if already_zeroed {
         return;
     }
-    
+
     match get_zero_policy() {
         ZeroPolicy::ZeroOnAlloc | ZeroPolicy::ZeroOnIdle => {
             // ZeroOnIdleでも、プリゼロ化されていなければ割り当て時にゼロクリア
             let strategy = choose_zero_strategy(size, false);
             zero_page_with_strategy(addr, size, strategy);
-            ZERO_PAGE_STATS.zero_on_alloc.fetch_add(1, Ordering::Relaxed);
+            ZERO_PAGE_STATS
+                .zero_on_alloc
+                .fetch_add(1, Ordering::Relaxed);
         }
         _ => {}
     }
@@ -430,7 +434,7 @@ pub unsafe fn zero_on_alloc_if_needed(addr: *mut u8, size: usize, already_zeroed
 // ============================================================================
 
 /// バックグラウンドスクラバー
-/// 
+///
 /// アイドル時に空きページをゼロクリアし、割り当て時のレイテンシを削減。
 pub struct BackgroundScrubber {
     /// 有効かどうか
@@ -449,21 +453,21 @@ impl BackgroundScrubber {
             max_pages_per_cycle: 64, // 256KB per cycle
         }
     }
-    
+
     /// スクラバーを有効/無効化
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
-    
+
     /// スクラバーが有効かどうか
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
-    
+
     /// 1サイクル分のスクラビングを実行
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// - 呼び出し側が適切なコンテキスト（アイドルスレッド等）で実行すること
     /// - `get_dirty_page` は有効な未ゼロクリアページを返すこと
     pub unsafe fn scrub_cycle<F, M>(&self, mut get_dirty_page: F, mut mark_zeroed: M) -> usize
@@ -474,9 +478,9 @@ impl BackgroundScrubber {
         if !self.is_enabled() {
             return 0;
         }
-        
+
         let mut scrubbed = 0;
-        
+
         for _ in 0..self.max_pages_per_cycle {
             match get_dirty_page() {
                 Some(addr) => {
@@ -488,15 +492,18 @@ impl BackgroundScrubber {
                 None => break,
             }
         }
-        
+
         if scrubbed > 0 {
-            self.scrubbed_pages.fetch_add(scrubbed as u64, Ordering::Relaxed);
-            ZERO_PAGE_STATS.scrubbed.fetch_add(scrubbed as u64, Ordering::Relaxed);
+            self.scrubbed_pages
+                .fetch_add(scrubbed as u64, Ordering::Relaxed);
+            ZERO_PAGE_STATS
+                .scrubbed
+                .fetch_add(scrubbed as u64, Ordering::Relaxed);
         }
-        
+
         scrubbed
     }
-    
+
     /// スクラブ済みページ数を取得
     pub fn scrubbed_count(&self) -> u64 {
         self.scrubbed_pages.load(Ordering::Relaxed)
@@ -511,12 +518,12 @@ pub static BACKGROUND_SCRUBBER: BackgroundScrubber = BackgroundScrubber::new();
 // ============================================================================
 
 /// Non-Temporal Prefetch
-/// 
+///
 /// データをキャッシュのL1に持ってくるが、LRU的に「すぐ追い出される」
 /// ヒントを付ける。一度だけ参照するデータの先読みに適している。
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効なメモリ領域を指す必要がある
 #[inline]
 pub unsafe fn prefetch_nta(addr: *const u8) {
@@ -528,9 +535,9 @@ pub unsafe fn prefetch_nta(addr: *const u8) {
 }
 
 /// 複数キャッシュラインのNon-Temporal Prefetch
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効なメモリ領域を指す必要がある
 /// - `lines` は先読みするキャッシュライン数（64B単位）
 #[inline]
@@ -567,24 +574,24 @@ impl NtPrefetchStats {
 }
 
 /// 4KBページをNT Store + Prefetchでゼロクリア（最適化版）
-/// 
+///
 /// プリフェッチを使用してメモリレイテンシを隠蔽しつつ、
 /// NT Storeでキャッシュ汚染を回避する。
-/// 
+///
 /// ## 最適化手法
-/// 
+///
 /// 1. 書き込み先を先行してプリフェッチ（prefetchnta）
 /// 2. NT Store（movntdq）でキャッシュバイパス書き込み
 /// 3. パイプライン化: プリフェッチと書き込みをオーバーラップ
-/// 
+///
 /// ## パフォーマンス
-/// 
+///
 /// - メモリレイテンシ隠蔽: プリフェッチが先行
 /// - キャッシュ汚染回避: NT Storeでバイパス
 /// - 帯域幅最大化: キャッシュライン単位の連続アクセス
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効な4KBアラインされたメモリ領域を指す必要がある
 /// - 他のCPUが同時にこの領域にアクセスしていないこと
 #[inline]
@@ -593,25 +600,22 @@ pub unsafe fn clear_page_nt_prefetch(addr: *mut u8) {
         clear_page_memset(addr);
         return;
     }
-    
+
     // 16バイトアライメントチェック
     debug_assert!(addr as usize % 16 == 0, "Address must be 16-byte aligned");
-    
+
     // プリフェッチ先行距離（キャッシュライン数）
     const PREFETCH_AHEAD: usize = 8; // 512バイト先行
     const CACHE_LINE_SIZE: usize = 64;
-    
+
     // 4KB / 64B = 64 キャッシュライン
     const TOTAL_LINES: usize = PAGE_SIZE_4K / CACHE_LINE_SIZE;
-    
+
     // XMM0 をゼロクリア
-    asm!(
-        "xorps xmm0, xmm0",
-        options(nomem, nostack, preserves_flags)
-    );
-    
+    asm!("xorps xmm0, xmm0", options(nomem, nostack, preserves_flags));
+
     let mut ptr = addr;
-    
+
     // フェーズ1: 最初のPREFETCH_AHEADキャッシュラインをプリフェッチ
     for i in 0..PREFETCH_AHEAD.min(TOTAL_LINES) {
         asm!(
@@ -620,7 +624,7 @@ pub unsafe fn clear_page_nt_prefetch(addr: *mut u8) {
             options(nostack, preserves_flags)
         );
     }
-    
+
     // フェーズ2: プリフェッチと書き込みをパイプライン化
     for line in 0..TOTAL_LINES {
         // 先行プリフェッチ（境界チェック）
@@ -632,7 +636,7 @@ pub unsafe fn clear_page_nt_prefetch(addr: *mut u8) {
                 options(nostack, preserves_flags)
             );
         }
-        
+
         // 現在のキャッシュラインをNT Storeでゼロクリア（64バイト = 4 x 16バイト）
         asm!(
             "movntdq [{ptr}], xmm0",
@@ -642,23 +646,25 @@ pub unsafe fn clear_page_nt_prefetch(addr: *mut u8) {
             ptr = in(reg) ptr,
             options(nostack, preserves_flags)
         );
-        
+
         ptr = ptr.add(CACHE_LINE_SIZE);
     }
-    
+
     // SFENCE: NT Storeの完了を保証
     asm!("sfence", options(nostack, preserves_flags));
-    
-    NT_PREFETCH_STATS.nt_prefetch_zeroed.fetch_add(1, Ordering::Relaxed);
+
+    NT_PREFETCH_STATS
+        .nt_prefetch_zeroed
+        .fetch_add(1, Ordering::Relaxed);
     ZERO_PAGE_STATS.nt_zeroed.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 2MBページをNT Store + Prefetchでゼロクリア（最適化版）
-/// 
+///
 /// 大容量ページ向けに最適化。より積極的なプリフェッチ。
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効な2MBアラインされたメモリ領域を指す必要がある
 #[inline]
 pub unsafe fn clear_huge_page_nt_prefetch(addr: *mut u8) {
@@ -666,19 +672,16 @@ pub unsafe fn clear_huge_page_nt_prefetch(addr: *mut u8) {
         clear_huge_page_memset(addr);
         return;
     }
-    
+
     const PREFETCH_AHEAD: usize = 16; // 1KBバイト先行（大容量向け）
     const CACHE_LINE_SIZE: usize = 64;
     const TOTAL_LINES: usize = PAGE_SIZE_2M / CACHE_LINE_SIZE;
-    
+
     // XMM0 をゼロクリア
-    asm!(
-        "xorps xmm0, xmm0",
-        options(nomem, nostack, preserves_flags)
-    );
-    
+    asm!("xorps xmm0, xmm0", options(nomem, nostack, preserves_flags));
+
     let mut ptr = addr;
-    
+
     // 初期プリフェッチ
     for i in 0..PREFETCH_AHEAD.min(TOTAL_LINES) {
         asm!(
@@ -687,12 +690,12 @@ pub unsafe fn clear_huge_page_nt_prefetch(addr: *mut u8) {
             options(nostack, preserves_flags)
         );
     }
-    
+
     // メインループ: 4キャッシュライン（256バイト）ずつ処理
     const UNROLL_FACTOR: usize = 4;
     for chunk in 0..(TOTAL_LINES / UNROLL_FACTOR) {
         let base_line = chunk * UNROLL_FACTOR;
-        
+
         // 先行プリフェッチ
         for i in 0..UNROLL_FACTOR {
             let prefetch_line = base_line + PREFETCH_AHEAD + i;
@@ -704,7 +707,7 @@ pub unsafe fn clear_huge_page_nt_prefetch(addr: *mut u8) {
                 );
             }
         }
-        
+
         // 4キャッシュライン（256バイト）をNT Storeでゼロクリア
         asm!(
             // Line 0
@@ -730,25 +733,31 @@ pub unsafe fn clear_huge_page_nt_prefetch(addr: *mut u8) {
             ptr = in(reg) ptr,
             options(nostack, preserves_flags)
         );
-        
+
         ptr = ptr.add(CACHE_LINE_SIZE * UNROLL_FACTOR);
     }
-    
+
     // SFENCE: NT Storeの完了を保証
     asm!("sfence", options(nostack, preserves_flags));
-    
-    NT_PREFETCH_STATS.nt_prefetch_zeroed.fetch_add(512, Ordering::Relaxed);
+
+    NT_PREFETCH_STATS
+        .nt_prefetch_zeroed
+        .fetch_add(512, Ordering::Relaxed);
     ZERO_PAGE_STATS.nt_zeroed.fetch_add(512, Ordering::Relaxed);
 }
 
 /// ゼロクリア戦略の選択（拡張版）- Prefetch版を優先
-/// 
+///
 /// 大きなページではPrefetch統合版を使用してレイテンシを隠蔽
-pub fn choose_zero_strategy_v2(size: usize, in_interrupt: bool, use_prefetch: bool) -> ZeroStrategy {
+pub fn choose_zero_strategy_v2(
+    size: usize,
+    in_interrupt: bool,
+    use_prefetch: bool,
+) -> ZeroStrategy {
     if in_interrupt {
         return ZeroStrategy::Memset;
     }
-    
+
     if use_prefetch && size >= PAGE_SIZE_4K {
         ZeroStrategy::NonTemporal // NT + Prefetch版を使用
     } else if size >= PAGE_SIZE_4K {
@@ -761,9 +770,9 @@ pub fn choose_zero_strategy_v2(size: usize, in_interrupt: bool, use_prefetch: bo
 }
 
 /// Prefetch統合版でページをゼロクリア
-/// 
+///
 /// # Safety
-/// 
+///
 /// - `addr` は有効なアラインされたメモリ領域を指す必要がある
 pub unsafe fn zero_page_with_prefetch(addr: *mut u8, size: usize) {
     if size >= PAGE_SIZE_2M {
@@ -784,7 +793,7 @@ pub unsafe fn zero_page_with_prefetch(addr: *mut u8, size: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test_case]
     fn test_choose_zero_strategy() {
         assert_eq!(
@@ -799,23 +808,16 @@ mod tests {
             choose_zero_strategy(PAGE_SIZE_4K, true),
             ZeroStrategy::Memset
         );
-        assert_eq!(
-            choose_zero_strategy(64, false),
-            ZeroStrategy::RepStosq
-        );
-        assert_eq!(
-            choose_zero_strategy(32, false),
-            ZeroStrategy::Memset
-        );
+        assert_eq!(choose_zero_strategy(64, false), ZeroStrategy::RepStosq);
+        assert_eq!(choose_zero_strategy(32, false), ZeroStrategy::Memset);
     }
-    
+
     #[test_case]
     fn test_zero_policy() {
         set_zero_policy(ZeroPolicy::ZeroOnFree);
         assert_eq!(get_zero_policy(), ZeroPolicy::ZeroOnFree);
-        
+
         set_zero_policy(ZeroPolicy::ZeroOnIdle);
         assert_eq!(get_zero_policy(), ZeroPolicy::ZeroOnIdle);
     }
 }
-

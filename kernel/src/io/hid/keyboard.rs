@@ -60,8 +60,6 @@ pub use hid_driver::keyboard::{KeyCodeExt, KeyEventExt};
 // Error types
 pub use hid_driver::StreamAlreadyTaken;
 
-
-
 // Keymap re-exports
 pub use super::keymap::{DEFAULT_KEYMAP, DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap};
 
@@ -109,7 +107,6 @@ pub fn keyboard_interrupt_handler() {
 
     PS2_KEYBOARD.handle_scancode(data);
 }
-
 
 /// 保留中のISR通知を処理（Executorから呼び出し）
 ///
@@ -174,8 +171,6 @@ pub fn set_event_tap(tap: Option<fn(KeyEvent)>) {
 // ============================================================================
 // 内部API（crate内部使用・後方互換性）
 // ============================================================================
-
-
 
 // Internal polling shims removed: Use `KeyboardStream` via `crate::io::hid::keyboard::take_stream()`
 // and async stream APIs instead of `poll_char()`/`poll_input_event()`.

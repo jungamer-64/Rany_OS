@@ -84,7 +84,8 @@ impl NvmeRawWalBackend {
         dma.as_mut_slice().copy_from_slice(src);
         let phys = dma.phys_addr().as_u64();
         let cid = nvme::with_driver(|d| unsafe {
-            d.submit_write(NVME_CORE_ID, self.nsid, lba, 0, phys, 0).ok()
+            d.submit_write(NVME_CORE_ID, self.nsid, lba, 0, phys, 0)
+                .ok()
         })
         .flatten()
         .ok_or(WalError::BackendIo)?;

@@ -1,7 +1,6 @@
 use super::*;
 use alloc::collections::{BTreeMap, BTreeSet};
 
-
 mod relocation;
 impl<'a> ElfLoader<'a> {
     /// 新しいELFローダーを作成
@@ -299,7 +298,6 @@ impl<'a> ElfLoader<'a> {
 
     /// セルをメモリにロード
     pub fn load(&self, info: &CellInfo<'a>) -> Result<LoadedCell, LoadError> {
-
         // Protection Key は page-table manager が利用可能な場合にのみ割り当てる。
         // テストビルド（libテスト）では `mm` モジュールが公開されていないため
         // PKEY の割り当てとページフラグの更新はスキップする。
@@ -335,8 +333,8 @@ impl<'a> ElfLoader<'a> {
         // will free the PKEY on early return if something goes wrong.
         #[cfg(any(feature = "pkey_integration_test", not(any(test, feature = "bench"))))]
         let guard = {
-            let pkey_raw = crate::security::mpk::allocate_protection_key()
-                .ok_or(LoadError::OutOfMemory)?;
+            let pkey_raw =
+                crate::security::mpk::allocate_protection_key().ok_or(LoadError::OutOfMemory)?;
             PkeyGuard::new(pkey_raw)
         };
 
@@ -436,7 +434,6 @@ impl<'a> ElfLoader<'a> {
                     core::ptr::write_bytes(bss_start as *mut u8, 0, bss_size);
                 }
             }
-
         }
 
         // Apply page permissions after all copies complete. Adjacent ELF segments can
@@ -468,7 +465,11 @@ impl<'a> ElfLoader<'a> {
     /// メモリを割り当て
     ///
     /// ASLRが有効な場合、ランダムなオフセットを加算してベースアドレスを予測困難にする
-    fn allocate_memory(&self, size: usize, _alignment: usize) -> Result<(usize, usize, usize), LoadError> {
+    fn allocate_memory(
+        &self,
+        size: usize,
+        _alignment: usize,
+    ) -> Result<(usize, usize, usize), LoadError> {
         // Note: フレームアロケータは mm::frame_allocator モジュールで実装
         // 現在はallocクレートを使用したヒープ割り当て
         use alloc::alloc::Layout;
@@ -523,7 +524,9 @@ impl<'a> ElfLoader<'a> {
             PageFlags::user_data().set_pkey(pkey)
         };
 
-        let seg_start = crate::mm::virt::higher_half::VirtAddr::new(dest as u64).align_down().as_u64() as usize;
+        let seg_start = crate::mm::virt::higher_half::VirtAddr::new(dest as u64)
+            .align_down()
+            .as_u64() as usize;
         let seg_end = crate::mm::virt::higher_half::VirtAddr::new((dest + mem_size) as u64)
             .align_up()
             .as_u64() as usize;
@@ -561,7 +564,8 @@ impl<'a> ElfLoader<'a> {
                 match crate::mm::virt::higher_half::global_update_flags(virt, flags) {
                     Ok(()) => {}
                     Err(e) => match e {
-                        crate::mm::virt::higher_half::MapError::InvalidAddress | crate::mm::virt::higher_half::MapError::NotMapped => {
+                        crate::mm::virt::higher_half::MapError::InvalidAddress
+                        | crate::mm::virt::higher_half::MapError::NotMapped => {
                             log::warn!(
                                 "[ELF] Could not update flags for page {:#x}: {:?} (continuing)",
                                 page_addr,
@@ -571,7 +575,8 @@ impl<'a> ElfLoader<'a> {
                         other => {
                             return Err(LoadError::InvalidPermissions(alloc::format!(
                                 "Failed to update page flags for page {:#x}: {:?}",
-                                page_addr, other
+                                page_addr,
+                                other
                             )));
                         }
                     },
@@ -583,7 +588,13 @@ impl<'a> ElfLoader<'a> {
     }
 
     #[cfg(any(test, feature = "bench"))]
-    fn apply_page_flags(&self, _dest: usize, _mem_size: usize, _seg_flags: u32, _pkey: u8) -> Result<(), LoadError> {
+    fn apply_page_flags(
+        &self,
+        _dest: usize,
+        _mem_size: usize,
+        _seg_flags: u32,
+        _pkey: u8,
+    ) -> Result<(), LoadError> {
         // No-op in tests and bench builds (full `mm` not available in library
         // builds that enable `bench`). This avoids bringing the full memory
         // manager into lightweight workspace runs.
@@ -643,8 +654,14 @@ impl<'a> ElfLoader<'a> {
 
         for j in 0..rela_count {
             self.process_single_relocation(
-                sh, j, &symtab_sh, strtab, symtab_count,
-                loaded, resolve, &mut sym_value_cache,
+                sh,
+                j,
+                &symtab_sh,
+                strtab,
+                symtab_count,
+                loaded,
+                resolve,
+                &mut sym_value_cache,
             )?;
         }
 
@@ -703,11 +720,12 @@ impl<'a> ElfLoader<'a> {
     where
         F: Fn(&str) -> Option<usize>,
     {
-        let sym_offset =
-            symtab_sh.sh_offset as usize + sym_idx * mem::size_of::<Elf64Symbol>();
+        let sym_offset = symtab_sh.sh_offset as usize + sym_idx * mem::size_of::<Elf64Symbol>();
 
         if sym_offset + mem::size_of::<Elf64Symbol>() > self.data.len() {
-            return Err(LoadError::InvalidFormat("Symbol offset out of range".into()));
+            return Err(LoadError::InvalidFormat(
+                "Symbol offset out of range".into(),
+            ));
         }
 
         let sym: Elf64Symbol = crate::util::read_struct(self.data, sym_offset)
@@ -726,8 +744,7 @@ impl<'a> ElfLoader<'a> {
             if name.is_empty() {
                 return Ok(0);
             }
-            resolve(name)
-                .ok_or_else(|| LoadError::UnresolvedDependency(name.to_string()))
+            resolve(name).ok_or_else(|| LoadError::UnresolvedDependency(name.to_string()))
         } else {
             Ok(loaded.base_address + sym.st_value as usize)
         }

@@ -14,12 +14,12 @@
 
 // Building block: Out-of-order queue implementation
 
+use super::types::{EndpointAddr, conn_key_hash, seq_before};
+use crate::net::datapath::mempool::{PacketRef, alloc_packet};
+use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::net::datapath::mempool::{PacketRef, alloc_packet};
-use crate::sync::PoisonLock;
-use super::types::{EndpointAddr, conn_key_hash, seq_before};
 
 /// OOOセグメントの最大保持数（接続あたり）
 const MAX_OOO_SEGMENTS: usize = 16;
@@ -79,7 +79,7 @@ impl ConnectionOooQueue {
                 }
             }
         }
-        
+
         // グローバル制限チェック
         if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
             // すでに上限に達している場合は新しいセグメントを破棄
@@ -94,11 +94,13 @@ impl ConnectionOooQueue {
     /// rcv_nxtより前のセグメントを削除、または部分的な重複をトリム
     fn prune_outdated(&mut self, rcv_nxt: u32) {
         let mut to_reinsert = Vec::new();
-        let outdated_keys: Vec<u32> = self.segments.keys()
+        let outdated_keys: Vec<u32> = self
+            .segments
+            .keys()
             .filter(|&&seq| seq_before(seq, rcv_nxt))
             .cloned()
             .collect();
-            
+
         for key in outdated_keys {
             if let Some(mut packet) = self.segments.remove(&key) {
                 let seg_end = key.wrapping_add(packet.len() as u32);
@@ -113,7 +115,7 @@ impl ConnectionOooQueue {
                 }
             }
         }
-        
+
         for (seq, packet) in to_reinsert {
             self.segments.insert(seq, packet);
             // GLOBAL_OOO_COUNT は remove 時にも減らしていないため、再挿入時にも増やさない
@@ -138,7 +140,7 @@ impl ConnectionOooQueue {
                 let data_len = data.len() as u32;
                 f(rcv_nxt, data);
                 rcv_nxt = rcv_nxt.wrapping_add(data_len);
-                
+
                 // FINに到達したか確認
                 if let Some(fs) = self.fin_seq {
                     if fs == rcv_nxt {
@@ -279,8 +281,7 @@ fn ooo_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
 
 /// シャード化されたグローバルOOOキューマップ
 static OOO_SHARDS: [PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>; OOO_SHARD_COUNT] = {
-    const EMPTY: PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>> =
-        PoisonLock::new(None);
+    const EMPTY: PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>> = PoisonLock::new(None);
     [EMPTY; OOO_SHARD_COUNT]
 };
 
@@ -305,7 +306,9 @@ pub fn insert_ooo_segment(
     data: &[u8],
     fin: bool,
 ) {
-    if data.is_empty() && !fin { return; }
+    if data.is_empty() && !fin {
+        return;
+    }
 
     // まずグローバル上限チェック
     if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
@@ -322,7 +325,9 @@ pub fn insert_ooo_segment(
     packet.set_len(len);
 
     let idx = ooo_shard_index(&local, &remote);
-    let Ok(mut guard) = OOO_SHARDS[idx].lock() else { return };
+    let Ok(mut guard) = OOO_SHARDS[idx].lock() else {
+        return;
+    };
     let queues = guard.get_or_insert_with(BTreeMap::new);
 
     // 接続数制限チェック
@@ -371,10 +376,7 @@ where
 }
 
 /// SACKブロックを取得
-pub fn get_sack_blocks(
-    local: EndpointAddr,
-    remote: EndpointAddr,
-) -> SackBlocks {
+pub fn get_sack_blocks(local: EndpointAddr, remote: EndpointAddr) -> SackBlocks {
     let idx = ooo_shard_index(&local, &remote);
     let Ok(guard) = OOO_SHARDS[idx].lock() else {
         return SackBlocks::new();
@@ -393,7 +395,9 @@ pub fn get_sack_blocks(
 /// 接続のOOOキューを削除
 pub fn remove_ooo_queue(local: EndpointAddr, remote: EndpointAddr) {
     let idx = ooo_shard_index(&local, &remote);
-    let Ok(mut guard) = OOO_SHARDS[idx].lock() else { return };
+    let Ok(mut guard) = OOO_SHARDS[idx].lock() else {
+        return;
+    };
     if let Some(queues) = guard.as_mut() {
         if let Some(mut conn_queue) = queues.remove(&(local, remote)) {
             conn_queue.clear();

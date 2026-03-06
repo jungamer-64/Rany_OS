@@ -13,7 +13,9 @@ use spin::RwLock;
 use super::segment::send_tcp_segment;
 use super::tcb::tcb_table;
 use super::timer_wheel::TimingWheel;
-use super::types::{EndpointAddr, conn_key_hash, seq_before as seq_before_fn, seq_leq as seq_leq_fn};
+use super::types::{
+    EndpointAddr, conn_key_hash, seq_before as seq_before_fn, seq_leq as seq_leq_fn,
+};
 
 /// 未確認セグメント（再送用）
 #[derive(Debug, Clone)]
@@ -170,10 +172,13 @@ impl RetransmitQueue {
     /// 再送が必要なセグメントがあるかチェック
     pub fn check_timeout(&self, current_tick: u64) -> Option<&UnackedSegment> {
         // SACK済みのセグメントは再送不要 (RFC 2018/6675)
-        self.unacked.iter().find(|seg| !seg.is_sacked).filter(|seg| {
-            let elapsed = current_tick.saturating_sub(seg.send_tick);
-            elapsed >= self.rto_calc.get_rto()
-        })
+        self.unacked
+            .iter()
+            .find(|seg| !seg.is_sacked)
+            .filter(|seg| {
+                let elapsed = current_tick.saturating_sub(seg.send_tick);
+                elapsed >= self.rto_calc.get_rto()
+            })
     }
 
     /// 再送処理
@@ -236,7 +241,8 @@ fn retransmit_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize 
 }
 
 /// シャード化されたグローバル再送キューテーブル
-static RETRANSMIT_SHARDS: [RwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>>; RETRANSMIT_SHARD_COUNT] = {
+static RETRANSMIT_SHARDS: [RwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>>;
+    RETRANSMIT_SHARD_COUNT] = {
     const EMPTY: RwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>> =
         RwLock::new(BTreeMap::new());
     [EMPTY; RETRANSMIT_SHARD_COUNT]
@@ -316,11 +322,15 @@ pub fn retransmit_queue_ack(local: EndpointAddr, remote: EndpointAddr, ack_num: 
 }
 
 /// SACKオプションで通知された領域を再送キューから取り除く
-pub fn retransmit_queue_process_sack(local: EndpointAddr, remote: EndpointAddr, blocks: &[(u32, u32)]) {
+pub fn retransmit_queue_process_sack(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    blocks: &[(u32, u32)],
+) {
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx].write();
     if let Some(queue) = queues.get_mut(&(local, remote)) {
-        // RFC 2018: "The sender SHOULD NOT drop data that has been SACKed until the 
+        // RFC 2018: "The sender SHOULD NOT drop data that has been SACKed until the
         // data has been acknowledged by a cumulative acknowledgment."
         // We mark is_sacked = true instead of removing the segment.
         for seg in queue.unacked.iter_mut() {
@@ -509,13 +519,13 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_retransmit_queue_process_sack() {
         use super::EndpointAddr;
-        let local = EndpointAddr::new([192,168,0,1], 10000);
-        let remote = EndpointAddr::new([192,168,0,2], 20000);
+        let local = EndpointAddr::new([192, 168, 0, 1], 10000);
+        let remote = EndpointAddr::new([192, 168, 0, 2], 20000);
 
         // 再送キュー作成とセグメント追加
         get_or_create_retransmit_queue(local, remote);
-        retransmit_queue_push(local, remote, 1000, alloc::vec![1,2,3]);
-        retransmit_queue_push(local, remote, 1003, alloc::vec![4,5,6]);
+        retransmit_queue_push(local, remote, 1000, alloc::vec![1, 2, 3]);
+        retransmit_queue_push(local, remote, 1003, alloc::vec![4, 5, 6]);
 
         // SACKで最初のセグメント(1000..1003)が通知される
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
@@ -538,7 +548,6 @@ pub mod tests {
         assert!(RetransmitQueue::seq_before(0xFFFF_FFF0, 0x0000_0010));
     }
 }
-
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {

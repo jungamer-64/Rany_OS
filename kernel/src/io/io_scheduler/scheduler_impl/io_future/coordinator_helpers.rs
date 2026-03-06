@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// ハイブリッドコーディネーターを取得
 pub fn hybrid_coordinator() -> Arc<HybridIoCoordinator> {
     HYBRID_COORDINATOR.call_once(|| Arc::new(HybridIoCoordinator::new(io_scheduler())));

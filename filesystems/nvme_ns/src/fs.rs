@@ -26,8 +26,8 @@ use vfs::{FsStats, VfsError, VfsResult};
 use crate::bitmap::Bitmap;
 use crate::error::NsError;
 use crate::inode::{NsInode, NsInodeOps};
-use crate::layout::{NsLayout, SuperBlock, SUPERBLOCK_MAGIC};
-use crate::ondisk::{DiskInode, InodeKind, INODE_SIZE, ROOT_INODE_NUM};
+use crate::layout::{NsLayout, SUPERBLOCK_MAGIC, SuperBlock};
+use crate::ondisk::{DiskInode, INODE_SIZE, InodeKind, ROOT_INODE_NUM};
 
 // ============================================================================
 // BlockIo トレイト
@@ -84,11 +84,7 @@ impl NvmeNamespaceFs {
     /// - `dev`: ブロック I/O バックエンド
     /// - `inode_ratio`: データブロック何個あたりに inode 1 つを割り当てるか (例: 4)
     /// - `label`: ボリュームラベル（最大 63 バイト）
-    pub fn mkfs(
-        dev: &dyn BlockIo,
-        inode_ratio: u64,
-        label: &str,
-    ) -> Result<(), NsError> {
+    pub fn mkfs(dev: &dyn BlockIo, inode_ratio: u64, label: &str) -> Result<(), NsError> {
         let bs = dev.block_size() as u64;
         let total = dev.total_blocks();
 
@@ -468,7 +464,9 @@ impl vfs::ExtendedFileSystem for NvmeNamespaceFs {
                 )
             };
             buf[..sb_bytes.len()].copy_from_slice(sb_bytes);
-            self.dev.write_block(0, &buf).map_err(|_| VfsError::IoError)?;
+            self.dev
+                .write_block(0, &buf)
+                .map_err(|_| VfsError::IoError)?;
         }
         drop(sb);
 

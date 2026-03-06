@@ -12,9 +12,7 @@ use crate::graphics::image::Image;
 use crate::graphics::{Color, Point, Rect};
 
 use super::constants::{BORDER_WIDTH, TITLE_BAR_HEIGHT};
-use super::types::{
-    CompositorWindowId, CompositorWindowState, CompositorWindowStyle, ZOrder,
-};
+use super::types::{CompositorWindowId, CompositorWindowState, CompositorWindowStyle, ZOrder};
 
 // ============================================================================
 // Compositor Window
@@ -244,8 +242,6 @@ impl CompositorWindow {
 
         title_bar.contains(Point::new(x, y))
     }
-
-
 
     /// 閉じるボタンの矩形を取得
     pub fn close_button_rect(&self) -> Option<Rect> {

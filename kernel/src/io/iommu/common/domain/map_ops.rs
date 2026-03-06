@@ -34,8 +34,13 @@ impl IommuDomain {
         rref: crate::ipc::RRef<T>,
         context: &dyn IommuHardwareContext,
         direction: crate::io::iommu::common::dma::handle::DmaDirection,
-    ) -> Result<crate::io::iommu::common::dma::handle::DmaHandle<T>, crate::io::iommu::common::dma::handle::MapError<T>> {
-        use crate::io::iommu::common::dma::handle::{DmaHandle, MapError, MapErrorKind, MappingKind};
+    ) -> Result<
+        crate::io::iommu::common::dma::handle::DmaHandle<T>,
+        crate::io::iommu::common::dma::handle::MapError<T>,
+    > {
+        use crate::io::iommu::common::dma::handle::{
+            DmaHandle, MapError, MapErrorKind, MappingKind,
+        };
         use x86_64::VirtAddr;
 
         // Get physical address from RRef's virtual pointer

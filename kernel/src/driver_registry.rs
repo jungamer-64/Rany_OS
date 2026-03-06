@@ -32,9 +32,9 @@ use core::fmt;
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::driver_abi::{
     AbiDmaBuffer, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle,
-    DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
-    DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
-    KernelApiV1, DRIVER_EXPORTS_ABI_VERSION, KERNEL_API_ABI_VERSION,
+    DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
+    DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
+    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV1,
 };
 use kernel_api::error::{KapiError, KapiResult};
 mod registration_api;
@@ -774,31 +774,33 @@ pub(crate) fn prepare_driver_exports(
             let init_virt = crate::mm::virt::higher_half::VirtAddr::new(init_addr as u64);
             #[cfg(any(not(test), feature = "full_mm_tests"))]
             {
-            if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(init_virt) {
-                let pte_raw = pte.as_u64();
-                let pte_flags = pte.flags().as_u64();
-                crate::io::log::early_print("[DRIVER] init pte raw=");
-                crate::io::log::early_print_hex(pte_raw);
-                crate::io::log::early_print(" flags=");
-                crate::io::log::early_print_hex(pte_flags);
-                crate::io::log::early_print(" user=");
-                crate::io::log::early_print(if (pte_flags & crate::mm::virt::higher_half::PageFlags::USER) != 0 {
-                    "1"
+                if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(init_virt) {
+                    let pte_raw = pte.as_u64();
+                    let pte_flags = pte.flags().as_u64();
+                    crate::io::log::early_print("[DRIVER] init pte raw=");
+                    crate::io::log::early_print_hex(pte_raw);
+                    crate::io::log::early_print(" flags=");
+                    crate::io::log::early_print_hex(pte_flags);
+                    crate::io::log::early_print(" user=");
+                    crate::io::log::early_print(
+                        if (pte_flags & crate::mm::virt::higher_half::PageFlags::USER) != 0 {
+                            "1"
+                        } else {
+                            "0"
+                        },
+                    );
+                    crate::io::log::early_print(" nx=");
+                    crate::io::log::early_print(
+                        if (pte_flags & crate::mm::virt::higher_half::PageFlags::NO_EXECUTE) != 0 {
+                            "1"
+                        } else {
+                            "0"
+                        },
+                    );
+                    crate::io::log::early_print("\n");
                 } else {
-                    "0"
-                });
-                crate::io::log::early_print(" nx=");
-                crate::io::log::early_print(
-                    if (pte_flags & crate::mm::virt::higher_half::PageFlags::NO_EXECUTE) != 0 {
-                        "1"
-                    } else {
-                        "0"
-                    },
-                );
-                crate::io::log::early_print("\n");
-            } else {
-                crate::io::log::early_print("[DRIVER] init pte lookup failed\n");
-            }
+                    crate::io::log::early_print("[DRIVER] init pte lookup failed\n");
+                }
             }
             #[cfg(not(any(not(test), feature = "full_mm_tests")))]
             {
@@ -808,10 +810,7 @@ pub(crate) fn prepare_driver_exports(
             let res = init(kernel_api_v1() as *const KernelApiV1);
             crate::io::log::early_print("[DRIVER] prepare_exports: init done\n");
             if !AbiErrorCode::from_raw(res).is_success() {
-                log::error!(
-                    "[DRIVER] DriverExports init failed: code={}",
-                    res
-                );
+                log::error!("[DRIVER] DriverExports init failed: code={}", res);
                 return Err(DriverError::InvalidState);
             }
         }

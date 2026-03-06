@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// 回収統計
 mod clock_pro_stats;
 pub use clock_pro_stats::*;
@@ -66,22 +65,24 @@ pub fn init_page_reclaim(total_pages: usize) {
 pub fn lru_add_page(frame: x86_64::structures::paging::PhysFrame, page_type: PageType) {
     // フレームアドレスからFrameIndexに変換
     let frame_index = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-    
+
     // NUMA ノードIDを取得
     let numa_node = numa_node_for_phys_addr(frame.start_address().as_u64());
-    
+
     // タイムスタンプ（ナノ秒精度）
     let timestamp = crate::time::current_time_ns();
-    
+
     // Workingset refault detection: evict 後に再度 fault したページかチェック
-    use crate::mm::reclaim::workingset::{workingset_refault, workingset_advance_clock, RefaultResult};
-    
+    use crate::mm::reclaim::workingset::{
+        RefaultResult, workingset_advance_clock, workingset_refault,
+    };
+
     let refault_result = workingset_refault(frame_index);
     workingset_advance_clock();
-    
+
     // PageVecエントリを作成
     let mut entry = PageVecEntry::new(frame_index, page_type, numa_node as u8, timestamp);
-    
+
     // Refault の結果に応じて追加先を決定
     match refault_result {
         RefaultResult::WorkingSet { .. } => {
@@ -97,16 +98,16 @@ pub fn lru_add_page(frame: x86_64::structures::paging::PhysFrame, page_type: Pag
             entry.target_list = 0; // Active
         }
     }
-    
+
     // 現在のCPU IDを取得（割り込み禁止状態を想定）
     let cpu_id = crate::per_cpu::current_cpu_id();
-    
+
     unsafe {
         // PageVecが満杯ならまずフラッシュ
         if pagevec_is_full(cpu_id) {
             pagevec_lru_add_flush(cpu_id);
         }
-        
+
         // エントリを追加
         pagevec_add(cpu_id, entry);
     }
@@ -131,7 +132,7 @@ pub fn lru_mark_accessed(frame: x86_64::structures::paging::PhysFrame) {
 }
 
 /// 物理アドレスからNUMAノードIDを取得
-/// 
+///
 /// 簡易実装: 単一ノード環境では常に0を返す
 /// 将来的にはACPI SRATテーブルを参照して正確なマッピングを行う
 #[inline]
@@ -174,18 +175,14 @@ pub fn notify_async_swapout_failure(frame: FrameIndex) {
 
 #[cfg(test)]
 pub fn set_test_sync_page_writeback_override(result: Option<bool>) {
-    TEST_SYNC_PAGE_WRITEBACK_OVERRIDE.store(
-        encode_test_writeback_override(result),
-        Ordering::Release,
-    );
+    TEST_SYNC_PAGE_WRITEBACK_OVERRIDE
+        .store(encode_test_writeback_override(result), Ordering::Release);
 }
 
 #[cfg(test)]
 pub fn set_test_sync_all_writeback_override(result: Option<bool>) {
-    TEST_SYNC_ALL_WRITEBACK_OVERRIDE.store(
-        encode_test_writeback_override(result),
-        Ordering::Release,
-    );
+    TEST_SYNC_ALL_WRITEBACK_OVERRIDE
+        .store(encode_test_writeback_override(result), Ordering::Release);
 }
 
 #[cfg(test)]
@@ -196,12 +193,14 @@ pub fn clear_test_writeback_overrides() {
 
 #[cfg(feature = "qemu-test-export")]
 pub fn qemu_test_set_sync_page_writeback_override(value: Option<bool>) {
-    TEST_SYNC_PAGE_WRITEBACK_OVERRIDE.store(encode_test_writeback_override(value), Ordering::Release);
+    TEST_SYNC_PAGE_WRITEBACK_OVERRIDE
+        .store(encode_test_writeback_override(value), Ordering::Release);
 }
 
 #[cfg(feature = "qemu-test-export")]
 pub fn qemu_test_set_sync_all_writeback_override(value: Option<bool>) {
-    TEST_SYNC_ALL_WRITEBACK_OVERRIDE.store(encode_test_writeback_override(value), Ordering::Release);
+    TEST_SYNC_ALL_WRITEBACK_OVERRIDE
+        .store(encode_test_writeback_override(value), Ordering::Release);
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -222,20 +221,20 @@ pub fn test_register_pending_async(frame: FrameIndex, page_type: PageType, node_
 // ============================================================================
 
 /// kswapd相当のバックグラウンド回収タスク
-/// 
+///
 /// この関数はカーネルスレッドから定期的に呼び出される想定
 pub fn kswapd_cycle() {
     if !PAGE_RECLAIM.should_wake_kswapd() {
         return;
     }
-    
+
     // 回収前に全CPUのPageVecをフラッシュ（保留中のLRU追加を確定）
     pagevec_flush_all();
-    
+
     // Watermark高まで回収
     let target = 64; // 1サイクルの回収目標
     let reclaimed = PAGE_RECLAIM.background_reclaim(target);
-    
+
     if reclaimed > 0 {
         log::trace!("[kswapd] Reclaimed {} pages", reclaimed);
     }
@@ -278,7 +277,7 @@ pub type PressureCallback = fn(PressureLevel);
 pub(crate) const MAX_PRESSURE_CALLBACKS: usize = 16;
 
 /// Memory Pressure Notifier
-/// 
+///
 /// メモリ圧力が変化したときにサブシステムに通知する仕組み。
 /// Slabキャッシュ、バッファキャッシュ、ページキャッシュなどが
 /// 圧力に応じてメモリを解放できる。
@@ -314,14 +313,14 @@ impl MemoryPressureNotifier {
             last_notification_tsc: AtomicU64::new(0),
         }
     }
-    
+
     /// コールバックを登録
-    /// 
+    ///
     /// # Returns
     /// 登録成功時はコールバックID（解除用）、失敗時はNone
     pub fn register(&self, callback: PressureCallback) -> Option<usize> {
         let mut callbacks = self.callbacks.lock();
-        
+
         for (i, slot) in callbacks.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(callback);
@@ -329,25 +328,25 @@ impl MemoryPressureNotifier {
                 return Some(i);
             }
         }
-        
+
         None // 満杯
     }
-    
+
     /// コールバックを解除
     pub fn unregister(&self, id: usize) {
         if id >= MAX_PRESSURE_CALLBACKS {
             return;
         }
-        
+
         let mut callbacks = self.callbacks.lock();
         if callbacks[id].is_some() {
             callbacks[id] = None;
             self.callback_count.fetch_sub(1, Ordering::Relaxed);
         }
     }
-    
+
     /// 圧力レベルを更新し、必要なら通知を発行
-    /// 
+    ///
     /// 圧力が上昇した場合は即座に通知。
     /// 圧力が低下した場合は抑制閾値後に通知（チャタリング防止）。
     pub fn update_pressure(&self, new_level: PressureLevel) {
@@ -358,11 +357,11 @@ impl MemoryPressureNotifier {
             2 => PressureLevel::High,
             _ => PressureLevel::Critical,
         };
-        
+
         if new_level != old_level {
             self.previous_level.store(old, Ordering::Relaxed);
             self.level_change_count.fetch_add(1, Ordering::Relaxed);
-            
+
             // 圧力上昇は即座に通知（緊急性が高い）
             if new_level > old_level {
                 self.notify_all(new_level);
@@ -371,31 +370,32 @@ impl MemoryPressureNotifier {
                 let current_tsc = read_tsc();
                 let last_tsc = self.last_notification_tsc.load(Ordering::Relaxed);
                 let threshold = self.suppression_threshold_ms.load(Ordering::Relaxed);
-                
+
                 // TSCをms概算変換（3GHz想定）
                 let elapsed_ms = (current_tsc.saturating_sub(last_tsc)) / 3_000_000;
-                
+
                 if elapsed_ms >= threshold {
                     self.notify_all(new_level);
                 }
             }
         }
     }
-    
+
     /// 全コールバックに通知
     pub(super) fn notify_all(&self, level: PressureLevel) {
         let callbacks = self.callbacks.lock();
-        
+
         for slot in callbacks.iter() {
             if let Some(callback) = slot {
                 callback(level);
             }
         }
-        
+
         self.notification_count.fetch_add(1, Ordering::Relaxed);
-        self.last_notification_tsc.store(read_tsc(), Ordering::Relaxed);
+        self.last_notification_tsc
+            .store(read_tsc(), Ordering::Relaxed);
     }
-    
+
     /// 現在の圧力レベルを取得
     #[inline]
     pub fn current_level(&self) -> PressureLevel {
@@ -406,19 +406,19 @@ impl MemoryPressureNotifier {
             _ => PressureLevel::Critical,
         }
     }
-    
+
     /// 圧力上昇中かどうか
     pub fn is_pressure_rising(&self) -> bool {
         let current = self.current_level.load(Ordering::Relaxed);
         let previous = self.previous_level.load(Ordering::Relaxed);
         current > previous
     }
-    
+
     /// 通知抑制閾値を設定（ミリ秒）
     pub fn set_suppression_threshold(&self, ms: u64) {
         self.suppression_threshold_ms.store(ms, Ordering::Relaxed);
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> PressureNotifierStats {
         PressureNotifierStats {
@@ -430,10 +430,7 @@ impl MemoryPressureNotifier {
     }
 }
 
-
 // Legacy tests removed.
-
-
 
 /// TSCを読み取る
 #[inline]
@@ -442,7 +439,7 @@ pub(crate) fn read_tsc() -> u64 {
     unsafe {
         core::arch::x86_64::_rdtsc()
     }
-    
+
     #[cfg(not(target_arch = "x86_64"))]
     {
         0
@@ -462,9 +459,9 @@ pub struct PressureNotifierStats {
 pub static PRESSURE_NOTIFIER: MemoryPressureNotifier = MemoryPressureNotifier::new();
 
 /// 圧力通知コールバックを登録
-/// 
+///
 /// # Example
-/// 
+///
 /// ```ignore
 /// fn my_pressure_handler(level: PressureLevel) {
 ///     match level {
@@ -475,7 +472,7 @@ pub static PRESSURE_NOTIFIER: MemoryPressureNotifier = MemoryPressureNotifier::n
 ///         _ => {}
 ///     }
 /// }
-/// 
+///
 /// register_pressure_callback(my_pressure_handler);
 /// ```
 pub fn register_pressure_callback(callback: PressureCallback) -> Option<usize> {
@@ -490,7 +487,7 @@ pub fn update_memory_pressure(free_pages: usize, total_pages: usize) {
     } else {
         0
     };
-    
+
     let level = if free_percent <= 2 {
         PressureLevel::Critical
     } else if free_percent <= 5 {
@@ -500,7 +497,7 @@ pub fn update_memory_pressure(free_pages: usize, total_pages: usize) {
     } else {
         PressureLevel::Low
     };
-    
+
     PRESSURE_NOTIFIER.update_pressure(level);
 }
 
@@ -581,24 +578,24 @@ pub struct ClockProList {
     /// 循環リスト（Cold + Hot + Test）
     /// VecDequeを循環バッファとして使用
     pages: spin::Mutex<VecDeque<ClockProEntry>>,
-    
+
     /// Hand Cold位置
     hand_cold: AtomicUsize,
     /// Hand Hot位置
     hand_hot: AtomicUsize,
     /// Hand Test位置
     hand_test: AtomicUsize,
-    
+
     /// Cold ページ数
     cold_count: AtomicUsize,
     /// Hot ページ数
     hot_count: AtomicUsize,
     /// Test ページ数（メタデータのみ）
     test_count: AtomicUsize,
-    
+
     /// ターゲット Cold ページ数（適応的に調整）
     target_cold: AtomicUsize,
-    
+
     /// 統計: Cold回収数
     cold_evictions: AtomicU64,
     /// 統計: Hot降格数

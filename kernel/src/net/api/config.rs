@@ -10,14 +10,14 @@
 //! `get_network_config_async()` / `get_network_stats_async()` は
 //! イベントキュー経由でスタックにアクセスし、同期ロックを回避する。
 
+use crate::net::runtime::stack;
+use crate::sync::PoisonLock;
+use crate::sync::atomic_waker::AtomicWaker;
+use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
 use core::task::{Context, Poll};
-use alloc::sync::Arc;
-use crate::net::runtime::stack;
-use crate::sync::PoisonLock;
-use crate::sync::atomic_waker::AtomicWaker;
 
 /// Network configuration snapshot for shell commands.
 #[derive(Debug, Clone)]

@@ -13,18 +13,17 @@
 //! - セッション再開 (TLS 1.2 abbreviated + TLS 1.3 PSK)
 //! - 0-RTT Early Data
 
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-use alloc::vec::Vec;
 #[cfg(any(test, feature = "qemu-test-export"))]
 use self::crypto::tls12_prf;
+#[cfg(any(test, feature = "qemu-test-export"))]
+use alloc::vec::Vec;
 
 // ── Sub-modules ──────────────────────────────────────────────────────────────
 
-pub mod types;
-pub mod error;
 pub mod connection;
 pub mod crypto;
+pub mod error;
+pub mod types;
 
 #[cfg(all(test, not(feature = "qemu-test-export")))]
 mod tests;
@@ -42,7 +41,7 @@ pub use types::*;
 pub(crate) use crypto::generate_random;
 
 #[cfg(feature = "qemu-test-export")]
-pub use crypto::{qemu_test_set_random_override_seed, qemu_test_clear_random_override};
+pub use crypto::{qemu_test_clear_random_override, qemu_test_set_random_override_seed};
 
 // ============================================================================
 // Shared Test Fixtures
@@ -61,7 +60,12 @@ fn tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished() -> Vec<
     let handshake_hash = crate::crypto::sha256::compute(&server_hello_done);
     let master_secret = [0u8; 48];
     let mut verify_data = [0u8; 12];
-    tls12_prf(&master_secret, b"server finished", &handshake_hash, &mut verify_data);
+    tls12_prf(
+        &master_secret,
+        b"server finished",
+        &handshake_hash,
+        &mut verify_data,
+    );
 
     // Handshake #2: Finished (len=12) + verify_data
     let mut data = Vec::with_capacity(server_hello_done.len() + 4 + verify_data.len());

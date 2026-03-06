@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl CongestionControllerVariant {
     /// アルゴリズム指定で作成
     pub fn from_algorithm(algorithm: CongestionAlgorithm) -> Self {

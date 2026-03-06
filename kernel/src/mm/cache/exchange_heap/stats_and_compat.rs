@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ============================================================================
 // 後方互換性のための型エイリアス（内部実装が変わっても外部APIは同じ）
 // ============================================================================
@@ -54,9 +53,9 @@ impl ExchangeHeap {
         // SAFETY: 呼び出し元がメモリ領域の有効性を保証
         unsafe {
             // Initialization-time best-effort recovery: proceed with initialization even if the lock
-        // appears poisoned to avoid blocking boot.
-        let mut guard = self.heap.lock_for_init("[MEM] Exchange Heap init");
-        guard.init(heap_start as *mut u8, size);
+            // appears poisoned to avoid blocking boot.
+            let mut guard = self.heap.lock_for_init("[MEM] Exchange Heap init");
+            guard.init(heap_start as *mut u8, size);
         }
     }
 
@@ -86,28 +85,26 @@ impl ExchangeHeap {
     }
 
     /// Exchange Heap上にメモリを割り当て
-pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
-    let size = layout.size().max(core::mem::size_of::<FreeBlock>());
-    let size_class = SegregatedFreeListHeap::size_to_class(size);
-    
-    // Fast path: try per-CPU cache first
-    if size_class < CACHED_SIZE_CLASSES {
-        if let Some(result) = Self::try_per_cpu_cache_alloc(size_class) {
-            return Some(result);
+    pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
+        let size = layout.size().max(core::mem::size_of::<FreeBlock>());
+        let size_class = SegregatedFreeListHeap::size_to_class(size);
+
+        // Fast path: try per-CPU cache first
+        if size_class < CACHED_SIZE_CLASSES {
+            if let Some(result) = Self::try_per_cpu_cache_alloc(size_class) {
+                return Some(result);
+            }
+        }
+
+        // Slow path: global heap
+        match self.heap.lock() {
+            Ok(mut guard) => guard.allocate_first_fit(layout).ok(),
+            Err(_) => {
+                log::error!("[MEM] Exchange Heap poisoned - allocation failed");
+                None
+            }
         }
     }
-    
-    // Slow path: global heap
-    match self.heap.lock() {
-        Ok(mut guard) => {
-            guard.allocate_first_fit(layout).ok()
-        },
-        Err(_) => {
-            log::error!("[MEM] Exchange Heap poisoned - allocation failed");
-            None
-        }
-    }
-}
 
     /// Exchange Heap上のメモリを解放
     ///
@@ -118,7 +115,7 @@ pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
         let size = layout.size().max(core::mem::size_of::<FreeBlock>());
         let size_class = SegregatedFreeListHeap::size_to_class(size);
         let addr = ptr.as_ptr() as usize;
-        
+
         // Fast path: try per-CPU cache first
         if size_class < CACHED_SIZE_CLASSES {
             if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
@@ -130,7 +127,7 @@ pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
                 }
             }
         }
-        
+
         // Slow path: global heap
         // SAFETY: 呼び出し元がポインタとレイアウトの有効性を保証
         match self.heap.lock() {
@@ -150,7 +147,10 @@ pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
             },
             Err(_) => {
                 log::error!("[MEM] Exchange Heap poisoned - returning zero stats");
-                HeapStats { allocated: 0, free: 0 }
+                HeapStats {
+                    allocated: 0,
+                    free: 0,
+                }
             }
         }
     }
@@ -636,4 +636,3 @@ pub enum ExchangeHeapError {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

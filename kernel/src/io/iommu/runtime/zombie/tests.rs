@@ -54,7 +54,7 @@ fn test_zombie_queue_failed_cleanup() {
     let stats = queue.stats();
     assert_eq!(stats.total_enqueued, 2);
     assert_eq!(stats.total_processed, 0); // cleanup failed
-    assert_eq!(stats.total_drained, 2);   // but entries are drained
+    assert_eq!(stats.total_drained, 2); // but entries are drained
     assert_eq!(queue.pending_estimate(), 0); // accurate estimate
 }
 
@@ -81,7 +81,10 @@ fn test_mapping_kind_encoding() {
 
     // Identity
     let encoded = encode_mapping_kind(&MappingKind::Identity);
-    assert!(matches!(decode_mapping_kind(encoded), MappingKind::Identity));
+    assert!(matches!(
+        decode_mapping_kind(encoded),
+        MappingKind::Identity
+    ));
 
     // Global
     let encoded = encode_mapping_kind(&MappingKind::Global);
@@ -104,7 +107,7 @@ fn test_mapping_kind_encoding() {
 #[test_case]
 fn test_state_transitions() {
     let entry = ZombieEntry::new();
-    
+
     // Initial state is Empty
     let (state, generation) = entry.load_state_gen_relaxed();
     assert_eq!(state, ZombieState::Empty);

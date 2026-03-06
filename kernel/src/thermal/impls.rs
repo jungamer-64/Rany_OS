@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl ThermalZone {
     pub fn new(id: u32, name: String) -> Self {
         Self {

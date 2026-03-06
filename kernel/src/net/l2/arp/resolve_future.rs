@@ -17,7 +17,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
-use super::{MacAddress, Ipv4Address};
+use super::{Ipv4Address, MacAddress};
 use crate::sync::PoisonLock;
 
 // ============================================================================

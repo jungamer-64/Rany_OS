@@ -13,14 +13,14 @@ use x86_64::PhysAddr;
 use hashbrown::HashMap;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
-use crate::mm::types::PAGE_SIZE_4K;
+use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::runtime::config::IommuConfig;
 use crate::io::iommu::runtime::registry::get_iommu_driver;
 use crate::io::iommu::types::IommuError;
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
+use crate::mm::types::PAGE_SIZE_4K;
 use crate::mm::virt::mapping::phys_to_virt;
-use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::sync::PoisonLock;
 
 use super::cmd;
@@ -139,7 +139,9 @@ pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState,
     Ok(state)
 }
 
-pub(super) fn init_command_states(units: &[AmdIommuUnit]) -> Vec<Option<PoisonLock<AmdCommandState>>> {
+pub(super) fn init_command_states(
+    units: &[AmdIommuUnit],
+) -> Vec<Option<PoisonLock<AmdCommandState>>> {
     let mut states = Vec::with_capacity(units.len());
     for unit in units {
         match init_command_state(unit) {
@@ -216,7 +218,9 @@ pub(super) fn max_devid_for_entries(entries: &[IvhdDeviceEntry]) -> u16 {
     max
 }
 
-pub(super) fn init_device_tables(units: &[AmdIommuUnit]) -> Result<HashMap<u16, AmdDeviceTable>, IommuError> {
+pub(super) fn init_device_tables(
+    units: &[AmdIommuUnit],
+) -> Result<HashMap<u16, AmdDeviceTable>, IommuError> {
     let mut max_by_segment = HashMap::<u16, u16>::new();
     for unit in units {
         let max_devid = max_devid_for_entries(&unit.device_entries);
@@ -247,27 +251,35 @@ pub(super) fn init_device_tables(units: &[AmdIommuUnit]) -> Result<HashMap<u16, 
 
 /// Collect AmdIommuUnit entries from parsed IVRS IVHD structures.
 fn collect_ivhd_units(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIommuUnit> {
-    ivrs_info.ivhds.iter().map(|ivhd| {
-        let max_addr_bits = {
-            let mmio_base = phys_to_virt_usize(ivhd.iommu_base);
-            super::registers::read_max_addr_bits(mmio_base)
-        };
-        AmdIommuUnit {
-            segment: ivhd.pci_segment,
-            base_addr: ivhd.iommu_base,
-            flags: ivhd.flags,
-            device_id: ivhd.device_id,
-            iommu_info: ivhd.iommu_info,
-            iommu_feature: ivhd.iommu_feature,
-            device_entries: ivhd.device_entries.clone(),
-            max_addr_bits,
-        }
-    }).collect()
+    ivrs_info
+        .ivhds
+        .iter()
+        .map(|ivhd| {
+            let max_addr_bits = {
+                let mmio_base = phys_to_virt_usize(ivhd.iommu_base);
+                super::registers::read_max_addr_bits(mmio_base)
+            };
+            AmdIommuUnit {
+                segment: ivhd.pci_segment,
+                base_addr: ivhd.iommu_base,
+                flags: ivhd.flags,
+                device_id: ivhd.device_id,
+                iommu_info: ivhd.iommu_info,
+                iommu_feature: ivhd.iommu_feature,
+                device_entries: ivhd.device_entries.clone(),
+                max_addr_bits,
+            }
+        })
+        .collect()
 }
 
 /// Collect IVMD ranges from parsed IVRS.
 fn collect_ivmd_ranges(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIvmdRange> {
-    ivrs_info.ivmds.iter().filter_map(|ivmd| AmdIvmdRange::from_ivmd(ivmd.clone())).collect()
+    ivrs_info
+        .ivmds
+        .iter()
+        .filter_map(|ivmd| AmdIvmdRange::from_ivmd(ivmd.clone()))
+        .collect()
 }
 
 pub unsafe fn init_iommu_from_ivrs(

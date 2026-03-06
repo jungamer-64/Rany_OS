@@ -17,18 +17,21 @@ impl UdpEndpointTable {
     }
 
     /// 1024..65535 の範囲からランダムな未使用ポートを選択する
-    fn find_available_port(&self, sockets: &BTreeMap<u16, Arc<PoisonLock<UdpEndpointInner>>>) -> Option<u16> {
+    fn find_available_port(
+        &self,
+        sockets: &BTreeMap<u16, Arc<PoisonLock<UdpEndpointInner>>>,
+    ) -> Option<u16> {
         // 暗号論的に安全な乱数から開始ポートを決定 (Source Port Randomization)
         let random_bytes = crate::net::security::tls::generate_random();
         let seed = u16::from_le_bytes([random_bytes[0], random_bytes[1]]);
-        
+
         // エフェメラルポート範囲 (RFC 6056 / IANA)
         const EPHEMERAL_START: u16 = 49152;
         const EPHEMERAL_END: u16 = 65535;
         const RANGE_SIZE: u16 = EPHEMERAL_END - EPHEMERAL_START + 1;
 
         let start_port = EPHEMERAL_START + (seed % RANGE_SIZE);
-        
+
         for i in 0..RANGE_SIZE {
             let port = EPHEMERAL_START + ((start_port - EPHEMERAL_START + i) % RANGE_SIZE);
             if !sockets.contains_key(&port) {
@@ -62,17 +65,25 @@ impl UdpEndpointTable {
                         let subject = crate::task::context::current_subject();
                         let caller = subject.domain.as_u64();
                         // Kernel domain always has full privilege
-                        let mut permitted = subject.domain == crate::domain_system::DomainId::KERNEL;
+                        let mut permitted =
+                            subject.domain == crate::domain_system::DomainId::KERNEL;
 
                         if !permitted {
                             if let Some(t) = token {
                                 // If a token is provided, it MUST grant CAP_NET_BIND for privileged ports
-                                if crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_NET_BIND) {
+                                if crate::security::capability::manager().validate_token(
+                                    caller,
+                                    t,
+                                    crate::security::capability::CAP_NET_BIND,
+                                ) {
                                     permitted = true;
                                 }
                             } else {
                                 // If no token, check if the domain has the capability ambiently
-                                if crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_NET_BIND) {
+                                if crate::security::capability::manager().has_capability(
+                                    caller,
+                                    crate::security::capability::CAP_NET_BIND,
+                                ) {
                                     permitted = true;
                                 }
                             }
@@ -129,7 +140,8 @@ impl UdpEndpointTable {
                     match inner.lock() {
                         Ok(mut guard) => {
                             if let Some(t) = guard.token.take() {
-                                let _ = crate::security::capability::manager().decrement_in_flight(t);
+                                let _ =
+                                    crate::security::capability::manager().decrement_in_flight(t);
                             }
                         }
                         Err(_) => log::error!("[NET] UDP Endpoint poisoned during unbind"),

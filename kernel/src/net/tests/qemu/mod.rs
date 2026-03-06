@@ -145,7 +145,9 @@ pub fn udp_udp_packet_smoke() -> bool {
     let mut buffer = [0u8; 64];
     let src_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(192, 168, 1, 1);
     let dst_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(192, 168, 1, 2);
-    let Some(len) = udp::UdpProcessor::build_packet(&mut buffer, src_ip, 12345, dst_ip, 53, b"hello") else {
+    let Some(len) =
+        udp::UdpProcessor::build_packet(&mut buffer, src_ip, 12345, dst_ip, 53, b"hello")
+    else {
         return false;
     };
     if len != udp::UdpHeader::SIZE + 5 {
@@ -163,19 +165,28 @@ pub fn udp_udp_socket_poisoned_methods_return_defaults_smoke() -> bool {
 
 pub fn udp_bind_with_token_reclaim_smoke() -> bool {
     use crate::sas::DomainId;
-    use crate::security::capability::{manager, CapabilitySet, CAP_NET_BIND};
+    use crate::security::capability::{CAP_NET_BIND, CapabilitySet, manager};
 
     let caller = DomainId::new(1);
     let target = DomainId::new(2);
     manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
-    let Ok(token) = manager().grant_capability_with_opts(caller.as_u64(), target.as_u64(), CAP_NET_BIND, None, false) else {
+    let Ok(token) = manager().grant_capability_with_opts(
+        caller.as_u64(),
+        target.as_u64(),
+        CAP_NET_BIND,
+        None,
+        false,
+    ) else {
         return false;
     };
     if manager().in_flight_count(token) != 0 {
         return false;
     }
-    if manager().revoke_grant(caller.as_u64(), token, false).is_err() {
+    if manager()
+        .revoke_grant(caller.as_u64(), token, false)
+        .is_err()
+    {
         return false;
     }
     manager().reclaim_token(token).is_ok()
@@ -190,10 +201,14 @@ pub fn udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
     let src_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(1, 2, 3, 4);
     let dst_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(1, 2, 3, 4);
     let mut buffer = [0u8; 64];
-    let Some(len) = udp::UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x") else {
+    let Some(len) = udp::UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x")
+    else {
         return false;
     };
-    matches!(processor.process(&buffer[..len], src_ip, dst_ip, 64), udp::UdpResult::NoEndpoint | udp::UdpResult::ChecksumError)
+    matches!(
+        processor.process(&buffer[..len], src_ip, dst_ip, 64),
+        udp::UdpResult::NoEndpoint | udp::UdpResult::ChecksumError
+    )
 }
 
 pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
@@ -292,10 +307,12 @@ pub fn stack_send_udp_fallback_zero_copy_smoke() -> bool {
     match stack::stack().lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
-                    assert!(_if.is_none());
-                    true
-                });
+                s.set_transmit_fn(
+                    |_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
+                        assert!(_if.is_none());
+                        true
+                    },
+                );
                 let _ = s.config();
             }
             true
@@ -309,10 +326,12 @@ pub fn stack_send_icmp_fallback_zero_copy_smoke() -> bool {
     match stack::stack().lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
-                    assert!(_if.is_none());
-                    true
-                });
+                s.set_transmit_fn(
+                    |_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
+                        assert!(_if.is_none());
+                        true
+                    },
+                );
                 let _ = s.current_time();
             }
             true
@@ -462,8 +481,8 @@ pub fn ipv6_display_all_nodes_smoke() -> bool {
 
 pub fn ipv6_display_full_smoke() -> bool {
     let addr = ipv6::Ipv6Address::new([
-        0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01, 0x00, 0x02,
-        0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06,
+        0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00,
+        0x06,
     ]);
     let s = alloc::format!("{}", addr);
     s.contains("2001") && s.contains("db8") && s.contains(':')
@@ -565,7 +584,13 @@ pub fn tcp_process_with_packet_zero_copy_smoke() -> bool {
         crate::net::l3::ipv4::Ipv4Address::from_octets(127, 0, 0, 1),
         0,
     ) {
-        tcp::TcpProcessResult::SendPacket { local: l, remote: r, flags, ack, .. } => {
+        tcp::TcpProcessResult::SendPacket {
+            local: l,
+            remote: r,
+            flags,
+            ack,
+            ..
+        } => {
             l == local
                 && r == remote
                 && (flags & tcp::TcpHeader::FLAG_SYN != 0)

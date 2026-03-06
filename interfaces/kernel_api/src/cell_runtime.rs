@@ -24,10 +24,10 @@
 
 #![allow(dead_code)]
 
+use crate::driver_abi::{KERNEL_API_SYMBOL, KernelApiV1};
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::{align_of, size_of};
 use core::ptr;
-use crate::driver_abi::{KERNEL_API_SYMBOL, KernelApiV1};
 
 // ============================================================================
 // External Kernel API Symbol

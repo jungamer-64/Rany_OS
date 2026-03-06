@@ -42,7 +42,7 @@ impl Driver for AmdViDriver {
 
     fn probe(&mut self) -> KapiResult<()> {
         log::info!(target: "amdvi", "Probing AMD-Vi IOMMU at {:#x}", self.ivrs_addr);
-        
+
         // Call existing unsafe initialization
         match unsafe { init_iommu_from_ivrs(self.ivrs_addr, self.config.clone()) } {
             Ok(_) => {

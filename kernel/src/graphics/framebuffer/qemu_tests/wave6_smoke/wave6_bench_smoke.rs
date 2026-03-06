@@ -19,7 +19,13 @@ fn checksum_u32(buf: &[u32]) -> u64 {
 fn all_pixels_match(buf: &[u32], expected: Color) -> bool {
     buf.iter().all(|&pixel| {
         let c = Color::from_u32(pixel);
-        super::eq_color(c, expected.red, expected.green, expected.blue, expected.alpha)
+        super::eq_color(
+            c,
+            expected.red,
+            expected.green,
+            expected.blue,
+            expected.alpha,
+        )
     })
 }
 
@@ -194,10 +200,25 @@ pub fn wave6_bench_draw_hline_bulk_smoke() -> bool {
         let left = Color::from_u32(back[row]);
         let mid = Color::from_u32(back[row + (width as usize / 2)]);
         let right = Color::from_u32(back[row + width as usize - 1]);
-        if !super::eq_color(left, expected.red, expected.green, expected.blue, expected.alpha)
-            || !super::eq_color(mid, expected.red, expected.green, expected.blue, expected.alpha)
-            || !super::eq_color(right, expected.red, expected.green, expected.blue, expected.alpha)
-        {
+        if !super::eq_color(
+            left,
+            expected.red,
+            expected.green,
+            expected.blue,
+            expected.alpha,
+        ) || !super::eq_color(
+            mid,
+            expected.red,
+            expected.green,
+            expected.blue,
+            expected.alpha,
+        ) || !super::eq_color(
+            right,
+            expected.red,
+            expected.green,
+            expected.blue,
+            expected.alpha,
+        ) {
             return false;
         }
     }

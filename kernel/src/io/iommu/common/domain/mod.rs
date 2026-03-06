@@ -8,7 +8,7 @@ use crate::io::iommu::common::dma::page_table_pool::{
 };
 use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::tables::{
-    phys_to_virt_usize, virt_ptr_to_phys, PageTableScope, SlPte, PT_ENTRIES,
+    PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
 };
 use crate::io::iommu::runtime::quarantine::QuarantineQueue;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};

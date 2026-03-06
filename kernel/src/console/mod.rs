@@ -274,7 +274,7 @@ impl TerminalBuffer {
                 }
             }
             '\x07' => { // Bell
-                 // ビープ音を鳴らす（実装依存）
+                // ビープ音を鳴らす（実装依存）
             }
             _ => {
                 self.write_printable_char(ch);
@@ -637,11 +637,7 @@ impl AnsiParser {
         let get = |i: usize, default: u32| params.get(i).copied().unwrap_or(default);
         let get_nonzero = |i: usize, default: u32| {
             let val = get(i, default);
-            if val == 0 {
-                default
-            } else {
-                val
-            }
+            if val == 0 { default } else { val }
         };
 
         match final_char {

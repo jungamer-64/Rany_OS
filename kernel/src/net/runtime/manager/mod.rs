@@ -122,7 +122,11 @@ impl NetworkManager {
     }
 
     /// Register or return an existing VirtIO-backed interface mapping.
-    pub fn register_virtio_port(&mut self, virtio_index: u8, initial_config: Option<NetworkConfig>) -> NetIfId {
+    pub fn register_virtio_port(
+        &mut self,
+        virtio_index: u8,
+        initial_config: Option<NetworkConfig>,
+    ) -> NetIfId {
         if let Some(existing) = self.virtio_if_map.get(&virtio_index).copied() {
             if let Some(cfg) = initial_config {
                 let _ = self.set_interface_config(existing, cfg);
@@ -156,21 +160,34 @@ impl NetworkManager {
         self.interfaces.get(&if_id)
     }
 
-    pub fn set_interface_config(&mut self, if_id: NetIfId, config: NetworkConfig) -> Result<(), NetworkError> {
-        let iface = self.interfaces.get_mut(&if_id).ok_or(NetworkError::InvalidAddress)?;
+    pub fn set_interface_config(
+        &mut self,
+        if_id: NetIfId,
+        config: NetworkConfig,
+    ) -> Result<(), NetworkError> {
+        let iface = self
+            .interfaces
+            .get_mut(&if_id)
+            .ok_or(NetworkError::InvalidAddress)?;
         iface.config = Some(config);
         self.refresh_managed_routes_for_interface(if_id, config);
         Ok(())
     }
 
     pub fn set_interface_up(&mut self, if_id: NetIfId) -> Result<(), NetworkError> {
-        let iface = self.interfaces.get_mut(&if_id).ok_or(NetworkError::InvalidAddress)?;
+        let iface = self
+            .interfaces
+            .get_mut(&if_id)
+            .ok_or(NetworkError::InvalidAddress)?;
         iface.admin_up = true;
         Ok(())
     }
 
     pub fn set_interface_down(&mut self, if_id: NetIfId) -> Result<(), NetworkError> {
-        let iface = self.interfaces.get_mut(&if_id).ok_or(NetworkError::InvalidAddress)?;
+        let iface = self
+            .interfaces
+            .get_mut(&if_id)
+            .ok_or(NetworkError::InvalidAddress)?;
         iface.admin_up = false;
         Ok(())
     }
@@ -185,7 +202,8 @@ impl NetworkManager {
         self.routes_v4.push(route);
         // keep longest-prefix/lowest-metric routes first so lookup can stop early
         self.routes_v4.sort_unstable_by(|a, b| {
-            b.prefix_len.cmp(&a.prefix_len)
+            b.prefix_len
+                .cmp(&a.prefix_len)
                 .then_with(|| a.metric.cmp(&b.metric))
                 .then_with(|| a.if_id.cmp(&b.if_id))
         });
@@ -231,7 +249,8 @@ impl NetworkManager {
         }
         self.routes_v6.push(route);
         self.routes_v6.sort_unstable_by(|a, b| {
-            b.prefix_len.cmp(&a.prefix_len)
+            b.prefix_len
+                .cmp(&a.prefix_len)
                 .then_with(|| a.metric.cmp(&b.metric))
                 .then_with(|| a.if_id.cmp(&b.if_id))
         });
@@ -277,7 +296,10 @@ impl NetworkManager {
             return Err(NetworkError::InvalidAddress);
         }
         self.routes_v4.retain(|r| {
-            !(r.if_id == if_id && r.prefix_len == 0 && r.flags.default_route && !r.managed_by_interface)
+            !(r.if_id == if_id
+                && r.prefix_len == 0
+                && r.flags.default_route
+                && !r.managed_by_interface)
         });
         self.routes_v4.push(Ipv4Route {
             destination: Ipv4Address::ANY,
@@ -302,7 +324,10 @@ impl NetworkManager {
             return Err(NetworkError::InvalidAddress);
         }
         self.routes_v6.retain(|r| {
-            !(r.if_id == if_id && r.prefix_len == 0 && r.flags.default_route && !r.managed_by_interface)
+            !(r.if_id == if_id
+                && r.prefix_len == 0
+                && r.flags.default_route
+                && !r.managed_by_interface)
         });
         self.routes_v6.push(Ipv6Route {
             destination: Ipv6Address::UNSPECIFIED,
@@ -524,7 +549,10 @@ pub fn register_interface(name: &str) -> Result<NetIfId, NetworkError> {
 }
 
 /// Register a VirtIO-backed interface and return its `NetIfId`.
-pub fn register_virtio_port(virtio_index: u8, initial_config: Option<NetworkConfig>) -> Result<NetIfId, NetworkError> {
+pub fn register_virtio_port(
+    virtio_index: u8,
+    initial_config: Option<NetworkConfig>,
+) -> Result<NetIfId, NetworkError> {
     with_manager_mut(|m| m.register_virtio_port(virtio_index, initial_config))
 }
 
@@ -587,11 +615,19 @@ pub fn list_ipv6_routes() -> Result<Vec<Ipv6Route>, NetworkError> {
     with_manager(|m| m.list_ipv6_routes())
 }
 
-pub fn set_default_route_v4(if_id: NetIfId, gateway: Ipv4Address, metric: u32) -> Result<(), NetworkError> {
+pub fn set_default_route_v4(
+    if_id: NetIfId,
+    gateway: Ipv4Address,
+    metric: u32,
+) -> Result<(), NetworkError> {
     with_manager_mut(|m| m.set_default_route_v4(if_id, gateway, metric)).and_then(|r| r)
 }
 
-pub fn set_default_route_v6(if_id: NetIfId, gateway: Ipv6Address, metric: u32) -> Result<(), NetworkError> {
+pub fn set_default_route_v6(
+    if_id: NetIfId,
+    gateway: Ipv6Address,
+    metric: u32,
+) -> Result<(), NetworkError> {
     with_manager_mut(|m| m.set_default_route_v6(if_id, gateway, metric)).and_then(|r| r)
 }
 
@@ -599,12 +635,7 @@ pub fn set_default_route_v6(if_id: NetIfId, gateway: Ipv6Address, metric: u32) -
 mod tests {
     use super::*;
 
-    fn v4route(
-        dest: [u8; 4],
-        prefix_len: u8,
-        if_id: NetIfId,
-        metric: u32,
-    ) -> Ipv4Route {
+    fn v4route(dest: [u8; 4], prefix_len: u8, if_id: NetIfId, metric: u32) -> Ipv4Route {
         Ipv4Route {
             destination: Ipv4Address::new(dest),
             prefix_len,
@@ -646,8 +677,14 @@ mod tests {
         let if0 = mgr.register_interface(String::from("vnet0"));
         let if1 = mgr.register_interface(String::from("vnet1"));
 
-        assert!(mgr.add_ipv4_route(v4route([10, 0, 0, 0], 8, if0, 1)).is_ok());
-        assert!(mgr.add_ipv4_route(v4route([10, 1, 0, 0], 16, if1, 100)).is_ok());
+        assert!(
+            mgr.add_ipv4_route(v4route([10, 0, 0, 0], 8, if0, 1))
+                .is_ok()
+        );
+        assert!(
+            mgr.add_ipv4_route(v4route([10, 1, 0, 0], 16, if1, 100))
+                .is_ok()
+        );
 
         let route = mgr
             .lookup_ipv4_route(Ipv4Address::new([10, 1, 2, 3]))
@@ -662,8 +699,14 @@ mod tests {
         let if0 = mgr.register_interface(String::from("vnet0"));
         let if1 = mgr.register_interface(String::from("vnet1"));
 
-        assert!(mgr.add_ipv4_route(v4route([192, 168, 1, 0], 24, if0, 20)).is_ok());
-        assert!(mgr.add_ipv4_route(v4route([192, 168, 1, 0], 24, if1, 10)).is_ok());
+        assert!(
+            mgr.add_ipv4_route(v4route([192, 168, 1, 0], 24, if0, 20))
+                .is_ok()
+        );
+        assert!(
+            mgr.add_ipv4_route(v4route([192, 168, 1, 0], 24, if1, 10))
+                .is_ok()
+        );
 
         let route = mgr
             .lookup_ipv4_route(Ipv4Address::new([192, 168, 1, 42]))
@@ -673,8 +716,14 @@ mod tests {
         let mut mgr2 = NetworkManager::new();
         let a = mgr2.register_interface(String::from("vnet0"));
         let b = mgr2.register_interface(String::from("vnet1"));
-        assert!(mgr2.add_ipv4_route(v4route([172, 16, 0, 0], 12, b, 10)).is_ok());
-        assert!(mgr2.add_ipv4_route(v4route([172, 16, 0, 0], 12, a, 10)).is_ok());
+        assert!(
+            mgr2.add_ipv4_route(v4route([172, 16, 0, 0], 12, b, 10))
+                .is_ok()
+        );
+        assert!(
+            mgr2.add_ipv4_route(v4route([172, 16, 0, 0], 12, a, 10))
+                .is_ok()
+        );
         let route2 = mgr2
             .lookup_ipv4_route(Ipv4Address::new([172, 16, 10, 1]))
             .expect("route");
@@ -686,10 +735,14 @@ mod tests {
         let mut mgr = NetworkManager::new();
         let if0 = mgr.register_interface(String::from("vnet0"));
         let if1 = mgr.register_interface(String::from("vnet1"));
-        assert!(mgr.add_ipv4_route(v4route([10, 0, 0, 0], 8, if0, 1)).is_ok());
-        assert!(mgr
-            .set_default_route_v4(if1, Ipv4Address::new([192, 168, 0, 1]), 50)
-            .is_ok());
+        assert!(
+            mgr.add_ipv4_route(v4route([10, 0, 0, 0], 8, if0, 1))
+                .is_ok()
+        );
+        assert!(
+            mgr.set_default_route_v4(if1, Ipv4Address::new([192, 168, 0, 1]), 50)
+                .is_ok()
+        );
         assert!(mgr.set_interface_down(if0).is_ok());
 
         let route = mgr
@@ -707,9 +760,11 @@ mod tests {
         let if1 = mgr.register_interface(String::from("vnet1"));
         let if2 = mgr.register_interface(String::from("vnet2"));
 
-        assert!(mgr
-            .add_ipv6_route(Ipv6Route {
-                destination: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        assert!(
+            mgr.add_ipv6_route(Ipv6Route {
+                destination: Ipv6Address::new([
+                    0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ]),
                 prefix_len: 32,
                 gateway: None,
                 if_id: if0,
@@ -718,10 +773,13 @@ mod tests {
                 admin_enabled: true,
                 managed_by_interface: false,
             })
-            .is_ok());
-        assert!(mgr
-            .add_ipv6_route(Ipv6Route {
-                destination: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            .is_ok()
+        );
+        assert!(
+            mgr.add_ipv6_route(Ipv6Route {
+                destination: Ipv6Address::new([
+                    0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ]),
                 prefix_len: 48,
                 gateway: None,
                 if_id: if1,
@@ -730,19 +788,29 @@ mod tests {
                 admin_enabled: true,
                 managed_by_interface: false,
             })
-            .is_ok());
-        assert!(mgr
-            .set_default_route_v6(if2, Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]), 10)
-            .is_ok());
+            .is_ok()
+        );
+        assert!(
+            mgr.set_default_route_v6(
+                if2,
+                Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+                10
+            )
+            .is_ok()
+        );
 
         let hit = mgr
-            .lookup_ipv6_route(Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 9]))
+            .lookup_ipv6_route(Ipv6Address::new([
+                0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 9,
+            ]))
             .expect("ipv6 route");
         assert_eq!(hit.if_id, if1);
         assert_eq!(hit.prefix_len, 48);
 
         let fallback = mgr
-            .lookup_ipv6_route(Ipv6Address::new([0x26, 0x07, 0xf8, 0xb0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]))
+            .lookup_ipv6_route(Ipv6Address::new([
+                0x26, 0x07, 0xf8, 0xb0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ]))
             .expect("ipv6 default route");
         assert_eq!(fallback.if_id, if2);
         assert_eq!(fallback.prefix_len, 0);

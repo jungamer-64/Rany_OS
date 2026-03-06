@@ -33,22 +33,24 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::RwLock;
 
-use super::higher_half::{VirtAddr, PhysAddr, PageFlags, global_unmap_page, global_translate};
-use crate::mm::phys::frame_allocator::alloc_frame;
-use super::cow::{cow_mark_page, cow_copy_pte, page_get, page_put};
-use super::rcu_vma::{VmaFlags, VmaList, VmArea};
-use crate::mm::meta::memcg::{memcg_charge, memcg_uncharge, ChargeType, MemcgId};
-use super::stack_growth::{create_stack, StackResult};
+use super::cow::{cow_copy_pte, cow_mark_page, page_get, page_put};
+use super::higher_half::{PageFlags, PhysAddr, VirtAddr, global_translate, global_unmap_page};
+use super::rcu_vma::{VmArea, VmaFlags, VmaList};
+use super::stack_growth::{StackResult, create_stack};
 use crate::mm::advanced::thp_promotion::ThpCandidate;
-use crate::mm::phys::buddy_allocator::{alloc_huge_frame, buddy_dealloc_frame, buddy_dealloc_frame_2m};
-use x86_64::structures::paging::{PhysFrame, Size4KiB, Size2MiB};
+use crate::mm::meta::memcg::{ChargeType, MemcgId, memcg_charge, memcg_uncharge};
+use crate::mm::phys::buddy_allocator::{
+    alloc_huge_frame, buddy_dealloc_frame, buddy_dealloc_frame_2m,
+};
+use crate::mm::phys::frame_allocator::alloc_frame;
 use x86_64::PhysAddr as X64PhysAddr;
+use x86_64::structures::paging::{PhysFrame, Size2MiB, Size4KiB};
 
 // ============================================================================
 // Address Space Constants
@@ -126,11 +128,31 @@ pub struct Protection {
 }
 
 impl Protection {
-    pub const NONE: Self = Self { read: false, write: false, execute: false };
-    pub const READ: Self = Self { read: true, write: false, execute: false };
-    pub const READ_WRITE: Self = Self { read: true, write: true, execute: false };
-    pub const READ_EXEC: Self = Self { read: true, write: false, execute: true };
-    pub const READ_WRITE_EXEC: Self = Self { read: true, write: true, execute: true };
+    pub const NONE: Self = Self {
+        read: false,
+        write: false,
+        execute: false,
+    };
+    pub const READ: Self = Self {
+        read: true,
+        write: false,
+        execute: false,
+    };
+    pub const READ_WRITE: Self = Self {
+        read: true,
+        write: true,
+        execute: false,
+    };
+    pub const READ_EXEC: Self = Self {
+        read: true,
+        write: false,
+        execute: true,
+    };
+    pub const READ_WRITE_EXEC: Self = Self {
+        read: true,
+        write: true,
+        execute: true,
+    };
 
     #[inline]
     pub fn can_read(&self) -> bool {
@@ -155,7 +177,7 @@ impl Protection {
             execute: self.execute || other.execute,
         }
     }
-    
+
     /// PageFlagsに変換
     pub fn to_page_flags(&self) -> PageFlags {
         let mut flags = PageFlags::new(PageFlags::PRESENT | PageFlags::USER);
@@ -167,7 +189,7 @@ impl Protection {
         }
         flags
     }
-    
+
     /// VmaFlagsから変換
     pub fn from_vma_flags(flags: u32) -> Self {
         Self {
@@ -214,7 +236,12 @@ pub struct FileBackingInfo {
 
 impl MemoryRegion {
     /// 新しい領域を作成
-    pub fn new(start: VirtAddr, end: VirtAddr, region_type: RegionType, protection: Protection) -> Self {
+    pub fn new(
+        start: VirtAddr,
+        end: VirtAddr,
+        region_type: RegionType,
+        protection: Protection,
+    ) -> Self {
         Self {
             start,
             end,
@@ -225,32 +252,32 @@ impl MemoryRegion {
             refcount: AtomicU64::new(1),
         }
     }
-    
+
     /// サイズを取得
     pub fn size(&self) -> u64 {
         self.end.as_u64() - self.start.as_u64()
     }
-    
+
     /// ページ数を取得
     pub fn page_count(&self) -> u64 {
         (self.size() + PAGE_SIZE - 1) / PAGE_SIZE
     }
-    
+
     /// アドレスが領域内か
     pub fn contains(&self, addr: VirtAddr) -> bool {
         addr >= self.start && addr < self.end
     }
-    
+
     /// 領域が重なるか
     pub fn overlaps(&self, start: VirtAddr, end: VirtAddr) -> bool {
         self.start < end && self.end > start
     }
-    
+
     /// 参照を取得
     pub fn get_ref(&self) {
         self.refcount.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// 参照を解放（trueなら解放が必要）
     pub fn put_ref(&self) -> bool {
         self.refcount.fetch_sub(1, Ordering::Release) == 1

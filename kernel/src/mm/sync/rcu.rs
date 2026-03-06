@@ -5,21 +5,19 @@
 // VMAの検索、ルーティングテーブルの参照など、読み取り優位なデータ構造に最適。
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
-use core::ptr::null_mut;
-use alloc::collections::VecDeque;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use spin::Mutex;
 use crate::per_cpu;
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+use core::ptr::null_mut;
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use spin::Mutex;
 
 /// RCUのグレース期間を追跡するためのエポックカウンタ
 ///
 /// 全CPUが少なくとも1回のコンテキストスイッチを行うと、
 /// その時点で保持されていた全ての参照が解放されたと見なせる
 static RCU_GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(0);
-
-
 
 /// RCUコンテキストスイッチカウンタ（グレース期間検出用）
 static RCU_CONTEXT_SWITCHES: AtomicUsize = AtomicUsize::new(0);
@@ -65,21 +63,21 @@ impl Drop for RcuReadGuard {
 pub fn rcu_read_lock() -> RcuReadGuard {
     // 読み取り開始を記録（compiler fence のみ、実際のロックなし）
     core::sync::atomic::compiler_fence(Ordering::Acquire);
-    
+
     // Increment local read depth and disable preemption
     unsafe {
         let gs_base = per_cpu::read_gsbase_any();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
             pcp.rcu_state.read_depth.fetch_add(1, Ordering::Relaxed);
-            
+
             // 脆弱性修正: プリエンプションを禁止
             if let Some(hot) = per_cpu::current_per_cpu_hot() {
                 hot.preempt_disable();
             }
         }
     }
-    
+
     RcuReadGuard::new()
 }
 
@@ -91,7 +89,7 @@ fn rcu_read_unlock_internal() {
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
             pcp.rcu_state.read_depth.fetch_sub(1, Ordering::Relaxed);
-            
+
             // 脆弱性修正: プリエンプションを再有効化
             if let Some(hot) = per_cpu::current_per_cpu_hot() {
                 hot.preempt_enable();
@@ -142,7 +140,7 @@ pub fn rcu_note_context_switch() {
             let pcp = &*(gs as *const per_cpu::PerCpuData);
             // Only report QS if not in a read section
             if pcp.rcu_state.read_depth.load(Ordering::Relaxed) == 0 {
-                 pcp.rcu_state.qs_count.fetch_add(1, Ordering::Release);
+                pcp.rcu_state.qs_count.fetch_add(1, Ordering::Release);
             }
         }
     }
@@ -173,10 +171,10 @@ pub fn synchronize_rcu() {
     let mut snapshots = Vec::new();
     for i in 0..per_cpu::MAX_CPUS {
         if per_cpu::is_cpu_online(i) {
-             unsafe {
-                 let pcp = per_cpu::get_per_cpu_data(i);
-                 snapshots.push((i, pcp.rcu_state.qs_count.load(Ordering::Acquire)));
-             }
+            unsafe {
+                let pcp = per_cpu::get_per_cpu_data(i);
+                snapshots.push((i, pcp.rcu_state.qs_count.load(Ordering::Acquire)));
+            }
         }
     }
 
@@ -263,7 +261,7 @@ pub fn call_rcu(ptr: *mut u8, callback: RcuCallback) {
             pcp.rcu_state.batch_queue.lock().push_back(entry);
         } else {
             // Fallback for early boot / non-PerCPU context (should be rare)
-            // Just leak or use a temporary global? 
+            // Just leak or use a temporary global?
             // For now, panic/warn or use static fallback.
             // Using the static fallback defined previously (if kept) or simple static.
             RCU_CALLBACK_QUEUE.lock().push_back(entry);
@@ -276,10 +274,12 @@ pub fn call_rcu(ptr: *mut u8, callback: RcuCallback) {
 /// 定期的に呼び出す（スケジューラのアイドルループやタイマー割り込みから）
 pub fn rcu_process_callbacks() {
     let current_epoch = rcu_current_epoch();
-    
+
     unsafe {
         let gs_base = per_cpu::read_gsbase_any();
-        if gs_base == 0 { return; }
+        if gs_base == 0 {
+            return;
+        }
         let pcp = &*(gs_base as *const per_cpu::PerCpuData);
         let mut queue = pcp.rcu_state.batch_queue.lock();
 
@@ -538,4 +538,3 @@ mod tests {
         assert!(!state.in_read_section());
     }
 }
-

@@ -4,14 +4,8 @@ use alloc::vec::Vec;
 use hashbrown::HashSet;
 
 use crate::{
-    FsResult,
-    DirEntryRaw,
-    LfnEntry,
-    FileAttributes,
+    DELETED_ENTRY, DirEntryRaw, END_OF_DIR, FileAttributes, FsResult, LfnEntry, MAX_LFN_PARTS,
     SafePackedRead,
-    END_OF_DIR,
-    DELETED_ENTRY,
-    MAX_LFN_PARTS,
 };
 
 // Short File Name (SFN) Generation with Collision Handling

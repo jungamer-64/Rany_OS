@@ -15,7 +15,7 @@ impl DnsClient {
     }
 
     /// DNSクライアントのメインループ（非同期）
-    /// 
+    ///
     /// キャッシュの定期的なクリーンアップなどを行います。
     pub async fn run(&self) -> Result<(), &'static str> {
         log::info!("[NET] DNS client task started");
@@ -23,7 +23,7 @@ impl DnsClient {
         loop {
             // 5秒ごとにキャッシュをクリーンアップ
             crate::task::timer::sleep_ms(5000).await;
-            
+
             let now = crate::task::timer::current_tick();
             if let Ok(mut cache) = self.cache.lock() {
                 cache.cleanup(now);
@@ -35,7 +35,9 @@ impl DnsClient {
     pub fn set_ipv4_servers(&self, servers: Vec<Ipv4Address>) {
         match self.ipv4_servers.lock() {
             Ok(mut guard) => *guard = servers,
-            Err(_) => log::error!("[NET] DNS IPv4 Servers lock poisoned (set_ipv4_servers) - operation skipped"),
+            Err(_) => log::error!(
+                "[NET] DNS IPv4 Servers lock poisoned (set_ipv4_servers) - operation skipped"
+            ),
         }
     }
 
@@ -43,7 +45,9 @@ impl DnsClient {
     pub fn set_ipv6_servers(&self, servers: Vec<Ipv6Address>) {
         match self.ipv6_servers.lock() {
             Ok(mut guard) => *guard = servers,
-            Err(_) => log::error!("[NET] DNS IPv6 Servers lock poisoned (set_ipv6_servers) - operation skipped"),
+            Err(_) => log::error!(
+                "[NET] DNS IPv6 Servers lock poisoned (set_ipv6_servers) - operation skipped"
+            ),
         }
     }
 
@@ -55,7 +59,9 @@ impl DnsClient {
                     servers.push(server);
                 }
             }
-            Err(_) => log::error!("[NET] DNS IPv4 Servers lock poisoned (add_ipv4_server) - operation skipped"),
+            Err(_) => log::error!(
+                "[NET] DNS IPv4 Servers lock poisoned (add_ipv4_server) - operation skipped"
+            ),
         }
     }
 
@@ -67,7 +73,9 @@ impl DnsClient {
                     servers.push(server);
                 }
             }
-            Err(_) => log::error!("[NET] DNS IPv6 Servers lock poisoned (add_ipv6_server) - operation skipped"),
+            Err(_) => log::error!(
+                "[NET] DNS IPv6 Servers lock poisoned (add_ipv6_server) - operation skipped"
+            ),
         }
     }
 
@@ -85,7 +93,9 @@ impl DnsClient {
                 }
             }
             Err(_) => {
-                log::error!("[NET] DNS Cache lock poisoned (resolve_cached) - treating as cache miss");
+                log::error!(
+                    "[NET] DNS Cache lock poisoned (resolve_cached) - treating as cache miss"
+                );
             }
         }
         self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
@@ -95,7 +105,7 @@ impl DnsClient {
     /// 非同期でIPアドレスを解決 (IPv4)
     pub async fn resolve_ipv4(&self, name: &str) -> Option<Ipv4Address> {
         let tick = crate::task::timer::current_tick();
-        
+
         // 1. まずキャッシュをチェック
         if let Some(ip) = self.resolve_cached(name, tick) {
             return Some(ip);
@@ -103,7 +113,7 @@ impl DnsClient {
 
         // 2. キャッシュになければネットワーククエリを実行
         let records = self.query_internal(name, DnsQueryType::A).await.ok()?;
-        
+
         for record in records {
             if let DnsRecordData::A(ip) = record.data {
                 return Some(ip);
@@ -115,7 +125,7 @@ impl DnsClient {
     /// 非同期でIPアドレスを解決 (IPv6)
     pub async fn resolve_ipv6(&self, name: &str) -> Option<Ipv6Address> {
         let tick = crate::task::timer::current_tick();
-        
+
         // 1. まずキャッシュをチェック
         match self.cache.lock() {
             Ok(cache) => {
@@ -133,7 +143,7 @@ impl DnsClient {
 
         // 2. キャッシュになければネットワーククエリを実行
         let records = self.query_internal(name, DnsQueryType::AAAA).await.ok()?;
-        
+
         for record in records {
             if let DnsRecordData::AAAA(ip) = record.data {
                 return Some(ip);
@@ -143,12 +153,20 @@ impl DnsClient {
     }
 
     /// Internal DNS query logic with UDP-to-TCP fallback (RFC 7766)
-    async fn query_internal(&self, name: &str, qtype: DnsQueryType) -> Result<Vec<DnsRecord>, &'static str> {
+    async fn query_internal(
+        &self,
+        name: &str,
+        qtype: DnsQueryType,
+    ) -> Result<Vec<DnsRecord>, &'static str> {
         let tick = crate::task::timer::current_tick();
-        let server = self.primary_ipv4_server().ok_or("No DNS server configured")?;
-        
+        let server = self
+            .primary_ipv4_server()
+            .ok_or("No DNS server configured")?;
+
         // Try UDP first
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(0).await.ok_or("Failed to bind UDP")?;
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(0)
+            .await
+            .ok_or("Failed to bind UDP")?;
         let mut buffer = [0u8; 512];
         let query_len = self.build_query(&mut buffer, name, qtype)?;
 
@@ -159,7 +177,7 @@ impl DnsClient {
 
         let mut attempt = 0;
         let mut udp_response = None;
-        
+
         while attempt < DNS_MAX_RETRIES {
             match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
                 TimeoutResult::Completed(Some((src, _ttl, packet))) => {
@@ -181,10 +199,12 @@ impl DnsClient {
         if let Some(data) = udp_response {
             // Check for truncation (RFC 7766)
             if self.needs_tcp_fallback(&data) {
-                log::info!("[NET] DNS: UDP response truncated, retrying with TCP (RFC 7766 fallback)");
+                log::info!(
+                    "[NET] DNS: UDP response truncated, retrying with TCP (RFC 7766 fallback)"
+                );
                 return self.query_tcp(server, name, qtype).await;
             }
-            
+
             return self.parse_response(&data, tick).map_err(|_| "Parse error");
         }
 
@@ -192,52 +212,78 @@ impl DnsClient {
     }
 
     /// DNS query over TCP (RFC 7766)
-    async fn query_tcp(&self, server: Ipv4Address, name: &str, qtype: DnsQueryType) -> Result<Vec<DnsRecord>, &'static str> {
+    async fn query_tcp(
+        &self,
+        server: Ipv4Address,
+        name: &str,
+        qtype: DnsQueryType,
+    ) -> Result<Vec<DnsRecord>, &'static str> {
         use crate::net::l4::endpoint::types::EndpointAddr;
         let dest = EndpointAddr::new(server.octets(), DNS_PORT);
-        
-        let mut stream = crate::net::l4::tcp::TcpStream::dial(dest).await
+
+        let mut stream = crate::net::l4::tcp::TcpStream::dial(dest)
+            .await
             .map_err(|_| "TCP connection failed")?;
-        
+
         let mut buffer = [0u8; 1024];
         let query_len = self.build_tcp_query(&mut buffer, name, qtype)?;
-        
-        stream.write(&buffer[..query_len]).await.map_err(|_| "TCP write failed")?;
-        
+
+        stream
+            .write(&buffer[..query_len])
+            .await
+            .map_err(|_| "TCP write failed")?;
+
         // Read 2-byte length prefix
         let mut len_buf = [0u8; 2];
         let mut len_read = 0;
         while len_read < 2 {
-            let n = stream.read(&mut len_buf[len_read..]).await.map_err(|_| "TCP read failed")?;
-            if n == 0 { break; }
+            let n = stream
+                .read(&mut len_buf[len_read..])
+                .await
+                .map_err(|_| "TCP read failed")?;
+            if n == 0 {
+                break;
+            }
             len_read += n;
         }
-        if len_read != 2 { return Err("TCP read length prefix failed (connection closed or incomplete)"); }
-        
+        if len_read != 2 {
+            return Err("TCP read length prefix failed (connection closed or incomplete)");
+        }
+
         let msg_len = u16::from_be_bytes(len_buf) as usize;
-        if msg_len > 65535 { return Err("TCP message too long"); }
-        
+        if msg_len > 65535 {
+            return Err("TCP message too long");
+        }
+
         let mut msg_data = alloc::vec![0u8; msg_len];
         let mut total_read = 0;
         while total_read < msg_len {
-            let n = stream.read(&mut msg_data[total_read..]).await.map_err(|_| "TCP read message failed")?;
-            if n == 0 { break; }
+            let n = stream
+                .read(&mut msg_data[total_read..])
+                .await
+                .map_err(|_| "TCP read message failed")?;
+            if n == 0 {
+                break;
+            }
             total_read += n;
         }
-        
+
         if total_read != msg_len {
             return Err("TCP read incomplete message");
         }
-        
+
         let tick = crate::task::timer::current_tick();
-        self.parse_response(&msg_data, tick).map_err(|_| "Parse error")
+        self.parse_response(&msg_data, tick)
+            .map_err(|_| "Parse error")
     }
 
     /// 期限切れキャッシュエントリをクリーンアップ
     pub fn cleanup_cache(&self, current_tick: u64) {
         match self.cache.lock() {
             Ok(mut cache) => cache.cleanup(current_tick),
-            Err(_) => log::error!("[NET] DNS Cache lock poisoned (cleanup_cache) - operation skipped"),
+            Err(_) => {
+                log::error!("[NET] DNS Cache lock poisoned (cleanup_cache) - operation skipped")
+            }
         }
     }
 
@@ -437,7 +483,9 @@ impl DnsClient {
                 }
             }
             Err(_) => {
-                log::error!("[NET] DNS Cache lock poisoned (cache_dns_records) - skipping cache insert")
+                log::error!(
+                    "[NET] DNS Cache lock poisoned (cache_dns_records) - skipping cache insert"
+                )
             }
         }
     }
@@ -492,7 +540,10 @@ impl DnsClient {
         if qcount > 64 || acount > 1024 || nscount > 1024 || arcount > 1024 {
             log::warn!(
                 "[NET] DNS: Response with excessive record counts (Q: {}, A: {}, NS: {}, AR: {}), dropping",
-                qcount, acount, nscount, arcount
+                qcount,
+                acount,
+                nscount,
+                arcount
             );
             return Err(DnsResponseCode::FormatError);
         }
@@ -512,16 +563,20 @@ impl DnsClient {
 
         // 権威セクションをスキップ (キャッシュ対象外とする)
         for _ in 0..nscount {
-            if offset >= data.len() { break; }
+            if offset >= data.len() {
+                break;
+            }
             offset = self.skip_name(data, offset)?;
-            if offset + 10 > data.len() { break; }
+            if offset + 10 > data.len() {
+                break;
+            }
             let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
             offset += 10 + rdlength;
         }
 
         // 追加セクションを解析
         let additional_records = self.parse_answer_section(data, &mut offset, arcount)?;
-        
+
         // 必要な追加情報をメインレコードに追加 (例: SRVのターゲットアドレスなど)
         for ar in additional_records {
             // EDNS0 OPTレコードなどはキャッシュしないが、パースエラーを防ぐために処理
@@ -626,21 +681,25 @@ impl DnsClient {
             }
             Some(DnsQueryType::MX) if rdlength >= 3 => {
                 let preference = u16::from_be_bytes([rdata[0], rdata[1]]);
-                if let Ok((exchange, _)) = self.parse_name(data, offset_after_rdata - rdlength + 2) {
+                if let Ok((exchange, _)) = self.parse_name(data, offset_after_rdata - rdlength + 2)
+                {
                     DnsRecordData::MX(preference, exchange)
                 } else {
                     DnsRecordData::Raw(rdata.to_vec())
                 }
             }
-            Some(DnsQueryType::TXT) => {
-                self.parse_txt_record(rdata, rdlength)
-            }
+            Some(DnsQueryType::TXT) => self.parse_txt_record(rdata, rdlength),
             Some(DnsQueryType::SRV) if rdlength >= 7 => {
                 let priority = u16::from_be_bytes([rdata[0], rdata[1]]);
                 let weight = u16::from_be_bytes([rdata[2], rdata[3]]);
                 let port = u16::from_be_bytes([rdata[4], rdata[5]]);
                 if let Ok((target, _)) = self.parse_name(data, offset_after_rdata - rdlength + 6) {
-                    DnsRecordData::SRV { priority, weight, port, target }
+                    DnsRecordData::SRV {
+                        priority,
+                        weight,
+                        port,
+                        target,
+                    }
                 } else {
                     DnsRecordData::Raw(rdata.to_vec())
                 }
@@ -659,11 +718,11 @@ impl DnsClient {
         // Each <character-string> has a 1-byte length followed by data.
         let mut txt_content = String::new();
         let mut offset = 0;
-        
+
         while offset < rdlength && offset < rdata.len() {
             let txt_len = rdata[offset] as usize;
             offset += 1;
-            
+
             if offset + txt_len > rdata.len() || offset + txt_len > rdlength {
                 // Malformed TXT record, but we've already started parsing.
                 // If we have nothing yet, return Raw. Otherwise return what we have.
@@ -672,16 +731,20 @@ impl DnsClient {
                 }
                 break;
             }
-            
+
             txt_content.push_str(&String::from_utf8_lossy(&rdata[offset..offset + txt_len]));
             offset += txt_len;
         }
-        
+
         DnsRecordData::TXT(txt_content)
     }
 
     /// ドメイン名をスキップ
-    pub(super) fn skip_name(&self, data: &[u8], mut offset: usize) -> Result<usize, DnsResponseCode> {
+    pub(super) fn skip_name(
+        &self,
+        data: &[u8],
+        mut offset: usize,
+    ) -> Result<usize, DnsResponseCode> {
         let mut labels = 0;
         loop {
             if offset >= data.len() {
@@ -772,7 +835,12 @@ impl DnsClient {
 
             if len & 0xC0 == 0xC0 {
                 offset = self.follow_compression_pointer(
-                    data, offset, len, &mut jump_count, &mut jumped, &mut final_offset,
+                    data,
+                    offset,
+                    len,
+                    &mut jump_count,
+                    &mut jumped,
+                    &mut final_offset,
                 )?;
                 continue;
             }
@@ -838,15 +906,15 @@ impl DnsClient {
     // ========================================================================
 
     /// Build a DNS query for TCP transport
-    /// 
+    ///
     /// DNS over TCP requires a 2-byte length prefix before the message.
     /// RFC 7766 specifies that all DNS implementations should support TCP.
-    /// 
+    ///
     /// # Arguments
     /// - `buffer`: Output buffer (must be at least message_len + 2)
     /// - `name`: Domain name to query
     /// - `qtype`: Query type (A, AAAA, etc.)
-    /// 
+    ///
     /// # Returns
     /// Total length including the 2-byte length prefix
     pub fn build_tcp_query(
@@ -871,14 +939,14 @@ impl DnsClient {
     }
 
     /// Parse a DNS response received over TCP
-    /// 
+    ///
     /// TCP responses include a 2-byte length prefix that specifies
     /// the length of the DNS message.
-    /// 
+    ///
     /// # Arguments
     /// - `data`: Raw TCP data including length prefix
     /// - `current_tick`: Current time for cache TTL calculation
-    /// 
+    ///
     /// # Returns
     /// Parsed DNS records or error code
     pub fn parse_tcp_response(
@@ -892,7 +960,7 @@ impl DnsClient {
         }
 
         let msg_len = u16::from_be_bytes([data[0], data[1]]) as usize;
-        
+
         if data.len() < 2 + msg_len {
             return Err(DnsResponseCode::FormatError);
         }
@@ -902,14 +970,14 @@ impl DnsClient {
     }
 
     /// Check if a UDP response requires TCP fallback
-    /// 
+    ///
     /// According to RFC 7766, clients should retry with TCP when:
     /// 1. The TC (Truncated) bit is set in the response
     /// 2. The response size is exactly 512 bytes (traditional UDP limit)
-    /// 
+    ///
     /// # Arguments
     /// - `data`: Raw UDP DNS response
-    /// 
+    ///
     /// # Returns
     /// `true` if TCP fallback is recommended
     pub fn needs_tcp_fallback(&self, data: &[u8]) -> bool {
@@ -936,12 +1004,12 @@ impl DnsClient {
     }
 
     /// Calculate expected TCP message length from length prefix
-    /// 
+    ///
     /// Used for reading TCP DNS messages which may be fragmented.
-    /// 
+    ///
     /// # Arguments
     /// - `length_prefix`: First 2 bytes of TCP stream
-    /// 
+    ///
     /// # Returns
     /// Expected total message length (excluding prefix)
     pub fn tcp_message_length(length_prefix: &[u8; 2]) -> u16 {

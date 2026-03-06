@@ -2,5 +2,5 @@
 //!
 //! Ethernetフレーム処理とARP解決。
 
-pub mod ethernet;
 pub mod arp;
+pub mod ethernet;

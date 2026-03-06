@@ -6,7 +6,6 @@
 //! ドメイン名からIPアドレスへの解決を行うDNSリゾルバ。
 //! 簡易的なキャッシュ機能付き。
 
-
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -19,9 +18,9 @@ use crate::net::l3::ipv6::Ipv6Address;
 /// DNSポート
 mod tcp_constants;
 pub use tcp_constants::*;
+mod client_impl;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
-mod client_impl;
 pub const DNS_PORT: u16 = 53;
 
 /// DNSクエリタイプ
@@ -278,12 +277,14 @@ impl DnsCache {
         // テーブルが満杯の場合、古いエントリを削除
         if self.entries.len() >= self.max_entries {
             self.cleanup(current_tick);
-            
+
             // それでも満杯の場合は、DoS攻撃を防ぐために最も古いエントリを強制削除
             if self.entries.len() >= self.max_entries {
-                if let Some(oldest_key) = self.entries.iter()
+                if let Some(oldest_key) = self
+                    .entries
+                    .iter()
                     .min_by_key(|(_, entry)| entry.cached_at)
-                    .map(|(k, _)| k.clone()) 
+                    .map(|(k, _)| k.clone())
                 {
                     self.entries.remove(&oldest_key);
                 }

@@ -7,11 +7,11 @@
 use alloc::sync::Arc;
 use x86_64::PhysAddr;
 
-use crate::io::iommu::vendors::amd::AmdIommuDriver;
-use crate::io::iommu::common::domain::IommuDomain;
-use crate::io::iommu::vendors::intel::IntelIommuDriver;
 use super::security::SecurityNotifier;
+use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
+use crate::io::iommu::vendors::amd::AmdIommuDriver;
+use crate::io::iommu::vendors::intel::IntelIommuDriver;
 
 /// IOMMU backend implementation selected at init time.
 pub enum IommuBackend {
@@ -73,12 +73,12 @@ impl IommuBackend {
         logical: bool,
     ) -> Result<u16, IommuError> {
         match self {
-            Self::Intel(driver) => driver.map_interrupt(
-                segment, bus, device, function, vector, dest_id, logical,
-            ),
-            Self::Amd(driver) => driver.map_interrupt(
-                segment, bus, device, function, vector, dest_id, logical,
-            ),
+            Self::Intel(driver) => {
+                driver.map_interrupt(segment, bus, device, function, vector, dest_id, logical)
+            }
+            Self::Amd(driver) => {
+                driver.map_interrupt(segment, bus, device, function, vector, dest_id, logical)
+            }
         }
     }
 
@@ -108,8 +108,12 @@ impl IommuBackend {
         write: bool,
     ) -> Result<u64, IommuError> {
         match self {
-            Self::Intel(driver) => unsafe { driver.map_for_dma_with_perms(phys_addr, size, read, write) },
-            Self::Amd(driver) => unsafe { driver.map_for_dma_with_perms(phys_addr, size, read, write) },
+            Self::Intel(driver) => unsafe {
+                driver.map_for_dma_with_perms(phys_addr, size, read, write)
+            },
+            Self::Amd(driver) => unsafe {
+                driver.map_for_dma_with_perms(phys_addr, size, read, write)
+            },
         }
     }
 
@@ -163,10 +167,12 @@ impl IommuBackend {
         size: u64,
     ) -> Result<u64, IommuError> {
         match self {
-            Self::Intel(driver) => unsafe { driver.map_for_device_async(device, phys_addr, size) }
-                .await,
-            Self::Amd(driver) => unsafe { driver.map_for_device_async(device, phys_addr, size) }
-                .await,
+            Self::Intel(driver) => {
+                unsafe { driver.map_for_device_async(device, phys_addr, size) }.await
+            }
+            Self::Amd(driver) => {
+                unsafe { driver.map_for_device_async(device, phys_addr, size) }.await
+            }
         }
     }
 

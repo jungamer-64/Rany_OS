@@ -207,7 +207,10 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     let server_ip = [192, 168, 123, 1];
     if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
-            let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new(test_ip), Some(crate::net::l3::ipv4::Ipv4Address::new(server_ip)));
+            let _ = client.send_decline(
+                crate::net::l3::ipv4::Ipv4Address::new(test_ip),
+                Some(crate::net::l3::ipv4::Ipv4Address::new(server_ip)),
+            );
         }
     }
 
@@ -221,14 +224,14 @@ pub fn test_redirect_cache_basic() {
     let mut cache = RedirectCache::new();
     let dst = Ipv4Address::new([10, 0, 0, 100]);
     let gateway = Ipv4Address::new([192, 168, 1, 2]);
-    
+
     // Initially empty
     assert!(cache.get(dst).is_none());
-    
+
     // Insert and retrieve
     cache.insert(dst, gateway);
     assert_eq!(cache.get(dst), Some(gateway));
-    
+
     // Update existing entry
     let new_gateway = Ipv4Address::new([192, 168, 1, 3]);
     cache.insert(dst, new_gateway);
@@ -240,15 +243,15 @@ pub fn test_redirect_cache_expiry() {
     let mut cache = RedirectCache::new();
     let dst = Ipv4Address::new([10, 0, 0, 100]);
     let gateway = Ipv4Address::new([192, 168, 1, 2]);
-    
+
     // Insert at time 0
     cache.set_time(0);
     cache.insert(dst, gateway);
-    
+
     // Still valid at TTL - 1
     cache.set_time(REDIRECT_CACHE_TTL - 1);
     assert_eq!(cache.get(dst), Some(gateway));
-    
+
     // Expired after TTL
     cache.set_time(REDIRECT_CACHE_TTL + 1);
     assert!(cache.get(dst).is_none());

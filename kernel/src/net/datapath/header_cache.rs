@@ -45,7 +45,8 @@ impl ConnId {
         let mut hash: u64 = 0xcbf29ce484222325;
         let fnv_prime: u64 = 0x100000001b3;
 
-        for byte in src_ip.to_be_bytes()
+        for byte in src_ip
+            .to_be_bytes()
             .iter()
             .chain(&dst_ip.to_be_bytes())
             .chain(&src_port.to_be_bytes())
@@ -151,7 +152,7 @@ impl CachedHeader {
 
         let ip_start = 14usize;
         // IPv4 Header (20 bytes)
-        self.template[ip_start] = 0x45;     // Version=4, IHL=5
+        self.template[ip_start] = 0x45; // Version=4, IHL=5
         self.template[ip_start + 1] = 0x00; // DSCP/ECN
         // [2..4] total_len - dynamic
         // [4..6] identification - dynamic
@@ -482,13 +483,13 @@ mod tests {
         let len = entry
             .stamp(
                 &mut output,
-                1000,       // seq
-                2000,       // ack
-                0x18,       // flags (PSH+ACK)
-                65535,      // window
-                60,         // ip_total_len
-                42,         // ip_id
-                12345,      // current_tsc
+                1000,  // seq
+                2000,  // ack
+                0x18,  // flags (PSH+ACK)
+                65535, // window
+                60,    // ip_total_len
+                42,    // ip_id
+                12345, // current_tsc
             )
             .unwrap();
 

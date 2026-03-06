@@ -50,8 +50,11 @@ pub trait PciTopologyProvider {
                 if func > 0 || (ht & 0x80) != 0 {
                     found_multifunction = true;
                 }
-                
-                if !self.is_acs_isolation_enabled(bus, device, func).unwrap_or(false) {
+
+                if !self
+                    .is_acs_isolation_enabled(bus, device, func)
+                    .unwrap_or(false)
+                {
                     all_acs_enabled = false;
                     // If any function lacks ACS, we can stop early if it's already known to be multifunction.
                     if found_multifunction {
@@ -337,8 +340,11 @@ impl IommuGroupManager {
         // PCIヒエラルキーをルートコンプレックスに向かって走査
         loop {
             // ... (rest of the loop is correct as it updates bus/dev and resets func to 0 on bridge merge)
-            let header_type = match topology.read_header_type(current_bus, current_dev, current_func)
-            {
+            let header_type = match topology.read_header_type(
+                current_bus,
+                current_dev,
+                current_func,
+            ) {
                 Some(header_type) => header_type,
                 None if first_hop => return Err(IommuError::DeviceNotFound),
                 None => {
@@ -409,9 +415,8 @@ impl IommuGroupManager {
     #[cfg(feature = "qemu-test-export")]
     pub fn groups_lock_for_test(
         &self,
-    ) -> crate::sync::LockResult<
-        crate::sync::PoisonLockGuard<'_, HashMap<IommuGroupId, IommuGroup>>,
-    > {
+    ) -> crate::sync::LockResult<crate::sync::PoisonLockGuard<'_, HashMap<IommuGroupId, IommuGroup>>>
+    {
         self.groups.lock()
     }
 }
@@ -473,7 +478,7 @@ mod tests {
 
         let dev = DeviceId::new(0, 0, 1, 0);
         let group_id = IommuGroupManager::determine_group_id_for_device(dev, &topo).unwrap();
-        
+
         // Single isolated endpoint should be its own group root
         assert_eq!(group_id, dev);
     }
@@ -487,10 +492,10 @@ mod tests {
 
         let dev0 = DeviceId::new(0, 0, 2, 0);
         let dev1 = DeviceId::new(0, 0, 2, 1);
-        
+
         let id0 = IommuGroupManager::determine_group_id_for_device(dev0, &topo).unwrap();
         let id1 = IommuGroupManager::determine_group_id_for_device(dev1, &topo).unwrap();
-        
+
         // Both should be grouped under function 0
         assert_eq!(id0, dev0);
         assert_eq!(id1, dev0);
@@ -505,7 +510,7 @@ mod tests {
 
         let dev = DeviceId::new(0, 1, 0, 0);
         let group_id = IommuGroupManager::determine_group_id_for_device(dev, &topo).unwrap();
-        
+
         // Should be grouped under the bridge (0,1,0)
         assert_eq!(group_id, DeviceId::new(0, 0, 1, 0));
     }
@@ -519,7 +524,7 @@ mod tests {
 
         let dev = DeviceId::new(0, 1, 0, 0);
         let group_id = IommuGroupManager::determine_group_id_for_device(dev, &topo).unwrap();
-        
+
         // Bridge has ACS, so the endpoint is isolated
         assert_eq!(group_id, dev);
     }
@@ -535,7 +540,7 @@ mod tests {
 
         let dev = DeviceId::new(0, 2, 0, 0);
         let group_id = IommuGroupManager::determine_group_id_for_device(dev, &topo).unwrap();
-        
+
         // Should be promoted to the highest non-ACS ancestor: Bridge A
         assert_eq!(group_id, DeviceId::new(0, 0, 1, 0));
     }

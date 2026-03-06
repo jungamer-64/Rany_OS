@@ -125,8 +125,10 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
 
     /// PSF2フォーマットを解析（所有権不要の検証フェーズ）
     fn parse_psf2_fields(slice: &[u8]) -> Option<PsfParsed> {
-        if slice[0] != PSF2_MAGIC0 || slice[1] != PSF2_MAGIC1
-            || slice[2] != PSF2_MAGIC2 || slice[3] != PSF2_MAGIC3
+        if slice[0] != PSF2_MAGIC0
+            || slice[1] != PSF2_MAGIC1
+            || slice[2] != PSF2_MAGIC2
+            || slice[3] != PSF2_MAGIC3
         {
             return None;
         }
@@ -164,8 +166,7 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
             return None;
         }
 
-        let parsed = Self::parse_psf1_fields(slice)
-            .or_else(|| Self::parse_psf2_fields(slice))?;
+        let parsed = Self::parse_psf1_fields(slice).or_else(|| Self::parse_psf2_fields(slice))?;
 
         Some(Self {
             data,

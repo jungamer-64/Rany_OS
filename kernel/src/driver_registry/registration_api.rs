@@ -1,8 +1,9 @@
 use super::*;
 
-
 /// Register a driver implemented as a DriverExports header
-pub fn register_exports_driver(exports: *const DriverExportsV1) -> Result<DriverHandle, DriverError> {
+pub fn register_exports_driver(
+    exports: *const DriverExportsV1,
+) -> Result<DriverHandle, DriverError> {
     let prepared = prepare_driver_exports(exports, true)?;
     let res = register_abi_driver_with_fini(prepared.entry, prepared.fini);
     if res.is_err() {

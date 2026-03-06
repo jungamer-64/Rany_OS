@@ -3,31 +3,60 @@
 // ============================================================================
 
 extern crate alloc;
-use alloc::vec::Vec;
+use crate::cmd::CmdMailbox;
+use crate::cmd::CommandTransport; // for execute() method
+use crate::cmd::hca::*; // bring HCA command builders/parsers
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE, PortLinkState, VportCounters};
+use crate::device::{DeviceState, Mlx5Device};
 use crate::eq::EqEvent;
 use crate::error::{Mlx5Error, Mlx5Result};
-use crate::device::{Mlx5Device, DeviceState};
-use crate::cmd::CmdMailbox;
-use crate::cmd::hca::*; // bring HCA command builders/parsers
-use crate::cmd::CommandTransport; // for execute() method
 use crate::health::HealthStatus;
 use crate::port::MacAddr;
+use alloc::vec::Vec;
 
 impl Mlx5Device {
     /// パケットを送信
-    pub unsafe fn transmit(&mut self, sq_index: usize, data_phys: u64, data_virt: u64, data_len: u32, inline_hdr: &[u8]) -> Mlx5Result<u16> {
-        if self.state != DeviceState::Active { return Err(Mlx5Error::DeviceNotReady); }
-        let sq = self.sqs.get_mut(sq_index).ok_or(Mlx5Error::InvalidParameter)?;
-        let segments = [crate::wq::DmaSegment { device_addr: data_phys, virt_addr: data_virt, len: data_len }];
-        sq.post_send(&segments, inline_hdr).ok_or(Mlx5Error::NoResources)
+    pub unsafe fn transmit(
+        &mut self,
+        sq_index: usize,
+        data_phys: u64,
+        data_virt: u64,
+        data_len: u32,
+        inline_hdr: &[u8],
+    ) -> Mlx5Result<u16> {
+        if self.state != DeviceState::Active {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
+        let sq = self
+            .sqs
+            .get_mut(sq_index)
+            .ok_or(Mlx5Error::InvalidParameter)?;
+        let segments = [crate::wq::DmaSegment {
+            device_addr: data_phys,
+            virt_addr: data_virt,
+            len: data_len,
+        }];
+        sq.post_send(&segments, inline_hdr)
+            .ok_or(Mlx5Error::NoResources)
     }
 
     /// 受信バッファを投入
-    pub unsafe fn post_receive(&mut self, rq_index: usize, buf_phys: u64, buf_virt: u64, buf_size: u32) -> Mlx5Result<u16> {
-        if self.state != DeviceState::Active && self.state != DeviceState::QueuesReady { return Err(Mlx5Error::DeviceNotReady); }
-        let rq = self.rqs.get_mut(rq_index).ok_or(Mlx5Error::InvalidParameter)?;
-        rq.post_recv(buf_phys, buf_virt, buf_size).ok_or(Mlx5Error::NoResources)
+    pub unsafe fn post_receive(
+        &mut self,
+        rq_index: usize,
+        buf_phys: u64,
+        buf_virt: u64,
+        buf_size: u32,
+    ) -> Mlx5Result<u16> {
+        if self.state != DeviceState::Active && self.state != DeviceState::QueuesReady {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
+        let rq = self
+            .rqs
+            .get_mut(rq_index)
+            .ok_or(Mlx5Error::InvalidParameter)?;
+        rq.post_recv(buf_phys, buf_virt, buf_size)
+            .ok_or(Mlx5Error::NoResources)
     }
 
     pub unsafe fn handle_eq_interrupt(&mut self, eq_index: usize) -> Vec<EqEvent> {
@@ -42,90 +71,138 @@ impl Mlx5Device {
                     None => break,
                 }
             }
-            if !events.is_empty() { eq.update_doorbell(); }
+            if !events.is_empty() {
+                eq.update_doorbell();
+            }
         }
         events
     }
 
     pub unsafe fn poll_cq(&mut self, cq_index: usize, max_batch: u32) -> Vec<crate::cq::CqeInfo> {
         let batch = self.polling_state.max_batch_size().min(max_batch);
-        let result = if let Some(cq) = self.cqs.get_mut(cq_index) { cq.poll_batch(batch) } else { Vec::new() };
+        let result = if let Some(cq) = self.cqs.get_mut(cq_index) {
+            cq.poll_batch(batch)
+        } else {
+            Vec::new()
+        };
         let need_rearm = self.polling_state.record_poll_cycle(result.len() as u32);
-        if need_rearm { if let Some(cq) = self.cqs.get(cq_index) { cq.arm(); } }
+        if need_rearm {
+            if let Some(cq) = self.cqs.get(cq_index) {
+                cq.arm();
+            }
+        }
         result
     }
 
-    pub fn process_tx_completions(&mut self, sq_index: usize, wqe_counter: u16) -> Option<crate::wq::TxBufferInfo> {
-        self.sqs.get_mut(sq_index).and_then(|sq| sq.complete_tx(wqe_counter))
+    pub fn process_tx_completions(
+        &mut self,
+        sq_index: usize,
+        wqe_counter: u16,
+    ) -> Option<crate::wq::TxBufferInfo> {
+        self.sqs
+            .get_mut(sq_index)
+            .and_then(|sq| sq.complete_tx(wqe_counter))
     }
 
-    pub fn process_rx_completion(&mut self, rq_index: usize, wqe_counter: u16) -> Option<crate::wq::RxBufferInfo> {
-        self.rqs.get_mut(rq_index).and_then(|rq| rq.complete_rx(wqe_counter))
-    }
-
-    pub fn query_vport_context(&mut self, vport: u16) -> Mlx5Result<crate::cmd::VportContext> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
-        unsafe {
-            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-            build_query_vport_context_input(in_mbox, vport);
-
-            cmd.execute(
-                CmdOpcode::QueryNicVportContext,
-                self.cmd_in_mbox_device,
-                MLX5_CMD_MBOX_SIZE as u32,
-                self.cmd_out_mbox_device,
-                MLX5_CMD_MBOX_SIZE as u32,
-            )?;
-
-            let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-            Ok(parse_query_vport_context_output(out_mbox))
-        }
+    pub fn process_rx_completion(
+        &mut self,
+        rq_index: usize,
+        wqe_counter: u16,
+    ) -> Option<crate::wq::RxBufferInfo> {
+        self.rqs
+            .get_mut(rq_index)
+            .and_then(|rq| rq.complete_rx(wqe_counter))
     }
 
     pub unsafe fn activate_vfs(&mut self, num_vfs: u16) -> Mlx5Result<()> {
-        if self.is_vf() { return Err(Mlx5Error::NotSupported); }
+        if self.is_vf() {
+            return Err(Mlx5Error::NotSupported);
+        }
         let caps = self.hca_caps.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        if !caps.vport_group_manager { return Err(Mlx5Error::NotSupported); }
+        if !caps.vport_group_manager {
+            return Err(Mlx5Error::NotSupported);
+        }
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         for i in 0..num_vfs {
             let vhca_id = i + 1;
             {
                 let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
                 build_modify_vhca_state_input(in_mbox, vhca_id, 0, 1);
-                cmd.execute(CmdOpcode::ModifyVhcaState, self.cmd_in_mbox_device, MLX5_CMD_MBOX_SIZE as u32, self.cmd_out_mbox_device, MLX5_CMD_MBOX_SIZE as u32)?;
+                cmd.execute(
+                    CmdOpcode::ModifyVhcaState,
+                    self.cmd_in_mbox_device,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_device,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                )?;
             }
             {
                 let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
                 build_modify_vhca_state_input(in_mbox, vhca_id, 0, 2);
-                cmd.execute(CmdOpcode::ModifyVhcaState, self.cmd_in_mbox_device, MLX5_CMD_MBOX_SIZE as u32, self.cmd_out_mbox_device, MLX5_CMD_MBOX_SIZE as u32)?;
+                cmd.execute(
+                    CmdOpcode::ModifyVhcaState,
+                    self.cmd_in_mbox_device,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_device,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                )?;
             }
             {
                 let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
                 build_modify_nic_vport_state_input(in_mbox, vhca_id, true);
-                cmd.execute(CmdOpcode::ModifyNicVportContext, self.cmd_in_mbox_device, MLX5_CMD_MBOX_SIZE as u32, self.cmd_out_mbox_device, MLX5_CMD_MBOX_SIZE as u32)?;
+                cmd.execute(
+                    CmdOpcode::ModifyNicVportContext,
+                    self.cmd_in_mbox_device,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                    self.cmd_out_mbox_device,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                )?;
             }
         }
         Ok(())
     }
 
     pub unsafe fn query_port_state(&mut self, port_index: usize) -> Mlx5Result<PortLinkState> {
+        self.ports
+            .get(port_index)
+            .ok_or(Mlx5Error::InvalidParameter)?;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        build_query_vport_state_input(in_mbox, 0);
-        cmd.execute(CmdOpcode::QueryVportState, self.cmd_in_mbox_device, MLX5_CMD_MBOX_SIZE as u32, self.cmd_out_mbox_device, MLX5_CMD_MBOX_SIZE as u32)?;
+        build_query_vport_state_input(in_mbox, query_vport_state_op_mod_vnic_vport(), 0, false);
+        cmd.execute(
+            CmdOpcode::QueryVportState,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let (_admin, oper) = parse_query_vport_state_output(out_mbox);
-        let link_state = if oper == 0x01 { PortLinkState::Up } else { PortLinkState::Down };
-        if let Some(port) = self.ports.get_mut(port_index) { port.set_link_state(link_state); }
+        let (admin, oper, _max_tx_speed) = parse_query_vport_state_output(out_mbox);
+        let link_state = match oper {
+            0x01 => PortLinkState::Up,
+            0x00 => PortLinkState::Down,
+            _ => PortLinkState::Unknown,
+        };
+        if let Some(port) = self.ports.get_mut(port_index) {
+            if admin == 0 {
+                port.admin_down();
+            } else {
+                port.admin_up();
+            }
+            port.set_link_state(link_state);
+        }
         Ok(link_state)
     }
 
     pub unsafe fn query_port_mac(&mut self, port_index: usize) -> Mlx5Result<MacAddr> {
+        self.ports
+            .get(port_index)
+            .ok_or(Mlx5Error::InvalidParameter)?;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let query_patterns: &[(bool, Option<u8>, &str)] = &[
-            (false, None, "self"),
+            (false, None, "self-permanent"),
             (false, Some(0), "self-uc-list"),
-            (true, None, "other-vport"),
+            (true, None, "other-vport-permanent"),
             (true, Some(0), "other-vport-uc-list"),
         ];
 
@@ -133,7 +210,7 @@ impl Mlx5Device {
 
         for (other_vport, allowed_list_type, label) in query_patterns {
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-            build_query_nic_vport_input_ex(in_mbox, 0, *other_vport, *allowed_list_type);
+            build_query_nic_vport_context_input(in_mbox, 0, *other_vport, *allowed_list_type);
             match cmd.execute(
                 CmdOpcode::QueryNicVportContext,
                 self.cmd_in_mbox_device,
@@ -144,7 +221,16 @@ impl Mlx5Device {
                 Ok(()) => {
                     let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
                     Self::debug_dump_mailbox_words("QUERY_NIC_VPORT_CONTEXT", out_mbox, 48);
-                    let mac_bytes = parse_vport_mac(out_mbox);
+                    let mac_bytes = if allowed_list_type.is_some() {
+                        let list_size = parse_query_nic_vport_context_allowed_list_size(out_mbox);
+                        (0..list_size)
+                            .find_map(|index| {
+                                parse_query_nic_vport_context_allowed_list_mac(out_mbox, index)
+                            })
+                            .unwrap_or([0; 6])
+                    } else {
+                        parse_query_nic_vport_context_mac(out_mbox)
+                    };
                     if mac_bytes != [0; 6] {
                         let mac = MacAddr(mac_bytes);
                         if let Some(port) = self.ports.get_mut(port_index) {
@@ -218,16 +304,14 @@ impl Mlx5Device {
     }
 
     pub unsafe fn set_port_mac(&mut self, port_index: usize, mac: MacAddr) -> Mlx5Result<()> {
-        let vport_num = self
-            .ports
+        self.ports
             .get(port_index)
-            .map(|p| p.port_number())
-            .ok_or(Mlx5Error::InvalidParameter)? as u16;
+            .ok_or(Mlx5Error::InvalidParameter)?;
 
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
 
-        build_modify_nic_vport_mac_input(in_mbox, vport_num, false, mac.0);
+        build_modify_nic_vport_mac_input(in_mbox, 0, false, mac.0);
         cmd.execute(
             CmdOpcode::ModifyNicVportContext,
             self.cmd_in_mbox_device,
@@ -240,7 +324,7 @@ impl Mlx5Device {
             port.set_mac_address(mac);
         }
 
-        log::info!(target: "mlx5", "Port {} MAC updated to {}", vport_num, mac);
+        log::info!(target: "mlx5", "Port {} MAC updated to {}", port_index + 1, mac);
         Ok(())
     }
 
@@ -251,7 +335,22 @@ impl Mlx5Device {
     ) -> Mlx5Result<VportCounters> {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        build_query_vport_counter_input(in_mbox, port_num, clear_on_read);
+        let include_port_num = self
+            .hca_caps
+            .as_ref()
+            .map(|caps| caps.num_ports > 1)
+            .unwrap_or(false);
+        build_query_vport_counter_input(
+            in_mbox,
+            0,
+            false,
+            if include_port_num {
+                Some(port_num)
+            } else {
+                None
+            },
+            clear_on_read,
+        );
 
         cmd.execute(
             CmdOpcode::QueryVportCounter,
@@ -277,8 +376,29 @@ impl Mlx5Device {
     }
 
     pub fn set_port_mtu(&mut self, port_index: usize, mtu: u32) -> Mlx5Result<()> {
-        let port = self.ports.get_mut(port_index).ok_or(Mlx5Error::InvalidParameter)?;
-        port.set_mtu(mtu).map_err(|_| Mlx5Error::InvalidParameter)?;
+        self.ports
+            .get(port_index)
+            .ok_or(Mlx5Error::InvalidParameter)?;
+        if !(68..=crate::defs::MLX5_MAX_MTU).contains(&mtu) {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        unsafe {
+            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+            build_modify_nic_vport_mtu_input(in_mbox, 0, false, mtu as u16);
+            cmd.execute(
+                CmdOpcode::ModifyNicVportContext,
+                self.cmd_in_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+                self.cmd_out_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+            )?;
+        }
+
+        if let Some(port) = self.ports.get_mut(port_index) {
+            port.set_mtu(mtu).map_err(|_| Mlx5Error::InvalidParameter)?;
+        }
         Ok(())
     }
 

@@ -5,7 +5,6 @@
 use super::*;
 use crate::io::iommu::types::DeviceId;
 
-
 // ============================================================================
 // Isolation Helpers (extracted from isolate_faulting_device for CC reduction)
 // ============================================================================

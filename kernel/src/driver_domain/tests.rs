@@ -78,7 +78,8 @@ fn fixture_variant(path: &str) -> Option<u8> {
     if bytes[n - 8] != b'_' || bytes[n - 7] != b'v' || bytes[n - 5] != b'.' {
         return None;
     }
-    if bytes[n - 4] != b'c' || bytes[n - 3] != b'e' || bytes[n - 2] != b'l' || bytes[n - 1] != b'l' {
+    if bytes[n - 4] != b'c' || bytes[n - 3] != b'e' || bytes[n - 2] != b'l' || bytes[n - 1] != b'l'
+    {
         return None;
     }
     match bytes[n - 6] {
@@ -396,11 +397,7 @@ pub fn run_driver_domain_runtime_suite() -> DriverDomainRuntimeSuiteSummary {
         "manual_rollback",
         case_manual_rollback(&mut ctx),
     );
-    run_case(
-        &mut summary,
-        "manual_commit",
-        case_manual_commit(&mut ctx),
-    );
+    run_case(&mut summary, "manual_commit", case_manual_commit(&mut ctx));
     // Keep full-boot runtime coverage deterministic under qemu_no_if=1 by
     // restricting the suite to the stable hot-swap validation cases.
 
@@ -432,7 +429,9 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
     runtime_log_line("[driver-cell-runtime] preflight: selected running DriverDomain");
 
     let (state, hot_swap_state, loader_cell_id) = manager
-        .with_cell(driver_domain_id, |cell| (cell.state, cell.hot_swap_state, cell.cell_id))
+        .with_cell(driver_domain_id, |cell| {
+            (cell.state, cell.hot_swap_state, cell.cell_id)
+        })
         .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect DriverDomain: {}", e)))?;
 
     if state != DriverDomainState::Running {
@@ -633,13 +632,18 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
 
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: read stats begin");
     let (restart_before, fault_before) = driver_domain_manager()
-        .with_cell(ctx.driver_domain_id, |cell| (cell.stats.restart_count, cell.stats.fault_count))
+        .with_cell(ctx.driver_domain_id, |cell| {
+            (cell.stats.restart_count, cell.stats.fault_count)
+        })
         .map_err(|e| RuntimeCaseError::failed(format!("failed to read stats: {}", e)))?;
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: read stats done");
 
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: inject panic begin");
-    let outcome = super::fault::inject_test_fault(ctx.driver_domain_id, super::fault::TestFaultKind::Panic)
-        .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
+    let outcome = super::fault::inject_test_fault(
+        ctx.driver_domain_id,
+        super::fault::TestFaultKind::Panic,
+    )
+    .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: inject panic done");
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime2 begin");
     poll_runtime();
@@ -653,7 +657,9 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
     }
 
     let (restart_after, fault_after) = driver_domain_manager()
-        .with_cell(ctx.driver_domain_id, |cell| (cell.stats.restart_count, cell.stats.fault_count))
+        .with_cell(ctx.driver_domain_id, |cell| {
+            (cell.stats.restart_count, cell.stats.fault_count)
+        })
         .map_err(|e| RuntimeCaseError::failed(format!("failed to read stats: {}", e)))?;
     if restart_after != restart_before {
         return Err(RuntimeCaseError::failed(
@@ -700,8 +706,11 @@ fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseEr
         .with_cell(ctx.driver_domain_id, |cell| cell.stats.restart_count)
         .map_err(|e| RuntimeCaseError::failed(format!("failed to read restart_count: {}", e)))?;
 
-    let outcome = super::fault::inject_test_fault(ctx.driver_domain_id, super::fault::TestFaultKind::Panic)
-        .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
+    let outcome = super::fault::inject_test_fault(
+        ctx.driver_domain_id,
+        super::fault::TestFaultKind::Panic,
+    )
+    .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
     poll_runtime();
 
     if outcome.action != super::fault::FaultAction::Restarted {
@@ -715,7 +724,9 @@ fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseEr
         .with_cell(ctx.driver_domain_id, |cell| {
             (cell.stats.restart_count, cell.state, cell.hot_swap_state)
         })
-        .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect post-restart state: {}", e)))?;
+        .map_err(|e| {
+            RuntimeCaseError::failed(format!("failed to inspect post-restart state: {}", e))
+        })?;
 
     if restart_after <= restart_before {
         return Err(RuntimeCaseError::failed(
@@ -766,7 +777,9 @@ fn case_unload(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
 fn ensure_running_idle(id: DriverDomainId) -> Result<(), RuntimeCaseError> {
     let (state, hot_swap_state) = driver_domain_manager()
         .with_cell(id, |cell| (cell.state, cell.hot_swap_state))
-        .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect DriverDomain state: {}", e)))?;
+        .map_err(|e| {
+            RuntimeCaseError::failed(format!("failed to inspect DriverDomain state: {}", e))
+        })?;
     if state != DriverDomainState::Running {
         return Err(RuntimeCaseError::failed(format!(
             "expected Running state, got {}",
@@ -901,13 +914,14 @@ fn run_case(
 #[cfg(feature = "qemu-test-export")]
 fn log_case(name: &str, status: &str, detail: &str) {
     if detail.is_empty() {
-        runtime_log_line(&format!("[driver-cell-runtime] case {} ... {}", name, status));
+        runtime_log_line(&format!(
+            "[driver-cell-runtime] case {} ... {}",
+            name, status
+        ));
     } else {
         runtime_log_line(&format!(
             "[driver-cell-runtime] case {} ... {} ({})",
-            name,
-            status,
-            detail
+            name, status, detail
         ));
     }
 }
@@ -916,9 +930,7 @@ fn log_case(name: &str, status: &str, detail: &str) {
 fn log_summary(summary: &DriverDomainRuntimeSuiteSummary) {
     runtime_log_line(&format!(
         "[driver-cell-runtime] summary pass={} fail={} blocked={}",
-        summary.passed,
-        summary.failed,
-        summary.blocked
+        summary.passed, summary.failed, summary.blocked
     ));
 }
 

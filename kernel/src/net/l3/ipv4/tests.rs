@@ -162,7 +162,10 @@ pub fn test_fragment_overflow_rejected() {
     // construct payload length that causes overflow
     let payload = vec![0u8; (FragmentBuffer::MAX_DATAGRAM_SIZE + 1) as usize];
     // fragment_offset bytes = 0
-    assert!(!buffer.add_fragment(&header, &payload, 0), "overflow should be rejected");
+    assert!(
+        !buffer.add_fragment(&header, &payload, 0),
+        "overflow should be rejected"
+    );
 }
 
 #[cfg_attr(test, test_case)]
@@ -187,7 +190,10 @@ pub fn test_fragment_overlap_detection() {
     assert!(result.0.is_none());
 
     // second fragment overlaps first (offset 0)
-    let hdr2 = Ipv4Header { flags_fragment: [0x00, 0x00], ..hdr1 };
+    let hdr2 = Ipv4Header {
+        flags_fragment: [0x00, 0x00],
+        ..hdr1
+    };
     // offset field still 0 (means overlap)
     let p2 = [0u8; 8];
     let h2_data = crate::util::struct_as_bytes(&hdr2);
@@ -218,7 +224,10 @@ pub fn test_fragment_hole_exhaustion() {
         };
         // manually set fragment offset field (bytes 6-7)
         let off_val = offset / 8;
-        hdr.flags_fragment = [(hdr.flags_fragment[0] & 0xE0) | ((off_val >> 8) as u8), off_val as u8];
+        hdr.flags_fragment = [
+            (hdr.flags_fragment[0] & 0xE0) | ((off_val >> 8) as u8),
+            off_val as u8,
+        ];
         let payload = [0u8; 8];
         let accepted = buffer.add_fragment(&hdr, &payload, 0);
         if i as usize > FragmentBuffer::MAX_HOLES {
@@ -232,7 +241,7 @@ pub fn test_fragment_hole_exhaustion() {
 pub fn test_fragment_with_options_vulnerability_fixed() {
     let mut reassembler = FragmentReassembler::new(16);
 
-    // First fragment with IHL=6 (24 bytes). 
+    // First fragment with IHL=6 (24 bytes).
     let header1 = Ipv4Header {
         version_ihl: 0x46, // IHL=6 (24 bytes)
         dscp_ecn: 0,
@@ -249,7 +258,7 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
     let mut h1_full = Vec::new();
     h1_full.extend_from_slice(crate::util::struct_as_bytes(&header1));
     h1_full.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]); // 4 bytes of options
-    
+
     let payload1 = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
 
     let result = reassembler.process_fragment(&header1, &h1_full, &payload1, 0);
@@ -275,12 +284,12 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
     assert!(result.0.is_some());
 
     let reassembled = result.0.unwrap();
-    
+
     // Parse the reassembled packet
     if let Some(packet) = Ipv4Packet::parse(&reassembled) {
         assert_eq!(packet.header().ihl(), 6);
         assert_eq!(packet.header().header_len(), 24);
-        
+
         let payload = packet.payload();
         assert_eq!(payload.len(), 16, "Payload length should be 16");
         assert_eq!(payload[0], 0x01, "First byte of payload should be 0x01");
@@ -314,7 +323,7 @@ pub fn test_ipv4_id_generation_unpredictability() {
     // for the same destination should not be a constant small increment (like 1 or 2).
     // It's technically possible but very unlikely to be 1 or 2 due to the hash.
     let diff = id1_b.wrapping_sub(id1_a);
-    // Since we're using a hash, any diff is possible, but it shouldn't be 
+    // Since we're using a hash, any diff is possible, but it shouldn't be
     // consistently small across many calls.
     // This is a weak test but it confirms the code runs and produces non-obvious output.
     assert!(diff > 2 || diff == 0); // Very basic check

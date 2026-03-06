@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ============================================================================
 // Cache Range Operations
 // ============================================================================
@@ -427,7 +426,9 @@ impl CoherentDmaBuffer {
                     Ok(iova) => {
                         log::debug!(
                             "[DMA] CoherentDmaBuffer IOMMU mapped: phys=0x{:x} -> iova=0x{:x} size={}",
-                            phys_addr.as_u64(), iova, aligned_size
+                            phys_addr.as_u64(),
+                            iova,
+                            aligned_size
                         );
                         (Some(iova), Some(*dev))
                     }
@@ -439,7 +440,9 @@ impl CoherentDmaBuffer {
                         // Security: If IOMMU is enabled but mapping fails, we MUST NOT fall back
                         // to using physical addresses directly as it would bypass IOMMU protections
                         // or lead to immediate device faults.
-                        unsafe { dealloc(ptr, layout); }
+                        unsafe {
+                            dealloc(ptr, layout);
+                        }
                         return None;
                     }
                 }
@@ -519,19 +522,19 @@ impl Drop for CoherentDmaBuffer {
         // IOMMUマッピングの解除
         if let (Some(iova), Some(ref device)) = (self.iova, self.iommu_device) {
             let aligned_size = iommu_align_len(self.size).unwrap_or(self.size);
-            if let Err(e) = crate::io::iommu::api::unmap_for_device(
-                device,
-                iova,
-                aligned_size as u64,
-            ) {
+            if let Err(e) =
+                crate::io::iommu::api::unmap_for_device(device, iova, aligned_size as u64)
+            {
                 log::warn!(
                     "[DMA] CoherentDmaBuffer IOMMU unmap failed: {:?} (iova=0x{:x})",
-                    e, iova
+                    e,
+                    iova
                 );
             } else {
                 log::debug!(
                     "[DMA] CoherentDmaBuffer IOMMU unmapped: iova=0x{:x} size={}",
-                    iova, aligned_size
+                    iova,
+                    aligned_size
                 );
             }
         }
@@ -573,7 +576,10 @@ impl<'a> StreamingDmaMapping<'a> {
         // SECURITY: Even for streaming mapping, check against protected regions.
         if size > 0 {
             if let Err(e) = crate::io::iommu::api::validate_dma_region(phys, size) {
-                panic!("[DMA][SECURITY] StreamingDmaMapping overlaps protected region! phys={:#x}, size={}, error={:?}", phys, size, e);
+                panic!(
+                    "[DMA][SECURITY] StreamingDmaMapping overlaps protected region! phys={:#x}, size={}, error={:?}",
+                    phys, size, e
+                );
             }
         }
 

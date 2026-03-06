@@ -15,12 +15,12 @@
 //! - Actual logging is done by `drain_deferred_faults()` in a safe async context
 
 use super::dma::DomainManager;
-use super::{HardwareContext, IommuController};
 use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
-use crate::io::iommu::vendors::intel::registers::{ecap_bits, fsts_bits, regs};
-use crate::io::iommu::vendors::intel::tables::{ContextEntry, ScalableContextEntry};
+use super::{HardwareContext, IommuController};
 use crate::io::iommu::runtime::fault_log::{FaultLog, FaultRecord};
 use crate::io::iommu::types::{DeviceId, IommuError};
+use crate::io::iommu::vendors::intel::registers::{ecap_bits, fsts_bits, regs};
+use crate::io::iommu::vendors::intel::tables::{ContextEntry, ScalableContextEntry};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
@@ -355,9 +355,7 @@ fn process_fault_with_controller(event: &RawFaultEvent, controller: &IommuContro
         .ok()
         .flatten()
         .or_else(|| domain_id_from_context_entry(controller, device_id))
-        .or_else(|| {
-            domain_id_from_scalable_context_entry(controller, device_id, event.pasid)
-        })
+        .or_else(|| domain_id_from_scalable_context_entry(controller, device_id, event.pasid))
         .map(u32::from);
 
     // SECURITY: Automatically isolate the faulting device if required by policy.

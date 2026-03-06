@@ -35,12 +35,15 @@ impl NvmeBlockIoAdapter {
     ///
     /// NVMe グローバルドライバが初期化済みであること。
     pub fn from_driver() -> Result<Self, &'static str> {
-        let (nsid, block_size, total_blocks) =
-            crate::io::nvme::with_driver(|d| {
-                let nsid = d.nsid;
-                (nsid, d.namespace_block_size(nsid), d.namespace_total_blocks())
-            })
-            .ok_or("NVMe driver not initialized")?;
+        let (nsid, block_size, total_blocks) = crate::io::nvme::with_driver(|d| {
+            let nsid = d.nsid;
+            (
+                nsid,
+                d.namespace_block_size(nsid),
+                d.namespace_total_blocks(),
+            )
+        })
+        .ok_or("NVMe driver not initialized")?;
 
         if block_size == 0 || total_blocks == 0 {
             return Err("NVMe namespace not configured");
@@ -118,10 +121,9 @@ impl NvmeBlockIoAdapter {
         // 完了をポーリング
         let mut completed = false;
         for _ in 0..MAX_POLL_ITERATIONS {
-            if let Some(cqe) = crate::io::nvme::with_driver(|d| unsafe {
-                d.poll_completion_by_cid(core_id, cid)
-            })
-            .flatten()
+            if let Some(cqe) =
+                crate::io::nvme::with_driver(|d| unsafe { d.poll_completion_by_cid(core_id, cid) })
+                    .flatten()
             {
                 if !cqe.is_success() {
                     kernel.free_dma(dma_buf);
@@ -135,7 +137,9 @@ impl NvmeBlockIoAdapter {
 
         if !completed {
             kernel.free_dma(dma_buf);
-            return Err(NsError::Internal(alloc::string::String::from("NVMe timeout")));
+            return Err(NsError::Internal(alloc::string::String::from(
+                "NVMe timeout",
+            )));
         }
 
         // 読み取り時: DMA バッファからデータをコピー
@@ -180,17 +184,14 @@ impl BlockIo for NvmeBlockIoAdapter {
     fn flush(&self) -> Result<(), NsError> {
         let core_id = Self::core_id();
 
-        let cid = crate::io::nvme::with_driver(|d| unsafe {
-            d.submit_flush(core_id, self.nsid)
-        })
-        .ok_or(NsError::IoError)?
-        .map_err(|_| NsError::IoError)?;
+        let cid = crate::io::nvme::with_driver(|d| unsafe { d.submit_flush(core_id, self.nsid) })
+            .ok_or(NsError::IoError)?
+            .map_err(|_| NsError::IoError)?;
 
         for _ in 0..MAX_POLL_ITERATIONS {
-            if let Some(cqe) = crate::io::nvme::with_driver(|d| unsafe {
-                d.poll_completion_by_cid(core_id, cid)
-            })
-            .flatten()
+            if let Some(cqe) =
+                crate::io::nvme::with_driver(|d| unsafe { d.poll_completion_by_cid(core_id, cid) })
+                    .flatten()
             {
                 if cqe.is_success() {
                     return Ok(());
@@ -200,6 +201,8 @@ impl BlockIo for NvmeBlockIoAdapter {
             core::hint::spin_loop();
         }
 
-        Err(NsError::Internal(alloc::string::String::from("flush timeout")))
+        Err(NsError::Internal(alloc::string::String::from(
+            "flush timeout",
+        )))
     }
 }

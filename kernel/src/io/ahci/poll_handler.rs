@@ -4,21 +4,21 @@
 
 extern crate alloc;
 
+use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
-use crate::sync::PoisonLock;
 
 use crate::io::io_scheduler::{
-    DeviceId, DeviceOps, DmaBufHandle, IoCommand, IoError, IoRequest, IoRequestId, IoResult, PollHandler,
-    hybrid_coordinator, io_scheduler,
+    DeviceId, DeviceOps, DmaBufHandle, IoCommand, IoError, IoRequest, IoRequestId, IoResult,
+    PollHandler, hybrid_coordinator, io_scheduler,
 };
 
 use super::controller::AhciController;
-use super::types::{PX_CI, PX_TFD, PortNumber, SlotNumber, Lba, SectorCount};
+use super::types::{Lba, PX_CI, PX_TFD, PortNumber, SectorCount, SlotNumber};
 use spin::RwLock;
 
 /// AHCI PollHandler 実装
@@ -151,7 +151,11 @@ impl AhciOps {
         port: u8,
         handler: Option<Arc<AhciPollHandler>>,
     ) -> Self {
-        Self { controller, port, handler }
+        Self {
+            controller,
+            port,
+            handler,
+        }
     }
 
     /// Submit a block read or write DMA command
@@ -210,15 +214,21 @@ impl DeviceOps for AhciOps {
         // IoCommand 対応
         if let Some(cmd) = &req.command {
             return match cmd {
-                IoCommand::BlockRead { lba, blocks, bytes, buf } => {
-                    self.submit_block_io(req.id, *lba, *blocks, *bytes, buf, true)
-                }
-                IoCommand::BlockWrite { lba, blocks, bytes, buf } => {
-                    self.submit_block_io(req.id, *lba, *blocks, *bytes, buf, false)
-                }
+                IoCommand::BlockRead {
+                    lba,
+                    blocks,
+                    bytes,
+                    buf,
+                } => self.submit_block_io(req.id, *lba, *blocks, *bytes, buf, true),
+                IoCommand::BlockWrite {
+                    lba,
+                    blocks,
+                    bytes,
+                    buf,
+                } => self.submit_block_io(req.id, *lba, *blocks, *bytes, buf, false),
                 IoCommand::Flush => Err(IoError::NotSupported),
                 _ => Err(IoError::NotSupported),
-            }
+            };
         }
         // 旧形式: 未サポート
         Err(IoError::NotSupported)
@@ -234,7 +244,8 @@ impl DeviceOps for AhciOps {
 // ============================================================================
 
 /// Global registry for AHCI poll handlers (port -> handler)
-static AHCI_POLL_HANDLERS: RwLock<BTreeMap<u8, Arc<AhciPollHandler>>> = RwLock::new(BTreeMap::new());
+static AHCI_POLL_HANDLERS: RwLock<BTreeMap<u8, Arc<AhciPollHandler>>> =
+    RwLock::new(BTreeMap::new());
 
 // Wrapper to allow registering an Arc<AhciPollHandler> as a PollHandler trait object
 struct AhciPollHandlerWrapper {
@@ -267,9 +278,12 @@ pub fn register_ahci_with(
     // DeviceOps を登録
     // Create and register a shared poll handler so submit() can add pending requests
     let handler = Arc::new(AhciPollHandler::new(controller.clone()));
-    coordinator
-        .polling_executor()
-        .register_handler(device_id, Box::new(AhciPollHandlerWrapper { inner: handler.clone() }));
+    coordinator.polling_executor().register_handler(
+        device_id,
+        Box::new(AhciPollHandlerWrapper {
+            inner: handler.clone(),
+        }),
+    );
 
     // Store in global registry for lookup
     AHCI_POLL_HANDLERS

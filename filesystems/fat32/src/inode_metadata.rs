@@ -1,9 +1,4 @@
-use crate::{
-    Fat32Inode,
-    FileAttr,
-    FsResult,
-    ZeroCopyBufferMut,
-};
+use crate::{Fat32Inode, FileAttr, FsResult, ZeroCopyBufferMut};
 
 impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     pub fn getattr(&self) -> FsResult<FileAttr> {

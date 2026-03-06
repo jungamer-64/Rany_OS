@@ -26,7 +26,10 @@ use alloc::string::String;
 
 use crate::loader::CellId;
 
-use super::{DriverDomainError, DriverDomainId, DriverDomainSnapshot, DriverDomainState, driver_domain_manager};
+use super::{
+    DriverDomainError, DriverDomainId, DriverDomainSnapshot, DriverDomainState,
+    driver_domain_manager,
+};
 
 // ============================================================================
 // Hot Swap State
@@ -121,9 +124,8 @@ pub fn hot_swap(
                 to: DriverDomainState::Updating,
             });
         }
-        cell.cell_id.ok_or(DriverDomainError::LoadFailed(
-            "No cell loaded".into(),
-        ))
+        cell.cell_id
+            .ok_or(DriverDomainError::LoadFailed("No cell loaded".into()))
     })??;
 
     // Updating状態に遷移
@@ -191,11 +193,7 @@ pub fn hot_swap(
         }
         Err(e) => {
             let msg = format!("LiveUpdate failed: {}", e);
-            log::error!(
-                "[DriverDomain] Hot-swap failed for '{}': {}\n",
-                name,
-                msg
-            );
+            log::error!("[DriverDomain] Hot-swap failed for '{}': {}\n", name, msg);
 
             // ロールバック: 元のRunning状態に復帰
             manager.with_cell_mut(id, |cell| {
@@ -264,9 +262,11 @@ pub fn rollback(id: DriverDomainId) -> Result<(), DriverDomainError> {
     let transition = match live_update.rollback_for_cell(current_cell_id.as_u64()) {
         Ok(t) => t,
         Err(e) => {
-            manager.with_cell_mut(id, |cell| {
-                cell.hot_swap_state = HotSwapState::Error;
-            }).ok();
+            manager
+                .with_cell_mut(id, |cell| {
+                    cell.hot_swap_state = HotSwapState::Error;
+                })
+                .ok();
             return Err(DriverDomainError::HotSwapFailed(format!(
                 "Rollback failed: {}",
                 e
@@ -287,9 +287,11 @@ pub fn rollback(id: DriverDomainId) -> Result<(), DriverDomainError> {
     if let Some(crate::loader::live_update::CompletedUpdateOutcome::RolledBack { reason, .. }) =
         live_update.take_recent_outcome_for_cell(current_cell_id.as_u64())
     {
-        manager.with_cell_mut(id, |cell| {
-            cell.last_health_failure = reason;
-        }).ok();
+        manager
+            .with_cell_mut(id, |cell| {
+                cell.last_health_failure = reason;
+            })
+            .ok();
     }
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
@@ -301,9 +303,8 @@ pub fn rollback(id: DriverDomainId) -> Result<(), DriverDomainError> {
 /// ホットスワップをコミット（猶予期間前の明示コミット）
 pub fn commit(id: DriverDomainId) -> Result<(), DriverDomainError> {
     let manager = driver_domain_manager();
-    let (hot_swap_state, current_cell_id) = manager.with_cell(id, |cell| {
-        (cell.hot_swap_state, cell.cell_id)
-    })?;
+    let (hot_swap_state, current_cell_id) =
+        manager.with_cell(id, |cell| (cell.hot_swap_state, cell.cell_id))?;
 
     if hot_swap_state != HotSwapState::Validating {
         return Err(DriverDomainError::HotSwapFailed(format!(
@@ -355,7 +356,9 @@ pub fn health_status(id: DriverDomainId) -> Result<CellHealthStatus, DriverDomai
 
     let health_failed = snap
         .loader_cell_id
-        .and_then(|cid| crate::loader::live_update::live_update_manager().pending_status(cid.as_u64()))
+        .and_then(|cid| {
+            crate::loader::live_update::live_update_manager().pending_status(cid.as_u64())
+        })
         .map(|p| p.health_failed)
         .unwrap_or(false);
 

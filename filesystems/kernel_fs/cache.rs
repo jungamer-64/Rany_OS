@@ -398,13 +398,7 @@ impl PageCache {
     }
 
     /// Write to cache
-    pub fn write(
-        &self,
-        ino: InodeNum,
-        offset: u64,
-        buf: &[u8],
-        file_size: u64,
-    ) -> Option<usize> {
+    pub fn write(&self, ino: InodeNum, offset: u64, buf: &[u8], file_size: u64) -> Option<usize> {
         self.get_or_create_file_cache(ino, file_size);
 
         let page_num = offset / PAGE_SIZE as u64;

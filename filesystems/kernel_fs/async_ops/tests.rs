@@ -1,10 +1,10 @@
 use super::{AsyncFile, DirectBlockHandle, FileAttr, FsError, SeekFrom};
-use alloc::sync::Arc;
 use crate::io::dma::TypedSgList;
 use crate::io::io_scheduler::{
     self, DeviceId as IoDeviceId, DeviceOps, IoCommand, IoError, IoMode, IoRequest, IoResult,
     ModeThresholds,
 };
+use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::ptr;

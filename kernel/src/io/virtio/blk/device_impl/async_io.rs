@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ============================================================================
 // Async Futures
 // ============================================================================
@@ -186,8 +185,12 @@ impl<'a> Future for DmaReadFuture<'a> {
 
             let mut is_completed = false;
             while let Some((completed_id, len)) = queue_guard.poll_completion() {
-                self.device
-                    .process_completion_entry(&*queue_guard, self.queue_idx, completed_id, len);
+                self.device.process_completion_entry(
+                    &*queue_guard,
+                    self.queue_idx,
+                    completed_id,
+                    len,
+                );
                 if completed_id == desc_id {
                     is_completed = true;
                 }
@@ -242,8 +245,12 @@ impl<'a> Future for DmaWriteFuture<'a> {
 
             let mut is_completed = false;
             while let Some((completed_id, len)) = queue_guard.poll_completion() {
-                self.device
-                    .process_completion_entry(&*queue_guard, self.queue_idx, completed_id, len);
+                self.device.process_completion_entry(
+                    &*queue_guard,
+                    self.queue_idx,
+                    completed_id,
+                    len,
+                );
                 if completed_id == desc_id {
                     is_completed = true;
                 }
@@ -410,8 +417,6 @@ pub(crate) fn alloc_bounce_buffer(len: usize) -> VfsBlockResult<crate::ipc::RRef
 impl ZeroCopyBlockDevice for VirtioBlkDevice {
     type Buffer = OwnedBytes;
 
-
-
     fn info(&self) -> VfsBlockDeviceInfo {
         let block_size = effective_block_size(&self.config);
         let sectors_per_block = (block_size / SECTOR_SIZE) as u64;
@@ -558,15 +563,19 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
 // ============================================================================
 
 /// Primary (legacy) VirtIO block device slot kept for compatibility (`index=0`).
-pub(crate) static VIRTIO_BLK_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioBlkDevice>>> = crate::sync::PoisonLock::new(None);
+pub(crate) static VIRTIO_BLK_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioBlkDevice>>> =
+    crate::sync::PoisonLock::new(None);
 
 /// Additional VirtIO block devices (`index != 0`).
-pub(crate) static VIRTIO_BLK_DEVICES: spin::RwLock<alloc::collections::BTreeMap<u8, Arc<VirtioBlkDevice>>> =
-    spin::RwLock::new(alloc::collections::BTreeMap::new());
+pub(crate) static VIRTIO_BLK_DEVICES: spin::RwLock<
+    alloc::collections::BTreeMap<u8, Arc<VirtioBlkDevice>>,
+> = spin::RwLock::new(alloc::collections::BTreeMap::new());
 
 fn install_virtio_blk_device(index: u8, device_arc: Arc<VirtioBlkDevice>) {
     if index == 0 {
-        *VIRTIO_BLK_DEVICE.lock().expect("VIRTIO_BLK_DEVICE lock poisoned") = Some(device_arc);
+        *VIRTIO_BLK_DEVICE
+            .lock()
+            .expect("VIRTIO_BLK_DEVICE lock poisoned") = Some(device_arc);
     } else {
         VIRTIO_BLK_DEVICES.write().insert(index, device_arc);
     }
@@ -575,8 +584,10 @@ fn install_virtio_blk_device(index: u8, device_arc: Arc<VirtioBlkDevice>) {
 /// Get a shared reference to the VirtIO block device by index.
 pub fn get_virtio_blk_device_at_index(index: u8) -> Option<Arc<VirtioBlkDevice>> {
     if index == 0 {
-     let device_guard = VIRTIO_BLK_DEVICE.lock().expect("VIRTIO_BLK_DEVICE lock poisoned");
-     device_guard.clone()
+        let device_guard = VIRTIO_BLK_DEVICE
+            .lock()
+            .expect("VIRTIO_BLK_DEVICE lock poisoned");
+        device_guard.clone()
     } else {
         VIRTIO_BLK_DEVICES.read().get(&index).cloned()
     }
@@ -584,9 +595,8 @@ pub fn get_virtio_blk_device_at_index(index: u8) -> Option<Arc<VirtioBlkDevice>>
 
 /// Initialize the global VirtIO block device at a specific index.
 pub unsafe fn init_virtio_blk_at_index(index: u8, mmio_base: u64) -> Result<(), BlockError> {
-    let transport = unsafe {
-        VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)?
-    };
+    let transport =
+        unsafe { VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)? };
     let mut dev = VirtioBlkDevice::new(Box::new(transport));
     dev.init()?;
 
@@ -617,9 +627,8 @@ pub unsafe fn init_virtio_blk_for_device_at_index(
     mmio_base: u64,
     device: IommuDeviceId,
 ) -> Result<(), BlockError> {
-    let transport = unsafe {
-        VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)?
-    };
+    let transport =
+        unsafe { VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)? };
     let mut dev = VirtioBlkDevice::new_with_device(Box::new(transport), Some(device));
     dev.init()?;
 
@@ -679,7 +688,6 @@ pub unsafe fn init_virtio_blk_with_transport(
 ) -> Result<(), BlockError> {
     init_virtio_blk_with_transport_at_index(0, transport, iommu_device_id)
 }
-
 
 /// Get a clone of the global VirtioBlk device Arc if initialized
 pub fn get_virtio_blk_device() -> Option<Arc<VirtioBlkDevice>> {

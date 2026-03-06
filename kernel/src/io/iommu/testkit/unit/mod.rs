@@ -9,25 +9,25 @@
 use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
-use crate::io::iommu::common::tables::{virt_ptr_to_phys, HardwareTable, PageTableScope, SlPte};
+use crate::io::iommu::common::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
 use crate::io::iommu::runtime::config::IommuConfig;
 use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::runtime::registry::{
-    get_iommu_driver, get_iommu_registry, init_registry, IommuRegistry,
+    IommuRegistry, get_iommu_driver, get_iommu_registry, init_registry,
 };
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 use crate::io::iommu::vendors::intel::controller::fault::FaultHandler;
 use crate::io::iommu::vendors::intel::controller::fault::{
-    drain_deferred_faults_with_controller, push_deferred_fault_for_test, RawFaultEvent,
+    RawFaultEvent, drain_deferred_faults_with_controller, push_deferred_fault_for_test,
 };
 use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 use crate::io::iommu::vendors::intel::controller::ir::InterruptRemapper;
 use crate::io::iommu::vendors::intel::controller::pri::PageRequestManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
-use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::tables::{
@@ -719,7 +719,9 @@ fn test_iova_allocator_basic() {
         Ok(_) => {}
         Err(crate::io::iommu::types::IommuError::OutOfMemory)
         | Err(crate::io::iommu::types::IommuError::OutOfIova) => {
-            log::warn!("[IOMMU][TEST] test_iova_allocator_basic: post-free alloc skipped due allocator pressure");
+            log::warn!(
+                "[IOMMU][TEST] test_iova_allocator_basic: post-free alloc skipped due allocator pressure"
+            );
         }
         Err(e) => panic!("alloc after free: {:?}", e),
     }
@@ -1609,7 +1611,7 @@ fn test_api_security_notifier_registration() {
     use crate::io::iommu::runtime::registry::get_iommu_driver;
     use crate::io::iommu::vendors::intel::controller::IommuController;
     use crate::io::iommu::vendors::intel::registry::{
-        get_iommu_registry, init_registry, IommuRegistry,
+        IommuRegistry, get_iommu_registry, init_registry,
     };
 
     if get_iommu_registry().is_none() {
@@ -1877,7 +1879,9 @@ fn test_iova_quarantine_and_epoch_drain() {
         Ok(v) => v,
         Err(crate::io::iommu::types::IommuError::OutOfMemory)
         | Err(crate::io::iommu::types::IommuError::OutOfIova) => {
-            log::warn!("[IOMMU][TEST] test_iova_quarantine_and_epoch_drain: skipped due allocator pressure");
+            log::warn!(
+                "[IOMMU][TEST] test_iova_quarantine_and_epoch_drain: skipped due allocator pressure"
+            );
             return;
         }
         Err(e) => panic!("alloc: {:?}", e),

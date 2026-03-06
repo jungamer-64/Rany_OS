@@ -15,8 +15,7 @@ pub fn test_multicast_mac() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_mdns_service_new() {
-    let service =
-        MdnsService::new(String::from("myhost"), Ipv4Address::new([192, 168, 1, 100]));
+    let service = MdnsService::new(String::from("myhost"), Ipv4Address::new([192, 168, 1, 100]));
     assert_eq!(service.hostname(), "myhost");
     assert_eq!(service.fqdn(), "myhost.local");
     assert_eq!(service.local_ip(), Ipv4Address::new([192, 168, 1, 100]));
@@ -47,7 +46,8 @@ pub fn test_encode_decode_dns_name() {
 #[cfg_attr(test, test_case)]
 pub fn test_build_query() {
     let mut buffer = [0u8; 256];
-    let _len = MdnsService::build_query(&mut buffer, "test.local").expect("build_query should succeed");
+    let _len =
+        MdnsService::build_query(&mut buffer, "test.local").expect("build_query should succeed");
 
     // Check header
     assert_eq!(u16::from_be_bytes([buffer[0], buffer[1]]), 0); // ID = 0
@@ -80,15 +80,18 @@ pub fn test_build_response() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_process_query_for_our_hostname() {
-    let mut service =
-        MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
     // Build a query for "myhost.local"
     let mut query_buf = [0u8; 256];
-    let query_len =
-        MdnsService::build_query(&mut query_buf, "myhost.local").expect("build_query");
+    let query_len = MdnsService::build_query(&mut query_buf, "myhost.local").expect("build_query");
 
-    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 255, 100);
+    let result = service.process_packet(
+        &query_buf[..query_len],
+        Ipv4Address::new([10, 0, 0, 1]),
+        255,
+        100,
+    );
 
     match result {
         MdnsResult::SendResponse { name, ip, ttl } => {
@@ -102,15 +105,19 @@ pub fn test_process_query_for_our_hostname() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_process_query_for_other_hostname() {
-    let mut service =
-        MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
     // Build a query for a different host
     let mut query_buf = [0u8; 256];
     let query_len =
         MdnsService::build_query(&mut query_buf, "otherhost.local").expect("build_query");
 
-    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 255, 100);
+    let result = service.process_packet(
+        &query_buf[..query_len],
+        Ipv4Address::new([10, 0, 0, 1]),
+        255,
+        100,
+    );
 
     match result {
         MdnsResult::Ignored => {} // expected
@@ -120,8 +127,7 @@ pub fn test_process_query_for_other_hostname() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_process_response_updates_cache() {
-    let mut service =
-        MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
     // Build a response for "other.local" -> 10.0.0.42
     let mut resp_buf = [0u8; 256];
@@ -133,7 +139,12 @@ pub fn test_process_response_updates_cache() {
     )
     .expect("build_response");
 
-    let result = service.process_packet(&resp_buf[..resp_len], Ipv4Address::new([10, 0, 0, 42]), 255, 1000);
+    let result = service.process_packet(
+        &resp_buf[..resp_len],
+        Ipv4Address::new([10, 0, 0, 42]),
+        255,
+        1000,
+    );
 
     match result {
         MdnsResult::Resolved { name, ip } => {
@@ -154,8 +165,7 @@ pub fn test_process_response_updates_cache() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_cleanup_expired() {
-    let mut service =
-        MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
     // Manually insert a cache entry that will expire
     service.cache.insert(
@@ -188,8 +198,7 @@ pub fn test_cleanup_expired() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_invalid_packet_too_short() {
-    let mut service =
-        MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
     // Packet shorter than DNS header
     let short_data = [0u8; 6];
@@ -255,15 +264,12 @@ pub fn test_encode_dns_name_label_too_long() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_roundtrip_query_response() {
-    let mut server =
-        MdnsService::new(String::from("server"), Ipv4Address::new([192, 168, 1, 10]));
-    let mut client =
-        MdnsService::new(String::from("client"), Ipv4Address::new([192, 168, 1, 20]));
+    let mut server = MdnsService::new(String::from("server"), Ipv4Address::new([192, 168, 1, 10]));
+    let mut client = MdnsService::new(String::from("client"), Ipv4Address::new([192, 168, 1, 20]));
 
     // Client builds a query for server.local
     let mut query_buf = [0u8; 512];
-    let query_len =
-        MdnsService::build_query(&mut query_buf, "server.local").expect("build_query");
+    let query_len = MdnsService::build_query(&mut query_buf, "server.local").expect("build_query");
 
     // Server processes the query
     let result = server.process_packet(
@@ -278,8 +284,8 @@ pub fn test_roundtrip_query_response() {
         MdnsResult::SendResponse { name, ip, ttl } => {
             // Server builds the response
             let mut resp_buf = [0u8; 512];
-            let resp_len = MdnsService::build_response(&mut resp_buf, &name, ip, ttl)
-                .expect("build_response");
+            let resp_len =
+                MdnsService::build_response(&mut resp_buf, &name, ip, ttl).expect("build_response");
 
             // Client processes the response
             let client_result = client.process_packet(
@@ -298,8 +304,9 @@ pub fn test_roundtrip_query_response() {
             }
 
             // Client should now have the entry cached
-            let cached =
-                client.resolve("server.local", 1000).expect("should be cached");
+            let cached = client
+                .resolve("server.local", 1000)
+                .expect("should be cached");
             assert_eq!(cached, Ipv4Address::new([192, 168, 1, 10]));
         }
         _ => panic!("Expected SendResponse"),
@@ -313,10 +320,20 @@ pub fn test_mdns_reject_invalid_ttl() {
     let query_len = MdnsService::build_query(&mut query_buf, "myhost.local").expect("build_query");
 
     // TTL 64 should be ignored
-    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 64, 100);
+    let result = service.process_packet(
+        &query_buf[..query_len],
+        Ipv4Address::new([10, 0, 0, 1]),
+        64,
+        100,
+    );
     assert!(matches!(result, MdnsResult::Ignored));
 
     // TTL 255 should be accepted
-    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 255, 100);
+    let result = service.process_packet(
+        &query_buf[..query_len],
+        Ipv4Address::new([10, 0, 0, 1]),
+        255,
+        100,
+    );
     assert!(matches!(result, MdnsResult::SendResponse { .. }));
 }

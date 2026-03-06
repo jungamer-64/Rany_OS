@@ -8,15 +8,14 @@
 //!
 #![allow(dead_code)]
 
-use x86_64::structures::paging::{PhysFrame, Size2MiB, Size1GiB};
+use x86_64::structures::paging::{PhysFrame, Size1GiB, Size2MiB};
 
-use crate::mm::types::FrameIndex;
 use crate::mm::meta::frame_backing;
 use crate::mm::phys::buddy_allocator;
+use crate::mm::types::FrameIndex;
 
 // ファイルシステム型（Inode）
 use crate::fs::fs_abstraction::InodeNum;
-
 
 /// スワップアウト種別
 mod worker;
@@ -64,7 +63,7 @@ impl SwapHandle {
         let (lock, _) = &*self.done;
         *lock.lock().unwrap()
     }
-} 
+}
 
 // 内部エントリ（テスト用）
 // 内部エントリ（テスト用）
@@ -73,14 +72,14 @@ struct SwapEntry {
     frame: FrameIndex,
     kind: SwapKind,
     completion: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
-} 
+}
 
-use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(any(
     all(test, not(feature = "full_mm_tests")),
     feature = "qemu-test-export"
 ))]
 use core::sync::atomic::AtomicU8;
+use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 #[cfg(any(
     all(test, not(feature = "full_mm_tests")),
@@ -139,15 +138,26 @@ fn encode_test_enqueue_override(value: Option<SwapError>) -> u8 {
 fn atomic_saturating_decrement(a: &core::sync::atomic::AtomicUsize) {
     loop {
         let cur = a.load(core::sync::atomic::Ordering::Acquire);
-        if cur == 0 { break; }
-        if a.compare_exchange(cur, cur - 1, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire).is_ok() { break; }
+        if cur == 0 {
+            break;
+        }
+        if a.compare_exchange(
+            cur,
+            cur - 1,
+            core::sync::atomic::Ordering::AcqRel,
+            core::sync::atomic::Ordering::Acquire,
+        )
+        .is_ok()
+        {
+            break;
+        }
     }
 }
 
 // Runtime metrics
 static GLOBAL_ZSWAP_FAILS: AtomicUsize = AtomicUsize::new(0);
 static GLOBAL_ASYNC_DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static GLOBAL_HUGE_2M_SKIPPED: AtomicUsize = AtomicUsize::new(0);
+static GLOBAL_HUGE_2M_SKIPPED: AtomicUsize = AtomicUsize::new(0);
 fn release_frame_and_untrack(frame: FrameIndex) {
     // Untrack from memcg if tracked
     crate::mm::meta::memcg::memcg_untrack_and_uncharge(frame, 1);
@@ -156,7 +166,9 @@ fn release_frame_and_untrack(frame: FrameIndex) {
     let _ = frame_backing::untrack_frame_backing(frame);
 
     // Deallocate
-    let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+    let physf = unsafe {
+        PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr()))
+    };
     buddy_allocator::buddy_dealloc_frame(physf);
 
     // Update global metric
@@ -183,7 +195,8 @@ const MAX_CPUS: usize = 64;
 const PER_CPU_CACHE_SIZE: usize = 4; // Number of buffers cached per CPU
 
 // Global pool (overflow/underflow)
-static BUFFER_POOL_4K_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> = spin::Mutex::new(alloc::vec::Vec::new());
+static BUFFER_POOL_4K_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
 static BUFFER_POOL_4K_HITS: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_4K_MISSES: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_4K_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_4K_DEFAULT_CAPACITY);
@@ -202,7 +215,7 @@ struct PerCpuBufferCache4K {
 
 impl PerCpuBufferCache4K {
     const fn new() -> Self {
-        const EMPTY: core::cell::UnsafeCell<Option<alloc::vec::Vec<u8>>> = 
+        const EMPTY: core::cell::UnsafeCell<Option<alloc::vec::Vec<u8>>> =
             core::cell::UnsafeCell::new(None);
         Self {
             slots: [EMPTY; PER_CPU_CACHE_SIZE],
@@ -218,7 +231,7 @@ impl PerCpuBufferCache4K {
         if count == 0 {
             return None;
         }
-        
+
         // Find a non-empty slot
         for slot in &self.slots {
             let ptr = slot.get();
@@ -242,7 +255,7 @@ impl PerCpuBufferCache4K {
         if count >= PER_CPU_CACHE_SIZE {
             return Some(buf);
         }
-        
+
         // Find an empty slot
         for slot in &self.slots {
             let ptr = slot.get();
@@ -283,23 +296,23 @@ fn current_cpu_for_cache() -> usize {
 
 pub fn buffer_pool_get_4k() -> alloc::vec::Vec<u8> {
     let cpu = current_cpu_for_cache();
-    
+
     // Fast path: try local cache first (lock-free)
     // SAFETY: We are on the owning CPU
     if let Some(mut buf) = unsafe { PER_CPU_BUFFER_CACHE_4K[cpu].try_get() } {
         BUFFER_POOL_4K_LOCAL_HITS.fetch_add(1, AtomicOrdering::Relaxed);
-        if buf.len() != crate::mm::types::PAGE_SIZE_4K { 
-            buf.resize(crate::mm::types::PAGE_SIZE_4K, 0); 
+        if buf.len() != crate::mm::types::PAGE_SIZE_4K {
+            buf.resize(crate::mm::types::PAGE_SIZE_4K, 0);
         }
         return buf;
     }
-    
+
     // Slow path: try global pool
     let mut pool = BUFFER_POOL_4K_POOL.lock();
     if let Some(mut buf) = pool.pop() {
         BUFFER_POOL_4K_HITS.fetch_add(1, AtomicOrdering::AcqRel);
-        if buf.len() != crate::mm::types::PAGE_SIZE_4K { 
-            buf.resize(crate::mm::types::PAGE_SIZE_4K, 0); 
+        if buf.len() != crate::mm::types::PAGE_SIZE_4K {
+            buf.resize(crate::mm::types::PAGE_SIZE_4K, 0);
         }
         buf
     } else {
@@ -310,16 +323,16 @@ pub fn buffer_pool_get_4k() -> alloc::vec::Vec<u8> {
 }
 
 pub fn buffer_pool_put_4k(mut buf: alloc::vec::Vec<u8>) {
-    if buf.len() != crate::mm::types::PAGE_SIZE_4K { 
-        buf.resize(crate::mm::types::PAGE_SIZE_4K, 0); 
+    if buf.len() != crate::mm::types::PAGE_SIZE_4K {
+        buf.resize(crate::mm::types::PAGE_SIZE_4K, 0);
     }
-    
+
     let cpu = current_cpu_for_cache();
-    
+
     // Fast path: try local cache first (lock-free)
     // SAFETY: We are on the owning CPU
     let overflow = unsafe { PER_CPU_BUFFER_CACHE_4K[cpu].try_put(buf) };
-    
+
     if let Some(buf) = overflow {
         // Local cache full, put in global pool
         let cap = BUFFER_POOL_4K_CAPACITY.load(AtomicOrdering::Acquire);
@@ -333,9 +346,9 @@ pub fn buffer_pool_put_4k(mut buf: alloc::vec::Vec<u8>) {
 
 pub fn buffer_pool_4k_stats() -> (usize, usize, usize) {
     (
-        BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire), 
-        BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire), 
-        BUFFER_POOL_4K_POOL.lock().len()
+        BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire),
+        BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire),
+        BUFFER_POOL_4K_POOL.lock().len(),
     )
 }
 
@@ -343,16 +356,18 @@ pub fn buffer_pool_4k_stats() -> (usize, usize, usize) {
 pub fn buffer_pool_4k_extended_stats() -> (usize, usize, usize, usize) {
     (
         BUFFER_POOL_4K_LOCAL_HITS.load(AtomicOrdering::Acquire),
-        BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire), 
-        BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire), 
-        BUFFER_POOL_4K_POOL.lock().len()
+        BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire),
+        BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire),
+        BUFFER_POOL_4K_POOL.lock().len(),
     )
 }
 
 pub fn buffer_pool_4k_set_capacity(n: usize) {
     BUFFER_POOL_4K_CAPACITY.store(n, AtomicOrdering::Release);
     let mut pool = BUFFER_POOL_4K_POOL.lock();
-    while pool.len() > n { pool.pop(); }
+    while pool.len() > n {
+        pool.pop();
+    }
 }
 
 pub fn buffer_pool_4k_clear() {
@@ -360,7 +375,7 @@ pub fn buffer_pool_4k_clear() {
     BUFFER_POOL_4K_MISSES.store(0, AtomicOrdering::Release);
     BUFFER_POOL_4K_LOCAL_HITS.store(0, AtomicOrdering::Release);
     BUFFER_POOL_4K_POOL.lock().clear();
-    
+
     // Clear per-CPU caches too
     for cpu in 0..MAX_CPUS {
         // SAFETY: Clearing is safe during initialization/reset
@@ -368,7 +383,9 @@ pub fn buffer_pool_4k_clear() {
             for slot in &PER_CPU_BUFFER_CACHE_4K[cpu].slots {
                 *slot.get() = None;
             }
-            PER_CPU_BUFFER_CACHE_4K[cpu].count.store(0, AtomicOrdering::Release);
+            PER_CPU_BUFFER_CACHE_4K[cpu]
+                .count
+                .store(0, AtomicOrdering::Release);
         }
     }
 }
@@ -377,7 +394,8 @@ pub fn buffer_pool_4k_clear() {
 // 2MiB Buffer Pool
 // ---------------------------
 const BUFFER_POOL_2M_DEFAULT_CAPACITY: usize = 16;
-static BUFFER_POOL_2M_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> = spin::Mutex::new(alloc::vec::Vec::new());
+static BUFFER_POOL_2M_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
 static BUFFER_POOL_2M_HITS: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_2M_MISSES: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_2M_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_2M_DEFAULT_CAPACITY);
@@ -386,7 +404,9 @@ pub fn buffer_pool_get_2m() -> alloc::vec::Vec<u8> {
     let mut pool = BUFFER_POOL_2M_POOL.lock();
     if let Some(mut buf) = pool.pop() {
         BUFFER_POOL_2M_HITS.fetch_add(1, AtomicOrdering::AcqRel);
-        if buf.len() != crate::mm::types::PAGE_SIZE_2M as usize { buf.resize(crate::mm::types::PAGE_SIZE_2M as usize, 0); }
+        if buf.len() != crate::mm::types::PAGE_SIZE_2M as usize {
+            buf.resize(crate::mm::types::PAGE_SIZE_2M as usize, 0);
+        }
         buf
     } else {
         BUFFER_POOL_2M_MISSES.fetch_add(1, AtomicOrdering::AcqRel);
@@ -395,7 +415,9 @@ pub fn buffer_pool_get_2m() -> alloc::vec::Vec<u8> {
 }
 
 pub fn buffer_pool_put_2m(mut buf: alloc::vec::Vec<u8>) {
-    if buf.len() != crate::mm::types::PAGE_SIZE_2M as usize { buf.resize(crate::mm::types::PAGE_SIZE_2M as usize, 0); }
+    if buf.len() != crate::mm::types::PAGE_SIZE_2M as usize {
+        buf.resize(crate::mm::types::PAGE_SIZE_2M as usize, 0);
+    }
     let cap = BUFFER_POOL_2M_CAPACITY.load(AtomicOrdering::Acquire);
     let mut pool = BUFFER_POOL_2M_POOL.lock();
     if pool.len() < cap {
@@ -404,13 +426,19 @@ pub fn buffer_pool_put_2m(mut buf: alloc::vec::Vec<u8>) {
 }
 
 pub fn buffer_pool_2m_stats() -> (usize, usize, usize) {
-    (BUFFER_POOL_2M_HITS.load(AtomicOrdering::Acquire), BUFFER_POOL_2M_MISSES.load(AtomicOrdering::Acquire), BUFFER_POOL_2M_POOL.lock().len())
+    (
+        BUFFER_POOL_2M_HITS.load(AtomicOrdering::Acquire),
+        BUFFER_POOL_2M_MISSES.load(AtomicOrdering::Acquire),
+        BUFFER_POOL_2M_POOL.lock().len(),
+    )
 }
 
 pub fn buffer_pool_2m_set_capacity(n: usize) {
     BUFFER_POOL_2M_CAPACITY.store(n, AtomicOrdering::Release);
     let mut pool = BUFFER_POOL_2M_POOL.lock();
-    while pool.len() > n { pool.pop(); }
+    while pool.len() > n {
+        pool.pop();
+    }
 }
 
 pub fn buffer_pool_2m_clear() {
@@ -423,7 +451,8 @@ pub fn buffer_pool_2m_clear() {
 // 1GiB Buffer Pool
 // ---------------------------
 const BUFFER_POOL_1G_DEFAULT_CAPACITY: usize = 1;
-static BUFFER_POOL_1G_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> = spin::Mutex::new(alloc::vec::Vec::new());
+static BUFFER_POOL_1G_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
 static BUFFER_POOL_1G_HITS: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_1G_MISSES: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_1G_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_1G_DEFAULT_CAPACITY);
@@ -432,7 +461,9 @@ pub fn buffer_pool_get_1g() -> alloc::vec::Vec<u8> {
     let mut pool = BUFFER_POOL_1G_POOL.lock();
     if let Some(mut buf) = pool.pop() {
         BUFFER_POOL_1G_HITS.fetch_add(1, AtomicOrdering::AcqRel);
-        if buf.len() != crate::mm::types::PAGE_SIZE_1G as usize { buf.resize(crate::mm::types::PAGE_SIZE_1G as usize, 0); }
+        if buf.len() != crate::mm::types::PAGE_SIZE_1G as usize {
+            buf.resize(crate::mm::types::PAGE_SIZE_1G as usize, 0);
+        }
         buf
     } else {
         BUFFER_POOL_1G_MISSES.fetch_add(1, AtomicOrdering::AcqRel);
@@ -441,7 +472,9 @@ pub fn buffer_pool_get_1g() -> alloc::vec::Vec<u8> {
 }
 
 pub fn buffer_pool_put_1g(mut buf: alloc::vec::Vec<u8>) {
-    if buf.len() != crate::mm::types::PAGE_SIZE_1G as usize { buf.resize(crate::mm::types::PAGE_SIZE_1G as usize, 0); }
+    if buf.len() != crate::mm::types::PAGE_SIZE_1G as usize {
+        buf.resize(crate::mm::types::PAGE_SIZE_1G as usize, 0);
+    }
     let cap = BUFFER_POOL_1G_CAPACITY.load(AtomicOrdering::Acquire);
     let mut pool = BUFFER_POOL_1G_POOL.lock();
     if pool.len() < cap {
@@ -450,13 +483,19 @@ pub fn buffer_pool_put_1g(mut buf: alloc::vec::Vec<u8>) {
 }
 
 pub fn buffer_pool_1g_stats() -> (usize, usize, usize) {
-    (BUFFER_POOL_1G_HITS.load(AtomicOrdering::Acquire), BUFFER_POOL_1G_MISSES.load(AtomicOrdering::Acquire), BUFFER_POOL_1G_POOL.lock().len())
+    (
+        BUFFER_POOL_1G_HITS.load(AtomicOrdering::Acquire),
+        BUFFER_POOL_1G_MISSES.load(AtomicOrdering::Acquire),
+        BUFFER_POOL_1G_POOL.lock().len(),
+    )
 }
 
 pub fn buffer_pool_1g_set_capacity(n: usize) {
     BUFFER_POOL_1G_CAPACITY.store(n, AtomicOrdering::Release);
     let mut pool = BUFFER_POOL_1G_POOL.lock();
-    while pool.len() > n { pool.pop(); }
+    while pool.len() > n {
+        pool.pop();
+    }
 }
 
 pub fn buffer_pool_1g_clear() {
@@ -472,10 +511,16 @@ fn try_zswap_store_and_dealloc(frame: FrameIndex, buf: &mut [u8]) -> bool {
         let phys = frame.to_phys_addr();
         let vaddr = crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
         let src = vaddr.as_u64() as *const u8;
-        unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::types::PAGE_SIZE_4K); }
+        unsafe {
+            core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::types::PAGE_SIZE_4K);
+        }
         match crate::mm::reclaim::zswap::zswap_store(0, buf) {
             Ok(_) => {
-                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+                let physf = unsafe {
+                    PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(
+                        frame.to_phys_addr(),
+                    ))
+                };
                 buddy_allocator::buddy_dealloc_frame(physf);
                 GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
                 true
@@ -488,7 +533,9 @@ fn try_zswap_store_and_dealloc(frame: FrameIndex, buf: &mut [u8]) -> bool {
         }
     } else {
         // zswap disabled -> just dealloc
-        let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+        let physf = unsafe {
+            PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr()))
+        };
         buddy_allocator::buddy_dealloc_frame(physf);
         true
     }
@@ -531,17 +578,22 @@ fn detect_frame_page_size(frame: FrameIndex) -> usize {
 fn dealloc_frame_by_size(phys: u64, page_size: usize) -> bool {
     match page_size {
         s if s == crate::mm::types::PAGE_SIZE_4K => {
-            let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+            let physf =
+                unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
             buddy_allocator::buddy_dealloc_frame(physf);
             true
         }
         s if s == crate::mm::types::PAGE_SIZE_2M => {
-            let physf2m = unsafe { PhysFrame::<Size2MiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+            let physf2m = unsafe {
+                PhysFrame::<Size2MiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys))
+            };
             buddy_allocator::buddy_dealloc_frame_2m(physf2m);
             true
         }
         s if s == crate::mm::types::PAGE_SIZE_1G => {
-            let physf1g = unsafe { PhysFrame::<Size1GiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+            let physf1g = unsafe {
+                PhysFrame::<Size1GiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys))
+            };
             buddy_allocator::buddy_dealloc_frame_1g(physf1g);
             true
         }
@@ -559,7 +611,12 @@ fn zswap_store_then_dealloc(frame: FrameIndex, phys: u64, page_size: usize, buf:
             true
         }
         Err(e) => {
-            log::warn!("zswap_store failed for {:?} frame {:?}: {:?}", page_size, frame, e);
+            log::warn!(
+                "zswap_store failed for {:?} frame {:?}: {:?}",
+                page_size,
+                frame,
+                e
+            );
             GLOBAL_ZSWAP_FAILS.fetch_add(1, AtomicOrdering::AcqRel);
             false
         }
@@ -582,13 +639,25 @@ fn try_zswap_store_and_dealloc_any(frame: FrameIndex, buf4k: &mut [u8]) -> bool 
         s if s == crate::mm::types::PAGE_SIZE_4K => {
             let vaddr = crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
             let src = vaddr.as_u64() as *const u8;
-            unsafe { core::ptr::copy_nonoverlapping(src, buf4k.as_mut_ptr(), crate::mm::types::PAGE_SIZE_4K); }
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    src,
+                    buf4k.as_mut_ptr(),
+                    crate::mm::types::PAGE_SIZE_4K,
+                );
+            }
             zswap_store_then_dealloc(frame, phys, page_size, buf4k)
         }
         s if s == crate::mm::types::PAGE_SIZE_2M => {
             let mut buf = crate::mm::reclaim::async_swapout::buffer_pool_get_2m();
             let vaddr = crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
-            unsafe { core::ptr::copy_nonoverlapping(vaddr.as_u64() as *const u8, buf.as_mut_ptr(), crate::mm::types::PAGE_SIZE_2M); }
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    vaddr.as_u64() as *const u8,
+                    buf.as_mut_ptr(),
+                    crate::mm::types::PAGE_SIZE_2M,
+                );
+            }
             let ok = zswap_store_then_dealloc(frame, phys, page_size, &buf);
             crate::mm::reclaim::async_swapout::buffer_pool_put_2m(buf);
             ok
@@ -596,7 +665,13 @@ fn try_zswap_store_and_dealloc_any(frame: FrameIndex, buf4k: &mut [u8]) -> bool 
         s if s == crate::mm::types::PAGE_SIZE_1G => {
             let mut buf = crate::mm::reclaim::async_swapout::buffer_pool_get_1g();
             let vaddr = crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
-            unsafe { core::ptr::copy_nonoverlapping(vaddr.as_u64() as *const u8, buf.as_mut_ptr(), crate::mm::types::PAGE_SIZE_1G); }
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    vaddr.as_u64() as *const u8,
+                    buf.as_mut_ptr(),
+                    crate::mm::types::PAGE_SIZE_1G,
+                );
+            }
             let ok = zswap_store_then_dealloc(frame, phys, page_size, &buf);
             crate::mm::reclaim::async_swapout::buffer_pool_put_1g(buf);
             ok

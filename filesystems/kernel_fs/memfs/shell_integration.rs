@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ============================================================================
 // Shell Integration API
 // ============================================================================
@@ -10,11 +9,7 @@ use spin::Once;
 /// グローバルMemoryFsインスタンス
 pub(crate) static SHELL_FS: Once<Arc<MemoryFs>> = Once::new();
 
-#[cfg(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 fn wal_record_mutation(op: &str, path: &str, payload: &[u8]) {
     let tx = crate::durability::wal::begin();
     let mut data = alloc::vec::Vec::with_capacity(op.len() + path.len() + payload.len() + 2);
@@ -25,19 +20,12 @@ fn wal_record_mutation(op: &str, path: &str, payload: &[u8]) {
     data.extend_from_slice(payload);
     crate::durability::wal::append(
         tx,
-        crate::durability::wal::WalOperation::Write {
-            offset: 0,
-            data,
-        },
+        crate::durability::wal::WalOperation::Write { offset: 0, data },
     );
     crate::durability::wal::commit(tx);
 }
 
-#[cfg(not(any(
-    not(test),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-)))]
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
 fn wal_record_mutation(_op: &str, _path: &str, _payload: &[u8]) {}
 
 /// シェル用ファイルシステムを初期化

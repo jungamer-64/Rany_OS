@@ -11,7 +11,7 @@ mod backend_nvme;
 mod codec;
 
 pub use backend_nvme::NvmeRawWalBackend;
-use codec::{decode_record, decode_superblock, encode_record, encode_superblock, SuperblockState};
+use codec::{SuperblockState, decode_record, decode_superblock, encode_record, encode_superblock};
 
 /// Logical write operation recorded in the WAL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,8 +120,10 @@ impl WalManager {
     fn recalc_counters_locked(&self, records: &[WalRecord]) {
         let max_tx = records.iter().map(|r| r.tx_id).max().unwrap_or(0);
         let max_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
-        self.next_tx.store(max_tx.saturating_add(1), Ordering::Relaxed);
-        self.next_seq.store(max_seq.saturating_add(1), Ordering::Relaxed);
+        self.next_tx
+            .store(max_tx.saturating_add(1), Ordering::Relaxed);
+        self.next_seq
+            .store(max_seq.saturating_add(1), Ordering::Relaxed);
     }
 
     fn persist_record(&self, rec: &WalRecord) -> Result<(), WalError> {
@@ -626,7 +628,10 @@ mod tests {
         );
 
         let removed = wal.checkpoint().expect("checkpoint ok");
-        assert!(removed >= 3, "committed begin/append/commit should be removed");
+        assert!(
+            removed >= 3,
+            "committed begin/append/commit should be removed"
+        );
         let snapshot = wal.snapshot();
         assert!(!snapshot.is_empty());
         assert!(snapshot.iter().all(|r| r.tx_id == tx_pending));

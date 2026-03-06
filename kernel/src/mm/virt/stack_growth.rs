@@ -22,14 +22,14 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, Ordering};
-use alloc::collections::BTreeMap;
 use crate::sync::IrqPoisonLock;
+use alloc::collections::BTreeMap;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::higher_half::{PageFlags, MapError, VirtAddr};
+use super::fault_handler::PageSetup;
+use super::higher_half::{MapError, PageFlags, VirtAddr};
 use crate::mm::meta::memcg::ChargeType; // for memcg page charges
 use crate::mm::reclaim::page_reclaim::PageType as LruPageType;
-use super::fault_handler::PageSetup;
 
 // ============================================================================
 // Constants
@@ -80,7 +80,7 @@ impl StackRegion {
         let stack_top_aligned = VirtAddr::new(stack_top.as_u64() & !0xFFF);
         let initial_bottom = VirtAddr::new(stack_top_aligned.as_u64() - initial_size);
         let guard_bottom = VirtAddr::new(stack_top_aligned.as_u64() - max_size - GUARD_SIZE);
-        
+
         Self {
             stack_top: stack_top_aligned,
             current_bottom: initial_bottom,
@@ -90,19 +90,19 @@ impl StackRegion {
             growth_count: 0,
         }
     }
-    
+
     /// アドレスがスタック領域内か
     #[inline]
     pub fn contains(&self, addr: VirtAddr) -> bool {
         addr >= self.current_bottom && addr < self.stack_top
     }
-    
+
     /// アドレスがガードページ領域か
     #[inline]
     pub fn is_in_guard(&self, addr: VirtAddr) -> bool {
         addr >= self.guard_bottom && addr < self.current_bottom
     }
-    
+
     /// アドレスがスタック拡張可能な領域か
     #[inline]
     pub fn can_grow_to(&self, addr: VirtAddr) -> bool {
@@ -110,21 +110,23 @@ impl StackRegion {
         if addr < self.guard_bottom {
             return false;
         }
-        
+
         // 現在のボトムより下（かつガードより上）なら拡張可能
         addr < self.current_bottom
     }
-    
+
     /// 現在のスタックサイズ
     #[inline]
     pub fn current_size(&self) -> u64 {
         self.stack_top.as_u64() - self.current_bottom.as_u64()
     }
-    
+
     /// 残り拡張可能サイズ
     #[inline]
     pub fn remaining_growth(&self) -> u64 {
-        self.current_bottom.as_u64().saturating_sub(self.guard_bottom.as_u64() + GUARD_SIZE)
+        self.current_bottom
+            .as_u64()
+            .saturating_sub(self.guard_bottom.as_u64() + GUARD_SIZE)
     }
 }
 
@@ -144,29 +146,31 @@ impl StackManager {
             stacks: BTreeMap::new(),
         }
     }
-    
+
     /// スタック領域を登録
     pub fn register(&mut self, task_id: u64, stack: StackRegion) {
         self.stacks.insert(task_id, stack);
-        STACK_STATS.stacks_registered.fetch_add(1, Ordering::Relaxed);
+        STACK_STATS
+            .stacks_registered
+            .fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// スタック領域を取得
     pub fn get(&self, task_id: u64) -> Option<&StackRegion> {
         self.stacks.get(&task_id)
     }
-    
+
     /// スタック領域を取得（可変）
     pub fn get_mut(&mut self, task_id: u64) -> Option<&mut StackRegion> {
         self.stacks.get_mut(&task_id)
     }
-    
+
     /// スタック領域を削除
     pub fn remove(&mut self, task_id: u64) -> Option<StackRegion> {
         STACK_STATS.stacks_removed.fetch_add(1, Ordering::Relaxed);
         self.stacks.remove(&task_id)
     }
-    
+
     /// アドレスに対応するスタックを検索
     pub fn find_for_addr(&self, addr: VirtAddr) -> Option<(u64, &StackRegion)> {
         for (task_id, stack) in &self.stacks {
@@ -246,7 +250,7 @@ pub enum StackResult {
 /// フォルトアドレスがスタック拡張可能な範囲であれば、スタックを拡張する。
 pub fn handle_stack_fault(task_id: u64, fault_addr: VirtAddr) -> StackResult {
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
-    
+
     let mut manager = match STACK_MANAGER.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -255,56 +259,56 @@ pub fn handle_stack_fault(task_id: u64, fault_addr: VirtAddr) -> StackResult {
         Some(s) => s,
         None => return StackResult::NotFound,
     };
-    
+
     // 既にスタック範囲内ならDemand Paging
     if stack.contains(page_addr) {
         return grow_single_page(page_addr);
     }
-    
+
     // ガードページへのアクセス
     if stack.is_in_guard(page_addr) {
         STACK_STATS.guard_hits.fetch_add(1, Ordering::Relaxed);
-        
+
         // ガードより上なら拡張を試みる
         if stack.can_grow_to(page_addr) {
             return grow_stack_to(stack, page_addr);
         }
-        
+
         // ガード最下部への直接アクセスはオーバーフロー
         STACK_STATS.overflows.fetch_add(1, Ordering::Relaxed);
         return StackResult::Overflow;
     }
-    
+
     // スタック拡張可能領域へのアクセス
     if stack.can_grow_to(page_addr) {
         return grow_stack_to(stack, page_addr);
     }
-    
+
     StackResult::OutOfRange
 }
 
 /// スタックを指定アドレスまで拡張
 fn grow_stack_to(stack: &mut StackRegion, target_addr: VirtAddr) -> StackResult {
     let target_page = VirtAddr::new(target_addr.as_u64() & !0xFFF);
-    
+
     // 現在のボトムからターゲットまでのページ数を計算
     let pages_needed = (stack.current_bottom.as_u64() - target_page.as_u64()) / 4096;
-    
+
     // 追加で余裕を持って拡張
     let pages_to_grow = pages_needed.max(GROWTH_PAGES);
     let new_bottom = VirtAddr::new(stack.current_bottom.as_u64() - pages_to_grow * 4096);
-    
+
     // ガード領域を侵害しないようにクリップ
     let new_bottom = if new_bottom < VirtAddr::new(stack.guard_bottom.as_u64() + GUARD_SIZE) {
         VirtAddr::new(stack.guard_bottom.as_u64() + GUARD_SIZE)
     } else {
         new_bottom
     };
-    
+
     // 各ページを割り当て
     let mut addr = stack.current_bottom.as_u64() - 4096;
     let mut pages_grown = 0u64;
-    
+
     while addr >= new_bottom.as_u64() {
         let result = grow_single_page(VirtAddr::new(addr));
         match result {
@@ -322,15 +326,17 @@ fn grow_stack_to(stack: &mut StackRegion, target_addr: VirtAddr) -> StackResult 
         }
         addr -= 4096;
     }
-    
+
     // スタック情報を更新
     stack.current_bottom = VirtAddr::new(stack.current_bottom.as_u64() - pages_grown * 4096);
     stack.pages_used += pages_grown;
     stack.growth_count += 1;
-    
+
     STACK_STATS.growths.fetch_add(1, Ordering::Relaxed);
-    STACK_STATS.pages_grown.fetch_add(pages_grown, Ordering::Relaxed);
-    
+    STACK_STATS
+        .pages_grown
+        .fetch_add(pages_grown, Ordering::Relaxed);
+
     // ターゲットアドレスがカバーされているか確認
     if target_page >= stack.current_bottom {
         StackResult::Ok
@@ -364,12 +370,17 @@ fn grow_single_page(page_addr: VirtAddr) -> StackResult {
 // ============================================================================
 
 /// スタックを作成・登録
-pub fn create_stack(task_id: u64, stack_top: VirtAddr, initial_size: u64, max_size: u64) -> StackResult {
+pub fn create_stack(
+    task_id: u64,
+    stack_top: VirtAddr,
+    initial_size: u64,
+    max_size: u64,
+) -> StackResult {
     let max_size = max_size.clamp(MIN_STACK_SIZE, MAX_STACK_SIZE);
     let initial_size = initial_size.clamp(MIN_STACK_SIZE, max_size);
-    
+
     let stack = StackRegion::new(stack_top, initial_size, max_size);
-    
+
     // 初期ページをマッピング
     let mut addr = stack.current_bottom.as_u64();
     while addr < stack.stack_top.as_u64() {
@@ -381,19 +392,19 @@ pub fn create_stack(task_id: u64, stack_top: VirtAddr, initial_size: u64, max_si
         }
         addr += 4096;
     }
-    
+
     match STACK_MANAGER.lock() {
         Ok(mut guard) => guard.register(task_id, stack),
         Err(poisoned) => poisoned.into_inner().register(task_id, stack),
     }
-    
+
     StackResult::Ok
 }
 
 /// スタックサイズ上限を変更
 pub fn set_stack_limit(task_id: u64, new_limit: u64) -> StackResult {
     let new_limit = new_limit.clamp(MIN_STACK_SIZE, MAX_STACK_SIZE);
-    
+
     let mut manager = match STACK_MANAGER.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -403,10 +414,10 @@ pub fn set_stack_limit(task_id: u64, new_limit: u64) -> StackResult {
         if new_limit < stack.current_size() {
             return StackResult::Overflow;
         }
-        
+
         stack.max_size = new_limit;
         stack.guard_bottom = VirtAddr::new(stack.stack_top.as_u64() - new_limit - GUARD_SIZE);
-        
+
         StackResult::Ok
     } else {
         StackResult::NotFound
@@ -476,9 +487,9 @@ pub fn get_stack_usage(task_id: u64, current_sp: VirtAddr) -> Option<u64> {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    manager.get(task_id).map(|stack| {
-        stack.stack_top.as_u64().saturating_sub(current_sp.as_u64())
-    })
+    manager
+        .get(task_id)
+        .map(|stack| stack.stack_top.as_u64().saturating_sub(current_sp.as_u64()))
 }
 
 // ============================================================================
@@ -532,7 +543,7 @@ pub fn stack_debug_info(task_id: u64) {
 /// グローバル統計を出力
 pub fn stack_global_stats() {
     let stats = stack_stats();
-    
+
     log::info!("=== Stack Global Stats ===");
     log::info!("  Stacks registered: {}", stats.stacks_registered);
     log::info!("  Stacks removed: {}", stats.stacks_removed);
@@ -548,9 +559,11 @@ pub fn stack_global_stats() {
 
 /// スタック管理サブシステムを初期化
 pub fn init_stack_growth() {
-    log::info!("[mm] Stack growth initialized (default: {}MB, max: {}MB)",
+    log::info!(
+        "[mm] Stack growth initialized (default: {}MB, max: {}MB)",
         DEFAULT_STACK_SIZE / (1024 * 1024),
-        MAX_STACK_SIZE / (1024 * 1024));
+        MAX_STACK_SIZE / (1024 * 1024)
+    );
 }
 
 // ============================================================================
@@ -560,47 +573,34 @@ pub fn init_stack_growth() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test_case]
     fn test_stack_region_new() {
-        let stack = StackRegion::new(
-            VirtAddr::new(0x8000_0000),
-            64 * 1024,
-            8 * 1024 * 1024,
-        );
-        
+        let stack = StackRegion::new(VirtAddr::new(0x8000_0000), 64 * 1024, 8 * 1024 * 1024);
+
         assert_eq!(stack.stack_top.as_u64(), 0x8000_0000);
         assert_eq!(stack.current_size(), 64 * 1024);
     }
-    
+
     #[test_case]
     fn test_stack_region_contains() {
-        let stack = StackRegion::new(
-            VirtAddr::new(0x8000_0000),
-            64 * 1024,
-            8 * 1024 * 1024,
-        );
-        
+        let stack = StackRegion::new(VirtAddr::new(0x8000_0000), 64 * 1024, 8 * 1024 * 1024);
+
         // スタック範囲内
         assert!(stack.contains(VirtAddr::new(0x7FFF_F000)));
-        
+
         // スタック外
         assert!(!stack.contains(VirtAddr::new(0x8000_0000)));
     }
-    
+
     #[test_case]
     fn test_stack_can_grow() {
-        let stack = StackRegion::new(
-            VirtAddr::new(0x8000_0000),
-            64 * 1024,
-            8 * 1024 * 1024,
-        );
-        
+        let stack = StackRegion::new(VirtAddr::new(0x8000_0000), 64 * 1024, 8 * 1024 * 1024);
+
         // 現在のボトムより下は拡張可能
         assert!(stack.can_grow_to(VirtAddr::new(stack.current_bottom.as_u64() - 0x1000)));
-        
+
         // ガードより下は拡張不可
         assert!(!stack.can_grow_to(VirtAddr::new(stack.guard_bottom.as_u64() - 0x1000)));
     }
 }
-

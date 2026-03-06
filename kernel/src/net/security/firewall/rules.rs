@@ -10,8 +10,8 @@
 //! - プロトコル（TCP / UDP / ICMP / Any）
 //! - ポート（単一 / 範囲 / Any）
 
-use alloc::string::String;
 use alloc::format;
+use alloc::string::String;
 
 extern crate alloc;
 

@@ -6,11 +6,11 @@ use core::sync::atomic::Ordering;
 fn test_memcg_counter() {
     let counter = MemcgCounter::new();
     assert_eq!(counter.current(), 0);
-    
+
     counter.add(100);
     assert_eq!(counter.current(), 100);
     assert_eq!(counter.peak(), 100);
-    
+
     counter.sub(50);
     assert_eq!(counter.current(), 50);
     assert_eq!(counter.peak(), 100); // ピークは変わらない

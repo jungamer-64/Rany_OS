@@ -632,4 +632,3 @@ mod tests {
         assert!(!decision.action.is_allow());
     }
 }
-

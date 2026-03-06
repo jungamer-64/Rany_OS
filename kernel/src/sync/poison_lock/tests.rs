@@ -1,5 +1,3 @@
-
-
 // ============================================================================
 // テスト
 // ============================================================================
@@ -9,8 +7,8 @@ mod tests {
     use super::*;
     // bring types and helpers into scope when running with std feature
     use crate::sync::PoisonLock;
+    use crate::sync::poison_lock::{get_lock_metrics, reset_lock_metrics};
     use crate::sync::set_panicking;
-    use crate::sync::poison_lock::{reset_lock_metrics, get_lock_metrics};
     use alloc::sync::Arc;
 
     #[test_case]
@@ -265,4 +263,3 @@ mod tests {
         }
     }
 }
-

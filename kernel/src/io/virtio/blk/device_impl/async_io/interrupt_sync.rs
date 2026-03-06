@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Handle VirtIO block device interrupt
 pub fn handle_virtio_blk_interrupt() {
     if let Some(device) = get_virtio_blk_device_at_index(0) {
@@ -64,8 +63,9 @@ mod unit_tests {
         }
 
         // Map (domain 0 / identity mapping in test env)
-        let handle = crate::io::iommu::api::DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice)
-            .expect("map_rref_slice failed");
+        let handle =
+            crate::io::iommu::api::DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice)
+                .expect("map_rref_slice failed");
         let _iova = handle.iova();
         // Unmap and recover RRef
         let rref = handle.unmap().expect("unmap failed");

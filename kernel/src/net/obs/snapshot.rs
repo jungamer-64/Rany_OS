@@ -96,7 +96,11 @@ mod tests {
         counters::global().record_tx(32);
         counters::global().record_drop();
         counters::global().record_error();
-        trace::push_event(NetLayer::Service, NetEventKind::Rx, "obs-snapshot-test-event");
+        trace::push_event(
+            NetLayer::Service,
+            NetEventKind::Rx,
+            "obs-snapshot-test-event",
+        );
 
         let after = snapshot();
         assert!(after.rx_packets >= before.rx_packets + 1);
@@ -105,10 +109,12 @@ mod tests {
         assert!(after.tx_bytes >= before.tx_bytes + 32);
         assert!(after.drops >= before.drops + 1);
         assert!(after.errors >= before.errors + 1);
-        assert!(after
-            .recent_events
-            .iter()
-            .any(|e| e.message == "obs-snapshot-test-event"));
+        assert!(
+            after
+                .recent_events
+                .iter()
+                .any(|e| e.message == "obs-snapshot-test-event")
+        );
     }
 
     #[cfg_attr(test, test_case)]
@@ -117,6 +123,10 @@ mod tests {
         assert!(manager::register_interface("obs-snapshot-if").is_ok());
 
         let snap = snapshot();
-        assert!(snap.interfaces.iter().any(|iface| iface.name == "obs-snapshot-if"));
+        assert!(
+            snap.interfaces
+                .iter()
+                .any(|iface| iface.name == "obs-snapshot-if")
+        );
     }
 }

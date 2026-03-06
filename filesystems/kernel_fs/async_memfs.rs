@@ -187,10 +187,7 @@ pub trait AsyncInode: Send + Sync {
     fn rmdir_async(&self, name: &str) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>>;
 
     /// ファイルを非同期に切り詰め
-    fn truncate_async(
-        &self,
-        size: u64,
-    ) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>>;
+    fn truncate_async(&self, size: u64) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>>;
 
     /// ファイル/ディレクトリを非同期に名前変更
     fn rename_async(
@@ -309,11 +306,11 @@ impl AsyncInode for AsyncMemoryInode {
         offset: u64,
         len: usize,
     ) -> Pin<Box<dyn Future<Output = FsResult<Bytes>> + Send + '_>> {
-        use super::page::{PAGE_SIZE, PAGE_SHIFT, PAGE_MASK};
-        
+        use super::page::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
+
         let page_idx = offset >> PAGE_SHIFT;
         let offset_in_page = (offset as usize) & PAGE_MASK;
-        
+
         // 単一ページ内の読み取りならゼロコピー可能
         if offset_in_page + len <= PAGE_SIZE {
             if let Some(page) = self.inner.get_page(page_idx) {
@@ -327,7 +324,7 @@ impl AsyncInode for AsyncMemoryInode {
                 return Box::pin(ImmediateFuture::new(Ok(bytes)));
             }
         }
-        
+
         // ページ境界をまたぐ場合は従来のコピー
         let mut buf = vec![0u8; len];
         let result = self.inner.read(offset, &mut buf).map(|n| {
@@ -343,7 +340,10 @@ impl AsyncInode for AsyncMemoryInode {
         mode: FileMode,
         flags: OpenFlags,
     ) -> Pin<Box<dyn Future<Output = FsResult<Arc<dyn AsyncInode>>> + Send + '_>> {
-        let wrapped = self.inner.create(name, mode, flags).and_then(wrap_memory_inode);
+        let wrapped = self
+            .inner
+            .create(name, mode, flags)
+            .and_then(wrap_memory_inode);
         Box::pin(ImmediateFuture::new(wrapped))
     }
 
@@ -366,10 +366,7 @@ impl AsyncInode for AsyncMemoryInode {
         Box::pin(ImmediateFuture::new(result))
     }
 
-    fn truncate_async(
-        &self,
-        size: u64,
-    ) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>> {
+    fn truncate_async(&self, size: u64) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>> {
         let result = self.inner.truncate(size);
         Box::pin(ImmediateFuture::new(result))
     }

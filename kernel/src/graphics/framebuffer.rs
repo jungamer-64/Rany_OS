@@ -59,7 +59,6 @@ impl Framebuffer {
         Self::pack_rgba_to_bgr24_scalar(src, dst, true); // Default to BGR for backward compat
     }
 
-
     /// Bench-only: get the current sfence call count recorded by hal::mmio
     #[cfg(feature = "bench")]
     pub fn bench_get_sfence_count(&self) -> usize {
@@ -321,7 +320,9 @@ impl Framebuffer {
         }
         // Safety: We have ensured capacity >= capacity. The caller MUST overwrite
         // all elements up to `capacity` before reading.
-        unsafe { self.scratch_u32.set_len(capacity); }
+        unsafe {
+            self.scratch_u32.set_len(capacity);
+        }
     }
 
     /// Ensure scratch_u8 has at least `capacity` bytes
@@ -332,7 +333,9 @@ impl Framebuffer {
         }
         // Safety: We have ensured capacity >= capacity. The caller MUST overwrite
         // all bytes up to `capacity` before reading.
-        unsafe { self.scratch_u8.set_len(capacity); }
+        unsafe {
+            self.scratch_u8.set_len(capacity);
+        }
     }
 
     /// Write a slice of bytes to MMIO region efficiently.
@@ -353,7 +356,8 @@ impl Framebuffer {
                 }
                 #[cfg(not(target_endian = "little"))]
                 {
-                    let v = u32::from_le_bytes([data[*i], data[*i + 1], data[*i + 2], data[*i + 3]]);
+                    let v =
+                        u32::from_le_bytes([data[*i], data[*i + 1], data[*i + 2], data[*i + 3]]);
                     mmio::mmio_write_u32(*ptr, v);
                 }
                 *ptr += 4;
@@ -851,35 +855,57 @@ impl Framebuffer {
     // ------------------------------------------------------------------------
     // SIMD entry points (exposed for tests/benching)
     // ------------------------------------------------------------------------
-    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "avx2"
+    ))]
     pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
         // SAFETY: `src` and `dst` must be valid for `bytes` bytes and non-overlapping as required by the
         // underlying SIMD implementation. The caller of this `unsafe` function is responsible for ensuring that.
-        unsafe { crate::graphics::packer::pack_rgba_to_bgra_avx2(src, dst, bytes); }
+        unsafe {
+            crate::graphics::packer::pack_rgba_to_bgra_avx2(src, dst, bytes);
+        }
     }
 
-    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "ssse3"
+    ))]
     pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize) {
         // SAFETY: Same invariants as `pack_rgba_to_bgra_avx2`.
-        unsafe { crate::graphics::packer::pack_rgba_to_bgra_ssse3(src, dst, bytes); }
+        unsafe {
+            crate::graphics::packer::pack_rgba_to_bgra_ssse3(src, dst, bytes);
+        }
     }
 
-    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "avx2"
+    ))]
     pub unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
         // SAFETY: `src` and `dst` must point to at least 8 pixels' worth of data.
-        unsafe { crate::graphics::packer::pack_rgba_to_bgr24_avx2_8pixels(src, dst, is_bgr); }
+        unsafe {
+            crate::graphics::packer::pack_rgba_to_bgr24_avx2_8pixels(src, dst, is_bgr);
+        }
     }
 
-    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "ssse3"
+    ))]
     pub unsafe fn pack_rgba_to_bgr24_ssse3_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
         // SAFETY: `src` and `dst` must point to at least 8 pixels' worth of data.
-        unsafe { crate::graphics::packer::pack_rgba_to_bgr24_ssse3_8pixels(src, dst, is_bgr); }
+        unsafe {
+            crate::graphics::packer::pack_rgba_to_bgr24_ssse3_8pixels(src, dst, is_bgr);
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
     pub unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize) {
         // SAFETY: same invariants as other SIMD entry points.
-        unsafe { crate::graphics::packer::pack_rgba_to_bgra_neon(src, dst, bytes); }
+        unsafe {
+            crate::graphics::packer::pack_rgba_to_bgra_neon(src, dst, bytes);
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -903,13 +929,12 @@ impl Framebuffer {
             );
             // Backed by a Vec -> write via slice with alignment safety
             let row_ptr = unsafe { (back.as_mut_ptr() as *mut u8).add(dst_offset_bytes) };
-            
+
             // Check alignment before creating u32 slice
             if row_ptr as usize % 4 == 0 {
                 // Fast path: pointer is properly aligned for u32
-                let row_slice = unsafe {
-                    core::slice::from_raw_parts_mut(row_ptr as *mut u32, run_len_pixels)
-                };
+                let row_slice =
+                    unsafe { core::slice::from_raw_parts_mut(row_ptr as *mut u32, run_len_pixels) };
                 row_slice.fill(color_u32);
             } else {
                 // Safe path: use unaligned writes to avoid UB
@@ -925,7 +950,12 @@ impl Framebuffer {
     }
 
     /// MMIO path for write_u32_run: streaming stores for VRAM throughput
-    fn write_u32_run_mmio(&mut self, dst_offset_bytes: usize, run_len_pixels: usize, color_u32: u32) {
+    fn write_u32_run_mmio(
+        &mut self,
+        dst_offset_bytes: usize,
+        run_len_pixels: usize,
+        color_u32: u32,
+    ) {
         if self.buffer.is_null() {
             return;
         }
@@ -1059,19 +1089,10 @@ impl Framebuffer {
 
     /// Small-run fast-path: write BGR pixels directly via byte/u32 MMIO writes.
     /// Handles alignment and packs 4 pixels into 3 u32 words.
-    fn write_bgr_small_direct_mmio(
-        addr: usize,
-        run_len_pixels: usize,
-        c0: u8,
-        c1: u8,
-        c2: u8,
-    ) {
-        let u32_0 =
-            (c0 as u32) | ((c1 as u32) << 8) | ((c2 as u32) << 16) | ((c0 as u32) << 24);
-        let u32_1 =
-            (c1 as u32) | ((c2 as u32) << 8) | ((c0 as u32) << 16) | ((c1 as u32) << 24);
-        let u32_2 =
-            (c2 as u32) | ((c0 as u32) << 8) | ((c1 as u32) << 16) | ((c2 as u32) << 24);
+    fn write_bgr_small_direct_mmio(addr: usize, run_len_pixels: usize, c0: u8, c1: u8, c2: u8) {
+        let u32_0 = (c0 as u32) | ((c1 as u32) << 8) | ((c2 as u32) << 16) | ((c0 as u32) << 24);
+        let u32_1 = (c1 as u32) | ((c2 as u32) << 8) | ((c0 as u32) << 16) | ((c1 as u32) << 24);
+        let u32_2 = (c2 as u32) | ((c0 as u32) << 8) | ((c1 as u32) << 16) | ((c2 as u32) << 24);
 
         let mut off = addr;
         let mut remaining = run_len_pixels;
@@ -1114,13 +1135,7 @@ impl Framebuffer {
 
     /// Large-run direct MMIO path: write BGR pixels using u64 streaming writes.
     /// Handles alignment, precomputes 8-byte patterns, and writes in 24-byte groups.
-    fn write_bgr_large_direct_mmio(
-        addr: usize,
-        run_len_pixels: usize,
-        c0: u8,
-        c1: u8,
-        c2: u8,
-    ) {
+    fn write_bgr_large_direct_mmio(addr: usize, run_len_pixels: usize, c0: u8, c1: u8, c2: u8) {
         let mut addr = addr;
         let mut remaining = run_len_pixels * 3;
         let comps = [c0, c1, c2];
@@ -1206,7 +1221,6 @@ impl Framebuffer {
             filled += copy_pixels;
         }
     }
-
 
     /// Bench helper: expose targeted BGR run write for micro-bench timing.
     /// Only compiled when the `bench` feature is enabled.
@@ -1531,7 +1545,7 @@ impl Framebuffer {
         if buffer.len() == count {
             self.back_buffer = Some(buffer);
         } else {
-             // Size mismatch
+            // Size mismatch
         }
     }
 
@@ -1769,7 +1783,15 @@ impl Framebuffer {
         }
     }
 
-    fn blit_rect_32bpp(&mut self, back_ptr: *const u32, x: usize, y: usize, w: usize, h: usize, stride_mmio: usize) {
+    fn blit_rect_32bpp(
+        &mut self,
+        back_ptr: *const u32,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        stride_mmio: usize,
+    ) {
         for row in 0..h {
             let src_y = y + row;
             let src_idx = src_y * self.info.width as usize + x;
@@ -1780,7 +1802,15 @@ impl Framebuffer {
         }
     }
 
-    fn blit_rect_24bpp(&mut self, back_ptr: *const u32, x: usize, y: usize, w: usize, h: usize, stride_mmio: usize) {
+    fn blit_rect_24bpp(
+        &mut self,
+        back_ptr: *const u32,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        stride_mmio: usize,
+    ) {
         let row_bytes = w * 3;
         self.ensure_scratch_u8(row_bytes);
         let is_bgr_24 = matches!(self.info.format, PixelFormat::Bgr888);
@@ -1799,7 +1829,15 @@ impl Framebuffer {
         }
     }
 
-    fn blit_rect_16bpp(&mut self, back_ptr: *const u32, x: usize, y: usize, w: usize, h: usize, stride_mmio: usize) {
+    fn blit_rect_16bpp(
+        &mut self,
+        back_ptr: *const u32,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        stride_mmio: usize,
+    ) {
         let row_bytes = w * 2;
         self.ensure_scratch_u8(row_bytes);
         for row in 0..h {
@@ -1933,7 +1971,7 @@ impl Framebuffer {
             if buffer.is_null() {
                 return;
             }
-            
+
             // Recalculate byte offset for MMIO (uses stride)
             let offset = (y_u as usize * self.info.stride as usize)
                 + (x_u as usize * self.info.format.bytes_per_pixel());
@@ -2020,10 +2058,10 @@ impl Framebuffer {
     /// 画面をクリア
     pub fn clear(&mut self, color: Color) {
         if let Some(ref mut back) = self.back_buffer {
-             back.fill(color.to_u32());
-             let rect = Rect::new(0, 0, self.info.width, self.info.height);
-             self.mark_dirty(rect);
-             return;
+            back.fill(color.to_u32());
+            let rect = Rect::new(0, 0, self.info.width, self.info.height);
+            self.mark_dirty(rect);
+            return;
         }
         self.mark_dirty(Rect::new(0, 0, self.info.width, self.info.height));
         let draw_buf = self.draw_buffer();
@@ -2122,7 +2160,6 @@ impl Framebuffer {
             mmio::sfence();
         }
     }
-
 }
 
 // ============================================================================

@@ -1,17 +1,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::{
-    Arc,
-    RwLock,
-    FsResult,
-    FsError,
-    InodeNum,
-    FileType,
-    FileSystem,
-    Inode,
-};
-
+use super::{Arc, FileSystem, FileType, FsError, FsResult, Inode, InodeNum, RwLock};
 
 // ============================================================================
 // Mount Table

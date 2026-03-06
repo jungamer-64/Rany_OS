@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// TSC周波数をキャリブレーション (Channel 2 使用 - Channel 0 を壊さない)
 ///
 /// PIT Channel 2 (speaker timer) を使用して TSC 周波数を測定。
@@ -25,9 +24,9 @@ pub fn calibrate_tsc() -> Option<TscInfo> {
     let measurements = x86_64::instructions::interrupts::without_interrupts(|| {
         const TRIALS: usize = 3;
         let mut measurements = [0u64; TRIALS];
-        
+
         // 50ms 分の tick 数
-        let pit_ticks = (pit::BASE_FREQUENCY / 20) as u16; 
+        let pit_ticks = (pit::BASE_FREQUENCY / 20) as u16;
 
         // I/O ポート準備
         let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
@@ -39,11 +38,14 @@ pub fn calibrate_tsc() -> Option<TscInfo> {
 
         for i in 0..TRIALS {
             measurements[i] = perform_single_pit_measurement(
-                &mut cmd_port, &mut data_port, &mut speaker_port,
-                old_speaker, pit_ticks,
+                &mut cmd_port,
+                &mut data_port,
+                &mut speaker_port,
+                old_speaker,
+                pit_ticks,
             )?;
         }
-        
+
         // スピーカーポート復元
         speaker_port.write(old_speaker);
         Some(measurements)

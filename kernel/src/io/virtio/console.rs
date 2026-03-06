@@ -17,15 +17,15 @@
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
+use crate::io::virtio::virtqueue::*;
+use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::io::virtio::virtqueue::*;
 use core::task::Waker;
-use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
-use crate::sync::PoisonLock;
 
 // ============================================================================
 // VirtIO Common Definitions
@@ -270,7 +270,8 @@ impl VirtioConsoleDevice {
         let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // Standardized layout calculation
-        let (desc_size, _avail_size, used_offset, total_size) = VirtQueue::calculate_layout(queue_size);
+        let (desc_size, _avail_size, used_offset, total_size) =
+            VirtQueue::calculate_layout(queue_size);
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -355,7 +356,10 @@ impl VirtioConsoleDevice {
             }
 
             // Track the DMA buffer
-            self.rx_buffers.lock().expect("rx_buffers lock poisoned").insert(desc_idx, buffer);
+            self.rx_buffers
+                .lock()
+                .expect("rx_buffers lock poisoned")
+                .insert(desc_idx, buffer);
         }
 
         // Notify device that RX buffers are available
@@ -412,7 +416,10 @@ impl VirtioConsoleDevice {
         }
 
         // Track the inflight TX buffer
-        self.tx_inflight.lock().expect("tx_inflight lock poisoned").insert(desc_idx, buffer);
+        self.tx_inflight
+            .lock()
+            .expect("tx_inflight lock poisoned")
+            .insert(desc_idx, buffer);
 
         // Notify device
         queue_guard.notify(&*self.transport);
@@ -432,7 +439,11 @@ impl VirtioConsoleDevice {
         let (desc_id, len) = queue_guard.poll_completion()?;
 
         // Extract the DMA buffer
-        let buffer = self.rx_buffers.lock().expect("rx_buffers lock poisoned").remove(&desc_id)?;
+        let buffer = self
+            .rx_buffers
+            .lock()
+            .expect("rx_buffers lock poisoned")
+            .remove(&desc_id)?;
 
         // Copy received data out
         let received_len = len as usize;
@@ -468,7 +479,10 @@ impl VirtioConsoleDevice {
                     };
                     queue_guard.submit(new_desc);
                 }
-                self.rx_buffers.lock().expect("rx_buffers lock poisoned").insert(new_desc, new_buffer);
+                self.rx_buffers
+                    .lock()
+                    .expect("rx_buffers lock poisoned")
+                    .insert(new_desc, new_buffer);
                 queue_guard.notify(&*self.transport);
             }
         }
@@ -493,7 +507,12 @@ impl VirtioConsoleDevice {
             let mut queue_guard = tx_queue.lock().expect("tx_queue lock poisoned");
             while let Some((desc_id, _len)) = queue_guard.poll_completion() {
                 // Free the inflight DMA buffer
-                if let Some(_buf) = self.tx_inflight.lock().expect("tx_inflight lock poisoned").remove(&desc_id) {
+                if let Some(_buf) = self
+                    .tx_inflight
+                    .lock()
+                    .expect("tx_inflight lock poisoned")
+                    .remove(&desc_id)
+                {
                     // Buffer dropped here, freeing the DMA allocation
                 }
 
@@ -502,7 +521,10 @@ impl VirtioConsoleDevice {
 
                 // Wake pending future
                 let waker_idx = VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-                let mut wakers = self.pending_wakers.lock().expect("pending_wakers lock poisoned");
+                let mut wakers = self
+                    .pending_wakers
+                    .lock()
+                    .expect("pending_wakers lock poisoned");
                 if let Some(waker) = wakers.remove(&waker_idx) {
                     waker.wake();
                 }
@@ -519,7 +541,10 @@ impl VirtioConsoleDevice {
             // since read_bytes() will consume them. We just wake the waiters.
             if queue_guard.has_pending() {
                 // There are unprocessed RX completions - wake waiters
-                let mut wakers = self.pending_wakers.lock().expect("pending_wakers lock poisoned");
+                let mut wakers = self
+                    .pending_wakers
+                    .lock()
+                    .expect("pending_wakers lock poisoned");
                 wakers.retain(|&idx, waker| {
                     if idx < VIRTQUEUE_MAX_SIZE as usize {
                         waker.wake_by_ref();
@@ -549,7 +574,8 @@ impl VirtioConsoleDevice {
         if self.features & features::VIRTIO_CONSOLE_F_EMERG_WRITE != 0 {
             // emerg_wr is a u32 at config space offset 8.
             // Write the character in the low byte.
-            self.transport.write_config_u32(config_offsets::EMERG_WR, c as u32);
+            self.transport
+                .write_config_u32(config_offsets::EMERG_WR, c as u32);
         }
     }
 }

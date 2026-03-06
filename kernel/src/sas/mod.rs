@@ -12,10 +12,10 @@ pub mod heap_registry;
 pub mod memory_region;
 pub mod ownership;
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use alloc::boxed::Box;
 use once_cell::race::OnceBox;
 use spin::Mutex;
 
@@ -98,9 +98,10 @@ impl SingleAddressSpaceManager {
         permissions: RegionPermissions,
     ) -> Result<MemoryRegion, SasError> {
         // アドレスを割り当て
-        let addr = self
-            .next_alloc_addr
-            .fetch_add(align_up_u64(size as u64, PAGE_SIZE_4K as u64), Ordering::SeqCst);
+        let addr = self.next_alloc_addr.fetch_add(
+            align_up_u64(size as u64, PAGE_SIZE_4K as u64),
+            Ordering::SeqCst,
+        );
 
         // 上限チェック
         if addr + size as u64 > SAS_MAX_ADDRESS {
@@ -141,7 +142,11 @@ impl SingleAddressSpaceManager {
     /// 統計情報を取得
     pub fn stats(&self) -> SasStats {
         SasStats {
-            total_regions: self.cell_regions.values().map(|v: &Vec<MemoryRegion>| v.len()).sum::<usize>(),
+            total_regions: self
+                .cell_regions
+                .values()
+                .map(|v: &Vec<MemoryRegion>| v.len())
+                .sum::<usize>(),
             total_objects: heap_registry().object_count(),
             domains: self.cell_regions.len(),
             next_addr: self.next_alloc_addr.load(Ordering::Relaxed),
@@ -170,7 +175,6 @@ use crate::mm::types::PAGE_SIZE_4K;
 
 /// アドレスをアラインメント
 use crate::util::align_up_u64;
-
 
 // ============================================================================
 // エラー型
@@ -397,7 +401,10 @@ pub fn stats() -> SasStats {
         (
             m.cell_regions.len(),
             m.next_alloc_addr.load(Ordering::Relaxed),
-            m.cell_regions.values().map(|v: &Vec<MemoryRegion>| v.len()).sum::<usize>(),
+            m.cell_regions
+                .values()
+                .map(|v: &Vec<MemoryRegion>| v.len())
+                .sum::<usize>(),
         )
     });
 

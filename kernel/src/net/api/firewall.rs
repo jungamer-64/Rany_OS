@@ -13,13 +13,12 @@
 //! > firewall disable
 //! ```
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
 use crate::net::security::firewall::{
-    self, FirewallRule, FirewallAction, FirewallDirection,
-    FirewallProtocol, IpMatch, PortMatch,
+    self, FirewallAction, FirewallDirection, FirewallProtocol, FirewallRule, IpMatch, PortMatch,
 };
 
 extern crate alloc;
@@ -140,7 +139,10 @@ fn parse_action(s: &str) -> Result<FirewallAction, String> {
         "deny" | "drop" | "reject" => Ok(FirewallAction::Deny),
         "log-allow" | "log_allow" => Ok(FirewallAction::LogAllow),
         "log-deny" | "log_deny" => Ok(FirewallAction::LogDeny),
-        _ => Err(format!("unknown action: '{}' (allow/deny/log-allow/log-deny)", s)),
+        _ => Err(format!(
+            "unknown action: '{}' (allow/deny/log-allow/log-deny)",
+            s
+        )),
     }
 }
 
@@ -186,7 +188,8 @@ fn parse_ip_match(s: &str) -> Result<IpMatch, String> {
         let ip_str = &s[..slash_pos];
         let prefix_str = &s[slash_pos + 1..];
         let ip = parse_ipv4(ip_str)?;
-        let prefix: u8 = prefix_str.parse::<u8>()
+        let prefix: u8 = prefix_str
+            .parse::<u8>()
             .map_err(|_| format!("invalid prefix length: '{}'", prefix_str))?;
         if prefix > 32 {
             return Err(format!("prefix length {} > 32", prefix));
@@ -207,7 +210,8 @@ fn parse_ipv4(s: &str) -> Result<[u8; 4], String> {
     }
     let mut octets = [0u8; 4];
     for (i, part) in parts.iter().enumerate() {
-        octets[i] = part.parse::<u8>()
+        octets[i] = part
+            .parse::<u8>()
             .map_err(|_| format!("invalid octet '{}' in '{}'", part, s))?;
     }
     Ok(octets)
@@ -228,9 +232,11 @@ fn parse_port_match(s: &str) -> Result<PortMatch, String> {
     if let Some(dash_pos) = s.find('-') {
         let start_str = &s[..dash_pos];
         let end_str = &s[dash_pos + 1..];
-        let start = start_str.parse::<u16>()
+        let start = start_str
+            .parse::<u16>()
             .map_err(|_| format!("invalid port start: '{}'", start_str))?;
-        let end = end_str.parse::<u16>()
+        let end = end_str
+            .parse::<u16>()
             .map_err(|_| format!("invalid port end: '{}'", end_str))?;
         if start > end {
             return Err(format!("port range start {} > end {}", start, end));
@@ -238,7 +244,8 @@ fn parse_port_match(s: &str) -> Result<PortMatch, String> {
         return Ok(PortMatch::Range(start, end));
     }
 
-    let port = s.parse::<u16>()
+    let port = s
+        .parse::<u16>()
         .map_err(|_| format!("invalid port: '{}'", s))?;
     Ok(PortMatch::Exact(port))
 }
@@ -250,12 +257,14 @@ trait ToAsciiLowerStr {
 
 impl ToAsciiLowerStr for str {
     fn to_ascii_lowercase(&self) -> String {
-        self.chars().map(|c| {
-            if c.is_ascii_uppercase() {
-                (c as u8 + 32) as char
-            } else {
-                c
-            }
-        }).collect()
+        self.chars()
+            .map(|c| {
+                if c.is_ascii_uppercase() {
+                    (c as u8 + 32) as char
+                } else {
+                    c
+                }
+            })
+            .collect()
     }
 }

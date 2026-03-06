@@ -3,19 +3,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::{
-    Cluster,
-    Sector,
-    FsResult,
-    FsError,
-    BLOCK_SIZE,
-    FAT_ENTRIES_PER_SECTOR,
-    try_alloc_vec,
-    Fat32FileSystem,
-    ZeroCopyBufferMut,
-    FsInfo,
-    FSINFO_UNKNOWN,
-    IrqPoisonLock,
-    MAX_CLUSTER_CHAIN,
+    BLOCK_SIZE, Cluster, FAT_ENTRIES_PER_SECTOR, FSINFO_UNKNOWN, Fat32FileSystem, FsError, FsInfo,
+    FsResult, IrqPoisonLock, MAX_CLUSTER_CHAIN, Sector, ZeroCopyBufferMut, try_alloc_vec,
 };
 
 #[cfg(feature = "debug-trace")]

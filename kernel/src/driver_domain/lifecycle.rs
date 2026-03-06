@@ -151,10 +151,7 @@ pub fn create(config: &DriverDomainConfig) -> Result<DriverDomainId, DriverDomai
 /// 2. 対応するDomainを作成
 /// 3. リソースクォータを設定
 /// 4. NUMAアフィニティを設定
-pub fn load(
-    id: DriverDomainId,
-    elf_data: &[u8],
-) -> Result<(CellId, DomainId), DriverDomainError> {
+pub fn load(id: DriverDomainId, elf_data: &[u8]) -> Result<(CellId, DomainId), DriverDomainError> {
     let manager = driver_domain_manager();
 
     // 状態チェック
@@ -178,9 +175,11 @@ pub fn load(
         Ok(cid) => cid,
         Err(e) => {
             let msg = format!("{}", e);
-            manager.with_cell_mut(id, |cell| {
-                cell.transition_to(DriverDomainState::Faulted);
-            }).ok();
+            manager
+                .with_cell_mut(id, |cell| {
+                    cell.transition_to(DriverDomainState::Faulted);
+                })
+                .ok();
             return Err(DriverDomainError::LoadFailed(msg));
         }
     };
@@ -193,33 +192,32 @@ pub fn load(
             // ロールバック: セルをアンロード
             let _ = crate::loader::unload_cell(cell_id);
             let msg = format!("{}", e);
-            manager.with_cell_mut(id, |cell| {
-                cell.transition_to(DriverDomainState::Faulted);
-            }).ok();
+            manager
+                .with_cell_mut(id, |cell| {
+                    cell.transition_to(DriverDomainState::Faulted);
+                })
+                .ok();
             return Err(DriverDomainError::DomainCreationFailed(msg));
         }
     };
 
     // 3. DriverCell設定をDomainへ反映（メタデータ + セキュリティ）
-    let (numa_node, caps, priority, cpu_limit, mem_limit, io_limit) = manager.with_cell(id, |cell| {
-        (
-            cell.numa_node,
-            cell.capabilities,
-            cell.priority,
-            cell.cpu_limit_percent,
-            cell.memory_limit_bytes,
-            cell.io_bandwidth_limit,
-        )
-    })?;
+    let (numa_node, caps, priority, cpu_limit, mem_limit, io_limit) =
+        manager.with_cell(id, |cell| {
+            (
+                cell.numa_node,
+                cell.capabilities,
+                cell.priority,
+                cell.cpu_limit_percent,
+                cell.memory_limit_bytes,
+                cell.io_bandwidth_limit,
+            )
+        })?;
 
     let _ = crate::domain_system::set_domain_capabilities(domain_id, caps);
     let _ = crate::domain_system::set_domain_priority(domain_id, priority);
-    let _ = crate::domain_system::set_domain_resource_limits(
-        domain_id,
-        cpu_limit,
-        mem_limit,
-        io_limit,
-    );
+    let _ =
+        crate::domain_system::set_domain_resource_limits(domain_id, cpu_limit, mem_limit, io_limit);
 
     // 4. NUMAアフィニティを設定
     if let Some(node) = numa_node {
@@ -263,9 +261,8 @@ pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError>
                 to: DriverDomainState::Starting,
             });
         }
-        cell.cell_id.ok_or(DriverDomainError::LoadFailed(
-            "Cell not loaded".into(),
-        ))
+        cell.cell_id
+            .ok_or(DriverDomainError::LoadFailed("Cell not loaded".into()))
     })??;
 
     // Starting状態に遷移
@@ -279,9 +276,11 @@ pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError>
         Ok(h) => h,
         Err(e) => {
             let msg = format!("{}", e);
-            manager.with_cell_mut(id, |cell| {
-                cell.transition_to(DriverDomainState::Faulted);
-            }).ok();
+            manager
+                .with_cell_mut(id, |cell| {
+                    cell.transition_to(DriverDomainState::Faulted);
+                })
+                .ok();
             return Err(DriverDomainError::DriverInitFailed(msg));
         }
     };
@@ -292,9 +291,11 @@ pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError>
     crate::io::log::early_print("[DCELL] start: probe_and_start begin\n");
     if let Err(e) = registry.probe_and_start(handle) {
         let msg = format!("{}", e);
-        manager.with_cell_mut(id, |cell| {
-            cell.transition_to(DriverDomainState::Faulted);
-        }).ok();
+        manager
+            .with_cell_mut(id, |cell| {
+                cell.transition_to(DriverDomainState::Faulted);
+            })
+            .ok();
         return Err(DriverDomainError::DriverInitFailed(msg));
     }
     crate::io::log::early_print("[DCELL] start: probe_and_start done\n");
@@ -428,11 +429,7 @@ pub fn unload(id: DriverDomainId) -> Result<(), DriverDomainError> {
     // Domainを終了
     if let Some(did) = domain_id {
         if let Err(e) = crate::domain_system::terminate_domain(did) {
-            log::warn!(
-                "[DriverDomain] Failed to terminate domain {}: {}\n",
-                did,
-                e
-            );
+            log::warn!("[DriverDomain] Failed to terminate domain {}: {}\n", did, e);
         }
     }
 
@@ -443,11 +440,7 @@ pub fn unload(id: DriverDomainId) -> Result<(), DriverDomainError> {
     manager.remove(id)?;
     super::stats::global_stats().on_unloaded();
 
-    log::info!(
-        "[DriverDomain] Unloaded: {} (id={})\n",
-        name,
-        id
-    );
+    log::info!("[DriverDomain] Unloaded: {} (id={})\n", name, id);
 
     Ok(())
 }

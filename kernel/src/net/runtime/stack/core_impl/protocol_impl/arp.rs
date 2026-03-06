@@ -17,7 +17,10 @@ impl NetworkStack {
             } => {
                 self.send_arp_reply(target_mac, target_ip);
             }
-            ArpResult::CacheUpdated { resolved_ip, resolved_mac } => {
+            ArpResult::CacheUpdated {
+                resolved_ip,
+                resolved_mac,
+            } => {
                 // ARP解決完了をウェイターレジストリに通知（非同期ArpResolveFuture向け）
                 crate::net::l2::arp::notify_arp_resolved(
                     *resolved_ip.as_bytes(),
@@ -99,18 +102,28 @@ impl NetworkStack {
                 if self.transmit(frame.as_bytes()) {
                     // Mark request as sent only when TX succeeded.
                     self.arp.request_sent(target_ip, current_time);
-                    log::info!("[NET-ARP] ARP request sent for {}.{}.{}.{}",
-                        target_ip.as_bytes()[0], target_ip.as_bytes()[1], target_ip.as_bytes()[2], target_ip.as_bytes()[3]);
+                    log::info!(
+                        "[NET-ARP] ARP request sent for {}.{}.{}.{}",
+                        target_ip.as_bytes()[0],
+                        target_ip.as_bytes()[1],
+                        target_ip.as_bytes()[2],
+                        target_ip.as_bytes()[3]
+                    );
                 } else {
-                    log::warn!("[NET-ARP] ARP request transmit failed for {}.{}.{}.{}",
-                        target_ip.as_bytes()[0], target_ip.as_bytes()[1], target_ip.as_bytes()[2], target_ip.as_bytes()[3]);
+                    log::warn!(
+                        "[NET-ARP] ARP request transmit failed for {}.{}.{}.{}",
+                        target_ip.as_bytes()[0],
+                        target_ip.as_bytes()[1],
+                        target_ip.as_bytes()[2],
+                        target_ip.as_bytes()[3]
+                    );
                 }
             }
         }
     }
 
     /// Send an ARP probe (RFC 5227 / RFC 2131 Section 2.2)
-    /// 
+    ///
     /// Probes are sent with sender_ip = 0.0.0.0 to detect address conflicts
     /// without polluting other hosts' ARP caches with unverified information.
     pub fn send_arp_probe(&mut self, target_ip: Ipv4Address) {

@@ -43,13 +43,16 @@ impl VirtioNetDevice {
         for (q_idx, rx_queue) in self.rx_queues.iter().enumerate() {
             let completions = rx_queue.process_used();
             for (desc_idx, len) in completions {
-                self.rx_packets.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                self.rx_packets
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 trace::push_event(NetLayer::Driver, NetEventKind::Rx, "virtio rx completion");
 
                 // IoScheduler path: completion belongs to a pending IoRequest.
                 if let Some(handler) = get_poll_handler(self.virtio_index) {
                     if let Some((io_id, requested_bytes)) = handler.take_pending_rx(desc_idx) {
-                        let result = if let Some(completion_len) = rx_queue.take_completion(desc_idx) {
+                        let result = if let Some(completion_len) =
+                            rx_queue.take_completion(desc_idx)
+                        {
                             let payload_len =
                                 (completion_len as usize).saturating_sub(VirtioNetHeader::SIZE);
                             let payload_cap = requested_bytes.saturating_sub(VirtioNetHeader::SIZE);
@@ -73,7 +76,8 @@ impl VirtioNetDevice {
                         let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
                             index: self.virtio_index,
                         };
-                        let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
+                        let bridge =
+                            crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
                         bridge.handle_interrupt(device_id, &[(io_id, result)]);
                         continue;
                     }
@@ -89,15 +93,26 @@ impl VirtioNetDevice {
     }
 
     /// PacketRef ZeroCopy RX完了: IOMMUアンマップ + ブリッジ転送 + 再ポスト
-    pub(super) fn complete_rx_packetref(&self, rx_queue: &NetVirtQueue, _desc_idx: u16, len: u32, inflight: RxPacketInflight) {
+    pub(super) fn complete_rx_packetref(
+        &self,
+        rx_queue: &NetVirtQueue,
+        _desc_idx: u16,
+        len: u32,
+        inflight: RxPacketInflight,
+    ) {
         // Unmap IOMMU mapping if it was active
         if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
-            let _ = crate::io::iommu::api::unmap_for_device(device_id, iova, inflight.iommu_map_len);
+            let _ =
+                crate::io::iommu::api::unmap_for_device(device_id, iova, inflight.iommu_map_len);
         }
 
         let header_size = core::mem::size_of::<VirtioNetHeader>();
         let payload_len = (len as usize).saturating_sub(header_size);
-        trace::push_event(NetLayer::Driver, NetEventKind::Rx, "virtio zero-copy rx packetref");
+        trace::push_event(
+            NetLayer::Driver,
+            NetEventKind::Rx,
+            "virtio zero-copy rx packetref",
+        );
 
         // Pass PacketRef to bridge for zero-copy processing (prefer interface-aware path).
         if let Some(if_id) = self
@@ -128,7 +143,9 @@ impl VirtioNetDevice {
                     log::debug!("[VIRTIO-NET] PacketRef OOM; reposted RX buffer via VBuf fallback");
                 }
                 Ok(false) => {
-                    log::warn!("[VIRTIO-NET] OOM allocating replacement PacketRef (VBuf fallback also failed)");
+                    log::warn!(
+                        "[VIRTIO-NET] OOM allocating replacement PacketRef (VBuf fallback also failed)"
+                    );
                     counters::global().record_drop();
                     trace::push_event(
                         NetLayer::Driver,
@@ -167,11 +184,16 @@ impl VirtioNetDevice {
     ) {
         // Unmap IOMMU mapping if it was active
         if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
-            let _ = crate::io::iommu::api::unmap_for_device(device_id, iova, inflight.iommu_map_len);
+            let _ =
+                crate::io::iommu::api::unmap_for_device(device_id, iova, inflight.iommu_map_len);
         }
 
         if let Err(e) = inflight.vbuf.complete_receive() {
-            log::warn!("[VIRTIO-NET] failed to complete rx buffer {}: {}", desc_idx, e);
+            log::warn!(
+                "[VIRTIO-NET] failed to complete rx buffer {}: {}",
+                desc_idx,
+                e
+            );
             counters::global().record_error();
             trace::push_event(
                 NetLayer::Driver,
@@ -186,7 +208,10 @@ impl VirtioNetDevice {
         let data = match inflight.vbuf.received_data() {
             Some(d) => d,
             None => {
-                log::warn!("[VIRTIO-NET] Received completion for unknown desc {}", desc_idx);
+                log::warn!(
+                    "[VIRTIO-NET] Received completion for unknown desc {}",
+                    desc_idx
+                );
                 counters::global().record_error();
                 trace::push_event(
                     NetLayer::Driver,
@@ -203,21 +228,31 @@ impl VirtioNetDevice {
         if actual_len >= 12 {
             log::info!(
                 "[VIRTIO-NET][RX-COMP] desc={} len={} payload_len={} src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                desc_idx, len, actual_len,
-                payload_slice[6], payload_slice[7], payload_slice[8],
-                payload_slice[9], payload_slice[10], payload_slice[11]
+                desc_idx,
+                len,
+                actual_len,
+                payload_slice[6],
+                payload_slice[7],
+                payload_slice[8],
+                payload_slice[9],
+                payload_slice[10],
+                payload_slice[11]
             );
         } else {
-            log::info!("[VIRTIO-NET][RX-COMP] desc={} len={} payload_len={}", desc_idx, len, actual_len);
+            log::info!(
+                "[VIRTIO-NET][RX-COMP] desc={} len={} payload_len={}",
+                desc_idx,
+                len,
+                actual_len
+            );
         }
 
         // Convert the completed RX DMA buffer into PacketRef (zero-copy handoff).
         if let Some(cpu_buf) = inflight.vbuf.take_cpu_buffer() {
             let packet = crate::net::datapath::mempool::PacketRef::from_dma_slice(cpu_buf);
-            if let Some(if_id) = self
-                .net_if_id()
-                .or_else(|| crate::net::runtime::bridge::lookup_if_by_virtio_index(self.virtio_index))
-            {
+            if let Some(if_id) = self.net_if_id().or_else(|| {
+                crate::net::runtime::bridge::lookup_if_by_virtio_index(self.virtio_index)
+            }) {
                 crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
                     if_id,
                     packet,
@@ -232,7 +267,10 @@ impl VirtioNetDevice {
                 );
             }
         } else {
-            log::warn!("[VIRTIO-NET] RX completion missing CPU buffer desc={}", desc_idx);
+            log::warn!(
+                "[VIRTIO-NET] RX completion missing CPU buffer desc={}",
+                desc_idx
+            );
             counters::global().record_error();
             trace::push_event(
                 NetLayer::Driver,
@@ -247,7 +285,10 @@ impl VirtioNetDevice {
             Ok(false) => match self.try_post_rx_vbuf(rx_queue) {
                 Ok(true) => {}
                 Ok(false) => {
-                    log::warn!("[VIRTIO-NET] failed to repost RX buffer after desc={}", desc_idx);
+                    log::warn!(
+                        "[VIRTIO-NET] failed to repost RX buffer after desc={}",
+                        desc_idx
+                    );
                     counters::global().record_drop();
                     trace::push_event(
                         NetLayer::Driver,
@@ -268,7 +309,10 @@ impl VirtioNetDevice {
             Err(_) => match self.try_post_rx_vbuf(rx_queue) {
                 Ok(true) => {}
                 Ok(false) => {
-                    log::warn!("[VIRTIO-NET] failed to repost RX buffer after desc={}", desc_idx);
+                    log::warn!(
+                        "[VIRTIO-NET] failed to repost RX buffer after desc={}",
+                        desc_idx
+                    );
                     counters::global().record_drop();
                     trace::push_event(
                         NetLayer::Driver,
@@ -301,7 +345,9 @@ impl VirtioNetDevice {
     ) -> bool {
         let packetref_inflight = if let Some(lock) = self.rx_packetrefs.get(q_idx) {
             if let Ok(mut guard) = lock.lock() {
-                guard.get_mut(desc_idx as usize).and_then(|slot| slot.take())
+                guard
+                    .get_mut(desc_idx as usize)
+                    .and_then(|slot| slot.take())
             } else {
                 None
             }
@@ -332,7 +378,9 @@ impl VirtioNetDevice {
 
         let vbuf_inflight = if let Some(lock) = self.rx_buffers.get(q_idx) {
             if let Ok(mut guard) = lock.lock() {
-                guard.get_mut(desc_idx as usize).and_then(|slot| slot.take())
+                guard
+                    .get_mut(desc_idx as usize)
+                    .and_then(|slot| slot.take())
             } else {
                 None
             }
@@ -372,7 +420,10 @@ impl VirtioNetDevice {
                 desc_idx
             );
         }
-        log::warn!("[VIRTIO-NET] Received completion for unknown desc {}", desc_idx);
+        log::warn!(
+            "[VIRTIO-NET] Received completion for unknown desc {}",
+            desc_idx
+        );
         counters::global().record_drop();
         trace::push_event(
             NetLayer::Driver,

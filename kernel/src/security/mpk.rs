@@ -398,7 +398,9 @@ pub unsafe fn domain_transition_prologue(new_pkru: PkruValue) {
     }
 
     // WRPKRUでアクセス権を原子的に切り替え（約20サイクル）
-    unsafe { wrpkru(new_pkru.0); }
+    unsafe {
+        wrpkru(new_pkru.0);
+    }
 
     // 遷移先ドメインのエントリポイント検証（投機実行前に完了）
     core::sync::atomic::compiler_fence(Ordering::SeqCst);

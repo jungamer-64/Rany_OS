@@ -2,8 +2,8 @@
 // kernel/src/net/services/http/parser.rs
 // ============================================================================
 
+use super::types::{HttpHeader, HttpMethod, HttpRequest, HttpResponse, HttpVersion};
 use alloc::vec::Vec;
-use super::types::{HttpRequest, HttpResponse, HttpVersion, HttpMethod, HttpHeader};
 use core::str;
 use core::str::FromStr;
 
@@ -21,9 +21,7 @@ pub struct HttpParser {
 
 impl HttpParser {
     pub fn new() -> Self {
-        Self {
-            buffer: Vec::new(),
-        }
+        Self { buffer: Vec::new() }
     }
 
     /// データをバッファに追加
@@ -49,30 +47,35 @@ impl HttpParser {
         };
 
         let header_bytes = &self.buffer[..header_end_idx];
-        let header_str = str::from_utf8(header_bytes).map_err(|_| HttpParseError::InvalidEncoding)?;
-        
+        let header_str =
+            str::from_utf8(header_bytes).map_err(|_| HttpParseError::InvalidEncoding)?;
+
         let mut lines = header_str.split("\r\n");
-        
+
         // Request-Line
         let request_line = lines.next().ok_or(HttpParseError::InvalidFormat)?;
         let mut request_parts = request_line.splitn(3, ' ');
-        
+
         let method_str = request_parts.next().ok_or(HttpParseError::InvalidFormat)?;
         let method = HttpMethod::from_str(method_str).map_err(|_| HttpParseError::InvalidFormat)?;
-        
-        let uri = request_parts.next().ok_or(HttpParseError::InvalidFormat)?.trim();
+
+        let uri = request_parts
+            .next()
+            .ok_or(HttpParseError::InvalidFormat)?
+            .trim();
         if uri.len() > 4096 {
             return Err(HttpParseError::InvalidFormat);
         }
         let uri_string = alloc::string::String::from(uri);
-        
+
         let version_str = request_parts.next().ok_or(HttpParseError::InvalidFormat)?;
-        let version = HttpVersion::from_str(version_str).map_err(|_| HttpParseError::UnsupportedVersion)?;
-        
+        let version =
+            HttpVersion::from_str(version_str).map_err(|_| HttpParseError::UnsupportedVersion)?;
+
         let mut headers = Vec::new();
         let mut content_length = None;
         let mut chunked = false;
-        
+
         for line in lines {
             if line.is_empty() {
                 continue;
@@ -87,24 +90,28 @@ impl HttpParser {
                 return Err(HttpParseError::InvalidFormat);
             }
             headers.push(HttpHeader::new(name, value));
-            
+
             if name.eq_ignore_ascii_case("Content-Length") {
-                let len = value.parse::<usize>().map_err(|_| HttpParseError::InvalidFormat)?;
+                let len = value
+                    .parse::<usize>()
+                    .map_err(|_| HttpParseError::InvalidFormat)?;
                 if len > 10 * 1024 * 1024 {
                     return Err(HttpParseError::InvalidFormat);
                 }
                 content_length = Some(len);
-            } else if name.eq_ignore_ascii_case("Transfer-Encoding") && value.to_lowercase().contains("chunked") {
+            } else if name.eq_ignore_ascii_case("Transfer-Encoding")
+                && value.to_lowercase().contains("chunked")
+            {
                 chunked = true;
             }
         }
-        
+
         if chunked && content_length.is_some() {
             return Err(HttpParseError::InvalidFormat);
         }
-        
+
         let body_start_idx = header_end_idx + 4;
-        
+
         let (body, total_len) = if chunked {
             let res = self.parse_chunked(body_start_idx)?;
             if res.1 == 0 {
@@ -120,7 +127,7 @@ impl HttpParser {
         } else {
             (None, body_start_idx)
         };
-        
+
         self.buffer.drain(..total_len);
 
         Ok(Some(HttpRequest {
@@ -153,76 +160,83 @@ impl HttpParser {
         };
 
         let header_bytes = &self.buffer[..header_end_idx];
-        let header_str = str::from_utf8(header_bytes).map_err(|_| HttpParseError::InvalidEncoding)?;
-        
+        let header_str =
+            str::from_utf8(header_bytes).map_err(|_| HttpParseError::InvalidEncoding)?;
+
         let mut lines = header_str.split("\r\n");
-        
+
         // ステータス行のパース
         let status_line = lines.next().ok_or(HttpParseError::InvalidFormat)?;
         let mut status_parts = status_line.splitn(3, ' ');
-        
+
         let version_str = status_parts.next().ok_or(HttpParseError::InvalidFormat)?;
         let version = match version_str {
             "HTTP/1.0" => HttpVersion::Http1_0,
             "HTTP/1.1" => HttpVersion::Http1_1,
             _ => return Err(HttpParseError::UnsupportedVersion),
         };
-        
+
         let status_code_str = status_parts.next().ok_or(HttpParseError::InvalidFormat)?;
-        let status_code: u16 = status_code_str.parse().map_err(|_| HttpParseError::InvalidFormat)?;
-        
+        let status_code: u16 = status_code_str
+            .parse()
+            .map_err(|_| HttpParseError::InvalidFormat)?;
+
         // Security: Limit reason phrase length
         let reason_phrase_raw = status_parts.next().unwrap_or("").trim();
         if reason_phrase_raw.len() > 1024 {
             return Err(HttpParseError::InvalidFormat);
         }
         let reason_phrase = reason_phrase_raw.into();
-        
+
         // ヘッダ行のパース
         let mut headers = Vec::new();
         let mut content_length = None;
         let mut chunked = false;
-        
+
         for line in lines {
             if line.is_empty() {
                 continue;
             }
-            
+
             // Security: Limit number of headers to prevent memory DoS / HashDoS
             if headers.len() >= 100 {
                 return Err(HttpParseError::InvalidFormat);
             }
-            
+
             let mut parts = line.splitn(2, ':');
             let name = parts.next().ok_or(HttpParseError::InvalidFormat)?.trim();
             let value = parts.next().ok_or(HttpParseError::InvalidFormat)?.trim();
-            
+
             // Security: Limit header name and value length
             if name.len() > 256 || value.len() > 4096 {
                 return Err(HttpParseError::InvalidFormat);
             }
-            
+
             headers.push(HttpHeader::new(name, value));
-            
+
             if name.eq_ignore_ascii_case("Content-Length") {
-                let len = value.parse::<usize>().map_err(|_| HttpParseError::InvalidFormat)?;
+                let len = value
+                    .parse::<usize>()
+                    .map_err(|_| HttpParseError::InvalidFormat)?;
                 // Security: Limit content length to 10MB
                 if len > 10 * 1024 * 1024 {
                     return Err(HttpParseError::InvalidFormat);
                 }
                 content_length = Some(len);
-            } else if name.eq_ignore_ascii_case("Transfer-Encoding") && value.to_lowercase().contains("chunked") {
+            } else if name.eq_ignore_ascii_case("Transfer-Encoding")
+                && value.to_lowercase().contains("chunked")
+            {
                 chunked = true;
             }
         }
-        
+
         // Security: RFC 7230 - Request Smuggling / Response Splitting prevention
         if chunked && content_length.is_some() {
             return Err(HttpParseError::InvalidFormat);
         }
-        
+
         let body_start_idx = header_end_idx + 4; // \r\n\r\n
-        
+
         let (body, total_len) = if chunked {
             // chunked転送のパース
             let res = self.parse_chunked(body_start_idx)?;
@@ -242,7 +256,7 @@ impl HttpParser {
             // ここでは簡易的にボディなしとして扱う
             (Vec::new(), body_start_idx)
         };
-        
+
         // パース済みのデータをバッファから削除
         self.buffer.drain(..total_len);
 
@@ -277,11 +291,13 @@ impl HttpParser {
                 None => return Ok((Vec::new(), 0)), // 不完全なデータ
             };
 
-            let line = str::from_utf8(&self.buffer[current_pos..end_idx]).map_err(|_| HttpParseError::InvalidEncoding)?;
+            let line = str::from_utf8(&self.buffer[current_pos..end_idx])
+                .map_err(|_| HttpParseError::InvalidEncoding)?;
             // チャンクサイズは16進数。セミコロン以降のチャンク拡張は無視する。
             let line_trim = line.trim();
             let hex_part = line_trim.split(';').next().unwrap_or(line_trim).trim();
-            let chunk_size = usize::from_str_radix(hex_part, 16).map_err(|_| HttpParseError::InvalidFormat)?;
+            let chunk_size =
+                usize::from_str_radix(hex_part, 16).map_err(|_| HttpParseError::InvalidFormat)?;
 
             // Security: Check for integer overflow and body size limit
             if chunk_size > MAX_BODY_SIZE || body.len() + chunk_size > MAX_BODY_SIZE {
@@ -293,14 +309,16 @@ impl HttpParser {
             if chunk_size == 0 {
                 // 最後のチャンク (0\r\n\r\n)
                 if self.buffer.len() < current_pos + 2 {
-                    return Ok((Vec::new(), 0)); 
+                    return Ok((Vec::new(), 0));
                 }
-                current_pos += 2; 
+                current_pos += 2;
                 break;
             }
 
             // Check if entire chunk + trailing CRLF is in buffer
-            let chunk_end = current_pos.checked_add(chunk_size).and_then(|c| c.checked_add(2));
+            let chunk_end = current_pos
+                .checked_add(chunk_size)
+                .and_then(|c| c.checked_add(2));
             let chunk_end_pos = match chunk_end {
                 Some(pos) => pos,
                 None => return Err(HttpParseError::InvalidFormat),
@@ -319,7 +337,7 @@ impl HttpParser {
 
     fn find_header_end(&self) -> Option<usize> {
         for i in 0..self.buffer.len().saturating_sub(3) {
-            if &self.buffer[i..i+4] == b"\r\n\r\n" {
+            if &self.buffer[i..i + 4] == b"\r\n\r\n" {
                 return Some(i);
             }
         }
@@ -328,7 +346,7 @@ impl HttpParser {
 
     fn find_line_end(&self, start: usize) -> Option<usize> {
         for i in start..self.buffer.len().saturating_sub(1) {
-            if &self.buffer[i..i+2] == b"\r\n" {
+            if &self.buffer[i..i + 2] == b"\r\n" {
                 return Some(i);
             }
         }

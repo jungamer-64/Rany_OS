@@ -221,17 +221,21 @@ impl ZombieEntry {
 
     /// Write payload data to a claimed slot.
     /// SAFETY: Caller must have successfully called try_claim_for_writing().
-    unsafe fn write_payload(&self, payload: ZombiePayload) { unsafe {
-        let ptr = self.payload.get();
-        (*ptr).write(payload);
-    }}
+    unsafe fn write_payload(&self, payload: ZombiePayload) {
+        unsafe {
+            let ptr = self.payload.get();
+            (*ptr).write(payload);
+        }
+    }
 
     /// Read payload data from an acquired slot.
     /// SAFETY: Caller must have successfully called try_acquire_for_processing().
-    unsafe fn read_payload(&self) -> ZombiePayload { unsafe {
-        let ptr = self.payload.get();
-        (*ptr).assume_init_read()
-    }}
+    unsafe fn read_payload(&self) -> ZombiePayload {
+        unsafe {
+            let ptr = self.payload.get();
+            (*ptr).assume_init_read()
+        }
+    }
 }
 
 /// Components for RRef raw parts stored in zombie entry
@@ -256,7 +260,14 @@ impl ZombieRawPartsComponents {
 
     /// Reconstruct the drop function and parts for cleanup.
     /// Returns None if no valid RRef was stored.
-    fn into_drop_parts(self) -> Option<(NonNull<u8>, DomainId, usize, unsafe fn(NonNull<u8>, DomainId, usize))> {
+    fn into_drop_parts(
+        self,
+    ) -> Option<(
+        NonNull<u8>,
+        DomainId,
+        usize,
+        unsafe fn(NonNull<u8>, DomainId, usize),
+    )> {
         if self.ptr == 0 || self.drop_fn == 0 {
             return None;
         }
@@ -358,11 +369,11 @@ impl ZombieQueue {
 
             // Single load, extract both state and generation
             let (state, current_gen) = entry.load_state_gen_relaxed();
-            
+
             if state == ZombieState::Empty {
                 if let Some(new_gen) = entry.try_claim_for_writing(current_gen) {
                     // Phase 1 complete: we own the slot exclusively
-                    
+
                     // Build payload
                     let raw_components = raw.map(ZombieRawPartsComponents::from_raw_parts);
                     let payload = ZombiePayload {
@@ -376,13 +387,13 @@ impl ZombieQueue {
                         raw_meta: raw_components.map_or(0, |r| r.meta),
                         raw_drop_fn: raw_components.map_or(0, |r| r.drop_fn),
                     };
-                    
+
                     // SAFETY: We own the slot (Writing state)
                     unsafe { entry.write_payload(payload) };
-                    
+
                     // Phase 2: publish to consumer (Writing -> Pending)
                     entry.publish(new_gen);
-                    
+
                     self.total_enqueued.fetch_add(1, Ordering::Relaxed);
                     return true;
                 }
@@ -407,12 +418,7 @@ impl ZombieQueue {
     /// # Returns
     /// Number of entries processed (drained from queue).
     /// 単一のゾンビエントリを処理する
-    fn process_single_zombie<F>(
-        &self,
-        entry: &ZombieEntry,
-        sg: u32,
-        callback: &mut F,
-    ) -> bool
+    fn process_single_zombie<F>(&self, entry: &ZombieEntry, sg: u32, callback: &mut F) -> bool
     where
         F: FnMut(ZombieData) -> bool,
     {
@@ -421,13 +427,15 @@ impl ZombieQueue {
         }
         // SAFETY: We own the slot (Processing state)
         let payload = unsafe { entry.read_payload() };
-        
+
         let data = ZombieData {
             iova: payload.iova,
             size: payload.size,
             domain_id: payload.domain_id,
             device_id: if payload.device_bdf != 0xFFFF {
-                Some(crate::io::iommu::types::DeviceId::from_bdf(payload.device_bdf))
+                Some(crate::io::iommu::types::DeviceId::from_bdf(
+                    payload.device_bdf,
+                ))
             } else {
                 None
             },
@@ -435,7 +443,7 @@ impl ZombieQueue {
         };
 
         let success = callback(data);
-        
+
         if success {
             let raw = ZombieRawPartsComponents {
                 ptr: payload.raw_ptr,
@@ -702,7 +710,7 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
                 if let Ok(domain) = driver.get_domain(zombie.domain_id) {
                     let _ = domain.unregister_dma_mapping(zombie.iova);
                 }
-                
+
                 // If we have a device ID, we can do a proper IOMMU unmap
                 if let Some(device_id) = zombie.device_id {
                     driver.unmap_for_device(&device_id, zombie.iova, zombie.size)

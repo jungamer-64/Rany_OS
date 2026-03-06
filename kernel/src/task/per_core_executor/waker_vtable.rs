@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(crate) const WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
@@ -85,7 +84,8 @@ pub fn spawn_with_priority<F>(future: F, priority: Priority, domain_id: Option<u
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let resolved_domain = domain_id.or_else(|| Some(crate::domain_system::current_domain().as_u64()));
+    let resolved_domain =
+        domain_id.or_else(|| Some(crate::domain_system::current_domain().as_u64()));
     let task = Task::new(future, priority, resolved_domain);
     EXECUTOR_MANAGER.spawn(task);
 }

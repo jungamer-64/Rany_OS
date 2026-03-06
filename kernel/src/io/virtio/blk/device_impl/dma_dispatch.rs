@@ -1,7 +1,6 @@
 use super::*;
 
 impl VirtioBlkDevice {
-
     /// Dispatch DMA read based on IOMMU state.
     pub(super) fn dma_read_dispatch<'a>(
         &'a self,

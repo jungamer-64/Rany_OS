@@ -8,9 +8,9 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::types::*;
-use super::error::{TlsError, TlsResult};
 use super::crypto::*;
+use super::error::{TlsError, TlsResult};
+use super::types::*;
 use crate::net::security::ecdh;
 
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
@@ -185,7 +185,9 @@ impl TlsConnection {
     pub fn new(config: TlsConfig) -> Self {
         // RNGのセキュリティ状態をチェック
         if !has_secure_random() {
-            log::warn!("[TLS][SECURITY] Hardware RNG (RDRAND) unavailable — TLS session keys are generated with a WEAK fallback RNG. Connection security is severely degraded!");
+            log::warn!(
+                "[TLS][SECURITY] Hardware RNG (RDRAND) unavailable — TLS session keys are generated with a WEAK fallback RNG. Connection security is severely degraded!"
+            );
         }
 
         // クライアントランダムを生成
@@ -368,7 +370,9 @@ impl TlsConnection {
         }
         let psk = self.tls13_psk.as_ref().unwrap();
         let use_384 = self.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
-        let cipher = self.tls13_psk_cipher.unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+        let cipher = self
+            .tls13_psk_cipher
+            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
 
         if use_384 {
@@ -485,7 +489,9 @@ impl TlsConnection {
         // バッファリング（拒否時の再送用）
         self.early_data_buffer.extend_from_slice(data);
 
-        let cipher = self.tls13_psk_cipher.unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+        let cipher = self
+            .tls13_psk_cipher
+            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
 
         // TLS 1.3 inner plaintext: application_data || ContentType::ApplicationData(23)
         let mut inner_plaintext = Vec::with_capacity(data.len() + 1);
@@ -593,7 +599,7 @@ impl TlsConnection {
         // early_data (RFC 8446 Section 4.2.10)
         if self.tls13_psk.is_some() && self.max_early_data_size > 0 {
             extensions.extend_from_slice(&[0, 42]); // type = early_data
-            extensions.extend_from_slice(&[0, 0]);   // length = 0
+            extensions.extend_from_slice(&[0, 0]); // length = 0
         }
 
         // pre_shared_key (RFC 8446 Section 4.2.11) - MUST be last extension

@@ -67,7 +67,8 @@ struct PerCpuExchangeCache {
 impl PerCpuExchangeCache {
     const fn new() -> Self {
         const EMPTY_BLOCK: Option<CachedBlock> = None;
-        const EMPTY_CACHE: [Option<CachedBlock>; PER_CPU_CACHE_CAPACITY] = [EMPTY_BLOCK; PER_CPU_CACHE_CAPACITY];
+        const EMPTY_CACHE: [Option<CachedBlock>; PER_CPU_CACHE_CAPACITY] =
+            [EMPTY_BLOCK; PER_CPU_CACHE_CAPACITY];
         Self {
             caches: [EMPTY_CACHE; CACHED_SIZE_CLASSES],
             counts: [0; CACHED_SIZE_CLASSES],
@@ -84,20 +85,20 @@ impl PerCpuExchangeCache {
         if size_class >= CACHED_SIZE_CLASSES {
             return None;
         }
-        
+
         let count = self.counts[size_class];
         if count == 0 {
             self.cache_misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
-        
+
         let idx = count - 1;
         if let Some(block) = self.caches[size_class][idx].take() {
             self.counts[size_class] = idx;
             self.cache_hits.fetch_add(1, Ordering::Relaxed);
             return Some((block.addr, block.size));
         }
-        
+
         None
     }
 
@@ -107,17 +108,17 @@ impl PerCpuExchangeCache {
         if size_class >= CACHED_SIZE_CLASSES {
             return false;
         }
-        
+
         let count = self.counts[size_class];
         if count >= PER_CPU_CACHE_CAPACITY {
             return false;
         }
-        
+
         self.caches[size_class][count] = Some(CachedBlock { addr, size });
         self.counts[size_class] = count + 1;
         true
     }
-    
+
     /// Flush cache back to global heap
     fn flush_to_global(&mut self, heap: &mut SegregatedFreeListHeap) {
         for class in 0..CACHED_SIZE_CLASSES {
@@ -129,9 +130,9 @@ impl PerCpuExchangeCache {
             self.counts[class] = 0;
         }
     }
-    
+
     /// Try to steal one block from this cache (called by victim)
-    /// 
+    ///
     /// Returns Some((addr, size)) if a block was available to steal.
     /// This is called by other CPUs when their local cache is empty.
     #[inline]
@@ -139,19 +140,19 @@ impl PerCpuExchangeCache {
         if size_class >= CACHED_SIZE_CLASSES {
             return None;
         }
-        
+
         let count = self.counts[size_class];
         // Only steal if victim has more than half capacity (avoid thrashing)
         if count <= PER_CPU_CACHE_CAPACITY / 2 {
             return None;
         }
-        
+
         let idx = count - 1;
         if let Some(block) = self.caches[size_class][idx].take() {
             self.counts[size_class] = idx;
             return Some((block.addr, block.size));
         }
-        
+
         None
     }
 }
@@ -205,7 +206,7 @@ impl RRefPoolConfig {
             allow_growth: true,
         }
     }
-    
+
     /// 中サイズIPC向け
     pub const fn medium_ipc() -> Self {
         Self {
@@ -215,7 +216,7 @@ impl RRefPoolConfig {
             allow_growth: true,
         }
     }
-    
+
     /// 大きいIPC向け（バッファ転送等）
     pub const fn large_ipc() -> Self {
         Self {
@@ -246,7 +247,7 @@ pub enum RRefBlockState {
 }
 
 /// RRefブロックヘッダ
-/// 
+///
 /// 各ブロックの先頭に配置され、参照カウントと状態を管理。
 #[repr(C, align(8))]
 pub struct RRefBlockHeader {
@@ -276,30 +277,39 @@ impl RRefBlockHeader {
             next_free: 0,
         }
     }
-    
+
     /// 参照カウントをインクリメント
     #[inline]
     pub fn inc_ref(&self) -> u32 {
-        self.ref_count.fetch_add(1, core::sync::atomic::Ordering::AcqRel)
+        self.ref_count
+            .fetch_add(1, core::sync::atomic::Ordering::AcqRel)
     }
-    
+
     /// 参照カウントをデクリメント、0になったらtrueを返す
     #[inline]
     pub fn dec_ref(&self) -> bool {
-        self.ref_count.fetch_sub(1, core::sync::atomic::Ordering::AcqRel) == 1
+        self.ref_count
+            .fetch_sub(1, core::sync::atomic::Ordering::AcqRel)
+            == 1
     }
-    
+
     /// 転送開始
     #[inline]
     pub fn start_transfer(&self) {
-        self.state.store(RRefBlockState::InTransfer as u8, core::sync::atomic::Ordering::Release);
+        self.state.store(
+            RRefBlockState::InTransfer as u8,
+            core::sync::atomic::Ordering::Release,
+        );
     }
-    
+
     /// 転送完了
     #[inline]
     pub fn complete_transfer(&self, _new_domain: u16) {
         // Note: owner_domainはAtomic操作ではないので、転送中に呼び出し側が適切に同期すること
-        self.state.store(RRefBlockState::Allocated as u8, core::sync::atomic::Ordering::Release);
+        self.state.store(
+            RRefBlockState::Allocated as u8,
+            core::sync::atomic::Ordering::Release,
+        );
     }
 }
 
@@ -319,10 +329,10 @@ pub struct RRefPoolStats {
 }
 
 /// RRef Memory Pool
-/// 
+///
 /// 固定サイズブロックのプールを管理。
 /// スレッドセーフなフリーリストを使用。
-/// 
+///
 /// v0.6.1: ABA問題を回避するため、AtomicUsizeからIrqMutexによる保護へ移行。
 pub struct RRefPool {
     /// 設定
@@ -362,9 +372,9 @@ impl RRefPool {
             }),
         }
     }
-    
+
     /// ブロックを割り当て
-    /// 
+    ///
     /// フリーリストから取得、なければNoneを返す
     pub fn allocate(&self) -> Option<*mut RRefBlockHeader> {
         let mut inner = self.inner.lock();
@@ -372,24 +382,29 @@ impl RRefPool {
         if head == 0 {
             return None;
         }
-        
+
         let header = head as *mut RRefBlockHeader;
         unsafe {
             inner.free_head = (*header).next_free;
-            (*header).state.store(RRefBlockState::Allocated as u8, core::sync::atomic::Ordering::Release);
-            (*header).ref_count.store(1, core::sync::atomic::Ordering::Release);
+            (*header).state.store(
+                RRefBlockState::Allocated as u8,
+                core::sync::atomic::Ordering::Release,
+            );
+            (*header)
+                .ref_count
+                .store(1, core::sync::atomic::Ordering::Release);
             (*header).next_free = 0;
         }
-        
+
         inner.free_count -= 1;
         inner.alloc_count += 1;
         Some(header)
     }
-    
+
     /// ブロックを解放
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// - headerが有効なRRefBlockHeaderを指していること
     /// - 参照カウントが0であること
     pub unsafe fn deallocate(&self, header: *mut RRefBlockHeader) {
@@ -403,30 +418,33 @@ impl RRefPool {
         let ex_start = crate::memory::exchange_heap_start() as usize;
         let ex_end = ex_start + crate::memory::EXCHANGE_HEAP_SIZE;
         if addr < ex_start || addr >= ex_end {
-             // In a real system we might panic here, but as it's unsafe deallocate,
-             // we'll just ignore for now to avoid crashing on every minor bug.
-             // However, for security, we MUST NOT add it to our free list.
-             return;
+            // In a real system we might panic here, but as it's unsafe deallocate,
+            // we'll just ignore for now to avoid crashing on every minor bug.
+            // However, for security, we MUST NOT add it to our free list.
+            return;
         }
-        
+
         let mut inner = self.inner.lock();
-        
+
         unsafe {
-            (*header).state.store(RRefBlockState::Free as u8, core::sync::atomic::Ordering::Release);
+            (*header).state.store(
+                RRefBlockState::Free as u8,
+                core::sync::atomic::Ordering::Release,
+            );
             (*header).next_free = inner.free_head;
             inner.free_head = header as usize;
         }
-        
+
         inner.free_count += 1;
         inner.dealloc_count += 1;
     }
-    
+
     /// 転送を記録
     pub fn record_transfer(&self) {
         let mut inner = self.inner.lock();
         inner.transfer_count += 1;
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> RRefPoolStats {
         let inner = self.inner.lock();
@@ -483,7 +501,8 @@ struct BlockFooter {
 }
 
 /// 最小ブロックサイズ (ヘッダ + フッター + 最小データ)
-const MIN_BLOCK_WITH_FOOTER: usize = core::mem::size_of::<FreeBlock>() + core::mem::size_of::<BlockFooter>();
+const MIN_BLOCK_WITH_FOOTER: usize =
+    core::mem::size_of::<FreeBlock>() + core::mem::size_of::<BlockFooter>();
 
 /// Segregated Free Lists アロケータ
 ///

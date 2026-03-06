@@ -73,8 +73,8 @@ impl<T> core::ops::Deref for CacheLinePadded<T> {
 
 pub use backoff::Backoff;
 pub use channel::{
-    create_inter_core_channel, BoundedChannel, BoundedReceiver, BoundedReceiverStatic,
-    BoundedSender, BoundedSenderStatic, InterCoreChannel, InterCoreMessage, DEFAULT_QUEUE_SIZE,
+    BoundedChannel, BoundedReceiver, BoundedReceiverStatic, BoundedSender, BoundedSenderStatic,
+    DEFAULT_QUEUE_SIZE, InterCoreChannel, InterCoreMessage, create_inter_core_channel,
 };
 pub use index_stack::{LockFreeIndexStack, LockFreeIndexStackPushError};
 pub use mpmc::MpmcRingBuffer;

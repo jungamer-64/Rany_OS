@@ -1,6 +1,5 @@
 use super::*;
-use crate::loader::type_id::{TypeIdHash, TypeHash, SemVer, const_hash};
-
+use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
 
 mod trait_impl;
 pub use trait_impl::*;
@@ -12,7 +11,7 @@ impl CompactionCandidates {
             count: 0,
         }
     }
-    
+
     pub fn add(&mut self, order: usize, count: usize) {
         if order < 19 {
             self.by_order[order] += count;
@@ -170,9 +169,10 @@ impl BuddyFrameAllocator {
 
         for &(start, size) in usable_regions {
             // 脆弱性修正: ページ境界にアライン。開始は切り上げ、終了は切り下げ。
-            let start_addr = (start.as_u64() + PAGE_SIZE_4K as u64 - 1) & !(PAGE_SIZE_4K as u64 - 1);
+            let start_addr =
+                (start.as_u64() + PAGE_SIZE_4K as u64 - 1) & !(PAGE_SIZE_4K as u64 - 1);
             let end_addr = (start.as_u64() + size) & !(PAGE_SIZE_4K as u64 - 1);
-            
+
             if start_addr >= end_addr {
                 continue;
             }
@@ -270,8 +270,7 @@ impl BuddyFrameAllocator {
 
     #[inline]
     pub(super) fn set_summary_bit(&mut self, order: usize, detail_word_idx: usize) {
-        let summary_word_idx =
-            self.order_summary_word_start[order] + (detail_word_idx / 64);
+        let summary_word_idx = self.order_summary_word_start[order] + (detail_word_idx / 64);
         let summary_bit = detail_word_idx % 64;
         if summary_word_idx < self.free_summary.len() {
             self.free_summary[summary_word_idx] |= 1u64 << summary_bit;
@@ -280,8 +279,7 @@ impl BuddyFrameAllocator {
 
     #[inline]
     pub(super) fn clear_summary_bit(&mut self, order: usize, detail_word_idx: usize) {
-        let summary_word_idx =
-            self.order_summary_word_start[order] + (detail_word_idx / 64);
+        let summary_word_idx = self.order_summary_word_start[order] + (detail_word_idx / 64);
         let summary_bit = detail_word_idx % 64;
         if summary_word_idx < self.free_summary.len() {
             self.free_summary[summary_word_idx] &= !(1u64 << summary_bit);
@@ -452,9 +450,9 @@ impl BuddyFrameAllocator {
     }
 
     /// 指定オーダーのブロックを割り当て
-    /// 
+    ///
     /// ## 遅延結合との連携
-    /// 
+    ///
     /// 要求サイズのブロックが見つからない場合、まず遅延されていた
     /// 結合処理を実行してから再度探索を試みる。
     pub(super) fn allocate_order(&mut self, order: usize) -> Option<FrameIndex> {
@@ -498,14 +496,16 @@ impl BuddyFrameAllocator {
                 if order > 0 {
                     use crate::mm::meta::page_flags::{self, PageMetaFlags};
                     // Set order
-                    unsafe { page_flags::set_order(frame, order as u8); }
+                    unsafe {
+                        page_flags::set_order(frame, order as u8);
+                    }
 
                     // Head page
                     page_flags::set_flag(frame, PageMetaFlags::CompoundHead);
                     // Tail pages
                     for i in 1..block_size {
-                         let tail_frame = FrameIndex::new(frame.as_usize() + i as usize);
-                         page_flags::set_flag(tail_frame, PageMetaFlags::CompoundTail);
+                        let tail_frame = FrameIndex::new(frame.as_usize() + i as usize);
+                        page_flags::set_flag(tail_frame, PageMetaFlags::CompoundTail);
                     }
                 }
 
@@ -532,9 +532,9 @@ impl BuddyFrameAllocator {
     }
 
     /// 指定オーダーのブロックを解放
-    /// 
+    ///
     /// ## 遅延結合 (Lazy Coalescing)
-    /// 
+    ///
     /// 即座にBuddyとの結合を試みず、フリービットをセットするだけにする。
     /// 結合は以下のタイミングで行われる：
     /// - 解放回数が閾値 (LAZY_COALESCE_THRESHOLD) を超えた場合
@@ -546,14 +546,16 @@ impl BuddyFrameAllocator {
         // Phase 6: Clear Folio flags
         if order > 0 {
             use crate::mm::meta::page_flags::{self, PageMetaFlags};
-            unsafe { page_flags::set_order(frame, 0); }
+            unsafe {
+                page_flags::set_order(frame, 0);
+            }
 
             let count = 1usize << order;
-             page_flags::clear_flag(frame, PageMetaFlags::CompoundHead);
-             for i in 1..count {
-                 let tail_frame = FrameIndex::new(frame.as_usize() + i);
-                 page_flags::clear_flag(tail_frame, PageMetaFlags::CompoundTail);
-             }
+            page_flags::clear_flag(frame, PageMetaFlags::CompoundHead);
+            for i in 1..count {
+                let tail_frame = FrameIndex::new(frame.as_usize() + i);
+                page_flags::clear_flag(tail_frame, PageMetaFlags::CompoundTail);
+            }
         }
 
         // フレームを空きとしてマーク
@@ -582,7 +584,7 @@ impl BuddyFrameAllocator {
     }
 
     /// 指定オーダーのブロックを解放（即時結合版）
-    /// 
+    ///
     /// 遅延結合を使用せず、即座にBuddyとの結合を試みる。
     /// 大きなブロック（2MB以上）の解放など、結合が有利な場合に使用。
     pub(super) fn deallocate_order_immediate(&mut self, frame: FrameIndex, order: usize) {
@@ -591,14 +593,16 @@ impl BuddyFrameAllocator {
         // Phase 6: Clear Folio flags
         if order > 0 {
             use crate::mm::meta::page_flags::{self, PageMetaFlags};
-            unsafe { page_flags::set_order(frame, 0); }
+            unsafe {
+                page_flags::set_order(frame, 0);
+            }
 
             let count = 1usize << order;
-             page_flags::clear_flag(frame, PageMetaFlags::CompoundHead);
-             for i in 1..count {
-                 let tail_frame = FrameIndex::new(frame.as_usize() + i);
-                 page_flags::clear_flag(tail_frame, PageMetaFlags::CompoundTail);
-             }
+            page_flags::clear_flag(frame, PageMetaFlags::CompoundHead);
+            for i in 1..count {
+                let tail_frame = FrameIndex::new(frame.as_usize() + i);
+                page_flags::clear_flag(tail_frame, PageMetaFlags::CompoundTail);
+            }
         }
 
         let block_idx = frame.as_usize() >> order;
@@ -618,7 +622,7 @@ impl BuddyFrameAllocator {
     }
 
     /// 全オーダーで結合可能なブロックを結合する
-    /// 
+    ///
     /// アイドル時やメモリ不足時に呼び出すことで、
     /// 断片化を解消し大きな連続領域を確保できる。
     pub fn try_coalesce_all(&mut self) {

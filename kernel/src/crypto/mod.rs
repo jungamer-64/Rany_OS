@@ -25,7 +25,7 @@
 //! - `net/security/tls/crypto/hmac.rs` — HMAC-SHA256/384
 //! - `net/security/tls/crypto/hkdf.rs` — HKDF 鍵導出
 
+pub mod ed25519;
 pub mod sha256;
 pub mod sha384;
 pub mod sha512;
-pub mod ed25519;

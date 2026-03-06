@@ -18,8 +18,8 @@
 use alloc::sync::Arc;
 use log::{info, warn};
 
-use nvme_ns::fs::BlockIo;
 use nvme_ns::NvmeNamespaceFs;
+use nvme_ns::fs::BlockIo;
 
 use super::block_io::NvmeBlockIoAdapter;
 
@@ -57,11 +57,9 @@ pub fn mount_nvme_ns_fs() -> Result<(), &'static str> {
         Err(_) => {
             // マウント失敗 → フォーマットして再マウント
             info!(target: "nvme_ns", "No valid FS found, formatting...");
-            NvmeNamespaceFs::mkfs(&*dev, 4, "ranyos")
-                .map_err(|_| "mkfs failed")?;
+            NvmeNamespaceFs::mkfs(&*dev, 4, "ranyos").map_err(|_| "mkfs failed")?;
 
-            let fs = NvmeNamespaceFs::mount(dev)
-                .map_err(|_| "mount after mkfs failed")?;
+            let fs = NvmeNamespaceFs::mount(dev).map_err(|_| "mount after mkfs failed")?;
 
             info!(target: "nvme_ns", "NVMe Namespace FS formatted and mounted");
             NVME_NS_FS.call_once(|| fs);

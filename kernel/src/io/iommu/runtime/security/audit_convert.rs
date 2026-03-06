@@ -5,15 +5,8 @@
 use crate::security::audit::{AuditEvent, AuditEventType};
 
 use super::{
-    AtsChangeReason,
-    DeviceTrustLevel,
-    EventAggregate,
-    EventAggregateKey,
-    FMT_BUF_SIZE,
-    IsolationReason,
-    SecurityEvent,
-    fmt_dec_u64,
-    fmt_hex_u64,
+    AtsChangeReason, DeviceTrustLevel, EventAggregate, EventAggregateKey, FMT_BUF_SIZE,
+    IsolationReason, SecurityEvent, fmt_dec_u64, fmt_hex_u64,
 };
 
 /// Log a summary for aggregated events (called periodically).
@@ -22,26 +15,34 @@ pub(crate) fn log_aggregated_event_summary(key: EventAggregateKey, aggregate: Ev
     let mut buf2 = [0u8; FMT_BUF_SIZE];
 
     let audit_event = match key {
-        EventAggregateKey::DmaViolation { source_id } => AuditEvent::new(AuditEventType::IommuEvent, 0)
-            .success(false)
-            .message("dma_violation_summary")
-            .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
-            .field("count", fmt_dec_u64(aggregate.count, &mut buf2)),
-        EventAggregateKey::DeviceIsolated { source_id } => AuditEvent::new(AuditEventType::IommuEvent, 0)
-            .success(false)
-            .message("device_isolated_summary")
-            .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
-            .field("count", fmt_dec_u64(aggregate.count, &mut buf2)),
-        EventAggregateKey::QuarantinePoisoned { domain_id } => AuditEvent::new(AuditEventType::IommuEvent, 0)
-            .success(false)
-            .message("quarantine_poisoned_summary")
-            .field("domain_id", fmt_dec_u64(domain_id as u64, &mut buf1))
-            .field("count", fmt_dec_u64(aggregate.count, &mut buf2)),
-        EventAggregateKey::FaultStorm { source_id } => AuditEvent::new(AuditEventType::IommuEvent, 0)
-            .success(false)
-            .message("fault_storm_summary")
-            .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
-            .field("count", fmt_dec_u64(aggregate.count, &mut buf2)),
+        EventAggregateKey::DmaViolation { source_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("dma_violation_summary")
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
+        }
+        EventAggregateKey::DeviceIsolated { source_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("device_isolated_summary")
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
+        }
+        EventAggregateKey::QuarantinePoisoned { domain_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("quarantine_poisoned_summary")
+                .field("domain_id", fmt_dec_u64(domain_id as u64, &mut buf1))
+                .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
+        }
+        EventAggregateKey::FaultStorm { source_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("fault_storm_summary")
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
+        }
         EventAggregateKey::Other => {
             if let Some(event) = aggregate.representative {
                 let mut buf3 = [0u8; FMT_BUF_SIZE];
@@ -95,9 +96,11 @@ pub(crate) fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
                 .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
                 .field("reason", reason_str)
         }
-        SecurityEvent::QuarantinePoisoned { domain_id } => AuditEvent::new(AuditEventType::IommuEvent, domain_id as u64)
-            .success(false)
-            .message("quarantine_poisoned"),
+        SecurityEvent::QuarantinePoisoned { domain_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, domain_id as u64)
+                .success(false)
+                .message("quarantine_poisoned")
+        }
         SecurityEvent::EventsDropped { count } => AuditEvent::new(AuditEventType::IommuEvent, 0)
             .success(false)
             .message("events_dropped")

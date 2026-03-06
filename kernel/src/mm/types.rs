@@ -3,7 +3,7 @@
 // ============================================================================
 //
 // このモジュールは、メモリ管理全体で共有される基本型を定義します。
-// 
+//
 // ## 設計目標
 // - 型安全性: NewTypeパターンでアドレスとインデックスの取り違えを防止
 // - 統一性: frame_allocator.rsとbuddy_allocator.rsのFrameIndex定義を統合
@@ -433,10 +433,10 @@ pub trait AddressUnit: Copy + Sized {
 
     /// ゼロ値を取得
     fn zero() -> Self;
-    
+
     /// usizeからの変換（インデックス系で使用）
     fn from_usize(value: usize) -> Self;
-    
+
     /// usizeへの変換（インデックス系で使用）
     fn to_usize(self) -> usize;
 }
@@ -459,12 +459,12 @@ impl AddressUnit for FrameIndex {
     fn zero() -> Self {
         FrameIndex::new(0)
     }
-    
+
     #[inline(always)]
     fn from_usize(value: usize) -> Self {
         FrameIndex::new(value)
     }
-    
+
     #[inline(always)]
     fn to_usize(self) -> usize {
         self.as_usize()
@@ -489,12 +489,12 @@ impl AddressUnit for u64 {
     fn zero() -> Self {
         0
     }
-    
+
     #[inline(always)]
     fn from_usize(value: usize) -> Self {
         (value as u64) * Self::PAGE_SIZE
     }
-    
+
     #[inline(always)]
     fn to_usize(self) -> usize {
         (self / Self::PAGE_SIZE) as usize
@@ -597,7 +597,7 @@ mod tests {
     fn test_frame_index_word_and_bit() {
         let frame = FrameIndex::new(65);
         assert_eq!(frame.word_index(), 1); // 65 / 64 = 1
-        assert_eq!(frame.bit_index(), 1);  // 65 % 64 = 1
+        assert_eq!(frame.bit_index(), 1); // 65 % 64 = 1
     }
 
     #[test_case]
@@ -637,7 +637,7 @@ mod tests {
     fn test_frame_index_arithmetic() {
         let a = FrameIndex::new(10);
         let b = FrameIndex::new(5);
-        
+
         assert_eq!((a + 5).as_usize(), 15);
         assert_eq!((a - 3).as_usize(), 7);
         assert_eq!(a - b, 5); // FrameIndex同士の減算はusize
@@ -672,17 +672,17 @@ mod tests {
 // ============================================================================
 
 /// 固定容量のスタックベースベクタ
-/// 
+///
 /// `Vec` と同様のインターフェースを提供するが、ヒープ割り当てを行わない。
 /// メモリアロケータ自身の内部構造で使用することで、再帰的な依存を回避する。
-/// 
+///
 /// # 型パラメータ
-/// 
+///
 /// - `T`: 要素の型
 /// - `N`: 最大容量（コンパイル時定数）
-/// 
+///
 /// # 使用例
-/// 
+///
 /// ```rust
 /// let mut vec: FixedVec<u32, 16> = FixedVec::new();
 /// vec.push(1);
@@ -735,9 +735,9 @@ impl<T, const N: usize> FixedVec<T, N> {
     }
 
     /// 要素を末尾に追加
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// - `true`: 追加成功
     /// - `false`: 容量不足で追加失敗
     #[inline]
@@ -782,18 +782,18 @@ impl<T, const N: usize> FixedVec<T, N> {
     }
 
     /// 指定位置の要素を末尾の要素と交換して削除
-    /// 
+    ///
     /// 順序を維持しないがO(1)で削除可能。
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// `index >= len` の場合パニック（デバッグビルドのみ）
     #[inline]
     pub fn swap_remove(&mut self, index: usize) -> T {
         debug_assert!(index < self.len, "swap_remove: index out of bounds");
-        
+
         self.len -= 1;
-        
+
         if index == self.len {
             // 末尾の要素を削除する場合
             // SAFETY: 元のlenがindexより大きかったので有効
@@ -827,24 +827,14 @@ impl<T, const N: usize> FixedVec<T, N> {
     #[inline]
     pub fn as_slice(&self) -> &[T] {
         // SAFETY: 0..lenの範囲は全て初期化済み
-        unsafe {
-            core::slice::from_raw_parts(
-                self.data.as_ptr() as *const T,
-                self.len,
-            )
-        }
+        unsafe { core::slice::from_raw_parts(self.data.as_ptr() as *const T, self.len) }
     }
 
     /// 可変スライスとして参照を取得
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         // SAFETY: 0..lenの範囲は全て初期化済み
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                self.data.as_mut_ptr() as *mut T,
-                self.len,
-            )
-        }
+        unsafe { core::slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut T, self.len) }
     }
 
     /// イテレータを取得
@@ -873,7 +863,7 @@ impl<T, const N: usize> FixedVec<T, N> {
     }
 
     /// 比較関数でソート
-    /// 
+    ///
     /// スライスのsort_byに委譲する。
     pub fn sort_by<F>(&mut self, compare: F)
     where
@@ -920,4 +910,3 @@ impl<T, const N: usize> core::ops::IndexMut<usize> for FixedVec<T, N> {
         self.get_mut(index).expect("FixedVec index out of bounds")
     }
 }
-

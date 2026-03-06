@@ -83,7 +83,10 @@ impl HierarchicalBitmap {
     /// # Panics
     /// Panics if `total_units` is 0
     pub fn new(total_units: usize) -> Self {
-        assert!(total_units > 0, "HierarchicalBitmap: total_units must be > 0");
+        assert!(
+            total_units > 0,
+            "HierarchicalBitmap: total_units must be > 0"
+        );
 
         let detail_words = (total_units.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
         let summary_words = (detail_words.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
@@ -255,7 +258,7 @@ impl HierarchicalBitmap {
             if let Some(unit_idx) = self.try_allocate_from_word_below(detail_idx, bit_limit) {
                 return Some(unit_idx);
             }
-            
+
             // 次のビットへ
             temp_l1 &= !(1u64 << l1_bit);
         }
@@ -429,27 +432,27 @@ impl HierarchicalBitmap {
     }
 
     /// Mark a range of units as allocated
-    /// 
+    ///
     /// # Arguments
     /// * `start` - Starting index
     /// * `count` - Number of units to mark
-    /// 
+    ///
     /// # Returns
     /// Number of units that were actually marked (were free before)
     pub fn mark_allocated_range(&self, start: usize, count: usize) -> usize {
         if count == 0 {
             return 0;
         }
-        
+
         let end = (start + count).min(self.total_units);
         let mut marked = 0;
-        
+
         for index in start..end {
             if self.mark_allocated(index) {
                 marked += 1;
             }
         }
-        
+
         marked
     }
 
@@ -609,8 +612,8 @@ impl HierarchicalBitmap {
 // HugePageBitmap - Extended Bitmap with 2MB/1GB Tracking
 // ============================================================================
 
-use core::sync::atomic::AtomicU16;
 use super::atomic_utils::AtomicU8;
+use core::sync::atomic::AtomicU16;
 
 /// Pages per 2MB block (2MB / 4KB = 512)
 pub const PAGES_PER_2MB: usize = 512;
@@ -650,7 +653,7 @@ pub const WORDS_PER_2MB: usize = PAGES_PER_2MB / BITS_PER_WORD;
 pub struct HugePageBitmap {
     /// Base 4KB hierarchical bitmap
     base: HierarchicalBitmap,
-    
+
     // === 2MB Level ===
     /// Per-2MB-block used count (0..512)
     /// When 0, the block is fully free
@@ -675,7 +678,7 @@ pub struct HugePageBitmap {
     hint_2m: AtomicUsize,
     /// Allocation hint for partial 2MB (for 4KB allocation)
     hint_2m_partial: AtomicUsize,
-    
+
     // === 1GB Level ===
     /// Per-1GB-block used count (count of non-free 2MB blocks, 0..512)
     used_count_1g: Box<[AtomicU16]>,
@@ -702,7 +705,10 @@ impl core::fmt::Debug for HugePageBitmap {
             .field("base", &self.base)
             .field("total_2m_blocks", &self.total_2m_blocks)
             .field("free_count_2m", &self.free_count_2m.load(Ordering::Relaxed))
-            .field("partial_count_2m", &self.partial_count_2m.load(Ordering::Relaxed))
+            .field(
+                "partial_count_2m",
+                &self.partial_count_2m.load(Ordering::Relaxed),
+            )
             .field("total_1g_blocks", &self.total_1g_blocks)
             .field("free_count_1g", &self.free_count_1g.load(Ordering::Relaxed))
             .finish()

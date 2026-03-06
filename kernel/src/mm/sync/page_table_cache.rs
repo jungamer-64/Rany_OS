@@ -29,12 +29,11 @@
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
+use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
-
-use crate::mm::types::NumaNodeId;
 use crate::mm::phys::buddy_allocator;
+use crate::mm::types::NumaNodeId;
 
 // ============================================================================
 // Configuration
@@ -195,7 +194,7 @@ impl PtQuicklist {
 
         while i < self.pending_count {
             let entry = self.pending[i];
-            
+
             // 強化されたRCUチェック：quiescent epochを使用
             if is_safe_to_reuse(entry.release_epoch) {
                 // readyに移動
@@ -350,7 +349,7 @@ pub fn advance_epoch() {
 }
 
 /// CPUが静止状態を通過したことを記録
-/// 
+///
 /// コンテキストスイッチ時に各CPUから呼び出す。
 /// これによりRCUグレースピリオドが確定する。
 #[inline]
@@ -358,10 +357,10 @@ pub fn cpu_pass_quiescent_state(cpu_id: usize) {
     if cpu_id >= 64 {
         return;
     }
-    
+
     let current = global_epoch();
     CPU_EPOCHS[cpu_id].store(current, Ordering::Release);
-    
+
     // 全CPUの最小エポックを計算してquiescent epochを更新
     update_quiescent_epoch();
 }
@@ -376,7 +375,7 @@ fn update_quiescent_epoch() {
     let mut min_epoch = u64::MAX;
     let current = global_epoch();
     let cpu_count = ACTIVE_CPU_COUNT.load(Ordering::Acquire);
-    
+
     // アクティブCPUの最小エポックを取得
     for i in 0..cpu_count.min(64) {
         let cpu_epoch = CPU_EPOCHS[i].load(Ordering::Acquire);
@@ -384,26 +383,22 @@ fn update_quiescent_epoch() {
             min_epoch = cpu_epoch;
         }
     }
-    
+
     // 有効な値がない場合は現在値-1を使用
     if min_epoch == u64::MAX {
         min_epoch = current.saturating_sub(RCU_GRACE_PERIOD_SWITCHES);
     }
-    
+
     // 最小値が増加した場合のみ更新（monotonic）
     let old = QUIESCENT_EPOCH.load(Ordering::Relaxed);
     if min_epoch > old {
-        let _ = QUIESCENT_EPOCH.compare_exchange(
-            old,
-            min_epoch,
-            Ordering::Release,
-            Ordering::Relaxed,
-        );
+        let _ =
+            QUIESCENT_EPOCH.compare_exchange(old, min_epoch, Ordering::Release, Ordering::Relaxed);
     }
 }
 
 /// リソースが安全に再利用可能かチェック
-/// 
+///
 /// release_epochがquiescent_epoch以下なら安全
 #[inline]
 pub fn is_safe_to_reuse(release_epoch: u64) -> bool {
@@ -470,14 +465,14 @@ pub fn alloc_page_table_page() -> Option<PhysFrame<Size4KiB>> {
     // 現時点ではBuddyから直接割り当て
     // 将来的にはPer-CPU Quicklistを使用
     let frame = buddy_allocator::buddy_alloc_frame()?;
-    
+
     // ゼロクリア
     unsafe {
         let phys = frame.start_address().as_u64();
         let virt = phys + crate::mm::virt::mapping::physical_memory_offset();
         core::ptr::write_bytes(virt as *mut u8, 0, 4096);
     }
-    
+
     PT_CACHE_MANAGER.record_alloc();
     Some(frame)
 }

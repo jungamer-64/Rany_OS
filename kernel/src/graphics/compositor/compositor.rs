@@ -111,8 +111,6 @@ impl Compositor {
         if self.focused == Some(id) {
             self.focused = self.z_order_list.last().copied();
         }
-
-
     }
 
     /// Z-orderリストに挿入
@@ -217,10 +215,6 @@ impl Compositor {
         self.dirty_manager.invalidate_all();
     }
 
-
-
-
-
     // ========================================================================
     // Composition
     // ========================================================================
@@ -260,8 +254,6 @@ impl Compositor {
                 }
             }
         }
-
-
 
         // バックバッファをフレームバッファにコピー
         self.copy_to_framebuffer(fb, None);
@@ -503,13 +495,13 @@ impl Compositor {
     /// バックバッファをフレームバッファにコピー
     fn copy_to_framebuffer(&self, fb: &mut Framebuffer, region: Option<Rect>) {
         if let Some(r) = region {
-             // 画面範囲にクリップ (draw_image_part handles clipping but we need valid rect for it)
-             let clip = Rect::new(0, 0, self.screen_width, self.screen_height);
-             if let Some(draw_rect) = r.intersection(&clip) {
-                 fb.draw_image_part(&self.back_buffer, draw_rect, draw_rect.x, draw_rect.y);
-             }
+            // 画面範囲にクリップ (draw_image_part handles clipping but we need valid rect for it)
+            let clip = Rect::new(0, 0, self.screen_width, self.screen_height);
+            if let Some(draw_rect) = r.intersection(&clip) {
+                fb.draw_image_part(&self.back_buffer, draw_rect, draw_rect.x, draw_rect.y);
+            }
         } else {
-             fb.draw_image(&self.back_buffer, 0, 0);
+            fb.draw_image(&self.back_buffer, 0, 0);
         }
     }
 

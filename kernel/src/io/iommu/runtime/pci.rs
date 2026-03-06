@@ -9,7 +9,7 @@
 #[cfg(not(test))]
 use crate::io::iommu::api::is_iommu_enabled;
 #[cfg(not(test))]
-use crate::io::iommu::runtime::groups::{get_iommu_group_manager, RealPciTopology};
+use crate::io::iommu::runtime::groups::{RealPciTopology, get_iommu_group_manager};
 #[cfg(not(test))]
 use crate::io::iommu::runtime::registry::get_iommu_driver;
 #[cfg(not(test))]
@@ -21,7 +21,7 @@ use spin::Mutex;
 
 #[cfg(not(test))]
 #[allow(unused_imports)]
-use pci_driver::{pcie_ext_config, pcie_ext_manager, AtsController, PcieBdf};
+use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
 
 #[cfg(not(test))]
 static AHCI_PASSTHROUGH_DOMAIN: Mutex<Option<u16>> = Mutex::new(None);
@@ -49,7 +49,10 @@ pub fn setup_iommu_for_pci_device(
     device: &mut crate::io::pci::PciDeviceInfo,
 ) -> Result<u16, crate::io::iommu::types::IommuError> {
     if !is_iommu_enabled() {
-        log::warn!("[IOMMU][PCI] is_iommu_enabled() returned false for {:?}", device.bdf);
+        log::warn!(
+            "[IOMMU][PCI] is_iommu_enabled() returned false for {:?}",
+            device.bdf
+        );
         return Err(crate::io::iommu::types::IommuError::NotSupported);
     }
 
@@ -57,14 +60,20 @@ pub fn setup_iommu_for_pci_device(
     let driver = match get_iommu_driver() {
         Some(d) => d,
         None => {
-            log::error!("[IOMMU][PCI] get_iommu_driver() returned None for {:?}", device.bdf);
+            log::error!(
+                "[IOMMU][PCI] get_iommu_driver() returned None for {:?}",
+                device.bdf
+            );
             return Err(crate::io::iommu::types::IommuError::NotInitialized);
         }
     };
     let iommu_group_manager = match get_iommu_group_manager() {
         Some(m) => m,
         None => {
-            log::error!("[IOMMU][PCI] get_iommu_group_manager() returned None for {:?}", device.bdf);
+            log::error!(
+                "[IOMMU][PCI] get_iommu_group_manager() returned None for {:?}",
+                device.bdf
+            );
             return Err(crate::io::iommu::types::IommuError::NotInitialized);
         }
     };
@@ -113,7 +122,11 @@ pub fn setup_iommu_for_pci_device(
         ) {
             Ok(v) => v,
             Err(e) => {
-                log::error!("[IOMMU][PCI] find_or_create_group (PCIe) failed for {:?}: {:?}", device_id, e);
+                log::error!(
+                    "[IOMMU][PCI] find_or_create_group (PCIe) failed for {:?}: {:?}",
+                    device_id,
+                    e
+                );
                 return Err(e);
             }
         }
@@ -127,7 +140,11 @@ pub fn setup_iommu_for_pci_device(
         ) {
             Ok(v) => v,
             Err(e) => {
-                log::error!("[IOMMU][PCI] find_or_create_group (Legacy) failed for {:?}: {:?}", device_id, e);
+                log::error!(
+                    "[IOMMU][PCI] find_or_create_group (Legacy) failed for {:?}: {:?}",
+                    device_id,
+                    e
+                );
                 return Err(e);
             }
         }
@@ -230,18 +247,20 @@ fn determine_trust_level(
     pcie_ext_manager: &'static pci_driver::PcieExtManager,
     device: &crate::io::pci::PciDeviceInfo,
 ) -> crate::io::iommu::runtime::security::DeviceTrustLevel {
+    use crate::io::iommu::runtime::groups::PciTopologyProvider;
     use crate::io::iommu::runtime::security::DeviceTrustLevel;
     use pci_driver::HotPlugController;
-    use crate::io::iommu::runtime::groups::PciTopologyProvider;
 
     let topology = RealPciTopology::new(pcie_ext_manager);
     let mut current_bus = device.bdf.bus();
 
     // Check all bridges in the path from device to root complex
     loop {
-        if let Some((parent_bus, parent_dev, parent_func)) = topology.find_parent_bridge(current_bus) {
+        if let Some((parent_bus, parent_dev, parent_func)) =
+            topology.find_parent_bridge(current_bus)
+        {
             let parent_bdf = pci_driver::PcieBdf::new(parent_bus, parent_dev, parent_func);
-            
+
             // Check if this bridge/port is hot-plug capable (e.g., Thunderbolt, ExpressCard)
             if let Ok(hp_ctrl) = HotPlugController::new(pcie_ext_manager.config(), parent_bdf) {
                 if hp_ctrl.is_hotplug_capable() {
@@ -253,7 +272,7 @@ fn determine_trust_level(
                     return DeviceTrustLevel::Untrusted;
                 }
             }
-            
+
             current_bus = parent_bus;
             if current_bus == 0 {
                 break;
@@ -295,7 +314,9 @@ fn log_device_protection(
 ///
 /// PCI初期化後に呼び出して、全デバイスを保護します。
 #[cfg(not(test))]
-pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceInfo]) -> Result<(), crate::io::iommu::types::IommuError> {
+pub fn setup_iommu_for_all_pci_devices(
+    devices: &mut [crate::io::pci::PciDeviceInfo],
+) -> Result<(), crate::io::iommu::types::IommuError> {
     if !is_iommu_enabled() {
         log::info!("[IOMMU] Skipping PCI device protection (IOMMU not enabled)\n");
         return Ok(());
@@ -310,9 +331,16 @@ pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceI
                 let bdf = PcieBdf::from_bdf_address(&device.bdf);
                 if let Ok(acs) = pci_driver::AcsController::new(config, bdf) {
                     if let Err(e) = acs.enable_isolation() {
-                        log::warn!("[IOMMU][ACS] Failed to enable ACS on bridge {:?}: {:?}", device.bdf, e);
+                        log::warn!(
+                            "[IOMMU][ACS] Failed to enable ACS on bridge {:?}: {:?}",
+                            device.bdf,
+                            e
+                        );
                     } else {
-                        log::info!("[IOMMU][ACS] Enabled P2P isolation on bridge {:?}", device.bdf);
+                        log::info!(
+                            "[IOMMU][ACS] Enabled P2P isolation on bridge {:?}",
+                            device.bdf
+                        );
                     }
                 }
             }

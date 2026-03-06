@@ -2,9 +2,7 @@ use super::*;
 use crate::loader::{unload_cell, with_registry_mut};
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, Ordering};
-use kernel_api::driver_abi::{
-    AbiDriverType, DRIVER_ABI_VERSION, DriverContext, DriverVTable,
-};
+use kernel_api::driver_abi::{AbiDriverType, DRIVER_ABI_VERSION, DriverContext, DriverVTable};
 
 static PROBE_CALLED: AtomicBool = AtomicBool::new(false);
 static REMOVE_CALLED: AtomicBool = AtomicBool::new(false);

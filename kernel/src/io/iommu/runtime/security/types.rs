@@ -143,18 +143,20 @@ pub enum EventAggregateKey {
 impl From<&SecurityEvent> for EventAggregateKey {
     fn from(event: &SecurityEvent) -> Self {
         match event {
-            SecurityEvent::DmaViolation { source_id, .. } => {
-                EventAggregateKey::DmaViolation { source_id: *source_id }
-            }
-            SecurityEvent::DeviceIsolated { source_id, .. } => {
-                EventAggregateKey::DeviceIsolated { source_id: *source_id }
-            }
+            SecurityEvent::DmaViolation { source_id, .. } => EventAggregateKey::DmaViolation {
+                source_id: *source_id,
+            },
+            SecurityEvent::DeviceIsolated { source_id, .. } => EventAggregateKey::DeviceIsolated {
+                source_id: *source_id,
+            },
             SecurityEvent::QuarantinePoisoned { domain_id, .. } => {
-                EventAggregateKey::QuarantinePoisoned { domain_id: *domain_id }
+                EventAggregateKey::QuarantinePoisoned {
+                    domain_id: *domain_id,
+                }
             }
-            SecurityEvent::FaultStormDetected { source_id, .. } => {
-                EventAggregateKey::FaultStorm { source_id: *source_id }
-            }
+            SecurityEvent::FaultStormDetected { source_id, .. } => EventAggregateKey::FaultStorm {
+                source_id: *source_id,
+            },
             _ => EventAggregateKey::Other,
         }
     }

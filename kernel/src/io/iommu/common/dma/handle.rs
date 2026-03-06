@@ -392,7 +392,8 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
             } else {
                 None
             };
-            let mapping_kind_encoded = crate::io::iommu::runtime::zombie::encode_mapping_kind(&self.mapping);
+            let mapping_kind_encoded =
+                crate::io::iommu::runtime::zombie::encode_mapping_kind(&self.mapping);
 
             // Attempt to enqueue to zombie queue for async cleanup
             // We take the RRef only if enqueue succeeds
@@ -438,7 +439,7 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
                     "[IOMMU][SECURITY] Zombie queue full - performing synchronous unmap fallback for IOVA=0x{:x}",
                     self.iova
                 );
-                
+
                 // Perform synchronous unmap by taking ownership
                 let _ = self.unmap_sync_internal_in_drop();
             } else {
@@ -463,7 +464,9 @@ impl<T: ?Sized + 'static> DmaHandle<T> {
             MappingKind::Identity => Ok(()),
             MappingKind::Domain => Err(IommuError::InvalidAddress),
             MappingKind::Global => crate::io::iommu::api::unmap_dma(self.iova, self.size),
-            MappingKind::Device(device) => crate::io::iommu::api::unmap_for_device(&device, self.iova, self.size),
+            MappingKind::Device(device) => {
+                crate::io::iommu::api::unmap_for_device(&device, self.iova, self.size)
+            }
         };
 
         if result.is_ok() {
@@ -539,9 +542,7 @@ impl<T> DmaHandle<T> {
             ));
         }
 
-        log::warn!(
-            "[IOMMU][SECURITY] map_simple identity mapping - bypassing protection!"
-        );
+        log::warn!("[IOMMU][SECURITY] map_simple identity mapping - bypassing protection!");
 
         use x86_64::VirtAddr;
 
@@ -562,7 +563,8 @@ impl<T> DmaHandle<T> {
         if let Err(e) = crate::io::iommu::runtime::security::validate_dma_region(phys, size) {
             log::error!(
                 "[IOMMU][SECURITY] Identity mapping rejected: overlaps protected region {:#x}-{:#x}",
-                phys, phys + size
+                phys,
+                phys + size
             );
             return Err(MapError::new(rref, MapErrorKind::IommuError(e)));
         }

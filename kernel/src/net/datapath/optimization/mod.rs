@@ -13,15 +13,12 @@
 //! - GROv2 (Generic Receive Offload)
 //! - TSOシミュレーション (TCP Segmentation Offload)
 
-
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use crate::sync::PoisonLock;
 
-use super::mempool::PacketRef;
 use super::checksum_offload::internet_checksum;
-
-
+use super::mempool::PacketRef;
 
 // ============================================================================
 // Batch Processing - バッチ処理
@@ -306,7 +303,9 @@ impl BatchProcessor {
             return Some(batch);
         }
 
-        let Ok(mut batch_guard) = self.current_batch.lock() else { return None; };
+        let Ok(mut batch_guard) = self.current_batch.lock() else {
+            return None;
+        };
         batch_guard.push(packet);
 
         if batch_guard.is_full() {
@@ -326,7 +325,9 @@ impl BatchProcessor {
 
     /// バッチを強制フラッシュ
     pub fn flush(&self) -> Option<PacketBatch> {
-        let Ok(mut batch_guard) = self.current_batch.lock() else { return None; };
+        let Ok(mut batch_guard) = self.current_batch.lock() else {
+            return None;
+        };
         if batch_guard.is_empty() {
             return None;
         }
@@ -348,7 +349,9 @@ impl BatchProcessor {
         if elapsed_us >= self.config.max_delay_us as u64 {
             self.last_flush_tsc.store(current_tsc, Ordering::Relaxed);
             // タイムアウトしてもバッチが空なら何もしない
-            let Ok(mut batch_guard) = self.current_batch.lock() else { return None; };
+            let Ok(mut batch_guard) = self.current_batch.lock() else {
+                return None;
+            };
             if !batch_guard.is_empty() {
                 let ready_batch = core::mem::take(&mut *batch_guard);
                 drop(batch_guard);
@@ -370,7 +373,6 @@ impl BatchProcessor {
         &self.stats
     }
 }
-
 
 // ============================================================================
 // NUMA-aware Memory Allocation
@@ -634,11 +636,9 @@ impl FlowAffinity {
     ) -> u32 {
         // Microsoft RSS 標準ハッシュキー (40バイト — 先頭13バイトで十分)
         static RSS_KEY: [u8; 40] = [
-            0x6d, 0x5a, 0x56, 0xda, 0x25, 0x5b, 0x0e, 0xc2,
-            0x41, 0x67, 0x25, 0x3d, 0x43, 0xa3, 0x8f, 0xb0,
-            0xd0, 0xca, 0x2b, 0xcb, 0xae, 0x7b, 0x30, 0xb4,
-            0x77, 0xcb, 0x2d, 0xa3, 0x80, 0x30, 0xf2, 0x0c,
-            0x6a, 0x42, 0xb7, 0x3b, 0xbe, 0xac, 0x01, 0xfa,
+            0x6d, 0x5a, 0x56, 0xda, 0x25, 0x5b, 0x0e, 0xc2, 0x41, 0x67, 0x25, 0x3d, 0x43, 0xa3,
+            0x8f, 0xb0, 0xd0, 0xca, 0x2b, 0xcb, 0xae, 0x7b, 0x30, 0xb4, 0x77, 0xcb, 0x2d, 0xa3,
+            0x80, 0x30, 0xf2, 0x0c, 0x6a, 0x42, 0xb7, 0x3b, 0xbe, 0xac, 0x01, 0xfa,
         ];
 
         // 入力を12バイト（src_ip:4 + dst_ip:4 + src_port:2 + dst_port:2）に

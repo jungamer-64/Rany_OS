@@ -19,16 +19,16 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
 use crate::sync::poison_lock::IrqPoisonLock;
-use crate::loader::type_id::{TypeIdHash, TypeHash, SemVer, const_hash};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use x86_64::structures::paging::{PhysFrame, Size4KiB, Size2MiB, Size1GiB};
 use x86_64::PhysAddr;
+use x86_64::structures::paging::{PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
-use super::buddy_allocator::{BuddyFrameAllocator, BuddyAllocatorStats, MAX_ORDER};
-use crate::mm::types::NumaNodeId;
+use super::buddy_allocator::{BuddyAllocatorStats, BuddyFrameAllocator, MAX_ORDER};
 use crate::mm::numa::topology::MAX_NUMA_NODES;
+use crate::mm::types::NumaNodeId;
 
 // ============================================================================
 // Per-Node Allocator Statistics
@@ -112,8 +112,12 @@ impl NodeBuddyAllocator {
         if !self.is_initialized() {
             return None;
         }
-        
-        let result = self.allocator.lock().unwrap_or_else(|e| e.into_inner()).allocate_4k_frame();
+
+        let result = self
+            .allocator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .allocate_4k_frame();
         if result.is_some() {
             self.stats.local_allocs.fetch_add(1, Ordering::Relaxed);
         }
@@ -125,8 +129,12 @@ impl NodeBuddyAllocator {
         if !self.is_initialized() {
             return None;
         }
-        
-        let result = self.allocator.lock().unwrap_or_else(|e| e.into_inner()).allocate_2m_frame();
+
+        let result = self
+            .allocator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .allocate_2m_frame();
         if result.is_some() {
             self.stats.local_allocs.fetch_add(1, Ordering::Relaxed);
         }
@@ -138,8 +146,12 @@ impl NodeBuddyAllocator {
         if !self.is_initialized() {
             return None;
         }
-        
-        let result = self.allocator.lock().unwrap_or_else(|e| e.into_inner()).allocate_1g_frame();
+
+        let result = self
+            .allocator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .allocate_1g_frame();
         if result.is_some() {
             self.stats.local_allocs.fetch_add(1, Ordering::Relaxed);
         }
@@ -151,8 +163,11 @@ impl NodeBuddyAllocator {
         if !self.is_initialized() {
             return;
         }
-        
-        self.allocator.lock().unwrap_or_else(|e| e.into_inner()).deallocate_4k_frame(frame);
+
+        self.allocator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .deallocate_4k_frame(frame);
         self.stats.deallocs.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -161,8 +176,11 @@ impl NodeBuddyAllocator {
         if !self.is_initialized() {
             return;
         }
-        
-        self.allocator.lock().unwrap_or_else(|e| e.into_inner()).deallocate_2m_frame(frame);
+
+        self.allocator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .deallocate_2m_frame(frame);
         self.stats.deallocs.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -171,8 +189,11 @@ impl NodeBuddyAllocator {
         if !self.is_initialized() {
             return;
         }
-        
-        self.allocator.lock().unwrap_or_else(|e| e.into_inner()).deallocate_1g_frame(frame);
+
+        self.allocator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .deallocate_1g_frame(frame);
         self.stats.deallocs.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -187,7 +208,10 @@ impl NodeBuddyAllocator {
                 order_stats: [(0, 0); MAX_ORDER + 1],
             };
         }
-        self.allocator.lock().unwrap_or_else(|e| e.into_inner()).stats()
+        self.allocator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stats()
     }
 
     /// ノードIDを取得
@@ -201,7 +225,11 @@ impl NodeBuddyAllocator {
         if !self.is_initialized() {
             return 0;
         }
-        self.allocator.lock().unwrap_or_else(|e| e.into_inner()).stats().free_frames
+        self.allocator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stats()
+            .free_frames
     }
 }
 
@@ -252,7 +280,7 @@ pub unsafe fn init_per_node_allocators(regions_by_node: &[Vec<(PhysAddr, u64)>])
         if node_id >= MAX_NUMA_NODES || regions.is_empty() {
             continue;
         }
-        
+
         unsafe {
             PER_NODE_ALLOCATORS[node_id].init(regions);
         }
@@ -262,7 +290,7 @@ pub unsafe fn init_per_node_allocators(regions_by_node: &[Vec<(PhysAddr, u64)>])
             regions.len()
         );
     }
-    
+
     INITIALIZED.store(true, Ordering::Release);
 }
 
@@ -310,7 +338,10 @@ pub fn alloc_frame_local_first() -> Option<PhysFrame<Size4KiB>> {
         }
         if let Some(allocator) = get_node_allocator(NumaNodeId::new(node_id as u8)) {
             if let Some(frame) = allocator.allocate_4k() {
-                allocator.stats.remote_fallbacks.fetch_add(1, Ordering::Relaxed);
+                allocator
+                    .stats
+                    .remote_fallbacks
+                    .fetch_add(1, Ordering::Relaxed);
                 return Some(frame);
             }
         }
@@ -487,9 +518,9 @@ pub fn get_all_node_stats() -> [(BuddyAllocatorStats, u64, u64); MAX_NUMA_NODES]
             order_stats: [(0, 0); MAX_ORDER + 1],
         }
     }
-    
+
     let mut stats = [(empty_stats(), 0u64, 0u64); MAX_NUMA_NODES];
-    
+
     for (i, allocator) in PER_NODE_ALLOCATORS.iter().enumerate() {
         if allocator.is_initialized() {
             stats[i] = (
@@ -499,7 +530,7 @@ pub fn get_all_node_stats() -> [(BuddyAllocatorStats, u64, u64); MAX_NUMA_NODES]
             );
         }
     }
-    
+
     stats
 }
 

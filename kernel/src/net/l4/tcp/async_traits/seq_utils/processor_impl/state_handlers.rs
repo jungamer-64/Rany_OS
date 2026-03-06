@@ -2,7 +2,6 @@ use super::*;
 use alloc::vec;
 
 impl TcpProcessor {
-
     /// Handle segment in FIN-WAIT-2 state
     pub(super) fn handle_fin_wait2_segment(
         tcb: &mut TcpControlBlock,
@@ -162,7 +161,10 @@ impl TcpProcessor {
                     // RFC 1122: Check if maximum retransmission threshold reached
                     // Standard TCP typically uses 15, but for this OS we use 10.
                     if tcb.timers.retransmit_count >= 10 {
-                        log::info!("[TCP] Connection timed out after {} retransmissions", tcb.timers.retransmit_count);
+                        log::info!(
+                            "[TCP] Connection timed out after {} retransmissions",
+                            tcb.timers.retransmit_count
+                        );
                         timed_out_connections.push(*key);
                         continue;
                     }
@@ -172,7 +174,7 @@ impl TcpProcessor {
 
                     if let Some((seq, payload)) = packet_data {
                         tcb.backoff_rto();
-                        
+
                         // RFC 5681: On RTO, go back to slow start
                         tcb.on_loss();
 
@@ -331,7 +333,13 @@ impl TcpProcessor {
     /// Mark that a retransmit for a given (local, remote, seq) has been sent.
     /// Updates the corresponding unacked segment's sent_time and retransmit counters
     /// and applies RTO backoff.
-    pub fn mark_retransmit_sent(&mut self, local: EndpointAddr, remote: EndpointAddr, seq: u32, current_time: u64) {
+    pub fn mark_retransmit_sent(
+        &mut self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        seq: u32,
+        current_time: u64,
+    ) {
         if let Some(tcb_lock) = self.connections.get(&(local, remote)).cloned() {
             if let Ok(mut tcb) = tcb_lock.lock() {
                 if tcb.touch_unacked_segment_for_retransmit(seq, current_time) {
@@ -345,7 +353,15 @@ impl TcpProcessor {
 
     /// Record that a TCP segment was actually sent on the wire for a connection.
     /// This updates TCB state (snd_nxt) and queues the data for potential retransmit.
-    pub fn record_sent_packet(&mut self, local: EndpointAddr, remote: EndpointAddr, seq: u32, flags: u16, payload: &[u8], current_time: u64) {
+    pub fn record_sent_packet(
+        &mut self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        seq: u32,
+        flags: u16,
+        payload: &[u8],
+        current_time: u64,
+    ) {
         if let Some(tcb_lock) = self.connections.get(&(local, remote)).cloned() {
             if let Ok(mut tcb) = tcb_lock.lock() {
                 // Clear any pending delayed ACK since we are now sending an ACK (possibly with data)

@@ -6,8 +6,8 @@
 //! efficiently without carrying the overhead of per-page tracking for every
 //! 4KB constituent page.
 
-use crate::mm::types::FrameIndex;
 use crate::mm::meta::page_flags::{self, PageMetaFlags};
+use crate::mm::types::FrameIndex;
 
 /// A Folio represents a physically contiguous set of pages.
 /// A Folio is always aligned to its size.
@@ -16,7 +16,7 @@ pub struct Folio(FrameIndex);
 
 impl Folio {
     /// Create a Folio from a head page frame index.
-    /// 
+    ///
     /// # Safety
     /// The frame must be the head of a valid compound page or a single order-0 page.
     pub const fn new(frame: FrameIndex) -> Self {
@@ -36,7 +36,7 @@ impl Folio {
     /// Try to create a Folio from an arbitrary frame.
     /// If the frame is a tail page, returns the Folio for the head page.
     /// If the frame is a head page or order-0, returns the Folio for it.
-    /// 
+    ///
     /// Note: Currently we don't strictly track "Head pointer in Tail" in software
     /// without extra overhead. For now, this assumes we are given a head.
     /// A robust implementation would store the head PFN in the metadata of tail pages.

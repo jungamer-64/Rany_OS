@@ -19,8 +19,8 @@
 //! The archive ends with two consecutive zero-filled 512-byte blocks.
 
 use crate::driver_domain;
-use crate::driver_domain::lifecycle::DriverDomainConfig;
 use crate::driver_domain::RestartPolicy;
+use crate::driver_domain::lifecycle::DriverDomainConfig;
 use alloc::string::String;
 use alloc::vec::Vec;
 use boot_proto::InitramfsModule;
@@ -276,7 +276,6 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
     );
     loaded
 }
-
 
 /// Extract driver name from path (e.g., "drivers/nvme.cell" -> "nvme")
 fn extract_driver_name(path: &str) -> String {

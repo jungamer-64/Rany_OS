@@ -169,7 +169,9 @@ impl MdnsService {
     /// mDNSサービスのメインループ（非同期）
     pub async fn run(&mut self) -> Result<(), &'static str> {
         // Create socket
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(MDNS_PORT).await.ok_or("Failed to bind mDNS socket")?;
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(MDNS_PORT)
+            .await
+            .ok_or("Failed to bind mDNS socket")?;
 
         // Security (RFC 6762 Section 11): mDNS packets MUST have IP TTL 255.
         socket.set_ttl(255);
@@ -177,16 +179,19 @@ impl MdnsService {
         if !socket.join_multicast_group(MDNS_MULTICAST_GROUP).await {
             return Err("Failed to join mDNS multicast group");
         }
-        
-        log::info!("[NET] mDNS service task started (hostname: {}.local)", self.hostname);
+
+        log::info!(
+            "[NET] mDNS service task started (hostname: {}.local)",
+            self.hostname
+        );
 
         loop {
             // パケット受信を待機
             if let Some((src, ttl, packet)) = socket.recv().await {
                 let now = crate::task::timer::current_tick() / 1000;
-                
-                // Security: RFC 6762 Section 11 - Multicast DNS implementations MUST silently 
-                // discard any Multicast DNS queries that arrive with an IP TTL (or Hop Limit) 
+
+                // Security: RFC 6762 Section 11 - Multicast DNS implementations MUST silently
+                // discard any Multicast DNS queries that arrive with an IP TTL (or Hop Limit)
                 // other than 255.
                 let is_loopback = match src {
                     UdpAddr::V4 { ip, .. } => ip.is_loopback(),
@@ -194,14 +199,17 @@ impl MdnsService {
                 };
 
                 if ttl != 255 && !is_loopback {
-                    log::warn!("[NET] mDNS: Ignoring packet with TTL {} (RFC 6762 Section 11 mandate)", ttl);
+                    log::warn!(
+                        "[NET] mDNS: Ignoring packet with TTL {} (RFC 6762 Section 11 mandate)",
+                        ttl
+                    );
                     continue;
                 }
 
                 // 受信パケットを処理
                 let src_ip = src.ip_v4().unwrap_or(Ipv4Address::ANY);
                 let result = self.process_packet(packet.data(), src_ip, ttl, now);
-                
+
                 match result {
                     MdnsResult::SendResponse { name, ip, ttl } => {
                         let mut buffer = [0u8; 512];
@@ -212,14 +220,16 @@ impl MdnsService {
                     }
                     _ => {}
                 }
-                
+
                 // 保留中のレポート（クエリなど）があれば送信
                 let reports = self.take_pending_reports();
                 for report in reports {
                     let mut buffer = [0u8; 512];
                     if report.is_response {
                         if let Some(ip) = report.ip {
-                            if let Some(len) = Self::build_response(&mut buffer, &report.name, ip, report.ttl) {
+                            if let Some(len) =
+                                Self::build_response(&mut buffer, &report.name, ip, report.ttl)
+                            {
                                 let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
                                 let _ = socket.send_to(&buffer[..len], dst);
                             }
@@ -232,7 +242,7 @@ impl MdnsService {
                     }
                 }
             }
-            
+
             // 定期的なキャッシュクリーンアップ
             let now = crate::task::timer::current_tick() / 1000;
             self.cleanup_expired(now);
@@ -355,7 +365,11 @@ impl MdnsService {
                     const MAX_PENDING_REPORTS: usize = 32;
                     if self.pending_reports.len() < MAX_PENDING_REPORTS {
                         // Check for duplicate pending reports to avoid redundant work
-                        if !self.pending_reports.iter().any(|r| r.name == our_fqdn && r.is_response) {
+                        if !self
+                            .pending_reports
+                            .iter()
+                            .any(|r| r.name == our_fqdn && r.is_response)
+                        {
                             self.pending_reports.push(MdnsReport {
                                 name: our_fqdn.clone(),
                                 ip: Some(self.local_ip),
@@ -365,7 +379,10 @@ impl MdnsService {
                             });
                         }
                     } else {
-                        log::warn!("[NET] mDNS: Too many pending reports - dropping response for {}", our_fqdn);
+                        log::warn!(
+                            "[NET] mDNS: Too many pending reports - dropping response for {}",
+                            our_fqdn
+                        );
                     }
 
                     return MdnsResult::SendResponse {
@@ -445,7 +462,13 @@ impl MdnsService {
 
     /// Aレコードをキャッシュに追加・更新する。TTL=0のgoodbyeパケットはキャッシュ削除。
     /// 正常にキャッシュ更新された場合trueを返す。
-    fn cache_a_record(&mut self, name_lower: &str, ip: Ipv4Address, ttl: u32, current_time: u64) -> bool {
+    fn cache_a_record(
+        &mut self,
+        name_lower: &str,
+        ip: Ipv4Address,
+        ttl: u32,
+        current_time: u64,
+    ) -> bool {
         // Security: mDNS is only for names ending in ".local" (RFC 6762)
         if !name_lower.ends_with(".local") {
             log::warn!("[NET] mDNS: Ignoring non-local name: {}", name_lower);
@@ -465,7 +488,10 @@ impl MdnsService {
 
         self.cache.insert(
             String::from(name_lower),
-            MdnsCacheEntry { ip, expiry_time: expiry },
+            MdnsCacheEntry {
+                ip,
+                expiry_time: expiry,
+            },
         );
         true
     }
@@ -797,7 +823,12 @@ pub fn decode_dns_name(data: &[u8], offset: usize) -> Option<(String, usize)> {
         // Compression pointer (top 2 bits set = 0xC0)
         if len_byte & DNS_COMPRESSION_MASK == DNS_COMPRESSION_MASK {
             current = handle_compression_pointer(
-                data, current, &mut final_offset, &mut jumped, &mut jump_count, max_jumps,
+                data,
+                current,
+                &mut final_offset,
+                &mut jumped,
+                &mut jump_count,
+                max_jumps,
             )?;
             continue;
         }
@@ -874,7 +905,10 @@ fn skip_dns_questions(data: &[u8], mut offset: usize, qdcount: u16) -> Option<us
 
 /// DNS応答レコードをパースする
 /// 返り値: (rtype, rclass_masked, rdlength, next_offset, rdata_start, name, ttl)
-fn parse_dns_answer_record(data: &[u8], offset: usize) -> Option<(u16, u16, usize, usize, usize, String, u32)> {
+fn parse_dns_answer_record(
+    data: &[u8],
+    offset: usize,
+) -> Option<(u16, u16, usize, usize, usize, String, u32)> {
     let (name, new_offset) = decode_dns_name(data, offset)?;
     let mut offset = new_offset;
 
@@ -884,7 +918,12 @@ fn parse_dns_answer_record(data: &[u8], offset: usize) -> Option<(u16, u16, usiz
 
     let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
     let rclass = u16::from_be_bytes([data[offset + 2], data[offset + 3]]);
-    let ttl = u32::from_be_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
+    let ttl = u32::from_be_bytes([
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ]);
     let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
     offset += 10;
 
@@ -895,7 +934,15 @@ fn parse_dns_answer_record(data: &[u8], offset: usize) -> Option<(u16, u16, usiz
     let rdata_start = offset;
     let rclass_masked = rclass & 0x7FFF;
 
-    Some((rtype, rclass_masked, rdlength, offset + rdlength, rdata_start, name, ttl))
+    Some((
+        rtype,
+        rclass_masked,
+        rdlength,
+        offset + rdlength,
+        rdata_start,
+        name,
+        ttl,
+    ))
 }
 
 /// Aレコード（INクラス、4バイト）かどうか判定

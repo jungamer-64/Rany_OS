@@ -232,7 +232,11 @@ impl PageTableScope {
         let phys = virt_ptr_to_phys(ptr as *const u8)?;
 
         // Security: Register and protect the page table IMMEDIATELY after allocation.
-        crate::io::iommu::common::dma::page_table_pool::register_page_table(phys, ptr as usize, node);
+        crate::io::iommu::common::dma::page_table_pool::register_page_table(
+            phys,
+            ptr as usize,
+            node,
+        );
 
         Ok(Self {
             ptr,
@@ -385,9 +389,11 @@ pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
             return Ok(virt - hhdm_base);
         }
 
-        crate::mm::virt::higher_half::virt_to_phys(crate::mm::virt::higher_half::VirtAddr::new(virt))
-            .ok_or(IommuError::HardwareError)
-            .map(|p| p.as_u64())
+        crate::mm::virt::higher_half::virt_to_phys(crate::mm::virt::higher_half::VirtAddr::new(
+            virt,
+        ))
+        .ok_or(IommuError::HardwareError)
+        .map(|p| p.as_u64())
     }
 
     #[cfg(test)]
@@ -499,7 +505,9 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             .ok_or(IommuError::InvalidAddress)?;
 
         let page_size = crate::mm::types::PAGE_SIZE_4K as usize;
-        let alloc_bytes = bytes.checked_add(page_size - 1).ok_or(IommuError::InvalidAddress)?
+        let alloc_bytes = bytes
+            .checked_add(page_size - 1)
+            .ok_or(IommuError::InvalidAddress)?
             / page_size
             * page_size;
         let frame_count = alloc_bytes / page_size;

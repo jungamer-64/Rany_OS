@@ -645,11 +645,19 @@ impl HealthMonitor {
 
         let _ = writeln!(s, "# HELP exorust_health_warnings_total Total warnings");
         let _ = writeln!(s, "# TYPE exorust_health_warnings_total counter");
-        let _ = writeln!(s, "exorust_health_warnings_total {}", metrics.total_warnings);
+        let _ = writeln!(
+            s,
+            "exorust_health_warnings_total {}",
+            metrics.total_warnings
+        );
 
         let _ = writeln!(s, "# HELP exorust_health_criticals_total Total criticals");
         let _ = writeln!(s, "# TYPE exorust_health_criticals_total counter");
-        let _ = writeln!(s, "exorust_health_criticals_total {}", metrics.total_criticals);
+        let _ = writeln!(
+            s,
+            "exorust_health_criticals_total {}",
+            metrics.total_criticals
+        );
 
         s
     }

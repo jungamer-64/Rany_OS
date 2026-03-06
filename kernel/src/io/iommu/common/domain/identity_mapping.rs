@@ -26,7 +26,8 @@ impl IommuDomain {
     ) -> Result<(), IommuError> {
         log::warn!(
             "[IOMMU][SECURITY] Identity mapping {:#x}+{:#x} - bypassing protection!",
-            phys, size
+            phys,
+            size
         );
         self.map(phys, phys, size, read, write)
     }
@@ -44,9 +45,7 @@ impl IommuDomain {
         read: bool,
         write: bool,
     ) -> Result<(), IommuError> {
-        log::error!(
-            "[IOMMU][SECURITY] Identity mapping rejected in non-debug build"
-        );
+        log::error!("[IOMMU][SECURITY] Identity mapping rejected in non-debug build");
         Err(IommuError::NotSupported)
     }
 }

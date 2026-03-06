@@ -1,12 +1,11 @@
 use super::*;
-use crate::net::l3::icmp::{IcmpType, DestUnreachCode};
-use crate::net::l4::endpoint::types::{seq_before, seq_leq, seq_after, seq_geq};
-
+use crate::net::l3::icmp::{DestUnreachCode, IcmpType};
+use crate::net::l4::endpoint::types::{seq_after, seq_before, seq_geq, seq_leq};
 
 impl TcpControlBlock {
     pub fn new(local_addr: EndpointAddr) -> Self {
         let now = crate::task::timer::current_tick();
-        
+
         // Generate a cryptographically secure random Initial Sequence Number (ISN).
         // Using ISN randomization (RFC 6528) is critical to prevent TCP spoofing and hijacking.
         let isn = generate_initial_seq(local_addr, None);
@@ -134,7 +133,10 @@ impl TcpControlBlock {
             // ... (eviction logic)
             let mut furthest_seq: Option<u32> = None;
             for &s in self.rx.ooo_queue.keys() {
-                if furthest_seq.is_none() || (s.wrapping_sub(seq) as i32) > (furthest_seq.unwrap().wrapping_sub(seq) as i32) {
+                if furthest_seq.is_none()
+                    || (s.wrapping_sub(seq) as i32)
+                        > (furthest_seq.unwrap().wrapping_sub(seq) as i32)
+                {
                     furthest_seq = Some(s);
                 }
             }
@@ -229,7 +231,10 @@ impl TcpControlBlock {
     /// Remove outdated OOO segments (before rcv_nxt)
     pub fn prune_ooo_segments(&mut self) {
         let rcv_nxt = self.seq.rcv_nxt;
-        let outdated: Vec<u32> = self.rx.ooo_queue.keys()
+        let outdated: Vec<u32> = self
+            .rx
+            .ooo_queue
+            .keys()
             .filter(|&&seq| (seq.wrapping_sub(rcv_nxt) as i32) < 0)
             .cloned()
             .collect();
@@ -256,7 +261,7 @@ impl TcpControlBlock {
         // If (SND.UNA < SEG.ACK =< SND.NXT), the send window should be updated.
         // If (SEG.ACK = SND.UNA), the send window should be updated if (SEG.SEQ > SND.WL1)
         // or (SEG.SEQ = SND.WL1 and SEG.WND > SND.WL2).
-        
+
         let new_wnd = if self.options.wscale_enabled {
             (wnd as u32) << self.options.peer_wscale
         } else {
@@ -275,9 +280,9 @@ impl TcpControlBlock {
     /// RFC 793 / 9293 check for whether to update send window
     pub fn should_update_window(&self, seq: u32, ack: u32, window: u16) -> bool {
         let new_wnd = (window as u32) << self.options.peer_wscale;
-        
+
         // RFC 9293 Section 3.10.7.4 (Step 6):
-        // (SND.WL1 < SEG.SEQ) OR (SND.WL1 = SEG.SEQ AND SND.WL2 < SEG.ACK) 
+        // (SND.WL1 < SEG.SEQ) OR (SND.WL1 = SEG.SEQ AND SND.WL2 < SEG.ACK)
         // OR (SND.WL1 = SEG.SEQ AND SND.WL2 = SEG.ACK AND SEG.WND > SND.WND)
         if seq_after(seq, self.seq.snd_wl1) {
             return true;
@@ -310,9 +315,11 @@ impl TcpControlBlock {
 
     #[inline]
     pub fn send_capacity_bytes(&self) -> usize {
-        core::cmp::min(self.congestion.cwnd, self.seq.snd_wnd)
-            .saturating_sub(self.tx.outstanding_bytes.saturating_add(self.tx.send_buffer_bytes))
-            as usize
+        core::cmp::min(self.congestion.cwnd, self.seq.snd_wnd).saturating_sub(
+            self.tx
+                .outstanding_bytes
+                .saturating_add(self.tx.send_buffer_bytes),
+        ) as usize
     }
 
     #[inline]
@@ -322,7 +329,10 @@ impl TcpControlBlock {
 
     #[inline]
     pub fn enqueue_send_packet(&mut self, packet: PacketRef) {
-        self.tx.send_buffer_bytes = self.tx.send_buffer_bytes.saturating_add(packet.len() as u32);
+        self.tx.send_buffer_bytes = self
+            .tx
+            .send_buffer_bytes
+            .saturating_add(packet.len() as u32);
         self.tx.send_buffer.push_back(packet);
     }
 
@@ -339,13 +349,19 @@ impl TcpControlBlock {
     #[inline]
     pub fn dequeue_send_packet(&mut self) -> Option<PacketRef> {
         let packet = self.tx.send_buffer.pop_front()?;
-        self.tx.send_buffer_bytes = self.tx.send_buffer_bytes.saturating_sub(packet.len() as u32);
+        self.tx.send_buffer_bytes = self
+            .tx
+            .send_buffer_bytes
+            .saturating_sub(packet.len() as u32);
         Some(packet)
     }
 
     #[inline]
     pub fn requeue_send_packet_front(&mut self, packet: PacketRef) {
-        self.tx.send_buffer_bytes = self.tx.send_buffer_bytes.saturating_add(packet.len() as u32);
+        self.tx.send_buffer_bytes = self
+            .tx
+            .send_buffer_bytes
+            .saturating_add(packet.len() as u32);
         self.tx.send_buffer.push_front(packet);
     }
 
@@ -390,7 +406,9 @@ impl TcpControlBlock {
 
     #[inline]
     pub fn recv_buffer_available_bytes(&self) -> usize {
-        self.rx.recv_buffer_limit_bytes.saturating_sub(self.rx.recv_buffer_bytes)
+        self.rx
+            .recv_buffer_limit_bytes
+            .saturating_sub(self.rx.recv_buffer_bytes)
     }
 
     #[inline]
@@ -581,10 +599,7 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    pub fn push_backlog_connection_and_wake(
-        &self,
-        tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
-    ) {
+    pub fn push_backlog_connection_and_wake(&self, tcb_arc: &Arc<PoisonLock<TcpControlBlock>>) {
         if let Some(backlog_lock) = &self.waiters.backlog {
             if let Ok(mut backlog) = backlog_lock.lock() {
                 // Security: Limit backlog size to prevent SYN flood memory exhaustion
@@ -594,7 +609,9 @@ impl TcpControlBlock {
                     return;
                 }
 
-                backlog.push_back(TcpStream { tcb: tcb_arc.clone() });
+                backlog.push_back(TcpStream {
+                    tcb: tcb_arc.clone(),
+                });
                 if let Some(accept_waker) = &self.waiters.accept_waker {
                     accept_waker.wake();
                 }
@@ -679,7 +696,10 @@ impl TcpControlBlock {
     pub fn clone_oldest_unacked_packet_for_retransmit(&self) -> Option<(u32, u16, Vec<u8>)> {
         // RFC 2018: Skip segments that have been SACKed
         for seg in self.timers.unacked_segments.iter() {
-            if !self.options.is_sacked(seg.seq, Self::unacked_seq_space_len(seg)) {
+            if !self
+                .options
+                .is_sacked(seg.seq, Self::unacked_seq_space_len(seg))
+            {
                 return Some((seg.seq, seg.flags, seg.data.clone()));
             }
         }
@@ -687,13 +707,19 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    pub fn touch_oldest_unacked_for_retransmit(&mut self, current_time: u64) -> Option<(u32, Vec<u8>)> {
+    pub fn touch_oldest_unacked_for_retransmit(
+        &mut self,
+        current_time: u64,
+    ) -> Option<(u32, Vec<u8>)> {
         let ts_val = self.get_ts_val(); // Get new timestamp for retransmission
-        
+
         // RFC 2018: Skip segments that have been SACKed
         // Borrow checker: we can borrow self.options while self.timers.unacked_segments is mutably borrowed
         for seg in self.timers.unacked_segments.iter_mut() {
-            if !self.options.is_sacked(seg.seq, Self::unacked_seq_space_len(seg)) {
+            if !self
+                .options
+                .is_sacked(seg.seq, Self::unacked_seq_space_len(seg))
+            {
                 seg.sent_time = current_time;
                 seg.ts_val = ts_val;
                 seg.retransmit_count = seg.retransmit_count.saturating_add(1);
@@ -717,7 +743,10 @@ impl TcpControlBlock {
 
     #[inline]
     fn find_unacked_segment_mut_by_seq(&mut self, seq: u32) -> Option<&mut UnackedSegment> {
-        self.timers.unacked_segments.iter_mut().find(|s| s.seq == seq)
+        self.timers
+            .unacked_segments
+            .iter_mut()
+            .find(|s| s.seq == seq)
     }
 
     #[inline]
@@ -734,7 +763,11 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    fn retain_unacked_after_ack_and_count_removed(&mut self, ack_num: u32, current_time: u64) -> (u32, Option<u64>) {
+    fn retain_unacked_after_ack_and_count_removed(
+        &mut self,
+        ack_num: u32,
+        current_time: u64,
+    ) -> (u32, Option<u64>) {
         let mut removed = 0u32;
         let mut rtt_sample = None;
         let mut old_queue = core::mem::take(&mut self.timers.unacked_segments);
@@ -757,9 +790,8 @@ impl TcpControlBlock {
 
             // Partially acknowledged: trim prefix from the retransmit queue entry.
             if TcpProcessor::seq_after(ack_num, seg.seq) {
-                removed = removed.saturating_add(Self::trim_unacked_segment_prefix_to_ack(
-                    &mut seg, ack_num,
-                ));
+                removed = removed
+                    .saturating_add(Self::trim_unacked_segment_prefix_to_ack(&mut seg, ack_num));
             }
 
             kept.push_back(seg);
@@ -789,7 +821,8 @@ impl TcpControlBlock {
         let original_seq = seg.seq;
         seg.seq = ack_num;
 
-        if (seg.flags & 0x02) != 0 && acked > 0 { // SYN
+        if (seg.flags & 0x02) != 0 && acked > 0 {
+            // SYN
             seg.flags &= !0x02;
             acked -= 1;
         }
@@ -800,7 +833,8 @@ impl TcpControlBlock {
             acked -= payload_trim as u32;
         }
 
-        if (seg.flags & 0x01) != 0 && acked > 0 { // FIN
+        if (seg.flags & 0x01) != 0 && acked > 0 {
+            // FIN
             seg.flags &= !0x01;
             acked -= 1;
         }
@@ -812,7 +846,8 @@ impl TcpControlBlock {
     /// Remove acknowledged segments from retransmission queue
     pub fn ack_segments(&mut self, ack_num: u32, current_time: u64) {
         // Remove all segments with seq + len <= ack_num and count removed sequence-space bytes.
-        let (removed, rtt_sample) = self.retain_unacked_after_ack_and_count_removed(ack_num, current_time);
+        let (removed, rtt_sample) =
+            self.retain_unacked_after_ack_and_count_removed(ack_num, current_time);
         self.tx.outstanding_bytes = self.tx.outstanding_bytes.saturating_sub(removed);
 
         if let Some(rtt) = rtt_sample {
@@ -835,9 +870,9 @@ impl TcpControlBlock {
     /// OOMによるパケットドロップを記録する
     pub fn record_oom_drop(&mut self, payload: &[u8]) -> bool {
         self.stats.record_oom_drop(payload.len());
-        
+
         log::warn!("[TCP] OOM: dropped {} bytes of payload", payload.len());
-        
+
         // パケットをドロップするがコネクションは維持する (= RSTを送らない) ため、
         // 呼び出し元が正常として処理を続行できるよう true を返す
         true
@@ -856,7 +891,7 @@ impl TcpControlBlock {
         let new_total = self.rx.recv_queue_bytes.saturating_add(payload.len());
         if new_total > self.rx.recv_queue_limit_bytes {
             // Security: In production, limit is 0 to disable heap-allocating fallback.
-            // We return false here to indicate buffer is full/unavailable, but do NOT 
+            // We return false here to indicate buffer is full/unavailable, but do NOT
             // close the connection. This allows the stack to send an ACK with window 0
             // or just drop the segment, following standard TCP flow control.
             return false;
@@ -885,12 +920,12 @@ impl TcpControlBlock {
     }
 
     /// Update RTO based on RTT measurement (RFC 6298)
-    /// 
+    ///
     /// Called when an ACK is received for a segment that was not retransmitted.
     pub fn update_rto(&mut self, rtt_sample: u64) {
-        const ALPHA: u64 = 8;  // 1/8
-        const BETA: u64 = 4;   // 1/4
-        const MIN_RTO: u64 = 200;    // 200ms
+        const ALPHA: u64 = 8; // 1/8
+        const BETA: u64 = 4; // 1/4
+        const MIN_RTO: u64 = 200; // 200ms
         const MAX_RTO: u64 = 60_000; // 60 seconds in milliseconds
 
         if let (Some(srtt), Some(rttvar)) = (self.timers.srtt, self.timers.rttvar) {
@@ -927,10 +962,12 @@ impl TcpControlBlock {
     #[inline]
     pub(crate) fn seq_space_len_for_len_flags(data_len: usize, flags: u16) -> u32 {
         let mut len = data_len as u32;
-        if flags & 0x02 != 0 { // SYN
+        if flags & 0x02 != 0 {
+            // SYN
             len = len.saturating_add(1);
         }
-        if flags & 0x01 != 0 { // FIN
+        if flags & 0x01 != 0 {
+            // FIN
             len = len.saturating_add(1);
         }
         len
@@ -1011,7 +1048,7 @@ impl TcpControlBlock {
     pub fn on_new_ack(&mut self, bytes_acked: u32) -> bool {
         let mss = self.congestion.mss as u32;
         let ack_num = self.seq.snd_una;
-        
+
         // Fast Recovery handling
         if self.congestion.in_recovery {
             // RFC 6582 (NewReno): Check if this is a Full ACK
@@ -1025,15 +1062,19 @@ impl TcpControlBlock {
                 // Partial ACK: RFC 6582
                 // 1. Retransmit the first unacknowledged segment (caller handles this)
                 // 2. Deflate cwnd by the amount of data acknowledged, then add 1 MSS
-                self.congestion.cwnd = self.congestion.cwnd.saturating_sub(bytes_acked).saturating_add(mss);
+                self.congestion.cwnd = self
+                    .congestion
+                    .cwnd
+                    .saturating_sub(bytes_acked)
+                    .saturating_add(mss);
                 // 3. Stay in recovery
                 return true; // Partial ACK
             }
         }
-        
+
         // Reset dup ACK counter
         self.congestion.dup_ack_count = 0;
-        
+
         if self.congestion.cwnd < self.congestion.ssthresh {
             // Slow Start: exponential growth
             // RFC 5681: Increase cwnd by at most SMSS bytes for each ACK
@@ -1041,9 +1082,15 @@ impl TcpControlBlock {
         } else if self.congestion.cwnd > 0 {
             // Congestion Avoidance: linear growth (AIMD - Additive Increase)
             // RFC 5681: Increase cwnd by at most 1 MSS per RTT
-            self.congestion.bytes_acked_in_ca = self.congestion.bytes_acked_in_ca.saturating_add(bytes_acked);
+            self.congestion.bytes_acked_in_ca = self
+                .congestion
+                .bytes_acked_in_ca
+                .saturating_add(bytes_acked);
             if self.congestion.bytes_acked_in_ca >= self.congestion.cwnd {
-                self.congestion.bytes_acked_in_ca = self.congestion.bytes_acked_in_ca.saturating_sub(self.congestion.cwnd);
+                self.congestion.bytes_acked_in_ca = self
+                    .congestion
+                    .bytes_acked_in_ca
+                    .saturating_sub(self.congestion.cwnd);
                 self.congestion.cwnd = self.congestion.cwnd.saturating_add(mss);
             }
         }
@@ -1055,34 +1102,37 @@ impl TcpControlBlock {
     /// Returns true if fast retransmit should be triggered (3rd dup ACK)
     pub fn on_dup_ack(&mut self) -> bool {
         self.congestion.dup_ack_count = self.congestion.dup_ack_count.saturating_add(1);
-        
+
         if self.congestion.dup_ack_count == 3 && !self.congestion.in_recovery {
             // Fast Retransmit + Fast Recovery (RFC 5681)
             self.enter_fast_recovery();
             return true; // Trigger fast retransmit
         }
-        
+
         if self.congestion.in_recovery && self.congestion.dup_ack_count > 3 {
             // Inflate cwnd during fast recovery
-            self.congestion.cwnd = self.congestion.cwnd.saturating_add(self.congestion.mss as u32);
+            self.congestion.cwnd = self
+                .congestion
+                .cwnd
+                .saturating_add(self.congestion.mss as u32);
         }
-        
+
         false
     }
 
     /// Enter Fast Recovery mode (RFC 5681 Section 3.2)
     pub(super) fn enter_fast_recovery(&mut self) {
         let mss = self.congestion.mss as u32;
-        
+
         // RFC 6582 (NewReno): Record the recovery exit point (the next sequence number to be sent)
         self.congestion.recovery_exit_point = self.seq.snd_nxt;
 
         // ssthresh = max(FlightSize / 2, 2*MSS)
         self.congestion.ssthresh = (self.tx.outstanding_bytes / 2).max(2 * mss);
-        
+
         // cwnd = ssthresh + 3*MSS (for the 3 dup ACKs)
         self.congestion.cwnd = self.congestion.ssthresh.saturating_add(3 * mss);
-        
+
         self.congestion.in_recovery = true;
     }
 
@@ -1101,7 +1151,7 @@ impl TcpControlBlock {
 
     /// Handle ICMP Source Quench (RFC 1122 Section 4.2.3.9)
     pub fn on_source_quench(&mut self) {
-        // RFC 1122 Section 4.2.3.9: "A TCP SHOULD NOT, however, change the 
+        // RFC 1122 Section 4.2.3.9: "A TCP SHOULD NOT, however, change the
         // congestion window in response to a Source Quench."
         // Modern stacks (and RFC 6633) deprecate Source Quench entirely.
         // We log it and ignore for RFC 1122 compliance.
@@ -1110,23 +1160,27 @@ impl TcpControlBlock {
 
     /// Handle ICMP Error (RFC 1122 Section 4.2.3.9)
     pub fn on_icmp_error(&mut self, icmp_type: IcmpType, code: u8) {
-        // RFC 1122: "A TCP SHOULD notify the user of the error, but it SHOULD NOT 
+        // RFC 1122: "A TCP SHOULD notify the user of the error, but it SHOULD NOT
         // close the connection."
-        
-        // However, for SYN-SENT state, certain errors mean the connection 
+
+        // However, for SYN-SENT state, certain errors mean the connection
         // attempt failed (e.g. Port Unreachable = Connection Refused).
         if self.state == TcpState::SynSent {
             if icmp_type == IcmpType::DestinationUnreachable {
                 match DestUnreachCode::from(code) {
                     DestUnreachCode::PortUnreachable => {
-                        log::info!("[TCP] Connection refused by remote host (ICMP Port Unreachable)");
+                        log::info!(
+                            "[TCP] Connection refused by remote host (ICMP Port Unreachable)"
+                        );
                         self.close_and_wake();
                         return;
                     }
                     DestUnreachCode::HostUnreachable | DestUnreachCode::NetworkUnreachable => {
                         // RFC 1122 Section 4.2.3.9: "it SHOULD NOT close the connection."
                         // We just log it and wait for timeout or retry.
-                        log::info!("[TCP] Remote host/network unreachable (ICMP); keeping connection open");
+                        log::info!(
+                            "[TCP] Remote host/network unreachable (ICMP); keeping connection open"
+                        );
                         return;
                     }
                     _ => {}
@@ -1135,9 +1189,13 @@ impl TcpControlBlock {
         }
 
         // For established connections, we just log it for now.
-        // In a more complete implementation, we would store the error to be 
+        // In a more complete implementation, we would store the error to be
         // returned by the next read/write operation.
-        log::info!("[TCP] Received ICMP error (Type {:?}, Code {}) for established connection", icmp_type, code);
+        log::info!(
+            "[TCP] Received ICMP error (Type {:?}, Code {}) for established connection",
+            icmp_type,
+            code
+        );
     }
 
     /// Check if sending should be delayed (Nagle's algorithm + Sender SWS avoidance)
@@ -1182,7 +1240,13 @@ impl TcpControlBlock {
     // ========================================================================
 
     /// Enable/disable keepalive with custom parameters (all times in milliseconds)
-    pub fn set_keepalive(&mut self, enabled: bool, idle_ms: Option<u64>, interval_ms: Option<u64>, count: Option<u8>) {
+    pub fn set_keepalive(
+        &mut self,
+        enabled: bool,
+        idle_ms: Option<u64>,
+        interval_ms: Option<u64>,
+        count: Option<u8>,
+    ) {
         self.timers.keepalive_enabled = enabled;
         if let Some(idle) = idle_ms {
             self.timers.keepalive_idle = idle;
@@ -1202,7 +1266,7 @@ impl TcpControlBlock {
     }
 
     /// Check if keepalive probe should be sent
-    /// 
+    ///
     /// Returns:
     /// - None: No action needed
     /// - Some(true): Send keepalive probe
@@ -1211,19 +1275,19 @@ impl TcpControlBlock {
         if !self.timers.keepalive_enabled {
             return None;
         }
-        
+
         if !self.is_established() {
             return None;
         }
 
-        // RFC 1122 Section 4.2.3.6: Keep-alive packets SHOULD NOT be sent 
+        // RFC 1122 Section 4.2.3.6: Keep-alive packets SHOULD NOT be sent
         // if there is any data currently in flight.
         if self.tx.outstanding_bytes > 0 {
             return None;
         }
-        
+
         let elapsed = current_time.saturating_sub(self.timers.last_activity_time);
-        
+
         if self.timers.keepalive_probes_sent == 0 {
             // First probe after idle time
             if elapsed >= self.timers.keepalive_idle {
@@ -1232,9 +1296,9 @@ impl TcpControlBlock {
             }
         } else {
             // Subsequent probes at interval
-            let probe_time = self.timers.keepalive_idle + 
-                (self.timers.keepalive_probes_sent as u64 - 1) * self.timers.keepalive_interval;
-            
+            let probe_time = self.timers.keepalive_idle
+                + (self.timers.keepalive_probes_sent as u64 - 1) * self.timers.keepalive_interval;
+
             if elapsed >= probe_time + self.timers.keepalive_interval {
                 if self.timers.keepalive_probes_sent >= self.timers.keepalive_count {
                     // Too many probes - connection is dead
@@ -1244,7 +1308,7 @@ impl TcpControlBlock {
                 return Some(true);
             }
         }
-        
+
         None
     }
 
@@ -1281,10 +1345,10 @@ impl TcpControlBlock {
             return None;
         }
 
-        // Peer window is zero. 
-        // RFC 1122 Section 4.2.2.17: "A TCP MUST NOT close a connection because the 
+        // Peer window is zero.
+        // RFC 1122 Section 4.2.2.17: "A TCP MUST NOT close a connection because the
         // window is zero and the probe timer has expired."
-        // We continue probing indefinitely (or until a very high limit) but with 
+        // We continue probing indefinitely (or until a very high limit) but with
         // maximum backoff.
 
         // Exponential backoff: initial * 2^min(probes, 6)
@@ -1295,8 +1359,8 @@ impl TcpControlBlock {
         if elapsed >= interval {
             self.timers.zwp_probes_sent = self.timers.zwp_probes_sent.saturating_add(1);
             if self.timers.zwp_probes_sent > 100 {
-                 // Prevent overflow, keep it at a high but stable value
-                 self.timers.zwp_probes_sent = 100;
+                // Prevent overflow, keep it at a high but stable value
+                self.timers.zwp_probes_sent = 100;
             }
             self.timers.zwp_last_probe_time = current_time;
             Some(true) // Send probe
@@ -1372,33 +1436,33 @@ impl TcpControlBlock {
     /// Update our advertised receive window
     pub fn update_rcv_wnd(&mut self, available_buffer: u32) {
         // SWS Avoidance: RFC 1122 Section 4.2.3.3
-        // The receiver SHOULD NOT update the window if the update is less than 
+        // The receiver SHOULD NOT update the window if the update is less than
         // min(MSS, 1/2*RCV.WND).  Here RCV.WND is the total receive buffer size.
-        
+
         let old_wnd = self.options.rcv_wnd_scaled;
         let mss = self.congestion.mss as u32;
         let total_buffer = self.rx.recv_buffer_limit_bytes as u32;
-        
-        // RFC 1122 Section 4.2.2.13: "A TCP SHOULD NOT shrink the window after it has 
+
+        // RFC 1122 Section 4.2.2.13: "A TCP SHOULD NOT shrink the window after it has
         // been advertised."
         // We try to maintain the right edge (RCV.NXT + RCV.WND) if possible.
-        
+
         if available_buffer < old_wnd {
-            // Buffer pressure detected. 
-            // RFC 1122 Section 4.2.2.16: "A TCP SHOULD NOT shrink the window after it has 
-            // been advertised. If it must shrink the window, it should do so by not 
+            // Buffer pressure detected.
+            // RFC 1122 Section 4.2.2.16: "A TCP SHOULD NOT shrink the window after it has
+            // been advertised. If it must shrink the window, it should do so by not
             // moving the right window edge to the left."
-            
+
             let max_right_edge = self.options.rcv_wnd_max_adv;
             let current_nxt = self.seq.rcv_nxt;
-            
+
             // Promised window: Distance to the previously advertised right edge
             let promised_wnd = if seq_after(max_right_edge, current_nxt) {
                 max_right_edge.wrapping_sub(current_nxt)
             } else {
                 0
             };
-            
+
             // We MUST at least advertise promised_wnd to avoid moving the right edge left.
             // available_buffer might be smaller, but we already promised the space!
             self.options.rcv_wnd_scaled = core::cmp::max(available_buffer, promised_wnd);
@@ -1406,7 +1470,7 @@ impl TcpControlBlock {
             // Window is growing or staying the same. Apply SWS avoidance.
             let increment = available_buffer - old_wnd;
             let threshold = core::cmp::min(mss, total_buffer / 2);
-            
+
             if increment >= threshold || available_buffer == total_buffer || old_wnd == 0 {
                 self.options.rcv_wnd_scaled = available_buffer;
             }
@@ -1422,7 +1486,8 @@ impl TcpControlBlock {
 
         // Calculate the 16-bit window field (scaled down)
         if self.options.wscale_enabled {
-            self.seq.rcv_wnd = (self.options.rcv_wnd_scaled >> self.options.our_wscale).min(65535) as u16;
+            self.seq.rcv_wnd =
+                (self.options.rcv_wnd_scaled >> self.options.our_wscale).min(65535) as u16;
         } else {
             self.seq.rcv_wnd = self.options.rcv_wnd_scaled.min(65535) as u16;
         }
@@ -1447,7 +1512,13 @@ impl TcpControlBlock {
     /// Process incoming timestamp option
     ///
     /// Updates ts_recent for PAWS and prepares ts_ecr for reply (RFC 7323 Section 5.3)
-    pub fn process_ts_option(&mut self, ts_val: u32, _ts_ecr: u32, current_time: u64, seq_num: u32) {
+    pub fn process_ts_option(
+        &mut self,
+        ts_val: u32,
+        _ts_ecr: u32,
+        current_time: u64,
+        seq_num: u32,
+    ) {
         // RFC 7323 Section 5.3: Update TS.Recent if:
         // (1) SEG.TSval >= TS.Recent, AND
         // (2) SEG.SEQ <= last.ACK.sent (rcv_nxt)
@@ -1460,22 +1531,22 @@ impl TcpControlBlock {
             self.options.ts_recent_age = current_time;
         }
 
-        // RFC 7323 Section 5.2: The TSval to be sent in the TSecr field 
+        // RFC 7323 Section 5.2: The TSval to be sent in the TSecr field
         // of the NEXT segment is the current value of TS.Recent.
         self.options.ts_ecr = self.options.ts_recent;
     }
     /// Check PAWS (Protection Against Wrapped Sequences)
-    /// 
+    ///
     /// Returns true if segment should be rejected (old duplicate)
     pub fn check_paws(&self, ts_val: u32, current_time: u64) -> bool {
         if !self.options.ts_enabled || self.options.ts_recent == 0 {
             return false;
         }
-        
-        // RFC 7323: If ts_recent is less than 24 days old and 
+
+        // RFC 7323: If ts_recent is less than 24 days old and
         // incoming ts_val < ts_recent, reject segment
         const PAWS_IDLE_LIMIT_MS: u64 = 24 * 24 * 60 * 60 * 1_000; // 24 days in milliseconds
-        
+
         let age = current_time.saturating_sub(self.options.ts_recent_age);
         if age < PAWS_IDLE_LIMIT_MS {
             // Compare timestamps (handling wrap-around)
@@ -1484,18 +1555,18 @@ impl TcpControlBlock {
                 return true; // Old duplicate - reject
             }
         }
-        
+
         false
     }
 
     /// Measure RTT from timestamp echo
-    /// 
+    ///
     /// Returns RTT in milliseconds if measurement is valid
     pub fn measure_rtt_from_ts(&self, ts_ecr: u32, current_ts: u32) -> Option<u64> {
         if !self.options.ts_enabled || ts_ecr == 0 {
             return None;
         }
-        
+
         // RTT = current_ts - ts_ecr (in timestamp units)
         // Assuming 1ms per tick (common convention)
         let rtt_ticks = current_ts.wrapping_sub(ts_ecr);
@@ -1518,13 +1589,13 @@ impl TcpControlBlock {
     }
 
     /// Add a SACK block for out-of-order segment received
-    /// 
+    ///
     /// Called when we receive data out of order to build SACK option
     pub fn add_sack_block(&mut self, left: u32, right: u32) {
         if !self.options.sack_enabled {
             return;
         }
-        
+
         // Insert new block, maintaining most recent first
         // Shift existing blocks down
         for i in (1..4).rev() {
@@ -1535,7 +1606,7 @@ impl TcpControlBlock {
     }
 
     /// Process SACK option received from peer
-    /// 
+    ///
     /// Updates scoreboard to mark segments as selectively acknowledged
     pub fn process_sack_option(&mut self, blocks: &[(u32, u32)]) {
         self.options.process_sack_option(blocks);
@@ -1595,7 +1666,7 @@ impl TcpControlBlock {
         // Timestamps (RFC 7323)
         // Only in SYN or if negotiated (ts_enabled)
         if (syn && !ack) || self.options.ts_enabled {
-            opts.push(8);  // Kind
+            opts.push(8); // Kind
             opts.push(10); // Length
             let ts_val = self.get_ts_val().to_be_bytes();
             let ts_ecr = self.options.ts_ecr.to_be_bytes();

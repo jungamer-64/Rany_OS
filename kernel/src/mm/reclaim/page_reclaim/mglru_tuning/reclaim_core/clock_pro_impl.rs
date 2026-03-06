@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl ClockProList {
     pub const fn new() -> Self {
         Self {
@@ -22,7 +21,7 @@ impl ClockProList {
     /// 新しいページを追加（常にColdとして開始）
     pub fn add_page(&self, frame: FrameIndex, timestamp: u64) {
         let entry = ClockProEntry::new(frame, ClockProState::Cold, timestamp);
-        
+
         let mut pages = self.pages.lock();
         pages.push_back(entry);
         self.cold_count.fetch_add(1, Ordering::Relaxed);
@@ -31,7 +30,7 @@ impl ClockProList {
     /// ページアクセスを記録
     pub fn access_page(&self, frame: FrameIndex) {
         let pages = self.pages.lock();
-        
+
         for entry in pages.iter() {
             if entry.frame == frame {
                 entry.set_referenced();
@@ -41,7 +40,7 @@ impl ClockProList {
     }
 
     /// Hand Coldを進めて非参照Coldページを回収
-    /// 
+    ///
     /// # Returns
     /// 回収するフレームのリスト
     /// Coldエントリを回収試行し、成功時はTestエントリに変換する
@@ -68,22 +67,22 @@ impl ClockProList {
     pub fn run_hand_cold(&self, target_count: usize) -> Vec<FrameIndex> {
         let mut pages = self.pages.lock();
         let mut victims = Vec::new();
-        
+
         if pages.is_empty() {
             return victims;
         }
-        
+
         let mut hand = self.hand_cold.load(Ordering::Relaxed) % pages.len().max(1);
         let mut scanned = 0;
         let max_scan = pages.len() * 2; // 最大2周
-        
+
         while victims.len() < target_count && scanned < max_scan {
             if pages.is_empty() {
                 break;
             }
-            
+
             hand = hand % pages.len();
-            
+
             if let Some(entry) = pages.get(hand) {
                 match entry.state {
                     ClockProState::Cold => {
@@ -100,11 +99,11 @@ impl ClockProList {
                     }
                 }
             }
-            
+
             hand = (hand + 1) % pages.len().max(1);
             scanned += 1;
         }
-        
+
         self.hand_cold.store(hand, Ordering::Relaxed);
         victims
     }
@@ -112,21 +111,21 @@ impl ClockProList {
     /// Hand Hotを進めて非参照Hotページを降格
     pub fn run_hand_hot(&self, scan_count: usize) -> usize {
         let mut pages = self.pages.lock();
-        
+
         if pages.is_empty() {
             return 0;
         }
-        
+
         let mut hand = self.hand_hot.load(Ordering::Relaxed) % pages.len().max(1);
         let mut demoted = 0;
-        
+
         for _ in 0..scan_count {
             if pages.is_empty() {
                 break;
             }
-            
+
             hand = hand % pages.len();
-            
+
             if let Some(entry) = pages.get_mut(hand) {
                 if entry.state == ClockProState::Hot {
                     if entry.test_clear_referenced() {
@@ -141,42 +140,43 @@ impl ClockProList {
                     }
                 }
             }
-            
+
             hand = (hand + 1) % pages.len().max(1);
         }
-        
+
         self.hand_hot.store(hand, Ordering::Relaxed);
         demoted
     }
 
     /// Testエントリにヒットした場合の処理
-    /// 
+    ///
     /// Testにあるページが再度アクセスされた場合、
     /// そのページはワーキングセットの一部とみなしてHotに昇格する。
     /// また、ターゲットCold数を増加させる。
     pub fn handle_test_hit(&self, frame: FrameIndex) -> bool {
         let mut pages = self.pages.lock();
-        
+
         for entry in pages.iter_mut() {
             if entry.frame == frame && entry.state == ClockProState::Test {
                 // Test → Hot昇格
                 entry.state = ClockProState::Hot;
                 entry.promoted_from_test = true;
-                
+
                 self.test_count.fetch_sub(1, Ordering::Relaxed);
                 self.hot_count.fetch_add(1, Ordering::Relaxed);
                 self.test_promotions.fetch_add(1, Ordering::Relaxed);
-                
+
                 // ターゲットCold数を増加（ワーキングセット拡大の兆候）
                 let old_target = self.target_cold.fetch_add(1, Ordering::Relaxed);
-                if old_target < 1000 { // 上限
+                if old_target < 1000 {
+                    // 上限
                     self.target_adjustments.fetch_add(1, Ordering::Relaxed);
                 }
-                
+
                 return true;
             }
         }
-        
+
         false
     }
 

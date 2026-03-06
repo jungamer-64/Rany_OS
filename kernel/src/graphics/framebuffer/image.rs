@@ -8,13 +8,18 @@
 //! run detection, and format-specific pixel packing (32-bit, 24-bit, 16-bit).
 
 use super::*;
-use hal::mmio;
 use core::ptr;
+use hal::mmio;
 
 impl Framebuffer {
     /// Draw entire image at (dst_x, dst_y)
     pub fn draw_image(&mut self, image: &crate::graphics::image::Image, dst_x: i32, dst_y: i32) {
-        self.draw_image_part(image, Rect::new(0, 0, image.width(), image.height()), dst_x, dst_y);
+        self.draw_image_part(
+            image,
+            Rect::new(0, 0, image.width(), image.height()),
+            dst_x,
+            dst_y,
+        );
     }
 
     /// Draw a part of an image
@@ -47,16 +52,29 @@ impl Framebuffer {
         self.blit_image_rows(image, d_x, d_y, r_x, r_y, r_w, r_h);
     }
 
-    fn clip_src_to_image(src_rect: &Rect, image: &crate::graphics::image::Image) -> (i32, i32, u32, u32) {
+    fn clip_src_to_image(
+        src_rect: &Rect,
+        image: &crate::graphics::image::Image,
+    ) -> (i32, i32, u32, u32) {
         let s_x = src_rect.x.max(0);
         let s_y = src_rect.y.max(0);
-        let s_w = (src_rect.width as i32).min(image.width() as i32 - s_x).max(0) as u32;
-        let s_h = (src_rect.height as i32).min(image.height() as i32 - s_y).max(0) as u32;
+        let s_w = (src_rect.width as i32)
+            .min(image.width() as i32 - s_x)
+            .max(0) as u32;
+        let s_h = (src_rect.height as i32)
+            .min(image.height() as i32 - s_y)
+            .max(0) as u32;
         (s_x, s_y, s_w, s_h)
     }
 
     fn clip_dst_to_screen(
-        &self, s_x: i32, s_y: i32, s_w: u32, s_h: u32, dst_x: i32, dst_y: i32,
+        &self,
+        s_x: i32,
+        s_y: i32,
+        s_w: u32,
+        s_h: u32,
+        dst_x: i32,
+        dst_y: i32,
     ) -> Option<(i32, i32, i32, i32, u32, u32)> {
         let mut d_x = dst_x;
         let mut d_y = dst_y;
@@ -68,7 +86,9 @@ impl Framebuffer {
         // Left clip
         if d_x < self.clip.x {
             let diff = self.clip.x - d_x;
-            if diff >= r_w as i32 { return None; }
+            if diff >= r_w as i32 {
+                return None;
+            }
             d_x += diff;
             r_x += diff;
             r_w -= diff as u32;
@@ -76,7 +96,9 @@ impl Framebuffer {
         // Top clip
         if d_y < self.clip.y {
             let diff = self.clip.y - d_y;
-            if diff >= r_h as i32 { return None; }
+            if diff >= r_h as i32 {
+                return None;
+            }
             d_y += diff;
             r_y += diff;
             r_h -= diff as u32;
@@ -84,13 +106,17 @@ impl Framebuffer {
         // Right clip
         let over_x = (d_x + r_w as i32) - self.clip.right();
         if over_x > 0 {
-            if over_x >= r_w as i32 { return None; }
+            if over_x >= r_w as i32 {
+                return None;
+            }
             r_w -= over_x as u32;
         }
         // Bottom clip
         let over_y = (d_y + r_h as i32) - self.clip.bottom();
         if over_y > 0 {
-            if over_y >= r_h as i32 { return None; }
+            if over_y >= r_h as i32 {
+                return None;
+            }
             r_h -= over_y as u32;
         }
 
@@ -100,37 +126,49 @@ impl Framebuffer {
     fn blit_image_rows(
         &mut self,
         image: &crate::graphics::image::Image,
-        d_x: i32, d_y: i32,
-        r_x: i32, r_y: i32,
-        r_w: u32, r_h: u32,
+        d_x: i32,
+        d_y: i32,
+        r_x: i32,
+        r_y: i32,
+        r_w: u32,
+        r_h: u32,
     ) {
         let src_stride = image.width() * 4;
         let src_data = image.data();
-        let dst_stride = if self.back_buffer.is_some() { self.info.width * 4 } else { self.info.stride } as usize;
-        let dst_bpp = if self.back_buffer.is_some() { 4 } else { self.info.format.bytes_per_pixel() } as usize;
+        let dst_stride = if self.back_buffer.is_some() {
+            self.info.width * 4
+        } else {
+            self.info.stride
+        } as usize;
+        let dst_bpp = if self.back_buffer.is_some() {
+            4
+        } else {
+            self.info.format.bytes_per_pixel()
+        } as usize;
 
         let buf_ptr = self.draw_buffer();
 
         let needs_swizzle = match (self.back_buffer.is_some(), self.info.format) {
-             (true, _) => true,
-             (false, PixelFormat::Bgra8888 | PixelFormat::Bgr888) => true,
-             _ => false,
+            (true, _) => true,
+            (false, PixelFormat::Bgra8888 | PixelFormat::Bgr888) => true,
+            _ => false,
         };
 
         for i in 0..r_h {
             let src_row_offset = ((r_y as u32 + i as u32) * src_stride + (r_x as u32 * 4)) as usize;
-            let dst_row_offset = (d_y as usize + i as usize) * dst_stride + (d_x as usize * dst_bpp as usize);
-            
-            let src_row = &src_data[src_row_offset .. src_row_offset + (r_w as usize * 4)];
-            
+            let dst_row_offset =
+                (d_y as usize + i as usize) * dst_stride + (d_x as usize * dst_bpp as usize);
+
+            let src_row = &src_data[src_row_offset..src_row_offset + (r_w as usize * 4)];
+
             unsafe {
                 let dst_ptr = buf_ptr.add(dst_row_offset);
-                
+
                 if self.back_buffer.is_some() {
-                   let dst_slice = core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4);
-                   crate::graphics::packer::pack_rgba_to_bgra(src_row, dst_slice);
+                    let dst_slice = core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4);
+                    crate::graphics::packer::pack_rgba_to_bgra(src_row, dst_slice);
                 } else {
-                   self.blit_mmio_row(dst_ptr, src_row, r_w, dst_bpp, needs_swizzle, i == r_h - 1);
+                    self.blit_mmio_row(dst_ptr, src_row, r_w, dst_bpp, needs_swizzle, i == r_h - 1);
                 }
             }
         }
@@ -148,18 +186,16 @@ impl Framebuffer {
         match dst_bpp {
             4 => {
                 if needs_swizzle {
-                    let dst_slice = unsafe {
-                        core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4)
-                    };
+                    let dst_slice =
+                        unsafe { core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4) };
                     crate::graphics::packer::pack_rgba_to_bgra(src_row, dst_slice);
                 } else {
                     self.write_bytes_mmio_streaming(dst_ptr as usize, src_row);
                 }
             }
             3 => {
-                let dst_slice = unsafe {
-                    core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 3)
-                };
+                let dst_slice =
+                    unsafe { core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 3) };
                 crate::graphics::packer::pack_rgba_to_bgr24(src_row, dst_slice, needs_swizzle);
             }
             2 => {
@@ -225,8 +261,6 @@ impl Framebuffer {
         Some((draw_rect, src_off_x, src_off_y))
     }
 
-
-
     /// 32-bit不透明ランの描画
     fn write_opaque_run_32bit(
         &mut self,
@@ -243,23 +277,23 @@ impl Framebuffer {
 
         // If backbuffer (fixed u32/BGRA) is active, use SIMD packer for RGBA->BGRA swizzle
         if let Some(ref mut back) = self.back_buffer {
-             let src_offset = src_base * 4;
-             let byte_len = run_len * 4;
-             // Ensure bounds
-             if src_offset + byte_len <= imgdata.len() {
-                 let src_slice = &imgdata[src_offset..src_offset + byte_len];
-                 let dst_slice = unsafe {
-                     core::slice::from_raw_parts_mut(
-                         (back.as_mut_ptr() as *mut u8).add(dst_byte_offset),
-                         byte_len,
-                     )
-                 };
-                 // SIMD-accelerated RGBA→BGRA (AVX2/SSSE3/scalar auto-dispatch)
-                 crate::graphics::packer::pack_rgba_to_bgra(src_slice, dst_slice);
-             }
-             return false;
+            let src_offset = src_base * 4;
+            let byte_len = run_len * 4;
+            // Ensure bounds
+            if src_offset + byte_len <= imgdata.len() {
+                let src_slice = &imgdata[src_offset..src_offset + byte_len];
+                let dst_slice = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        (back.as_mut_ptr() as *mut u8).add(dst_byte_offset),
+                        byte_len,
+                    )
+                };
+                // SIMD-accelerated RGBA→BGRA (AVX2/SSSE3/scalar auto-dispatch)
+                crate::graphics::packer::pack_rgba_to_bgra(src_slice, dst_slice);
+            }
+            return false;
         }
-        
+
         // Allow tuning... (omitted for brevity, keep existing logic if possible, or just copy-paste)
         /* ... keeping variable declarations ... */
         #[cfg(feature = "std")]
@@ -274,31 +308,31 @@ impl Framebuffer {
             let byte_len = run_len * 4;
             let src_slice = &imgdata[src_base * 4..src_base * 4 + byte_len];
 
-                let addr = self.buffer as usize + dst_byte_offset;
-                self.write_bytes_mmio_streaming(addr, src_slice);
-                // mmio::sfence(); // DEFERRED
-                mmio_written = true;
+            let addr = self.buffer as usize + dst_byte_offset;
+            self.write_bytes_mmio_streaming(addr, src_slice);
+            // mmio::sfence(); // DEFERRED
+            mmio_written = true;
         } else if self.info.format == PixelFormat::Bgra8888 {
             let src_slice = &imgdata[src_base * 4..src_base * 4 + run_len * 4];
 
-                if avx2_available && run_len >= stream_threshold_pixels {
-                    let addr = self.buffer as usize + dst_byte_offset;
-                    self.write_rgba_packed_to_mmio_stream(addr, src_slice);
-                    // return; // DEFERRED
-                    return true;
-                }
-
-                self.ensure_scratch_u32(run_len);
-                let dst_bytes = unsafe {
-                    core::slice::from_raw_parts_mut(
-                        self.scratch_u32.as_mut_ptr() as *mut u8,
-                        run_len * 4,
-                    )
-                };
-                Self::pack_rgba_to_bgra(src_slice, dst_bytes);
+            if avx2_available && run_len >= stream_threshold_pixels {
                 let addr = self.buffer as usize + dst_byte_offset;
-                self.write_u32_slice_mmio(addr, &self.scratch_u32[..run_len]);
-                mmio_written = true; // Volatile writes technically don't need sfence but we signal activity
+                self.write_rgba_packed_to_mmio_stream(addr, src_slice);
+                // return; // DEFERRED
+                return true;
+            }
+
+            self.ensure_scratch_u32(run_len);
+            let dst_bytes = unsafe {
+                core::slice::from_raw_parts_mut(
+                    self.scratch_u32.as_mut_ptr() as *mut u8,
+                    run_len * 4,
+                )
+            };
+            Self::pack_rgba_to_bgra(src_slice, dst_bytes);
+            let addr = self.buffer as usize + dst_byte_offset;
+            self.write_u32_slice_mmio(addr, &self.scratch_u32[..run_len]);
+            mmio_written = true; // Volatile writes technically don't need sfence but we signal activity
         }
         mmio_written
     }
@@ -315,11 +349,7 @@ impl Framebuffer {
     }
 
     /// scratchバッファからバック/MMIOへチャンク書き込み
-    fn flush_scratch_24bit(
-        &mut self,
-        run_len: usize,
-        dst_byte_offset: usize,
-    ) {
+    fn flush_scratch_24bit(&mut self, run_len: usize, dst_byte_offset: usize) {
         // Tunable chunk size for 24-bit writes
         #[cfg(feature = "std")]
         let chunk_24_pixels: usize = std::env::var("RANY_CHUNK_24_PIXELS")
@@ -379,10 +409,7 @@ impl Framebuffer {
         self.ensure_scratch_u8(byte_len);
         {
             let dst_u16 = unsafe {
-                core::slice::from_raw_parts_mut(
-                    self.scratch_u8.as_mut_ptr() as *mut u16,
-                    run_len,
-                )
+                core::slice::from_raw_parts_mut(self.scratch_u8.as_mut_ptr() as *mut u16, run_len)
             };
             for i in 0..run_len {
                 let idx = (src_base + i) * 4;
@@ -543,13 +570,31 @@ impl Framebuffer {
     ) -> bool {
         match bytes_per_pixel {
             4 => self.write_opaque_run_32bit(
-                image, src_row, run_start, run_len, dst_byte_offset, avx2_available,
+                image,
+                src_row,
+                run_start,
+                run_len,
+                dst_byte_offset,
+                avx2_available,
             ),
             3 => self.write_opaque_run_24bit(
-                image, src_row, run_start, run_len, dst_byte_offset, x, dst_row, avx2_available,
+                image,
+                src_row,
+                run_start,
+                run_len,
+                dst_byte_offset,
+                x,
+                dst_row,
+                avx2_available,
             ),
             2 => self.write_opaque_run_16bit(
-                image, src_row, run_start, run_len, dst_byte_offset, x, dst_row,
+                image,
+                src_row,
+                run_start,
+                run_len,
+                dst_byte_offset,
+                x,
+                dst_row,
             ),
             _ => {
                 for i in 0..run_len {
@@ -574,11 +619,11 @@ impl Framebuffer {
     ) -> bool {
         let mut mmio_written = false;
         let (bytes_per_pixel, stride) = if self.back_buffer.is_some() {
-             (4, (self.info.width * 4) as u32)
+            (4, (self.info.width * 4) as u32)
         } else {
-             (self.info.format.bytes_per_pixel(), self.info.stride)
+            (self.info.format.bytes_per_pixel(), self.info.stride)
         };
-        
+
         let dst_row_offset = (dst_row as u32 * stride) as usize;
         let mut col = row_start;
         let img_ptr = image.data().as_ptr();
@@ -596,8 +641,15 @@ impl Framebuffer {
             let dst_byte_offset = dst_row_offset + abs_x * bytes_per_pixel;
 
             if self.write_run(
-                image, src_row, run_start, run_len, dst_byte_offset,
-                bytes_per_pixel, x, dst_row, avx2_available,
+                image,
+                src_row,
+                run_start,
+                run_len,
+                dst_byte_offset,
+                bytes_per_pixel,
+                x,
+                dst_row,
+                avx2_available,
             ) {
                 mmio_written = true;
             }

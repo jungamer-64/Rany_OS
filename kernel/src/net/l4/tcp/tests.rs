@@ -61,7 +61,9 @@ pub fn test_process_with_packet_zero_copy() {
     tcb.enter_established();
     tcb.set_rcv_nxt(1);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    processor.connections.insert((local, remote), tcb_arc.clone());
+    processor
+        .connections
+        .insert((local, remote), tcb_arc.clone());
 
     // Build a simple TCP segment with a small payload
     let mut packet = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
@@ -128,13 +130,19 @@ pub fn test_process_with_packet_zero_copy() {
     pkt2.data_mut()[8..12].copy_from_slice(&0u32.to_be_bytes());
     // set flags ACK|CWR|ECE
     let flags_val = tcp_flags::ACK | tcp_flags::CWR | tcp_flags::ECE;
-    let data_off_flags2 = ((5u16 << 12) | (flags_val as u16)) .to_be_bytes();
+    let data_off_flags2 = ((5u16 << 12) | (flags_val as u16)).to_be_bytes();
     pkt2.data_mut()[12..14].copy_from_slice(&data_off_flags2);
     pkt2.data_mut()[14..16].copy_from_slice(&65535u16.to_be_bytes());
     pkt2.data_mut()[20..20 + payload2.len()].copy_from_slice(payload2);
     pkt2.set_len(20 + payload2.len());
     let data2 = alloc::vec::Vec::from(pkt2.data());
-    let _ = processor.process_with_packet(&data2, Ipv4Address::from_octets(127,0,0,1), Ipv4Address::from_octets(127,0,0,1), pkt2, 0);
+    let _ = processor.process_with_packet(
+        &data2,
+        Ipv4Address::from_octets(127, 0, 0, 1),
+        Ipv4Address::from_octets(127, 0, 0, 1),
+        pkt2,
+        0,
+    );
     let after = crate::net::l4::endpoint::tcp_rx::fast_path_stats().0;
     assert!(after > before, "fast path should count the ECN packet");
 }
@@ -155,15 +163,17 @@ pub fn test_copy_fallback_queues_payload_and_keeps_connection_alive() {
     tcb.set_recv_copy_fallback_limit_bytes(64 * 1024);
     tcb.set_rcv_nxt(10);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    processor.connections.insert((local, remote), tcb_arc.clone());
+    processor
+        .connections
+        .insert((local, remote), tcb_arc.clone());
 
     let header_len = 20usize;
     let payload_len = 5000usize; // Larger than typical mempool packet capacity, forces Vec fallback path
     let mut seg = vec![0u8; header_len + payload_len];
     seg[0..2].copy_from_slice(&4000u16.to_be_bytes()); // src port
     seg[2..4].copy_from_slice(&3000u16.to_be_bytes()); // dst port
-    seg[4..8].copy_from_slice(&10u32.to_be_bytes());   // in-order seq
-    seg[8..12].copy_from_slice(&0u32.to_be_bytes());   // ack
+    seg[4..8].copy_from_slice(&10u32.to_be_bytes()); // in-order seq
+    seg[8..12].copy_from_slice(&0u32.to_be_bytes()); // ack
     seg[12..14].copy_from_slice(&((5u16 << 12) | 0u16).to_be_bytes());
     seg[14..16].copy_from_slice(&65535u16.to_be_bytes());
     seg[header_len..].fill(0x5A);
@@ -179,7 +189,11 @@ pub fn test_copy_fallback_queues_payload_and_keeps_connection_alive() {
         TcpProcessResult::SendPacket { flags, ack, .. } => {
             assert!(flags & TcpHeader::FLAG_ACK != 0, "ACK flag should be set");
             assert!(flags & TcpHeader::FLAG_RST == 0, "RST should NOT be set");
-            assert_eq!(ack, 10u32.wrapping_add(payload_len as u32), "ACK should advance");
+            assert_eq!(
+                ack,
+                10u32.wrapping_add(payload_len as u32),
+                "ACK should advance"
+            );
         }
         other => panic!("expected ACK SendPacket, got {:?}", other),
     }
@@ -214,15 +228,17 @@ pub fn test_recv_copy_fallback_overflow_sends_rst_and_closes() {
     tcb.set_recv_copy_fallback_limit_bytes(1024);
     tcb.set_rcv_nxt(42);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    processor.connections.insert((local, remote), tcb_arc.clone());
+    processor
+        .connections
+        .insert((local, remote), tcb_arc.clone());
 
     let header_len = 20usize;
     let payload_len = 5000usize;
     let mut seg = vec![0u8; header_len + payload_len];
     seg[0..2].copy_from_slice(&4100u16.to_be_bytes()); // src port
     seg[2..4].copy_from_slice(&3100u16.to_be_bytes()); // dst port
-    seg[4..8].copy_from_slice(&42u32.to_be_bytes());   // in-order seq
-    seg[8..12].copy_from_slice(&0u32.to_be_bytes());   // ack
+    seg[4..8].copy_from_slice(&42u32.to_be_bytes()); // in-order seq
+    seg[8..12].copy_from_slice(&0u32.to_be_bytes()); // ack
     seg[12..14].copy_from_slice(&((5u16 << 12) | 0u16).to_be_bytes());
     seg[14..16].copy_from_slice(&65535u16.to_be_bytes());
     seg[header_len..].fill(0xA5);
@@ -266,7 +282,9 @@ pub fn test_poll_read_consumes_recv_copy_fallback_queue_with_remainder() {
     assert!(tcb.enqueue_recv_copy_fallback(&[1, 2, 3, 4, 5]));
 
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    let mut stream = TcpStream { tcb: tcb_arc.clone() };
+    let mut stream = TcpStream {
+        tcb: tcb_arc.clone(),
+    };
 
     use core::pin::Pin;
     use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
@@ -332,15 +350,17 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
     // Initialize a small mempool for tests
     let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
-    let local = EndpointAddr::new([127,0,0,1], 1001);
-    let remote = EndpointAddr::new([127,0,0,1], 2001);
+    let local = EndpointAddr::new([127, 0, 0, 1], 1001);
+    let remote = EndpointAddr::new([127, 0, 0, 1], 2001);
 
     // Create TCB and wrap in Arc<PoisonLock>
     let mut tcb = TcpControlBlock::new(local);
     tcb.enter_established();
     tcb.set_remote_addr(remote);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    let mut stream = TcpStream { tcb: tcb_arc.clone() };
+    let mut stream = TcpStream {
+        tcb: tcb_arc.clone(),
+    };
 
     // Create packet and enqueue
     let mut packet = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
@@ -355,9 +375,9 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
     }
 
     // Create a noop Context
-    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
     use core::pin::Pin;
     use core::task::Poll;
+    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
     const VTABLE: RawWakerVTable = RawWakerVTable::new(
         |_| RawWaker::new(core::ptr::null(), &VTABLE),
         |_| {},
@@ -371,7 +391,7 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
     // Call poll_flush
     let mut pinned_stream = unsafe { Pin::new_unchecked(&mut stream) };
     match pinned_stream.as_mut().poll_flush(&mut cx) {
-        Poll::Ready(Ok(())) => {},
+        Poll::Ready(Ok(())) => {}
         other => panic!("poll_flush returned {:?}", other),
     }
 
@@ -393,8 +413,8 @@ pub fn test_three_way_handshake() {
     let mut client = TcpProcessor::new();
     let mut server = TcpProcessor::new();
 
-    let client_addr = EndpointAddr::new([127,0,0,1], 2000);
-    let server_addr = EndpointAddr::new([127,0,0,1], 1000);
+    let client_addr = EndpointAddr::new([127, 0, 0, 1], 2000);
+    let server_addr = EndpointAddr::new([127, 0, 0, 1], 1000);
 
     // Server binds (creates a listener with backlog)
     let listener = server.bind(server_addr, None).expect("bind");
@@ -432,7 +452,14 @@ pub fn test_three_way_handshake() {
         0,
     );
     let syn_ack_pkt = match res {
-        TcpProcessResult::SendPacket { local, remote, seq, ack, flags, .. } => {
+        TcpProcessResult::SendPacket {
+            local,
+            remote,
+            seq,
+            ack,
+            flags,
+            ..
+        } => {
             assert!(flags & TcpHeader::FLAG_SYN != 0);
             assert!(flags & TcpHeader::FLAG_ACK != 0);
             (local, remote, seq, ack)
@@ -459,7 +486,14 @@ pub fn test_three_way_handshake() {
     );
 
     let ack_pkt = match client_res {
-        TcpProcessResult::SendPacket { local, remote, seq, ack, flags, .. } => {
+        TcpProcessResult::SendPacket {
+            local,
+            remote,
+            seq,
+            ack,
+            flags,
+            ..
+        } => {
             assert!(flags & TcpHeader::FLAG_ACK != 0);
             (local, remote, seq, ack)
         }
@@ -502,7 +536,6 @@ pub fn test_three_way_handshake() {
     }
 }
 
-
 #[cfg_attr(test, test_case)]
 pub fn test_three_way_handshake_v6() {
     // IPv6 three-way handshake using TcpProcessor::process_v6
@@ -511,12 +544,16 @@ pub fn test_three_way_handshake_v6() {
     let mut client = TcpProcessor::new();
     let mut server = TcpProcessor::new();
 
-    let client_addr = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 3000);
-    let server_addr = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 4000);
+    let client_addr =
+        EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 3000);
+    let server_addr =
+        EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 4000);
 
     let listener = server.bind(server_addr, None).expect("bind v6");
 
-    let _client_stream = client.connect(client_addr, server_addr).expect("connect v6");
+    let _client_stream = client
+        .connect(client_addr, server_addr)
+        .expect("connect v6");
 
     let client_tcb_arc = client
         .connections
@@ -548,7 +585,14 @@ pub fn test_three_way_handshake_v6() {
     );
 
     let syn_ack_pkt = match res {
-        TcpProcessResult::SendPacket { local, remote, seq, ack, flags, .. } => {
+        TcpProcessResult::SendPacket {
+            local,
+            remote,
+            seq,
+            ack,
+            flags,
+            ..
+        } => {
             assert!(flags & TcpHeader::FLAG_SYN != 0);
             assert!(flags & TcpHeader::FLAG_ACK != 0);
             (local, remote, seq, ack)
@@ -574,7 +618,14 @@ pub fn test_three_way_handshake_v6() {
     );
 
     let ack_pkt = match client_res {
-        TcpProcessResult::SendPacket { local, remote, seq, ack, flags, .. } => {
+        TcpProcessResult::SendPacket {
+            local,
+            remote,
+            seq,
+            ack,
+            flags,
+            ..
+        } => {
             assert!(flags & TcpHeader::FLAG_ACK != 0);
             (local, remote, seq, ack)
         }
@@ -617,24 +668,31 @@ pub fn test_retransmit_on_timeout() {
     let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let mut processor = TcpProcessor::new();
-    let local = EndpointAddr::new([127,0,0,1], 1000);
-    let remote = EndpointAddr::new([127,0,0,1], 2000);
+    let local = EndpointAddr::new([127, 0, 0, 1], 1000);
+    let remote = EndpointAddr::new([127, 0, 0, 1], 2000);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
     tcb.enter_established();
     // Add an unacked segment with old timestamp (also updates outstanding_bytes)
-    tcb.queue_unacked(1, vec![1, 2, 3], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+    tcb.queue_unacked(
+        1,
+        vec![1, 2, 3],
+        0,
+        TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
+    );
     tcb.set_rto_for_test(1); // small RTO
 
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    processor.connections.insert((local, remote), tcb_arc.clone());
+    processor
+        .connections
+        .insert((local, remote), tcb_arc.clone());
 
     let res = processor.check_retransmissions(2); // current_time > sent_time + rto
     assert_eq!(res.len(), 1);
     if let TcpProcessResult::SendPacket { seq, payload, .. } = &res[0] {
         assert_eq!(*seq, 1);
-        assert_eq!(payload, &vec![1,2,3]);
+        assert_eq!(payload, &vec![1, 2, 3]);
     } else {
         panic!("Expected SendPacket");
     }
@@ -642,26 +700,32 @@ pub fn test_retransmit_on_timeout() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_connect_future_wakes_on_established() {
-    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
     use core::pin::Pin;
-    use core::task::Poll;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::task::Poll;
+    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
 
     static WAKE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     // Create a TCB in SynSent state
-    let local = EndpointAddr::new([127,0,0,1], 4000);
+    let local = EndpointAddr::new([127, 0, 0, 1], 4000);
     let mut tcb = TcpControlBlock::new(local);
     tcb.enter_syn_sent();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
 
     // Create ConnectFuture
-    let mut fut = ConnectFuture { tcb: tcb_arc.clone() };
+    let mut fut = ConnectFuture {
+        tcb: tcb_arc.clone(),
+    };
 
     const VTABLE: RawWakerVTable = RawWakerVTable::new(
         |_| RawWaker::new(core::ptr::null(), &VTABLE),
-        |_| { WAKE_COUNT.fetch_add(1, Ordering::SeqCst); },
-        |_| { WAKE_COUNT.fetch_add(1, Ordering::SeqCst); },
+        |_| {
+            WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+        },
+        |_| {
+            WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+        },
         |_| {},
     );
     let raw_waker = RawWaker::new(core::ptr::null(), &VTABLE);
@@ -698,21 +762,30 @@ pub fn test_connect_future_wakes_on_established() {
 pub fn test_record_sent_packet_updates_tcb() {
     // Create processor and register a connection
     let mut processor = TcpProcessor::new();
-    let local = EndpointAddr::new([127,0,0,1], 7000);
-    let remote = EndpointAddr::new([127,0,0,1], 8000);
+    let local = EndpointAddr::new([127, 0, 0, 1], 7000);
+    let remote = EndpointAddr::new([127, 0, 0, 1], 8000);
 
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
     tcb.enter_established();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    processor.connections.insert((local, remote), tcb_arc.clone());
+    processor
+        .connections
+        .insert((local, remote), tcb_arc.clone());
 
     // Simulate sending a data segment (length 4)
     let seq = 100u32;
     let payload = [1u8, 2, 3, 4];
     let now = 123456u64;
 
-    processor.record_sent_packet(local, remote, seq, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK, &payload, now);
+    processor.record_sent_packet(
+        local,
+        remote,
+        seq,
+        TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
+        &payload,
+        now,
+    );
 
     if let Ok(g) = tcb_arc.lock() {
         assert_eq!(g.outstanding_bytes(), 4);
@@ -729,11 +802,16 @@ pub fn test_ack_segments_removes_unacked_and_reduces_outstanding() {
     tcb.enter_established();
 
     // Add an unacked segment (also updates outstanding_bytes)
-    tcb.queue_unacked(10, vec![1, 2, 3, 4], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+    tcb.queue_unacked(
+        10,
+        vec![1, 2, 3, 4],
+        0,
+        TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
+    );
 
     // ACK that acknowledges the segment
     tcb.ack_segments(14, 0);
- // seq + len
+    // seq + len
 
     assert!(tcb.oldest_unacked_seq().is_none());
     assert_eq!(tcb.outstanding_bytes(), 0);
@@ -744,8 +822,18 @@ pub fn test_ack_segments_partial_ack_keeps_later_segments_and_updates_outstandin
     let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST.octets(), 9002));
     tcb.enter_established();
 
-    tcb.queue_unacked(10, vec![1, 2, 3, 4], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
-    tcb.queue_unacked(14, vec![5, 6, 7], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+    tcb.queue_unacked(
+        10,
+        vec![1, 2, 3, 4],
+        0,
+        TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
+    );
+    tcb.queue_unacked(
+        14,
+        vec![5, 6, 7],
+        0,
+        TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
+    );
     assert_eq!(tcb.outstanding_bytes(), 7);
 
     // ACK only the first segment
@@ -764,7 +852,12 @@ pub fn test_ack_segments_partial_within_segment_trims_retransmit_entry() {
     let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST.octets(), 9003));
     tcb.enter_established();
 
-    tcb.queue_unacked(100, vec![1, 2, 3, 4], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+    tcb.queue_unacked(
+        100,
+        vec![1, 2, 3, 4],
+        0,
+        TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
+    );
     assert_eq!(tcb.outstanding_bytes(), 4);
 
     // Partial ACK for first 2 bytes of payload.
@@ -782,14 +875,19 @@ pub fn test_ack_segments_partial_within_segment_trims_retransmit_entry() {
     tcb.ack_segments(104, 0);
     assert_eq!(tcb.outstanding_bytes(), 0);
     assert!(tcb.oldest_unacked_seq().is_none());
-    }
+}
 
-    #[cfg_attr(test, test_case)]
-    pub fn test_ack_segments_partial_trims_syn_then_payload() {
+#[cfg_attr(test, test_case)]
+pub fn test_ack_segments_partial_trims_syn_then_payload() {
     let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST.octets(), 9004));
     tcb.enter_established();
 
-    tcb.queue_unacked(100, vec![10, 11, 12], 0, TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK);
+    tcb.queue_unacked(
+        100,
+        vec![10, 11, 12],
+        0,
+        TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+    );
     assert_eq!(tcb.outstanding_bytes(), 4); // SYN + 3 bytes
 
     // ACK only the SYN and first payload byte.
@@ -811,7 +909,12 @@ pub fn test_ack_segments_partial_trims_payload_but_keeps_fin() {
     let mut tcb = TcpControlBlock::new(EndpointAddr::new(Ipv4Addr::LOCALHOST.octets(), 9005));
     tcb.enter_established();
 
-    tcb.queue_unacked(200, vec![1, 2, 3], 0, TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK);
+    tcb.queue_unacked(
+        200,
+        vec![1, 2, 3],
+        0,
+        TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK,
+    );
     assert_eq!(tcb.outstanding_bytes(), 4); // 3 bytes + FIN
 
     // ACK first 2 payload bytes, FIN is still outstanding.
@@ -840,7 +943,12 @@ pub fn test_unacked_sequence_space_accounts_for_syn_and_fin() {
     assert!(tcb.oldest_unacked_seq().is_none());
 
     // FIN also consumes one sequence number in addition to payload bytes.
-    tcb.queue_unacked(200, vec![1, 2], 0, TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK);
+    tcb.queue_unacked(
+        200,
+        vec![1, 2],
+        0,
+        TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK,
+    );
     assert_eq!(tcb.outstanding_bytes(), 3);
     tcb.ack_segments(203, 0);
     assert_eq!(tcb.outstanding_bytes(), 0);
@@ -849,16 +957,18 @@ pub fn test_unacked_sequence_space_accounts_for_syn_and_fin() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_accept_future_returns_on_push_connection() {
-    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
     use core::pin::Pin;
     use core::task::Poll;
+    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
 
     let mut server = TcpProcessor::new();
-    let server_addr = EndpointAddr::new([127,0,0,1], 5000);
+    let server_addr = EndpointAddr::new([127, 0, 0, 1], 5000);
     let listener = server.bind(server_addr, None).expect("bind");
 
     // Create AcceptFuture manually
-    let mut fut = AcceptFuture { listener: &listener };
+    let mut fut = AcceptFuture {
+        listener: &listener,
+    };
 
     const VTABLE: RawWakerVTable = RawWakerVTable::new(
         |_| RawWaker::new(core::ptr::null(), &VTABLE),
@@ -879,12 +989,14 @@ pub fn test_accept_future_returns_on_push_connection() {
     }
 
     // Prepare a TcpStream and push into backlog
-    let local = EndpointAddr::new([127,0,0,1], 5000);
-    let remote = EndpointAddr::new([127,0,0,1], 6000);
+    let local = EndpointAddr::new([127, 0, 0, 1], 5000);
+    let remote = EndpointAddr::new([127, 0, 0, 1], 6000);
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
     tcb.enter_established();
-    let stream = TcpStream { tcb: Arc::new(PoisonLock::new(tcb)) };
+    let stream = TcpStream {
+        tcb: Arc::new(PoisonLock::new(tcb)),
+    };
 
     listener.push_connection(stream, remote);
 
@@ -900,9 +1012,9 @@ pub fn test_accept_future_returns_on_push_connection() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_connect_timeout_expires() {
-    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
     use core::pin::Pin;
     use core::task::Poll;
+    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
 
     let now = crate::task::timer::current_tick();
     let local = EndpointAddr::new(Ipv4Addr::LOCALHOST.octets(), 4001);

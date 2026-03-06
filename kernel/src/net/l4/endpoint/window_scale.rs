@@ -7,7 +7,6 @@
 //! - Window Scale Option (WSopt)
 //! - 最大1GBのウィンドウサイズをサポート
 
-
 /// 最大ウィンドウスケール値 (2^14 = 16384 まで)
 pub const MAX_WINDOW_SCALE: u8 = 14;
 
@@ -599,16 +598,13 @@ pub mod tests {
     }
 }
 
-
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
 
     pub fn window_scale_disabled_smoke() -> bool {
         let ws = WindowScaleOption::new();
-        !ws.enabled
-            && ws.scale_snd_window(65535) == 65535
-            && ws.scale_rcv_window(65535) == 65535
+        !ws.enabled && ws.scale_snd_window(65535) == 65535 && ws.scale_rcv_window(65535) == 65535
     }
 
     pub fn window_scale_enabled_smoke() -> bool {
@@ -638,11 +634,7 @@ pub mod qemu_tests {
     }
 
     pub fn option_parser_smoke() -> bool {
-        let options = [
-            2, 4, 0x05, 0xB4,
-            1,
-            3, 3, 7,
-        ];
+        let options = [2, 4, 0x05, 0xB4, 1, 3, 3, 7];
 
         let mut parser = TcpOptionParser::new(&options);
         parser.find_mss() == Some(1460) && parser.find_window_scale() == Some(7)

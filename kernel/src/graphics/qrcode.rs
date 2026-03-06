@@ -80,17 +80,42 @@ impl Module {
 // Format Info Coordinates (Version 1)
 // 0(=MSB) -> 14(=LSB)
 const FORMAT_POS_TL: [(usize, usize); 15] = [
-    (0, 8), (1, 8), (2, 8), (3, 8), (4, 8), (5, 8),
-    (7, 8), (8, 8),
-    (8, 7), (8, 5), (8, 4), (8, 3), (8, 2), (8, 1), (8, 0),
+    (0, 8),
+    (1, 8),
+    (2, 8),
+    (3, 8),
+    (4, 8),
+    (5, 8),
+    (7, 8),
+    (8, 8),
+    (8, 7),
+    (8, 5),
+    (8, 4),
+    (8, 3),
+    (8, 2),
+    (8, 1),
+    (8, 0),
 ];
 
 const FORMAT_POS_TR: [(usize, usize); 8] = [
-    (20, 8), (19, 8), (18, 8), (17, 8), (16, 8), (15, 8), (14, 8), (13, 8),
+    (20, 8),
+    (19, 8),
+    (18, 8),
+    (17, 8),
+    (16, 8),
+    (15, 8),
+    (14, 8),
+    (13, 8),
 ];
 
 const FORMAT_POS_BL: [(usize, usize); 7] = [
-    (8, 20), (8, 19), (8, 18), (8, 17), (8, 16), (8, 15), (8, 14),
+    (8, 20),
+    (8, 19),
+    (8, 18),
+    (8, 17),
+    (8, 16),
+    (8, 15),
+    (8, 14),
 ];
 
 /// Error types for QR Code generation
@@ -115,54 +140,60 @@ impl QrCode {
     /// 2. If that fails, falls back to "ERROR".
     /// 3. If that fails, returns a valid empty QR frame.
     pub fn new_lossy(data: &str) -> Self {
-         let mut ascii_buf = [0u8; MAX_CHARS];
-         let mut len = 0;
+        let mut ascii_buf = [0u8; MAX_CHARS];
+        let mut len = 0;
 
-         // Use take(MAX_CHARS) to prevent buffer overflow
-         for c in data.chars().take(MAX_CHARS) {
-             ascii_buf[len] = sanitize_to_qr_alnum_ascii(c);
-             len += 1;
-         }
-         
-         // Try encoded sanitized input
-         if let Ok(qr) = Self::new_from_ascii(&ascii_buf[..len]) {
-             return qr;
-         }
+        // Use take(MAX_CHARS) to prevent buffer overflow
+        for c in data.chars().take(MAX_CHARS) {
+            ascii_buf[len] = sanitize_to_qr_alnum_ascii(c);
+            len += 1;
+        }
 
-         // Fallback 1: "ERROR"
-         if let Ok(qr) = Self::new_from_ascii(b"ERROR") {
-             return qr;
-         }
+        // Try encoded sanitized input
+        if let Ok(qr) = Self::new_from_ascii(&ascii_buf[..len]) {
+            return qr;
+        }
 
-         // Fallback 2: Minimal valid QR (Emergency)
-         let mut qr = QrCode {
-             modules: [[Module::Unset; QR_SIZE]; QR_SIZE],
-         };
-         qr.place_function_patterns();
-         qr.reserve_format_info();
-         // Fill data area with light modules (valid blank)
-         for y in 0..QR_SIZE {
-             for x in 0..QR_SIZE {
-                 if !qr.modules[y][x].is_reserved() {
-                     qr.modules[y][x] = Module::DataLight;
-                 }
-             }
-         }
-         qr.place_format_info(0);
-         qr
+        // Fallback 1: "ERROR"
+        if let Ok(qr) = Self::new_from_ascii(b"ERROR") {
+            return qr;
+        }
+
+        // Fallback 2: Minimal valid QR (Emergency)
+        let mut qr = QrCode {
+            modules: [[Module::Unset; QR_SIZE]; QR_SIZE],
+        };
+        qr.place_function_patterns();
+        qr.reserve_format_info();
+        // Fill data area with light modules (valid blank)
+        for y in 0..QR_SIZE {
+            for x in 0..QR_SIZE {
+                if !qr.modules[y][x].is_reserved() {
+                    qr.modules[y][x] = Module::DataLight;
+                }
+            }
+        }
+        qr.place_format_info(0);
+        qr
     }
 
     /// Create a new QR Code strict mode.
     /// Returns error if input contains non-ASCII characters, invalid alphanumeric characters, or exceeds length.
     pub fn new_strict(data: &str) -> Result<Self, QrError> {
-        if data.len() > MAX_CHARS { return Err(QrError::TooLong); }
-        if !data.is_ascii() { return Err(QrError::NonAscii); }
-        
+        if data.len() > MAX_CHARS {
+            return Err(QrError::TooLong);
+        }
+        if !data.is_ascii() {
+            return Err(QrError::NonAscii);
+        }
+
         let bytes = data.as_bytes();
         for &b in bytes {
-            if qr_alnum_value(b).is_none() { return Err(QrError::InvalidChar); }
+            if qr_alnum_value(b).is_none() {
+                return Err(QrError::InvalidChar);
+            }
         }
-        
+
         Self::new_from_ascii(bytes)
     }
 
@@ -186,7 +217,7 @@ impl QrCode {
 
         // 2. Place Format Information (Reserved areas)
         qr.reserve_format_info();
-        
+
         // Debug Check: Reserved Layout
         #[cfg(debug_assertions)]
         qr.debug_assert_reserved_layout();
@@ -209,7 +240,7 @@ impl QrCode {
         for mask in 0..8 {
             qr.modules = base_modules; // Restore baseline
             qr.apply_mask(mask);
-            
+
             // Verify mask didn't touch reserved modules (User request)
             #[cfg(debug_assertions)]
             qr.debug_assert_mask_does_not_touch_reserved(mask, &base_modules);
@@ -239,7 +270,11 @@ impl QrCode {
 
         // Timing Patterns
         for i in 8..QR_SIZE - 8 {
-            let module = if i % 2 == 0 { Module::FuncDark } else { Module::FuncLight };
+            let module = if i % 2 == 0 {
+                Module::FuncDark
+            } else {
+                Module::FuncLight
+            };
             self.set_reserved(i, 6, module);
             self.set_reserved(6, i, module);
         }
@@ -261,7 +296,11 @@ impl QrCode {
     fn finder_module(dx: usize, dy: usize) -> Module {
         // Ring distance from edge: border=0, white ring=1, inner center=2..3
         let ring = dx.min(6 - dx).min(dy.min(6 - dy));
-        if ring == 1 { Module::FuncLight } else { Module::FuncDark }
+        if ring == 1 {
+            Module::FuncLight
+        } else {
+            Module::FuncDark
+        }
     }
 
     /// データビットを1モジュールに配置する
@@ -269,8 +308,12 @@ impl QrCode {
         let bi = *placed_bits;
         if bi < data.len() * 8 {
             let byte = data[bi >> 3];
-            let bit  = (byte >> (7 - (bi & 7))) & 1;
-            self.modules[y][x] = if bit != 0 { Module::DataDark } else { Module::DataLight };
+            let bit = (byte >> (7 - (bi & 7))) & 1;
+            self.modules[y][x] = if bit != 0 {
+                Module::DataDark
+            } else {
+                Module::DataLight
+            };
         } else {
             self.modules[y][x] = Module::DataLight;
         }
@@ -285,9 +328,9 @@ impl QrCode {
     /// ファインダーパターン位置に基づきセパレータを配置
     fn place_separator_at(&mut self, fx: usize, fy: usize) {
         let (vx, vy_start, hx_start, hy) = match (fx == 0, fy == 0) {
-            (true, true)   => (7, 0, 0, 7),
-            (false, true)  => (QR_SIZE - 8, 0, QR_SIZE - 8, 7),
-            (true, false)  => (7, QR_SIZE - 8, 0, QR_SIZE - 8),
+            (true, true) => (7, 0, 0, 7),
+            (false, true) => (QR_SIZE - 8, 0, QR_SIZE - 8, 7),
+            (true, false) => (7, QR_SIZE - 8, 0, QR_SIZE - 8),
             (false, false) => return,
         };
         for i in 0..8 {
@@ -297,9 +340,15 @@ impl QrCode {
     }
 
     fn reserve_format_info(&mut self) {
-        for &(x, y) in FORMAT_POS_TL.iter() { self.set_reserved(x, y, Module::FuncLight); }
-        for &(x, y) in FORMAT_POS_TR.iter() { self.set_reserved(x, y, Module::FuncLight); }
-        for &(x, y) in FORMAT_POS_BL.iter() { self.set_reserved(x, y, Module::FuncLight); }
+        for &(x, y) in FORMAT_POS_TL.iter() {
+            self.set_reserved(x, y, Module::FuncLight);
+        }
+        for &(x, y) in FORMAT_POS_TR.iter() {
+            self.set_reserved(x, y, Module::FuncLight);
+        }
+        for &(x, y) in FORMAT_POS_BL.iter() {
+            self.set_reserved(x, y, Module::FuncLight);
+        }
 
         #[cfg(debug_assertions)]
         {
@@ -310,15 +359,18 @@ impl QrCode {
     }
 
     /// Place format information bits at the given positions.
-    fn place_format_bits(
-        &mut self,
-        format: u16,
-        positions: &[(usize, usize)],
-        shift_start: u8,
-    ) {
+    fn place_format_bits(&mut self, format: u16, positions: &[(usize, usize)], shift_start: u8) {
         for (i, (x, y)) in positions.iter().enumerate() {
             let bit = ((format >> (shift_start - i as u8)) & 1) != 0;
-            self.force_reserved(*x, *y, if bit { Module::FuncDark } else { Module::FuncLight });
+            self.force_reserved(
+                *x,
+                *y,
+                if bit {
+                    Module::FuncDark
+                } else {
+                    Module::FuncLight
+                },
+            );
         }
     }
 
@@ -327,7 +379,9 @@ impl QrCode {
         let mut rem = data << 10;
         let generator = 0b10100110111u16;
         for i in (10..=14).rev() {
-            if ((rem >> i) & 1) != 0 { rem ^= generator << (i - 10); }
+            if ((rem >> i) & 1) != 0 {
+                rem ^= generator << (i - 10);
+            }
         }
         let bch = (data << 10) | (rem & 0x03FF);
         let format = bch ^ 0b101010000010010u16;
@@ -345,18 +399,24 @@ impl QrCode {
 
         let mut right = QR_SIZE - 1;
         while right > 0 {
-            if right == 6 { right -= 1; }
+            if right == 6 {
+                right -= 1;
+            }
             let left = right - 1;
             let upward = ((QR_SIZE - 1 - right) / 2) % 2 == 0;
 
             for i in 0..QR_SIZE {
                 let y = if upward { QR_SIZE - 1 - i } else { i };
                 for x in [right, left] {
-                    if self.modules[y][x].is_reserved() { continue; }
+                    if self.modules[y][x].is_reserved() {
+                        continue;
+                    }
                     self.place_data_bit(data, &mut placed_bits, y, x);
                 }
             }
-            if right < 2 { break; }
+            if right < 2 {
+                break;
+            }
             right -= 2;
         }
 
@@ -409,7 +469,11 @@ impl QrCode {
             let mut run_len = 0u32;
             let mut last_dark = false;
             for inner in 0..QR_SIZE {
-                let (y, x) = if horizontal { (outer, inner) } else { (inner, outer) };
+                let (y, x) = if horizontal {
+                    (outer, inner)
+                } else {
+                    (inner, outer)
+                };
                 let dark = self.modules[y][x].is_dark();
                 if inner == 0 || dark != last_dark {
                     score += Self::penalty_run_score(run_len);
@@ -500,7 +564,11 @@ impl QrCode {
             }
         }
         let percent = (dark_count * 100) / total;
-        let diff = if percent > 50 { percent - 50 } else { 50 - percent };
+        let diff = if percent > 50 {
+            percent - 50
+        } else {
+            50 - percent
+        };
         (diff / 5) * 10
     }
 
@@ -514,20 +582,31 @@ impl QrCode {
 
     fn set_reserved(&mut self, x: usize, y: usize, module: Module) {
         if x < QR_SIZE && y < QR_SIZE {
-             #[cfg(debug_assertions)]
-             {
-                 let current = self.modules[y][x];
-                 debug_assert!(!current.is_reserved() || current == module, 
-                    "Overwrite reserved module conflict at ({}, {}): {:?} -> {:?}", x, y, current, module);
-             }
+            #[cfg(debug_assertions)]
+            {
+                let current = self.modules[y][x];
+                debug_assert!(
+                    !current.is_reserved() || current == module,
+                    "Overwrite reserved module conflict at ({}, {}): {:?} -> {:?}",
+                    x,
+                    y,
+                    current,
+                    module
+                );
+            }
             self.modules[y][x] = module;
         }
     }
 
     fn force_reserved(&mut self, x: usize, y: usize, module: Module) {
-         if x < QR_SIZE && y < QR_SIZE {
+        if x < QR_SIZE && y < QR_SIZE {
             #[cfg(debug_assertions)]
-            debug_assert!(self.modules[y][x].is_reserved(), "force_reserved on non-reserved area ({},{})", x, y);
+            debug_assert!(
+                self.modules[y][x].is_reserved(),
+                "force_reserved on non-reserved area ({},{})",
+                x,
+                y
+            );
 
             self.modules[y][x] = module;
         }
@@ -539,44 +618,71 @@ impl QrCode {
         let mut data_modules = 0usize;
         for y in 0..QR_SIZE {
             for x in 0..QR_SIZE {
-                if !self.modules[y][x].is_reserved() { 
-                    data_modules += 1; 
-                    debug_assert!(self.modules[y][x] != Module::Unset, "Unset module in data area at ({},{})", x, y);
+                if !self.modules[y][x].is_reserved() {
+                    data_modules += 1;
+                    debug_assert!(
+                        self.modules[y][x] != Module::Unset,
+                        "Unset module in data area at ({},{})",
+                        x,
+                        y
+                    );
                 } else {
-                     debug_assert!(self.modules[y][x] != Module::Unset, "Unset module in reserved area at ({},{})", x, y);
+                    debug_assert!(
+                        self.modules[y][x] != Module::Unset,
+                        "Unset module in reserved area at ({},{})",
+                        x,
+                        y
+                    );
                 }
             }
         }
-        debug_assert_eq!(data_modules, DATA_MODULES, "QR Data Module Count mismatch! Expected {}, found {}", DATA_MODULES, data_modules);
+        debug_assert_eq!(
+            data_modules, DATA_MODULES,
+            "QR Data Module Count mismatch! Expected {}, found {}",
+            DATA_MODULES, data_modules
+        );
     }
-    
+
     #[cfg(debug_assertions)]
     fn debug_assert_reserved_layout(&self) {
         let mut seen = [[false; QR_SIZE]; QR_SIZE];
         let mut count = 0;
 
-        for &(x, y) in FORMAT_POS_TL.iter()
+        for &(x, y) in FORMAT_POS_TL
+            .iter()
             .chain(FORMAT_POS_TR.iter())
             .chain(FORMAT_POS_BL.iter())
         {
             debug_assert!(!seen[y][x], "Duplicate format pos coordinate ({},{})", x, y);
             seen[y][x] = true;
             // Verify that this position is indeed marked as reserved
-            debug_assert!(self.modules[y][x].is_reserved(), "Format Info POS ({},{}) is improperly NOT reserved", x, y);
+            debug_assert!(
+                self.modules[y][x].is_reserved(),
+                "Format Info POS ({},{}) is improperly NOT reserved",
+                x,
+                y
+            );
             count += 1;
         }
-        
+
         debug_assert_eq!(count, 15 + 8 + 7, "Total format info bits mismatch");
     }
 
     #[cfg(debug_assertions)]
-    fn debug_assert_mask_does_not_touch_reserved(&self, mask: u8, base: &[[Module; QR_SIZE]; QR_SIZE]) {
+    fn debug_assert_mask_does_not_touch_reserved(
+        &self,
+        mask: u8,
+        base: &[[Module; QR_SIZE]; QR_SIZE],
+    ) {
         for y in 0..QR_SIZE {
             for x in 0..QR_SIZE {
                 if base[y][x].is_reserved() {
-                     // The mask operation should NOT have modified reserved modules.
-                    debug_assert_eq!(self.modules[y][x], base[y][x], 
-                        "Mask {} modified reserved module at ({},{})", mask, x, y);
+                    // The mask operation should NOT have modified reserved modules.
+                    debug_assert_eq!(
+                        self.modules[y][x], base[y][x],
+                        "Mask {} modified reserved module at ({},{})",
+                        mask, x, y
+                    );
                 }
             }
         }
@@ -586,7 +692,11 @@ impl QrCode {
         let mut out = [[b'.'; QR_SIZE]; QR_SIZE];
         for y in 0..QR_SIZE {
             for x in 0..QR_SIZE {
-                out[y][x] = if self.modules[y][x].is_dark() { b'#' } else { b'.' };
+                out[y][x] = if self.modules[y][x].is_dark() {
+                    b'#'
+                } else {
+                    b'.'
+                };
             }
         }
         out
@@ -613,7 +723,9 @@ impl QrCode {
             while col < QR_SIZE {
                 if self.modules[row][col].is_dark() {
                     let start = col;
-                    while col < QR_SIZE && self.modules[row][col].is_dark() { col += 1; }
+                    while col < QR_SIZE && self.modules[row][col].is_dark() {
+                        col += 1;
+                    }
                     let px = x + ((quiet_zone as i32 + start as i32) * module_size as i32);
                     let width = (col - start) as u32 * module_size;
                     fb.fill_rect(Rect::new(px, py, width, module_size), dark_color);
@@ -632,10 +744,14 @@ impl QrCode {
 fn gf_mul(mut x: u8, mut y: u8) -> u8 {
     let mut r = 0u8;
     while y != 0 {
-        if (y & 1) != 0 { r ^= x; }
+        if (y & 1) != 0 {
+            r ^= x;
+        }
         let hi = x & 0x80;
         x <<= 1;
-        if hi != 0 { x ^= 0x1d; } // Primitive polynomial 0x11D
+        if hi != 0 {
+            x ^= 0x1d;
+        } // Primitive polynomial 0x11D
         y >>= 1;
     }
     r

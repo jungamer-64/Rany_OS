@@ -140,7 +140,10 @@ fn test_parse_x509_raw_tbs() {
     let cert = parse_x509(&TEST_CERT_DER).expect("parse test cert");
 
     assert_eq!(cert.raw_tbs.len(), 129, "raw_tbs must be 129 bytes");
-    assert_eq!(cert.raw_tbs[0], 0x30, "raw_tbs must start with SEQUENCE tag");
+    assert_eq!(
+        cert.raw_tbs[0], 0x30,
+        "raw_tbs must start with SEQUENCE tag"
+    );
     assert_eq!(cert.raw_tbs[1], 0x7F, "raw_tbs length must be 127");
 }
 
@@ -159,8 +162,14 @@ fn test_parse_x509_issuer_subject() {
     );
 
     // issuer/subjectはSEQUENCEで始まること
-    assert_eq!(cert.issuer_raw[0], 0x30, "issuer must start with SEQUENCE tag");
-    assert_eq!(cert.subject_raw[0], 0x30, "subject must start with SEQUENCE tag");
+    assert_eq!(
+        cert.issuer_raw[0], 0x30,
+        "issuer must start with SEQUENCE tag"
+    );
+    assert_eq!(
+        cert.subject_raw[0], 0x30,
+        "subject must start with SEQUENCE tag"
+    );
 }
 
 /// RSA公開鍵抽出テスト
@@ -171,7 +180,11 @@ fn test_parse_x509_rsa_spki() {
     match cert.subject_public_key_info {
         SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
             // モジュラス: 先頭0x00除去後、8バイトの0xFF
-            assert_eq!(modulus.len(), 8, "modulus must be 8 bytes (leading 0x00 stripped)");
+            assert_eq!(
+                modulus.len(),
+                8,
+                "modulus must be 8 bytes (leading 0x00 stripped)"
+            );
             assert!(
                 modulus.iter().all(|&b| b == 0xFF),
                 "modulus bytes must all be 0xFF"
@@ -237,7 +250,10 @@ fn test_validate_chain_single_cert_untrusted() {
     // 信頼されたルートに含まれていない自己署名証明書1枚は拒否される
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
     let result = validate_certificate_chain(chain, None, &[]);
-    assert!(result.is_none(), "untrusted self-signed cert should be rejected");
+    assert!(
+        result.is_none(),
+        "untrusted self-signed cert should be rejected"
+    );
 }
 
 /// 証明書チェーン検証テスト（自己署名証明書1枚、信頼済み）
@@ -247,7 +263,10 @@ fn test_validate_chain_single_cert_trusted() {
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
     let trusted: &[&[u8]] = &[&TEST_CERT_DER];
     let result = validate_certificate_chain(chain, None, trusted);
-    assert!(result.is_some(), "trusted self-signed cert should be accepted");
+    assert!(
+        result.is_some(),
+        "trusted self-signed cert should be accepted"
+    );
 }
 
 /// 証明書チェーン検証テスト（空チェーン）
@@ -264,7 +283,10 @@ fn test_validate_chain_server_name_match_trusted() {
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
     let trusted: &[&[u8]] = &[&TEST_CERT_DER];
     let result = validate_certificate_chain(chain, Some("Test"), trusted);
-    assert!(result.is_some(), "trusted cert with matching hostname should be accepted");
+    assert!(
+        result.is_some(),
+        "trusted cert with matching hostname should be accepted"
+    );
 }
 
 /// 証明書チェーン検証テスト（サーバー名不一致、信頼済み）
@@ -273,7 +295,10 @@ fn test_validate_chain_server_name_mismatch_trusted() {
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
     let trusted: &[&[u8]] = &[&TEST_CERT_DER];
     let result = validate_certificate_chain(chain, Some("example.com"), trusted);
-    assert!(result.is_none(), "server name 'example.com' should not match");
+    assert!(
+        result.is_none(),
+        "server name 'example.com' should not match"
+    );
 }
 
 /// ワイルドカード照合テスト

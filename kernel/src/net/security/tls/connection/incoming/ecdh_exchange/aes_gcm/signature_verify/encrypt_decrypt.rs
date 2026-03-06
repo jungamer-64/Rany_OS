@@ -3,7 +3,6 @@
 use super::*;
 
 impl TlsConnection {
-
     /// データを暗号化して送信
     ///
     /// Dispatches between TLS 1.3 record layer and TLS 1.2 cipher suites.
@@ -90,7 +89,11 @@ impl TlsConnection {
     /// - auth_tag (16 bytes)
     ///
     /// Nonce: IV XOR zero-padded sequence number (RFC 7905 Section 2)
-    pub(super) fn encrypt_chacha20_poly1305(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_chacha20_poly1305(
+        &mut self,
+        data: &[u8],
+        content_type: u8,
+    ) -> TlsResult<Vec<u8>> {
         // Keys not set — return error (encryption requires valid keys)
         let (ciphertext, auth_tag) =
             if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
@@ -232,7 +235,10 @@ impl TlsConnection {
             }
             if ext_type == 42 && ext_len >= 4 {
                 max_early_data_size = u32::from_be_bytes([
-                    data[eoff], data[eoff + 1], data[eoff + 2], data[eoff + 3],
+                    data[eoff],
+                    data[eoff + 1],
+                    data[eoff + 2],
+                    data[eoff + 3],
                 ]);
             }
             eoff += ext_len;
@@ -327,7 +333,11 @@ impl TlsConnection {
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
         let use_384 = cipher.uses_sha384();
-        let hash_len = if use_384 { SHA384_OUTPUT_SIZE } else { SHA256_OUTPUT_SIZE };
+        let hash_len = if use_384 {
+            SHA384_OUTPUT_SIZE
+        } else {
+            SHA256_OUTPUT_SIZE
+        };
 
         // サーバーの application_traffic_secret を更新
         // application_traffic_secret_N+1 =
@@ -336,22 +346,12 @@ impl TlsConnection {
         if use_384 {
             let mut old_secret = [0u8; 48];
             old_secret.copy_from_slice(&self.server_app_traffic_secret);
-            let result = hkdf_expand_label_sha384(
-                &old_secret,
-                b"traffic upd",
-                b"",
-                hash_len,
-            );
+            let result = hkdf_expand_label_sha384(&old_secret, b"traffic upd", b"", hash_len);
             new_server_secret[..hash_len].copy_from_slice(&result[..hash_len]);
         } else {
             let mut old_secret = [0u8; 32];
             old_secret.copy_from_slice(&self.server_app_traffic_secret[..32]);
-            let result = hkdf_expand_label(
-                &old_secret,
-                b"traffic upd",
-                b"",
-                hash_len,
-            );
+            let result = hkdf_expand_label(&old_secret, b"traffic upd", b"", hash_len);
             new_server_secret[..hash_len].copy_from_slice(&result[..hash_len]);
         }
         self.server_app_traffic_secret = new_server_secret;
@@ -374,22 +374,12 @@ impl TlsConnection {
             if use_384 {
                 let mut old_secret = [0u8; 48];
                 old_secret.copy_from_slice(&self.client_app_traffic_secret);
-                let result = hkdf_expand_label_sha384(
-                    &old_secret,
-                    b"traffic upd",
-                    b"",
-                    hash_len,
-                );
+                let result = hkdf_expand_label_sha384(&old_secret, b"traffic upd", b"", hash_len);
                 new_client_secret[..hash_len].copy_from_slice(&result[..hash_len]);
             } else {
                 let mut old_secret = [0u8; 32];
                 old_secret.copy_from_slice(&self.client_app_traffic_secret[..32]);
-                let result = hkdf_expand_label(
-                    &old_secret,
-                    b"traffic upd",
-                    b"",
-                    hash_len,
-                );
+                let result = hkdf_expand_label(&old_secret, b"traffic upd", b"", hash_len);
                 new_client_secret[..hash_len].copy_from_slice(&result[..hash_len]);
             }
             self.client_app_traffic_secret = new_client_secret;
@@ -423,9 +413,9 @@ impl TlsConnection {
 
         // KeyUpdate { update_not_requested(0) }
         let key_update_msg = vec![
-            24,   // msg_type = KeyUpdate
+            24, // msg_type = KeyUpdate
             0, 0, 1, // length = 1
-            0,    // update_not_requested
+            0, // update_not_requested
         ];
 
         // Handshake content type を付加して暗号化

@@ -46,7 +46,9 @@ impl NtpTimestamp {
     /// Convert to Unix time (seconds since 1970)
     pub fn to_unix_seconds(&self) -> u64 {
         let seconds_u32 = u32::from_be_bytes(self.seconds);
-        if seconds_u32 == 0 { return 0; }
+        if seconds_u32 == 0 {
+            return 0;
+        }
         // NTP era 0: 1900-01-01 to 2036-02-07
         // Offset between 1900 and 1970 is 2,208,988,800 seconds.
         const NTP_UNIX_OFFSET: u32 = 2_208_988_800;
@@ -83,9 +85,15 @@ impl NtpHeader {
         }
     }
 
-    pub fn mode(&self) -> u8 { self.li_vn_mode & 0x07 }
-    pub fn version(&self) -> u8 { (self.li_vn_mode >> 3) & 0x07 }
-    pub fn leap_indicator(&self) -> u8 { (self.li_vn_mode >> 6) & 0x03 }
+    pub fn mode(&self) -> u8 {
+        self.li_vn_mode & 0x07
+    }
+    pub fn version(&self) -> u8 {
+        (self.li_vn_mode >> 3) & 0x07
+    }
+    pub fn leap_indicator(&self) -> u8 {
+        (self.li_vn_mode >> 6) & 0x03
+    }
 
     pub fn as_bytes(&self) -> &[u8; 48] {
         unsafe { core::mem::transmute(self) }
@@ -121,13 +129,14 @@ impl NtpClient {
     pub async fn sync_time(&self) -> Result<u64, EndpointError> {
         let server_ip = self.server.ok_or(EndpointError::InvalidArgument)?;
         let remote = UdpAddr::new(server_ip, NTP_PORT);
-        
+
         // 非同期UDPバインド: イベントキュー経由でNETWORK_STACKロックを回避
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(0).await
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(0)
+            .await
             .ok_or(EndpointError::Internal)?;
-        
+
         let mut req = NtpHeader::new_client_request();
-        
+
         // RFC 4330 Section 5: Set a unique transmit timestamp in the request.
         // We use uptime nanoseconds as a nonce to prevent off-path spoofing.
         let nonce = crate::task::timer::current_tick();
@@ -137,42 +146,48 @@ impl NtpClient {
         req.transmit_timestamp.fraction = fraction.to_be_bytes();
         let sent_ts = req.transmit_timestamp;
 
-        socket.send_to(req.as_bytes(), remote).map_err(|_| EndpointError::Internal)?;
+        socket
+            .send_to(req.as_bytes(), remote)
+            .map_err(|_| EndpointError::Internal)?;
 
         // 非同期受信: UdpRecvFuture経由（タイムアウト付き）
-        use crate::task::{with_timeout, TimeoutResult};
+        use crate::task::{TimeoutResult, with_timeout};
         const NTP_TIMEOUT_MS: u64 = 5_000;
-        
+
         match with_timeout(socket.recv(), NTP_TIMEOUT_MS).await {
             TimeoutResult::Completed(Some((_src, _ttl, packet))) => {
                 let data = packet.data();
                 let resp = NtpHeader::from_bytes(data).ok_or(EndpointError::Internal)?;
-                
+
                 // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
                 // in the response matches the transmit timestamp in the request.
                 if !resp.origin_timestamp.is_equal(&sent_ts) {
-                    log::warn!("[NTP] Security: Originate timestamp mismatch! Dropping spoofed response.");
+                    log::warn!(
+                        "[NTP] Security: Originate timestamp mismatch! Dropping spoofed response."
+                    );
                     return Err(EndpointError::Internal);
                 }
 
                 // Validation
-                if resp.mode() != 4 { // Server response mode
+                if resp.mode() != 4 {
+                    // Server response mode
                     return Err(EndpointError::Internal);
                 }
 
                 let transmit_ts = resp.transmit_timestamp;
                 let unix_time = transmit_ts.to_unix_seconds();
-                
+
                 if unix_time > 0 {
                     log::info!("[NTP] Synced time: {} (UNIX)", unix_time);
-                    
+
                     let current_uptime = time::get_uptime_ms() / 1000;
                     let calculated_boot_time = unix_time.saturating_sub(current_uptime);
-                    
+
                     // システム時計を更新
                     time::system_clock().set_boot_time(calculated_boot_time);
-                    
-                    self.last_sync_uptime.store(time::get_uptime_ms(), Ordering::Relaxed);
+
+                    self.last_sync_uptime
+                        .store(time::get_uptime_ms(), Ordering::Relaxed);
                     return Ok(unix_time);
                 }
 

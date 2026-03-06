@@ -177,7 +177,9 @@ pub fn flow_control_probe_timing_smoke() -> bool {
 pub fn futures_sendfuture_wakes_on_send_smoke() -> bool {
     let sock = crate::net::l4::endpoint::create_tcp_endpoint();
     if let Some(s) = sock.endpoint() {
-        let Ok(mut inner) = s.inner().lock() else { return false; };
+        let Ok(mut inner) = s.inner().lock() else {
+            return false;
+        };
         inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 30001));
         inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
         let _ = inner.transition_to(super::types::EndpointState::Connected);
@@ -208,14 +210,19 @@ pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
     let fd = sock.fd();
 
     if let Some(s) = sock.endpoint() {
-        let Ok(mut inner) = s.inner().lock() else { return false; };
+        let Ok(mut inner) = s.inner().lock() else {
+            return false;
+        };
         inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
         inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
         inner.send_buffer.extend(&[1, 2, 3]);
     }
 
     let handler = handler::NetworkEventHandler::new();
-    if !matches!(handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::TxAvailable), handler::EventHandleResult::Success) {
+    if !matches!(
+        handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::TxAvailable),
+        handler::EventHandleResult::Success
+    ) {
         return false;
     }
 
@@ -240,7 +247,9 @@ pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
     let fd = sock.fd();
 
     if let Some(s) = sock.endpoint() {
-        let Ok(mut inner) = s.inner().lock() else { return false; };
+        let Ok(mut inner) = s.inner().lock() else {
+            return false;
+        };
         inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
         inner.remote_addr = Some(super::types::EndpointAddr::new([10, 0, 2, 2], 80));
         inner.send_buffer.extend(&[1, 2, 3, 4]);

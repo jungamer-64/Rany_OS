@@ -2,10 +2,10 @@
 // drivers/mlx5/src/device/caps.rs - MLX5 Device Capabilities
 // ============================================================================
 
-use crate::defs::{CmdOpcode, HcaCaps, MLX5_CMD_MBOX_SIZE};
-use crate::error::{Mlx5Error, Mlx5Result};
-use crate::device::Mlx5Device;
 use crate::cmd::CmdMailbox;
+use crate::defs::{CmdOpcode, HcaCaps, MLX5_CMD_MBOX_SIZE};
+use crate::device::Mlx5Device;
+use crate::error::{Mlx5Error, Mlx5Result};
 // unused import removed
 
 impl Mlx5Device {
@@ -13,7 +13,7 @@ impl Mlx5Device {
     pub unsafe fn query_and_set_hca_cap(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        
+
         log::info!(target: "mlx5", "Querying HCA Capabilities...");
         *in_mbox = CmdMailbox::zeroed();
         // Query CURRENT caps (op_mod = 0)
@@ -24,12 +24,12 @@ impl Mlx5Device {
             self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
-        
+
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let cap_view = crate::structs::caps::HcaCapLayout::new(&out_mbox.data);
-        
+
         let mut caps = HcaCaps::default();
-        
+
         // Use structured layout accessors
         caps.max_cq = 1 << cap_view.log_max_cq();
         caps.max_sq = 1 << cap_view.log_max_sq();

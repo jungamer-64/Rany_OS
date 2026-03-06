@@ -24,19 +24,19 @@ use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
 // 共通型定義をインポート（IOVA_MM_MIGRATION_PLAN Phase 0.1）
-use crate::mm::types::{FrameIndex, NumaNodeId, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+use crate::mm::types::{FrameIndex, NumaNodeId, PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K};
 
 // ============================================================================
 // TZCNT (Trailing Zero Count) 高速化
 // ============================================================================
 
 /// x86_64 TZCNT命令を使用した高速trailing zero count
-/// 
+///
 /// TZCNT命令はBMI1拡張で利用可能。利用不可の場合はBSF命令にフォールバック。
 /// 両方ともO(1)で実行される。
-/// 
+///
 /// # Performance
-/// 
+///
 /// - TZCNT: 3サイクル（Haswell以降）
 /// - trailing_zeros(): コンパイラ最適化次第（通常はTZCNT/BSFにコンパイルされる）
 mod core_alloc;
@@ -61,41 +61,41 @@ fn fast_tzcnt_u64(word: u64) -> u32 {
 /// SIMD機能の利用可能フラグ
 mod simd_support {
     use core::sync::atomic::{AtomicBool, Ordering};
-    
+
     /// AVX2が利用可能か
     pub static AVX2_AVAILABLE: AtomicBool = AtomicBool::new(false);
     /// SSE4.2が利用可能か
     pub static SSE42_AVAILABLE: AtomicBool = AtomicBool::new(false);
     /// SIMD初期化済みフラグ
     pub static SIMD_INITIALIZED: AtomicBool = AtomicBool::new(false);
-    
+
     /// SIMD機能を初期化（CPUIDでチェック）
     pub fn init_simd_features() {
         if SIMD_INITIALIZED.load(Ordering::Acquire) {
             return;
         }
-        
+
         #[cfg(target_arch = "x86_64")]
         {
             // CPUID.01H:ECX.SSE4_2[bit 20]
             let cpuid1 = core::arch::x86_64::__cpuid(1);
             let sse42 = (cpuid1.ecx >> 20) & 1 != 0;
             SSE42_AVAILABLE.store(sse42, Ordering::Release);
-            
+
             // CPUID.07H:EBX.AVX2[bit 5]
             let cpuid7 = core::arch::x86_64::__cpuid_count(7, 0);
             let avx2 = (cpuid7.ebx >> 5) & 1 != 0;
             AVX2_AVAILABLE.store(avx2, Ordering::Release);
         }
-        
+
         SIMD_INITIALIZED.store(true, Ordering::Release);
     }
-    
+
     #[inline]
     pub fn has_avx2() -> bool {
         AVX2_AVAILABLE.load(Ordering::Relaxed)
     }
-    
+
     #[inline]
     pub fn has_sse42() -> bool {
         SSE42_AVAILABLE.load(Ordering::Relaxed)
@@ -126,20 +126,20 @@ impl SimdScanStats {
 pub static SIMD_SCAN_STATS: SimdScanStats = SimdScanStats::new();
 
 /// ビットマップスライスから最初のセットビット（空きブロック）を検索
-/// 
+///
 /// ## アルゴリズム
-/// 
+///
 /// 1. AVX2/SSE利用可能ならSIMD並列スキャン
 /// 2. 利用不可ならスカラー版（TZCNT）にフォールバック
-/// 
+///
 /// ## SIMD戦略
-/// 
+///
 /// - AVX2: 256ビット（4 x u64）を一度に比較
 /// - SSE4.2: 128ビット（2 x u64）を一度に比較
 /// - スカラー: u64ごとにTZCNT
-/// 
+///
 /// ## 戻り値
-/// 
+///
 /// - `Some(bit_index)`: 空きブロックのビットインデックス
 /// - `None`: 空きブロックなし
 #[inline]
@@ -147,55 +147,61 @@ pub fn find_first_set_bit_simd(bitmap: &[u64]) -> Option<usize> {
     if bitmap.is_empty() {
         return None;
     }
-    
+
     // SIMD初期化チェック
     if !simd_support::SIMD_INITIALIZED.load(core::sync::atomic::Ordering::Acquire) {
         simd_support::init_simd_features();
     }
-    
+
     #[cfg(target_arch = "x86_64")]
     {
         // AVX2版: 4 x u64を並列スキャン
         if simd_support::has_avx2() && bitmap.len() >= 4 {
             if let Some(idx) = find_first_set_bit_avx2(bitmap) {
-                SIMD_SCAN_STATS.simd_scans.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                SIMD_SCAN_STATS.simd_found.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                SIMD_SCAN_STATS
+                    .simd_scans
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                SIMD_SCAN_STATS
+                    .simd_found
+                    .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 return Some(idx);
             }
         }
     }
-    
+
     // スカラーフォールバック
-    SIMD_SCAN_STATS.scalar_scans.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    SIMD_SCAN_STATS
+        .scalar_scans
+        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     find_first_set_bit_scalar(bitmap)
 }
 
 /// AVX2によるビットマップスキャン（4 x u64並列）
-/// 
+///
 /// This function is only available when AVX2 is enabled at compile time.
 /// Runtime AVX2 detection is done in find_first_set_bit_simd before calling.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[inline]
 fn find_first_set_bit_avx2(bitmap: &[u64]) -> Option<usize> {
     use core::arch::x86_64::*;
-    
+
     let chunks = bitmap.len() / 4;
-    
+
     for chunk_idx in 0..chunks {
         let base = chunk_idx * 4;
-        
+
         unsafe {
             // 4つのu64をロード
             let ptr = bitmap.as_ptr().add(base) as *const __m256i;
             let vec = _mm256_loadu_si256(ptr);
-            
+
             // ゼロと比較（非ゼロ = 空きブロックあり）
             let zero = _mm256_setzero_si256();
             let cmp = _mm256_cmpeq_epi64(vec, zero);
-            
+
             // マスクを取得（各64ビット要素の符号ビット）
             let mask = _mm256_movemask_pd(_mm256_castsi256_pd(cmp));
-            
+
             // mask == 0xF なら全てゼロ（空きなし）
             if mask != 0xF {
                 // 非ゼロの要素がある → 詳細スキャン
@@ -209,7 +215,7 @@ fn find_first_set_bit_avx2(bitmap: &[u64]) -> Option<usize> {
             }
         }
     }
-    
+
     // 残りをスカラーでスキャン
     let remainder_start = chunks * 4;
     for (i, &word) in bitmap[remainder_start..].iter().enumerate() {
@@ -218,7 +224,7 @@ fn find_first_set_bit_avx2(bitmap: &[u64]) -> Option<usize> {
             return Some((remainder_start + i) * 64 + bit_in_word);
         }
     }
-    
+
     None
 }
 
@@ -245,7 +251,7 @@ fn find_first_set_bit_scalar(bitmap: &[u64]) -> Option<usize> {
 }
 
 /// 指定位置からの循環スキャン（Round-Robin対応）
-/// 
+///
 /// カーソル位置から開始し、ビットマップを循環的にスキャン。
 /// メモリ領域の均等使用を促進。
 #[inline]
@@ -253,10 +259,10 @@ pub fn find_first_set_bit_from(bitmap: &[u64], start_word: usize) -> Option<usiz
     if bitmap.is_empty() {
         return None;
     }
-    
+
     let len = bitmap.len();
     let start = start_word % len;
-    
+
     // start から末尾まで
     for word_idx in start..len {
         if bitmap[word_idx] != 0 {
@@ -264,7 +270,7 @@ pub fn find_first_set_bit_from(bitmap: &[u64], start_word: usize) -> Option<usiz
             return Some(word_idx * 64 + bit_in_word);
         }
     }
-    
+
     // 先頭から start まで（循環）
     for word_idx in 0..start {
         if bitmap[word_idx] != 0 {
@@ -272,12 +278,12 @@ pub fn find_first_set_bit_from(bitmap: &[u64], start_word: usize) -> Option<usiz
             return Some(word_idx * 64 + bit_in_word);
         }
     }
-    
+
     None
 }
 
 /// 複数ビット連続空き領域を検索（大ブロック割り当て向け）
-/// 
+///
 /// 連続したnビットのセット（空き）を検索。
 /// 2MBや1GBページの割り当てに使用。
 #[inline]
@@ -419,7 +425,7 @@ pub struct CoalescePolicy {
 
 impl CoalescePolicy {
     /// 新しいポリシーを作成
-    /// 
+    ///
     /// デフォルト: low=32, high=128 のブロック数
     pub const fn new() -> Self {
         Self {
@@ -430,15 +436,15 @@ impl CoalescePolicy {
             forced_coalesces: 0,
         }
     }
-    
+
     /// watermarkを設定
     pub fn set_watermarks(&mut self, low: usize, high: usize) {
         self.low_watermark = low;
         self.high_watermark = high.max(low + 1);
     }
-    
+
     /// 現在の空きブロック数に基づいて結合すべきか判定
-    /// 
+    ///
     /// Hysteresisロジック:
     /// - free <= low → Coalescing状態へ遷移、trueを返す
     /// - free >= high → Deferring状態へ遷移、falseを返す
@@ -462,14 +468,14 @@ impl CoalescePolicy {
             self.state == CoalesceState::Coalescing
         }
     }
-    
+
     /// 強制的に結合状態にする（メモリ圧迫時）
     #[inline]
     pub fn force_coalesce(&mut self) {
         self.state = CoalesceState::Coalescing;
         self.forced_coalesces += 1;
     }
-    
+
     /// 統計情報を取得
     pub fn stats(&self) -> CoalescePolicyStats {
         CoalescePolicyStats {
@@ -558,33 +564,33 @@ pub struct CompactionStats {
 // ============================================================================
 
 /// 詳細なフラグメンテーション指標
-/// 
+///
 /// 単純なパーセンテージではなく、フラグメンテーションの種類と
 /// 深刻度を分離して表現する。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FragmentationIndex {
     /// 外部フラグメンテーション (0.0 = 断片化なし, 1.0 = 完全断片化)
-    /// 
+    ///
     /// 空き領域が多数の小さなブロックに分散している度合い。
     /// 高い値は物理的に連続した大きな領域の確保が困難なことを示す。
     pub external: f32,
-    
+
     /// 内部フラグメンテーション (0.0 = 最適, 1.0 = 最悪)
-    /// 
+    ///
     /// 低次オーダーに空きが偏っている度合い。
     /// 高い値は過度な分割により大きなブロックが失われていることを示す。
     pub internal: f32,
-    
+
     /// 使用不能率 (特定オーダー用)
-    /// 
+    ///
     /// 特定のオーダーの割り当てに使用できない空き領域の割合。
     pub unusable_ratio: f32,
-    
+
     /// 推奨アクション
     pub recommended_action: FragmentationAction,
-    
+
     /// 緊急度 (0-100)
-    /// 
+    ///
     /// Compaction/Coalesceを実行すべき緊急度。
     pub urgency: u8,
 }
@@ -606,7 +612,7 @@ pub enum FragmentationAction {
 
 impl FragmentationIndex {
     /// フラグメンテーション指標を計算
-    /// 
+    ///
     /// # Arguments
     /// * `free_counts` - 各オーダーの空きブロック数
     /// * `total_frames` - 総フレーム数
@@ -620,19 +626,20 @@ impl FragmentationIndex {
         if total_free == 0 || total_frames == 0 {
             return Self::default();
         }
-        
+
         // External fragmentation: 空きブロック数 vs 最大可能ブロック数
         // 理想: 全ての空きが1つの最大オーダーブロックに
         // 現実: 多数の小さなブロックに分散
-        let total_free_pages: usize = free_counts.iter()
+        let total_free_pages: usize = free_counts
+            .iter()
             .enumerate()
             .map(|(order, &count)| count * (1usize << order))
             .sum();
-        
+
         // 理想的な場合の最大オーダーブロック数
         let ideal_max_order = total_free_pages.checked_ilog2().unwrap_or(0) as usize;
         let ideal_block_count = if ideal_max_order > 0 { 1 } else { 0 };
-        
+
         let external = if ideal_block_count > 0 && total_free > ideal_block_count {
             // 実際のブロック数が理想より多い → 断片化
             let excess = (total_free - ideal_block_count) as f32;
@@ -640,18 +647,18 @@ impl FragmentationIndex {
         } else {
             0.0
         };
-        
+
         // Internal fragmentation: 低次オーダーへの偏り
         // オーダー0-3 (4KB-32KB) に偏っているほど内部断片化が高い
         let low_order_free: usize = free_counts[..4.min(MAX_ORDER + 1)].iter().sum();
         let _high_order_free: usize = free_counts[4.min(MAX_ORDER + 1)..].iter().sum();
-        
+
         let internal = if total_free > 0 {
             (low_order_free as f32 / total_free as f32).min(1.0)
         } else {
             0.0
         };
-        
+
         // Unusable ratio for target order
         let unusable_ratio = if let Some(order) = target_order {
             // target_order より小さいブロックは使用不能
@@ -660,10 +667,11 @@ impl FragmentationIndex {
         } else {
             0.0
         };
-        
+
         // 緊急度と推奨アクションを決定
-        let (urgency, action) = Self::determine_action(external, internal, free_counts, total_frames);
-        
+        let (urgency, action) =
+            Self::determine_action(external, internal, free_counts, total_frames);
+
         Self {
             external,
             internal,
@@ -672,7 +680,7 @@ impl FragmentationIndex {
             urgency,
         }
     }
-    
+
     /// 緊急度と推奨アクションを決定
     fn determine_action(
         external: f32,
@@ -681,33 +689,34 @@ impl FragmentationIndex {
         total_frames: usize,
     ) -> (u8, FragmentationAction) {
         // Calculate total free pages
-        let total_free_pages: usize = free_counts.iter()
+        let total_free_pages: usize = free_counts
+            .iter()
             .enumerate()
             .map(|(order, &count)| count * (1usize << order))
             .sum();
-        
+
         let free_ratio = total_free_pages as f32 / total_frames as f32;
-        
+
         // 空きが少ない + 高断片化 → 緊急
         if free_ratio < 0.05 && (external > 0.7 || internal > 0.8) {
             return (90, FragmentationAction::CompactUrgent);
         }
-        
+
         // 高い外部断片化 → コンパクション
         if external > 0.6 {
             let urgency = ((external - 0.3) * 100.0).clamp(0.0, 80.0) as u8;
             return (urgency, FragmentationAction::CompactBackground);
         }
-        
+
         // 高い内部断片化 → 結合
         if internal > 0.7 {
             let urgency = ((internal - 0.4) * 80.0).clamp(0.0, 60.0) as u8;
             return (urgency, FragmentationAction::Coalesce);
         }
-        
+
         (0, FragmentationAction::None)
     }
-    
+
     /// コンパクションが必要かどうか
     pub fn needs_compaction(&self) -> bool {
         matches!(
@@ -715,12 +724,12 @@ impl FragmentationIndex {
             FragmentationAction::CompactBackground | FragmentationAction::CompactUrgent
         )
     }
-    
+
     /// 結合が必要かどうか
     pub fn needs_coalesce(&self) -> bool {
         matches!(self.recommended_action, FragmentationAction::Coalesce)
     }
-    
+
     /// 緊急対応が必要かどうか
     pub fn is_urgent(&self) -> bool {
         self.urgency >= 70
@@ -728,7 +737,7 @@ impl FragmentationIndex {
 }
 
 /// 圧縮コントローラ
-/// 
+///
 /// フラグメンテーション率を監視し、必要に応じて圧縮を実行。
 pub struct CompactionController {
     /// 現在の状態
@@ -769,9 +778,9 @@ impl CompactionController {
             compaction_interval: 10_000_000_000, // 約3秒@3GHz
         }
     }
-    
+
     /// フラグメンテーション率を計算
-    /// 
+    ///
     /// (空きブロック数 - 理想的な空きブロック数) / 理想的な空きブロック数
     pub fn calculate_fragmentation(&self, free_counts: &[usize; 19]) -> usize {
         // 低次オーダーに空きが偏っているほどフラグメンテーションが高い
@@ -779,23 +788,22 @@ impl CompactionController {
         if total_free == 0 {
             return 0;
         }
-        
+
         // 低次オーダー（0-3）の空きブロック比率
         let low_order_free: usize = free_counts[..4].iter().sum();
         (low_order_free * 100) / total_free
     }
-    
+
     /// 圧縮が必要か判定
     pub fn should_compact(&self, fragmentation_percent: usize) -> bool {
-        self.state == CompactionState::Idle 
-            && fragmentation_percent >= self.fragmentation_threshold
+        self.state == CompactionState::Idle && fragmentation_percent >= self.fragmentation_threshold
     }
-    
+
     /// 圧縮を開始
     pub fn start_compaction(&mut self) {
         self.state = CompactionState::Compacting;
     }
-    
+
     /// 圧縮完了
     pub fn finish_compaction(&mut self, pages_moved: usize, blocks_created: usize) {
         self.state = CompactionState::Done;
@@ -803,14 +811,14 @@ impl CompactionController {
         self.stats.pages_moved += pages_moved as u64;
         self.stats.blocks_created += blocks_created as u64;
     }
-    
+
     /// アイドルにリセット
     pub fn reset_to_idle(&mut self) {
         self.state = CompactionState::Idle;
     }
-    
+
     /// 圧縮候補のブロックを検索
-    /// 
+    ///
     /// 低次オーダーのブロックで、Buddyと結合可能なものを特定
     pub fn find_compaction_candidates(
         &self,
@@ -818,19 +826,22 @@ impl CompactionController {
         max_candidates: usize,
     ) -> CompactionCandidates {
         let mut candidates = CompactionCandidates::new();
-        
+
         // 低次オーダーから検索
         for order in self.min_compact_order..self.max_compact_order {
             if candidates.count >= max_candidates {
                 break;
             }
-            
+
             if free_counts[order] >= 2 {
                 // このオーダーにBuddy結合可能なペアがありそう
-                candidates.add(order, free_counts[order].min(max_candidates - candidates.count));
+                candidates.add(
+                    order,
+                    free_counts[order].min(max_candidates - candidates.count),
+                );
             }
         }
-        
+
         candidates
     }
 }

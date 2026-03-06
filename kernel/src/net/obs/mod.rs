@@ -7,8 +7,8 @@
 //! - [`snapshot`] — カウンタ・トレース・インターフェース情報の統合スナップショット
 
 pub mod counters;
-pub mod trace;
 pub mod snapshot;
+pub mod trace;
 
-pub use trace::NetTraceEvent;
 pub use snapshot::{NetSnapshot, snapshot};
+pub use trace::NetTraceEvent;

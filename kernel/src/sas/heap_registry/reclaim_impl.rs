@@ -1,7 +1,6 @@
 use super::*;
 
 impl HeapRegistry {
-
     pub fn reclaim_all(&self, domain: DomainId) -> usize {
         // Remove all objects owned by `domain` across all shards, deduplicate
         let mut removed_addrs: BTreeSet<usize> = BTreeSet::new();

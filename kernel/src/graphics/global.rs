@@ -33,8 +33,6 @@ impl Write for EarlyBuf {
 /// グローバルフレームバッファ
 static FRAMEBUFFER: Mutex<Option<Framebuffer>> = Mutex::new(None);
 
-
-
 /// フレームバッファを初期化
 pub fn init(info: FramebufferInfo) {
     let mut fb = unsafe { Framebuffer::new(info) };
@@ -182,7 +180,12 @@ fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
         crate::io::log::early_print("[GFX] Existing mapping cleared\n");
 
         // Map with Write-Combining attributes for optimal VRAM performance
-        match crate::mm::virt::higher_half::global_map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
+        match crate::mm::virt::higher_half::global_map_range(
+            virt_start,
+            phys_start,
+            size,
+            PageFlags::write_combining(),
+        ) {
             Ok(_) => {
                 crate::io::log::early_print("[GFX] map_range OK\n");
                 log::info!("[GRAPHICS] Framebuffer mapped successfully with WC attributes\n");
@@ -259,7 +262,12 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
 
         // 2. Write-Combining属性で範囲マップ
         // map_rangeはアラインメントとサイズに基づいて自動的にHuge Page (2MiB/1GiB)を使用する
-        match crate::mm::virt::higher_half::global_map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
+        match crate::mm::virt::higher_half::global_map_range(
+            virt_start,
+            phys_start,
+            size,
+            PageFlags::write_combining(),
+        ) {
             Ok(_) => {
                 log::info!("[GRAPHICS] Framebuffer remapped successfully with WC attributes\n");
             }
@@ -337,13 +345,13 @@ pub fn init_console() {
     if let Some(ref mut fb) = *fb_guard {
         // Create TextConsole and get dimensions
         let (console, cols, rows) = TextConsole::new(fb);
-        
+
         // Initialize ConsoleManager with correct dimensions
         crate::console::init(cols, rows);
-        
+
         // Register TextConsole as the driver
         crate::console::set_driver(alloc::boxed::Box::new(console));
-        
+
         drop(fb_guard);
         log::info!("[GRAPHICS] Text console initialized as driver\n");
     }

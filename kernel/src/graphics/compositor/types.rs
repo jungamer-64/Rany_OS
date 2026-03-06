@@ -149,9 +149,3 @@ pub enum CompositorWindowState {
     Maximized,
     Hidden,
 }
-
-
-
-
-
-

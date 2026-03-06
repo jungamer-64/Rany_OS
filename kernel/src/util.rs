@@ -126,11 +126,7 @@ pub fn struct_as_bytes_mut<T>(val: &mut T) -> &mut [u8] {
 
 /// Convert a NonNull<u8> pointer with an offset and length into an immutable slice.
 /// This encapsulates an unsafe pointer -> slice conversion for non-owning buffers.
-pub unsafe fn nonnull_ptr_as_slice<'a>(
-    ptr: NonNull<u8>,
-    offset: usize,
-    len: usize,
-) -> &'a [u8] {
+pub unsafe fn nonnull_ptr_as_slice<'a>(ptr: NonNull<u8>, offset: usize, len: usize) -> &'a [u8] {
     let base = ptr.as_ptr() as usize;
     let addr = base.checked_add(offset).unwrap_or(usize::MAX);
     debug_check_ptr_range(addr, len, 1);

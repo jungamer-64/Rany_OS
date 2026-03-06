@@ -7,8 +7,8 @@ use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use super::backoff::Backoff;
 use super::CacheLinePadded;
+use super::backoff::Backoff;
 
 /// ロックフリーMPSC リングバッファ
 ///

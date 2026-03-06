@@ -187,7 +187,10 @@ impl Ipv6FragmentBuffer {
 
         // RFC 8200: 8-octet multiple check for non-last fragments
         if frag.more_fragments && (payload_len % 8 != 0) {
-            log::warn!("[NET-IPV6] Fragment length ({}) not a multiple of 8 while M=1, dropping (RFC 8200)", payload_len);
+            log::warn!(
+                "[NET-IPV6] Fragment length ({}) not a multiple of 8 while M=1, dropping (RFC 8200)",
+                payload_len
+            );
             return Err(Ipv6ReassemblyError::InvalidSize);
         }
 
@@ -204,16 +207,20 @@ impl Ipv6FragmentBuffer {
         if let Some(unfrag) = &self.unfragmentable_part {
             let reassembled_payload_len = unfrag.len().saturating_sub(40) + end as usize;
             if reassembled_payload_len > 65535 {
-                log::warn!("[NET-IPV6] Reassembled packet Payload Length {} exceeds 65535, discarding (RFC 8200)",
-                    reassembled_payload_len);
+                log::warn!(
+                    "[NET-IPV6] Reassembled packet Payload Length {} exceeds 65535, discarding (RFC 8200)",
+                    reassembled_payload_len
+                );
                 return Err(Ipv6ReassemblyError::PacketTooLarge);
             }
         } else if frag.fragment_offset == 0 {
             // We are processing the first fragment right now
             let reassembled_payload_len = unfragmentable.len().saturating_sub(40) + end as usize;
             if reassembled_payload_len > 65535 {
-                log::warn!("[NET-IPV6] Reassembled packet Payload Length {} exceeds 65535, discarding (RFC 8200)",
-                    reassembled_payload_len);
+                log::warn!(
+                    "[NET-IPV6] Reassembled packet Payload Length {} exceeds 65535, discarding (RFC 8200)",
+                    reassembled_payload_len
+                );
                 return Err(Ipv6ReassemblyError::PacketTooLarge);
             }
         }
@@ -222,14 +229,22 @@ impl Ipv6FragmentBuffer {
         if !frag.more_fragments {
             if let Some(existing_total) = self.total_len {
                 if existing_total != end {
-                    log::warn!("[NET-IPV6] Inconsistent total length in fragments: expected {}, got {}", existing_total, end);
+                    log::warn!(
+                        "[NET-IPV6] Inconsistent total length in fragments: expected {}, got {}",
+                        existing_total,
+                        end
+                    );
                     return Err(Ipv6ReassemblyError::Overlap);
                 }
             }
             self.total_len = Some(end);
         } else if let Some(total) = self.total_len {
             if end > total {
-                log::warn!("[NET-IPV6] Fragment beyond end of datagram: {} > {}", end, total);
+                log::warn!(
+                    "[NET-IPV6] Fragment beyond end of datagram: {} > {}",
+                    end,
+                    total
+                );
                 return Err(Ipv6ReassemblyError::Overlap);
             }
         }
@@ -251,8 +266,11 @@ impl Ipv6FragmentBuffer {
         }
         if covered_hole_bytes < payload_len {
             // Overlap detected with already received data
-            log::warn!("[NET-IPV6] Overlapping fragment detected (offset={}, len={}), discarding datagram (RFC 8200)",
-                offset, payload_len);
+            log::warn!(
+                "[NET-IPV6] Overlapping fragment detected (offset={}, len={}), discarding datagram (RFC 8200)",
+                offset,
+                payload_len
+            );
             return Err(Ipv6ReassemblyError::Overlap);
         }
 
@@ -277,7 +295,8 @@ impl Ipv6FragmentBuffer {
             let mut frag_bytes = [0u8; 8];
             frag_bytes[0] = frag.next_header;
             frag_bytes[1] = 0; // Reserved
-            let off_and_flags = (frag.fragment_offset << 3) | (if frag.more_fragments { 0x01 } else { 0 });
+            let off_and_flags =
+                (frag.fragment_offset << 3) | (if frag.more_fragments { 0x01 } else { 0 });
             frag_bytes[2..4].copy_from_slice(&off_and_flags.to_be_bytes());
             frag_bytes[4..8].copy_from_slice(&frag.identification.to_be_bytes());
             self.first_frag_header = Some(frag_bytes);
@@ -365,7 +384,10 @@ impl Ipv6FragmentBuffer {
         // Check if reassembled length fits in IPv6 Payload Length field (16 bits)
         // RFC 8200: Payload Length excludes the 40-byte fixed header.
         if (unfrag.len() + total).saturating_sub(40) > 65535 {
-            log::warn!("[NET-IPV6] Reassembled packet too large for u16 Payload Length: {} bytes (Jumbo Payloads not supported)", unfrag.len() + total);
+            log::warn!(
+                "[NET-IPV6] Reassembled packet too large for u16 Payload Length: {} bytes (Jumbo Payloads not supported)",
+                unfrag.len() + total
+            );
             return None;
         }
 
@@ -396,27 +418,30 @@ impl Ipv6FragmentBuffer {
                     if ext_offset + 2 > unfrag.len() {
                         break;
                     }
-                    
+
                     // Previous extension header's Next Header field is at 'pos'
                     // We need to update nh_value to the CURRENT extension header's Next Header
                     let current_nh = nh_value;
                     nh_value = unfrag[ext_offset];
-                    
+
                     if nh_value == super::EXT_HEADER_FRAGMENT {
                         if ext_offset < packet.len() {
                             packet[ext_offset] = nh;
                         }
                         break;
                     }
-                    
-                    let ext_len = if current_nh == 51 { // EXT_HEADER_AUTH
+
+                    let ext_len = if current_nh == 51 {
+                        // EXT_HEADER_AUTH
                         (unfrag[ext_offset + 1] as usize + 2) * 4
                     } else {
                         (unfrag[ext_offset + 1] as usize + 1) * 8
                     };
-                    
-                    if ext_len == 0 { break; } 
-                    
+
+                    if ext_len == 0 {
+                        break;
+                    }
+
                     ext_offset += ext_len;
                     if ext_offset >= unfrag.len() {
                         break;
@@ -498,7 +523,10 @@ impl Ipv6FragmentReassembler {
         frag: &Ipv6FragmentHeader,
         payload: &[u8],
         current_time: u64,
-    ) -> (Result<Option<Vec<u8>>, Ipv6ReassemblyError>, Vec<(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>)>) {
+    ) -> (
+        Result<Option<Vec<u8>>, Ipv6ReassemblyError>,
+        Vec<(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>)>,
+    ) {
         self.stats.fragments_received += 1;
 
         let key = Ipv6FragmentKey::new(src, dst, frag.identification);
@@ -523,7 +551,8 @@ impl Ipv6FragmentReassembler {
                 self.stats.dropped_limit += 1;
                 return (Ok(None), expired);
             }
-            self.buffers.insert(key, Ipv6FragmentBuffer::new(current_time));
+            self.buffers
+                .insert(key, Ipv6FragmentBuffer::new(current_time));
         }
 
         let buffer = match self.buffers.get_mut(&key) {
@@ -556,14 +585,22 @@ impl Ipv6FragmentReassembler {
 
     /// Evict expired reassembly buffers.
     /// Returns a list of (src, dst, unfragmentable_part, fragment_header) for buffers that had the first fragment.
-    pub fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>)> {
+    pub fn evict_expired(
+        &mut self,
+        current_time: u64,
+    ) -> Vec<(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>)> {
         let mut expired_with_first = Vec::new();
         let mut keys_to_remove = Vec::new();
 
         for (key, buf) in self.buffers.iter() {
             if buf.is_expired(current_time) {
                 if let Some(ref unfrag) = buf.unfragmentable_part {
-                    expired_with_first.push((key.src, key.dst, unfrag.clone(), buf.first_frag_header));
+                    expired_with_first.push((
+                        key.src,
+                        key.dst,
+                        unfrag.clone(),
+                        buf.first_frag_header,
+                    ));
                 }
                 keys_to_remove.push(*key);
             }

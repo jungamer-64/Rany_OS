@@ -11,7 +11,6 @@
 //! - Router Solicitation (sending only)
 //! - NDP option parsing (Source/Target Link-Layer Address, Prefix Info, MTU)
 
-
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -164,12 +163,10 @@ pub fn parse_ndp_options(data: &[u8]) -> Vec<NdpOption> {
                     let flags = opt_data[3];
                     let on_link = (flags & 0x80) != 0;
                     let autonomous = (flags & 0x40) != 0;
-                    let valid_lifetime = u32::from_be_bytes([
-                        opt_data[4], opt_data[5], opt_data[6], opt_data[7],
-                    ]);
-                    let preferred_lifetime = u32::from_be_bytes([
-                        opt_data[8], opt_data[9], opt_data[10], opt_data[11],
-                    ]);
+                    let valid_lifetime =
+                        u32::from_be_bytes([opt_data[4], opt_data[5], opt_data[6], opt_data[7]]);
+                    let preferred_lifetime =
+                        u32::from_be_bytes([opt_data[8], opt_data[9], opt_data[10], opt_data[11]]);
                     // Bytes 12-15: reserved
                     let mut prefix_bytes = [0u8; 16];
                     prefix_bytes.copy_from_slice(&opt_data[16..32]);
@@ -186,18 +183,16 @@ pub fn parse_ndp_options(data: &[u8]) -> Vec<NdpOption> {
             NdpOptionType::Mtu => {
                 if opt_len >= 8 {
                     // Bytes 2-3: reserved
-                    let mtu = u32::from_be_bytes([
-                        opt_data[4], opt_data[5], opt_data[6], opt_data[7],
-                    ]);
+                    let mtu =
+                        u32::from_be_bytes([opt_data[4], opt_data[5], opt_data[6], opt_data[7]]);
                     options.push(NdpOption::Mtu(mtu));
                 }
             }
             NdpOptionType::RecursiveDnsServer => {
                 if opt_len >= 24 {
                     // RFC 8106: Type(1), Length(1), Reserved(2), Lifetime(4), Addresses(Nx16)
-                    let lifetime = u32::from_be_bytes([
-                        opt_data[4], opt_data[5], opt_data[6], opt_data[7],
-                    ]);
+                    let lifetime =
+                        u32::from_be_bytes([opt_data[4], opt_data[5], opt_data[6], opt_data[7]]);
                     let mut servers = Vec::new();
                     let mut addr_offset = 8;
                     while addr_offset + 16 <= opt_len {
@@ -206,10 +201,7 @@ pub fn parse_ndp_options(data: &[u8]) -> Vec<NdpOption> {
                         servers.push(Ipv6Address::new(addr_bytes));
                         addr_offset += 16;
                     }
-                    options.push(NdpOption::RecursiveDnsServer {
-                        lifetime,
-                        servers,
-                    });
+                    options.push(NdpOption::RecursiveDnsServer { lifetime, servers });
                 }
             }
             _ => {
@@ -327,7 +319,9 @@ impl NeighborCache {
     /// Insert or update an entry
     pub fn insert(&mut self, entry: NeighborEntry) {
         // Enforce max entries by removing oldest stale entry if needed
-        if self.entries.len() >= MAX_NEIGHBOR_ENTRIES && !self.entries.contains_key(entry.ip.as_bytes()) {
+        if self.entries.len() >= MAX_NEIGHBOR_ENTRIES
+            && !self.entries.contains_key(entry.ip.as_bytes())
+        {
             self.evict_one();
         }
         self.entries.insert(*entry.ip.as_bytes(), entry);
@@ -478,7 +472,9 @@ impl NeighborCache {
     /// Evict one entry (prefer Stale, then oldest)
     fn evict_one(&mut self) {
         // Find a stale entry to evict
-        let stale_key = self.entries.iter()
+        let stale_key = self
+            .entries
+            .iter()
             .find(|(_, e)| e.state == NeighborState::Stale)
             .map(|(k, _)| *k);
 
@@ -520,10 +516,7 @@ pub enum NdpResult {
         our_mac: [u8; 6],
     },
     /// Neighbor info learned (from NA or NS source)
-    NeighborUpdated {
-        ip: Ipv6Address,
-        mac: [u8; 6],
-    },
+    NeighborUpdated { ip: Ipv6Address, mac: [u8; 6] },
     /// Send a Neighbor Solicitation (e.g. for DAD)
     SendNeighborSolicitation {
         src: Ipv6Address,

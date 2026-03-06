@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Clock-Pro統計
 #[derive(Debug, Clone, Copy)]
 pub struct ClockProStats {
@@ -41,10 +40,10 @@ pub fn clock_pro_access_page(frame: FrameIndex, node: usize) {
 /// Clock-Proで回収対象ページを取得
 pub fn clock_pro_reclaim(node: usize, target_count: usize) -> Vec<FrameIndex> {
     let node_idx = node.min(7);
-    
+
     // まずHand Hotでスキャン
     CLOCK_PRO_LISTS[node_idx].run_hand_hot(target_count * 2);
-    
+
     // Hand Coldで回収
     CLOCK_PRO_LISTS[node_idx].run_hand_cold(target_count)
 }
@@ -143,38 +142,39 @@ impl SwapPrefetcher {
             default_prefetch_count: AtomicUsize::new(PREFETCH_WINDOW_SIZE),
         }
     }
-    
+
     /// 先読み機能を有効/無効化
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
-    
+
     /// 先読み機能が有効か
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
-    
+
     /// デフォルト先読みページ数を設定
     pub fn set_default_prefetch_count(&self, count: usize) {
-        self.default_prefetch_count.store(count.min(32).max(1), Ordering::Release);
+        self.default_prefetch_count
+            .store(count.min(32).max(1), Ordering::Release);
     }
-    
+
     /// ページフォールト時に先読みヒントを生成
-    /// 
+    ///
     /// # Arguments
     /// * `fault_addr` - フォールトしたアドレス
     /// * `is_sequential` - 直前のフォールトから連続しているか
-    /// 
+    ///
     /// # Returns
     /// 先読みすべきページのヒント（先読み不要の場合はNone）
     pub fn generate_hint(&self, fault_addr: u64, is_sequential: bool) -> Option<SwapPrefetchHint> {
         if !self.is_enabled() {
             return None;
         }
-        
+
         let page_addr = fault_addr & !0xFFF; // 4KB境界にアライン
         let page_num = page_addr >> 12;
-        
+
         // フォールト履歴に追加
         {
             let mut history = self.fault_history.lock();
@@ -183,9 +183,9 @@ impl SwapPrefetcher {
                 history.pop_front();
             }
         }
-        
+
         let prefetch_count = self.default_prefetch_count.load(Ordering::Relaxed);
-        
+
         // 連続アクセスの場合は空間的局所性を利用
         if is_sequential {
             return Some(SwapPrefetchHint {
@@ -196,12 +196,12 @@ impl SwapPrefetcher {
                 reason: PrefetchReason::SpatialLocality,
             });
         }
-        
+
         // 履歴からパターンを検出
         if let Some(hint) = self.detect_access_pattern(page_addr) {
             return Some(hint);
         }
-        
+
         // デフォルト: 近傍ページを先読み
         Some(SwapPrefetchHint {
             fault_addr,
@@ -211,21 +211,21 @@ impl SwapPrefetcher {
             reason: PrefetchReason::TemporalLocality,
         })
     }
-    
+
     /// アクセスパターンを検出
     pub(super) fn detect_access_pattern(&self, current_addr: u64) -> Option<SwapPrefetchHint> {
         let history = self.fault_history.lock();
-        
+
         if history.len() < 3 {
             return None;
         }
-        
+
         // ストライドパターンを検出
         let recent: Vec<u64> = history.iter().rev().take(4).cloned().collect();
         if recent.len() >= 3 {
             let stride1 = recent[0].wrapping_sub(recent[1]) as i64;
             let stride2 = recent[1].wrapping_sub(recent[2]) as i64;
-            
+
             // 同じストライドで連続している場合
             if stride1 == stride2 && stride1.abs() <= 16 * 4096 {
                 let next_addr = if stride1 >= 0 {
@@ -233,7 +233,7 @@ impl SwapPrefetcher {
                 } else {
                     current_addr.wrapping_sub((-stride1) as u64)
                 };
-                
+
                 return Some(SwapPrefetchHint {
                     fault_addr: current_addr,
                     prefetch_start: next_addr >> 12,
@@ -243,25 +243,26 @@ impl SwapPrefetcher {
                 });
             }
         }
-        
+
         None
     }
-    
+
     /// 先読み成功を記録
     pub fn record_hit(&self) {
         self.hits.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// 先読み失敗を記録
     pub fn record_miss(&self) {
         self.misses.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// 先読み実行を記録
     pub fn record_prefetch(&self, page_count: usize) {
-        self.total_prefetched.fetch_add(page_count as u64, Ordering::Relaxed);
+        self.total_prefetched
+            .fetch_add(page_count as u64, Ordering::Relaxed);
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> SwapPrefetchStats {
         SwapPrefetchStats {
@@ -271,13 +272,13 @@ impl SwapPrefetcher {
             enabled: self.is_enabled(),
         }
     }
-    
+
     /// ヒット率を計算（%）
     pub fn hit_rate(&self) -> f32 {
         let hits = self.hits.load(Ordering::Relaxed);
         let misses = self.misses.load(Ordering::Relaxed);
         let total = hits + misses;
-        
+
         if total == 0 {
             0.0
         } else {

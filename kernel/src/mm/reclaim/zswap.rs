@@ -28,10 +28,10 @@
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
-use crate::mm::types::{PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+use crate::mm::types::{PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K};
 
 /// 圧縮アルゴリズム
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,7 +110,7 @@ impl ZswapStats {
             self.compr_data_size as f64 / self.orig_data_size as f64
         }
     }
-    
+
     /// 節約バイト数
     pub fn saved_bytes(&self) -> u64 {
         self.orig_data_size.saturating_sub(self.compr_data_size)
@@ -140,7 +140,7 @@ impl Default for ZswapConfig {
             enabled: true,
             compressor: CompressionAlgo::Lz4,
             max_pool_size: 256 * 1024 * 1024, // 256MB
-            max_compression_ratio: 0.9, // 90%以上は拒否
+            max_compression_ratio: 0.9,       // 90%以上は拒否
             same_filled_pages_enabled: true,
             writeback_threshold: 0.8, // 80%使用で書き戻し開始
         }
@@ -171,8 +171,10 @@ impl Zpool {
             current_size: AtomicU64::new(0),
             max_size: AtomicU64::new(256 * 1024 * 1024),
             stats: Mutex::new(ZswapStats {
-                stored_pages: 0,                stored_pages_2m: 0,
-                stored_pages_1g: 0,                orig_data_size: 0,
+                stored_pages: 0,
+                stored_pages_2m: 0,
+                stored_pages_1g: 0,
+                orig_data_size: 0,
                 compr_data_size: 0,
                 compress_success: 0,
                 compress_fail: 0,
@@ -192,29 +194,40 @@ impl Zpool {
             initialized: AtomicU8::new(0),
         }
     }
-    
+
     /// 初期化
     pub fn init(&self) {
-        if self.initialized.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-            log::info!("[ZSWAP] Initialized with max pool size: {}MB", 
-                self.max_size.load(Ordering::Relaxed) / (1024 * 1024));
+        if self
+            .initialized
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            log::info!(
+                "[ZSWAP] Initialized with max pool size: {}MB",
+                self.max_size.load(Ordering::Relaxed) / (1024 * 1024)
+            );
         }
     }
-    
+
     /// 設定を更新
     pub fn update_config(&self, config: ZswapConfig) {
-        self.max_size.store(config.max_pool_size as u64, Ordering::Relaxed);
+        self.max_size
+            .store(config.max_pool_size as u64, Ordering::Relaxed);
         let mut cfg = self.config.write();
         *cfg = config;
     }
-    
+
     /// 有効か確認
     pub fn is_enabled(&self) -> bool {
         self.config.read().enabled
     }
-    
+
     /// 同一値ページ検出を試み、成功すれば格納して結果を返す
-    fn try_store_same_filled(&self, swap_offset: u64, page_data: &[u8]) -> Option<Result<(), ZswapError>> {
+    fn try_store_same_filled(
+        &self,
+        swap_offset: u64,
+        page_data: &[u8],
+    ) -> Option<Result<(), ZswapError>> {
         let config = self.config.read();
         if config.same_filled_pages_enabled {
             if let Some(fill_value) = self.detect_same_filled(page_data) {
@@ -231,11 +244,19 @@ impl Zpool {
         stats.orig_data_size += page_size as u64;
         stats.compr_data_size += compressed_len as u64;
         stats.compress_success += 1;
-        if page_size == PAGE_SIZE_2M { stats.stored_pages_2m += 1; }
-        if page_size == PAGE_SIZE_1G { stats.stored_pages_1g += 1; }
+        if page_size == PAGE_SIZE_2M {
+            stats.stored_pages_2m += 1;
+        }
+        if page_size == PAGE_SIZE_1G {
+            stats.stored_pages_1g += 1;
+        }
     }
 
-    fn compress_and_validate(&self, page_data: &[u8], page_size: usize) -> Result<alloc::vec::Vec<u8>, ZswapError> {
+    fn compress_and_validate(
+        &self,
+        page_data: &[u8],
+        page_size: usize,
+    ) -> Result<alloc::vec::Vec<u8>, ZswapError> {
         let config = self.config.read();
         let compressed = self.compress(page_data, config.compressor)?;
         let compression_ratio = compressed.len() as f64 / page_size as f64;
@@ -272,7 +293,7 @@ impl Zpool {
         }
 
         let compressed = self.compress_and_validate(page_data, page_size)?;
-        
+
         let entry = ZswapEntry {
             data: compressed.clone(),
             original_size: page_size,
@@ -288,7 +309,8 @@ impl Zpool {
 
             // 既存エントリがあれば削除
             if let Some(old) = entries.remove(&swap_offset) {
-                self.current_size.fetch_sub(old.compressed_size as u64, Ordering::Relaxed);
+                self.current_size
+                    .fetch_sub(old.compressed_size as u64, Ordering::Relaxed);
                 let mut stats = self.stats.lock();
                 stats.stored_pages -= 1;
                 stats.orig_data_size -= old.original_size as u64;
@@ -300,12 +322,13 @@ impl Zpool {
         }
 
         // 統計更新
-        self.current_size.fetch_add(compressed.len() as u64, Ordering::Relaxed);
+        self.current_size
+            .fetch_add(compressed.len() as u64, Ordering::Relaxed);
         self.update_store_stats(page_size, compressed.len());
 
         Ok(())
     }
-    
+
     /// ページを展開して取得
     pub fn load(&self, swap_offset: u64, out_buffer: &mut [u8]) -> Result<(), ZswapError> {
         let entries = self.entries.read();
@@ -326,25 +349,26 @@ impl Zpool {
 
         Ok(())
     }
-    
+
     /// エントリを削除
     pub fn invalidate(&self, swap_offset: u64) -> bool {
         let mut entries = self.entries.write();
-        
+
         if let Some(entry) = entries.remove(&swap_offset) {
-            self.current_size.fetch_sub(entry.compressed_size as u64, Ordering::Relaxed);
-            
+            self.current_size
+                .fetch_sub(entry.compressed_size as u64, Ordering::Relaxed);
+
             let mut stats = self.stats.lock();
             stats.stored_pages -= 1;
             stats.orig_data_size -= entry.original_size as u64;
             stats.compr_data_size -= entry.compressed_size as u64;
-            
+
             true
         } else {
             false
         }
     }
-    
+
     /// 圧縮処理
     fn compress(&self, data: &[u8], algo: CompressionAlgo) -> Result<Vec<u8>, ZswapError> {
         match algo {
@@ -353,25 +377,25 @@ impl Zpool {
             CompressionAlgo::None => Ok(data.to_vec()),
         }
     }
-    
+
     /// LZ4圧縮（簡易実装）
     fn compress_lz4(&self, data: &[u8]) -> Result<Vec<u8>, ZswapError> {
         // 実際のLZ4実装ではなく、簡易的なRLE圧縮
         // 本番環境では lz4_flex クレートなどを使用
         let mut compressed = Vec::with_capacity(data.len());
         let mut i = 0;
-        
+
         while i < data.len() {
             let byte = data[i];
             let mut run_len = 1u8;
-            
-            while (i + run_len as usize) < data.len() 
-                && data[i + run_len as usize] == byte 
-                && run_len < 255 
+
+            while (i + run_len as usize) < data.len()
+                && data[i + run_len as usize] == byte
+                && run_len < 255
             {
                 run_len += 1;
             }
-            
+
             if run_len >= 4 {
                 // RLEエンコード: [0xFF, byte, length]
                 compressed.push(0xFF);
@@ -390,18 +414,23 @@ impl Zpool {
                 i += 1;
             }
         }
-        
+
         Ok(compressed)
     }
-    
+
     /// ZSTD圧縮（スタブ）
     fn compress_zstd(&self, data: &[u8]) -> Result<Vec<u8>, ZswapError> {
         // 実際のZSTD実装ではなく、LZ4にフォールバック
         self.compress_lz4(data)
     }
-    
+
     /// 展開処理
-    fn decompress(&self, data: &[u8], algo: CompressionAlgo, out: &mut [u8]) -> Result<(), ZswapError> {
+    fn decompress(
+        &self,
+        data: &[u8],
+        algo: CompressionAlgo,
+        out: &mut [u8],
+    ) -> Result<(), ZswapError> {
         match algo {
             CompressionAlgo::Lz4 => self.decompress_lz4(data, out),
             CompressionAlgo::Zstd => self.decompress_zstd(data, out),
@@ -411,14 +440,9 @@ impl Zpool {
             }
         }
     }
-    
+
     /// LZ4展開: 0xFFマーカー処理（RLEデコードまたはエスケープ）
-    fn decode_lz4_marker(
-        data: &[u8],
-        in_idx: &mut usize,
-        out: &mut [u8],
-        out_idx: &mut usize,
-    ) {
+    fn decode_lz4_marker(data: &[u8], in_idx: &mut usize, out: &mut [u8], out_idx: &mut usize) {
         if *in_idx + 1 >= data.len() {
             return;
         }
@@ -447,11 +471,11 @@ impl Zpool {
     fn decompress_lz4(&self, data: &[u8], out: &mut [u8]) -> Result<(), ZswapError> {
         let mut out_idx = 0;
         let mut in_idx = 0;
-        
+
         while in_idx < data.len() && out_idx < out.len() {
             let byte = data[in_idx];
             in_idx += 1;
-            
+
             if byte == 0xFF {
                 Self::decode_lz4_marker(data, &mut in_idx, out, &mut out_idx);
             } else {
@@ -459,24 +483,24 @@ impl Zpool {
                 out_idx += 1;
             }
         }
-        
+
         // 残りをゼロ埋め
         out[out_idx..].fill(0);
-        
+
         Ok(())
     }
-    
+
     /// ZSTD展開
     fn decompress_zstd(&self, data: &[u8], out: &mut [u8]) -> Result<(), ZswapError> {
         self.decompress_lz4(data, out)
     }
-    
+
     /// 同一値ページの検出
     fn detect_same_filled(&self, data: &[u8]) -> Option<u8> {
         if data.is_empty() {
             return None;
         }
-        
+
         let first = data[0];
         if data.iter().all(|&b| b == first) {
             Some(first)
@@ -484,9 +508,14 @@ impl Zpool {
             None
         }
     }
-    
+
     /// 同一値ページを格納（1バイトで表現）
-    fn store_same_filled(&self, swap_offset: u64, fill_value: u8, original_size: usize) -> Result<(), ZswapError> {
+    fn store_same_filled(
+        &self,
+        swap_offset: u64,
+        fill_value: u8,
+        original_size: usize,
+    ) -> Result<(), ZswapError> {
         let entry = ZswapEntry {
             data: vec![fill_value],
             original_size,
@@ -508,17 +537,21 @@ impl Zpool {
         stats.orig_data_size += original_size as u64;
         stats.compr_data_size += 1;
         stats.compress_success += 1;
-        if original_size == PAGE_SIZE_2M { stats.stored_pages_2m += 1; }
-        if original_size == PAGE_SIZE_1G { stats.stored_pages_1g += 1; }
+        if original_size == PAGE_SIZE_2M {
+            stats.stored_pages_2m += 1;
+        }
+        if original_size == PAGE_SIZE_1G {
+            stats.stored_pages_1g += 1;
+        }
 
         Ok(())
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> ZswapStats {
         self.stats.lock().clone()
     }
-    
+
     /// 現在のプール使用率
     pub fn pool_usage(&self) -> f64 {
         let current = self.current_size.load(Ordering::Relaxed);
@@ -529,24 +562,29 @@ impl Zpool {
             current as f64 / max as f64
         }
     }
-    
+
     /// 書き戻しが必要か
     pub fn needs_writeback(&self) -> bool {
         let threshold = self.config.read().writeback_threshold;
         self.pool_usage() > threshold
     }
-    
+
     /// LRUで最も古いエントリを取得
     pub fn get_oldest_entries(&self, count: usize) -> Vec<u64> {
         let entries = self.entries.read();
-        let mut items: Vec<_> = entries.iter()
+        let mut items: Vec<_> = entries
+            .iter()
             .map(|(&offset, entry)| (offset, entry.created_tsc))
             .collect();
-        
+
         items.sort_by_key(|&(_, tsc)| tsc);
-        items.into_iter().take(count).map(|(offset, _)| offset).collect()
+        items
+            .into_iter()
+            .take(count)
+            .map(|(offset, _)| offset)
+            .collect()
     }
-    
+
     /// エントリ数を取得
     pub fn entry_count(&self) -> usize {
         self.entries.read().len()
@@ -653,22 +691,22 @@ pub fn zswap_get_writeback_candidates(count: usize) -> Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test_case]
     fn test_same_filled_detection() {
         let pool = Zpool::new();
-        
+
         let zeros = [0u8; PAGE_SIZE_4K];
         assert_eq!(pool.detect_same_filled(&zeros), Some(0));
-        
+
         let ones = [1u8; PAGE_SIZE_4K];
         assert_eq!(pool.detect_same_filled(&ones), Some(1));
-        
+
         let mut mixed = [0u8; PAGE_SIZE_4K];
         mixed[100] = 1;
         assert_eq!(pool.detect_same_filled(&mixed), None);
     }
-    
+
     #[test_case]
     fn test_compression_ratio() {
         let entry = ZswapEntry {
@@ -679,7 +717,7 @@ mod tests {
             created_tsc: 0,
             access_count: 0,
         };
-        
+
         let ratio = entry.compression_ratio();
         assert!(ratio > 0.24 && ratio < 0.25);
     }
@@ -706,5 +744,3 @@ mod tests {
         assert_eq!(out, data);
     }
 }
-
-

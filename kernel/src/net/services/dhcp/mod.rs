@@ -6,7 +6,6 @@
 //! DHCPを使用してIPアドレス、サブネットマスク、ゲートウェイ、
 //! DNSサーバーなどのネットワーク設定を自動取得する。
 
-
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -23,9 +22,9 @@ pub mod tests;
 pub(crate) use self::tests as qemu_v4_tests;
 
 mod v6;
-pub use v6::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) use self::v6::tests as qemu_v6_tests;
+pub use v6::*;
 pub const DHCP_CLIENT_PORT: u16 = 68;
 
 /// DHCPサーバーポート
@@ -122,7 +121,7 @@ pub enum DhcpOption {
     ClientIdentifier = 61,
     /// 終端
     End = 255,
-} 
+}
 
 /// DHCPヘッダ
 #[derive(Debug, Clone, Copy)]
@@ -266,7 +265,7 @@ pub struct DhcpLease {
     pub hostname: Option<Vec<u8>>,
     /// ドメイン名
     pub domain_name: Option<Vec<u8>>,
-} 
+}
 
 impl DhcpLease {
     /// リースが期限切れか判定
@@ -286,7 +285,7 @@ impl DhcpLease {
         let elapsed_secs = (current_tick.saturating_sub(self.obtained_at)) / tick_rate;
         elapsed_secs >= self.t2 as u64
     }
-} 
+}
 
 /// DHCPクライアントの状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

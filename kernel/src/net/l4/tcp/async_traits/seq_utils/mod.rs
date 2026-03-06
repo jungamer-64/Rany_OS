@@ -1,20 +1,18 @@
 use super::*;
 use crate::net::l3::icmp::IcmpType;
 
-
 /// 初期シーケンス番号生成
 /// RFC 6528に従い、タイムスタンプベースで予測困難な値を生成
 mod processor_impl;
 
-use once_cell::race::OnceBox;
 use alloc::boxed::Box;
+use once_cell::race::OnceBox;
 
 static ISN_SECRET: OnceBox<[u8; 32]> = OnceBox::new();
 
 fn get_isn_secret() -> &'static [u8; 32] {
-    ISN_SECRET.get_or_init(|| {
-        Box::new(crate::net::security::tls::crypto::random::generate_random())
-    })
+    ISN_SECRET
+        .get_or_init(|| Box::new(crate::net::security::tls::crypto::random::generate_random()))
 }
 
 pub(crate) fn generate_initial_seq(local: EndpointAddr, remote: Option<EndpointAddr>) -> u32 {
@@ -22,12 +20,12 @@ pub(crate) fn generate_initial_seq(local: EndpointAddr, remote: Option<EndpointA
 
     // RFC 6528: ISN = M + F(localip, localport, remoteip, remoteport, secret)
     // We use HMAC-SHA256 to generate the hash component.
-    
+
     let mut data = [0u8; 40];
     let local_v6 = local.as_ipv6();
     data[0..16].copy_from_slice(&local_v6);
     data[16..18].copy_from_slice(&local.port().to_be_bytes());
-    
+
     if let Some(r) = remote {
         let remote_v6 = r.as_ipv6();
         data[18..34].copy_from_slice(&remote_v6);
@@ -37,7 +35,7 @@ pub(crate) fn generate_initial_seq(local: EndpointAddr, remote: Option<EndpointA
     // RFC 6528: The secret MUST NOT change per connection.
     // Use a long-lived secret for the HMAC key.
     let secret = get_isn_secret();
-    
+
     // Generate F(...) using HMAC
     let hash = hmac_sha256(secret, &data);
     let hash_val = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]);
@@ -47,7 +45,7 @@ pub(crate) fn generate_initial_seq(local: EndpointAddr, remote: Option<EndpointA
     let time_component = crate::task::timer::current_tick() as u32;
     // カウンターを追加して同一タイミングでも異なる値に
     let counter = SEQ_COUNTER.fetch_add(64000, Ordering::Relaxed);
-    
+
     // Mix them: ISN = M + Hash
     time_component.wrapping_add(counter).wrapping_add(hash_val)
 }
@@ -111,8 +109,16 @@ pub(crate) fn send_tcp_packet(
         _ => {
             let src_v6 = local.as_ipv6();
             let dst_v6 = remote.as_ipv6();
-            calculate_tcp_checksum_v6(&mut segment, crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6));
-            crate::net::runtime::stack::send_tcp_v6_async(crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6), &segment)
+            calculate_tcp_checksum_v6(
+                &mut segment,
+                crate::net::l3::ipv6::Ipv6Address::new(src_v6),
+                crate::net::l3::ipv6::Ipv6Address::new(dst_v6),
+            );
+            crate::net::runtime::stack::send_tcp_v6_async(
+                crate::net::l3::ipv6::Ipv6Address::new(src_v6),
+                crate::net::l3::ipv6::Ipv6Address::new(dst_v6),
+                &segment,
+            )
         }
     }
 }
@@ -186,27 +192,36 @@ pub(crate) fn verify_tcp_checksum(segment: &[u8], src_ip: [u8; 4], dst_ip: [u8; 
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
-    
+
     (sum as u16) == 0xFFFF
 }
 
 /// TCPチェックサム検証（IPv6擬似ヘッダ）
-pub(crate) fn verify_tcp_checksum_v6(segment: &[u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) -> bool {
+pub(crate) fn verify_tcp_checksum_v6(
+    segment: &[u8],
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+) -> bool {
     if segment.len() < 20 {
         return false;
     }
 
-    use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
-    use crate::net::l3::ipv4::data_checksum;
     use crate::net::l3::ipv4::IpProtocol;
+    use crate::net::l3::ipv4::data_checksum;
+    use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
 
-    let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
+    let pseudo =
+        ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
     let checksum = data_checksum(segment, pseudo);
 
     checksum == 0
-    }
+}
 /// TCPチェックサム計算（IPv6擬似ヘッダ）
-pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) {
+pub(crate) fn calculate_tcp_checksum_v6(
+    segment: &mut [u8],
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+) {
     if segment.len() < 20 {
         return;
     }
@@ -215,13 +230,14 @@ pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::
     segment[16] = 0;
     segment[17] = 0;
 
-    use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
-    use crate::net::l3::ipv4::data_checksum;
     use crate::net::l3::ipv4::IpProtocol;
+    use crate::net::l3::ipv4::data_checksum;
+    use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
 
-    let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
+    let pseudo =
+        ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
     let mut checksum = data_checksum(segment, pseudo);
-    
+
     // RFC 8200 Section 8.1: If the computed checksum is zero, it must be changed to 0xFFFF.
     if checksum == 0 {
         checksum = 0xFFFF;
@@ -257,7 +273,16 @@ pub(crate) fn send_syn_packet_with_options(
     }
 
     let options = opt_builder.finalize();
-    send_tcp_packet_with_options(local, remote, seq, 0, TcpHeader::FLAG_SYN, 65535, &[], options)
+    send_tcp_packet_with_options(
+        local,
+        remote,
+        seq,
+        0,
+        TcpHeader::FLAG_SYN,
+        65535,
+        &[],
+        options,
+    )
 }
 
 /// SYN-ACKパケットをオプション付きで送信
@@ -352,14 +377,27 @@ pub(crate) fn send_tcp_packet_with_options(
         _ => {
             let src_v6 = local.as_ipv6();
             let dst_v6 = remote.as_ipv6();
-            calculate_tcp_checksum_v6(&mut segment, crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6));
-            crate::net::runtime::stack::send_tcp_v6_async(crate::net::l3::ipv6::Ipv6Address::new(src_v6), crate::net::l3::ipv6::Ipv6Address::new(dst_v6), &segment)
+            calculate_tcp_checksum_v6(
+                &mut segment,
+                crate::net::l3::ipv6::Ipv6Address::new(src_v6),
+                crate::net::l3::ipv6::Ipv6Address::new(dst_v6),
+            );
+            crate::net::runtime::stack::send_tcp_v6_async(
+                crate::net::l3::ipv6::Ipv6Address::new(src_v6),
+                crate::net::l3::ipv6::Ipv6Address::new(dst_v6),
+                &segment,
+            )
         }
     }
 }
 
 /// SYN-ACKパケットを送信
-pub(crate) fn send_syn_ack_packet(local: EndpointAddr, remote: EndpointAddr, seq: u32, ack: u32) -> bool {
+pub(crate) fn send_syn_ack_packet(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    seq: u32,
+    ack: u32,
+) -> bool {
     send_tcp_packet(
         local,
         remote,
@@ -372,12 +410,23 @@ pub(crate) fn send_syn_ack_packet(local: EndpointAddr, remote: EndpointAddr, seq
 }
 
 /// ACKパケットを送信
-pub(crate) fn send_ack_packet(local: EndpointAddr, remote: EndpointAddr, seq: u32, ack: u32, window: u16) -> bool {
+pub(crate) fn send_ack_packet(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    seq: u32,
+    ack: u32,
+    window: u16,
+) -> bool {
     send_tcp_packet(local, remote, seq, ack, TcpHeader::FLAG_ACK, window, &[])
 }
 
 /// FINパケットを送信
-pub(crate) fn send_fin_packet(local: EndpointAddr, remote: EndpointAddr, seq: u32, ack: u32) -> bool {
+pub(crate) fn send_fin_packet(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    seq: u32,
+    ack: u32,
+) -> bool {
     send_tcp_packet(
         local,
         remote,
@@ -669,15 +718,9 @@ pub(crate) fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_heade
     let flags = (data_offset_flags as u8) as u16;
 
     // ソケットアドレスを構築
-    let src_addr = EndpointAddr::new(
-        ip_header.src_addr,
-        src_port,
-    );
+    let src_addr = EndpointAddr::new(ip_header.src_addr, src_port);
 
-    let dst_addr = EndpointAddr::new(
-        ip_header.dst_addr,
-        dst_port,
-    );
+    let dst_addr = EndpointAddr::new(ip_header.dst_addr, dst_port);
 
     // グローバルTcpProcessorは現在存在しないため、
     // 基本的なログのみ出力
@@ -735,7 +778,8 @@ pub enum TcpProcessResult {
 /// TCP segment processor for the network stack
 pub struct TcpProcessor {
     /// TCP connections indexed by (local_addr, remote_addr) tuple
-    pub(crate) connections: BTreeMap<(EndpointAddr, EndpointAddr), Arc<PoisonLock<TcpControlBlock>>>,
+    pub(crate) connections:
+        BTreeMap<(EndpointAddr, EndpointAddr), Arc<PoisonLock<TcpControlBlock>>>,
     /// Listening sockets indexed by local address
     listeners: BTreeMap<EndpointAddr, Arc<PoisonLock<TcpControlBlock>>>,
     /// Count of semi-open connections (SYN-RECEIVED state) for DoS protection
@@ -760,10 +804,15 @@ impl TcpProcessor {
     ///
     /// オフパス攻撃者による PMTU 毒入れ攻撃を防ぐため、引用されたパケットの
     /// シーケンス番号が現在の送信ウィンドウ内にあることを確認します。
-    pub fn validate_icmp_sequence(&self, local: EndpointAddr, remote: EndpointAddr, seq: u32) -> bool {
+    pub fn validate_icmp_sequence(
+        &self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        seq: u32,
+    ) -> bool {
         if let Some(conn) = self.connections.get(&(local, remote)) {
             if let Ok(tcb) = conn.lock() {
-                // RFC 5927 Section 4.1: "The TCP sequence number should be checked 
+                // RFC 5927 Section 4.1: "The TCP sequence number should be checked
                 // to see if it's within the current window"
 
                 // For SYN-SENT, the sequence must be exactly the ISN
@@ -806,7 +855,13 @@ impl TcpProcessor {
     }
 
     /// Handle ICMP Error (RFC 1122 Section 4.2.3.9)
-    pub fn handle_icmp_error(&self, local: EndpointAddr, remote: EndpointAddr, icmp_type: IcmpType, code: u8) {
+    pub fn handle_icmp_error(
+        &self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        icmp_type: IcmpType,
+        code: u8,
+    ) {
         if let Some(conn) = self.connections.get(&(local, remote)) {
             if let Ok(mut tcb) = conn.lock() {
                 // Notify the TCB of the ICMP error

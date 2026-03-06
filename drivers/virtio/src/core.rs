@@ -447,15 +447,8 @@ impl<T> TrackedVirtQueue<T> {
         avail_ring: *mut VringAvailHeader,
         used_ring: *mut VringUsedHeader,
     ) -> Result<Self, &'static str> {
-        let inner = unsafe {
-            VirtQueue::new(
-                queue_index,
-                queue_size,
-                desc_table,
-                avail_ring,
-                used_ring,
-            )?
-        };
+        let inner =
+            unsafe { VirtQueue::new(queue_index, queue_size, desc_table, avail_ring, used_ring)? };
 
         let mut pending = VecDeque::with_capacity(queue_size as usize);
         for _ in 0..queue_size {

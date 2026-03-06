@@ -95,8 +95,16 @@ fn test_osc_st_terminator_is_not_rendered() {
 fn test_console_input_hub_tty_and_gui_paths() {
     reset_input_hub_for_tests();
 
-    inject_key_event_for_tests(key_event(KeyCode::A, KeyState::Pressed, Modifiers::default()));
-    inject_key_event_for_tests(key_event(KeyCode::Left, KeyState::Pressed, Modifiers::default()));
+    inject_key_event_for_tests(key_event(
+        KeyCode::A,
+        KeyState::Pressed,
+        Modifiers::default(),
+    ));
+    inject_key_event_for_tests(key_event(
+        KeyCode::Left,
+        KeyState::Pressed,
+        Modifiers::default(),
+    ));
 
     let first = try_pop_key_event().expect("first gui event");
     let second = try_pop_key_event().expect("second gui event");
@@ -137,7 +145,11 @@ fn test_console_input_hub_drop_counters_increment_when_full() {
     reset_input_hub_for_tests();
 
     for _ in 0..600 {
-        inject_key_event_for_tests(key_event(KeyCode::A, KeyState::Pressed, Modifiers::default()));
+        inject_key_event_for_tests(key_event(
+            KeyCode::A,
+            KeyState::Pressed,
+            Modifiers::default(),
+        ));
     }
 
     let (tty_drops_after_keys, gui_drops_after_keys) = dropped_input_counts();

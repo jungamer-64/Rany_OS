@@ -16,11 +16,11 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
-use x86_64::PhysAddr;
-use crate::sync::IrqMutex;
 use crate::mm::types::NumaNodeId;
+use crate::sync::IrqMutex;
+use core::sync::atomic::{AtomicBool, Ordering};
+use x86_64::PhysAddr;
+use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
 // ============================================================================
 // Non-Temporal Zeroing (Cache Pollution Prevention)
@@ -89,7 +89,7 @@ impl ZeroedFramePool {
     }
 
     /// ゼロ済みフレームを取得
-    /// 
+    ///
     /// プールが空の場合はNoneを返す
     #[inline]
     pub fn pop(&mut self) -> Option<PhysFrame<Size4KiB>> {
@@ -107,7 +107,7 @@ impl ZeroedFramePool {
     }
 
     /// ゼロ済みフレームをプールに追加
-    /// 
+    ///
     /// プールが満杯の場合はfalseを返す
     #[inline]
     pub fn push(&mut self, frame: PhysFrame<Size4KiB>) -> bool {
@@ -198,11 +198,14 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// ゼロ済みプールを初期化
 pub fn init() {
     INITIALIZED.store(true, Ordering::Release);
-    log::info!("[PMM] Zeroed frame pools initialized ({} per node)", ZEROED_POOL_CAPACITY);
+    log::info!(
+        "[PMM] Zeroed frame pools initialized ({} per node)",
+        ZEROED_POOL_CAPACITY
+    );
 }
 
 /// ゼロ済みフレームを取得
-/// 
+///
 /// 優先ノードから取得を試み、失敗した場合は他ノードにフォールバック
 pub fn allocate_zeroed_frame(preferred_node: usize) -> Option<PhysFrame<Size4KiB>> {
     if !INITIALIZED.load(Ordering::Acquire) {
@@ -229,7 +232,7 @@ pub fn allocate_zeroed_frame(preferred_node: usize) -> Option<PhysFrame<Size4KiB
 }
 
 /// バックグラウンドでゼロクリアを実行（アイドルタスクから呼び出し）
-/// 
+///
 /// # Returns
 /// 処理したフレーム数
 pub fn idle_zero_frames() -> usize {
@@ -238,9 +241,10 @@ pub fn idle_zero_frames() -> usize {
     }
 
     // 他のタスクがゼロクリア中なら何もしない
-    if ZEROING_IN_PROGRESS.compare_exchange(
-        false, true, Ordering::Acquire, Ordering::Relaxed
-    ).is_err() {
+    if ZEROING_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         return 0;
     }
 
@@ -345,7 +349,7 @@ pub fn get_node_stats(node: usize) -> Option<ZeroedPoolStats> {
 }
 
 /// ゼロ済みフレームを返却（使用済みだがゼロ状態が保証されている場合）
-/// 
+///
 /// 通常は使用しない。特殊なケース（例: ページテーブルの再利用）のみ。
 pub fn return_zeroed_frame(frame: PhysFrame<Size4KiB>, node: usize) -> bool {
     if !INITIALIZED.load(Ordering::Acquire) || node >= MAX_NUMA_NODES {
@@ -368,4 +372,3 @@ mod tests {
         assert_eq!(pool.len(), 0);
     }
 }
-

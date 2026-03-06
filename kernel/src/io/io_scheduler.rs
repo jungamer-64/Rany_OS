@@ -162,17 +162,11 @@ pub enum IoCommand {
     /// キャッシュフラッシュ
     Flush,
     /// TRIM/Discard
-    Discard {
-        lba: u64,
-        blocks: u16,
-    },
+    Discard { lba: u64, blocks: u16 },
     /// デバイス固有コマンド（ioctl的）
     ///
     /// コードとバッファの解釈はデバイスドライバに委ねられる
-    Ioctl {
-        code: u32,
-        buf: DmaBufHandle,
-    },
+    Ioctl { code: u32, buf: DmaBufHandle },
 }
 
 // ============================================================================
@@ -180,11 +174,7 @@ pub enum IoCommand {
 // ============================================================================
 
 // Legacy `IoPayload` removed - use `IoCommand` variants instead.
-// (Removed types: IoPayload, NvmeRwPayload, NvmeSglPayload, NvmeDsmPayload)  
-
-
-
-
+// (Removed types: IoPayload, NvmeRwPayload, NvmeSglPayload, NvmeDsmPayload)
 
 /// NVMe SGL ディスクリプタ（I/Oスケジューラ用）
 #[derive(Debug, Clone, Copy)]
@@ -211,8 +201,6 @@ impl NvmeSglDescriptor {
         }
     }
 }
-
-
 
 /// I/Oリクエスト記述子
 pub struct IoRequest {
@@ -284,8 +272,6 @@ where
 
 /// I/O完了フック型
 pub type CompletionHook = Box<dyn IoCompletionHook>;
-
-
 
 // ============================================================================
 // Adaptive I/O Mode Controller

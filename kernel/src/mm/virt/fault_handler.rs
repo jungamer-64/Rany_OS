@@ -29,15 +29,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::InterruptStackFrame;
 
-use crate::mm::sync::rcu::rcu_read_lock;
+use super::higher_half::{MapError, PageFlags, PhysAddr, VirtAddr, global_map_page};
 use super::rcu_vma::{VmArea, VmaFlags};
+use crate::mm::meta::memcg::{ChargeType, MemcgId, memcg_charge, memcg_track_page, memcg_uncharge};
 use crate::mm::phys::frame_allocator::alloc_frame;
-use super::higher_half::{
-    global_map_page, PageFlags, MapError, VirtAddr, PhysAddr,
-};
-use crate::mm::meta::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType, MemcgId};
+use crate::mm::reclaim::page_reclaim::{PageType as LruPageType, lru_add_page};
+use crate::mm::sync::rcu::rcu_read_lock;
 use crate::mm::types::FrameIndex;
-use crate::mm::reclaim::page_reclaim::{lru_add_page, PageType as LruPageType};
 
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 mod integration;
@@ -141,55 +139,55 @@ impl PageFaultErrorCode {
     pub fn from_bits(bits: u64) -> Self {
         Self { bits }
     }
-    
+
     /// Present bit (P): fault caused by non-present page
     #[inline]
     pub fn is_present(&self) -> bool {
         self.bits & (1 << 0) != 0
     }
-    
+
     /// Write bit (W/R): fault caused by write access
     #[inline]
     pub fn is_write(&self) -> bool {
         self.bits & (1 << 1) != 0
     }
-    
+
     /// User bit (U/S): fault occurred in user mode
     #[inline]
     pub fn is_user(&self) -> bool {
         self.bits & (1 << 2) != 0
     }
-    
+
     /// Reserved write (RSVD): fault caused by reserved bit set
     #[inline]
     pub fn is_reserved_write(&self) -> bool {
         self.bits & (1 << 3) != 0
     }
-    
+
     /// Instruction fetch (I/D): fault caused by instruction fetch
     #[inline]
     pub fn is_instruction_fetch(&self) -> bool {
         self.bits & (1 << 4) != 0
     }
-    
+
     /// Protection key violation (PK)
     #[inline]
     pub fn is_protection_key(&self) -> bool {
         self.bits & (1 << 5) != 0
     }
-    
+
     /// Shadow stack (SS)
     #[inline]
     pub fn is_shadow_stack(&self) -> bool {
         self.bits & (1 << 6) != 0
     }
-    
+
     /// Software Guard Extensions (SGX)
     #[inline]
     pub fn is_sgx(&self) -> bool {
         self.bits & (1 << 15) != 0
     }
-    
+
     /// Raw bits
     #[inline]
     pub fn bits(&self) -> u64 {
@@ -309,15 +307,15 @@ pub struct FaultContext {
 pub fn handle_page_fault(error_code: u64, current_rsp: VirtAddr) -> FaultResult {
     // 統計更新
     FAULT_STATS.total.fetch_add(1, Ordering::Relaxed);
-    
+
     // フォルトアドレス取得
     let fault_addr = match Cr2::read() {
         Ok(addr) => VirtAddr::new(addr.as_u64()),
         Err(_) => return FaultResult::KernelBug,
     };
-    
+
     let error = PageFaultErrorCode::from_bits(error_code);
-    
+
     // 再帰フォルト検出（Per-CPU）
     let recursive = unsafe {
         if let Some(hot) = crate::per_cpu::current_per_cpu_hot_mut() {
@@ -332,32 +330,36 @@ pub fn handle_page_fault(error_code: u64, current_rsp: VirtAddr) -> FaultResult 
         // カーネル内のバグやスタック破損の可能性
         return FaultResult::KernelBug;
     }
-    
+
     let result = handle_fault_inner(fault_addr, error, current_rsp);
-    
+
     unsafe {
         if let Some(hot) = crate::per_cpu::current_per_cpu_hot_mut() {
             hot.in_page_fault.store(false, Ordering::SeqCst);
         }
     }
-    
+
     result
 }
 
 /// 内部フォルト処理
-fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode, current_rsp: VirtAddr) -> FaultResult {
+fn handle_fault_inner(
+    fault_addr: VirtAddr,
+    error: PageFaultErrorCode,
+    current_rsp: VirtAddr,
+) -> FaultResult {
     // Reserved bit violation は常にバグ
     if error.is_reserved_write() {
         return FaultResult::KernelBug;
     }
-    
+
     // VMA検索（RCU保護）
     let _guard = rcu_read_lock();
-    
+
     // 現在のプロセスのVMAリストを取得
     let asid = super::address_space::current_asid();
     let manager = super::address_space::address_space_manager();
-    
+
     let vma: Option<super::rcu_vma::VmaInfo> = {
         let spaces_guard = match manager.spaces().lock() {
             Ok(guard) => guard,
@@ -369,18 +371,18 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode, current_r
             None
         }
     };
-    
+
     // VMAが見つからない場合
     if vma.is_none() {
         // 脆弱性修正: スタック拡張の判定に RSP を使用し、無制限なページ割り当てを防止
         if is_potential_stack_access(fault_addr, current_rsp) {
             return handle_stack_growth(fault_addr, error);
         }
-        
+
         FAULT_STATS.no_vma.fetch_add(1, Ordering::Relaxed);
         return FaultResult::NoVma;
     }
-    
+
     let vma = vma.unwrap();
 
     // 権限チェック
@@ -389,15 +391,19 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode, current_r
         if vma.flags & VmaFlags::CopyOnWrite as u32 != 0 {
             return handle_cow_fault(fault_addr, error);
         }
-        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+        FAULT_STATS
+            .permission_denied
+            .fetch_add(1, Ordering::Relaxed);
         return FaultResult::PermissionDenied;
     }
 
     if error.is_instruction_fetch() && (vma.flags & VmaFlags::Execute as u32 == 0) {
-        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+        FAULT_STATS
+            .permission_denied
+            .fetch_add(1, Ordering::Relaxed);
         return FaultResult::PermissionDenied;
     }
-    
+
     // Present bit がない場合 = ページが割り当てられていない または NUMA Hint Fault
     if !error.is_present() {
         // NUMA Hint Fault チェック
@@ -413,28 +419,29 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode, current_r
             return handle_demand_paging(fault_addr, error, vma.flags);
         }
     }
-    
+
     // 書き込みフォルト + Present = Copy-on-Write の可能性
     if error.is_write() && error.is_present() {
         if vma.flags & VmaFlags::CopyOnWrite as u32 != 0 {
             return handle_cow_fault(fault_addr, error);
         }
     }
-    
-    FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+
+    FAULT_STATS
+        .permission_denied
+        .fetch_add(1, Ordering::Relaxed);
     FaultResult::PermissionDenied
 }
-
 
 /// ファイルバックページのフォルトハンドラ (VmaInfo版)
 fn handle_file_fault_info(fault_addr: VirtAddr, vma: &super::rcu_vma::VmaInfo) -> FaultResult {
     FAULT_STATS.file_backed.fetch_add(1, Ordering::Relaxed);
-    
+
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
     let file_offset = vma.file_offset + (page_addr.as_u64() - vma.start.as_u64());
-    
+
     let memcg_id = crate::mm::meta::memcg::current_memcg_id();
-    
+
     // 脆弱性修正: PageSetupを使用して、不完全なマッピングやリークを防止
     let setup = match PageSetup::allocate(Some(memcg_id), ChargeType::Cache) {
         Some(s) => s,
@@ -443,23 +450,25 @@ fn handle_file_fault_info(fault_addr: VirtAddr, vma: &super::rcu_vma::VmaInfo) -
             return FaultResult::OutOfMemory;
         }
     };
-    
+
     // ファイルシステムからページを読み込む
     zero_page(setup.frame_phys);
     let virt = super::mapping::phys_to_virt(x86_64::PhysAddr::new(setup.frame_phys.as_u64()));
     let buf = unsafe {
         core::slice::from_raw_parts_mut(virt.as_u64() as *mut u8, crate::mm::types::PAGE_SIZE_4K)
     };
-    
+
     if crate::fs::fs_abstraction::read_inode_by_number(
         vma.file_inode as crate::fs::InodeNum,
         file_offset,
         buf,
-    ).is_err() {
+    )
+    .is_err()
+    {
         setup.rollback();
         return FaultResult::IoError;
     }
-    
+
     // マッピング作成
     let mut base_flags = PageFlags::PRESENT | PageFlags::USER;
     if (vma.flags & VmaFlags::Write as u32) != 0 {
@@ -474,11 +483,10 @@ fn handle_file_fault_info(fault_addr: VirtAddr, vma: &super::rcu_vma::VmaInfo) -
     }
 }
 
-
 /// NUMA Hint Fault ハンドラ
 fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
-    use super::higher_half::{with_current_pte_mut, PageFlags};
-    use crate::mm::numa::autonuma::{handle_numa_fault, get_page_numa_stats, NumaFaultAction};
+    use super::higher_half::{PageFlags, with_current_pte_mut};
+    use crate::mm::numa::autonuma::{NumaFaultAction, get_page_numa_stats, handle_numa_fault};
 
     // PTEを確認し、NUMA_HINTが立っているかチェック
     // 立っていればクリアしてPresentを立てる
@@ -488,14 +496,14 @@ fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
             // Hintフラグをクリアし、Presentを立てる
             let new_flags = flags.clear(PageFlags::NUMA_HINT).set(PageFlags::PRESENT);
             pte.set_flags(new_flags);
-            
+
             // TLB無効化（現在のアドレスなのでinvlpgでOK）
             super::higher_half::invalidate_page(fault_addr);
-            
+
             // アクセス情報を記録＆マイグレーション判断
             let frame = FrameIndex::from_phys_addr(pte.phys_addr().as_u64());
             let stats = get_page_numa_stats(frame);
-            
+
             // 現在のCPUのNUMAノードを取得
             if let Some(_cpu_id) = crate::per_cpu::try_current_cpu_id() {
                 // NUMAノードIDを取得 (Per-CPUデータから)
@@ -504,18 +512,22 @@ fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
                 } else {
                     0 // Per-CPU未初期化時はノード0と仮定
                 };
-                
+
                 let action = handle_numa_fault(&stats, node_id, crate::time::current_time_ns());
-                
-                if let NumaFaultAction::Migrate { from_node: _, to_node } = action {
-                     use crate::mm::numa::autonuma::{MigrationRequest, MIGRATION_ENGINE};
-                     // マイグレーションキューに追加
-                     MIGRATION_ENGINE.queue_migration(MigrationRequest {
-                         src_frame: frame,
-                         dest_node: to_node,
-                         priority: 5,
-                         timestamp: crate::time::current_time_ns(),
-                     });
+
+                if let NumaFaultAction::Migrate {
+                    from_node: _,
+                    to_node,
+                } = action
+                {
+                    use crate::mm::numa::autonuma::{MIGRATION_ENGINE, MigrationRequest};
+                    // マイグレーションキューに追加
+                    MIGRATION_ENGINE.queue_migration(MigrationRequest {
+                        src_frame: frame,
+                        dest_node: to_node,
+                        priority: 5,
+                        timestamp: crate::time::current_time_ns(),
+                    });
                 }
             }
 
@@ -523,7 +535,8 @@ fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
         } else {
             None
         }
-    }).flatten()
+    })
+    .flatten()
 }
 
 #[allow(unused_assignments)]
@@ -546,12 +559,16 @@ fn check_vma_permission(
         if vma.flags & VmaFlags::CopyOnWrite as u32 != 0 {
             return Some(handle_cow_fault(fault_addr, error));
         }
-        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+        FAULT_STATS
+            .permission_denied
+            .fetch_add(1, Ordering::Relaxed);
         return Some(FaultResult::PermissionDenied);
     }
 
     if error.is_instruction_fetch() && !vma.is_executable() {
-        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+        FAULT_STATS
+            .permission_denied
+            .fetch_add(1, Ordering::Relaxed);
         return Some(FaultResult::PermissionDenied);
     }
     None
@@ -559,16 +576,12 @@ fn check_vma_permission(
 
 /// VMAに対するフォルト処理
 #[allow(dead_code)]
-fn handle_vma_fault(
-    fault_addr: VirtAddr,
-    error: PageFaultErrorCode,
-    vma: &VmArea,
-) -> FaultResult {
+fn handle_vma_fault(fault_addr: VirtAddr, error: PageFaultErrorCode, vma: &VmArea) -> FaultResult {
     // 権限チェック
     if let Some(result) = check_vma_permission(error, vma, fault_addr) {
         return result;
     }
-    
+
     // Present bit なし = Demand Paging
     if !error.is_present() {
         if vma.is_file_backed() {
@@ -577,13 +590,15 @@ fn handle_vma_fault(
             return handle_demand_paging(fault_addr, error, vma.flags);
         }
     }
-    
+
     // Present + Write + CoW
     if error.is_write() && (vma.flags & VmaFlags::CopyOnWrite as u32 != 0) {
         return handle_cow_fault(fault_addr, error);
     }
-    
-    FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+
+    FAULT_STATS
+        .permission_denied
+        .fetch_add(1, Ordering::Relaxed);
     FaultResult::PermissionDenied
 }
 
@@ -633,7 +648,7 @@ fn zero_page(phys_addr: PhysAddr) {
     // 物理アドレスを仮想アドレスに変換（higher_half::PhysAddr -> x86_64::PhysAddr -> VirtAddr）
     let x86_phys = x86_64::PhysAddr::new(phys_addr.as_u64());
     let virt = super::mapping::phys_to_virt(x86_phys);
-    
+
     unsafe {
         core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, 4096);
     }
@@ -648,7 +663,7 @@ fn zero_page(phys_addr: PhysAddr) {
 /// 共有ページへの書き込み時に、ページを複製して新しいマッピングを作成する。
 fn handle_cow_fault(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultResult {
     FAULT_STATS.cow.fetch_add(1, Ordering::Relaxed);
-    
+
     // cow.rs の cow_break を使用して共通化
     match super::cow::cow_break(fault_addr) {
         super::cow::CowResult::Ok => FaultResult::CowHandled,
@@ -666,7 +681,7 @@ fn copy_page(src_phys: PhysAddr, dst_phys: PhysAddr) {
     let dst_x86 = x86_64::PhysAddr::new(dst_phys.as_u64());
     let src_virt = super::mapping::phys_to_virt(src_x86);
     let dst_virt = super::mapping::phys_to_virt(dst_x86);
-    
+
     unsafe {
         core::ptr::copy_nonoverlapping(
             src_virt.as_u64() as *const u8,
@@ -694,7 +709,7 @@ const USER_STACK_BOTTOM: u64 = USER_STACK_TOP - MAX_STACK_SIZE;
 fn is_potential_stack_access(addr: VirtAddr, current_rsp: VirtAddr) -> bool {
     let addr_u64 = addr.as_u64();
     let rsp_u64 = current_rsp.as_u64();
-    
+
     // ユーザースタック領域内かチェック
     if addr_u64 < USER_STACK_BOTTOM || addr_u64 >= USER_STACK_TOP {
         return false;
@@ -733,12 +748,12 @@ fn handle_stack_growth(fault_addr: VirtAddr, error: PageFaultErrorCode) -> Fault
 #[allow(dead_code)]
 fn handle_file_fault(fault_addr: VirtAddr, vma: &VmArea) -> FaultResult {
     FAULT_STATS.file_backed.fetch_add(1, Ordering::Relaxed);
-    
+
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
-    
+
     // ファイルオフセットを計算
     let file_offset = vma.file_offset + (page_addr.as_u64() - vma.start.as_u64());
-    
+
     // 新しいフレームを割り当て
     let frame = match alloc_frame() {
         Some(f) => f,
@@ -747,10 +762,10 @@ fn handle_file_fault(fault_addr: VirtAddr, vma: &VmArea) -> FaultResult {
             return FaultResult::OutOfMemory;
         }
     };
-    
+
     // 物理アドレスをhigher_half型に変換
     let frame_phys = PhysAddr::new(frame.start_address().as_u64());
-    
+
     // ファイルシステムからページを読み込む
     zero_page(frame_phys);
     let virt = super::mapping::phys_to_virt(x86_64::PhysAddr::new(frame_phys.as_u64()));
@@ -767,7 +782,7 @@ fn handle_file_fault(fault_addr: VirtAddr, vma: &VmArea) -> FaultResult {
         crate::mm::phys::frame_allocator::dealloc_frame(frame);
         return FaultResult::IoError;
     }
-    
+
     // Memcgチャージ（ファイルキャッシュ）
     let memcg_id = crate::mm::meta::memcg::current_memcg_id();
     if memcg_charge(memcg_id, 1, ChargeType::Cache).is_err() {

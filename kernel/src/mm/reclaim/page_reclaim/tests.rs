@@ -28,7 +28,9 @@ fn setup_gen3_victim(
     let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
     let mut entry = MglruEntry::new(frame_idx, page_type, 0);
     entry.generation = MglruGen::Gen3;
-    if dirty { entry.flags = LruFlags::DIRTY; }
+    if dirty {
+        entry.flags = LruFlags::DIRTY;
+    }
     entry.referenced.store(false, Ordering::Relaxed);
     controller.lru_lists[0].add_page_to_generation(entry, 3);
     frame_idx
@@ -54,7 +56,7 @@ fn test_watermarks_calculation() {
 #[test_case]
 fn test_pressure_level() {
     let wm = Watermarks::calculate(10000);
-    
+
     assert_eq!(wm.pressure_level(10000), MemoryPressure::None);
     assert_eq!(wm.pressure_level(wm.low - 1), MemoryPressure::Background);
     assert_eq!(wm.pressure_level(wm.min - 1), MemoryPressure::Direct);
@@ -65,7 +67,7 @@ fn test_pressure_level() {
 fn test_mglru_list_add() {
     let lru = MglruList::new();
     let entry = MglruEntry::new(FrameIndex::new(100), PageType::Anonymous, 0);
-    
+
     lru.add_page(entry);
     let stats = lru.stats();
     assert_eq!(stats.gen_sizes[0], 1); // Gen0に追加される
@@ -127,7 +129,9 @@ fn test_file_backed_clean_reclaims_with_unsafe_disabled() {
     assert_eq!(stats.total_reclaimed, 1);
     assert_eq!(stats.blocked_unsafe, 0);
     assert_eq!(stats.lru_stats[0].reclaimed, 1);
-    assert!(!crate::mm::phys::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
+    assert!(!crate::mm::phys::buddy_allocator::is_frame_allocated(
+        frame_idx.as_usize()
+    ));
     reset_test_overrides();
 }
 
@@ -152,8 +156,13 @@ fn test_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled() {
     assert_eq!(reclaimed, 1);
     assert_eq!(after.total_reclaimed, before.total_reclaimed + 1);
     assert_eq!(after.writeback_skipped, before.writeback_skipped);
-    assert_eq!(after.lru_stats[0].reclaimed, before.lru_stats[0].reclaimed + 1);
-    assert!(!crate::mm::phys::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
+    assert_eq!(
+        after.lru_stats[0].reclaimed,
+        before.lru_stats[0].reclaimed + 1
+    );
+    assert!(!crate::mm::phys::buddy_allocator::is_frame_allocated(
+        frame_idx.as_usize()
+    ));
     assert!(crate::mm::meta::frame_backing::get_frame_backing(frame_idx).is_none());
 
     reset_test_overrides();
@@ -182,8 +191,13 @@ fn test_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled() {
     assert_eq!(after.total_reclaimed, before.total_reclaimed);
     assert_eq!(after.writeback_skipped, before.writeback_skipped + 1);
     assert_eq!(after.requeued, before.requeued + 1);
-    assert_eq!(after.lru_stats[0].gen_sizes[1], before.lru_stats[0].gen_sizes[1] + 1);
-    assert!(crate::mm::phys::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
+    assert_eq!(
+        after.lru_stats[0].gen_sizes[1],
+        before.lru_stats[0].gen_sizes[1] + 1
+    );
+    assert!(crate::mm::phys::buddy_allocator::is_frame_allocated(
+        frame_idx.as_usize()
+    ));
 
     cleanup_frame_if_allocated(frame_idx);
     reset_test_overrides();
@@ -208,7 +222,9 @@ fn test_file_backed_dirty_without_backing_requeues_with_unsafe_disabled() {
     assert_eq!(after.writeback_skipped, before.writeback_skipped);
     assert_eq!(after.requeued, before.requeued + 1);
     assert_eq!(after.blocked_unsafe, before.blocked_unsafe);
-    assert!(crate::mm::phys::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
+    assert!(crate::mm::phys::buddy_allocator::is_frame_allocated(
+        frame_idx.as_usize()
+    ));
 
     cleanup_frame_if_allocated(frame_idx);
     reset_test_overrides();
@@ -222,7 +238,10 @@ fn test_already_pending_does_not_count_writeback_skipped() {
     let (frame_idx, entry) = alloc_dirty_entry(PageType::Anonymous);
 
     controller.enqueue_pending_async(&entry, 0);
-    crate::mm::meta::page_flags::set_flag(frame_idx, crate::mm::meta::page_flags::PageMetaFlags::SwapPending);
+    crate::mm::meta::page_flags::set_flag(
+        frame_idx,
+        crate::mm::meta::page_flags::PageMetaFlags::SwapPending,
+    );
 
     let before = controller.stats();
     let outcome = controller.reclaim_page(&entry, 0);
@@ -231,7 +250,10 @@ fn test_already_pending_does_not_count_writeback_skipped() {
     assert_eq!(outcome, ReclaimOutcome::DeferredAsync);
     assert_eq!(after.writeback_skipped, before.writeback_skipped);
 
-    crate::mm::meta::page_flags::clear_flag(frame_idx, crate::mm::meta::page_flags::PageMetaFlags::SwapPending);
+    crate::mm::meta::page_flags::clear_flag(
+        frame_idx,
+        crate::mm::meta::page_flags::PageMetaFlags::SwapPending,
+    );
     controller.on_async_swapout_complete(frame_idx, false);
     cleanup_frame_if_allocated(frame_idx);
 }
@@ -359,7 +381,9 @@ fn test_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success(
     assert_eq!(reclaimed, 1);
     assert_eq!(after.total_reclaimed, before.total_reclaimed + 1);
     assert_eq!(after.writeback_skipped, before.writeback_skipped);
-    assert!(!crate::mm::phys::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
+    assert!(!crate::mm::phys::buddy_allocator::is_frame_allocated(
+        frame_idx.as_usize()
+    ));
 
     reset_test_overrides();
 }
@@ -388,7 +412,9 @@ fn test_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure
     assert_eq!(after.total_reclaimed, before.total_reclaimed);
     assert_eq!(after.requeued, before.requeued + 1);
     assert_eq!(after.writeback_skipped, before.writeback_skipped + 1);
-    assert!(crate::mm::phys::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
+    assert!(crate::mm::phys::buddy_allocator::is_frame_allocated(
+        frame_idx.as_usize()
+    ));
 
     cleanup_frame_if_allocated(frame_idx);
     reset_test_overrides();

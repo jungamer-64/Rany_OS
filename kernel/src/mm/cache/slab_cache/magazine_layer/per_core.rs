@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// 現在のCPUのPer-Coreキャッシュから割り当て
 ///
 /// # Note
@@ -36,7 +35,10 @@ pub fn per_core_alloc(cpu_id: usize, layout: Layout) -> Option<NonNull<u8>> {
         Err(_) => {
             // Poisoned: fallback to global heap allocation instead of accessing potentially
             // corrupted per-core cache data.
-            log::error!("[MEM] Slab Poisoned cpu={}; falling back to global allocator", cpu_id);
+            log::error!(
+                "[MEM] Slab Poisoned cpu={}; falling back to global allocator",
+                cpu_id
+            );
             unsafe {
                 let ptr = alloc::alloc::alloc(layout);
                 NonNull::new(ptr)
@@ -66,7 +68,10 @@ pub unsafe fn per_core_dealloc(cpu_id: usize, ptr: NonNull<u8>, layout: Layout) 
             // fallthrough to global dealloc if no per-core cache
         }
         Err(_) => {
-            log::error!("[MEM] Slab Poisoned cpu={}; falling back to global dealloc", cpu_id);
+            log::error!(
+                "[MEM] Slab Poisoned cpu={}; falling back to global dealloc",
+                cpu_id
+            );
             // fallthrough to global dealloc
         }
     }
@@ -142,13 +147,9 @@ pub unsafe fn per_core_dealloc_auto(ptr: NonNull<u8>, layout: Layout) {
 ///
 /// # Safety
 /// - ptr は owner_cpu の per_core_alloc で割り当てられたものである必要がある
-pub unsafe fn per_core_dealloc_remote(
-    owner_cpu: usize,
-    ptr: NonNull<u8>,
-    layout: Layout,
-) -> bool {
+pub unsafe fn per_core_dealloc_remote(owner_cpu: usize, ptr: NonNull<u8>, layout: Layout) -> bool {
     let size = layout.size().max(layout.align());
-    
+
     // サイズクラスを特定
     let size_class = match SLAB_SIZES.iter().position(|&s| size <= s) {
         Some(class) => class as u8,
@@ -160,7 +161,7 @@ pub unsafe fn per_core_dealloc_remote(
             return true;
         }
     };
-    
+
     // リモートフリーリングにプッシュ
     // リング満杯時も内部でフォールバックキューに保存されるため、常に成功する
     slab_remote_free_push(owner_cpu, ptr.as_ptr() as u64, size_class);
@@ -171,7 +172,9 @@ pub unsafe fn per_core_dealloc_remote(
 pub fn slab_remote_free_stats() -> (u64, u64, u64, u64) {
     (
         REMOTE_FREE_STATS.remote_pushes.load(Ordering::Relaxed),
-        REMOTE_FREE_STATS.remote_push_failures.load(Ordering::Relaxed),
+        REMOTE_FREE_STATS
+            .remote_push_failures
+            .load(Ordering::Relaxed),
         REMOTE_FREE_STATS.drain_count.load(Ordering::Relaxed),
         REMOTE_FREE_STATS.drained_entries.load(Ordering::Relaxed),
     )
@@ -240,7 +243,10 @@ impl TypedSlabCache {
     /// コンストラクタ付きTypedSlabCacheを作成
     pub fn new_with_ctor(object_size: usize, ctor: SlabCtor) -> Self {
         // TypedSlabCache maintains internal state (initialized_bitmap) so it cannot be merged
-        let flags = SlabFlags { mergeable: false, read_only: false };
+        let flags = SlabFlags {
+            mergeable: false,
+            read_only: false,
+        };
         let inner = SlabCacheRegistry::global().get_or_create(object_size, flags);
         Self {
             inner,
@@ -254,13 +260,12 @@ impl TypedSlabCache {
     }
 
     /// コンストラクタ/デストラクタ付きTypedSlabCacheを作成
-    pub fn new_with_ctor_dtor(
-        object_size: usize,
-        ctor: SlabCtor,
-        dtor: Option<SlabDtor>,
-    ) -> Self {
+    pub fn new_with_ctor_dtor(object_size: usize, ctor: SlabCtor, dtor: Option<SlabDtor>) -> Self {
         // TypedSlabCache maintains internal state, no merging
-        let flags = SlabFlags { mergeable: false, read_only: false };
+        let flags = SlabFlags {
+            mergeable: false,
+            read_only: false,
+        };
         let inner = SlabCacheRegistry::global().get_or_create(object_size, flags);
         Self {
             inner,
@@ -274,11 +279,7 @@ impl TypedSlabCache {
     }
 
     /// NUMA node指定でTypedSlabCacheを作成
-    pub fn new_with_ctor_on_node(
-        object_size: usize,
-        ctor: SlabCtor,
-        numa_node: u8,
-    ) -> Self {
+    pub fn new_with_ctor_on_node(object_size: usize, ctor: SlabCtor, numa_node: u8) -> Self {
         // NUMA aware, not mergeable currently (registry doesn't track node yet, or assume non-mergeable)
         // For now, create direct since Registry doesn't support NUMA constraints yet
         // OR wrapper allowing new_on_node.
@@ -500,9 +501,9 @@ pub struct ObjectCacheStats {
 }
 
 /// 型付きオブジェクトキャッシュ
-/// 
+///
 /// ## 特徴
-/// 
+///
 /// - `T: Default`の型に対して自動的にデフォルト初期化
 /// - プーリングによる高速な再割り当て
 /// - バッチ操作のサポート
@@ -528,12 +529,15 @@ impl<T> ObjectCache<T> {
     pub fn new(name: &'static str) -> Self {
         Self::with_config(name, ObjectCacheConfig::default())
     }
-    
+
     /// 設定付きで新しいオブジェクトキャッシュを作成
     pub fn with_config(name: &'static str, config: ObjectCacheConfig) -> Self {
-        // ObjectCache is stateless regarding initialization (pools it manually), 
+        // ObjectCache is stateless regarding initialization (pools it manually),
         // so it IS mergeable.
-        let flags = SlabFlags { mergeable: true, read_only: false };
+        let flags = SlabFlags {
+            mergeable: true,
+            read_only: false,
+        };
         let inner = SlabCacheRegistry::global().get_or_create(core::mem::size_of::<T>(), flags);
         Self {
             name,
@@ -543,21 +547,21 @@ impl<T> ObjectCache<T> {
             stats: spin::Mutex::new(ObjectCacheStats::default()),
         }
     }
-    
+
     /// 名前を取得
     pub fn name(&self) -> &'static str {
         self.name
     }
-    
+
     /// オブジェクトを割り当て（未初期化）
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// 返されたポインタは未初期化状態。使用前に初期化が必要。
     pub unsafe fn alloc_uninit(&self) -> Option<NonNull<T>> {
         let mut stats = self.stats.lock();
         stats.allocations += 1;
-        
+
         // プールから取得を試みる
         {
             let mut pool = self.pool.lock();
@@ -566,23 +570,23 @@ impl<T> ObjectCache<T> {
                 return Some(ptr);
             }
         }
-        
+
         // キャッシュミス: Slabから新規割り当て
         stats.pool_misses += 1;
         let mut inner = self.inner.lock();
         inner.allocate().map(|ptr| ptr.cast())
     }
-    
+
     /// オブジェクトを解放
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// - `ptr`はこのキャッシュから割り当てられたもの
     /// - 解放後は使用禁止
     pub unsafe fn free(&self, ptr: NonNull<T>) {
         let mut stats = self.stats.lock();
         stats.deallocations += 1;
-        
+
         // プールに返却を試みる
         {
             let mut pool = self.pool.lock();
@@ -592,24 +596,24 @@ impl<T> ObjectCache<T> {
                 return;
             }
         }
-        
+
         // プール満杯: Slabに返却
         stats.pool_overflows += 1;
         let mut inner = self.inner.lock();
         inner.deallocate(ptr.cast());
     }
-    
+
     /// バッチ割り当て（未初期化）
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// 返されたポインタは全て未初期化状態。
     pub unsafe fn alloc_batch_uninit(&self, count: usize) -> Vec<NonNull<T>> {
         let mut result = Vec::with_capacity(count);
         let mut stats = self.stats.lock();
         stats.batch_allocs += 1;
         drop(stats);
-        
+
         for _ in 0..count {
             if let Some(ptr) = self.alloc_uninit() {
                 result.push(ptr);
@@ -617,28 +621,28 @@ impl<T> ObjectCache<T> {
                 break;
             }
         }
-        
+
         result
     }
-    
+
     /// バッチ解放
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// 全てのポインタはこのキャッシュから割り当てられたもの。
     pub unsafe fn free_batch(&self, ptrs: &[NonNull<T>]) {
         for &ptr in ptrs {
             self.free(ptr);
         }
     }
-    
+
     /// プールを縮小
-    /// 
+    ///
     /// `shrink_threshold`を超えるオブジェクトをSlabに返却。
     pub fn shrink(&self) {
         let mut pool = self.pool.lock();
         let mut inner = self.inner.lock();
-        
+
         while pool.len() > self.config.shrink_threshold {
             if let Some(ptr) = pool.pop() {
                 unsafe {
@@ -647,24 +651,24 @@ impl<T> ObjectCache<T> {
             }
         }
     }
-    
+
     /// プールをクリア
     pub fn clear_pool(&self) {
         let mut pool = self.pool.lock();
         let mut inner = self.inner.lock();
-        
+
         while let Some(ptr) = pool.pop() {
             unsafe {
                 inner.deallocate(ptr.cast());
             }
         }
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> ObjectCacheStats {
         *self.stats.lock()
     }
-    
+
     /// キャッシュヒット率を計算
     pub fn hit_rate(&self) -> f32 {
         let stats = self.stats.lock();
@@ -675,7 +679,7 @@ impl<T> ObjectCache<T> {
             stats.pool_hits as f32 / total as f32 * 100.0
         }
     }
-    
+
     /// プールのサイズを取得
     pub fn pool_size(&self) -> usize {
         self.pool.lock().len()
@@ -684,13 +688,13 @@ impl<T> ObjectCache<T> {
 
 impl<T: Default> ObjectCache<T> {
     /// オブジェクトを割り当て（デフォルト初期化済み）
-    /// 
+    ///
     /// プールから取得した場合、`skip_init_on_reuse`が`true`なら
     /// 初期化をスキップする。
     pub fn alloc(&self) -> Option<NonNull<T>> {
         let mut stats = self.stats.lock();
         stats.allocations += 1;
-        
+
         // プールから取得を試みる
         {
             let mut pool = self.pool.lock();
@@ -707,11 +711,11 @@ impl<T: Default> ObjectCache<T> {
                 return Some(ptr);
             }
         }
-        
+
         // キャッシュミス: Slabから新規割り当て + 初期化
         stats.pool_misses += 1;
         drop(stats);
-        
+
         let mut inner = self.inner.lock();
         inner.allocate().map(|ptr| {
             let typed_ptr: NonNull<T> = ptr.cast();
@@ -721,14 +725,14 @@ impl<T: Default> ObjectCache<T> {
             typed_ptr
         })
     }
-    
+
     /// バッチ割り当て（デフォルト初期化済み）
     pub fn alloc_batch(&self, count: usize) -> Vec<NonNull<T>> {
         let mut result = Vec::with_capacity(count);
         let mut stats = self.stats.lock();
         stats.batch_allocs += 1;
         drop(stats);
-        
+
         for _ in 0..count {
             if let Some(ptr) = self.alloc() {
                 result.push(ptr);
@@ -736,7 +740,7 @@ impl<T: Default> ObjectCache<T> {
                 break;
             }
         }
-        
+
         result
     }
 }
@@ -751,4 +755,3 @@ impl<T> Drop for ObjectCache<T> {
 #[cfg(test)]
 #[path = "../tests.rs"]
 mod tests;
-

@@ -25,8 +25,8 @@
 
 // サブモジュール (controller/global remain kernel-local; core codec/types/stream moved to driver crate)
 // mod controller; // Moved to driver
-mod global;
 mod driver;
+mod global;
 
 // Use driver-provided modules
 pub use hda_driver::codec;
@@ -41,8 +41,8 @@ pub use types::{
 
 // コントローラの再エクスポート
 // pub use controller::HdaController;
-pub use hda_driver::hda::HdaController;
 pub use driver::HdaDriver;
+pub use hda_driver::hda::HdaController;
 
 // 公開API関数の再エクスポート
 pub use global::{

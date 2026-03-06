@@ -8,8 +8,8 @@
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
-use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use super::init_virtio_gpu_for_device;
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
 
 /// VirtIO GPU Driver
 pub struct VirtioGpuDriver {
@@ -50,12 +50,8 @@ impl Driver for VirtioGpuDriver {
                 .map_err(|_| KapiError::IoError)?
         };
 
-        let res = unsafe {
-            init_virtio_gpu_for_device(
-                alloc::boxed::Box::new(transport),
-                self.iommu_id,
-            )
-        };
+        let res =
+            unsafe { init_virtio_gpu_for_device(alloc::boxed::Box::new(transport), self.iommu_id) };
 
         match res {
             Ok(_) => {
@@ -82,14 +78,12 @@ impl Driver for VirtioGpuDriver {
     }
 
     fn supported_devices(&self) -> &[DeviceId] {
-        static DEVICES: [DeviceId; 1] = [
-            DeviceId {
-                vendor: 0x1AF4,
-                device: 0x1050, // VirtIO GPU (Modern)
-                subsystem_vendor: None,
-                subsystem_device: None,
-            },
-        ];
+        static DEVICES: [DeviceId; 1] = [DeviceId {
+            vendor: 0x1AF4,
+            device: 0x1050, // VirtIO GPU (Modern)
+            subsystem_vendor: None,
+            subsystem_device: None,
+        }];
         &DEVICES
     }
 }

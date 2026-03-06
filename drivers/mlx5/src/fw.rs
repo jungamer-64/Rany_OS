@@ -124,10 +124,13 @@ pub unsafe fn check_health(bar0_base: u64) -> bool {
 /// QUERY_HCA_CAP 出力からHcaCapsを解析
 pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
     log::info!(target: "mlx5", "QUERY_HCA_CAP decoding start (Offset 0x10):");
-    
+
     let rd_be32 = |data: &[u8], off: usize| -> u32 {
-        if off + 4 > data.len() { 0 }
-        else { u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]) }
+        if off + 4 > data.len() {
+            0
+        } else {
+            u32::from_be_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+        }
     };
 
     // Comparative diagnostics
@@ -140,7 +143,7 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
     // Standard mlx5 IFC: capability data starts at offset 0x10 in the mailbox.
     // However, we verify if the layout seems shifted by checking known fields.
     let mut cap_base = 0x10usize;
-    
+
     // Quick heuristic: if offset 0x10 is zero but 0x00 has data, it might be inline.
     // But usually, QUERY_HCA_CAP output is in the mailbox.
     let dw3_at_10 = rd_be32(out_data, 0x10 + 0x0C);
@@ -200,7 +203,9 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         max_sq: max_sq_rq,
         max_rq: max_sq_rq,
         max_eq: 1u32.checked_shl(log_max_eq.min(20) as u32).unwrap_or(16),
-        max_mkey: 1u32.checked_shl(log_max_mkey.min(20) as u32).unwrap_or(1024),
+        max_mkey: 1u32
+            .checked_shl(log_max_mkey.min(20) as u32)
+            .unwrap_or(1024),
         max_mtu: 1500,
         num_ports: actual_ports,
         log_max_cq_sz,

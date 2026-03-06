@@ -1,7 +1,6 @@
 use super::*;
 
 impl BuddyFrameAllocator {
-
     /// Buddyとの合体を反復的に試みる
     ///
     /// 以前の再帰実装はスタックオーバーフローのリスクがあったため、
@@ -182,14 +181,20 @@ impl BuddyFrameAllocator {
 
     /// NUMA-aware allocation helper: try preferred node, then other nodes.
     /// Returns a raw FrameIndex if successful.
-    pub(super) fn allocate_on_numa_node(&mut self, node: NumaNodeId, order: usize) -> Option<FrameIndex> {
+    pub(super) fn allocate_on_numa_node(
+        &mut self,
+        node: NumaNodeId,
+        order: usize,
+    ) -> Option<FrameIndex> {
         let map_clone = self.numa_regions.clone();
         let map = map_clone.as_ref()?;
 
         // Preferred node first
         if let Some(ranges) = map.get(&node) {
             for &(start, end) in ranges.iter() {
-                if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                if let Some(frame) =
+                    self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
+                {
                     return Some(frame);
                 }
             }
@@ -197,9 +202,13 @@ impl BuddyFrameAllocator {
 
         // Fallback to other nodes
         for (&other, ranges) in map.iter() {
-            if other == node { continue; }
+            if other == node {
+                continue;
+            }
             for &(start, end) in ranges.iter() {
-                if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                if let Some(frame) =
+                    self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
+                {
                     return Some(frame);
                 }
             }
@@ -382,7 +391,10 @@ impl BuddyFrameAllocator {
     pub fn allocate_4k_zeroed(&mut self) -> Option<(PhysFrame<Size4KiB>, bool)> {
         self.allocate_order_prefer_zeroed(0).map(|(frame, zeroed)| {
             let phys_addr = PhysAddr::new(frame.to_phys_addr());
-            (unsafe { PhysFrame::from_start_address_unchecked(phys_addr) }, zeroed)
+            (
+                unsafe { PhysFrame::from_start_address_unchecked(phys_addr) },
+                zeroed,
+            )
         })
     }
 
@@ -452,11 +464,7 @@ impl BuddyFrameAllocator {
     /// # Returns
     /// FragmentationIndex 構造体
     pub fn fragmentation_index(&self, target_order: Option<usize>) -> FragmentationIndex {
-        FragmentationIndex::calculate(
-            &self.order_free_counts,
-            self.total_frames,
-            target_order,
-        )
+        FragmentationIndex::calculate(&self.order_free_counts, self.total_frames, target_order)
     }
 
     /// 各オーダーの空きブロック数を取得

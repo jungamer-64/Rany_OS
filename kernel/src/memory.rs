@@ -17,8 +17,8 @@
 pub mod oom_killer;
 
 use crate::sync::PoisonLock;
-use boot_proto::{ExoBootInfo, MemoryDescriptor, MemoryMap, NumaInfo};
 use alloc::vec::Vec;
+use boot_proto::{ExoBootInfo, MemoryDescriptor, MemoryMap, NumaInfo};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -34,7 +34,9 @@ pub use ap_boot_reserve::*;
 /// Test-mode volatile write stub (the real implementation is in ap_boot_reserve.rs).
 #[cfg(all(test, not(feature = "full_mm_tests")))]
 fn checked_volatile_write_usize(addr: usize, val: usize, _context: &str) {
-    unsafe { core::ptr::write_volatile(addr as *mut usize, val); }
+    unsafe {
+        core::ptr::write_volatile(addr as *mut usize, val);
+    }
 }
 
 /// Test-mode phys_to_virt stub.
@@ -391,7 +393,6 @@ impl BuddyHeapAllocator {
 
     /// メモリを割り当て（O(log n)）
     fn allocate(&mut self, layout: Layout) -> *mut u8 {
-
         if !self.ensure_initialized() {
             #[cfg(debug_assertions)]
             crate::io::log::early_print("[HEAP] allocate: not initialized\n");
@@ -422,9 +423,6 @@ impl BuddyHeapAllocator {
                 // 必要に応じて分割
                 self.split_block(block, current_order, order);
 
-
-        
-
                 // Buddyブロックは自身のサイズでアラインされているため、
                 // block_size >= align なら自動的にアラインメントを満たす
                 return block as *mut u8;
@@ -449,7 +447,6 @@ impl BuddyHeapAllocator {
 
     /// メモリを解放（O(log n)）
     fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
-
         if ptr.is_null() {
             #[cfg(debug_assertions)]
             crate::io::log::early_print("[HEAP] deallocate: null or not init\n");
@@ -474,15 +471,11 @@ impl BuddyHeapAllocator {
         let order = Self::size_to_order(size);
         let addr = ptr as usize;
 
-
         if addr < self.heap_start || addr >= self.heap_start + HEAP_SIZE {
             crate::io::log::early_print("[HEAP] ERROR: deallocate got invalid ptr!\n");
         }
 
         self.coalesce(addr, order);
-
-
-
     }
 
     /// Buddyとの合体を反復的に試みる
@@ -669,7 +662,7 @@ impl LockedBuddyHeap {
                 i -= 1;
             }
         }
-        for k in (i+1)..20 {
+        for k in (i + 1)..20 {
             crate::io::log::early_print_char(buf[k]);
         }
 
@@ -716,7 +709,10 @@ impl LockedBuddyHeap {
 
 /// グローバルヒープアロケータ（Buddy Allocatorベース）
 /// 設計理念: O(log n)割り当てで <100ns を達成
-#[cfg(any(not(feature = "full_mm_tests"), all(feature = "full_mm_tests", not(test))))]
+#[cfg(any(
+    not(feature = "full_mm_tests"),
+    all(feature = "full_mm_tests", not(test))
+))]
 pub static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
 
 #[cfg(all(feature = "full_mm_tests", test))]

@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Helper: Map resource string to capability bit
 pub fn resource_to_capability(resource: &str) -> Capability {
     match resource {
@@ -113,4 +112,3 @@ pub fn capability_name(cap: Capability) -> &'static str {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

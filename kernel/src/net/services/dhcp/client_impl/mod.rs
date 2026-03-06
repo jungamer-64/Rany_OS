@@ -10,7 +10,7 @@ impl DhcpClient {
     pub(super) const PROBE_WAIT_SECS: u64 = 1;
 
     /// Default retry interval used for retransmits (seconds)
-    pub(super) const RETRY_INTERVAL_SECS: u64 = 4; 
+    pub(super) const RETRY_INTERVAL_SECS: u64 = 4;
 
     /// 新しいDHCPクライアントを作成
     pub fn new(mac_address: MacAddress) -> Self {
@@ -29,20 +29,22 @@ impl DhcpClient {
     }
 
     /// DHCPクライアントのメインループ（非同期）
-    /// 
+    ///
     /// 指定されたポートでUDPソケットをバインドし、DHCP状態機械を駆動します。
     pub async fn run(&self) -> Result<(), &'static str> {
         // DHCPクライアントポート(68)でバインド
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(DHCP_CLIENT_PORT).await.ok_or("Failed to bind DHCP socket")?;
-        
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(DHCP_CLIENT_PORT)
+            .await
+            .ok_or("Failed to bind DHCP socket")?;
+
         log::info!("[NET] DHCPv4 client task started");
 
         loop {
             let now = crate::task::timer::current_tick();
-            
+
             // 状態機械を駆動（タイムアウトチェックと必要に応じたパケット送信）
             self.drive(now, 1000).await?;
-            
+
             // パケット受信を待機。再送タイマーを考慮して1秒でタイムアウト。
             match task::with_timeout(socket.recv(), 1000).await {
                 TimeoutResult::Completed(Some((_src, _ttl, packet))) => {
@@ -70,7 +72,11 @@ impl DhcpClient {
                             }
                         }
                         Ok(DhcpResponseResult::Offer(lease)) => {
-                            log::info!("[NET] DHCPv4 OFFER received: {:?} from {:?}", lease.ip_address, lease.server_ip);
+                            log::info!(
+                                "[NET] DHCPv4 OFFER received: {:?} from {:?}",
+                                lease.ip_address,
+                                lease.server_ip
+                            );
                         }
                         Ok(DhcpResponseResult::Nak) => {
                             log::warn!("[NET] DHCPv4 NAK received");
@@ -89,12 +95,12 @@ impl DhcpClient {
                 }
             }
         }
-        
+
         Ok(())
     }
 
     /// 現在の状態を取得
-    pub fn state(&self) -> DhcpState { 
+    pub fn state(&self) -> DhcpState {
         match self.state.lock() {
             Ok(g) => *g,
             Err(_) => {
@@ -157,7 +163,8 @@ impl DhcpClient {
                 Err(_) => return Err("Lease lock poisoned"),
             };
             if let Some(l) = lease_opt {
-                let is_renew_or_rebind = current_state == DhcpState::Renewing || current_state == DhcpState::Rebinding;
+                let is_renew_or_rebind =
+                    current_state == DhcpState::Renewing || current_state == DhcpState::Rebinding;
                 Ok((l, is_renew_or_rebind))
             } else {
                 Err("No active lease available")
@@ -228,7 +235,12 @@ impl DhcpClient {
         if *state_guard == DhcpState::Init {
             // Use cryptographically secure random value for XID to prevent spoofing
             let random_bytes = crate::net::security::tls::crypto::random::generate_random();
-            let xid = u32::from_be_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
+            let xid = u32::from_be_bytes([
+                random_bytes[0],
+                random_bytes[1],
+                random_bytes[2],
+                random_bytes[3],
+            ]);
             self.xid.store(xid, Ordering::SeqCst);
         }
         let xid = self.xid.load(Ordering::SeqCst);
@@ -266,19 +278,25 @@ impl DhcpClient {
         };
 
         // メッセージタイプ: DISCOVER
-        append_opt(DhcpOption::MessageType as u8, &[DhcpMessageType::Discover as u8])?;
+        append_opt(
+            DhcpOption::MessageType as u8,
+            &[DhcpMessageType::Discover as u8],
+        )?;
 
         // パラメータ要求リスト
-        append_opt(DhcpOption::ParameterRequestList as u8, &[
-            DhcpOption::SubnetMask as u8,
-            DhcpOption::Router as u8,
-            DhcpOption::DnsServer as u8,
-            DhcpOption::DomainName as u8,
-            DhcpOption::LeaseTime as u8,
-            DhcpOption::ServerIdentifier as u8,
-            DhcpOption::RenewalTime as u8,
-            DhcpOption::RebindingTime as u8,
-        ])?;
+        append_opt(
+            DhcpOption::ParameterRequestList as u8,
+            &[
+                DhcpOption::SubnetMask as u8,
+                DhcpOption::Router as u8,
+                DhcpOption::DnsServer as u8,
+                DhcpOption::DomainName as u8,
+                DhcpOption::LeaseTime as u8,
+                DhcpOption::ServerIdentifier as u8,
+                DhcpOption::RenewalTime as u8,
+                DhcpOption::RebindingTime as u8,
+            ],
+        )?;
 
         // クライアント識別子
         let mut client_id = [0u8; 7];
@@ -333,7 +351,11 @@ impl DhcpClient {
         buffer[8..10].copy_from_slice(&0u16.to_be_bytes()); // secs
 
         // Flags: unicast for renewing, broadcast for rebinding and normal REQUEST
-        let flags: u16 = if current_state == DhcpState::Renewing { 0 } else { 0x8000 };
+        let flags: u16 = if current_state == DhcpState::Renewing {
+            0
+        } else {
+            0x8000
+        };
         buffer[10..12].copy_from_slice(&flags.to_be_bytes());
 
         // ciaddr must be set for renewals and rebinding; cleared for new requests (RFC 2131 Table 5)
@@ -367,24 +389,33 @@ impl DhcpClient {
         };
 
         // メッセージタイプ: REQUEST
-        append_opt(DhcpOption::MessageType as u8, &[DhcpMessageType::Request as u8])?;
+        append_opt(
+            DhcpOption::MessageType as u8,
+            &[DhcpMessageType::Request as u8],
+        )?;
 
         // RFC 2131 Section 4.3.2: omit ServerIdentifier and RequestedIp during RENEWING/REBINDING
         if !is_renew_or_rebind {
             append_opt(DhcpOption::RequestedIp as u8, lease.ip_address.as_bytes())?;
-            append_opt(DhcpOption::ServerIdentifier as u8, lease.server_ip.as_bytes())?;
+            append_opt(
+                DhcpOption::ServerIdentifier as u8,
+                lease.server_ip.as_bytes(),
+            )?;
         }
 
-        append_opt(DhcpOption::ParameterRequestList as u8, &[
-            DhcpOption::SubnetMask as u8,
-            DhcpOption::Router as u8,
-            DhcpOption::DnsServer as u8,
-            DhcpOption::DomainName as u8,
-            DhcpOption::LeaseTime as u8,
-            DhcpOption::ServerIdentifier as u8,
-            DhcpOption::RenewalTime as u8,
-            DhcpOption::RebindingTime as u8,
-        ])?;
+        append_opt(
+            DhcpOption::ParameterRequestList as u8,
+            &[
+                DhcpOption::SubnetMask as u8,
+                DhcpOption::Router as u8,
+                DhcpOption::DnsServer as u8,
+                DhcpOption::DomainName as u8,
+                DhcpOption::LeaseTime as u8,
+                DhcpOption::ServerIdentifier as u8,
+                DhcpOption::RenewalTime as u8,
+                DhcpOption::RebindingTime as u8,
+            ],
+        )?;
 
         let mut client_id = [0u8; 7];
         client_id[0] = 1; // Ethernet
@@ -428,7 +459,10 @@ impl DhcpClient {
     }
 
     /// ヘッダを検証し、参照を返す
-    pub(super) fn validate_header<'a>(&self, data: &'a [u8]) -> Result<&'a DhcpHeader, &'static str> {
+    pub(super) fn validate_header<'a>(
+        &self,
+        data: &'a [u8],
+    ) -> Result<&'a DhcpHeader, &'static str> {
         if data.len() < DhcpHeader::SIZE + 4 {
             return Err("Packet too small");
         }
@@ -453,7 +487,11 @@ impl DhcpClient {
             let mut mac_bytes = [0u8; 6];
             mac_bytes.copy_from_slice(&header.chaddr[0..6]);
             if mac_bytes != *self.mac_address.as_bytes() {
-                log::warn!("[NET] DHCP CHADDR does not match client MAC - rejecting (chaddr={:?} expected={:?})", &header.chaddr[0..6], self.mac_address.as_bytes());
+                log::warn!(
+                    "[NET] DHCP CHADDR does not match client MAC - rejecting (chaddr={:?} expected={:?})",
+                    &header.chaddr[0..6],
+                    self.mac_address.as_bytes()
+                );
                 return Err("CHADDR does not match client MAC");
             }
         }
@@ -534,7 +572,12 @@ impl DhcpClient {
 
             let len = data[offset + 1] as usize;
             if offset + 2 + len > data.len() {
-                log::warn!("[NET] DHCP option length {} at offset {} overruns packet (len {}) - stopping parse", len, offset, data.len());
+                log::warn!(
+                    "[NET] DHCP option length {} at offset {} overruns packet (len {}) - stopping parse",
+                    len,
+                    offset,
+                    data.len()
+                );
                 break;
             }
 
@@ -563,7 +606,9 @@ impl DhcpClient {
                 Ok(())
             }
             Err(_) => {
-                log::error!("[NET] DHCP Offer lock poisoned (process_response Ack) - cannot verify ACK");
+                log::error!(
+                    "[NET] DHCP Offer lock poisoned (process_response Ack) - cannot verify ACK"
+                );
                 Err("Offer lock poisoned")
             }
         }
@@ -587,7 +632,9 @@ impl DhcpClient {
                 Ok(())
             }
             Err(_) => {
-                log::error!("[NET] DHCP Lease lock poisoned (process_response Ack) - cannot verify ACK");
+                log::error!(
+                    "[NET] DHCP Lease lock poisoned (process_response Ack) - cannot verify ACK"
+                );
                 Err("Lease lock poisoned")
             }
         }
@@ -605,7 +652,9 @@ impl DhcpClient {
                 Ok(())
             }
             Err(_) => {
-                log::error!("[NET] DHCP Offer lock poisoned (process_response Offer) - cannot verify offer");
+                log::error!(
+                    "[NET] DHCP Offer lock poisoned (process_response Offer) - cannot verify offer"
+                );
                 Err("Offer lock poisoned")
             }
         }
@@ -641,7 +690,9 @@ impl DhcpClient {
         let current_state = match self.state.lock() {
             Ok(g) => *g,
             Err(_) => {
-                log::error!("[NET] DHCP State lock poisoned (process_response) - cannot verify response");
+                log::error!(
+                    "[NET] DHCP State lock poisoned (process_response) - cannot verify response"
+                );
                 return Err("State lock poisoned");
             }
         };
@@ -654,13 +705,19 @@ impl DhcpClient {
     }
 
     /// ParsedOptions と DhcpHeader からリース情報を構築する
-    pub(super) fn build_lease(header: &DhcpHeader, opts: ParsedOptions, current_tick: u64) -> DhcpLease {
+    pub(super) fn build_lease(
+        header: &DhcpHeader,
+        opts: ParsedOptions,
+        current_tick: u64,
+    ) -> DhcpLease {
         let t1 = opts.renewal_time.unwrap_or(opts.lease_time / 2);
         let t2 = opts.rebinding_time.unwrap_or((opts.lease_time * 7) / 8);
 
         DhcpLease {
             ip_address: header.yiaddr(),
-            subnet_mask: opts.subnet_mask.unwrap_or(Ipv4Address::new([255, 255, 255, 0])),
+            subnet_mask: opts
+                .subnet_mask
+                .unwrap_or(Ipv4Address::new([255, 255, 255, 0])),
             gateway: opts.router,
             dns_servers: opts.dns_servers,
             server_ip: opts.server_id.unwrap_or(header.siaddr()),
@@ -701,6 +758,3 @@ pub fn init(mac_address: MacAddress) {
 pub fn client() -> Option<&'static PoisonLock<Option<DhcpClient>>> {
     Some(&DHCP_CLIENT)
 }
-
-
-

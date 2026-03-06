@@ -15,9 +15,8 @@ use alloc::vec::Vec;
 use spin::{Mutex, RwLock};
 
 use crate::io::io_scheduler::{
-    DeviceOps, DmaBufHandle, IoCommand, IoError,
-    IoRequest, IoRequestId, IoResult, PollHandler,
-    ModeThresholds, DeviceId as IoDeviceId,
+    DeviceId as IoDeviceId, DeviceOps, DmaBufHandle, IoCommand, IoError, IoRequest, IoRequestId,
+    IoResult, ModeThresholds, PollHandler,
 };
 
 use super::global;
@@ -33,8 +32,24 @@ use super::global;
 
 /// NVMe ドライバ操作抽象化（依存注入用）
 pub trait NvmeDriverOps: Send + Sync {
-    unsafe fn submit_read(&self, qid: u32, nsid: u32, lba: u64, blocks: u16, prp1: u64, prp2: u64) -> Option<u16>;
-    unsafe fn submit_write(&self, qid: u32, nsid: u32, lba: u64, blocks: u16, prp1: u64, prp2: u64) -> Option<u16>;
+    unsafe fn submit_read(
+        &self,
+        qid: u32,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        prp1: u64,
+        prp2: u64,
+    ) -> Option<u16>;
+    unsafe fn submit_write(
+        &self,
+        qid: u32,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        prp1: u64,
+        prp2: u64,
+    ) -> Option<u16>;
     unsafe fn submit_flush(&self, qid: u32, nsid: u32) -> Option<u16>;
     unsafe fn submit_dsm(&self, qid: u32, nsid: u32, prp1: u64, prp2: u64) -> Option<u16>;
     fn is_active(&self) -> bool;
@@ -44,12 +59,30 @@ pub trait NvmeDriverOps: Send + Sync {
 struct GlobalDriverAdapter;
 
 impl NvmeDriverOps for GlobalDriverAdapter {
-    unsafe fn submit_read(&self, qid: u32, nsid: u32, lba: u64, blocks: u16, prp1: u64, prp2: u64) -> Option<u16> {
-        global::with_driver(|d| unsafe { d.submit_read(qid, nsid, lba, blocks, prp1, prp2).ok() }).flatten()
+    unsafe fn submit_read(
+        &self,
+        qid: u32,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        prp1: u64,
+        prp2: u64,
+    ) -> Option<u16> {
+        global::with_driver(|d| unsafe { d.submit_read(qid, nsid, lba, blocks, prp1, prp2).ok() })
+            .flatten()
     }
 
-    unsafe fn submit_write(&self, qid: u32, nsid: u32, lba: u64, blocks: u16, prp1: u64, prp2: u64) -> Option<u16> {
-        global::with_driver(|d| unsafe { d.submit_write(qid, nsid, lba, blocks, prp1, prp2).ok() }).flatten()
+    unsafe fn submit_write(
+        &self,
+        qid: u32,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        prp1: u64,
+        prp2: u64,
+    ) -> Option<u16> {
+        global::with_driver(|d| unsafe { d.submit_write(qid, nsid, lba, blocks, prp1, prp2).ok() })
+            .flatten()
     }
 
     unsafe fn submit_flush(&self, qid: u32, nsid: u32) -> Option<u16> {
@@ -106,11 +139,18 @@ impl DeviceOps for NvmeOps {
 
 impl NvmeOps {
     /// IoCommand を NVMe 固有形式に変換して submit
-    fn submit_command(&self, cmd: &IoCommand, id: IoRequestId, cpu_idx: usize) -> Result<(), IoError> {
+    fn submit_command(
+        &self,
+        cmd: &IoCommand,
+        id: IoRequestId,
+        cpu_idx: usize,
+    ) -> Result<(), IoError> {
         let core_id = cpu_idx as u32;
 
         // 1. 指定されたCPUに関連付けられたハンドラを取得
-        let handler = self.handlers.iter()
+        let handler = self
+            .handlers
+            .iter()
             .find(|h| h.core_id == core_id)
             .cloned()
             .or_else(|| {
@@ -124,28 +164,53 @@ impl NvmeOps {
         let submit_qid = handler.core_id;
 
         let (cid, bytes) = match cmd {
-            IoCommand::BlockRead { lba, blocks, bytes, buf }
-            | IoCommand::BlockWrite { lba, blocks, bytes, buf } => {
+            IoCommand::BlockRead {
+                lba,
+                blocks,
+                bytes,
+                buf,
+            }
+            | IoCommand::BlockWrite {
+                lba,
+                blocks,
+                bytes,
+                buf,
+            } => {
                 let (prp1, prp2) = Self::validate_and_get_prps(buf)?;
                 let is_read = matches!(cmd, IoCommand::BlockRead { .. });
                 let cid = if is_read {
-                    unsafe { self.driver.submit_read(submit_qid, self.namespace_id, *lba, *blocks, prp1, prp2) }
+                    unsafe {
+                        self.driver.submit_read(
+                            submit_qid,
+                            self.namespace_id,
+                            *lba,
+                            *blocks,
+                            prp1,
+                            prp2,
+                        )
+                    }
                 } else {
-                    unsafe { self.driver.submit_write(submit_qid, self.namespace_id, *lba, *blocks, prp1, prp2) }
-                }.ok_or(IoError::NoResources)?;
+                    unsafe {
+                        self.driver.submit_write(
+                            submit_qid,
+                            self.namespace_id,
+                            *lba,
+                            *blocks,
+                            prp1,
+                            prp2,
+                        )
+                    }
+                }
+                .ok_or(IoError::NoResources)?;
                 (cid, *bytes)
             }
             IoCommand::Flush => {
-                let cid = unsafe {
-                    self.driver.submit_flush(submit_qid, self.namespace_id)
-                }
-                .ok_or(IoError::NoResources)?;
+                let cid = unsafe { self.driver.submit_flush(submit_qid, self.namespace_id) }
+                    .ok_or(IoError::NoResources)?;
                 (cid, 0)
             }
             IoCommand::Discard { .. } => (0, 0),
-            IoCommand::Ioctl { code, buf } => {
-                self.handle_ioctl_submit(submit_qid, *code, buf)?
-            }
+            IoCommand::Ioctl { code, buf } => self.handle_ioctl_submit(submit_qid, *code, buf)?,
         };
 
         handler.register_request(id, cid, bytes);
@@ -153,13 +218,16 @@ impl NvmeOps {
     }
 
     /// IoctlコマンドをNVMeに変換してsubmit
-    fn handle_ioctl_submit(&self, qid: u32, code: u32, buf: &DmaBufHandle) -> Result<(u16, usize), IoError> {
+    fn handle_ioctl_submit(
+        &self,
+        qid: u32,
+        code: u32,
+        buf: &DmaBufHandle,
+    ) -> Result<(u16, usize), IoError> {
         if code == 0x09 {
             let prp1 = buf.iova;
-            let cid = unsafe {
-                self.driver.submit_dsm(qid, self.namespace_id, prp1, 0)
-            }
-            .ok_or(IoError::NoResources)?;
+            let cid = unsafe { self.driver.submit_dsm(qid, self.namespace_id, prp1, 0) }
+                .ok_or(IoError::NoResources)?;
             Ok((cid, 0))
         } else {
             Err(IoError::NotSupported)
@@ -192,7 +260,10 @@ impl NvmeOps {
             Ok((buf.iova, prp2))
         } else {
             // Spans > 2 pages. Requires PRP List.
-            log::warn!("[NVMe] Buffer too large (> 2 pages) for inline PRP: {} bytes", buf.len);
+            log::warn!(
+                "[NVMe] Buffer too large (> 2 pages) for inline PRP: {} bytes",
+                buf.len
+            );
             Err(IoError::NotSupported)
         }
     }
@@ -264,7 +335,9 @@ impl PollHandler for NvmePollHandler {
                 unsafe {
                     while let Some(cqe) = queue.poll() {
                         let cid = cqe.cid;
-                        let entry = self.pending.lock()
+                        let entry = self
+                            .pending
+                            .lock()
                             .get_mut(cid as usize)
                             .and_then(|slot| slot.take());
 
@@ -334,7 +407,6 @@ pub fn register_with_io_scheduler(
     namespace_id: u32,
     num_cores: u32,
 ) -> Result<Vec<Arc<NvmePollHandler>>, &'static str> {
-    
     // 1. 利用可能なキュー数を確認
     let available = global::with_driver(|driver| driver.io_queue_count()).unwrap_or(0);
     if available == 0 {
@@ -362,9 +434,14 @@ pub fn register_with_io_scheduler(
 
     // DeviceOps 登録
     scheduler.register_device(device_id, ModeThresholds::default());
-    
+
     let driver = Box::new(GlobalDriverAdapter);
-    let ops = Arc::new(NvmeOps::new(driver, controller_id, namespace_id, handlers_arc));
+    let ops = Arc::new(NvmeOps::new(
+        driver,
+        controller_id,
+        namespace_id,
+        handlers_arc,
+    ));
     scheduler.register_device_ops(device_id, ops);
 
     // 4. PollHandler登録
@@ -382,8 +459,12 @@ pub fn register_with_io_scheduler(
         .write()
         .insert((controller_id, namespace_id), handlers.clone());
 
-    log::info!("[NVMe] Registered device {:?} with IoScheduler ({} queues)", device_id, handler_count);
-    
+    log::info!(
+        "[NVMe] Registered device {:?} with IoScheduler ({} queues)",
+        device_id,
+        handler_count
+    );
+
     Ok(handlers)
 }
 

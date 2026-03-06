@@ -41,9 +41,7 @@ mod window;
 pub use compositor::Compositor;
 pub use constants::*;
 pub use dirty_rect::{DirtyRect, DirtyRegionManager};
-pub use types::{
-    CompositorWindowId, CompositorWindowState, CompositorWindowStyle, ZOrder,
-};
+pub use types::{CompositorWindowId, CompositorWindowState, CompositorWindowStyle, ZOrder};
 pub use window::CompositorWindow;
 
 // ============================================================================
@@ -98,5 +96,3 @@ pub fn destroy_window(id: CompositorWindowId) {
 pub fn compose(fb: &mut Framebuffer) {
     with_compositor_mut(|c| c.compose(fb));
 }
-
-

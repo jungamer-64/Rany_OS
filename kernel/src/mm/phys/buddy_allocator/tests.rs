@@ -17,9 +17,9 @@ fn test_buddy_allocator() {
 
 #[test_case]
 fn test_init_numa_frame_allocator_registers_region_with_buddy() {
-    use crate::mm::types::NumaNodeId;
     use crate::mm::phys::buddy_allocator::init_buddy_allocator;
-use crate::mm::phys::frame_allocator::init_numa_frame_allocator;
+    use crate::mm::phys::frame_allocator::init_numa_frame_allocator;
+    use crate::mm::types::NumaNodeId;
 
     // Initialize buddy allocator without owning global memory
     unsafe {
@@ -38,7 +38,8 @@ use crate::mm::phys::frame_allocator::init_numa_frame_allocator;
     ));
 
     // Try to allocate a frame preferring that node (best-effort) via PMM borrow
-    let alloc = crate::mm::phys::buddy_allocator::buddy_alloc_frame_on_node(NumaNodeId::new(1)).expect("borrowed alloc");
+    let alloc = crate::mm::phys::buddy_allocator::buddy_alloc_frame_on_node(NumaNodeId::new(1))
+        .expect("borrowed alloc");
     assert!(crate::mm::phys::buddy_allocator::is_managed_by_buddy(
         alloc.start_address()
     ));
@@ -96,7 +97,7 @@ fn test_numa_2m_alloc_local() {
 #[test_case]
 fn test_folio_allocation_and_flags() {
     use crate::mm::meta::page_flags::{self, PageMetaFlags};
-    
+
     // Initialize page flags for testing (needed for Folio tracking)
     // We allocate enough space for the test frames.
     // Note: This modifies global state, so it might conflict if other tests used page_flags.
@@ -109,30 +110,46 @@ fn test_folio_allocation_and_flags() {
     }
 
     let mut allocator = BuddyFrameAllocator::new();
-    
+
     // Setup a region: 2MB at 2MB offset (Frames 512 to 1024)
     let start = PhysAddr::new(0x200000);
     let size = 0x200000u64; // 2MB
     let regions = [(start, size)];
-    
+
     unsafe {
         allocator.init(&regions);
     }
 
     // Allocate Order 2 (16KB, 4 pages)
-    let frame = allocator.allocate_order(2).expect("Failed to allocate order 2");
+    let frame = allocator
+        .allocate_order(2)
+        .expect("Failed to allocate order 2");
     let frame_idx = frame.as_usize();
-    
+
     // 1. Verify Head Page
-    assert!(page_flags::test_flag(frame, PageMetaFlags::CompoundHead), "Head flag not set");
-    assert!(!page_flags::test_flag(frame, PageMetaFlags::CompoundTail), "Head has Tail flag");
+    assert!(
+        page_flags::test_flag(frame, PageMetaFlags::CompoundHead),
+        "Head flag not set"
+    );
+    assert!(
+        !page_flags::test_flag(frame, PageMetaFlags::CompoundTail),
+        "Head has Tail flag"
+    );
     assert_eq!(page_flags::get_order(frame), 2, "Head order incorrect");
 
     // 2. Verify Tail Pages
     for i in 1..4 {
         let tail = FrameIndex::new(frame_idx + i);
-        assert!(page_flags::test_flag(tail, PageMetaFlags::CompoundTail), "Tail flag not set at index {}", i);
-        assert!(!page_flags::test_flag(tail, PageMetaFlags::CompoundHead), "Tail has Head flag at index {}", i);
+        assert!(
+            page_flags::test_flag(tail, PageMetaFlags::CompoundTail),
+            "Tail flag not set at index {}",
+            i
+        );
+        assert!(
+            !page_flags::test_flag(tail, PageMetaFlags::CompoundHead),
+            "Tail has Head flag at index {}",
+            i
+        );
         // Allocation only sets order on HEAD. Tail order remains 0.
         assert_eq!(page_flags::get_order(tail), 0, "Tail order should be 0");
     }
@@ -140,11 +157,18 @@ fn test_folio_allocation_and_flags() {
     // 3. Verify Deallocation Cleans Up
     allocator.deallocate_order(frame, 2);
 
-    assert!(!page_flags::test_flag(frame, PageMetaFlags::CompoundHead), "Head flag not cleared");
+    assert!(
+        !page_flags::test_flag(frame, PageMetaFlags::CompoundHead),
+        "Head flag not cleared"
+    );
     assert_eq!(page_flags::get_order(frame), 0, "Head order not cleared");
-    
+
     for i in 1..4 {
         let tail = FrameIndex::new(frame_idx + i);
-        assert!(!page_flags::test_flag(tail, PageMetaFlags::CompoundTail), "Tail flag not cleared at index {}", i);
+        assert!(
+            !page_flags::test_flag(tail, PageMetaFlags::CompoundTail),
+            "Tail flag not cleared at index {}",
+            i
+        );
     }
 }

@@ -63,7 +63,8 @@ impl DeviceFaultEntry {
     }
 
     fn record_fault(&self, current_time_ms: u64) -> (u32, bool) {
-        self.last_fault_time.store(current_time_ms, Ordering::Relaxed);
+        self.last_fault_time
+            .store(current_time_ms, Ordering::Relaxed);
         let window_start = self.window_start.load(Ordering::Relaxed);
         let elapsed = current_time_ms.saturating_sub(window_start);
 
@@ -87,11 +88,17 @@ impl DeviceFaultEntry {
 
         if self
             .source_id
-            .compare_exchange(current_sid, source_id as u32, Ordering::AcqRel, Ordering::Relaxed)
+            .compare_exchange(
+                current_sid,
+                source_id as u32,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
             .is_ok()
         {
             self.window_start.store(current_time_ms, Ordering::Relaxed);
-            self.last_fault_time.store(current_time_ms, Ordering::Relaxed);
+            self.last_fault_time
+                .store(current_time_ms, Ordering::Relaxed);
             self.fault_count.store(0, Ordering::Relaxed);
             self.isolated.store(0, Ordering::Relaxed);
             true

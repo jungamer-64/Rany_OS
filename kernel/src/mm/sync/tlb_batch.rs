@@ -46,10 +46,10 @@ fn read_tsc() -> u64 {
     }
 }
 
+use crate::mm::sync::pcid::{PCID_ALLOCATOR, PCID_STATS};
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use x86_64::VirtAddr;
-use crate::mm::sync::pcid::{PCID_STATS, PCID_ALLOCATOR};
 
 // ============================================================================
 // Configuration
@@ -82,25 +82,27 @@ impl CpuMask {
     pub const fn new() -> Self {
         Self { bits: [0; 4] }
     }
-    
+
     pub const fn all() -> Self {
-        Self { bits: [u64::MAX; 4] }
+        Self {
+            bits: [u64::MAX; 4],
+        }
     }
-    
+
     #[inline]
     pub fn set(&mut self, cpu_id: usize) {
         if cpu_id < MAX_CPUS {
             self.bits[cpu_id / 64] |= 1 << (cpu_id % 64);
         }
     }
-    
+
     #[inline]
     pub fn clear(&mut self, cpu_id: usize) {
         if cpu_id < MAX_CPUS {
             self.bits[cpu_id / 64] &= !(1 << (cpu_id % 64));
         }
     }
-    
+
     #[inline]
     pub fn is_set(&self, cpu_id: usize) -> bool {
         if cpu_id < MAX_CPUS {
@@ -109,7 +111,7 @@ impl CpuMask {
             false
         }
     }
-    
+
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.bits[0] == 0 && self.bits[1] == 0 && self.bits[2] == 0 && self.bits[3] == 0
@@ -125,10 +127,10 @@ impl CpuMask {
 pub const TLB_COALESCE_WINDOW_NS: u64 = 1000; // 1μs
 
 /// TLBフラッシュバッチ
-/// 
+///
 /// 複数のTLB無効化要求をまとめて処理する。
 /// Coalescing Window機能により、短時間の複数要求を1回のIPIにまとめる。
-#[repr(C, align(64))]  // キャッシュライン境界
+#[repr(C, align(64))] // キャッシュライン境界
 pub struct TlbFlushBatch {
     /// フラッシュ対象のアドレス（仮想アドレス）
     pages: [u64; TLB_BATCH_SIZE],
@@ -171,7 +173,7 @@ impl TlbFlushBatch {
             coalesced_count: 0,
         }
     }
-    
+
     /// バッチをリセット
     #[inline]
     pub fn reset(&mut self) {
@@ -182,9 +184,9 @@ impl TlbFlushBatch {
         self.first_add_time = None;
         self.cpu_mask = CpuMask::new();
     }
-    
+
     /// ページをバッチに追加
-    /// 
+    ///
     /// バッチが満杯の場合は自動的にフラッシュされる
     /// Coalescing Window機能により、最初の追加からの経過時間を追跡
     #[inline]
@@ -193,19 +195,19 @@ impl TlbFlushBatch {
             // バッチが満杯 → フラッシュして継続
             self.flush();
         }
-        
+
         // Coalescing Window: 最初の追加時刻を記録
         if self.first_add_time.is_none() {
             self.first_add_time = Some(read_tsc());
         }
-        
+
         self.pages[self.count] = vaddr.as_u64();
         self.count += 1;
         self.need_flush = true;
     }
-    
+
     /// Coalescing Windowの残り時間をチェック
-    /// 
+    ///
     /// Window期間が経過している場合はフラッシュすべき
     #[inline]
     pub fn should_flush_by_window(&self) -> bool {
@@ -218,15 +220,15 @@ impl TlbFlushBatch {
             false
         }
     }
-    
+
     /// Coalescing Windowを考慮したフラッシュ試行
-    /// 
+    ///
     /// Window期間内ならフラッシュを遅延、期間経過後に実行
     pub fn try_flush_coalesced(&mut self) -> bool {
         if !self.need_flush {
             return false;
         }
-        
+
         if self.should_flush_by_window() {
             self.flush();
             true
@@ -234,7 +236,7 @@ impl TlbFlushBatch {
             false
         }
     }
-    
+
     /// 複数ページをバッチに追加
     pub fn add_pages(&mut self, start: VirtAddr, page_count: usize) {
         if page_count > TLB_FLUSH_ALL_THRESHOLD {
@@ -243,37 +245,37 @@ impl TlbFlushBatch {
             self.need_flush = true;
             return;
         }
-        
+
         for i in 0..page_count {
             let addr = VirtAddr::new(start.as_u64() + (i as u64 * 4096));
             self.add_page(addr);
         }
     }
-    
+
     /// 対象CPUを追加
     #[inline]
     pub fn add_cpu(&mut self, cpu_id: usize) {
         self.cpu_mask.set(cpu_id);
     }
-    
+
     /// 全CPUを対象に
     #[inline]
     pub fn set_all_cpus(&mut self) {
         self.cpu_mask = CpuMask::all();
     }
-    
+
     /// ASIDを設定
     #[inline]
     pub fn set_asid(&mut self, asid: u16) {
         self.asid = asid;
     }
-    
+
     /// バッチをフラッシュ
     pub fn flush(&mut self) {
         if !self.need_flush {
             return;
         }
-        
+
         if self.flush_all {
             // 全TLBフラッシュ
             self.do_flush_all();
@@ -283,24 +285,24 @@ impl TlbFlushBatch {
             self.do_flush_pages();
             self.batch_count += 1;
         }
-        
+
         self.reset();
     }
-    
+
     /// 全TLBをフラッシュ
     fn do_flush_all(&self) {
         // ローカルCPUの全TLBフラッシュ
         unsafe {
             flush_tlb_all_local();
         }
-        
+
         // リモートCPUへIPI（必要な場合）
         if !self.cpu_mask.is_empty() {
             // 現在のCPU以外にIPIを送信
             send_tlb_flush_ipi_all(self.cpu_mask);
         }
     }
-    
+
     /// 個別ページをフラッシュ
     fn do_flush_pages(&self) {
         // ローカルCPU
@@ -309,13 +311,13 @@ impl TlbFlushBatch {
                 flush_tlb_page_local(VirtAddr::new(self.pages[i]));
             }
         }
-        
+
         // リモートCPUへIPI
         if !self.cpu_mask.is_empty() {
             send_tlb_flush_ipi_pages(self.cpu_mask, &self.pages[..self.count]);
         }
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> TlbBatchStats {
         TlbBatchStats {
@@ -345,9 +347,9 @@ static mut PER_CPU_TLB_BATCH: [TlbFlushBatch; MAX_CPUS] = {
 };
 
 /// 現在のCPUのTLBバッチを取得
-/// 
+///
 /// # Safety
-/// 
+///
 /// - 割り込み禁止状態で呼び出すこと
 /// - 同一CPU内でのみアクセスすること
 #[inline]
@@ -390,7 +392,7 @@ impl CpuTlbState {
             pending_flush: AtomicBool::new(false),
         }
     }
-    
+
     /// 状態を取得
     #[inline]
     pub fn get_state(&self) -> TlbState {
@@ -399,29 +401,31 @@ impl CpuTlbState {
             _ => TlbState::Lazy,
         }
     }
-    
+
     /// Lazyモードに移行
     #[inline]
     pub fn enter_lazy(&self) {
         self.state.store(TlbState::Lazy as u64, Ordering::Release);
     }
-    
+
     /// Activeモードに移行
     #[inline]
     pub fn enter_active(&self) {
         // Lazyモードだった場合、保留中のフラッシュを実行
         if self.pending_flush.swap(false, Ordering::AcqRel) {
-            unsafe { flush_tlb_all_local(); }
+            unsafe {
+                flush_tlb_all_local();
+            }
         }
         self.state.store(TlbState::Active as u64, Ordering::Release);
     }
-    
+
     /// フラッシュ要求を保留
     #[inline]
     pub fn mark_pending_flush(&self) {
         self.pending_flush.store(true, Ordering::Release);
     }
-    
+
     /// ASIDを設定
     #[inline]
     pub fn set_asid(&self, asid: u64) {
@@ -446,9 +450,9 @@ pub fn get_cpu_tlb_state(cpu_id: usize) -> &'static CpuTlbState {
 // ============================================================================
 
 /// ローカルCPUの単一ページをフラッシュ（INVLPG）
-/// 
+///
 /// # Safety
-/// 
+///
 /// - 有効なアドレスを指定すること
 #[inline]
 pub unsafe fn flush_tlb_page_local(addr: VirtAddr) {
@@ -460,9 +464,9 @@ pub unsafe fn flush_tlb_page_local(addr: VirtAddr) {
 }
 
 /// ローカルCPUの全TLBをフラッシュ（CR3リロード）
-/// 
+///
 /// # Safety
-/// 
+///
 /// - カーネルモードで実行すること
 #[inline]
 pub unsafe fn flush_tlb_all_local() {
@@ -513,7 +517,8 @@ pub enum TlbFlushType {
 }
 
 /// グローバルTLBフラッシュの排他制御
-static TLB_FLUSH_LOCK: crate::sync::irq_mutex::IrqMutex<()> = crate::sync::irq_mutex::IrqMutex::new(());
+static TLB_FLUSH_LOCK: crate::sync::irq_mutex::IrqMutex<()> =
+    crate::sync::irq_mutex::IrqMutex::new(());
 
 /// グローバルIPIペイロード（各CPUが参照）
 /// TLB_FLUSH_LOCK で保護される。
@@ -538,13 +543,18 @@ fn send_tlb_flush_ipi_pages(cpu_mask: CpuMask, pages: &[u64]) {
 }
 
 /// TLBフラッシュIPIを送信（共通処理）
-/// 
+///
 /// 1. TLB_FLUSH_LOCK を取得して送信側をシリアライズ
 /// 2. ペイロードを設定
 /// 3. IPIを送信
 /// 4. 全CPUの完了を待機
 /// 5. ロックを解放
-fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, pages: &[u64], asid: u16) {
+fn send_tlb_flush_ipi_internal(
+    cpu_mask: CpuMask,
+    flush_type: TlbFlushType,
+    pages: &[u64],
+    asid: u16,
+) {
     // 現在のCPUを除外したターゲットマスクを作成
     let current_cpu = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
     let cpu_scan_limit = core::cmp::max(
@@ -553,7 +563,7 @@ fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, page
     );
     let mut remote_mask = cpu_mask;
     remote_mask.clear(current_cpu);
-    
+
     if remote_mask.is_empty() {
         return;
     }
@@ -576,23 +586,23 @@ fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, page
 
     let mut target_count = 0;
     TLB_FLUSH_DONE_COUNT.store(0, Ordering::Release);
-    
+
     // 各ターゲットCPUの状態をチェック
     for cpu_id in 0..cpu_scan_limit {
         if remote_mask.is_set(cpu_id) {
             let state = get_cpu_tlb_state(cpu_id);
-            
+
             // Lazyモードのcpuはフラッシュを保留
             if state.get_state() == TlbState::Lazy {
                 state.mark_pending_flush();
                 remote_mask.clear(cpu_id); // IPI送信対象から除外
                 continue;
             }
-            
+
             target_count += 1;
         }
     }
-    
+
     if target_count == 0 {
         return;
     }
@@ -603,7 +613,7 @@ fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, page
             send_tlb_ipi_to_cpu(cpu_id);
         }
     }
-    
+
     // 全CPUの完了を待機（タイムアウト付き）
     let mut spin_count = 0;
     while TLB_FLUSH_DONE_COUNT.load(Ordering::Acquire) < target_count {
@@ -614,16 +624,19 @@ fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, page
             // TLBシュートダウンのタイムアウトは、他CPUがハングしているか、
             // 重大なデッドロックが発生していることを示し、無視するとデータ破損や
             // Use-After-Free 脆弱性の原因となる。
-            panic!("[TLB] Fatal: Flush IPI timeout (target={}, done={}). System state inconsistent.", 
-                target_count, TLB_FLUSH_DONE_COUNT.load(Ordering::Relaxed));
+            panic!(
+                "[TLB] Fatal: Flush IPI timeout (target={}, done={}). System state inconsistent.",
+                target_count,
+                TLB_FLUSH_DONE_COUNT.load(Ordering::Relaxed)
+            );
         }
     }
 }
 
 /// TLBフラッシュIPIハンドラ（各CPUで実行）
-/// 
+///
 /// # Safety
-/// 
+///
 /// - 割り込みハンドラとして呼び出されること
 /// - 送信側が TLB_FLUSH_LOCK を保持している間のみペイロードが有効
 pub unsafe fn tlb_flush_ipi_handler() {
@@ -631,7 +644,7 @@ pub unsafe fn tlb_flush_ipi_handler() {
     // これによりデッドロックを回避する
     // Rust 2024 では static mut への直接参照は禁止されているため raw pointer を使用
     let payload_ptr = &raw const TLB_FLUSH_PAYLOAD;
-    
+
     match (*payload_ptr).flush_type {
         TlbFlushType::All => {
             flush_tlb_all_local();
@@ -646,7 +659,7 @@ pub unsafe fn tlb_flush_ipi_handler() {
             invpcid((*payload_ptr).asid as u64, 0, invpcid_type::SINGLE_CONTEXT);
         }
     }
-    
+
     TLB_FLUSH_DONE_COUNT.fetch_add(1, Ordering::Release);
 }
 
@@ -655,7 +668,7 @@ pub unsafe fn tlb_flush_ipi_handler() {
 // ============================================================================
 
 /// ページ範囲のTLBを無効化（バッチ化対応）
-/// 
+///
 /// この関数は複数の無効化要求をバッチ化し、
 /// 最後に flush_tlb_batch() で一括送信する。
 pub fn invalidate_page_range(start: VirtAddr, page_count: usize, cpu_id: usize) {
@@ -699,10 +712,10 @@ pub fn flush_tlb_all() {
 fn send_tlb_ipi_to_cpu(cpu_id: usize) {
     // CPU IDをAPIC IDとして使用（通常は1:1マッピング）
     let apic_id = cpu_id as u8;
-    
+
     // interrupt_manager経由でIPI送信
     crate::io::interrupt_manager::send_ipi(apic_id, TLB_FLUSH_VECTOR);
-    
+
     TLB_STATS.remote_flushes.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -743,10 +756,8 @@ pub static TLB_STATS: TlbGlobalStats = TlbGlobalStats {
 // 後方互換性のため、必要であれば use 文を追加しますが、現状は tlb_batch.rs 内部で
 // 直接 super::pcid を参照するように変更しています。
 
-
 // (Removed redundant definitions: PCID_STATS, PcidAllocator, PCID_ALLOCATOR)
 // Note: These are now imported from crate::mm::sync::pcid
-
 
 // ============================================================================
 // ASID LRU Manager (v0.6.0 - Enhanced ASID Rotation)
@@ -782,26 +793,26 @@ impl AsidLruEntry {
             active: AtomicBool::new(false),
         }
     }
-    
+
     /// 使用を記録
     #[inline]
     pub fn touch(&self) {
         self.last_used.store(read_tsc(), Ordering::Relaxed);
     }
-    
+
     /// プロセスに割り当て
     pub fn assign(&self, pid: u64) {
         self.process_id.store(pid, Ordering::Release);
         self.active.store(true, Ordering::Release);
         self.touch();
     }
-    
+
     /// 解放
     pub fn release(&self) {
         self.active.store(false, Ordering::Release);
         self.process_id.store(0, Ordering::Release);
     }
-    
+
     /// 未使用か
     #[inline]
     pub fn is_free(&self) -> bool {
@@ -810,7 +821,7 @@ impl AsidLruEntry {
 }
 
 /// LRUベースのASID/PCID管理
-/// 
+///
 /// 最大256エントリを追跡（実用的なアクティブプロセス数）
 const ASID_LRU_CAPACITY: usize = 256;
 
@@ -838,9 +849,9 @@ impl AsidLruManager {
             free_slot_uses: AtomicU64::new(0),
         }
     }
-    
+
     /// ASIDを割り当て（プロセスID付き）
-    /// 
+    ///
     /// 1. 空きスロットを優先使用
     /// 2. 空きがなければLRU（最も古いエントリ）を再利用
     pub fn allocate(&self, process_id: u64) -> u16 {
@@ -850,27 +861,30 @@ impl AsidLruManager {
         }
 
         let hint = self.search_hint.load(Ordering::Relaxed) as usize;
-        
+
         // 第1パス: 空きスロットを検索
         for offset in 0..ASID_LRU_CAPACITY {
             let idx = (hint + offset) % ASID_LRU_CAPACITY;
-            if idx == 0 { continue; } // ASID 0は予約
-            
+            if idx == 0 {
+                continue;
+            } // ASID 0は予約
+
             let entry = &self.entries[idx];
             if entry.is_free() {
                 entry.assign(process_id);
-                self.search_hint.store((idx as u16).wrapping_add(1), Ordering::Relaxed);
+                self.search_hint
+                    .store((idx as u16).wrapping_add(1), Ordering::Relaxed);
                 self.free_slot_uses.fetch_add(1, Ordering::Relaxed);
-                
+
                 self.lock.store(false, Ordering::Release);
                 return idx as u16;
             }
         }
-        
+
         // 第2パス: LRU（最も古い）を検索
         let mut oldest_idx: usize = 1;
         let mut oldest_time: u64 = u64::MAX;
-        
+
         for idx in 1..ASID_LRU_CAPACITY {
             let entry = &self.entries[idx];
             let time = entry.last_used.load(Ordering::Relaxed);
@@ -879,17 +893,18 @@ impl AsidLruManager {
                 oldest_idx = idx;
             }
         }
-        
+
         // 最も古いエントリを再利用
         let entry = &self.entries[oldest_idx];
         entry.assign(process_id);
-        self.search_hint.store((oldest_idx as u16).wrapping_add(1), Ordering::Relaxed);
+        self.search_hint
+            .store((oldest_idx as u16).wrapping_add(1), Ordering::Relaxed);
         self.lru_reuses.fetch_add(1, Ordering::Relaxed);
-        
+
         self.lock.store(false, Ordering::Release);
         oldest_idx as u16
     }
-    
+
     /// ASIDを解放
     pub fn deallocate(&self, asid: u16) {
         if asid == 0 || asid as usize >= ASID_LRU_CAPACITY {
@@ -897,7 +912,7 @@ impl AsidLruManager {
         }
         self.entries[asid as usize].release();
     }
-    
+
     /// ASIDの使用を記録（アクセス時に呼び出し）
     #[inline]
     pub fn touch(&self, asid: u16) {
@@ -905,13 +920,11 @@ impl AsidLruManager {
             self.entries[asid as usize].touch();
         }
     }
-    
+
     /// 統計情報を取得
     pub fn stats(&self) -> AsidLruStats {
-        let active_count = self.entries.iter()
-            .filter(|e| !e.is_free())
-            .count();
-        
+        let active_count = self.entries.iter().filter(|e| !e.is_free()).count();
+
         AsidLruStats {
             active_asids: active_count,
             lru_reuses: self.lru_reuses.load(Ordering::Relaxed),
@@ -935,7 +948,7 @@ pub struct AsidLruStats {
 pub static ASID_LRU_MANAGER: AsidLruManager = AsidLruManager::new();
 
 /// PCID対応のTLBフラッシュ（高効率版）
-/// 
+///
 /// INVPCIDが利用可能な場合は、指定PCIDのみを無効化。
 /// これによりコンテキストスイッチ時のオーバーヘッドを大幅に削減。
 pub unsafe fn flush_tlb_pcid(pcid: u16, addr: Option<u64>) {
@@ -943,7 +956,7 @@ pub unsafe fn flush_tlb_pcid(pcid: u16, addr: Option<u64>) {
     if !super::pcid::is_initialized() {
         super::pcid::init_features();
     }
-    
+
     if super::pcid::has_invpcid() {
         match addr {
             Some(address) => {
@@ -984,18 +997,18 @@ pub unsafe fn flush_tlb_all_pcids_preserve_global() {
 }
 
 /// CR3 with PCID設定
-/// 
+///
 /// PCID対応のCR3書き込み。noflushビットを使用して
 /// TLBフラッシュなしでアドレス空間を切り替え可能。
 pub unsafe fn set_cr3_with_pcid(pml4_phys: u64, pcid: u16, noflush: bool) {
     let mut cr3_value = pml4_phys & !0xFFF; // 下位12ビットクリア
     cr3_value |= pcid as u64; // PCID設定（下位12ビット）
-    
+
     if noflush && super::pcid::is_available() {
         // bit 63 = noflush bit
         cr3_value |= 1u64 << 63;
     }
-    
+
     core::arch::asm!(
         "mov cr3, {}",
         in(reg) cr3_value,
@@ -1008,7 +1021,7 @@ pub fn pcid_status() -> PcidStatus {
     if !super::pcid::is_initialized() {
         super::pcid::init_features();
     }
-    
+
     PcidStatus {
         pcid_available: super::pcid::is_available(),
         invpcid_available: super::pcid::has_invpcid(),
@@ -1027,19 +1040,19 @@ pub struct PcidStatus {
 }
 
 /// PCIDを初期化・有効化（公開API）
-/// 
+///
 /// カーネル初期化時とAP起動時に呼び出すこと。
-/// 
+///
 /// # 使用例
-/// 
+///
 /// ```ignore
 /// // BSP初期化時
 /// mm::tlb_batch::init_pcid();
-/// 
+///
 /// // AP起動時（SMP初期化）
 /// mm::tlb_batch::init_pcid();
 /// ```
-/// 
+///
 /// # Returns
 /// - `true`: PCID有効化成功
 /// - `false`: PCID非対応またはエラー
@@ -1066,9 +1079,9 @@ pub fn deallocate_pcid(pcid: u16) {
 }
 
 /// PCID対応のコンテキストスイッチ（公開API）
-/// 
+///
 /// TLBをフラッシュせずにアドレス空間を切り替える。
-/// 
+///
 /// # Safety
 /// - カーネルモードで実行すること
 /// - pml4_physは有効な物理アドレスであること
@@ -1147,20 +1160,23 @@ impl PerCpuLazyTlb {
 
     /// Lazyモードに入る（カーネルスレッド開始時等）
     pub fn enter_lazy(&self) {
-        self.state.store(LazyTlbState::Lazy as u64, Ordering::Release);
+        self.state
+            .store(LazyTlbState::Lazy as u64, Ordering::Release);
         self.lazy_enter_tsc.store(read_tsc(), Ordering::Relaxed);
     }
 
     /// Activeモードに戻る（ユーザ空間に戻る時）
-    /// 
+    ///
     /// pendingフラッシュがあれば実行し、skipped countを返す
     pub fn exit_lazy(&self) -> bool {
-        let state = self.state.swap(LazyTlbState::Active as u64, Ordering::AcqRel);
-        
+        let state = self
+            .state
+            .swap(LazyTlbState::Active as u64, Ordering::AcqRel);
+
         if state == LazyTlbState::Pending as u64 {
             // 遅延フラッシュを実行
             let asid = self.pending_asid.swap(0, Ordering::Relaxed);
-            
+
             unsafe {
                 if asid == 0 {
                     flush_tlb_all_local();
@@ -1170,32 +1186,33 @@ impl PerCpuLazyTlb {
                     flush_tlb_all_local();
                 }
             }
-            
+
             self.deferred_flushes.fetch_add(1, Ordering::Relaxed);
             return true;
         }
-        
+
         false
     }
 
     /// フラッシュ要求を処理
-    /// 
+    ///
     /// Lazyモードならpendingを設定、Activeなら即座にフラッシュ
-    /// 
+    ///
     /// # Returns
     /// - `true`: フラッシュをスキップ（Lazyモード）
     /// - `false`: 即座にフラッシュを実行
     pub fn request_flush(&self, asid: u16) -> bool {
         let state = self.state.load(Ordering::Acquire);
-        
+
         if state == LazyTlbState::Lazy as u64 {
             // Lazyモード: pending設定のみ
             self.pending_asid.store(asid as u64, Ordering::Relaxed);
-            self.state.store(LazyTlbState::Pending as u64, Ordering::Release);
+            self.state
+                .store(LazyTlbState::Pending as u64, Ordering::Release);
             self.skipped_flushes.fetch_add(1, Ordering::Relaxed);
             return true;
         }
-        
+
         // Activeモード: 即座にフラッシュ
         self.immediate_flushes.fetch_add(1, Ordering::Relaxed);
         false
@@ -1238,7 +1255,7 @@ static LAZY_TLB_STATE: [PerCpuLazyTlb; MAX_CPUS] = {
 };
 
 /// CPUをLazy TLBモードに設定
-/// 
+///
 /// カーネルスレッド開始時やアイドルループ進入時に呼び出す。
 /// このモード中は、他CPUからのTLBフラッシュIPIを受け取っても
 /// 即座にフラッシュせず、pending flagを設定するだけになる。
@@ -1249,9 +1266,9 @@ pub fn enter_lazy_tlb_mode(cpu_id: usize) {
 }
 
 /// CPUをActive TLBモードに戻す
-/// 
+///
 /// ユーザ空間に戻る前に呼び出す。pendingフラッシュがあれば実行する。
-/// 
+///
 /// # Returns
 /// - `true`: 遅延フラッシュを実行した
 /// - `false`: 遅延フラッシュなし
@@ -1264,26 +1281,26 @@ pub fn exit_lazy_tlb_mode(cpu_id: usize) -> bool {
 }
 
 /// TLBフラッシュをLazy-aware方式で送信
-/// 
+///
 /// 対象CPUがLazyモードなら即座のフラッシュをスキップ。
-/// 
+///
 /// # Returns
 /// - スキップしたCPU数
 pub fn send_tlb_flush_lazy_aware(cpu_mask: CpuMask, asid: u16) -> usize {
     let mut skipped = 0;
-    
+
     for cpu_id in 0..MAX_CPUS {
         if !cpu_mask.is_set(cpu_id) {
             continue;
         }
-        
+
         if LAZY_TLB_STATE[cpu_id].request_flush(asid) {
             skipped += 1;
         } else {
             send_tlb_ipi_to_cpu(cpu_id);
         }
     }
-    
+
     skipped
 }
 
@@ -1303,14 +1320,14 @@ pub fn lazy_tlb_total_stats() -> LazyTlbStats {
         deferred: 0,
         immediate: 0,
     };
-    
+
     for state in &LAZY_TLB_STATE {
         let stats = state.stats();
         total.skipped += stats.skipped;
         total.deferred += stats.deferred;
         total.immediate += stats.immediate;
     }
-    
+
     total
 }
 
@@ -1338,7 +1355,7 @@ pub fn lazy_tlb_total_stats() -> LazyTlbStats {
 // ============================================================================
 
 /// IPL-Free TLB Flush エポック
-/// 
+///
 /// 各CPUが最後にフラッシュを実行した世代番号を追跡。
 /// フラッシュ要求側はこの番号を監視して完了を確認できる。
 #[repr(C, align(64))]
@@ -1363,9 +1380,9 @@ impl TlbFlushEpoch {
             complete_count: AtomicU64::new(0),
         }
     }
-    
+
     /// 新しいフラッシュエポックを開始
-    /// 
+    ///
     /// # Returns
     /// 新しいエポック番号
     #[inline]
@@ -1373,7 +1390,7 @@ impl TlbFlushEpoch {
         self.request_count.fetch_add(1, Ordering::Relaxed);
         self.global_epoch.fetch_add(1, Ordering::Release)
     }
-    
+
     /// CPUがエポックを観測したことを記録
     #[inline]
     pub fn observe_epoch(&self, cpu_id: usize, epoch: u64) {
@@ -1381,13 +1398,13 @@ impl TlbFlushEpoch {
             self.cpu_epochs[cpu_id].store(epoch, Ordering::Release);
         }
     }
-    
+
     /// 全CPUが指定エポックを観測したか確認
-    /// 
+    ///
     /// # Arguments
     /// * `epoch` - 確認するエポック番号
     /// * `cpu_mask` - 対象CPUマスク
-    /// 
+    ///
     /// # Returns
     /// 全対象CPUが観測済みなら `true`
     pub fn all_observed(&self, epoch: u64, cpu_mask: CpuMask) -> bool {
@@ -1402,13 +1419,13 @@ impl TlbFlushEpoch {
         self.complete_count.fetch_add(1, Ordering::Relaxed);
         true
     }
-    
+
     /// 現在のグローバルエポックを取得
     #[inline]
     pub fn current_epoch(&self) -> u64 {
         self.global_epoch.load(Ordering::Acquire)
     }
-    
+
     /// 指定CPUの観測済みエポックを取得
     #[inline]
     pub fn cpu_epoch(&self, cpu_id: usize) -> u64 {
@@ -1424,7 +1441,7 @@ impl TlbFlushEpoch {
 pub static TLB_FLUSH_EPOCH: TlbFlushEpoch = TlbFlushEpoch::new();
 
 /// IPL-Free TLBフラッシュリクエスト
-/// 
+///
 /// 割り込みレベルを上げずにTLBフラッシュを要求する。
 /// 対象CPUは次のスケジューリングポイントでフラッシュを実行する。
 #[derive(Debug, Clone, Copy)]
@@ -1465,9 +1482,9 @@ impl IplFreeFlushQueue {
             poll_executed: AtomicU64::new(0),
         }
     }
-    
+
     /// フラッシュリクエストをキューに追加
-    /// 
+    ///
     /// # Returns
     /// 成功した場合は `true`
     #[inline]
@@ -1485,22 +1502,22 @@ impl IplFreeFlushQueue {
             Ordering::Relaxed,
         );
         self.pending[2].store(request.epoch, Ordering::Relaxed);
-        
+
         // Memory barrier: pending データが先に見えることを保証
         core::sync::atomic::fence(Ordering::Release);
-        
+
         self.valid.store(true, Ordering::Release);
         self.ipl_free_count.fetch_add(1, Ordering::Relaxed);
-        
+
         // ロックを解放
         self.lock.store(false, Ordering::Release);
         true
     }
-    
+
     /// 保留中のフラッシュを実行（ポーリング用）
-    /// 
+    ///
     /// スケジューリングポイントや割り込みリターン時に呼び出す。
-    /// 
+    ///
     /// # Returns
     /// フラッシュを実行した場合は `true`
     #[inline]
@@ -1508,22 +1525,22 @@ impl IplFreeFlushQueue {
         if !self.valid.load(Ordering::Acquire) {
             return false;
         }
-        
+
         // Atomicにvalidをクリアしてリクエストを取得
         if !self.valid.swap(false, Ordering::AcqRel) {
             return false; // 他のCPUが先に処理した
         }
-        
+
         // Memory barrier: valid クリア後にpendingを読む
         core::sync::atomic::fence(Ordering::Acquire);
-        
+
         let start_addr = self.pending[0].load(Ordering::Relaxed);
         let page_count_and_asid = self.pending[1].load(Ordering::Relaxed);
         let epoch = self.pending[2].load(Ordering::Relaxed);
-        
+
         let page_count = (page_count_and_asid & 0xFFFF_FFFF) as usize;
         let asid = ((page_count_and_asid >> 32) & 0xFFFF) as u16;
-        
+
         // 実際のTLBフラッシュを実行
         unsafe {
             const PAGE_SIZE: u64 = 4096;
@@ -1542,14 +1559,14 @@ impl IplFreeFlushQueue {
                 flush_tlb_all_local();
             }
         }
-        
+
         // エポックを更新
         TLB_FLUSH_EPOCH.observe_epoch(cpu_id, epoch);
         self.poll_executed.fetch_add(1, Ordering::Relaxed);
-        
+
         true
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> (u64, u64) {
         (
@@ -1566,16 +1583,16 @@ static IPL_FREE_QUEUES: [IplFreeFlushQueue; MAX_CPUS] = {
 };
 
 /// IPL-Free TLBフラッシュを要求
-/// 
+///
 /// 対象CPUに割り込みを送らず、TLBフラッシュをリクエストする。
 /// 対象CPUは次のポーリングポイントでフラッシュを実行する。
-/// 
+///
 /// # Arguments
 /// * `cpu_mask` - 対象CPUマスク
 /// * `start_addr` - 開始アドレス
 /// * `page_count` - ページ数
 /// * `asid` - ASID（0 = 全ASID）
-/// 
+///
 /// # Returns
 /// 新しいエポック番号（完了確認用）
 pub fn request_ipl_free_flush(
@@ -1585,14 +1602,14 @@ pub fn request_ipl_free_flush(
     asid: u16,
 ) -> u64 {
     let epoch = TLB_FLUSH_EPOCH.start_epoch();
-    
+
     let request = IplFreeTlbRequest {
         start_addr,
         page_count,
         asid,
         epoch,
     };
-    
+
     // 現在のCPUは直接フラッシュ
     if let Some(current_cpu) = crate::per_cpu::try_current_cpu_id() {
         if cpu_mask.is_set(current_cpu) {
@@ -1610,7 +1627,7 @@ pub fn request_ipl_free_flush(
             TLB_FLUSH_EPOCH.observe_epoch(current_cpu, epoch);
         }
     }
-    
+
     // 他のCPUにリクエストをキュー
     for cpu_id in 0..MAX_CPUS {
         if !cpu_mask.is_set(cpu_id) {
@@ -1621,14 +1638,14 @@ pub fn request_ipl_free_flush(
         }
         IPL_FREE_QUEUES[cpu_id].enqueue(&request);
     }
-    
+
     epoch
 }
 
 /// IPL-Freeフラッシュのポーリング
-/// 
+///
 /// スケジューリングポイントで呼び出す。保留中のフラッシュがあれば実行する。
-/// 
+///
 /// # Returns
 /// フラッシュを実行した場合は `true`
 #[inline]
@@ -1641,31 +1658,31 @@ pub fn poll_ipl_free_flush(cpu_id: usize) -> bool {
 }
 
 /// IPL-Freeフラッシュの完了を待機
-/// 
+///
 /// 指定エポックのフラッシュが全対象CPUで完了するまでスピン待機する。
-/// 
+///
 /// # Arguments
 /// * `epoch` - 待機するエポック番号
 /// * `cpu_mask` - 対象CPUマスク
 /// * `max_spins` - 最大スピン回数（0 = 無限）
-/// 
+///
 /// # Returns
 /// 完了した場合は `true`、タイムアウトの場合は `false`
 pub fn wait_ipl_free_flush(epoch: u64, cpu_mask: CpuMask, max_spins: usize) -> bool {
     let mut spins = 0;
-    
+
     loop {
         if TLB_FLUSH_EPOCH.all_observed(epoch, cpu_mask) {
             return true;
         }
-        
+
         if max_spins > 0 {
             spins += 1;
             if spins >= max_spins {
                 return false;
             }
         }
-        
+
         // CPU relaxを挿入してスピン効率を改善
         core::hint::spin_loop();
     }
@@ -1688,7 +1705,7 @@ pub fn ipl_free_stats() -> IplFreeStats {
         let (_, executed) = queue.stats();
         poll_executed += executed;
     }
-    
+
     IplFreeStats {
         requests: TLB_FLUSH_EPOCH.request_count.load(Ordering::Relaxed),
         completions: TLB_FLUSH_EPOCH.complete_count.load(Ordering::Relaxed),
@@ -1703,37 +1720,37 @@ pub fn ipl_free_stats() -> IplFreeStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test_case]
     fn test_tlb_batch_add() {
         let mut batch = TlbFlushBatch::new();
-        
+
         batch.add_page(VirtAddr::new(0x1000));
         assert_eq!(batch.count, 1);
         assert!(batch.need_flush);
-        
+
         batch.add_page(VirtAddr::new(0x2000));
         assert_eq!(batch.count, 2);
     }
-    
+
     #[test_case]
     fn test_tlb_batch_threshold() {
         let mut batch = TlbFlushBatch::new();
-        
+
         // 閾値を超えるページ数
         batch.add_pages(VirtAddr::new(0x1000), TLB_FLUSH_ALL_THRESHOLD + 1);
         assert!(batch.flush_all);
     }
-    
+
     #[test_case]
     fn test_cpu_tlb_state() {
         let state = CpuTlbState::new();
-        
+
         assert_eq!(state.get_state(), TlbState::Active);
-        
+
         state.enter_lazy();
         assert_eq!(state.get_state(), TlbState::Lazy);
-        
+
         state.mark_pending_flush();
         state.enter_active();
         assert_eq!(state.get_state(), TlbState::Active);

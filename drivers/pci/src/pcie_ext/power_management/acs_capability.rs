@@ -105,7 +105,7 @@ impl AcsController {
         // 3. P2P Request Redirect (RR): Forces P2P requests to go upstream to IOMMU.
         // 4. P2P Completion Redirect (CR): Forces P2P completions to go upstream.
         // 5. Upstream Forwarding (UF): Prevents direct P2P bypass of IOMMU.
-        
+
         let sv_ok = cap.source_validation && (ctrl & 0x01) != 0;
         let tb_ok = !cap.translation_blocking || (ctrl & 0x02) != 0; // Required IF supported
         let rr_ok = cap.p2p_request_redirect && (ctrl & 0x04) != 0;

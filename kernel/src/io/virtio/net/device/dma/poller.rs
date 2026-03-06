@@ -1,13 +1,11 @@
 use super::*;
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
-use alloc::collections::BTreeMap;
 use spin::RwLock;
 
-use crate::io::io_scheduler::{
-    DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator,
-};
+use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
 
 // ============================================================================
 // IoScheduler Integration
@@ -93,7 +91,8 @@ impl VirtioNetPollHandler {
     /// IRQパス向けに pending RX を取り出して削除
     pub fn take_pending_rx(&self, desc_id: u16) -> Option<(IoRequestId, usize)> {
         self.pending_rx
-            .lock().expect("lock poisoned")
+            .lock()
+            .expect("lock poisoned")
             .remove(&desc_id)
             .map(|req| (req.io_id, req.requested_bytes))
     }
@@ -101,7 +100,8 @@ impl VirtioNetPollHandler {
     /// IRQパス向けに pending TX を取り出して削除
     pub fn take_pending_tx(&self, desc_id: u16) -> Option<(IoRequestId, usize)> {
         self.pending_tx
-            .lock().expect("lock poisoned")
+            .lock()
+            .expect("lock poisoned")
             .remove(&desc_id)
             .map(|req| (req.io_id, req.requested_bytes))
     }
@@ -111,7 +111,11 @@ impl VirtioNetPollHandler {
         rx_queue: &NetVirtQueue,
         desc_id: u16,
     ) -> Option<(IoRequestId, IoResult)> {
-        let pending = self.pending_rx.lock().expect("lock poisoned").remove(&desc_id);
+        let pending = self
+            .pending_rx
+            .lock()
+            .expect("lock poisoned")
+            .remove(&desc_id);
         let Some(req) = pending else { return None };
 
         let completion_len = match rx_queue.take_completion(desc_id) {
@@ -140,7 +144,11 @@ impl VirtioNetPollHandler {
         tx_queue: &NetVirtQueue,
         desc_id: u16,
     ) -> Option<(IoRequestId, IoResult)> {
-        let pending = self.pending_tx.lock().expect("lock poisoned").remove(&desc_id);
+        let pending = self
+            .pending_tx
+            .lock()
+            .expect("lock poisoned")
+            .remove(&desc_id);
         let Some(req) = pending else { return None };
 
         if tx_queue.take_completion(desc_id).is_none() {
@@ -164,11 +172,7 @@ impl VirtioNetPollHandler {
         desc_id: u16,
         len: u32,
     ) -> bool {
-        let q_idx = rx_queue
-            .vq
-            .lock()
-            .expect("lock poisoned")
-            .index() as usize;
+        let q_idx = rx_queue.vq.lock().expect("lock poisoned").index() as usize;
         device.handle_legacy_rx_completion(rx_queue, q_idx, desc_id, len)
     }
 
@@ -179,11 +183,7 @@ impl VirtioNetPollHandler {
         desc_id: u16,
         len: u32,
     ) -> bool {
-        let q_idx = tx_queue
-            .vq
-            .lock()
-            .expect("lock poisoned")
-            .index() as usize;
+        let q_idx = tx_queue.vq.lock().expect("lock poisoned").index() as usize;
         device.handle_legacy_tx_completion(tx_queue, q_idx, desc_id, len)
     }
 
@@ -224,8 +224,7 @@ impl PollHandler for VirtioNetPollHandler {
                 for (desc_id, len) in rx_queue.process_used() {
                     device.rx_packets.fetch_add(1, Ordering::Relaxed);
 
-                    if let Some(result) = self.route_scheduler_rx_completion(rx_queue, desc_id)
-                    {
+                    if let Some(result) = self.route_scheduler_rx_completion(rx_queue, desc_id) {
                         results.push(result);
                         continue;
                     }

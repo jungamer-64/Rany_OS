@@ -42,7 +42,8 @@ impl AhciController {
                 // Try to allocate new port. If fails (OOM), we skip it.
                 if let Some(mut port) = AhciPort::new(base, PortNumber::new(i as u8), device_id) {
                     let ssts = hal::mmio::mmio_read_u32(
-                        (base + PORT_BASE as u64 + (i as u64 * PORT_SIZE as u64) + PX_SSTS as u64) as usize
+                        (base + PORT_BASE as u64 + (i as u64 * PORT_SIZE as u64) + PX_SSTS as u64)
+                            as usize,
                     );
                     let det = ssts & 0x0F;
 
@@ -130,7 +131,6 @@ impl AhciController {
             None
         }
     }
-
 
     pub fn read_ghc(&self, offset: u32) -> u32 {
         hal::mmio::mmio_read_u32((self.base + offset as u64) as usize)

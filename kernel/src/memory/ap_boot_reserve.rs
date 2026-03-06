@@ -1,17 +1,13 @@
 use super::*;
 
-
 /// Reserve AP boot trampoline and stack ranges.
 pub(crate) fn reserve_ap_boot_ranges(
     mut regions: Vec<(PhysAddr, u64)>,
     ap_boot: &boot_proto::ApBootInfo,
 ) -> Vec<(PhysAddr, u64)> {
     if ap_boot.trampoline_size > 0 {
-        regions = subtract_reserved_range(
-            regions,
-            ap_boot.trampoline_addr,
-            ap_boot.trampoline_size,
-        );
+        regions =
+            subtract_reserved_range(regions, ap_boot.trampoline_addr, ap_boot.trampoline_size);
     }
     if ap_boot.stack_size > 0 && ap_boot.stack_count > 0 {
         let size = (ap_boot.stack_size as u64)
@@ -29,8 +25,7 @@ pub(crate) fn reserve_uefi_runtime_ranges(
     mut regions: Vec<(PhysAddr, u64)>,
     runtime: &boot_proto::UefiRuntimeInfo,
 ) -> Vec<(PhysAddr, u64)> {
-    let runtime_count = (runtime.runtime_mmap_count as usize)
-        .min(runtime.runtime_mmap.len());
+    let runtime_count = (runtime.runtime_mmap_count as usize).min(runtime.runtime_mmap.len());
     for i in 0..runtime_count {
         let region = &runtime.runtime_mmap[i];
         if region.phys_addr == 0 || region.page_count == 0 {
@@ -58,7 +53,11 @@ pub(crate) fn reserve_boot_info_ranges(
 
     let mmap_ptr = boot_info.memory_map.entries as u64;
     let entry_size = core::mem::size_of::<boot_proto::MemoryDescriptor>() as u64;
-    let mmap_bytes = boot_info.memory_map.count.checked_mul(entry_size).unwrap_or(0);
+    let mmap_bytes = boot_info
+        .memory_map
+        .count
+        .checked_mul(entry_size)
+        .unwrap_or(0);
     regions = subtract_if_valid(regions, hhdm_ptr_to_phys(mmap_ptr), mmap_bytes);
 
     regions = subtract_if_valid(
@@ -176,7 +175,10 @@ pub(crate) fn init_pmm_from_srat(rsdp_addr: Option<u64>) -> bool {
 /// Exchange Heap, Per-CPU, Per-Core Slab Cache の初期化
 pub(crate) fn init_post_buddy() {
     unsafe {
-        crate::mm::cache::exchange_heap::init_exchange_heap(exchange_heap_start() as usize, EXCHANGE_HEAP_SIZE);
+        crate::mm::cache::exchange_heap::init_exchange_heap(
+            exchange_heap_start() as usize,
+            EXCHANGE_HEAP_SIZE,
+        );
     }
     verify_buddy_integrity();
 
@@ -241,7 +243,9 @@ pub fn verify_buddy_integrity() {
 
                     if head != 0 {
                         let next = crate::io::mmio::volatile_read::<usize>(head as usize);
-                        if next != 0 && (next < guard.heap_start || next >= guard.heap_start + HEAP_SIZE) {
+                        if next != 0
+                            && (next < guard.heap_start || next >= guard.heap_start + HEAP_SIZE)
+                        {
                             crate::io::log::early_print("[HEAP_CHECK] INVALID NEXT at head=");
                             crate::io::log::early_print_hex(head as u64);
                             crate::io::log::early_print(" next=");
@@ -252,7 +256,9 @@ pub fn verify_buddy_integrity() {
                             let bt = crate::unwind::Backtrace::capture();
                             for entry in bt.iter() {
                                 crate::io::log::early_print("[HEAP_CHECK][BT] IP=");
-                                crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+                                crate::io::log::early_print_hex(
+                                    entry.frame.instruction_pointer as u64,
+                                );
                                 crate::io::log::early_print("\n");
                             }
                         }
@@ -314,7 +320,9 @@ pub fn checked_volatile_write_usize(addr: usize, val: usize, context: &str) {
 pub fn checked_store_usize(addr: usize, val: usize, context: &str) {
     #[cfg(debug_assertions)]
     debug_log_suspicious_write(addr, val, context);
-    unsafe { core::ptr::write_volatile(addr as *mut usize, val); }
+    unsafe {
+        core::ptr::write_volatile(addr as *mut usize, val);
+    }
 }
 
 /// ACPI Reclaimable メモリをPMMへ返却
@@ -334,13 +342,14 @@ pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfo) {
         }
         if let Some((start, end)) = validate_usable_descriptor(desc, MIN_USABLE_PHYS_ADDR) {
             let size = end - start;
-            
+
             // SECURITY: Unregister the range from DMA protection before reclaiming it as RAM.
-            // This is necessary because reclaimed RAM can be used for DMA targets, and 
+            // This is necessary because reclaimed RAM can be used for DMA targets, and
             // IOMMU validation will reject any mapping into a protected region.
             crate::security::dma::unregister_protected_range(start, size);
-            
-            let released = crate::mm::phys::frame_allocator::pmm_release_range(PhysAddr::new(start), size);
+
+            let released =
+                crate::mm::phys::frame_allocator::pmm_release_range(PhysAddr::new(start), size);
             total_pages += released;
         }
     }
@@ -352,7 +361,10 @@ pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfo) {
 
 /// グローバルヒープの初期化（Buddy Allocatorベース）
 pub(crate) fn init_global_heap() {
-    #[cfg(any(not(feature = "full_mm_tests"), all(feature = "full_mm_tests", not(test))))]
+    #[cfg(any(
+        not(feature = "full_mm_tests"),
+        all(feature = "full_mm_tests", not(test))
+    ))]
     {
         crate::io::log::early_print("[HEAP] lock\n");
         let mut guard = ALLOCATOR.0.lock_for_init("[HEAP] global allocator init");
@@ -378,9 +390,14 @@ pub(crate) fn init_global_heap() {
 /// If metadata was clobbered and the allocator appears uninitialized, rebuild
 /// the buddy free lists from the canonical heap geometry.
 pub(crate) fn ensure_global_heap_ready() {
-    #[cfg(any(not(feature = "full_mm_tests"), all(feature = "full_mm_tests", not(test))))]
+    #[cfg(any(
+        not(feature = "full_mm_tests"),
+        all(feature = "full_mm_tests", not(test))
+    ))]
     {
-        let mut guard = ALLOCATOR.0.lock_for_init("[HEAP] ensure global allocator ready");
+        let mut guard = ALLOCATOR
+            .0
+            .lock_for_init("[HEAP] ensure global allocator ready");
         if guard.ensure_initialized() {
             set_heap_deallocation_enabled(true);
             return;
@@ -501,7 +518,6 @@ pub fn used_memory_kb() -> u64 {
 
 #[cfg(not(test))]
 // #[alloc_error_handler] removed. Defined in kernel_content.rs
-
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;

@@ -9,11 +9,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::Poll;
 
 use crate::io::iommu::common::tables::phys_to_virt_usize;
-use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
-use crate::io::iommu::runtime::security::SecurityEvent;
-use crate::io::iommu::types::IommuError;
 use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::runtime::registry::get_iommu_driver;
+use crate::io::iommu::runtime::security::SecurityEvent;
+use crate::io::iommu::types::IommuError;
+use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 use crate::sync::WakerQueue;
 
 use super::event_log::AmdEventEntry;
@@ -376,7 +376,10 @@ impl AmdIommuDriver {
         }
     }
 
-    pub(super) fn program_event_log_interrupt(&self, unit: &AmdIommuUnit) -> Result<(), IommuError> {
+    pub(super) fn program_event_log_interrupt(
+        &self,
+        unit: &AmdIommuUnit,
+    ) -> Result<(), IommuError> {
         let (addr, data) = msi_message(AMD_IOMMU_FAULT_VECTOR);
         let mmio_base = phys_to_virt_usize(unit.base_addr);
         mmio_write_u32(

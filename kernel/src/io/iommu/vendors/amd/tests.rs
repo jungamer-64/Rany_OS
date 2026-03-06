@@ -495,7 +495,7 @@ fn test_cmdqueue_pressure() {
 // ---------------------------------------------------------------------------
 
 use super::cmd::AmdCommand;
-use super::irt::{encode_remap_msi, AmdInterruptRemapTable, AmdIrte, AmdUnitIrt};
+use super::irt::{AmdInterruptRemapTable, AmdIrte, AmdUnitIrt, encode_remap_msi};
 
 #[test_case]
 fn test_wave5_irt_entry_construction() {

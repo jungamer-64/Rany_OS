@@ -20,11 +20,7 @@ use crate::fs::fs_abstraction::{
 use crate::sync::PoisonLock;
 
 use nvme_ns::NvmeNamespaceFs;
-use vfs::{
-    ExtendedFileSystem,
-    FileType as VfsFileType,
-    Inode as VfsInode,
-};
+use vfs::{ExtendedFileSystem, FileType as VfsFileType, Inode as VfsInode};
 
 // ============================================================================
 // Type Conversion
@@ -183,7 +179,11 @@ impl Inode for NvmeNsInodeAdapter {
     fn create(&self, name: &str, mode: FileMode, flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
         let inode = self.inner.lock().map_err(|_| FsError::IoError)?;
         let child = inode
-            .create(name, convert_to_vfs_mode(mode), convert_to_vfs_open_flags(flags))
+            .create(
+                name,
+                convert_to_vfs_mode(mode),
+                convert_to_vfs_open_flags(flags),
+            )
             .map_err(FsError::from)?;
         Ok(Arc::new(NvmeNsInodeAdapter {
             inner: PoisonLock::new(child),

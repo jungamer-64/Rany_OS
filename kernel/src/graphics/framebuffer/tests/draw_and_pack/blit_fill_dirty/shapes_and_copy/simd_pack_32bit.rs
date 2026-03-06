@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// write_opaque_run_32bit: verify SIMD pack_rgba_to_bgra path
 #[test_case]
 pub(crate) fn test_write_opaque_run_32bit_simd_pack() {

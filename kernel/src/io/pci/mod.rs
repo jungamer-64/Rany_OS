@@ -81,4 +81,3 @@ pub use pci_driver::{
     setup_msix,
     status_bits,
 };
-

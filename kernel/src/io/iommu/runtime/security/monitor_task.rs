@@ -7,16 +7,9 @@ use spin::Once;
 use crate::security::audit::{AuditEvent, AuditEventType};
 
 use super::{
-    EventAggregator,
-    IsolationReason,
-    SecurityEvent,
-    SecurityNotifier,
-    default_security_monitor,
-    emergency_isolate_device,
-    emergency_isolation_registry,
-    fault_rate_limiter,
-    log_aggregated_event_summary,
-    security_event_to_audit,
+    EventAggregator, IsolationReason, SecurityEvent, SecurityNotifier, default_security_monitor,
+    emergency_isolate_device, emergency_isolation_registry, fault_rate_limiter,
+    log_aggregated_event_summary, security_event_to_audit,
 };
 
 pub(crate) const SECURITY_MONITOR_INTERVAL_MS: u64 = 100;
@@ -114,7 +107,8 @@ pub async fn security_monitor_task() {
         #[cfg(test)]
         crate::task::sleep_ms(SECURITY_MONITOR_INTERVAL_MS).await;
         #[cfg(not(test))]
-        let _ = crate::task::with_timeout(SecurityMonitorWaitFuture, SECURITY_MONITOR_INTERVAL_MS).await;
+        let _ = crate::task::with_timeout(SecurityMonitorWaitFuture, SECURITY_MONITOR_INTERVAL_MS)
+            .await;
     }
 }
 

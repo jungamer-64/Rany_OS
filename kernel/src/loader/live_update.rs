@@ -30,7 +30,9 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use kernel_api::driver_abi::{DriverEntryFn, DriverExportsV1, DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL};
+use kernel_api::driver_abi::{
+    DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverEntryFn, DriverExportsV1,
+};
 use spin::Mutex;
 
 // ============================================================================
@@ -459,10 +461,14 @@ impl LiveUpdateManager {
         let mut updated_handles = Vec::new();
 
         for handle in old_drivers {
-            match crate::driver_registry::update_abi_driver_with_fini(*handle, entry_fn, entry_fini) {
+            match crate::driver_registry::update_abi_driver_with_fini(*handle, entry_fn, entry_fini)
+            {
                 Ok(_) => updated_handles.push(*handle),
                 Err(_) => {
-                    log::error!("[LIVE_UPDATE] Update failed, rolling back {} drivers...\n", updated_handles.len());
+                    log::error!(
+                        "[LIVE_UPDATE] Update failed, rolling back {} drivers...\n",
+                        updated_handles.len()
+                    );
                     rollback_drivers(&updated_handles, old_entry);
                     return Err(LiveUpdateError::StateMigrationFailed);
                 }
@@ -627,7 +633,10 @@ impl LiveUpdateManager {
         self.commit_context(ctx)
     }
 
-    fn commit_context(&self, ctx: PendingUpdateContext) -> Result<UpdateTransition, LiveUpdateError> {
+    fn commit_context(
+        &self,
+        ctx: PendingUpdateContext,
+    ) -> Result<UpdateTransition, LiveUpdateError> {
         *self.state.lock() = LiveUpdateState::WaitingQuiescent;
         log::info!(
             "[LIVE_UPDATE] Committing update old={} new={}\n",
@@ -666,7 +675,10 @@ impl LiveUpdateManager {
         self.rollback_context(ctx)
     }
 
-    fn rollback_pending_update_for(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
+    fn rollback_pending_update_for(
+        &self,
+        cell_id: u64,
+    ) -> Result<UpdateTransition, LiveUpdateError> {
         let ctx = {
             let mut pending = self.pending.lock();
             let matches = pending
@@ -727,8 +739,7 @@ impl LiveUpdateManager {
 
     #[cfg(feature = "qemu-test-export")]
     pub fn set_rollback_grace_period_for_test(&self, ticks: u64) -> u64 {
-        self.rollback_grace_period
-            .swap(ticks, Ordering::AcqRel)
+        self.rollback_grace_period.swap(ticks, Ordering::AcqRel)
     }
 }
 
@@ -782,9 +793,11 @@ fn rollback_drivers(
 ) {
     if let Some((old_entry_fn, old_entry_fini)) = old_entry {
         for handle in handles {
-            if let Err(e) =
-                crate::driver_registry::update_abi_driver_with_fini(*handle, old_entry_fn, old_entry_fini)
-            {
+            if let Err(e) = crate::driver_registry::update_abi_driver_with_fini(
+                *handle,
+                old_entry_fn,
+                old_entry_fini,
+            ) {
                 log::error!(
                     "[LIVE_UPDATE] CRITICAL: Rollback failed for driver {:?}: {:?}\n",
                     handle,

@@ -1,14 +1,4 @@
-use crate::{
-    Arc,
-    Box,
-    Cluster,
-    DirEntryRaw,
-    IrqPoisonLock,
-    HashMap,
-    HashSet,
-    String,
-    Vec,
-};
+use crate::{Arc, Box, Cluster, DirEntryRaw, HashMap, HashSet, IrqPoisonLock, String, Vec};
 
 /// FATセクタのLRUキャッシュ
 ///

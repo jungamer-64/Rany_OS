@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl GlobalScheduler {
     pub fn new(num_cores: u32) -> Self {
         let mut workers = Vec::with_capacity(num_cores as usize);
@@ -155,7 +154,11 @@ impl GlobalScheduler {
     }
 
     /// Phase 1: 同一LLCを共有するコア（Hyperthread sibling）からスチール
-    pub(super) fn steal_from_llc_siblings(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
+    pub(super) fn steal_from_llc_siblings(
+        &self,
+        core_id: u32,
+        numa_info: &NumaTopology,
+    ) -> Option<Box<StealableTask>> {
         for &sibling_id in numa_info.get_llc_siblings(core_id) {
             if sibling_id == core_id || sibling_id as usize >= self.workers.len() {
                 continue;
@@ -168,7 +171,11 @@ impl GlobalScheduler {
     }
 
     /// Phase 2: 同一NUMAノード内の他コアからスチール（LLC sibling除く）
-    pub(super) fn steal_from_same_numa(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
+    pub(super) fn steal_from_same_numa(
+        &self,
+        core_id: u32,
+        numa_info: &NumaTopology,
+    ) -> Option<Box<StealableTask>> {
         let my_numa_node = numa_info.get_numa_node(core_id);
         for &target_core in numa_info.get_cores_in_node(my_numa_node) {
             if target_core == core_id || target_core as usize >= self.workers.len() {
@@ -185,7 +192,11 @@ impl GlobalScheduler {
     }
 
     /// Phase 3: 他のNUMAノードからスチール（最後の手段）
-    pub(super) fn steal_from_remote_numa(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
+    pub(super) fn steal_from_remote_numa(
+        &self,
+        core_id: u32,
+        numa_info: &NumaTopology,
+    ) -> Option<Box<StealableTask>> {
         let my_numa_node = numa_info.get_numa_node(core_id);
         for node in 0..numa_info.num_nodes() {
             if node == my_numa_node {
@@ -208,7 +219,11 @@ impl GlobalScheduler {
     }
 
     /// 特定のコアからタスクをスチール
-    pub(super) fn try_steal_from_core(&self, victim_id: u32, thief_id: u32) -> Option<Box<StealableTask>> {
+    pub(super) fn try_steal_from_core(
+        &self,
+        victim_id: u32,
+        thief_id: u32,
+    ) -> Option<Box<StealableTask>> {
         let victim = &self.workers[victim_id as usize];
 
         // 被害者のキューが十分にある場合のみスチール
@@ -238,7 +253,7 @@ impl GlobalScheduler {
         let count = self.poll_counter.load(Ordering::Relaxed);
         if count % LOAD_BALANCE_INTERVAL == 0 {
             self.load_balance();
-            
+
             // AutoNUMA スキャン
             // 内部でタイマーチェックを行うため、頻繁に呼び出しても安全
             crate::mm::numa::autonuma::try_scan_current_process();
@@ -369,4 +384,3 @@ pub fn schedule(core_id: u32) -> Option<Box<StealableTask>> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

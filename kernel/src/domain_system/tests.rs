@@ -125,7 +125,9 @@ fn test_cpu_quota_demote_then_suspend() {
         "first violation should demote and yield"
     );
     assert_eq!(
-        get_domain_snapshot(id).expect("domain snapshot missing").priority,
+        get_domain_snapshot(id)
+            .expect("domain snapshot missing")
+            .priority,
         DomainPriority::Normal
     );
 
@@ -135,7 +137,9 @@ fn test_cpu_quota_demote_then_suspend() {
         "second violation should demote and yield"
     );
     assert_eq!(
-        get_domain_snapshot(id).expect("domain snapshot missing").priority,
+        get_domain_snapshot(id)
+            .expect("domain snapshot missing")
+            .priority,
         DomainPriority::Low
     );
 
@@ -145,7 +149,9 @@ fn test_cpu_quota_demote_then_suspend() {
         other => panic!("expected suspend action, got {:?}", other),
     };
     assert_eq!(
-        get_domain_snapshot(id).expect("domain snapshot missing").state,
+        get_domain_snapshot(id)
+            .expect("domain snapshot missing")
+            .state,
         DomainState::Suspended
     );
     assert!(

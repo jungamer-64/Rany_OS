@@ -40,9 +40,7 @@ pub fn test_link_local() {
 #[cfg_attr(test, test_case)]
 pub fn test_global() {
     // 2001:db8::1 (documentation global unicast prefix)
-    let addr = Ipv6Address::new([
-        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-    ]);
+    let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     assert!(!addr.is_unspecified());
     assert!(!addr.is_loopback());
     assert!(!addr.is_multicast());
@@ -54,28 +52,46 @@ pub fn test_global() {
 pub fn test_header_chain_completeness_rfc7112() {
     // TCP header (20 bytes) - only 10 bytes provided
     let tcp_truncated = [0u8; 10];
-    assert!(!is_header_chain_complete(6, &tcp_truncated), "Should reject truncated TCP header (RFC 7112)");
+    assert!(
+        !is_header_chain_complete(6, &tcp_truncated),
+        "Should reject truncated TCP header (RFC 7112)"
+    );
 
     // TCP header - 20 bytes provided
     let tcp_full = [0u8; 20];
-    assert!(is_header_chain_complete(6, &tcp_full), "Should accept complete TCP header");
+    assert!(
+        is_header_chain_complete(6, &tcp_full),
+        "Should accept complete TCP header"
+    );
 
     // UDP header (8 bytes) - only 4 bytes provided
     let udp_truncated = [0u8; 4];
-    assert!(!is_header_chain_complete(17, &udp_truncated), "Should reject truncated UDP header (RFC 7112)");
+    assert!(
+        !is_header_chain_complete(17, &udp_truncated),
+        "Should reject truncated UDP header (RFC 7112)"
+    );
 
     // UDP header - 8 bytes provided
     let udp_full = [0u8; 8];
-    assert!(is_header_chain_complete(17, &udp_full), "Should accept complete UDP header");
+    assert!(
+        is_header_chain_complete(17, &udp_full),
+        "Should accept complete UDP header"
+    );
 
     // AH header (length in 4-byte units)
     // Next Header (1), Payload Len (4 -> 24 bytes), Reserved (2), SPI (4), Seq (4), ICV (12)
     let mut ah_truncated = [0u8; 16];
     ah_truncated[1] = 4; // 24 bytes expected
-    assert!(!is_header_chain_complete(51, &ah_truncated), "Should reject truncated AH header");
+    assert!(
+        !is_header_chain_complete(51, &ah_truncated),
+        "Should reject truncated AH header"
+    );
 
     // ESP header - always considered complete for chain walk (RFC 7112)
-    assert!(is_header_chain_complete(50, &[]), "ESP should terminate chain regardless of length");
+    assert!(
+        is_header_chain_complete(50, &[]),
+        "ESP should terminate chain regardless of length"
+    );
 }
 
 #[cfg_attr(test, test_case)]
@@ -118,8 +134,7 @@ pub fn test_solicited_node() {
 pub fn test_multicast_mac() {
     // ff02::1:ff12:3456 → 33:33:ff:12:34:56
     let addr = Ipv6Address::new([
-        0xff, 0x02, 0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0x01, 0xff, 0x12, 0x34, 0x56,
+        0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0xff, 0x12, 0x34, 0x56,
     ]);
     let mac = addr.multicast_mac();
     assert_eq!(mac, [0x33, 0x33, 0xff, 0x12, 0x34, 0x56]);
@@ -137,7 +152,8 @@ pub fn test_packet_parse_valid() {
     // Construct a minimal valid IPv6 packet (ICMPv6 Echo Request)
     let mut buf = [0u8; 48]; // 40 header + 8 payload
     buf[0] = 0x60; // version = 6
-    buf[4] = 0; buf[5] = 8; // payload length = 8
+    buf[4] = 0;
+    buf[5] = 8; // payload length = 8
     buf[6] = 58; // next header = ICMPv6 (58)
     buf[7] = 64; // hop limit = 64
 
@@ -177,7 +193,9 @@ pub fn test_packet_mut_build() {
     pkt.set_hop_limit(255);
     pkt.finalize(20);
 
-    let header = pkt.header().expect("initialized IPv6 packet must have a header");
+    let header = pkt
+        .header()
+        .expect("initialized IPv6 packet must have a header");
     assert_eq!(header.version(), 6);
     assert_eq!(header.source(), src);
     assert_eq!(header.destination(), dst);
@@ -237,7 +255,7 @@ pub fn test_skip_hop_by_hop() {
     // Hop-by-Hop Options header: next=ICMPv6(58), len=0 → 8 bytes total
     let mut data = [0u8; 16];
     data[0] = 58; // next header = ICMPv6
-    data[1] = 0;  // length = 0 → (0+1)*8 = 8 bytes
+    data[1] = 0; // length = 0 → (0+1)*8 = 8 bytes
     // data[2..8] = padding/options
     data[8] = 0x80; // fake ICMPv6 echo request
 
@@ -312,8 +330,8 @@ pub fn test_display_all_nodes() {
 pub fn test_display_full() {
     // 2001:db8:1:2:3:4:5:6 (no zero run >= 2)
     let addr = Ipv6Address::new([
-        0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01, 0x00, 0x02,
-        0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00, 0x06,
+        0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00,
+        0x06,
     ]);
     let s = alloc::format!("{}", addr);
     assert_eq!(s, "2001:db8:1:2:3:4:5:6");
@@ -321,10 +339,7 @@ pub fn test_display_full() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_from_u64_pair() {
-    let addr = Ipv6Address::from_u64_pair(
-        0xfe80_0000_0000_0000,
-        0x0000_0000_0000_0001,
-    );
+    let addr = Ipv6Address::from_u64_pair(0xfe80_0000_0000_0000, 0x0000_0000_0000_0001);
     assert!(addr.is_unicast_link_local());
     assert_eq!(addr.as_bytes()[15], 1);
 }
@@ -394,8 +409,12 @@ pub fn test_pmtu_cache_evict_expired_cleans_entries_and_lru() {
 pub fn test_ipv6_fragment_header_parse() {
     let mut data = [0u8; 8];
     data[0] = 6; // next header = TCP
-    data[2] = 0x00; data[3] = 0x09; // offset = 1, M = 1
-    data[4] = 0x11; data[5] = 0x22; data[6] = 0x33; data[7] = 0x44; // ID
+    data[2] = 0x00;
+    data[3] = 0x09; // offset = 1, M = 1
+    data[4] = 0x11;
+    data[5] = 0x22;
+    data[6] = 0x33;
+    data[7] = 0x44; // ID
 
     let frag = Ipv6FragmentHeader::parse(&data).expect("parse failed");
     assert_eq!(frag.next_header, 6);
@@ -417,8 +436,14 @@ pub fn test_ipv6_fragment_reassembly_success() {
     let mut unfrag = [0u8; 40];
     unfrag[0] = 0x60;
     unfrag[6] = 44; // Fragment header
-    src.as_bytes().iter().enumerate().for_each(|(i, &b)| unfrag[8+i] = b);
-    dst.as_bytes().iter().enumerate().for_each(|(i, &b)| unfrag[24+i] = b);
+    src.as_bytes()
+        .iter()
+        .enumerate()
+        .for_each(|(i, &b)| unfrag[8 + i] = b);
+    dst.as_bytes()
+        .iter()
+        .enumerate()
+        .for_each(|(i, &b)| unfrag[24 + i] = b);
 
     // Fragment 1: offset=0, M=1, next=58 (ICMPv6)
     let frag1_hdr = Ipv6FragmentHeader {
@@ -464,11 +489,21 @@ pub fn test_ipv6_fragment_overlap_rejection() {
     let id = 0x999;
 
     let unfrag = [0u8; 40];
-    let frag1 = Ipv6FragmentHeader { next_header: 6, fragment_offset: 0, more_fragments: true, identification: id };
-    let frag2 = Ipv6FragmentHeader { next_header: 6, fragment_offset: 1, more_fragments: false, identification: id };
-    
+    let frag1 = Ipv6FragmentHeader {
+        next_header: 6,
+        fragment_offset: 0,
+        more_fragments: true,
+        identification: id,
+    };
+    let frag2 = Ipv6FragmentHeader {
+        next_header: 6,
+        fragment_offset: 1,
+        more_fragments: false,
+        identification: id,
+    };
+
     reassembler.process_fragment(src, dst, &unfrag, &frag1, &[0xaa; 16], 0);
-    
+
     // Overlapping fragment (starts at offset 8, but offset 0-16 already filled)
     let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag2, &[0xbb; 8], 0);
     assert!(res.is_err());
@@ -481,12 +516,17 @@ pub fn test_ipv6_fragment_tiny_attack_rejection() {
     let mut reassembler = Ipv6FragmentReassembler::new(4);
     let src = Ipv6Address::LOOPBACK;
     let dst = Ipv6Address::LOOPBACK;
-    
+
     // First fragment with only 4 bytes of payload (ICMPv6 header is 8 bytes)
     // This violates RFC 7112 (entire header chain must be in first fragment)
     let unfrag = [0u8; 40];
-    let frag = Ipv6FragmentHeader { next_header: 58, fragment_offset: 0, more_fragments: true, identification: 0x123 };
-    
+    let frag = Ipv6FragmentHeader {
+        next_header: 58,
+        fragment_offset: 0,
+        more_fragments: true,
+        identification: 0x123,
+    };
+
     let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag, &[0x00; 4], 0);
     assert!(res.is_err());
     assert_eq!(reassembler.stats().dropped_invalid, 1);

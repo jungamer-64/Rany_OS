@@ -24,7 +24,6 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 
-
 /// 署名セクションの名前（ELFセクション）
 const SIGNATURE_SECTION_NAME: &[u8] = b".exorust_sig";
 
@@ -495,10 +494,7 @@ pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
 }
 
 /// ELFヘッダーからセクション名文字列テーブルを取得する
-fn get_shstrtab<'a>(
-    elf_data: &'a [u8],
-    header: &super::elf::Elf64Header,
-) -> Option<&'a [u8]> {
+fn get_shstrtab<'a>(elf_data: &'a [u8], header: &super::elf::Elf64Header) -> Option<&'a [u8]> {
     use super::elf::Elf64SectionHeader;
     use core::mem;
 
@@ -535,7 +531,9 @@ fn get_section_name<'a>(shstrtab: &'a [u8], name_offset: usize) -> Option<&'a [u
 }
 
 /// ELFヘッダーとshstrtabを検証・取得
-fn validate_and_get_shstrtab<'a>(elf_data: &'a [u8]) -> Option<(super::elf::Elf64Header, &'a [u8])> {
+fn validate_and_get_shstrtab<'a>(
+    elf_data: &'a [u8],
+) -> Option<(super::elf::Elf64Header, &'a [u8])> {
     use super::elf::Elf64Header;
     use core::mem;
 
@@ -594,9 +592,11 @@ fn read_compiler_version(data: &[u8], header: &SignatureHeader) -> Result<String
                 "Invalid compiler version offset".into(),
             ));
         }
-        Ok(String::from(core::str::from_utf8(&data[start..end]).map_err(|_| {
-            LoadError::InvalidFormat("Invalid UTF-8 in compiler version".into())
-        })?))
+        Ok(String::from(
+            core::str::from_utf8(&data[start..end]).map_err(|_| {
+                LoadError::InvalidFormat("Invalid UTF-8 in compiler version".into())
+            })?,
+        ))
     } else {
         Ok(String::new())
     }

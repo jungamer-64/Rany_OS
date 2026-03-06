@@ -2,9 +2,9 @@
 // tls/crypto/random.rs - Random Generation (RDRAND Hardware RNG)
 // ============================================================================
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
 #[cfg(feature = "qemu-test-export")]
 use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
 
 /// Whether RDRAND availability has been checked
 static RDRAND_CHECKED: AtomicBool = AtomicBool::new(false);
@@ -55,7 +55,6 @@ fn generate_qemu_test_random() -> [u8; 32] {
     }
     result
 }
-
 
 /// Check if the CPU supports RDRAND via CPUID
 fn has_rdrand() -> bool {
@@ -136,11 +135,15 @@ pub(crate) fn generate_random() -> [u8; 32] {
                 // RDRAND failed after retries
                 #[cfg(not(debug_assertions))]
                 {
-                    panic!("[CRITICAL SECURITY] RDRAND hardware RNG failed after retries. System cannot proceed safely.");
+                    panic!(
+                        "[CRITICAL SECURITY] RDRAND hardware RNG failed after retries. System cannot proceed safely."
+                    );
                 }
                 #[cfg(debug_assertions)]
                 {
-                    log::warn!("[SECURITY] RDRAND failed after retries, falling back to weak RNG (DEBUG ONLY)");
+                    log::warn!(
+                        "[SECURITY] RDRAND failed after retries, falling back to weak RNG (DEBUG ONLY)"
+                    );
                     return generate_random_fallback();
                 }
             }
@@ -150,16 +153,22 @@ pub(crate) fn generate_random() -> [u8; 32] {
 
     #[cfg(not(debug_assertions))]
     {
-        panic!("[CRITICAL SECURITY] RDRAND hardware RNG is not available on this CPU. TLS/Crypto cannot be used safely in production without a secure entropy source.");
+        panic!(
+            "[CRITICAL SECURITY] RDRAND hardware RNG is not available on this CPU. TLS/Crypto cannot be used safely in production without a secure entropy source."
+        );
     }
 
     #[cfg(debug_assertions)]
     {
-        log::warn!("********************************************************************************");
+        log::warn!(
+            "********************************************************************************"
+        );
         log::warn!("[SECURITY WARNING] RDRAND not available. Using INSECURE LCG fallback!");
         log::warn!("[SECURITY WARNING] This build is for DEVELOPMENT/DEBUG only.");
         log::warn!("[SECURITY WARNING] TLS communication and keys are NOT PROTECTED.");
-        log::warn!("********************************************************************************");
+        log::warn!(
+            "********************************************************************************"
+        );
         generate_random_fallback()
     }
 }

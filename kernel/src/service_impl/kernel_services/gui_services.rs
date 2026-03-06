@@ -71,10 +71,8 @@ impl GuiServices for ExoKernel {
     }
 
     fn poll_input_event(&self) -> Option<kernel_api::gui::InputEvent> {
-        use kernel_api::gui::{
-            InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState,
-        };
         use crate::io::hid::keyboard::KeyEventExt;
+        use kernel_api::gui::{InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState};
         crate::console::install_keyboard_tap();
         let hid_event_opt = crate::console::try_pop_key_event();
 
@@ -105,8 +103,6 @@ impl GuiServices for ExoKernel {
 
             return Some(InputEvent::Key(kapi_event));
         }
-
-
 
         None
     }
@@ -165,7 +161,9 @@ pub(crate) fn map_domain_state(state: crate::domain_system::DomainState) -> Kapi
     }
 }
 
-pub(crate) fn ensure_domain_control(target: crate::domain_system::DomainId) -> Result<(), &'static str> {
+pub(crate) fn ensure_domain_control(
+    target: crate::domain_system::DomainId,
+) -> Result<(), &'static str> {
     let subject = crate::task::current_subject();
     if subject.domain == target {
         return Ok(());

@@ -1,11 +1,7 @@
-use crate::{
-    Fat32Error,
-    FsError,
-    Vec,
-};
+use crate::{Fat32Error, FsError, Vec};
 
-use core::ops::{Add, Sub};
 use core::fmt;
+use core::ops::{Add, Sub};
 
 // Strong Types (Newtypes)
 // ============================================================================

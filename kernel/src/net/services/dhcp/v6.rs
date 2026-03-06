@@ -93,7 +93,9 @@ impl DhcpV6Client {
 
         // 初回のみスタックロックで取得してキャッシュ
         let result = match crate::net::runtime::stack::stack().lock() {
-            Ok(guard) => guard.as_ref().and_then(|s| s.config().ipv6.map(|c| c.link_local)),
+            Ok(guard) => guard
+                .as_ref()
+                .and_then(|s| s.config().ipv6.map(|c| c.link_local)),
             Err(_) => {
                 log::error!("[NET] DHCPv6: Global Stack poisoned - cannot get link-local");
                 None
@@ -154,13 +156,15 @@ impl DhcpV6Client {
 
     /// DHCPv6 クライアントのメインループ（非同期）
     pub async fn run(&self) -> Result<(), &'static str> {
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(DHCPV6_CLIENT_PORT).await.ok_or("Failed to bind DHCPv6 socket")?;
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(DHCPV6_CLIENT_PORT)
+            .await
+            .ok_or("Failed to bind DHCPv6 socket")?;
 
         log::info!("[NET] DHCPv6 client task started");
 
         loop {
             let now = crate::task::timer::current_tick();
-            
+
             // タイムアウトチェックと必要に応じた SOLICIT/REQUEST 送信
             self.check_timeout(now, 1000)?;
 
@@ -175,7 +179,7 @@ impl DhcpV6Client {
                             Ipv6Address::LOOPBACK
                         }
                     };
-                    
+
                     if self.handle_packet(packet.data(), src_v6) {
                         log::info!("[NET] DHCPv6 packet handled from {}", src_v6);
                     }
@@ -222,7 +226,11 @@ impl DhcpV6Client {
         let mut off = 4usize;
 
         // Helper to safely append options
-        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+        let append_opt = |buf: &mut [u8],
+                          offset: &mut usize,
+                          code: u16,
+                          data: &[u8]|
+         -> Result<(), &'static str> {
             if *offset + 4 + data.len() > buf.len() {
                 return Err("Buffer overflow during option writing");
             }
@@ -257,7 +265,11 @@ impl DhcpV6Client {
 
     /// Build a DHCPv6 REQUEST message (used for Renew/Rebind).
     /// Includes ClientID + IA_NA with IAADDR suboption for the lease being renewed.
-    pub fn build_request(&self, buf: &mut [u8], lease: &DhcpV6Lease) -> Result<usize, &'static str> {
+    pub fn build_request(
+        &self,
+        buf: &mut [u8],
+        lease: &DhcpV6Lease,
+    ) -> Result<usize, &'static str> {
         if buf.len() < 256 {
             return Err("buffer too small");
         }
@@ -270,7 +282,11 @@ impl DhcpV6Client {
         let mut off = 4usize;
 
         // Helper to safely append options
-        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+        let append_opt = |buf: &mut [u8],
+                          offset: &mut usize,
+                          code: u16,
+                          data: &[u8]|
+         -> Result<(), &'static str> {
             if *offset + 4 + data.len() > buf.len() {
                 return Err("Buffer overflow during option writing");
             }
@@ -331,7 +347,11 @@ impl DhcpV6Client {
         let mut off = 4usize;
 
         // Helper to safely append options
-        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+        let append_opt = |buf: &mut [u8],
+                          offset: &mut usize,
+                          code: u16,
+                          data: &[u8]|
+         -> Result<(), &'static str> {
             if *offset + 4 + data.len() > buf.len() {
                 return Err("Buffer overflow during option writing");
             }
@@ -383,7 +403,11 @@ impl DhcpV6Client {
         buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
         let mut off = 4usize;
 
-        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+        let append_opt = |buf: &mut [u8],
+                          offset: &mut usize,
+                          code: u16,
+                          data: &[u8]|
+         -> Result<(), &'static str> {
             if *offset + 4 + data.len() > buf.len() {
                 return Err("Buffer overflow during option writing");
             }
@@ -445,7 +469,11 @@ impl DhcpV6Client {
         buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
         let mut off = 4usize;
 
-        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+        let append_opt = |buf: &mut [u8],
+                          offset: &mut usize,
+                          code: u16,
+                          data: &[u8]|
+         -> Result<(), &'static str> {
             if *offset + 4 + data.len() > buf.len() {
                 return Err("Buffer overflow during option writing");
             }
@@ -490,7 +518,11 @@ impl DhcpV6Client {
 
     /// Build a DHCPv6 RELEASE message (RFC 8415 Section 18.2.6)
     /// Includes ClientID + ServerID + IA_NA with IAADDR suboption.
-    pub fn build_release(&self, buf: &mut [u8], lease: &DhcpV6Lease) -> Result<usize, &'static str> {
+    pub fn build_release(
+        &self,
+        buf: &mut [u8],
+        lease: &DhcpV6Lease,
+    ) -> Result<usize, &'static str> {
         if buf.len() < 256 {
             return Err("buffer too small");
         }
@@ -501,7 +533,11 @@ impl DhcpV6Client {
         buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
         let mut off = 4usize;
 
-        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+        let append_opt = |buf: &mut [u8],
+                          offset: &mut usize,
+                          code: u16,
+                          data: &[u8]|
+         -> Result<(), &'static str> {
             if *offset + 4 + data.len() > buf.len() {
                 return Err("Buffer overflow during option writing");
             }
@@ -568,7 +604,9 @@ impl DhcpV6Client {
                 Ok(len) => {
                     if let Some(src) = self.get_link_local() {
                         // Send to server address if known, otherwise multicast
-                        let all_dhcp_servers = Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
+                        let all_dhcp_servers = Ipv6Address::new([
+                            0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+                        ]);
                         let dst = match self.server_addr.lock() {
                             Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
                             Err(_) => all_dhcp_servers,
@@ -603,12 +641,18 @@ impl DhcpV6Client {
     /// Parse a DHCPv6 REPLY/ADVERTISE and extract IAADDR if present.
     /// Also parses DNS Recursive Name Server (option 23), Domain Search List (option 24),
     /// and Status Code (option 13).
-    pub fn parse_reply(&self, data: &[u8], current_time: u64) -> Result<Option<DhcpV6Lease>, &'static str> {
+    pub fn parse_reply(
+        &self,
+        data: &[u8],
+        current_time: u64,
+    ) -> Result<Option<DhcpV6Lease>, &'static str> {
         if data.len() < 4 {
             return Err("packet too small");
         }
         let msg_type = data[0];
-        if msg_type != (DhcpV6MessageType::Advertise as u8) && msg_type != (DhcpV6MessageType::Reply as u8) {
+        if msg_type != (DhcpV6MessageType::Advertise as u8)
+            && msg_type != (DhcpV6MessageType::Reply as u8)
+        {
             return Err("not an advertise/reply");
         }
 
@@ -656,7 +700,8 @@ impl DhcpV6Client {
                         let mut sub_off = off + 12; // skip IAID/T1/T2
                         while sub_off + 4 <= off + len {
                             let sc = u16::from_be_bytes([data[sub_off], data[sub_off + 1]]);
-                            let sl = u16::from_be_bytes([data[sub_off + 2], data[sub_off + 3]]) as usize;
+                            let sl =
+                                u16::from_be_bytes([data[sub_off + 2], data[sub_off + 3]]) as usize;
                             sub_off += 4;
                             if sub_off + sl > off + len {
                                 break;
@@ -679,13 +724,15 @@ impl DhcpV6Client {
                                             data[sub_off + 22],
                                             data[sub_off + 23],
                                         ]);
-                                        found_addr = Some((Ipv6Address::new(addr_bytes), pref, valid));
+                                        found_addr =
+                                            Some((Ipv6Address::new(addr_bytes), pref, valid));
                                     }
                                 }
                                 13 => {
                                     // Status Code (within IA_NA)
                                     if sl >= 2 {
-                                        let sc_val = u16::from_be_bytes([data[sub_off], data[sub_off + 1]]);
+                                        let sc_val =
+                                            u16::from_be_bytes([data[sub_off], data[sub_off + 1]]);
                                         status_code = Some(sc_val);
                                     }
                                 }
@@ -879,7 +926,9 @@ impl DhcpV6Client {
     /// `get_link_local()` で短時間ロックのみ取得し、送信は `send_v6_async()` を使用する。
     pub fn check_timeout(&self, current_tick: u64, _tick_rate: u64) -> Result<(), &'static str> {
         // All-DHCP-Servers multicast address (ff02::2)
-        let all_dhcp_servers = crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
+        let all_dhcp_servers = crate::net::l3::ipv6::Ipv6Address::new([
+            0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+        ]);
 
         match self.state.lock() {
             Ok(mut s) => match *s {
@@ -905,7 +954,7 @@ impl DhcpV6Client {
                     let retry = self.retry_count.load(Ordering::SeqCst);
                     // IRT = 1s, MRT = 120s
                     let base_t = (1u64 << core::cmp::min(retry, 7)).min(120);
-                    
+
                     // RFC 8415: RT = (1 + RAND) * T, where RAND is [-0.1, 0.1]
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21; // 0..20
                     let jitter_percent = (rnd as i64) - 10; // -10% .. +10%
@@ -914,7 +963,8 @@ impl DhcpV6Client {
                     let interval_ms = (base_ms + jitter_ms).max(100) as u64;
                     let interval_ticks = interval_ms; // already >= 100ms
 
-                    let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                    let elapsed_ms =
+                        current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
                     if elapsed_ms >= interval_ticks {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
@@ -935,7 +985,7 @@ impl DhcpV6Client {
                     // Retransmit REQUEST (RFC 8415 Section 15: IRT = 1s, MRT = 30s)
                     let retry = self.retry_count.load(Ordering::SeqCst);
                     let base_t = (1u64 << core::cmp::min(retry, 5)).min(30);
-                    
+
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
                     let jitter_percent = (rnd as i64) - 10;
                     let base_ms = (base_t * 1000) as i64;
@@ -943,7 +993,8 @@ impl DhcpV6Client {
                     let interval_ms = (base_ms + jitter_ms).max(100) as u64;
                     let interval_ticks = interval_ms;
 
-                    let elapsed_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                    let elapsed_ms =
+                        current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
                     if elapsed_ms >= interval_ticks {
                         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
                         if retries >= Self::MAX_RETRIES {
@@ -974,14 +1025,16 @@ impl DhcpV6Client {
 
                             *s = DhcpV6State::Renewing;
                             self.state_time.store(current_tick, Ordering::SeqCst);
-                            self.retry_count.store(0, Ordering::SeqCst); 
+                            self.retry_count.store(0, Ordering::SeqCst);
 
                             // Send first RENEW immediately
                             let mut buf = [0u8; 512];
                             if let Ok(len) = self.build_renew(&mut buf, &lease) {
                                 if let Some(src) = self.get_link_local() {
                                     let dst = match self.server_addr.lock() {
-                                        Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
+                                        Ok(ref a) => {
+                                            a.as_ref().copied().unwrap_or(all_dhcp_servers)
+                                        }
                                         Err(_) => all_dhcp_servers,
                                     };
                                     self.send_v6_async(src, dst, &buf[..len]);
@@ -994,7 +1047,7 @@ impl DhcpV6Client {
                     // Attempt to renew (RFC 8415 Section 18.2.3: IRT = 10s, MRT = 600s)
                     let retry = self.retry_count.load(Ordering::SeqCst);
                     let base_t = (10u64 << core::cmp::min(retry, 6)).min(600);
-                    
+
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
                     let jitter_percent = (rnd as i64) - 10;
                     let base_ms = (base_t * 1000) as i64;
@@ -1009,7 +1062,7 @@ impl DhcpV6Client {
                             *s = DhcpV6State::Rebinding;
                             self.retry_count.store(0, Ordering::SeqCst);
                             self.state_time.store(current_tick, Ordering::SeqCst);
-                            
+
                             // Send first REBIND immediately
                             let mut buf = [0u8; 512];
                             if let Ok(len) = self.build_rebind(&mut buf, &lease) {
@@ -1020,7 +1073,8 @@ impl DhcpV6Client {
                             return Ok(());
                         }
 
-                        let elapsed_state_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                        let elapsed_state_ms =
+                            current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
                         if elapsed_state_ms >= interval_ticks {
                             self.retry_count.fetch_add(1, Ordering::SeqCst);
                             // Send RENEW (msg type 5) to the original server using SAME XID
@@ -1044,7 +1098,7 @@ impl DhcpV6Client {
                     // Rebinding (RFC 8415 Section 18.2.5: IRT = 10s, MRT = 600s)
                     let retry = self.retry_count.load(Ordering::SeqCst);
                     let base_t = (10u64 << core::cmp::min(retry, 6)).min(600);
-                    
+
                     let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
                     let jitter_percent = (rnd as i64) - 10;
                     let base_ms = (base_t * 1000) as i64;
@@ -1063,7 +1117,8 @@ impl DhcpV6Client {
                             return Ok(());
                         }
 
-                        let elapsed_state_ms = current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                        let elapsed_state_ms =
+                            current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
                         if elapsed_state_ms >= interval_ticks {
                             self.retry_count.fetch_add(1, Ordering::SeqCst);
                             // Send REBIND (msg type 6) to multicast using SAME XID
@@ -1145,14 +1200,16 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_build_solicit_min_size() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         let mut buf = [0u8; 256];
         let now = 1000u64;
-        
+
         // Setup XID
-        client.xid.store(((now as u32) ^ 0xDEADBEEF) & 0x00FF_FFFF, Ordering::SeqCst);
-        
+        client
+            .xid
+            .store(((now as u32) ^ 0xDEADBEEF) & 0x00FF_FFFF, Ordering::SeqCst);
+
         let len = client.build_solicit(&mut buf).unwrap();
         assert!(len > 0);
         assert_eq!(buf[0], DhcpV6MessageType::Solicit as u8);
@@ -1160,7 +1217,7 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_parse_reply_with_iaaddr() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         // construct a fake REPLY that contains IA_NA with IAADDR
         let mut pkt = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24];
@@ -1169,23 +1226,23 @@ pub(crate) mod tests {
         pkt[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
         let mut off = 4;
         // IA_NA option
-        pkt[off..off+2].copy_from_slice(&(3u16.to_be_bytes())); // code
-        pkt[off+2..off+4].copy_from_slice(&(40u16.to_be_bytes())); // len
+        pkt[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // code
+        pkt[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // len
         off += 4;
         // IAID + T1 + T2
-        pkt[off..off+12].copy_from_slice(&[0u8; 12]);
+        pkt[off..off + 12].copy_from_slice(&[0u8; 12]);
         off += 12;
         // IAADDR as suboption under IA_NA (we'll append directly after)
         // For simplicity append IAADDR as a top-level option in this test
-        pkt[off..off+2].copy_from_slice(&(5u16.to_be_bytes()));
-        pkt[off+2..off+4].copy_from_slice(&(24u16.to_be_bytes()));
+        pkt[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
+        pkt[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
         off += 4;
-        let addr = Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,1]);
-        pkt[off..off+16].copy_from_slice(addr.as_bytes());
+        let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        pkt[off..off + 16].copy_from_slice(addr.as_bytes());
         off += 16;
-        pkt[off..off+4].copy_from_slice(&3600u32.to_be_bytes());
+        pkt[off..off + 4].copy_from_slice(&3600u32.to_be_bytes());
         off += 4;
-        pkt[off..off+4].copy_from_slice(&7200u32.to_be_bytes());
+        pkt[off..off + 4].copy_from_slice(&7200u32.to_be_bytes());
 
         let parsed = client.parse_reply(&pkt, 100).unwrap();
         assert!(parsed.is_some());
@@ -1195,10 +1252,12 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_build_request_min_size() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
-            addr: crate::net::l3::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,2]),
+            addr: crate::net::l3::ipv6::Ipv6Address::new([
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+            ]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
             t1: 0,
@@ -1211,15 +1270,17 @@ pub(crate) mod tests {
         let now = 200u64;
 
         // Setup XID
-        client.xid.store(((now as u32) ^ 0xBEEFBEEF) & 0x00FF_FFFF, Ordering::SeqCst);
+        client
+            .xid
+            .store(((now as u32) ^ 0xBEEFBEEF) & 0x00FF_FFFF, Ordering::SeqCst);
 
         let len = client.build_request(&mut buf, &lease).unwrap();
         assert!(len > 0);
         assert_eq!(buf[0], DhcpV6MessageType::Request as u8);
         // find IAADDR suboption code (5) somewhere after header
         let mut found = false;
-        for i in 4..len-2 {
-            if buf[i] == 0 && buf[i+1] == 5u8 {
+        for i in 4..len - 2 {
+            if buf[i] == 0 && buf[i + 1] == 5u8 {
                 found = true;
                 break;
             }
@@ -1229,11 +1290,13 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_bound_to_renewing_and_rebinding_transitions() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         // set lease with T1 = 1 second, T2 = 2 seconds, valid = 10 seconds
         let lease = DhcpV6Lease {
-            addr: crate::net::l3::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,3]),
+            addr: crate::net::l3::ipv6::Ipv6Address::new([
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+            ]),
             preferred_lifetime: 5,
             valid_lifetime: 10,
             t1: 1,
@@ -1268,12 +1331,12 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_handle_packet_stores_server_addr_and_duid() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
 
         // Build a REPLY that contains Server Identifier (option 2) + IA_NA with IAADDR
         let server_duid: [u8; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
-        let addr = Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,4]);
+        let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]);
 
         // layout: header(4) + srv_id(opt2) + IA_NA(opt3)+IAADDR(subopt5)
         let mut pkt = alloc::vec![0u8; 4 + 4 + server_duid.len() + 4 + 12 + 4 + 24];
@@ -1281,31 +1344,31 @@ pub(crate) mod tests {
         pkt[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
         let mut off = 4;
         // Server Identifier (option 2)
-        pkt[off..off+2].copy_from_slice(&(2u16.to_be_bytes()));
-        pkt[off+2..off+4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
+        pkt[off..off + 2].copy_from_slice(&(2u16.to_be_bytes()));
+        pkt[off + 2..off + 4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
         off += 4;
-        pkt[off..off+server_duid.len()].copy_from_slice(&server_duid);
+        pkt[off..off + server_duid.len()].copy_from_slice(&server_duid);
         off += server_duid.len();
 
         // IA_NA option (top-level)
-        pkt[off..off+2].copy_from_slice(&(3u16.to_be_bytes())); // code
-        pkt[off+2..off+4].copy_from_slice(&(40u16.to_be_bytes())); // len
+        pkt[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // code
+        pkt[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // len
         off += 4;
         // IAID + T1 + T2
-        pkt[off..off+12].copy_from_slice(&[0u8; 12]);
+        pkt[off..off + 12].copy_from_slice(&[0u8; 12]);
         off += 12;
 
         // IAADDR as a top-level option for this test (simpler)
-        pkt[off..off+2].copy_from_slice(&(5u16.to_be_bytes()));
-        pkt[off+2..off+4].copy_from_slice(&(24u16.to_be_bytes()));
+        pkt[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
+        pkt[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
         off += 4;
-        pkt[off..off+16].copy_from_slice(addr.as_bytes());
+        pkt[off..off + 16].copy_from_slice(addr.as_bytes());
         off += 16;
-        pkt[off..off+4].copy_from_slice(&3600u32.to_be_bytes());
+        pkt[off..off + 4].copy_from_slice(&3600u32.to_be_bytes());
         off += 4;
-        pkt[off..off+4].copy_from_slice(&7200u32.to_be_bytes());
+        pkt[off..off + 4].copy_from_slice(&7200u32.to_be_bytes());
 
-        let src_ip = Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,1]);
+        let src_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         let handled = client.handle_packet(&pkt, src_ip);
         assert!(handled);
         // lease stored
@@ -1327,11 +1390,13 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_advertise_triggers_request_and_requesting_state() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
 
         // Put client into SolicitSent
-        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::SolicitSent; }
+        if let Ok(mut st) = client.state.lock() {
+            *st = DhcpV6State::SolicitSent;
+        }
 
         // Build an ADVERTISE that contains Server Identifier (option 2) but no IAADDR
         let server_duid: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
@@ -1339,27 +1404,35 @@ pub(crate) mod tests {
         pkt[0] = DhcpV6MessageType::Advertise as u8;
         pkt[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
         let mut off = 4;
-        pkt[off..off+2].copy_from_slice(&(2u16.to_be_bytes()));
-        pkt[off+2..off+4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
+        pkt[off..off + 2].copy_from_slice(&(2u16.to_be_bytes()));
+        pkt[off + 2..off + 4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
         off += 4;
-        pkt[off..off+server_duid.len()].copy_from_slice(&server_duid);
+        pkt[off..off + server_duid.len()].copy_from_slice(&server_duid);
 
-        let src_ip = Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,9]);
+        let src_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
         let handled = client.handle_packet(&pkt, src_ip);
         assert!(handled);
         assert_eq!(client.state(), DhcpV6State::Requesting);
         // server_addr and server_duid should be set
-        if let Ok(g) = client.server_addr.lock() { assert_eq!(g.as_ref().unwrap(), &src_ip); }
-        if let Ok(g) = client.server_duid.lock() { assert_eq!(g.as_ref().unwrap().as_slice(), &server_duid); }
+        if let Ok(g) = client.server_addr.lock() {
+            assert_eq!(g.as_ref().unwrap(), &src_ip);
+        }
+        if let Ok(g) = client.server_duid.lock() {
+            assert_eq!(g.as_ref().unwrap().as_slice(), &server_duid);
+        }
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_requesting_retransmit_exhaustion_goes_to_init() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
-        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Requesting; }
+        if let Ok(mut st) = client.state.lock() {
+            *st = DhcpV6State::Requesting;
+        }
         // simulate having already retried up to MAX_RETRIES
-        client.retry_count.store(DhcpV6Client::MAX_RETRIES, Ordering::SeqCst);
+        client
+            .retry_count
+            .store(DhcpV6Client::MAX_RETRIES, Ordering::SeqCst);
         let tick_rate = 1000u64;
         let now = DhcpV6Client::RETRANS_INTERVAL_SECS * tick_rate + 10;
         client.check_timeout(now, tick_rate).unwrap();
@@ -1368,10 +1441,10 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_force_renew_or_restart_paths() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,8]),
+            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
             t1: 0,
@@ -1381,13 +1454,19 @@ pub(crate) mod tests {
             domain_search: Vec::new(),
         };
 
-        if let Ok(mut lg) = client.lease.lock() { *lg = Some(lease.clone()); }
-        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Bound; }
+        if let Ok(mut lg) = client.lease.lock() {
+            *lg = Some(lease.clone());
+        }
+        if let Ok(mut st) = client.state.lock() {
+            *st = DhcpV6State::Bound;
+        }
         client.force_renew_or_restart(100).unwrap();
         assert_eq!(client.state(), DhcpV6State::Renewing);
         assert!(client.lease().is_some());
 
-        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Requesting; }
+        if let Ok(mut st) = client.state.lock() {
+            *st = DhcpV6State::Requesting;
+        }
         client.force_renew_or_restart(200).unwrap();
         assert_eq!(client.state(), DhcpV6State::Init);
         assert!(client.lease().is_none());
@@ -1395,11 +1474,13 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_solicit_advertise_request_reply_complete_flow() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
 
         // Start from Init -> send SOLICIT (simulate periodic trigger)
-        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::SolicitSent; }
+        if let Ok(mut st) = client.state.lock() {
+            *st = DhcpV6State::SolicitSent;
+        }
 
         // Build ADVERTISE (server-id only)
         let server_duid: [u8; 4] = [0x11, 0x22, 0x33, 0x44];
@@ -1407,37 +1488,37 @@ pub(crate) mod tests {
         adv[0] = DhcpV6MessageType::Advertise as u8;
         adv[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
         let mut off = 4;
-        adv[off..off+2].copy_from_slice(&(2u16.to_be_bytes()));
-        adv[off+2..off+4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
+        adv[off..off + 2].copy_from_slice(&(2u16.to_be_bytes()));
+        adv[off + 2..off + 4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
         off += 4;
-        adv[off..off+server_duid.len()].copy_from_slice(&server_duid);
+        adv[off..off + server_duid.len()].copy_from_slice(&server_duid);
 
-        let server_ip = Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,7]);
+        let server_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]);
         assert!(client.handle_packet(&adv, server_ip));
         assert_eq!(client.state(), DhcpV6State::Requesting);
 
         // Now build a REPLY that contains IAADDR for the requested IA
-        let addr = Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,6]);
+        let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
         let mut reply = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24];
         reply[0] = DhcpV6MessageType::Reply as u8;
         reply[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
         let mut roff = 4;
         // IA_NA option (top-level)
-        reply[roff..roff+2].copy_from_slice(&(3u16.to_be_bytes())); // code
-        reply[roff+2..roff+4].copy_from_slice(&(40u16.to_be_bytes())); // len
+        reply[roff..roff + 2].copy_from_slice(&(3u16.to_be_bytes())); // code
+        reply[roff + 2..roff + 4].copy_from_slice(&(40u16.to_be_bytes())); // len
         roff += 4;
         // IAID + T1 + T2
-        reply[roff..roff+12].copy_from_slice(&[0u8; 12]);
+        reply[roff..roff + 12].copy_from_slice(&[0u8; 12]);
         roff += 12;
         // IAADDR (as top-level for test simplicity)
-        reply[roff..roff+2].copy_from_slice(&(5u16.to_be_bytes()));
-        reply[roff+2..roff+4].copy_from_slice(&(24u16.to_be_bytes()));
+        reply[roff..roff + 2].copy_from_slice(&(5u16.to_be_bytes()));
+        reply[roff + 2..roff + 4].copy_from_slice(&(24u16.to_be_bytes()));
         roff += 4;
-        reply[roff..roff+16].copy_from_slice(addr.as_bytes());
+        reply[roff..roff + 16].copy_from_slice(addr.as_bytes());
         roff += 16;
-        reply[roff..roff+4].copy_from_slice(&3600u32.to_be_bytes());
+        reply[roff..roff + 4].copy_from_slice(&3600u32.to_be_bytes());
         roff += 4;
-        reply[roff..roff+4].copy_from_slice(&7200u32.to_be_bytes());
+        reply[roff..roff + 4].copy_from_slice(&7200u32.to_be_bytes());
 
         assert!(client.handle_packet(&reply, server_ip));
         assert_eq!(client.state(), DhcpV6State::Bound);
@@ -1448,10 +1529,12 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_renew_uses_known_server_address_for_dst() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
-            addr: crate::net::l3::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,5]),
+            addr: crate::net::l3::ipv6::Ipv6Address::new([
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5,
+            ]),
             preferred_lifetime: 1,
             valid_lifetime: 10,
             t1: 0,
@@ -1467,8 +1550,12 @@ pub(crate) mod tests {
             *st = DhcpV6State::Renewing;
         }
         // set known server address
-        let server_ip = crate::net::l3::ipv6::Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
-        if let Ok(mut g) = client.server_addr.lock() { *g = Some(server_ip); }
+        let server_ip = crate::net::l3::ipv6::Ipv6Address::new([
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+        ]);
+        if let Ok(mut g) = client.server_addr.lock() {
+            *g = Some(server_ip);
+        }
 
         let tick_rate = 1000u64;
         // force a retransmit interval to elapse
@@ -1480,10 +1567,10 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_build_renew_uses_correct_msg_type() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xa]),
+            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xa]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
             t1: 0,
@@ -1504,7 +1591,7 @@ pub(crate) mod tests {
         // Verify IAADDR suboption exists
         let mut found_iaaddr = false;
         for i in 4..len.saturating_sub(1) {
-            if buf[i] == 0 && buf[i+1] == 5 {
+            if buf[i] == 0 && buf[i + 1] == 5 {
                 found_iaaddr = true;
                 break;
             }
@@ -1514,10 +1601,10 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_build_rebind_uses_correct_msg_type() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xb]),
+            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xb]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
             t1: 0,
@@ -1535,10 +1622,12 @@ pub(crate) mod tests {
         let mut found_server_id = false;
         let mut off = 4usize;
         while off + 4 <= len {
-            let code = u16::from_be_bytes([buf[off], buf[off+1]]);
-            let opt_len = u16::from_be_bytes([buf[off+2], buf[off+3]]) as usize;
+            let code = u16::from_be_bytes([buf[off], buf[off + 1]]);
+            let opt_len = u16::from_be_bytes([buf[off + 2], buf[off + 3]]) as usize;
             off += 4;
-            if code == 2 { found_server_id = true; }
+            if code == 2 {
+                found_server_id = true;
+            }
             off += opt_len;
         }
         assert!(!found_server_id, "Rebind must not contain Server ID");
@@ -1546,10 +1635,10 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_build_release_uses_correct_msg_type() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xc]),
+            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xc]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
             t1: 0,
@@ -1570,10 +1659,10 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_release_clears_lease_and_state() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xd]),
+            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xd]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
             t1: 0,
@@ -1582,30 +1671,46 @@ pub(crate) mod tests {
             dns_servers: Vec::new(),
             domain_search: Vec::new(),
         };
-        if let Ok(mut lg) = client.lease.lock() { *lg = Some(lease); }
-        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Bound; }
-        if let Ok(mut sg) = client.server_duid.lock() { *sg = Some(alloc::vec![0x01]); }
+        if let Ok(mut lg) = client.lease.lock() {
+            *lg = Some(lease);
+        }
+        if let Ok(mut st) = client.state.lock() {
+            *st = DhcpV6State::Bound;
+        }
+        if let Ok(mut sg) = client.server_duid.lock() {
+            *sg = Some(alloc::vec![0x01]);
+        }
         if let Ok(mut ag) = client.server_addr.lock() {
-            *ag = Some(Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,1]));
+            *ag = Some(Ipv6Address::new([
+                0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            ]));
         }
 
         client.release();
 
         assert_eq!(client.state(), DhcpV6State::Init);
         assert!(client.lease().is_none());
-        if let Ok(g) = client.server_duid.lock() { assert!(g.is_none()); }
-        if let Ok(g) = client.server_addr.lock() { assert!(g.is_none()); }
+        if let Ok(g) = client.server_duid.lock() {
+            assert!(g.is_none());
+        }
+        if let Ok(g) = client.server_addr.lock() {
+            assert!(g.is_none());
+        }
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_parse_reply_with_dns_servers() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
 
         // Build a REPLY with IA_NA/IAADDR + DNS Recursive Name Server (option 23)
-        let dns1 = Ipv6Address::new([0x20,0x01,0x48,0x60,0x48,0x60,0,0,0,0,0,0,0,0,0x88,0x88]);
-        let dns2 = Ipv6Address::new([0x20,0x01,0x48,0x60,0x48,0x60,0,0,0,0,0,0,0,0,0x88,0x44]);
-        let addr = Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,0xe]);
+        let dns1 = Ipv6Address::new([
+            0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x88,
+        ]);
+        let dns2 = Ipv6Address::new([
+            0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x44,
+        ]);
+        let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xe]);
 
         // header(4) + IA_NA(4+12 + subopt IAADDR 4+24) + DNS(4+32)
         let mut pkt = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24 + 4 + 32];
@@ -1613,30 +1718,30 @@ pub(crate) mod tests {
         let mut off = 4usize;
 
         // IA_NA option (code=3, len=40)
-        pkt[off..off+2].copy_from_slice(&3u16.to_be_bytes());
-        pkt[off+2..off+4].copy_from_slice(&40u16.to_be_bytes());
+        pkt[off..off + 2].copy_from_slice(&3u16.to_be_bytes());
+        pkt[off + 2..off + 4].copy_from_slice(&40u16.to_be_bytes());
         off += 4;
         // IAID + T1 + T2 = 0
-        pkt[off..off+12].copy_from_slice(&[0u8; 12]);
+        pkt[off..off + 12].copy_from_slice(&[0u8; 12]);
         off += 12;
         // IAADDR suboption (code=5, len=24)
-        pkt[off..off+2].copy_from_slice(&5u16.to_be_bytes());
-        pkt[off+2..off+4].copy_from_slice(&24u16.to_be_bytes());
+        pkt[off..off + 2].copy_from_slice(&5u16.to_be_bytes());
+        pkt[off + 2..off + 4].copy_from_slice(&24u16.to_be_bytes());
         off += 4;
-        pkt[off..off+16].copy_from_slice(addr.as_bytes());
+        pkt[off..off + 16].copy_from_slice(addr.as_bytes());
         off += 16;
-        pkt[off..off+4].copy_from_slice(&3600u32.to_be_bytes()); // preferred
+        pkt[off..off + 4].copy_from_slice(&3600u32.to_be_bytes()); // preferred
         off += 4;
-        pkt[off..off+4].copy_from_slice(&7200u32.to_be_bytes()); // valid
+        pkt[off..off + 4].copy_from_slice(&7200u32.to_be_bytes()); // valid
         off += 4;
 
         // DNS Recursive Name Server (option 23, len=32: 2 addresses)
-        pkt[off..off+2].copy_from_slice(&23u16.to_be_bytes());
-        pkt[off+2..off+4].copy_from_slice(&32u16.to_be_bytes());
+        pkt[off..off + 2].copy_from_slice(&23u16.to_be_bytes());
+        pkt[off + 2..off + 4].copy_from_slice(&32u16.to_be_bytes());
         off += 4;
-        pkt[off..off+16].copy_from_slice(dns1.as_bytes());
+        pkt[off..off + 16].copy_from_slice(dns1.as_bytes());
         off += 16;
-        pkt[off..off+16].copy_from_slice(dns2.as_bytes());
+        pkt[off..off + 16].copy_from_slice(dns2.as_bytes());
 
         let parsed = client.parse_reply(&pkt, 500).unwrap();
         assert!(parsed.is_some());
@@ -1649,7 +1754,7 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_parse_reply_with_status_code_error() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(mac);
 
         // Build a REPLY with Status Code = 2 (NoBinding)
@@ -1657,10 +1762,10 @@ pub(crate) mod tests {
         pkt[0] = DhcpV6MessageType::Reply as u8;
         let mut off = 4usize;
         // Status Code option (code=13, len=2)
-        pkt[off..off+2].copy_from_slice(&13u16.to_be_bytes());
-        pkt[off+2..off+4].copy_from_slice(&2u16.to_be_bytes());
+        pkt[off..off + 2].copy_from_slice(&13u16.to_be_bytes());
+        pkt[off + 2..off + 4].copy_from_slice(&2u16.to_be_bytes());
         off += 4;
-        pkt[off..off+2].copy_from_slice(&2u16.to_be_bytes()); // NoBinding
+        pkt[off..off + 2].copy_from_slice(&2u16.to_be_bytes()); // NoBinding
 
         let parsed = client.parse_reply(&pkt, 100).unwrap();
         assert!(parsed.is_none(), "Non-zero status code should return None");
@@ -1670,12 +1775,8 @@ pub(crate) mod tests {
     pub fn test_parse_domain_search_list() {
         // DNS-encoded domain: "example.com" → [7, 'e','x','a','m','p','l','e', 3, 'c','o','m', 0]
         let data = [
-            7, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
-            3, b'c', b'o', b'm',
-            0,
-            4, b't', b'e', b's', b't',
-            3, b'n', b'e', b't',
-            0,
+            7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0, 4, b't', b'e',
+            b's', b't', 3, b'n', b'e', b't', 0,
         ];
         let mut out = Vec::new();
         DhcpV6Client::parse_domain_search_list(&data, &mut out);

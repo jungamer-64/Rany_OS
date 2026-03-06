@@ -7,39 +7,44 @@
 //! This module integrates all network protocol layers into
 //! a unified zero-copy network stack as specified in Section 6.2.
 
+use crate::net::datapath::mempool::{PacketPool, PacketRef};
+use crate::net::datapath::optimization::PacketBatch;
 use crate::net::l2::arp::{ArpProcessor, ArpResult};
-use crate::net::l2::ethernet::{EtherType, EthernetFrameMut, EthernetHeader, EthernetProcessor, MacAddress};
-use crate::net::l3::icmp::{DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, IcmpType, RedirectCode};
+use crate::net::l2::ethernet::{
+    EtherType, EthernetFrameMut, EthernetHeader, EthernetProcessor, MacAddress,
+};
+use crate::net::l3::icmp::{
+    DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, IcmpType, RedirectCode,
+};
 use crate::net::l3::icmpv6::{Icmpv6Builder, Icmpv6Processor, Icmpv6Result, Icmpv6Type};
 use crate::net::l3::igmp::{IgmpError, IgmpProcessor, IgmpResult, multicast_ip_to_mac};
 use crate::net::l3::ipv4::{
-    IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult, Ipv4Processor,
+    IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult,
+    Ipv4Processor,
 };
 use crate::net::l3::ipv6::{
-    Ipv6Address, Ipv6Config, Ipv6PacketMut, Ipv6ProcessResult, Ipv6Processor, IPV6_HEADER_SIZE,
-    Ipv6FragmentReassembler, Ipv6PmtuCache,
+    IPV6_HEADER_SIZE, Ipv6Address, Ipv6Config, Ipv6FragmentReassembler, Ipv6PacketMut,
+    Ipv6PmtuCache, Ipv6ProcessResult, Ipv6Processor,
 };
 use crate::net::l3::ndp::{NdpProcessor, NdpResult};
-use crate::net::datapath::mempool::{PacketPool, PacketRef};
-use crate::net::datapath::optimization::PacketBatch;
 use crate::net::l4::tcp::{
-    TcpError, TcpListener, TcpProcessor, TcpProcessResult, TcpStream,
-    EndpointAddr as TcpEndpointAddr, TcpHeader,
+    EndpointAddr as TcpEndpointAddr, TcpError, TcpHeader, TcpListener, TcpProcessResult,
+    TcpProcessor, TcpStream,
 };
 
-use crate::net::l4::udp::{UdpProcessor, UdpResult, UdpEndpoint};
-use crate::net::runtime::timeouts::{TimeoutWheel, TimerKind};
+use crate::net::l4::udp::{UdpEndpoint, UdpProcessor, UdpResult};
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
 };
-use crate::net::runtime::manager::NetIfId; // required for new transmit callback signature
+use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::timeouts::{TimeoutWheel, TimerKind}; // required for new transmit callback signature
 
 use crate::sync::PoisonLock;
+use alloc::collections::BTreeMap;
+use alloc::collections::VecDeque;
 #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
 use alloc::sync::Arc;
-use alloc::collections::VecDeque;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 mod core_impl;
@@ -190,11 +195,13 @@ impl RedirectCache {
 
     fn set_time(&mut self, time: u64) {
         self.current_time = time;
-        self.map.retain(|_, e| self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL);
+        self.map
+            .retain(|_, e| self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL);
     }
 
     fn insert(&mut self, destination: Ipv4Address, gateway: Ipv4Address) {
-        self.map.retain(|_, e| self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL);
+        self.map
+            .retain(|_, e| self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL);
 
         if let Some(e) = self.map.get_mut(&destination) {
             e.gateway = gateway;
@@ -203,12 +210,23 @@ impl RedirectCache {
         }
 
         if self.map.len() >= REDIRECT_CACHE_SIZE {
-            if let Some((oldest, _)) = self.map.iter().min_by_key(|(_, e)| e.timestamp).map(|(k, _)| (*k, ())) {
+            if let Some((oldest, _)) = self
+                .map
+                .iter()
+                .min_by_key(|(_, e)| e.timestamp)
+                .map(|(k, _)| (*k, ()))
+            {
                 self.map.remove(&oldest);
             }
         }
 
-        self.map.insert(destination, RedirectCacheEntry { gateway, timestamp: self.current_time });
+        self.map.insert(
+            destination,
+            RedirectCacheEntry {
+                gateway,
+                timestamp: self.current_time,
+            },
+        );
     }
 
     fn get(&self, destination: Ipv4Address) -> Option<Ipv4Address> {
@@ -299,7 +317,13 @@ impl NdpPendingQueue {
     }
 
     /// パケットをキューに追加
-    fn enqueue(&mut self, src: Ipv6Address, dst: Ipv6Address, icmpv6_data: &[u8], current_time: u64) {
+    fn enqueue(
+        &mut self,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        icmpv6_data: &[u8],
+        current_time: u64,
+    ) {
         if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
             // VecDeque provides efficient pop_front
             self.packets.pop_front();
@@ -331,8 +355,7 @@ impl NdpPendingQueue {
 
     /// タイムアウトしたパケットを削除
     fn expire(&mut self, current_time: u64) {
-        self.packets.retain(|pkt| {
-            current_time.saturating_sub(pkt.queued_at) < NDP_PENDING_TIMEOUT_MS
-        });
+        self.packets
+            .retain(|pkt| current_time.saturating_sub(pkt.queued_at) < NDP_PENDING_TIMEOUT_MS);
     }
 }

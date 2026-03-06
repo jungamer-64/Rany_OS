@@ -646,9 +646,7 @@ fn compute_cfa(ctx: &registers::UnwindContext, frame: &StackFrame) -> Result<u64
             };
             Ok((base as i64 + offset) as u64)
         }
-        registers::CfaRule::Expression { .. } => {
-            Err(UnwindError::UnsupportedDwarfExpression)
-        }
+        registers::CfaRule::Expression { .. } => Err(UnwindError::UnsupportedDwarfExpression),
     }
 }
 
@@ -727,15 +725,23 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
 
     // CIEの初期命令を実行
     execute_dwarf_instructions(
-        &mut parser, &mut interpreter, data_alignment_factor,
-        initial_start, initial_start + initial_len, None,
+        &mut parser,
+        &mut interpreter,
+        data_alignment_factor,
+        initial_start,
+        initial_start + initial_len,
+        None,
     );
 
     // FDEの命令を実行（PCまで）
     let pc_offset = (frame.instruction_pointer as u64).saturating_sub(fde.initial_location);
     execute_dwarf_instructions(
-        &mut parser, &mut interpreter, data_alignment_factor,
-        fde.instructions_offset, fde.instructions_offset + fde.instructions_len, Some(pc_offset),
+        &mut parser,
+        &mut interpreter,
+        data_alignment_factor,
+        fde.instructions_offset,
+        fde.instructions_offset + fde.instructions_len,
+        Some(pc_offset),
     );
 
     // CFAを計算

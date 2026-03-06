@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl Default for PerCpuMagazineSet {
     fn default() -> Self {
         Self::new(NumaNodeId::new(0))
@@ -74,7 +73,9 @@ pub mod integration {
     /// # Safety
     /// 割り込み禁止状態で呼び出すこと
     #[inline]
-    pub unsafe fn alloc_from_local_magazine(magazine: &mut PerCpuMagazineSet) -> Option<PhysFrame<Size4KiB>> {
+    pub unsafe fn alloc_from_local_magazine(
+        magazine: &mut PerCpuMagazineSet,
+    ) -> Option<PhysFrame<Size4KiB>> {
         magazine.alloc()
     }
 
@@ -83,7 +84,10 @@ pub mod integration {
     /// # Safety
     /// 割り込み禁止状態で呼び出すこと
     #[inline]
-    pub unsafe fn free_to_local_magazine(magazine: &mut PerCpuMagazineSet, frame: PhysFrame<Size4KiB>) {
+    pub unsafe fn free_to_local_magazine(
+        magazine: &mut PerCpuMagazineSet,
+        frame: PhysFrame<Size4KiB>,
+    ) {
         magazine.free(frame);
     }
 }

@@ -14,7 +14,6 @@
 //! - データコピーなし（ゼロコピー）
 //! - async/await ファースト
 
-
 use crate::sync::PoisonLock;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
@@ -137,7 +136,6 @@ pub const TCP_RECV_COPY_FALLBACK_LIMIT_BYTES: usize = 0; // disabled
 
 /// Zero-copy receive buffer limit (bytes)
 pub const TCP_RECV_BUFFER_LIMIT_DEFAULT: usize = 128 * 1024; // 128 KB
-
 
 /// TCP受信状態（バッファ管理）
 struct TcpRxState {
@@ -312,8 +310,8 @@ impl TcpOptionsState {
     fn new() -> Self {
         Self {
             our_wscale: 7,
-            peer_wscale: 0, // Set when peer SYN received
-            wscale_enabled: false, // Negotiated during handshake
+            peer_wscale: 0,             // Set when peer SYN received
+            wscale_enabled: false,      // Negotiated during handshake
             rcv_wnd_scaled: 65535 << 7, // Initial scaled window
             rcv_wnd_max_adv: 65535 << 7,
             ts_enabled: false,
@@ -339,8 +337,9 @@ impl TcpOptionsState {
     pub fn is_sacked(&self, seq: u32, len: u32) -> bool {
         let end = seq.wrapping_add(len);
         for &(left, right) in &self.sack_scoreboard {
-            if Self::seq_in_range(seq, left, right) && 
-               (Self::seq_in_range(end, left, right) || end == right) {
+            if Self::seq_in_range(seq, left, right)
+                && (Self::seq_in_range(end, left, right) || end == right)
+            {
                 return true;
             }
         }
@@ -354,8 +353,11 @@ impl TcpOptionsState {
             let mut merged = false;
             for (l, r) in self.sack_scoreboard.iter_mut() {
                 // Check for overlap or adjacency
-                if Self::seq_in_range(left, *l, *r) || Self::seq_in_range(*l, left, right) ||
-                   right == *l || *r == left {
+                if Self::seq_in_range(left, *l, *r)
+                    || Self::seq_in_range(*l, left, right)
+                    || right == *l
+                    || *r == left
+                {
                     *l = core::cmp::min(*l, left);
                     *r = core::cmp::max(*r, right);
                     merged = true;
@@ -427,7 +429,7 @@ impl TcpTimerState {
             retransmit_count: 0,
             unacked_segments: VecDeque::new(),
             keepalive_enabled: false,
-            keepalive_idle: 7_200_000, // 2 hours in milliseconds
+            keepalive_idle: 7_200_000,  // 2 hours in milliseconds
             keepalive_interval: 75_000, // 75 seconds in milliseconds
             keepalive_count: 9,
             keepalive_probes_sent: 0,

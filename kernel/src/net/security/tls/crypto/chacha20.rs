@@ -16,13 +16,13 @@ fn ct_eq_tag(a: &[u8], b: &[u8]) -> bool {
     for i in 0..16 {
         // Accumulate differences without branching
         diff |= unsafe { core::ptr::read_volatile(a.as_ptr().add(i)) }
-              ^ unsafe { core::ptr::read_volatile(b.as_ptr().add(i)) };
+            ^ unsafe { core::ptr::read_volatile(b.as_ptr().add(i)) };
     }
-    
+
     // Constant-time check if diff == 0.
     let diff_u32 = diff as u32;
     let is_zero = ((diff_u32.wrapping_sub(1) >> 31) & 1) as u8;
-    
+
     unsafe { core::ptr::read_volatile(&is_zero) == 1 }
 }
 
@@ -156,10 +156,7 @@ fn poly1305_clamp_r(key: &[u8; 32]) -> ([u64; 5], [u64; 4]) {
     let r3 = ((t2 >> 14) | (t3 << 18)) & 0x3f03fff;
     let r4 = (t3 >> 8) & 0x00fffff;
 
-    (
-        [r0, r1, r2, r3, r4],
-        [r1 * 5, r2 * 5, r3 * 5, r4 * 5],
-    )
+    ([r0, r1, r2, r3, r4], [r1 * 5, r2 * 5, r3 * 5, r4 * 5])
 }
 
 /// Multiply h by r (mod 2^130-5) and reduce carries.
@@ -219,8 +216,12 @@ fn poly1305_multiply_reduce(h: &mut [u64; 5], r: &[u64; 5], r5: &[u64; 4]) {
 fn poly1305_is_gte_prime(h: &[u64; 5]) -> bool {
     const P: [u64; 5] = [0x3fffffb, 0x3ffffff, 0x3ffffff, 0x3ffffff, 0x3ffffff];
     for i in (0..5).rev() {
-        if h[i] > P[i] { return true; }
-        if h[i] < P[i] { return false; }
+        if h[i] > P[i] {
+            return true;
+        }
+        if h[i] < P[i] {
+            return false;
+        }
     }
     true
 }
@@ -309,7 +310,9 @@ pub fn poly1305_mac(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
         block[block_len] = 1;
         let m = poly1305_block_to_limbs(&block);
 
-        for i in 0..5 { h[i] += m[i]; }
+        for i in 0..5 {
+            h[i] += m[i];
+        }
 
         poly1305_multiply_reduce(&mut h, &r_limbs, &r5_limbs);
 

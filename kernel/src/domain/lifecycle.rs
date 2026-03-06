@@ -20,7 +20,9 @@
 //!
 #![allow(dead_code)]
 
-use crate::domain_system::{DomainId, DomainState, create_domain, set_domain_state, with_domain, with_domain_mut};
+use crate::domain_system::{
+    DomainId, DomainState, create_domain, set_domain_state, with_domain, with_domain_mut,
+};
 use crate::task::Task;
 use alloc::string::String;
 use core::future::Future;
@@ -133,8 +135,7 @@ where
 ///
 /// `domain_system::terminate_domain()` に委譲し、エラー型を変換する。
 pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
-    crate::domain_system::terminate_domain(domain_id)
-        .map_err(|_| DomainError::NotFound)
+    crate::domain_system::terminate_domain(domain_id).map_err(|_| DomainError::NotFound)
 }
 
 /// ドメインがパニックした場合の処理

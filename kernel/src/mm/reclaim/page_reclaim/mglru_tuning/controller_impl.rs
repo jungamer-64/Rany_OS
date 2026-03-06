@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl PageReclaimController {
     /// 新しいコントローラを作成
     pub const fn new() -> Self {
@@ -30,7 +29,7 @@ impl PageReclaimController {
             scan_ratio: AtomicU64::new(1), // 1:1
         }
     }
-    
+
     /// ウォーターマークを設定
     pub fn set_watermarks(&mut self, watermarks: Watermarks) {
         self.watermarks = watermarks;
@@ -43,7 +42,8 @@ impl PageReclaimController {
 
     /// Enable/disable potentially unsafe eviction paths.
     pub fn set_unsafe_eviction_enabled(&self, enabled: bool) {
-        self.unsafe_eviction_enabled.store(enabled, Ordering::Release);
+        self.unsafe_eviction_enabled
+            .store(enabled, Ordering::Release);
     }
 
     /// Return whether unsafe eviction paths are enabled.
@@ -134,20 +134,20 @@ impl PageReclaimController {
             self.requeue_candidate(entry, node_idx);
         }
     }
-    
+
     /// 空きページ数を更新し、必要なアクションを返す
     pub fn update_free_pages(&self, free_pages: usize) -> MemoryPressure {
         let pressure = self.watermarks.pressure_level(free_pages);
         self.pressure.store(pressure as u64, Ordering::Release);
-        
+
         // Low watermark以下ならkswapdを起動
         if pressure >= MemoryPressure::Background {
             self.kswapd_wake.store(true, Ordering::Release);
         }
-        
+
         pressure
     }
-    
+
     /// kswapdが起動すべきか
     pub fn should_wake_kswapd(&self) -> bool {
         self.kswapd_wake.swap(false, Ordering::AcqRel)
@@ -168,8 +168,9 @@ impl PageReclaimController {
             3 => MemoryPressure::Critical,
             _ => MemoryPressure::None,
         };
-        
-        self.mglru_tuning.adjust_interval(workingset_refaults, normal_refaults, pressure);
+
+        self.mglru_tuning
+            .adjust_interval(workingset_refaults, normal_refaults, pressure);
     }
 
     /// Aging cycle を実行すべきか判定
@@ -186,7 +187,7 @@ impl PageReclaimController {
     pub fn mglru_tuning_stats(&self) -> MglruTuningStats {
         self.mglru_tuning.stats()
     }
-    
+
     /// 現在のメモリ圧迫レベル
     pub fn current_pressure(&self) -> MemoryPressure {
         match self.pressure.load(Ordering::Acquire) {
@@ -196,28 +197,28 @@ impl PageReclaimController {
             _ => MemoryPressure::Critical,
         }
     }
-    
+
     /// ページをLRUに追加
     pub fn add_page(&self, frame: FrameIndex, page_type: PageType, node: usize, timestamp: u64) {
         let entry = MglruEntry::new(frame, page_type, timestamp);
-        
+
         let node_idx = node.min(7);
         // Gen0 (Newest) に追加
         self.lru_lists[node_idx].add_page(entry);
     }
-    
+
     /// ページアクセスを記録（参照ビットをセット）
     pub fn mark_accessed(&self, frame: FrameIndex, node: usize) {
         // 実際の実装ではフレームからエントリを検索する必要がある
         // ここでは簡略化
         let _ = (frame, node);
     }
-    
+
     /// バックグラウンド回収（kswapd相当）
-    /// 
+    ///
     /// 返り値: 回収したページ数
     /// バックグラウンド回収（kswapd相当）
-    /// 
+    ///
     /// 返り値: 回収したページ数
     pub fn background_reclaim(&self, target_pages: usize) -> usize {
         let mut total_reclaimed = 0;
@@ -230,18 +231,18 @@ impl PageReclaimController {
             if total_reclaimed >= target_pages {
                 break;
             }
-            
+
             // Aging cycle の実行
             if run_aging {
                 let stats = lru.run_aging_cycle();
                 // 若返ったページ数を考慮すると良さそうだが、ここでは単純にagingを進める
                 let _ = stats;
             }
-            
+
             // Gen3 (Oldest) から回収
             let to_reclaim = (target_pages - total_reclaimed).min(64);
             let victims = lru.reclaim_from_oldest(to_reclaim);
-            
+
             for entry in victims {
                 // 実際にフレームを解放
                 match self.reclaim_page(&entry, node_idx) {
@@ -256,31 +257,32 @@ impl PageReclaimController {
                 }
             }
         }
-        
+
         if run_aging {
             self.mark_mglru_aging_done(current_time);
         }
-        
+
         if total_reclaimed > 0 {
-            self.background_reclaim_count.fetch_add(1, Ordering::Relaxed);
-            self.total_reclaimed.fetch_add(total_reclaimed as u64, Ordering::Relaxed);
+            self.background_reclaim_count
+                .fetch_add(1, Ordering::Relaxed);
+            self.total_reclaimed
+                .fetch_add(total_reclaimed as u64, Ordering::Relaxed);
         }
-        
+
         total_reclaimed
     }
-    
+
     /// 直接回収（Direct Reclaim）
-    /// 
+    ///
     /// 割り当てパスから呼ばれる同期的な回収
     /// 直接回収（Direct Reclaim）
-    /// 
+    ///
     /// 割り当てパスから呼ばれる同期的な回収
     pub fn direct_reclaim(&self, needed_pages: usize) -> usize {
         self.direct_reclaim_count.fetch_add(1, Ordering::Relaxed);
-        
+
         let mut total_reclaimed = 0;
 
-        
         // Direct Reclaimでは強制的にAgingを行うことが一般的だが
         // ここでは単純化のためAgingはSkipし、既存のGen3から回収を試みる
         // 必要ならAgingを呼び出すロジックを追加可能
@@ -289,11 +291,11 @@ impl PageReclaimController {
             if total_reclaimed >= needed_pages {
                 break;
             }
-            
+
             // Gen3から積極的に回収
             let to_reclaim = (needed_pages - total_reclaimed).min(64).max(16);
             let victims = lru.reclaim_from_oldest(to_reclaim);
-            
+
             for entry in victims {
                 match self.reclaim_page(&entry, node_idx) {
                     ReclaimOutcome::FreedNow => {
@@ -307,8 +309,9 @@ impl PageReclaimController {
                 }
             }
         }
-        
-        self.total_reclaimed.fetch_add(total_reclaimed as u64, Ordering::Relaxed);
+
+        self.total_reclaimed
+            .fetch_add(total_reclaimed as u64, Ordering::Relaxed);
         total_reclaimed
     }
 
@@ -341,9 +344,9 @@ impl PageReclaimController {
     /// Returns true if any pages were written back successfully.
     pub(super) fn attempt_writeback_all(&self) -> bool {
         #[cfg(any(test, feature = "qemu-test-export"))]
-        if let Some(forced) = decode_test_writeback_override(
-            TEST_SYNC_ALL_WRITEBACK_OVERRIDE.load(Ordering::Acquire),
-        ) {
+        if let Some(forced) =
+            decode_test_writeback_override(TEST_SYNC_ALL_WRITEBACK_OVERRIDE.load(Ordering::Acquire))
+        {
             return forced;
         }
 
@@ -359,7 +362,7 @@ impl PageReclaimController {
             Err(_) => false,
         }
     }
-    
+
     /// ページを実際に回収
     pub(super) fn reclaim_page(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
         // 脆弱性修正: ページがまだどこかにマップされている場合は回収を拒否
@@ -390,7 +393,11 @@ impl PageReclaimController {
         let count = 1u64 << order;
 
         if entry.flags.contains(LruFlags::DIRTY) {
-            self.try_async_swapout(entry, node_idx, crate::mm::reclaim::async_swapout::SwapKind::Anon)
+            self.try_async_swapout(
+                entry,
+                node_idx,
+                crate::mm::reclaim::async_swapout::SwapKind::Anon,
+            )
         } else {
             crate::mm::meta::memcg::memcg_untrack_and_uncharge(entry.frame, count);
             self.free_frame(entry.frame);
@@ -399,7 +406,12 @@ impl PageReclaimController {
     }
 
     /// ファイルバックページの回収
-    pub(super) fn reclaim_file_backed(&self, entry: &MglruEntry, node_idx: usize, unsafe_eviction: bool) -> ReclaimOutcome {
+    pub(super) fn reclaim_file_backed(
+        &self,
+        entry: &MglruEntry,
+        node_idx: usize,
+        unsafe_eviction: bool,
+    ) -> ReclaimOutcome {
         let order = crate::mm::meta::page_flags::get_order(entry.frame);
         let count = 1u64 << order;
 
@@ -412,7 +424,11 @@ impl PageReclaimController {
         if let Some(backing) = crate::mm::meta::frame_backing::get_frame_backing(entry.frame) {
             self.reclaim_dirty_file_with_backing(entry, node_idx, &backing, count)
         } else if unsafe_eviction {
-            self.try_async_swapout(entry, node_idx, crate::mm::reclaim::async_swapout::SwapKind::Anon)
+            self.try_async_swapout(
+                entry,
+                node_idx,
+                crate::mm::reclaim::async_swapout::SwapKind::Anon,
+            )
         } else {
             ReclaimOutcome::Requeued
         }
@@ -426,7 +442,10 @@ impl PageReclaimController {
         backing: &crate::mm::meta::frame_backing::FrameBackingInfo,
         count: u64,
     ) -> ReclaimOutcome {
-        let kind = crate::mm::reclaim::async_swapout::SwapKind::File { ino: backing.ino, page_num: backing.page_num };
+        let kind = crate::mm::reclaim::async_swapout::SwapKind::File {
+            ino: backing.ino,
+            page_num: backing.page_num,
+        };
         match crate::mm::reclaim::async_swapout::try_enqueue_swapout(entry.frame, kind) {
             Ok(_handle) => {
                 self.enqueue_pending_async(entry, node_idx);
@@ -479,7 +498,9 @@ impl PageReclaimController {
             }
             Err(crate::mm::reclaim::async_swapout::SwapError::QueueFull)
             | Err(crate::mm::reclaim::async_swapout::SwapError::NotSupported) => {
-                if matches!(kind, crate::mm::reclaim::async_swapout::SwapKind::Anon) && self.attempt_writeback_all() {
+                if matches!(kind, crate::mm::reclaim::async_swapout::SwapKind::Anon)
+                    && self.attempt_writeback_all()
+                {
                     let order = crate::mm::meta::page_flags::get_order(entry.frame);
                     let count = 1u64 << order;
                     crate::mm::meta::memcg::memcg_untrack_and_uncharge(entry.frame, count);
@@ -492,32 +513,30 @@ impl PageReclaimController {
             }
         }
     }
-    
+
     /// フレームをBuddyに返却
     pub(super) fn free_frame(&self, frame: FrameIndex) {
         use crate::mm::phys::buddy_allocator::buddy_dealloc_frame;
-        use x86_64::structures::paging::{PhysFrame, Size4KiB};
         use x86_64::PhysAddr;
-        
+        use x86_64::structures::paging::{PhysFrame, Size4KiB};
+
         // Remove any frame backing mapping if present
         let _ = crate::mm::meta::frame_backing::untrack_frame_backing(frame);
 
         let phys_frame = unsafe {
-            PhysFrame::<Size4KiB>::from_start_address_unchecked(
-                PhysAddr::new(frame.to_phys_addr())
-            )
+            PhysFrame::<Size4KiB>::from_start_address_unchecked(PhysAddr::new(frame.to_phys_addr()))
         };
         buddy_dealloc_frame(phys_frame);
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> ReclaimStats {
         let mut lru_stats = [MglruStats::default(); 8];
-        
+
         for (i, lru) in self.lru_lists.iter().enumerate() {
             lru_stats[i] = lru.stats();
         }
-        
+
         ReclaimStats {
             direct_reclaim_count: self.direct_reclaim_count.load(Ordering::Relaxed),
             background_reclaim_count: self.background_reclaim_count.load(Ordering::Relaxed),

@@ -519,4 +519,3 @@ mod tests {
         assert_eq!(bounds_check_speculation_safe(&arr, 100), None);
     }
 }
-

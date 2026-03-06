@@ -16,7 +16,7 @@ fn test_region_contains() {
         RegionType::Data,
         Protection::READ_WRITE,
     );
-    
+
     assert!(region.contains(VirtAddr::new(0x1000)));
     assert!(region.contains(VirtAddr::new(0x1500)));
     assert!(!region.contains(VirtAddr::new(0x2000)));

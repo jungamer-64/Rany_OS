@@ -31,7 +31,10 @@ fn memcg_usage_snapshot(memcg_id: crate::mm::meta::memcg::MemcgId) -> Option<(u6
 }
 
 fn alloc_anon_tracked_frame(memcg_id: crate::mm::meta::memcg::MemcgId) -> Option<FrameIndex> {
-    eprintln!("[qemu-test] alloc_anon_tracked_frame: called for memcg_id={:?}", memcg_id);
+    eprintln!(
+        "[qemu-test] alloc_anon_tracked_frame: called for memcg_id={:?}",
+        memcg_id
+    );
     let frame = match crate::mm::phys::frame_allocator::alloc_frame() {
         Some(f) => f,
         None => {
@@ -44,7 +47,10 @@ fn alloc_anon_tracked_frame(memcg_id: crate::mm::meta::memcg::MemcgId) -> Option
     if crate::mm::meta::memcg::memcg_charge(memcg_id, 1, crate::mm::meta::memcg::ChargeType::Anon)
         .is_err()
     {
-        eprintln!("[qemu-test] alloc_anon_tracked_frame: memcg_charge failed for memcg_id={:?}", memcg_id);
+        eprintln!(
+            "[qemu-test] alloc_anon_tracked_frame: memcg_charge failed for memcg_id={:?}",
+            memcg_id
+        );
         cleanup_frame_if_allocated(frame_idx);
         return None;
     }
@@ -424,14 +430,22 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
     crate::mm::meta::memcg::init_memcg();
 
     if !prepare_wave7_worker() {
-        eprintln!("[qemu-test] mm_wave7_async_swapout_heavy_stress: prepare_wave7_worker() returned false");
+        eprintln!(
+            "[qemu-test] mm_wave7_async_swapout_heavy_stress: prepare_wave7_worker() returned false"
+        );
         return false;
     }
 
     let memcg_id = crate::mm::meta::memcg::memcg_root();
-    eprintln!("[qemu-test] mm_wave7_async_swapout_heavy_stress: memcg_root={:?}", memcg_id);
+    eprintln!(
+        "[qemu-test] mm_wave7_async_swapout_heavy_stress: memcg_root={:?}",
+        memcg_id
+    );
     let Some(before) = memcg_usage_snapshot(memcg_id) else {
-        eprintln!("[qemu-test] mm_wave7_async_swapout_heavy_stress: memcg_usage_snapshot returned None for memcg_id={:?}", memcg_id);
+        eprintln!(
+            "[qemu-test] mm_wave7_async_swapout_heavy_stress: memcg_usage_snapshot returned None for memcg_id={:?}",
+            memcg_id
+        );
         return false;
     };
 
@@ -450,7 +464,11 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
     let mut total_enqueued = 0usize;
 
     for round in 0..DEFAULT_HEAVY_ROUNDS {
-        eprintln!("[qemu-test] mm_wave7_async_swapout_heavy_stress: starting round {}/{}", round+1, DEFAULT_HEAVY_ROUNDS);
+        eprintln!(
+            "[qemu-test] mm_wave7_async_swapout_heavy_stress: starting round {}/{}",
+            round + 1,
+            DEFAULT_HEAVY_ROUNDS
+        );
         let mut round_frames: Vec<FrameIndex> = Vec::new();
         for batch_idx in 0..DEFAULT_HEAVY_BATCH {
             let frame_idx = match alloc_anon_tracked_frame(memcg_id) {
@@ -458,8 +476,8 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
                 None => {
                     eprintln!(
                         "[qemu-test] mm_wave7_async_swapout_heavy_stress: alloc_anon_tracked_frame returned None (round {}, batch {})",
-                        round+1,
-                        batch_idx+1
+                        round + 1,
+                        batch_idx + 1
                     );
                     continue;
                 }
@@ -474,8 +492,8 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
                     eprintln!(
                         "[qemu-test] mm_wave7_async_swapout_heavy_stress: try_enqueue_swapout failed: {:?} (round {}, batch {})",
                         e,
-                        round+1,
-                        batch_idx+1
+                        round + 1,
+                        batch_idx + 1
                     );
                     cleanup_memcg_and_frame(frame_idx);
                     return false;
@@ -486,7 +504,7 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
         if !qemu_test_drain_until_idle(DEFAULT_DRAIN_ROUNDS) {
             eprintln!(
                 "[qemu-test] mm_wave7_async_swapout_heavy_stress: qemu_test_drain_until_idle returned false at round {} (queued_counts={:?})",
-                round+1,
+                round + 1,
                 crate::mm::reclaim::async_swapout::queued_counts()
             );
 

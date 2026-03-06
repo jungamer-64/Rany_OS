@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Find the CellId that owns the given driver handle
 pub fn find_cell_by_driver(handle: DriverHandle) -> Option<CellId> {
     with_registry(|r| {

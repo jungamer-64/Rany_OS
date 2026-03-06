@@ -127,7 +127,8 @@ mod tests {
 
         fn set_driver_features_high(&self, features: u32) {
             let mut s = self.state.lock();
-            s.driver_features = (s.driver_features & 0x0000_0000_FFFF_FFFF) | ((features as u64) << 32);
+            s.driver_features =
+                (s.driver_features & 0x0000_0000_FFFF_FFFF) | ((features as u64) << 32);
         }
 
         fn get_num_queues(&self) -> u16 {

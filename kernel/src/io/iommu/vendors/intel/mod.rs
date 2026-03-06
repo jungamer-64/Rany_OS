@@ -10,11 +10,11 @@ use x86_64::PhysAddr;
 
 // Declaring submodules moved here
 pub mod controller;
+pub mod driver;
 pub mod qi;
 pub mod registers;
 pub mod registry; // Intel-specific registry
 pub mod tables;
-pub mod driver;
 
 use self::controller::dma::DomainManager;
 use self::controller::fault::FaultHandler;
@@ -34,11 +34,9 @@ use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 // Intel-specific registry access
 use self::registry::get_iommu_registry;
 
-/// Intel VT-d driver wrapper.
-
-
-mod driver_ops;
 mod diagnostics;
+/// Intel VT-d driver wrapper.
+mod driver_ops;
 
 #[derive(Default, Clone)]
 pub struct IntelIommuDriver {

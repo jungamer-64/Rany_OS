@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod simd_pack_32bit;
 #[test_case]
 pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
@@ -195,7 +194,9 @@ pub(crate) fn test_draw_circle_symmetric_32bit_backbuffer() {
     // pixels at all 8 mirrored positions.
     let buf = fb.back_buffer.as_ref().unwrap();
     let px = |x: i32, y: i32| -> bool {
-        if x < 0 || y < 0 || x >= info.width as i32 || y >= info.height as i32 { return false; }
+        if x < 0 || y < 0 || x >= info.width as i32 || y >= info.height as i32 {
+            return false;
+        }
         buf[y as usize * info.width as usize + x as usize] != 0
     };
 
@@ -305,13 +306,24 @@ pub(crate) fn test_draw_line_steep_rgb565_mmio() {
         let mut err = dx + dy;
         loop {
             fb_naive.set_pixel(x, y, color);
-            if x == x2 && y == y2 { break; }
+            if x == x2 && y == y2 {
+                break;
+            }
             let e2 = 2 * err;
-            if e2 >= dy { err += dy; x += sx; }
-            if e2 <= dx { err += dx; y += sy; }
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
         }
 
-        assert_eq!(vram_opt, vram_naive, "steep line ({x1},{y1})->({x2},{y2}) mismatch");
+        assert_eq!(
+            vram_opt, vram_naive,
+            "steep line ({x1},{y1})->({x2},{y2}) mismatch"
+        );
 
         // reset
         vram_opt.fill(0);
@@ -350,7 +362,8 @@ pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
             assert_eq!(
                 (actual.red, actual.green, actual.blue),
                 (expected.red, expected.green, expected.blue),
-                "copy_rect mismatch at dest ({},{y})", x + 2
+                "copy_rect mismatch at dest ({},{y})",
+                x + 2
             );
         }
     }

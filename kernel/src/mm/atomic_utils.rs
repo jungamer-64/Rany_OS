@@ -326,7 +326,6 @@ impl core::fmt::Debug for AtomicU16 {
     }
 }
 
-
 // ============================================================================
 // QEMU Smoke Tests (wave10)
 // ============================================================================
@@ -473,16 +472,15 @@ mod tests {
     #[test_case]
     fn test_compare_exchange() {
         let a = AtomicU8::new(10);
-        
+
         // 成功ケース
         let result = a.compare_exchange(10, 20, Ordering::SeqCst, Ordering::SeqCst);
         assert_eq!(result, Ok(10));
         assert_eq!(a.load(Ordering::SeqCst), 20);
-        
+
         // 失敗ケース
         let result = a.compare_exchange(10, 30, Ordering::SeqCst, Ordering::SeqCst);
         assert_eq!(result, Err(20));
         assert_eq!(a.load(Ordering::SeqCst), 20);
     }
 }
-

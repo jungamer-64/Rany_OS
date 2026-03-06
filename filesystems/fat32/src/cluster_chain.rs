@@ -1,10 +1,5 @@
 use crate::{
-    Cluster,
-    Fat32FileSystem,
-    FsError,
-    FsResult,
-    CYCLE_CHECK_INTERVAL,
-    MAX_CLUSTER_CHAIN,
+    CYCLE_CHECK_INTERVAL, Cluster, Fat32FileSystem, FsError, FsResult, MAX_CLUSTER_CHAIN,
     ZeroCopyBufferMut,
 };
 

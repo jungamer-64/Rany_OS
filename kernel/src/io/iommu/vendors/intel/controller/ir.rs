@@ -13,9 +13,9 @@ use core::sync::atomic::Ordering;
 use super::IommuController;
 use super::init::CapabilityManager;
 use super::utils::IommuUtils;
+use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
 use crate::io::iommu::types::IommuError;
 use crate::io::iommu::vendors::intel::registers::{ecap_bits, gcmd_bits, gsts_bits, regs};
-use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
 
 /// Interrupt Remapping Entry (128-bit)
 #[repr(C, align(16))]
@@ -70,9 +70,9 @@ impl InterruptRemapEntry {
         let mut lo = (pid_addr & !0xFFF) | 1;
         // SECURITY: IM (Interrupt Mode) = 1 (bit 15) for posted interrupts.
         lo |= 1 << 15;
-        
+
         let mut hi = 0;
-        
+
         // Notification Vector (bits 111:104 of IRTE, bits 47:40 of hi)
         hi |= (vector as u64) << 40;
 
@@ -146,20 +146,30 @@ impl InterruptRemapTable {
 
             if was_present && is_present {
                 // Modifying a present entry: Clear Present bit first.
-                unsafe { core::ptr::write_volatile(&mut e.lo, 0); }
+                unsafe {
+                    core::ptr::write_volatile(&mut e.lo, 0);
+                }
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
             }
 
             if is_present {
                 // Setting to Present=1: Write hi first, then lo.
-                unsafe { core::ptr::write_volatile(&mut e.hi, entry.hi); }
+                unsafe {
+                    core::ptr::write_volatile(&mut e.hi, entry.hi);
+                }
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                unsafe { core::ptr::write_volatile(&mut e.lo, entry.lo); }
+                unsafe {
+                    core::ptr::write_volatile(&mut e.lo, entry.lo);
+                }
             } else {
                 // Clearing to Present=0: Write lo first, then hi.
-                unsafe { core::ptr::write_volatile(&mut e.lo, entry.lo); }
+                unsafe {
+                    core::ptr::write_volatile(&mut e.lo, entry.lo);
+                }
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                unsafe { core::ptr::write_volatile(&mut e.hi, entry.hi); }
+                unsafe {
+                    core::ptr::write_volatile(&mut e.hi, entry.hi);
+                }
             }
             true
         } else {

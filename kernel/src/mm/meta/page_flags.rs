@@ -22,9 +22,9 @@
 //! ```
 // ============================================================================
 
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
-use alloc::vec::Vec;
 use crate::mm::types::FrameIndex;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 /// Global array of atomic page flags.
 /// Initialized during memory management setup.
@@ -70,12 +70,12 @@ impl PageMetaFlags {
 }
 
 /// Initialize the global page flags array.
-/// 
+///
 /// # Safety
 /// Must be called once during kernel initialization with valid heap.
 pub unsafe fn init_page_flags(total_frames: usize) {
     TOTAL_FRAMES = total_frames;
-    
+
     // Allocate the flags array
     let mut flags = Vec::with_capacity(total_frames);
     flags.resize_with(total_frames, || AtomicU8::new(0));
@@ -219,13 +219,13 @@ pub fn get_order(frame: FrameIndex) -> u8 {
 }
 
 /// Set the allocated order of a page.
-/// 
+///
 /// # Safety
 /// Caller must ensure synchronization. Typically set during allocation/deallocation.
 #[inline]
 pub unsafe fn set_order(frame: FrameIndex, order: u8) {
-     let idx = frame.as_usize();
-     if idx < TOTAL_FRAMES && !PAGE_ORDERS.is_null() {
-         *PAGE_ORDERS.add(idx) = order;
-     }
+    let idx = frame.as_usize();
+    if idx < TOTAL_FRAMES && !PAGE_ORDERS.is_null() {
+        *PAGE_ORDERS.add(idx) = order;
+    }
 }

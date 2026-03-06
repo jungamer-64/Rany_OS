@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl FastBitmapAllocator {
     /// Create a new fast bitmap allocator
     pub fn new(base: u64, size: u64) -> Self {
@@ -29,7 +28,13 @@ impl FastBitmapAllocator {
             let arena_start_2m = cpu_id * blocks_2m_per_cpu;
             let arena_end_2m = ((cpu_id + 1) * blocks_2m_per_cpu).min(total_blocks_2m);
 
-            mag.set_arena(cpu_id, arena_start_4k, arena_end_4k, arena_start_2m, arena_end_2m);
+            mag.set_arena(
+                cpu_id,
+                arena_start_4k,
+                arena_end_4k,
+                arena_start_2m,
+                arena_end_2m,
+            );
             magazines.push(mag);
         }
 
@@ -120,14 +125,18 @@ impl FastBitmapAllocator {
     /// arena から1ページ割り当て (ウィンドウリロード含む)
     pub(super) fn try_arena_allocate_page(&self, arena: &mut PerArenaDetail) -> Option<u64> {
         if let Some(page_idx) = arena.allocate_page() {
-            self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
+            self.stats
+                .single_writer_allocs
+                .fetch_add(1, Ordering::Relaxed);
             return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
         }
         if arena.is_windowed() && arena.has_next_window() {
             let global_detail = self.bitmap.detail();
             if arena.reload_next_window(global_detail) {
                 if let Some(page_idx) = arena.allocate_page() {
-                    self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
+                    self.stats
+                        .single_writer_allocs
+                        .fetch_add(1, Ordering::Relaxed);
                     return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
                 }
             }
@@ -179,7 +188,9 @@ impl FastBitmapAllocator {
         if let Some(page_idx) = self.bitmap.allocate_4k_from_partial() {
             let addr = self.base + (page_idx as u64) * PAGE_SIZE_4K;
             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
-            self.stats.allocs_from_partial_2m.fetch_add(1, Ordering::Relaxed);
+            self.stats
+                .allocs_from_partial_2m
+                .fetch_add(1, Ordering::Relaxed);
             return Some(addr);
         }
 
@@ -187,7 +198,9 @@ impl FastBitmapAllocator {
         if let Some(page_idx) = self.bitmap.base_bitmap().allocate_one() {
             let addr = self.base + (page_idx as u64) * PAGE_SIZE_4K;
             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
-            self.stats.hugepage_pollutions.fetch_add(1, Ordering::Relaxed);
+            self.stats
+                .hugepage_pollutions
+                .fetch_add(1, Ordering::Relaxed);
             // Update 2MB hierarchy
             self.bitmap.on_page_allocated(page_idx);
             return Some(addr);
@@ -244,17 +257,19 @@ impl FastBitmapAllocator {
         if limit >= self.base + self.size {
             return self.allocate_4k();
         }
-        if limit <= self.base { return None; }
-        
+        if limit <= self.base {
+            return None;
+        }
+
         // Strict limit: bypass magazine
         let limit_idx = ((limit - self.base) / PAGE_SIZE_4K) as usize;
-        
+
         if let Some(idx) = self.bitmap.allocate_4k_below(limit_idx) {
-             let addr = self.base + (idx as u64) * PAGE_SIZE_4K;
-             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
-             Some(addr)
+            let addr = self.base + (idx as u64) * PAGE_SIZE_4K;
+            self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+            Some(addr)
         } else {
-             None
+            None
         }
     }
 
@@ -263,33 +278,37 @@ impl FastBitmapAllocator {
         if limit >= self.base + self.size {
             return self.allocate_2m();
         }
-        if limit <= self.base { return None; }
+        if limit <= self.base {
+            return None;
+        }
 
         let limit_idx = ((limit - self.base) / PAGE_SIZE_2M) as usize;
         if let Some(idx) = self.bitmap.allocate_2m_below(limit_idx) {
-             let addr = self.base + (idx as u64) * PAGE_SIZE_2M;
-             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
-             Some(addr)
+            let addr = self.base + (idx as u64) * PAGE_SIZE_2M;
+            self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+            Some(addr)
         } else {
-             None
+            None
         }
     }
 
     /// Allocate 1GB page below limit
     pub fn allocate_1g_below(&self, limit: u64) -> Option<u64> {
-         if limit >= self.base + self.size {
+        if limit >= self.base + self.size {
             return self.allocate_1g();
-         }
-         if limit <= self.base { return None; }
+        }
+        if limit <= self.base {
+            return None;
+        }
 
-         let limit_idx = ((limit - self.base) / PAGE_SIZE_1G) as usize;
-         if let Some(idx) = self.bitmap.allocate_1g_below(limit_idx) {
-             let addr = self.base + (idx as u64) * PAGE_SIZE_1G;
-             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
-             Some(addr)
-         } else {
-             None
-         }
+        let limit_idx = ((limit - self.base) / PAGE_SIZE_1G) as usize;
+        if let Some(idx) = self.bitmap.allocate_1g_below(limit_idx) {
+            let addr = self.base + (idx as u64) * PAGE_SIZE_1G;
+            self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+            Some(addr)
+        } else {
+            None
+        }
     }
 
     // ========================================================================
@@ -320,7 +339,11 @@ impl FastBitmapAllocator {
     }
 
     /// Attempt to free a page via the single-writer arena path.
-    pub(super) fn try_free_single_writer(&self, magazine: &PerCpuFastMagazine, page_idx: usize) -> bool {
+    pub(super) fn try_free_single_writer(
+        &self,
+        magazine: &PerCpuFastMagazine,
+        page_idx: usize,
+    ) -> bool {
         if !magazine.is_single_writer_enabled() {
             return false;
         }
@@ -328,7 +351,9 @@ impl FastBitmapAllocator {
         if let Some(ref mut arena) = *arena_guard {
             if arena.in_current_window(page_idx) && !arena.is_frozen() {
                 if arena.free_page(page_idx) {
-                    self.stats.single_writer_frees.fetch_add(1, Ordering::Relaxed);
+                    self.stats
+                        .single_writer_frees
+                        .fetch_add(1, Ordering::Relaxed);
                     return true;
                 }
             }
@@ -405,14 +430,16 @@ impl FastBitmapAllocator {
         // Drain entries from remote free ring using closure
         let base = self.base;
         let bitmap = &self.bitmap;
-        
+
         drained = magazine.remote_free_ring.drain_with(64, |entry| {
             let page_idx = ((entry.addr - base) / PAGE_SIZE_4K) as usize;
             let _ = bitmap.free_4k(page_idx);
         });
 
         if drained > 0 {
-            self.stats.remote_frees_drained.fetch_add(drained as u64, Ordering::Relaxed);
+            self.stats
+                .remote_frees_drained
+                .fetch_add(drained as u64, Ordering::Relaxed);
         }
 
         drained
@@ -477,16 +504,24 @@ impl FastBitmapAllocator {
                 let arena_end_4k = ((idx + 1).saturating_mul(words_per_cpu)).min(total_words_4k);
 
                 let arena_start_2m = (idx.saturating_mul(blocks_2m_per_cpu)).min(total_blocks_2m);
-                let arena_end_2m = ((idx + 1).saturating_mul(blocks_2m_per_cpu)).min(total_blocks_2m);
+                let arena_end_2m =
+                    ((idx + 1).saturating_mul(blocks_2m_per_cpu)).min(total_blocks_2m);
 
                 let mag = &mut self.magazines[cpu_id];
-                mag.set_arena(cpu_id, arena_start_4k, arena_end_4k, arena_start_2m, arena_end_2m);
+                mag.set_arena(
+                    cpu_id,
+                    arena_start_4k,
+                    arena_end_4k,
+                    arena_start_2m,
+                    arena_end_2m,
+                );
                 mag.single_writer_enabled.store(false, Ordering::Release);
                 *mag.arena_detail.lock().expect("lock poisoned") = None;
             }
         }
 
-        self.arena_ownership.reconfigure_for_cpu_list(total_words_4k, cpu_ids);
+        self.arena_ownership
+            .reconfigure_for_cpu_list(total_words_4k, cpu_ids);
     }
 
     // ========================================================================
@@ -557,7 +592,7 @@ impl FastBitmapAllocator {
         // Ensure alignment is at least page-sized and a multiple of PAGE_SIZE_4K for simplicity
         let align = align.max(PAGE_SIZE_4K);
         let align_pages = (align.checked_add(PAGE_SIZE_4K - 1)? / PAGE_SIZE_4K) as usize;
-        
+
         if align_pages == 0 {
             return None;
         }
@@ -595,13 +630,25 @@ impl FastBitmapAllocator {
     pub fn free_immediate(&self, addr: u64, granularity: PageGranularity) -> Result<(), ()> {
         match granularity {
             PageGranularity::Page4K => {
-                if self.free_4k(addr) { Ok(()) } else { Err(()) }
+                if self.free_4k(addr) {
+                    Ok(())
+                } else {
+                    Err(())
+                }
             }
             PageGranularity::Page2M => {
-                if self.free_2m(addr) { Ok(()) } else { Err(()) }
+                if self.free_2m(addr) {
+                    Ok(())
+                } else {
+                    Err(())
+                }
             }
             PageGranularity::Page1G => {
-                if self.free_1g(addr) { Ok(()) } else { Err(()) }
+                if self.free_1g(addr) {
+                    Ok(())
+                } else {
+                    Err(())
+                }
             }
         }
     }

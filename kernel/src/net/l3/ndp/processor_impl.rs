@@ -3,7 +3,6 @@
 use super::*;
 use crate::net::l2::ethernet::MacAddress;
 
-
 impl NdpProcessor {
     /// Create a new NDP processor
     pub fn new(our_link_local: Ipv6Address, our_mac: [u8; 6]) -> Self {
@@ -71,12 +70,8 @@ impl NdpProcessor {
             Icmpv6Type::NeighborAdvertisement => {
                 self.process_na(data, src, dst, src_mac, current_time)
             }
-            Icmpv6Type::RouterAdvertisement => {
-                self.process_ra(data, src, dst, current_time)
-            }
-            Icmpv6Type::Redirect => {
-                self.process_redirect(data, src, dst, current_time)
-            }
+            Icmpv6Type::RouterAdvertisement => self.process_ra(data, src, dst, current_time),
+            Icmpv6Type::Redirect => self.process_redirect(data, src, dst, current_time),
             Icmpv6Type::RouterSolicitation => {
                 // We don't process RS (we're not a router)
                 NdpResult::None
@@ -132,7 +127,9 @@ impl NdpProcessor {
                     log::warn!(
                         "[NET-NDP] Possible NS spoofing: SLLA {} does not match Ethernet source MAC {}",
                         MacAddress::from_octets(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]),
-                        MacAddress::from_octets(src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5])
+                        MacAddress::from_octets(
+                            src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]
+                        )
                     );
                     return NdpResult::Error;
                 }
@@ -147,7 +144,10 @@ impl NdpProcessor {
         if src.is_unspecified() {
             // RFC 4862 Section 5.4.3: Defense against DAD probe.
             // MUST send to all-nodes multicast address.
-            log::info!("[NET-NDP] Received DAD probe for our address {} - defending (RFC 4862)", target);
+            log::info!(
+                "[NET-NDP] Received DAD probe for our address {} - defending (RFC 4862)",
+                target
+            );
             NdpResult::SendNeighborAdvertisementMulticast {
                 target,
                 our_mac: self.our_mac,
@@ -192,7 +192,10 @@ impl NdpProcessor {
 
         // Security (RFC 4861 Section 7.1.2): Target address MUST NOT be a multicast address.
         if target.is_multicast() {
-            log::warn!("[NET-NDP] Dropping NA with multicast target address {}", target);
+            log::warn!(
+                "[NET-NDP] Dropping NA with multicast target address {}",
+                target
+            );
             return NdpResult::Error;
         }
 
@@ -216,7 +219,9 @@ impl NdpProcessor {
                     log::warn!(
                         "[NET-NDP] Possible NA spoofing: TLLA {} does not match Ethernet source MAC {}",
                         MacAddress::from_octets(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]),
-                        MacAddress::from_octets(src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5])
+                        MacAddress::from_octets(
+                            src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]
+                        )
                     );
                     return NdpResult::Error;
                 }
@@ -246,15 +251,12 @@ impl NdpProcessor {
                     }
                 }
             } else {
-                // RFC 4861 Section 7.2.5: If the Target Address is NOT in the Neighbor Cache, 
+                // RFC 4861 Section 7.2.5: If the Target Address is NOT in the Neighbor Cache,
                 // advertisements for the target SHOULD be silently discarded.
                 return NdpResult::None;
             }
 
-            return NdpResult::NeighborUpdated {
-                ip: target,
-                mac,
-            };
+            return NdpResult::NeighborUpdated { ip: target, mac };
         }
 
         NdpResult::None
@@ -304,7 +306,9 @@ impl NdpProcessor {
                     // Update neighbor cache with router's MAC (RFC 4861: should be STALE)
                     self.cache.update_stale(&src, *mac, current_time);
                 }
-                NdpOption::PrefixInfo { .. } | NdpOption::Mtu(_) | NdpOption::RecursiveDnsServer { .. } => {
+                NdpOption::PrefixInfo { .. }
+                | NdpOption::Mtu(_)
+                | NdpOption::RecursiveDnsServer { .. } => {
                     prefix_options.push(opt);
                 }
                 _ => {}
@@ -359,15 +363,22 @@ impl NdpProcessor {
 
         // 4. Destination address MUST NOT be a multicast address.
         if destination.is_multicast() {
-            log::warn!("NDP: Dropping Redirect with multicast destination {}", destination);
+            log::warn!(
+                "NDP: Dropping Redirect with multicast destination {}",
+                destination
+            );
             return NdpResult::Error;
         }
 
-        // 5. The Target Address MUST be either a link-local address (when the redirect 
-        //    is to a router) or the same as the Destination Address (when the 
+        // 5. The Target Address MUST be either a link-local address (when the redirect
+        //    is to a router) or the same as the Destination Address (when the
         //    redirect is to the destination itself).
         if !target.is_link_local() && target != destination {
-            log::warn!("NDP: Dropping Redirect with invalid target {} for destination {}", target, destination);
+            log::warn!(
+                "NDP: Dropping Redirect with invalid target {} for destination {}",
+                target,
+                destination
+            );
             return NdpResult::Error;
         }
 
@@ -389,7 +400,10 @@ impl NdpProcessor {
             }
         }
 
-        NdpResult::Redirect { target, destination }
+        NdpResult::Redirect {
+            target,
+            destination,
+        }
     }
 
     /// Build a Neighbor Solicitation message
@@ -474,10 +488,7 @@ impl NdpProcessor {
     /// Build a Router Solicitation message
     ///
     /// Sent to ff02::2 (all-routers) to solicit Router Advertisements
-    pub fn build_rs(
-        src: &Ipv6Address,
-        src_mac: &[u8; 6],
-    ) -> Vec<u8> {
+    pub fn build_rs(src: &Ipv6Address, src_mac: &[u8; 6]) -> Vec<u8> {
         let dst = Ipv6Address::ALL_ROUTERS_LINK_LOCAL;
         // RS: type(1) + code(1) + checksum(2) + reserved(4) + SLLA option(8) = 16
         let total_len = 16;
@@ -489,8 +500,8 @@ impl NdpProcessor {
         // bytes 4-7: reserved
 
         // Source Link-Layer Address option
-        msg[8] = 1;  // type = Source Link-Layer Address
-        msg[9] = 1;  // length = 1 (in 8-byte units)
+        msg[8] = 1; // type = Source Link-Layer Address
+        msg[9] = 1; // length = 1 (in 8-byte units)
         msg[10..16].copy_from_slice(src_mac);
 
         // Compute checksum
@@ -526,13 +537,10 @@ impl NdpProcessor {
     /// Start resolution for a neighbor (create Incomplete entry)
     ///
     /// Returns the NS message to send (caller sends it)
-    pub fn start_resolution(
-        &mut self,
-        target: &Ipv6Address,
-        current_time: u64,
-    ) -> Vec<u8> {
+    pub fn start_resolution(&mut self, target: &Ipv6Address, current_time: u64) -> Vec<u8> {
         // Create incomplete entry
-        self.cache.insert(NeighborEntry::new_incomplete(*target, current_time));
+        self.cache
+            .insert(NeighborEntry::new_incomplete(*target, current_time));
         self.stats.ns_sent.fetch_add(1, Ordering::Relaxed);
 
         // Build NS targeting the solicited-node multicast address
@@ -599,4 +607,3 @@ pub fn ipv6_multicast_to_mac(addr: &Ipv6Address) -> [u8; 6] {
 // =====================================================
 // Tests
 // =====================================================
-

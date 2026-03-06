@@ -3,7 +3,6 @@ use super::*;
 use crate::net::l4::tcp::TcpControlBlock;
 
 impl NetworkStack {
-
     /// Bind a TCP listener
     pub fn bind_tcp(&mut self, addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
         // Default: no token
@@ -11,7 +10,11 @@ impl NetworkStack {
     }
 
     /// Bind a TCP listener with a capability token
-    pub fn bind_tcp_with_token(&mut self, addr: TcpEndpointAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
+    pub fn bind_tcp_with_token(
+        &mut self,
+        addr: TcpEndpointAddr,
+        token: Option<u64>,
+    ) -> Result<TcpListener, TcpError> {
         self.tcp.bind(addr, token)
     }
 
@@ -98,7 +101,11 @@ impl NetworkStack {
             let src_port = u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]);
             let dst_port = u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]);
             if !crate::net::security::firewall::check_egress(
-                src_ip.octets(), dst_ip.octets(), 6, src_port, dst_port,
+                src_ip.octets(),
+                dst_ip.octets(),
+                6,
+                src_port,
+                dst_port,
             ) {
                 self.stats.record_dropped();
                 return false;
@@ -150,7 +157,9 @@ impl NetworkStack {
                         drop(frame);
                         packet.set_len(total_len);
 
-                        match crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
+                        match crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(
+                            packet,
+                        ) {
                             Ok(()) => {
                                 // Zero-copy enqueue succeeded
                                 // Update stats
@@ -178,7 +187,17 @@ impl NetworkStack {
         res: &TcpProcessResult,
         buffer: &mut [u8; MAX_PACKET_SIZE],
     ) -> Option<(TcpEndpointAddr, TcpEndpointAddr, u32, usize)> {
-        if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, ref payload, ref options } = *res {
+        if let TcpProcessResult::SendPacket {
+            local,
+            remote,
+            seq,
+            ack,
+            flags,
+            window,
+            ref payload,
+            ref options,
+        } = *res
+        {
             let header_len = 20 + options.len();
             let total_len = header_len + payload.len();
             if total_len > buffer.len() {
@@ -210,7 +229,12 @@ impl NetworkStack {
                 let src_v6 = Ipv6Address::new(local.as_ipv6());
                 let dst_v6 = Ipv6Address::new(remote.as_ipv6());
                 // IPv6 pseudo-header based checksum
-                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::l3::ipv4::IpProtocol::Tcp, total_len as u32);
+                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(
+                    &src_v6,
+                    &dst_v6,
+                    crate::net::l3::ipv4::IpProtocol::Tcp,
+                    total_len as u32,
+                );
                 let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
                 let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
@@ -229,7 +253,9 @@ impl NetworkStack {
 
         for res in results {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
-            if let Some((local, remote, seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
+            if let Some((local, remote, seq, total_len)) =
+                Self::build_tcp_packet_from_result(&res, &mut buffer)
+            {
                 let sent = if local.is_ipv6() && remote.is_ipv6() {
                     let src_v6 = Ipv6Address::new(local.as_ipv6());
                     let dst_v6 = Ipv6Address::new(remote.as_ipv6());
@@ -256,7 +282,9 @@ impl NetworkStack {
         let keepalive_results = self.tcp.process_keepalives(current_time);
         for res in keepalive_results {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
-            if let Some((local, remote, _seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
+            if let Some((local, remote, _seq, total_len)) =
+                Self::build_tcp_packet_from_result(&res, &mut buffer)
+            {
                 if local.is_ipv6() && remote.is_ipv6() {
                     let src_v6 = Ipv6Address::new(local.as_ipv6());
                     let dst_v6 = Ipv6Address::new(remote.as_ipv6());
@@ -273,7 +301,9 @@ impl NetworkStack {
         let zwp_results = self.tcp.process_zero_window_probes(current_time);
         for res in zwp_results {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
-            if let Some((local, remote, _seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
+            if let Some((local, remote, _seq, total_len)) =
+                Self::build_tcp_packet_from_result(&res, &mut buffer)
+            {
                 if local.is_ipv6() && remote.is_ipv6() {
                     let src_v6 = Ipv6Address::new(local.as_ipv6());
                     let dst_v6 = Ipv6Address::new(remote.as_ipv6());
@@ -317,13 +347,13 @@ impl NetworkStack {
     // ========================================================================
 
     /// Join a multicast group
-    /// 
+    ///
     /// Sends an IGMP Membership Report and starts responding to queries
     /// for the specified group address.
-    /// 
+    ///
     /// # Parameters
     /// - `group`: Multicast group address (224.0.0.0 - 239.255.255.255)
-    /// 
+    ///
     /// # Returns
     /// - `Ok(())` if successfully joined
     /// - `Err(IgmpError::InvalidGroupAddress)` if not a multicast address
@@ -336,13 +366,13 @@ impl NetworkStack {
     }
 
     /// Leave a multicast group
-    /// 
+    ///
     /// Sends an IGMP Leave Group message and stops responding to queries
     /// for the specified group address.
-    /// 
+    ///
     /// # Parameters
     /// - `group`: Multicast group address to leave
-    /// 
+    ///
     /// # Returns
     /// - `Ok(())` if successfully left
     /// - `Err(IgmpError::NotMember)` if not a member of the group
@@ -419,7 +449,11 @@ impl NetworkStack {
 
         // Run NDP periodic maintenance (expire stale neighbor cache entries + NUD probes)
         // Collect NS messages and link-local address first to avoid double borrow
-        let ndp_ns_data: alloc::vec::Vec<(crate::net::l3::ipv6::Ipv6Address, crate::net::l3::ipv6::Ipv6Address, alloc::vec::Vec<u8>)> = {
+        let ndp_ns_data: alloc::vec::Vec<(
+            crate::net::l3::ipv6::Ipv6Address,
+            crate::net::l3::ipv6::Ipv6Address,
+            alloc::vec::Vec<u8>,
+        )> = {
             if let Some(ref mut ndp) = self.ndp {
                 let ns_messages = ndp.tick(current_time);
                 let our_ll = ndp.our_link_local;

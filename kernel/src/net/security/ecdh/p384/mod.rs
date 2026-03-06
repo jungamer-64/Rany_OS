@@ -3,7 +3,6 @@
 
 use super::*;
 
-
 // ============================================================================
 // P-384 (secp384r1) Software Implementation
 // ============================================================================
@@ -17,7 +16,6 @@ mod ecdh_group;
 pub use ecdh_group::*;
 /// P-384演算の内部実装。TLS 1.2以降のECDHE鍵交換で使用。
 pub mod p384 {
-    
 
     /// P-384素数体の元（リトルエンディアン6×u64リム表現）
     ///
@@ -108,8 +106,12 @@ pub mod p384 {
 
         /// ゼロ判定 (Constant-time version)
         pub fn is_zero_ct(&self) -> u8 {
-            let or = self.limbs[0] | self.limbs[1] | self.limbs[2] | 
-                     self.limbs[3] | self.limbs[4] | self.limbs[5];
+            let or = self.limbs[0]
+                | self.limbs[1]
+                | self.limbs[2]
+                | self.limbs[3]
+                | self.limbs[4]
+                | self.limbs[5];
             let is_zero = ((or | (0u64.wrapping_sub(or))) >> 63) ^ 1;
             is_zero as u8
         }
@@ -135,10 +137,10 @@ pub mod p384 {
                 sub[i] = diff as u64;
                 borrow = (diff >> 127) as u64;
             }
-            
+
             // carry > 0 OR borrow == 0
             let use_sub = (carry as u8) | (1 - borrow as u8);
-            
+
             let res_fe = Self { limbs: result };
             let sub_fe = Self { limbs: sub };
             Self::ct_select(&res_fe, &sub_fe, use_sub)
@@ -220,7 +222,7 @@ pub mod p384 {
                 for _ in 0..64 {
                     let bit = (word & 1) as u8;
                     let multiplied = result.mul(&base);
-                    
+
                     result = Self::ct_select(&result, &multiplied, bit);
                     base = base.square();
                     word >>= 1;
@@ -329,7 +331,8 @@ pub mod p384 {
                 arr[48 - len..].copy_from_slice(&result_bytes);
             }
             arr
-        }).unwrap_or_else(|| P384FieldElement::from_limbs([0; 6]))
+        })
+        .unwrap_or_else(|| P384FieldElement::from_limbs([0; 6]))
     }
 
     // ========================================================================
@@ -402,7 +405,7 @@ pub mod p384 {
         /// M = 3*(X + Z^2)*(X - Z^2)
         pub fn double(&self) -> Self {
             let is_id = self.is_identity();
-            
+
             // a = p - 3 ショートカット: M = 3(X + Z²)(X - Z²)
             let z2 = self.z.square();
             let xpz2 = self.x.add(&z2);
@@ -473,18 +476,22 @@ pub mod p384 {
             // Z3 = H*Z1*Z2
             let z3 = h.mul(&self.z).mul(&other.z);
 
-            let res = Self { x: x3, y: y3, z: z3 };
+            let res = Self {
+                x: x3,
+                y: y3,
+                z: z3,
+            };
 
             // U1 == U2 の場合
             let is_equal = h_is_zero & r_is_zero;
             let is_opposite = h_is_zero & (1 - r_is_zero);
-            
+
             // 2倍算の結果（自己加算時）
             let doubled = self.double();
-            
+
             let res = Self::ct_select(&res, &doubled, is_equal);
             let res = Self::ct_select(&res, &Self::identity(), is_opposite);
-            
+
             // 単位元の処理
             let res = Self::ct_select(&res, other, is_self_id);
             let res = Self::ct_select(&res, self, is_other_id);
@@ -726,7 +733,10 @@ pub mod p384 {
     }
 
     /// DER INTEGERを読み取り、(データスライス, 次のオフセット)を返す
-    pub(super) fn read_der_integer<'a>(der: &'a [u8], pos: usize) -> Result<(&'a [u8], usize), EcdsaError> {
+    pub(super) fn read_der_integer<'a>(
+        der: &'a [u8],
+        pos: usize,
+    ) -> Result<(&'a [u8], usize), EcdsaError> {
         if pos >= der.len() || der[pos] != 0x02 {
             return Err(EcdsaError::InvalidSignature);
         }
@@ -738,7 +748,9 @@ pub mod p384 {
         Ok((&der[start..start + len], start + len))
     }
 
-    pub(super) fn parse_ecdsa_signature_der_384(der: &[u8]) -> Result<([u8; 48], [u8; 48]), EcdsaError> {
+    pub(super) fn parse_ecdsa_signature_der_384(
+        der: &[u8],
+    ) -> Result<([u8; 48], [u8; 48]), EcdsaError> {
         let (seq_len, pos) = decode_der_sequence_header(der)?;
 
         if der.len() < pos + seq_len {
@@ -818,9 +830,7 @@ pub mod p384 {
         }
 
         // x座標を取得
-        let (rx, _ry) = r_point
-            .to_affine()
-            .ok_or(EcdsaError::InvalidSignature)?;
+        let (rx, _ry) = r_point.to_affine().ok_or(EcdsaError::InvalidSignature)?;
 
         let rx_bytes = rx.to_be_bytes();
 

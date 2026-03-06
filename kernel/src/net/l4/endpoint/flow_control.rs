@@ -1,6 +1,6 @@
 // ============================================================================
- // kernel/src/net/endpoint/flow_control.rs
- // ===========================================================================
+// kernel/src/net/endpoint/flow_control.rs
+// ===========================================================================
 //! # TCP Flow Control - フロー制御
 //!
 //! 受信ウィンドウ管理とゼロウィンドウ処理
@@ -128,7 +128,7 @@ impl FlowController {
         self.buffer_used = self.buffer_used.saturating_add(bytes);
         // 受信した分だけ広告ウィンドウを減らして、ウィンドウ右端を維持する (RFC 1122)
         self.advertised_window = self.advertised_window.saturating_sub(bytes);
-        
+
         if self.advertised_window == 0 {
             self.state = FlowControlState::ZeroWindow;
         }
@@ -146,14 +146,14 @@ impl FlowController {
         // RFC 1122 Section 4.2.3.3: Receiver SWS Avoidance
         // ウィンドウの更新（右端の移動）を行う閾値: max(MSS, BufferSize / 2)
         let threshold = max(MIN_ADVERTISE_WINDOW, self.buffer_size / 2);
-        
+
         // 以下のいずれかの場合にウィンドウを更新する:
         // 1. 増加分が閾値以上
         // 2. ウィンドウが0から回復し、かつ最小広告ウィンドウ以上
         // 3. バッファが完全に空になった
-        let can_update = (available >= self.advertised_window + threshold) ||
-                        (self.advertised_window == 0 && available >= MIN_ADVERTISE_WINDOW) ||
-                        (available == self.buffer_size && self.advertised_window < self.buffer_size);
+        let can_update = (available >= self.advertised_window + threshold)
+            || (self.advertised_window == 0 && available >= MIN_ADVERTISE_WINDOW)
+            || (available == self.buffer_size && self.advertised_window < self.buffer_size);
 
         if can_update {
             self.advertised_window = available;
@@ -177,7 +177,8 @@ impl FlowController {
             // Note: 本来は RightEdge を維持すべきだが、既存実装との互換性のため
             // available が十分大きい場合は更新する。
             // on_consume 側で詳細な制御を行っている。
-            if available >= self.advertised_window + max(MIN_ADVERTISE_WINDOW, self.buffer_size / 2) {
+            if available >= self.advertised_window + max(MIN_ADVERTISE_WINDOW, self.buffer_size / 2)
+            {
                 self.advertised_window = available;
                 self.state = FlowControlState::Normal;
             }
@@ -211,7 +212,7 @@ impl FlowController {
             return false;
         }
 
-        // RFC 1122 Section 4.2.2.17: "A TCP MUST NOT close a connection because the 
+        // RFC 1122 Section 4.2.2.17: "A TCP MUST NOT close a connection because the
         // window is zero and the probe timer has expired."
         // We continue probing indefinitely with maximum backoff.
 
@@ -219,7 +220,7 @@ impl FlowController {
         // Exponential backoff: initial * 2^min(probes, 6)
         let backoff_shift = min(self.probe_count, 6) as u64;
         let interval = ZERO_WINDOW_PROBE_INTERVAL_MS * (1 << backoff_shift);
-        
+
         if current_tick.saturating_sub(self.last_probe_tick) >= interval {
             return true;
         }
@@ -383,7 +384,6 @@ pub mod tests {
         assert!(fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 3));
     }
 }
-
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {

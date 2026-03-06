@@ -239,7 +239,8 @@ impl GlobalDriverDomainStats {
 
     /// 再起動成功を記録
     pub fn on_restart_succeeded(&self) {
-        self.total_restarts_succeeded.fetch_add(1, Ordering::Relaxed);
+        self.total_restarts_succeeded
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// 再起動失敗を記録

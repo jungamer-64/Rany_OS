@@ -38,7 +38,6 @@ kernel_api::register_cell_runtime!();
 pub mod cmd;
 pub mod cq;
 pub mod defs;
-mod structs; // low‑level layout helpers used internally
 pub mod device;
 pub mod eq;
 pub mod error;
@@ -51,6 +50,7 @@ pub mod polling;
 pub mod port;
 pub mod regs;
 pub mod resources;
+mod structs; // low‑level layout helpers used internally
 pub mod wq;
 
 #[inline]
@@ -65,10 +65,9 @@ pub(crate) fn mmio_write_be32(addr: usize, value: u32) {
 
 // Re-export core types
 pub use defs::{
-    ConnectXVariant, CONNECTX4_DEVICE_ID, CONNECTX4_LX_DEVICE_ID, CONNECTX4_LX_VF_DEVICE_ID,
-    CONNECTX5_DEVICE_ID, CONNECTX5_EX_DEVICE_ID, CONNECTX6_DEVICE_ID, CONNECTX6_DX_DEVICE_ID,
-    CONNECTX6_LX_DEVICE_ID, CONNECTX7_DEVICE_ID, MELLANOX_VENDOR_ID, MLX5_MAX_PORTS,
-    SUPPORTED_DEVICE_IDS,
+    CONNECTX4_DEVICE_ID, CONNECTX4_LX_DEVICE_ID, CONNECTX4_LX_VF_DEVICE_ID, CONNECTX5_DEVICE_ID,
+    CONNECTX5_EX_DEVICE_ID, CONNECTX6_DEVICE_ID, CONNECTX6_DX_DEVICE_ID, CONNECTX6_LX_DEVICE_ID,
+    CONNECTX7_DEVICE_ID, ConnectXVariant, MELLANOX_VENDOR_ID, MLX5_MAX_PORTS, SUPPORTED_DEVICE_IDS,
 };
 pub use device::Mlx5Device;
 pub use error::Mlx5Error;

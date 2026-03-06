@@ -1,8 +1,7 @@
 use super::*;
-use crate::io::virtio::virtqueue::vring_flags;
-use crate::io::iommu::types::DmaAddr;
 use crate::io::iommu::api::is_global_dma_mapping_allowed;
-
+use crate::io::iommu::types::DmaAddr;
+use crate::io::virtio::virtqueue::vring_flags;
 
 mod async_io;
 pub use async_io::*;
@@ -172,7 +171,8 @@ impl VirtioBlkDevice {
         let _ = self.transport.get_notify_addr(queue_idx);
 
         // Standardized layout calculation
-        let (desc_size, _avail_size, used_offset, total_size) = VirtQueue::calculate_layout(queue_size);
+        let (desc_size, _avail_size, used_offset, total_size) =
+            VirtQueue::calculate_layout(queue_size);
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         // We use Bidirectional as default, allowing device to read/write rings
@@ -314,7 +314,10 @@ impl VirtioBlkDevice {
         // DMA バッファからステータスを確認
         let status_ok = if let Some(inflight_q) = self.inflight_dma.get(q_idx) {
             if let Ok(mut inflight) = inflight_q.lock() {
-                if let Some(req_dma) = inflight.get_mut(desc_id as usize).and_then(|slot| slot.take()) {
+                if let Some(req_dma) = inflight
+                    .get_mut(desc_id as usize)
+                    .and_then(|slot| slot.take())
+                {
                     let status = req_dma.status();
                     if status != VirtioBlkStatus::Ok as u8 {
                         log::warn!(
@@ -342,7 +345,9 @@ impl VirtioBlkDevice {
             let result = if status_ok {
                 crate::io::io_scheduler::IoResult::Success(completed_len as usize)
             } else {
-                crate::io::io_scheduler::IoResult::Error(crate::io::io_scheduler::IoError::DeviceError)
+                crate::io::io_scheduler::IoResult::Error(
+                    crate::io::io_scheduler::IoError::DeviceError,
+                )
             };
             let device_id = crate::io::io_scheduler::DeviceId::VirtioBlk { index: 0 };
             let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
@@ -351,7 +356,10 @@ impl VirtioBlkDevice {
             // レガシーパス: 既存の Waker を起動
             if let Some(queue_wakers_lock) = self.pending_wakers.get(q_idx) {
                 if let Ok(mut wakers) = queue_wakers_lock.lock() {
-                    if let Some(waker) = wakers.get_mut(desc_id as usize).and_then(|slot| slot.take()) {
+                    if let Some(waker) = wakers
+                        .get_mut(desc_id as usize)
+                        .and_then(|slot| slot.take())
+                    {
                         waker.wake();
                     }
                 }
@@ -360,7 +368,9 @@ impl VirtioBlkDevice {
     }
 
     /// Submit a read request (internal)
-    pub(super) fn alloc_three_descriptors(queue: &VirtQueue) -> Result<(u16, u16, u16), BlockError> {
+    pub(super) fn alloc_three_descriptors(
+        queue: &VirtQueue,
+    ) -> Result<(u16, u16, u16), BlockError> {
         let desc0 = queue.alloc_desc().ok_or(BlockError::QueueFull)?;
         let desc1 = queue.alloc_desc().ok_or_else(|| {
             queue.free_desc(desc0);
@@ -391,8 +401,12 @@ impl VirtioBlkDevice {
 
         // SECURITY CHECK: If IOMMU is enabled and global mappings are disallowed,
         // we cannot trust a raw `buf_addr` unless we know it's an IOVA.
-        if is_iommu_enabled() && self.iommu_device_id.is_some() && !is_global_dma_mapping_allowed() {
-            log::error!("[VIRTIO-BLK][SECURITY] attempt to use raw DMA address {:#x} without global mapping allowed. Use IoBuffer/DmaInfo instead.", buf_addr);
+        if is_iommu_enabled() && self.iommu_device_id.is_some() && !is_global_dma_mapping_allowed()
+        {
+            log::error!(
+                "[VIRTIO-BLK][SECURITY] attempt to use raw DMA address {:#x} without global mapping allowed. Use IoBuffer/DmaInfo instead.",
+                buf_addr
+            );
             return Err(BlockError::Unsupported);
         }
 
@@ -402,15 +416,19 @@ impl VirtioBlkDevice {
             sector,
         };
         let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
-        let mut req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
-            .ok_or(BlockError::NotReady)?;
+        let mut req_dma =
+            BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
+                .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
         let desc_id = if use_indirect {
             let indirect_table = req_dma.indirect_table_mut().ok_or(BlockError::NotReady)?;
-            let indirect_phys = req_dma.indirect_table_phys.map(DmaAddr::new).ok_or(BlockError::NotReady)?;
+            let indirect_phys = req_dma
+                .indirect_table_phys
+                .map(DmaAddr::new)
+                .ok_or(BlockError::NotReady)?;
 
             unsafe {
                 // Indirect Descriptor 0: Header
@@ -435,7 +453,9 @@ impl VirtioBlkDevice {
                     next: 0,
                 };
 
-                queue_guard.submit_indirect(indirect_phys, 3).ok_or(BlockError::QueueFull)?
+                queue_guard
+                    .submit_indirect(indirect_phys, 3)
+                    .ok_or(BlockError::QueueFull)?
             }
         } else {
             let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
@@ -512,8 +532,12 @@ impl VirtioBlkDevice {
         queue_idx: usize,
     ) -> Result<u16, BlockError> {
         // SECURITY CHECK: Matches submit_read
-        if is_iommu_enabled() && self.iommu_device_id.is_some() && !is_global_dma_mapping_allowed() {
-            log::error!("[VIRTIO-BLK][SECURITY] attempt to use raw DMA address {:#x} without global mapping allowed. Use IoBuffer/DmaInfo instead.", buf_addr);
+        if is_iommu_enabled() && self.iommu_device_id.is_some() && !is_global_dma_mapping_allowed()
+        {
+            log::error!(
+                "[VIRTIO-BLK][SECURITY] attempt to use raw DMA address {:#x} without global mapping allowed. Use IoBuffer/DmaInfo instead.",
+                buf_addr
+            );
             return Err(BlockError::Unsupported);
         }
 
@@ -525,7 +549,10 @@ impl VirtioBlkDevice {
 
         let desc_id = if use_indirect {
             let indirect_table = req_dma.indirect_table_mut().ok_or(BlockError::NotReady)?;
-            let indirect_phys = req_dma.indirect_table_phys.map(DmaAddr::new).ok_or(BlockError::NotReady)?;
+            let indirect_phys = req_dma
+                .indirect_table_phys
+                .map(DmaAddr::new)
+                .ok_or(BlockError::NotReady)?;
 
             unsafe {
                 // Indirect Descriptor 0: Header
@@ -550,7 +577,9 @@ impl VirtioBlkDevice {
                     next: 0,
                 };
 
-                queue_guard.submit_indirect(indirect_phys, 3).ok_or(BlockError::QueueFull)?
+                queue_guard
+                    .submit_indirect(indirect_phys, 3)
+                    .ok_or(BlockError::QueueFull)?
             }
         } else {
             // Allocate 3 descriptors
@@ -619,15 +648,19 @@ impl VirtioBlkDevice {
             sector: 0, // sector is ignored for flush
         };
         let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
-        let mut req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
-            .ok_or(BlockError::NotReady)?;
+        let mut req_dma =
+            BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
+                .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
         let desc_id = if use_indirect {
             let indirect_table = req_dma.indirect_table_mut().ok_or(BlockError::NotReady)?;
-            let indirect_phys = req_dma.indirect_table_phys.map(DmaAddr::new).ok_or(BlockError::NotReady)?;
+            let indirect_phys = req_dma
+                .indirect_table_phys
+                .map(DmaAddr::new)
+                .ok_or(BlockError::NotReady)?;
 
             unsafe {
                 // Indirect Descriptor 0: Header
@@ -645,7 +678,9 @@ impl VirtioBlkDevice {
                     next: 0,
                 };
 
-                queue_guard.submit_indirect(indirect_phys, 2).ok_or(BlockError::QueueFull)?
+                queue_guard
+                    .submit_indirect(indirect_phys, 2)
+                    .ok_or(BlockError::QueueFull)?
             }
         } else {
             // Flush only requires 2 descriptors: header and status (no data)

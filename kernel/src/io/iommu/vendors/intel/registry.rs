@@ -9,9 +9,9 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use super::controller::IommuController;
 use crate::io::iommu::runtime::config::IommuConfig;
 pub use crate::io::iommu::runtime::config::ReservedMemoryRegion; // Will be moved? RMRR is defined in mod?
-use super::controller::IommuController;
 
 /// Intel IOMMU Registry
 pub struct IommuRegistry {

@@ -1,9 +1,9 @@
 use super::*;
+use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
+use crate::security::capability::{CAP_NET_BIND, CapabilitySet, manager};
+use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
-use crate::security::capability::{manager, CapabilitySet, CAP_NET_BIND};
-use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
 
 fn idle_entry(_: u64) -> ! {
     loop {
@@ -30,8 +30,8 @@ impl Drop for CurrentTaskGuard {
 fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
     let cpu_id = crate::smp::current_cpu() as usize;
     let prev = get_current_task(cpu_id);
-    let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
-        .expect("failed to create test TCB");
+    let mut tcb =
+        TaskControlBlock::new(idle_entry, 0, 0, domain_id).expect("failed to create test TCB");
     let caps = manager().get_capabilities(domain_id.as_u64());
     tcb.security = Arc::new(DomainSecurity {
         credentials: DomainCredentials::ROOT,
@@ -52,8 +52,7 @@ pub fn test_udp_packet() {
     let src_ip = Ipv4Address::from_octets(192, 168, 1, 1);
     let dst_ip = Ipv4Address::from_octets(192, 168, 1, 2);
 
-    let len =
-        UdpProcessor::build_packet(&mut buffer, src_ip, 12345, dst_ip, 53, b"hello").unwrap();
+    let len = UdpProcessor::build_packet(&mut buffer, src_ip, 12345, dst_ip, 53, b"hello").unwrap();
 
     assert_eq!(len, UdpHeader::SIZE + 5);
 
@@ -84,7 +83,7 @@ pub fn test_udp_packet_v6() {
     assert_eq!(packet.src_port(), 12345);
     assert_eq!(packet.dst_port(), 53);
     assert_eq!(packet.payload(), b"hello v6");
-    
+
     // Checksum must be non-zero for IPv6 (transmitted as 0xFFFF if calculated as 0)
     assert!(packet.header().checksum() != 0);
     assert!(packet.verify_checksum_v6(src_ip, dst_ip));
@@ -97,7 +96,10 @@ pub fn test_udp_v6_checksum_mandatory() {
     let dst_ip = Ipv6Address::LOOPBACK;
 
     let mut packet_mut = UdpPacketMut::new(&mut buffer).unwrap();
-    packet_mut.set_src_port(1234).set_dst_port(5678).write_payload(b"test");
+    packet_mut
+        .set_src_port(1234)
+        .set_dst_port(5678)
+        .write_payload(b"test");
     let len = packet_mut.finalize_v6(src_ip, dst_ip);
 
     // Manually zero out the checksum
@@ -159,7 +161,11 @@ pub fn test_bind_with_token_reclaim() {
     }
 
     // Issuer revokes token (mark revoked)
-    assert!(manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+    assert!(
+        manager()
+            .revoke_grant(caller.as_u64(), token, false)
+            .is_ok()
+    );
 
     // Immediate reclaim should fail (in-flight)
     match manager().reclaim_token(token) {
@@ -181,20 +187,27 @@ pub fn test_bind_with_token_reclaim() {
 #[cfg_attr(test, test_case)]
 pub fn test_udp_recv_future_poisoned_returns_closed() {
     use crate::sync::set_panicking;
-    use core::task::{RawWaker, RawWakerVTable, Waker, Context};
     use core::pin::Pin;
-    use core::task::Poll;
     use core::ptr;
+    use core::task::Poll;
+    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
 
     fn noop_raw_waker() -> RawWaker {
-        unsafe fn clone(_: *const ()) -> RawWaker { noop_raw_waker() }
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            noop_raw_waker()
+        }
         unsafe fn wake(_: *const ()) {}
         unsafe fn wake_by_ref(_: *const ()) {}
         unsafe fn drop(_: *const ()) {}
-        RawWaker::new(ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
+        RawWaker::new(
+            ptr::null(),
+            &RawWakerVTable::new(clone, wake, wake_by_ref, drop),
+        )
     }
 
-    fn noop_waker() -> Waker { unsafe { Waker::from_raw(noop_raw_waker()) } }
+    fn noop_waker() -> Waker {
+        unsafe { Waker::from_raw(noop_raw_waker()) }
+    }
 
     let endpoint = UdpEndpoint::new(54321);
 
@@ -209,7 +222,10 @@ pub fn test_udp_recv_future_poisoned_returns_closed() {
     let w = noop_waker();
     let mut cx = Context::from_waker(&w);
 
-    assert!(matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Ready(None)));
+    assert!(matches!(
+        Pin::new(&mut fut).poll(&mut cx),
+        Poll::Ready(None)
+    ));
 }
 
 #[cfg_attr(test, test_case)]
@@ -263,8 +279,7 @@ pub fn test_udp_endpoint_multiple_waiters_woken_on_deliver() {
         }
         unsafe fn drop_waker(_: *const ()) {}
 
-        static VTABLE: RawWakerVTable =
-            RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
 
         unsafe { Waker::from_raw(RawWaker::new(counter as *const _ as *const (), &VTABLE)) }
     }
@@ -324,8 +339,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         unsafe fn wake_by_ref(_: *const ()) {}
         unsafe fn drop_waker(_: *const ()) {}
 
-        static VTABLE: RawWakerVTable =
-            RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
 
         unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) }
     }
@@ -373,12 +387,17 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         match crate::net::datapath::mempool::net_mempool() {
             None => crate::net::datapath::mempool::init_net_mempool(4)
                 .expect("initialize mempool for udp zero-copy enqueue test"),
-            Some(pool) if pool.stats().free_buffers == 0 => crate::net::datapath::mempool::init_net_mempool(1)
-                .expect("top up mempool for udp zero-copy enqueue test"),
+            Some(pool) if pool.stats().free_buffers == 0 => {
+                crate::net::datapath::mempool::init_net_mempool(1)
+                    .expect("top up mempool for udp zero-copy enqueue test")
+            }
             Some(_) => {}
         }
 
-        assert_eq!(processor.process(&buf[..len], src_ip, dst_ip, 255), UdpResult::Delivered);
+        assert_eq!(
+            processor.process(&buf[..len], src_ip, dst_ip, 255),
+            UdpResult::Delivered
+        );
     }
 
     let mut fut = endpoint.recv();

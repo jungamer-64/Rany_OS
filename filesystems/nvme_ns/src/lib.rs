@@ -35,19 +35,19 @@
 
 extern crate alloc;
 
+pub mod bitmap;
+pub mod dir;
 pub mod error;
+pub mod fs;
+pub mod inode;
 pub mod layout;
 pub mod ondisk;
-pub mod inode;
-pub mod dir;
-pub mod bitmap;
-pub mod fs;
 
 // Re-exports
-pub use error::{NsError, NsResult};
-pub use layout::{SuperBlock, NsLayout, SUPERBLOCK_MAGIC};
-pub use ondisk::{DiskInode, InodeKind, INODE_SIZE, ROOT_INODE_NUM};
-pub use inode::NsInode;
-pub use dir::{DirEntry as NsDirEntry, DirEntryIter};
 pub use bitmap::Bitmap;
+pub use dir::{DirEntry as NsDirEntry, DirEntryIter};
+pub use error::{NsError, NsResult};
 pub use fs::NvmeNamespaceFs;
+pub use inode::NsInode;
+pub use layout::{NsLayout, SUPERBLOCK_MAGIC, SuperBlock};
+pub use ondisk::{DiskInode, INODE_SIZE, InodeKind, ROOT_INODE_NUM};

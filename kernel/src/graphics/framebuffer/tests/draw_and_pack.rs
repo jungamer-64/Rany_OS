@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod blit_fill_dirty;
 #[test_case]
 pub(crate) fn test_draw_line_matches_naive_32bit_backbuffer() {
@@ -10,8 +9,12 @@ pub(crate) fn test_draw_line_matches_naive_32bit_backbuffer() {
     let color = Color::with_alpha(10, 20, 30, 255);
 
     let cases = [
-        (0, 0, 15, 3), (0, 0, 3, 15), (15, 0, 0, 15),
-        (2, 14, 13, 4), (7, 0, 7, 15), (0, 8, 15, 8),
+        (0, 0, 15, 3),
+        (0, 0, 3, 15),
+        (15, 0, 0, 15),
+        (2, 14, 13, 4),
+        (7, 0, 7, 15),
+        (0, 8, 15, 8),
     ];
 
     for &(x1, y1, x2, y2) in &cases {
@@ -22,8 +25,12 @@ pub(crate) fn test_draw_line_matches_naive_32bit_backbuffer() {
         let buf_naive = fb_naive.back_buffer.as_ref().unwrap();
         assert_eq!(buf_opt, buf_naive);
 
-        for b in fb_opt.back_buffer.as_mut().unwrap().iter_mut() { *b = 0; }
-        for b in fb_naive.back_buffer.as_mut().unwrap().iter_mut() { *b = 0; }
+        for b in fb_opt.back_buffer.as_mut().unwrap().iter_mut() {
+            *b = 0;
+        }
+        for b in fb_naive.back_buffer.as_mut().unwrap().iter_mut() {
+            *b = 0;
+        }
     }
 }
 
@@ -44,8 +51,12 @@ pub(crate) fn test_draw_line_matches_naive_24bit_backbuffer() {
         let buf_naive = fb_naive.back_buffer.as_ref().unwrap();
         assert_eq!(buf_opt, buf_naive);
 
-        for b in fb_opt.back_buffer.as_mut().unwrap().iter_mut() { *b = 0; }
-        for b in fb_naive.back_buffer.as_mut().unwrap().iter_mut() { *b = 0; }
+        for b in fb_opt.back_buffer.as_mut().unwrap().iter_mut() {
+            *b = 0;
+        }
+        for b in fb_naive.back_buffer.as_mut().unwrap().iter_mut() {
+            *b = 0;
+        }
     }
 }
 
@@ -247,9 +258,13 @@ pub(crate) fn test_pack_rgba_to_bgra_basic() {
 #[test_case]
 pub(crate) fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
     #[cfg(feature = "std")]
-    if !std::is_x86_feature_detected!("ssse3") { return; }
+    if !std::is_x86_feature_detected!("ssse3") {
+        return;
+    }
     #[cfg(not(feature = "std"))]
-    if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 { return; }
+    if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 {
+        return;
+    }
 
     assert_simd_matches_scalar(
         &[4, 12, 16, 20, 48, 64, 100],
@@ -263,9 +278,13 @@ pub(crate) fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
 #[test_case]
 pub(crate) fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
     #[cfg(feature = "std")]
-    if !std::is_x86_feature_detected!("avx2") { return; }
+    if !std::is_x86_feature_detected!("avx2") {
+        return;
+    }
     #[cfg(not(feature = "std"))]
-    if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 { return; }
+    if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 {
+        return;
+    }
 
     assert_simd_matches_scalar(
         &[4, 12, 16, 20, 48, 64, 100],
@@ -279,9 +298,13 @@ pub(crate) fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
 #[test_case]
 pub(crate) fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
     #[cfg(feature = "std")]
-    if !std::is_x86_feature_detected!("avx2") { return; }
+    if !std::is_x86_feature_detected!("avx2") {
+        return;
+    }
     #[cfg(not(feature = "std"))]
-    if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 { return; }
+    if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 {
+        return;
+    }
 
     assert_bgr24_8px_matches_scalar(97, true, Framebuffer::pack_rgba_to_bgr24_avx2_8pixels);
 }
@@ -290,9 +313,13 @@ pub(crate) fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
 #[test_case]
 pub(crate) fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
     #[cfg(feature = "std")]
-    if !std::is_x86_feature_detected!("ssse3") { return; }
+    if !std::is_x86_feature_detected!("ssse3") {
+        return;
+    }
     #[cfg(not(feature = "std"))]
-    if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 { return; }
+    if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 {
+        return;
+    }
 
     assert_bgr24_8px_matches_scalar(61, true, Framebuffer::pack_rgba_to_bgr24_ssse3_8pixels);
 }
@@ -300,7 +327,9 @@ pub(crate) fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 pub(crate) fn test_pack_rgba_to_bgra_neon_matches_scalar() {
-    if !std::is_aarch64_feature_detected!("neon") { return; }
+    if !std::is_aarch64_feature_detected!("neon") {
+        return;
+    }
 
     assert_simd_matches_scalar(
         &[4, 12, 16, 20, 48, 64, 100],

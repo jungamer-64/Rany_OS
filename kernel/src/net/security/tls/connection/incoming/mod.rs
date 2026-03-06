@@ -2,7 +2,6 @@ use super::*;
 
 mod ecdh_exchange;
 impl TlsConnection {
-
     /// データを受信して処理
     pub fn process_incoming(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         // Security: Limit receive buffer size to prevent DoS.
@@ -49,10 +48,12 @@ impl TlsConnection {
             Some(c) => c,
             None => return Err(TlsError::UnexpectedMessage),
         };
-        
+
         // TLS 1.2: 読み取り暗号化が有効な場合、Handshake/Alertレコードも復号が必要
-        let decrypted_storage_opt = if !self.is_tls13 && self.read_encryption_active && 
-                               (ct == ContentType::Handshake || ct == ContentType::Alert) {
+        let decrypted_storage_opt = if !self.is_tls13
+            && self.read_encryption_active
+            && (ct == ContentType::Handshake || ct == ContentType::Alert)
+        {
             Some(self.decrypt_record(payload, content_type)?)
         } else {
             None
@@ -133,12 +134,13 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         if self.is_tls13 && self.state != TlsState::Established {
             // TLS 1.3: 暗号化ハンドシェイクメッセージ
-            let app_data =
-                self.tls13_process_encrypted_handshake(payload)?;
+            let app_data = self.tls13_process_encrypted_handshake(payload)?;
             if !app_data.is_empty() {
                 plaintext.extend_from_slice(&app_data);
             }
-        } else if self.state == TlsState::Established || (!self.is_tls13 && self.read_encryption_active) {
+        } else if self.state == TlsState::Established
+            || (!self.is_tls13 && self.read_encryption_active)
+        {
             self.decrypt_established_data(payload, ContentType::ApplicationData as u8, plaintext)?;
         }
         Ok(())
@@ -150,9 +152,7 @@ impl TlsConnection {
         decrypted: &[u8],
         plaintext: &mut Vec<u8>,
     ) -> TlsResult<()> {
-        if let Some((inner_ct, inner_data)) =
-            Self::tls13_split_content_type(decrypted)
-        {
+        if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type(decrypted) {
             match ContentType::from_u8(inner_ct) {
                 Some(ContentType::ApplicationData) => {
                     plaintext.extend_from_slice(inner_data);
@@ -171,19 +171,27 @@ impl TlsConnection {
     }
 
     /// ハンドシェイクメッセージタイプに応じたディスパッチ
-    pub(super) fn dispatch_handshake_message(&mut self, msg_type: u8, payload: &[u8]) -> TlsResult<()> {
+    pub(super) fn dispatch_handshake_message(
+        &mut self,
+        msg_type: u8,
+        payload: &[u8],
+    ) -> TlsResult<()> {
         match msg_type {
-            2 => self.process_server_hello(payload),   // ServerHello
-            11 => self.process_certificate(payload),    // Certificate
+            2 => self.process_server_hello(payload), // ServerHello
+            11 => self.process_certificate(payload), // Certificate
             12 => self.process_server_key_exchange(payload), // ServerKeyExchange
-            14 => self.process_server_hello_done(payload),   // ServerHelloDone
-            20 => self.process_finished(payload),       // Finished
+            14 => self.process_server_hello_done(payload), // ServerHelloDone
+            20 => self.process_finished(payload),    // Finished
             _ => Ok(()),
         }
     }
 
     /// ハンドシェイクメッセージを記録し、トランスクリプトハッシュと鍵導出を更新する
-    pub(super) fn record_and_update_handshake(&mut self, msg_data: &[u8], msg_type: u8) -> TlsResult<()> {
+    pub(super) fn record_and_update_handshake(
+        &mut self,
+        msg_data: &[u8],
+        msg_type: u8,
+    ) -> TlsResult<()> {
         // Security: Limit cumulative handshake messages to prevent memory DoS.
         // 128KB is the limit for a single message, so we allow 256KB total for the whole handshake.
         const MAX_HANDSHAKE_ACCUMULATOR: usize = 262144;
@@ -265,8 +273,13 @@ impl TlsConnection {
         self.negotiated_cipher = Some(cipher);
 
         let ext_offset = offset + 3;
-        let (actual_version, server_key_share) =
-            Self::parse_server_hello_extensions(data, ext_offset, _legacy_version, &mut self.tls13_using_psk, self.tls13_psk.is_some());
+        let (actual_version, server_key_share) = Self::parse_server_hello_extensions(
+            data,
+            ext_offset,
+            _legacy_version,
+            &mut self.tls13_using_psk,
+            self.tls13_psk.is_some(),
+        );
 
         self.negotiated_version = Some(actual_version);
 
@@ -301,11 +314,15 @@ impl TlsConnection {
         let sentinel = &server_random[24..32];
 
         if negotiated_version <= TlsVersion::TLS_1_2 && sentinel == &DOWNGRD_12 {
-            log::warn!("[TLS] Downgrade attack detected: server signaled TLS 1.2 downgrade sentinel");
+            log::warn!(
+                "[TLS] Downgrade attack detected: server signaled TLS 1.2 downgrade sentinel"
+            );
             return Err(TlsError::HandshakeFailure);
         }
         if negotiated_version <= TlsVersion(0x0302) && sentinel == &DOWNGRD_11 {
-            log::warn!("[TLS] Downgrade attack detected: server signaled TLS 1.1 downgrade sentinel");
+            log::warn!(
+                "[TLS] Downgrade attack detected: server signaled TLS 1.1 downgrade sentinel"
+            );
             return Err(TlsError::HandshakeFailure);
         }
         Ok(())
@@ -326,8 +343,7 @@ impl TlsConnection {
             return (actual_version, server_key_share);
         }
 
-        let extensions_len =
-            ((data[ext_offset] as usize) << 8) | data[ext_offset + 1] as usize;
+        let extensions_len = ((data[ext_offset] as usize) << 8) | data[ext_offset + 1] as usize;
         let mut eoff = ext_offset + 2;
         let extensions_end = eoff + extensions_len;
 
@@ -341,9 +357,14 @@ impl TlsConnection {
             }
 
             Self::apply_server_hello_extension(
-                data, eoff, ext_type, ext_len,
-                &mut actual_version, &mut server_key_share,
-                tls13_using_psk, has_psk,
+                data,
+                eoff,
+                ext_type,
+                ext_len,
+                &mut actual_version,
+                &mut server_key_share,
+                tls13_using_psk,
+                has_psk,
             );
 
             eoff += ext_len;
@@ -365,24 +386,19 @@ impl TlsConnection {
     ) {
         match ext_type {
             43 if ext_len >= 2 => {
-                *actual_version =
-                    TlsVersion(((data[eoff] as u16) << 8) | data[eoff + 1] as u16);
+                *actual_version = TlsVersion(((data[eoff] as u16) << 8) | data[eoff + 1] as u16);
             }
             41 if ext_len >= 2 => {
-                let selected_index =
-                    ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
+                let selected_index = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
                 if selected_index == 0 && has_psk {
                     *tls13_using_psk = true;
                 }
             }
             51 if ext_len >= 4 => {
-                let group =
-                    ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
-                let key_len =
-                    ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;
+                let group = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
+                let key_len = ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;
                 if ext_len >= 4 + key_len {
-                    *server_key_share =
-                        Some((group, data[eoff + 4..eoff + 4 + key_len].to_vec()));
+                    *server_key_share = Some((group, data[eoff + 4..eoff + 4 + key_len].to_vec()));
                 }
             }
             _ => {}
@@ -398,21 +414,19 @@ impl TlsConnection {
         self.is_tls13 = true;
 
         const HRR_RANDOM: [u8; 32] = [
-            0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
-            0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
-            0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E,
-            0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
+            0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65,
+            0xB8, 0x91, 0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2,
+            0xC8, 0xA8, 0x33, 0x9C,
         ];
 
         if self.server_random == HRR_RANDOM {
             return self.process_hello_retry_request(cipher, &server_key_share);
         }
 
-        let (group_id, server_pubkey) = server_key_share
-            .ok_or(TlsError::HandshakeFailure)?;
+        let (group_id, server_pubkey) = server_key_share.ok_or(TlsError::HandshakeFailure)?;
 
-        let group = ecdh::EcdhGroup::from_named_group(group_id)
-            .ok_or(TlsError::UnsupportedCipherSuite)?;
+        let group =
+            ecdh::EcdhGroup::from_named_group(group_id).ok_or(TlsError::UnsupportedCipherSuite)?;
 
         let local_keypair = self
             .local_ecdh_keypair
@@ -573,8 +587,7 @@ impl TlsConnection {
             return Err(TlsError::DecodeError);
         }
 
-        let certs_len =
-            ((data[0] as usize) << 16) | ((data[1] as usize) << 8) | (data[2] as usize);
+        let certs_len = ((data[0] as usize) << 16) | ((data[1] as usize) << 8) | (data[2] as usize);
 
         // Security: Limit certificate chain length (e.g. 64KB)
         if data.len() < 3 + certs_len || certs_len == 0 || certs_len > 65536 {
@@ -606,7 +619,12 @@ impl TlsConnection {
 
         if !self.config.should_skip_verify() {
             // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致、およびルートCAへの信頼)
-            let ca_ders: Vec<&[u8]> = self.config.ca_certs.iter().map(|c| c.der.as_slice()).collect();
+            let ca_ders: Vec<&[u8]> = self
+                .config
+                .ca_certs
+                .iter()
+                .map(|c| c.der.as_slice())
+                .collect();
             if let Some(spki) = crate::net::security::x509::validate_certificate_chain(
                 &certs,
                 self.config.server_name.as_deref(),
@@ -618,7 +636,9 @@ impl TlsConnection {
             }
         } else {
             // 検証スキップ時は最初の証明書の鍵をそのまま使用
-            log::warn!("[TLS] Security: Certificate verification skipped. This connection is vulnerable to Man-in-the-Middle attacks!");
+            log::warn!(
+                "[TLS] Security: Certificate verification skipped. This connection is vulnerable to Man-in-the-Middle attacks!"
+            );
             if let Some(cert) = crate::net::security::x509::parse_x509(certs[0]) {
                 self.extract_server_public_key(&cert)?;
             } else {
@@ -655,13 +675,8 @@ impl TlsConnection {
             _ => return Err(TlsError::CryptoError),
         };
 
-        crate::net::security::rsa::rsa_pkcs1_verify(
-            &pubkey,
-            hash_alg,
-            &digest,
-            signature,
-        )
-        .map_err(|_| TlsError::CryptoError)
+        crate::net::security::rsa::rsa_pkcs1_verify(&pubkey, hash_alg, &digest, signature)
+            .map_err(|_| TlsError::CryptoError)
     }
 
     /// ECDSA P-256署名でServerKeyExchangeを検証
@@ -699,15 +714,18 @@ impl TlsConnection {
     }
 
     /// ServerKeyExchangeの署名を解析・検証
-    pub(super) fn verify_ske_signature(&self, data: &[u8], ecdhe_params_end: usize) -> TlsResult<()> {
+    pub(super) fn verify_ske_signature(
+        &self,
+        data: &[u8],
+        ecdhe_params_end: usize,
+    ) -> TlsResult<()> {
         let sig_offset = ecdhe_params_end;
         if data.len() < sig_offset + 4 {
             return Err(TlsError::DecodeError);
         }
 
         let sig_algorithm = ((data[sig_offset] as u16) << 8) | data[sig_offset + 1] as u16;
-        let sig_len =
-            ((data[sig_offset + 2] as usize) << 8) | data[sig_offset + 3] as usize;
+        let sig_len = ((data[sig_offset + 2] as usize) << 8) | data[sig_offset + 3] as usize;
 
         if data.len() < sig_offset + 4 + sig_len {
             return Err(TlsError::DecodeError);
@@ -717,8 +735,7 @@ impl TlsConnection {
 
         // 署名対象: client_random || server_random || ecdhe_params
         let ecdhe_params = &data[..ecdhe_params_end];
-        let mut signed_data =
-            Vec::with_capacity(32 + 32 + ecdhe_params.len());
+        let mut signed_data = Vec::with_capacity(32 + 32 + ecdhe_params.len());
         signed_data.extend_from_slice(&self.client_random);
         signed_data.extend_from_slice(&self.server_random);
         signed_data.extend_from_slice(ecdhe_params);

@@ -76,12 +76,12 @@ pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
 // 非同期API（推奨）
 // ============================================================================
 
+use crate::sync::PoisonLock;
+use crate::sync::atomic_waker::AtomicWaker;
+use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use alloc::sync::Arc;
-use crate::sync::PoisonLock;
-use crate::sync::atomic_waker::AtomicWaker;
 
 /// 非同期ARPキャッシュ取得Future
 pub struct GetArpCacheFuture {

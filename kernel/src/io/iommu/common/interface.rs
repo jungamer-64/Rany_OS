@@ -47,12 +47,8 @@ pub trait IommuHardwareContext: Send + Sync {
     ///
     /// # Returns
     /// An IOVA that satisfies: `iova + size <= mask + 1`
-    fn allocate_iova_masked(
-        &self,
-        size: u64,
-        alignment: u64,
-        mask: u64,
-    ) -> Result<u64, IommuError>;
+    fn allocate_iova_masked(&self, size: u64, alignment: u64, mask: u64)
+    -> Result<u64, IommuError>;
 
     /// Free a previously allocated IOVA range.
     fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError>;

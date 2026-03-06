@@ -1,17 +1,6 @@
 use crate::{
-    Cluster,
-    DirEntryRaw,
-    DIR_ENTRY_SIZE,
-    Fat32Inode,
-    FileType,
-    FsError,
-    FsResult,
-    MAX_CLUSTER_CHAIN,
-    PooledClusterBuffer,
-    SafePackedRead,
-    String,
-    unix_to_dos,
-    ZeroCopyBufferMut,
+    Cluster, DIR_ENTRY_SIZE, DirEntryRaw, Fat32Inode, FileType, FsError, FsResult,
+    MAX_CLUSTER_CHAIN, PooledClusterBuffer, SafePackedRead, String, ZeroCopyBufferMut, unix_to_dos,
 };
 
 impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {

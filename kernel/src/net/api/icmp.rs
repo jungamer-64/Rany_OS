@@ -37,10 +37,7 @@ pub fn send_icmp_echo_async(target: [u8; 4], seq: u16) -> bool {
 ///     Err(e) => log::warn!("ping failed: {:?}", e),
 /// }
 /// ```
-pub fn ping_async(
-    target: [u8; 4],
-    seq: u16,
-) -> crate::net::l4::endpoint::futures::IcmpEchoFuture {
+pub fn ping_async(target: [u8; 4], seq: u16) -> crate::net::l4::endpoint::futures::IcmpEchoFuture {
     crate::net::l4::endpoint::futures::IcmpEchoFuture::new(target, seq)
 }
 

@@ -64,16 +64,41 @@ pub fn test_zero_copy_clone_drop_returns_once() {
     let clone = buf.clone_ref();
 
     assert_eq!(buf.debug_ref_count(), 2);
-    assert_eq!(pool.stats().in_use.load(core::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(
+        pool.stats()
+            .in_use
+            .load(core::sync::atomic::Ordering::Acquire),
+        1
+    );
 
     drop(clone);
     assert_eq!(buf.debug_ref_count(), 1);
-    assert_eq!(pool.stats().frees.load(core::sync::atomic::Ordering::Acquire), 0);
-    assert_eq!(pool.stats().in_use.load(core::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(
+        pool.stats()
+            .frees
+            .load(core::sync::atomic::Ordering::Acquire),
+        0
+    );
+    assert_eq!(
+        pool.stats()
+            .in_use
+            .load(core::sync::atomic::Ordering::Acquire),
+        1
+    );
 
     drop(buf);
-    assert_eq!(pool.stats().frees.load(core::sync::atomic::Ordering::Acquire), 1);
-    assert_eq!(pool.stats().in_use.load(core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(
+        pool.stats()
+            .frees
+            .load(core::sync::atomic::Ordering::Acquire),
+        1
+    );
+    assert_eq!(
+        pool.stats()
+            .in_use
+            .load(core::sync::atomic::Ordering::Acquire),
+        0
+    );
 }
 
 #[cfg_attr(test, test_case)]
@@ -88,11 +113,21 @@ pub fn test_zero_copy_split_drop_uses_same_slot() {
     assert_eq!(first.debug_ref_count(), 2);
     drop(second);
     assert_eq!(first.debug_ref_count(), 1);
-    assert_eq!(pool.stats().frees.load(core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(
+        pool.stats()
+            .frees
+            .load(core::sync::atomic::Ordering::Acquire),
+        0
+    );
 
     drop(first);
     assert_eq!(pool.available(), 1);
-    assert_eq!(pool.stats().frees.load(core::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(
+        pool.stats()
+            .frees
+            .load(core::sync::atomic::Ordering::Acquire),
+        1
+    );
 }
 
 #[cfg_attr(test, test_case)]
@@ -205,7 +240,9 @@ pub fn test_zero_copy_try_as_mut_slice_unique_write() {
         return;
     };
     buf.set_len(4);
-    let slice = buf.try_as_mut_slice().expect("unique buffer should be mutable");
+    let slice = buf
+        .try_as_mut_slice()
+        .expect("unique buffer should be mutable");
     slice.copy_from_slice(b"TEST");
     assert_eq!(buf.as_slice(), b"TEST");
 }

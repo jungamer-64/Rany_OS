@@ -3,11 +3,11 @@
 // TLS 1.0/1.1/1.2 CBC暗号スイートに必要
 // ============================================================================
 
-use alloc::vec::Vec;
 use super::aes_core::{
-    AesRoundKeySchedule, aes_expand_key_schedule,
-    aes_encrypt_block_with_schedule, aes_add_round_key, gf_mul,
+    AesRoundKeySchedule, aes_add_round_key, aes_encrypt_block_with_schedule,
+    aes_expand_key_schedule, gf_mul,
 };
+use alloc::vec::Vec;
 
 /// AES Inverse S-box (復号用)
 const AES_INV_SBOX: [u8; 256] = [
@@ -66,7 +66,7 @@ fn aes_inv_mix_columns(state: &mut [u8; 16]) {
         let s2 = state[i + 2];
         let s3 = state[i + 3];
 
-        state[i]     = gf_mul(0x0e, s0) ^ gf_mul(0x0b, s1) ^ gf_mul(0x0d, s2) ^ gf_mul(0x09, s3);
+        state[i] = gf_mul(0x0e, s0) ^ gf_mul(0x0b, s1) ^ gf_mul(0x0d, s2) ^ gf_mul(0x09, s3);
         state[i + 1] = gf_mul(0x09, s0) ^ gf_mul(0x0e, s1) ^ gf_mul(0x0b, s2) ^ gf_mul(0x0d, s3);
         state[i + 2] = gf_mul(0x0d, s0) ^ gf_mul(0x09, s1) ^ gf_mul(0x0e, s2) ^ gf_mul(0x0b, s3);
         state[i + 3] = gf_mul(0x0b, s0) ^ gf_mul(0x0d, s1) ^ gf_mul(0x09, s2) ^ gf_mul(0x0e, s3);
@@ -202,7 +202,7 @@ pub(crate) fn tls_verify_padding(data: &[u8]) -> Option<usize> {
     // We cap it to data.len() to avoid out-of-bounds, but for TLS records data.len()
     // is usually > 256. If data.len() < 256, we check up to data.len().
     let check_len = data.len().min(256);
-    
+
     for i in 0..check_len {
         let mask = if i < pad_len { 0xFF } else { 0x00 };
         let actual_byte = data[data.len() - 1 - i];

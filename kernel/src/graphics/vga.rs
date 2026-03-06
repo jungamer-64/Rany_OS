@@ -185,4 +185,3 @@ pub fn _print(args: fmt::Arguments) {
     }
     // それ以外の場合はシリアル出力を使用（io::logが処理）
 }
-

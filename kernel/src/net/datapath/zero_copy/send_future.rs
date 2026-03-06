@@ -6,7 +6,6 @@
 
 use super::*;
 
-
 impl<'a> Future for ZeroCopySendFuture<'a> {
     type Output = Result<(), &'static str>;
 
@@ -55,7 +54,8 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
 // ============================================================================
 
 /// グローバルプールマネージャー
-pub(crate) static POOL_MANAGER: crate::sync::PoisonLock<Option<PoolManager>> = crate::sync::PoisonLock::new(None);
+pub(crate) static POOL_MANAGER: crate::sync::PoisonLock<Option<PoolManager>> =
+    crate::sync::PoisonLock::new(None);
 
 pub struct PoolManager {
     pools: Vec<Arc<MemoryPool>>,

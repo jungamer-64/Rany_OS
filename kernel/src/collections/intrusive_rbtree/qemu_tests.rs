@@ -44,10 +44,7 @@ unsafe impl KeyAdapter for TestAdapter {
 
 pub fn rbtree_empty_smoke() -> bool {
     let tree: RBTree<TestAdapter> = RBTree::new();
-    tree.is_empty()
-        && tree.len() == 0
-        && tree.first().is_none()
-        && tree.last().is_none()
+    tree.is_empty() && tree.len() == 0 && tree.first().is_none() && tree.last().is_none()
 }
 
 pub fn rbtree_insert_find_smoke() -> bool {
@@ -55,20 +52,34 @@ pub fn rbtree_insert_find_smoke() -> bool {
     let mut entry = Box::new(TestEntry::new(42, 100));
 
     unsafe {
-        if !tree.insert(entry.as_mut()) { return false; }
+        if !tree.insert(entry.as_mut()) {
+            return false;
+        }
     }
 
-    if tree.len() != 1 { return false; }
-    if tree.is_empty() { return false; }
+    if tree.len() != 1 {
+        return false;
+    }
+    if tree.is_empty() {
+        return false;
+    }
 
     let found = tree.find(&42);
-    if found.is_none() { return false; }
+    if found.is_none() {
+        return false;
+    }
     let ok = unsafe { (*found.unwrap()).value == 100 };
-    if !ok { return false; }
+    if !ok {
+        return false;
+    }
 
-    if tree.find(&999).is_some() { return false; }
+    if tree.find(&999).is_some() {
+        return false;
+    }
 
-    unsafe { tree.remove(entry.as_mut()); }
+    unsafe {
+        tree.remove(entry.as_mut());
+    }
     true
 }
 
@@ -80,18 +91,26 @@ pub fn rbtree_multiple_inserts_smoke() -> bool {
 
     for entry in entries.iter_mut() {
         unsafe {
-            if !tree.insert(entry.as_mut()) { return false; }
+            if !tree.insert(entry.as_mut()) {
+                return false;
+            }
         }
     }
 
-    if tree.len() != 10 { return false; }
+    if tree.len() != 10 {
+        return false;
+    }
 
     for i in 0..10u64 {
-        if tree.find(&(i * 10)).is_none() { return false; }
+        if tree.find(&(i * 10)).is_none() {
+            return false;
+        }
     }
 
     for entry in entries.iter_mut() {
-        unsafe { tree.remove(entry.as_mut()); }
+        unsafe {
+            tree.remove(entry.as_mut());
+        }
     }
     true
 }
@@ -105,7 +124,9 @@ pub fn rbtree_ordering_smoke() -> bool {
         .collect();
 
     for entry in entries.iter_mut() {
-        unsafe { tree.insert(entry.as_mut()); }
+        unsafe {
+            tree.insert(entry.as_mut());
+        }
     }
 
     let first_ok = unsafe { (*tree.first().unwrap()).key == 20 };
@@ -115,7 +136,9 @@ pub fn rbtree_ordering_smoke() -> bool {
     let order_ok = collected == alloc::vec![20, 30, 40, 50, 60, 70, 80];
 
     for entry in entries.iter_mut() {
-        unsafe { tree.remove(entry.as_mut()); }
+        unsafe {
+            tree.remove(entry.as_mut());
+        }
     }
 
     first_ok && last_ok && order_ok
@@ -127,13 +150,19 @@ pub fn rbtree_duplicate_key_smoke() -> bool {
     let mut entry2 = Box::new(TestEntry::new(42, 200));
 
     unsafe {
-        if !tree.insert(entry1.as_mut()) { return false; }
-        if tree.insert(entry2.as_mut()) { return false; } // should reject
+        if !tree.insert(entry1.as_mut()) {
+            return false;
+        }
+        if tree.insert(entry2.as_mut()) {
+            return false;
+        } // should reject
     }
 
     let ok = tree.len() == 1;
 
-    unsafe { tree.remove(entry1.as_mut()); }
+    unsafe {
+        tree.remove(entry1.as_mut());
+    }
     ok
 }
 
@@ -144,20 +173,38 @@ pub fn rbtree_remove_smoke() -> bool {
         .collect();
 
     for entry in entries.iter_mut() {
-        unsafe { tree.insert(entry.as_mut()); }
+        unsafe {
+            tree.insert(entry.as_mut());
+        }
     }
 
-    if tree.len() != 5 { return false; }
+    if tree.len() != 5 {
+        return false;
+    }
 
-    unsafe { tree.remove(entries[2].as_mut()); }
-    if tree.len() != 4 { return false; }
-    if tree.find(&2).is_some() { return false; }
+    unsafe {
+        tree.remove(entries[2].as_mut());
+    }
+    if tree.len() != 4 {
+        return false;
+    }
+    if tree.find(&2).is_some() {
+        return false;
+    }
 
-    unsafe { tree.remove(entries[0].as_mut()); }
-    if tree.len() != 3 { return false; }
+    unsafe {
+        tree.remove(entries[0].as_mut());
+    }
+    if tree.len() != 3 {
+        return false;
+    }
 
-    unsafe { tree.remove(entries[4].as_mut()); }
-    if tree.len() != 2 { return false; }
+    unsafe {
+        tree.remove(entries[4].as_mut());
+    }
+    if tree.len() != 2 {
+        return false;
+    }
 
     tree.find(&1).is_some() && tree.find(&3).is_some()
 }

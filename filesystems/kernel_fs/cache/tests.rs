@@ -1,4 +1,4 @@
-use super::{CachedPage, PageState, PageCache, PAGE_SIZE};
+use super::{CachedPage, PAGE_SIZE, PageCache, PageState};
 
 #[cfg_attr(test, test_case)]
 pub fn test_cached_page() {
@@ -58,11 +58,13 @@ pub fn test_sync_page() {
     let mut recorded_offset = 0u64;
     let mut recorded_first = 0u8;
 
-    let res = cache.sync_page(2, 1, |offset, data| {
-        recorded_offset = offset;
-        recorded_first = data[0];
-        Ok(())
-    }).expect("sync_page failed");
+    let res = cache
+        .sync_page(2, 1, |offset, data| {
+            recorded_offset = offset;
+            recorded_first = data[0];
+            Ok(())
+        })
+        .expect("sync_page failed");
 
     assert!(res);
     assert_eq!(recorded_offset, 1 * PAGE_SIZE as u64);

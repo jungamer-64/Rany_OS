@@ -160,19 +160,19 @@ unsafe impl Sync for RBLink {}
 pub unsafe trait KeyAdapter {
     /// キーの型（Ord を実装する必要がある）
     type Key: Ord;
-    
+
     /// エントリの型
     type Entry;
 
     /// エントリからキーを取得
     fn get_key(entry: &Self::Entry) -> &Self::Key;
-    
+
     /// エントリからRBLinkを取得（不変）
     fn get_link(entry: &Self::Entry) -> &RBLink;
-    
+
     /// エントリからRBLinkを取得（可変）
     fn get_link_mut(entry: &mut Self::Entry) -> &mut RBLink;
-    
+
     /// RBLinkポインタからエントリポインタを取得
     ///
     /// # Safety
@@ -224,11 +224,11 @@ impl<A: KeyAdapter> RBTree<A> {
     /// 返されるポインタはツリーが変更されるまで有効。
     pub fn find(&self, key: &A::Key) -> Option<*mut A::Entry> {
         let mut node = self.root;
-        
+
         while !node.is_null() {
             let entry = unsafe { A::entry_from_link(node) };
             let node_key = unsafe { A::get_key(&*entry) };
-            
+
             match key.cmp(node_key) {
                 Ordering::Less => {
                     node = unsafe { (*node).left };
@@ -241,7 +241,7 @@ impl<A: KeyAdapter> RBTree<A> {
                 }
             }
         }
-        
+
         None
     }
 
@@ -254,7 +254,7 @@ impl<A: KeyAdapter> RBTree<A> {
         if !self.last_hint.is_null() {
             let hint_entry = unsafe { A::entry_from_link(self.last_hint) };
             let hint_key = unsafe { A::get_key(&*hint_entry) };
-            
+
             match key.cmp(hint_key) {
                 Ordering::Equal => {
                     return Some(hint_entry);
@@ -277,7 +277,7 @@ impl<A: KeyAdapter> RBTree<A> {
                 }
             }
         }
-        
+
         // フォールバック: 通常検索 + ヒント更新
         let result = self.find(key);
         if let Some(entry) = result {
@@ -322,24 +322,28 @@ impl<A: KeyAdapter> RBTree<A> {
     pub unsafe fn insert(&mut self, entry: *mut A::Entry) -> bool {
         // &mut を保持せず、shared ref から raw ptr を取得（参照エイリアシング回避）
         let new_link = A::get_link(&*entry) as *const RBLink as *mut RBLink;
-        
+
         debug_assert!(!(*new_link).is_linked(), "Entry is already linked");
         // RBLink は 2byte 以上にアラインされている必要がある（LSB に色を格納）
-        debug_assert_eq!((new_link as usize) & 1, 0, "RBLink must be at least 2-byte aligned");
-        
+        debug_assert_eq!(
+            (new_link as usize) & 1,
+            0,
+            "RBLink must be at least 2-byte aligned"
+        );
+
         // 挿入位置を見つける
         let mut parent: *mut RBLink = ptr::null_mut();
         let mut node_ptr: *mut *mut RBLink = &mut self.root;
-        
+
         // key 参照は探索中のみ有効（スコープで借用を終わらせる）
         {
             let key = A::get_key(&*entry);
-            
+
             while !(*node_ptr).is_null() {
                 parent = *node_ptr;
                 let parent_entry = A::entry_from_link(parent);
                 let parent_key = A::get_key(&*parent_entry);
-                
+
                 match key.cmp(parent_key) {
                     Ordering::Less => {
                         node_ptr = &mut (*parent).left;
@@ -354,18 +358,18 @@ impl<A: KeyAdapter> RBTree<A> {
                 }
             }
         } // <- key の借用をここで終わらせる
-        
+
         // ノードを挿入（初期色: 赤）
         (*new_link).set_parent_color(parent, Color::Red);
         (*new_link).left = ptr::null_mut();
         (*new_link).right = ptr::null_mut();
         *node_ptr = new_link;
-        
+
         self.len += 1;
-        
+
         // リバランス
         self.insert_fixup(new_link);
-        
+
         true
     }
 
@@ -377,9 +381,9 @@ impl<A: KeyAdapter> RBTree<A> {
     pub unsafe fn remove(&mut self, entry: *mut A::Entry) {
         // &mut を保持せず raw ptr を取得
         let link = A::get_link(&*entry) as *const RBLink as *mut RBLink;
-        
+
         debug_assert!((*link).is_linked(), "Entry is not linked");
-        
+
         self.remove_node(link);
         (*link).clear();
         self.len -= 1;
@@ -390,12 +394,12 @@ impl<A: KeyAdapter> RBTree<A> {
         if self.root.is_null() {
             return None;
         }
-        
+
         let mut node = self.root;
         while !unsafe { (*node).left }.is_null() {
             node = unsafe { (*node).left };
         }
-        
+
         Some(unsafe { A::entry_from_link(node) })
     }
 
@@ -404,12 +408,12 @@ impl<A: KeyAdapter> RBTree<A> {
         if self.root.is_null() {
             return None;
         }
-        
+
         let mut node = self.root;
         while !unsafe { (*node).right }.is_null() {
             node = unsafe { (*node).right };
         }
-        
+
         Some(unsafe { A::entry_from_link(node) })
     }
 
@@ -425,18 +429,18 @@ impl<A: KeyAdapter> RBTree<A> {
             _marker: PhantomData,
         }
     }
-    
+
     /// 最小ノードの RBLink を取得（内部用）
     fn first_link(&self) -> Option<*mut RBLink> {
         if self.root.is_null() {
             return None;
         }
-        
+
         let mut node = self.root;
         while !unsafe { (*node).left }.is_null() {
             node = unsafe { (*node).left };
         }
-        
+
         Some(node)
     }
 
@@ -451,14 +455,14 @@ impl<A: KeyAdapter> RBTree<A> {
             if grandparent.is_null() {
                 break;
             }
-            
+
             if parent == (*grandparent).left {
                 self.insert_fixup_left(&mut node, parent, grandparent);
             } else {
                 self.insert_fixup_right(&mut node, parent, grandparent);
             }
         }
-        
+
         // ルートは常に黒
         if !self.root.is_null() {
             (*self.root).set_color(Color::Black);
@@ -535,15 +539,15 @@ impl<A: KeyAdapter> RBTree<A> {
     unsafe fn rotate_left(&mut self, x: *mut RBLink) {
         let y = (*x).right;
         debug_assert!(!y.is_null(), "rotate_left: right child must not be null");
-        
+
         (*x).right = (*y).left;
-        
+
         if !(*y).left.is_null() {
             (*(*y).left).set_parent(x);
         }
-        
+
         (*y).set_parent((*x).parent());
-        
+
         if (*x).parent().is_null() {
             self.root = y;
         } else if x == (*(*x).parent()).left {
@@ -551,7 +555,7 @@ impl<A: KeyAdapter> RBTree<A> {
         } else {
             (*(*x).parent()).right = y;
         }
-        
+
         (*y).left = x;
         (*x).set_parent(y);
     }
@@ -560,15 +564,15 @@ impl<A: KeyAdapter> RBTree<A> {
     unsafe fn rotate_right(&mut self, y: *mut RBLink) {
         let x = (*y).left;
         debug_assert!(!x.is_null(), "rotate_right: left child must not be null");
-        
+
         (*y).left = (*x).right;
-        
+
         if !(*x).right.is_null() {
             (*(*x).right).set_parent(y);
         }
-        
+
         (*x).set_parent((*y).parent());
-        
+
         if (*y).parent().is_null() {
             self.root = x;
         } else if y == (*(*y).parent()).right {
@@ -576,7 +580,7 @@ impl<A: KeyAdapter> RBTree<A> {
         } else {
             (*(*y).parent()).left = x;
         }
-        
+
         (*x).right = y;
         (*y).set_parent(x);
     }
@@ -667,8 +671,10 @@ impl<A: KeyAdapter> RBTree<A> {
                         continue;
                     }
 
-                    let left_black = (*sibling).left.is_null() || (*(*sibling).left).color() == Color::Black;
-                    let right_black = (*sibling).right.is_null() || (*(*sibling).right).color() == Color::Black;
+                    let left_black =
+                        (*sibling).left.is_null() || (*(*sibling).left).color() == Color::Black;
+                    let right_black =
+                        (*sibling).right.is_null() || (*(*sibling).right).color() == Color::Black;
 
                     if left_black && right_black {
                         (*sibling).set_color(Color::Red);
@@ -712,8 +718,10 @@ impl<A: KeyAdapter> RBTree<A> {
                         continue;
                     }
 
-                    let left_black = (*sibling).left.is_null() || (*(*sibling).left).color() == Color::Black;
-                    let right_black = (*sibling).right.is_null() || (*(*sibling).right).color() == Color::Black;
+                    let left_black =
+                        (*sibling).left.is_null() || (*(*sibling).left).color() == Color::Black;
+                    let right_black =
+                        (*sibling).right.is_null() || (*(*sibling).right).color() == Color::Black;
 
                     if left_black && right_black {
                         (*sibling).set_color(Color::Red);

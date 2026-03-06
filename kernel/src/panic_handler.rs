@@ -4,11 +4,11 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use core::mem::MaybeUninit;
-use core::fmt::{self, Write};
 use crate::graphics::bsod::BsodInfo;
+use core::fmt::{self, Write};
+use core::mem::MaybeUninit;
+use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 /// 【設計書 8.5.1】Double Panic検出用フラグ
 /// 各CPUコアにパニック中フラグを設置（現在は単一コア想定）
@@ -82,7 +82,7 @@ impl<'a> Write for PanicBufferWriter<'a> {
         let remaining = self.buffer.len() - self.offset;
         let bytes = s.as_bytes();
         let len = bytes.len().min(remaining);
-        
+
         if len > 0 {
             unsafe {
                 core::ptr::copy_nonoverlapping(
@@ -93,10 +93,10 @@ impl<'a> Write for PanicBufferWriter<'a> {
             }
             self.offset += len;
         }
-        
+
         if len < bytes.len() {
             // Buffer full, but we don't error, just truncate
-            Ok(()) 
+            Ok(())
         } else {
             Ok(())
         }
@@ -108,7 +108,10 @@ impl<'a> Write for PanicBufferWriter<'a> {
 fn panic_capture_record(info: &PanicInfo, domain_id: u64) -> &'static [u8] {
     let mut message_slice: &[u8] = b"Unknown panic";
 
-    if PANIC_RECORD_STATE.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+    if PANIC_RECORD_STATE
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
         unsafe {
             let record_ptr = core::ptr::addr_of_mut!(PANIC_RECORD) as *mut PanicRecord;
             let record_ref = &mut *record_ptr;
@@ -122,7 +125,11 @@ fn panic_capture_record(info: &PanicInfo, domain_id: u64) -> &'static [u8] {
                 let mut file_buf = [0u8; MAX_FILE_LEN];
                 let file_bytes = loc.file().as_bytes();
                 let copy_len = file_bytes.len().min(MAX_FILE_LEN);
-                core::ptr::copy_nonoverlapping(file_bytes.as_ptr(), file_buf.as_mut_ptr(), copy_len);
+                core::ptr::copy_nonoverlapping(
+                    file_bytes.as_ptr(),
+                    file_buf.as_mut_ptr(),
+                    copy_len,
+                );
 
                 record_ref.location = Some(PanicLocation {
                     file: file_buf,
@@ -335,7 +342,8 @@ pub fn panic_stats() -> PanicStats {
         if PANIC_RECORD_STATE.load(Ordering::Acquire) == 2 {
             let record_ptr = core::ptr::addr_of!(PANIC_RECORD) as *const PanicRecord;
             let record = &*record_ptr;
-            let s = core::str::from_utf8(&record.message[..record.message_len]).unwrap_or("Invalid UTF-8");
+            let s = core::str::from_utf8(&record.message[..record.message_len])
+                .unwrap_or("Invalid UTF-8");
             Some(alloc::string::String::from(s))
         } else {
             None
@@ -365,7 +373,7 @@ pub fn handle_double_fault(
     error_code: u64,
 ) -> ! {
     x86_64::instructions::interrupts::disable();
-    
+
     // Ensure we can print even if locks are held
     crate::io::log::enter_panic_mode();
 
@@ -373,13 +381,13 @@ pub fn handle_double_fault(
     crate::io::log::early_print("Error Code: ");
     crate::io::log::early_print_dec(error_code);
     crate::io::log::early_print("\n");
-    
-    // Stack frame dump would require formatting wrapper for early_print, 
+
+    // Stack frame dump would require formatting wrapper for early_print,
     // or we can just rely on the fact that enter_panic_mode allows log::info! to work without locks?
     // Let's stick to early_print where possible for absolute safety, but accessing the logger might work now.
     // However, log::info! macro expands to allocating code sometimes (formatting arguments).
     // Safest is to just print what we can simply.
-    
+
     // BSOD表示を試みる
     #[cfg(not(any(test, feature = "bench")))]
     {
@@ -413,9 +421,7 @@ pub fn setup_stack_guard(stack_bottom: usize, stack_size: usize) {
 
     // ── 1) ページアライメントを強制チェック（release でも有効） ──
     if stack_bottom & 0xFFF != 0 {
-        crate::io::log::early_print(
-            "[StackGuard] FATAL: stack_bottom is not page-aligned!\n",
-        );
+        crate::io::log::early_print("[StackGuard] FATAL: stack_bottom is not page-aligned!\n");
         #[cfg(debug_assertions)]
         panic!(
             "setup_stack_guard: stack_bottom {:#x} is not 4KiB-aligned",
@@ -428,9 +434,7 @@ pub fn setup_stack_guard(stack_bottom: usize, stack_size: usize) {
     // ── 2) stack_size の整合チェック ──
     //    ガード1ページ + 実用1ページ = 最低 8KiB 必要
     if stack_size < 4096 * 2 {
-        crate::io::log::early_print(
-            "[StackGuard] FATAL: stack_size too small for guard page!\n",
-        );
+        crate::io::log::early_print("[StackGuard] FATAL: stack_size too small for guard page!\n");
         #[cfg(debug_assertions)]
         panic!(
             "setup_stack_guard: stack_size {:#x} < 8KiB (need guard + 1 usable page)",
@@ -537,18 +541,17 @@ pub fn test_bsod(message: &str) {
 }
 
 #[cfg(any(test, feature = "bench"))]
-pub fn test_bsod(_message: &str) {
-}
+pub fn test_bsod(_message: &str) {}
 // Basic panic handler implementation
 pub fn panic(_info: &PanicInfo) -> ! {
     // Attempt to acquire lock and print panic info
     // In a real implementation we would write to the panic record
     // For now, just loop
     PANIC_IN_PROGRESS.store(true, Ordering::SeqCst);
-    
+
     // Simplistic printing if possible (depends on logger state)
     // We avoid complex formatting to prevent double panic
-    
+
     loop {
         core::hint::spin_loop();
     }

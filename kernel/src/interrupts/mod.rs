@@ -94,161 +94,155 @@ fn init_idt() {
         &mut *(idt_ptr as *mut InterruptDescriptorTable)
     };
 
-        // CPU例外ハンドラの設定
-        idt.divide_error.set_handler_fn(handler_to_x86!(
-            exceptions::divide_error_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt.debug.set_handler_fn(handler_to_x86!(
-            exceptions::debug_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt.breakpoint.set_handler_fn(handler_to_x86!(
-            exceptions::breakpoint_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt.invalid_opcode.set_handler_fn(handler_to_x86!(
-            exceptions::invalid_opcode_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt.device_not_available.set_handler_fn(handler_to_x86!(
-            exceptions::device_not_available_handler
-                as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
+    // CPU例外ハンドラの設定
+    idt.divide_error.set_handler_fn(handler_to_x86!(
+        exceptions::divide_error_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt.debug.set_handler_fn(handler_to_x86!(
+        exceptions::debug_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt.breakpoint.set_handler_fn(handler_to_x86!(
+        exceptions::breakpoint_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt.invalid_opcode.set_handler_fn(handler_to_x86!(
+        exceptions::invalid_opcode_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt.device_not_available.set_handler_fn(handler_to_x86!(
+        exceptions::device_not_available_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
 
-        // 【設計書 8.5.2】Double Fault ハンドラには IST を使用し、専用スタックを確保
-        let double_fault_handler = handler_to_x86!(
-            exceptions::double_fault_handler
-                as extern "x86-interrupt" fn(InterruptStackFrame, u64) -> !
-        );
-        unsafe {
-            idt.double_fault
-                .set_handler_fn(double_fault_handler)
-                .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
-        }
+    // 【設計書 8.5.2】Double Fault ハンドラには IST を使用し、専用スタックを確保
+    let double_fault_handler = handler_to_x86!(
+        exceptions::double_fault_handler
+            as extern "x86-interrupt" fn(InterruptStackFrame, u64) -> !
+    );
+    unsafe {
+        idt.double_fault
+            .set_handler_fn(double_fault_handler)
+            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+    }
 
-        idt.general_protection_fault.set_handler_fn(handler_to_x86!(
-            exceptions::general_protection_fault_handler
-                as extern "x86-interrupt" fn(InterruptStackFrame, u64)
-        ));
-        idt.page_fault.set_handler_fn(handler_to_x86!(
-            exceptions::page_fault_handler
-                as extern "x86-interrupt" fn(
-                    InterruptStackFrame,
-                    x86_64::structures::idt::PageFaultErrorCode,
-                )
-        ));
-        idt.alignment_check.set_handler_fn(handler_to_x86!(
-            exceptions::alignment_check_handler
-                as extern "x86-interrupt" fn(InterruptStackFrame, u64)
-        ));
-        idt.machine_check.set_handler_fn(handler_to_x86!(
-            exceptions::machine_check_handler
-                as extern "x86-interrupt" fn(InterruptStackFrame) -> !
-        ));
-        idt.simd_floating_point.set_handler_fn(handler_to_x86!(
-            exceptions::simd_floating_point_handler
-                as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
+    idt.general_protection_fault.set_handler_fn(handler_to_x86!(
+        exceptions::general_protection_fault_handler
+            as extern "x86-interrupt" fn(InterruptStackFrame, u64)
+    ));
+    idt.page_fault.set_handler_fn(handler_to_x86!(
+        exceptions::page_fault_handler
+            as extern "x86-interrupt" fn(
+                InterruptStackFrame,
+                x86_64::structures::idt::PageFaultErrorCode,
+            )
+    ));
+    idt.alignment_check.set_handler_fn(handler_to_x86!(
+        exceptions::alignment_check_handler as extern "x86-interrupt" fn(InterruptStackFrame, u64)
+    ));
+    idt.machine_check.set_handler_fn(handler_to_x86!(
+        exceptions::machine_check_handler as extern "x86-interrupt" fn(InterruptStackFrame) -> !
+    ));
+    idt.simd_floating_point.set_handler_fn(handler_to_x86!(
+        exceptions::simd_floating_point_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
 
-        // ハードウェア割り込みハンド設定
-        idt[InterruptVector::Timer as u8].set_handler_fn(handler_to_x86!(
-            timer_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[InterruptVector::Keyboard as u8].set_handler_fn(handler_to_x86!(
-            keyboard_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[InterruptVector::Com1 as u8].set_handler_fn(handler_to_x86!(
-            com1_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
+    // ハードウェア割り込みハンド設定
+    idt[InterruptVector::Timer as u8].set_handler_fn(handler_to_x86!(
+        timer_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[InterruptVector::Keyboard as u8].set_handler_fn(handler_to_x86!(
+        keyboard_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[InterruptVector::Com1 as u8].set_handler_fn(handler_to_x86!(
+        com1_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
 
-        // IOMMU Fault Handler
-        idt[InterruptVector::IommuFault as u8].set_handler_fn(handler_to_x86!(
-            iommu_fault_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
+    // IOMMU Fault Handler
+    idt[InterruptVector::IommuFault as u8].set_handler_fn(handler_to_x86!(
+        iommu_fault_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
 
-        // NVMe Interrupt (Direct Callback)
-        idt[crate::io::interrupt_manager::NVME_VECTOR as u8].set_handler_fn(handler_to_x86!(
-            crate::io::interrupt_manager::nvme_entry_point
-                as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
+    // NVMe Interrupt (Direct Callback)
+    idt[crate::io::interrupt_manager::NVME_VECTOR as u8].set_handler_fn(handler_to_x86!(
+        crate::io::interrupt_manager::nvme_entry_point
+            as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
 
-        // MSI shared range handlers (0x60..=0x6F)
-        idt[0x60].set_handler_fn(handler_to_x86!(
-            msi_vector_0x60_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x61].set_handler_fn(handler_to_x86!(
-            msi_vector_0x61_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x62].set_handler_fn(handler_to_x86!(
-            msi_vector_0x62_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x63].set_handler_fn(handler_to_x86!(
-            msi_vector_0x63_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x64].set_handler_fn(handler_to_x86!(
-            msi_vector_0x64_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x65].set_handler_fn(handler_to_x86!(
-            msi_vector_0x65_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x66].set_handler_fn(handler_to_x86!(
-            msi_vector_0x66_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x67].set_handler_fn(handler_to_x86!(
-            msi_vector_0x67_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x68].set_handler_fn(handler_to_x86!(
-            msi_vector_0x68_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x69].set_handler_fn(handler_to_x86!(
-            msi_vector_0x69_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x6A].set_handler_fn(handler_to_x86!(
-            msi_vector_0x6a_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x6B].set_handler_fn(handler_to_x86!(
-            msi_vector_0x6b_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x6C].set_handler_fn(handler_to_x86!(
-            msi_vector_0x6c_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x6D].set_handler_fn(handler_to_x86!(
-            msi_vector_0x6d_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x6E].set_handler_fn(handler_to_x86!(
-            msi_vector_0x6e_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-        idt[0x6F].set_handler_fn(handler_to_x86!(
-            msi_vector_0x6f_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
+    // MSI shared range handlers (0x60..=0x6F)
+    idt[0x60].set_handler_fn(handler_to_x86!(
+        msi_vector_0x60_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x61].set_handler_fn(handler_to_x86!(
+        msi_vector_0x61_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x62].set_handler_fn(handler_to_x86!(
+        msi_vector_0x62_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x63].set_handler_fn(handler_to_x86!(
+        msi_vector_0x63_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x64].set_handler_fn(handler_to_x86!(
+        msi_vector_0x64_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x65].set_handler_fn(handler_to_x86!(
+        msi_vector_0x65_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x66].set_handler_fn(handler_to_x86!(
+        msi_vector_0x66_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x67].set_handler_fn(handler_to_x86!(
+        msi_vector_0x67_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x68].set_handler_fn(handler_to_x86!(
+        msi_vector_0x68_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x69].set_handler_fn(handler_to_x86!(
+        msi_vector_0x69_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x6A].set_handler_fn(handler_to_x86!(
+        msi_vector_0x6a_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x6B].set_handler_fn(handler_to_x86!(
+        msi_vector_0x6b_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x6C].set_handler_fn(handler_to_x86!(
+        msi_vector_0x6c_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x6D].set_handler_fn(handler_to_x86!(
+        msi_vector_0x6d_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x6E].set_handler_fn(handler_to_x86!(
+        msi_vector_0x6e_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[0x6F].set_handler_fn(handler_to_x86!(
+        msi_vector_0x6f_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
 
-        // PIC2 の IRQ ハンドラ（動的デバイス用）
-        // IRQ 9, 10, 11 は多くの PCI デバイスで使用される
-        idt[PIC2_OFFSET + 1].set_handler_fn(handler_to_x86!(
-            pci_irq9_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        )); // IRQ9 (Free1)
-        idt[PIC2_OFFSET + 2].set_handler_fn(handler_to_x86!(
-            pci_irq10_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        )); // IRQ10 (Free2)
-        idt[PIC2_OFFSET + 3].set_handler_fn(handler_to_x86!(
-            pci_irq11_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        )); // IRQ11 (Free3)
-        // Mouse interrupt handler removed
+    // PIC2 の IRQ ハンドラ（動的デバイス用）
+    // IRQ 9, 10, 11 は多くの PCI デバイスで使用される
+    idt[PIC2_OFFSET + 1].set_handler_fn(handler_to_x86!(
+        pci_irq9_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    )); // IRQ9 (Free1)
+    idt[PIC2_OFFSET + 2].set_handler_fn(handler_to_x86!(
+        pci_irq10_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    )); // IRQ10 (Free2)
+    idt[PIC2_OFFSET + 3].set_handler_fn(handler_to_x86!(
+        pci_irq11_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    )); // IRQ11 (Free3)
+    // Mouse interrupt handler removed
 
+    // TLB Flush IPI Vector (0xF1 = 241)
+    // マルチコア環境でのTLBシュートダウンに使用
+    idt[crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR].set_handler_fn(handler_to_x86!(
+        tlb_flush_ipi_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
 
-        // TLB Flush IPI Vector (0xF1 = 241)
-        // マルチコア環境でのTLBシュートダウンに使用
-        idt[crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR].set_handler_fn(handler_to_x86!(
-            tlb_flush_ipi_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
+    // Spurious Interrupt Vector (0xFF)
+    // APICによって生成される偽の割り込みを処理
+    // OSクラッシュ（#GP/#DF）を防ぐために必須
+    idt[0xFF].set_handler_fn(handler_to_x86!(
+        spurious_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
 
-        // Spurious Interrupt Vector (0xFF)
-        // APICによって生成される偽の割り込みを処理
-        // OSクラッシュ（#GP/#DF）を防ぐために必須
-        idt[0xFF].set_handler_fn(handler_to_x86!(
-            spurious_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        ));
-
-        // IDTをロード
-        idt.load();
-
+    // IDTをロード
+    idt.load();
 }
 
 // ============================================================================
@@ -459,8 +453,7 @@ pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 // - フラグ設定のみで重い処理は遅延
 // - Wakerを起床させるだけ
 // simple counter for timer debug logging
-static TIMER_LOGGED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+static TIMER_LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 define_interrupt!(
     fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
         // log first tick to confirm handler firing
@@ -508,8 +501,7 @@ static TIMER_EVENT_PENDING: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 /// Debug helpers: log first occurrence of certain interrupts
-static KEYBOARD_LOGGED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+static KEYBOARD_LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// タイマーイベントをポーリング（非ISRコンテキストから呼び出し）
 ///
@@ -558,7 +550,6 @@ pub fn poll_timer_events() {
     }
 }
 
-
 // キーボード割り込みハンドラ
 // Interrupt-Wakerブリッジとの連携
 define_interrupt!(
@@ -583,8 +574,6 @@ define_interrupt!(
         }
     }
 );
-
-
 
 // COM1 (Serial) 割り込みハンドラ
 // シリアルポートからのデータ受信時に呼ばれる
@@ -708,7 +697,7 @@ define_interrupt!(
         unsafe {
             crate::mm::sync::tlb_batch::tlb_flush_ipi_handler();
         }
-        
+
         // Local APICにEOIを送信
         // IPIはLocal APICから来るのでLocal APICにEOIを送る
         crate::io::interrupt_manager::send_eoi();
@@ -719,8 +708,7 @@ define_interrupt!(
 // APICノイズによる偽の割り込みを処理
 // 何もせず単にリターンする（EOIも送らないのが一般的だが、ISR上はiretが必要）
 // For debug we log the *first* occurrence.
-static SPURIOUS_LOGGED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+static SPURIOUS_LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 define_interrupt!(
     fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
         if !SPURIOUS_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {

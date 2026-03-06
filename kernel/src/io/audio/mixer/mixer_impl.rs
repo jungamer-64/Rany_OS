@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl Mixer {
     /// 新しいミキサーを作成
     pub fn new(config: MixerConfig) -> Self {
@@ -219,7 +218,10 @@ impl Mixer {
     // ========================================================================
 
     /// リサンプリング不要時のファストパス
-    pub(super) fn no_resample_fast_path(channel: &mut MixerChannel, output_frames: usize) -> Vec<f32> {
+    pub(super) fn no_resample_fast_path(
+        channel: &mut MixerChannel,
+        output_frames: usize,
+    ) -> Vec<f32> {
         let needed = output_frames * 2; // stereo
         if channel.buffer.len() >= needed {
             channel.buffer.drain(..needed).collect()

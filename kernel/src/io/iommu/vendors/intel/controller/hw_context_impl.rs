@@ -4,7 +4,6 @@
 
 use super::*;
 
-
 impl IommuHardwareContext for IommuController {
     fn allocate_iova_aligned(&self, size: u64, alignment: u64) -> Result<u64, IommuError> {
         // Fast path for 4KB-aligned allocations
@@ -55,7 +54,6 @@ impl IommuHardwareContext for IommuController {
         let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
         alloc.free_immediate(iova, size)
     }
-
 }
 
 // ============================================================================
@@ -77,11 +75,19 @@ impl<'a> Future for InvalidationWaiter<'a> {
             Err(e) => return Poll::Ready(Err(e)),
             Ok(()) => {
                 // Security: Check for hardware faults during poll.
-                let fsts = self.controller.read32(crate::io::iommu::vendors::intel::registers::regs::FSTS);
-                if (fsts & (crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_IQE | 
-                           crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_ICE | 
-                           crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_ITE)) != 0 {
-                    log::error!("[IOMMU][QI] Async wait failed: hardware fault detected in FSTS: {:#x}", fsts);
+                let fsts = self
+                    .controller
+                    .read32(crate::io::iommu::vendors::intel::registers::regs::FSTS);
+                if (fsts
+                    & (crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_IQE
+                        | crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_ICE
+                        | crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_ITE))
+                    != 0
+                {
+                    log::error!(
+                        "[IOMMU][QI] Async wait failed: hardware fault detected in FSTS: {:#x}",
+                        fsts
+                    );
                     return Poll::Ready(Err(IommuError::HardwareError));
                 }
 

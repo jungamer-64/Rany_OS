@@ -32,22 +32,20 @@ pub mod net;
 pub mod virtqueue;
 pub use virtqueue::*;
 
-pub mod dma;
-pub mod console;
-pub mod console_driver;
-pub mod input;
-pub mod input_driver;
 pub mod balloon;
 pub mod balloon_driver;
+pub mod console;
+pub mod console_driver;
+pub mod dma;
+pub mod input;
+pub mod input_driver;
 
 // Re-export common types from virtio_driver, but exclude conflicting ring/desc definitions
 // which are now unified in our local virtqueue.rs
-pub use virtio_driver::defs::{
-    VirtioDeviceType, VirtioDeviceStatus, status,
-};
+pub use virtio_driver::defs::{VirtioDeviceStatus, VirtioDeviceType, status};
 pub mod defs {
+    pub use super::virtqueue::{VringAvail, VringDesc, VringUsed};
     pub use virtio_driver::defs::*;
-    pub use super::virtqueue::{VringDesc, VringAvail, VringUsed};
 }
 
 pub mod transport {
@@ -62,52 +60,51 @@ pub use virtio_driver::transport::{
 
 // Re-exports for VirtIO-Net
 pub use net::{
-    NetVirtQueue, VirtioNetConfig, VirtioNetDevice, VirtioNetHeader, VirtioNetStats,
-    VirtioNetOps, VIRTIO_NET_IOCTL_RX, VIRTIO_NET_IOCTL_TX, features as net_features,
-    ack_all_virtio_net_interrupts, bind_virtio_net_interface, for_each_virtio_net, get_poll_handler,
-    handle_all_virtio_net_interrupts, handle_virtio_net_interrupt, handle_virtio_net_interrupt_for_index, init_virtio_net,
-    init_virtio_net_at_index, init_virtio_net_for_device, init_virtio_net_for_device_at_index,
+    NetVirtQueue, VIRTIO_NET_IOCTL_RX, VIRTIO_NET_IOCTL_TX, VirtioNetConfig, VirtioNetDevice,
+    VirtioNetHeader, VirtioNetOps, VirtioNetStats, ack_all_virtio_net_interrupts,
+    bind_virtio_net_interface, features as net_features, for_each_virtio_net, get_poll_handler,
+    handle_all_virtio_net_interrupts, handle_virtio_net_interrupt,
+    handle_virtio_net_interrupt_for_index, init_virtio_net, init_virtio_net_at_index,
+    init_virtio_net_for_device, init_virtio_net_for_device_at_index,
     init_virtio_net_with_transport, init_virtio_net_with_transport_at_index,
-    poll_all_virtio_net_queues,
-    register_virtio_net_with_io_scheduler, with_virtio_net, with_virtio_net_at_index,
+    poll_all_virtio_net_queues, register_virtio_net_with_io_scheduler, with_virtio_net,
+    with_virtio_net_at_index,
 };
 pub use virtqueue::{VringAvail, VringDesc, VringUsed};
 
 // Re-exports for VirtIO-Blk
-pub use virtqueue::VringDesc as BlkVringDesc;
 pub use blk::{
-    AsyncBlockDevice, BlockDeviceConfig, BlockError, VirtioBlkDevice,
-    features as blk_features, handle_virtio_blk_interrupt,
-    init_virtio_blk, init_virtio_blk_for_device, init_virtio_blk_with_transport,
+    AsyncBlockDevice, BlockDeviceConfig, BlockError, VirtioBlkDevice, features as blk_features,
+    handle_virtio_blk_interrupt, init_virtio_blk, init_virtio_blk_for_device,
+    init_virtio_blk_with_transport,
 };
 pub use blk_driver::VirtioBlkDriver;
+pub use virtqueue::VringDesc as BlkVringDesc;
 
 // Re-exports for VirtIO-Blk IoScheduler Integration
 pub use blk_scheduler::{
-    VirtioBlkOps, VirtioBlkPollHandler,
-    register_virtio_blk_with_io_scheduler,
+    VirtioBlkOps, VirtioBlkPollHandler, register_virtio_blk_with_io_scheduler,
 };
 
 // Re-exports for VirtIO-Console
 pub use console::{
-    VirtioConsoleDevice, handle_virtio_console_interrupt,
-    init_virtio_console, init_virtio_console_for_device, init_virtio_console_with_transport,
-    get_virtio_console_device, features as console_features,
+    VirtioConsoleDevice, features as console_features, get_virtio_console_device,
+    handle_virtio_console_interrupt, init_virtio_console, init_virtio_console_for_device,
+    init_virtio_console_with_transport,
 };
 pub use console_driver::VirtioConsoleDriver;
 
 // Re-exports for VirtIO-Input
 pub use input::{
-    VirtioInputDevice, VirtioInputEvent, handle_virtio_input_interrupt,
+    VirtioInputDevice, VirtioInputEvent, get_virtio_input_device, handle_virtio_input_interrupt,
     init_virtio_input, init_virtio_input_for_device, init_virtio_input_with_transport,
-    get_virtio_input_device,
 };
 pub use input_driver::VirtioInputDriver;
 
 // Re-exports for VirtIO-Balloon
 pub use balloon::{
-    VirtioBalloonDevice, handle_virtio_balloon_interrupt,
-    init_virtio_balloon, init_virtio_balloon_for_device, init_virtio_balloon_with_transport,
-    get_virtio_balloon_device, features as balloon_features,
+    VirtioBalloonDevice, features as balloon_features, get_virtio_balloon_device,
+    handle_virtio_balloon_interrupt, init_virtio_balloon, init_virtio_balloon_for_device,
+    init_virtio_balloon_with_transport,
 };
 pub use balloon_driver::VirtioBalloonDriver;

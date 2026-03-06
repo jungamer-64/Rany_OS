@@ -1,5 +1,5 @@
-use crate::error::{KernelError, MemoryError};
 use crate::crypto::{ed25519, sha256};
+use crate::error::{KernelError, MemoryError};
 use crate::loader::{elf, live_update, signature, type_id};
 use alloc::collections::{BTreeSet, VecDeque};
 use alloc::sync::Arc;

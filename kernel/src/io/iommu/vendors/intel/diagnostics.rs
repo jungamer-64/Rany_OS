@@ -9,7 +9,10 @@ impl IntelIommuDriver {
         let registry = match self.registry() {
             Ok(r) => r,
             Err(e) => {
-                log::warn!("[IOMMU] diagnostics skipped: registry unavailable ({:?})", e);
+                log::warn!(
+                    "[IOMMU] diagnostics skipped: registry unavailable ({:?})",
+                    e
+                );
                 return;
             }
         };

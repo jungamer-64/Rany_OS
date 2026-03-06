@@ -255,7 +255,11 @@ impl PerCpuBatchProcessor {
     ///
     /// 他のCPUがロック保持中のキューはスキップする。
     /// 固定配列を使用し、ホットパスでのヒープ割り当てを回避。
-    pub fn check_timeouts(&self, current_tsc: u64, tsc_freq_mhz: u64) -> ([Option<PacketBatch>; MAX_CPUS], usize) {
+    pub fn check_timeouts(
+        &self,
+        current_tsc: u64,
+        tsc_freq_mhz: u64,
+    ) -> ([Option<PacketBatch>; MAX_CPUS], usize) {
         const NONE: Option<PacketBatch> = None;
         let mut batches = [NONE; MAX_CPUS];
         let mut count = 0;

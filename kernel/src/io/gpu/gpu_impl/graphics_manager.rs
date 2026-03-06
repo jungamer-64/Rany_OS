@@ -1,7 +1,6 @@
 use super::*;
 use alloc::sync::Arc;
 
-
 // =============================================================================
 // グラフィックスマネージャ
 // =============================================================================
@@ -114,8 +113,6 @@ pub fn get_virtio_gpu_device() -> Option<Arc<VirtioGpu>> {
 pub fn init(transport: Box<dyn VirtioTransport>) -> GpuResult<()> {
     graphics_manager().init(transport)
 }
-
-
 
 // =============================================================================
 // Tests

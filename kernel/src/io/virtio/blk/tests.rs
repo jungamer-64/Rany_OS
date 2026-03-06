@@ -3,10 +3,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use super::*;
-use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
 use crate::fs::page_cluster_buffer::PageClusterBuffer;
-use crate::mm::types::PAGE_SIZE_4K;
+use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
 use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
+use crate::mm::types::PAGE_SIZE_4K;
 use x86_64::PhysAddr;
 
 struct NoopTransport;
@@ -110,9 +110,7 @@ fn test_submit_read_uses_dma_addr() {
     let mut used_mem = vec![0u8; used_bytes];
     let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
 
-    let vq = unsafe {
-        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0)
-    };
+    let vq = unsafe { VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0) };
 
     let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport));
     dev.queues.push(Arc::new(crate::sync::PoisonLock::new(vq)));
@@ -167,9 +165,7 @@ fn test_submit_write_uses_dma_addr() {
     let mut used_mem = vec![0u8; used_bytes];
     let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
 
-    let vq = unsafe {
-        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0)
-    };
+    let vq = unsafe { VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0) };
 
     let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport));
     dev.queues.push(Arc::new(crate::sync::PoisonLock::new(vq)));

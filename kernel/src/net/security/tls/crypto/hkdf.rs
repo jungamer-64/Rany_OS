@@ -1,7 +1,7 @@
 // tls/crypto/hkdf.rs - HKDF and TLS 1.3 Key Schedule (RFC 5869 / RFC 8446)
 
+use super::hmac::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, hmac_sha256, hmac_sha384};
 use alloc::vec::Vec;
-use super::hmac::{hmac_sha256, hmac_sha384, SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 
 // ============================================================================
 // HKDF-SHA256 (RFC 5869)
@@ -175,9 +175,7 @@ pub fn tls13_derive_traffic_keys(
 /// TLS 1.3: Finished鍵を導出
 ///
 /// finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
-pub fn tls13_finished_key(
-    base_key: &[u8; SHA256_OUTPUT_SIZE],
-) -> [u8; SHA256_OUTPUT_SIZE] {
+pub fn tls13_finished_key(base_key: &[u8; SHA256_OUTPUT_SIZE]) -> [u8; SHA256_OUTPUT_SIZE] {
     let result = hkdf_expand_label(base_key, b"finished", b"", SHA256_OUTPUT_SIZE);
     let mut output = [0u8; SHA256_OUTPUT_SIZE];
     output.copy_from_slice(&result);
@@ -314,9 +312,7 @@ pub fn tls13_derive_traffic_keys_sha384(
 }
 
 /// TLS 1.3 Finished鍵導出 using SHA-384
-pub fn tls13_finished_key_sha384(
-    base_key: &[u8; SHA384_OUTPUT_SIZE],
-) -> [u8; SHA384_OUTPUT_SIZE] {
+pub fn tls13_finished_key_sha384(base_key: &[u8; SHA384_OUTPUT_SIZE]) -> [u8; SHA384_OUTPUT_SIZE] {
     let result = hkdf_expand_label_sha384(base_key, b"finished", b"", SHA384_OUTPUT_SIZE);
     let mut output = [0u8; SHA384_OUTPUT_SIZE];
     output.copy_from_slice(&result);

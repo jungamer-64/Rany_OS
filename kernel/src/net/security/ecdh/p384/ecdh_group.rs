@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 // ============================================================================
 // ECDH Group
 // ============================================================================
@@ -58,10 +57,7 @@ pub enum EcdhKeyPair {
         pk: X25519PublicKey,
     },
     /// P-256 (secp256r1) 鍵ペア（ソフトウェア実装）
-    Secp256r1 {
-        sk: [u8; 32],
-        pk: [u8; 65],
-    },
+    Secp256r1 { sk: [u8; 32], pk: [u8; 65] },
 }
 
 impl EcdhKeyPair {
@@ -127,9 +123,7 @@ impl EcdhKeyPair {
                 let bytes: &[u8; 32] = pk;
                 bytes.to_vec()
             }
-            EcdhKeyPair::Secp256r1 { pk, .. } => {
-                pk.to_vec()
-            }
+            EcdhKeyPair::Secp256r1 { pk, .. } => pk.to_vec(),
         }
     }
 
@@ -147,8 +141,8 @@ impl EcdhKeyPair {
     pub fn shared_secret(&self, peer_public: &[u8]) -> Result<Vec<u8>, EcdhError> {
         match self {
             EcdhKeyPair::X25519 { sk, .. } => {
-                let peer_pk =
-                    X25519PublicKey::from_slice(peer_public).map_err(|_| EcdhError::InvalidPeerKey)?;
+                let peer_pk = X25519PublicKey::from_slice(peer_public)
+                    .map_err(|_| EcdhError::InvalidPeerKey)?;
                 let dh_output = peer_pk.dh(sk).map_err(|_| EcdhError::SharedSecretFailed)?;
                 let bytes: &[u8; 32] = &dh_output;
                 Ok(bytes.to_vec())

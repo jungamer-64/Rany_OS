@@ -31,7 +31,11 @@ impl NetworkStack {
     ) -> bool {
         // ── ファイアウォール Egress チェック ──
         if !crate::net::security::firewall::check_egress(
-            src_ip.octets(), dst_ip.octets(), 17, src_port, dst_port,
+            src_ip.octets(),
+            dst_ip.octets(),
+            17,
+            src_port,
+            dst_port,
         ) {
             self.stats.record_dropped();
             return false;
@@ -74,12 +78,7 @@ impl NetworkStack {
 
                 // Build UDP packet
                 if let Some(udp_len) = crate::net::l4::udp::UdpProcessor::build_packet(
-                    ip_payload,
-                    src_ip,
-                    src_port,
-                    dst_ip,
-                    dst_port,
-                    data,
+                    ip_payload, src_ip, src_port, dst_ip, dst_port, data,
                 ) {
                     ip_packet.finalize(udp_len);
 
@@ -173,7 +172,8 @@ impl NetworkStack {
         drop(frame);
         packet.set_len(total_len);
 
-        if let Ok(()) = crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
+        if let Ok(()) = crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet)
+        {
             self.stats.record_tx(total_len);
             return Some(Ok(()));
         }
@@ -188,9 +188,18 @@ impl NetworkStack {
         data: &[u8],
     ) -> Result<(), crate::net::types::NetworkError> {
         use crate::net::l4::udp::UdpAddr;
-        
+
         match (src, dst) {
-            (UdpAddr::V4 { ip: s_ip, port: s_port }, UdpAddr::V4 { ip: d_ip, port: d_port }) => {
+            (
+                UdpAddr::V4 {
+                    ip: s_ip,
+                    port: s_port,
+                },
+                UdpAddr::V4 {
+                    ip: d_ip,
+                    port: d_port,
+                },
+            ) => {
                 let config = self.config.clone();
                 let current_time = self.current_time();
 
@@ -202,13 +211,14 @@ impl NetworkStack {
                 };
 
                 // Resolve MAC address
-                let dst_mac = self.resolve_mac(d_ip, &config, current_time)
+                let dst_mac = self
+                    .resolve_mac(d_ip, &config, current_time)
                     .ok_or(crate::net::types::NetworkError::ArpResolutionPending)?;
 
                 // Try zero-copy first
-                if let Some(result) = self.try_send_udp_zero_copy(
-                    &config, src_ip, s_port, d_ip, dst_mac, d_port, data,
-                ) {
+                if let Some(result) = self
+                    .try_send_udp_zero_copy(&config, src_ip, s_port, d_ip, dst_mac, d_port, data)
+                {
                     return result;
                 }
 
@@ -218,7 +228,16 @@ impl NetworkStack {
                     Err(crate::net::types::NetworkError::TransmitFailed)
                 }
             }
-            (UdpAddr::V6 { ip: s_ip, port: s_port }, UdpAddr::V6 { ip: d_ip, port: d_port }) => {
+            (
+                UdpAddr::V6 {
+                    ip: s_ip,
+                    port: s_port,
+                },
+                UdpAddr::V6 {
+                    ip: d_ip,
+                    port: d_port,
+                },
+            ) => {
                 if self.send_udp_v6_raw(s_port, s_ip, d_ip, d_port, data) {
                     Ok(())
                 } else {

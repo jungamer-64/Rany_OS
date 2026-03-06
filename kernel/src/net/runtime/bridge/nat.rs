@@ -6,7 +6,7 @@
 //! Supports TCP state tracking (SYN/FIN/RST), ICMP echo NAT, ICMP error
 //! rewriting, and periodic garbage collection of expired entries.
 
-use crate::net::l3::ipv4::{Ipv4Address, IpProtocol};
+use crate::net::l3::ipv4::{IpProtocol, Ipv4Address};
 use crate::net::runtime::manager::{self, NetIfId};
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU16;
@@ -111,7 +111,7 @@ pub(super) fn nat_translate_out(
                 let mut tablew = NAT_TABLE.write();
                 if let Some(e) = tablew.get_mut(&ext_port) {
                     e.last_seen = crate::time::get_uptime_ms();
-                    
+
                     // TCP state machine
                     if protocol == IpProtocol::Tcp {
                         const FIN: u8 = 0x01;
@@ -144,14 +144,18 @@ pub(super) fn nat_translate_out(
         nat_prune_expired(crate::time::get_uptime_ms());
         tablew = NAT_TABLE.write();
         if tablew.len() >= MAX_NAT_ENTRIES {
-            log::error!("[NET BRIDGE] NAT table full, dropping connection (Security: prevent internal IP leak)");
+            log::error!(
+                "[NET BRIDGE] NAT table full, dropping connection (Security: prevent internal IP leak)"
+            );
             return None;
         }
     }
 
     // Use random starting port to prevent port prediction attacks
     let random_bytes = crate::net::security::tls::generate_random();
-    let mut ext_port = (u16::from_be_bytes([random_bytes[0], random_bytes[1]]) % (65535 - NAT_EPHEMERAL_START)) + NAT_EPHEMERAL_START;
+    let mut ext_port = (u16::from_be_bytes([random_bytes[0], random_bytes[1]])
+        % (65535 - NAT_EPHEMERAL_START))
+        + NAT_EPHEMERAL_START;
 
     // Collision detection: skip ports that are already mapped
     let mut attempts = 0;
@@ -199,7 +203,7 @@ pub(super) fn nat_translate_out(
 // ============================================================================
 
 /// Perform inbound NAT translation on a packet arriving on any interface.
-/// If translation exists for `dst_port` AND matches remote address/port, 
+/// If translation exists for `dst_port` AND matches remote address/port,
 /// rewrites `dst_ip` and `dst_port` to the internal values and returns true.
 /// Caller should recompute checksums.
 pub(super) fn nat_translate_in(
@@ -218,14 +222,14 @@ pub(super) fn nat_translate_in(
     let mut tablew = NAT_TABLE.write();
     if let Some(entry) = tablew.get_mut(dst_port) {
         // Security check: Verify protocol, local destination IP, AND the remote source IP/port.
-        if entry.protocol != protocol 
+        if entry.protocol != protocol
             || entry.external_addr != *dst_ip
             || entry.remote_addr != src_ip
             || entry.remote_port != src_port
         {
             return false;
         }
-        
+
         // TCP state machine for inbound packets
         if protocol == IpProtocol::Tcp {
             const FIN: u8 = 0x01;
@@ -238,7 +242,9 @@ pub(super) fn nat_translate_in(
                 entry.last_seen = entry.last_seen.saturating_sub(NAT_TCP_TRANSIT_TIMEOUT_MS);
             } else if (tcp_flags & FIN) != 0 {
                 entry.tcp_state = NatTcpState::Closing;
-            } else if entry.tcp_state == NatTcpState::SynSent && (tcp_flags & (SYN | ACK)) == (SYN | ACK) {
+            } else if entry.tcp_state == NatTcpState::SynSent
+                && (tcp_flags & (SYN | ACK)) == (SYN | ACK)
+            {
                 entry.tcp_state = NatTcpState::Established;
             }
         }
@@ -301,14 +307,7 @@ pub(super) fn nat_translate_in_icmp(
         // Echo Reply
         let identifier = u16::from_be_bytes([icmp_payload[4], icmp_payload[5]]);
         let mut port = identifier;
-        if nat_translate_in(
-            IpProtocol::Icmp,
-            src_ip,
-            0,
-            dst_ip,
-            &mut port,
-            0,
-        ) {
+        if nat_translate_in(IpProtocol::Icmp, src_ip, 0, dst_ip, &mut port, 0) {
             icmp_payload[4..6].copy_from_slice(&port.to_be_bytes());
             return Some(*dst_ip);
         }
@@ -322,7 +321,9 @@ pub(super) fn nat_translate_in_icmp(
         let ihl = (icmp_payload[inner_ip_header_off] & 0x0F) as usize;
         let inner_ip_header_len = ihl * 4;
 
-        if inner_ip_header_len < 20 || icmp_payload.len() < inner_ip_header_off + inner_ip_header_len + 8 {
+        if inner_ip_header_len < 20
+            || icmp_payload.len() < inner_ip_header_off + inner_ip_header_len + 8
+        {
             return None;
         }
 
@@ -342,8 +343,10 @@ pub(super) fn nat_translate_in_icmp(
         );
 
         let inner_payload_off = inner_ip_header_off + inner_ip_header_len;
-        let inner_src_port =
-            u16::from_be_bytes([icmp_payload[inner_payload_off], icmp_payload[inner_payload_off + 1]]);
+        let inner_src_port = u16::from_be_bytes([
+            icmp_payload[inner_payload_off],
+            icmp_payload[inner_payload_off + 1],
+        ]);
         let inner_dst_port = u16::from_be_bytes([
             icmp_payload[inner_payload_off + 2],
             icmp_payload[inner_payload_off + 3],
@@ -403,8 +406,12 @@ pub(super) fn recompute_ipv4_transport_checksum(
     }
 
     transport[checksum_off..checksum_off + 2].copy_from_slice(&0u16.to_be_bytes());
-    let pseudo =
-        crate::net::l3::ipv4::pseudo_header_checksum(src_ip, dst_ip, protocol, transport.len() as u16);
+    let pseudo = crate::net::l3::ipv4::pseudo_header_checksum(
+        src_ip,
+        dst_ip,
+        protocol,
+        transport.len() as u16,
+    );
     let checksum = crate::net::l3::ipv4::data_checksum(transport, pseudo);
     let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
     transport[checksum_off..checksum_off + 2].copy_from_slice(&final_checksum.to_be_bytes());
@@ -424,7 +431,7 @@ pub(super) fn nat_prune_expired(now_ms: u64) -> usize {
             NatTcpState::Closing | NatTcpState::SynSent => NAT_TCP_TRANSIT_TIMEOUT_MS,
             NatTcpState::None => NAT_IDLE_TIMEOUT_MS,
         };
-        
+
         if now_ms.saturating_sub(entry.last_seen) > timeout {
             stale_ports.push(ext_port);
         }

@@ -8,8 +8,8 @@
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
-use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use super::balloon::init_virtio_balloon_for_device;
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
 
 /// VirtIO Balloon Driver
 pub struct VirtioBalloonDriver {
