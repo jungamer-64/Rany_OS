@@ -38,6 +38,7 @@ kernel_api::register_cell_runtime!();
 pub mod cmd;
 pub mod cq;
 pub mod defs;
+mod structs; // low‑level layout helpers used internally
 pub mod device;
 pub mod eq;
 pub mod error;

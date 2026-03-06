@@ -192,8 +192,9 @@ pub const MLX5_PAGE_SIZE: usize = 4096;
 // Command Interface
 // ============================================================================
 
-/// コマンドメールボックスサイズ (4096 bytes)
-pub const MLX5_CMD_MBOX_SIZE: usize = 4096;
+/// コマンドメールボックスサイズ (16KB)
+/// Chained blocks を考慮して 16KB に拡張（以前は 8KB）
+pub const MLX5_CMD_MBOX_SIZE: usize = 16384;
 
 /// コマンド入力最大サイズ (512 - 64 = 448 bytes per block)
 pub const MLX5_CMD_DATA_BLOCK_SIZE: usize = 448;
@@ -423,6 +424,8 @@ pub enum EventType {
     CommandCompletion = 0x0A,
     /// ページ要求
     PageRequest = 0x0B,
+    /// 内部エラー (Health Event)
+    InternalError = 0x08,
     /// NICアラート
     NicVportChange = 0x0D,
     /// ポートモジュールイベント
@@ -440,6 +443,7 @@ impl EventType {
             0x09 => Some(Self::PortStateChange),
             0x0A => Some(Self::CommandCompletion),
             0x0B => Some(Self::PageRequest),
+            0x08 => Some(Self::InternalError),
             0x0D => Some(Self::NicVportChange),
             0x0F => Some(Self::PortModule),
             0x17 => Some(Self::TempWarning),

@@ -16,6 +16,8 @@
 //! - ウォッチドッグタイマーでハング検出
 
 use crate::fw;
+use crate::structs::health::HealthLayout;
+use crate::regs::init_seg;
 
 /// 健全性チェックの結果
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,10 +48,13 @@ pub struct HealthMonitor {
     recovery_count: u32,
     /// 最大リカバリ試行回数（上限超過時はデバイス無効化）
     max_recoveries: u32,
+    /// 前回の健全性カウンタ値
+    last_health_counter: u32,
+    /// カウンタが停止している連続回数
+    counter_stuck_count: u32,
 }
 
 impl HealthMonitor {
-    /// 新しい HealthMonitor を作成
     pub fn new() -> Self {
         Self {
             consecutive_errors: 0,
@@ -59,44 +64,49 @@ impl HealthMonitor {
             checks_since_recovery: 0,
             recovery_count: 0,
             max_recoveries: 5,
+            last_health_counter: 0,
+            counter_stuck_count: 0,
         }
     }
 
-    /// カスタム閾値で作成
-    pub fn with_threshold(error_threshold: u32, max_recoveries: u32) -> Self {
-        Self {
-            error_threshold,
-            max_recoveries,
-            ..Self::new()
-        }
-    }
-
-    /// FW 健全性をチェック
-    ///
-    /// # Safety
-    /// - `bar0_base` が有効な MMIO マッピングであること
+    /// FW 健全性を詳細にチェック
     pub unsafe fn check(&mut self, bar0_base: u64) -> HealthStatus {
         self.total_checks += 1;
         self.checks_since_recovery += 1;
 
-        let healthy = fw::check_health(bar0_base);
+        // 1. 健全性カウンタのチェック
+        let health_counter = crate::mmio_read_be32(bar0_base as usize + init_seg::HEALTH_COUNTER);
+        if health_counter == self.last_health_counter && health_counter != 0 {
+            self.counter_stuck_count += 1;
+        } else {
+            self.counter_stuck_count = 0;
+            self.last_health_counter = health_counter;
+        }
 
-        if healthy {
+        // 2. 致命的エラー状態のチェック
+        let healthy = fw::check_health(bar0_base);
+        let stuck = self.counter_stuck_count >= 10; // 10回連続でカウンタ停止ならハングとみなす
+
+        if healthy && !stuck {
             self.consecutive_errors = 0;
             HealthStatus::Healthy
         } else {
             self.consecutive_errors += 1;
             self.total_errors += 1;
 
+            let h_buf = self.read_health_buffer(bar0_base);
+            let layout = HealthLayout::new(&h_buf);
+            
             log::warn!(
                 target: "mlx5::health",
-                "FW health check failed ({}/{} consecutive, total={})",
-                self.consecutive_errors,
-                self.error_threshold,
-                self.total_errors,
+                "FW health error: syndrome={:#x}, ext_syndrome={:#x}, full_reset={}, stuck={}",
+                layout.syndrome(),
+                layout.ext_syndrome(),
+                layout.full_reset_required(),
+                stuck
             );
 
-            if self.consecutive_errors >= self.error_threshold {
+            if self.consecutive_errors >= self.error_threshold || layout.full_reset_required() || stuck {
                 HealthStatus::Critical
             } else {
                 HealthStatus::Degraded
@@ -104,30 +114,23 @@ impl HealthMonitor {
         }
     }
 
-    /// リカバリが必要か判定
-    pub fn needs_reset(&self) -> bool {
-        self.consecutive_errors >= self.error_threshold
+    unsafe fn read_health_buffer(&self, bar0_base: u64) -> [u8; 64] {
+        let mut buf = [0u8; 64];
+        let base = bar0_base as usize + init_seg::HEALTH_BUFFER;
+        for i in 0..16 {
+            let val = crate::mmio_read_be32(base + i * 4);
+            buf[i*4..i*4+4].copy_from_slice(&val.to_be_bytes());
+        }
+        buf
     }
 
-    /// リカバリを試行可能か判定（上限チェック）
-    pub fn can_recover(&self) -> bool {
-        self.recovery_count < self.max_recoveries
-    }
-
-    /// リカバリ完了を通知
     pub fn record_recovery(&mut self) {
         self.recovery_count += 1;
         self.consecutive_errors = 0;
         self.checks_since_recovery = 0;
-
-        log::info!(
-            target: "mlx5::health",
-            "Recovery #{} completed",
-            self.recovery_count,
-        );
+        self.counter_stuck_count = 0;
     }
 
-    /// 統計情報を取得
     pub fn stats(&self) -> HealthStats {
         HealthStats {
             total_checks: self.total_checks,
@@ -139,23 +142,15 @@ impl HealthMonitor {
     }
 }
 
-impl Default for HealthMonitor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// 健全性統計
 #[derive(Debug, Clone)]
 pub struct HealthStats {
-    /// 合計チェック回数
     pub total_checks: u64,
-    /// 合計エラー検出数
     pub total_errors: u64,
-    /// 連続エラー数
     pub consecutive_errors: u32,
-    /// リカバリ実行回数
     pub recovery_count: u32,
-    /// 最後のリカバリからのチェック数
     pub checks_since_recovery: u64,
+}
+
+impl Default for HealthMonitor {
+    fn default() -> Self { Self::new() }
 }

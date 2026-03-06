@@ -15,6 +15,7 @@
 use crate::defs::HcaCaps;
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::regs::{fw_state, init_seg};
+use crate::structs::health::HealthLayout;
 
 /// ファームウェアの状態情報
 #[derive(Debug, Clone)]
@@ -56,23 +57,17 @@ impl FwInfo {
 /// # Returns
 /// - `Ok(FwInfo)`: FW準備完了
 /// - `Err(Mlx5Error)`: タイムアウト
-pub unsafe fn wait_fw_ready(bar0_base: u64) -> Mlx5Result<FwInfo> {
+pub unsafe fn wait_fw_ready(bar0_base: u64, timeout_ms: u32) -> Mlx5Result<FwInfo> {
     let base = bar0_base as usize;
+    let start_ms = kernel_api::services::kernel().current_tick();
 
-    // ポーリング: INITIALIZING(bit31) が 0 になるまで待機
-    // NOTE:
-    //   This runs inside an async executor task context in the kernel.
-    //   Large unbounded spin loops can stall the whole executor and block boot.
-    //   Keep the budget tight and fail fast when FW does not become ready.
-    let max_iters = 200_000u64;
     let mut invalid_reads = 0u64;
 
-    for _ in 0..max_iters {
+    while kernel_api::services::kernel().current_tick() - start_ms < timeout_ms as u64 {
         let initializing = crate::mmio_read_be32(base + init_seg::INITIALIZING);
         let cmdif_rev_fw_sub = crate::mmio_read_be32(base + init_seg::CMDIF_REV_FW_SUB);
 
-        // MMIO read returning all-zeros/all-ones on both registers repeatedly
-        // indicates inaccessible BAR or not-ready VF path.
+        // BAR inaccessible check
         if (initializing == 0 || initializing == u32::MAX)
             && (cmdif_rev_fw_sub == 0 || cmdif_rev_fw_sub == u32::MAX)
         {
@@ -86,9 +81,23 @@ pub unsafe fn wait_fw_ready(bar0_base: u64) -> Mlx5Result<FwInfo> {
         invalid_reads = 0;
 
         if (initializing & fw_state::INITIALIZING_BIT) == 0 {
-            // ヘルスチェック
+            // Health fatal check
             let health = crate::mmio_read_be32(base + init_seg::HEALTH_COUNTER);
             if health == fw_state::HEALTH_FATAL {
+                // Read detailed health buffer for diagnostics
+                let mut h_buf = [0u8; 64];
+                for (i, dword) in h_buf.chunks_exact_mut(4).enumerate() {
+                    let val = crate::mmio_read_be32(base + init_seg::HEALTH_BUFFER + i * 4);
+                    dword.copy_from_slice(&val.to_be_bytes());
+                }
+                let layout = HealthLayout::new(&h_buf);
+                log::error!(
+                    target: "mlx5",
+                    "FW FATAL error detected: syndrome={:#x}, ext_syndrome={:#x}, full_reset={}",
+                    layout.syndrome(),
+                    layout.ext_syndrome(),
+                    layout.full_reset_required()
+                );
                 return Err(Mlx5Error::FirmwareInitFailed);
             }
 
@@ -99,6 +108,7 @@ pub unsafe fn wait_fw_ready(bar0_base: u64) -> Mlx5Result<FwInfo> {
         core::hint::spin_loop();
     }
 
+    log::error!(target: "mlx5", "FW wait timeout ({}ms)", timeout_ms);
     Err(Mlx5Error::DeviceNotReady)
 }
 
@@ -127,8 +137,18 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         log::info!(target: "mlx5", "  Offset {:#x}: num_ports={} log_max_cq={}", base_off, (dw6 >> 24) & 0xFF, (dw3 >> 24) & 0xFF);
     }
 
-    // Standard mlx5 IFC: capability data starts at offset 0x10 in the mailbox
-    let cap_base = 0x10usize;
+    // Standard mlx5 IFC: capability data starts at offset 0x10 in the mailbox.
+    // However, we verify if the layout seems shifted by checking known fields.
+    let mut cap_base = 0x10usize;
+    
+    // Quick heuristic: if offset 0x10 is zero but 0x00 has data, it might be inline.
+    // But usually, QUERY_HCA_CAP output is in the mailbox.
+    let dw3_at_10 = rd_be32(out_data, 0x10 + 0x0C);
+    if dw3_at_10 == 0 && rd_be32(out_data, 0x0C) != 0 {
+        log::warn!(target: "mlx5", "HCA caps seem shifted to offset 0x00");
+        cap_base = 0x00;
+    }
+
     let rd = |off: usize| -> u32 { rd_be32(out_data, cap_base + off) };
 
     let dw0 = rd(0x00);

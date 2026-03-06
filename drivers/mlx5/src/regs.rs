@@ -30,6 +30,10 @@ pub mod init_seg {
     /// HCA健全性バッファオフセット
     pub const HEALTH_BUFFER: usize = 0x0200;
 
+    /// ソフトウェアリセットレジスタ
+    /// bit 0: 1を書き込むとリセット開始
+    pub const SW_RESET: usize = 0x01F0;
+
     /// Internal Timer（高位32ビット）
     pub const INTERNAL_TIMER_H: usize = 0x1000;
     /// Internal Timer（低位32ビット）
@@ -53,6 +57,11 @@ pub mod init_seg {
 pub mod cmd_entry {
     /// エントリサイズ
     pub const ENTRY_SIZE: usize = 64;
+
+    /// コマンドエントリにおけるOPCODEフィールドのオフセット。
+    /// (書き込みは32bit単位で行われ、TYPEフィールドは後から submit() で
+    /// 上書きされるためここでは 0 を使う)
+    pub const OPCODE: usize = 0x00;
 
     /// 記述子タイプ (MLX5_PCI_CMD_XPORT=7)
     pub const TYPE: usize = 0x00;
