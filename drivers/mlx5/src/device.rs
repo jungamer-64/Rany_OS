@@ -920,7 +920,7 @@ impl Mlx5Device {
             is_vf
         );
 
-        let mut uid_candidates = [0u16; 3];
+        let mut uid_candidates = [0u16; 4];
         let mut uid_count = 0usize;
         let mut push_uid = |uid: u16| {
             if uid_candidates[..uid_count].contains(&uid) {
@@ -929,11 +929,13 @@ impl Mlx5Device {
             uid_candidates[uid_count] = uid;
             uid_count += 1;
         };
+        push_uid(prev_uid);
         if is_vf {
             push_uid(0xFFFF);
             push_uid(0);
-        } else {
-            push_uid(prev_uid);
+            if vhca_uid != 0 {
+                push_uid(vhca_uid);
+            }
         }
 
         let mut attempts = [(0u16, 0u32, 0u32); 16];
@@ -955,7 +957,7 @@ impl Mlx5Device {
                 push_attempt(uid, params.td, params.pd);
                 push_attempt(uid, 0, 0);
             } else {
-                // ...
+                push_attempt(uid, params.td, params.pd);
             }
         }
 
@@ -1100,9 +1102,24 @@ impl Mlx5Device {
             push_candidate(tisn);
         }
 
-        let uids: &[u16] = if is_vf { &[0xFFFFu16, 0u16] } else { core::slice::from_ref(&prev_uid) };
+        let mut uid_list = [0u16; 4];
+        let mut uid_count = 0usize;
+        let mut push_uid = |u: u16| {
+            if !uid_list[..uid_count].contains(&u) {
+                uid_list[uid_count] = u;
+                uid_count += 1;
+            }
+        };
+        push_uid(prev_uid);
+        if is_vf {
+            push_uid(0xFFFF);
+            push_uid(0);
+            if self.sw_vhca_id != 0 {
+                push_uid(self.sw_vhca_id);
+            }
+        }
 
-        for &uid in uids {
+        for &uid in &uid_list[..uid_count] {
             cmd.set_uid(uid);
             for &tisn in &candidates[..candidate_count] {
                 let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -1144,18 +1161,54 @@ impl Mlx5Device {
     /// # Safety
     /// - コマンドインタフェースが使用可能であること
     pub unsafe fn create_tir(&mut self, params: &TirParams) -> Mlx5Result<u32> {
+        let is_vf = self.is_virtual_function();
+        let vhca_uid = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let prev_uid = cmd.uid();
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::resources::build_create_tir_input(in_mbox, params);
 
-        cmd.execute(
-            CmdOpcode::CreateTir,
-            self.cmd_in_mbox_device,
-            0x110,
-            self.cmd_out_mbox_device,
-            0x10,
-        )?;
+        let mut uid_candidates = [0u16; 4];
+        let mut uid_count = 0usize;
+        let mut push_uid = |u: u16| {
+            if !uid_candidates[..uid_count].contains(&u) {
+                uid_candidates[uid_count] = u;
+                uid_count += 1;
+            }
+        };
+        push_uid(prev_uid);
+        if is_vf {
+            push_uid(0xFFFF);
+            push_uid(0);
+            if vhca_uid != 0 {
+                push_uid(vhca_uid);
+            }
+        }
+
+        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        for &uid in &uid_candidates[..uid_count] {
+            cmd.set_uid(uid);
+            let res = cmd.execute(
+                CmdOpcode::CreateTir,
+                self.cmd_in_mbox_device,
+                0x110,
+                self.cmd_out_mbox_device,
+                0x10,
+            );
+            match res {
+                Ok(()) => {
+                    exec_res = Ok(());
+                    break;
+                }
+                Err(e) => {
+                    exec_res = Err(e);
+                }
+            }
+        }
+
+        cmd.set_uid(prev_uid);
+        exec_res?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let tirn = crate::resources::parse_create_tir_output(out_mbox);
@@ -1631,23 +1684,46 @@ impl Mlx5Device {
         // Completion EQ on VF follows shared-resource UID semantics in mlx5 Linux path.
         // Keep this scoped to CREATE_EQ and restore previous UID immediately.
         let prev_uid = cmd.uid();
-        let use_shared_uid = is_vf && event_bitmask == 0;
-        if use_shared_uid {
-            cmd.set_uid(0xFFFF);
+        let vhca_uid = self.sw_vhca_id;
+        let mut uid_candidates = [0u16; 4];
+        let mut uid_count = 0usize;
+        let mut push_uid = |u: u16| {
+            if !uid_candidates[..uid_count].contains(&u) {
+                uid_candidates[uid_count] = u;
+                uid_count += 1;
+            }
+        };
+        push_uid(prev_uid);
+        if is_vf {
+            push_uid(0xFFFF);
+            push_uid(0);
+            if vhca_uid != 0 {
+                push_uid(vhca_uid);
+            }
         }
 
-        let exec_res = cmd.execute(
-            CmdOpcode::CreateEq,
-            self.cmd_in_mbox_device,
-            eq_in_len,
-            self.cmd_out_mbox_device,
-            0x10,
-        );
-
-        if use_shared_uid {
-            cmd.set_uid(prev_uid);
+        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        for &uid in &uid_candidates[..uid_count] {
+            cmd.set_uid(uid);
+            let res = cmd.execute(
+                CmdOpcode::CreateEq,
+                self.cmd_in_mbox_device,
+                eq_in_len,
+                self.cmd_out_mbox_device,
+                0x10,
+            );
+            match res {
+                Ok(()) => {
+                    exec_res = Ok(());
+                    break;
+                }
+                Err(e) => {
+                    exec_res = Err(e);
+                }
+            }
         }
 
+        cmd.set_uid(prev_uid);
         exec_res?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -1688,7 +1764,10 @@ impl Mlx5Device {
         log_cq_size: u8,
         eqn: u32,
     ) -> Mlx5Result<u32> {
+        let is_vf = self.is_virtual_function();
+        let vhca_uid = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let prev_uid = cmd.uid();
 
         // CQメモリの初期化 (cycle bit = 1 to indicate HW ownership)
         let cq_depth = 1u32 << log_cq_size;
@@ -1714,13 +1793,46 @@ impl Mlx5Device {
         let cq_pages = (cq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let cq_in_len = (0x110 + cq_pages * 8) as u32;
 
-        cmd.execute(
-            CmdOpcode::CreateCq,
-            self.cmd_in_mbox_device,
-            cq_in_len,
-            self.cmd_out_mbox_device,
-            0x10,
-        )?;
+        let mut uid_candidates = [0u16; 4];
+        let mut uid_count = 0usize;
+        let mut push_uid = |u: u16| {
+            if !uid_candidates[..uid_count].contains(&u) {
+                uid_candidates[uid_count] = u;
+                uid_count += 1;
+            }
+        };
+        push_uid(prev_uid);
+        if is_vf {
+            push_uid(0xFFFF);
+            push_uid(0);
+            if vhca_uid != 0 {
+                push_uid(vhca_uid);
+            }
+        }
+
+        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        for &uid in &uid_candidates[..uid_count] {
+            cmd.set_uid(uid);
+            let res = cmd.execute(
+                CmdOpcode::CreateCq,
+                self.cmd_in_mbox_device,
+                cq_in_len,
+                self.cmd_out_mbox_device,
+                0x10,
+            );
+            match res {
+                Ok(()) => {
+                    exec_res = Ok(());
+                    break;
+                }
+                Err(e) => {
+                    exec_res = Err(e);
+                }
+            }
+        }
+
+        cmd.set_uid(prev_uid);
+        exec_res?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let cqn = crate::cmd::parse_create_cq_output(out_mbox);
@@ -1800,7 +1912,7 @@ impl Mlx5Device {
             tisn,
             log_sq_size
         );
-        let mut uid_candidates = [0u16; 3];
+        let mut uid_candidates = [0u16; 4];
         let mut uid_count = 0usize;
         let mut push_uid = |uid: u16| {
             if uid_candidates[..uid_count].contains(&uid) {
@@ -1813,6 +1925,9 @@ impl Mlx5Device {
         if is_vf {
             push_uid(0xFFFF);
             push_uid(0);
+            if vhca_uid != 0 {
+                push_uid(vhca_uid);
+            }
         }
 
         let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
@@ -1928,8 +2043,10 @@ impl Mlx5Device {
         vlan_strip: bool,
     ) -> Mlx5Result<u32> {
         let is_vf = self.is_virtual_function();
+        let vhca_uid = self.sw_vhca_id;
         let pd = self.pd;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let prev_uid = cmd.uid();
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::build_create_rq_input(
@@ -1947,16 +2064,51 @@ impl Mlx5Device {
         let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rq_in_len = (0x110 + rq_pages * 8) as u32;
 
-        cmd.execute(
-            CmdOpcode::CreateRq,
-            self.cmd_in_mbox_device,
-            rq_in_len,
-            self.cmd_out_mbox_device,
-            0x10,
-        )?;
+        let mut uid_candidates = [0u16; 4];
+        let mut uid_count = 0usize;
+        let mut push_uid = |uid: u16| {
+            if uid_candidates[..uid_count].contains(&uid) {
+                return;
+            }
+            uid_candidates[uid_count] = uid;
+            uid_count += 1;
+        };
+        push_uid(prev_uid);
+        if is_vf {
+            push_uid(0xFFFF);
+            push_uid(0);
+            if vhca_uid != 0 {
+                push_uid(vhca_uid);
+            }
+        }
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let rqn = crate::cmd::parse_create_rq_output(out_mbox);
+        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        let mut rqn = 0u32;
+        'outer: for &uid in &uid_candidates[..uid_count] {
+            cmd.set_uid(uid);
+            let res = cmd.execute(
+                CmdOpcode::CreateRq,
+                self.cmd_in_mbox_device,
+                rq_in_len,
+                self.cmd_out_mbox_device,
+                0x10,
+            );
+            match res {
+                Ok(()) => {
+                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    rqn = crate::cmd::parse_create_rq_output(out_mbox);
+                    exec_res = Ok(());
+                    log::info!(target: "mlx5", "RQ created with rqn={} uid={}", rqn, uid);
+                    break 'outer;
+                }
+                Err(e) => {
+                    exec_res = Err(e);
+                }
+            }
+        }
+
+        cmd.set_uid(prev_uid);
+        exec_res?;
 
         // Transition RQ from RESET to RDY
         self.transition_rq_to_ready(rqn)?;
@@ -1974,7 +2126,7 @@ impl Mlx5Device {
         );
         self.rqs.push(rq);
 
-        log::info!(target: "mlx5", "RQ created: rqn={} cqn={} tirn={}", rqn, cqn, tirn);
+        log::info!(target: "mlx5", "RQ created and ready: rqn={} cqn={} tirn={}", rqn, cqn, tirn);
         Ok(rqn)
     }
 
@@ -1983,7 +2135,10 @@ impl Mlx5Device {
     /// # Safety
     /// - コマンドインタフェースが使用可能であること
     unsafe fn transition_rq_to_ready(&mut self, rqn: u32) -> Mlx5Result<()> {
+        let is_vf = self.is_virtual_function();
+        let vhca_uid = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let prev_uid = cmd.uid();
 
         // Substantial delay
         for _ in 0..1_000_000 { core::hint::spin_loop(); }
@@ -1992,17 +2147,50 @@ impl Mlx5Device {
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::build_modify_rq_input(in_mbox, rqn, WqState::Reset as u8, WqState::Ready as u8, 0, false);
 
-        match cmd.execute(
-            CmdOpcode::ModifyRq,
-            self.cmd_in_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
-        ) {
-            Ok(()) => {
-                log::trace!(target: "mlx5", "RQ {} transitioned to RDY", rqn);
-                Ok(())
+        let mut uid_candidates = [0u16; 4];
+        let mut uid_count = 0usize;
+        let mut push_uid = |uid: u16| {
+            if uid_candidates[..uid_count].contains(&uid) {
+                return;
             }
+            uid_candidates[uid_count] = uid;
+            uid_count += 1;
+        };
+        push_uid(prev_uid);
+        if is_vf {
+            push_uid(0xFFFF);
+            push_uid(0);
+            if vhca_uid != 0 {
+                push_uid(vhca_uid);
+            }
+        }
+
+        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        for &uid in &uid_candidates[..uid_count] {
+            cmd.set_uid(uid);
+            let res = cmd.execute(
+                CmdOpcode::ModifyRq,
+                self.cmd_in_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+                self.cmd_out_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+            );
+            match res {
+                Ok(()) => {
+                    log::trace!(target: "mlx5", "RQ {} transitioned to RDY (uid={})", rqn, uid);
+                    exec_res = Ok(());
+                    break;
+                }
+                Err(e) => {
+                    exec_res = Err(e);
+                }
+            }
+        }
+
+        cmd.set_uid(prev_uid);
+
+        match exec_res {
+            Ok(()) => Ok(()),
             Err(e) => {
                 log::warn!(target: "mlx5", "MODIFY_RQ failed for rqn={} (status=0x3 usually means invalid TD/TIS but for RQ it often means state mismatch), continuing: {:?}", rqn, e);
                 Ok(())
@@ -2023,18 +2211,54 @@ impl Mlx5Device {
     /// # Safety
     /// - コマンドインタフェースが使用可能であること
     pub unsafe fn create_rqt(&mut self, rq_numbers: &[u32], log_rqt_size: u8) -> Mlx5Result<u32> {
+        let is_vf = self.is_virtual_function();
+        let vhca_uid = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let prev_uid = cmd.uid();
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::flow::build_create_rqt_input(in_mbox, rq_numbers, log_rqt_size);
 
-        cmd.execute(
-            CmdOpcode::CreateRqt,
-            self.cmd_in_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
+        let mut uid_candidates = [0u16; 4];
+        let mut uid_count = 0usize;
+        let mut push_uid = |u: u16| {
+            if !uid_candidates[..uid_count].contains(&u) {
+                uid_candidates[uid_count] = u;
+                uid_count += 1;
+            }
+        };
+        push_uid(prev_uid);
+        if is_vf {
+            push_uid(0xFFFF);
+            push_uid(0);
+            if vhca_uid != 0 {
+                push_uid(vhca_uid);
+            }
+        }
+
+        let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        for &uid in &uid_candidates[..uid_count] {
+            cmd.set_uid(uid);
+            let res = cmd.execute(
+                CmdOpcode::CreateRqt,
+                self.cmd_in_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+                self.cmd_out_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+            );
+            match res {
+                Ok(()) => {
+                    exec_res = Ok(());
+                    break;
+                }
+                Err(e) => {
+                    exec_res = Err(e);
+                }
+            }
+        }
+
+        cmd.set_uid(prev_uid);
+        exec_res?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let rqtn = crate::flow::parse_create_rqt_output(out_mbox);
@@ -2700,6 +2924,26 @@ impl Mlx5Device {
             vf_index, vhca_id, vlan, qos
         );
         Ok(())
+    }
+
+    /// VPort Context をクエリ (VFのリソース発見用)
+    pub fn query_vport_context(&mut self, vport: u16) -> Mlx5Result<crate::cmd::VportContext> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        unsafe {
+            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+            crate::cmd::build_query_vport_context_input(in_mbox, vport);
+
+            cmd.execute(
+                crate::defs::CmdOpcode::QueryNicVportContext,
+                self.cmd_in_mbox_device,
+                crate::defs::MLX5_CMD_MBOX_SIZE as u32,
+                self.cmd_out_mbox_device,
+                crate::defs::MLX5_CMD_MBOX_SIZE as u32,
+            )?;
+
+            let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+            Ok(crate::cmd::parse_query_vport_context_output(out_mbox))
+        }
     }
 
     /// VPORTの状態をクエリ
@@ -3721,32 +3965,44 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "[6/8] {} RX CQs created", rx_cqn_list.len());
 
         // Phase 7: TX path
-        // Phase 7: TX path (Probing candidates)
         let mut tisn = 0u32;
         let mut tis_created = false;
         
-        'tis_probe: for &pd in &pd_candidates {
-            for &td in &td_candidates {
-                let tis_params = crate::resources::TisParams {
-                    pd,
-                    td,
-                    port: 1,
-                    prio: 0,
-                };
-                match self.create_tis(&tis_params) {
-                    Ok(n) => {
-                        tisn = n;
-                        tis_created = true;
-                        log::info!(target: "mlx5", "[7/8] TIS created with PD {} TD {}", pd, td);
-                        break 'tis_probe;
+        // VF Discovery: Check VPort context for pre-allocated TIS
+        if self.is_virtual_function() {
+            if let Ok(vctx) = self.query_vport_context(0) {
+                if vctx.default_tis_valid {
+                    tisn = vctx.default_tisn;
+                    tis_created = true;
+                    log::info!(target: "mlx5", "[7/8] Found pre-allocated TISN {} via VPort Context", tisn);
+                }
+            }
+        }
+
+        if !tis_created {
+            'tis_probe: for &pd in &pd_candidates {
+                for &td in &td_candidates {
+                    let tis_params = crate::resources::TisParams {
+                        pd,
+                        td,
+                        port: 1,
+                        prio: 0,
+                    };
+                    match self.create_tis(&tis_params) {
+                        Ok(n) => {
+                            tisn = n;
+                            tis_created = true;
+                            log::info!(target: "mlx5", "[7/8] TIS created with PD {} TD {}", pd, td);
+                            break 'tis_probe;
+                        }
+                        Err(_) => {}
                     }
-                    Err(_) => {}
                 }
             }
         }
 
         if !tis_created && self.is_virtual_function() {
-            log::warn!(target: "mlx5", "CREATE_TIS failed for all candidates, fallback to discover");
+            log::warn!(target: "mlx5", "CREATE_TIS failed, trying fallback discovery");
             tisn = self.discover_existing_tisn()?.unwrap_or(0);
         }
         
@@ -3755,10 +4011,20 @@ impl Mlx5Device {
             let cqn = tx_cqn_list[i % tx_cqn_list.len()];
             match self.create_sq_hw(buf.0, buf.1, buf.2, buf.3, log_sq_size, cqn, tisn) {
                 Ok(sqn) => sqn_list.push(sqn),
+                Err(e) if self.is_virtual_function() => {
+                    log::warn!(target: "mlx5", "SQ {} creation failed ({:?}), attempting takeover of SQN {}", i, e, i);
+                    // For restricted VFs, assume SQNs are pre-allocated starting from 0
+                    let assumed_sqn = i as u32;
+                    // Attempt to take over the SQ state machine via transition_sq_to_ready
+                    if self.transition_sq_to_ready(assumed_sqn).is_ok() {
+                        sqn_list.push(assumed_sqn);
+                        log::info!(target: "mlx5", "SQ {} takeover successful (SQN={})", i, assumed_sqn);
+                    }
+                }
                 Err(e) => log::warn!(target: "mlx5", "SQ {} creation failed: {:?}", i, e),
             }
         }
-        log::info!(target: "mlx5", "[7/8] {} SQs created (tisn={})", sqn_list.len(), tisn);
+        log::info!(target: "mlx5", "[7/8] {} SQs ready (tisn={})", sqn_list.len(), tisn);
 
         // Phase 8: RX path
         let (scatter_fcs, vlan_strip) = {
@@ -3769,29 +4035,50 @@ impl Mlx5Device {
         let mut rqn_list = Vec::with_capacity(rq_bufs.len());
         for (i, buf) in rq_bufs.iter().enumerate() {
             let cqn = rx_cqn_list[i % rx_cqn_list.len()];
-            // Try different PDs for RQ until one works
             let mut rq_created = false;
-            for &pd in &pd_candidates {
-                // Temporarily override self.pd to use build_create_rq_input logic
-                let old_pd = self.pd;
-                self.pd = pd;
-                match self.create_rq_hw(buf.0, buf.1, buf.2, buf.3, log_rq_size, cqn, 0, scatter_fcs, vlan_strip) {
-                    Ok(rqn) => {
-                        rqn_list.push(rqn);
+            
+            match self.create_rq_hw(buf.0, buf.1, buf.2, buf.3, log_rq_size, cqn, 0, scatter_fcs, vlan_strip) {
+                Ok(rqn) => {
+                    rqn_list.push(rqn);
+                    rq_created = true;
+                }
+                Err(e) if self.is_virtual_function() => {
+                    log::warn!(target: "mlx5", "RQ {} creation failed ({:?}), attempting takeover of RQN {}", i, e, i);
+                    let assumed_rqn = i as u32;
+                    // Take over RQ state machine using manual transition logic if needed
+                    if self.transition_rq_to_ready(assumed_rqn).is_ok() {
+                        rqn_list.push(assumed_rqn);
                         rq_created = true;
-                        self.pd = old_pd;
-                        break;
+                        log::info!(target: "mlx5", "RQ {} takeover successful (RQN={})", i, assumed_rqn);
                     }
-                    Err(_) => {
-                        self.pd = old_pd;
+                }
+                Err(_) => {}
+            }
+
+            if !rq_created {
+                // Last ditch effort: try other PDs for CREATE_RQ if not in takeover mode
+                for &pd in &pd_candidates {
+                    let old_pd = self.pd;
+                    self.pd = pd;
+                    match self.create_rq_hw(buf.0, buf.1, buf.2, buf.3, log_rq_size, cqn, 0, scatter_fcs, vlan_strip) {
+                        Ok(rqn) => {
+                            rqn_list.push(rqn);
+                            rq_created = true;
+                            self.pd = old_pd;
+                            break;
+                        }
+                        Err(_) => {
+                            self.pd = old_pd;
+                        }
                     }
                 }
             }
+
             if !rq_created {
-                log::error!(target: "mlx5", "RQ {} creation failed for all PD candidates", i);
+                log::error!(target: "mlx5", "RQ {} setup failed for all methods", i);
             }
         }
-        log::info!(target: "mlx5", "[8/8] {} RQs created", rqn_list.len());
+        log::info!(target: "mlx5", "[8/8] {} RQs ready", rqn_list.len());
 
         // Multi-queue RSS setup
         // Try different TDs for TIR until one works

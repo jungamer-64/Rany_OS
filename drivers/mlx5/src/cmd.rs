@@ -1219,6 +1219,32 @@ pub fn parse_create_eq_output(out_mbox: &CmdMailbox) -> u32 {
 // Port & Statistics Commands
 // ============================================================================
 
+/// QUERY_VPORT_CONTEXT コマンド入力の構築
+pub fn build_query_vport_context_input(in_mbox: &mut CmdMailbox, vport_number: u16) {
+    *in_mbox = CmdMailbox::zeroed();
+    // mlx5_ifc_query_vport_context_in_bits: vport_number at bit offset 0x50 => byte 0x0A.
+    in_mbox.write_be16(0x0A, vport_number);
+}
+
+/// QUERY_VPORT_CONTEXT 出力からデフォルトのリソース情報を解析
+pub struct VportContext {
+    pub default_tisn: u32,
+    pub default_tis_valid: bool,
+}
+
+pub fn parse_query_vport_context_output(out_mbox: &CmdMailbox) -> VportContext {
+    // mlx5_ifc_vport_context_bits starts at byte 0x20.
+    let ctx = 0x20;
+    // default_tis_num[23:0] at bit 0x108 => ctx + 0x19 (big-endian 24-bit)
+    let default_tisn = out_mbox.read_be32(ctx + 0x18) & 0x00FF_FFFF;
+    // field_select[31] is bit 0 of field_select (context starts with field_select)
+    let field_select = out_mbox.read_be32(ctx + 0x00);
+    VportContext {
+        default_tisn,
+        default_tis_valid: (field_select & (1 << 31)) != 0,
+    }
+}
+
 /// QUERY_VPORT_STATE コマンド入力の構築
 pub fn build_query_vport_state_input(in_mbox: &mut CmdMailbox, vport_number: u16) {
     *in_mbox = CmdMailbox::zeroed();
