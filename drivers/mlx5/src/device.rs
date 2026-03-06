@@ -14,6 +14,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::cmd::{CmdMailbox, CmdQueueTransport, CommandTransport};
@@ -3652,14 +3653,12 @@ impl Mlx5Device {
         self.alloc_pd()?;
         self.alloc_td()?;
         
-        // VF Probe: Try to find a valid PD/TD by testing different values if allocated ones fail
-        let mut pd_candidates = Vec::new();
-        if self.pd != 0 { pd_candidates.push(self.pd); }
-        pd_candidates.extend_from_slice(&[0, 1, 17]);
+        // VF Probe: Use minimal candidates to avoid firmware rejection
+        let mut pd_candidates = vec![0, 1];
+        if self.pd != 0 && self.pd != 1 { pd_candidates.push(self.pd); }
         
-        let mut td_candidates = Vec::new();
-        if self.td != 0 { td_candidates.push(self.td); }
-        td_candidates.extend_from_slice(&[0, 1]);
+        let mut td_candidates = vec![0, 1];
+        if self.td != 0 && self.td != 1 { td_candidates.push(self.td); }
 
         log::info!(target: "mlx5", "[3/8] Core resources allocated (UAR, PD, TD)");
 
