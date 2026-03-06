@@ -54,9 +54,9 @@ impl DmaSlot {
                         size: buf.size(),
                     };
                     
-                    if handle.device_addr == 0 {
-                        log::warn!(target: "mlx5", "DMA allocated at IOVA 0x0 for {}, skipping to avoid IOMMU fault", label);
-                        // Leak this buffer for now to ensure address 0 is not reused
+                    // Skip anything below 1MB to avoid legacy/IOMMU reservation conflicts
+                    if handle.device_addr < 0x100000 {
+                        log::warn!(target: "mlx5", "DMA allocated at IOVA {:#x} for {}, skipping (<1MB)", handle.device_addr, label);
                         core::mem::forget(buf);
                         continue;
                     }
@@ -82,6 +82,10 @@ impl DmaSlot {
 
     fn device_address(&self) -> u64 {
         self.handle.device_addr
+    }
+
+    fn phys_address(&self) -> u64 {
+        self.handle.phys_addr
     }
 
     fn free(self) {

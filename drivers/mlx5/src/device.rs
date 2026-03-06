@@ -336,17 +336,17 @@ impl Mlx5Device {
     pub unsafe fn init_command_interface(
         &mut self,
         cmdq_virt: u64,
-        cmdq_device: u64,
+        cmdq_pa: u64,
         in_mbox_virt: u64,
-        in_mbox_device: u64,
+        in_mbox_pa: u64,
         out_mbox_virt: u64,
-        out_mbox_device: u64,
+        out_mbox_pa: u64,
     ) -> Mlx5Result<()> {
-        if cmdq_device == 0 || in_mbox_device == 0 || out_mbox_device == 0 {
+        if cmdq_pa == 0 || in_mbox_pa == 0 || out_mbox_pa == 0 {
             log::error!(
                 target: "mlx5",
                 "CRITICAL: Zero DMA address detected (cmdq={:#x} in={:#x} out={:#x}). IOMMU will likely block access.",
-                cmdq_device, in_mbox_device, out_mbox_device
+                cmdq_pa, in_mbox_pa, out_mbox_pa
             );
         }
 
@@ -355,9 +355,9 @@ impl Mlx5Device {
         }
 
         self.cmd_in_mbox_virt = in_mbox_virt;
-        self.cmd_in_mbox_device = in_mbox_device;
+        self.cmd_in_mbox_device = in_mbox_pa;
         self.cmd_out_mbox_virt = out_mbox_virt;
-        self.cmd_out_mbox_device = out_mbox_device;
+        self.cmd_out_mbox_device = out_mbox_pa;
 
         let base = self.bar0_base as usize;
         let cmdif_rev_fw_sub =
@@ -371,7 +371,7 @@ impl Mlx5Device {
 
         let cmd = CmdQueueTransport::new(
             self.bar0_base,
-            cmdq_device,
+            cmdq_pa,
             cmdq_virt,
             self.cmd_in_mbox_virt,
             self.cmd_out_mbox_virt,
@@ -1596,7 +1596,7 @@ impl Mlx5Device {
     pub unsafe fn create_eq_hw(
         &mut self,
         eq_buf_virt: u64,
-        eq_buf_device: u64,
+        eq_buf_pa: u64,
         log_eq_size: u8,
         msix_vector: u32,
         event_bitmask: u64,
@@ -1617,7 +1617,7 @@ impl Mlx5Device {
         crate::cmd::build_create_eq_input(
             in_mbox,
             log_eq_size,
-            eq_buf_device,
+            eq_buf_pa,
             self.uar_page,
             msix_vector,
             event_bitmask,
@@ -1655,7 +1655,7 @@ impl Mlx5Device {
         let eq = EventQueue::new(
             eqn,
             eq_buf_virt,
-            eq_buf_device,
+            eq_buf_pa,
             self.uar_base,
             log_eq_size,
             msix_vector,
@@ -1681,9 +1681,9 @@ impl Mlx5Device {
     pub unsafe fn create_cq_hw(
         &mut self,
         cq_buf_virt: u64,
-        cq_buf_device: u64,
+        cq_buf_pa: u64,
         db_virt: u64,
-        db_device: u64,
+        db_pa: u64,
         log_cq_size: u8,
         eqn: u32,
     ) -> Mlx5Result<u32> {
@@ -1702,8 +1702,8 @@ impl Mlx5Device {
         crate::cmd::build_create_cq_input(
             in_mbox,
             log_cq_size,
-            cq_buf_device,
-            db_device,
+            cq_buf_pa,
+            db_pa,
             self.uar_page,
             eqn,
             false, // CQE compression disabled by default
@@ -1727,14 +1727,14 @@ impl Mlx5Device {
         let cq = CompletionQueue::new(
             cqn,
             cq_buf_virt,
-            cq_buf_device,
+            cq_buf_pa,
             self.uar_base,
             db_virt,
             log_cq_size,
             eqn,
         );
         self.cqs.push(cq);
-        self.cq_db_records.push((db_virt, db_device));
+        self.cq_db_records.push((db_virt, db_pa));
 
         log::info!(target: "mlx5", "CQ created: cqn={} eqn={}", cqn, eqn);
         Ok(cqn)
@@ -1756,9 +1756,9 @@ impl Mlx5Device {
     pub unsafe fn create_sq_hw(
         &mut self,
         sq_buf_virt: u64,
-        sq_buf_device: u64,
+        sq_buf_pa: u64,
         db_virt: u64,
-        db_device: u64,
+        db_pa: u64,
         log_sq_size: u8,
         cqn: u32,
         tisn: u32,
@@ -1779,8 +1779,8 @@ impl Mlx5Device {
         crate::cmd::build_create_sq_input(
             in_mbox,
             log_sq_size,
-            sq_buf_device,
-            db_device,
+            sq_buf_pa,
+            db_pa,
             cqn,
             tisn,
             self.uar_page,
@@ -1824,8 +1824,8 @@ impl Mlx5Device {
                 crate::cmd::build_create_sq_input(
                     &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox),
                     log_sq_size,
-                    sq_buf_device,
-                    db_device,
+                    sq_buf_pa,
+                    db_pa,
                     cqn,
                     self.pd,
                     self.uar_page,
@@ -1864,7 +1864,7 @@ impl Mlx5Device {
         let sq = SendQueue::new(
             sqn,
             sq_buf_virt,
-            sq_buf_device,
+            sq_buf_pa,
             db_virt,
             self.uar_base,
             log_sq_size,
@@ -1917,9 +1917,9 @@ impl Mlx5Device {
     pub unsafe fn create_rq_hw(
         &mut self,
         rq_buf_virt: u64,
-        rq_buf_device: u64,
+        rq_buf_pa: u64,
         db_virt: u64,
-        db_device: u64,
+        db_pa: u64,
         log_rq_size: u8,
         cqn: u32,
         tirn: u32,
@@ -1934,8 +1934,8 @@ impl Mlx5Device {
         crate::cmd::build_create_rq_input(
             in_mbox,
             log_rq_size,
-            rq_buf_device,
-            db_device,
+            rq_buf_pa,
+            db_pa,
             cqn,
             pd,
             scatter_fcs,
@@ -1964,7 +1964,7 @@ impl Mlx5Device {
         let rq = ReceiveQueue::new(
             rqn,
             rq_buf_virt,
-            rq_buf_device,
+            rq_buf_pa,
             db_virt,
             log_rq_size,
             cqn,
@@ -3651,6 +3651,16 @@ impl Mlx5Device {
         self.alloc_uar()?;
         self.alloc_pd()?;
         self.alloc_td()?;
+        
+        // VF Probe: Try to find a valid PD/TD by testing different values if allocated ones fail
+        let mut pd_candidates = Vec::new();
+        if self.pd != 0 { pd_candidates.push(self.pd); }
+        pd_candidates.extend_from_slice(&[0, 1, 17]);
+        
+        let mut td_candidates = Vec::new();
+        if self.td != 0 { td_candidates.push(self.td); }
+        td_candidates.extend_from_slice(&[0, 1]);
+
         log::info!(target: "mlx5", "[3/8] Core resources allocated (UAR, PD, TD)");
 
         // Phase 4: FW setup
@@ -3661,16 +3671,28 @@ impl Mlx5Device {
         self.query_port_mac(0)?;
         log::info!(target: "mlx5", "[5/8] MAC address obtained");
 
-        let mut effective_mkey_params = mkey_params.clone();
-        effective_mkey_params.pd = self.pd;
-        match self.create_mkey(&effective_mkey_params) {
-            Ok(_) => log::info!(target: "mlx5", "[5/8] MKEY created"),
-            Err(_) if self.is_virtual_function() => {
-                let lkey = self.query_reserved_lkey().unwrap_or(0x100);
-                self.set_mkey(lkey);
-                log::warn!(target: "mlx5", "[5/8] Using reserved lkey={:#x}", lkey);
+        let mut mkey_created = false;
+        for &pd in &pd_candidates {
+            let mut effective_mkey_params = mkey_params.clone();
+            effective_mkey_params.pd = pd;
+            match self.create_mkey(&effective_mkey_params) {
+                Ok(_) => {
+                    log::info!(target: "mlx5", "[5/8] MKEY created with PD {}", pd);
+                    mkey_created = true;
+                    break;
+                }
+                Err(e) => {
+                    log::warn!(target: "mlx5", "[5/8] MKEY creation failed with PD {}: {:?}", pd, e);
+                }
             }
-            Err(e) => return Err(e),
+        }
+
+        if !mkey_created && self.is_virtual_function() {
+            let lkey = self.query_reserved_lkey().unwrap_or(0x100);
+            self.set_mkey(lkey);
+            log::warn!(target: "mlx5", "[5/8] Using reserved lkey={:#x}", lkey);
+        } else if !mkey_created {
+            return Err(Mlx5Error::NotSupported);
         }
 
         // Phase 6: Queues (Multi-queue)
