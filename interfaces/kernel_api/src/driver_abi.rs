@@ -398,6 +398,7 @@ pub struct AbiMmioHandle {
 /// entries in this table. Older drivers may use only the prefix fields and
 /// ignore optional tail entries introduced in later revisions.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct KernelApiV1 {
     pub abi_version: u32,
     pub abi_size: u32,

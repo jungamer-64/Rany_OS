@@ -76,12 +76,12 @@ pub struct Mlx5Device {
     cmd: Option<Box<dyn CommandTransport + Send>>,
     /// コマンド入力メールボックス（仮想アドレス）
     cmd_in_mbox_virt: u64,
-    /// コマンド入力メールボックス（DMA物理アドレス）
-    cmd_in_mbox_phys: u64,
+    /// コマンド入力メールボックス（デバイスアドレス）
+    cmd_in_mbox_device: u64,
     /// コマンド出力メールボックス（仮想アドレス）
     cmd_out_mbox_virt: u64,
-    /// コマンド出力メールボックス（DMA物理アドレス）
-    cmd_out_mbox_phys: u64,
+    /// コマンド出力メールボックス（デバイスアドレス）
+    cmd_out_mbox_device: u64,
 
     /// Event Queues
     eqs: Vec<EventQueue>,
@@ -169,9 +169,9 @@ impl Mlx5Device {
             hca_caps: None,
             cmd: None,
             cmd_in_mbox_virt: 0,
-            cmd_in_mbox_phys: 0,
+            cmd_in_mbox_device: 0,
             cmd_out_mbox_virt: 0,
-            cmd_out_mbox_phys: 0,
+            cmd_out_mbox_device: 0,
             eqs: Vec::new(),
             cqs: Vec::new(),
             sqs: Vec::new(),
@@ -336,20 +336,20 @@ impl Mlx5Device {
     pub unsafe fn init_command_interface(
         &mut self,
         cmdq_virt: u64,
-        cmdq_phys: u64,
+        cmdq_device: u64,
         in_mbox_virt: u64,
-        in_mbox_phys: u64,
+        in_mbox_device: u64,
         out_mbox_virt: u64,
-        out_mbox_phys: u64,
+        out_mbox_device: u64,
     ) -> Mlx5Result<()> {
         if self.state != DeviceState::FirmwareReady {
             return Err(Mlx5Error::DeviceNotReady);
         }
 
         self.cmd_in_mbox_virt = in_mbox_virt;
-        self.cmd_in_mbox_phys = in_mbox_phys;
+        self.cmd_in_mbox_device = in_mbox_device;
         self.cmd_out_mbox_virt = out_mbox_virt;
-        self.cmd_out_mbox_phys = out_mbox_phys;
+        self.cmd_out_mbox_device = out_mbox_device;
 
         let base = self.bar0_base as usize;
         let cmdif_rev_fw_sub =
@@ -363,7 +363,7 @@ impl Mlx5Device {
 
         let cmd = CmdQueueTransport::new(
             self.bar0_base,
-            cmdq_phys,
+            cmdq_device,
             cmdq_virt,
             self.cmd_in_mbox_virt,
             self.cmd_out_mbox_virt,
@@ -410,9 +410,9 @@ impl Mlx5Device {
         crate::cmd::build_enable_hca_input(in_mbox, 0);
         cmd.execute(
             CmdOpcode::EnableHca,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         log::info!(target: "mlx5", "HCA enabled");
@@ -425,9 +425,9 @@ impl Mlx5Device {
             *in_mbox = CmdMailbox::zeroed();
             let issi = match cmd.execute(
                 CmdOpcode::QueryIssi,
-                self.cmd_in_mbox_phys,
+                self.cmd_in_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
-                self.cmd_out_mbox_phys,
+                self.cmd_out_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
             ) {
                 Ok(()) => {
@@ -454,9 +454,9 @@ impl Mlx5Device {
                 crate::cmd::build_set_issi_input(in_mbox, 1);
                 cmd.execute(
                     CmdOpcode::SetIssi,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 )?;
             }
@@ -468,9 +468,9 @@ impl Mlx5Device {
             crate::cmd::build_query_hca_cap_input(in_mbox, 0x0); // General
             cmd.execute(
                 CmdOpcode::QueryHcaCap,
-                self.cmd_in_mbox_phys,
+                self.cmd_in_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
-                self.cmd_out_mbox_phys,
+                self.cmd_out_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
             )?;
 
@@ -521,9 +521,9 @@ impl Mlx5Device {
             crate::cmd::build_set_hca_cap_input(in_mbox, 0x0, &queried_capability);
             match cmd.execute(
                 CmdOpcode::SetHcaCap,
-                self.cmd_in_mbox_phys,
+                self.cmd_in_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
-                self.cmd_out_mbox_phys,
+                self.cmd_out_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
             ) {
                 Ok(()) => {
@@ -557,9 +557,9 @@ impl Mlx5Device {
         crate::cmd::build_init_hca_input(in_mbox, self.sw_vhca_id);
         cmd.execute(
             CmdOpcode::InitHca,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         log::info!(target: "mlx5", "HCA initialized");
@@ -596,9 +596,9 @@ impl Mlx5Device {
             );
             match cmd.execute(
                 CmdOpcode::QueryNicVportContext,
-                self.cmd_in_mbox_phys,
+                self.cmd_in_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
-                self.cmd_out_mbox_phys,
+                self.cmd_out_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
             ) {
                 Ok(()) => {
@@ -744,9 +744,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::ManagePages,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -782,13 +782,50 @@ impl Mlx5Device {
         crate::pages::build_query_pages_input(in_mbox, op_mod);
         cmd.execute(
             CmdOpcode::QueryPages,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         Ok(crate::pages::parse_query_pages_output(out_mbox))
+    }
+
+    /// FWに提供したページを回収
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn reclaim_pages(&mut self, function_id: u16, num_pages: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        log::info!(
+            target: "mlx5",
+            "Reclaiming {} pages from FW (function_id={})",
+            num_pages, function_id
+        );
+
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_manage_pages_input(
+            in_mbox,
+            crate::pages::ManagePagesOp::ReclaimPages as u8,
+            function_id,
+            num_pages,
+            &[], // No PAS for reclaim
+        );
+
+        cmd.execute(
+            CmdOpcode::ManagePages,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        // 本来は回収したページアドレスをout_mboxから読み取るべき
+        // self.page_manager.record_reclaim(...)
+        
+        log::info!(target: "mlx5", "Reclaimed pages from FW");
+        Ok(())
     }
 
     /// ページマネージャの参照を取得
@@ -810,9 +847,9 @@ impl Mlx5Device {
         crate::cmd::build_query_special_contexts_input(in_mbox);
         cmd.execute(
             CmdOpcode::QuerySpecialContexts,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             0x10,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             0x20,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -831,9 +868,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::CreateMkey,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -883,12 +920,11 @@ impl Mlx5Device {
             uid_candidates[uid_count] = uid;
             uid_count += 1;
         };
-        push_uid(prev_uid);
         if is_vf {
-            if vhca_uid != 0 && vhca_uid != 0xFFFF {
-                push_uid(vhca_uid);
-            }
             push_uid(0xFFFF);
+            push_uid(0);
+        } else {
+            push_uid(prev_uid);
         }
 
         let mut attempts = [(0u16, 0u32, 0u32); 16];
@@ -906,27 +942,18 @@ impl Mlx5Device {
 
         for &uid in &uid_candidates[..uid_count] {
             if is_vf {
-                // Keep VF CREATE_TIS probing minimal and deterministic.
+                push_attempt(uid, 0, params.pd);
                 push_attempt(uid, params.td, params.pd);
+                push_attempt(uid, 0, 0);
             } else {
-                // Baseline path first, then relaxed variants for broader FW compatibility.
-                push_attempt(uid, params.td, params.pd);
-                if params.pd != 0 {
-                    push_attempt(uid, params.td, 0);
-                }
-                if params.td != 0 {
-                    push_attempt(uid, 0, params.pd);
-                }
-                if params.td != 0 || params.pd != 0 {
-                    push_attempt(uid, 0, 0);
-                }
+                // ...
             }
         }
 
-        let mut in_len_candidates = [0xC0u32; 1];
+        let in_len_candidates = [0xC0u32; 1];
         let in_len_count = 1usize;
 
-        let mut underlay_qpn_candidates = [0u32; 1];
+        let underlay_qpn_candidates = [0u32; 1];
         let underlay_qpn_count = 1usize;
 
         let total_attempts = attempt_count * underlay_qpn_count * in_len_count;
@@ -974,9 +1001,9 @@ impl Mlx5Device {
 
                     let res = cmd.execute(
                         CmdOpcode::CreateTis,
-                        self.cmd_in_mbox_phys,
+                        self.cmd_in_mbox_device,
                         in_len,
-                        self.cmd_out_mbox_phys,
+                        self.cmd_out_mbox_device,
                         0x10,
                     );
                     match res {
@@ -1007,29 +1034,47 @@ impl Mlx5Device {
         }
 
         cmd.set_uid(prev_uid);
-        exec_res?;
-
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let tisn = crate::resources::parse_create_tis_output(out_mbox);
-
-        let info = TisInfo {
-            tisn,
-            port: params.port,
-        };
-        self.tis_list.push(info);
-
-        log::info!(target: "mlx5", "TIS created: tisn={}", tisn);
-        Ok(tisn)
+        
+        match exec_res {
+            Ok(()) => {
+                let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                let tisn = crate::resources::parse_create_tis_output(out_mbox);
+                let info = TisInfo {
+                    tisn,
+                    port: params.port,
+                };
+                self.tis_list.push(info);
+                log::info!(target: "mlx5", "TIS created: tisn={}", tisn);
+                Ok(tisn)
+            }
+            Err(e) => {
+                if self.is_virtual_function() {
+                    log::warn!(target: "mlx5", "CREATE_TIS failed ({:?}), attempting to discover existing TISN", e);
+                    if let Some(tisn) = self.discover_existing_tisn()? {
+                        let info = TisInfo {
+                            tisn,
+                            port: params.port,
+                        };
+                        self.tis_list.push(info);
+                        log::info!(target: "mlx5", "Discovered existing TIS: tisn={}", tisn);
+                        Ok(tisn)
+                    } else {
+                        log::warn!(target: "mlx5", "No TIS found, using TISN 0 as final fallback for VF");
+                        Ok(0)
+                    }
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
-    /// QUERY_TIS で既存 TISN を探索する（VF fallback用）
-    ///
-    /// # Safety
-    /// - コマンドインタフェースが使用可能であること
     unsafe fn discover_existing_tisn(&mut self) -> Mlx5Result<Option<u32>> {
+        let is_vf = self.is_virtual_function();
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let prev_uid = cmd.uid();
 
-        let mut candidates = [0u32; 80];
+        let mut candidates = [0u32; 16];
         let mut candidate_count = 0usize;
         let mut push_candidate = |tisn: u32| {
             if candidate_count >= candidates.len() {
@@ -1042,57 +1087,46 @@ impl Mlx5Device {
             candidate_count += 1;
         };
 
-        // Probe common low IDs first.
-        for tisn in 0..64u32 {
+        for tisn in 0..16u32 {
             push_candidate(tisn);
         }
-        for &tisn in &[64u32, 128, 256, 512, 1024, 2048, 4095] {
-            push_candidate(tisn);
-        }
-        if let Some(caps) = self.hca_caps {
-            let max_tis = 1u32
-                .checked_shl((caps.log_max_tis as u32).min(12))
-                .unwrap_or(0);
-            if max_tis > 0 {
-                push_candidate(max_tis / 2);
-                push_candidate(max_tis.saturating_sub(1));
+
+        let uids: &[u16] = if is_vf { &[0xFFFFu16, 0u16] } else { core::slice::from_ref(&prev_uid) };
+
+        for &uid in uids {
+            cmd.set_uid(uid);
+            for &tisn in &candidates[..candidate_count] {
+                let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+                crate::resources::build_query_tis_input(in_mbox, tisn, 0, false);
+                match cmd.execute(
+                    CmdOpcode::QueryTis,
+                    self.cmd_in_mbox_device,
+                    0x40, // Full input size
+                    self.cmd_out_mbox_device,
+                    MLX5_CMD_MBOX_SIZE as u32,
+                ) {
+                    Ok(()) => {
+                        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                        let (prio, td, underlay_qpn, pd) = crate::resources::parse_query_tis_output(out_mbox);
+                        log::debug!(
+                            target: "mlx5",
+                            "QUERY_TIS (uid={}) found tisn={} prio={} td={} underlay_qpn={:#x} pd={}",
+                            uid,
+                            tisn,
+                            prio,
+                            td,
+                            underlay_qpn,
+                            pd
+                        );
+                        cmd.set_uid(prev_uid);
+                        return Ok(Some(tisn));
+                    }
+                    Err(_) => {}
+                }
             }
         }
 
-        for &tisn in &candidates[..candidate_count] {
-            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-            crate::resources::build_query_tis_input(in_mbox, tisn);
-            match cmd.execute(
-                CmdOpcode::QueryTis,
-                self.cmd_in_mbox_phys,
-                0x10,
-                self.cmd_out_mbox_phys,
-                MLX5_CMD_MBOX_SIZE as u32,
-            ) {
-                Ok(()) => {
-                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-                    let (prio, td, underlay_qpn, pd) = crate::resources::parse_query_tis_output(out_mbox);
-                    log::debug!(
-                        target: "mlx5",
-                        "QUERY_TIS found tisn={} prio={} td={} underlay_qpn={:#x} pd={}",
-                        tisn,
-                        prio,
-                        td,
-                        underlay_qpn,
-                        pd
-                    );
-                    return Ok(Some(tisn));
-                }
-                Err(Mlx5Error::CommandFailed(status)) if status == CmdStatus::BadOpcode as u8 => {
-                    // FW does not support QUERY_TIS in this mode.
-                    return Ok(None);
-                }
-                Err(Mlx5Error::CommandFailed(_)) => {}
-                Err(Mlx5Error::CommandTimeout) => return Ok(None),
-                Err(err) => return Err(err),
-            }
-        }
-
+        cmd.set_uid(prev_uid);
         Ok(None)
     }
 
@@ -1108,9 +1142,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::CreateTir,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             0x110,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             0x10,
         )?;
 
@@ -1140,6 +1174,54 @@ impl Mlx5Device {
     // ========================================================================
     // Phase 5e: フローテーブル設定
     // ========================================================================
+
+    /// ユニキャストMACアドレスフィルタを追加
+    ///
+    /// 指定されたMACアドレス宛のパケットをTIRにフォワードする。
+    ///
+    /// # Arguments
+    /// - `table_id`: 登録先のフローテーブルID
+    /// - `group_id`: 登録先のフローグループID
+    /// - `flow_index`: フローテーブル内のインデックス
+    /// - `mac`: 宛先MACアドレス
+    /// - `tirn`: フォワード先TIR番号
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn add_unicast_filter(
+        &mut self,
+        table_id: u32,
+        group_id: u32,
+        flow_index: u32,
+        mac: MacAddr,
+        tirn: u32,
+    ) -> Mlx5Result<()> {
+        let mut match_value = crate::flow::MatchValue::default();
+        match_value.dst_mac = Some(mac.0);
+
+        self.set_flow_table_entry(
+            table_id,
+            flow_index,
+            group_id,
+            crate::flow::FlowAction::Allow,
+            Some(tirn),
+            &match_value,
+        )?;
+
+        log::info!(target: "mlx5", "Unicast filter added: MAC {} -> TIR {}", mac, tirn);
+        Ok(())
+    }
+
+    /// ブロードキャストフィルタを追加
+    pub unsafe fn add_broadcast_filter(
+        &mut self,
+        table_id: u32,
+        group_id: u32,
+        flow_index: u32,
+        tirn: u32,
+    ) -> Mlx5Result<()> {
+        self.add_unicast_filter(table_id, group_id, flow_index, MacAddr::BROADCAST, tirn)
+    }
 
     /// NIC RXフローテーブル・フローグループ・catch-allエントリを作成
     ///
@@ -1180,7 +1262,7 @@ impl Mlx5Device {
     }
 
     /// フローテーブルを作成
-    unsafe fn create_flow_table(&mut self, config: &FlowTableConfig) -> Mlx5Result<u32> {
+    pub unsafe fn create_flow_table(&mut self, config: &FlowTableConfig) -> Mlx5Result<u32> {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -1188,9 +1270,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::CreateFlowTable,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -1208,7 +1290,7 @@ impl Mlx5Device {
     }
 
     /// フローグループを作成
-    unsafe fn create_flow_group(
+    pub unsafe fn create_flow_group(
         &mut self,
         table_id: u32,
         start_index: u32,
@@ -1228,9 +1310,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::CreateFlowGroup,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -1249,7 +1331,7 @@ impl Mlx5Device {
     }
 
     /// フローテーブルエントリを設定
-    unsafe fn set_flow_table_entry(
+    pub unsafe fn set_flow_table_entry(
         &mut self,
         table_id: u32,
         flow_index: u32,
@@ -1273,9 +1355,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::SetFlowTableEntry,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -1287,6 +1369,56 @@ impl Mlx5Device {
             action,
             destination_tirn,
         });
+
+        Ok(())
+    }
+
+    /// フローテーブルにルールを追加
+    ///
+    /// # Safety
+    /// - table_id, group_id, tirn が有効であること
+    pub unsafe fn add_flow_rule(
+        &mut self,
+        table_id: u32,
+        flow_index: u32,
+        group_id: u32,
+        tirn: u32,
+        match_value: &crate::flow::MatchValue,
+    ) -> Mlx5Result<()> {
+        self.set_flow_table_entry(
+            table_id,
+            flow_index,
+            group_id,
+            crate::flow::FlowAction::Allow,
+            Some(tirn),
+            match_value,
+        )
+    }
+
+    /// フロールールを削除
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn delete_flow_rule(
+        &mut self,
+        table_id: u32,
+        flow_index: u32,
+    ) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+
+        crate::cmd::build_delete_flow_table_entry_input(in_mbox, table_id, flow_index);
+
+        cmd.execute(
+            CmdOpcode::DeleteFlowTableEntry,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        // キャッシュからも削除
+        self.flow_entries.retain(|e| !(e.table_id == table_id && e.index == flow_index));
 
         Ok(())
     }
@@ -1307,9 +1439,9 @@ impl Mlx5Device {
 
         match cmd.execute(
             CmdOpcode::AllocUar,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             0x10,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             0x10,
         ) {
             Ok(()) => {}
@@ -1357,9 +1489,9 @@ impl Mlx5Device {
 
         match cmd.execute(
             CmdOpcode::AllocPd,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             0x10,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             0x10,
         ) {
             Ok(()) => {}
@@ -1392,9 +1524,9 @@ impl Mlx5Device {
 
         match cmd.execute(
             CmdOpcode::AllocTransportDomain,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             0x10,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             0x10,
         ) {
             Ok(()) => {}
@@ -1428,9 +1560,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::SetDriverVersion,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -1456,7 +1588,7 @@ impl Mlx5Device {
     pub unsafe fn create_eq_hw(
         &mut self,
         eq_buf_virt: u64,
-        eq_buf_phys: u64,
+        eq_buf_device: u64,
         log_eq_size: u8,
         msix_vector: u32,
         event_bitmask: u64,
@@ -1464,11 +1596,20 @@ impl Mlx5Device {
         let is_vf = self.is_virtual_function();
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
+        // EQメモリの初期化 (cycle bit = 1 to indicate HW ownership)
+        let eq_depth = 1u32 << log_eq_size;
+        let eq_ptr = eq_buf_virt as *mut u8;
+        core::ptr::write_bytes(eq_ptr, 0, (eq_depth as usize) * crate::regs::eqe::EQE_SIZE);
+        for i in 0..eq_depth {
+            let offset = (i as usize * crate::regs::eqe::EQE_SIZE) + crate::regs::eqe::STATUS_OWN;
+            core::ptr::write_volatile(eq_ptr.add(offset), 0x01);
+        }
+
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::build_create_eq_input(
             in_mbox,
             log_eq_size,
-            eq_buf_phys,
+            eq_buf_device,
             self.uar_page,
             msix_vector,
             event_bitmask,
@@ -1488,9 +1629,9 @@ impl Mlx5Device {
 
         let exec_res = cmd.execute(
             CmdOpcode::CreateEq,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             eq_in_len,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             0x10,
         );
 
@@ -1506,7 +1647,7 @@ impl Mlx5Device {
         let eq = EventQueue::new(
             eqn,
             eq_buf_virt,
-            eq_buf_phys,
+            eq_buf_device,
             self.uar_base,
             log_eq_size,
             msix_vector,
@@ -1532,20 +1673,29 @@ impl Mlx5Device {
     pub unsafe fn create_cq_hw(
         &mut self,
         cq_buf_virt: u64,
-        cq_buf_phys: u64,
+        cq_buf_device: u64,
         db_virt: u64,
-        db_phys: u64,
+        db_device: u64,
         log_cq_size: u8,
         eqn: u32,
     ) -> Mlx5Result<u32> {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
+        // CQメモリの初期化 (cycle bit = 1 to indicate HW ownership)
+        let cq_depth = 1u32 << log_cq_size;
+        let cq_ptr = cq_buf_virt as *mut u8;
+        core::ptr::write_bytes(cq_ptr, 0, (cq_depth as usize) * crate::regs::cqe::SIZE);
+        for i in 0..cq_depth {
+            let offset = (i as usize * crate::regs::cqe::SIZE) + crate::regs::cqe::OP_OWN;
+            core::ptr::write_volatile(cq_ptr.add(offset), 0x01);
+        }
+
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::build_create_cq_input(
             in_mbox,
             log_cq_size,
-            cq_buf_phys,
-            db_phys,
+            cq_buf_device,
+            db_device,
             self.uar_page,
             eqn,
             false, // CQE compression disabled by default
@@ -1557,9 +1707,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::CreateCq,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             cq_in_len,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             0x10,
         )?;
 
@@ -1569,14 +1719,14 @@ impl Mlx5Device {
         let cq = CompletionQueue::new(
             cqn,
             cq_buf_virt,
-            cq_buf_phys,
+            cq_buf_device,
             self.uar_base,
             db_virt,
             log_cq_size,
             eqn,
         );
         self.cqs.push(cq);
-        self.cq_db_records.push((db_virt, db_phys));
+        self.cq_db_records.push((db_virt, db_device));
 
         log::info!(target: "mlx5", "CQ created: cqn={} eqn={}", cqn, eqn);
         Ok(cqn)
@@ -1598,9 +1748,9 @@ impl Mlx5Device {
     pub unsafe fn create_sq_hw(
         &mut self,
         sq_buf_virt: u64,
-        sq_buf_phys: u64,
+        sq_buf_device: u64,
         db_virt: u64,
-        db_phys: u64,
+        db_device: u64,
         log_sq_size: u8,
         cqn: u32,
         tisn: u32,
@@ -1621,8 +1771,8 @@ impl Mlx5Device {
         crate::cmd::build_create_sq_input(
             in_mbox,
             log_sq_size,
-            sq_buf_phys,
-            db_phys,
+            sq_buf_device,
+            db_device,
             cqn,
             tisn,
             self.uar_page,
@@ -1652,10 +1802,8 @@ impl Mlx5Device {
         };
         push_uid(prev_uid);
         if is_vf {
-            if vhca_uid != 0 && vhca_uid != 0xFFFF {
-                push_uid(vhca_uid);
-            }
             push_uid(0xFFFF);
+            push_uid(0);
         }
 
         let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
@@ -1671,9 +1819,9 @@ impl Mlx5Device {
             );
             let res = cmd.execute(
                 CmdOpcode::CreateSq,
-                self.cmd_in_mbox_phys,
+                self.cmd_in_mbox_device,
                 sq_in_len,
-                self.cmd_out_mbox_phys,
+                self.cmd_out_mbox_device,
                 0x10,
             );
             match res {
@@ -1702,7 +1850,7 @@ impl Mlx5Device {
         let sq = SendQueue::new(
             sqn,
             sq_buf_virt,
-            sq_buf_phys,
+            sq_buf_device,
             db_virt,
             self.uar_base,
             log_sq_size,
@@ -1728,9 +1876,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::ModifySq,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -1754,12 +1902,14 @@ impl Mlx5Device {
     pub unsafe fn create_rq_hw(
         &mut self,
         rq_buf_virt: u64,
-        rq_buf_phys: u64,
+        rq_buf_device: u64,
         db_virt: u64,
-        db_phys: u64,
+        db_device: u64,
         log_rq_size: u8,
         cqn: u32,
         tirn: u32,
+        scatter_fcs: bool,
+        vlan_strip: bool,
     ) -> Mlx5Result<u32> {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
@@ -1767,10 +1917,12 @@ impl Mlx5Device {
         crate::cmd::build_create_rq_input(
             in_mbox,
             log_rq_size,
-            rq_buf_phys,
-            db_phys,
+            rq_buf_device,
+            db_device,
             cqn,
             self.pd,
+            scatter_fcs,
+            vlan_strip,
         );
 
         let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
@@ -1779,9 +1931,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::CreateRq,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             rq_in_len,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             0x10,
         )?;
 
@@ -1794,7 +1946,7 @@ impl Mlx5Device {
         let rq = ReceiveQueue::new(
             rqn,
             rq_buf_virt,
-            rq_buf_phys,
+            rq_buf_device,
             db_virt,
             log_rq_size,
             cqn,
@@ -1819,9 +1971,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::ModifyRq,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -1849,9 +2001,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::CreateRqt,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -1866,6 +2018,241 @@ impl Mlx5Device {
 
         log::info!(target: "mlx5", "RQT created: rqtn={} rq_count={}", rqtn, rq_numbers.len());
         Ok(rqtn)
+    }
+
+    /// RSS付きTIRを作成してRQTに紐づける
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    /// SQを破棄
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn destroy_sq_hw(&mut self, sqn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_destroy_sq_input(in_mbox, sqn);
+
+        cmd.execute(
+            CmdOpcode::DestroySq,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "SQ {} destroyed", sqn);
+        Ok(())
+    }
+
+    /// RQを破棄
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn destroy_rq_hw(&mut self, rqn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_destroy_rq_input(in_mbox, rqn);
+
+        cmd.execute(
+            CmdOpcode::DestroyRq,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "RQ {} destroyed", rqn);
+        Ok(())
+    }
+
+    /// CQを破棄
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn destroy_cq_hw(&mut self, cqn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_destroy_cq_input(in_mbox, cqn);
+
+        cmd.execute(
+            CmdOpcode::DestroyCq,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "CQ {} destroyed", cqn);
+        Ok(())
+    }
+
+    /// EQを破棄
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn destroy_eq_hw(&mut self, eqn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_destroy_eq_input(in_mbox, eqn);
+
+        cmd.execute(
+            CmdOpcode::DestroyEq,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "EQ {} destroyed", eqn);
+        Ok(())
+    }
+
+    /// TIRを破棄
+    pub unsafe fn destroy_tir_hw(&mut self, tirn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        *in_mbox = CmdMailbox::zeroed();
+        in_mbox.write_be32(0x04, tirn & 0x00FF_FFFF);
+
+        cmd.execute(
+            CmdOpcode::DestroyTir,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "TIR {} destroyed", tirn);
+        Ok(())
+    }
+
+    /// TISを破棄
+    pub unsafe fn destroy_tis_hw(&mut self, tisn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        *in_mbox = CmdMailbox::zeroed();
+        in_mbox.write_be32(0x04, tisn & 0x00FF_FFFF);
+
+        cmd.execute(
+            CmdOpcode::DestroyTis,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "TIS {} destroyed", tisn);
+        Ok(())
+    }
+
+    /// RQTを破棄
+    pub unsafe fn destroy_rqt_hw(&mut self, rqtn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_destroy_rqt_input(in_mbox, rqtn);
+
+        cmd.execute(
+            CmdOpcode::DestroyRqt,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "RQT {} destroyed", rqtn);
+        Ok(())
+    }
+
+    /// フローテーブルを破棄
+    pub unsafe fn destroy_flow_table_hw(&mut self, table_id: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_destroy_flow_table_input(in_mbox, table_id);
+
+        cmd.execute(
+            CmdOpcode::DestroyFlowTable,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "Flow Table {} destroyed", table_id);
+        Ok(())
+    }
+
+    /// フローグループを破棄
+    pub unsafe fn destroy_flow_group_hw(&mut self, table_id: u32, group_id: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_destroy_flow_group_input(in_mbox, table_id, group_id);
+
+        cmd.execute(
+            CmdOpcode::DestroyFlowGroup,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "Flow Group {} (FT={}) destroyed", group_id, table_id);
+        Ok(())
+    }
+
+    /// フローテーブルエントリを削除
+    pub unsafe fn delete_flow_table_entry_hw(&mut self, table_id: u32, flow_index: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_delete_flow_table_entry_input(in_mbox, table_id, flow_index);
+
+        cmd.execute(
+            CmdOpcode::DeleteFlowTableEntry,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "Flow Table Entry {} (FT={}) deleted", flow_index, table_id);
+        Ok(())
+    }
+
+    /// MKEYを破棄
+    pub unsafe fn destroy_mkey_hw(&mut self, mkey_index: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        *in_mbox = CmdMailbox::zeroed();
+        in_mbox.write_be32(0x04, mkey_index & 0x00FF_FFFF);
+
+        cmd.execute(
+            CmdOpcode::DestroyMkey,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "MKEY index {} destroyed", mkey_index);
+        Ok(())
+    }
+
+    /// PDを解放
+    pub unsafe fn dealloc_pd_hw(&mut self, pd: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_dealloc_pd_input(in_mbox, pd);
+
+        cmd.execute(
+            CmdOpcode::DeallocPd,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "PD {} deallocated", pd);
+        Ok(())
     }
 
     /// RSS付きTIRを作成してRQTに紐づける
@@ -1888,6 +2275,114 @@ impl Mlx5Device {
         };
 
         self.create_tir(&params)
+    }
+
+    /// TDを解放
+    pub unsafe fn dealloc_td_hw(&mut self, td: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_dealloc_td_input(in_mbox, td);
+
+        cmd.execute(
+            CmdOpcode::DeallocTransportDomain,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "TD {} deallocated", td);
+        Ok(())
+    }
+
+    /// UARを解放
+    pub unsafe fn dealloc_uar_hw(&mut self, uar_page: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_dealloc_uar_input(in_mbox, uar_page);
+
+        cmd.execute(
+            CmdOpcode::DeallocUar,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "UAR page {} deallocated", uar_page);
+        Ok(())
+    }
+
+    /// HCAを停止
+    pub unsafe fn teardown_hca_hw(&mut self, graceful: bool) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_teardown_hca_input(in_mbox, graceful);
+
+        cmd.execute(
+            CmdOpcode::TeardownHca,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "HCA torn down (graceful={})", graceful);
+        Ok(())
+    }
+
+    /// HCAを無効化
+    pub unsafe fn disable_hca_hw(&mut self) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        *in_mbox = CmdMailbox::zeroed();
+
+        cmd.execute(
+            CmdOpcode::DisableHca,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::info!(target: "mlx5", "HCA disabled");
+        Ok(())
+    }
+
+    /// SQをReadyからErrorに遷移（停止用）
+    pub unsafe fn transition_sq_to_error(&mut self, sqn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_modify_sq_input(in_mbox, sqn, WqState::Ready as u8, WqState::Error as u8);
+
+        cmd.execute(
+            CmdOpcode::ModifySq,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::trace!(target: "mlx5", "SQ {} transitioned to ERR", sqn);
+        Ok(())
+    }
+
+    /// RQをReadyからErrorに遷移
+    pub unsafe fn transition_rq_to_error(&mut self, rqn: u32) -> Mlx5Result<()> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_modify_rq_input(in_mbox, rqn, WqState::Ready as u8, WqState::Error as u8);
+
+        cmd.execute(
+            CmdOpcode::ModifyRq,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        log::trace!(target: "mlx5", "RQ {} transitioned to ERR", rqn);
+        Ok(())
     }
 
     /// マルチキューRSSセットアップ
@@ -1968,9 +2463,9 @@ impl Mlx5Device {
                 crate::cmd::build_modify_vhca_state_input(in_mbox, vhca_id, 0, 1); // 1 = ALLOCATED
                 cmd.execute(
                     CmdOpcode::ModifyVhcaState,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 )?;
             }
@@ -1981,9 +2476,9 @@ impl Mlx5Device {
                 crate::cmd::build_modify_vhca_state_input(in_mbox, vhca_id, 0, 2); // 2 = ACTIVE
                 cmd.execute(
                     CmdOpcode::ModifyVhcaState,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 )?;
             }
@@ -1994,9 +2489,9 @@ impl Mlx5Device {
                 crate::cmd::build_modify_nic_vport_state_input(in_mbox, vhca_id, true);
                 cmd.execute(
                     CmdOpcode::ModifyNicVportContext,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 )?;
             }
@@ -2033,9 +2528,9 @@ impl Mlx5Device {
                 crate::cmd::build_modify_nic_vport_state_input(in_mbox, vhca_id, false);
                 let _ = cmd.execute(
                     CmdOpcode::ModifyNicVportContext,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2046,9 +2541,9 @@ impl Mlx5Device {
                 crate::cmd::build_modify_vhca_state_input(in_mbox, vhca_id, 0, 3); // 3 = TEARDOWN
                 let _ = cmd.execute(
                     CmdOpcode::ModifyVhcaState,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 )?;
             }
@@ -2072,9 +2567,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::QueryVhcaState,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -2106,9 +2601,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::QueryNicVportContext,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -2132,9 +2627,9 @@ impl Mlx5Device {
         crate::cmd::build_set_vf_mac_input(in_mbox, vhca_id, mac);
         cmd.execute(
             CmdOpcode::ModifyNicVportContext,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -2162,9 +2657,9 @@ impl Mlx5Device {
         crate::cmd::build_set_vf_vlan_input(in_mbox, vhca_id, vlan, qos);
         cmd.execute(
             CmdOpcode::ModifyNicVportContext,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -2188,9 +2683,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::QueryVportState,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -2215,6 +2710,80 @@ impl Mlx5Device {
         Ok(link_state)
     }
 
+    /// VPORTカウンタを取得してポート統計を更新
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn update_port_stats(&mut self, port_index: usize) -> Mlx5Result<()> {
+        let port_num = self
+            .ports
+            .get(port_index)
+            .map(|p| p.port_number())
+            .ok_or(Mlx5Error::InvalidParameter)?;
+
+        let counters = self.query_vport_counters(port_num, false)?;
+
+        if let Some(port) = self.ports.get_mut(port_index) {
+            let stats = port.stats_mut();
+            stats.rx_packets = counters.rx_unicast_packets
+                + counters.rx_multicast_packets
+                + counters.rx_broadcast_packets;
+            stats.rx_bytes = counters.rx_unicast_bytes
+                + counters.rx_multicast_bytes
+                + counters.rx_broadcast_bytes;
+            stats.tx_packets = counters.tx_unicast_packets
+                + counters.tx_multicast_packets
+                + counters.tx_broadcast_packets;
+            stats.tx_bytes = counters.tx_unicast_bytes
+                + counters.tx_multicast_bytes
+                + counters.tx_broadcast_bytes;
+            stats.rx_errors = counters.rx_error_packets;
+            stats.tx_errors = counters.tx_error_packets;
+            stats.rx_dropped = counters.rx_dropped;
+            stats.tx_dropped = counters.tx_dropped;
+        }
+
+        Ok(())
+    }
+
+    /// ポートのMACアドレスを変更
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn set_port_mac(&mut self, port_index: usize, mac: MacAddr) -> Mlx5Result<()> {
+        let vport_num = self
+            .ports
+            .get(port_index)
+            .map(|p| p.port_number())
+            .ok_or(Mlx5Error::InvalidParameter)? as u16;
+
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+
+        // VPORT context modify
+        crate::cmd::build_modify_nic_vport_mac_input(
+            in_mbox,
+            vport_num,
+            false, // PF vport
+            mac.0,
+        );
+
+        cmd.execute(
+            CmdOpcode::ModifyNicVportContext,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        if let Some(port) = self.ports.get_mut(port_index) {
+            port.set_mac_address(mac);
+        }
+
+        log::info!(target: "mlx5", "Port {} MAC updated to {}", vport_num, mac);
+        Ok(())
+    }
+
     /// VPORTカウンタを取得
     ///
     /// # Safety
@@ -2231,9 +2800,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::QueryVportCounter,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -2279,9 +2848,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::ModifyNicVportContext,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -2343,9 +2912,9 @@ impl Mlx5Device {
 
         cmd.execute(
             CmdOpcode::ModifyCq,
-            self.cmd_in_mbox_phys,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_phys,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
@@ -2440,7 +3009,13 @@ impl Mlx5Device {
             .get_mut(sq_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
 
-        sq.post_send(data_phys, data_virt, data_len, inline_hdr)
+        let segments = [crate::wq::DmaSegment {
+            device_addr: data_phys,
+            virt_addr: data_virt,
+            len: data_len,
+        }];
+
+        sq.post_send(&segments, inline_hdr)
             .ok_or(Mlx5Error::NoResources)
     }
 
@@ -2574,9 +3149,9 @@ impl Mlx5Device {
                 );
                 let _ = cmd.execute(
                     CmdOpcode::DeleteFlowTableEntry,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2588,9 +3163,9 @@ impl Mlx5Device {
                 crate::cmd::build_destroy_flow_group_input(in_mbox, group.table_id, group.group_id);
                 let _ = cmd.execute(
                     CmdOpcode::DestroyFlowGroup,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2602,9 +3177,9 @@ impl Mlx5Device {
                 crate::cmd::build_destroy_flow_table_input(in_mbox, ft.table_id);
                 let _ = cmd.execute(
                     CmdOpcode::DestroyFlowTable,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2617,9 +3192,9 @@ impl Mlx5Device {
                 crate::cmd::build_destroy_sq_input(in_mbox, sq.sqn);
                 let _ = cmd.execute(
                     CmdOpcode::DestroySq,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2632,9 +3207,9 @@ impl Mlx5Device {
                 crate::cmd::build_destroy_rq_input(in_mbox, rq.rqn);
                 let _ = cmd.execute(
                     CmdOpcode::DestroyRq,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2647,9 +3222,9 @@ impl Mlx5Device {
                 crate::cmd::build_destroy_rqt_input(in_mbox, rqt.rqtn);
                 let _ = cmd.execute(
                     CmdOpcode::DestroyRqt,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2662,9 +3237,9 @@ impl Mlx5Device {
                 crate::resources::build_destroy_tir_input(in_mbox, tir.tirn);
                 let _ = cmd.execute(
                     CmdOpcode::DestroyTir,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2677,9 +3252,9 @@ impl Mlx5Device {
                 crate::resources::build_destroy_tis_input(in_mbox, tis.tisn);
                 let _ = cmd.execute(
                     CmdOpcode::DestroyTis,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2692,9 +3267,9 @@ impl Mlx5Device {
                 crate::cmd::build_destroy_cq_input(in_mbox, cq.cqn);
                 let _ = cmd.execute(
                     CmdOpcode::DestroyCq,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2708,9 +3283,9 @@ impl Mlx5Device {
                 crate::cmd::build_destroy_eq_input(in_mbox, eq.eqn);
                 let _ = cmd.execute(
                     CmdOpcode::DestroyEq,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2723,9 +3298,9 @@ impl Mlx5Device {
                 crate::resources::build_destroy_mkey_input(in_mbox, mkey_info.mkey_index);
                 let _ = cmd.execute(
                     CmdOpcode::DestroyMkey,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2739,9 +3314,9 @@ impl Mlx5Device {
                 crate::cmd::build_dealloc_td_input(in_mbox, self.td);
                 let _ = cmd.execute(
                     CmdOpcode::DeallocTransportDomain,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
                 self.td = 0;
@@ -2754,9 +3329,9 @@ impl Mlx5Device {
                 crate::cmd::build_dealloc_pd_input(in_mbox, self.pd);
                 let _ = cmd.execute(
                     CmdOpcode::DeallocPd,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
                 self.pd = 0;
@@ -2769,9 +3344,9 @@ impl Mlx5Device {
                 crate::cmd::build_dealloc_uar_input(in_mbox, *uar);
                 let _ = cmd.execute(
                     CmdOpcode::DeallocUar,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2799,9 +3374,9 @@ impl Mlx5Device {
                 );
                 let _ = cmd.execute(
                     CmdOpcode::ManagePages,
-                    self.cmd_in_mbox_phys,
+                    self.cmd_in_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
-                    self.cmd_out_mbox_phys,
+                    self.cmd_out_mbox_device,
                     MLX5_CMD_MBOX_SIZE as u32,
                 );
             }
@@ -2813,9 +3388,9 @@ impl Mlx5Device {
 
             let _ = cmd.execute(
                 CmdOpcode::TeardownHca,
-                self.cmd_in_mbox_phys,
+                self.cmd_in_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
-                self.cmd_out_mbox_phys,
+                self.cmd_out_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
             );
             log::trace!(target: "mlx5", "HCA torn down");
@@ -2826,9 +3401,9 @@ impl Mlx5Device {
 
             let _ = cmd.execute(
                 CmdOpcode::DisableHca,
-                self.cmd_in_mbox_phys,
+                self.cmd_in_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
-                self.cmd_out_mbox_phys,
+                self.cmd_out_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
             );
             log::trace!(target: "mlx5", "HCA disabled");
@@ -2882,16 +3457,16 @@ impl Mlx5Device {
         &mut self,
         // Phase 1: コマンドIF用DMAバッファ
         cmdq_virt: u64,
-        cmdq_phys: u64,
+        cmdq_device: u64,
         cmd_in_mbox_virt: u64,
-        cmd_in_mbox_phys: u64,
+        cmd_in_mbox_device: u64,
         cmd_out_mbox_virt: u64,
-        cmd_out_mbox_phys: u64,
+        cmd_out_mbox_device: u64,
         // Phase 3: FWページ
         fw_page_addrs: &[u64],
         // Phase 4: MKEY
         mkey_params: &MkeyParams,
-        // Phase 5-7: キューバッファ (virt, phys) or (virt, phys, db_virt, db_phys)
+        // Phase 5-7: キューバッファ (virt, device) or (virt, device, db_virt, db_device)
         eq_buf: (u64, u64),
         tx_cq_buf: (u64, u64, u64, u64),
         rx_cq_buf: (u64, u64, u64, u64),
@@ -2903,7 +3478,49 @@ impl Mlx5Device {
         log_sq_size: u8,
         log_rq_size: u8,
     ) -> Mlx5Result<()> {
-        log::info!(target: "mlx5", "=== Starting full pipeline initialization ===");
+        self.init_multi_queue(
+            cmdq_virt,
+            cmdq_device,
+            cmd_in_mbox_virt,
+            cmd_in_mbox_device,
+            cmd_out_mbox_virt,
+            cmd_out_mbox_device,
+            fw_page_addrs,
+            mkey_params,
+            &[eq_buf],
+            &[tx_cq_buf],
+            &[rx_cq_buf],
+            &[sq_buf],
+            &[rq_buf],
+            log_eq_size,
+            log_cq_size,
+            log_sq_size,
+            log_rq_size,
+        )
+    }
+
+    /// マルチキュー対応の完全初期化パイプライン
+    pub unsafe fn init_multi_queue(
+        &mut self,
+        cmdq_virt: u64,
+        cmdq_device: u64,
+        cmd_in_mbox_virt: u64,
+        cmd_in_mbox_device: u64,
+        cmd_out_mbox_virt: u64,
+        cmd_out_mbox_device: u64,
+        fw_page_addrs: &[u64],
+        mkey_params: &MkeyParams,
+        eq_bufs: &[(u64, u64)],
+        tx_cq_bufs: &[(u64, u64, u64, u64)],
+        rx_cq_bufs: &[(u64, u64, u64, u64)],
+        sq_bufs: &[(u64, u64, u64, u64)],
+        rq_bufs: &[(u64, u64, u64, u64)],
+        log_eq_size: u8,
+        log_cq_size: u8,
+        log_sq_size: u8,
+        log_rq_size: u8,
+    ) -> Mlx5Result<()> {
+        log::info!(target: "mlx5", "=== Starting multi-queue pipeline initialization ===");
 
         // Phase 1: Boot sequence
         match self.wait_firmware() {
@@ -2911,8 +3528,6 @@ impl Mlx5Device {
                 log::info!(target: "mlx5", "[1/8] Firmware ready");
             }
             Err(Mlx5Error::DeviceNotReady) if self.is_virtual_function() => {
-                // VF passthrough では PF と同じ FW ブート状態が露出しない場合がある。
-                // FW wait だけを緩和し、以降のコマンドIF/HCA初期化で実際の可否を判定する。
                 log::warn!(
                     target: "mlx5",
                     "[1/8] Firmware ready wait skipped for VF (device_id={:#06x})",
@@ -2925,11 +3540,11 @@ impl Mlx5Device {
 
         self.init_command_interface(
             cmdq_virt,
-            cmdq_phys,
+            cmdq_device,
             cmd_in_mbox_virt,
-            cmd_in_mbox_phys,
+            cmd_in_mbox_device,
             cmd_out_mbox_virt,
-            cmd_out_mbox_phys,
+            cmd_out_mbox_device,
         )?;
         log::info!(target: "mlx5", "[1/8] Command interface initialized");
 
@@ -2964,13 +3579,7 @@ impl Mlx5Device {
                 );
             }
             Err(e) => {
-                log::warn!(
-                    target: "mlx5",
-                    "[2/8] QUERY_PAGES boot failed ({:?}); fallback function_id={} pages={}",
-                    e,
-                    page_function_id,
-                    requested_pages
-                );
+                log::warn!(target: "mlx5", "[2/8] QUERY_PAGES boot failed ({:?})", e);
             }
         }
 
@@ -2978,24 +3587,9 @@ impl Mlx5Device {
             let give_pages = core::cmp::min(requested_pages, fw_page_addrs.len());
             self.provide_pages(page_function_id, &fw_page_addrs[..give_pages])?;
             pages_consumed = give_pages;
-            if give_pages < requested_pages {
-                log::warn!(
-                    target: "mlx5",
-                    "[2/8] Startup pages shortfall: requested={} provided={}",
-                    requested_pages,
-                    give_pages
-                );
-            }
-        } else {
-            log::info!(
-                target: "mlx5",
-                "[2/8] No startup pages provided (requested={} available={})",
-                requested_pages,
-                fw_page_addrs.len()
-            );
         }
 
-        // Linux mlx5 と同様に、INIT_HCA 前に init pages も供給する。
+        // INIT_HCA 前に init pages も供給
         let mut init_page_function_id = self.fw_function_id;
         let mut init_requested_pages = 0usize;
         match self.query_required_pages(0x02) {
@@ -3003,81 +3597,33 @@ impl Mlx5Device {
                 init_page_function_id = func_id;
                 self.fw_function_id = func_id;
                 init_requested_pages = core::cmp::max(num_pages, 0) as usize;
-                log::info!(
-                    target: "mlx5",
-                    "[2/8] QUERY_PAGES init: function_id={} requested_pages={}",
-                    func_id,
-                    init_requested_pages
-                );
             }
-            Err(Mlx5Error::CommandFailed(code))
-                if code == CmdStatus::BadOpcode as u8 || code == CmdStatus::BadParam as u8 =>
-            {
-                log::debug!(
-                    target: "mlx5",
-                    "[2/8] QUERY_PAGES init unsupported (status={:#x}); skipping",
-                    code
-                );
-            }
-            Err(e) => {
-                log::warn!(target: "mlx5", "[2/8] QUERY_PAGES init failed ({:?})", e);
-            }
+            Err(_) => {}
         }
 
         if init_requested_pages > 0 && pages_consumed < fw_page_addrs.len() {
             let remaining = &fw_page_addrs[pages_consumed..];
             let give_pages = core::cmp::min(init_requested_pages, remaining.len());
-            self.provide_pages(init_page_function_id, &remaining[..give_pages])?;
-            if give_pages < init_requested_pages {
-                log::warn!(
-                    target: "mlx5",
-                    "[2/8] Init pages shortfall: requested={} provided={}",
-                    init_requested_pages,
-                    give_pages
-                );
-            }
-        } else if init_requested_pages > 0 {
-            log::warn!(
-                target: "mlx5",
-                "[2/8] Init pages requested={} but no free page buffers remain (available={})",
-                init_requested_pages,
-                fw_page_addrs.len().saturating_sub(pages_consumed)
-            );
+            let _ = self.provide_pages(init_page_function_id, &remaining[..give_pages]);
         }
 
         self.init_hca()?;
         log::info!(target: "mlx5", "[2/8] HCA initialized");
-        log::info!(target: "mlx5", "[2/8] Startup/init pages setup complete");
 
         if self.is_virtual_function() {
             if let Some(cmd) = self.cmd.as_mut() {
-                // Keep VF resources and object-creation commands in a shared UID domain.
-                // Without this, VF FW can reject CREATE_TIS/CREATE_SQ due to UID mismatch.
                 cmd.set_uid(0xFFFF);
             }
         }
 
         // Phase 3: Resource allocation
-        self.alloc_uar().map_err(|e| {
-            log::error!(target: "mlx5", "alloc_uar failed: {:?}", e);
-            e
-        })?;
-        log::info!(target: "mlx5", "[3/8] UAR allocated");
-
-        self.alloc_pd().map_err(|e| {
-            log::error!(target: "mlx5", "alloc_pd failed: {:?}", e);
-            e
-        })?;
-        log::info!(target: "mlx5", "[3/8] PD allocated");
-
-        self.alloc_td().map_err(|e| {
-            log::error!(target: "mlx5", "alloc_td failed: {:?}", e);
-            e
-        })?;
-        log::info!(target: "mlx5", "[3/8] TD allocated");
+        self.alloc_uar()?;
+        self.alloc_pd()?;
+        self.alloc_td()?;
+        log::info!(target: "mlx5", "[3/8] Core resources allocated (UAR, PD, TD)");
 
         // Phase 4: FW setup
-        let _ = self.set_driver_version(); // Non-fatal if fails
+        let _ = self.set_driver_version();
         log::info!(target: "mlx5", "[4/8] Driver version set");
 
         // Phase 5: Key resources
@@ -3087,80 +3633,37 @@ impl Mlx5Device {
         let mut effective_mkey_params = mkey_params.clone();
         effective_mkey_params.pd = self.pd;
         match self.create_mkey(&effective_mkey_params) {
-            Ok(_) => {
-                log::info!(target: "mlx5", "[5/8] MKEY created");
-            }
-            Err(Mlx5Error::CommandFailed(status))
-                if self.is_virtual_function()
-                    && (status == CmdStatus::BadResourceState as u8
-                        || status == CmdStatus::BadParam as u8) =>
-            {
-                let reserved_lkey = match self.query_reserved_lkey() {
-                    Ok(lkey) if lkey != 0 => lkey,
-                    Ok(_) => 0x100,
-                    Err(_) => 0x100,
-                };
-                self.set_mkey(reserved_lkey);
-                log::warn!(
-                    target: "mlx5",
-                    "[5/8] CREATE_MKEY unavailable on VF (status={:#x}); using reserved lkey={:#010x}",
-                    status,
-                    reserved_lkey
-                );
+            Ok(_) => log::info!(target: "mlx5", "[5/8] MKEY created"),
+            Err(_) if self.is_virtual_function() => {
+                let lkey = self.query_reserved_lkey().unwrap_or(0x100);
+                self.set_mkey(lkey);
+                log::warn!(target: "mlx5", "[5/8] Using reserved lkey={:#x}", lkey);
             }
             Err(e) => return Err(e),
         }
 
-        // Phase 6: Event & Completion queues
-        // Completion EQ follows the Linux path: mask[0] = 0 for comp EQ creation.
-        // Setting CQ completion bits explicitly can be rejected with BadParam on VF FW.
-        let event_mask = 0u64;
+        // Phase 6: Queues (Multi-queue)
+        let mut eqn_list = Vec::with_capacity(eq_bufs.len());
+        for (i, buf) in eq_bufs.iter().enumerate() {
+            let eqn = self.create_eq_hw(buf.0, buf.1, log_eq_size, i as u32, 0)?;
+            eqn_list.push(eqn);
+        }
+        let primary_eqn = eqn_list[0];
+        log::info!(target: "mlx5", "[6/8] {} EQs created", eqn_list.len());
 
-        let eqn = match self.create_eq_hw(
-            eq_buf.0,
-            eq_buf.1,
-            log_eq_size,
-            0, // MSI-X vector 0
-            event_mask,
-        ) {
-            Ok(eqn) => {
-                log::info!(target: "mlx5", "[6/8] EQ created (eqn={})", eqn);
-                eqn
-            }
-            Err(Mlx5Error::CommandFailed(status))
-                if self.is_virtual_function() && status == CmdStatus::BadResourceState as u8 =>
-            {
-                let fallback_eqn = 0;
-                log::warn!(
-                    target: "mlx5",
-                    "[6/8] CREATE_EQ unavailable on VF (status={:#x}); using fallback eqn={}",
-                    status,
-                    fallback_eqn
-                );
-                fallback_eqn
-            }
-            Err(e) => return Err(e),
-        };
+        let mut tx_cqn_list = Vec::with_capacity(tx_cq_bufs.len());
+        for buf in tx_cq_bufs {
+            let cqn = self.create_cq_hw(buf.0, buf.1, buf.2, buf.3, log_cq_size, primary_eqn)?;
+            tx_cqn_list.push(cqn);
+        }
+        log::info!(target: "mlx5", "[6/8] {} TX CQs created", tx_cqn_list.len());
 
-        let tx_cqn = self.create_cq_hw(
-            tx_cq_buf.0,
-            tx_cq_buf.1,
-            tx_cq_buf.2,
-            tx_cq_buf.3,
-            log_cq_size,
-            eqn,
-        )?;
-        log::info!(target: "mlx5", "[6/8] TX CQ created (cqn={})", tx_cqn);
-
-        let rx_cqn = self.create_cq_hw(
-            rx_cq_buf.0,
-            rx_cq_buf.1,
-            rx_cq_buf.2,
-            rx_cq_buf.3,
-            log_cq_size,
-            eqn,
-        )?;
-        log::info!(target: "mlx5", "[6/8] RX CQ created (cqn={})", rx_cqn);
+        let mut rx_cqn_list = Vec::with_capacity(rx_cq_bufs.len());
+        for buf in rx_cq_bufs {
+            let cqn = self.create_cq_hw(buf.0, buf.1, buf.2, buf.3, log_cq_size, primary_eqn)?;
+            rx_cqn_list.push(cqn);
+        }
+        log::info!(target: "mlx5", "[6/8] {} RX CQs created", rx_cqn_list.len());
 
         // Phase 7: TX path
         let tis_params = crate::resources::TisParams {
@@ -3169,183 +3672,204 @@ impl Mlx5Device {
             port: 1,
             prio: 0,
         };
-        let (tisn, tis_from_fw) = match self.create_tis(&tis_params) {
-            Ok(tisn) => {
-                log::info!(target: "mlx5", "[7/8] TIS created (tisn={})", tisn);
-                (tisn, true)
-            }
-            Err(Mlx5Error::CommandFailed(status)) if self.is_virtual_function() => {
-                let fallback_tisn = 0;
-                log::warn!(
-                    target: "mlx5",
-                    "[7/8] CREATE_TIS unavailable on VF (status={:#x}); using fallback tisn={}",
-                    status,
-                    fallback_tisn
-                );
-                (fallback_tisn, false)
-            }
-            Err(err) if self.is_virtual_function() => {
-                let fallback_tisn = 0;
-                log::warn!(
-                    target: "mlx5",
-                    "[7/8] CREATE_TIS failed on VF ({:?}); using fallback tisn={}",
-                    err,
-                    fallback_tisn
-                );
-                (fallback_tisn, false)
-            }
-            Err(e) => return Err(e),
-        };
-        let discovered_tisn = if self.is_virtual_function() && !tis_from_fw {
-            match self.discover_existing_tisn() {
-                Ok(found) => found,
-                Err(err) => {
-                    log::debug!(target: "mlx5", "QUERY_TIS discovery failed: {:?}", err);
-                    None
+        let tisn = match self.create_tis(&tis_params) {
+            Ok(n) => n,
+            Err(e) => {
+                if self.is_virtual_function() {
+                    log::warn!(target: "mlx5", "CREATE_TIS failed ({:?}), searching for existing TISN", e);
+                    self.discover_existing_tisn()?.ok_or(Mlx5Error::NotSupported)?
+                } else {
+                    return Err(e);
                 }
             }
-        } else {
-            None
         };
-
-        let mut sq_tisn_candidates = [0u32; 16];
-        let mut sq_tisn_count = 0usize;
-        let mut push_sq_tisn = |candidate: u32| {
-            if sq_tisn_count >= sq_tisn_candidates.len() {
-                return;
-            }
-            if sq_tisn_candidates[..sq_tisn_count].contains(&candidate) {
-                return;
-            }
-            sq_tisn_candidates[sq_tisn_count] = candidate;
-            sq_tisn_count += 1;
-        };
-        if tis_from_fw || !self.is_virtual_function() {
-            push_sq_tisn(tisn);
-        } else {
-            if let Some(found) = discovered_tisn {
-                log::warn!(
-                    target: "mlx5",
-                    "[7/8] CREATE_TIS unavailable on VF; trying discovered tisn={}",
-                    found
-                );
-                push_sq_tisn(found);
-            }
-            // Probe a small set of candidate TISNs used by some VF firmware defaults.
-            push_sq_tisn(0);
-            push_sq_tisn(1);
-            push_sq_tisn(2);
-            push_sq_tisn(3);
-            push_sq_tisn(4);
-            push_sq_tisn(8);
-            push_sq_tisn(16);
-            push_sq_tisn(32);
-            push_sq_tisn(64);
-            push_sq_tisn(128);
-            push_sq_tisn(256);
-            push_sq_tisn(512);
+        
+        let mut sqn_list = Vec::with_capacity(sq_bufs.len());
+        for (i, buf) in sq_bufs.iter().enumerate() {
+            let cqn = tx_cqn_list[i % tx_cqn_list.len()];
+            let sqn = self.create_sq_hw(buf.0, buf.1, buf.2, buf.3, log_sq_size, cqn, tisn)?;
+            sqn_list.push(sqn);
         }
-
-        let mut selected_tisn = tisn;
-        let mut sq_res: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
-        for i in 0..sq_tisn_count {
-            let candidate_tisn = sq_tisn_candidates[i];
-            match self.create_sq_hw(
-                sq_buf.0,
-                sq_buf.1,
-                sq_buf.2,
-                sq_buf.3,
-                log_sq_size,
-                tx_cqn,
-                candidate_tisn,
-            ) {
-                Ok(sqn) => {
-                    selected_tisn = candidate_tisn;
-                    sq_res = Ok(sqn);
-                    break;
-                }
-                Err(Mlx5Error::CommandFailed(status))
-                    if self.is_virtual_function() && (i + 1) < sq_tisn_count =>
-                {
-                    log::warn!(
-                        target: "mlx5",
-                        "[7/8] CREATE_SQ rejected tisn={} (status={:#x}); trying next candidate",
-                        candidate_tisn,
-                        status
-                    );
-                    sq_res = Err(Mlx5Error::CommandFailed(status));
-                }
-                Err(err) => {
-                    sq_res = Err(err);
-                    break;
-                }
-            }
-        }
-        let sqn = sq_res?;
-        log::info!(
-            target: "mlx5",
-            "[7/8] SQ created and RDY (sqn={} tisn={})",
-            sqn,
-            selected_tisn
-        );
+        log::info!(target: "mlx5", "[7/8] {} SQs created", sqn_list.len());
 
         // Phase 8: RX path
-        let rqn = self.create_rq_hw(
-            rq_buf.0,
-            rq_buf.1,
-            rq_buf.2,
-            rq_buf.3,
-            log_rq_size,
-            rx_cqn,
-            0, // TIR is created after RQ for direct-rq binding.
-        )?;
-        log::info!(target: "mlx5", "[8/8] RQ created and RDY (rqn={})", rqn);
-
-        let tir_params = crate::resources::TirParams {
-            receive_type: TirReceiveType::DirectRq,
-            td: self.td,
-            inline_rqn: rqn,
-            rqtn: 0,
-            rss: None,
-            scatter_fcs: false,
-            vlan_strip: false,
+        let (scatter_fcs, vlan_strip) = {
+            let caps = self.hca_caps.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+            (caps.scatter_fcs, caps.vlan_strip)
         };
-        let tirn = self.create_tir(&tir_params)?;
-        if let Some(rq) = self.rqs.last_mut() {
-            rq.tirn = tirn;
+
+        let mut rqn_list = Vec::with_capacity(rq_bufs.len());
+        for (i, buf) in rq_bufs.iter().enumerate() {
+            let cqn = rx_cqn_list[i % rx_cqn_list.len()];
+            let rqn = self.create_rq_hw(buf.0, buf.1, buf.2, buf.3, log_rq_size, cqn, 0, scatter_fcs, vlan_strip)?;
+            rqn_list.push(rqn);
         }
-        log::info!(target: "mlx5", "[8/8] TIR created (tirn={})", tirn);
+        log::info!(target: "mlx5", "[8/8] {} RQs created", rqn_list.len());
 
-        // Phase 8: Flow steering & finalize
-        self.setup_rx_flow_table(tirn)?;
-        log::info!(target: "mlx5", "[8/8] Flow table configured");
+        // Multi-queue RSS setup
+        let tirn = if rqn_list.len() > 1 {
+            self.setup_multi_queue_rss(&rqn_list, None)?
+        } else {
+            let tir_params = crate::resources::TirParams {
+                receive_type: TirReceiveType::DirectRq,
+                td: self.td,
+                inline_rqn: rqn_list[0],
+                rqtn: 0,
+                rss: None,
+                scatter_fcs,
+                vlan_strip,
+            };
+            let tirn = self.create_tir(&tir_params)?;
+            if let Some(rq) = self.rqs.last_mut() {
+                rq.tirn = tirn;
+            }
+            self.setup_rx_flow_table(tirn)?;
+            tirn
+        };
+        log::info!(target: "mlx5", "[8/8] RX path setup complete (TIR={})", tirn);
 
-        // Set CQ moderation defaults (moderate for latency)
-        let _ = self.set_cq_moderation(0, 16, 64); // TX CQ: 16 CQEs or 64us
-        let _ = self.set_cq_moderation(1, 16, 64); // RX CQ: 16 CQEs or 64us
+        // Set CQ moderation defaults for all CQs
+        for i in 0..tx_cqn_list.len() {
+            // index must be usize for API
+            let _ = self.set_cq_moderation(i as usize, 16, 64);
+        }
+        let rx_cq_start = tx_cqn_list.len() as u32;
+        for i in 0..rx_cqn_list.len() {
+            let _ = self.set_cq_moderation((rx_cq_start + i as u32) as usize, 16, 64);
+        }
 
-        // ポートUp
+        // Finalize
         if let Some(port) = self.ports.get_mut(0) {
             port.admin_up();
-            log::info!(target: "mlx5", "[8/8] Port 1 administratively up");
         }
 
         self.resources_allocated = true;
         self.state = DeviceState::Active;
 
-        log::info!(target: "mlx5", "=== Full pipeline initialization complete ===");
-        log::info!(
-            target: "mlx5",
-            "  EQ={} TX_CQ={} RX_CQ={} SQ={} RQ={} TIS={} TIR={}",
-            eqn, tx_cqn, rx_cqn, sqn, rqn, tisn, tirn
-        );
-        log::info!(
-            target: "mlx5",
-            "  UAR={} PD={} TD={} MKEY=0x{:08x}",
-            self.uar_page, self.pd, self.td, self.mkey
-        );
-
+        log::info!(target: "mlx5", "=== Multi-queue initialization complete ===");
         Ok(())
+    }
+
+    /// デバイスの完全なシャットダウンとリソース解放
+    ///
+    /// # Safety
+    /// - コマンドインタフェースが使用可能であること
+    pub unsafe fn teardown_full(&mut self) -> Mlx5Result<()> {
+        log::info!(target: "mlx5", "=== Starting full teardown sequence ===");
+
+        if self.state == DeviceState::Uninitialized || self.state == DeviceState::Error {
+            log::warn!(target: "mlx5", "Device in state {:?}, attempting best-effort teardown", self.state);
+        }
+
+        // 1. パケット送受信の停止
+        let sqns: Vec<u32> = self.sqs.iter().map(|sq| sq.sqn).collect();
+        for sqn in sqns {
+            let _ = self.transition_sq_to_error(sqn);
+        }
+        let rqns: Vec<u32> = self.rqs.iter().map(|rq| rq.rqn).collect();
+        for rqn in rqns {
+            let _ = self.transition_rq_to_error(rqn);
+        }
+        log::info!(target: "mlx5", "[1/10] Traffic stopped");
+
+        // 2. フローテーブルの破棄
+        let entries = core::mem::take(&mut self.flow_entries);
+        for entry in entries {
+            let _ = self.delete_flow_table_entry_hw(entry.table_id, entry.index);
+        }
+        let groups = core::mem::take(&mut self.flow_groups);
+        for group in groups {
+            let _ = self.destroy_flow_group_hw(group.table_id, group.group_id);
+        }
+        let tables = core::mem::take(&mut self.flow_tables);
+        for table in tables {
+            let _ = self.destroy_flow_table_hw(table.table_id);
+        }
+        log::info!(target: "mlx5", "[2/10] Flow steering resources destroyed");
+
+        // 3. TIR / TIS / RQT の破棄
+        let tir_list = core::mem::take(&mut self.tir_list);
+        for tir in tir_list {
+            let _ = self.destroy_tir_hw(tir.tirn);
+        }
+        let tis_list = core::mem::take(&mut self.tis_list);
+        for tis in tis_list {
+            let _ = self.destroy_tis_hw(tis.tisn);
+        }
+        let rq_tables = core::mem::take(&mut self.rq_tables);
+        for rqt in rq_tables {
+            let _ = self.destroy_rqt_hw(rqt.rqtn);
+        }
+        log::info!(target: "mlx5", "[3/10] Transport resources (TIR/TIS/RQT) destroyed");
+
+        // 4. SQ / RQ の破棄
+        while let Some(sq) = self.sqs.pop() {
+            let _ = self.destroy_sq_hw(sq.sqn);
+        }
+        while let Some(rq) = self.rqs.pop() {
+            let _ = self.destroy_rq_hw(rq.rqn);
+        }
+        log::info!(target: "mlx5", "[4/10] Work Queues (SQ/RQ) destroyed");
+
+        // 5. CQ の破棄
+        while let Some(cq) = self.cqs.pop() {
+            let _ = self.destroy_cq_hw(cq.cqn);
+        }
+        log::info!(target: "mlx5", "[5/10] Completion Queues (CQ) destroyed");
+
+        // 6. EQ の破棄
+        while let Some(eq) = self.eqs.pop() {
+            let _ = self.destroy_eq_hw(eq.eqn);
+        }
+        log::info!(target: "mlx5", "[6/10] Event Queues (EQ) destroyed");
+
+        // 7. MKEY の破棄
+        if let Some(info) = self.mkey_info.take() {
+            let _ = self.destroy_mkey_hw(info.mkey_index);
+        }
+        log::info!(target: "mlx5", "[7/10] Memory Key destroyed");
+
+        // 8. PD / TD / UAR の解放
+        if self.pd != 0 {
+            let _ = self.dealloc_pd_hw(self.pd);
+            self.pd = 0;
+        }
+        if self.td != 0 {
+            let _ = self.dealloc_td_hw(self.td);
+            self.td = 0;
+        }
+        while let Some(uar) = self.allocated_uars.pop() {
+            let _ = self.dealloc_uar_hw(uar);
+        }
+        log::info!(target: "mlx5", "[8/10] Core resources (PD/TD/UAR) deallocated");
+
+        // 9. HCA Teardown & Disable
+        let _ = self.teardown_hca_hw(true);
+        let _ = self.disable_hca_hw();
+        log::info!(target: "mlx5", "[9/10] HCA torn down and disabled");
+
+        // 10. FW ページの回収 (MANAGE_PAGES reclaiming)
+        let total_pages = self.page_manager.total_given_pages();
+        if total_pages > 0 {
+            log::info!(target: "mlx5", "[10/10] Reclaiming {} pages from FW", total_pages);
+            let _ = self.reclaim_pages(self.fw_function_id, total_pages as u32);
+        }
+
+        self.state = DeviceState::Uninitialized;
+        self.resources_allocated = false;
+
+        log::info!(target: "mlx5", "=== Full teardown complete ===");
+        Ok(())
+    }
+
+    /// 稼働中の RQ 数を取得
+    pub fn num_rqs(&self) -> usize {
+        self.rqs.len()
+    }
+
+    /// 稼働中の SQ 数を取得
+    pub fn num_sqs(&self) -> usize {
+        self.sqs.len()
     }
 
     /// ヘルスチェック

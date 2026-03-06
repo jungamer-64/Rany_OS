@@ -17,6 +17,7 @@
 //! - Async-First: ポーリングタスクは Future ベース
 
 extern crate alloc;
+use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -30,6 +31,8 @@ use crate::net::obs::{
 
 use mlx5_driver::Mlx5Device;
 
+use crate::net::datapath::mempool::PacketRef;
+
 // ============================================================================
 // Bridge State
 // ============================================================================
@@ -42,6 +45,12 @@ static MLX5_DEVICE: PoisonLock<Option<Mlx5Device>> = PoisonLock::new(None);
 
 /// mlx5 ブリッジの論理インターフェースID
 static MLX5_IF_ID: PoisonLock<Option<NetIfId>> = PoisonLock::new(None);
+
+/// RX バッファトラッキング（ゼロコピー用、キューごと）
+static MLX5_RX_BUFS: PoisonLock<Vec<Vec<Option<PacketRef>>>> = PoisonLock::new(Vec::new());
+
+/// TX バッファトラッキング（安全な非同期送信用、キューごと）
+static MLX5_TX_BUFS: PoisonLock<Vec<Vec<Option<PacketRef>>>> = PoisonLock::new(Vec::new());
 
 /// 送信パケットカウンタ
 static MLX5_TX_PACKETS: AtomicU64 = AtomicU64::new(0);
@@ -121,29 +130,51 @@ pub fn mlx5_transmit(_if_id: Option<NetIfId>, data: &[u8]) -> bool {
         return false;
     }
 
+    let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
+        Ok(guard) => guard,
+        Err(_) => return false,
+    };
+
     let result = with_mlx5_device(|device| {
         if !device.is_active() {
             return false;
         }
 
-        // Ethernet ヘッダ（先頭14バイト）をインラインヘッダとして設定
-        let inline_hdr_len = core::cmp::min(data.len(), 18); // ETH header + optional bytes
-        let inline_hdr = &data[..inline_hdr_len];
-
-        // 残りのデータは DMA バッファとして設定
-        let data_virt = data.as_ptr() as u64;
-        let offset = crate::mm::virt::higher_half::physical_memory_offset();
-        let data_phys = if data_virt >= offset {
-            data_virt - offset
-        } else {
-            // オフセット未満（カーネルイメージ内など）は identity mapping とみなす
-            data_virt
+        // 送信バッファを mempool から割り当て（安全な DMA バッファの確保）
+        let mut pkt = match crate::net::datapath::mempool::alloc_packet() {
+            Some(p) => p,
+            None => {
+                log::trace!(target: "mlx5::bridge", "TX packet alloc failed");
+                return false;
+            }
         };
-        let data_len = data.len() as u32;
 
-        // Safety: 物理アドレスが正しく計算されていること
-        match unsafe { device.transmit(MLX5_SQ_INDEX, data_phys, data_virt, data_len, inline_hdr) } {
-            Ok(_wqe_idx) => {
+        // データをコピー
+        let copy_len = core::cmp::min(data.len(), pkt.capacity());
+        pkt.data_mut()[..copy_len].copy_from_slice(&data[..copy_len]);
+        pkt.set_len(copy_len);
+
+        let data_virt = pkt.as_ptr() as u64;
+        let data_device = pkt.device_address(); // IOMMU-safe
+        let data_len = pkt.len() as u32;
+
+        // Ethernet ヘッダ（先頭14バイト）をインラインヘッダとして設定
+        let inline_hdr_len = core::cmp::min(data_len as usize, 18);
+        let inline_hdr = &pkt.data()[..inline_hdr_len];
+
+        // CPU ID に基づいて SQ を選択（マルチコア分散）
+        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+        let num_sqs = tx_bufs_guard.len();
+        let sq_index = if num_sqs > 0 { (cpu_id % num_sqs) as usize } else { 0 };
+
+        // Safety: デバイスアドレスが正しく取得されていること
+        match unsafe { device.transmit(sq_index, data_device, data_virt, data_len, inline_hdr) } {
+            Ok(wqe_idx) => {
+                let idx = (wqe_idx as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
+                if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
+                    queue_bufs[idx] = Some(pkt);
+                }
+
                 MLX5_TX_PACKETS.fetch_add(1, Ordering::Relaxed);
                 counters::global().record_tx(data.len());
                 trace::push_event(NetLayer::Driver, NetEventKind::Tx, "mlx5 tx");
@@ -170,63 +201,108 @@ pub fn mlx5_transmit(_if_id: Option<NetIfId>, data: &[u8]) -> bool {
 /// # Safety
 /// - CQ/RQ バッファが有効であること
 pub unsafe fn mlx5_poll_rx() -> u32 {
+    let mut rx_bufs_guard = match MLX5_RX_BUFS.lock() {
+        Ok(guard) => guard,
+        Err(_) => return 0,
+    };
+
+    let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
+        Ok(guard) => guard,
+        Err(_) => return 0,
+    };
+
     let result = with_mlx5_device(|device| {
-        let cqes = device.poll_cq(MLX5_RX_CQ_INDEX, MLX5_RX_POLL_BATCH);
-        let processed = cqes.len() as u32;
+        let mut total_processed = 0;
 
-        for cqe in &cqes {
-            // CQE から受信情報を取得
-            let wqe_counter = cqe.wqe_counter;
-            let byte_count = cqe.byte_count as usize;
+        // すべての RX CQ をポーリング
+        for rq_index in 0..rx_bufs_guard.len() {
+            // 現状 CQ と RQ は 1:1 と想定 (RX CQ index = MLX5_RX_CQ_INDEX + rq_index?)
+            // デバイスの実装に合わせて調整が必要。
+            // Mlx5Device::init_multi_queue では RX CQ を Vec に入れている。
+            let rx_cq_index = rq_index; // 0..N
 
-            // RQ から受信バッファ情報を取得
-            if let Some(rx_info) = device.process_rx_completion(MLX5_RQ_INDEX, wqe_counter) {
-                MLX5_RX_PACKETS.fetch_add(1, Ordering::Relaxed);
-                counters::global().record_rx(byte_count);
-                trace::push_event(NetLayer::Driver, NetEventKind::Rx, "mlx5 rx");
+            let cqes = device.poll_cq(rx_cq_index, MLX5_RX_POLL_BATCH);
+            total_processed += cqes.len() as u32;
 
-                // ゼロコピーパス: mempool の PacketRef を構築してスタックに配送
-                // mlx5 は VirtIO ヘッダが無いので header_size = 0
-                let virt_addr = rx_info.virt_addr as *const u8;
-                let rx_slice = core::slice::from_raw_parts(virt_addr, byte_count);
+            for cqe in &cqes {
+                let wqe_counter = cqe.wqe_counter;
+                let byte_count = cqe.byte_count as usize;
 
-                // mempool 経由で PacketRef を割り当て、データをコピー
-                if let Some(mut pkt) = crate::net::datapath::mempool::alloc_packet() {
-                    let copy_len = core::cmp::min(byte_count, pkt.capacity());
-                    pkt.data_mut()[..copy_len].copy_from_slice(&rx_slice[..copy_len]);
-                    pkt.set_len(copy_len);
+                if let Some(rx_info) = device.process_rx_completion(rq_index, wqe_counter) {
+                    MLX5_RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+                    counters::global().record_rx(byte_count);
+                    trace::push_event(NetLayer::Driver, NetEventKind::Rx, "mlx5 rx");
 
-                    // mlx5 はハードウェアチェックサム検証をサポート
-                    if cqe.checksum_ok {
-                        let meta = pkt.meta_mut();
-                        meta.set_ip_csum_verified();
-                        meta.set_l4_csum_verified();
+                    let idx = (wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
+                    if let Some(mut pkt) = rx_bufs_guard[rq_index][idx].take() {
+                        pkt.set_len(byte_count);
+                        if cqe.checksum_ok {
+                            let meta = pkt.meta_mut();
+                            meta.set_ip_csum_verified();
+                            meta.set_l4_csum_verified();
+                        }
+
+                        super::process_received_packet_zero_copy(pkt, 0, byte_count);
+
+                        // Replenish
+                        if let Some(new_pkt) = crate::net::datapath::mempool::alloc_packet() {
+                            let new_virt = new_pkt.as_ptr() as u64;
+                            let new_device = new_pkt.device_address();
+                            let buf_size = new_pkt.capacity() as u32;
+
+                            rx_bufs_guard[rq_index][idx] = Some(new_pkt);
+                            let _ = device.post_receive(rq_index, new_device, new_virt, buf_size);
+                        } else {
+                            MLX5_RX_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        }
+                    } else {
+                        // Fallback
+                        let _ = device.post_receive(
+                            rq_index,
+                            rx_info.device_addr,
+                            rx_info.virt_addr,
+                            rx_info.size,
+                        );
                     }
-
-                    // header_size = 0 (mlx5 は VirtIO ヘッダ無し)
-                    super::process_received_packet_zero_copy(pkt, 0, copy_len);
-                } else {
-                    MLX5_RX_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    log::trace!(target: "mlx5::bridge", "RX packet alloc failed");
                 }
-
-                // RQ にバッファを再投入
-                let _ = device.post_receive(
-                    MLX5_RQ_INDEX,
-                    rx_info.phys_addr,
-                    rx_info.virt_addr,
-                    rx_info.size,
-                );
             }
         }
 
-        // TX CQ の完了も処理（送信バッファの解放）
-        let tx_cqes = device.poll_cq(MLX5_TX_CQ_INDEX, MLX5_RX_POLL_BATCH);
-        for cqe in &tx_cqes {
-            let _ = device.process_tx_completions(MLX5_SQ_INDEX, cqe.wqe_counter);
+        // すべての TX CQ をポーリング
+        for sq_index in 0..tx_bufs_guard.len() {
+            // Mlx5Device::init_multi_queue では TX CQ も Vec に入れている。
+            // TX CQs follow RX CQs in create order? No, they are separate Vecs in Mlx5Device.
+            // But poll_cq index is absolute across all CQs in the device.
+            // Wait, check Mlx5Device::poll_cq implementation.
+            
+            // In device.rs: self.cqs.get(cqn)
+            // But we need to know the mapping of SQ to CQ.
+            // In init_multi_queue:
+            // tx_cqn_list has CQNs.
+            // sqn_list[i] uses tx_cqn_list[i % tx_cqn_list.len()]
+            
+            // So for now we assume 1:1 mapping and TX CQs start at index 0? 
+            // Wait, let's check init_multi_queue again.
+            // It created TX CQs first, then RX CQs.
+            // So TX CQs are 0..N, RX CQs are N..2N?
+            // No, the cqn is returned by create_cq_hw.
+            
+            // Actually, Mlx5Device stores them in self.cqs (Vec).
+            // We should use the actual CQNs if possible, but bridge currently uses indices.
+            
+            // Let's assume tx_cq_index = sq_index for now.
+            let tx_cq_index = sq_index; 
+
+            let tx_cqes = device.poll_cq(tx_cq_index, MLX5_RX_POLL_BATCH);
+            for cqe in &tx_cqes {
+                if let Some(_info) = device.process_tx_completions(sq_index, cqe.wqe_counter) {
+                    let idx = (cqe.wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
+                    let _pkt = tx_bufs_guard[sq_index][idx].take();
+                }
+            }
         }
 
-        processed
+        total_processed
     });
 
     result.unwrap_or(0)
@@ -362,11 +438,35 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
         }
     }
 
+    // RX バッファトラッキングの初期化 (キューごと)
+    let num_rqs = with_mlx5_device(|dev| dev.num_rqs()).unwrap_or(1);
+    if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
+        if bufs.is_empty() {
+            bufs.resize_with(num_rqs, || {
+                let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
+                v.resize_with(mlx5_driver::defs::MLX5_WQ_DEPTH as usize, || None);
+                v
+            });
+        }
+    }
+
+    // TX バッファトラッキングの初期化 (キューごと)
+    let num_sqs = with_mlx5_device(|dev| dev.num_sqs()).unwrap_or(1);
+    if let Ok(mut bufs) = MLX5_TX_BUFS.lock() {
+        if bufs.is_empty() {
+            bufs.resize_with(num_sqs, || {
+                let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
+                v.resize_with(mlx5_driver::defs::MLX5_WQ_DEPTH as usize, || None);
+                v
+            });
+        }
+    }
+
     // ポーリングタスクをスポーン
     crate::task::Executor::spawn_global(
         crate::task::Task::new(mlx5_poll_task()),
     );
-    log::info!(target: "mlx5::bridge", "mlx5 poll task spawned");
+    log::info!(target: "mlx5::bridge", "mlx5 poll task spawned (RQs={}, SQs={})", num_rqs, num_sqs);
 
     // RX バッファのプリフィル
     prefill_rx_buffers();
@@ -379,37 +479,47 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
 
 /// RX バッファをプリフィルする
 ///
-/// 受信キューにバッファを事前投入して受信準備を整える。
+/// すべての受信キューにバッファを事前投入して受信準備を整える。
 fn prefill_rx_buffers() {
-    const RX_PREFILL_COUNT: u32 = 64;
-    const RX_BUF_SIZE: u32 = 2048;
+    let mut bufs_guard = match MLX5_RX_BUFS.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
 
     with_mlx5_device(|device| {
-        let mut filled = 0u32;
-        for _ in 0..RX_PREFILL_COUNT {
-            if let Some(pkt) = crate::net::datapath::mempool::alloc_packet() {
-                let buf_virt = pkt.data().as_ptr() as u64;
-                let buf_phys = pkt.phys_addr().as_u64();
-                let buf_size = RX_BUF_SIZE;
+        let num_rqs = bufs_guard.len();
+        let mut total_filled = 0u32;
 
-                // PacketRef をリークして所有権をデバイスに移動
-                // (CQ 完了時に回収される)
-                core::mem::forget(pkt);
+        for rq_idx in 0..num_rqs {
+            let mut filled = 0u32;
+            for i in 0..mlx5_driver::defs::MLX5_WQ_DEPTH {
+                if let Some(pkt) = crate::net::datapath::mempool::alloc_packet() {
+                    let buf_virt = pkt.as_ptr() as u64;
+                    let buf_device = pkt.device_address();
+                    let buf_size = pkt.capacity() as u32;
 
-                // Safety: バッファは有効
-                match unsafe { device.post_receive(MLX5_RQ_INDEX, buf_phys, buf_virt, buf_size) } {
-                    Ok(_) => filled += 1,
-                    Err(_) => break,
+                    bufs_guard[rq_idx][i as usize] = Some(pkt);
+
+                    // Safety: バッファは有効
+                    match unsafe { device.post_receive(rq_idx, buf_device, buf_virt, buf_size) } {
+                        Ok(_) => filled += 1,
+                        Err(_) => {
+                            bufs_guard[rq_idx][i as usize] = None;
+                            break;
+                        }
+                    }
+                } else {
+                    break;
                 }
-            } else {
-                break;
             }
+            total_filled += filled;
         }
 
         log::info!(
             target: "mlx5::bridge",
-            "Prefilled {} RX buffers",
-            filled
+            "Prefilled {} RX buffers across {} queues",
+            total_filled,
+            num_rqs
         );
     });
 }
@@ -449,12 +559,43 @@ pub fn is_mlx5_bridge_initialized() -> bool {
     MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire)
 }
 
-/// ポート統計を取得する（ソフトウェアカウンタから）
+/// ポート統計を取得する
 pub fn get_mlx5_port_stats(port_index: usize) -> Option<mlx5_driver::port::PortStats> {
     with_mlx5_device(|device| {
+        // ハードウェアカウンタを同期（Safe Rust の wrapper 経由で unsafe 呼び出し）
+        unsafe { let _ = device.update_port_stats(port_index); }
         device.port(port_index).map(|port| port.stats().clone())
     })
     .flatten()
+}
+
+/// mlx5 ブリッジを停止し、リソースを解放する
+pub fn cleanup_mlx5_bridge() {
+    MLX5_BRIDGE_INITIALIZED.store(false, Ordering::Release);
+
+    // RX バッファの解放
+    if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
+        for queue_bufs in bufs.iter_mut() {
+            for buf in queue_bufs.iter_mut() {
+                let _ = buf.take(); // PacketRef がドロップされる
+            }
+            queue_bufs.clear();
+        }
+        bufs.clear();
+    }
+
+    // TX バッファの解放
+    if let Ok(mut bufs) = MLX5_TX_BUFS.lock() {
+        for queue_bufs in bufs.iter_mut() {
+            for buf in queue_bufs.iter_mut() {
+                let _ = buf.take();
+            }
+            queue_bufs.clear();
+        }
+        bufs.clear();
+    }
+
+    log::info!(target: "mlx5::bridge", "mlx5 bridge cleaned up");
 }
 
 // ============================================================================

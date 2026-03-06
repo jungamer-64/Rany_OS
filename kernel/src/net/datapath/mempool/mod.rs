@@ -35,6 +35,8 @@ struct PacketBufferMeta {
     len: AtomicUsize,
     /// 物理アドレス（DMA用）
     phys_addr: PhysAddr,
+    /// デバイスアドレス（IOMMU用）
+    device_addr: u64,
     /// 所属するプールへの参照（デバッグ用）
     pool_id: u32,
     /// バッファインデックス
@@ -106,6 +108,20 @@ impl PacketBuffer {
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> PhysAddr {
         self.meta.phys_addr
+    }
+
+    /// デバイスアドレスを取得（IOMMU用）
+    pub fn device_address(&self) -> u64 {
+        if self.meta.device_addr != 0 {
+            self.meta.device_addr
+        } else {
+            self.meta.phys_addr.as_u64()
+        }
+    }
+
+    /// デバイスアドレスを設定（IOMMU用）
+    pub fn set_device_address(&mut self, addr: u64) {
+        self.meta.device_addr = addr;
     }
 
     /// 参照カウントをインクリメント
@@ -313,6 +329,23 @@ impl PacketRef {
         self.meta_cache = meta;
     }
 
+    /// 生ポインタを取得（バッファ先頭 + オフセット）
+    #[inline]
+    pub fn as_ptr(&self) -> *const u8 {
+        match &self.kind {
+            PacketRefKind::Pooled { buffer, offset, .. } => unsafe {
+                buffer.as_ref().as_ptr().add(*offset)
+            },
+            PacketRefKind::Dma { buf, offset, .. } => unsafe {
+                buf.ptr.as_ptr().add(*offset)
+            },
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { ptr, offset, .. } => unsafe {
+                ptr.as_ptr().add(*offset)
+            },
+        }
+    }
+
     /// Create new PacketRef (internal) from pooled buffer — kept for back compat
     fn _new_pooled_inner(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> Self {
         let len = unsafe { buffer.as_ref().len() };
@@ -476,6 +509,21 @@ impl PacketRef {
             }
             #[cfg(any(test, feature = "qemu-test-export"))]
             PacketRefKind::BorrowedTest { offset, .. } => PhysAddr::new(*offset as u64),
+        }
+    }
+
+    /// デバイスアドレスを取得（IOMMU用）
+    pub fn device_address(&self) -> u64 {
+        match &self.kind {
+            PacketRefKind::Pooled { buffer, offset, .. } => unsafe {
+                buffer.as_ref().device_address() + *offset as u64
+            },
+            PacketRefKind::Dma { buf, offset, .. } => {
+                // For Dma variant, we assume it's already a device address or can be used as such
+                buf.phys_addr.as_u64() + *offset as u64
+            }
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { offset, .. } => *offset as u64,
         }
     }
 

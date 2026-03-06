@@ -399,7 +399,7 @@ impl NvmePollingDriver {
         let cq_size = (depth as usize) * CQ_ENTRY_SIZE;
 
         // Alloc DMA via IOMMU-aware method
-        let asq_buffer = self.alloc_dma_for_driver(sq_size, "Failed to allocate ASQ DMA buffer")?;;
+        let asq_buffer = self.alloc_dma_for_driver(sq_size, "Failed to allocate ASQ DMA buffer")?;
         let asq_phys = asq_buffer.device_address();
         let _asq_ptr = asq_buffer.as_ptr();
 

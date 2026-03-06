@@ -1095,6 +1095,10 @@ pub fn build_modify_sq_input(
     // modify_sq_in.sq_state[3:0] + sqn[23:0] at dword 0x04.
     let sq_state_and_num = (((current_state as u32) & 0x0F) << 28) | (sqn & 0x00FF_FFFF);
     in_mbox.write_be32(0x04, sq_state_and_num);
+    // modify_sq_in.sqc_bitmask at dword 0x08.
+    // Linux mlx5_ifc: bit 0 of the mask is 'state'.
+    in_mbox.write_be32(0x08, 0x01);
+
     // modify_sq_in.ctx starts at 0x20; sqc.state[3:0] is bits 23:20 of first dword.
     let ctx = 0x20usize;
     in_mbox.write_be32(ctx, ((next_state as u32) & 0x0F) << 20);
@@ -1116,12 +1120,21 @@ pub fn build_create_rq_input(
     db_pa: u64,
     cqn: u32,
     pd: u32,
+    scatter_fcs: bool,
+    vlan_strip: bool,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     // create_rq_in.ctx starts at 0x20.
     let ctx = 0x20usize;
     // rqc.flush_in_error_en=1, rqc.state=RST(0), mem_rq_type=inline(0)
-    in_mbox.write_be32(ctx, 1 << 18);
+    let mut rqc0 = 1 << 18;
+    if scatter_fcs {
+        rqc0 |= 1 << 30;
+    }
+    if vlan_strip {
+        rqc0 |= 1 << 31;
+    }
+    in_mbox.write_be32(ctx, rqc0);
     // rqc.cqn[23:0] at ctx+0x08
     in_mbox.write_be32(ctx + 0x08, cqn & 0x00FF_FFFF);
 
@@ -1247,6 +1260,33 @@ pub fn parse_query_vport_counter_output(out_mbox: &CmdMailbox) -> crate::defs::V
         rx_dropped: out_mbox.read_be64(base + 0x70),
         tx_dropped: out_mbox.read_be64(base + 0x78),
     }
+}
+
+/// NIC VPORT の MAC アドレスを変更するコマンド入力の構築
+pub fn build_modify_nic_vport_mac_input(
+    in_mbox: &mut CmdMailbox,
+    vport_number: u16,
+    other_vport: bool,
+    mac: [u8; 6],
+) {
+    *in_mbox = CmdMailbox::zeroed();
+
+    // vport_number
+    in_mbox.write_be16(0x0A, vport_number);
+    if other_vport {
+        in_mbox.data[0x08] |= 0x80;
+    }
+
+    // field_select: bit 2 (permanent_address)
+    // mlx5_ifc_nic_vport_context_field_select_bits: permanent_address is bit 10?
+    // Let's use 1 << 10 as in build_set_vf_mac_input.
+    in_mbox.write_be32(0x00, 1 << 10);
+
+    // nic_vport_context starts at 0x10.
+    // permanent_address is at offset 0xF4 within context.
+    let ctx_base = 0x10;
+    let mac_off = ctx_base + 0xF4;
+    in_mbox.data[mac_off..mac_off + 6].copy_from_slice(&mac);
 }
 
 /// VF の VLAN ID を設定するコマンド入力の構築
@@ -1471,7 +1511,16 @@ mod tests {
         let rq_pa = 0x2345_6789_0000u64;
         let log_rq_size = 9u8; // 512 WQEBB * 16B = 8KiB => 2 pages
 
-        build_create_rq_input(&mut in_mbox, log_rq_size, rq_pa, 0x3000, 0x10, 0x40);
+        build_create_rq_input(
+            &mut in_mbox,
+            log_rq_size,
+            rq_pa,
+            0x3000,
+            0x10,
+            0x40,
+            false,
+            false,
+        );
 
         let rq_bytes = (1usize << (log_rq_size as usize)) * WQEBB_SIZE;
         let rq_pages = (rq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;

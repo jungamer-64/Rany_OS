@@ -112,52 +112,72 @@ pub unsafe fn check_health(bar0_base: u64) -> bool {
 }
 
 /// QUERY_HCA_CAP 出力からHcaCapsを解析
-///
-/// 出力メールボックスのレイアウト（General Device Capabilities）:
-/// - offset 0x10: max_cqe
-/// - offset 0x14: max_sq
-/// - offset 0x18: max_rq
-/// - etc.
 pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
-    // QUERY_HCA_CAP out layout:
-    // [0x00..0x10): status/syndrome/reserved
-    // [0x10..): capability union (cmd_hca_cap for op_mod=0)
-    let cap = out_data.get(0x10..).unwrap_or(&[]);
+    // The capability data starts at offset 0x10 in the mailbox output
+    let cap = &out_data[0x10..];
 
-    let read_bits = |bit_off: usize, bit_len: usize| -> u32 {
-        let mut v = 0u32;
-        for i in 0..bit_len {
-            let bit = bit_off + i;
-            let byte_idx = bit / 8;
-            let bit_in_byte = 7 - (bit % 8);
-            let b = cap
-                .get(byte_idx)
-                .map(|byte| (byte >> bit_in_byte) & 0x1)
-                .unwrap_or(0);
-            v = (v << 1) | (b as u32);
+    // Helper to read a big-endian 32-bit word from a byte offset
+    let rd = |off: usize| -> u32 {
+        if off + 4 > cap.len() {
+            return 0;
         }
-        v
+        u32::from_be_bytes([cap[off], cap[off+1], cap[off+2], cap[off+3]])
     };
 
-    // mlx5_ifc_cmd_hca_cap_bits bit fields (Linux mlx5_ifc.h).
-    let log_max_qp_sz = read_bits(0x88, 0x8) as u8;
-    let log_max_cq_sz = read_bits(0xC8, 0x8) as u8;
-    let log_max_eq_sz = read_bits(0xE0, 0x8) as u8;
-    let log_max_mkey = read_bits(0xEA, 0x6) as u8;
-    let log_max_cq = read_bits(0xDB, 0x5) as u8;
-    let log_max_eq = read_bits(0xFC, 0x4) as u8;
-    let log_max_transport_domain = read_bits(0x323, 0x5) as u8;
-    let log_max_tir = read_bits(0x373, 0x5) as u8;
-    let log_max_tis = read_bits(0x37B, 0x5) as u8;
-    let log_max_tis_per_sq = read_bits(0x39B, 0x5) as u8;
-    let tis_tir_td_order = read_bits(0x2A9, 0x1) != 0;
-    let num_ports = read_bits(0x1B8, 0x8) as u8;
-    let vport_group_manager = read_bits(0x1B0, 0x1) != 0;
-    let eswitch_manager = read_bits(0x1B1, 0x1) != 0;
-    let num_vhca_ports = read_bits(0x1C0, 0x8) as u16;
+    // DW0 [0x00]: [reserved(1)|vport_group_manager(1)|eswitch_manager(1)|...]
+    let dw0 = rd(0x00);
+    let vport_group_manager = (dw0 & 0x4000_0000) != 0;
+    let eswitch_manager = (dw0 & 0x2000_0000) != 0;
 
-    let cqe_version = read_bits(0x1FC, 0x4) as u8;
-    let csum_cap = read_bits(0x21D, 0x1) != 0; // eth_net_offloads
+    // DW1 [0x04]: [log_max_mkey(7)|reserved(1)|...]
+    let dw1 = rd(0x04);
+    let log_max_mkey = ((dw1 >> 25) & 0x7F) as u8;
+
+    // DW2 [0x08]: [log_max_qp(8)|...]
+    let dw2 = rd(0x08);
+    let log_max_qp_sz = ((dw2 >> 24) & 0xFF).max(8) as u8;
+
+    // DW3 [0x0C]: [log_max_cq(8)|log_max_cq_sz(8)|...]
+    let dw3 = rd(0x0C);
+    let log_max_cq = ((dw3 >> 24) & 0xFF).max(8) as u8;
+    let log_max_cq_sz = ((dw3 >> 16) & 0xFF).max(12) as u8;
+
+    // DW4 [0x10]: [log_max_eq(8)|log_max_eq_sz(8)|...]
+    let dw4 = rd(0x10);
+    let log_max_eq = ((dw4 >> 24) & 0xFF).max(4) as u8;
+    let log_max_eq_sz = ((dw4 >> 16) & 0xFF).max(12) as u8;
+
+    // DW6 [0x18]: [num_ports(8)|...]
+    let dw6 = rd(0x18);
+    let num_ports = ((dw6 >> 24) & 0xFF) as u8;
+
+    // DW7 [0x1C]: [num_vhca_ports(8)|...]
+    let dw7 = rd(0x1C);
+    let num_vhca_ports = ((dw7 >> 24) & 0xFF) as u16;
+
+    // DW12 [0x30]: [..., cqe_version(4)]
+    let dw12 = rd(0x30);
+    let cqe_version = ((dw12 >> 4) & 0x0F) as u8;
+
+    // DW13 [0x34]: [..., eth_net_offloads(1)|vlan_strip(1)|scatter_fcs(1)|...]
+    let dw13 = rd(0x34);
+    let eth_net_offloads = (dw13 & 0x0008_0000) != 0;
+    let vlan_strip = (dw13 & 0x0004_0000) != 0;
+    let scatter_fcs = (dw13 & 0x0002_0000) != 0;
+
+    // DW17 [0x44]: [..., tis_tir_td_order(1), ..., log_max_transport_domain(5)]
+    let dw17 = rd(0x44);
+    let tis_tir_td_order = (dw17 & 0x0020_0000) != 0;
+    let log_max_transport_domain = (dw17 & 0x1F) as u8;
+
+    // DW20 [0x50]: [..., log_max_tir(5), ..., log_max_tis(5)]
+    let dw20 = rd(0x50);
+    let log_max_tir = ((dw20 >> 8) & 0x1F) as u8;
+    let log_max_tis = (dw20 & 0x1F) as u8;
+
+    // DW22 [0x58]: [..., log_max_tis_per_sq(5)]
+    let dw22 = rd(0x58);
+    let log_max_tis_per_sq = (dw22 & 0x1F) as u8;
 
     let max_cq = 1u32.checked_shl(log_max_cq as u32).unwrap_or(0);
     let max_eq = 1u32.checked_shl(log_max_eq as u32).unwrap_or(0);
@@ -180,9 +200,9 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         log_max_tis_per_sq,
         log_max_transport_domain,
         log_max_eq_sz,
-        scatter_fcs: false,
-        vlan_strip: false,
-        csum_cap,
+        scatter_fcs,
+        vlan_strip,
+        csum_cap: eth_net_offloads,
         cqe_compression: false,
         cqe_version,
         tis_tir_td_order,

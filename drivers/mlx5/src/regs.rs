@@ -130,8 +130,8 @@ pub mod eqe {
     /// EQEサイズ (bytes)
     pub const EQE_SIZE: usize = 64;
 
-    /// オーナービットを含むステータスワード
-    pub const STATUS_OWN: usize = 0x3C;
+    /// オーナービットを含むステータスバイト (byte 63)
+    pub const STATUS_OWN: usize = 0x3F;
 
     /// イベントタイプフィールド
     pub const TYPE: usize = 0x00;

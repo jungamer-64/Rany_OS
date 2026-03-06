@@ -56,7 +56,7 @@ impl Default for MkeyParams {
             length: 0xFFFF_FFFF_FFFF_FFFF, // 全アドレス空間
             access_flags: MkeyAccessFlags::LocalRead as u8 | MkeyAccessFlags::LocalWrite as u8,
             pd: 0,
-            log_page_size: 12, // 4KB
+            log_page_size: 0, // Direct MKey usually uses 0
         }
     }
 }
@@ -173,18 +173,25 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
     *in_mbox = CmdMailbox::zeroed();
     // MKEY Context at offset 0x10
     let ctx = 0x10;
-    // access_flags at offset +0x00 bits [7:0]
-    in_mbox.write_be32(ctx, params.access_flags as u32);
-    // PD at offset +0x04
+    
+    // DW0: access_flags[31:24], other bits reserved
+    in_mbox.write_be32(ctx + 0x00, (params.access_flags as u32) << 24);
+    
+    // DW1: PD[23:0]
     in_mbox.write_be32(ctx + 0x04, params.pd & 0x00FF_FFFF);
-    // start_addr at offset +0x08
+    
+    // DW2-3: start_addr[63:0]
     in_mbox.write_be64(ctx + 0x08, params.start_addr);
-    // length at offset +0x10
+    
+    // DW4-5: len[63:0]
     in_mbox.write_be64(ctx + 0x10, params.length);
-    // log_page_size at offset +0x18 bits [4:0]
-    in_mbox.write_be32(ctx + 0x18, params.log_page_size as u32);
-    // MKey type: PA-based (0x00) with "free" bit set for Direct MKey
-    in_mbox.write_be32(ctx + 0x1C, 0x01 << 24); // free=1
+    
+    // DW6: log_page_size[4:0] is bits 7:3
+    in_mbox.write_be32(ctx + 0x18, (params.log_page_size as u32) << 3);
+    
+    // DW7: [reserved(2), free(1), ..., mkey_7_0(8)]
+    // Set free=1 (bit 29) and a non-zero mkey_7_0.
+    in_mbox.write_be32(ctx + 0x1C, (1 << 29) | 0x42); 
 }
 
 /// CREATE_MKEY 出力からMKEY値を解析
@@ -212,9 +219,9 @@ pub fn build_create_tis_input(in_mbox: &mut CmdMailbox, params: &TisParams) {
     in_mbox.write_be32(ctx, tisc0);
     // tisc.transport_domain[23:0] in dword @ ctx+0x24
     in_mbox.write_be32(ctx + 0x24, params.td & 0x00FF_FFFF);
-    // For regular Ethernet TIS, leave tisc.pd cleared.
-    // Linux only programs this field for TLS-enabled TIS objects.
-    let _ = params.pd;
+    
+    // tisc.pd[23:0] in dword @ ctx+0x2C
+    in_mbox.write_be32(ctx + 0x2C, params.pd & 0x00FF_FFFF);
 }
 
 /// CREATE_TIS 出力からTIS番号を解析
@@ -224,10 +231,16 @@ pub fn parse_create_tis_output(out_mbox: &CmdMailbox) -> u32 {
 }
 
 /// QUERY_TIS コマンド入力の構築
-pub fn build_query_tis_input(in_mbox: &mut CmdMailbox, tisn: u32) {
+pub fn build_query_tis_input(in_mbox: &mut CmdMailbox, tisn: u32, vport: u16, other_vport: bool) {
     *in_mbox = CmdMailbox::zeroed();
     // mlx5_ifc_query_tis_in_bits: tisn[23:0] at dword offset 0x04.
     in_mbox.write_be32(0x04, tisn & 0x00FF_FFFF);
+    // bit 31 of DW2: other_vport
+    if other_vport {
+        in_mbox.data[0x08] |= 0x80;
+    }
+    // vport_number in DW2 [15:0]
+    in_mbox.write_be16(0x0A, vport);
 }
 
 /// QUERY_TIS 出力から TIS context の主要フィールドを解析
@@ -285,9 +298,9 @@ pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
     }
 
     // tirc.transport_domain[23:0] at dword @ ctx+0x24.
-    // If RQT+RSS path set this dword above, keep only TD low24 here.
-    let dword_124 = in_mbox.read_be32(ctx + 0x24) & 0xFF00_0000;
-    in_mbox.write_be32(ctx + 0x24, dword_124 | (params.td & 0x00FF_FFFF));
+    // If RQT+RSS path set this dword above, we only update the low 24 bits.
+    let current_dw9 = in_mbox.read_be32(ctx + 0x24);
+    in_mbox.write_be32(ctx + 0x24, (current_dw9 & 0xFF00_0000) | (params.td & 0x00FF_FFFF));
 
     // NOTE: scatter_fcs / vlan_strip are RQ context settings, not TIR context bits.
     let _ = (params.scatter_fcs, params.vlan_strip);

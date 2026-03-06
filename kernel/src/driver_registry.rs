@@ -612,7 +612,8 @@ extern "C" fn kapi_panic_abort(msg_ptr: *const u8, msg_len: usize) -> ! {
     panic!("Cell panic - aborting");
 }
 
-static KERNEL_API_V1: KernelApiV1 = KernelApiV1 {
+#[unsafe(no_mangle)]
+pub static __exorust_kernel_api_v1: KernelApiV1 = KernelApiV1 {
     abi_version: KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV1>() as u32,
     log: kapi_log,
@@ -629,7 +630,7 @@ static KERNEL_API_V1: KernelApiV1 = KernelApiV1 {
 };
 
 pub(crate) fn kernel_api_v1() -> &'static KernelApiV1 {
-    &KERNEL_API_V1
+    &__exorust_kernel_api_v1
 }
 
 // ============================================================================

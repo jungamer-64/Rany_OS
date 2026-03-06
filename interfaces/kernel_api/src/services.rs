@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+use crate::driver_abi::KernelApiV1;
 use crate::{ChannelHandle, DmaBuffer, FileHandle, KapiResult, TaskHandle, TcpEndpoint};
 use alloc::boxed::Box;
 use core::future::Future;
@@ -391,4 +392,22 @@ pub fn kernel() -> &'static dyn KernelServices {
 #[inline]
 pub fn is_kernel_registered() -> bool {
     KERNEL.get().is_some()
+}
+
+// ============================================================================
+// Stable ABI Kernel API
+// ============================================================================
+
+unsafe extern "C" {
+    /// The global KernelApiV1 instance exported by the kernel.
+    static __exorust_kernel_api_v1: KernelApiV1;
+}
+
+/// Get the stable ABI kernel API table
+///
+/// This is used by drivers and standalone cells to access kernel services
+/// through the ABI-stable interface.
+#[inline]
+pub fn kernel_api_v1() -> &'static KernelApiV1 {
+    unsafe { &__exorust_kernel_api_v1 }
 }

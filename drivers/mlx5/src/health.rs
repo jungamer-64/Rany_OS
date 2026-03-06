@@ -15,7 +15,6 @@
 //! - `Result::Err` でエラーを伝播（パニックではなくエラー型で障害通知）
 //! - ウォッチドッグタイマーでハング検出
 
-use crate::error::Mlx5Result;
 use crate::fw;
 
 /// 健全性チェックの結果

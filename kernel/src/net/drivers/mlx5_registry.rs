@@ -92,15 +92,15 @@ struct Mlx5DmaResources {
     cmd_in_mbox: DmaSlot,
     cmd_out_mbox: DmaSlot,
     fw_pages: Vec<DmaSlot>,
-    eq: DmaSlot,
-    tx_cq: DmaSlot,
-    tx_cq_db: DmaSlot,
-    rx_cq: DmaSlot,
-    rx_cq_db: DmaSlot,
-    sq: DmaSlot,
-    sq_db: DmaSlot,
-    rq: DmaSlot,
-    rq_db: DmaSlot,
+    eqs: Vec<DmaSlot>,
+    tx_cqs: Vec<DmaSlot>,
+    tx_cq_dbs: Vec<DmaSlot>,
+    rx_cqs: Vec<DmaSlot>,
+    rx_cq_dbs: Vec<DmaSlot>,
+    sqs: Vec<DmaSlot>,
+    sq_dbs: Vec<DmaSlot>,
+    rqs: Vec<DmaSlot>,
+    rq_dbs: Vec<DmaSlot>,
 }
 
 impl Mlx5DmaResources {
@@ -115,15 +115,15 @@ impl Drop for Mlx5DmaResources {
             release_dma_slot(page);
         }
 
-        release_dma_slot(&mut self.rq_db);
-        release_dma_slot(&mut self.rq);
-        release_dma_slot(&mut self.sq_db);
-        release_dma_slot(&mut self.sq);
-        release_dma_slot(&mut self.rx_cq_db);
-        release_dma_slot(&mut self.rx_cq);
-        release_dma_slot(&mut self.tx_cq_db);
-        release_dma_slot(&mut self.tx_cq);
-        release_dma_slot(&mut self.eq);
+        for q in self.rq_dbs.iter_mut() { release_dma_slot(q); }
+        for q in self.rqs.iter_mut() { release_dma_slot(q); }
+        for q in self.sq_dbs.iter_mut() { release_dma_slot(q); }
+        for q in self.sqs.iter_mut() { release_dma_slot(q); }
+        for q in self.rx_cq_dbs.iter_mut() { release_dma_slot(q); }
+        for q in self.rx_cqs.iter_mut() { release_dma_slot(q); }
+        for q in self.tx_cq_dbs.iter_mut() { release_dma_slot(q); }
+        for q in self.tx_cqs.iter_mut() { release_dma_slot(q); }
+        for q in self.eqs.iter_mut() { release_dma_slot(q); }
         release_dma_slot(&mut self.cmd_out_mbox);
         release_dma_slot(&mut self.cmd_in_mbox);
         release_dma_slot(&mut self.cmdq);
@@ -194,6 +194,8 @@ impl Mlx5ConnectXDriver {
         let rq_size = (MLX5_WQ_DEPTH as usize) * wqe::WQEBB_SIZE;
         let db_record_size = DMA_PAGE_BYTES;
 
+        let num_queues = 4;
+
         let mut fw_pages = Vec::with_capacity(FW_BOOT_PAGE_COUNT);
         for _ in 0..FW_BOOT_PAGE_COUNT {
             fw_pages.push(Self::alloc_dma_for_device(
@@ -203,20 +205,42 @@ impl Mlx5ConnectXDriver {
             )?);
         }
 
+        let mut eqs = Vec::with_capacity(num_queues);
+        let mut tx_cqs = Vec::with_capacity(num_queues);
+        let mut tx_cq_dbs = Vec::with_capacity(num_queues);
+        let mut rx_cqs = Vec::with_capacity(num_queues);
+        let mut rx_cq_dbs = Vec::with_capacity(num_queues);
+        let mut sqs = Vec::with_capacity(num_queues);
+        let mut sq_dbs = Vec::with_capacity(num_queues);
+        let mut rqs = Vec::with_capacity(num_queues);
+        let mut rq_dbs = Vec::with_capacity(num_queues);
+
+        for _ in 0..num_queues {
+            eqs.push(Self::alloc_dma_for_device(eq_size, packed_device_id, "eq")?);
+            tx_cqs.push(Self::alloc_dma_for_device(cq_size, packed_device_id, "tx_cq")?);
+            tx_cq_dbs.push(Self::alloc_dma_for_device(db_record_size, packed_device_id, "tx_cq_db")?);
+            rx_cqs.push(Self::alloc_dma_for_device(cq_size, packed_device_id, "rx_cq")?);
+            rx_cq_dbs.push(Self::alloc_dma_for_device(db_record_size, packed_device_id, "rx_cq_db")?);
+            sqs.push(Self::alloc_dma_for_device(sq_size, packed_device_id, "sq")?);
+            sq_dbs.push(Self::alloc_dma_for_device(db_record_size, packed_device_id, "sq_db")?);
+            rqs.push(Self::alloc_dma_for_device(rq_size, packed_device_id, "rq")?);
+            rq_dbs.push(Self::alloc_dma_for_device(db_record_size, packed_device_id, "rq_db")?);
+        }
+
         Ok(Mlx5DmaResources {
             cmdq: Self::alloc_dma_for_device(cmdq_size, packed_device_id, "cmdq")?,
             cmd_in_mbox: Self::alloc_dma_for_device(cmd_mbox_size, packed_device_id, "cmd_in_mbox")?,
             cmd_out_mbox: Self::alloc_dma_for_device(cmd_mbox_size, packed_device_id, "cmd_out_mbox")?,
             fw_pages,
-            eq: Self::alloc_dma_for_device(eq_size, packed_device_id, "eq")?,
-            tx_cq: Self::alloc_dma_for_device(cq_size, packed_device_id, "tx_cq")?,
-            tx_cq_db: Self::alloc_dma_for_device(db_record_size, packed_device_id, "tx_cq_db")?,
-            rx_cq: Self::alloc_dma_for_device(cq_size, packed_device_id, "rx_cq")?,
-            rx_cq_db: Self::alloc_dma_for_device(db_record_size, packed_device_id, "rx_cq_db")?,
-            sq: Self::alloc_dma_for_device(sq_size, packed_device_id, "sq")?,
-            sq_db: Self::alloc_dma_for_device(db_record_size, packed_device_id, "sq_db")?,
-            rq: Self::alloc_dma_for_device(rq_size, packed_device_id, "rq")?,
-            rq_db: Self::alloc_dma_for_device(db_record_size, packed_device_id, "rq_db")?,
+            eqs,
+            tx_cqs,
+            tx_cq_dbs,
+            rx_cqs,
+            rx_cq_dbs,
+            sqs,
+            sq_dbs,
+            rqs,
+            rq_dbs,
         })
     }
 
@@ -382,6 +406,16 @@ impl Mlx5ConnectXDriver {
         let sq_log_size = log2_u32(MLX5_WQ_DEPTH);
         let rq_log_size = log2_u32(MLX5_WQ_DEPTH);
 
+        let eq_bufs: Vec<(u64, u64)> = dma_resources.eqs.iter().map(|q| (q.as_ptr_u64(), q.device_address())).collect();
+        let tx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources.tx_cqs.iter().zip(dma_resources.tx_cq_dbs.iter())
+            .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
+        let rx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources.rx_cqs.iter().zip(dma_resources.rx_cq_dbs.iter())
+            .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
+        let sq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources.sqs.iter().zip(dma_resources.sq_dbs.iter())
+            .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
+        let rq_bufs: Vec<(u64, u64, u64, u64)> = dma_resources.rqs.iter().zip(dma_resources.rq_dbs.iter())
+            .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
+
         log::info!(
             target: "mlx5",
             "CMD DMA IOVA: cmdq={:#x} in_mbox={:#x} out_mbox={:#x}",
@@ -391,7 +425,7 @@ impl Mlx5ConnectXDriver {
         );
 
         let init_result = unsafe {
-            device.init_full(
+            device.init_multi_queue(
                 dma_resources.cmdq.as_ptr_u64(),
                 dma_resources.cmdq.device_address(),
                 dma_resources.cmd_in_mbox.as_ptr_u64(),
@@ -400,34 +434,11 @@ impl Mlx5ConnectXDriver {
                 dma_resources.cmd_out_mbox.device_address(),
                 &fw_page_addrs,
                 &MkeyParams::default(),
-                (
-                    dma_resources.eq.as_ptr_u64(),
-                    dma_resources.eq.device_address(),
-                ),
-                (
-                    dma_resources.tx_cq.as_ptr_u64(),
-                    dma_resources.tx_cq.device_address(),
-                    dma_resources.tx_cq_db.as_ptr_u64(),
-                    dma_resources.tx_cq_db.device_address(),
-                ),
-                (
-                    dma_resources.rx_cq.as_ptr_u64(),
-                    dma_resources.rx_cq.device_address(),
-                    dma_resources.rx_cq_db.as_ptr_u64(),
-                    dma_resources.rx_cq_db.device_address(),
-                ),
-                (
-                    dma_resources.sq.as_ptr_u64(),
-                    dma_resources.sq.device_address(),
-                    dma_resources.sq_db.as_ptr_u64(),
-                    dma_resources.sq_db.device_address(),
-                ),
-                (
-                    dma_resources.rq.as_ptr_u64(),
-                    dma_resources.rq.device_address(),
-                    dma_resources.rq_db.as_ptr_u64(),
-                    dma_resources.rq_db.device_address(),
-                ),
+                &eq_bufs,
+                &tx_cq_bufs,
+                &rx_cq_bufs,
+                &sq_bufs,
+                &rq_bufs,
                 eq_log_size,
                 cq_log_size,
                 sq_log_size,
@@ -525,6 +536,9 @@ impl Driver for Mlx5ConnectXDriver {
     fn stop(&mut self) -> KapiResult<()> {
         let variant_name = self.variant.map(|v| v.name()).unwrap_or("ConnectX");
         log::info!(target: "mlx5", "{} driver stopping...", variant_name);
+
+        // ブリッジ側のリソース（PacketRef等）を解放
+        crate::net::runtime::bridge::mlx5_bridge::cleanup_mlx5_bridge();
 
         if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device() {
             unsafe {

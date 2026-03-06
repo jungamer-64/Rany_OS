@@ -41,6 +41,7 @@ pub mod defs;
 pub mod device;
 pub mod eq;
 pub mod error;
+pub mod ffi;
 pub mod flow;
 pub mod fw;
 pub mod health;

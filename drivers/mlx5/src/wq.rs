@@ -51,8 +51,8 @@ impl Wqebb {
 pub struct TxBufferInfo {
     /// DMAバッファの仮想アドレス
     pub virt_addr: u64,
-    /// DMAバッファの物理アドレス（デバイスアドレス）
-    pub phys_addr: u64,
+    /// DMAバッファのデバイスアドレス（IOMMU IOVA）
+    pub device_addr: u64,
     /// バッファサイズ
     pub size: u32,
     /// 使用中フラグ
@@ -65,8 +65,8 @@ pub struct SendQueue {
     pub sqn: u32,
     /// WQバッファの仮想アドレス
     buf_virt: u64,
-    /// WQバッファの物理アドレス
-    buf_phys: u64,
+    /// WQバッファのデバイスアドレス
+    buf_device: u64,
     /// ドアベルレコードの仮想アドレス
     doorbell_virt: u64,
     /// UAR（BlueFlame用）ベースアドレス
@@ -87,12 +87,23 @@ pub struct SendQueue {
     pub mkey: u32,
 }
 
+/// DMAセグメント（Scatter/Gather用）
+#[derive(Clone, Copy, Debug)]
+pub struct DmaSegment {
+    /// デバイスアドレス (IOMMU IOVA)
+    pub device_addr: u64,
+    /// 仮想アドレス（トラッキング用）
+    pub virt_addr: u64,
+    /// 長さ
+    pub len: u32,
+}
+
 impl SendQueue {
     /// 新しいSend Queueを作成
     pub fn new(
         sqn: u32,
         buf_virt: u64,
-        buf_phys: u64,
+        buf_device: u64,
         doorbell_virt: u64,
         uar_base: u64,
         log_sq_size: u8,
@@ -107,7 +118,7 @@ impl SendQueue {
         Self {
             sqn,
             buf_virt,
-            buf_phys,
+            buf_device,
             doorbell_virt,
             uar_base,
             log_sq_size,
@@ -130,33 +141,28 @@ impl SendQueue {
     /// 送信WQEを構築してSQに投入
     ///
     /// # Arguments
-    /// - `data_phys`: 送信データのDMA物理アドレス
-    /// - `data_virt`: 送信データの仮想アドレス（完了時の解放用）
-    /// - `data_len`: 送信データ長
+    /// - `segments`: 送信データのDMAセグメント（最大2つまでサポート、合計64B以内）
     /// - `inline_hdr`: インラインEthernetヘッダ（最初の18バイト以下）
     ///
     /// # Safety
     /// - buf_virt, doorbell_virt, uar_base が有効であること
-    /// - data_phys がDMAアクセス可能なアドレスであること
+    /// - segments のデバイスアドレスがDMAアクセス可能なアドレスであること
     ///
     /// # Returns
     /// 投入したWQEインデックス
     pub unsafe fn post_send(
         &mut self,
-        data_phys: u64,
-        data_virt: u64,
-        data_len: u32,
+        segments: &[DmaSegment],
         inline_hdr: &[u8],
     ) -> Option<u16> {
-        if !self.has_space() {
+        if !self.has_space() || segments.is_empty() || segments.len() > 2 {
             return None;
         }
 
         let wqe_idx = self.producer_counter;
         let buf_idx = (wqe_idx as u32 % self.sq_depth) as usize;
 
-        // WQEの構築: ctrl(16) + eth(16) + data(16) = 3 WQEBBs
-        // 実際はWQE全体がSQバッファの連続領域に配置される
+        // WQEの構築: ctrl(16) + eth(16) + data(16) * N
         // SQ uses 64-byte WQE stride (log_wq_stride=6).
         let wqe_offset = buf_idx * 64;
         let wqe_ptr = (self.buf_virt as usize + wqe_offset) as *mut u8;
@@ -166,8 +172,9 @@ impl SendQueue {
         // OPMOD_IDX_OPCODE: [31:24]=opcode, [23:0]=wqe_index
         let opmod_idx = ((WqeOpcode::EthSend as u32) << 24) | (wqe_idx as u32 & 0x00FF_FFFF);
         write_be32_raw(ctrl_ptr, wqe::ctrl::OPMOD_IDX_OPCODE, opmod_idx);
-        // QPN_DS: [31:8]=QPN, [7:0]=DS count (3 for min TX WQE)
-        let qpn_ds = ((self.sqn & 0x00FF_FFFF) << 8) | 3;
+        // QPN_DS: [31:8]=QPN, [7:0]=DS count (2 + num_segments)
+        let ds_count = 2 + segments.len() as u32;
+        let qpn_ds = ((self.sqn & 0x00FF_FFFF) << 8) | ds_count;
         write_be32_raw(ctrl_ptr, wqe::ctrl::QPN_DS, qpn_ds);
         // FM_CE_SE: completion enable
         write_be32_raw(ctrl_ptr, wqe::ctrl::FM_CE_SE, 0x08); // CE=1 (completion requested)
@@ -187,20 +194,23 @@ impl SendQueue {
             core::ptr::copy_nonoverlapping(inline_hdr.as_ptr(), hdr_dst, copy_len);
         }
 
-        // Data Segment (16 bytes) at offset 32
-        let data_seg_ptr = ctrl_ptr.add(32);
-        // Byte count
-        write_be32_raw(data_seg_ptr, wqe::data::BYTE_COUNT, data_len);
-        // L-Key (Memory Key)
-        write_be32_raw(data_seg_ptr, wqe::data::LKEY, self.mkey);
-        // Address (64-bit physical)
-        write_be64_raw(data_seg_ptr, wqe::data::ADDR, data_phys);
+        // Data Segments (16 bytes each) starting at offset 32
+        for (i, seg) in segments.iter().enumerate() {
+            let data_seg_ptr = ctrl_ptr.add(32 + i * 16);
+            // Byte count
+            write_be32_raw(data_seg_ptr, wqe::data::BYTE_COUNT, seg.len);
+            // L-Key (Memory Key)
+            write_be32_raw(data_seg_ptr, wqe::data::LKEY, self.mkey);
+            // Address (64-bit device address)
+            write_be64_raw(data_seg_ptr, wqe::data::ADDR, seg.device_addr);
+        }
 
-        // バッファトラッキング
+        // バッファトラッキング (単一バッファの互換性維持のため、最初のセグメントを保存)
+        // 本来は全セグメントをトラッキングすべきだが、現在は1パケット1エントリ
         self.tx_buffers[buf_idx] = TxBufferInfo {
-            virt_addr: data_virt,
-            phys_addr: data_phys,
-            size: data_len,
+            virt_addr: segments[0].virt_addr,
+            device_addr: segments[0].device_addr,
+            size: segments[0].len,
             in_use: true,
         };
 
@@ -247,8 +257,8 @@ impl SendQueue {
 pub struct RxBufferInfo {
     /// DMAバッファの仮想アドレス
     pub virt_addr: u64,
-    /// DMAバッファの物理アドレス（デバイスアドレス）
-    pub phys_addr: u64,
+    /// DMAバッファのデバイスアドレス（IOMMU IOVA）
+    pub device_addr: u64,
     /// バッファサイズ
     pub size: u32,
     /// 使用中フラグ
@@ -261,8 +271,8 @@ pub struct ReceiveQueue {
     pub rqn: u32,
     /// WQバッファの仮想アドレス
     buf_virt: u64,
-    /// WQバッファの物理アドレス
-    buf_phys: u64,
+    /// WQバッファのデバイスアドレス
+    buf_device: u64,
     /// ドアベルレコードの仮想アドレス
     doorbell_virt: u64,
     /// ログ2 RQサイズ
@@ -286,7 +296,7 @@ impl ReceiveQueue {
     pub fn new(
         rqn: u32,
         buf_virt: u64,
-        buf_phys: u64,
+        buf_device: u64,
         doorbell_virt: u64,
         log_rq_size: u8,
         cqn: u32,
@@ -300,7 +310,7 @@ impl ReceiveQueue {
         Self {
             rqn,
             buf_virt,
-            buf_phys,
+            buf_device,
             doorbell_virt,
             log_rq_size,
             rq_depth: depth,
@@ -315,17 +325,17 @@ impl ReceiveQueue {
     /// 受信バッファをRQに投入
     ///
     /// # Arguments
-    /// - `buf_phys`: 受信バッファのDMA物理アドレス
+    /// - `device_addr`: 受信バッファのデバイスアドレス (IOMMU IOVA)
     /// - `buf_virt`: 受信バッファの仮想アドレス
     /// - `buf_size`: バッファサイズ
     ///
     /// # Safety
     /// - buf_virt が有効なマッピングであること
-    /// - buf_phys がDMAアクセス可能であること
+    /// - device_addr がDMAアクセス可能であること
     ///
     /// # Returns
     /// 投入したWQEインデックス
-    pub unsafe fn post_recv(&mut self, buf_phys: u64, buf_virt: u64, buf_size: u32) -> Option<u16> {
+    pub unsafe fn post_recv(&mut self, device_addr: u64, buf_virt: u64, buf_size: u32) -> Option<u16> {
         let wqe_idx = self.producer_counter;
         let buf_idx = (wqe_idx as u32 % self.rq_depth) as usize;
 
@@ -340,12 +350,12 @@ impl ReceiveQueue {
         // Data Segment
         write_be32_raw(wqe_ptr, wqe::data::BYTE_COUNT, buf_size);
         write_be32_raw(wqe_ptr, wqe::data::LKEY, self.mkey);
-        write_be64_raw(wqe_ptr, wqe::data::ADDR, buf_phys);
+        write_be64_raw(wqe_ptr, wqe::data::ADDR, device_addr);
 
         // バッファトラッキング
         self.rx_buffers[buf_idx] = RxBufferInfo {
             virt_addr: buf_virt,
-            phys_addr: buf_phys,
+            device_addr,
             size: buf_size,
             in_use: true,
         };
@@ -378,9 +388,9 @@ impl ReceiveQueue {
         self.rx_buffers.iter().filter(|b| !b.in_use).count() as u32
     }
 
-    /// RQバッファの物理アドレス
-    pub fn buffer_phys(&self) -> u64 {
-        self.buf_phys
+    /// RQバッファのデバイスアドレス
+    pub fn buffer_device(&self) -> u64 {
+        self.buf_device
     }
 }
 
