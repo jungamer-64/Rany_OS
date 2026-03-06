@@ -878,8 +878,8 @@ pub fn build_query_special_contexts_input(in_mbox: &mut CmdMailbox) {
 
 /// QUERY_SPECIAL_CONTEXTS 出力から reserved lkey を取得
 pub fn parse_query_special_contexts_resd_lkey(out_mbox: &CmdMailbox) -> u32 {
-    // mlx5_ifc_query_special_contexts_out_bits: resd_lkey at byte offset 0x0C.
-    out_mbox.read_be32(0x0C)
+    // mlx5_ifc_query_special_contexts_out_bits: resd_lkey at byte offset 0x10.
+    out_mbox.read_be32(0x10)
 }
 
 // ============================================================================
@@ -1050,8 +1050,8 @@ pub fn build_create_sq_input(
     in_mbox.write_be64(wq + 0x10, db_pa);
 
     // wq.log_wq_stride/log_wq_pg_sz/log_wq_sz
-    let log_wq_stride = 6u32; // 64-byte SQ WQE stride
-    let log_wq_pg_sz = 0u32; // 4KB page vs adapter page
+    let log_wq_stride = 4u32; // Try 16-byte SQ stride
+    let log_wq_pg_sz = 0u32; // 4KB page
     let log_wq_sz = (log_sq_size as u32) & 0x1F;
     let wq_sz_word = ((log_wq_stride & 0x0F) << 16) | ((log_wq_pg_sz & 0x1F) << 8) | log_wq_sz;
     in_mbox.write_be32(wq + 0x20, wq_sz_word);
@@ -1080,24 +1080,26 @@ pub fn build_destroy_sq_input(in_mbox: &mut CmdMailbox, sqn: u32) {
 }
 
 /// MODIFY_SQ コマンド入力の構築（状態遷移用）
-///
-/// # Arguments
-/// - `sqn`: SQ番号
-/// - `current_state`: 現在の状態
-/// - `next_state`: 遷移先の状態
 pub fn build_modify_sq_input(
     in_mbox: &mut CmdMailbox,
     sqn: u32,
     current_state: u8,
     next_state: u8,
+    vport: u16,
+    other_vport: bool,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     // modify_sq_in.sq_state[3:0] + sqn[23:0] at dword 0x04.
     let sq_state_and_num = (((current_state as u32) & 0x0F) << 28) | (sqn & 0x00FF_FFFF);
     in_mbox.write_be32(0x04, sq_state_and_num);
-    // modify_sq_in.sqc_bitmask at dword 0x08.
-    // Linux mlx5_ifc: bit 0 of the mask is 'state'.
-    in_mbox.write_be32(0x08, 0x01);
+
+    if other_vport {
+        in_mbox.data[0x08] |= 0x80;
+    }
+    in_mbox.write_be16(0x0A, vport);
+
+    // modify_sq_in.sqc_bitmask at dword 0x10. bit 0 is 'state'.
+    in_mbox.write_be32(0x10, 0x01);
 
     // modify_sq_in.ctx starts at 0x20; sqc.state[3:0] is bits 23:20 of first dword.
     let ctx = 0x20usize;
@@ -1145,7 +1147,7 @@ pub fn build_create_rq_input(
     in_mbox.write_be64(wq + 0x10, db_pa); // wq.dbr_addr
 
     // wq.log_wq_stride/log_wq_pg_sz/log_wq_sz
-    let log_wq_stride = 4u32; // 16-byte RQ stride
+    let log_wq_stride = 6u32; // 64-byte RQ stride
     let log_wq_pg_sz = 0u32;
     let log_wq_sz = (log_rq_size as u32) & 0x1F;
     let wq_sz_word = ((log_wq_stride & 0x0F) << 16) | ((log_wq_pg_sz & 0x1F) << 8) | log_wq_sz;
@@ -1180,11 +1182,22 @@ pub fn build_modify_rq_input(
     rqn: u32,
     current_state: u8,
     next_state: u8,
+    vport: u16,
+    other_vport: bool,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     // modify_rq_in.rq_state[3:0] + rqn[23:0] at dword 0x04.
     let rq_state_and_num = (((current_state as u32) & 0x0F) << 28) | (rqn & 0x00FF_FFFF);
     in_mbox.write_be32(0x04, rq_state_and_num);
+
+    if other_vport {
+        in_mbox.data[0x08] |= 0x80;
+    }
+    in_mbox.write_be16(0x0A, vport);
+
+    // modify_rq_in.rqc_bitmask at dword 0x10. bit 0 is 'state'.
+    in_mbox.write_be32(0x10, 0x01);
+
     // modify_rq_in.ctx starts at 0x20; rqc.state[3:0] at bits 23:20.
     let ctx = 0x20usize;
     in_mbox.write_be32(ctx, ((next_state as u32) & 0x0F) << 20);
@@ -1320,7 +1333,14 @@ pub fn build_set_vf_vlan_input(in_mbox: &mut CmdMailbox, vhca_id: u16, vlan: u16
     in_mbox.data[vlan_off + 2] = ((vlan & 0xF) as u8) << 4 | 0x08; 
 }
 
-/// VF の MAC アドレスを設定するコマンド入力の構築
+/// QUERY_SPECIAL_CONTEXTS 出力から予約済みLKeyを解析
+pub fn parse_query_special_contexts_output(out_mbox: &CmdMailbox) -> u32 {
+    // mlx5_ifc_query_special_contexts_out_bits: res_lkey[23:0] at byte offset 0x11.
+    out_mbox.read_be24(0x11)
+}
+
+/// VF の MAC アドレスをクエリするコマンド入力の構築
+
 pub fn build_set_vf_mac_input(in_mbox: &mut CmdMailbox, vhca_id: u16, mac: [u8; 6]) {
     *in_mbox = CmdMailbox::zeroed();
 

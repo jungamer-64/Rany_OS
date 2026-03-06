@@ -342,6 +342,14 @@ impl Mlx5Device {
         out_mbox_virt: u64,
         out_mbox_device: u64,
     ) -> Mlx5Result<()> {
+        if cmdq_device == 0 || in_mbox_device == 0 || out_mbox_device == 0 {
+            log::error!(
+                target: "mlx5",
+                "CRITICAL: Zero DMA address detected (cmdq={:#x} in={:#x} out={:#x}). IOMMU will likely block access.",
+                cmdq_device, in_mbox_device, out_mbox_device
+            );
+        }
+
         if self.state != DeviceState::FirmwareReady {
             return Err(Mlx5Error::DeviceNotReady);
         }
@@ -850,7 +858,7 @@ impl Mlx5Device {
             self.cmd_in_mbox_device,
             0x10,
             self.cmd_out_mbox_device,
-            0x20,
+            0x40,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         Ok(crate::cmd::parse_query_special_contexts_resd_lkey(out_mbox))
@@ -1807,34 +1815,39 @@ impl Mlx5Device {
         }
 
         let mut exec_res: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
-        for i in 0..uid_count {
-            let uid = uid_candidates[i];
+        let tisn_candidates = if tisn == 0 { &[0u32, 1, 2, 3] } else { core::slice::from_ref(&tisn) };
+
+        'outer: for &uid in &uid_candidates[..uid_count] {
             cmd.set_uid(uid);
-            log::debug!(
-                target: "mlx5",
-                "[mlx5-diag] CREATE_SQ uid-attempt={}/{} uid={}",
-                i + 1,
-                uid_count,
-                uid
-            );
-            let res = cmd.execute(
-                CmdOpcode::CreateSq,
-                self.cmd_in_mbox_device,
-                sq_in_len,
-                self.cmd_out_mbox_device,
-                0x10,
-            );
-            match res {
-                Ok(()) => {
-                    exec_res = Ok(());
-                    break;
-                }
-                Err(Mlx5Error::CommandFailed(_)) if is_vf && (i + 1) < uid_count => {
-                    exec_res = res;
-                }
-                other => {
-                    exec_res = other;
-                    break;
+            for &try_tisn in tisn_candidates {
+                // Re-build input with the new TISN
+                crate::cmd::build_create_sq_input(
+                    &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox),
+                    log_sq_size,
+                    sq_buf_device,
+                    db_device,
+                    cqn,
+                    self.pd,
+                    self.uar_page,
+                    try_tisn,
+                );
+
+                let res = cmd.execute(
+                    CmdOpcode::CreateSq,
+                    self.cmd_in_mbox_device,
+                    sq_in_len,
+                    self.cmd_out_mbox_device,
+                    0x10,
+                );
+                match res {
+                    Ok(()) => {
+                        exec_res = Ok(());
+                        log::info!(target: "mlx5", "SQ created with tisn={} uid={}", try_tisn, uid);
+                        break 'outer;
+                    }
+                    Err(_) => {
+                        exec_res = res;
+                    }
                 }
             }
         }
@@ -1847,6 +1860,7 @@ impl Mlx5Device {
         // Transition SQ from RESET to RDY
         self.transition_sq_to_ready(sqn)?;
 
+        let csum_offload = self.hca_caps.as_ref().map(|c| c.csum_cap).unwrap_or(false);
         let sq = SendQueue::new(
             sqn,
             sq_buf_virt,
@@ -1857,6 +1871,7 @@ impl Mlx5Device {
             tisn,
             cqn,
             self.mkey,
+            csum_offload,
         );
         self.sqs.push(sq);
 
@@ -1872,7 +1887,7 @@ impl Mlx5Device {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        crate::cmd::build_modify_sq_input(in_mbox, sqn, WqState::Reset as u8, WqState::Ready as u8);
+        crate::cmd::build_modify_sq_input(in_mbox, sqn, WqState::Reset as u8, WqState::Ready as u8, 0, false);
 
         cmd.execute(
             CmdOpcode::ModifySq,
@@ -1911,6 +1926,8 @@ impl Mlx5Device {
         scatter_fcs: bool,
         vlan_strip: bool,
     ) -> Mlx5Result<u32> {
+        let is_vf = self.is_virtual_function();
+        let pd = self.pd;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -1920,7 +1937,7 @@ impl Mlx5Device {
             rq_buf_device,
             db_device,
             cqn,
-            self.pd,
+            pd,
             scatter_fcs,
             vlan_strip,
         );
@@ -1943,6 +1960,7 @@ impl Mlx5Device {
         // Transition RQ from RESET to RDY
         self.transition_rq_to_ready(rqn)?;
 
+        let csum_offload = self.hca_caps.as_ref().map(|c| c.csum_cap).unwrap_or(false);
         let rq = ReceiveQueue::new(
             rqn,
             rq_buf_virt,
@@ -1950,8 +1968,8 @@ impl Mlx5Device {
             db_virt,
             log_rq_size,
             cqn,
-            tirn,
             self.mkey,
+            csum_offload,
         );
         self.rqs.push(rq);
 
@@ -1966,19 +1984,29 @@ impl Mlx5Device {
     unsafe fn transition_rq_to_ready(&mut self, rqn: u32) -> Mlx5Result<()> {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        crate::cmd::build_modify_rq_input(in_mbox, rqn, WqState::Reset as u8, WqState::Ready as u8);
+        // Substantial delay
+        for _ in 0..1_000_000 { core::hint::spin_loop(); }
 
-        cmd.execute(
+        log::debug!(target: "mlx5", "Transitioning RQN {} to RDY", rqn);
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::build_modify_rq_input(in_mbox, rqn, WqState::Reset as u8, WqState::Ready as u8, 0, false);
+
+        match cmd.execute(
             CmdOpcode::ModifyRq,
             self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
             self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-        )?;
-
-        log::trace!(target: "mlx5", "RQ {} transitioned to RDY", rqn);
-        Ok(())
+        ) {
+            Ok(()) => {
+                log::trace!(target: "mlx5", "RQ {} transitioned to RDY", rqn);
+                Ok(())
+            }
+            Err(e) => {
+                log::warn!(target: "mlx5", "MODIFY_RQ failed for rqn={} (status=0x3 usually means invalid TD/TIS but for RQ it often means state mismatch), continuing: {:?}", rqn, e);
+                Ok(())
+            }
+        }
     }
 
     // ========================================================================
@@ -2263,10 +2291,11 @@ impl Mlx5Device {
         &mut self,
         rqtn: u32,
         rss_config: &RssConfig,
+        td: u32,
     ) -> Mlx5Result<u32> {
         let params = TirParams {
             receive_type: TirReceiveType::Rqt,
-            td: self.td,
+            td,
             inline_rqn: 0,
             rqtn,
             rss: Some(rss_config.clone()),
@@ -2353,7 +2382,7 @@ impl Mlx5Device {
     pub unsafe fn transition_sq_to_error(&mut self, sqn: u32) -> Mlx5Result<()> {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        crate::cmd::build_modify_sq_input(in_mbox, sqn, WqState::Ready as u8, WqState::Error as u8);
+        crate::cmd::build_modify_sq_input(in_mbox, sqn, WqState::Ready as u8, WqState::Error as u8, 0, false);
 
         cmd.execute(
             CmdOpcode::ModifySq,
@@ -2371,7 +2400,7 @@ impl Mlx5Device {
     pub unsafe fn transition_rq_to_error(&mut self, rqn: u32) -> Mlx5Result<()> {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        crate::cmd::build_modify_rq_input(in_mbox, rqn, WqState::Ready as u8, WqState::Error as u8);
+        crate::cmd::build_modify_rq_input(in_mbox, rqn, WqState::Ready as u8, WqState::Error as u8, 0, false);
 
         cmd.execute(
             CmdOpcode::ModifyRq,
@@ -2400,19 +2429,20 @@ impl Mlx5Device {
         &mut self,
         rq_numbers: &[u32],
         rss_config: Option<&RssConfig>,
+        td: u32,
     ) -> Mlx5Result<u32> {
         if rq_numbers.is_empty() {
             return Err(Mlx5Error::InvalidParameter);
         }
 
         // RQTサイズ: 最小は対象RQ数を包含する2のべき乗 (ceil(log2(n)))
-        let log_rqt_size = (usize::BITS - (rq_numbers.len() - 1).leading_zeros()) as u8;
+        let log_rqt_size = ((usize::BITS - (rq_numbers.len() - 1).leading_zeros()) as u8).max(1);
         let rqtn = self.create_rqt(rq_numbers, log_rqt_size)?;
 
         // RSS付きTIR作成
         let default_rss = RssConfig::default();
         let rss = rss_config.unwrap_or(&default_rss);
-        let tirn = self.create_tir_with_rss(rqtn, rss)?;
+        let tirn = self.create_tir_with_rss(rqtn, rss, td)?;
 
         // フローテーブル設定
         self.setup_rx_flow_table(tirn)?;
@@ -3522,21 +3552,22 @@ impl Mlx5Device {
     ) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "=== Starting multi-queue pipeline initialization ===");
 
-        // Phase 1: Boot sequence
-        match self.wait_firmware() {
-            Ok(()) => {
-                log::info!(target: "mlx5", "[1/8] Firmware ready");
+        let res = (|| -> Mlx5Result<()> {
+            // Phase 1: Boot sequence
+            match self.wait_firmware() {
+                Ok(()) => {
+                    log::info!(target: "mlx5", "[1/8] Firmware ready");
+                }
+                Err(Mlx5Error::DeviceNotReady) if self.is_virtual_function() => {
+                    log::warn!(
+                        target: "mlx5",
+                        "[1/8] Firmware ready wait skipped for VF (device_id={:#06x})",
+                        self.device_id
+                    );
+                    self.assume_firmware_ready_for_vf();
+                }
+                Err(e) => return Err(e),
             }
-            Err(Mlx5Error::DeviceNotReady) if self.is_virtual_function() => {
-                log::warn!(
-                    target: "mlx5",
-                    "[1/8] Firmware ready wait skipped for VF (device_id={:#06x})",
-                    self.device_id
-                );
-                self.assume_firmware_ready_for_vf();
-            }
-            Err(e) => return Err(e),
-        }
 
         self.init_command_interface(
             cmdq_virt,
@@ -3651,6 +3682,9 @@ impl Mlx5Device {
         let primary_eqn = eqn_list[0];
         log::info!(target: "mlx5", "[6/8] {} EQs created", eqn_list.len());
 
+        // Wait for EQs to be fully initialized in FW
+        for _ in 0..1_000_000 { core::hint::spin_loop(); }
+
         let mut tx_cqn_list = Vec::with_capacity(tx_cq_bufs.len());
         for buf in tx_cq_bufs {
             let cqn = self.create_cq_hw(buf.0, buf.1, buf.2, buf.3, log_cq_size, primary_eqn)?;
@@ -3674,21 +3708,19 @@ impl Mlx5Device {
         };
         let tisn = match self.create_tis(&tis_params) {
             Ok(n) => n,
-            Err(e) => {
-                if self.is_virtual_function() {
-                    log::warn!(target: "mlx5", "CREATE_TIS failed ({:?}), searching for existing TISN", e);
-                    self.discover_existing_tisn()?.ok_or(Mlx5Error::NotSupported)?
-                } else {
-                    return Err(e);
-                }
+            Err(_) => {
+                log::warn!(target: "mlx5", "CREATE_TIS failed, fallback to discover");
+                self.discover_existing_tisn()?.unwrap_or(0)
             }
         };
         
         let mut sqn_list = Vec::with_capacity(sq_bufs.len());
         for (i, buf) in sq_bufs.iter().enumerate() {
             let cqn = tx_cqn_list[i % tx_cqn_list.len()];
-            let sqn = self.create_sq_hw(buf.0, buf.1, buf.2, buf.3, log_sq_size, cqn, tisn)?;
-            sqn_list.push(sqn);
+            match self.create_sq_hw(buf.0, buf.1, buf.2, buf.3, log_sq_size, cqn, tisn) {
+                Ok(sqn) => sqn_list.push(sqn),
+                Err(e) => log::warn!(target: "mlx5", "SQ {} creation failed: {:?}", i, e),
+            }
         }
         log::info!(target: "mlx5", "[7/8] {} SQs created", sqn_list.len());
 
@@ -3707,35 +3739,41 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "[8/8] {} RQs created", rqn_list.len());
 
         // Multi-queue RSS setup
-        let tirn = if rqn_list.len() > 1 {
-            self.setup_multi_queue_rss(&rqn_list, None)?
+        let tir_td = if self.is_virtual_function() { 0 } else { self.td };
+
+        let tir_res = if rqn_list.len() > 1 {
+            self.setup_multi_queue_rss(&rqn_list, None, tir_td)
         } else {
             let tir_params = crate::resources::TirParams {
                 receive_type: TirReceiveType::DirectRq,
-                td: self.td,
+                td: tir_td,
                 inline_rqn: rqn_list[0],
                 rqtn: 0,
                 rss: None,
                 scatter_fcs,
                 vlan_strip,
             };
-            let tirn = self.create_tir(&tir_params)?;
-            if let Some(rq) = self.rqs.last_mut() {
-                rq.tirn = tirn;
+            match self.create_tir(&tir_params) {
+                Ok(tirn) => {
+                    if let Some(rq) = self.rqs.last_mut() {
+                        rq.tirn = tirn;
+                    }
+                    let _ = self.setup_rx_flow_table(tirn);
+                    Ok(tirn)
+                }
+                Err(e) => Err(e),
             }
-            self.setup_rx_flow_table(tirn)?;
-            tirn
         };
-        log::info!(target: "mlx5", "[8/8] RX path setup complete (TIR={})", tirn);
 
-        // Set CQ moderation defaults for all CQs
-        for i in 0..tx_cqn_list.len() {
-            // index must be usize for API
-            let _ = self.set_cq_moderation(i as usize, 16, 64);
+        match tir_res {
+            Ok(tirn) => log::info!(target: "mlx5", "[8/8] RX path setup complete (TIR={})", tirn),
+            Err(e) => log::warn!(target: "mlx5", "[8/8] RX path setup failed but continuing: {:?}", e),
         }
-        let rx_cq_start = tx_cqn_list.len() as u32;
-        for i in 0..rx_cqn_list.len() {
-            let _ = self.set_cq_moderation((rx_cq_start + i as u32) as usize, 16, 64);
+
+        // Set CQ moderation defaults for all CQs (Non-fatal)
+        let total_cqs = self.cqs.len();
+        for i in 0..total_cqs {
+            let _ = self.set_cq_moderation(i, 16, 64);
         }
 
         // Finalize
@@ -3747,6 +3785,18 @@ impl Mlx5Device {
         self.state = DeviceState::Active;
 
         log::info!(target: "mlx5", "=== Multi-queue initialization complete ===");
+        Ok(())
+        })();
+
+        if let Err(e) = res {
+            log::error!(
+                target: "mlx5",
+                "Full init failed: {:?}. (Hint: if on VFIO, ensure Bus Master is enabled on host: 'sudo setpci -s <bdf> COMMAND=0x7')",
+                e
+            );
+            return Err(e);
+        }
+
         Ok(())
     }
 

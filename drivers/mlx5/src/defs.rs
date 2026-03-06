@@ -168,13 +168,13 @@ pub const MLX5_MAX_EQS: usize = 64;
 pub const MLX5_MAX_CQS: usize = 256;
 
 /// EQエントリ数（2のべき乗）
-pub const MLX5_EQ_DEPTH: u32 = 16;
+pub const MLX5_EQ_DEPTH: u32 = 64;
 
 /// CQエントリ数（2のべき乗）
-pub const MLX5_CQ_DEPTH: u32 = 16;
+pub const MLX5_CQ_DEPTH: u32 = 64;
 
 /// SQ/RQエントリ数（2のべき乗）
-pub const MLX5_WQ_DEPTH: u32 = 16;
+pub const MLX5_WQ_DEPTH: u32 = 256;
 
 /// 最大MTU
 pub const MLX5_MAX_MTU: u32 = 9216;

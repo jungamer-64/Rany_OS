@@ -350,6 +350,13 @@ define RUN_PREFLIGHT_VFIO_RUN
 				else \
 					pf_fail "no IOMMU group for $$_vfio_bdf"; \
 				fi; \
+				_vfio_pci_cmd=$$(sudo setpci -s "$$_vfio_bdf" COMMAND | tail -n 1 || echo "0000"); \
+				_vfio_bus_master=$$(( 0x$$_vfio_pci_cmd & 0x04 )); \
+				if [ "$$_vfio_bus_master" != "0" ]; then \
+					pf_pass "PCI bus mastering enabled (0x$$_vfio_pci_cmd)"; \
+				else \
+					pf_fail "PCI bus mastering disabled (0x$$_vfio_pci_cmd). Action: sudo setpci -s $$_vfio_bdf COMMAND=0x7"; \
+				fi; \
 			fi; \
 			_memlock_kb=$$(ulimit -l 2>/dev/null || echo 0); \
 			_required_kb=$$(( $(MEMORY) * 1024 )); \

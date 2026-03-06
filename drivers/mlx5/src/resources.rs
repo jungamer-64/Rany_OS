@@ -174,23 +174,23 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
     // MKEY Context at offset 0x10
     let ctx = 0x10;
     
-    // DW0: access_flags[31:24], other bits reserved
+    // DW0: access_flags[31:24], translations_octword_size[7:0]=0 (Direct)
     in_mbox.write_be32(ctx + 0x00, (params.access_flags as u32) << 24);
     
     // DW1: PD[23:0]
     in_mbox.write_be32(ctx + 0x04, params.pd & 0x00FF_FFFF);
     
-    // DW2-3: start_addr[63:0]
-    in_mbox.write_be64(ctx + 0x08, params.start_addr);
+    // DW2-3: start_addr[63:0] = 0 (Base of memory)
+    in_mbox.write_be64(ctx + 0x08, 0);
     
-    // DW4-5: len[63:0]
-    in_mbox.write_be64(ctx + 0x10, params.length);
+    // DW4-5: len[63:0] = !0 (All memory)
+    in_mbox.write_be64(ctx + 0x10, !0u64);
     
-    // DW6: log_page_size[4:0] is bits 7:3
-    in_mbox.write_be32(ctx + 0x18, (params.log_page_size as u32) << 3);
+    // DW6: log_page_size[4:0] = 0
+    in_mbox.write_be32(ctx + 0x18, 0);
     
     // DW7: [reserved(2), free(1), ..., mkey_7_0(8)]
-    // Set free=1 (bit 29) and a non-zero mkey_7_0.
+    // Set free=1 (bit 29)
     in_mbox.write_be32(ctx + 0x1C, (1 << 29) | 0x42); 
 }
 

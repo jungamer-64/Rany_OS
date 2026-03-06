@@ -85,6 +85,8 @@ pub struct SendQueue {
     tx_buffers: alloc::vec::Vec<TxBufferInfo>,
     /// Memory Key (L-Key)
     pub mkey: u32,
+    /// チェックサムオフロード対応
+    pub csum_offload: bool,
 }
 
 /// DMAセグメント（Scatter/Gather用）
@@ -110,6 +112,7 @@ impl SendQueue {
         tisn: u32,
         cqn: u32,
         mkey: u32,
+        csum_offload: bool,
     ) -> Self {
         let depth = 1u32 << log_sq_size;
         let mut tx_buffers = alloc::vec::Vec::with_capacity(depth as usize);
@@ -128,6 +131,7 @@ impl SendQueue {
             cqn,
             tx_buffers,
             mkey,
+            csum_offload,
         }
     }
 
@@ -184,8 +188,9 @@ impl SendQueue {
         // Inline header size
         let inline_sz = inline_hdr.len().min(18) as u16;
         write_be16_raw(eth_ptr, wqe::eth::INLINE_HDR_SZ, inline_sz);
-        // CS flags: L3/L4 checksum offload
-        write_be16_raw(eth_ptr, wqe::eth::CS_FLAGS, 0x03);
+        // CS flags: L3/L4 checksum offload (only if supported)
+        let cs_flags = if self.csum_offload { 0x03 } else { 0x00 };
+        write_be16_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
 
         // Copy inline header (Ethernet header)
         if !inline_hdr.is_empty() {
@@ -289,6 +294,8 @@ pub struct ReceiveQueue {
     rx_buffers: alloc::vec::Vec<RxBufferInfo>,
     /// Memory Key (L-Key)
     pub mkey: u32,
+    /// チェックサムオフロード対応
+    pub csum_offload: bool,
 }
 
 impl ReceiveQueue {
@@ -300,9 +307,9 @@ impl ReceiveQueue {
         doorbell_virt: u64,
         log_rq_size: u8,
         cqn: u32,
-        tirn: u32,
         mkey: u32,
-    ) -> Self {
+        csum_offload: bool,
+        ) -> Self {
         let depth = 1u32 << log_rq_size;
         let mut rx_buffers = alloc::vec::Vec::with_capacity(depth as usize);
         rx_buffers.resize(depth as usize, RxBufferInfo::default());
@@ -316,9 +323,10 @@ impl ReceiveQueue {
             rq_depth: depth,
             producer_counter: 0,
             cqn,
-            tirn,
+            tirn: 0,
             rx_buffers,
             mkey,
+            csum_offload,
         }
     }
 

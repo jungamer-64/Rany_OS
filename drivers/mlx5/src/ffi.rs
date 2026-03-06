@@ -44,20 +44,34 @@ struct DmaSlot {
 
 impl DmaSlot {
     fn alloc(size: usize, label: &'static str) -> Result<Self, i32> {
-        // Use the high-level KernelServices API, then convert to ABI buffer using accessors.
-        match kernel_api::services::kernel().alloc_dma(size) {
-            Ok(buf) => {
-                let handle = AbiDmaBuffer {
-                    phys_addr: buf.physical_address(),
-                    device_addr: buf.device_address(),
-                    virt_addr: buf.as_ptr() as u64,
-                    size: buf.size(),
-                };
-                Ok(Self { handle })
-            }
-            Err(e) => {
-                log::error!(target: "mlx5", "DMA allocation failed for {}: {:?}", label, e);
-                Err(-1)
+        loop {
+            match kernel_api::services::kernel().alloc_dma(size) {
+                Ok(buf) => {
+                    let handle = AbiDmaBuffer {
+                        phys_addr: buf.physical_address(),
+                        device_addr: buf.device_address(),
+                        virt_addr: buf.as_ptr() as u64,
+                        size: buf.size(),
+                    };
+                    
+                    if handle.device_addr == 0 {
+                        log::warn!(target: "mlx5", "DMA allocated at IOVA 0x0 for {}, skipping to avoid IOMMU fault", label);
+                        // Leak this buffer for now to ensure address 0 is not reused
+                        core::mem::forget(buf);
+                        continue;
+                    }
+
+                    log::info!(
+                        target: "mlx5",
+                        "DMA allocated for {}: phys={:#x} device={:#x} size={:#x}",
+                        label, handle.phys_addr, handle.device_addr, handle.size
+                    );
+                    return Ok(Self { handle });
+                }
+                Err(e) => {
+                    log::error!(target: "mlx5", "DMA allocation failed for {}: {:?}", label, e);
+                    return Err(-1);
+                }
             }
         }
     }
@@ -217,7 +231,9 @@ extern "C" fn mlx5_probe(ctx: *mut DriverContext) -> i32 {
     // at zero and avoid accessing them.
     
     let fw_page_addrs = dma.fw_page_device_addrs();
-    let mkey_params = MkeyParams::default();
+    let mut mkey_params = MkeyParams::default();
+    // Use the first DMA buffer's address as the start of our memory region
+    mkey_params.start_addr = dma.cmdq.device_address();
 
     let eq_log_size = (32 - (MLX5_EQ_DEPTH.saturating_add(MLX5_EQ_SPARE_EQE) - 1).leading_zeros()) as u8;
     let cq_log_size = (32 - (MLX5_CQ_DEPTH - 1).leading_zeros()) as u8;

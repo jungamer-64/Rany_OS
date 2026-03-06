@@ -151,8 +151,8 @@ pub fn mlx5_transmit(_if_id: Option<NetIfId>, data: &[u8]) -> bool {
 
         // データをコピー
         let copy_len = core::cmp::min(data.len(), pkt.capacity());
-        pkt.data_mut()[..copy_len].copy_from_slice(&data[..copy_len]);
         pkt.set_len(copy_len);
+        pkt.data_mut()[..copy_len].copy_from_slice(&data[..copy_len]);
 
         let data_virt = pkt.as_ptr() as u64;
         let data_device = pkt.device_address(); // IOMMU-safe
@@ -165,7 +165,11 @@ pub fn mlx5_transmit(_if_id: Option<NetIfId>, data: &[u8]) -> bool {
         // CPU ID に基づいて SQ を選択（マルチコア分散）
         let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
         let num_sqs = tx_bufs_guard.len();
-        let sq_index = if num_sqs > 0 { (cpu_id % num_sqs) as usize } else { 0 };
+        if num_sqs == 0 {
+            log::trace!(target: "mlx5::bridge", "No active SQs available for TX");
+            return false;
+        }
+        let sq_index = (cpu_id % num_sqs) as usize;
 
         // Safety: デバイスアドレスが正しく取得されていること
         match unsafe { device.transmit(sq_index, data_device, data_virt, data_len, inline_hdr) } {
@@ -451,9 +455,9 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
     }
 
     // TX バッファトラッキングの初期化 (キューごと)
-    let num_sqs = with_mlx5_device(|dev| dev.num_sqs()).unwrap_or(1);
+    let num_sqs = with_mlx5_device(|dev| dev.num_sqs()).unwrap_or(0);
     if let Ok(mut bufs) = MLX5_TX_BUFS.lock() {
-        if bufs.is_empty() {
+        if bufs.is_empty() && num_sqs > 0 {
             bufs.resize_with(num_sqs, || {
                 let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
                 v.resize_with(mlx5_driver::defs::MLX5_WQ_DEPTH as usize, || None);
