@@ -1028,8 +1028,8 @@ pub fn build_create_sq_input(
     *in_mbox = CmdMailbox::zeroed();
     // create_sq_in.ctx starts at 0x20.
     let ctx = 0x20usize;
-    // sqc.flush_in_error_en=1, sqc.state=RST(0)
-    in_mbox.write_be32(ctx, 1 << 28);
+    // sqc.flush_in_error_en=1 (bit 28), sqc.state=RST(0), mem_sq_type=external_mem_pas(1) (bit 24)
+    in_mbox.write_be32(ctx, (1 << 28) | (1 << 24));
     // sqc.cqn[23:0] at ctx+0x08
     in_mbox.write_be32(ctx + 0x08, cqn & 0x00FF_FFFF);
     // Keep packet pacing fields at reset defaults (zero) during CREATE_SQ.
@@ -1128,8 +1128,8 @@ pub fn build_create_rq_input(
     *in_mbox = CmdMailbox::zeroed();
     // create_rq_in.ctx starts at 0x20.
     let ctx = 0x20usize;
-    // rqc.flush_in_error_en=1, rqc.state=RST(0), mem_rq_type=inline(0)
-    let mut rqc0 = 1 << 18;
+    // rqc.flush_in_error_en=1 (bit 28), rqc.state=RST(0), mem_rq_type=external_mem_pas(1) (bit 24)
+    let mut rqc0 = (1 << 28) | (1 << 24);
     if scatter_fcs {
         rqc0 |= 1 << 30;
     }

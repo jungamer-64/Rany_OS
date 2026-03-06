@@ -3722,19 +3722,34 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "[6/8] {} RX CQs created", rx_cqn_list.len());
 
         // Phase 7: TX path
-        let tis_params = crate::resources::TisParams {
-            pd: self.pd,
-            td: self.td,
-            port: 1,
-            prio: 0,
-        };
-        let tisn = match self.create_tis(&tis_params) {
-            Ok(n) => n,
-            Err(_) => {
-                log::warn!(target: "mlx5", "CREATE_TIS failed, fallback to discover");
-                self.discover_existing_tisn()?.unwrap_or(0)
+        // Phase 7: TX path (Probing candidates)
+        let mut tisn = 0u32;
+        let mut tis_created = false;
+        
+        'tis_probe: for &pd in &pd_candidates {
+            for &td in &td_candidates {
+                let tis_params = crate::resources::TisParams {
+                    pd,
+                    td,
+                    port: 1,
+                    prio: 0,
+                };
+                match self.create_tis(&tis_params) {
+                    Ok(n) => {
+                        tisn = n;
+                        tis_created = true;
+                        log::info!(target: "mlx5", "[7/8] TIS created with PD {} TD {}", pd, td);
+                        break 'tis_probe;
+                    }
+                    Err(_) => {}
+                }
             }
-        };
+        }
+
+        if !tis_created && self.is_virtual_function() {
+            log::warn!(target: "mlx5", "CREATE_TIS failed for all candidates, fallback to discover");
+            tisn = self.discover_existing_tisn()?.unwrap_or(0);
+        }
         
         let mut sqn_list = Vec::with_capacity(sq_bufs.len());
         for (i, buf) in sq_bufs.iter().enumerate() {
@@ -3744,7 +3759,7 @@ impl Mlx5Device {
                 Err(e) => log::warn!(target: "mlx5", "SQ {} creation failed: {:?}", i, e),
             }
         }
-        log::info!(target: "mlx5", "[7/8] {} SQs created", sqn_list.len());
+        log::info!(target: "mlx5", "[7/8] {} SQs created (tisn={})", sqn_list.len(), tisn);
 
         // Phase 8: RX path
         let (scatter_fcs, vlan_strip) = {
@@ -3755,41 +3770,71 @@ impl Mlx5Device {
         let mut rqn_list = Vec::with_capacity(rq_bufs.len());
         for (i, buf) in rq_bufs.iter().enumerate() {
             let cqn = rx_cqn_list[i % rx_cqn_list.len()];
-            let rqn = self.create_rq_hw(buf.0, buf.1, buf.2, buf.3, log_rq_size, cqn, 0, scatter_fcs, vlan_strip)?;
-            rqn_list.push(rqn);
+            // Try different PDs for RQ until one works
+            let mut rq_created = false;
+            for &pd in &pd_candidates {
+                // Temporarily override self.pd to use build_create_rq_input logic
+                let old_pd = self.pd;
+                self.pd = pd;
+                match self.create_rq_hw(buf.0, buf.1, buf.2, buf.3, log_rq_size, cqn, 0, scatter_fcs, vlan_strip) {
+                    Ok(rqn) => {
+                        rqn_list.push(rqn);
+                        rq_created = true;
+                        self.pd = old_pd;
+                        break;
+                    }
+                    Err(_) => {
+                        self.pd = old_pd;
+                    }
+                }
+            }
+            if !rq_created {
+                log::error!(target: "mlx5", "RQ {} creation failed for all PD candidates", i);
+            }
         }
         log::info!(target: "mlx5", "[8/8] {} RQs created", rqn_list.len());
 
         // Multi-queue RSS setup
-        let tir_td = if self.is_virtual_function() { 0 } else { self.td };
-
-        let tir_res = if rqn_list.len() > 1 {
-            self.setup_multi_queue_rss(&rqn_list, None, tir_td)
-        } else {
-            let tir_params = crate::resources::TirParams {
-                receive_type: TirReceiveType::DirectRq,
-                td: tir_td,
-                inline_rqn: rqn_list[0],
-                rqtn: 0,
-                rss: None,
-                scatter_fcs,
-                vlan_strip,
-            };
-            match self.create_tir(&tir_params) {
-                Ok(tirn) => {
-                    if let Some(rq) = self.rqs.last_mut() {
-                        rq.tirn = tirn;
+        // Try different TDs for TIR until one works
+        let mut tir_created = false;
+        let mut tirn = 0u32;
+        if !rqn_list.is_empty() {
+            for &td in &td_candidates {
+                let tir_res = if rqn_list.len() > 1 {
+                    self.setup_multi_queue_rss(&rqn_list, None, td)
+                } else {
+                    let tir_params = crate::resources::TirParams {
+                        receive_type: TirReceiveType::DirectRq,
+                        td,
+                        inline_rqn: rqn_list[0],
+                        rqtn: 0,
+                        rss: None,
+                        scatter_fcs,
+                        vlan_strip,
+                    };
+                    match self.create_tir(&tir_params) {
+                        Ok(n) => {
+                            if let Some(rq) = self.rqs.last_mut() {
+                                rq.tirn = n;
+                            }
+                            let _ = self.setup_rx_flow_table(n);
+                            Ok(n)
+                        }
+                        Err(e) => Err(e),
                     }
-                    let _ = self.setup_rx_flow_table(tirn);
-                    Ok(tirn)
+                };
+                
+                if let Ok(n) = tir_res {
+                    tirn = n;
+                    tir_created = true;
+                    log::info!(target: "mlx5", "[8/8] RX path setup complete with TD {} (TIR={})", td, tirn);
+                    break;
                 }
-                Err(e) => Err(e),
             }
-        };
+        }
 
-        match tir_res {
-            Ok(tirn) => log::info!(target: "mlx5", "[8/8] RX path setup complete (TIR={})", tirn),
-            Err(e) => log::warn!(target: "mlx5", "[8/8] RX path setup failed but continuing: {:?}", e),
+        if !tir_created {
+            log::warn!(target: "mlx5", "[8/8] RX path setup failed for all TD candidates");
         }
 
         // Set CQ moderation defaults for all CQs (Non-fatal)

@@ -170,8 +170,8 @@ impl Mlx5DmaResources {
         })
     }
 
-    fn fw_page_device_addrs(&self) -> Vec<u64> {
-        self.fw_pages.iter().map(|p| p.device_address()).collect()
+    fn fw_page_phys_addrs(&self) -> Vec<u64> {
+        self.fw_pages.iter().map(|p| p.phys_address()).collect()
     }
 }
 
@@ -234,34 +234,35 @@ extern "C" fn mlx5_probe(ctx: *mut DriverContext) -> i32 {
     // kernel the registry fills the fields.  In cell/FFI mode we leave them
     // at zero and avoid accessing them.
     
-    let fw_page_addrs = dma.fw_page_device_addrs();
+    let fw_page_addrs = dma.fw_page_phys_addrs();
     let mut mkey_params = MkeyParams::default();
-    // Use the first DMA buffer's address as the start of our memory region
-    mkey_params.start_addr = dma.cmdq.device_address();
+    // Use the first DMA buffer's physical address as the start of our memory region
+    mkey_params.start_addr = dma.cmdq.phys_address();
+    mkey_params.length = 0x1000; // Map at least the first page
 
-    let eq_log_size = (32 - (MLX5_EQ_DEPTH.saturating_add(MLX5_EQ_SPARE_EQE) - 1).leading_zeros()) as u8;
-    let cq_log_size = (32 - (MLX5_CQ_DEPTH - 1).leading_zeros()) as u8;
-    let sq_log_size = (32 - (MLX5_WQ_DEPTH - 1).leading_zeros()) as u8;
-    let rq_log_size = (32 - (MLX5_WQ_DEPTH - 1).leading_zeros()) as u8;
+    let eq_log_size = 4; // 16 entries
+    let cq_log_size = 4; // 16 entries
+    let sq_log_size = 4; // 16 entries
+    let rq_log_size = 4; // 16 entries
 
-    let eq_bufs: Vec<(u64, u64)> = dma.eqs.iter().map(|q| (q.as_ptr_u64(), q.device_address())).collect();
+    let eq_bufs: Vec<(u64, u64)> = dma.eqs.iter().map(|q| (q.as_ptr_u64(), q.phys_address())).collect();
     let tx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma.tx_cqs.iter().zip(dma.tx_cq_dbs.iter())
-        .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
+        .map(|(q, db)| (q.as_ptr_u64(), q.phys_address(), db.as_ptr_u64(), db.phys_address())).collect();
     let rx_cq_bufs: Vec<(u64, u64, u64, u64)> = dma.rx_cqs.iter().zip(dma.rx_cq_dbs.iter())
-        .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
+        .map(|(q, db)| (q.as_ptr_u64(), q.phys_address(), db.as_ptr_u64(), db.phys_address())).collect();
     let sq_bufs: Vec<(u64, u64, u64, u64)> = dma.sqs.iter().zip(dma.sq_dbs.iter())
-        .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
+        .map(|(q, db)| (q.as_ptr_u64(), q.phys_address(), db.as_ptr_u64(), db.phys_address())).collect();
     let rq_bufs: Vec<(u64, u64, u64, u64)> = dma.rqs.iter().zip(dma.rq_dbs.iter())
-        .map(|(q, db)| (q.as_ptr_u64(), q.device_address(), db.as_ptr_u64(), db.device_address())).collect();
+        .map(|(q, db)| (q.as_ptr_u64(), q.phys_address(), db.as_ptr_u64(), db.phys_address())).collect();
 
     let init_res = unsafe {
         device.init_multi_queue(
             dma.cmdq.as_ptr_u64(),
-            dma.cmdq.device_address(),
+            dma.cmdq.phys_address(),
             dma.cmd_in_mbox.as_ptr_u64(),
-            dma.cmd_in_mbox.device_address(),
+            dma.cmd_in_mbox.phys_address(),
             dma.cmd_out_mbox.as_ptr_u64(),
-            dma.cmd_out_mbox.device_address(),
+            dma.cmd_out_mbox.phys_address(),
             &fw_page_addrs,
             &mkey_params,
             &eq_bufs,

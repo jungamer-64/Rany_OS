@@ -174,24 +174,27 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
     // MKEY Context at offset 0x10
     let ctx = 0x10;
     
-    // DW0: access_flags[31:24], translations_octword_size[7:0]=0 (Direct)
-    in_mbox.write_be32(ctx + 0x00, (params.access_flags as u32) << 24);
+    // DW0: access_flags[31:24], translations_octword_size[7:0]=1 (8 bytes for 1 PAS entry)
+    in_mbox.write_be32(ctx + 0x00, (params.access_flags as u32) << 24 | 1);
     
     // DW1: PD[23:0]
     in_mbox.write_be32(ctx + 0x04, params.pd & 0x00FF_FFFF);
     
-    // DW2-3: start_addr[63:0] = 0 (Base of memory)
-    in_mbox.write_be64(ctx + 0x08, 0);
+    // DW2-3: start_addr[63:0]
+    in_mbox.write_be64(ctx + 0x08, params.start_addr);
     
-    // DW4-5: len[63:0] = !0 (All memory)
-    in_mbox.write_be64(ctx + 0x10, !0u64);
+    // DW4-5: len[63:0]
+    in_mbox.write_be64(ctx + 0x10, params.length);
     
-    // DW6: log_page_size[4:0] = 0
-    in_mbox.write_be32(ctx + 0x18, 0);
+    // DW6: log_page_size[4:0] = 12 (4KB)
+    in_mbox.write_be32(ctx + 0x18, 12 << 3);
     
-    // DW7: [reserved(2), free(1), ..., mkey_7_0(8)]
-    // Set free=1 (bit 29)
-    in_mbox.write_be32(ctx + 0x1C, (1 << 29) | 0x42); 
+    // DW7: mkey_7_0
+    in_mbox.write_be32(ctx + 0x1C, 0x42); 
+
+    // PAS[0] at context + 0x40. 
+    // Target the actual device address of our first buffer
+    in_mbox.write_be64(ctx + 0x40, params.start_addr);
 }
 
 /// CREATE_MKEY 出力からMKEY値を解析
