@@ -6,7 +6,7 @@
 //! HCAファームウェアとのメールボックスベースのコマンド送受信。
 //! コマンドキュー(CMDQ)を通じて初期化コマンドやリソース作成コマンドを発行する。
 
-use crate::defs::{CmdOpcode, CmdStatus, MLX5_CMD_MBOX_SIZE};
+use crate::defs::{CmdOpcode, CmdStatus, MLX5_CMD_DATA_BLOCK_SIZE, MLX5_CMD_MBOX_SIZE};
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::regs::cmd_entry;
 use core::sync::atomic::{fence, Ordering};
@@ -246,7 +246,7 @@ pub struct CmdQueueTransport {
 
 #[repr(C)]
 struct CmdProtBlock {
-    data: [u8; MLX5_CMD_MBOX_SIZE],
+    data: [u8; MLX5_CMD_DATA_BLOCK_SIZE],
     rsvd0: [u8; 48],
     next: u64,
     block_num: u32,
@@ -363,73 +363,149 @@ impl CmdQueueTransport {
         sum
     }
 
-    unsafe fn prepare_in_block(&self, token: u8, in_len: usize) -> [u8; 16] {
-        let block = &mut *(self.in_mbox_virt as *mut CmdProtBlock);
+    unsafe fn prepare_in_block(&self, token: u8, in_len: usize, in_mbox_phys: u64) -> [u8; 16] {
         let mut in_inline = [0u8; 16];
-        let inline_len = in_len.min(16);
-        in_inline[..inline_len].copy_from_slice(&block.data[..inline_len]);
-
-        if in_len > 16 {
-            let payload_len = (in_len - 16).min(MLX5_CMD_MBOX_SIZE);
-            let mut tmp = [0u8; MLX5_CMD_MBOX_SIZE];
-            tmp[..payload_len].copy_from_slice(&block.data[16..16 + payload_len]);
-            block.data.fill(0);
-            block.data[..payload_len].copy_from_slice(&tmp[..payload_len]);
-        } else {
-            block.data.fill(0);
+        if in_len == 0 {
+            return in_inline;
         }
 
-        block.rsvd0 = [0u8; 48];
-        block.next = 0;
-        block.block_num = 0;
-        block.rsvd1 = 0;
-        block.token = token;
-        block.ctrl_sig = 0;
-        block.sig = 0;
+        // The first 16 bytes are always copied to the inline area of the command entry.
+        {
+            let src = core::slice::from_raw_parts(self.in_mbox_virt as *const u8, in_len.min(16));
+            in_inline[..src.len()].copy_from_slice(src);
+        }
 
-        let raw = core::slice::from_raw_parts_mut(block as *mut CmdProtBlock as *mut u8, 576);
-        // ctrl_sig: XOR over trailer area excluding ctrl_sig/sig.
-        let ctrl_xor = Self::xor8(&raw[512..574]);
-        block.ctrl_sig = !ctrl_xor;
-        raw[574] = block.ctrl_sig;
-        // sig: XOR over entire block excluding sig itself.
-        let sig_xor = Self::xor8(&raw[..575]);
-        block.sig = !sig_xor;
+        if in_len > 16 {
+            let total_payload = in_len - 16;
+            let num_blocks = (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
+
+            // We need to shift all data after the first 16 bytes into the chained blocks.
+            // Since we are formatting in-place, we copy to a temporary buffer first.
+            let mut tmp_payload = [0u8; MLX5_CMD_MBOX_SIZE];
+            let copy_len = total_payload.min(MLX5_CMD_MBOX_SIZE);
+            core::ptr::copy_nonoverlapping(
+                (self.in_mbox_virt as *const u8).add(16),
+                tmp_payload.as_mut_ptr(),
+                copy_len,
+            );
+
+            for i in 0..num_blocks {
+                let block_ptr = (self.in_mbox_virt as usize + i * 512) as *mut CmdProtBlock;
+                let block = &mut *block_ptr;
+                
+                let offset = i * MLX5_CMD_DATA_BLOCK_SIZE;
+                let remaining = if offset < copy_len { copy_len - offset } else { 0 };
+                let current_payload = remaining.min(MLX5_CMD_DATA_BLOCK_SIZE);
+
+                block.data.fill(0);
+                if current_payload > 0 {
+                    block.data[..current_payload].copy_from_slice(&tmp_payload[offset..offset + current_payload]);
+                }
+
+                block.rsvd0 = [0u8; 48];
+                block.block_num = i as u32;
+                block.token = token;
+                block.rsvd1 = 0;
+                
+                if i + 1 < num_blocks {
+                    block.next = in_mbox_phys + ((i + 1) * 512) as u64;
+                } else {
+                    block.next = 0;
+                }
+
+                // Signature calculation
+                block.ctrl_sig = 0;
+                block.sig = 0;
+                let raw = core::slice::from_raw_parts_mut(block_ptr as *mut u8, 512);
+                let ctrl_xor = Self::xor8(&raw[448..510]);
+                block.ctrl_sig = !ctrl_xor;
+                raw[510] = block.ctrl_sig;
+                let sig_xor = Self::xor8(&raw[..511]);
+                block.sig = !sig_xor;
+                raw[511] = block.sig;
+            }
+        } else {
+            // For inline-only commands, we might still want to zero out the first block just in case.
+            let block = &mut *(self.in_mbox_virt as *mut CmdProtBlock);
+            core::ptr::write_bytes(block as *mut CmdProtBlock as *mut u8, 0, 512);
+        }
 
         in_inline
     }
 
-    unsafe fn prepare_out_block(&self, token: u8) {
-        let block = &mut *(self.out_mbox_virt as *mut CmdProtBlock);
-        block.data.fill(0);
-        block.rsvd0 = [0u8; 48];
-        block.next = 0;
-        block.block_num = 0;
-        block.rsvd1 = 0;
-        block.token = token;
-        block.ctrl_sig = 0;
-        block.sig = 0;
+    unsafe fn prepare_out_block(&self, token: u8, out_len: usize, out_mbox_phys: u64) {
+        if out_len <= 16 {
+            return;
+        }
 
-        let raw = core::slice::from_raw_parts_mut(block as *mut CmdProtBlock as *mut u8, 576);
-        let ctrl_xor = Self::xor8(&raw[512..574]);
-        block.ctrl_sig = !ctrl_xor;
-        raw[574] = block.ctrl_sig;
-        let sig_xor = Self::xor8(&raw[..575]);
-        block.sig = !sig_xor;
+        let total_payload = out_len - 16;
+        let num_blocks = (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
+
+        for i in 0..num_blocks {
+            let block_ptr = (self.out_mbox_virt as usize + i * 512) as *mut CmdProtBlock;
+            let block = &mut *block_ptr;
+            
+            block.data.fill(0);
+            block.rsvd0 = [0u8; 48];
+            block.block_num = i as u32;
+            block.token = token;
+            block.rsvd1 = 0;
+            
+            if i + 1 < num_blocks {
+                block.next = out_mbox_phys + ((i + 1) * 512) as u64;
+            } else {
+                block.next = 0;
+            }
+
+            // Signature calculation
+            block.ctrl_sig = 0;
+            block.sig = 0;
+            let raw = core::slice::from_raw_parts_mut(block_ptr as *mut u8, 512);
+            let ctrl_xor = Self::xor8(&raw[448..510]);
+            block.ctrl_sig = !ctrl_xor;
+            raw[510] = block.ctrl_sig;
+            let sig_xor = Self::xor8(&raw[..511]);
+            block.sig = !sig_xor;
+            raw[511] = block.sig;
+        }
     }
 
     unsafe fn collect_out_data(&self, out_len: usize, inline_out: [u8; 16]) {
-        let block = &mut *(self.out_mbox_virt as *mut CmdProtBlock);
+        if out_len == 0 {
+            return;
+        }
+
+        // We assemble the data back into the virtual buffer for the caller.
+        // First, the 16 bytes inline output.
+        let dest = self.out_mbox_virt as *mut u8;
+        core::ptr::copy_nonoverlapping(inline_out.as_ptr(), dest, out_len.min(16));
+
         if out_len > 16 {
-            let payload_len = (out_len - 16).min(MLX5_CMD_MBOX_SIZE);
-            let mut tmp = [0u8; MLX5_CMD_MBOX_SIZE];
-            tmp[..payload_len].copy_from_slice(&block.data[..payload_len]);
-            let inline_len = out_len.min(16);
-            block.data[..inline_len].copy_from_slice(&inline_out[..inline_len]);
-            block.data[16..16 + payload_len].copy_from_slice(&tmp[..payload_len]);
-        } else {
-            let inline_len = out_len.min(16);
-            block.data[..inline_len].copy_from_slice(&inline_out[..inline_len]);
+            let total_payload = out_len - 16;
+            let num_blocks = (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
+
+            // We need to copy from blocks back to a continuous area.
+            // To avoid overwriting blocks while reading them, we copy payload to the end of the buffer first,
+            // then move it to offset 16.
+            // Wait, we have 16KB. Let's use offset 8KB as temporary if needed, 
+            // but actually we can just copy to a stack buffer or shift carefully.
+            let mut tmp_payload = [0u8; MLX5_CMD_MBOX_SIZE];
+            let mut copied = 0;
+
+            for i in 0..num_blocks {
+                let block = &*((self.out_mbox_virt as usize + i * 512) as *const CmdProtBlock);
+                let to_copy = (total_payload - copied).min(MLX5_CMD_DATA_BLOCK_SIZE);
+                if to_copy > 0 {
+                    tmp_payload[copied..copied + to_copy].copy_from_slice(&block.data[..to_copy]);
+                    copied += to_copy;
+                }
+            }
+
+            core::ptr::copy_nonoverlapping(
+                tmp_payload.as_ptr(),
+                dest.add(16),
+                copied.min(MLX5_CMD_MBOX_SIZE - 16),
+            );
         }
     }
 
@@ -528,9 +604,21 @@ impl CmdQueueTransport {
             0
         };
         in_mbox.write_be16(0x02, cmd_uid);
-        let in_inline = self.prepare_in_block(token, in_len_usize);
+
+        // Dump input mailbox before submitting
+        #[cfg(feature = "debug_mlx5_cmd")]
+        {
+            log::info!(target: "mlx5", "CMD {:?} (token={}) input mailbox dump (len={}):", opcode, token, in_len);
+            for i in (0..in_len_usize.min(MLX5_CMD_MBOX_SIZE)).step_by(16) {
+                let end = (i + 16).min(in_len_usize).min(MLX5_CMD_MBOX_SIZE);
+                let chunk = &in_mbox.data[i..end];
+                log::info!(target: "mlx5", "  [{:04x}] {:02x?}", i, chunk);
+            }
+        }
+
+        let in_inline = self.prepare_in_block(token, in_len_usize, in_mbox_phys);
         if out_len_usize > 16 {
-            self.prepare_out_block(token);
+            self.prepare_out_block(token, out_len_usize, out_mbox_phys);
         }
 
         let entry = self.entry_mut(slot);
@@ -564,6 +652,22 @@ impl CmdQueueTransport {
 
                 if out_len_usize > 0 {
                     let out_mbox = &*(self.out_mbox_virt as *const CmdMailbox);
+
+                    // Dump output mailbox after completion
+                    #[cfg(feature = "debug_mlx5_cmd")]
+                    {
+                        if opcode != CmdOpcode::QueryHcaCap {
+                            log::info!(target: "mlx5", "CMD {:?} (token={}) output mailbox dump (len={}):", opcode, token, out_len);
+                            for i in (0..out_len_usize.min(MLX5_CMD_MBOX_SIZE)).step_by(16) {
+                                let end = (i + 16).min(out_len_usize).min(MLX5_CMD_MBOX_SIZE);
+                                let chunk = &out_mbox.data[i..end];
+                                log::info!(target: "mlx5", "  [{:04x}] {:02x?}", i, chunk);
+                            }
+                        } else {
+                            log::info!(target: "mlx5", "CMD QueryHcaCap output received (len={}), skipping full dump to avoid hang", out_len);
+                        }
+                    }
+
                     let fw_status = out_mbox.data[0];
                     if fw_status != 0 {
                         let syndrome = if out_len_usize >= 8 {
@@ -578,9 +682,11 @@ impl CmdQueueTransport {
                             fw_status,
                             syndrome
                         );
+                        log::info!(target: "mlx5", "CMD {:?} returning CommandFailed({})", opcode, fw_status);
                         return Err(Mlx5Error::CommandFailed(fw_status));
                     }
                 }
+                log::info!(target: "mlx5", "CMD {:?} execution successful, returning Ok", opcode);
                 Ok(())
             }
             Err(err) => {
@@ -658,9 +764,11 @@ impl CommandTransport for CmdQueueTransport {
 
 /// QUERY_ISSI コマンド出力の解析
 pub fn parse_query_issi(out_mbox: &CmdMailbox) -> u32 {
-    // mlx5_ifc_query_issi_out_bits:
-    // current_issi is at bit offset 0x50 => byte offset 0x0A.
-    out_mbox.read_be16(0x0A) as u32
+    // query_issi_out.supported_issi[0] is at dword 0x18 => absolute byte 0x60.
+    // The previous dump showed [0060] [..., 00, 02].
+    // Let's read it from 0x60 and see.
+    let issi = out_mbox.read_be16(0x60);
+    issi as u32
 }
 
 /// ENABLE_HCA コマンド入力の構築
@@ -686,7 +794,7 @@ pub fn build_set_issi_input(in_mbox: &mut CmdMailbox, current_issi: u16) {
 pub fn build_query_hca_cap_input(in_mbox: &mut CmdMailbox, cap_type: u16) {
     *in_mbox = CmdMailbox::zeroed();
     // mlx5_ifc_query_hca_cap_in_bits: op_mod at byte 0x06.
-    in_mbox.write_be16(0x06, cap_type);
+    in_mbox.write_be16(0x06, cap_type << 1);
 }
 
 /// SET_HCA_CAP コマンド入力の構築
@@ -699,11 +807,17 @@ pub fn build_set_hca_cap_input(
     capability_payload: &[u8],
 ) {
     *in_mbox = CmdMailbox::zeroed();
-    // mlx5_ifc_set_hca_cap_in_bits: op_mod at byte 0x06.
-    in_mbox.write_be16(0x06, cap_type);
+    // byte 0x06 op_mod
+    in_mbox.write_be16(0x06, cap_type << 1);
+
     // capability union starts at byte 0x10.
-    let copy_len = capability_payload.len().min(MLX5_CMD_MBOX_SIZE - 0x10);
-    in_mbox.data[0x10..0x10 + copy_len].copy_from_slice(&capability_payload[..copy_len]);
+    // The total length of capability_payload can be up to 4096 bytes.
+    let in_mbox_ptr = in_mbox as *mut CmdMailbox as *mut u8;
+    let dst_ptr = unsafe { in_mbox_ptr.add(0x10) };
+    let copy_len = capability_payload.len().min(4096);
+    unsafe {
+        core::ptr::copy_nonoverlapping(capability_payload.as_ptr(), dst_ptr, copy_len);
+    }
 }
 
 /// INIT_HCA コマンド入力の構築
@@ -1012,28 +1126,28 @@ pub fn build_destroy_cq_input(in_mbox: &mut CmdMailbox, cqn: u32) {
 /// - `sq_buf_pa`: SQバッファ物理アドレス
 /// - `db_pa`: SQドアベルレコード物理アドレス
 /// - `cqn`: 紐づくCQ番号
-/// - `tisn`: 紐づくTIS番号
+/// - `pd`: Protection Domain 番号
 /// - `uar_page`: UARページ番号
-/// - `mkey`: メモリキー
+/// - `tisn`: 紐づくTIS番号
 pub fn build_create_sq_input(
     in_mbox: &mut CmdMailbox,
     log_sq_size: u8,
     sq_buf_pa: u64,
     db_pa: u64,
     cqn: u32,
-    tisn: u32,
-    uar_page: u32,
     pd: u32,
+    uar_page: u32,
+    tisn: u32,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     // create_sq_in.ctx starts at 0x20.
     let ctx = 0x20usize;
     // sqc.flush_in_error_en=1 (bit 28), sqc.state=RST(0), mem_sq_type=external_mem_pas(1) (bit 24)
-    in_mbox.write_be32(ctx, (1 << 28) | (1 << 24));
+    // sqc.min_wqe_inline_mode=1 (bit 26) (VPORT/L2)
+    in_mbox.write_be32(ctx, (1 << 28) | (1 << 26) | (1 << 24));
     // sqc.cqn[23:0] at ctx+0x08
     in_mbox.write_be32(ctx + 0x08, cqn & 0x00FF_FFFF);
-    // Keep packet pacing fields at reset defaults (zero) during CREATE_SQ.
-    // Linux programs RL index later via MODIFY_SQ only when rate limiting is enabled.
+    
     // sqc.tis_lst_sz[15:0] is at ctx+0x20 high 16 bits.
     let tis_list_size = 1u32;
     in_mbox.write_be32(ctx + 0x20, (tis_list_size & 0xFFFF) << 16);
@@ -1050,7 +1164,7 @@ pub fn build_create_sq_input(
     in_mbox.write_be64(wq + 0x10, db_pa);
 
     // wq.log_wq_stride/log_wq_pg_sz/log_wq_sz
-    let log_wq_stride = 4u32; // Try 16-byte SQ stride
+    let log_wq_stride = 4u32; // 16-byte SQ stride (log2(16)=4)
     let log_wq_pg_sz = 0u32; // 4KB page
     let log_wq_sz = (log_sq_size as u32) & 0x1F;
     let wq_sz_word = ((log_wq_stride & 0x0F) << 16) | ((log_wq_pg_sz & 0x1F) << 8) | log_wq_sz;
@@ -1113,8 +1227,10 @@ pub fn build_modify_sq_input(
 /// - `rq_buf_pa`: RQバッファ物理アドレス
 /// - `db_pa`: RQドアベルレコード物理アドレス
 /// - `cqn`: 紐づくCQ番号
+/// - `pd`: Protection Domain 番号
 /// - `uar_page`: UARページ番号
-/// - `mkey`: メモリキー
+/// - `scatter_fcs`: Scatter FCS を有効化するか
+/// - `vlan_strip`: VLAN strippingを有効化するか
 pub fn build_create_rq_input(
     in_mbox: &mut CmdMailbox,
     log_rq_size: u8,
@@ -1122,6 +1238,7 @@ pub fn build_create_rq_input(
     db_pa: u64,
     cqn: u32,
     pd: u32,
+    uar_page: u32,
     scatter_fcs: bool,
     vlan_strip: bool,
 ) {
@@ -1144,11 +1261,12 @@ pub fn build_create_rq_input(
     let wq = ctx + 0x30;
     in_mbox.write_be32(wq, 0x1 << 28); // wq.wq_type = cyclic
     in_mbox.write_be32(wq + 0x08, pd & 0x00FF_FFFF); // wq.pd
+    in_mbox.write_be32(wq + 0x0C, uar_page & 0x00FF_FFFF); // wq.uar_page
     in_mbox.write_be64(wq + 0x10, db_pa); // wq.dbr_addr
 
     // wq.log_wq_stride/log_wq_pg_sz/log_wq_sz
-    let log_wq_stride = 6u32; // 64-byte RQ stride
-    let log_wq_pg_sz = 0u32;
+    let log_wq_stride = 6u32; // 64-byte RQ stride (log2(64)=6)
+    let log_wq_pg_sz = 0u32; // 4KB page
     let log_wq_sz = (log_rq_size as u32) & 0x1F;
     let wq_sz_word = ((log_wq_stride & 0x0F) << 16) | ((log_wq_pg_sz & 0x1F) << 8) | log_wq_sz;
     in_mbox.write_be32(wq + 0x20, wq_sz_word);

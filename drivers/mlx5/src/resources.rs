@@ -186,11 +186,11 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
     // DW4-5: len[63:0]
     in_mbox.write_be64(ctx + 0x10, params.length);
     
-    // DW6: log_page_size[4:0] = 12 (4KB)
-    in_mbox.write_be32(ctx + 0x18, 12 << 3);
+    // DW6: log_page_size[31:27] = 12 (4KB)
+    in_mbox.write_be32(ctx + 0x18, 12 << 27);
     
-    // DW7: mkey_7_0
-    in_mbox.write_be32(ctx + 0x1C, 0x42); 
+    // DW7: mkey_7_0[31:24]
+    in_mbox.write_be32(ctx + 0x1C, 0x42 << 24); 
 
     // PAS[0] at context + 0x40. 
     // Target the actual device address of our first buffer
@@ -199,10 +199,8 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
 
 /// CREATE_MKEY 出力からMKEY値を解析
 pub fn parse_create_mkey_output(out_mbox: &CmdMailbox) -> u32 {
-    // mlx5_ifc_create_mkey_out_bits: mkey_index[23:0] at byte offset 0x09.
-    let mkey_index = out_mbox.read_be24(0x09);
-    // Full mkey = (index << 8) — key portion is from HW
-    mkey_index
+    // mlx5_ifc_create_mkey_out_bits: mkey_index[23:0] at byte offset 0x05.
+    out_mbox.read_be24(0x05)
 }
 
 /// CREATE_TIS コマンド入力の構築
@@ -213,18 +211,26 @@ pub fn build_create_tis_input(in_mbox: &mut CmdMailbox, params: &TisParams) {
     // - tisc context starts at 0x20
     let ctx = 0x20usize;
 
-    // tisc first dword:
-    // - lag_tx_port_affinity[3:0] at bits 27:24
-    // - prio[3:0] at bits 19:16
-    // Keep strict_lag_tx_port_affinity/tls_en cleared for regular Ethernet VF path.
+    // tisc DW0:
+    // - lag_tx_port_affinity[27:24]
+    // - prio[19:16]
     let lag_affinity = (params.port as u32) & 0x0F;
     let tisc0 = (lag_affinity << 24) | (((params.prio as u32) & 0x0F) << 16);
-    in_mbox.write_be32(ctx, tisc0);
-    // tisc.transport_domain[23:0] in dword @ ctx+0x24
-    in_mbox.write_be32(ctx + 0x24, params.td & 0x00FF_FFFF);
+    in_mbox.write_be32(ctx + 0x00, tisc0);
+
+    // tisc DW1: reserved
+
+    // tisc DW2: transport_domain[23:0]
+    in_mbox.write_be32(ctx + 0x08, params.td & 0x00FF_FFFF);
     
-    // tisc.pd[23:0] in dword @ ctx+0x2C
-    in_mbox.write_be32(ctx + 0x2C, params.pd & 0x00FF_FFFF);
+    // tisc DW3: reserved
+
+    // tisc DW4: underlay_qpn[23:0] (Keep 0 for now)
+
+    // tisc DW5: reserved
+
+    // tisc DW6: pd[23:0]
+    in_mbox.write_be32(ctx + 0x18, params.pd & 0x00FF_FFFF);
 }
 
 /// CREATE_TIS 出力からTIS番号を解析
@@ -253,9 +259,9 @@ pub fn parse_query_tis_output(out_mbox: &CmdMailbox) -> (u8, u32, u32, u32) {
     // mlx5_ifc_query_tis_out_bits has tisc at byte offset 0x10.
     let ctx = 0x10usize;
     let prio = ((out_mbox.read_be32(ctx) >> 16) & 0x0F) as u8;
-    let td = out_mbox.read_be32(ctx + 0x24) & 0x00FF_FFFF;
-    let underlay_qpn = out_mbox.read_be32(ctx + 0x28) & 0x00FF_FFFF;
-    let pd = out_mbox.read_be32(ctx + 0x2C) & 0x00FF_FFFF;
+    let td = out_mbox.read_be32(ctx + 0x08) & 0x00FF_FFFF;
+    let underlay_qpn = out_mbox.read_be32(ctx + 0x10) & 0x00FF_FFFF;
+    let pd = out_mbox.read_be32(ctx + 0x18) & 0x00FF_FFFF;
     (prio, td, underlay_qpn, pd)
 }
 
@@ -267,46 +273,43 @@ pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
     // - tirc context starts at 0x20
     let ctx = 0x20usize;
 
-    // tirc.disp_type[3:0] in dword @ ctx+0x04 (bits 31:28)
+    // tirc DW0: disp_type[31:28]
     let disp_type: u32 = match params.receive_type {
         TirReceiveType::DirectRq => 0x0,
         TirReceiveType::Rqt => 0x1,
     };
-    in_mbox.write_be32(ctx + 0x04, (disp_type & 0x0F) << 28);
+    in_mbox.write_be32(ctx + 0x00, (disp_type & 0x0F) << 28);
 
-    match params.receive_type {
-        TirReceiveType::DirectRq => {
-            // tirc.inline_rqn[23:0] at dword @ ctx+0x1C
-            in_mbox.write_be32(ctx + 0x1C, params.inline_rqn & 0x00FF_FFFF);
-        }
-        TirReceiveType::Rqt => {
-            // tirc.indirect_table[23:0] at dword @ ctx+0x20
-            in_mbox.write_be32(ctx + 0x20, params.rqtn & 0x00FF_FFFF);
-            if let Some(ref rss) = params.rss {
-                // MLX5 RX hash fn encoding: NONE=0, XOR=1, TOEPLITZ=2.
-                let rx_hash_fn = match rss.hash_function {
-                    crate::flow::RssHashFunction::Toeplitz => 0x2u32,
-                    crate::flow::RssHashFunction::Xor => 0x1u32,
-                };
-                let td_hash = ((rx_hash_fn & 0x0F) << 28) | (params.td & 0x00FF_FFFF);
-                in_mbox.write_be32(ctx + 0x24, td_hash);
+    // tirc DW1..DW6: reserved
 
-                // tirc.rx_hash_toeplitz_key[10] starts at ctx+0x28 (40 bytes).
-                let key_off = ctx + 0x28;
-                let copy_len = rss.hash_key.len().min(40);
-                in_mbox.data[key_off..key_off + copy_len]
-                    .copy_from_slice(&rss.hash_key[..copy_len]);
-            }
-        }
+    // tirc DW7: inline_rqn[23:0]
+    if params.receive_type == TirReceiveType::DirectRq {
+        in_mbox.write_be32(ctx + 0x1C, params.inline_rqn & 0x00FF_FFFF);
     }
 
-    // tirc.transport_domain[23:0] at dword @ ctx+0x24.
-    // If RQT+RSS path set this dword above, we only update the low 24 bits.
-    let current_dw9 = in_mbox.read_be32(ctx + 0x24);
-    in_mbox.write_be32(ctx + 0x24, (current_dw9 & 0xFF00_0000) | (params.td & 0x00FF_FFFF));
+    // tirc DW8: indirect_table[23:0]
+    if params.receive_type == TirReceiveType::Rqt {
+        in_mbox.write_be32(ctx + 0x20, params.rqtn & 0x00FF_FFFF);
+    }
 
-    // NOTE: scatter_fcs / vlan_strip are RQ context settings, not TIR context bits.
-    let _ = (params.scatter_fcs, params.vlan_strip);
+    // tirc DW9: rx_hash_fn[31:28], transport_domain[23:0]
+    let rx_hash_fn = if let Some(ref rss) = params.rss {
+        match rss.hash_function {
+            crate::flow::RssHashFunction::Toeplitz => 0x2u32,
+            crate::flow::RssHashFunction::Xor => 0x1u32,
+        }
+    } else {
+        0u32
+    };
+    in_mbox.write_be32(ctx + 0x24, ((rx_hash_fn & 0x0F) << 28) | (params.td & 0x00FF_FFFF));
+
+    // tirc DW10..DW19: rx_hash_toeplitz_key[10]
+    if let Some(ref rss) = params.rss {
+        let key_off = ctx + 0x28;
+        let copy_len = rss.hash_key.len().min(40);
+        in_mbox.data[key_off..key_off + copy_len]
+            .copy_from_slice(&rss.hash_key[..copy_len]);
+    }
 }
 
 /// CREATE_TIR 出力からTIR番号を解析

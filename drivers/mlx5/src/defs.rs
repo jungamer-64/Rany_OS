@@ -192,11 +192,11 @@ pub const MLX5_PAGE_SIZE: usize = 4096;
 // Command Interface
 // ============================================================================
 
-/// コマンドメールボックスサイズ (512 bytes)
-pub const MLX5_CMD_MBOX_SIZE: usize = 512;
+/// コマンドメールボックスサイズ (4096 bytes)
+pub const MLX5_CMD_MBOX_SIZE: usize = 4096;
 
-/// コマンド入力最大サイズ
-pub const MLX5_CMD_DATA_BLOCK_SIZE: usize = 512;
+/// コマンド入力最大サイズ (512 - 64 = 448 bytes per block)
+pub const MLX5_CMD_DATA_BLOCK_SIZE: usize = 448;
 
 /// コマンドインタフェースの最大同時実行コマンド数
 pub const MLX5_MAX_COMMANDS: usize = 32;
@@ -381,6 +381,8 @@ pub enum CmdStatus {
     BadInputLen = 0x0A,
     /// 不正な出力サイズ
     BadOutputLen = 0x0B,
+    /// 未知のコマンド
+    UnknownCommand = 0x51,
 }
 
 impl CmdStatus {
@@ -399,6 +401,7 @@ impl CmdStatus {
             0x09 => Self::BadResource,
             0x0A => Self::BadInputLen,
             0x0B => Self::BadOutputLen,
+            0x51 => Self::UnknownCommand,
             _ => Self::InternalError,
         }
     }

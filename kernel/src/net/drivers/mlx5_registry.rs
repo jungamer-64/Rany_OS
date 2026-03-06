@@ -182,7 +182,8 @@ impl Mlx5ConnectXDriver {
 
     fn allocate_dma_resources(&self, packed_device_id: u64) -> KapiResult<Mlx5DmaResources> {
         let cmdq_size = DMA_PAGE_BYTES.max((1usize << CMD_LOG_SIZE) * cmd_entry::ENTRY_SIZE);
-        let cmd_mbox_size = DMA_PAGE_BYTES;
+        // Allocate 16KB (4 pages) for mailboxes to support multi-block chains.
+        let cmd_mbox_size = 4 * DMA_PAGE_BYTES;
 
         let eq_target_depth = MLX5_EQ_DEPTH.saturating_add(MLX5_EQ_SPARE_EQE);
         let eq_log_size = log2_ceil_u32(eq_target_depth);

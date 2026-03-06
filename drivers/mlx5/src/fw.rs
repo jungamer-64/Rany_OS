@@ -113,91 +113,82 @@ pub unsafe fn check_health(bar0_base: u64) -> bool {
 
 /// QUERY_HCA_CAP 出力からHcaCapsを解析
 pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
-    // The capability data starts at offset 0x10 in the mailbox output
-    let cap = &out_data[0x10..];
-
-    // Helper to read a big-endian 32-bit word from a byte offset
-    let rd = |off: usize| -> u32 {
-        if off + 4 > cap.len() {
-            return 0;
-        }
-        u32::from_be_bytes([cap[off], cap[off+1], cap[off+2], cap[off+3]])
+    log::info!(target: "mlx5", "QUERY_HCA_CAP decoding start (Offset 0x10):");
+    
+    let rd_be32 = |data: &[u8], off: usize| -> u32 {
+        if off + 4 > data.len() { 0 }
+        else { u32::from_be_bytes([data[off], data[off+1], data[off+2], data[off+3]]) }
     };
 
-    // DW0 [0x00]: [reserved(1)|vport_group_manager(1)|eswitch_manager(1)|...]
+    // Comparative diagnostics
+    for &base_off in &[0x00, 0x10] {
+        let dw3 = rd_be32(out_data, base_off + 0x0C);
+        let dw6 = rd_be32(out_data, base_off + 0x18);
+        log::info!(target: "mlx5", "  Offset {:#x}: num_ports={} log_max_cq={}", base_off, (dw6 >> 24) & 0xFF, (dw3 >> 24) & 0xFF);
+    }
+
+    // Standard mlx5 IFC: capability data starts at offset 0x10 in the mailbox
+    let cap_base = 0x10usize;
+    let rd = |off: usize| -> u32 { rd_be32(out_data, cap_base + off) };
+
     let dw0 = rd(0x00);
     let vport_group_manager = (dw0 & 0x4000_0000) != 0;
-    let eswitch_manager = (dw0 & 0x2000_0000) != 0;
 
-    // DW1 [0x04]: [log_max_mkey(7)|reserved(1)|...]
     let dw1 = rd(0x04);
     let log_max_mkey = ((dw1 >> 25) & 0x7F) as u8;
 
-    // DW2 [0x08]: [log_max_qp(8)|...]
     let dw2 = rd(0x08);
-    let log_max_qp_sz = ((dw2 >> 24) & 0xFF).max(8) as u8;
+    let log_max_qp_sz = ((dw2 >> 24) & 0xFF) as u8;
 
-    // DW3 [0x0C]: [log_max_cq(8)|log_max_cq_sz(8)|...]
     let dw3 = rd(0x0C);
-    let log_max_cq = ((dw3 >> 24) & 0xFF).max(8) as u8;
-    let log_max_cq_sz = ((dw3 >> 16) & 0xFF).max(12) as u8;
+    let log_max_cq = ((dw3 >> 24) & 0xFF) as u8;
+    let log_max_cq_sz = ((dw3 >> 16) & 0xFF) as u8;
 
-    // DW4 [0x10]: [log_max_eq(8)|log_max_eq_sz(8)|...]
     let dw4 = rd(0x10);
-    let log_max_eq = ((dw4 >> 24) & 0xFF).max(4) as u8;
-    let log_max_eq_sz = ((dw4 >> 16) & 0xFF).max(12) as u8;
+    let log_max_eq = ((dw4 >> 24) & 0xFF) as u8;
+    let log_max_eq_sz = ((dw4 >> 16) & 0xFF) as u8;
 
-    // DW6 [0x18]: [num_ports(8)|...]
     let dw6 = rd(0x18);
     let num_ports = ((dw6 >> 24) & 0xFF) as u8;
 
-    // DW7 [0x1C]: [num_vhca_ports(8)|...]
-    let dw7 = rd(0x1C);
-    let num_vhca_ports = ((dw7 >> 24) & 0xFF) as u16;
-
-    // DW12 [0x30]: [..., cqe_version(4)]
     let dw12 = rd(0x30);
     let cqe_version = ((dw12 >> 4) & 0x0F) as u8;
 
-    // DW13 [0x34]: [..., eth_net_offloads(1)|vlan_strip(1)|scatter_fcs(1)|...]
     let dw13 = rd(0x34);
     let eth_net_offloads = (dw13 & 0x0008_0000) != 0;
     let vlan_strip = (dw13 & 0x0004_0000) != 0;
     let scatter_fcs = (dw13 & 0x0002_0000) != 0;
 
-    // DW17 [0x44]: [..., tis_tir_td_order(1), ..., log_max_transport_domain(5)]
     let dw17 = rd(0x44);
     let tis_tir_td_order = (dw17 & 0x0020_0000) != 0;
     let log_max_transport_domain = (dw17 & 0x1F) as u8;
 
-    // DW20 [0x50]: [..., log_max_tir(5), ..., log_max_tis(5)]
     let dw20 = rd(0x50);
     let log_max_tir = ((dw20 >> 8) & 0x1F) as u8;
     let log_max_tis = (dw20 & 0x1F) as u8;
 
-    // DW22 [0x58]: [..., log_max_tis_per_sq(5)]
-    let dw22 = rd(0x58);
-    let log_max_tis_per_sq = (dw22 & 0x1F) as u8;
+    log::info!(target: "mlx5", "Decoded HCA caps: ports={} log_cq={} log_qp={} log_tis={} csum={} vport_mgr={}",
+        num_ports, log_max_cq, log_max_qp_sz, log_max_tis, eth_net_offloads, vport_group_manager);
 
-    let max_cq = 1u32.checked_shl(log_max_cq as u32).unwrap_or(0);
-    let max_eq = 1u32.checked_shl(log_max_eq as u32).unwrap_or(0);
-    let max_sq_rq = 1u32.checked_shl(log_max_qp_sz as u32).unwrap_or(0);
-    let max_mkey = 1u32.checked_shl(log_max_mkey as u32).unwrap_or(0);
+    // VFs might report 0 ports in general caps; assume 1 logically.
+    let actual_ports = if num_ports == 0 { 1 } else { num_ports.min(2) };
+    let max_cq = 1u32.checked_shl(log_max_cq.min(20) as u32).unwrap_or(64);
+    let max_sq_rq = 1u32.checked_shl(log_max_qp_sz.min(20) as u32).unwrap_or(64);
 
     HcaCaps {
         max_cq,
         max_sq: max_sq_rq,
         max_rq: max_sq_rq,
-        max_eq,
-        max_mkey,
+        max_eq: 1u32.checked_shl(log_max_eq.min(20) as u32).unwrap_or(16),
+        max_mkey: 1u32.checked_shl(log_max_mkey.min(20) as u32).unwrap_or(1024),
         max_mtu: 1500,
-        num_ports,
+        num_ports: actual_ports,
         log_max_cq_sz,
         log_max_sq_sz: log_max_qp_sz,
         log_max_rq_sz: log_max_qp_sz,
         log_max_tir,
         log_max_tis,
-        log_max_tis_per_sq,
+        log_max_tis_per_sq: 0,
         log_max_transport_domain,
         log_max_eq_sz,
         scatter_fcs,
@@ -207,7 +198,7 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         cqe_version,
         tis_tir_td_order,
         vport_group_manager,
-        eswitch_manager,
-        num_vhca_ports,
+        eswitch_manager: false,
+        num_vhca_ports: 0,
     }
 }

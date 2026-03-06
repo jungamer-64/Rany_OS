@@ -24,3 +24,4 @@ log = "0.4"
 default = []
 standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
 export_driver_entry = ["kernel_api/export_driver_entry"]
+debug_mlx5_cmd = []
