@@ -65,17 +65,7 @@ impl Mlx5Device {
         let eq_pages = (eq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let eq_in_len = (0x110 + eq_pages * 8) as u32;
 
-        let prev_uid = cmd.uid();
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
-        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
-            cmd.execute(
-                CmdOpcode::CreateEq,
-                cmd_in_mbox_device,
-                eq_in_len,
-                cmd_out_mbox_device,
-                0x10,
-            )
-        })?;
+        self.execute_uid_sensitive_cmd(CmdOpcode::CreateEq, eq_in_len, 0x10)?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let eqn = parse_create_eq_output(out_mbox);
@@ -101,13 +91,6 @@ impl Mlx5Device {
         log_cq_size: u8,
         eqn: u32,
     ) -> Mlx5Result<u32> {
-        let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
-        let cmd_in_mbox_device = self.cmd_in_mbox_device;
-        let cmd_out_mbox_device = self.cmd_out_mbox_device;
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
-        let prev_uid = cmd.uid();
-
         let cq_depth = 1u32 << log_cq_size;
         let cq_ptr = cq_buf_virt as *mut u8;
         core::ptr::write_bytes(cq_ptr, 0, (cq_depth as usize) * crate::regs::cqe::SIZE);
@@ -132,16 +115,7 @@ impl Mlx5Device {
         let cq_pages = (cq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let cq_in_len = (0x110 + cq_pages * 8) as u32;
 
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
-        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
-            cmd.execute(
-                CmdOpcode::CreateCq,
-                cmd_in_mbox_device,
-                cq_in_len,
-                cmd_out_mbox_device,
-                0x10,
-            )
-        })?;
+        self.execute_uid_sensitive_cmd(CmdOpcode::CreateCq, cq_in_len, 0x10)?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let cqn = parse_create_cq_output(out_mbox);
@@ -283,25 +257,15 @@ impl Mlx5Device {
 
     /// RQTを作成
     pub unsafe fn create_rqt(&mut self, rq_numbers: &[u32], log_rqt_size: u8) -> Mlx5Result<u32> {
-        let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
-        let cmd_in_mbox_device = self.cmd_in_mbox_device;
-        let cmd_out_mbox_device = self.cmd_out_mbox_device;
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
-        let prev_uid = cmd.uid();
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::flow::build_create_rqt_input(in_mbox, rq_numbers, log_rqt_size);
 
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
-        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
-            cmd.execute(
-                CmdOpcode::CreateRqt,
-                cmd_in_mbox_device,
-                MLX5_CMD_MBOX_SIZE as u32,
-                cmd_out_mbox_device,
-                MLX5_CMD_MBOX_SIZE as u32,
-            )
-        })?;
+        self.execute_uid_sensitive_cmd(
+            CmdOpcode::CreateRqt,
+            MLX5_CMD_MBOX_SIZE as u32,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let rqtn = crate::cmd::flow::parse_create_rqt_output(out_mbox);

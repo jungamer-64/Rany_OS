@@ -63,6 +63,20 @@ pub fn build_init_hca_input(in_mbox: &mut CmdMailbox, sw_vhca_id: u16, sw_owner_
     }
 }
 
+/// QUERY_ADAPTER コマンド入力の構築
+pub fn build_query_adapter_input(in_mbox: &mut CmdMailbox) {
+    *in_mbox = CmdMailbox::zeroed();
+    // No fields needed for QueryAdapter input usually
+}
+
+/// QUERY_ADAPTER 出力の解析 (VSD = Vendor Specific Data)
+pub fn parse_query_adapter_vsd(out_mbox: &CmdMailbox) -> [u8; 208] {
+    let mut vsd = [0u8; 208];
+    // VSD starts at offset 0x10 in the mailbox
+    vsd.copy_from_slice(&out_mbox.data[0x10..0x10 + 208]);
+    vsd
+}
+
 /// NOP コマンド入力の構築
 pub fn build_nop_input(in_mbox: &mut CmdMailbox) {
     *in_mbox = CmdMailbox::zeroed();

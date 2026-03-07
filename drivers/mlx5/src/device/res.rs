@@ -83,26 +83,16 @@ impl Mlx5Device {
 
     /// TIR (Transport Interface Receive) を作成
     pub unsafe fn create_tir(&mut self, params: &TirParams) -> Mlx5Result<u32> {
-        let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
-        let cmd_in_mbox_device = self.cmd_in_mbox_device;
-        let cmd_out_mbox_device = self.cmd_out_mbox_device;
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
-        let prev_uid = cmd.uid();
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::res::build_create_tir_input(in_mbox, params);
 
-        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
-            cmd.execute(
-                CmdOpcode::CreateTir,
-                cmd_in_mbox_device,
-                0x110,
-                cmd_out_mbox_device,
-                0x10,
-            )
-        })?;
+        self.execute_uid_sensitive_cmd(
+            CmdOpcode::CreateTir,
+            0x110, // mailbox input length (header + payload)
+            0x10,  // output length
+        )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let tirn = crate::cmd::res::parse_create_tir_output(out_mbox);

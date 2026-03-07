@@ -218,6 +218,8 @@ pub const MLX5_FW_BOOT_TIMEOUT_MS: u64 = 30_000;
 pub enum CmdOpcode {
     /// FW状態クエリ
     QueryHcaCap = 0x0100,
+    /// アダプタ情報クエリ
+    QueryAdapter = 0x0101,
     /// HCA初期化
     InitHca = 0x0102,
     /// HCA停止

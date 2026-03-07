@@ -399,15 +399,26 @@ fn log_stack_free_space(label: &str) {
 }
 
 fn register_spl_kernel_services() {
+    // We are hitting mysterious stack corruption after this function returns,
+    // so emit fine-grained diagnostics around every step.
     log_stack_free_space("before register_kernel_services");
     info!(target: "init", "Registering kernel services...");
-    unsafe {
+    log_stack_free_space("after log before call");
+
+    // The act of registering kernel services should not require interrupts, and
+    // a buggy ISR might be corrupting the stack pointer.  Disable them to
+    // diagnose and (temporarily) avoid the issue.
+    interrupts::without_interrupts(|| unsafe {
         service_impl::register_kernel_services();
-    }
+    });
+    log_stack_free_space("after register_kernel_services call");
+
     info!(target: "init", "Kernel services registered");
+    log_stack_free_space("after log after call");
 }
 
 fn register_builtin_kernel_providers() {
+    log_stack_free_space("entering register_builtin_kernel_providers");
     crate::platform::register_builtin_services();
     crate::service_impl::register_builtin_service_providers();
     crate::drivers::time::register_builtin_service();

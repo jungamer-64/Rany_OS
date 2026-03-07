@@ -106,8 +106,44 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// HCA Capabilities (MAX) の照会
+    pub unsafe fn query_hca_cap_max(&mut self) -> Mlx5Result<()> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+
+        log::info!(target: "mlx5", "Querying HCA Capabilities (MAX)...");
+        *in_mbox = CmdMailbox::zeroed();
+        // Query MAX caps (op_mod = 1)
+        crate::cmd::hca::build_query_hca_cap_input(in_mbox, 0); // 0 = GENERAL
+        in_mbox.data[0x10 + 0x06] |= 1; // set op_mod bit 0 for MAX
+
+        self.execute_cmd_with_uid_candidates(
+            CmdOpcode::QueryHcaCap,
+            self.cmd_in_mbox_device,
+            16,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let cap_view = crate::structs::caps::HcaCapLayout::new(&out_mbox.data);
+
+        log::info!(
+            target: "mlx5",
+            "HCA Max Limits: max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_mkey={}",
+            1 << cap_view.log_max_cq(),
+            1 << cap_view.log_max_sq(),
+            1 << cap_view.log_max_rq(),
+            1 << cap_view.log_max_eq(),
+            1 << cap_view.log_max_mkey(),
+        );
+
+        Ok(())
+    }
+
     /// ドライバの起動時に必要な全 HCA Capability を一気に取得
     pub unsafe fn query_all_caps(&mut self) -> Mlx5Result<()> {
+        self.query_hca_cap_max()?;
         self.query_and_set_hca_cap()?;
         self.query_hca_cap_ethernet()
     }

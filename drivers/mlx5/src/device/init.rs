@@ -7,6 +7,7 @@ use crate::cmd::CmdQueueTransport; // needed for layout parsing
 use crate::cmd::hca::{build_enable_hca_input, build_set_issi_input, VhcaState, build_init_hca_input};
 use crate::cmd::{CmdMailbox, CmdQueue};
 use crate::defs::CmdOpcode;
+use crate::defs::MLX5_CMD_MBOX_SIZE;
 use crate::device::{DeviceState, Mlx5Device};
 use crate::error::{Mlx5Error, Mlx5Result};
 use alloc::vec; // bring `vec!` macro into scope for candidate lists
@@ -283,14 +284,16 @@ impl Mlx5Device {
         // Phase 1: Boot
         log::info!(target: "mlx5", "Phase 1: Waiting for firmware/BAR0 to become accessible...");
         let mut boot_success = false;
-        for retry in 0..5 {
+        // VF では PF による PCI 有効化待ちが発生するため、多めにリトライする（合計約3秒）
+        let max_boot_retries = if self.is_vf() { 15 } else { 5 };
+        for retry in 0..max_boot_retries {
             match self.wait_firmware() {
                 Ok(()) => {
                     boot_success = true;
                     break;
                 }
                 Err(Mlx5Error::DeviceNotReady) if self.is_vf() => {
-                    log::warn!(target: "mlx5", "VF BAR0 not ready (floating), retry {}/5...", retry + 1);
+                    log::warn!(target: "mlx5", "VF BAR0 not ready (floating), retry {}/{}...", retry + 1, max_boot_retries);
                 }
                 Err(e) => return Err(e),
             }
@@ -380,6 +383,25 @@ impl Mlx5Device {
             )?;
         }
         self.query_all_caps()?;
+
+        // Query adapter info (VSD)
+        log::info!(target: "mlx5", "Querying Adapter info...");
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::hca::build_query_adapter_input(in_mbox);
+        if let Ok(()) = self.execute_cmd_with_uid_candidates(
+            CmdOpcode::QueryAdapter,
+            self.cmd_in_mbox_device,
+            16,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        ) {
+            let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+            let vsd = crate::cmd::hca::parse_query_adapter_vsd(out_mbox);
+            // VSD には "ConnectX-5 EN" 等の文字列が含まれる場合がある
+            if let Ok(vsd_str) = core::str::from_utf8(&vsd) {
+                log::info!(target: "mlx5", "Adapter VSD: {}", vsd_str.trim_matches('\0'));
+            }
+        }
 
         // Dynamic resource adjustment based on reported capabilities
         if let Some(caps) = self.hca_caps() {
