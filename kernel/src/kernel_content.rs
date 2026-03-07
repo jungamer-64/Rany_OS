@@ -31,6 +31,7 @@ mod interrupt_macros;
 mod graphics;
 pub mod interrupts;
 pub mod io;
+pub mod drivers;
 mod ipc;
 mod loader;
 mod driver_domain;
@@ -502,9 +503,9 @@ fn init_nvme_controllers() {
             dev.bdf.device(),
             dev.bdf.function(),
         );
-        crate::io::nvme::set_iommu_device(iommu_device);
+        crate::drivers::nvme::set_iommu_device(iommu_device);
 
-        if crate::io::nvme::with_driver(|_| ()).is_some() {
+        if crate::drivers::nvme::with_driver(|_| ()).is_some() {
             info!(target: "init", "NVMe driver already initialized, skipping");
             continue;
         }
@@ -533,19 +534,19 @@ fn init_single_nvme_controller(dev: &pci_driver::PciDeviceInfo, nvme_controller_
     };
 
     let num_cores = crate::smp::cpu_count();
-    let packed_device_id = crate::io::nvme::iommu_device().map(|d| {
+    let packed_device_id = crate::drivers::nvme::iommu_device().map(|d| {
         ((d.segment as u64) << 32)
             | ((d.bus as u64) << 16)
             | ((d.device as u64) << 8)
             | (d.function as u64)
     });
-    match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
+    match crate::drivers::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
         Ok(()) => {
             info!(target: "init", "NVMe driver initialized (polling)");
-            let apic_id = crate::io::apic::local_apic().id() as u32;
+            let apic_id = crate::drivers::apic::local_apic().id() as u32;
             let core_id = crate::smp::current_cpu();
-            crate::io::nvme::per_core::register_apic_mapping(apic_id, core_id);
-            if let Err(e) = crate::io::nvme::register_with_io_scheduler(nvme_controller_id, 1, num_cores) {
+            crate::drivers::nvme::per_core::register_apic_mapping(apic_id, core_id);
+            if let Err(e) = crate::drivers::nvme::register_with_io_scheduler(nvme_controller_id, 1, num_cores) {
                 warn!(target: "init", "NVMe IoScheduler registration failed: {}", e);
             }
             crate::io::log::early_print("[HEAP_CHECK] after NVMe controller init\n");
@@ -621,11 +622,11 @@ fn init_single_ahci_controller(dev: &pci_driver::PciDeviceInfo) {
         dev.bdf.function(),
     );
 
-    match crate::io::ahci::init_from_pci(base_virt, Some(iommu_device)) {
+    match crate::drivers::ahci::init_from_pci(base_virt, Some(iommu_device)) {
         Ok(controller) => {
             info!(target: "init", "AHCI controller initialized");
             let first_port = controller.lock().get_port_start_index().unwrap_or(0) as u8;
-            crate::io::ahci::register_ahci_with_io_scheduler(controller.clone(), first_port);
+            crate::drivers::ahci::register_ahci_with_io_scheduler(controller.clone(), first_port);
             crate::io::log::early_print("[HEAP_CHECK] after AHCI controller init\n");
             crate::memory::verify_buddy_integrity();
         }

@@ -2,7 +2,7 @@ use super::*;
 
 impl SystemIntegration {
 
-    pub(super) fn init_virtio_gpu_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_gpu_device(&mut self, dev: &crate::drivers::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-GPU at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -29,10 +29,10 @@ impl SystemIntegration {
             let mut initialized_via_pci = false;
             if let Some(transport) = try_create_pci_transport(
                 dev,
-                crate::io::virtio::VirtioDeviceType::Gpu,
+                crate::drivers::virtio::VirtioDeviceType::Gpu,
             ) {
                 match unsafe {
-                    crate::io::gpu::init_virtio_gpu_for_device(
+                    crate::drivers::gpu::init_virtio_gpu_for_device(
                         alloc::boxed::Box::new(transport),
                         iommu_device,
                     )
@@ -53,7 +53,7 @@ impl SystemIntegration {
             if !initialized_via_pci {
                 use alloc::boxed::Box;
                 use crate::driver_registry::{register_driver, driver_registry};
-                use crate::io::gpu::gpu_driver::VirtioGpuDriver;
+                use crate::drivers::gpu::gpu_driver::VirtioGpuDriver;
 
                 let drv = Box::new(VirtioGpuDriver::new(bar0_virt, iommu_device));
                 match register_driver(drv) {
@@ -74,7 +74,7 @@ impl SystemIntegration {
 
     pub(super) fn init_nvme_devices(&mut self) {
         let mut nvme_controller_id: u8 = 0;
-        let nvme_devices = crate::io::pci::find_by_class(0x01, 0x08);
+        let nvme_devices = crate::drivers::pci::find_by_class(0x01, 0x08);
         for dev in nvme_devices {
             self.log(&alloc::format!(
                 "  Initializing NVMe controller at {:02x}:{:02x}.{}",
@@ -92,9 +92,9 @@ impl SystemIntegration {
                 dev.bdf.device(),
                 dev.bdf.function(),
             );
-            crate::io::nvme::set_iommu_device(iommu_device);
+            crate::drivers::nvme::set_iommu_device(iommu_device);
 
-            if crate::io::nvme::with_driver(|_| ()).is_some() {
+            if crate::drivers::nvme::with_driver(|_| ()).is_some() {
                 self.log("    NVMe driver already initialized, skipping");
                 continue;
             }
@@ -112,13 +112,13 @@ impl SystemIntegration {
                         | (dev.bdf.function() as u64),
                 );
 
-                match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
+                match crate::drivers::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
                     Ok(()) => {
                         self.log("    NVMe driver initialized (polling)");
-                        let apic_id = crate::io::apic::local_apic().id() as u32;
+                        let apic_id = crate::drivers::apic::local_apic().id() as u32;
                         let core_id = crate::smp::current_cpu();
-                        crate::io::nvme::per_core::register_apic_mapping(apic_id, core_id);
-                        if let Err(e) = crate::io::nvme::register_with_io_scheduler(
+                        crate::drivers::nvme::per_core::register_apic_mapping(apic_id, core_id);
+                        if let Err(e) = crate::drivers::nvme::register_with_io_scheduler(
                             nvme_controller_id,
                             1,
                             num_cores,
@@ -145,7 +145,7 @@ impl SystemIntegration {
     }
 
     pub(super) fn init_hda_devices(&mut self) {
-        let hda_devices = crate::io::pci::find_by_class(0x04, 0x03);
+        let hda_devices = crate::drivers::pci::find_by_class(0x04, 0x03);
         for dev in hda_devices {
              self.log(&alloc::format!(
                 "  Initializing HDA Audio at {:02x}:{:02x}.{}",
@@ -161,7 +161,7 @@ impl SystemIntegration {
                  let bar0_phys = bar0.base();
                  let bar0_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
                  
-                 use crate::io::audio::hda::HdaDriver;
+                 use crate::drivers::audio::hda::HdaDriver;
                  use crate::driver_registry::{register_driver, driver_registry};
                  use alloc::boxed::Box;
 

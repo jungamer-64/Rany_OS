@@ -528,7 +528,7 @@ pub fn poll_timer_events() {
         if VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
             && VIRTIO_NET_IRQ_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
         {
-            crate::io::virtio::poll_all_virtio_net_queues();
+            crate::drivers::virtio::poll_all_virtio_net_queues();
         }
 
         // PMMメンテナンス (非ISRコンテキスト)
@@ -558,7 +558,7 @@ define_interrupt!(
             crate::io::log::early_print("[INT] keyboard interrupt received\n");
         }
         // Feed scancodes into the async KeyboardStream driver used by ConsoleFrontend.
-        crate::io::hid::keyboard::keyboard_interrupt_handler();
+        crate::drivers::hid::keyboard::keyboard_interrupt_handler();
 
         // Interrupt-Wakerブリッジにキーボード割り込みを通知（設計書 4.2）
         crate::task::interrupt_waker::wake_from_interrupt(
@@ -580,7 +580,7 @@ define_interrupt!(
 define_interrupt!(
     fn com1_interrupt_handler(_stack_frame: InterruptStackFrame) {
         // シリアルポートドライバの割り込みハンドラを呼び出し
-        crate::io::serial::dispatch_interrupt();
+        crate::drivers::serial::dispatch_interrupt();
 
         // Interrupt-Wakerブリッジに通知
         crate::task::interrupt_waker::wake_from_interrupt(
@@ -727,9 +727,9 @@ define_interrupt!(
 /// 同じ IRQ を共有する可能性のある複数のデバイスをチェックする
 fn dispatch_pci_interrupt(irq: u8) {
     // HDA ドライバをチェック
-    let hda_irq = crate::io::audio::hda::get_irq();
+    let hda_irq = crate::drivers::audio::hda::get_irq();
     if hda_irq == irq {
-        crate::io::audio::hda::handle_interrupt();
+        crate::drivers::audio::hda::handle_interrupt();
     }
 
     // VirtIO shared IRQ work is deferred to non-ISR context to avoid lock inversion

@@ -13,6 +13,7 @@ Drivers are intended to be built separately from the kernel core and must not de
 - Drivers may depend on `hal` for hardware access wrappers (MMIO, port I/O, etc.)
 - Drivers SHOULD only use the kernel API for functionalities such as memory allocation and DMA.
 - Drivers that expose a `standalone` feature SHOULD treat it as a complete cell build contract: exported ABI entry symbol plus `kernel_api/cell_runtime`.
+- Kernel code SHOULD access device-facing modules via `crate::drivers::*`, while `crate::io::*` is reserved for kernel-owned I/O infrastructure such as DMA/IOMMU, interrupt routing, and polling.
 
 ## What to do when needing kernel capabilities
 
@@ -37,3 +38,5 @@ Drivers are intended to be built separately from the kernel core and must not de
 If you are unsure whether a symbol belongs to `kernel_api` or `kernel`, prefer adding it to `kernel_api` with a minimal interface that doesn't expose kernel internals.
 
 If you need help migrating an existing driver, ask in a PR and attach a short plan describing the change.
+
+See also: `docs/kernel_driver_boundary.md`

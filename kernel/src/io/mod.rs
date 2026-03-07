@@ -1,16 +1,26 @@
 // ============================================================================
-// I/O Subsystem Module
+// I/O Infrastructure Module
 // 設計書 6: I/Oサブシステム - ゼロコピーとポーリングの極致
 // ============================================================================
+//
+// `crate::io` is the kernel-owned I/O framework layer:
+// - DMA / IOMMU services
+// - interrupt delivery and polling infrastructure
+// - logging and HAL access wrappers
+//
+// Device-facing modules remain here as compatibility shims, but new kernel
+// code should use `crate::drivers::*` as the explicit kernel/driver boundary.
 
 // ============================================================================
 // Submodules
 // ============================================================================
 
+// Driver/bus compatibility shims. Prefer `crate::drivers::*` from new code.
 pub mod acpi;
 pub mod ahci;
 pub mod apic;
 pub mod audio;
+// Kernel-owned infrastructure.
 pub mod dma;
 pub mod gpu;
 pub mod hid;
@@ -71,6 +81,12 @@ pub use iommu::types::{DeviceId, IommuError};
 //
 // For specific subsystems, use direct module paths:
 //
+// - Driver boundary: `use crate::drivers::{nvme, virtio, pci, acpi, ...};`
+// - DMA/IOMMU:       `use crate::io::{dma, iommu};`
+// - Interrupts:      `use crate::io::interrupt_manager;`
+// - Logging/HAL:     `use crate::io::{log, mmio, port_io};`
+//
+// Compatibility paths still exist:
 // - NVMe:        `use crate::io::nvme::{NvmePollingDriver, ...};`
 // - VirtIO:      `use crate::io::virtio::{VirtioBlkDevice, ...};`
 // - PCI:         `use crate::io::pci::{PciDeviceInfo, Bar, ...};`

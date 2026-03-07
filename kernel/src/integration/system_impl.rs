@@ -63,9 +63,9 @@ impl SystemIntegration {
         self.log("Phase 1: ACPI integration");
 
         // Get ACPI information
-        let local_apics = crate::io::acpi::local_apics();
-        let io_apics = crate::io::acpi::io_apics();
-        let pcie_ecam = crate::io::acpi::pcie_ecam_regions();
+        let local_apics = crate::drivers::acpi::local_apics();
+        let io_apics = crate::drivers::acpi::io_apics();
+        let pcie_ecam = crate::drivers::acpi::pcie_ecam_regions();
 
         self.log(&alloc::format!(
             "  Found {} processor(s)",
@@ -84,7 +84,7 @@ impl SystemIntegration {
         }
 
         // Store interrupt overrides
-        let overrides = crate::io::acpi::interrupt_overrides();
+        let overrides = crate::drivers::acpi::interrupt_overrides();
         for ovr in &overrides {
             self.interrupt_router
                 .add_override(ovr.source, ovr.gsi, ovr.polarity, ovr.trigger_mode);
@@ -99,10 +99,10 @@ impl SystemIntegration {
         self.log("Phase 2: PCI bus integration");
 
         // Initialize PCI bus
-        crate::io::pci::init();
+        crate::drivers::pci::init();
 
         // Get all PCI devices
-        let mut devices = crate::io::pci::scan_all_devices();
+        let mut devices = crate::drivers::pci::scan_all_devices();
         self.log(&alloc::format!("  Found {} PCI device(s)", devices.len()));
 
         #[cfg(not(test))]
@@ -172,7 +172,7 @@ impl SystemIntegration {
         ));
 
         // Get PCI devices with MSI capability and allocate vectors
-        let pci_devices = crate::io::pci::scan_all_devices();
+        let pci_devices = crate::drivers::pci::scan_all_devices();
         for pci_dev in &pci_devices {
             for (dev_id, dev_name, pci_loc) in &msi_devices {
                 if pci_loc
@@ -201,8 +201,8 @@ impl SystemIntegration {
                                         vector,
                                     );
                                 }
-                                let accessor = crate::io::pci::legacy::LegacyPciAccessor::new();
-                                crate::io::pci::disable_intx(&accessor, pci_dev);
+                                let accessor = crate::drivers::pci::legacy::LegacyPciAccessor::new();
+                                crate::drivers::pci::disable_intx(&accessor, pci_dev);
                                 crate::io::interrupt_manager::register_handler(
                                     vector,
                                     alloc::boxed::Box::new(|| {
@@ -253,7 +253,7 @@ impl SystemIntegration {
         self.log("Phase 4: Device initialization");
 
         // Initialize VirtIO devices
-        let virtio_devices = crate::io::pci::find_virtio_devices();
+        let virtio_devices = crate::drivers::pci::find_virtio_devices();
         self.log(&alloc::format!(
             "  Found {} virtio device(s) during PCI scan",
             virtio_devices.len()
@@ -292,7 +292,7 @@ impl SystemIntegration {
         Ok(())
     }
 
-    pub(super) fn init_virtio_blk_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_blk_device(&mut self, dev: &crate::drivers::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Blk at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -320,10 +320,10 @@ impl SystemIntegration {
             let mut initialized_via_pci = false;
             if let Some(transport) = try_create_pci_transport(
                 dev,
-                crate::io::virtio::VirtioDeviceType::Block,
+                crate::drivers::virtio::VirtioDeviceType::Block,
             ) {
                 match unsafe {
-                    crate::io::virtio::init_virtio_blk_with_transport(
+                    crate::drivers::virtio::init_virtio_blk_with_transport(
                         alloc::boxed::Box::new(transport),
                         Some(iommu_device),
                     )
@@ -332,7 +332,7 @@ impl SystemIntegration {
                         self.log("    VirtIO-blk PCI transport initialized");
                         initialized_via_pci = true;
                         // IoScheduler に登録
-                        crate::io::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
+                        crate::drivers::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
                         self.log("    VirtIO-blk registered with IoScheduler");
                     }
                     Err(e) => {
@@ -347,7 +347,7 @@ impl SystemIntegration {
             if !initialized_via_pci {
                 use alloc::boxed::Box;
                 use crate::driver_registry::{register_driver, driver_registry};
-                use crate::io::virtio::VirtioBlkDriver;
+                use crate::drivers::virtio::VirtioBlkDriver;
 
                 let drv = Box::new(VirtioBlkDriver::new(bar0_virt, iommu_device));
                 match register_driver(drv) {
@@ -357,7 +357,7 @@ impl SystemIntegration {
                         } else {
                             self.log("    VirtIO-blk driver initialized via DriverRegistry");
                             // IoScheduler に登録
-                            crate::io::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
+                            crate::drivers::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
                             self.log("    VirtIO-blk registered with IoScheduler");
                         }
                     }
@@ -384,7 +384,7 @@ impl SystemIntegration {
         }
     }
 
-    pub(super) fn init_virtio_net_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_net_device(&mut self, dev: &crate::drivers::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Net at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -410,12 +410,12 @@ impl SystemIntegration {
         crate::io::log::early_print("[VIRTIO-DBG] trying PCI transport...\n");
         if let Some(transport) = try_create_pci_transport(
             dev,
-            crate::io::virtio::VirtioDeviceType::Network,
+            crate::drivers::virtio::VirtioDeviceType::Network,
         ) {
             crate::io::log::early_print("[VIRTIO-DBG] PCI transport created, init bridge...\n");
             let _ = crate::net::runtime::bridge::init_bridge();
             crate::io::log::early_print("[VIRTIO-DBG] bridge init done, init device...\n");
-            match crate::io::virtio::init_virtio_net_with_transport(
+            match crate::drivers::virtio::init_virtio_net_with_transport(
                 alloc::boxed::Box::new(transport),
                 Some(iommu_device),
             ) {
@@ -457,7 +457,7 @@ impl SystemIntegration {
         }
     }
 
-    pub(super) fn init_virtio_console_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_console_device(&mut self, dev: &crate::drivers::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Console at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -484,10 +484,10 @@ impl SystemIntegration {
             let mut initialized_via_pci = false;
             if let Some(transport) = try_create_pci_transport(
                 dev,
-                crate::io::virtio::VirtioDeviceType::Console,
+                crate::drivers::virtio::VirtioDeviceType::Console,
             ) {
                 match unsafe {
-                    crate::io::virtio::init_virtio_console_with_transport(
+                    crate::drivers::virtio::init_virtio_console_with_transport(
                         alloc::boxed::Box::new(transport),
                         Some(iommu_device),
                     )
@@ -508,7 +508,7 @@ impl SystemIntegration {
             if !initialized_via_pci {
                 use alloc::boxed::Box;
                 use crate::driver_registry::{register_driver, driver_registry};
-                use crate::io::virtio::VirtioConsoleDriver;
+                use crate::drivers::virtio::VirtioConsoleDriver;
 
                 let drv = Box::new(VirtioConsoleDriver::new(bar0_virt, iommu_device));
                 match register_driver(drv) {
@@ -527,7 +527,7 @@ impl SystemIntegration {
         }
     }
 
-    pub(super) fn init_virtio_input_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_input_device(&mut self, dev: &crate::drivers::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Input at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -554,10 +554,10 @@ impl SystemIntegration {
             let mut initialized_via_pci = false;
             if let Some(transport) = try_create_pci_transport(
                 dev,
-                crate::io::virtio::VirtioDeviceType::Input,
+                crate::drivers::virtio::VirtioDeviceType::Input,
             ) {
                 match unsafe {
-                    crate::io::virtio::init_virtio_input_with_transport(
+                    crate::drivers::virtio::init_virtio_input_with_transport(
                         alloc::boxed::Box::new(transport),
                         Some(iommu_device),
                     )
@@ -578,7 +578,7 @@ impl SystemIntegration {
             if !initialized_via_pci {
                 use alloc::boxed::Box;
                 use crate::driver_registry::{register_driver, driver_registry};
-                use crate::io::virtio::VirtioInputDriver;
+                use crate::drivers::virtio::VirtioInputDriver;
 
                 let drv = Box::new(VirtioInputDriver::new(bar0_virt, iommu_device));
                 match register_driver(drv) {
@@ -597,7 +597,7 @@ impl SystemIntegration {
         }
     }
 
-    pub(super) fn init_virtio_balloon_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_balloon_device(&mut self, dev: &crate::drivers::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Balloon at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -624,10 +624,10 @@ impl SystemIntegration {
             let mut initialized_via_pci = false;
             if let Some(transport) = try_create_pci_transport(
                 dev,
-                crate::io::virtio::VirtioDeviceType::Balloon,
+                crate::drivers::virtio::VirtioDeviceType::Balloon,
             ) {
                 match unsafe {
-                    crate::io::virtio::init_virtio_balloon_with_transport(
+                    crate::drivers::virtio::init_virtio_balloon_with_transport(
                         alloc::boxed::Box::new(transport),
                         Some(iommu_device),
                     )
@@ -648,7 +648,7 @@ impl SystemIntegration {
             if !initialized_via_pci {
                 use alloc::boxed::Box;
                 use crate::driver_registry::{register_driver, driver_registry};
-                use crate::io::virtio::VirtioBalloonDriver;
+                use crate::drivers::virtio::VirtioBalloonDriver;
 
                 let drv = Box::new(VirtioBalloonDriver::new(bar0_virt, iommu_device));
                 match register_driver(drv) {

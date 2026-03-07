@@ -381,6 +381,8 @@ pub mod domain;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod driver_domain;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod drivers;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod error;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod interrupts;
