@@ -125,7 +125,8 @@ async fn network_bootstrap_task() {
     // 非同期ping: ゲートウェイへの接続性確認
     let ping_target = if dhcp_bound {
         // DHCP取得済みの場合、スタックからゲートウェイを読む（非同期版使用）
-        crate::net::api::config::get_network_config_async().await
+        crate::net::api::config::get_network_config_async()
+            .await
             .and_then(|cfg| {
                 let gw = cfg.gateway;
                 if gw != [0, 0, 0, 0] { Some(gw) } else { None }
@@ -175,14 +176,11 @@ async fn network_bootstrap_task() {
     );
 }
 
-/// カーネルタスクをスポーン
-pub(crate) fn spawn_kernel_tasks(
+fn spawn_shell_tasks(
     executor: &mut task::Executor,
     shell_mode: crate::shell::session::ShellLaunchMode,
 ) {
     use crate::shell::session::{ShellLaunchMode, spawn_console_shell, spawn_serial_shell};
-    use ipc::RRef;
-    use task::Task;
 
     match shell_mode {
         ShellLaunchMode::Console => spawn_console_shell(executor),
@@ -195,6 +193,10 @@ pub(crate) fn spawn_kernel_tasks(
             info!(target: "init", "Shell launch disabled by cmdline (shell=off)");
         }
     }
+}
+
+pub(crate) fn spawn_core_runtime_tasks(executor: &mut task::Executor) {
+    use task::Task;
 
     // === ネットワークブートストラップ（完全非同期） ===
     // VirtIO-Netドライバ登録 → DHCP → ping をExecutor上で非同期実行
@@ -202,7 +204,9 @@ pub(crate) fn spawn_kernel_tasks(
     info!(target: "init", "Network bootstrap task spawned (async)");
 
     // IOMMU フォルトハンドラタスク: ISRがキューに積んだフォルトイベントを定期的にdrainする
-    executor.spawn(Task::new(crate::io::iommu::vendors::intel::controller::fault::fault_handler_task()));
+    executor.spawn(Task::new(
+        crate::io::iommu::vendors::intel::controller::fault::fault_handler_task(),
+    ));
     info!(target: "init", "IOMMU fault handler task spawned");
 
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
@@ -213,10 +217,19 @@ pub(crate) fn spawn_kernel_tasks(
 
     // Initialize network event handler and spawn the background task for async networking
     crate::net::l4::endpoint::handler::init_network_event_handler();
-    executor.spawn(crate::task::Task::new(crate::net::l4::endpoint::tcp_rx::network_event_task()));
+    executor.spawn(crate::task::Task::new(
+        crate::net::l4::endpoint::tcp_rx::network_event_task(),
+    ));
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)
-    executor.spawn(crate::task::Task::new(crate::net::runtime::stack::async_timeout_task()));
+    executor.spawn(crate::task::Task::new(
+        crate::net::runtime::stack::async_timeout_task(),
+    ));
+}
+
+pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
+    use ipc::RRef;
+    use task::Task;
 
     // ドメイン1を作成：ユーザーアプリケーション
     let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))
@@ -418,6 +431,13 @@ pub(crate) fn spawn_kernel_tasks(
     }));
     */
     crate::io::log::early_print("[INITDBG] spawn_kernel_tasks complete\n");
+}
+
+/// カーネルタスクをスポーン
+pub(crate) fn spawn_kernel_tasks(executor: &mut task::Executor, context: &KernelBootContext) {
+    spawn_shell_tasks(executor, context.shell_mode);
+    spawn_core_runtime_tasks(executor);
+    spawn_demo_runtime_tasks(executor);
 }
 
 /// システム統計を表示
