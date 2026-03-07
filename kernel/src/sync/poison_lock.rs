@@ -112,6 +112,15 @@ pub struct PoisonLock<T: ?Sized> {
 unsafe impl<T: ?Sized + Send> Sync for PoisonLock<T> {}
 unsafe impl<T: ?Sized + Send> Send for PoisonLock<T> {}
 
+#[cfg(any(not(test), not(feature = "std")))]
+#[inline]
+fn lock_stats_tick() -> u64 {
+    // Lock acquisition accounting must not depend on provider-registered services.
+    // During early boot the provider registry itself uses PoisonLock, so routing
+    // through drivers::time/service tables would recurse back into this lock path.
+    crate::time::current_tick()
+}
+
 impl<T> PoisonLock<T> {
     /// 新しいPoisonLockを作成
     pub const fn new(data: T) -> Self {
@@ -132,7 +141,7 @@ impl<T> PoisonLock<T> {
         #[cfg(all(test, feature = "std"))]
         let start = std::time::Instant::now();
         #[cfg(any(not(test), not(feature = "std")))]
-        let start = crate::task::timer::current_tick();
+        let start = lock_stats_tick();
 
         let mut spin_count: u64 = 0;
         let mut backoff = Backoff::new();
@@ -149,7 +158,7 @@ impl<T> PoisonLock<T> {
         #[cfg(all(test, feature = "std"))]
         let acquire_time = std::time::Instant::now().duration_since(start).as_micros() as u64;
         #[cfg(any(not(test), not(feature = "std")))]
-        let acquire_time = crate::task::timer::current_tick().saturating_sub(start);
+        let acquire_time = lock_stats_tick().saturating_sub(start);
 
         LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
         LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
@@ -176,7 +185,7 @@ impl<T> PoisonLock<T> {
         #[cfg(all(test, feature = "std"))]
         let start = std::time::Instant::now();
         #[cfg(any(not(test), not(feature = "std")))]
-        let start = crate::task::timer::current_tick();
+        let start = lock_stats_tick();
 
         if self
             .locked
@@ -186,7 +195,7 @@ impl<T> PoisonLock<T> {
             #[cfg(all(test, feature = "std"))]
             let acquire_time = std::time::Instant::now().duration_since(start).as_micros() as u64;
             #[cfg(any(not(test), not(feature = "std")))]
-            let acquire_time = crate::task::timer::current_tick().saturating_sub(start);
+            let acquire_time = lock_stats_tick().saturating_sub(start);
 
             LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
             LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);

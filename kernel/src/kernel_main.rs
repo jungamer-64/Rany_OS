@@ -419,9 +419,19 @@ fn register_spl_kernel_services() {
 
 fn register_builtin_kernel_providers() {
     log_stack_free_space("entering register_builtin_kernel_providers");
+    info!(target: "init", "Registering builtin platform providers...");
     crate::platform::register_builtin_services();
+    info!(target: "init", "Builtin platform providers registered");
+    log_stack_free_space("after builtin platform providers");
+
+    info!(target: "init", "Registering builtin kernel service providers...");
     crate::service_impl::register_builtin_service_providers();
+    info!(target: "init", "Builtin kernel service providers registered");
+    log_stack_free_space("after builtin kernel service providers");
+
+    info!(target: "init", "Registering builtin time provider...");
     crate::drivers::time::register_builtin_service();
+    info!(target: "init", "Builtin time provider registered");
     info!(target: "init", "Kernel providers registered");
 }
 

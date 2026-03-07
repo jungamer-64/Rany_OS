@@ -126,13 +126,18 @@ fn init_idt() {
         exceptions::general_protection_fault_handler
             as extern "x86-interrupt" fn(InterruptStackFrame, u64)
     ));
-    idt.page_fault.set_handler_fn(handler_to_x86!(
+    let page_fault_handler = handler_to_x86!(
         exceptions::page_fault_handler
             as extern "x86-interrupt" fn(
                 InterruptStackFrame,
                 x86_64::structures::idt::PageFaultErrorCode,
             )
-    ));
+    );
+    unsafe {
+        idt.page_fault
+            .set_handler_fn(page_fault_handler)
+            .set_stack_index(gdt::PAGE_FAULT_IST_INDEX);
+    }
     idt.alignment_check.set_handler_fn(handler_to_x86!(
         exceptions::alignment_check_handler as extern "x86-interrupt" fn(InterruptStackFrame, u64)
     ));
