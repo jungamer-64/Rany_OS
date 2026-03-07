@@ -206,12 +206,35 @@ pub const MLX5_PAGE_SIZE: usize = 4096;
 // Command Interface
 // ============================================================================
 
-/// コマンドメールボックスサイズ (16KB)
-/// Chained blocks を考慮して 16KB に拡張（以前は 8KB）
+/// コマンドメールボックスの論理サイズ (16KB)
 pub const MLX5_CMD_MBOX_SIZE: usize = 16384;
 
-/// コマンド入力最大サイズ (512 - 64 = 448 bytes per block)
-pub const MLX5_CMD_DATA_BLOCK_SIZE: usize = 448;
+/// 記述子に inline で載る mailbox 先頭データ長
+pub const MLX5_CMD_INLINE_SIZE: usize = 16;
+
+/// chained mailbox block の payload サイズ
+pub const MLX5_CMD_DATA_BLOCK_SIZE: usize = 512;
+
+/// Linux `struct mlx5_cmd_prot_block` の実サイズ
+pub const MLX5_CMD_PROT_BLOCK_SIZE: usize = 576;
+
+/// Linux dma_pool と同じ mailbox block のアラインメント
+pub const MLX5_CMD_PROT_BLOCK_ALIGN: usize = 1024;
+
+pub const fn mlx5_cmd_chained_blocks(len: usize) -> usize {
+    if len <= MLX5_CMD_INLINE_SIZE {
+        0
+    } else {
+        (len - MLX5_CMD_INLINE_SIZE + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE
+    }
+}
+
+pub const fn mlx5_cmd_mailbox_backing_size(len: usize) -> usize {
+    mlx5_cmd_chained_blocks(len) * MLX5_CMD_PROT_BLOCK_ALIGN
+}
+
+/// 16KB 論理 mailbox を保持するために必要な DMA backing size
+pub const MLX5_CMD_MBOX_BACKING_SIZE: usize = mlx5_cmd_mailbox_backing_size(MLX5_CMD_MBOX_SIZE);
 
 /// コマンドインタフェースの最大同時実行コマンド数
 pub const MLX5_MAX_COMMANDS: usize = 32;
@@ -374,56 +397,38 @@ pub enum CmdOpcode {
 // Command Status Codes
 // ============================================================================
 
-/// コマンド実行ステータス
-#[repr(u8)]
+/// コマンド descriptor delivery ステータス
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CmdStatus {
-    /// 成功
-    Ok = 0x00,
-    /// 内部エラー
-    InternalError = 0x01,
-    /// 不正なオペコード
-    BadOpcode = 0x02,
-    /// 不正な引数
-    BadParam = 0x03,
-    /// 不正なリソース状態
-    BadResourceState = 0x04,
-    /// リソース不足
-    NoResources = 0x05,
-    /// リソースが使用中
-    ResourceBusy = 0x06,
-    /// 入力長エラー
-    InputLenErr = 0x07,
-    /// 出力長エラー
-    OutputLenErr = 0x08,
-    /// 不正なリソースID
-    BadResource = 0x09,
-    /// 不正なサイズ
-    BadInputLen = 0x0A,
-    /// 不正な出力サイズ
-    BadOutputLen = 0x0B,
-    /// 未知のコマンド
-    UnknownCommand = 0x51,
+pub enum CmdDeliveryStatus {
+    Ok,
+    SignatureError,
+    TokenError,
+    BadBlockNumber,
+    OutPointerAlignment,
+    InPointerAlignment,
+    FirmwareError,
+    InputLengthError,
+    OutputLengthError,
+    ReservedFieldsNotClear,
+    DescriptorError,
+    Unknown(u8),
 }
 
-impl CmdStatus {
-    /// Convert from raw u8 value
+impl CmdDeliveryStatus {
     pub fn from_u8(val: u8) -> Self {
         match val {
             0x00 => Self::Ok,
-            0x01 => Self::InternalError,
-            0x02 => Self::BadOpcode,
-            0x03 => Self::BadParam,
-            0x04 => Self::BadResourceState,
-            0x05 => Self::NoResources,
-            0x06 => Self::ResourceBusy,
-            0x07 => Self::InputLenErr,
-            0x08 => Self::OutputLenErr,
-            0x09 => Self::BadResource,
-            0x0A => Self::BadInputLen,
-            0x0B => Self::BadOutputLen,
-            0x51 => Self::UnknownCommand,
-            _ => Self::InternalError,
+            0x01 => Self::SignatureError,
+            0x02 => Self::TokenError,
+            0x03 => Self::BadBlockNumber,
+            0x04 => Self::OutPointerAlignment,
+            0x05 => Self::InPointerAlignment,
+            0x06 => Self::FirmwareError,
+            0x07 => Self::InputLengthError,
+            0x08 => Self::OutputLengthError,
+            0x09 => Self::ReservedFieldsNotClear,
+            0x10 => Self::DescriptorError,
+            other => Self::Unknown(other),
         }
     }
 }

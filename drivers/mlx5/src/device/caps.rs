@@ -40,16 +40,28 @@ impl Mlx5Device {
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let cap_view = crate::structs::caps::HcaCapLayout::new(&out_mbox.data);
+        let cap_data = &out_mbox.data[0x10..];
+        let cap_view = crate::structs::caps::HcaCapLayout::new(cap_data);
+        let pow2 = |field: &str, shift: u32| -> u32 {
+            1u32.checked_shl(shift).unwrap_or_else(|| {
+                log::warn!(
+                    target: "mlx5",
+                    "Ignoring out-of-range {} shift {} from QUERY_HCA_CAP",
+                    field,
+                    shift
+                );
+                0
+            })
+        };
 
         let mut caps = HcaCaps::default();
 
         // Use structured layout accessors
-        caps.max_cq = 1 << cap_view.log_max_cq();
-        caps.max_sq = 1 << cap_view.log_max_sq();
-        caps.max_rq = 1 << cap_view.log_max_rq();
-        caps.max_eq = 1 << cap_view.log_max_eq();
-        caps.max_mkey = 1 << cap_view.log_max_mkey();
+        caps.max_cq = pow2("log_max_cq", cap_view.log_max_cq());
+        caps.max_sq = pow2("log_max_sq", cap_view.log_max_sq());
+        caps.max_rq = pow2("log_max_rq", cap_view.log_max_rq());
+        caps.max_eq = pow2("log_max_eq", cap_view.log_max_eq());
+        caps.max_mkey = pow2("log_max_mkey", cap_view.log_max_mkey());
         caps.num_ports = cap_view.num_ports() as u8;
         caps.max_mtu = cap_view.max_mtu();
         caps.vport_group_manager = cap_view.vport_group_manager();
@@ -63,12 +75,12 @@ impl Mlx5Device {
 
         // TSO (TCP Segmentation Offload) の取得
         // byte 0x11 (dword 4): bit 29: tso_ipv4, bit 28: tso_ipv6
-        caps.tso_ipv4 = (out_mbox.data[0x10 + 0x11] & 0x20) != 0;
-        caps.tso_ipv6 = (out_mbox.data[0x10 + 0x11] & 0x10) != 0;
+        caps.tso_ipv4 = (cap_data[0x11] & 0x20) != 0;
+        caps.tso_ipv6 = (cap_data[0x11] & 0x10) != 0;
 
         // 最大 SGE 数 (Scatter/Gather Entry) の取得
         // byte 0x12 (dword 4): [31:24] log_max_sge_sz
-        caps.max_sge = 1 << (out_mbox.data[0x10 + 0x12] >> 4);
+        caps.max_sge = pow2("log_max_sge", (cap_data[0x12] >> 4) as u32).min(u8::MAX as u32) as u8;
 
         // MSI-X 制限の取得
         // byte 0x3c (dword 15): [31:0] max_num_eqs
@@ -78,8 +90,8 @@ impl Mlx5Device {
         caps.max_msix = max_msix;
 
         // Timestamp formats (dw1: bits 15:14 rq_ts_format, 13:12 sq_ts_format)
-        caps.rq_ts_format = (out_mbox.data[0x10 + 0x04 + 2] >> 6) & 0x03;
-        caps.sq_ts_format = (out_mbox.data[0x10 + 0x04 + 2] >> 4) & 0x03;
+        caps.rq_ts_format = (cap_data[0x06] >> 6) & 0x03;
+        caps.sq_ts_format = (cap_data[0x06] >> 4) & 0x03;
         
         // Device frequency (dw15: 0x3C-0x3F)
         caps.device_frequency_khz = out_mbox.read_be32(0x10 + 0x3c);
@@ -175,16 +187,17 @@ impl Mlx5Device {
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let cap_view = crate::structs::caps::HcaCapLayout::new(&out_mbox.data);
+        let cap_view = crate::structs::caps::HcaCapLayout::new(&out_mbox.data[0x10..]);
+        let pow2 = |shift: u32| 1u32.checked_shl(shift).unwrap_or(0);
 
         log::info!(
             target: "mlx5",
             "HCA Max Limits: max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_mkey={}",
-            1 << cap_view.log_max_cq(),
-            1 << cap_view.log_max_sq(),
-            1 << cap_view.log_max_rq(),
-            1 << cap_view.log_max_eq(),
-            1 << cap_view.log_max_mkey(),
+            pow2(cap_view.log_max_cq()),
+            pow2(cap_view.log_max_sq()),
+            pow2(cap_view.log_max_rq()),
+            pow2(cap_view.log_max_eq()),
+            pow2(cap_view.log_max_mkey()),
         );
 
         Ok(())

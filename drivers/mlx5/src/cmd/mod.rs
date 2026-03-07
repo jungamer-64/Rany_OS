@@ -5,9 +5,13 @@
 //!
 //! HCAファームウェアとのメールボックスベースのコマンド送受信を管理する。
 
-use crate::defs::{CmdOpcode, CmdStatus, MLX5_CMD_DATA_BLOCK_SIZE, MLX5_CMD_MBOX_SIZE};
+use crate::defs::{
+    CmdDeliveryStatus, CmdOpcode, MLX5_CMD_DATA_BLOCK_SIZE, MLX5_CMD_INLINE_SIZE,
+    MLX5_CMD_MBOX_BACKING_SIZE, MLX5_CMD_MBOX_SIZE, MLX5_CMD_PROT_BLOCK_ALIGN,
+};
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::regs::cmd_entry;
+use core::mem::size_of;
 use core::sync::atomic::{Ordering, fence};
 
 pub mod flow;
@@ -156,8 +160,12 @@ impl CmdEntry {
         (self.raw[cmd_entry::STATUS_OWN] & 0x01) != 0
     }
 
-    pub fn status(&self) -> CmdStatus {
-        CmdStatus::from_u8(self.raw[cmd_entry::STATUS_OWN] >> 1)
+    pub fn delivery_status_raw(&self) -> u8 {
+        self.raw[cmd_entry::STATUS_OWN] >> 1
+    }
+
+    pub fn delivery_status(&self) -> CmdDeliveryStatus {
+        CmdDeliveryStatus::from_u8(self.delivery_status_raw())
     }
 
     fn write_be32(&mut self, offset: usize, value: u32) {
@@ -209,11 +217,13 @@ struct CmdProtBlock {
     sig: u8,
 }
 
+const CMD_BLOCK_SIZE: usize = size_of::<CmdProtBlock>();
+
 pub type CmdQueue = CmdQueueTransport;
 
 impl CmdQueueTransport {
     pub fn opcode_uses_uid(opcode: CmdOpcode) -> bool {
-        matches!(opcode, CmdOpcode::QueryVhcaState | CmdOpcode::ModifyVhcaState)
+        !matches!(opcode, CmdOpcode::QueryVhcaState | CmdOpcode::ModifyVhcaState)
     }
 
     pub fn parse_hw_cmdq_layout(cmdq_addr_l_sz: u32) -> (u8, u8, bool) {
@@ -258,8 +268,8 @@ impl CmdQueueTransport {
             // Fresh DMA buffers may retain stale owner bits from prior use. Clear the
             // command queue and mailboxes before exposing them to the device.
             core::ptr::write_bytes(cmdq_virt as *mut u8, 0, cmdq_bytes);
-            core::ptr::write_bytes(in_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_SIZE);
-            core::ptr::write_bytes(out_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_SIZE);
+            core::ptr::write_bytes(in_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_BACKING_SIZE);
+            core::ptr::write_bytes(out_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_BACKING_SIZE);
         }
         Ok(Self {
             cmdq_phys,
@@ -289,93 +299,130 @@ impl CmdQueueTransport {
         sum
     }
 
+    fn chained_block_count(len: usize) -> usize {
+        if len <= MLX5_CMD_INLINE_SIZE {
+            0
+        } else {
+            (len - MLX5_CMD_INLINE_SIZE + MLX5_CMD_DATA_BLOCK_SIZE - 1)
+                / MLX5_CMD_DATA_BLOCK_SIZE
+        }
+    }
+
+    fn validate_mailbox_len(dir: &str, len: usize) -> Mlx5Result<()> {
+        if len > MLX5_CMD_MBOX_SIZE {
+            log::error!(
+                target: "mlx5",
+                "{} mailbox length {} exceeds logical mailbox size {}",
+                dir,
+                len,
+                MLX5_CMD_MBOX_SIZE
+            );
+            return Err(Mlx5Error::InvalidParameter);
+        }
+        let num_blocks = Self::chained_block_count(len);
+        let storage = num_blocks
+            .checked_mul(MLX5_CMD_PROT_BLOCK_ALIGN)
+            .ok_or(Mlx5Error::InvalidParameter)?;
+        if storage > MLX5_CMD_MBOX_BACKING_SIZE {
+            log::error!(
+                target: "mlx5",
+                "{} mailbox backing overflow: len={} blocks={} storage={}",
+                dir,
+                len,
+                num_blocks,
+                storage
+            );
+            return Err(Mlx5Error::InvalidParameter);
+        }
+        Ok(())
+    }
+
+    fn block_phys(base_phys: u64, index: usize) -> u64 {
+        base_phys + (index * MLX5_CMD_PROT_BLOCK_ALIGN) as u64
+    }
+
+    unsafe fn block_ptr(base_virt: u64, index: usize) -> *mut CmdProtBlock {
+        (base_virt as *mut u8).add(index * MLX5_CMD_PROT_BLOCK_ALIGN) as *mut CmdProtBlock
+    }
+
     unsafe fn finalize_block(block_ptr: *mut CmdProtBlock, token: u8, block_num: u32, next: u64) {
         let block = &mut *block_ptr;
-        block.next = next;
-        block.block_num = block_num;
+        block.next = next.to_be();
+        block.block_num = block_num.to_be();
         block.rsvd1 = 0;
         block.token = token;
         block.ctrl_sig = 0;
         block.sig = 0;
 
-        let block_bytes = core::slice::from_raw_parts(block_ptr as *const u8, 512);
+        let block_bytes = core::slice::from_raw_parts(block_ptr as *const u8, CMD_BLOCK_SIZE);
         block.ctrl_sig = !Self::xor8(
             &block_bytes[MLX5_CMD_DATA_BLOCK_SIZE..MLX5_CMD_DATA_BLOCK_SIZE + 62],
         );
-        block.sig = !Self::xor8(&block_bytes[..511]);
+        block.sig = !Self::xor8(&block_bytes[..CMD_BLOCK_SIZE - 1]);
     }
 
-    unsafe fn prepare_in_block(&self, token: u8, in_len: usize, _in_mbox_phys: u64) -> [u8; 16] {
-        let mut in_inline = [0u8; 16];
+    unsafe fn prepare_in_block(
+        &self,
+        token: u8,
+        in_len: usize,
+        in_mbox_phys: u64,
+    ) -> Mlx5Result<[u8; MLX5_CMD_INLINE_SIZE]> {
+        Self::validate_mailbox_len("input", in_len)?;
+        let mut in_inline = [0u8; MLX5_CMD_INLINE_SIZE];
         if in_len == 0 {
-            return in_inline;
+            return Ok(in_inline);
         }
-        let src = core::slice::from_raw_parts(self.in_mbox_virt as *const u8, in_len.min(16));
+        let src = core::slice::from_raw_parts(
+            self.in_mbox_virt as *const u8,
+            in_len.min(MLX5_CMD_INLINE_SIZE),
+        );
         in_inline[..src.len()].copy_from_slice(src);
 
-        if in_len > 16 {
-            let total_payload = in_len - 16;
-            let num_blocks =
-                (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
-            if num_blocks * 512 > MLX5_CMD_MBOX_SIZE {
-                log::error!(target: "mlx5", "Input mailbox overflow: {} blocks requested", num_blocks);
-                return in_inline;
-            }
-            let mut tmp_payload = [0u8; MLX5_CMD_MBOX_SIZE];
-            let copy_len = total_payload.min(MLX5_CMD_MBOX_SIZE);
-            core::ptr::copy_nonoverlapping(
-                (self.in_mbox_virt as *const u8).add(16),
-                tmp_payload.as_mut_ptr(),
-                copy_len,
-            );
-
-            for i in 0..num_blocks {
-                let block_ptr = (self.in_mbox_virt as *mut CmdProtBlock).add(i);
+        if in_len > MLX5_CMD_INLINE_SIZE {
+            let total_payload = in_len - MLX5_CMD_INLINE_SIZE;
+            let num_blocks = Self::chained_block_count(in_len);
+            for i in (0..num_blocks).rev() {
+                let block_ptr = Self::block_ptr(self.in_mbox_virt, i);
+                core::ptr::write_bytes(block_ptr as *mut u8, 0, CMD_BLOCK_SIZE);
                 let block = &mut *block_ptr;
                 let offset = i * MLX5_CMD_DATA_BLOCK_SIZE;
                 let payload_len = (total_payload - offset).min(MLX5_CMD_DATA_BLOCK_SIZE);
-                block.data.fill(0);
-                block.data[..payload_len]
-                    .copy_from_slice(&tmp_payload[offset..offset + payload_len]);
+                let mut payload = [0u8; MLX5_CMD_DATA_BLOCK_SIZE];
+                core::ptr::copy_nonoverlapping(
+                    (self.in_mbox_virt as *const u8).add(MLX5_CMD_INLINE_SIZE + offset),
+                    payload.as_mut_ptr(),
+                    payload_len,
+                );
+                block.data[..payload_len].copy_from_slice(&payload[..payload_len]);
                 let next = if i + 1 < num_blocks {
-                    _in_mbox_phys + ((i + 1) * 512) as u64
+                    Self::block_phys(in_mbox_phys, i + 1)
                 } else {
                     0
                 };
                 Self::finalize_block(block_ptr, token, i as u32, next);
             }
         }
-        in_inline
+        Ok(in_inline)
     }
 
-    unsafe fn prepare_out_block(&self, token: u8, out_len: usize, out_mbox_phys: u64) {
-        if out_len <= 16 {
-            return;
+    unsafe fn prepare_out_block(&self, token: u8, out_len: usize, out_mbox_phys: u64) -> Mlx5Result<()> {
+        Self::validate_mailbox_len("output", out_len)?;
+        if out_len <= MLX5_CMD_INLINE_SIZE {
+            return Ok(());
         }
 
-        let total_payload = out_len - 16;
-        let num_blocks =
-            (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
-        if num_blocks * 512 > MLX5_CMD_MBOX_SIZE {
-            log::error!(
-                target: "mlx5",
-                "Output mailbox overflow: {} blocks requested",
-                num_blocks
-            );
-            return;
-        }
-
+        let num_blocks = Self::chained_block_count(out_len);
         for i in 0..num_blocks {
-            let block_ptr = (self.out_mbox_virt as *mut CmdProtBlock).add(i);
-            let block = &mut *block_ptr;
-            block.data.fill(0);
+            let block_ptr = Self::block_ptr(self.out_mbox_virt, i);
+            core::ptr::write_bytes(block_ptr as *mut u8, 0, CMD_BLOCK_SIZE);
             let next = if i + 1 < num_blocks {
-                out_mbox_phys + ((i + 1) * 512) as u64
+                Self::block_phys(out_mbox_phys, i + 1)
             } else {
                 0
             };
             Self::finalize_block(block_ptr, token, i as u32, next);
         }
+        Ok(())
     }
 
     pub fn setup_cmdq_in_bar0(&mut self) {
@@ -422,12 +469,10 @@ impl CommandTransport for CmdQueueTransport {
 
         let in_mbox = &mut *(self.in_mbox_virt as *mut CmdMailbox);
         in_mbox.write_be16(0x00, opcode as u16);
-        if Self::opcode_uses_uid(opcode) {
-            in_mbox.write_be16(0x02, self.uid);
-        }
+        in_mbox.write_be16(0x02, self.uid);
 
-        let in_inline = self.prepare_in_block(token, in_len as usize, in_mbox_phys);
-        self.prepare_out_block(token, out_len as usize, out_mbox_phys);
+        let in_inline = self.prepare_in_block(token, in_len as usize, in_mbox_phys)?;
+        self.prepare_out_block(token, out_len as usize, out_mbox_phys)?;
         let entry_ptr = self.cmdq_virt as *mut CmdEntry;
         let entry = &mut *entry_ptr;
 
@@ -455,9 +500,13 @@ impl CommandTransport for CmdQueueTransport {
         crate::boot_trace_cmd(opcode, "slot_ready", self.uid);
 
         *entry = CmdEntry::zeroed();
-        entry.set_input_mailbox(in_mbox_phys);
+        if in_len as usize > MLX5_CMD_INLINE_SIZE {
+            entry.set_input_mailbox(in_mbox_phys);
+        }
         entry.set_input_length(in_len);
-        entry.set_output_mailbox(out_mbox_phys);
+        if out_len as usize > MLX5_CMD_INLINE_SIZE {
+            entry.set_output_mailbox(out_mbox_phys);
+        }
         entry.set_output_length(out_len);
         entry.set_input_inline(&in_inline);
         fence(Ordering::Release);
@@ -488,38 +537,58 @@ impl CommandTransport for CmdQueueTransport {
         crate::boot_trace_cmd(opcode, "hw_done", self.uid);
         fence(Ordering::Acquire);
 
-        let status = entry.status();
-        if status != CmdStatus::Ok {
-            let out_mbox = &*(self.out_mbox_virt as *const CmdMailbox);
-            let syndrome = out_mbox.read_be32(0x04);
+        let out_inline = entry.output_inline();
+        let delivery_status_raw = entry.delivery_status_raw();
+        let delivery_status = entry.delivery_status();
+        if delivery_status != CmdDeliveryStatus::Ok {
+            let syndrome = u32::from_be_bytes([out_inline[4], out_inline[5], out_inline[6], out_inline[7]]);
             crate::boot_trace_cmd(opcode, "status_err", self.uid);
-            log::error!(target: "mlx5", "Command failed: opcode={:?} status={:?} syndrome={:#x}", opcode, status, syndrome);
-            // syndrome is currently a 32-bit value returned by the HW;
-            // the error enum only stores an 8‑bit code so truncate.
-            return Err(Mlx5Error::CommandFailed(syndrome as u8));
+            log::error!(
+                target: "mlx5",
+                "Command delivery failed: opcode={:?} delivery={:?} raw={:#x} syndrome={:#x}",
+                opcode,
+                delivery_status,
+                delivery_status_raw,
+                syndrome
+            );
+            return Err(Mlx5Error::CommandFailed(delivery_status_raw));
         }
 
-        if out_len > 16 {
-            let total_payload = out_len as usize - 16;
-            let num_blocks =
-                (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
-            let mut out_payload = [0u8; MLX5_CMD_MBOX_SIZE];
+        core::ptr::copy_nonoverlapping(
+            out_inline.as_ptr(),
+            self.out_mbox_virt as *mut u8,
+            MLX5_CMD_INLINE_SIZE,
+        );
+        if out_len as usize > MLX5_CMD_INLINE_SIZE {
+            let total_payload = out_len as usize - MLX5_CMD_INLINE_SIZE;
+            let num_blocks = Self::chained_block_count(out_len as usize);
             for i in 0..num_blocks {
-                let block = &*(self.out_mbox_virt as *const CmdProtBlock).add(i);
+                let block = &*Self::block_ptr(self.out_mbox_virt, i);
                 let offset = i * MLX5_CMD_DATA_BLOCK_SIZE;
                 let payload_len = (total_payload - offset).min(MLX5_CMD_DATA_BLOCK_SIZE);
-                out_payload[offset..offset + payload_len]
-                    .copy_from_slice(&block.data[..payload_len]);
+                let mut payload = [0u8; MLX5_CMD_DATA_BLOCK_SIZE];
+                payload[..payload_len].copy_from_slice(&block.data[..payload_len]);
+                core::ptr::copy_nonoverlapping(
+                    payload.as_ptr(),
+                    (self.out_mbox_virt as *mut u8).add(MLX5_CMD_INLINE_SIZE + offset),
+                    payload_len,
+                );
             }
-            let dest = (self.out_mbox_virt as *mut u8).add(16);
-            core::ptr::copy_nonoverlapping(
-                out_payload.as_ptr(),
-                dest,
-                total_payload.min(MLX5_CMD_MBOX_SIZE - 16),
-            );
         }
-        let out_inline = entry.output_inline();
-        core::ptr::copy_nonoverlapping(out_inline.as_ptr(), self.out_mbox_virt as *mut u8, 16);
+
+        let fw_status = out_inline[0];
+        if fw_status != 0 {
+            let syndrome = u32::from_be_bytes([out_inline[4], out_inline[5], out_inline[6], out_inline[7]]);
+            crate::boot_trace_cmd(opcode, "status_err", self.uid);
+            log::error!(
+                target: "mlx5",
+                "Command failed: opcode={:?} fw_status={:#x} syndrome={:#x}",
+                opcode,
+                fw_status,
+                syndrome
+            );
+            return Err(Mlx5Error::CommandFailed(fw_status));
+        }
 
         crate::boot_trace_cmd(opcode, "done", self.uid);
         Ok(())

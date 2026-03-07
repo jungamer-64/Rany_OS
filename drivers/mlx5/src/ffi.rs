@@ -20,7 +20,7 @@ use crate::bootstrap::{
     Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion, Mlx5PciIdentity,
     Mlx5QueueDmaRegion, Mlx5QueueProfile,
 };
-use crate::defs::MLX5_CMD_MBOX_SIZE;
+use crate::defs::MLX5_CMD_MBOX_BACKING_SIZE;
 use crate::device::Mlx5Device;
 use crate::error::Mlx5Error;
 
@@ -196,7 +196,7 @@ struct Mlx5DmaResources {
 
 impl Mlx5DmaResources {
     const fn command_mailbox_allocation_size() -> usize {
-        MLX5_CMD_MBOX_SIZE
+        MLX5_CMD_MBOX_BACKING_SIZE
     }
 
     fn device_addresses(slots: &[DmaSlot]) -> Vec<u64> {
@@ -492,7 +492,7 @@ mod tests {
     fn command_mailbox_allocation_size_matches_driver_mailbox_size() {
         assert_eq!(
             Mlx5DmaResources::command_mailbox_allocation_size(),
-            MLX5_CMD_MBOX_SIZE
+            MLX5_CMD_MBOX_BACKING_SIZE
         );
     }
 

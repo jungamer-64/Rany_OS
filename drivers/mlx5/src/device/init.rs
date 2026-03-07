@@ -142,20 +142,35 @@ impl Mlx5Device {
         crate::boot_trace("[MLX5_BOOT] query_issi start\n");
         log::info!(target: "mlx5", "Querying ISSI...");
         *in_mbox = CmdMailbox::zeroed();
-        self.execute_cmd_with_uid_candidates(
+        match self.execute_cmd_with_uid_candidates(
             CmdOpcode::QueryIssi,
             self.cmd_in_mbox_device,
             16,
             self.cmd_out_mbox_device,
             64,
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(Mlx5Error::CommandFailed(status)) if status != 0 => {
+                let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                let syndrome = out_mbox.read_be32(0x04);
+                log::warn!(
+                    target: "mlx5",
+                    "QUERY_ISSI not supported or rejected by FW (status={:#x} syndrome={:#x}); continuing with ISSI 0",
+                    status,
+                    syndrome
+                );
+                self.state = DeviceState::HcaEnabled;
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        }
         crate::boot_trace("[MLX5_BOOT] query_issi done\n");
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let current_issi = out_mbox.read_be16(0x02);
-        let supported_issi = out_mbox.read_be16(0x04);
+        let current_issi = out_mbox.read_be16(0x0a);
+        let supported_issi = out_mbox.read_be32(0x20);
         log::info!(target: "mlx5", "ISSI: current={}, supported={:#x}", current_issi, supported_issi);
 
-        if current_issi == 0 && (supported_issi & 0x01) != 0 {
+        if current_issi == 0 && (supported_issi & (1 << 1)) != 0 {
             log::info!(target: "mlx5", "Setting ISSI to 1...");
             build_set_issi_input(in_mbox, 1);
             self.execute_cmd_with_uid_candidates(
@@ -446,12 +461,49 @@ impl Mlx5Device {
             }
         }
 
-        // Once caps are queried, we know the real vhca_id for the VF.
-        // Update the default UID to avoid unnecessary retries in the candidate loop.
+        if self.is_vf() && self.sw_vhca_id == 0 {
+            match self.query_vhca_state(0) {
+                Ok(vhca_ctx) => {
+                    log::info!(
+                        target: "mlx5",
+                        "Local VF VHCA state: {:?}, sw_function_id={:#x}",
+                        vhca_ctx.state,
+                        vhca_ctx.sw_function_id
+                    );
+                    if vhca_ctx.sw_function_id != 0
+                        && vhca_ctx.sw_function_id <= u16::MAX as u32
+                    {
+                        self.sw_vhca_id = vhca_ctx.sw_function_id as u16;
+                    }
+                    if !vhca_ctx.state.is_activation_ready() {
+                        log::warn!(
+                            target: "mlx5",
+                            "VF VHCA state {:?} is not activation-ready; later resource commands may still fail",
+                            vhca_ctx.state
+                        );
+                    }
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "Failed to query local VF VHCA state after caps query: {:?}",
+                        err
+                    );
+                }
+            }
+        }
+
+        // Once caps/VHCA state are queried, update the default UID used by the
+        // transport. Keep the broadcast UID while the VF-specific UID is unknown.
         if self.is_vf() {
             if let Some(cmd) = self.cmd.as_mut() {
-                cmd.set_uid(self.sw_vhca_id);
-                log::info!(target: "mlx5", "Updated VF command UID to {:#x}", self.sw_vhca_id);
+                let active_uid = if self.sw_vhca_id != 0 {
+                    self.sw_vhca_id
+                } else {
+                    0xFFFF
+                };
+                cmd.set_uid(active_uid);
+                log::info!(target: "mlx5", "Updated VF command UID to {:#x}", active_uid);
             }
         }
 

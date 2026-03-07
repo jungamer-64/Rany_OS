@@ -12,7 +12,7 @@ pub const MLX5_CAP_FLOW_TABLE: u16 = 2;
 
 /// QUERY_ISSI コマンド出力の解析
 pub fn parse_query_issi(out_mbox: &CmdMailbox) -> u32 {
-    let issi = out_mbox.read_be16(0x60);
+    let issi = out_mbox.read_be16(0x0a);
     issi as u32
 }
 

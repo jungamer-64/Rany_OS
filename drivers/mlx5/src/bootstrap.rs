@@ -7,7 +7,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::defs::{
-    MLX5_CMD_MBOX_SIZE, MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH,
+    MLX5_CMD_MBOX_BACKING_SIZE, MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH,
 };
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::regs::{cmd_entry, cqe, eqe, wqe};
@@ -169,7 +169,7 @@ impl Mlx5BootstrapPlan {
         Self {
             queue_profile,
             cmdq_size,
-            cmd_mailbox_size: MLX5_CMD_MBOX_SIZE,
+            cmd_mailbox_size: MLX5_CMD_MBOX_BACKING_SIZE,
             eq_size,
             cq_size,
             sq_size,
