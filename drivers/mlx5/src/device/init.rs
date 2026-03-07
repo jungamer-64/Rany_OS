@@ -312,18 +312,35 @@ impl Mlx5Device {
             }
 
             // Verify that the VF's VHCA is actually ready
-            match self.query_vhca_state(0) {
-                Ok(vhca_ctx) => {
-                    log::info!(target: "mlx5", "VF VHCA state: {:?}", vhca_ctx.state);
-                    if !vhca_ctx.state.is_activation_ready() {
-                        log::error!(target: "mlx5", "VF VHCA not ready for activation ({:?})", vhca_ctx.state);
-                        return Err(Mlx5Error::DeviceNotReady);
+            // PF が VF を有効化するまでに時間がかかる場合があるため、数回リトライする
+            let mut vhca_ready = false;
+            for _ in 0..10 {
+                match self.query_vhca_state(0) {
+                    Ok(vhca_ctx) => {
+                        log::info!(target: "mlx5", "VF VHCA state: {:?}", vhca_ctx.state);
+                        if vhca_ctx.state.is_activation_ready() {
+                            vhca_ready = true;
+                            break;
+                        }
+                        log::warn!(target: "mlx5", "VF VHCA not ready yet ({:?}), retrying...", vhca_ctx.state);
+                    }
+                    Err(e) => {
+                        log::warn!(target: "mlx5", "Failed to query VHCA state for VF: {:?}", e);
+                        // FW によってはこのコマンドを制限している場合があるため、失敗しても続行の余地あり
+                        vhca_ready = true;
+                        break;
                     }
                 }
-                Err(e) => {
-                    log::warn!(target: "mlx5", "Failed to query VHCA state for VF: {:?}", e);
-                    // Continue anyway as some firmware might restrict this command
+                // 100ms 待機
+                let start_ms = kernel_api::service::kernel::instance().current_tick();
+                while kernel_api::service::kernel::instance().current_tick() - start_ms < 100 {
+                    core::hint::spin_loop();
                 }
+            }
+
+            if !vhca_ready {
+                log::error!(target: "mlx5", "VF VHCA activation timed out");
+                return Err(Mlx5Error::DeviceNotReady);
             }
         }
 
@@ -351,6 +368,11 @@ impl Mlx5Device {
                 log::info!(target: "mlx5", "Updated VF command UID to {:#x}", self.sw_vhca_id);
             }
         }
+
+        // SET_HCA_CAP を呼び出して、ドライバ固有の要件に合わせてデバイスを最適化
+        // INIT_HCA の前に実行する必要がある (Linux に倣う)
+        log::info!(target: "mlx5", "Configuring HCA capabilities...");
+        self.set_hca_cap_general()?;
 
         self.init_hca()?;
 

@@ -63,4 +63,48 @@ impl Mlx5Device {
     pub unsafe fn query_all_caps(&mut self) -> Mlx5Result<()> {
         self.query_and_set_hca_cap()
     }
+
+    /// HCA Capabilities を設定 (SET_HCA_CAP)
+    pub unsafe fn set_hca_cap_general(&mut self) -> Mlx5Result<()> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let out_mbox = &mut *(self.cmd_out_mbox_virt as *mut CmdMailbox);
+
+        // 1. まず現在の設定を取得 (op_mod = 0: CURRENT)
+        log::info!(target: "mlx5", "Querying current HCA Capabilities for modification...");
+        *in_mbox = CmdMailbox::zeroed();
+        crate::cmd::hca::build_query_hca_cap_input(in_mbox, 0); // 0 = GENERAL
+        self.execute_cmd_with_uid_candidates(
+            CmdOpcode::QueryHcaCap,
+            self.cmd_in_mbox_device,
+            16,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        // 2. 取得した設定をベースに一部を書き換え
+        // query の出力は mailbox の 0x10 から始まる
+        let mut caps_payload = [0u8; 4096];
+        caps_payload.copy_from_slice(&out_mbox.data[..4096]);
+
+        // Linux の handle_hca_cap に倣い、いくつかのパラメータを最適化
+        // - pkey_table_size = 128 (to_fw_pkey_sz(128) = 1)
+        caps_payload[0x1c] = (caps_payload[0x1c] & 0x3f) | (1 << 6);
+        // - log_uar_page_sz = 0 (for 4K pages)
+        caps_payload[0x0b] = caps_payload[0x0b] & 0xf0;
+        // - cmdif_checksum = 0 (disable)
+        caps_payload[0x01] = caps_payload[0x01] & 0xbf;
+
+        log::info!(target: "mlx5", "Setting modified HCA Capabilities...");
+        crate::cmd::hca::build_set_hca_cap_input(in_mbox, 0, &caps_payload);
+        self.execute_cmd_with_uid_candidates(
+            CmdOpcode::SetHcaCap,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            16,
+        )?;
+
+        Ok(())
+    }
 }
