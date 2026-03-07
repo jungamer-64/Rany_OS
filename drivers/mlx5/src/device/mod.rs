@@ -346,11 +346,32 @@ impl Mlx5Device {
         is_vf: bool,
         sw_vhca_id: u16,
     ) -> Mlx5Result<()> {
+        if !crate::cmd::CmdQueueTransport::opcode_uses_uid(opcode) {
+            return cmd.execute(opcode, in_mbox_phys, in_len, out_mbox_phys, out_len);
+        }
+
         let prev_uid = cmd.uid();
         let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
-        Self::execute_with_uid_candidates(cmd, &uids[..len], |cmd| {
-            cmd.execute(opcode, in_mbox_phys, in_len, out_mbox_phys, out_len)
-        })
+        let mut last_err = Err(Mlx5Error::NotSupported);
+
+        for &uid in &uids[..len] {
+            crate::boot_trace_cmd(opcode, "uid_try", uid);
+            cmd.set_uid(uid);
+            match cmd.execute(opcode, in_mbox_phys, in_len, out_mbox_phys, out_len) {
+                Ok(()) => {
+                    crate::boot_trace_cmd(opcode, "uid_ok", uid);
+                    cmd.set_uid(prev_uid);
+                    return Ok(());
+                }
+                Err(err) => {
+                    crate::boot_trace_cmd(opcode, "uid_err", uid);
+                    last_err = Err(err);
+                }
+            }
+        }
+
+        cmd.set_uid(prev_uid);
+        last_err
     }
 
     /// Execute a command through the standard UID candidate retry path used by

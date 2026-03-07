@@ -189,6 +189,9 @@ impl<'a> QueryHcaCapInputLayout<'a> {
     pub fn set_op_mod(&mut self, val: u16) {
         set_bits_u32(self.data, 48, 16, val as u32);
     }
+    pub fn set_ec_vf_function(&mut self, val: bool) {
+        set_bits_u32(self.data, 65, 1, if val { 1 } else { 0 });
+    }
 }
 
 /// QUERY_NIC_VPORT_CONTEXT Input Layout

@@ -54,6 +54,34 @@ pub mod resources;
 mod structs; // low‑level layout helpers used internally
 pub mod wq;
 
+pub(crate) fn boot_trace(msg: &str) {
+    if let Some(serial) = kernel_api::service::serial::try_instance() {
+        let _ = serial.write(0, msg.as_bytes());
+    }
+}
+
+pub(crate) fn boot_trace_cmd(opcode: defs::CmdOpcode, stage: &str, uid: u16) {
+    if let Some(name) = boot_opcode_name(opcode) {
+        let msg = alloc::format!("[MLX5_CMD] {} {} uid={:#x}\n", name, stage, uid);
+        boot_trace(&msg);
+    }
+}
+
+fn boot_opcode_name(opcode: defs::CmdOpcode) -> Option<&'static str> {
+    match opcode {
+        defs::CmdOpcode::EnableHca => Some("enable_hca"),
+        defs::CmdOpcode::QueryIssi => Some("query_issi"),
+        defs::CmdOpcode::SetIssi => Some("set_issi"),
+        defs::CmdOpcode::QueryHcaCap => Some("query_hca_cap"),
+        defs::CmdOpcode::SetHcaCap => Some("set_hca_cap"),
+        defs::CmdOpcode::InitHca => Some("init_hca"),
+        defs::CmdOpcode::QueryPages => Some("query_pages"),
+        defs::CmdOpcode::ManagePages => Some("manage_pages"),
+        defs::CmdOpcode::QueryAdapter => Some("query_adapter"),
+        _ => None,
+    }
+}
+
 #[inline]
 pub(crate) fn mmio_read_be32(addr: usize) -> u32 {
     u32::from_be(hal::mmio::mmio_read_u32(addr))

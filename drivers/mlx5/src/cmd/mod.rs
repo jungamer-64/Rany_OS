@@ -213,53 +213,7 @@ pub type CmdQueue = CmdQueueTransport;
 
 impl CmdQueueTransport {
     pub fn opcode_uses_uid(opcode: CmdOpcode) -> bool {
-        matches!(
-            opcode,
-            CmdOpcode::QueryHcaCap
-                | CmdOpcode::InitHca
-                | CmdOpcode::EnableHca
-                | CmdOpcode::QueryPages
-                | CmdOpcode::ManagePages
-                | CmdOpcode::QueryIssi
-                | CmdOpcode::SetIssi
-                | CmdOpcode::QueryNicVportContext
-                | CmdOpcode::ModifyNicVportContext
-                | CmdOpcode::QueryVportState
-                | CmdOpcode::ModifyVportState
-                | CmdOpcode::AllocUar
-                | CmdOpcode::DeallocUar
-                | CmdOpcode::AllocPd
-                | CmdOpcode::DeallocPd
-                | CmdOpcode::AllocTransportDomain
-                | CmdOpcode::DeallocTransportDomain
-                | CmdOpcode::CreateEq
-                | CmdOpcode::CreateCq
-                | CmdOpcode::DestroyCq
-                | CmdOpcode::ModifyCq
-                | CmdOpcode::CreateSq
-                | CmdOpcode::DestroySq
-                | CmdOpcode::ModifySq
-                | CmdOpcode::CreateRq
-                | CmdOpcode::DestroyRq
-                | CmdOpcode::ModifyRq
-                | CmdOpcode::CreateTis
-                | CmdOpcode::ModifyTis
-                | CmdOpcode::DestroyTis
-                | CmdOpcode::CreateTir
-                | CmdOpcode::ModifyTir
-                | CmdOpcode::DestroyTir
-                | CmdOpcode::CreateMkey
-                | CmdOpcode::DestroyMkey
-                | CmdOpcode::CreateRqt
-                | CmdOpcode::ModifyRqt
-                | CmdOpcode::DestroyRqt
-                | CmdOpcode::CreateFlowTable
-                | CmdOpcode::DestroyFlowTable
-                | CmdOpcode::CreateFlowGroup
-                | CmdOpcode::DestroyFlowGroup
-                | CmdOpcode::SetFlowTableEntry
-                | CmdOpcode::DeleteFlowTableEntry
-        )
+        matches!(opcode, CmdOpcode::QueryVhcaState | CmdOpcode::ModifyVhcaState)
     }
 
     pub fn parse_hw_cmdq_layout(cmdq_addr_l_sz: u32) -> (u8, u8, bool) {
@@ -294,6 +248,19 @@ impl CmdQueueTransport {
         log_cmd_stride: u8,
     ) -> Mlx5Result<Self> {
         Self::validate_hw_cmdq_layout(log_cmdq_size, log_cmd_stride)?;
+        let cmdq_entries = 1usize
+            .checked_shl(log_cmdq_size as u32)
+            .ok_or(Mlx5Error::NotSupported)?;
+        let cmdq_bytes = cmdq_entries
+            .checked_mul(cmd_entry::ENTRY_SIZE)
+            .ok_or(Mlx5Error::NotSupported)?;
+        unsafe {
+            // Fresh DMA buffers may retain stale owner bits from prior use. Clear the
+            // command queue and mailboxes before exposing them to the device.
+            core::ptr::write_bytes(cmdq_virt as *mut u8, 0, cmdq_bytes);
+            core::ptr::write_bytes(in_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_SIZE);
+            core::ptr::write_bytes(out_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_SIZE);
+        }
         Ok(Self {
             cmdq_phys,
             cmdq_virt,
@@ -320,6 +287,22 @@ impl CmdQueueTransport {
             sum ^= *b;
         }
         sum
+    }
+
+    unsafe fn finalize_block(block_ptr: *mut CmdProtBlock, token: u8, block_num: u32, next: u64) {
+        let block = &mut *block_ptr;
+        block.next = next;
+        block.block_num = block_num;
+        block.rsvd1 = 0;
+        block.token = token;
+        block.ctrl_sig = 0;
+        block.sig = 0;
+
+        let block_bytes = core::slice::from_raw_parts(block_ptr as *const u8, 512);
+        block.ctrl_sig = !Self::xor8(
+            &block_bytes[MLX5_CMD_DATA_BLOCK_SIZE..MLX5_CMD_DATA_BLOCK_SIZE + 62],
+        );
+        block.sig = !Self::xor8(&block_bytes[..511]);
     }
 
     unsafe fn prepare_in_block(&self, token: u8, in_len: usize, _in_mbox_phys: u64) -> [u8; 16] {
@@ -354,28 +337,60 @@ impl CmdQueueTransport {
                 block.data.fill(0);
                 block.data[..payload_len]
                     .copy_from_slice(&tmp_payload[offset..offset + payload_len]);
-                block.token = token;
-                block.block_num = i as u32;
-                block.next = if i + 1 < num_blocks {
+                let next = if i + 1 < num_blocks {
                     _in_mbox_phys + ((i + 1) * 512) as u64
                 } else {
                     0
                 };
-                block.ctrl_sig = 0;
-                block.sig = 0;
-                let block_bytes = core::slice::from_raw_parts(block_ptr as *const u8, 512);
-                block.sig = !Self::xor8(block_bytes);
+                Self::finalize_block(block_ptr, token, i as u32, next);
             }
         }
         in_inline
     }
 
+    unsafe fn prepare_out_block(&self, token: u8, out_len: usize, out_mbox_phys: u64) {
+        if out_len <= 16 {
+            return;
+        }
+
+        let total_payload = out_len - 16;
+        let num_blocks =
+            (total_payload + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE;
+        if num_blocks * 512 > MLX5_CMD_MBOX_SIZE {
+            log::error!(
+                target: "mlx5",
+                "Output mailbox overflow: {} blocks requested",
+                num_blocks
+            );
+            return;
+        }
+
+        for i in 0..num_blocks {
+            let block_ptr = (self.out_mbox_virt as *mut CmdProtBlock).add(i);
+            let block = &mut *block_ptr;
+            block.data.fill(0);
+            let next = if i + 1 < num_blocks {
+                out_mbox_phys + ((i + 1) * 512) as u64
+            } else {
+                0
+            };
+            Self::finalize_block(block_ptr, token, i as u32, next);
+        }
+    }
+
     pub fn setup_cmdq_in_bar0(&mut self) {
         let h = (self.cmdq_phys >> 32) as u32;
-        // combine physical address low32 bits with command queue layout fields
-        let l = (self.cmdq_phys as u32)
-            | ((self.log_cmdq_size as u32) << 4)
-            | (self.log_cmd_stride as u32);
+        if (self.cmdq_phys & 0x0fff) != 0 {
+            log::error!(
+                target: "mlx5",
+                "CMDQ physical address is not 4K-aligned: {:#x}",
+                self.cmdq_phys
+            );
+        }
+
+        // Firmware publishes the command queue layout in this register. The
+        // driver only programs the aligned DMA base address back into BAR0.
+        let l = self.cmdq_phys as u32;
         crate::mmio_write_be32(
             self.bar0_base as usize + crate::regs::init_seg::CMDQ_ADDR_H,
             h,
@@ -397,6 +412,7 @@ impl CommandTransport for CmdQueueTransport {
         out_mbox_phys: u64,
         out_len: u32,
     ) -> Mlx5Result<()> {
+        crate::boot_trace_cmd(opcode, "exec_enter", self.uid);
         let token = self.next_token;
         self.next_token = if self.next_token == 0xFF {
             1
@@ -404,21 +420,41 @@ impl CommandTransport for CmdQueueTransport {
             self.next_token + 1
         };
 
+        let in_mbox = &mut *(self.in_mbox_virt as *mut CmdMailbox);
+        in_mbox.write_be16(0x00, opcode as u16);
         if Self::opcode_uses_uid(opcode) {
-            let in_mbox = &mut *(self.in_mbox_virt as *mut CmdMailbox);
-            in_mbox.write_be16(0x0c, self.uid);
+            in_mbox.write_be16(0x02, self.uid);
         }
 
         let in_inline = self.prepare_in_block(token, in_len as usize, in_mbox_phys);
+        self.prepare_out_block(token, out_len as usize, out_mbox_phys);
         let entry_ptr = self.cmdq_virt as *mut CmdEntry;
         let entry = &mut *entry_ptr;
 
+        crate::boot_trace_cmd(opcode, "wait_slot", self.uid);
+        let queue_wait_start = kernel_api::service::kernel::instance().current_tick();
+        let mut queue_wait_spins = 0u64;
         while entry.is_owned_by_hw() {
+            queue_wait_spins = queue_wait_spins.wrapping_add(1);
+            if queue_wait_spins == 10_000_000 {
+                crate::boot_trace_cmd(opcode, "slot_still_busy", self.uid);
+            }
+            if kernel_api::service::kernel::instance().current_tick() - queue_wait_start > 5000 {
+                crate::boot_trace_cmd(opcode, "slot_timeout", self.uid);
+                log::error!(
+                    target: "mlx5",
+                    "Command queue busy before submit: opcode={:?} token={} uid={:#x}",
+                    opcode,
+                    token,
+                    self.uid
+                );
+                return Err(Mlx5Error::CommandTimeout);
+            }
             core::hint::spin_loop();
         }
+        crate::boot_trace_cmd(opcode, "slot_ready", self.uid);
 
         *entry = CmdEntry::zeroed();
-        entry.write_be32(cmd_entry::OPCODE, (opcode as u32) << 16);
         entry.set_input_mailbox(in_mbox_phys);
         entry.set_input_length(in_len);
         entry.set_output_mailbox(out_mbox_phys);
@@ -427,23 +463,36 @@ impl CommandTransport for CmdQueueTransport {
         fence(Ordering::Release);
         entry.submit(token);
 
+        crate::boot_trace_cmd(opcode, "doorbell", self.uid);
         let doorbell = self.bar0_base as usize + crate::regs::init_seg::CMDQ_DOORBELL;
-        crate::mmio_write_be32(doorbell, 1 << 31);
+        // This transport submits synchronously through slot 0 only, so ring the
+        // doorbell for descriptor bit 0. The register itself is big-endian;
+        // shifting into bit 31 prevents firmware from seeing the command.
+        crate::mmio_write_be32(doorbell, 1);
 
+        crate::boot_trace_cmd(opcode, "wait_hw", self.uid);
         let start_ms = kernel_api::service::kernel::instance().current_tick();
+        let mut hw_wait_spins = 0u64;
         while entry.is_owned_by_hw() {
+            hw_wait_spins = hw_wait_spins.wrapping_add(1);
+            if hw_wait_spins == 10_000_000 {
+                crate::boot_trace_cmd(opcode, "hw_still_owned", self.uid);
+            }
             if kernel_api::service::kernel::instance().current_tick() - start_ms > 5000 {
+                crate::boot_trace_cmd(opcode, "hw_timeout", self.uid);
                 log::error!(target: "mlx5", "Command timeout: opcode={:?}", opcode);
                 return Err(Mlx5Error::CommandTimeout);
             }
             core::hint::spin_loop();
         }
+        crate::boot_trace_cmd(opcode, "hw_done", self.uid);
         fence(Ordering::Acquire);
 
         let status = entry.status();
         if status != CmdStatus::Ok {
             let out_mbox = &*(self.out_mbox_virt as *const CmdMailbox);
             let syndrome = out_mbox.read_be32(0x04);
+            crate::boot_trace_cmd(opcode, "status_err", self.uid);
             log::error!(target: "mlx5", "Command failed: opcode={:?} status={:?} syndrome={:#x}", opcode, status, syndrome);
             // syndrome is currently a 32-bit value returned by the HW;
             // the error enum only stores an 8‑bit code so truncate.
@@ -472,6 +521,7 @@ impl CommandTransport for CmdQueueTransport {
         let out_inline = entry.output_inline();
         core::ptr::copy_nonoverlapping(out_inline.as_ptr(), self.out_mbox_virt as *mut u8, 16);
 
+        crate::boot_trace_cmd(opcode, "done", self.uid);
         Ok(())
     }
 

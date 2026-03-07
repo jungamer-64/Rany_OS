@@ -537,6 +537,13 @@ impl Executor {
             } else if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 110 {
                 crate::io::log::early_print("[RUNDBG2] popped one task\n");
             }
+            if EXECUTOR_RUNDBG_POLLS.load(Ordering::Relaxed) < 8 {
+                crate::io::log::early_print("[RUNDBG] task id=");
+                crate::io::log::early_print_hex(task.id.as_u64());
+                crate::io::log::early_print(" domain=");
+                crate::io::log::early_print_hex(task.domain_id.as_u64());
+                crate::io::log::early_print("\n");
+            }
             let debug_seq = EXECUTOR_RUNDBG_POLLS.load(Ordering::Relaxed);
             if debug_seq < 8 {
                 log::info!(

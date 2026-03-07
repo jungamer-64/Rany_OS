@@ -15,9 +15,12 @@ use super::*;
 /// `spawn_global` するため、ブリッジ初期化後はDHCPが自動的に非同期で走る。
 /// このタスクは状態がBoundになるのを待ってからpingで接続性を確認する。
 async fn network_bootstrap_task() {
+    crate::io::log::early_print("[NET_BOOT] task enter\n");
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
+    crate::io::log::early_print("[NET_BOOT] checking virtio presence\n");
     let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
+    crate::io::log::early_print("[NET_BOOT] virtio presence checked\n");
     if virtio_net_present {
         let bridge_initialized = crate::net::runtime::bridge::is_initialized();
         if bridge_initialized {
@@ -31,7 +34,10 @@ async fn network_bootstrap_task() {
                 use alloc::boxed::Box;
                 use driver_registry::register_driver;
 
+                crate::io::log::early_print("[NET_BOOT] registering virtio driver\n");
                 let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
+                crate::io::log::early_print("[NET_BOOT] registered virtio driver\n");
+                crate::io::log::early_print("[NET_BOOT] probing/starting virtio driver\n");
                 if let Err(e) = driver_registry::driver_registry()
                     .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
                 {
@@ -39,6 +45,7 @@ async fn network_bootstrap_task() {
                 } else {
                     info!(target: "net_boot", "VirtIO-Net driver initialized via DriverRegistry");
                 }
+                crate::io::log::early_print("[NET_BOOT] probe/start virtio driver returned\n");
             }
         }
     } else {
@@ -54,10 +61,13 @@ async fn network_bootstrap_task() {
         use alloc::boxed::Box;
         use driver_registry::register_driver;
 
+        crate::io::log::early_print("[NET_BOOT] registering mlx5 driver\n");
         info!(target: "net_boot", "Probing ConnectX (mlx5) via DriverRegistry");
         let mlx5_handle = register_driver(Box::new(Mlx5ConnectXDriver::new()));
+        crate::io::log::early_print("[NET_BOOT] registered mlx5 driver\n");
         match mlx5_handle {
             Ok(handle) => {
+                crate::io::log::early_print("[NET_BOOT] probing/starting mlx5 driver\n");
                 match driver_registry::driver_registry().probe_and_start(handle) {
                     Ok(()) => {
                         info!(target: "net_boot", "ConnectX (mlx5) driver initialized via DriverRegistry");
@@ -68,6 +78,7 @@ async fn network_bootstrap_task() {
                         info!(target: "net_boot", "ConnectX (mlx5) not found or init failed: {:?}", e);
                     }
                 }
+                crate::io::log::early_print("[NET_BOOT] probe/start mlx5 driver returned\n");
             }
             Err(e) => {
                 warn!(target: "net_boot", "Failed to register mlx5 driver: {:?}", e);

@@ -99,10 +99,32 @@ impl Mlx5Device {
         Ok(())
     }
 
+    unsafe fn wait_post_cmdif_ready(&mut self, timeout_ms: u64) -> Mlx5Result<()> {
+        let start_ms = kernel_api::service::kernel::instance().current_tick();
+
+        while kernel_api::service::kernel::instance().current_tick().saturating_sub(start_ms)
+            < timeout_ms
+        {
+            let initializing =
+                crate::mmio_read_be32(self.bar0_base as usize + crate::regs::init_seg::INITIALIZING);
+
+            if initializing != 0 && initializing != u32::MAX {
+                if (initializing & crate::regs::fw_state::INITIALIZING_BIT) == 0 {
+                    return Ok(());
+                }
+            }
+
+            core::hint::spin_loop();
+        }
+
+        Err(Mlx5Error::DeviceNotReady)
+    }
+
     /// HCA の有効化と ISSI セットアップ
     pub unsafe fn enable_hca_and_setup(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
+        crate::boot_trace("[MLX5_BOOT] enable_hca start\n");
         log::info!(target: "mlx5", "Enabling HCA...");
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_enable_hca_input(in_mbox, 0);
@@ -115,7 +137,9 @@ impl Mlx5Device {
             self.cmd_out_mbox_device,
             16,
         )?;
+        crate::boot_trace("[MLX5_BOOT] enable_hca done\n");
 
+        crate::boot_trace("[MLX5_BOOT] query_issi start\n");
         log::info!(target: "mlx5", "Querying ISSI...");
         *in_mbox = CmdMailbox::zeroed();
         self.execute_cmd_with_uid_candidates(
@@ -125,7 +149,7 @@ impl Mlx5Device {
             self.cmd_out_mbox_device,
             64,
         )?;
-
+        crate::boot_trace("[MLX5_BOOT] query_issi done\n");
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let current_issi = out_mbox.read_be16(0x02);
         let supported_issi = out_mbox.read_be16(0x04);
@@ -328,6 +352,10 @@ impl Mlx5Device {
             cmd_out_mbox_virt,
             cmd_out_mbox_device,
         )?;
+        crate::boot_trace("[MLX5_BOOT] cmd interface ready\n");
+        crate::boot_trace("[MLX5_BOOT] post-cmdif wait start\n");
+        self.wait_post_cmdif_ready(30_000)?;
+        crate::boot_trace("[MLX5_BOOT] post-cmdif wait done\n");
 
         // For VFs the majority of commands will only succeed when a proper UID
         // is present.  Set a sensible default before making any further calls so
@@ -345,43 +373,32 @@ impl Mlx5Device {
                 log::debug!(target: "mlx5", "VF detected, initial UID set to {:#x}", default_uid);
             }
 
-            // Verify that the VF's VHCA is actually ready
-            // PF が VF を有効化するまでに時間がかかる場合があるため、数回リトライする
-            log::info!(target: "mlx5", "Waiting for VF VHCA to be enabled by PF (initial UID={:#x})...", default_uid);
-            let mut vhca_ready = false;
-            let vhca_start = kernel_api::service::kernel::instance().current_tick();
-            let vhca_timeout = 5000; // 5 seconds timeout for VHCA activation
-
-            while kernel_api::service::kernel::instance().current_tick() - vhca_start < vhca_timeout {
-                match self.query_vhca_state(0) {
-                    Ok(vhca_ctx) => {
-                        if vhca_ctx.state.is_activation_ready() {
-                            log::info!(target: "mlx5", "VF VHCA is ready (state={:?})", vhca_ctx.state);
-                            vhca_ready = true;
-                            break;
-                        }
-                        log::warn!(target: "mlx5", "VF VHCA not ready yet (state={:?}), waiting for PF...", vhca_ctx.state);
-                    }
-                    Err(e) => {
-                        log::warn!(target: "mlx5", "Failed to query VHCA state (might be restricted): {:?}", e);
-                        // FW によってはこのコマンドを制限している場合があるため、失敗しても続行の余地あり
-                        // ただし初回は失敗する可能性が高いため、リトライを継続する
-                    }
-                }
-                // 200ms 待機して再試行
-                let loop_start = kernel_api::service::kernel::instance().current_tick();
-                while kernel_api::service::kernel::instance().current_tick() - loop_start < 200 {
-                    core::hint::spin_loop();
-                }
-            }
-
-            if !vhca_ready {
-                log::error!(target: "mlx5", "VF VHCA activation timed out (PF might not have enabled this VF)");
-                return Err(Mlx5Error::DeviceNotReady);
+            // Guest-visible VFs often expose a working command interface before the
+            // firmware reports a stable software VHCA ID.  At this stage the only
+            // UID candidates we have are `0xffff`/`0`, and QUERY_VHCA_STATE can
+            // stall for multiple transport timeouts without adding signal.
+            //
+            // Instead of busy-waiting here, proceed directly to the UID-candidate
+            // enable/query flow below.  If the PF truly has not enabled the VF,
+            // ENABLE_HCA / QUERY_HCA_CAP will fail with a more actionable error.
+            if self.sw_vhca_id == 0 {
+                log::info!(
+                    target: "mlx5",
+                    "Skipping pre-enable VF VHCA wait (stable VHCA UID not known yet, initial UID={:#x}); proceeding with direct HCA bring-up",
+                    default_uid
+                );
+            } else {
+                log::info!(
+                    target: "mlx5",
+                    "Skipping pre-enable VF VHCA wait (VHCA UID {:#x} will be validated after caps query)",
+                    self.sw_vhca_id
+                );
             }
         }
 
+        crate::boot_trace("[MLX5_BOOT] enable/setup phase enter\n");
         self.enable_hca_and_setup()?;
+        crate::boot_trace("[MLX5_BOOT] enable/setup phase done\n");
 
         // Phase 2: Pages & Caps
         // VF devices typically do not request additional firmware pages; the PF
@@ -395,7 +412,9 @@ impl Mlx5Device {
                 &fw_page_addrs[..(requested_pages as usize).min(fw_page_addrs.len())],
             )?;
         }
+        crate::boot_trace("[MLX5_BOOT] query caps start\n");
         self.query_all_caps()?;
+        crate::boot_trace("[MLX5_BOOT] query caps done\n");
 
         // Query adapter info (VSD)
         log::info!(target: "mlx5", "Querying Adapter info...");
@@ -458,7 +477,9 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Configuring HCA capabilities...");
         self.set_hca_cap_general()?;
 
+        crate::boot_trace("[MLX5_BOOT] init_hca start\n");
         self.init_hca()?;
+        crate::boot_trace("[MLX5_BOOT] init_hca done\n");
 
         // Phase 3: Resources
         self.alloc_uar()?;

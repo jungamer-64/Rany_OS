@@ -3,10 +3,12 @@
 // ============================================================================
 
 use crate::cmd::CmdMailbox;
-use crate::defs::{CmdOpcode, HcaCaps, MLX5_CMD_MBOX_SIZE};
+use crate::defs::{CmdOpcode, HcaCaps};
 use crate::device::Mlx5Device;
 use crate::error::{Mlx5Error, Mlx5Result};
 // unused import removed
+
+const HCA_CAP_MBOX_LEN: u32 = 4096;
 
 impl Mlx5Device {
     /// HCA Capabilities の照会と設定
@@ -17,12 +19,24 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Querying HCA Capabilities...");
         *in_mbox = CmdMailbox::zeroed();
         // Query CURRENT caps (op_mod = 0)
+        if self.is_vf() {
+            let mut layout = crate::structs::cmd::QueryHcaCapInputLayout::new(&mut in_mbox.data[..]);
+            layout.set_ec_vf_function(true);
+        }
+        log::info!(
+            target: "mlx5",
+            "QUERY_HCA_CAP(CUR) in[0..16]={:#010x} {:#010x} {:#010x} {:#010x}",
+            in_mbox.read_be32(0x00),
+            in_mbox.read_be32(0x04),
+            in_mbox.read_be32(0x08),
+            in_mbox.read_be32(0x0c),
+        );
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::QueryHcaCap,
             self.cmd_in_mbox_device,
             16,
             self.cmd_out_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
+            HCA_CAP_MBOX_LEN,
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -109,12 +123,16 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Querying ETHERNET_OFFLOADS Capabilities...");
         *in_mbox = CmdMailbox::zeroed();
         crate::cmd::hca::build_query_hca_cap_input(in_mbox, crate::cmd::hca::MLX5_CAP_ETHERNET_OFFLOADS);
+        if self.is_vf() {
+            let mut layout = crate::structs::cmd::QueryHcaCapInputLayout::new(&mut in_mbox.data[..]);
+            layout.set_ec_vf_function(true);
+        }
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::QueryHcaCap,
             self.cmd_in_mbox_device,
             16,
             self.cmd_out_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
+            HCA_CAP_MBOX_LEN,
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -142,14 +160,18 @@ impl Mlx5Device {
         *in_mbox = CmdMailbox::zeroed();
         // Query MAX caps (op_mod = 1)
         crate::cmd::hca::build_query_hca_cap_input(in_mbox, 0); // 0 = GENERAL
-        in_mbox.data[0x10 + 0x06] |= 1; // set op_mod bit 0 for MAX
+        in_mbox.write_be16(0x06, 1); // op_mod = (GENERAL << 1) | GET_MAX
+        if self.is_vf() {
+            let mut layout = crate::structs::cmd::QueryHcaCapInputLayout::new(&mut in_mbox.data[..]);
+            layout.set_ec_vf_function(true);
+        }
 
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::QueryHcaCap,
             self.cmd_in_mbox_device,
             16,
             self.cmd_out_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
+            HCA_CAP_MBOX_LEN,
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -170,8 +192,14 @@ impl Mlx5Device {
 
     /// ドライバの起動時に必要な全 HCA Capability を一気に取得
     pub unsafe fn query_all_caps(&mut self) -> Mlx5Result<()> {
-        self.query_hca_cap_max()?;
         self.query_and_set_hca_cap()?;
+        if let Err(err) = self.query_hca_cap_max() {
+            log::warn!(
+                target: "mlx5",
+                "QUERY_HCA_CAP(MAX) failed during bootstrap: {:?}; continuing with current caps only",
+                err
+            );
+        }
         self.query_hca_cap_ethernet()?;
         self.query_hca_cap_flow_table()
     }
@@ -186,12 +214,16 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Querying current HCA Capabilities for modification...");
         *in_mbox = CmdMailbox::zeroed();
         crate::cmd::hca::build_query_hca_cap_input(in_mbox, 0); // 0 = GENERAL
+        if self.is_vf() {
+            let mut layout = crate::structs::cmd::QueryHcaCapInputLayout::new(&mut in_mbox.data[..]);
+            layout.set_ec_vf_function(true);
+        }
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::QueryHcaCap,
             self.cmd_in_mbox_device,
             16,
             self.cmd_out_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
+            HCA_CAP_MBOX_LEN,
         )?;
 
         // 2. 取得した設定をベースに一部を書き換え
@@ -216,10 +248,14 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Setting modified HCA Capabilities...");
         *in_mbox = CmdMailbox::zeroed();
         crate::cmd::hca::build_set_hca_cap_input(in_mbox, 0, &caps_payload);
+        if self.is_vf() {
+            let mut layout = crate::structs::cmd::QueryHcaCapInputLayout::new(&mut in_mbox.data[..]);
+            layout.set_ec_vf_function(true);
+        }
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::SetHcaCap,
             self.cmd_in_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
+            HCA_CAP_MBOX_LEN,
             self.cmd_out_mbox_device,
             16,
         )?;
@@ -235,12 +271,16 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Querying FLOW_TABLE Capabilities...");
         *in_mbox = CmdMailbox::zeroed();
         crate::cmd::hca::build_query_hca_cap_input(in_mbox, crate::cmd::hca::MLX5_CAP_FLOW_TABLE);
+        if self.is_vf() {
+            let mut layout = crate::structs::cmd::QueryHcaCapInputLayout::new(&mut in_mbox.data[..]);
+            layout.set_ec_vf_function(true);
+        }
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::QueryHcaCap,
             self.cmd_in_mbox_device,
             16,
             self.cmd_out_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
+            HCA_CAP_MBOX_LEN,
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
