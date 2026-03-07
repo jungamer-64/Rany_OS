@@ -223,6 +223,7 @@ impl CmdQueueTransport {
                 | CmdOpcode::QueryIssi
                 | CmdOpcode::SetIssi
                 | CmdOpcode::QueryNicVportContext
+                | CmdOpcode::ModifyNicVportContext
                 | CmdOpcode::QueryVportState
                 | CmdOpcode::ModifyVportState
                 | CmdOpcode::AllocUar
@@ -253,6 +254,11 @@ impl CmdQueueTransport {
                 | CmdOpcode::ModifyRqt
                 | CmdOpcode::DestroyRqt
                 | CmdOpcode::CreateFlowTable
+                | CmdOpcode::DestroyFlowTable
+                | CmdOpcode::CreateFlowGroup
+                | CmdOpcode::DestroyFlowGroup
+                | CmdOpcode::SetFlowTableEntry
+                | CmdOpcode::DeleteFlowTableEntry
         )
     }
 

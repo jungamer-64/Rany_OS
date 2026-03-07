@@ -47,10 +47,16 @@ impl Mlx5Device {
         caps.eswitch_manager = cap_view.eswitch_manager();
         caps.num_vhca_ports = cap_view.num_vhca_ports() as u16;
 
+        // MSI-X 制限の取得
+        // byte 0x3c (dword 15): [31:0] max_num_eqs
+        caps.max_eq = out_mbox.read_be32(0x10 + 0x3c);
+        // byte 0x48 (dword 18): [31:0] max_num_msix (for VFs)
+        let max_msix = out_mbox.read_be32(0x10 + 0x48);
+
         log::info!(
             target: "mlx5",
-            "HCA Caps: ports={}, max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_mkey={}, max_mtu={}, vport_mgr={}, eswitch_mgr={}, vhca_id={:#x}",
-            caps.num_ports, caps.max_cq, caps.max_sq, caps.max_rq, caps.max_eq, caps.max_mkey, caps.max_mtu, caps.vport_group_manager, caps.eswitch_manager, caps.vhca_id
+            "HCA Caps: ports={}, max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_msix={}, vhca_id={:#x}",
+            caps.num_ports, caps.max_cq, caps.max_sq, caps.max_rq, caps.max_eq, max_msix, caps.vhca_id
         );
 
         self.hca_caps = Some(caps);
@@ -59,9 +65,42 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// ETHERNET_OFFLOADS ケーパビリティの照会
+    pub unsafe fn query_hca_cap_ethernet(&mut self) -> Mlx5Result<()> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+
+        log::info!(target: "mlx5", "Querying ETHERNET_OFFLOADS Capabilities...");
+        *in_mbox = CmdMailbox::zeroed();
+        crate::cmd::hca::build_query_hca_cap_input(in_mbox, crate::cmd::hca::MLX5_CAP_ETHERNET_OFFLOADS);
+        self.execute_cmd_with_uid_candidates(
+            CmdOpcode::QueryHcaCap,
+            self.cmd_in_mbox_device,
+            16,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        // byte 0x10 からペイロード。Linux ifcの ethernet_offloads_cap_bits を参照
+        // RSS, LRO, Checksum 等のフラグを取得可能
+        let rss_en = (out_mbox.data[0x10 + 0x01] & 0x01) != 0;
+        let lro_en = (out_mbox.data[0x10 + 0x01] & 0x02) != 0;
+        log::debug!(target: "mlx5", "Ethernet Caps: rss={}, lro={}", rss_en, lro_en);
+
+        if let Some(caps) = self.hca_caps.as_mut() {
+            // 現状 HcaCaps にはフラグが少ないため必要に応じて defs.rs の HcaCaps を拡張
+            // ここではログ出力に留めるか、既存フラグを補正
+            caps.csum_cap = true; // Ethernetページがあれば基本csumは可能
+        }
+
+        Ok(())
+    }
+
     /// ドライバの起動時に必要な全 HCA Capability を一気に取得
     pub unsafe fn query_all_caps(&mut self) -> Mlx5Result<()> {
-        self.query_and_set_hca_cap()
+        self.query_and_set_hca_cap()?;
+        self.query_hca_cap_ethernet()
     }
 
     /// HCA Capabilities を設定 (SET_HCA_CAP)

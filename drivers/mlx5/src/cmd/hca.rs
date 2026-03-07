@@ -6,6 +6,10 @@ use crate::cmd::CmdMailbox;
 use crate::defs::MLX5_CMD_MBOX_SIZE;
 use crate::structs::cmd::*;
 
+pub const MLX5_CAP_GENERAL: u16 = 0;
+pub const MLX5_CAP_ETHERNET_OFFLOADS: u16 = 1;
+pub const MLX5_CAP_FLOW_TABLE: u16 = 2;
+
 /// QUERY_ISSI コマンド出力の解析
 pub fn parse_query_issi(out_mbox: &CmdMailbox) -> u32 {
     let issi = out_mbox.read_be16(0x60);

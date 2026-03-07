@@ -312,7 +312,7 @@ impl Mlx5Device {
         end_index: u32,
         criteria: &crate::flow::MatchCriteria,
     ) -> Mlx5Result<u32> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::flow::build_create_flow_group_input(
             in_mbox,
@@ -321,11 +321,9 @@ impl Mlx5Device {
             end_index,
             criteria,
         );
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateFlowGroup,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -349,7 +347,7 @@ impl Mlx5Device {
         destination_tirn: Option<u32>,
         match_value: &crate::flow::MatchValue,
     ) -> Mlx5Result<()> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::flow::build_set_flow_table_entry_input(
             in_mbox,
@@ -360,11 +358,9 @@ impl Mlx5Device {
             destination_tirn,
             match_value,
         );
-        cmd.execute(
+        self.execute_uid_sensitive_cmd(
             CmdOpcode::SetFlowTableEntry,
-            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         self.flow_entries.push(FlowTableEntry {

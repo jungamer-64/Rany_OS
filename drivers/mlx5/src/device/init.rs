@@ -369,6 +369,14 @@ impl Mlx5Device {
             }
         }
 
+        // VF の場合は PF から割り当てられた MAC アドレスを取得する
+        if self.is_vf() {
+            log::info!(target: "mlx5", "Querying VF port properties...");
+            // query_port_mac は内部で execute_cmd_with_uid_candidates を使用している
+            let _ = self.query_port_mac(0);
+            let _ = self.query_port_mtu(0);
+        }
+
         // SET_HCA_CAP を呼び出して、ドライバ固有の要件に合わせてデバイスを最適化
         // INIT_HCA の前に実行する必要がある (Linux に倣う)
         log::info!(target: "mlx5", "Configuring HCA capabilities...");
@@ -388,10 +396,6 @@ impl Mlx5Device {
         if self.pd != 0 && self.pd != 1 {
             pd_candidates.push(self.pd);
         }
-        let mut td_candidates = vec![0, 1];
-        if self.td != 0 && self.td != 1 {
-            td_candidates.push(self.td);
-        }
 
         let mut effective_mkey_params = mkey_params.clone();
         let mut mkey_ok = false;
@@ -409,15 +413,24 @@ impl Mlx5Device {
                 }
             }
         }
-        if !mkey_ok {
-            if self.is_vf() {
-                let lkey = self.query_reserved_lkey().unwrap_or(0x100);
-                // directly assign fallback key; helper method not present
-                self.mkey = lkey;
-                log::warn!(target: "mlx5", "[5/8] Using reserved lkey={:#x}", lkey);
-            } else {
-                return Err(Mlx5Error::CommandFailed(0xff));
+
+        // 完全に失敗した場合は、VF特有の「予約済みLKEY」をPFから取得して使用する
+        if !mkey_ok && self.is_vf() {
+            log::info!(target: "mlx5", "Attempting to query reserved lkey for VF fallback...");
+            match self.query_reserved_lkey() {
+                Ok(lkey) => {
+                    self.mkey = lkey;
+                    mkey_ok = true;
+                    log::warn!(target: "mlx5", "[5/8] Using reserved lkey={:#x} as fallback", lkey);
+                }
+                Err(e) => {
+                    log::error!(target: "mlx5", "[5/8] Failed to query reserved lkey: {:?}", e);
+                }
             }
+        }
+
+        if !mkey_ok {
+            return Err(Mlx5Error::CommandFailed(0xff));
         }
 
         let _ = self.refresh_port_runtime_state(0);
