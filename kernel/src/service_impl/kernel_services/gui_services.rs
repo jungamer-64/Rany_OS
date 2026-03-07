@@ -12,13 +12,36 @@ mod nvme_tests;
 // ============================================================================
 
 use kernel_api::capability::DomainCapabilities;
+use kernel_api::service::audio::{AudioDeviceInfo, AudioServices};
 use kernel_api::service::graphics::{DisplayInfo, GraphicsServices};
 use kernel_api::service::gui::{
     FramebufferInfo as KapiFramebufferInfo, GuiServices, InputStreamHandle,
     PixelFormat as KapiPixelFormat,
 };
 use kernel_api::service::input::{InputDeviceInfo, InputDeviceKind, InputServices};
+use kernel_api::service::netdev::{MacAddress as KapiMacAddress, NetDeviceInfo, NetDeviceServices};
 use kernel_api::service::serial::{SerialPortInfo, SerialServices};
+use kernel_api::service::storage::{StorageDeviceInfo, StorageServices, StorageTransport};
+
+const STORAGE_FLAG_ACTIVE: u32 = 1 << 0;
+const STORAGE_FLAG_READ_ONLY: u32 = 1 << 1;
+
+const NETDEV_FLAG_ADMIN_UP: u32 = 1 << 0;
+const NETDEV_FLAG_BOUND_PORT: u32 = 1 << 1;
+const NETDEV_FLAG_HEALTHY: u32 = 1 << 2;
+
+const AUDIO_FLAG_INITIALIZED: u32 = 1 << 0;
+const AUDIO_FLAG_BEEP: u32 = 1 << 1;
+
+const DEFAULT_AUDIO_SAMPLE_RATE_HZ: u32 = 48_000;
+
+const STORAGE_KIND_NVME: u8 = 1;
+const STORAGE_KIND_VIRTIO_BLK: u8 = 2;
+const STORAGE_KIND_AHCI: u8 = 3;
+
+fn provider_device_id(kind: u8, index: u64) -> u64 {
+    ((kind as u64) << 56) | index
+}
 
 fn map_pixel_format(format: crate::graphics::PixelFormat) -> KapiPixelFormat {
     match format {
@@ -50,6 +73,139 @@ fn current_framebuffer_info() -> Option<KapiFramebufferInfo> {
     {
         None
     }
+}
+
+fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
+    let mut devices = alloc::vec::Vec::new();
+
+    if let Some(Some(info)) = crate::io::nvme::with_driver(|driver| {
+        if !driver.is_active() {
+            return None;
+        }
+
+        let block_size = driver.namespace_block_size(driver.nsid);
+        if block_size == 0 {
+            return None;
+        }
+
+        let max_transfer_blocks =
+            (driver.max_transfer_size() / block_size as usize).min(u32::MAX as usize) as u32;
+
+        Some(StorageDeviceInfo {
+            device_id: provider_device_id(STORAGE_KIND_NVME, driver.nsid as u64),
+            namespace_id: driver.nsid,
+            block_size,
+            max_transfer_blocks,
+            transport: StorageTransport::Nvme,
+            flags: STORAGE_FLAG_ACTIVE,
+        })
+    }) {
+        devices.push(info);
+    }
+
+    if let Some(device) = crate::io::virtio::blk::get_virtio_blk_device() {
+        let config = device.config();
+        let mut flags = 0;
+        if device.is_ready() {
+            flags |= STORAGE_FLAG_ACTIVE;
+        }
+        if config.read_only {
+            flags |= STORAGE_FLAG_READ_ONLY;
+        }
+
+        devices.push(StorageDeviceInfo {
+            device_id: provider_device_id(STORAGE_KIND_VIRTIO_BLK, 0),
+            namespace_id: 0,
+            block_size: config.block_size,
+            max_transfer_blocks: 0,
+            transport: StorageTransport::VirtioBlock,
+            flags,
+        });
+    }
+
+    for device in crate::io::io_scheduler::io_scheduler().registered_devices() {
+        if let crate::io::io_scheduler::DeviceId::Ahci { port } = device {
+            devices.push(StorageDeviceInfo {
+                device_id: provider_device_id(STORAGE_KIND_AHCI, port as u64),
+                namespace_id: 0,
+                block_size: crate::io::ahci::SECTOR_SIZE as u32,
+                max_transfer_blocks: 0,
+                transport: StorageTransport::Ahci,
+                flags: STORAGE_FLAG_ACTIVE,
+            });
+        }
+    }
+
+    devices
+}
+
+fn net_devices_snapshot() -> alloc::vec::Vec<NetDeviceInfo> {
+    let Ok(interfaces) = crate::net::runtime::manager::list_interfaces() else {
+        return alloc::vec::Vec::new();
+    };
+
+    interfaces
+        .into_iter()
+        .map(|interface| {
+            let port = crate::net::runtime::bridge::shared::lookup_port(interface.if_id);
+            let (mac, has_port, healthy) = match port {
+                Some(port) => (
+                    KapiMacAddress(*port.mac_address().as_bytes()),
+                    true,
+                    port.health(),
+                ),
+                None => (KapiMacAddress([0; 6]), false, false),
+            };
+
+            let mut flags = 0;
+            if interface.admin_up {
+                flags |= NETDEV_FLAG_ADMIN_UP;
+            }
+            if has_port {
+                flags |= NETDEV_FLAG_BOUND_PORT;
+            }
+            if healthy {
+                flags |= NETDEV_FLAG_HEALTHY;
+            }
+
+            NetDeviceInfo {
+                device_id: interface.if_id.0 as u64,
+                mtu: crate::net::runtime::stack::MTU as u32,
+                mac,
+                flags,
+            }
+        })
+        .collect()
+}
+
+fn audio_devices_snapshot() -> alloc::vec::Vec<AudioDeviceInfo> {
+    crate::io::audio::with_driver(|controller| {
+        if !controller.is_initialized() {
+            return alloc::vec::Vec::new();
+        }
+
+        controller
+            .codecs()
+            .iter()
+            .map(|codec| {
+                let mut flags = AUDIO_FLAG_INITIALIZED;
+                if codec.beep_node.is_some() {
+                    flags |= AUDIO_FLAG_BEEP;
+                }
+
+                AudioDeviceInfo {
+                    device_id: ((codec.vendor_id as u64) << 32)
+                        | ((codec.device_id as u64) << 16)
+                        | codec.address as u64,
+                    output_channels: if codec.output_nodes.is_empty() { 0 } else { 2 },
+                    input_channels: if codec.input_nodes.is_empty() { 0 } else { 2 },
+                    sample_rate_hz: DEFAULT_AUDIO_SAMPLE_RATE_HZ,
+                    flags,
+                }
+            })
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 impl GuiServices for ExoKernel {
@@ -184,6 +340,24 @@ impl SerialServices for ExoKernel {
         }
 
         Ok(bytes.len())
+    }
+}
+
+impl StorageServices for ExoKernel {
+    fn devices(&self) -> alloc::vec::Vec<StorageDeviceInfo> {
+        storage_devices_snapshot()
+    }
+}
+
+impl NetDeviceServices for ExoKernel {
+    fn devices(&self) -> alloc::vec::Vec<NetDeviceInfo> {
+        net_devices_snapshot()
+    }
+}
+
+impl AudioServices for ExoKernel {
+    fn devices(&self) -> alloc::vec::Vec<AudioDeviceInfo> {
+        audio_devices_snapshot()
     }
 }
 
@@ -534,9 +708,12 @@ pub(crate) static EXOKERNEL: ExoKernel = ExoKernel::new();
 
 pub(crate) fn register_builtin_service_providers() {
     let registry = crate::provider_registry::provider_registry();
+    registry.register_builtin_storage(&EXOKERNEL);
+    registry.register_builtin_netdev(&EXOKERNEL);
     registry.register_builtin_graphics(&EXOKERNEL);
     registry.register_builtin_input(&EXOKERNEL);
     registry.register_builtin_serial(&EXOKERNEL);
+    registry.register_builtin_audio(&EXOKERNEL);
 }
 
 /// Register the kernel services (call from kmain early in boot)

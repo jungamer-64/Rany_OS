@@ -42,6 +42,11 @@ impl IoScheduler {
         self.device_ops.read().get(&device).cloned()
     }
 
+    /// 登録済みデバイスIDのスナップショットを返す。
+    pub fn registered_devices(&self) -> Vec<DeviceId> {
+        self.device_ops.read().keys().copied().collect()
+    }
+
     /// I/Oリクエストをサブミット
     #[allow(deprecated)]
     pub fn submit(

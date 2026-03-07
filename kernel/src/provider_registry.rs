@@ -481,9 +481,12 @@ mod tests {
     use super::*;
     use alloc::vec;
     use core::task::Waker;
+    use kernel_api::service::audio::{AudioDeviceInfo, AudioServices};
+    use kernel_api::service::netdev::{MacAddress, NetDeviceInfo, NetDeviceServices};
     use kernel_api::service::platform::{
         BdfAddress, ClassCode, DeviceId, IoApicInfo, LocalApicInfo, PciDeviceInfo, VendorId,
     };
+    use kernel_api::service::storage::{StorageDeviceInfo, StorageServices, StorageTransport};
     use kernel_api::service::time::{
         CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats,
     };
@@ -492,6 +495,9 @@ mod tests {
     struct FakePci;
     struct FakeApic;
     struct FakeTime;
+    struct FakeStorage;
+    struct FakeNetdev;
+    struct FakeAudio;
 
     impl kernel_api::service::platform::AcpiServices for FakeAcpi {
         fn local_apics(&self) -> Vec<LocalApicInfo> {
@@ -620,10 +626,49 @@ mod tests {
         fn unregister_sleep(&self, _wake_tick: u64) {}
     }
 
+    impl StorageServices for FakeStorage {
+        fn devices(&self) -> Vec<StorageDeviceInfo> {
+            vec![StorageDeviceInfo {
+                device_id: 0x100,
+                namespace_id: 1,
+                block_size: 4096,
+                max_transfer_blocks: 128,
+                transport: StorageTransport::Nvme,
+                flags: 1,
+            }]
+        }
+    }
+
+    impl NetDeviceServices for FakeNetdev {
+        fn devices(&self) -> Vec<NetDeviceInfo> {
+            vec![NetDeviceInfo {
+                device_id: 7,
+                mtu: 1500,
+                mac: MacAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x07]),
+                flags: 3,
+            }]
+        }
+    }
+
+    impl AudioServices for FakeAudio {
+        fn devices(&self) -> Vec<AudioDeviceInfo> {
+            vec![AudioDeviceInfo {
+                device_id: 9,
+                output_channels: 2,
+                input_channels: 1,
+                sample_rate_hz: 48_000,
+                flags: 1,
+            }]
+        }
+    }
+
     static FAKE_ACPI: FakeAcpi = FakeAcpi;
     static FAKE_PCI: FakePci = FakePci;
     static FAKE_APIC: FakeApic = FakeApic;
     static FAKE_TIME: FakeTime = FakeTime;
+    static FAKE_STORAGE: FakeStorage = FakeStorage;
+    static FAKE_NETDEV: FakeNetdev = FakeNetdev;
+    static FAKE_AUDIO: FakeAudio = FakeAudio;
 
     #[test_case]
     fn builtin_provider_registration_smoke() {
@@ -643,6 +688,31 @@ mod tests {
         assert_eq!(
             provider_registry().pci().unwrap().scan_all_devices().len(),
             1
+        );
+    }
+
+    #[test_case]
+    fn builtin_service_provider_registration_smoke() {
+        let storage_handle = provider_registry().register_builtin_storage(&FAKE_STORAGE);
+        let netdev_handle = provider_registry().register_builtin_netdev(&FAKE_NETDEV);
+        let audio_handle = provider_registry().register_builtin_audio(&FAKE_AUDIO);
+
+        assert!(provider_registry().contains(storage_handle));
+        assert!(provider_registry().contains(netdev_handle));
+        assert!(provider_registry().contains(audio_handle));
+        assert_eq!(provider_registry().storage().unwrap().devices().len(), 1);
+        assert_eq!(
+            provider_registry()
+                .netdev()
+                .unwrap()
+                .primary_device()
+                .unwrap()
+                .mtu,
+            1500
+        );
+        assert_eq!(
+            provider_registry().audio().unwrap().devices()[0].device_id,
+            9
         );
     }
 
