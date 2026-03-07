@@ -66,8 +66,15 @@ impl PageManager {
 
     /// ページ割り当て記録を追加
     pub fn record_allocation(&mut self, alloc: PageAllocation) {
+        if self
+            .allocated_pages
+            .iter()
+            .any(|page| page.phys_addr == alloc.phys_addr)
+        {
+            return;
+        }
         self.allocated_pages.push(alloc);
-        self.total_given += 1;
+        self.total_given = self.allocated_pages.len() as u32;
     }
 
     /// 指定関数IDに関連するページを回収用にリストアップ

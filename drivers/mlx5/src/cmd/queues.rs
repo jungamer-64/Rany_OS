@@ -6,6 +6,25 @@ use crate::cmd::CmdMailbox;
 use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_PAGE_SIZE};
 use crate::structs::queues::{CqContextLayout, EqContextLayout, RqContextLayout, SqContextLayout};
 
+const MLX5_EQ_STATE_ARMED: u8 = 0x9;
+const MLX5_CQ_STATE_NOTIFICATION_ARMED: u8 = 0x9;
+const CREATE_EQ_EVENT_MASK_OFFSET: usize = 0x58;
+const CREATE_EQ_EVENT_MASK_LEN: usize = 0x20;
+
+fn encode_eq_event_mask(event_mask: u64, field: &mut [u8]) {
+    for event_type in 0..64usize {
+        if (event_mask & (1u64 << event_type)) == 0 {
+            continue;
+        }
+
+        let byte_index = event_type / 8;
+        let bit_in_byte = event_type % 8;
+        if byte_index < field.len() {
+            field[byte_index] |= 1u8 << (7 - bit_in_byte);
+        }
+    }
+}
+
 /// CREATE_EQ コマンド入力の構築
 pub fn build_create_eq_input(
     in_mbox: &mut CmdMailbox,
@@ -18,10 +37,17 @@ pub fn build_create_eq_input(
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = EqContextLayout::new(&mut in_mbox.data[0x10..]);
 
+    layout.set_state(MLX5_EQ_STATE_ARMED);
+    layout.set_page_offset(0);
     layout.set_log_eq_size(log_eq_size);
     layout.set_uar_page(uar_page);
     layout.set_intr(msix_vector);
-    layout.set_event_bitmask(event_bitmask);
+    layout.set_log_page_size(0);
+    encode_eq_event_mask(
+        event_bitmask,
+        &mut in_mbox.data
+            [CREATE_EQ_EVENT_MASK_OFFSET..CREATE_EQ_EVENT_MASK_OFFSET + CREATE_EQ_EVENT_MASK_LEN],
+    );
 
     let eq_bytes = (1usize << (log_eq_size as usize)) * crate::regs::eqe::EQE_SIZE;
     let eq_pages = (eq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
@@ -57,9 +83,12 @@ pub fn build_create_cq_input(
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = CqContextLayout::new(&mut in_mbox.data[0x10..]);
 
+    layout.set_state(MLX5_CQ_STATE_NOTIFICATION_ARMED);
+    layout.set_page_offset(0);
     layout.set_log_cq_size(log_cq_size);
     layout.set_uar_page(uar_page);
     layout.set_c_eqn(eqn);
+    layout.set_log_page_size(0);
     layout.set_dbr_addr(db_pa);
 
     if _cqe_comp {
@@ -256,7 +285,47 @@ pub fn build_modify_rq_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::defs::eq_event_mask;
     use crate::structs::get_bits_u32;
+
+    #[test]
+    fn create_eq_sets_linux_ifc_required_fields() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_create_eq_input(
+            &mut in_mbox,
+            8,
+            0x1000,
+            0x123,
+            0x4,
+            eq_event_mask::STANDARD,
+        );
+
+        let ctx = &in_mbox.data[0x10..];
+        assert_eq!(get_bits_u32(ctx, 20, 4), MLX5_EQ_STATE_ARMED as u32);
+        assert_eq!(get_bits_u32(ctx, 84, 6), 0);
+        assert_eq!(get_bits_u32(ctx, 123, 5), 8);
+        assert_eq!(get_bits_u32(ctx, 180, 12), 0x4);
+        assert_eq!(get_bits_u32(ctx, 195, 5), 0);
+        assert_eq!(
+            &in_mbox.data
+                [CREATE_EQ_EVENT_MASK_OFFSET..CREATE_EQ_EVENT_MASK_OFFSET + 8],
+            &[0x80, 0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    fn create_cq_sets_linux_ifc_required_fields() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_create_cq_input(&mut in_mbox, 6, 0x4000, 0x5000, 0x123, 0x456, false);
+
+        let ctx = &in_mbox.data[0x10..];
+        assert_eq!(get_bits_u32(ctx, 20, 4), MLX5_CQ_STATE_NOTIFICATION_ARMED as u32);
+        assert_eq!(get_bits_u32(ctx, 84, 6), 0);
+        assert_eq!(get_bits_u32(ctx, 123, 5), 6);
+        assert_eq!(get_bits_u32(ctx, 160, 32), 0x456);
+        assert_eq!(get_bits_u32(ctx, 195, 5), 0);
+        assert_eq!(in_mbox.read_be64(0x48), 0x5000);
+    }
 
     #[test]
     fn create_sq_uses_64b_wqe_stride() {

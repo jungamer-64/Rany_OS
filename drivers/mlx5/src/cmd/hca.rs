@@ -10,6 +10,9 @@ pub const MLX5_CAP_GENERAL: u16 = 0;
 pub const MLX5_CAP_ETHERNET_OFFLOADS: u16 = 1;
 pub const MLX5_CAP_FLOW_TABLE: u16 = 2;
 pub const MLX5_CAP_GENERAL_2: u16 = 0x20;
+pub const QUERY_PAGES_OP_MOD_BOOT_PAGES: u16 = 0x1;
+pub const QUERY_PAGES_OP_MOD_INIT_PAGES: u16 = 0x2;
+pub const QUERY_PAGES_OP_MOD_REGULAR_PAGES: u16 = 0x3;
 
 /// QUERY_ISSI コマンド出力の解析
 pub fn parse_query_issi(out_mbox: &CmdMailbox) -> u32 {

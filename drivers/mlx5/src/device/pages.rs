@@ -18,6 +18,18 @@ impl Mlx5Device {
 
         log::info!(target: "mlx5", "Providing {} pages to function {}", pas.len(), function_id);
 
+        for &pa in pas {
+            self.page_manager
+                .record_allocation(crate::pages::PageAllocation {
+                    phys_addr: pa,
+                    // Bootstrap-provided FW pages are owned by the higher-level
+                    // DMA resource set; tracking the PA is sufficient for
+                    // later reclaim.
+                    virt_addr: 0,
+                    function_id,
+                });
+        }
+
         build_manage_pages_input(
             in_mbox,
             crate::pages::ManagePagesOp::GivePages as u8,
@@ -35,6 +47,7 @@ impl Mlx5Device {
             16,
         )?;
 
+        self.state = crate::device::DeviceState::PagesProvided;
         log::info!(target: "mlx5", "Pages provided successfully");
         Ok(())
     }

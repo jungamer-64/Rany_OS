@@ -234,6 +234,52 @@ impl Mlx5Device {
         Ok(())
     }
 
+    unsafe fn provide_bootstrap_pages_if_requested(
+        &mut self,
+        phase: &str,
+        func_id: u16,
+        requested_pages: i32,
+        fw_page_addrs: &[u64],
+    ) -> Mlx5Result<()> {
+        if requested_pages <= 0 {
+            return Ok(());
+        }
+
+        if fw_page_addrs.is_empty() {
+            log::warn!(
+                target: "mlx5",
+                "FW requested {} {} pages for function {:#x}, but no bootstrap pages are available",
+                requested_pages,
+                phase,
+                func_id
+            );
+            return Ok(());
+        }
+
+        let requested_pages = requested_pages as usize;
+        let provided_pages = requested_pages.min(fw_page_addrs.len());
+        if provided_pages < requested_pages {
+            log::warn!(
+                target: "mlx5",
+                "FW requested {} {} pages for function {:#x}, only {} bootstrap pages available",
+                requested_pages,
+                phase,
+                func_id,
+                provided_pages
+            );
+        } else {
+            log::info!(
+                target: "mlx5",
+                "Providing {} {} pages for function {:#x}",
+                provided_pages,
+                phase,
+                func_id
+            );
+        }
+
+        self.provide_pages(func_id, &fw_page_addrs[..provided_pages])
+    }
+
     pub unsafe fn bootstrap(
         &mut self,
         config: &Mlx5BootstrapConfig,
@@ -432,14 +478,11 @@ impl Mlx5Device {
         // VF devices typically do not request additional firmware pages; the PF
         // is responsible for managing them.  Ignore any page requirements to
         // avoid failing during early boot.
-        let (func_id, requested_pages) = self.query_required_pages(0x01).unwrap_or((0, 0));
+        let (func_id, requested_pages) = self
+            .query_required_pages(crate::cmd::hca::QUERY_PAGES_OP_MOD_BOOT_PAGES)
+            .unwrap_or((0, 0));
         self.fw_function_id = func_id;
-        if !self.is_vf() && requested_pages > 0 && !fw_page_addrs.is_empty() {
-            self.provide_pages(
-                func_id,
-                &fw_page_addrs[..(requested_pages as usize).min(fw_page_addrs.len())],
-            )?;
-        }
+        self.provide_bootstrap_pages_if_requested("boot", func_id, requested_pages, fw_page_addrs)?;
         crate::boot_trace("[MLX5_BOOT] query caps start\n");
         self.query_all_caps()?;
         crate::boot_trace("[MLX5_BOOT] query caps done\n");
@@ -500,6 +543,30 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Configuring HCA capabilities...");
         self.set_hca_cap_general()?;
         self.set_hca_cap_general_2()?;
+
+        // Linux issues QUERY_PAGES for init pages between SET_HCA_CAP and
+        // INIT_HCA, even when the result is zero. Some VF firmware paths appear
+        // to use this handshake as part of the startup state transition.
+        match self.query_required_pages(crate::cmd::hca::QUERY_PAGES_OP_MOD_INIT_PAGES) {
+            Ok((func_id, requested_pages)) => {
+                if func_id != 0 {
+                    self.fw_function_id = func_id;
+                }
+                self.provide_bootstrap_pages_if_requested(
+                    "init",
+                    func_id,
+                    requested_pages,
+                    fw_page_addrs,
+                )?;
+            }
+            Err(err) => {
+                log::warn!(
+                    target: "mlx5",
+                    "QUERY_PAGES(init) failed before INIT_HCA: {:?}",
+                    err
+                );
+            }
+        }
 
         crate::boot_trace("[MLX5_BOOT] init_hca start\n");
         self.init_hca()?;
@@ -630,7 +697,13 @@ impl Mlx5Device {
         let mut eqns = Vec::new();
         for (_i, eq_buf) in eq_bufs.iter().enumerate() {
             // RanyOS DriverContext currently supports a single IRQ, so map all EQs to vector 0
-            let eqn = self.create_eq_hw(eq_buf.0, eq_buf.1, log_eq_size, 0, 0)?;
+            let eqn = self.create_eq_hw(
+                eq_buf.0,
+                eq_buf.1,
+                log_eq_size,
+                0,
+                crate::defs::eq_event_mask::STANDARD,
+            )?;
             eqns.push(eqn);
         }
 
