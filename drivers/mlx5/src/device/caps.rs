@@ -131,19 +131,22 @@ impl Mlx5Device {
         )?;
 
         // 2. 取得した設定をベースに一部を書き換え
-        // query の出力は mailbox の 0x10 から始まる
-        let mut caps_payload = [0u8; 4096];
-        caps_payload.copy_from_slice(&out_mbox.data[..4096]);
+        // query の出力は mailbox の 0x10 から実際の capability 領域が始まる
+        let mut caps_payload = [0u8; 4096 - 16];
+        caps_payload.copy_from_slice(&out_mbox.data[16..4096]);
 
         // Linux の handle_hca_cap に倣い、いくつかのパラメータを最適化
-        // - pkey_table_size = 128 (to_fw_pkey_sz(128) = 1)
+        // 注意: オフセットは capability 構造体の先頭(0x00)からの相対位置
+        
+        // - pkey_table_size = 128 (to_fw_pkey_sz(128) = 1) -> DW 7 (0x1c)
         caps_payload[0x1c] = (caps_payload[0x1c] & 0x3f) | (1 << 6);
-        // - log_uar_page_sz = 0 (for 4K pages)
+        // - log_uar_page_sz = 0 (for 4K pages) -> DW 2 (0x0b)
         caps_payload[0x0b] = caps_payload[0x0b] & 0xf0;
-        // - cmdif_checksum = 0 (disable)
+        // - cmdif_checksum = 0 (disable) -> DW 0 (0x01)
         caps_payload[0x01] = caps_payload[0x01] & 0xbf;
 
         log::info!(target: "mlx5", "Setting modified HCA Capabilities...");
+        *in_mbox = CmdMailbox::zeroed();
         crate::cmd::hca::build_set_hca_cap_input(in_mbox, 0, &caps_payload);
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::SetHcaCap,

@@ -382,10 +382,18 @@ impl AsyncDriver for Mlx5AsyncDriver {
             let plan = Mlx5BootstrapPlan::new(&config);
 
             let mut mmio = AbiMmioHandle::default();
-            let res = (kernel_api().map_mmio)(bar0_phys, 0x100000, &mut mmio);
+            // ConnectX BAR0 can be up to 32MB for PFs, and 4MB-16MB for VFs depending on UAR count.
+            // Map 16MB to cover a reasonable range of UARs.
+            let bar0_size = 0x1000000; // 16MB
+            let res = (kernel_api().map_mmio)(bar0_phys, bar0_size, &mut mmio);
             if res != 0 {
                 log::error!(target: "mlx5", "Failed to map BAR0: {}", res);
                 return Err(kernel_api::error::KapiError::IoError);
+            }
+
+            let is_vf = crate::defs::ConnectXVariant::is_vf_device_id(device_id);
+            if is_vf {
+                log::info!(target: "mlx5", "PCI device {:#x} recognized as Virtual Function (VF)", device_id);
             }
 
             let dma = match Mlx5DmaResources::allocate(&plan) {
