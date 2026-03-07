@@ -16,11 +16,6 @@ use alloc::vec::Vec;
 // Volatile memory reads/writes centralized via mmio helpers
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
-use pci_driver::PciDeviceInfo;
-// use crate::time; // Kernel time not available in driver
-// use crate::io::pci::PciDeviceInfo; // Removed
-// use crate::time; // Removed
-
 use crate::regs::*;
 use crate::types::{CodecInfo, HdaError, HdaResult, make_corb_entry};
 
@@ -30,8 +25,6 @@ use crate::types::{CodecInfo, HdaError, HdaResult, make_corb_entry};
 
 /// Intel HD Audio Controller
 pub struct HdaController {
-    /// PCI device info
-    pub(crate) pci_device: PciDeviceInfo,
     /// Memory-mapped register base address
     pub(crate) mmio_base: u64,
     /// CORB buffer (virtual address for CPU access)
@@ -99,9 +92,8 @@ unsafe impl Sync for HdaController {}
 
 impl HdaController {
     /// Create a new HDA controller instance
-    pub fn new(pci_device: PciDeviceInfo, mmio_base: u64) -> Self {
+    pub fn new(mmio_base: u64) -> Self {
         Self {
-            pci_device,
             mmio_base,
             corb_addr: 0,
             corb_device_addr: 0,
@@ -195,10 +187,6 @@ impl HdaController {
     /// Initialize the HDA controller
     pub fn init(&mut self) -> HdaResult<()> {
         log::info!("[HDA] Initializing Intel HD Audio controller\n");
-
-        // Enable PCI bus mastering and memory space
-        self.pci_device.enable_bus_master();
-        self.pci_device.enable_memory_space();
 
         // Read capabilities
         self.read_capabilities()?;

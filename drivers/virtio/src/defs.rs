@@ -54,6 +54,18 @@ pub const VIRTQUEUE_DEFAULT_SIZE: u16 = 256;
 /// 最大キューサイズ（仕様上の制限）
 pub const VIRTQUEUE_MAX_SIZE: u16 = 32768;
 
+/// 間接ディスクリプタ機能ビット
+pub const VIRTIO_F_INDIRECT_DESC: u64 = 1 << 28;
+
+/// vring ディスクリプタテーブルのアライメント
+pub const VRING_DESC_ALIGN: usize = 16;
+
+/// vring available リングのアライメント
+pub const VRING_AVAIL_ALIGN: usize = 2;
+
+/// vring used リングのアライメント
+pub const VRING_USED_ALIGN: usize = 4;
+
 // ============================================================================
 // Descriptor Ring Structures
 // ============================================================================
@@ -98,6 +110,10 @@ pub struct VringDesc {
 }
 
 impl VringDesc {
+    pub const F_NEXT: u16 = vring_flags::VRING_DESC_F_NEXT;
+    pub const F_WRITE: u16 = vring_flags::VRING_DESC_F_WRITE;
+    pub const F_INDIRECT: u16 = vring_flags::VRING_DESC_F_INDIRECT;
+
     /// 新しいディスクリプタを作成
     pub const fn new() -> Self {
         Self {

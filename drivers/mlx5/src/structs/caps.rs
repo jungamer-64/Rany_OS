@@ -16,8 +16,8 @@ impl<'a> HcaCapLayout<'a> {
     }
 
     // dword 0
-    pub fn vhc_id(&self) -> u32 {
-        get_bits_u32(self.data, 0, 16)
+    pub fn vhca_id(&self) -> u32 {
+        get_bits_u32(self.data, 16, 16)
     }
 
     // dword 4
@@ -73,5 +73,11 @@ impl<'a> HcaCapLayout<'a> {
     }
     pub fn vlan_strip(&self) -> bool {
         get_bits_u32(self.data, 310, 1) != 0
+    }
+    pub fn eswitch_manager(&self) -> bool {
+        get_bits_u32(self.data, 306, 1) != 0
+    }
+    pub fn num_vhca_ports(&self) -> u32 {
+        get_bits_u32(self.data, 352, 16)
     }
 }

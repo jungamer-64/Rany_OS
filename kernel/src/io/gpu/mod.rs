@@ -15,6 +15,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
+use virtio_driver::defs::{
+    vring_flags, VringAvailHeader as VringAvail, VringDesc, VringUsedElem,
+    VringUsedHeader as VringUsed, VRING_USED_ALIGN,
+};
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
@@ -60,41 +64,8 @@ enum VirtioDeviceStatus {
 }
 
 // =============================================================================
-// VirtQueue Implementation (local, same pattern as balloon.rs)
+// VirtQueue Implementation (local runtime, shared vring layout from virtio_driver)
 // =============================================================================
-
-mod vring_flags {
-    pub const VRING_DESC_F_NEXT: u16 = 1;
-    pub const VRING_DESC_F_WRITE: u16 = 2;
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-struct VringDesc {
-    addr: u64,
-    len: u32,
-    flags: u16,
-    next: u16,
-}
-
-#[repr(C)]
-struct VringAvail {
-    flags: u16,
-    idx: u16,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-struct VringUsedElem {
-    id: u32,
-    len: u32,
-}
-
-#[repr(C)]
-struct VringUsed {
-    flags: u16,
-    idx: u16,
-}
 
 struct VirtQueue {
     queue_size: u16,

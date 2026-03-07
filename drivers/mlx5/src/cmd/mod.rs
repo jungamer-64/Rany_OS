@@ -215,7 +215,17 @@ impl CmdQueueTransport {
     pub fn opcode_uses_uid(opcode: CmdOpcode) -> bool {
         matches!(
             opcode,
-            CmdOpcode::AllocUar
+            CmdOpcode::QueryHcaCap
+                | CmdOpcode::InitHca
+                | CmdOpcode::EnableHca
+                | CmdOpcode::QueryPages
+                | CmdOpcode::ManagePages
+                | CmdOpcode::QueryIssi
+                | CmdOpcode::SetIssi
+                | CmdOpcode::QueryNicVportContext
+                | CmdOpcode::QueryVportState
+                | CmdOpcode::ModifyVportState
+                | CmdOpcode::AllocUar
                 | CmdOpcode::DeallocUar
                 | CmdOpcode::AllocPd
                 | CmdOpcode::DeallocPd

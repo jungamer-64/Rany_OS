@@ -122,11 +122,20 @@ impl SystemIntegration {
 
         #[cfg(not(test))]
         {
-            if let Err(e) = crate::io::iommu::api::setup_iommu_for_all_pci_devices(&mut devices) {
+            let mut iommu_devices: Vec<_> = devices
+                .iter()
+                .map(crate::platform::pci::to_native_device)
+                .collect();
+            if let Err(e) =
+                crate::io::iommu::api::setup_iommu_for_all_pci_devices(&mut iommu_devices)
+            {
                 self.log(&alloc::format!(
                     "  [IOMMU][WARNING] Failed to protect one or more PCI devices: {:?}. System may be vulnerable.",
                     e
                 ));
+            }
+            for (device, iommu_device) in devices.iter_mut().zip(iommu_devices.iter()) {
+                device.iommu_domain_id = iommu_device.iommu_domain_id;
             }
         }
 

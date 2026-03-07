@@ -280,10 +280,9 @@ impl Mlx5Device {
         self.ports
             .get(port_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_query_vport_state_input(in_mbox, query_vport_state_op_mod_vnic_vport(), 0, false);
-        cmd.execute(
+        self.execute_cmd_with_uid_candidates(
             CmdOpcode::QueryVportState,
             self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
@@ -312,7 +311,6 @@ impl Mlx5Device {
         self.ports
             .get(port_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let query_patterns: &[(bool, Option<u8>, &str)] = &[
             (false, None, "self-permanent"),
             (false, Some(0), "self-uc-list"),
@@ -325,7 +323,7 @@ impl Mlx5Device {
         for (other_vport, allowed_list_type, label) in query_patterns {
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             build_query_nic_vport_context_input(in_mbox, 0, *other_vport, *allowed_list_type);
-            match cmd.execute(
+            match self.execute_cmd_with_uid_candidates(
                 CmdOpcode::QueryNicVportContext,
                 self.cmd_in_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,

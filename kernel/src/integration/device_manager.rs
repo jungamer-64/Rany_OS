@@ -92,7 +92,8 @@ impl DeviceInfo {
         let mut base_addresses = Vec::new();
         for bar in &dev.bars {
             if let Some(b) = bar {
-                if let Some(addr) = b.address() {
+                let addr = b.base();
+                if addr != 0 {
                     base_addresses.push(addr);
                 }
             }

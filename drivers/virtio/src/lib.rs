@@ -39,10 +39,14 @@ pub use transport::{
 
 // Re-export commonly used types from defs
 pub use defs::{
-    VIRTIO_MMIO_MAGIC,
-    // Queue constants
-    VIRTQUEUE_DEFAULT_SIZE,
-    VIRTQUEUE_MAX_SIZE,
+    avail_flags,
+    // Features
+    common_features,
+    // MMIO
+    mmio_regs,
+    status,
+    used_flags,
+    vring_flags,
     // Status
     VirtioDeviceStatus,
     // Transport types
@@ -59,14 +63,14 @@ pub use defs::{
     VringUsed256,
     VringUsedElem,
     VringUsedHeader,
-    avail_flags,
-    // Features
-    common_features,
-    // MMIO
-    mmio_regs,
-    status,
-    used_flags,
-    vring_flags,
+    VIRTIO_F_INDIRECT_DESC,
+    VIRTIO_MMIO_MAGIC,
+    // Queue constants
+    VIRTQUEUE_DEFAULT_SIZE,
+    VIRTQUEUE_MAX_SIZE,
+    VRING_AVAIL_ALIGN,
+    VRING_DESC_ALIGN,
+    VRING_USED_ALIGN,
 };
 
 #[cfg(test)]

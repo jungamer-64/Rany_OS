@@ -14,8 +14,9 @@
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 
-use crate::io::pci::{Bar, find_by_class};
+use crate::platform::pci::find_by_class;
 use crate::task::interrupt_waker;
+use kernel_api::service::platform::Bar;
 
 use super::regs::*;
 use super::types::{HdaError, HdaResult};
@@ -56,6 +57,9 @@ pub fn init() -> HdaResult<()> {
 
     let pci_device = devices.into_iter().next().unwrap();
 
+    pci_device.enable_bus_master();
+    pci_device.enable_memory_space();
+
     log::info!(
         "[HDA] Found device: {:04x}:{:04x} at {:02x}:{:02x}.{}\n",
         pci_device.vendor_id.0,
@@ -91,7 +95,7 @@ pub fn init() -> HdaResult<()> {
     log::info!("[HDA] MMIO base: 0x{:016x}\n", mmio_base);
 
     // Create and initialize controller
-    let mut controller = HdaController::new(pci_device, mmio_base);
+    let mut controller = HdaController::new(mmio_base);
     controller.init()?;
 
     *HDA_DRIVER.lock() = Some(controller);

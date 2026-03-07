@@ -20,7 +20,7 @@
 
 #![allow(dead_code)]
 
-use crate::defs::{VirtioDeviceType, status};
+use crate::defs::{status, VirtioDeviceType};
 
 // ============================================================================
 // Transport Error

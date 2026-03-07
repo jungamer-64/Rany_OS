@@ -517,7 +517,6 @@ dependencies = [
  "hal",
  "kernel_api",
  "log",
- "pci_driver",
  "spin",
  "x86_64",
 ]

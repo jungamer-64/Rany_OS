@@ -512,6 +512,8 @@ pub struct HcaCaps {
     pub eswitch_manager: bool,
     /// VHCA ポート数
     pub num_vhca_ports: u16,
+    /// VHCA ID (VF identification)
+    pub vhca_id: u16,
 }
 
 // ============================================================================

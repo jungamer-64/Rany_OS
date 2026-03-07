@@ -10,6 +10,7 @@ use crate::defs::CmdOpcode;
 use crate::device::{DeviceState, Mlx5Device};
 use crate::error::{Mlx5Error, Mlx5Result};
 use alloc::vec; // bring `vec!` macro into scope for candidate lists
+use alloc::vec::Vec;
 // unused MkeyParams removed
 
 impl Mlx5Device {
@@ -372,24 +373,25 @@ impl Mlx5Device {
         let _ = self.refresh_port_runtime_state(0);
 
         // Phase 4: Queues
-        let eqn = self.create_eq_hw(eq_bufs[0].0, eq_bufs[0].1, log_eq_size, 0, 0)?;
+        let mut eqns = Vec::new();
+        for (i, eq_buf) in eq_bufs.iter().enumerate() {
+            let eqn = self.create_eq_hw(eq_buf.0, eq_buf.1, log_eq_size, i as u32, 0)?;
+            eqns.push(eqn);
+        }
 
-        let tx_cqn = self.create_cq_hw(
-            tx_cq_bufs[0].0,
-            tx_cq_bufs[0].1,
-            tx_cq_bufs[0].2,
-            tx_cq_bufs[0].3,
-            log_cq_size,
-            eqn,
-        )?;
-        let rx_cqn = self.create_cq_hw(
-            rx_cq_bufs[0].0,
-            rx_cq_bufs[0].1,
-            rx_cq_bufs[0].2,
-            rx_cq_bufs[0].3,
-            log_cq_size,
-            eqn,
-        )?;
+        let mut tx_cqns = Vec::new();
+        for (i, cq_buf) in tx_cq_bufs.iter().enumerate() {
+            let eqn = eqns[i % eqns.len()];
+            let cqn = self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
+            tx_cqns.push(cqn);
+        }
+
+        let mut rx_cqns = Vec::new();
+        for (i, cq_buf) in rx_cq_bufs.iter().enumerate() {
+            let eqn = eqns[i % eqns.len()];
+            let cqn = self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
+            rx_cqns.push(cqn);
+        }
 
         let tisn = self.create_tis(&crate::resources::TisParams {
             pd: self.pd,
@@ -397,39 +399,62 @@ impl Mlx5Device {
             port: 1,
             prio: 0,
         })?;
-        let _sqn = self.create_sq_hw(
-            sq_bufs[0].0,
-            sq_bufs[0].1,
-            sq_bufs[0].2,
-            sq_bufs[0].3,
-            log_sq_size,
-            tx_cqn,
-            tisn,
-        )?;
+        for (i, sq_buf) in sq_bufs.iter().enumerate() {
+            let cqn = tx_cqns[i % tx_cqns.len()];
+            let _sqn = self.create_sq_hw(
+                sq_buf.0,
+                sq_buf.1,
+                sq_buf.2,
+                sq_buf.3,
+                log_sq_size,
+                cqn,
+                tisn,
+            )?;
+        }
 
         let scatter_fcs = self.hca_caps().map(|c| c.scatter_fcs).unwrap_or(false);
         let vlan_strip = self.hca_caps().map(|c| c.vlan_strip).unwrap_or(false);
-        let tirn = self.create_tir(&crate::resources::TirParams {
-            receive_type: crate::resources::TirReceiveType::DirectRq,
-            td: self.td,
-            inline_rqn: 0, // Will be set by create_rq_hw if it transitions
-            rqtn: 0,
-            rss: None,
-            scatter_fcs,
-            vlan_strip,
-        })?;
 
-        let _rqn = self.create_rq_hw(
-            rq_bufs[0].0,
-            rq_bufs[0].1,
-            rq_bufs[0].2,
-            rq_bufs[0].3,
-            log_rq_size,
-            rx_cqn,
-            tirn,
-            scatter_fcs,
-            vlan_strip,
-        )?;
+        let mut rqns = Vec::new();
+        for (i, rq_buf) in rq_bufs.iter().enumerate() {
+            let cqn = rx_cqns[i % rx_cqns.len()];
+            let rqn = self.create_rq_hw(
+                rq_buf.0,
+                rq_buf.1,
+                rq_buf.2,
+                rq_buf.3,
+                log_rq_size,
+                cqn,
+                0, // Dummy TIRN for DirectRq (unused in create_rq_hw)
+                scatter_fcs,
+                vlan_strip,
+            )?;
+            rqns.push(rqn);
+        }
+
+        let tirn = if rqns.len() > 1 {
+            let log_rqt_size = (32 - (rqns.len() as u32 - 1).leading_zeros()) as u8;
+            let rqtn = self.create_rqt(&rqns, log_rqt_size)?;
+            self.create_tir(&crate::resources::TirParams {
+                receive_type: crate::resources::TirReceiveType::Rqt,
+                td: self.td,
+                inline_rqn: 0,
+                rqtn,
+                rss: Some(crate::flow::RssConfig::default()),
+                scatter_fcs,
+                vlan_strip,
+            })?
+        } else {
+            self.create_tir(&crate::resources::TirParams {
+                receive_type: crate::resources::TirReceiveType::DirectRq,
+                td: self.td,
+                inline_rqn: rqns[0],
+                rqtn: 0,
+                rss: None,
+                scatter_fcs,
+                vlan_strip,
+            })?
+        };
 
         // Finalize
         let _ = self.setup_rx_flow_table(tirn);

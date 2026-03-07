@@ -197,6 +197,11 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
     let actual_ports = if num_ports == 0 { 1 } else { num_ports.min(2) };
     let max_cq = 1u32.checked_shl(log_max_cq.min(20) as u32).unwrap_or(64);
     let max_sq_rq = 1u32.checked_shl(log_max_qp_sz.min(20) as u32).unwrap_or(64);
+    // Extract VHCA-related fields if present
+    let dw0 = rd(0x00);
+    let vhca_id = ((dw0 >> 16) & 0xFFFF) as u16;
+    let dw11 = rd(0x2C);
+    let num_vhca_ports = ((dw11 >> 16) & 0xFFFF) as u16;
 
     HcaCaps {
         max_cq,
@@ -224,6 +229,7 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         tis_tir_td_order,
         vport_group_manager,
         eswitch_manager: false,
-        num_vhca_ports: 0,
+        num_vhca_ports,
+        vhca_id,
     }
 }

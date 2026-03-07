@@ -31,6 +31,30 @@ fn convert_bar(bar: crate::io::pci::Bar) -> Bar {
     }
 }
 
+fn convert_bar_to_native(bar: Bar) -> crate::io::pci::Bar {
+    match bar {
+        Bar::Memory32 {
+            base,
+            size,
+            prefetchable,
+        } => crate::io::pci::Bar::Memory32 {
+            base,
+            size,
+            prefetchable,
+        },
+        Bar::Memory64 {
+            base,
+            size,
+            prefetchable,
+        } => crate::io::pci::Bar::Memory64 {
+            base,
+            size,
+            prefetchable,
+        },
+        Bar::Io { base, size } => crate::io::pci::Bar::Io { base, size },
+    }
+}
+
 fn convert_device(dev: crate::io::pci::PciDeviceInfo) -> PciDeviceInfo {
     PciDeviceInfo {
         segment: dev.segment,
@@ -53,6 +77,38 @@ fn convert_device(dev: crate::io::pci::PciDeviceInfo) -> PciDeviceInfo {
             .capabilities
             .into_iter()
             .map(|(cap, offset)| (cap as u8, offset))
+            .collect(),
+        msi_cap_offset: dev.msi_cap_offset,
+        msix_cap_offset: dev.msix_cap_offset,
+        pcie_cap_offset: dev.pcie_cap_offset,
+        iommu_domain_id: dev.iommu_domain_id,
+    }
+}
+
+pub fn to_native_device(dev: &PciDeviceInfo) -> crate::io::pci::PciDeviceInfo {
+    crate::io::pci::PciDeviceInfo {
+        segment: dev.segment,
+        bdf: crate::io::pci::BdfAddress::new(dev.bdf.bus(), dev.bdf.device(), dev.bdf.function()),
+        vendor_id: crate::io::pci::VendorId(dev.vendor_id.0),
+        device_id: crate::io::pci::DeviceId(dev.device_id.0),
+        revision_id: dev.revision_id,
+        class_code: crate::io::pci::ClassCode::new(
+            dev.class_code.class,
+            dev.class_code.subclass,
+            dev.class_code.prog_if,
+        ),
+        header_type: dev.header_type,
+        subsystem_vendor_id: dev.subsystem_vendor_id,
+        subsystem_id: dev.subsystem_id,
+        interrupt_line: dev.interrupt_line,
+        interrupt_pin: dev.interrupt_pin,
+        bars: dev.bars.map(|bar| bar.map(convert_bar_to_native)),
+        capabilities: dev
+            .capabilities
+            .iter()
+            .filter_map(|(cap, offset)| {
+                crate::io::pci::bus::CapabilityId::from_u8(*cap).map(|cap_id| (cap_id, *offset))
+            })
             .collect(),
         msi_cap_offset: dev.msi_cap_offset,
         msix_cap_offset: dev.msix_cap_offset,
@@ -150,4 +206,52 @@ pub fn disable_intx(device: &PciDeviceInfo) -> kernel_api::KapiResult<()> {
     }
 
     BUILTIN_PCI_PROVIDER.disable_intx(device.bdf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_native_device_preserves_bar_base_addresses() {
+        let dev = PciDeviceInfo {
+            segment: 0,
+            bdf: BdfAddress::new(0, 1, 0),
+            vendor_id: VendorId(0x8086),
+            device_id: DeviceId(0x2668),
+            revision_id: 0,
+            class_code: ClassCode::new(0x04, 0x03, 0x00),
+            header_type: 0,
+            subsystem_vendor_id: 0,
+            subsystem_id: 0,
+            interrupt_line: 10,
+            interrupt_pin: 1,
+            bars: [
+                Some(Bar::Memory64 {
+                    base: 0x1234_5000,
+                    size: 0x1000,
+                    prefetchable: false,
+                }),
+                Some(Bar::Io {
+                    base: 0x3f8,
+                    size: 0x8,
+                }),
+                None,
+                None,
+                None,
+                None,
+            ],
+            capabilities: alloc::vec![(0x05, 0x50)],
+            msi_cap_offset: Some(0x50),
+            msix_cap_offset: None,
+            pcie_cap_offset: None,
+            iommu_domain_id: Some(7),
+        };
+
+        let native = to_native_device(&dev);
+
+        assert_eq!(native.bars[0].map(|bar| bar.base()), Some(0x1234_5000));
+        assert_eq!(native.bars[1].map(|bar| bar.base()), Some(0x3f8));
+        assert_eq!(native.iommu_domain_id, Some(7));
+    }
 }

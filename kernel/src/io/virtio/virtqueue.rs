@@ -2,49 +2,14 @@ use crate::io::dma::CoherentDmaBuffer;
 use crate::io::iommu::types::DmaAddr;
 use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
-use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU16, Ordering};
 
-pub use virtio_driver::defs::{VIRTQUEUE_MAX_SIZE, VringUsedElem};
-
-/// Virtqueue descriptor
-#[repr(C)]
-#[derive(Default, Clone, Copy, Debug)]
-pub struct VringDesc {
-    pub addr: u64,
-    pub len: u32,
-    pub flags: u16,
-    pub next: u16,
-}
-
-impl VringDesc {
-    pub const F_NEXT: u16 = 0x1;
-    pub const F_WRITE: u16 = 0x2;
-    pub const F_INDIRECT: u16 = 0x4;
-}
-
-pub mod vring_flags {
-    pub const VRING_DESC_F_NEXT: u16 = 0x1;
-    pub const VRING_DESC_F_WRITE: u16 = 0x2;
-    pub const VRING_DESC_F_INDIRECT: u16 = 0x4;
-}
-
-pub const VIRTIO_F_INDIRECT_DESC: u64 = 1 << 28;
-
-/// Virtqueue available ring (fixed part)
-#[repr(C)]
-pub struct VringAvail {
-    pub flags: UnsafeCell<u16>,
-    pub idx: UnsafeCell<u16>,
-}
-
-/// Virtqueue used ring (fixed part)
-#[repr(C)]
-pub struct VringUsed {
-    pub flags: UnsafeCell<u16>,
-    pub idx: UnsafeCell<u16>,
-}
+pub use virtio_driver::defs::{
+    vring_flags, VringAvailHeader as VringAvail, VringDesc, VringUsedElem,
+    VringUsedHeader as VringUsed, VIRTIO_F_INDIRECT_DESC, VIRTQUEUE_MAX_SIZE, VRING_AVAIL_ALIGN,
+    VRING_DESC_ALIGN, VRING_USED_ALIGN,
+};
 
 /// Virtqueue implementation
 #[derive(Debug)]
@@ -71,17 +36,12 @@ pub struct VirtQueue {
 
 // SAFETY: VirtQueue is thread-safe because:
 // 1. Mutable state (free_list) is protected by a lock.
-// 2. Shared memory (rings) is accessed via volatile operations on UnsafeCell.
+// 2. Shared memory (rings) is accessed via volatile operations on shared DMA memory.
 // 3. Atomical updates for last_used_idx.
 unsafe impl Send for VirtQueue {}
 unsafe impl Sync for VirtQueue {}
 
 impl VirtQueue {
-    /// Layout constants
-    pub const VRING_DESC_ALIGN: usize = 16;
-    pub const VRING_AVAIL_ALIGN: usize = 2;
-    pub const VRING_USED_ALIGN: usize = 4;
-
     /// Calculate required memory size for a virtqueue
     pub fn calculate_layout(queue_size: u16) -> (usize, usize, usize, usize) {
         let queue_size = queue_size as usize;
@@ -93,8 +53,8 @@ impl VirtQueue {
         // Used: flags(2) + idx(2) + ring[queue_size](8*qs) + avail_event(2)
         let used_ring_size = 2 + 2 + core::mem::size_of::<VringUsedElem>() * queue_size + 2;
 
-        let used_offset = (desc_table_size + avail_ring_size + Self::VRING_USED_ALIGN - 1)
-            & !(Self::VRING_USED_ALIGN - 1);
+        let used_offset =
+            (desc_table_size + avail_ring_size + VRING_USED_ALIGN - 1) & !(VRING_USED_ALIGN - 1);
         let total_size = used_offset + used_ring_size;
 
         (desc_table_size, avail_ring_size, used_offset, total_size)
@@ -131,12 +91,12 @@ impl VirtQueue {
         }
 
         // Initialize Available ring
-        core::ptr::write_volatile((*avail_ring).flags.get(), 0);
-        core::ptr::write_volatile((*avail_ring).idx.get(), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*avail_ring).flags), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*avail_ring).idx), 0);
 
         // Initialize Used ring
-        core::ptr::write_volatile((*used_ring).flags.get(), 0);
-        core::ptr::write_volatile((*used_ring).idx.get(), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*used_ring).flags), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*used_ring).idx), 0);
 
         Self {
             queue_size,
@@ -191,13 +151,16 @@ impl VirtQueue {
 
     /// Safely get the current available index
     fn get_avail_idx(&self) -> u16 {
-        unsafe { core::ptr::read_volatile(self.avail_ring.as_ref().idx.get()) }
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!(self.avail_ring.as_ref().idx)) }
     }
 
     /// Safely set a new available index
     fn set_avail_idx(&mut self, idx: u16) {
         unsafe {
-            core::ptr::write_volatile(self.avail_ring.as_ref().idx.get(), idx);
+            core::ptr::write_volatile(
+                core::ptr::addr_of_mut!((*self.avail_ring.as_ptr()).idx),
+                idx,
+            );
         }
     }
 
@@ -211,7 +174,7 @@ impl VirtQueue {
 
     /// Safely get the current used index
     fn get_used_idx(&self) -> u16 {
-        unsafe { core::ptr::read_volatile(self.used_ring.as_ref().idx.get()) }
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!(self.used_ring.as_ref().idx)) }
     }
 
     /// Safely get an element from the used ring

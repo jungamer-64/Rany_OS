@@ -43,14 +43,18 @@ impl Mlx5Device {
         caps.vlan_strip = cap_view.vlan_strip();
         caps.csum_cap = cap_view.csum_cap();
         caps.cqe_compression = cap_view.cqe_compression();
+        caps.vhca_id = cap_view.vhca_id() as u16;
+        caps.eswitch_manager = cap_view.eswitch_manager();
+        caps.num_vhca_ports = cap_view.num_vhca_ports() as u16;
 
         log::info!(
             target: "mlx5",
-            "HCA Caps: ports={}, max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_mkey={}, max_mtu={}, vport_mgr={}",
-            caps.num_ports, caps.max_cq, caps.max_sq, caps.max_rq, caps.max_eq, caps.max_mkey, caps.max_mtu, caps.vport_group_manager
+            "HCA Caps: ports={}, max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_mkey={}, max_mtu={}, vport_mgr={}, eswitch_mgr={}, vhca_id={:#x}",
+            caps.num_ports, caps.max_cq, caps.max_sq, caps.max_rq, caps.max_eq, caps.max_mkey, caps.max_mtu, caps.vport_group_manager, caps.eswitch_manager, caps.vhca_id
         );
 
         self.hca_caps = Some(caps);
+        self.sw_vhca_id = caps.vhca_id;
         self.state = crate::device::DeviceState::CapsQueried;
         Ok(())
     }

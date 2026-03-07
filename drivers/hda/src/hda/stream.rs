@@ -151,13 +151,13 @@ impl HdaController {
             // BdlEntry is repr(C, align(16)) ensuring proper alignment.
             // The write is within bounds (i < num_entries).
             unsafe {
-                crate::io::mmio::volatile_write::<BdlEntry>(entry_addr as usize, entry);
+                hal::mmio::volatile_write::<BdlEntry>(entry_addr as usize, entry);
             }
         }
 
         // SAFETY: SFENCE ensures all BDL entries are visible to the HDA controller
         // before we configure the stream to use this BDL.
-        crate::io::dma::sfence();
+        hal::mmio::sfence();
 
         // Set BDL address (hardware-visible device address)
         self.write32(stream_base + REG_SD_BDPL, bdl_dev as u32);

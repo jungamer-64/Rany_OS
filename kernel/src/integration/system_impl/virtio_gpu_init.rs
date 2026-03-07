@@ -170,7 +170,7 @@ impl SystemIntegration {
                 use crate::drivers::audio::hda::HdaDriver;
                 use alloc::boxed::Box;
 
-                let drv = Box::new(HdaDriver::new(dev, bar0_virt));
+                let drv = Box::new(HdaDriver::new(bar0_virt, dev.interrupt_line));
                 match register_driver(drv) {
                     Ok(handle) => {
                         if let Err(e) = driver_registry().probe_and_start(handle) {

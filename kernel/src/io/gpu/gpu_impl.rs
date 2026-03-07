@@ -118,7 +118,7 @@ impl VirtioGpu {
         let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
         let avail_size = 6 + 2 * queue_size as usize;
         let used_size = 6 + 8 * queue_size as usize;
-        let used_align = core::mem::align_of::<VringUsed>();
+        let used_align = VRING_USED_ALIGN;
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 

@@ -10,20 +10,19 @@ use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
 use crate::io::audio::hda::{HdaController, global};
-use crate::io::pci::PciDeviceInfo;
 
 /// Intel HD Audio Driver
 pub struct HdaDriver {
-    pci_device: Option<PciDeviceInfo>,
+    irq: u8,
     mmio_base: u64,
     initialized: bool,
 }
 
 impl HdaDriver {
     /// Create a new HDA Driver instance
-    pub fn new(pci_device: PciDeviceInfo, mmio_base: u64) -> Self {
+    pub fn new(mmio_base: u64, irq: u8) -> Self {
         Self {
-            pci_device: Some(pci_device),
+            irq,
             mmio_base,
             initialized: false,
         }
@@ -46,19 +45,16 @@ impl Driver for HdaDriver {
     fn probe(&mut self) -> KapiResult<()> {
         log::info!(target: "hda", "Probing Intel HD Audio...");
 
-        let pci_device = self.pci_device.take().ok_or(KapiError::Internal(-1))?;
-        let irq = pci_device.interrupt_line;
-
         // Create and initialize controller
-        let mut controller = HdaController::new(pci_device, self.mmio_base);
+        let mut controller = HdaController::new(self.mmio_base);
         match controller.init() {
             Ok(_) => {
                 // Register global instance
                 *global::HDA_DRIVER.lock() = Some(controller);
 
                 // Store IRQ
-                if irq > 0 && irq < 16 {
-                    global::HDA_IRQ.store(irq, Ordering::SeqCst);
+                if self.irq > 0 && self.irq < 16 {
+                    global::HDA_IRQ.store(self.irq, Ordering::SeqCst);
                 }
 
                 self.initialized = true;
