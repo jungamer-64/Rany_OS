@@ -8,6 +8,7 @@ macro_rules! export_async_driver {
         name: $name:expr,
         driver_type: $dtype:expr,
         version: $version:expr
+        $(, providers: $providers:expr)?
         $(, irq: $irq:path)?
     ) => {
         $crate::export_async_driver!(@impl
@@ -15,7 +16,8 @@ macro_rules! export_async_driver {
             constructor = $constructor,
             name = $name,
             driver_type = $dtype,
-            version = $version
+            version = $version,
+            providers = $crate::export_async_driver!(@providers $( $providers )?)
             $(, irq = $irq)?
         );
     };
@@ -26,6 +28,7 @@ macro_rules! export_async_driver {
         constructor = $constructor:expr,
         name = $name:expr,
         driver_type = $dtype:expr,
+        providers = $providers:expr,
         version = $version:expr,
         irq = $irq:path
     ) => {
@@ -38,6 +41,7 @@ macro_rules! export_async_driver {
                 constructor = $constructor,
                 name = $name,
                 driver_type = $dtype,
+                providers = $providers,
                 version = $version
             );
 
@@ -66,7 +70,7 @@ macro_rules! export_async_driver {
                 version_adapter,
                 None,
                 Some(irq_adapter),
-            );
+            ).with_provider_descriptors_export(Some(providers_adapter));
             &VTABLE
         }
     };
@@ -77,6 +81,7 @@ macro_rules! export_async_driver {
         constructor = $constructor:expr,
         name = $name:expr,
         driver_type = $dtype:expr,
+        providers = $providers:expr,
         version = $version:expr
     ) => {
         $crate::declare_rany_type_id_section!();
@@ -88,6 +93,7 @@ macro_rules! export_async_driver {
                 constructor = $constructor,
                 name = $name,
                 driver_type = $dtype,
+                providers = $providers,
                 version = $version
             );
 
@@ -103,7 +109,7 @@ macro_rules! export_async_driver {
                 version_adapter,
                 None,
                 None,
-            );
+            ).with_provider_descriptors_export(Some(providers_adapter));
             &VTABLE
         }
     };
@@ -114,6 +120,7 @@ macro_rules! export_async_driver {
         constructor = $constructor:expr,
         name = $name:expr,
         driver_type = $dtype:expr,
+        providers = $providers:expr,
         version = $version:expr
     ) => {
             use $crate::driver::{AsyncDriver, DriverType};
@@ -274,5 +281,22 @@ macro_rules! export_async_driver {
             extern "C" fn version_adapter() -> u64 {
                 $version as u64
             }
+            extern "C" fn providers_adapter(count_out: *mut usize) -> *const () {
+                let providers: &'static [$crate::provider::ProviderDescriptorV1] = $providers;
+                if !count_out.is_null() {
+                    unsafe {
+                        *count_out = providers.len();
+                    }
+                }
+                providers.as_ptr() as *const ()
+            }
+    };
+
+    (@providers $providers:expr) => {
+        $providers
+    };
+
+    (@providers) => {
+        &[] as &[$crate::provider::ProviderDescriptorV1]
     };
 }

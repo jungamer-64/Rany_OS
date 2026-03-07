@@ -74,5 +74,6 @@ pub static DRIVER_EXPORTS: DriverExportsV1 = DriverExportsV1 {
     entry: _exorust_driver_entry,
     init: Some(driver_init),
     fini: Some(driver_fini),
-    reserved: [0; 8],
+    providers: None,
+    reserved: [0; 7],
 };

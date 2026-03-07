@@ -7,7 +7,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use kernel_api::provider::{ProviderHandle, ProviderKind};
+use kernel_api::provider::{ProviderDescriptorV1, ProviderHandle, ProviderKind};
 use kernel_api::service::audio::AudioServices;
 use kernel_api::service::graphics::GraphicsServices;
 use kernel_api::service::input::InputServices;
@@ -31,6 +31,7 @@ enum ProviderRef {
     Pci(&'static dyn PciServices),
     Apic(&'static dyn ApicServices),
     Time(&'static dyn TimeService),
+    Descriptor(ProviderDescriptorV1),
     Storage(&'static dyn StorageServices),
     Netdev(&'static dyn NetDeviceServices),
     Input(&'static dyn InputServices),
@@ -282,6 +283,32 @@ impl ProviderRegistry {
         self.register_driver_provider(owner, ProviderKind::Audio, ProviderRef::Audio(provider))
     }
 
+    pub fn register_driver_descriptors(
+        &self,
+        owner: DriverHandle,
+        descriptors: &[ProviderDescriptorV1],
+    ) -> Vec<ProviderHandle> {
+        let mut handles = Vec::with_capacity(descriptors.len());
+        for descriptor in descriptors {
+            if !descriptor.validate() {
+                log::warn!(
+                    target: "provider",
+                    "ignoring invalid provider descriptor for driver {} kind {:?}",
+                    owner.index(),
+                    descriptor.kind
+                );
+                continue;
+            }
+
+            handles.push(self.register_driver_provider(
+                owner,
+                descriptor.kind,
+                ProviderRef::Descriptor(*descriptor),
+            ));
+        }
+        handles
+    }
+
     pub fn unregister_driver(&self, handle: DriverHandle) {
         if let Ok(mut entries) = self.entries.lock() {
             entries.retain(|entry| entry.owner != ProviderOwner::Driver(handle));
@@ -383,6 +410,23 @@ impl ProviderRegistry {
                 _ => None,
             })
         })
+    }
+
+    pub fn descriptors_for_driver(&self, owner: DriverHandle) -> Vec<ProviderDescriptorV1> {
+        self.entries
+            .lock()
+            .ok()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.owner == ProviderOwner::Driver(owner))
+                    .filter_map(|entry| match entry.provider {
+                        ProviderRef::Descriptor(descriptor) => Some(descriptor),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

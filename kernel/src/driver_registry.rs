@@ -26,7 +26,6 @@ extern crate alloc;
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::string::String;
-
 use alloc::vec::Vec;
 use core::fmt;
 use kernel_api::abi::driver::{
@@ -37,6 +36,7 @@ use kernel_api::abi::driver::{
 };
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::error::{KapiError, KapiResult};
+use kernel_api::provider::ProviderDescriptorV1;
 mod registration_api;
 pub use registration_api::*;
 
@@ -125,55 +125,72 @@ impl DriverRegistry {
 
     /// Start a probed driver
     pub fn start(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock().map_err(|_| {
-            log::error!("[DRIVER] Registry lock is poisoned during start!");
-            DriverError::Poisoned
-        })?;
-        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
+        let provider_descriptors = {
+            let mut drivers = self.drivers.lock().map_err(|_| {
+                log::error!("[DRIVER] Registry lock is poisoned during start!");
+                DriverError::Poisoned
+            })?;
+            let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
 
-        if entry.state != DriverState::Probed && entry.state != DriverState::Stopped {
-            return Err(DriverError::InvalidState);
+            if entry.state != DriverState::Probed && entry.state != DriverState::Stopped {
+                return Err(DriverError::InvalidState);
+            }
+
+            log::info!("[DRIVER] Starting driver: {}\n", entry.driver.name());
+
+            match entry.driver.start() {
+                Ok(()) => {
+                    entry.state = DriverState::Running;
+                    entry.driver.provider_descriptors().to_vec()
+                }
+                Err(e) => {
+                    entry.state = DriverState::Error;
+                    log::info!("[DRIVER] Start failed: {} - {:?}\n", entry.driver.name(), e);
+                    return Err(DriverError::StartFailed);
+                }
+            }
+        };
+
+        if !provider_descriptors.is_empty() {
+            crate::provider_registry::provider_registry()
+                .register_driver_descriptors(handle, &provider_descriptors);
         }
 
-        log::info!("[DRIVER] Starting driver: {}\n", entry.driver.name());
-
-        match entry.driver.start() {
-            Ok(()) => {
-                entry.state = DriverState::Running;
-                Ok(())
-            }
-            Err(e) => {
-                entry.state = DriverState::Error;
-                log::info!("[DRIVER] Start failed: {} - {:?}\n", entry.driver.name(), e);
-                Err(DriverError::StartFailed)
-            }
-        }
+        Ok(())
     }
 
     /// Stop a running driver
     pub fn stop(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock().map_err(|_| {
-            log::error!("[DRIVER] Registry lock is poisoned during stop!");
-            DriverError::Poisoned
-        })?;
-        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
+        let result = {
+            let mut drivers = self.drivers.lock().map_err(|_| {
+                log::error!("[DRIVER] Registry lock is poisoned during stop!");
+                DriverError::Poisoned
+            })?;
+            let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
 
-        if entry.state != DriverState::Running {
-            return Err(DriverError::InvalidState);
+            if entry.state != DriverState::Running {
+                return Err(DriverError::InvalidState);
+            }
+
+            log::info!("[DRIVER] Stopping driver: {}\n", entry.driver.name());
+
+            match entry.driver.stop() {
+                Ok(()) => {
+                    entry.state = DriverState::Stopped;
+                    Ok(())
+                }
+                Err(_e) => {
+                    entry.state = DriverState::Error;
+                    Err(DriverError::StopFailed)
+                }
+            }
+        };
+
+        if result.is_ok() {
+            crate::provider_registry::provider_registry().unregister_driver(handle);
         }
 
-        log::info!("[DRIVER] Stopping driver: {}\n", entry.driver.name());
-
-        match entry.driver.stop() {
-            Ok(()) => {
-                entry.state = DriverState::Stopped;
-                Ok(())
-            }
-            Err(_e) => {
-                entry.state = DriverState::Error;
-                Err(DriverError::StopFailed)
-            }
-        }
+        result
     }
 
     /// Probe and start a driver in one call
@@ -367,6 +384,8 @@ impl DriverRegistry {
         let old_name = alloc::string::String::from(entry.driver.name());
         let old_ty = entry.driver.driver_type();
 
+        crate::provider_registry::provider_registry().unregister_driver(handle);
+
         // Try to remove driver resources first
         let _ = entry.driver.remove();
 
@@ -400,6 +419,8 @@ impl DriverRegistry {
             entry.driver.name(),
             handle.index()
         );
+
+        crate::provider_registry::provider_registry().unregister_driver(handle);
 
         // We assume the new driver is in Registered state initially?
         // Or do we expect it to be Probed/Started if the old one was?
@@ -704,9 +725,59 @@ pub fn init_all_drivers() {
     DRIVER_REGISTRY.init_all()
 }
 
+const MAX_ABI_PROVIDER_DESCRIPTORS: usize = 32;
+
+fn collect_provider_descriptors_from_export(
+    export: kernel_api::abi::driver::ProviderDescriptorsFn,
+) -> Vec<ProviderDescriptorV1> {
+    let mut count = 0usize;
+    let descriptors_ptr = export(&mut count as *mut usize);
+    if descriptors_ptr.is_null() || count == 0 {
+        return Vec::new();
+    }
+
+    if count > MAX_ABI_PROVIDER_DESCRIPTORS {
+        log::warn!(
+            "[DRIVER] Provider descriptor count {} exceeds limit {}, ignoring",
+            count,
+            MAX_ABI_PROVIDER_DESCRIPTORS
+        );
+        return Vec::new();
+    }
+
+    if (descriptors_ptr as usize) % core::mem::align_of::<ProviderDescriptorV1>() != 0 {
+        log::warn!(
+            "[DRIVER] Provider descriptor slice is unaligned: ptr={:#x}",
+            descriptors_ptr as usize
+        );
+        return Vec::new();
+    }
+
+    let descriptors = unsafe {
+        core::slice::from_raw_parts(descriptors_ptr as *const ProviderDescriptorV1, count)
+    };
+
+    descriptors
+        .iter()
+        .copied()
+        .filter(|descriptor| descriptor.validate())
+        .collect()
+}
+
+pub(crate) fn collect_provider_descriptors_from_vtable(
+    vtable: &AbiDriverVTable,
+) -> Vec<ProviderDescriptorV1> {
+    let Some(export) = vtable.provider_descriptors_export() else {
+        return Vec::new();
+    };
+
+    collect_provider_descriptors_from_export(export)
+}
+
 fn build_abi_driver(
     entry: AbiEntryFn,
     exports_fini: Option<extern "C" fn() -> i32>,
+    provider_descriptors: Vec<ProviderDescriptorV1>,
 ) -> Result<Box<dyn Driver>, DriverError> {
     // Call the entry to get vtable pointer
     crate::io::log::early_print("[DRIVER] build_abi_driver: entry()\n");
@@ -745,11 +816,18 @@ fn build_abi_driver(
     crate::io::log::early_print("[DRIVER] build_abi_driver: name done\n");
 
     // Build AbiDriver wrapper
+    let provider_descriptors = if provider_descriptors.is_empty() {
+        collect_provider_descriptors_from_vtable(vtable)
+    } else {
+        provider_descriptors
+    };
+
     let abi_driver = Box::new(AbiDriver {
         vtable: vtable_ptr,
         name,
         ctx: AbiDriverContext::new(),
         exports_fini,
+        provider_descriptors,
     });
 
     Ok(abi_driver)
@@ -758,6 +836,7 @@ fn build_abi_driver(
 pub(crate) struct PreparedDriverExports {
     pub entry: AbiEntryFn,
     pub fini: Option<extern "C" fn() -> i32>,
+    pub providers: Vec<ProviderDescriptorV1>,
 }
 
 pub(crate) fn prepare_driver_exports(
@@ -863,8 +942,14 @@ pub(crate) fn prepare_driver_exports(
         }
     }
 
+    let providers = exports_ref
+        .providers
+        .map(collect_provider_descriptors_from_export)
+        .unwrap_or_default();
+
     Ok(PreparedDriverExports {
         entry: exports_ref.entry,
         fini: exports_ref.fini,
+        providers,
     })
 }

@@ -3,6 +3,7 @@ use crate::loader::{unload_cell, with_registry_mut};
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, Ordering};
 use kernel_api::abi::driver::{AbiDriverType, DRIVER_ABI_VERSION, DriverContext, DriverVTable};
+use kernel_api::provider::{ProviderDescriptorV1, ProviderKind};
 
 static PROBE_CALLED: AtomicBool = AtomicBool::new(false);
 static REMOVE_CALLED: AtomicBool = AtomicBool::new(false);
@@ -38,6 +39,21 @@ extern "C" fn version_fn() -> u64 {
     0
 }
 
+extern "C" fn providers_fn(count_out: *mut usize) -> *const () {
+    static PROVIDERS: [ProviderDescriptorV1; 1] = [ProviderDescriptorV1::new(
+        ProviderKind::Storage,
+        core::ptr::null(),
+    )];
+
+    if !count_out.is_null() {
+        unsafe {
+            *count_out = PROVIDERS.len();
+        }
+    }
+
+    PROVIDERS.as_ptr() as *const ()
+}
+
 static VTABLE: DriverVTable = DriverVTable::new(
     DRIVER_ABI_VERSION,
     probe,
@@ -50,7 +66,8 @@ static VTABLE: DriverVTable = DriverVTable::new(
     version_fn,
     None,
     None,
-);
+)
+.with_provider_descriptors_export(Some(providers_fn));
 
 extern "C" fn entry_fn() -> *const DriverVTable {
     &VTABLE
@@ -114,6 +131,39 @@ fn test_unregister_running_fails() {
     // Attempt to unload driver while running - should fail
     let res = crate::loader::unload_driver(handle);
     assert!(res.is_err());
+
+    DRIVER_REGISTRY.stop(handle).expect("stop failed");
+    DRIVER_REGISTRY
+        .unregister(handle)
+        .expect("unregister after stop failed");
+}
+
+#[test_case]
+fn test_driver_provider_descriptors_follow_lifecycle() {
+    let handle = register_abi_driver(entry_fn).expect("register failed");
+    assert!(
+        crate::provider_registry::provider_registry()
+            .descriptors_for_driver(handle)
+            .is_empty()
+    );
+
+    DRIVER_REGISTRY.probe(handle).expect("probe failed");
+    DRIVER_REGISTRY.start(handle).expect("start failed");
+
+    let descriptors = crate::provider_registry::provider_registry().descriptors_for_driver(handle);
+    assert_eq!(descriptors.len(), 1);
+    assert_eq!(descriptors[0].kind, ProviderKind::Storage);
+
+    DRIVER_REGISTRY.stop(handle).expect("stop failed");
+    assert!(
+        crate::provider_registry::provider_registry()
+            .descriptors_for_driver(handle)
+            .is_empty()
+    );
+
+    DRIVER_REGISTRY
+        .unregister(handle)
+        .expect("unregister failed");
 }
 
 #[test_case]

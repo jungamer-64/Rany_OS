@@ -388,6 +388,7 @@ fn register_spl_kernel_services() {
 
 fn register_builtin_kernel_providers() {
     crate::platform::register_builtin_services();
+    crate::service_impl::register_builtin_service_providers();
     crate::drivers::time::register_builtin_service();
     info!(target: "init", "Kernel providers registered");
 }

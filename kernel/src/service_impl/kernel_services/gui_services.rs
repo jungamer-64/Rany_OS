@@ -12,10 +12,45 @@ mod nvme_tests;
 // ============================================================================
 
 use kernel_api::capability::DomainCapabilities;
+use kernel_api::service::graphics::{DisplayInfo, GraphicsServices};
 use kernel_api::service::gui::{
     FramebufferInfo as KapiFramebufferInfo, GuiServices, InputStreamHandle,
     PixelFormat as KapiPixelFormat,
 };
+use kernel_api::service::input::{InputDeviceInfo, InputDeviceKind, InputServices};
+use kernel_api::service::serial::{SerialPortInfo, SerialServices};
+
+fn map_pixel_format(format: crate::graphics::PixelFormat) -> KapiPixelFormat {
+    match format {
+        crate::graphics::PixelFormat::Rgba8888 => KapiPixelFormat::Rgb32,
+        crate::graphics::PixelFormat::Bgra8888 => KapiPixelFormat::Bgr32,
+        crate::graphics::PixelFormat::Rgb888 => KapiPixelFormat::Rgb24,
+        crate::graphics::PixelFormat::Bgr888 => KapiPixelFormat::Bgr24,
+        _ => KapiPixelFormat::Unknown,
+    }
+}
+
+fn current_framebuffer_info() -> Option<KapiFramebufferInfo> {
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        crate::graphics::with_framebuffer(|fb| {
+            let info = fb.info();
+            KapiFramebufferInfo {
+                width: info.width as usize,
+                height: info.height as usize,
+                stride: info.stride as usize,
+                format: map_pixel_format(info.format),
+                vaddr: info.address as usize,
+                size: info.size(),
+            }
+        })
+    }
+
+    #[cfg(any(test, feature = "bench"))]
+    {
+        None
+    }
+}
 
 impl GuiServices for ExoKernel {
     fn request_framebuffer(
@@ -30,28 +65,7 @@ impl GuiServices for ExoKernel {
         // Get framebuffer info from global
         #[cfg(not(any(test, feature = "bench")))]
         {
-            crate::graphics::with_framebuffer(|fb| {
-                let info = fb.info();
-
-                // Convert graphic_types::PixelFormat to kernel_api::service::gui::PixelFormat
-                let format = match info.format {
-                    crate::graphics::PixelFormat::Rgba8888 => KapiPixelFormat::Rgb32,
-                    crate::graphics::PixelFormat::Bgra8888 => KapiPixelFormat::Bgr32,
-                    crate::graphics::PixelFormat::Rgb888 => KapiPixelFormat::Rgb24,
-                    crate::graphics::PixelFormat::Bgr888 => KapiPixelFormat::Bgr24,
-                    _ => KapiPixelFormat::Unknown,
-                };
-
-                Ok(KapiFramebufferInfo {
-                    width: info.width as usize,
-                    height: info.height as usize,
-                    stride: info.stride as usize,
-                    format,
-                    vaddr: info.address as usize,
-                    size: info.size(),
-                })
-            })
-            .unwrap_or(Err(KapiError::ResourceExhausted))
+            current_framebuffer_info().ok_or(KapiError::ResourceExhausted)
         }
         #[cfg(any(test, feature = "bench"))]
         {
@@ -113,6 +127,63 @@ impl GuiServices for ExoKernel {
         // Synchronous yield - just hint to the scheduler that we're willing to yield
         // In an async context, the caller should use `.await` on yield_now() instead
         core::hint::spin_loop();
+    }
+}
+
+impl GraphicsServices for ExoKernel {
+    fn displays(&self) -> alloc::vec::Vec<DisplayInfo> {
+        current_framebuffer_info()
+            .map(|framebuffer| {
+                alloc::vec![DisplayInfo {
+                    display_id: 0,
+                    width: framebuffer.width,
+                    height: framebuffer.height,
+                    format: framebuffer.format,
+                    flags: 0,
+                }]
+            })
+            .unwrap_or_default()
+    }
+
+    fn primary_framebuffer(&self) -> Option<KapiFramebufferInfo> {
+        current_framebuffer_info()
+    }
+}
+
+impl InputServices for ExoKernel {
+    fn devices(&self) -> alloc::vec::Vec<InputDeviceInfo> {
+        alloc::vec![InputDeviceInfo {
+            device_id: 0,
+            kind: InputDeviceKind::Keyboard,
+            flags: 0,
+        }]
+    }
+
+    fn poll_event(&self) -> Option<kernel_api::service::gui::InputEvent> {
+        GuiServices::poll_input_event(self)
+    }
+}
+
+impl SerialServices for ExoKernel {
+    fn ports(&self) -> alloc::vec::Vec<SerialPortInfo> {
+        alloc::vec![SerialPortInfo {
+            port_id: 0,
+            base_port: 0x3F8,
+            irq: 4,
+            flags: 0,
+        }]
+    }
+
+    fn write(&self, port_id: u32, bytes: &[u8]) -> Result<usize, KapiError> {
+        if port_id != 0 {
+            return Err(KapiError::NotFound);
+        }
+
+        for &byte in bytes {
+            crate::io::serial::write_byte(byte);
+        }
+
+        Ok(bytes.len())
     }
 }
 
@@ -460,6 +531,13 @@ impl ShellServices for ExoKernel {
 
 /// The global ExoKernel instance
 pub(crate) static EXOKERNEL: ExoKernel = ExoKernel::new();
+
+pub(crate) fn register_builtin_service_providers() {
+    let registry = crate::provider_registry::provider_registry();
+    registry.register_builtin_graphics(&EXOKERNEL);
+    registry.register_builtin_input(&EXOKERNEL);
+    registry.register_builtin_serial(&EXOKERNEL);
+}
 
 /// Register the kernel services (call from kmain early in boot)
 ///

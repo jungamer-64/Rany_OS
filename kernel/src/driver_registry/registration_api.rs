@@ -5,7 +5,7 @@ pub fn register_exports_driver(
     exports: *const DriverExportsV1,
 ) -> Result<DriverHandle, DriverError> {
     let prepared = prepare_driver_exports(exports, true)?;
-    let res = register_abi_driver_with_fini(prepared.entry, prepared.fini);
+    let res = register_abi_driver_with_fini(prepared.entry, prepared.fini, prepared.providers);
     if res.is_err() {
         if let Some(fini) = prepared.fini {
             let _ = fini();
@@ -17,14 +17,21 @@ pub fn register_exports_driver(
 pub(crate) fn register_abi_driver_with_fini(
     entry: AbiEntryFn,
     exports_fini: Option<extern "C" fn() -> i32>,
+    provider_descriptors: Vec<ProviderDescriptorV1>,
 ) -> Result<DriverHandle, DriverError> {
-    let abi_driver = build_abi_driver(entry, exports_fini)?;
+    let abi_driver = build_abi_driver(entry, exports_fini, provider_descriptors)?;
     DRIVER_REGISTRY.register(abi_driver)
 }
 
 /// Register a driver implemented as an ABI vtable
 pub fn register_abi_driver(entry: AbiEntryFn) -> Result<DriverHandle, DriverError> {
-    register_abi_driver_with_fini(entry, None)
+    let vtable_ptr = entry();
+    if vtable_ptr.is_null() {
+        return Err(DriverError::InvalidState);
+    }
+
+    let providers = super::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
+    register_abi_driver_with_fini(entry, None, providers)
 }
 
 /// Unregister a driver by handle
@@ -38,7 +45,14 @@ pub(crate) fn update_abi_driver_with_fini(
     entry: AbiEntryFn,
     exports_fini: Option<extern "C" fn() -> i32>,
 ) -> Result<(), DriverError> {
-    let abi_driver = build_abi_driver(entry, exports_fini)?;
+    let vtable_ptr = entry();
+    if vtable_ptr.is_null() {
+        return Err(DriverError::InvalidState);
+    }
+
+    let provider_descriptors =
+        super::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
+    let abi_driver = build_abi_driver(entry, exports_fini, provider_descriptors)?;
     DRIVER_REGISTRY.replace_driver(handle, abi_driver)
 }
 
@@ -52,6 +66,7 @@ pub(crate) struct AbiDriver {
     pub(crate) name: alloc::string::String,
     pub(crate) ctx: AbiDriverContext,
     pub(crate) exports_fini: Option<extern "C" fn() -> i32>,
+    pub(crate) provider_descriptors: Vec<ProviderDescriptorV1>,
 }
 
 // Safety: AbiDriver contains a raw pointer to a statically allocated vtable that
@@ -188,6 +203,10 @@ impl Driver for AbiDriver {
 
     fn supported_devices(&self) -> &[DeviceId] {
         &[]
+    }
+
+    fn provider_descriptors(&self) -> &[ProviderDescriptorV1] {
+        &self.provider_descriptors
     }
 }
 

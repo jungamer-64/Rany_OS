@@ -60,7 +60,8 @@ fn nvme_driver_vtable() -> *const kernel_api::abi::driver::DriverVTable {
         version: version_adapter,
         request_capabilities: None,
         handle_irq: None,
-        _reserved: [0usize; 8],
+        provider_descriptors: None,
+        reserved: [0; 6],
     };
 
     &VTABLE

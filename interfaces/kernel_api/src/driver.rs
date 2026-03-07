@@ -17,6 +17,7 @@
 
 use crate::abi::driver::DriverContext;
 use crate::error::KapiResult;
+use crate::provider::ProviderDescriptorV1;
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
@@ -110,6 +111,11 @@ pub trait Driver: Send + Sync {
     fn supported_devices(&self) -> &[DeviceId] {
         &[]
     }
+
+    /// Driver-provided runtime capability descriptors exposed after start.
+    fn provider_descriptors(&self) -> &[ProviderDescriptorV1] {
+        &[]
+    }
 }
 
 // ============================================================================
@@ -161,6 +167,11 @@ pub trait AsyncDriver: Send + Sync {
 
     /// サポートするデバイス
     fn supported_devices(&self) -> &[DeviceId] {
+        &[]
+    }
+
+    /// Driver-provided runtime capability descriptors exposed after start.
+    fn provider_descriptors(&self) -> &[ProviderDescriptorV1] {
         &[]
     }
 }

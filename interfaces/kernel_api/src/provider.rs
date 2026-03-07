@@ -54,6 +54,11 @@ pub struct ProviderDescriptorV1 {
     pub reserved: [u64; 4],
 }
 
+// SAFETY: Provider descriptors are immutable metadata tables pointing at
+// read-only provider vtables owned by the driver or kernel image.
+unsafe impl Send for ProviderDescriptorV1 {}
+unsafe impl Sync for ProviderDescriptorV1 {}
+
 impl ProviderDescriptorV1 {
     pub const fn new(kind: ProviderKind, vtable: *const ()) -> Self {
         Self {

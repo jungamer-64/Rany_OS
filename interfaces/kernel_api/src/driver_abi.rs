@@ -70,6 +70,12 @@ pub const KERNEL_API_ABI_VERSION: u32 = 2;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 1;
 
+/// Exporter for a driver's provider descriptor slice.
+///
+/// The function writes the descriptor count into `count_out` when non-null and
+/// returns a raw pointer to the first `ProviderDescriptorV1` entry.
+pub type ProviderDescriptorsFn = extern "C" fn(count_out: *mut usize) -> *const ();
+
 // ============================================================================
 // Error Codes
 // ============================================================================
@@ -324,8 +330,11 @@ pub struct DriverVTable {
     /// Handle interrupt (optional).
     pub handle_irq: Option<extern "C" fn(ctx: *mut DriverContext) -> bool>,
 
+    /// Export provider descriptors for this driver instance (optional).
+    pub provider_descriptors: Option<ProviderDescriptorsFn>,
+
     /// Reserved for future expansion
-    pub reserved: [u64; 7],
+    pub reserved: [u64; 6],
 }
 
 impl DriverVTable {
@@ -371,8 +380,23 @@ impl DriverVTable {
             version,
             request_capabilities,
             handle_irq,
-            reserved: [0; 7],
+            provider_descriptors: None,
+            reserved: [0; 6],
         }
+    }
+
+    /// Attach a provider descriptor exporter without changing the ABI layout.
+    pub const fn with_provider_descriptors_export(
+        mut self,
+        provider_export: Option<ProviderDescriptorsFn>,
+    ) -> Self {
+        self.provider_descriptors = provider_export;
+        self
+    }
+
+    /// Read the optional provider descriptor exporter from the reserved tail.
+    pub fn provider_descriptors_export(&self) -> Option<ProviderDescriptorsFn> {
+        self.provider_descriptors
     }
 }
 
@@ -459,8 +483,9 @@ pub struct DriverExportsV1 {
     pub entry: DriverEntryFn,
     pub init: Option<extern "C" fn(api: *const KernelApiV2) -> i32>,
     pub fini: Option<extern "C" fn() -> i32>,
+    pub providers: Option<ProviderDescriptorsFn>,
 
-    pub reserved: [u64; 8],
+    pub reserved: [u64; 7],
 }
 
 // SAFETY: `DriverExportsV1` is an immutable table of function pointers and raw
@@ -534,6 +559,7 @@ macro_rules! export_driver {
         name = $name:expr,
         driver_type = $driver_type:expr,
         version = $version:expr
+        , providers = $providers:expr
         $(, start = $start:path)?
         $(, stop = $stop:path)?
         , irq = $irq:path
@@ -565,6 +591,15 @@ macro_rules! export_driver {
             extern "C" fn version_adapter() -> u64 {
                 $version as u64
             }
+            extern "C" fn providers_adapter(count_out: *mut usize) -> *const () {
+                let providers: &'static [$crate::provider::ProviderDescriptorV1] = $providers;
+                if !count_out.is_null() {
+                    unsafe {
+                        *count_out = providers.len();
+                    }
+                }
+                providers.as_ptr() as *const ()
+            }
 
             // --- Optional Adapters (start/stop) ---
             extern "C" fn start_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
@@ -601,7 +636,7 @@ macro_rules! export_driver {
                 version_adapter,
                 None,
                 Some(irq_adapter),
-            );
+            ).with_provider_descriptors_export(Some(providers_adapter));
 
             &VTABLE
         }
@@ -630,6 +665,15 @@ macro_rules! export_driver {
             extern "C" fn version_adapter() -> u64 {
                 $version as u64
             }
+            extern "C" fn providers_adapter(count_out: *mut usize) -> *const () {
+                let providers: &'static [$crate::provider::ProviderDescriptorV1] = $providers;
+                if !count_out.is_null() {
+                    unsafe {
+                        *count_out = providers.len();
+                    }
+                }
+                providers.as_ptr() as *const ()
+            }
 
             // --- Optional Adapters (start/stop) ---
             extern "C" fn start_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
@@ -663,7 +707,7 @@ macro_rules! export_driver {
                 version_adapter,
                 None,
                 Some(irq_adapter),
-            );
+            ).with_provider_descriptors_export(Some(providers_adapter));
 
             &VTABLE
         }
@@ -676,6 +720,7 @@ macro_rules! export_driver {
         name = $name:expr,
         driver_type = $driver_type:expr,
         version = $version:expr
+        , providers = $providers:expr
         $(, start = $start:path)?
         $(, stop = $stop:path)?
     ) => {
@@ -707,6 +752,15 @@ macro_rules! export_driver {
             extern "C" fn version_adapter() -> u64 {
                 $version as u64
             }
+            extern "C" fn providers_adapter(count_out: *mut usize) -> *const () {
+                let providers: &'static [$crate::provider::ProviderDescriptorV1] = $providers;
+                if !count_out.is_null() {
+                    unsafe {
+                        *count_out = providers.len();
+                    }
+                }
+                providers.as_ptr() as *const ()
+            }
 
             // --- Optional Adapters (start/stop) ---
             extern "C" fn start_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
@@ -736,7 +790,7 @@ macro_rules! export_driver {
                 version_adapter,
                 None,
                 None,
-            );
+            ).with_provider_descriptors_export(Some(providers_adapter));
 
             &VTABLE
         }
@@ -749,6 +803,7 @@ macro_rules! export_driver {
         name: $name:path,
         driver_type: $driver_type:expr,
         version: $version:expr
+        $(, providers: $providers:expr)?
         $(, start: $start:path)? // Optional start
         $(, stop: $stop:path)?   // Optional stop
         $(, irq: $irq:path)?     // Optional irq
@@ -759,10 +814,19 @@ macro_rules! export_driver {
             remove = $remove,
             name = $name,
             driver_type = $driver_type,
-            version = $version
+            version = $version,
+            providers = $crate::export_driver!(@providers $( $providers )?)
             $(, start = $start)?
             $(, stop = $stop)?
             $(, irq = $irq)?
         );
+    };
+
+    (@providers $providers:expr) => {
+        $providers
+    };
+
+    (@providers) => {
+        &[] as &[$crate::provider::ProviderDescriptorV1]
     };
 }

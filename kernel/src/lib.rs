@@ -405,7 +405,6 @@ pub mod per_cpu;
 pub mod platform;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod power;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod provider_registry;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod sas;
