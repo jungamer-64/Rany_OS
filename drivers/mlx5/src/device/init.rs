@@ -371,7 +371,11 @@ impl Mlx5Device {
 
         // VF の場合は PF から割り当てられた MAC アドレスを取得する
         if self.is_vf() {
-            log::info!(target: "mlx5", "Querying VF port properties...");
+            log::info!(target: "mlx5", "Querying VF port properties and ensuring vport is active...");
+            
+            // VF 自身の vport (index 0) に対して admin up を試みる
+            let _ = self.set_port_admin_up(0);
+            
             // query_port_mac は内部で execute_cmd_with_uid_candidates を使用している
             let _ = self.query_port_mac(0);
             let _ = self.query_port_mtu(0);
