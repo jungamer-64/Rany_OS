@@ -201,25 +201,30 @@ fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
     }
 }
 
+// Number of 4KB pages allocated for the BSP boot stack.  Historically the
+// stack began at just 20 pages (~80 KiB), which proved to be far too small once
+// the kernel added ACPI parsing, IOMMU setup, PCI enumeration, and other
+// complex subsystems during early boot.  A 512‑KiB stack (128 pages) fixed the
+// initial overflows, but as the kernel has grown additional headroom is
+// required.  We now allocate 1 MiB (256 pages) to give plenty of breathing
+// room for initialization and avoid hitting the guard page unexpectedly.
+const KERNEL_STACK_PAGES: usize = 256;
+
 #[cfg(not(test))]
 #[repr(align(4096))]
 #[allow(dead_code)]
-struct KernelStack([u8; 4096 * 128]);
+struct KernelStack([u8; 4096 * KERNEL_STACK_PAGES]);
 
 /// Boot stack for the BSP (Bootstrap Processor).
 ///
-/// 512 KiB (128 pages).  The previous 80 KiB (20 pages) was insufficient:
-/// during kernel initialization (ACPI parsing, IOMMU page-table setup, PCI
-/// enumeration, etc.) the combined stack depth exceeded the allocation and
-/// silently overwrote adjacent BSS variables — in particular the `spin::Once`
-/// status byte of `DEFAULT_SECURITY_MONITOR`, causing undefined behaviour in
-/// the subsequent `security::init()` call.
-///
-/// A guard page (Present=0) is installed at the bottom of this stack
-/// immediately after `memory::init()` completes (see `kmain_inner`),
-/// so future overflows trigger a Page Fault instead of silent corruption.
+/// 1 MiB (256 pages) by default.  A guard page (Present=0) is installed at the
+/// bottom of this stack immediately after `memory::init()` completes (see
+/// `kmain_inner`), so future overflows trigger a Page Fault instead of silent
+/// corruption.  The previous 512 KiB allocation was still occasionally exhausted
+/// during early boot; the larger size restores a generous margin without
+/// significant memory cost.
 #[unsafe(link_section = ".bss")]
-static mut KERNEL_STACK: KernelStack = KernelStack([0; 4096 * 128]);
+static mut KERNEL_STACK: KernelStack = KernelStack([0; 4096 * KERNEL_STACK_PAGES]);
 
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
@@ -228,7 +233,8 @@ pub extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
         "lea rsp, [rip + {stack} + {size}]",
         "jmp {kmain_inner}",
         stack = sym KERNEL_STACK,
-        size = const 4096 * 128,
+        // `size` must match the actual byte size of `KERNEL_STACK`.
+        size = const 4096 * KERNEL_STACK_PAGES,
         kmain_inner = sym kmain_inner,
     );
 }

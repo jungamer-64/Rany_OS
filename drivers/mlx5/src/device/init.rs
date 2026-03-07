@@ -281,10 +281,31 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "=== Starting multi-queue pipeline initialization ===");
 
         // Phase 1: Boot
-        match self.wait_firmware() {
-            Ok(()) => {}
-            Err(Mlx5Error::DeviceNotReady) if self.is_vf() => self.assume_firmware_ready_for_vf(),
-            Err(e) => return Err(e),
+        log::info!(target: "mlx5", "Phase 1: Waiting for firmware/BAR0 to become accessible...");
+        let mut boot_success = false;
+        for retry in 0..5 {
+            match self.wait_firmware() {
+                Ok(()) => {
+                    boot_success = true;
+                    break;
+                }
+                Err(Mlx5Error::DeviceNotReady) if self.is_vf() => {
+                    log::warn!(target: "mlx5", "VF BAR0 not ready (floating), retry {}/5...", retry + 1);
+                }
+                Err(e) => return Err(e),
+            }
+            // 200ms 待機
+            let start_ms = kernel_api::service::kernel::instance().current_tick();
+            while kernel_api::service::kernel::instance().current_tick() - start_ms < 200 {
+                core::hint::spin_loop();
+            }
+        }
+
+        if !boot_success && self.is_vf() {
+            log::info!(target: "mlx5", "BAR0 still floating, assuming VF initialization can proceed to command interface...");
+            self.assume_firmware_ready_for_vf();
+        } else if !boot_success {
+            return Err(Mlx5Error::DeviceNotReady);
         }
 
         self.init_command_interface(
@@ -360,6 +381,17 @@ impl Mlx5Device {
         }
         self.query_all_caps()?;
 
+        // Dynamic resource adjustment based on reported capabilities
+        if let Some(caps) = self.hca_caps() {
+            log::info!(target: "mlx5", "HCA Caps limits: max_mkey={}, max_cq={}, max_sq={}, max_rq={}", 
+                caps.max_mkey, caps.max_cq, caps.max_sq, caps.max_rq);
+            
+            // VF では PF からのリソース割り当てが少ない場合があるため、警告を出力
+            if caps.max_mkey < 16 {
+                log::warn!(target: "mlx5", "Device reports very few mkeys ({}); MKEY operations might fail", caps.max_mkey);
+            }
+        }
+
         // Once caps are queried, we know the real vhca_id for the VF.
         // Update the default UID to avoid unnecessary retries in the candidate loop.
         if self.is_vf() {
@@ -377,8 +409,13 @@ impl Mlx5Device {
             let _ = self.set_port_admin_up(0);
             
             // query_port_mac は内部で execute_cmd_with_uid_candidates を使用している
-            let _ = self.query_port_mac(0);
-            let _ = self.query_port_mtu(0);
+            // 一部の VF ではこのコマンドが拒否される場合があるため、エラーを無視する
+            if let Err(e) = self.query_port_mac(0) {
+                log::warn!(target: "mlx5", "Failed to query VF port MAC address: {:?}", e);
+            }
+            if let Err(e) = self.query_port_mtu(0) {
+                log::warn!(target: "mlx5", "Failed to query VF port MTU: {:?}", e);
+            }
         }
 
         // SET_HCA_CAP を呼び出して、ドライバ固有の要件に合わせてデバイスを最適化
@@ -442,7 +479,8 @@ impl Mlx5Device {
         // Phase 4: Queues
         let mut eqns = Vec::new();
         for (i, eq_buf) in eq_bufs.iter().enumerate() {
-            let eqn = self.create_eq_hw(eq_buf.0, eq_buf.1, log_eq_size, i as u32, 0)?;
+            // RanyOS DriverContext currently supports a single IRQ, so map all EQs to vector 0
+            let eqn = self.create_eq_hw(eq_buf.0, eq_buf.1, log_eq_size, 0, 0)?;
             eqns.push(eqn);
         }
 
@@ -528,6 +566,12 @@ impl Mlx5Device {
         let _ = self.set_port_admin_up(0);
         if let Some(port) = self.ports.get_mut(0) {
             port.admin_up();
+        }
+
+        // Give the firmware a moment to reflect the port state change before reporting active
+        let start_ms = kernel_api::service::kernel::instance().current_tick();
+        while kernel_api::service::kernel::instance().current_tick() - start_ms < 50 {
+            core::hint::spin_loop();
         }
 
         self.resources_allocated = true;

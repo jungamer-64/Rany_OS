@@ -322,7 +322,7 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
 
 fn install_bsp_stack_guard() {
     let stack_base = &raw const KERNEL_STACK as usize;
-    const STACK_SIZE: usize = 4096 * 128; // 512 KiB
+    const STACK_SIZE: usize = 4096 * KERNEL_STACK_PAGES; // 1 MiB
     crate::panic_handler::setup_stack_guard(stack_base, STACK_SIZE);
     let guard_end = stack_base + 4096;
     let stack_top = stack_base + STACK_SIZE;
@@ -378,7 +378,28 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
     let _ = task::interrupt_waker::interrupt_waker_registry().stats();
 }
 
+// Helper used during early boot to report how much of the BSP
+// boot stack remains above the guard page.  This is purely diagnostic and
+// helps catch unchecked growth of the initialization call stack.
+#[allow(dead_code)]
+fn log_stack_free_space(label: &str) {
+    let rsp: usize;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) };
+    // these constants must match those used in kernel_content.rs
+    let stack_base = &raw const KERNEL_STACK as usize;
+    let guard_end = stack_base + 4096;
+    let free = rsp.saturating_sub(guard_end);
+    info!(
+        target: "init",
+        "[stack] {}: rsp={:#x}, free above guard = {} bytes",
+        label,
+        rsp,
+        free
+    );
+}
+
 fn register_spl_kernel_services() {
+    log_stack_free_space("before register_kernel_services");
     info!(target: "init", "Registering kernel services...");
     unsafe {
         service_impl::register_kernel_services();
