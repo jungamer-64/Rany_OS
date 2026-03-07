@@ -4,7 +4,7 @@
 
 use crate::bootstrap::{Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan};
 use crate::cmd::CmdQueueTransport; // needed for layout parsing
-use crate::cmd::hca::{build_enable_hca_input, build_set_issi_input};
+use crate::cmd::hca::{build_enable_hca_input, build_set_issi_input, VhcaState, build_init_hca_input};
 use crate::cmd::{CmdMailbox, CmdQueue};
 use crate::defs::CmdOpcode;
 use crate::device::{DeviceState, Mlx5Device};
@@ -149,13 +149,16 @@ impl Mlx5Device {
     /// HCA の初期化 (INIT_HCA)
     pub unsafe fn init_hca(&mut self) -> Mlx5Result<()> {
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        *in_mbox = CmdMailbox::zeroed();
+        let sw_vhca_id = self.sw_vhca_id;
+        let sw_owner_id = self.sw_owner_id;
 
-        log::info!(target: "mlx5", "Executing INIT_HCA...");
+        log::info!(target: "mlx5", "Executing INIT_HCA (sw_vhca_id={:#x})...", sw_vhca_id);
+        build_init_hca_input(in_mbox, sw_vhca_id, sw_owner_id);
+
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::InitHca,
             self.cmd_in_mbox_device,
-            16,
+            32, // mailbox header(16) + sw_vhca_id/sw_owner_id area
             self.cmd_out_mbox_device,
             16,
         )?;
@@ -307,6 +310,21 @@ impl Mlx5Device {
                 cmd.set_uid(default_uid);
                 log::debug!(target: "mlx5", "VF detected, initial UID set to {:#x}", default_uid);
             }
+
+            // Verify that the VF's VHCA is actually ready
+            match self.query_vhca_state(0) {
+                Ok(vhca_ctx) => {
+                    log::info!(target: "mlx5", "VF VHCA state: {:?}", vhca_ctx.state);
+                    if !vhca_ctx.state.is_activation_ready() {
+                        log::error!(target: "mlx5", "VF VHCA not ready for activation ({:?})", vhca_ctx.state);
+                        return Err(Mlx5Error::DeviceNotReady);
+                    }
+                }
+                Err(e) => {
+                    log::warn!(target: "mlx5", "Failed to query VHCA state for VF: {:?}", e);
+                    // Continue anyway as some firmware might restrict this command
+                }
+            }
         }
 
         self.enable_hca_and_setup()?;
@@ -324,6 +342,16 @@ impl Mlx5Device {
             )?;
         }
         self.query_all_caps()?;
+
+        // Once caps are queried, we know the real vhca_id for the VF.
+        // Update the default UID to avoid unnecessary retries in the candidate loop.
+        if self.is_vf() {
+            if let Some(cmd) = self.cmd.as_mut() {
+                cmd.set_uid(self.sw_vhca_id);
+                log::info!(target: "mlx5", "Updated VF command UID to {:#x}", self.sw_vhca_id);
+            }
+        }
+
         self.init_hca()?;
 
         // Phase 3: Resources

@@ -49,10 +49,14 @@ pub fn build_set_hca_cap_input(in_mbox: &mut CmdMailbox, cap_type: u16, capabili
 }
 
 /// INIT_HCA コマンド入力の構築
-pub fn build_init_hca_input(in_mbox: &mut CmdMailbox, sw_vhca_id: u16) {
+pub fn build_init_hca_input(in_mbox: &mut CmdMailbox, sw_vhca_id: u16, sw_owner_id: [u32; 4]) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = InitHcaInputLayout::new(&mut in_mbox.data[..]);
     layout.set_sw_vhca_id(sw_vhca_id & 0x3FFF);
+    // sw_owner_id starts at offset 0x14 (DW5)
+    for (i, &word) in sw_owner_id.iter().enumerate() {
+        in_mbox.write_be32(0x14 + i * 4, word);
+    }
 }
 
 /// NOP コマンド入力の構築

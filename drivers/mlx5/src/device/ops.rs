@@ -234,6 +234,34 @@ impl Mlx5Device {
             .and_then(|rq| rq.complete_rx(wqe_counter))
     }
 
+    pub unsafe fn query_vhca_state(&mut self, function_id: u16) -> Mlx5Result<VhcaStateContext> {
+        let is_vf = self.is_vf();
+        let sw_vhca_id = self.sw_vhca_id;
+        let in_mbox_phys = self.cmd_in_mbox_device;
+        let out_mbox_phys = self.cmd_out_mbox_device;
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let out_mbox = &mut *(self.cmd_out_mbox_virt as *mut CmdMailbox);
+
+        Self::execute_rebuilt_with_uid_candidates(
+            cmd,
+            in_mbox,
+            is_vf,
+            sw_vhca_id,
+            |in_mbox, uid| build_query_vhca_state_input(in_mbox, uid, function_id),
+            |cmd, _| {
+                cmd.execute(
+                    CmdOpcode::QueryVhcaState,
+                    in_mbox_phys,
+                    0x10,
+                    out_mbox_phys,
+                    0x20,
+                )?;
+                Ok(parse_query_vhca_state_output(out_mbox))
+            },
+        )
+    }
+
     pub unsafe fn activate_vfs(&mut self, num_vfs: u16) -> Mlx5Result<()> {
         if self.is_vf() {
             return Err(Mlx5Error::NotSupported);
