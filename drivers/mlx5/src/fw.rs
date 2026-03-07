@@ -62,20 +62,34 @@ pub unsafe fn wait_fw_ready(bar0_base: u64, timeout_ms: u32) -> Mlx5Result<FwInf
     let start_ms = kernel_api::service::kernel::instance().current_tick();
 
     let mut invalid_reads = 0u64;
+    let mut last_inaccessible_log = 0u64;
 
     while kernel_api::service::kernel::instance().current_tick() - start_ms < timeout_ms as u64 {
         let initializing = crate::mmio_read_be32(base + init_seg::INITIALIZING);
         let cmdif_rev_fw_sub = crate::mmio_read_be32(base + init_seg::CMDIF_REV_FW_SUB);
 
-        // BAR inaccessible check
+        // BAR inaccessible check (often seen on VFs when PF is initializing)
         if (initializing == 0 || initializing == u32::MAX)
             && (cmdif_rev_fw_sub == 0 || cmdif_rev_fw_sub == u32::MAX)
         {
             invalid_reads = invalid_reads.saturating_add(1);
-            if invalid_reads >= 4096 {
+            let now = kernel_api::service::kernel::instance().current_tick();
+            
+            // Log every 2 seconds if BAR is still inaccessible
+            if now - last_inaccessible_log > 2000 {
+                log::warn!(target: "mlx5", "BAR0 still inaccessible (PF might be initializing the device), retrying...");
+                last_inaccessible_log = now;
+            }
+
+            if invalid_reads >= 100000 {
+                log::error!(target: "mlx5", "BAR0 remains inaccessible after multiple retries");
                 return Err(Mlx5Error::DeviceNotReady);
             }
-            core::hint::spin_loop();
+            
+            // 小さなディレイを入れて CPU 負荷を下げる
+            for _ in 0..1000 {
+                core::hint::spin_loop();
+            }
             continue;
         }
         invalid_reads = 0;
@@ -159,6 +173,8 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
 
     let dw1 = rd(0x04);
     let log_max_mkey = ((dw1 >> 25) & 0x7F) as u8;
+    let rq_ts_format = ((dw1 >> 14) & 0x03) as u8;
+    let sq_ts_format = ((dw1 >> 12) & 0x03) as u8;
 
     let dw2 = rd(0x08);
     let log_max_qp_sz = ((dw2 >> 24) & 0xFF) as u8;
@@ -168,14 +184,26 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
     let log_max_cq_sz = ((dw3 >> 16) & 0xFF) as u8;
 
     let dw4 = rd(0x10);
-    let log_max_eq = ((dw4 >> 24) & 0xFF) as u8;
+    let _log_max_eq = ((dw4 >> 24) & 0xFF) as u8;
     let log_max_eq_sz = ((dw4 >> 16) & 0xFF) as u8;
+
+    let dw15 = rd(0x3c);
+    let max_num_eqs = dw15;
+    let device_frequency_khz = dw15; // DW15 also contains frequency
+
+    let dw18 = rd(0x48);
+    let max_msix = dw18;
 
     let dw6 = rd(0x18);
     let num_ports = ((dw6 >> 24) & 0xFF) as u8;
 
     let dw12 = rd(0x30);
     let cqe_version = ((dw12 >> 4) & 0x0F) as u8;
+
+    // vhca_id and num_vhca_ports are referenced below; provide defaults in
+    // case the parsed data path does not populate them explicitly.
+    let vhca_id: u16 = 0;
+    let num_vhca_ports: u16 = 0;
 
     let dw13 = rd(0x34);
     let eth_net_offloads = (dw13 & 0x0008_0000) != 0;
@@ -205,24 +233,20 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         1
     };
 
-    log::info!(target: "mlx5", "Decoded HCA caps: ports={} log_cq={} log_qp={} log_tis={} csum={} vport_mgr={}",
-        num_ports, log_max_cq, log_max_qp_sz, log_max_tis, eth_net_offloads, vport_group_manager);
+    log::info!(target: "mlx5", "Decoded HCA caps: ports={} log_cq={} log_qp={} log_tis={} csum={} vport_mgr={} vhca_id={:#x} max_msix={}",
+        num_ports, log_max_cq, log_max_qp_sz, log_max_tis, eth_net_offloads, vport_group_manager, vhca_id, max_msix);
 
     // VFs might report 0 ports in general caps; assume 1 logically.
     let actual_ports = if num_ports == 0 { 1 } else { num_ports.min(2) };
     let max_cq = 1u32.checked_shl(log_max_cq.min(20) as u32).unwrap_or(64);
     let max_sq_rq = 1u32.checked_shl(log_max_qp_sz.min(20) as u32).unwrap_or(64);
-    // Extract VHCA-related fields if present
-    let dw0 = rd(0x00);
-    let vhca_id = ((dw0 >> 16) & 0xFFFF) as u16;
-    let dw11 = rd(0x2C);
-    let num_vhca_ports = ((dw11 >> 16) & 0xFFFF) as u16;
 
     HcaCaps {
         max_cq,
         max_sq: max_sq_rq,
         max_rq: max_sq_rq,
-        max_eq: 1u32.checked_shl(log_max_eq.min(20) as u32).unwrap_or(16),
+        max_eq: max_num_eqs.max(16),
+        max_msix,
         max_mkey: 1u32
             .checked_shl(log_max_mkey.min(20) as u32)
             .unwrap_or(1024),
@@ -249,5 +273,11 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         max_sge,
         tso_ipv4,
         tso_ipv6,
+        rss_en: false,     // Will be updated by query_hca_cap_ethernet
+        lro_en: false,     // Will be updated by query_hca_cap_ethernet
+        nic_rx_ft: false,  // Will be updated by query_hca_cap_flow_table
+        rq_ts_format,
+        sq_ts_format,
+        device_frequency_khz,
     }
 }

@@ -104,9 +104,8 @@ impl Cqe {
 
     /// VLANタグが存在するか確認
     pub fn vlan_present(&self) -> bool {
-        // byte 0x1a (word 6 in dword 6) contains vlan_info
-        // Actual bit depends on format, but typically CV bit or similar
-        (self.data[cqe_regs::VLAN_INFO] != 0) || (self.data[cqe_regs::VLAN_INFO + 1] != 0)
+        // bit 15 of word at 0x18 (byte 0x1a in big-endian)
+        (self.data[cqe_regs::VLAN_INFO + 2] & 0x80) != 0
     }
 
     /// VLANタグ（TCI: Tag Control Information）を取得
@@ -114,6 +113,14 @@ impl Cqe {
         u16::from_be_bytes([
             self.data[cqe_regs::VLAN_INFO],
             self.data[cqe_regs::VLAN_INFO + 1],
+        ])
+    }
+
+    /// ハードウェアタイムスタンプを取得 (64-bit)
+    pub fn timestamp(&self) -> u64 {
+        u64::from_be_bytes([
+            self.data[0x10], self.data[0x11], self.data[0x12], self.data[0x13],
+            self.data[0x14], self.data[0x15], self.data[0x16], self.data[0x17],
         ])
     }
 }
@@ -242,6 +249,7 @@ impl CompletionQueue {
                         l3_ok: cqe.l3_ok(),
                         l4_ok: cqe.l4_ok(),
                         vlan_tag: if cqe.vlan_present() { Some(cqe.vlan_tag()) } else { None },
+                        timestamp: cqe.timestamp(),
                     };
                     results.push(info);
                     self.advance_consumer();
@@ -276,4 +284,6 @@ pub struct CqeInfo {
     pub l4_ok: bool,
     /// 抽出された VLAN タグ (TCI)
     pub vlan_tag: Option<u16>,
+    /// ハードウェアタイムスタンプ
+    pub timestamp: u64,
 }

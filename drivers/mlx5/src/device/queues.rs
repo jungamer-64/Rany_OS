@@ -5,7 +5,6 @@
 extern crate alloc;
 // unused import Vec removed
 use crate::cmd::CmdMailbox;
-use crate::cmd::CommandTransport; // needed for execute() method
 use crate::cmd::queues::*; // bring in helper builders/parsers
 use crate::cq::CompletionQueue;
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE, WqState};
@@ -36,12 +35,6 @@ impl Mlx5Device {
                 return Err(Mlx5Error::NoResources);
             }
         }
-
-        let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
-        let cmd_in_mbox_device = self.cmd_in_mbox_device;
-        let cmd_out_mbox_device = self.cmd_out_mbox_device;
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
 
         let eq_depth = 1u32 << log_eq_size;
         let eq_ptr = eq_buf_virt as *mut u8;

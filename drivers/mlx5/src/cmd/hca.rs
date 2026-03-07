@@ -147,7 +147,7 @@ pub(crate) struct VnicEnvCounters {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VhcaState {
+pub enum VhcaState {
     Invalid = 0,
     Allocated = 1,
     Active = 2,
@@ -156,7 +156,7 @@ pub(crate) enum VhcaState {
 }
 
 impl VhcaState {
-    fn from_raw(value: u8) -> Self {
+    pub(crate) fn from_raw(value: u8) -> Self {
         match value {
             1 => Self::Allocated,
             2 => Self::Active,
@@ -172,7 +172,7 @@ impl VhcaState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct VhcaStateContext {
+pub struct VhcaStateContext {
     pub state: VhcaState,
     pub sw_function_id: u32,
     pub arm_change_event: bool,

@@ -117,40 +117,55 @@ pub fn build_destroy_tis_input(in_mbox: &mut CmdMailbox, tisn: u32) {
 /// CREATE_TIR コマンド入力の構築
 pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
     *in_mbox = CmdMailbox::zeroed();
-    let mut layout = TirContextLayout::new(&mut in_mbox.data[0x20..]);
 
-    let disp_type: u8 = match params.receive_type {
-        TirReceiveType::DirectRq => 0x0,
-        TirReceiveType::Rqt => 0x1,
-    };
-    layout.set_disp_type(disp_type);
+    // Scope the layout borrow so it doesn't overlap with later mutable
+    // accesses to `in_mbox.data`.
+    {
+        let mut layout = TirContextLayout::new(&mut in_mbox.data[0x20..]);
 
-    if params.receive_type == TirReceiveType::DirectRq {
-        layout.set_inline_rqn(params.inline_rqn);
-    }
-    if params.receive_type == TirReceiveType::Rqt {
-        layout.set_indirect_table(params.rqtn);
-    }
+        let disp_type: u8 = match params.receive_type {
+            TirReceiveType::DirectRq => 0x0,
+            TirReceiveType::Rqt => 0x1,
+        };
+        layout.set_disp_type(disp_type);
 
-    let rx_hash_fn = if let Some(ref rss) = params.rss {
-        match rss.hash_function {
-            crate::flow::RssHashFunction::Toeplitz => 0x2u8,
-            crate::flow::RssHashFunction::Xor => 0x1u8,
+        if params.receive_type == TirReceiveType::DirectRq {
+            layout.set_inline_rqn(params.inline_rqn);
         }
-    } else {
-        0u8
-    };
-    layout.set_rx_hash_fn(rx_hash_fn);
-    layout.set_transport_domain(params.td);
+        if params.receive_type == TirReceiveType::Rqt {
+            layout.set_indirect_table(params.rqtn);
+        }
 
+        let rx_hash_fn = if let Some(ref rss) = params.rss {
+            match rss.hash_function {
+                crate::flow::RssHashFunction::Toeplitz => 0x2u8,
+                crate::flow::RssHashFunction::Xor => 0x1u8,
+            }
+        } else {
+            0u8
+        };
+        layout.set_rx_hash_fn(rx_hash_fn);
+        layout.set_transport_domain(params.td);
+
+        // LRO configuration can be done while layout is borrowed
+        if let Some(ref rss) = params.rss {
+            if rss.lro_enabled {
+                layout.set_lro_enable_mask(0xF); // Enable LRO for IPv4/IPv6 TCP
+                layout.set_lro_max_ip_payload_size(65535); // 64KB
+                if rss.lro_timeout_us > 0 {
+                    layout.set_lro_timeout_period_usecs(rss.lro_timeout_us);
+                }
+            }
+        }
+    }
+
+    // Now that `layout` is dropped we can mutably borrow the mailbox again
     if let Some(ref rss) = params.rss {
         let key_off = 0x20 + 0x28; // Context + 0x28 (dword 10-19 for hash key)
         let copy_len = rss.hash_key.len().min(40);
         in_mbox.data[key_off..key_off + copy_len].copy_from_slice(&rss.hash_key[..copy_len]);
 
         // Rx Hash Field Selector (dword 11 after context base 0x20 => 0x4C)
-        // Note: Actual bit layout depends on the specific mlx5 version, 
-        // but typically it starts at offset 0x4C within the mailbox for TIR.
         in_mbox.write_be32(0x20 + 0x0C, rss.hash_fields);
     }
 }

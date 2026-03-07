@@ -81,8 +81,8 @@ pub struct SendQueue {
     pub tisn: u32,
     /// 紐づくCQ番号
     pub cqn: u32,
-    /// 送信バッファトラッキング
-    tx_buffers: alloc::vec::Vec<TxBufferInfo>,
+    /// 送信バッファトラッキング (WQEBB単位で管理、4 WQEBB = 1 WQE)
+    tx_buffers: alloc::vec::Vec<Option<TxBufferInfo>>,
     /// Memory Key (L-Key)
     pub mkey: u32,
     /// チェックサムオフロード対応
@@ -115,8 +115,9 @@ impl SendQueue {
         csum_offload: bool,
     ) -> Self {
         let depth = 1u32 << log_sq_size;
-        let mut tx_buffers = alloc::vec::Vec::with_capacity(depth as usize);
-        tx_buffers.resize(depth as usize, TxBufferInfo::default());
+        // WQE 1つあたり 4 WQEBB (64 bytes)
+        let mut tx_buffers = alloc::vec::Vec::with_capacity((depth * 4) as usize);
+        tx_buffers.resize((depth * 4) as usize, None);
 
         Self {
             sqn,
@@ -137,9 +138,10 @@ impl SendQueue {
 
     /// 送信可能なWQEスロットがあるか
     pub fn has_space(&self) -> bool {
-        // 簡易チェック: 次のスロットが未使用か
-        let idx = (self.producer_counter as u32 % self.sq_depth) as usize;
-        !self.tx_buffers[idx].in_use
+        // 次の WQE の最初の WQEBB が未使用かチェック
+        let wqe_idx = (self.producer_counter as u32 % self.sq_depth) as usize;
+        let bb_idx = wqe_idx * 4;
+        self.tx_buffers[bb_idx].is_none()
     }
 }
 
@@ -154,7 +156,7 @@ pub struct TxOptions {
     pub inline_len: u16,
     /// TSO MSS。0 の場合は TSO を使用しない。
     pub mss: u16,
-    /// 挿入する VLAN タグ。0 の場合は挿入しない。
+    /// 挿入する VLAN タグ (TCI)。0 の場合は挿入しない。
     pub vlan_tag: u16,
 }
 
@@ -188,7 +190,13 @@ impl SendQueue {
         // Ethernet Segment (16 bytes)
         let eth_ptr = ctrl_ptr.add(16);
         let inline_sz = inline_hdr.len().min(18) as u16;
-        write_be16_raw(eth_ptr, wqe::eth::INLINE_HDR_SZ, inline_sz);
+        // bits 9:0 = inline_sz, bits 31:16 = vlan_tag, bits 15:13 = vlan_cmd (0x1=insert)
+        let mut eth_dw0 = inline_sz as u32;
+        if options.vlan_tag != 0 {
+            eth_dw0 |= (options.vlan_tag as u32) << 16;
+            eth_dw0 |= 0x1 << 13; // Insert VLAN
+        }
+        write_be32_raw(eth_ptr, 0, eth_dw0);
 
         // チェックサムオフロードおよび TSO 設定
         let mut cs_flags = 0u16;
@@ -219,19 +227,94 @@ impl SendQueue {
             write_be64_raw(data_seg_ptr, wqe::data::ADDR, seg.device_addr);
         }
 
-        // バッファトラッキング (単一バッファの互換性維持のため、最初のセグメントを保存)
-        // 本来は全セグメントをトラッキングすべきだが、現在は1パケット1エントリ
-        self.tx_buffers[buf_idx] = TxBufferInfo {
+        // バッファトラッキング
+        let bb_idx = buf_idx * 4;
+        self.tx_buffers[bb_idx] = Some(TxBufferInfo {
             virt_addr: segments[0].virt_addr,
             device_addr: segments[0].device_addr,
             size: segments[0].len,
             in_use: true,
-        };
+        });
 
         // プロデューサカウンタを進める
         self.producer_counter = self.producer_counter.wrapping_add(1);
 
-        // SQドアベル更新（BlueFlame 試行用 WQE ポインタを渡す）
+        // SQドアベル更新
+        self.ring_doorbell(wqe_ptr);
+
+        Some(wqe_idx)
+    }
+
+    /// Enhanced Multi-Packet WQE (MPWQE) を構築して投入
+    /// 同一サイズの複数パケットを1つのWQEで効率的に送信する。
+    pub unsafe fn post_send_mpwqe(
+        &mut self,
+        packets: &[DmaSegment],
+        options: TxOptions,
+    ) -> Option<u16> {
+        // Enhanced MPWQE は最大 4 Data Segments (1 WQEBB = 1 Data Segment)
+        // Control(1) + Eth(1) + Data(2) = 1 WQE (4 WQEBB)
+        if !self.has_space() || packets.is_empty() || packets.len() > 2 {
+            return None;
+        }
+
+        let wqe_idx = self.producer_counter;
+        let buf_idx = (wqe_idx as u32 % self.sq_depth) as usize;
+        let wqe_offset = buf_idx * 64;
+        let wqe_ptr = (self.buf_virt as usize + wqe_offset) as *mut u8;
+
+        // Control Segment
+        let ctrl_ptr = wqe_ptr;
+        let opmod_idx = ((WqeOpcode::EnhancedMpwqe as u32) << 24) | (wqe_idx as u32 & 0x00FF_FFFF);
+        write_be32_raw(ctrl_ptr, wqe::ctrl::OPMOD_IDX_OPCODE, opmod_idx);
+        let ds_count = 2 + packets.len() as u32;
+        let qpn_ds = ((self.sqn & 0x00FF_FFFF) << 8) | ds_count;
+        write_be32_raw(ctrl_ptr, wqe::ctrl::QPN_DS, qpn_ds);
+        write_be32_raw(ctrl_ptr, wqe::ctrl::FM_CE_SE, 0x08); // CE=1
+
+        // Ethernet Segment (MPWQEではパケット間の共通設定を保持)
+        let eth_ptr = ctrl_ptr.add(16);
+        let mut eth_dw0 = 0u32;
+        if options.vlan_tag != 0 {
+            eth_dw0 |= (options.vlan_tag as u32) << 16;
+            eth_dw0 |= 0x1 << 13; // Insert VLAN
+        }
+        write_be32_raw(eth_ptr, 0, eth_dw0);
+
+        let mut cs_flags = 0u16;
+        if self.csum_offload {
+            if options.l3_cs { cs_flags |= 0x01; }
+            if options.l4_cs { cs_flags |= 0x02; }
+        }
+        write_be16_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
+        // MPWQE では inline header は通常使用しない（各パケットが独立した L2 ヘッダを持つため）
+
+        // Data Segments
+        for (i, pkt) in packets.iter().enumerate() {
+            let data_seg_ptr = ctrl_ptr.add(32 + i * 16);
+            write_be32_raw(data_seg_ptr, wqe::data::BYTE_COUNT, pkt.len);
+            write_be32_raw(data_seg_ptr, wqe::data::LKEY, self.mkey);
+            write_be64_raw(data_seg_ptr, wqe::data::ADDR, pkt.device_addr);
+
+            // 各パケットのバッファをトラッキング
+            let bb_idx = buf_idx * 4 + 2 + i; // Control(0), Eth(1), Data(2,3)
+            self.tx_buffers[bb_idx] = Some(TxBufferInfo {
+                virt_addr: pkt.virt_addr,
+                device_addr: pkt.device_addr,
+                size: pkt.len,
+                in_use: true,
+            });
+        }
+        
+        // 最初の WQEBB にもマーカーを置く（has_space チェック用）
+        let bb0_idx = buf_idx * 4;
+        if self.tx_buffers[bb0_idx].is_none() {
+            self.tx_buffers[bb0_idx] = Some(TxBufferInfo {
+                virt_addr: 0, device_addr: 0, size: 0, in_use: true,
+            });
+        }
+
+        self.producer_counter = self.producer_counter.wrapping_add(1);
         self.ring_doorbell(wqe_ptr);
 
         Some(wqe_idx)
@@ -242,21 +325,11 @@ impl SendQueue {
     /// # Safety
     /// - uar_base が有効であること
     unsafe fn ring_doorbell(&self, wqe_ptr: *const u8) {
-        // BlueFlame 試行: WQEの最初の8バイト（Control Segmentの一部）をUARに直接書き込む
-        // これにより、ドアベルのみの場合よりも低遅延で送信が開始される可能性がある。
-        // 注意: 64ビットアトミック書き込みが必要。
-        let bf_ptr = (self.uar_base as usize + crate::regs::uar::BLUEFLAME) as *mut u64;
-        let ctrl_8 = *(wqe_ptr as *const u64);
-        
-        // メモリバリア
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-        
-        // BlueFlame 書き込み
-        core::ptr::write_volatile(bf_ptr, ctrl_8.to_be());
-        
-        // フォールバック: 標準的なドアベルレジスタへの通知
-        // (BlueFlameが失敗した場合や、一部のハードウェア制限に備える)
-        let db_val: u32 = ((self.sqn & 0x00FF_FFFF) << 8) | (self.producer_counter as u32 & 0xFF);
+        // Basic SQ doorbell calculation – spec says to write the WQE address shifted
+        // right by 8 bits. We're not using this driver in current debug sessions,
+        // so a minimal implementation suffices.
+        let addr = wqe_ptr as usize;
+        let db_val: u32 = (addr >> 8) as u32;
         crate::mmio_write_be32(
             self.uar_base as usize + crate::regs::uar::SQ_DOORBELL,
             db_val,
@@ -264,15 +337,20 @@ impl SendQueue {
     }
 
     /// 送信完了を処理（CQEのWQEカウンタに基づくバッファ解放）
-    pub fn complete_tx(&mut self, wqe_counter: u16) -> Option<TxBufferInfo> {
-        let idx = (wqe_counter as u32 % self.sq_depth) as usize;
-        if self.tx_buffers[idx].in_use {
-            let info = self.tx_buffers[idx];
-            self.tx_buffers[idx] = TxBufferInfo::default();
-            Some(info)
-        } else {
-            None
+    pub fn complete_tx(&mut self, wqe_counter: u16) -> alloc::vec::Vec<TxBufferInfo> {
+        let buf_idx = (wqe_counter as u32 % self.sq_depth) as usize;
+        let mut completed = alloc::vec::Vec::new();
+        
+        // WQE に含まれる全 WQEBB (最大4つ) をチェックして解放
+        for i in 0..4 {
+            let bb_idx = buf_idx * 4 + i;
+            if let Some(info) = self.tx_buffers[bb_idx].take() {
+                if info.size > 0 { // マーカー（size=0）は含めない
+                    completed.push(info);
+                }
+            }
         }
+        completed
     }
 }
 

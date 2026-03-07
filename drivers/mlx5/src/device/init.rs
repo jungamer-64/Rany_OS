@@ -4,7 +4,7 @@
 
 use crate::bootstrap::{Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan};
 use crate::cmd::CmdQueueTransport; // needed for layout parsing
-use crate::cmd::hca::{build_enable_hca_input, build_set_issi_input, VhcaState, build_init_hca_input};
+use crate::cmd::hca::{build_enable_hca_input, build_set_issi_input, build_init_hca_input};
 use crate::cmd::{CmdMailbox, CmdQueue};
 use crate::defs::CmdOpcode;
 use crate::defs::MLX5_CMD_MBOX_SIZE;
@@ -173,9 +173,10 @@ impl Mlx5Device {
         config: &Mlx5BootstrapConfig,
         resources: &Mlx5AllocatedResources,
     ) -> Mlx5Result<()> {
-        if config.is_vf != self.is_vf() {
-            return Err(Mlx5Error::InvalidParameter);
-        }
+        self.is_vf = config.is_vf;
+        self.pci_bus = config.pci_identity.bus;
+        self.pci_device = config.pci_identity.device;
+        self.pci_function = config.pci_identity.function;
 
         let plan = Mlx5BootstrapPlan::new(config);
         plan.validate_resources(resources)?;
@@ -283,6 +284,14 @@ impl Mlx5Device {
 
         // Phase 1: Boot
         log::info!(target: "mlx5", "Phase 1: Waiting for firmware/BAR0 to become accessible...");
+        
+        // ECPU (Embedded CPU / ECPF) 判定
+        let initializing = crate::mmio_read_be32(self.bar0_base as usize + crate::regs::init_seg::INITIALIZING);
+        if (initializing & crate::regs::fw_state::EMBEDDED_CPU_BIT) != 0 {
+            self.is_ecpf = true;
+            log::info!(target: "mlx5", "Device recognized as ECPF (Embedded CPU / SmartNIC mode)");
+        }
+
         let mut boot_success = false;
         // VF では PF による PCI 有効化待ちが発生するため、多めにリトライする（合計約3秒）
         let max_boot_retries = if self.is_vf() { 15 } else { 5 };
@@ -324,9 +333,10 @@ impl Mlx5Device {
         // is present.  Set a sensible default before making any further calls so
         // that "simple" operations like enabling the HCA or querying caps work
         // without having to retry inside each helper.
+        let mut default_uid = 0u16;
         if self.is_vf() {
             if let Some(cmd) = self.cmd.as_mut() {
-                let default_uid = if self.sw_vhca_id != 0 {
+                default_uid = if self.sw_vhca_id != 0 {
                     self.sw_vhca_id
                 } else {
                     0xFFFF
@@ -337,33 +347,36 @@ impl Mlx5Device {
 
             // Verify that the VF's VHCA is actually ready
             // PF が VF を有効化するまでに時間がかかる場合があるため、数回リトライする
+            log::info!(target: "mlx5", "Waiting for VF VHCA to be enabled by PF (initial UID={:#x})...", default_uid);
             let mut vhca_ready = false;
-            for _ in 0..10 {
+            let vhca_start = kernel_api::service::kernel::instance().current_tick();
+            let vhca_timeout = 5000; // 5 seconds timeout for VHCA activation
+
+            while kernel_api::service::kernel::instance().current_tick() - vhca_start < vhca_timeout {
                 match self.query_vhca_state(0) {
                     Ok(vhca_ctx) => {
-                        log::info!(target: "mlx5", "VF VHCA state: {:?}", vhca_ctx.state);
                         if vhca_ctx.state.is_activation_ready() {
+                            log::info!(target: "mlx5", "VF VHCA is ready (state={:?})", vhca_ctx.state);
                             vhca_ready = true;
                             break;
                         }
-                        log::warn!(target: "mlx5", "VF VHCA not ready yet ({:?}), retrying...", vhca_ctx.state);
+                        log::warn!(target: "mlx5", "VF VHCA not ready yet (state={:?}), waiting for PF...", vhca_ctx.state);
                     }
                     Err(e) => {
-                        log::warn!(target: "mlx5", "Failed to query VHCA state for VF: {:?}", e);
+                        log::warn!(target: "mlx5", "Failed to query VHCA state (might be restricted): {:?}", e);
                         // FW によってはこのコマンドを制限している場合があるため、失敗しても続行の余地あり
-                        vhca_ready = true;
-                        break;
+                        // ただし初回は失敗する可能性が高いため、リトライを継続する
                     }
                 }
-                // 100ms 待機
-                let start_ms = kernel_api::service::kernel::instance().current_tick();
-                while kernel_api::service::kernel::instance().current_tick() - start_ms < 100 {
+                // 200ms 待機して再試行
+                let loop_start = kernel_api::service::kernel::instance().current_tick();
+                while kernel_api::service::kernel::instance().current_tick() - loop_start < 200 {
                     core::hint::spin_loop();
                 }
             }
 
             if !vhca_ready {
-                log::error!(target: "mlx5", "VF VHCA activation timed out");
+                log::error!(target: "mlx5", "VF VHCA activation timed out (PF might not have enabled this VF)");
                 return Err(Mlx5Error::DeviceNotReady);
             }
         }
@@ -500,7 +513,7 @@ impl Mlx5Device {
 
         // Phase 4: Queues
         let mut eqns = Vec::new();
-        for (i, eq_buf) in eq_bufs.iter().enumerate() {
+        for (_i, eq_buf) in eq_bufs.iter().enumerate() {
             // RanyOS DriverContext currently supports a single IRQ, so map all EQs to vector 0
             let eqn = self.create_eq_hw(eq_buf.0, eq_buf.1, log_eq_size, 0, 0)?;
             eqns.push(eqn);

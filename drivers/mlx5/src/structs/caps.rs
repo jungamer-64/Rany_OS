@@ -2,7 +2,7 @@
 // drivers/mlx5/src/structs/caps.rs - HCA Capabilities Layout
 // ============================================================================
 
-use crate::structs::get_bits_u32;
+use crate::structs::{get_bits_u32, set_bits_u32};
 
 /// HCA Capabilities (General) Layout
 /// Based on mlx5_ifc_hca_cap_bits
@@ -20,6 +20,16 @@ impl<'a> HcaCapLayout<'a> {
         get_bits_u32(self.data, 16, 16)
     }
 
+    // dword 1
+    pub fn cmdif_checksum(&self) -> u32 {
+        get_bits_u32(self.data, 38, 2)
+    }
+
+    // dword 2
+    pub fn log_uar_page_sz(&self) -> u32 {
+        get_bits_u32(self.data, 80, 4)
+    }
+
     // dword 4
     pub fn log_max_cq(&self) -> u32 {
         get_bits_u32(self.data, 136, 8)
@@ -31,34 +41,35 @@ impl<'a> HcaCapLayout<'a> {
     }
     pub fn log_max_sq(&self) -> u32 {
         get_bits_u32(self.data, 152, 8)
-    } // Same as QP? Check Linux ifc.
-    // In Linux ifc: dword 4 has log_max_cq[8] at bit 8. (bit 136 total)
-    // dword 4: log_max_srq_sz[8], log_max_qp_sz[8], log_max_cq_sz[8], log_max_mkey_sz[8]
-    // Wait, let's look at the offsets I saw in caps.rs:
-    // caps.max_cq = 1 << out_mbox.read_be8(0x11); => byte 0x11 = 17 bytes = 136 bits. Correct.
-    // caps.max_sq = 1 << out_mbox.read_be8(0x13); => byte 0x13 = 19 bytes = 152 bits. Correct.
-    // caps.max_rq = 1 << out_mbox.read_be8(0x14); => byte 0x14 = 20 bytes = 160 bits. Correct.
+    }
 
     pub fn log_max_mkey(&self) -> u32 {
         get_bits_u32(self.data, 192, 8)
     }
 
+    // dword 7
+    pub fn pkey_table_size(&self) -> u32 {
+        get_bits_u32(self.data, 224, 16)
+    }
     pub fn num_ports(&self) -> u32 {
         get_bits_u32(self.data, 232, 8)
     }
 
+    // dword 8
     pub fn max_mtu(&self) -> u32 {
         get_bits_u32(self.data, 272, 16)
     }
 
+    // dword 3
     pub fn log_max_eq(&self) -> u32 {
         get_bits_u32(self.data, 120, 8)
     }
+    // dword 5
     pub fn log_max_rq(&self) -> u32 {
         get_bits_u32(self.data, 160, 8)
     }
 
-    // Flags
+    // Flags (various dwords)
     pub fn csum_cap(&self) -> bool {
         get_bits_u32(self.data, 279, 1) != 0
     }
@@ -79,5 +90,35 @@ impl<'a> HcaCapLayout<'a> {
     }
     pub fn num_vhca_ports(&self) -> u32 {
         get_bits_u32(self.data, 352, 16)
+    }
+}
+
+pub struct HcaCapLayoutMut<'a> {
+    data: &'a mut [u8],
+}
+
+impl<'a> HcaCapLayoutMut<'a> {
+    pub fn new(data: &'a mut [u8]) -> Self {
+        Self { data }
+    }
+
+    pub fn set_pkey_table_size(&mut self, val: u32) {
+        set_bits_u32(self.data, 224, 16, val);
+    }
+
+    pub fn set_log_uar_page_sz(&mut self, val: u32) {
+        set_bits_u32(self.data, 80, 4, val);
+    }
+
+    pub fn set_cmdif_checksum(&mut self, val: u32) {
+        set_bits_u32(self.data, 38, 2, val);
+    }
+
+    pub fn set_vport_group_manager(&mut self, val: bool) {
+        set_bits_u32(self.data, 305, 1, if val { 1 } else { 0 });
+    }
+
+    pub fn set_eswitch_manager(&mut self, val: bool) {
+        set_bits_u32(self.data, 306, 1, if val { 1 } else { 0 });
     }
 }

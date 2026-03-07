@@ -80,6 +80,7 @@ const MLX5_RX_POLL_BATCH: u32 = 64;
 
 struct Mlx5TransmitRequest {
     data: Vec<u8>,
+    vlan_tag: Option<u16>,
 }
 
 struct Mlx5Runtime;
@@ -143,6 +144,7 @@ fn enqueue_mlx5_tx(data: &[u8]) -> bool {
     };
     queue.push_back(Mlx5TransmitRequest {
         data: data.to_vec(),
+        vlan_tag: None,
     });
     MLX5_TX_QUEUE_HAS_EVENTS.store(true, Ordering::Release);
 
@@ -224,8 +226,8 @@ impl crate::net::runtime::bridge::shared::NetBridgePort for Mlx5Runtime {
         if let Ok(mut bufs) = MLX5_TX_BUFS.lock() {
             if bufs.is_empty() && num_sqs > 0 {
                 bufs.resize_with(num_sqs, || {
-                    let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
-                    v.resize_with(mlx5_driver::defs::MLX5_WQ_DEPTH as usize, || None);
+                    let mut v = Vec::with_capacity((mlx5_driver::defs::MLX5_WQ_DEPTH * 4) as usize);
+                    v.resize_with((mlx5_driver::defs::MLX5_WQ_DEPTH * 4) as usize, || None);
                     v
                 });
             }
@@ -281,7 +283,7 @@ pub fn deactivate_mlx5_vfs(num_vfs: u16) -> Result<(), mlx5_driver::Mlx5Error> {
 // Transmit Path
 // ============================================================================
 
-fn submit_mlx5_tx(data: &[u8]) -> bool {
+fn submit_mlx5_tx(data: &[u8], vlan_tag: Option<u16>) -> bool {
     let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
         Ok(guard) => guard,
         Err(_) => return false,
@@ -324,7 +326,11 @@ fn submit_mlx5_tx(data: &[u8]) -> bool {
         let sq_index = (cpu_id % num_sqs) as usize;
 
         // Safety: デバイスアドレスが正しく取得されていること
-        let tx_options = mlx5_driver::wq::TxOptions::default();
+        let mut tx_options = mlx5_driver::wq::TxOptions::default();
+        tx_options.vlan_tag = vlan_tag.unwrap_or(0);
+        tx_options.l3_cs = true;
+        tx_options.l4_cs = true;
+        
         match unsafe {
             device.transmit(
                 sq_index,
@@ -336,9 +342,9 @@ fn submit_mlx5_tx(data: &[u8]) -> bool {
             )
         } {
             Ok(wqe_idx) => {
-                let idx = (wqe_idx as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
+                let bb_idx = (wqe_idx as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize * 4;
                 if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
-                    queue_bufs[idx] = Some(pkt);
+                    queue_bufs[bb_idx] = Some(pkt);
                 }
 
                 MLX5_TX_PACKETS.fetch_add(1, Ordering::Relaxed);
@@ -415,6 +421,8 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                         if cqe.l4_ok {
                             meta.set_l4_csum_verified();
                         }
+                        meta.vlan_tag = cqe.vlan_tag;
+                        meta.timestamp = cqe.timestamp;
 
                         let if_id = MLX5_IF_ID.lock().ok().and_then(|guard| *guard);
                         if let Some(if_id) = if_id {
@@ -456,9 +464,24 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
 
             let tx_cqes = device.poll_cq(tx_cq_index, MLX5_RX_POLL_BATCH);
             for cqe in &tx_cqes {
-                if let Some(_info) = device.process_tx_completions(sq_index, cqe.wqe_counter) {
+                let infos = device.process_tx_completions(sq_index, cqe.wqe_counter);
+                for _info in infos {
                     let idx = (cqe.wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
-                    let _pkt = tx_bufs_guard[sq_index][idx].take();
+                    // Note: In MPWQE, we'd need a more complex mapping if we wanted to 
+                    // precisely take the right buf from the bridge's tracking.
+                    // For now, we clear the tracking based on the buf_idx.
+                    if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
+                        // For simple post_send, idx is correct. For MPWQE, 
+                        // multiple slots (WQEBBs) were used. complete_tx already 
+                        // cleared the hardware-side tracking.
+                        // We need to clear bridge-side tracking for all 4 slots.
+                        for i in 0..4 {
+                            let bb_idx = idx * 4 + i;
+                            if bb_idx < queue_bufs.len() {
+                                let _ = queue_bufs[bb_idx].take();
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -523,7 +546,7 @@ async fn mlx5_tx_worker_task() {
         }
 
         while let Some(current) = request {
-            let _ = submit_mlx5_tx(&current.data);
+            let _ = submit_mlx5_tx(&current.data, current.vlan_tag);
             request = recv_mlx5_tx();
         }
     }

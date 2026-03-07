@@ -102,6 +102,17 @@ impl<'a> TirContextLayout<'a> {
     pub fn set_transport_domain(&mut self, val: u32) {
         set_bits_u32(self.data, 304, 24, val);
     }
+
+    // LRO settings
+    pub fn set_lro_enable_mask(&mut self, val: u8) {
+        set_bits_u32(self.data, 48, 4, val as u32);
+    }
+    pub fn set_lro_max_ip_payload_size(&mut self, val: u32) {
+        set_bits_u32(self.data, 64, 32, val);
+    }
+    pub fn set_lro_timeout_period_usecs(&mut self, val: u16) {
+        set_bits_u32(self.data, 32, 16, val as u32);
+    }
 }
 
 /// ENABLE_HCA Input Layout
@@ -468,5 +479,47 @@ impl<'a> QueryVportCounterInputLayout<'a> {
     }
     pub fn set_clear(&mut self, val: bool) {
         set_bits_u32(self.data, 192, 1, if val { 1 } else { 0 });
+    }
+}
+
+/// FTE Match Set Layer 2-4 Layout
+pub struct FteMatchSetLyr24Layout<'a> {
+    pub(crate) data: &'a mut [u8],
+}
+
+impl<'a> FteMatchSetLyr24Layout<'a> {
+    pub fn new(data: &'a mut [u8]) -> Self {
+        Self { data }
+    }
+
+    pub fn dmac_mut(&mut self) -> &mut [u8] {
+        &mut self.data[0x00..0x06]
+    }
+    pub fn smac_mut(&mut self) -> &mut [u8] {
+        &mut self.data[0x08..0x0e]
+    }
+    pub fn set_ethertype(&mut self, val: u16) {
+        set_bits_u32(self.data, 64, 16, val as u32);
+    }
+    pub fn set_ip_protocol(&mut self, val: u8) {
+        set_bits_u32(self.data, 80, 8, val as u32);
+    }
+    pub fn src_ipv4_mut(&mut self) -> &mut [u8] {
+        &mut self.data[0x10..0x14]
+    }
+    pub fn dst_ipv4_mut(&mut self) -> &mut [u8] {
+        &mut self.data[0x14..0x18]
+    }
+    pub fn src_ipv6_mut(&mut self) -> &mut [u8] {
+        &mut self.data[0x20..0x30]
+    }
+    pub fn dst_ipv6_mut(&mut self) -> &mut [u8] {
+        &mut self.data[0x30..0x40]
+    }
+    pub fn set_src_port(&mut self, val: u16) {
+        set_bits_u32(self.data, 512, 16, val as u32);
+    }
+    pub fn set_dst_port(&mut self, val: u16) {
+        set_bits_u32(self.data, 528, 16, val as u32);
     }
 }

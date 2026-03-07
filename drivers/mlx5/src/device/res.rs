@@ -270,9 +270,6 @@ impl Mlx5Device {
         mac: [u8; 6],
         tirn: u32,
     ) -> Mlx5Result<()> {
-        let mut criteria = crate::flow::MatchCriteria::default();
-        criteria.outer_l2 = true;
-
         let mut match_value = crate::flow::MatchValue::default();
         match_value.dst_mac = Some(mac);
 
@@ -295,9 +292,6 @@ impl Mlx5Device {
         dst_ip: u32,
         tirn: u32,
     ) -> Mlx5Result<()> {
-        let mut criteria = crate::flow::MatchCriteria::default();
-        criteria.outer_l3 = true;
-
         let mut match_value = crate::flow::MatchValue::default();
         match_value.dst_ipv4 = Some(dst_ip);
 

@@ -128,6 +128,8 @@ pub struct PacketMeta {
     pub flow_hash: u32,
     pub csum_flags: u8,
     pub pkt_type: PacketType,
+    pub vlan_tag: Option<u16>,
+    pub timestamp: u64,
 }
 
 impl PacketMeta {

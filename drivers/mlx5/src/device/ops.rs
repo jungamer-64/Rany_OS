@@ -88,6 +88,16 @@ impl Mlx5Device {
                 return Err(Mlx5Error::InvalidResponse);
             }
 
+            // Linux と同様に EnableHca を呼び出し、VF の HCA を有効化する
+            build_enable_hca_input(in_mbox, function_id);
+            cmd.execute(
+                CmdOpcode::EnableHca,
+                in_mbox_phys,
+                0x10,
+                out_mbox_phys,
+                0x10,
+            )?;
+
             build_modify_vport_state_input(
                 in_mbox,
                 MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT,
@@ -129,6 +139,16 @@ impl Mlx5Device {
                 0x10,
                 out_mbox_phys,
                 0x10,
+            )?;
+
+            // Linux と同様に DisableHca を呼び出し、VF の HCA を無効化する
+            build_enable_hca_input(in_mbox, function_id);
+            cmd.execute(
+                CmdOpcode::DisableHca,
+                in_mbox_phys,
+                0x10,
+                0,
+                0,
             )?;
         }
 
@@ -222,10 +242,38 @@ impl Mlx5Device {
         &mut self,
         sq_index: usize,
         wqe_counter: u16,
-    ) -> Option<crate::wq::TxBufferInfo> {
+    ) -> Vec<crate::wq::TxBufferInfo> {
         self.sqs
             .get_mut(sq_index)
-            .and_then(|sq| sq.complete_tx(wqe_counter))
+            .map(|sq| sq.complete_tx(wqe_counter))
+            .unwrap_or_default()
+    }
+
+    /// デバイスの現在時刻を取得（ハードウェアタイマー）
+    ///
+    /// # Safety
+    /// - bar0_base が有効であること
+    pub unsafe fn query_time(&self) -> u64 {
+        use crate::regs::init_seg;
+        let base = self.bar0_base as usize;
+        
+        // 64ビットカウンタを32ビットずつ2回に分けて読み取る（一貫性確保のためループ）
+        loop {
+            let hi = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_H);
+            let lo = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_L);
+            let hi2 = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_H);
+            
+            if hi == hi2 {
+                return ((hi as u64) << 32) | (lo as u64);
+            }
+        }
+    }
+
+    /// PTP (Precision Time Protocol) サポート状況を確認
+    pub fn ptp_caps(&self) -> Option<(u8, u32)> {
+        self.hca_caps.as_ref().map(|caps| {
+            (caps.rq_ts_format, caps.device_frequency_khz)
+        })
     }
 
     pub fn process_rx_completion(

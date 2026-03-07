@@ -86,23 +86,42 @@ pub fn build_set_flow_table_entry_input(
     }
 
     let match_base = 0x40;
+    let mut layout = crate::structs::cmd::FteMatchSetLyr24Layout::new(&mut in_mbox.data[match_base..]);
+
     // Outer L2
     if let Some(mac) = match_value.dst_mac {
-        in_mbox.data[match_base..match_base + 6].copy_from_slice(&mac);
+        layout.dmac_mut().copy_from_slice(&mac);
     }
     if let Some(mac) = match_value.src_mac {
-        in_mbox.data[match_base + 6..match_base + 12].copy_from_slice(&mac);
+        layout.smac_mut().copy_from_slice(&mac);
     }
     if let Some(etype) = match_value.ethertype {
-        in_mbox.write_be16(match_base + 12, etype);
+        layout.set_ethertype(etype);
     }
 
-    // Outer L3 (IPv4) - typical offset for mlx5 ifc
+    // Outer L3
+    if let Some(proto) = match_value.ip_protocol {
+        layout.set_ip_protocol(proto);
+    }
     if let Some(ip) = match_value.src_ipv4 {
-        in_mbox.write_be32(match_base + 0x10, ip);
+        layout.src_ipv4_mut().copy_from_slice(&ip.to_be_bytes());
     }
     if let Some(ip) = match_value.dst_ipv4 {
-        in_mbox.write_be32(match_base + 0x14, ip);
+        layout.dst_ipv4_mut().copy_from_slice(&ip.to_be_bytes());
+    }
+    if let Some(ip6) = match_value.src_ipv6 {
+        layout.src_ipv6_mut().copy_from_slice(&ip6);
+    }
+    if let Some(ip6) = match_value.dst_ipv6 {
+        layout.dst_ipv6_mut().copy_from_slice(&ip6);
+    }
+
+    // Outer L4
+    if let Some(port) = match_value.src_port {
+        layout.set_src_port(port);
+    }
+    if let Some(port) = match_value.dst_port {
+        layout.set_dst_port(port);
     }
 }
 

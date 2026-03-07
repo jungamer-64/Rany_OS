@@ -783,6 +783,25 @@ impl Mlx5AsyncDriver {
             log::warn!(target: "mlx5", "MSI-X not available; using polling mode");
         }
 
+        // SR-IOV ケーパビリティの有無を確認して PF/VF 判定を補強
+        let has_sriov_cap = pcie_ext_config()
+            .map(|config| {
+                config
+                    .find_ext_capability(
+                        PcieBdf::new(
+                            pci_dev.bdf.bus(),
+                            pci_dev.bdf.device(),
+                            pci_dev.bdf.function(),
+                        ),
+                        crate::io::pci::ext_cap_id::SRIOV,
+                    )
+                    .is_some()
+            })
+            .unwrap_or(false);
+
+        let mut device = Mlx5Device::new(bar0_base, bar0_size, pci_dev.device_id.0);
+        let is_vf = device.is_vf_robust(has_sriov_cap);
+
         let config = Mlx5BootstrapConfig {
             queue_profile: Mlx5QueueProfile::default(),
             mkey_params: mlx5_driver::resources::MkeyParams::default(),
@@ -791,7 +810,7 @@ impl Mlx5AsyncDriver {
                 device: pci_dev.bdf.device(),
                 function: pci_dev.bdf.function(),
             },
-            is_vf: ConnectXVariant::is_vf_device_id(pci_dev.device_id.0),
+            is_vf,
         };
         let plan = Mlx5BootstrapPlan::new(&config);
 
@@ -806,7 +825,6 @@ impl Mlx5AsyncDriver {
         let dma_resources = self.allocate_dma_resources(packed_device_id, &plan)?;
         let allocated = dma_resources.to_allocated_resources();
 
-        let mut device = Mlx5Device::new(bar0_base, bar0_size, pci_dev.device_id.0);
 
         log::info!(
             target: "mlx5",
@@ -852,7 +870,7 @@ impl Mlx5AsyncDriver {
                 pci_dev.bdf.device(),
                 pci_dev.bdf.function(),
             ),
-            !ConnectXVariant::is_vf_device_id(pci_dev.device_id.0),
+            !is_vf,
         )));
 
         log::info!(

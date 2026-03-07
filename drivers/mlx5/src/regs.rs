@@ -125,6 +125,8 @@ pub mod uar {
 pub mod fw_state {
     /// 初期化中フラグ（1=初期化中, 0=ready）
     pub const INITIALIZING_BIT: u32 = 1 << 31;
+    /// 内蔵 CPU (ECPU) フラグ
+    pub const EMBEDDED_CPU_BIT: u32 = 1 << 23;
     /// cmdq_addr_l_sz の NIC interface support bit
     pub const NIC_INTERFACE_SUPPORTED_BIT: u32 = 1 << 8;
 

@@ -75,6 +75,9 @@ pub struct Mlx5Device {
     pub(crate) sw_vhca_id: u16,
     pub(crate) sw_owner_id: [u32; 4],
     pub(crate) resources_allocated: bool,
+    pub(crate) is_vf: bool,
+    pub(crate) is_ecpf: bool,
+
     pub(crate) pci_bus: u8,
     pub(crate) pci_device: u8,
     pub(crate) pci_function: u8,
@@ -132,6 +135,8 @@ impl Mlx5Device {
             sw_vhca_id: 0,
             sw_owner_id: [0xCAFE, 0xBABE, 0x1234, 0x5678],
             resources_allocated: false,
+            is_vf: ConnectXVariant::is_vf_device_id(device_id),
+            is_ecpf: false,
             pci_bus: 0,
             pci_device: 0,
             pci_function: 0,
@@ -172,7 +177,28 @@ impl Mlx5Device {
     }
 
     pub fn is_vf(&self) -> bool {
-        ConnectXVariant::is_vf_device_id(self.device_id)
+        self.is_vf
+    }
+
+    /// Physical Function かどうか判定
+    pub fn is_pf(&self) -> bool {
+        !self.is_vf && !self.is_ecpf
+    }
+
+    /// SmartNIC / DPU 内蔵 CPU (ECPU) かどうか判定
+    pub fn is_ecpf(&self) -> bool {
+        self.is_ecpf
+    }
+
+    /// より堅牢な VF 判定 (PCI ケーパビリティ情報を考慮)
+    /// PF であれば SR-IOV 拡張ケーパビリティを持つはずなので、それがない場合は VF とみなす候補になる。
+    pub fn is_vf_robust(&self, has_sriov_cap: bool) -> bool {
+        if self.is_vf() {
+            return true;
+        }
+        // Mellanox デバイスで、かつ SR-IOV ケーパビリティがない場合は VF である可能性が高い
+        // (ただし、SR-IOV 非対応の PF や、古いカード、ブリッジ等は除外が必要)
+        !has_sriov_cap && self.variant != ConnectXVariant::Unknown(0) && !self.is_ecpf
     }
 
     pub fn hca_caps(&self) -> Option<&HcaCaps> {
@@ -267,7 +293,8 @@ impl Mlx5Device {
         };
 
         push_uid(prev_uid);
-        if is_vf {
+        // VF または 不明なバリアント（初期化中）の場合は候補を追加
+        if is_vf || prev_uid == 0 {
             push_uid(0xFFFF);
             push_uid(0);
             if sw_vhca_id != 0 {

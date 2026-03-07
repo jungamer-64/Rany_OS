@@ -12,6 +12,12 @@
 /// Mellanox (NVIDIA Networking) PCI Vendor ID
 pub const MELLANOX_VENDOR_ID: u16 = 0x15B3;
 
+// -- Connect-IB --
+/// Connect-IB PCI Device ID (Physical Function)
+pub const CONNECTIB_DEVICE_ID: u16 = 0x1011;
+/// Connect-IB VF PCI Device ID
+pub const CONNECTIB_VF_DEVICE_ID: u16 = 0x1012;
+
 // -- ConnectX-4 --
 /// ConnectX-4 EN PCI Device ID (Physical Function)
 pub const CONNECTX4_DEVICE_ID: u16 = 0x1013;
@@ -58,6 +64,9 @@ pub const CONNECTX7_VF_DEVICE_ID: u16 = 0x1022;
 
 /// ドライバがサポートする全デバイスの (Vendor ID, Device ID) ペア
 pub static SUPPORTED_DEVICE_IDS: &[(u16, u16)] = &[
+    // Connect-IB
+    (MELLANOX_VENDOR_ID, CONNECTIB_DEVICE_ID),
+    (MELLANOX_VENDOR_ID, CONNECTIB_VF_DEVICE_ID),
     // ConnectX-4
     (MELLANOX_VENDOR_ID, CONNECTX4_DEVICE_ID),
     (MELLANOX_VENDOR_ID, CONNECTX4_VF_DEVICE_ID),
@@ -87,6 +96,8 @@ pub static SUPPORTED_DEVICE_IDS: &[(u16, u16)] = &[
 /// ConnectX ファミリのバリアント識別
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectXVariant {
+    /// Connect-IB
+    ConnectIB,
     /// ConnectX-4
     CX4,
     /// ConnectX-4 Lx
@@ -111,6 +122,7 @@ impl ConnectXVariant {
     /// PCI Device ID からバリアントを判別
     pub fn from_device_id(device_id: u16) -> Self {
         match device_id {
+            CONNECTIB_DEVICE_ID | CONNECTIB_VF_DEVICE_ID => Self::ConnectIB,
             CONNECTX4_DEVICE_ID | CONNECTX4_VF_DEVICE_ID => Self::CX4,
             CONNECTX4_LX_DEVICE_ID | CONNECTX4_LX_VF_DEVICE_ID => Self::CX4Lx,
             CONNECTX5_DEVICE_ID | CONNECTX5_VF_DEVICE_ID => Self::CX5,
@@ -126,6 +138,7 @@ impl ConnectXVariant {
     /// 人間可読なデバイス名を返す
     pub fn name(&self) -> &'static str {
         match self {
+            Self::ConnectIB => "Connect-IB",
             Self::CX4 => "ConnectX-4",
             Self::CX4Lx => "ConnectX-4 Lx",
             Self::CX5 => "ConnectX-5",
@@ -142,7 +155,8 @@ impl ConnectXVariant {
     pub fn is_vf_device_id(device_id: u16) -> bool {
         matches!(
             device_id,
-            CONNECTX4_VF_DEVICE_ID
+            CONNECTIB_VF_DEVICE_ID
+                | CONNECTX4_VF_DEVICE_ID
                 | CONNECTX4_LX_VF_DEVICE_ID
                 | CONNECTX5_VF_DEVICE_ID
                 | CONNECTX5_EX_VF_DEVICE_ID
@@ -474,6 +488,8 @@ pub struct HcaCaps {
     pub max_rq: u32,
     /// 最大EQ数
     pub max_eq: u32,
+    /// 最大MSI-X数 (VFs)
+    pub max_msix: u32,
     /// 最大MKEY数
     pub max_mkey: u32,
     /// 最大MTU
@@ -522,6 +538,18 @@ pub struct HcaCaps {
     pub tso_ipv4: bool,
     /// TSO (TCP Segmentation Offload) IPv6 対応
     pub tso_ipv6: bool,
+    /// RSS サポート (Ethernet Offloads)
+    pub rss_en: bool,
+    /// LRO サポート (Ethernet Offloads)
+    pub lro_en: bool,
+    /// NIC Receive Flow Table サポート
+    pub nic_rx_ft: bool,
+    /// 受信タイムスタンプ形式 (0: none, 1: free running, 2: real time)
+    pub rq_ts_format: u8,
+    /// 送信タイムスタンプ形式 (0: none, 1: free running, 2: real time)
+    pub sq_ts_format: u8,
+    /// デバイス内部タイマー周波数 (kHz)
+    pub device_frequency_khz: u32,
 }
 
 // ============================================================================
@@ -599,6 +627,10 @@ pub enum WqeOpcode {
     Nop = 0x00,
     /// Ethernet送信
     EthSend = 0x0A,
+    /// Enhanced Multi-Packet WQE
+    EnhancedMpwqe = 0x0D,
+    /// MPWQE with Ethernet segment
+    MpwqeEthSeg = 0x0E,
 }
 
 // ============================================================================

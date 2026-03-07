@@ -79,6 +79,12 @@ pub mod rss_field {
     pub const IPV4_UDP: u32 = SRC_IPV4 | DST_IPV4 | SRC_UDP | DST_UDP;
     /// IPv4 のみ
     pub const IPV4_ONLY: u32 = SRC_IPV4 | DST_IPV4;
+    /// IPv6 + TCP
+    pub const IPV6_TCP: u32 = SRC_IPV6 | DST_IPV6 | SRC_TCP | DST_TCP;
+    /// IPv6 + UDP
+    pub const IPV6_UDP: u32 = SRC_IPV6 | DST_IPV6 | SRC_UDP | DST_UDP;
+    /// IPv6 のみ
+    pub const IPV6_ONLY: u32 = SRC_IPV6 | DST_IPV6;
 }
 
 /// Toeplitz RSSハッシュキー（デフォルト値: Microsoft推奨ハッシュキー）
@@ -182,6 +188,16 @@ pub struct MatchValue {
     pub dst_ipv4: Option<u32>,
     /// ソースIPv4アドレス
     pub src_ipv4: Option<u32>,
+    /// 宛先IPv6アドレス
+    pub dst_ipv6: Option<[u8; 16]>,
+    /// ソースIPv6アドレス
+    pub src_ipv6: Option<[u8; 16]>,
+    /// 宛先TCP/UDPポート
+    pub dst_port: Option<u16>,
+    /// ソースTCP/UDPポート
+    pub src_port: Option<u16>,
+    /// IPプロトコル
+    pub ip_protocol: Option<u8>,
 }
 
 impl Default for MatchValue {
@@ -192,6 +208,11 @@ impl Default for MatchValue {
             ethertype: None,
             dst_ipv4: None,
             src_ipv4: None,
+            dst_ipv6: None,
+            src_ipv6: None,
+            dst_port: None,
+            src_port: None,
+            ip_protocol: None,
         }
     }
 }
@@ -209,6 +230,10 @@ pub struct RssConfig {
     pub hash_fields: u32,
     /// ハッシュキー（40バイト）
     pub hash_key: [u8; 40],
+    /// LROを有効化するか
+    pub lro_enabled: bool,
+    /// LRO タイムアウト (マイクロ秒, 0ならデフォルト)
+    pub lro_timeout_us: u16,
 }
 
 impl Default for RssConfig {
@@ -217,6 +242,8 @@ impl Default for RssConfig {
             hash_function: RssHashFunction::Toeplitz,
             hash_fields: rss_field::IPV4_TCP | rss_field::IPV4_UDP,
             hash_key: DEFAULT_RSS_KEY,
+            lro_enabled: false,
+            lro_timeout_us: 0,
         }
     }
 }
