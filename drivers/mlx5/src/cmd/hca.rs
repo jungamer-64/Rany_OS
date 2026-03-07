@@ -9,6 +9,7 @@ use crate::structs::cmd::*;
 pub const MLX5_CAP_GENERAL: u16 = 0;
 pub const MLX5_CAP_ETHERNET_OFFLOADS: u16 = 1;
 pub const MLX5_CAP_FLOW_TABLE: u16 = 2;
+pub const MLX5_CAP_GENERAL_2: u16 = 0x20;
 
 /// QUERY_ISSI コマンド出力の解析
 pub fn parse_query_issi(out_mbox: &CmdMailbox) -> u32 {
@@ -53,13 +54,21 @@ pub fn build_set_hca_cap_input(in_mbox: &mut CmdMailbox, cap_type: u16, capabili
 }
 
 /// INIT_HCA コマンド入力の構築
-pub fn build_init_hca_input(in_mbox: &mut CmdMailbox, sw_vhca_id: u16, sw_owner_id: [u32; 4]) {
+pub fn build_init_hca_input(
+    in_mbox: &mut CmdMailbox,
+    sw_vhca_id: Option<u16>,
+    sw_owner_id: Option<[u32; 4]>,
+) {
     *in_mbox = CmdMailbox::zeroed();
-    let mut layout = InitHcaInputLayout::new(&mut in_mbox.data[..]);
-    layout.set_sw_vhca_id(sw_vhca_id & 0x3FFF);
-    // sw_owner_id starts at offset 0x14 (DW5)
-    for (i, &word) in sw_owner_id.iter().enumerate() {
-        in_mbox.write_be32(0x14 + i * 4, word);
+    if let Some(sw_vhca_id) = sw_vhca_id {
+        let mut layout = InitHcaInputLayout::new(&mut in_mbox.data[..]);
+        layout.set_sw_vhca_id(sw_vhca_id & 0x3FFF);
+    }
+    if let Some(sw_owner_id) = sw_owner_id {
+        // sw_owner_id starts at offset 0x10 (bit 128).
+        for (i, &word) in sw_owner_id.iter().enumerate() {
+            in_mbox.write_be32(0x10 + i * 4, word);
+        }
     }
 }
 

@@ -223,7 +223,32 @@ pub type CmdQueue = CmdQueueTransport;
 
 impl CmdQueueTransport {
     pub fn opcode_uses_uid(opcode: CmdOpcode) -> bool {
-        !matches!(opcode, CmdOpcode::QueryVhcaState | CmdOpcode::ModifyVhcaState)
+        !matches!(
+            opcode,
+            CmdOpcode::QueryHcaCap
+                | CmdOpcode::QueryAdapter
+                | CmdOpcode::InitHca
+                | CmdOpcode::TeardownHca
+                | CmdOpcode::EnableHca
+                | CmdOpcode::DisableHca
+                | CmdOpcode::QueryPages
+                | CmdOpcode::ManagePages
+                | CmdOpcode::SetHcaCap
+                | CmdOpcode::QueryIssi
+                | CmdOpcode::SetIssi
+                | CmdOpcode::QueryNicVportContext
+                | CmdOpcode::ModifyNicVportContext
+                | CmdOpcode::QueryVportState
+                | CmdOpcode::ModifyVportState
+                | CmdOpcode::QueryVportCounter
+                | CmdOpcode::QueryVnicEnv
+                | CmdOpcode::QueryVhcaState
+                | CmdOpcode::ModifyVhcaState
+                | CmdOpcode::QuerySpecialContexts
+                | CmdOpcode::SetDriverVersion
+                | CmdOpcode::AccessRegister
+                | CmdOpcode::Nop
+        )
     }
 
     pub fn parse_hw_cmdq_layout(cmdq_addr_l_sz: u32) -> (u8, u8, bool) {
@@ -289,6 +314,13 @@ impl CmdQueueTransport {
     }
     pub fn uid(&self) -> u16 {
         self.uid
+    }
+
+    fn write_transport_header(&self, opcode: CmdOpcode, in_mbox: &mut CmdMailbox) {
+        in_mbox.write_be16(0x00, opcode as u16);
+        if Self::opcode_uses_uid(opcode) {
+            in_mbox.write_be16(0x02, self.uid);
+        }
     }
 
     fn xor8(buf: &[u8]) -> u8 {
@@ -468,8 +500,7 @@ impl CommandTransport for CmdQueueTransport {
         };
 
         let in_mbox = &mut *(self.in_mbox_virt as *mut CmdMailbox);
-        in_mbox.write_be16(0x00, opcode as u16);
-        in_mbox.write_be16(0x02, self.uid);
+        self.write_transport_header(opcode, in_mbox);
 
         let in_inline = self.prepare_in_block(token, in_len as usize, in_mbox_phys)?;
         self.prepare_out_block(token, out_len as usize, out_mbox_phys)?;
@@ -599,5 +630,42 @@ impl CommandTransport for CmdQueueTransport {
     }
     fn uid(&self) -> u16 {
         self.uid
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_transport_header_only_injects_uid_for_uid_opcodes() {
+        let transport = CmdQueueTransport {
+            cmdq_phys: 0,
+            cmdq_virt: 0,
+            log_cmdq_size: 5,
+            log_cmd_stride: 6,
+            bar0_base: 0,
+            in_mbox_virt: 0,
+            out_mbox_virt: 0,
+            next_token: 1,
+            uid: 0x1234,
+        };
+
+        let mut with_uid = CmdMailbox::zeroed();
+        transport.write_transport_header(CmdOpcode::CreateSq, &mut with_uid);
+        assert_eq!(with_uid.read_be16(0x00), CmdOpcode::CreateSq as u16);
+        assert_eq!(with_uid.read_be16(0x02), 0x1234);
+
+        let mut reserved_uid = CmdMailbox::zeroed();
+        reserved_uid.write_be16(0x02, 0x55aa);
+        transport.write_transport_header(CmdOpcode::QueryHcaCap, &mut reserved_uid);
+        assert_eq!(reserved_uid.read_be16(0x00), CmdOpcode::QueryHcaCap as u16);
+        assert_eq!(reserved_uid.read_be16(0x02), 0x55aa);
+
+        let mut rebuilt_uid = CmdMailbox::zeroed();
+        rebuilt_uid.write_be16(0x02, 0xabcd);
+        transport.write_transport_header(CmdOpcode::QueryVhcaState, &mut rebuilt_uid);
+        assert_eq!(rebuilt_uid.read_be16(0x00), CmdOpcode::QueryVhcaState as u16);
+        assert_eq!(rebuilt_uid.read_be16(0x02), 0xabcd);
     }
 }

@@ -19,7 +19,6 @@ impl Mlx5Device {
         cmd: &mut T,
         in_mbox: &mut CmdMailbox,
         is_vf: bool,
-        sw_vhca_id: u16,
         mut build: B,
         mut execute: F,
     ) -> Mlx5Result<R>
@@ -29,7 +28,7 @@ impl Mlx5Device {
         F: FnMut(&mut T, &CmdMailbox) -> Mlx5Result<R>,
     {
         let prev_uid = cmd.uid();
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf);
         let mut last_err = Err(Mlx5Error::NotSupported);
 
         for &uid in &uids[..len] {
@@ -55,7 +54,6 @@ impl Mlx5Device {
         out_mbox: &mut CmdMailbox,
         out_mbox_phys: u64,
         is_vf: bool,
-        sw_vhca_id: u16,
         num_vfs: u16,
     ) -> Mlx5Result<()> {
         for vf in 0..num_vfs {
@@ -64,7 +62,6 @@ impl Mlx5Device {
                 cmd,
                 in_mbox,
                 is_vf,
-                sw_vhca_id,
                 |in_mbox, uid| build_query_vhca_state_input(in_mbox, uid, function_id),
                 |cmd, _| {
                     cmd.execute(
@@ -290,7 +287,6 @@ impl Mlx5Device {
 
     pub unsafe fn query_vhca_state(&mut self, function_id: u16) -> Mlx5Result<VhcaStateContext> {
         let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
         let in_mbox_phys = self.cmd_in_mbox_device;
         let out_mbox_phys = self.cmd_out_mbox_device;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
@@ -301,7 +297,6 @@ impl Mlx5Device {
             cmd,
             in_mbox,
             is_vf,
-            sw_vhca_id,
             |in_mbox, uid| build_query_vhca_state_input(in_mbox, uid, function_id),
             |cmd, _| {
                 cmd.execute(
@@ -325,7 +320,6 @@ impl Mlx5Device {
             return Err(Mlx5Error::NotSupported);
         }
         let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
         let in_mbox_phys = self.cmd_in_mbox_device;
         let out_mbox_phys = self.cmd_out_mbox_device;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
@@ -338,7 +332,6 @@ impl Mlx5Device {
             out_mbox,
             out_mbox_phys,
             is_vf,
-            sw_vhca_id,
             num_vfs,
         )
     }
@@ -916,6 +909,19 @@ mod tests {
                     });
                     Ok(())
                 }
+                CmdOpcode::EnableHca | CmdOpcode::DisableHca => {
+                    self.calls.push(CallSnapshot {
+                        opcode,
+                        uid: self.uid,
+                        encoded_uid: 0,
+                        function_id: get_bits_u32(&in_mbox.data[..], 80, 16) as u16,
+                        op_mod: 0,
+                        other_vport: false,
+                        vport_number: 0,
+                        admin_state: 0,
+                    });
+                    Ok(())
+                }
                 _ => Err(Mlx5Error::InvalidParameter),
             }
         }
@@ -944,13 +950,12 @@ mod tests {
                 &mut out_mbox,
                 0,
                 true,
-                0x2222,
                 1,
             )
         }
         .unwrap();
 
-        assert_eq!(transport.calls.len(), 3);
+        assert_eq!(transport.calls.len(), 4);
         assert_eq!(transport.calls[0].opcode, CmdOpcode::QueryVhcaState);
         assert_eq!(transport.calls[0].uid, 0);
         assert_eq!(transport.calls[0].encoded_uid, 0);
@@ -959,14 +964,16 @@ mod tests {
         assert_eq!(transport.calls[1].uid, 0xffff);
         assert_eq!(transport.calls[1].encoded_uid, 0xffff);
         assert_eq!(transport.calls[1].function_id, 1);
-        assert_eq!(transport.calls[2].opcode, CmdOpcode::ModifyVportState);
+        assert_eq!(transport.calls[2].opcode, CmdOpcode::EnableHca);
+        assert_eq!(transport.calls[2].function_id, 1);
+        assert_eq!(transport.calls[3].opcode, CmdOpcode::ModifyVportState);
         assert_eq!(
-            transport.calls[2].op_mod,
+            transport.calls[3].op_mod,
             MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT
         );
-        assert!(transport.calls[2].other_vport);
-        assert_eq!(transport.calls[2].vport_number, 1);
-        assert_eq!(transport.calls[2].admin_state, VPORT_ADMIN_STATE_UP);
+        assert!(transport.calls[3].other_vport);
+        assert_eq!(transport.calls[3].vport_number, 1);
+        assert_eq!(transport.calls[3].admin_state, VPORT_ADMIN_STATE_UP);
         assert!(
             !transport
                 .calls
@@ -989,7 +996,6 @@ mod tests {
                 &mut out_mbox,
                 0,
                 true,
-                0x2222,
                 1,
             )
         }
@@ -1015,12 +1021,20 @@ mod tests {
         unsafe { Mlx5Device::deactivate_vfs_with_transport(&mut transport, &mut in_mbox, 0, 0, 2) }
             .unwrap();
 
-        assert_eq!(transport.calls.len(), 2);
+        assert_eq!(transport.calls.len(), 4);
+        assert_eq!(transport.calls[0].opcode, CmdOpcode::ModifyVportState);
+        assert_eq!(transport.calls[1].opcode, CmdOpcode::DisableHca);
+        assert_eq!(transport.calls[1].function_id, 1);
+        assert_eq!(transport.calls[2].opcode, CmdOpcode::ModifyVportState);
+        assert_eq!(transport.calls[3].opcode, CmdOpcode::DisableHca);
+        assert_eq!(transport.calls[3].function_id, 2);
         assert!(
             transport
                 .calls
                 .iter()
-                .all(|call| call.opcode == CmdOpcode::ModifyVportState)
+                .filter(|call| call.opcode == CmdOpcode::ModifyVportState)
+                .count()
+                == 2
         );
         assert_eq!(
             transport.calls[0].op_mod,
@@ -1029,8 +1043,8 @@ mod tests {
         assert!(transport.calls[0].other_vport);
         assert_eq!(transport.calls[0].vport_number, 1);
         assert_eq!(transport.calls[0].admin_state, VPORT_ADMIN_STATE_DOWN);
-        assert_eq!(transport.calls[1].vport_number, 2);
-        assert_eq!(transport.calls[1].admin_state, VPORT_ADMIN_STATE_DOWN);
+        assert_eq!(transport.calls[2].vport_number, 2);
+        assert_eq!(transport.calls[2].admin_state, VPORT_ADMIN_STATE_DOWN);
         assert!(
             !transport
                 .calls

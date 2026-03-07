@@ -501,6 +501,8 @@ pub struct HcaCaps {
     pub max_mtu: u32,
     /// ポート数
     pub num_ports: u8,
+    /// GENERAL_2 capability page が存在する
+    pub hca_cap_2: bool,
     /// ログ最大CQサイズ（2^n）
     pub log_max_cq_sz: u8,
     /// ログ最大SQサイズ
@@ -533,6 +535,12 @@ pub struct HcaCaps {
     pub vport_group_manager: bool,
     /// E-Switch マネージャ
     pub eswitch_manager: bool,
+    /// INIT_HCA で sw_owner_id を渡せる
+    pub sw_owner_id_cap: bool,
+    /// SET_DRIVER_VERSION を受け付ける
+    pub driver_version_cap: bool,
+    /// GENERAL_2 で sw_vhca_id_valid を有効化できる
+    pub sw_vhca_id_valid_cap: bool,
     /// VHCA ポート数
     pub num_vhca_ports: u16,
     /// VHCA ID (VF identification)

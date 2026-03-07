@@ -16,10 +16,9 @@ use crate::resources::{MkeyInfo, MkeyParams, TirInfo, TirParams, TisInfo, TisPar
 impl Mlx5Device {
     /// QUERY_SPECIAL_CONTEXTS から reserved lkey を取得
     pub unsafe fn query_reserved_lkey(&mut self) -> Mlx5Result<u32> {
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_query_special_contexts_input(in_mbox);
-        cmd.execute(
+        self.execute_cmd_with_uid_candidates(
             CmdOpcode::QuerySpecialContexts,
             self.cmd_in_mbox_device,
             0x10,
@@ -110,12 +109,12 @@ impl Mlx5Device {
     /// UAR (User Access Region) を割り当て
     pub unsafe fn alloc_uar(&mut self) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf);
 
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
+        let mut fallback_uar = None;
         for &uid in &uids[..len] {
             cmd.set_uid(uid);
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -141,13 +140,9 @@ impl Mlx5Device {
                     return Ok(uar_number);
                 }
                 Err(Mlx5Error::CommandFailed(status)) if status == 0x04 => {
-                    let uar_number = 0;
-                    self.allocated_uars.push(uar_number);
-                    self.uar_page = uar_number;
-                    self.uar_base =
-                        self.bar0_base + (uar_number as u64) * (crate::regs::uar::PAGE_SIZE as u64);
-                    cmd.set_uid(prev_uid);
-                    return Ok(uar_number);
+                    fallback_uar = Some(0);
+                    last_err = Err(Mlx5Error::CommandFailed(status));
+                    continue;
                 }
                 Err(e) => {
                     last_err = Err(e);
@@ -156,18 +151,25 @@ impl Mlx5Device {
             }
         }
         cmd.set_uid(prev_uid);
+        if let Some(uar_number) = fallback_uar {
+            self.allocated_uars.push(uar_number);
+            self.uar_page = uar_number;
+            self.uar_base =
+                self.bar0_base + (uar_number as u64) * (crate::regs::uar::PAGE_SIZE as u64);
+            return Ok(uar_number);
+        }
         last_err
     }
 
     /// Protection Domain を割り当て
     pub unsafe fn alloc_pd(&mut self) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf);
 
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
+        let mut fallback_pd = None;
         for &uid in &uids[..len] {
             cmd.set_uid(uid);
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -187,9 +189,9 @@ impl Mlx5Device {
                     return Ok(self.pd);
                 }
                 Err(Mlx5Error::CommandFailed(status)) if status == 0x04 => {
-                    self.pd = 0;
-                    cmd.set_uid(prev_uid);
-                    return Ok(self.pd);
+                    fallback_pd = Some(0);
+                    last_err = Err(Mlx5Error::CommandFailed(status));
+                    continue;
                 }
                 Err(e) => {
                     last_err = Err(e);
@@ -198,18 +200,22 @@ impl Mlx5Device {
             }
         }
         cmd.set_uid(prev_uid);
+        if let Some(pd) = fallback_pd {
+            self.pd = pd;
+            return Ok(self.pd);
+        }
         last_err
     }
 
     /// Transport Domain を割り当て
     pub unsafe fn alloc_td(&mut self) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let prev_uid = cmd.uid();
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf);
 
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
+        let mut fallback_td = None;
         for &uid in &uids[..len] {
             cmd.set_uid(uid);
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -229,9 +235,9 @@ impl Mlx5Device {
                     return Ok(self.td);
                 }
                 Err(Mlx5Error::CommandFailed(status)) if status == 0x04 => {
-                    self.td = 0;
-                    cmd.set_uid(prev_uid);
-                    return Ok(self.td);
+                    fallback_td = Some(0);
+                    last_err = Err(Mlx5Error::CommandFailed(status));
+                    continue;
                 }
                 Err(e) => {
                     last_err = Err(e);
@@ -240,23 +246,38 @@ impl Mlx5Device {
             }
         }
         cmd.set_uid(prev_uid);
+        if let Some(td) = fallback_td {
+            self.td = td;
+            return Ok(self.td);
+        }
         last_err
     }
 
     pub unsafe fn set_driver_version(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        if !self
+            .hca_caps
+            .as_ref()
+            .map(|caps| caps.driver_version_cap)
+            .unwrap_or(false)
+        {
+            log::debug!(
+                target: "mlx5",
+                "Skipping SET_DRIVER_VERSION because the capability bit is not set"
+            );
+            return Ok(());
+        }
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        
-        // Linux 互換のバージョン文字列形式: "mlx5_core, ExoRust, 0.1.0"
-        // ファームウェアはこの文字列を見て、特定のバグ回避策を有効にすることがある。
-        let version = b"mlx5_core, ExoRust, 0.1.0";
+
+        // Linux format: "Linux,mlx5_core,<major>.<minor>.<patch>".
+        let version = b"Linux,mlx5_core,0.1.0";
         build_set_driver_version_input(in_mbox, version);
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::SetDriverVersion,
             self.cmd_in_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x50,
             self.cmd_out_mbox_device,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x10,
         )?;
         Ok(())
     }

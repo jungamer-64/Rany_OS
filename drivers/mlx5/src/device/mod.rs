@@ -109,6 +109,37 @@ pub struct Mlx5Device {
 // Types moved to crate::flow
 
 impl Mlx5Device {
+    fn splitmix64_step(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    pub(crate) fn derive_sw_owner_id(&self) -> [u32; 4] {
+        let mut seed = self.bar0_base
+            ^ self.cmd_in_mbox_device.rotate_left(7)
+            ^ self.cmd_out_mbox_device.rotate_left(23)
+            ^ ((self.device_id as u64) << 32)
+            ^ ((self.pci_bus as u64) << 24)
+            ^ ((self.pci_device as u64) << 16)
+            ^ ((self.pci_function as u64) << 8);
+        if seed == 0 {
+            seed = 0x6A09_E667_F3BC_C909;
+        }
+
+        let mut words = [0u32; 4];
+        for word in &mut words {
+            let mixed = Self::splitmix64_step(&mut seed);
+            *word = (mixed as u32) ^ ((mixed >> 32) as u32);
+        }
+        if words == [0; 4] {
+            words[0] = 1;
+        }
+        words
+    }
+
     pub fn new(bar0_base: u64, bar0_size: usize, device_id: u16) -> Self {
         let variant = ConnectXVariant::from_device_id(device_id);
         Self {
@@ -133,7 +164,7 @@ impl Mlx5Device {
             mkey: 0,
             mkey_info: None,
             sw_vhca_id: 0,
-            sw_owner_id: [0xCAFE, 0xBABE, 0x1234, 0x5678],
+            sw_owner_id: [0; 4],
             resources_allocated: false,
             is_vf: ConnectXVariant::is_vf_device_id(device_id),
             is_ecpf: false,
@@ -277,12 +308,11 @@ impl Mlx5Device {
         }
     }
 
-    /// Build the list of UID candidates that should be tried for commands when
-    /// running in VF mode.  The first entry is always the previous UID stored
-    /// in the transport; additional entries may include the broadcast sentinel
-    /// (0xFFFF), zero and the software VHCA ID if available.
-    pub(crate) fn uid_candidates(prev_uid: u16, is_vf: bool, sw_vhca_id: u16) -> ([u16; 4], usize) {
-        let mut uids = [0u16; 4];
+    /// Build the list of mailbox UID candidates that should be tried for
+    /// transport-managed commands.  This is distinct from INIT_HCA's
+    /// software VHCA ID and should only carry mailbox header UID values.
+    pub(crate) fn uid_candidates(prev_uid: u16, is_vf: bool) -> ([u16; 3], usize) {
+        let mut uids = [0u16; 3];
         let mut len = 0usize;
 
         let mut push_uid = |uid: u16| {
@@ -297,9 +327,6 @@ impl Mlx5Device {
         if is_vf || prev_uid == 0 {
             push_uid(0xFFFF);
             push_uid(0);
-            if sw_vhca_id != 0 {
-                push_uid(sw_vhca_id);
-            }
         }
 
         (uids, len)
@@ -344,14 +371,13 @@ impl Mlx5Device {
         out_mbox_phys: u64,
         out_len: u32,
         is_vf: bool,
-        sw_vhca_id: u16,
     ) -> Mlx5Result<()> {
         if !crate::cmd::CmdQueueTransport::opcode_uses_uid(opcode) {
             return cmd.execute(opcode, in_mbox_phys, in_len, out_mbox_phys, out_len);
         }
 
         let prev_uid = cmd.uid();
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf, sw_vhca_id);
+        let (uids, len) = Self::uid_candidates(prev_uid, is_vf);
         let mut last_err = Err(Mlx5Error::NotSupported);
 
         for &uid in &uids[..len] {
@@ -384,7 +410,6 @@ impl Mlx5Device {
         out_mbox_phys: u64,
         out_len: u32,
         is_vf: bool,
-        sw_vhca_id: u16,
     ) -> Mlx5Result<()> {
         if !crate::cmd::CmdQueueTransport::opcode_uses_uid(opcode) {
             return Err(Mlx5Error::InvalidParameter);
@@ -398,7 +423,6 @@ impl Mlx5Device {
             out_mbox_phys,
             out_len,
             is_vf,
-            sw_vhca_id,
         )
     }
 
@@ -412,7 +436,6 @@ impl Mlx5Device {
         out_len: u32,
     ) -> Mlx5Result<()> {
         let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
         if let Some(cmd) = self.cmd.as_mut() {
             Self::execute_cmd_with_uid_candidates_impl(
                 cmd,
@@ -422,7 +445,6 @@ impl Mlx5Device {
                 out_mbox_phys,
                 out_len,
                 is_vf,
-                sw_vhca_id,
             )
         } else {
             Err(Mlx5Error::DeviceNotReady)
@@ -438,7 +460,6 @@ impl Mlx5Device {
         out_len: u32,
     ) -> Mlx5Result<()> {
         let is_vf = self.is_vf();
-        let sw_vhca_id = self.sw_vhca_id;
         if let Some(cmd) = self.cmd.as_mut() {
             Self::execute_uid_sensitive_cmd_impl(
                 cmd,
@@ -448,11 +469,18 @@ impl Mlx5Device {
                 self.cmd_out_mbox_device,
                 out_len,
                 is_vf,
-                sw_vhca_id,
             )
         } else {
             Err(Mlx5Error::DeviceNotReady)
         }
+    }
+
+    pub(crate) fn default_sw_vhca_id(&self) -> u16 {
+        let raw = ((self.pci_bus as u16) << 8)
+            | ((self.pci_device as u16) << 3)
+            | (self.pci_function as u16);
+        let masked = raw & 0x3fff;
+        if masked == 0 { 1 } else { masked }
     }
 }
 
@@ -515,7 +543,6 @@ mod tests {
                 0x2000,
                 0x10,
                 true,
-                0x2222,
             )
         }
         .unwrap();
@@ -529,7 +556,7 @@ mod tests {
 
     #[test]
     fn execute_uid_sensitive_cmd_impl_retries_destroy_mkey_through_all_candidates() {
-        let mut transport = FakeTransport::new(0x1234, 0x2222);
+        let mut transport = FakeTransport::new(0x1234, 0);
 
         unsafe {
             Mlx5Device::execute_uid_sensitive_cmd_impl(
@@ -540,7 +567,6 @@ mod tests {
                 0x2000,
                 0x10,
                 true,
-                0x2222,
             )
         }
         .unwrap();
@@ -551,7 +577,6 @@ mod tests {
                 (CmdOpcode::DestroyMkey, 0x1234),
                 (CmdOpcode::DestroyMkey, 0xffff),
                 (CmdOpcode::DestroyMkey, 0),
-                (CmdOpcode::DestroyMkey, 0x2222),
             ]
         );
         assert_eq!(transport.uid(), 0x1234);
@@ -570,7 +595,6 @@ mod tests {
                 0x2000,
                 0x20,
                 true,
-                0x2222,
             )
         }
         .unwrap_err();

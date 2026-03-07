@@ -62,6 +62,15 @@ impl Mlx5Device {
         self.cmd_in_mbox_device = cmd_in_mbox_pa;
         self.cmd_out_mbox_virt = cmd_out_mbox_virt;
         self.cmd_out_mbox_device = cmd_out_mbox_pa;
+        self.sw_owner_id = self.derive_sw_owner_id();
+        log::info!(
+            target: "mlx5",
+            "Derived sw_owner_id={:08x}:{:08x}:{:08x}:{:08x}",
+            self.sw_owner_id[0],
+            self.sw_owner_id[1],
+            self.sw_owner_id[2],
+            self.sw_owner_id[3]
+        );
 
         if cmdq_pa == 0 {
             log::error!(
@@ -189,16 +198,34 @@ impl Mlx5Device {
     /// HCA の初期化 (INIT_HCA)
     pub unsafe fn init_hca(&mut self) -> Mlx5Result<()> {
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        let sw_vhca_id = self.sw_vhca_id;
-        let sw_owner_id = self.sw_owner_id;
+        let caps = self.hca_caps.as_ref();
+        let sw_vhca_id = caps
+            .filter(|caps| caps.sw_vhca_id_valid_cap && self.sw_vhca_id != 0)
+            .map(|_| self.sw_vhca_id);
+        let sw_owner_id = caps
+            .filter(|caps| caps.sw_owner_id_cap)
+            .map(|_| self.sw_owner_id);
+        let in_len = 0x20;
 
-        log::info!(target: "mlx5", "Executing INIT_HCA (sw_vhca_id={:#x})...", sw_vhca_id);
+        match sw_vhca_id {
+            Some(sw_vhca_id) => log::info!(
+                target: "mlx5",
+                "Executing INIT_HCA (sw_vhca_id={:#x}, sw_owner_id={})...",
+                sw_vhca_id,
+                if sw_owner_id.is_some() { "enabled" } else { "disabled" }
+            ),
+            None => log::info!(
+                target: "mlx5",
+                "Executing INIT_HCA (sw_vhca_id=disabled, sw_owner_id={})...",
+                if sw_owner_id.is_some() { "enabled" } else { "disabled" }
+            ),
+        }
         build_init_hca_input(in_mbox, sw_vhca_id, sw_owner_id);
 
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::InitHca,
             self.cmd_in_mbox_device,
-            32, // mailbox header(16) + sw_vhca_id/sw_owner_id area
+            in_len,
             self.cmd_out_mbox_device,
             16,
         )?;
@@ -376,14 +403,9 @@ impl Mlx5Device {
         // is present.  Set a sensible default before making any further calls so
         // that "simple" operations like enabling the HCA or querying caps work
         // without having to retry inside each helper.
-        let mut default_uid = 0u16;
         if self.is_vf() {
             if let Some(cmd) = self.cmd.as_mut() {
-                default_uid = if self.sw_vhca_id != 0 {
-                    self.sw_vhca_id
-                } else {
-                    0xFFFF
-                };
+                let default_uid = 0;
                 cmd.set_uid(default_uid);
                 log::debug!(target: "mlx5", "VF detected, initial UID set to {:#x}", default_uid);
             }
@@ -396,19 +418,10 @@ impl Mlx5Device {
             // Instead of busy-waiting here, proceed directly to the UID-candidate
             // enable/query flow below.  If the PF truly has not enabled the VF,
             // ENABLE_HCA / QUERY_HCA_CAP will fail with a more actionable error.
-            if self.sw_vhca_id == 0 {
-                log::info!(
-                    target: "mlx5",
-                    "Skipping pre-enable VF VHCA wait (stable VHCA UID not known yet, initial UID={:#x}); proceeding with direct HCA bring-up",
-                    default_uid
-                );
-            } else {
-                log::info!(
-                    target: "mlx5",
-                    "Skipping pre-enable VF VHCA wait (VHCA UID {:#x} will be validated after caps query)",
-                    self.sw_vhca_id
-                );
-            }
+            log::info!(
+                target: "mlx5",
+                "Skipping pre-enable VF VHCA wait (mailbox UID will stay on VF self UID 0x0 until PF exposes a dedicated UID)"
+            );
         }
 
         crate::boot_trace("[MLX5_BOOT] enable/setup phase enter\n");
@@ -431,6 +444,77 @@ impl Mlx5Device {
         self.query_all_caps()?;
         crate::boot_trace("[MLX5_BOOT] query caps done\n");
 
+        if self.is_vf()
+            && self.sw_vhca_id == 0
+            && self
+                .hca_caps()
+                .map(|caps| caps.sw_vhca_id_valid_cap)
+                .unwrap_or(false)
+        {
+            self.sw_vhca_id = self.default_sw_vhca_id();
+            log::info!(
+                target: "mlx5",
+                "Assigned software VHCA ID {:#x} for VF INIT_HCA",
+                self.sw_vhca_id
+            );
+        }
+
+        // Dynamic resource adjustment based on reported capabilities
+        if let Some(caps) = self.hca_caps() {
+            log::info!(target: "mlx5", "HCA Caps limits: max_mkey={}, max_cq={}, max_sq={}, max_rq={}", 
+                caps.max_mkey, caps.max_cq, caps.max_sq, caps.max_rq);
+            
+            // VF では PF からのリソース割り当てが少ない場合があるため、警告を出力
+            if caps.max_mkey < 16 {
+                log::warn!(target: "mlx5", "Device reports very few mkeys ({}); MKEY operations might fail", caps.max_mkey);
+            }
+        }
+
+        // Keep using the broadcast mailbox UID for VF command transport until a
+        // mailbox-specific UID can be queried independently from INIT_HCA's
+        // software VHCA ID. If firmware does not expose a VHCA ID at all, try a
+        // stable guest-visible RID-derived hint before falling back to 0xffff/0.
+        if self.is_vf() {
+            let hw_vhca_id = self.hca_caps().map(|caps| caps.vhca_id).unwrap_or(0);
+            let active_uid = if self.sw_vhca_id != 0 {
+                self.sw_vhca_id
+            } else if hw_vhca_id != 0 {
+                hw_vhca_id
+            } else {
+                self.default_sw_vhca_id()
+            };
+            if let Some(cmd) = self.cmd.as_mut() {
+                cmd.set_uid(active_uid);
+                log::info!(
+                    target: "mlx5",
+                    "Updated VF command UID to {:#x} (sw_vhca_id={:#x}, hw_vhca_id={:#x})",
+                    active_uid,
+                    self.sw_vhca_id,
+                    hw_vhca_id
+                );
+            }
+        }
+
+        // SET_HCA_CAP を呼び出して、ドライバ固有の要件に合わせてデバイスを最適化
+        // INIT_HCA の前に実行する必要がある (Linux に倣う)
+        log::info!(target: "mlx5", "Configuring HCA capabilities...");
+        self.set_hca_cap_general()?;
+        self.set_hca_cap_general_2()?;
+
+        crate::boot_trace("[MLX5_BOOT] init_hca start\n");
+        self.init_hca()?;
+        crate::boot_trace("[MLX5_BOOT] init_hca done\n");
+        let _ = self.set_driver_version();
+
+        log::info!(target: "mlx5", "Refreshing HCA capabilities after INIT_HCA...");
+        if let Err(err) = self.query_all_caps() {
+            log::warn!(
+                target: "mlx5",
+                "Post-INIT_HCA capability refresh failed: {:?}",
+                err
+            );
+        }
+
         // Query adapter info (VSD)
         log::info!(target: "mlx5", "Querying Adapter info...");
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -444,20 +528,8 @@ impl Mlx5Device {
         ) {
             let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
             let vsd = crate::cmd::hca::parse_query_adapter_vsd(out_mbox);
-            // VSD には "ConnectX-5 EN" 等の文字列が含まれる場合がある
             if let Ok(vsd_str) = core::str::from_utf8(&vsd) {
                 log::info!(target: "mlx5", "Adapter VSD: {}", vsd_str.trim_matches('\0'));
-            }
-        }
-
-        // Dynamic resource adjustment based on reported capabilities
-        if let Some(caps) = self.hca_caps() {
-            log::info!(target: "mlx5", "HCA Caps limits: max_mkey={}, max_cq={}, max_sq={}, max_rq={}", 
-                caps.max_mkey, caps.max_cq, caps.max_sq, caps.max_rq);
-            
-            // VF では PF からのリソース割り当てが少ない場合があるため、警告を出力
-            if caps.max_mkey < 16 {
-                log::warn!(target: "mlx5", "Device reports very few mkeys ({}); MKEY operations might fail", caps.max_mkey);
             }
         }
 
@@ -486,36 +558,16 @@ impl Mlx5Device {
                 Err(err) => {
                     log::warn!(
                         target: "mlx5",
-                        "Failed to query local VF VHCA state after caps query: {:?}",
+                        "Failed to query local VF VHCA state after INIT_HCA: {:?}",
                         err
                     );
                 }
             }
         }
 
-        // Once caps/VHCA state are queried, update the default UID used by the
-        // transport. Keep the broadcast UID while the VF-specific UID is unknown.
-        if self.is_vf() {
-            if let Some(cmd) = self.cmd.as_mut() {
-                let active_uid = if self.sw_vhca_id != 0 {
-                    self.sw_vhca_id
-                } else {
-                    0xFFFF
-                };
-                cmd.set_uid(active_uid);
-                log::info!(target: "mlx5", "Updated VF command UID to {:#x}", active_uid);
-            }
-        }
-
-        // VF の場合は PF から割り当てられた MAC アドレスを取得する
         if self.is_vf() {
             log::info!(target: "mlx5", "Querying VF port properties and ensuring vport is active...");
-            
-            // VF 自身の vport (index 0) に対して admin up を試みる
             let _ = self.set_port_admin_up(0);
-            
-            // query_port_mac は内部で execute_cmd_with_uid_candidates を使用している
-            // 一部の VF ではこのコマンドが拒否される場合があるため、エラーを無視する
             if let Err(e) = self.query_port_mac(0) {
                 log::warn!(target: "mlx5", "Failed to query VF port MAC address: {:?}", e);
             }
@@ -524,20 +576,10 @@ impl Mlx5Device {
             }
         }
 
-        // SET_HCA_CAP を呼び出して、ドライバ固有の要件に合わせてデバイスを最適化
-        // INIT_HCA の前に実行する必要がある (Linux に倣う)
-        log::info!(target: "mlx5", "Configuring HCA capabilities...");
-        self.set_hca_cap_general()?;
-
-        crate::boot_trace("[MLX5_BOOT] init_hca start\n");
-        self.init_hca()?;
-        crate::boot_trace("[MLX5_BOOT] init_hca done\n");
-
         // Phase 3: Resources
         self.alloc_uar()?;
         self.alloc_pd()?;
         self.alloc_td()?;
-        let _ = self.set_driver_version();
 
         // VF probe: try a short list of PD values when creating MKEY, falling
         // back to the reserved lkey only if none succeed.
