@@ -77,6 +77,12 @@ pub fn parse_create_cq_output(out_mbox: &CmdMailbox) -> u32 {
     out_mbox.read_be24(0x05)
 }
 
+/// DESTROY_CQ コマンド入力の構築
+pub fn build_destroy_cq_input(in_mbox: &mut CmdMailbox, cqn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, cqn & 0x00FF_FFFF);
+}
+
 /// MODIFY_CQ (Moderation) コマンド入力の構築
 pub fn build_modify_cq_moderation_input(
     in_mbox: &mut CmdMailbox,

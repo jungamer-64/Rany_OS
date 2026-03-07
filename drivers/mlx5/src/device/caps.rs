@@ -47,6 +47,11 @@ impl Mlx5Device {
         caps.eswitch_manager = cap_view.eswitch_manager();
         caps.num_vhca_ports = cap_view.num_vhca_ports() as u16;
 
+        // TSO (TCP Segmentation Offload) の取得
+        // byte 0x11 (dword 4): bit 29: tso_ipv4, bit 28: tso_ipv6
+        caps.tso_ipv4 = (out_mbox.data[0x10 + 0x11] & 0x20) != 0;
+        caps.tso_ipv6 = (out_mbox.data[0x10 + 0x11] & 0x10) != 0;
+
         // 最大 SGE 数 (Scatter/Gather Entry) の取得
         // byte 0x12 (dword 4): [31:24] log_max_sge_sz
         caps.max_sge = 1 << (out_mbox.data[0x10 + 0x12] >> 4);

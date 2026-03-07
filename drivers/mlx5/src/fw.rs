@@ -181,6 +181,16 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
     let eth_net_offloads = (dw13 & 0x0008_0000) != 0;
     let vlan_strip = (dw13 & 0x0004_0000) != 0;
     let scatter_fcs = (dw13 & 0x0002_0000) != 0;
+    let tso_ipv4 = if cap_base + 0x11 < out_data.len() {
+        (out_data[cap_base + 0x11] & 0x20) != 0
+    } else {
+        false
+    };
+    let tso_ipv6 = if cap_base + 0x11 < out_data.len() {
+        (out_data[cap_base + 0x11] & 0x10) != 0
+    } else {
+        false
+    };
 
     let dw17 = rd(0x44);
     let tis_tir_td_order = (dw17 & 0x0020_0000) != 0;
@@ -189,6 +199,11 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
     let dw20 = rd(0x50);
     let log_max_tir = ((dw20 >> 8) & 0x1F) as u8;
     let log_max_tis = (dw20 & 0x1F) as u8;
+    let max_sge = if cap_base + 0x12 < out_data.len() {
+        1u8.checked_shl((out_data[cap_base + 0x12] >> 4) as u32).unwrap_or(1)
+    } else {
+        1
+    };
 
     log::info!(target: "mlx5", "Decoded HCA caps: ports={} log_cq={} log_qp={} log_tis={} csum={} vport_mgr={}",
         num_ports, log_max_cq, log_max_qp_sz, log_max_tis, eth_net_offloads, vport_group_manager);
@@ -231,5 +246,8 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         eswitch_manager: false,
         num_vhca_ports,
         vhca_id,
+        max_sge,
+        tso_ipv4,
+        tso_ipv6,
     }
 }

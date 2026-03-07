@@ -152,6 +152,8 @@ pub struct TxOptions {
     pub l4_cs: bool,
     /// インラインヘッダの長さ
     pub inline_len: u16,
+    /// TSO MSS。0 の場合は TSO を使用しない。
+    pub mss: u16,
 }
 
 impl SendQueue {
@@ -186,13 +188,16 @@ impl SendQueue {
         let inline_sz = inline_hdr.len().min(18) as u16;
         write_be16_raw(eth_ptr, wqe::eth::INLINE_HDR_SZ, inline_sz);
 
-        // チェックサムオフロードフラグの構築
+        // チェックサムオフロードおよび TSO 設定
         let mut cs_flags = 0u16;
         if self.csum_offload {
             if options.l3_cs { cs_flags |= 0x01; }
             if options.l4_cs { cs_flags |= 0x02; }
         }
         write_be16_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
+
+        // TSO MSS
+        write_be16_raw(eth_ptr, wqe::eth::MSS, options.mss);
 
         // Copy inline header (Ethernet header)
         if !inline_hdr.is_empty() {
@@ -391,6 +396,8 @@ impl ReceiveQueue {
             device_addr,
             size: buf_size,
             in_use: true,
+            l3_ok: false,
+            l4_ok: false,
         };
 
         // プロデューサカウンタを進める

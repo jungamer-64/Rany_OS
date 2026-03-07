@@ -86,6 +86,7 @@ pub fn build_set_flow_table_entry_input(
     }
 
     let match_base = 0x40;
+    // Outer L2
     if let Some(mac) = match_value.dst_mac {
         in_mbox.data[match_base..match_base + 6].copy_from_slice(&mac);
     }
@@ -94,6 +95,14 @@ pub fn build_set_flow_table_entry_input(
     }
     if let Some(etype) = match_value.ethertype {
         in_mbox.write_be16(match_base + 12, etype);
+    }
+
+    // Outer L3 (IPv4) - typical offset for mlx5 ifc
+    if let Some(ip) = match_value.src_ipv4 {
+        in_mbox.write_be32(match_base + 0x10, ip);
+    }
+    if let Some(ip) = match_value.dst_ipv4 {
+        in_mbox.write_be32(match_base + 0x14, ip);
     }
 }
 

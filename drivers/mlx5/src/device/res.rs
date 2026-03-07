@@ -293,6 +293,31 @@ impl Mlx5Device {
         )
     }
 
+    /// フローテーブルに特定のIPv4アドレスフィルタを追加
+    pub unsafe fn add_ip_filter(
+        &mut self,
+        table_id: u32,
+        group_id: u32,
+        flow_index: u32,
+        dst_ip: u32,
+        tirn: u32,
+    ) -> Mlx5Result<()> {
+        let mut criteria = crate::flow::MatchCriteria::default();
+        criteria.outer_l3 = true;
+
+        let mut match_value = crate::flow::MatchValue::default();
+        match_value.dst_ipv4 = Some(dst_ip);
+
+        self.set_flow_table_entry(
+            table_id,
+            flow_index,
+            group_id,
+            crate::flow::FlowAction::Allow,
+            Some(tirn),
+            &match_value,
+        )
+    }
+
     pub unsafe fn setup_rx_flow_table_advanced(&mut self, tirn: u32) -> Mlx5Result<()> {
         let ft_config = FlowTableConfig {
             table_type: crate::flow::FlowTableType::NicRx,

@@ -343,34 +343,52 @@ impl Mlx5Device {
 
     /// EQエントリを処理 (MSI-X 割り込みハンドラ等から呼び出し)
     pub unsafe fn process_events(&mut self) -> Mlx5Result<u32> {
+        enum DeferredEvent {
+            RefreshPort(usize),
+            RefreshPrimaryPortConfig,
+        }
+
         let mut processed = 0;
+        let mut deferred = Vec::new();
         for eq in &mut self.eqs {
-            while let Some(eqe) = eq.poll() {
+            while let Some(eqe) = eq.poll_eqe() {
                 processed += 1;
-                let event_type = eqe.event_type();
-                match event_type {
-                    crate::defs::EventType::PortStateChange => {
-                        let port_num = eqe.port_num();
+                match eqe.event_type() {
+                    Some(crate::defs::EventType::PortStateChange) => {
+                        let port_num = eqe.port_number();
                         log::info!(target: "mlx5", "Port state change event for port {}", port_num);
-                        let _ = self.refresh_port_runtime_state((port_num as usize).saturating_sub(1));
+                        deferred.push(DeferredEvent::RefreshPort(
+                            (port_num as usize).saturating_sub(1),
+                        ));
                     }
-                    crate::defs::EventType::NicVportChange => {
+                    Some(crate::defs::EventType::NicVportChange) => {
                         log::info!(target: "mlx5", "NIC VPort change event detected (PF modified VF config)");
-                        // MACアドレスやMTUが変更された可能性があるため再照会
-                        let _ = self.query_port_mac(0);
-                        let _ = self.query_port_mtu(0);
+                        deferred.push(DeferredEvent::RefreshPrimaryPortConfig);
                     }
-                    crate::defs::EventType::PageRequest => {
-                        let (func_id, num_pages) = eqe.page_request_info();
+                    Some(crate::defs::EventType::PageRequest) => {
+                        let func_id = eqe.function_id();
+                        let num_pages = eqe.requested_pages();
                         log::info!(target: "mlx5", "Page request: func_id={:#x}, num_pages={}", func_id, num_pages);
-                        // VF の場合は PF に任せるが、念のためログ出力
                     }
                     _ => {
-                        log::debug!(target: "mlx5", "Unhandled event type: {:?}", event_type);
+                        log::debug!(target: "mlx5", "Unhandled event type: {:?}", eqe.event_type());
                     }
                 }
+                eq.advance_consumer();
             }
-            eq.arm();
+            eq.update_doorbell();
+        }
+
+        for event in deferred {
+            match event {
+                DeferredEvent::RefreshPort(port_index) => {
+                    let _ = self.refresh_port_runtime_state(port_index);
+                }
+                DeferredEvent::RefreshPrimaryPortConfig => {
+                    let _ = self.query_port_mac(0);
+                    let _ = self.query_port_mtu(0);
+                }
+            }
         }
         Ok(processed)
     }
@@ -491,7 +509,7 @@ impl Mlx5Device {
         Ok(counters)
     }
 
-    unsafe fn query_port_mtu(&mut self, port_index: usize) -> Mlx5Result<u32> {
+    pub(crate) unsafe fn query_port_mtu(&mut self, port_index: usize) -> Mlx5Result<u32> {
         self.ports
             .get(port_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
@@ -678,6 +696,30 @@ impl Mlx5Device {
 
         if let Some(port) = self.ports.get_mut(port_index) {
             port.set_mtu(mtu).map_err(|_| Mlx5Error::InvalidParameter)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_port_admin_up(&mut self, port_index: usize) -> Mlx5Result<()> {
+        self.ports
+            .get(port_index)
+            .ok_or(Mlx5Error::InvalidParameter)?;
+
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        unsafe {
+            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+            build_modify_vport_state_input(in_mbox, 0, 0, false, VPORT_ADMIN_STATE_UP);
+            cmd.execute(
+                CmdOpcode::ModifyVportState,
+                self.cmd_in_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+                self.cmd_out_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+            )?;
+        }
+
+        if let Some(port) = self.ports.get_mut(port_index) {
+            port.admin_up();
         }
         Ok(())
     }

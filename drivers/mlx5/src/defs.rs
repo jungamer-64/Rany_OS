@@ -516,6 +516,10 @@ pub struct HcaCaps {
     pub vhca_id: u16,
     /// 1WQEあたりの最大SGE数
     pub max_sge: u8,
+    /// TSO (TCP Segmentation Offload) IPv4 対応
+    pub tso_ipv4: bool,
+    /// TSO (TCP Segmentation Offload) IPv6 対応
+    pub tso_ipv6: bool,
 }
 
 // ============================================================================

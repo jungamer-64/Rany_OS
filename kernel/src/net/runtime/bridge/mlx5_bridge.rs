@@ -324,7 +324,17 @@ fn submit_mlx5_tx(data: &[u8]) -> bool {
         let sq_index = (cpu_id % num_sqs) as usize;
 
         // Safety: デバイスアドレスが正しく取得されていること
-        match unsafe { device.transmit(sq_index, data_device, data_virt, data_len, inline_hdr) } {
+        let tx_options = mlx5_driver::wq::TxOptions::default();
+        match unsafe {
+            device.transmit(
+                sq_index,
+                data_device,
+                data_virt,
+                data_len,
+                inline_hdr,
+                tx_options,
+            )
+        } {
             Ok(wqe_idx) => {
                 let idx = (wqe_idx as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
                 if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
@@ -388,7 +398,9 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                 let wqe_counter = cqe.wqe_counter;
                 let byte_count = cqe.byte_count as usize;
 
-                if let Some(rx_info) = device.process_rx_completion(rq_index, wqe_counter) {
+                if let Some(rx_info) =
+                    device.process_rx_completion(rq_index, wqe_counter, cqe.l3_ok, cqe.l4_ok)
+                {
                     MLX5_RX_PACKETS.fetch_add(1, Ordering::Relaxed);
                     counters::global().record_rx(byte_count);
                     trace::push_event(NetLayer::Driver, NetEventKind::Rx, "mlx5 rx");
@@ -396,9 +408,11 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                     let idx = (wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
                     if let Some(mut pkt) = rx_bufs_guard[rq_index][idx].take() {
                         pkt.set_len(byte_count);
-                        if cqe.checksum_ok {
-                            let meta = pkt.meta_mut();
+                        let meta = pkt.meta_mut();
+                        if cqe.l3_ok {
                             meta.set_ip_csum_verified();
+                        }
+                        if cqe.l4_ok {
                             meta.set_l4_csum_verified();
                         }
 
