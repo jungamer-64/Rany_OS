@@ -141,20 +141,27 @@ impl SendQueue {
         let idx = (self.producer_counter as u32 % self.sq_depth) as usize;
         !self.tx_buffers[idx].in_use
     }
+}
 
+/// 送信オプション
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TxOptions {
+    /// IPv4 チェックサムオフロードを要求
+    pub l3_cs: bool,
+    /// TCP/UDP チェックサムオフロードを要求
+    pub l4_cs: bool,
+    /// インラインヘッダの長さ
+    pub inline_len: u16,
+}
+
+impl SendQueue {
     /// 送信WQEを構築してSQに投入
-    ///
-    /// # Arguments
-    /// - `segments`: 送信データのDMAセグメント（最大2つまでサポート、合計64B以内）
-    /// - `inline_hdr`: インラインEthernetヘッダ（最初の18バイト以下）
-    ///
-    /// # Safety
-    /// - buf_virt, doorbell_virt, uar_base が有効であること
-    /// - segments のデバイスアドレスがDMAアクセス可能なアドレスであること
-    ///
-    /// # Returns
-    /// 投入したWQEインデックス
-    pub unsafe fn post_send(&mut self, segments: &[DmaSegment], inline_hdr: &[u8]) -> Option<u16> {
+    pub unsafe fn post_send(
+        &mut self,
+        segments: &[DmaSegment],
+        inline_hdr: &[u8],
+        options: TxOptions,
+    ) -> Option<u16> {
         if !self.has_space() || segments.is_empty() || segments.len() > 2 {
             return None;
         }
@@ -162,30 +169,29 @@ impl SendQueue {
         let wqe_idx = self.producer_counter;
         let buf_idx = (wqe_idx as u32 % self.sq_depth) as usize;
 
-        // WQEの構築: ctrl(16) + eth(16) + data(16) * N
-        // SQ uses 64-byte WQE stride (log_wq_stride=6).
         let wqe_offset = buf_idx * 64;
         let wqe_ptr = (self.buf_virt as usize + wqe_offset) as *mut u8;
 
         // Control Segment (16 bytes)
         let ctrl_ptr = wqe_ptr;
-        // OPMOD_IDX_OPCODE: [31:24]=opcode, [23:0]=wqe_index
         let opmod_idx = ((WqeOpcode::EthSend as u32) << 24) | (wqe_idx as u32 & 0x00FF_FFFF);
         write_be32_raw(ctrl_ptr, wqe::ctrl::OPMOD_IDX_OPCODE, opmod_idx);
-        // QPN_DS: [31:8]=QPN, [7:0]=DS count (2 + num_segments)
         let ds_count = 2 + segments.len() as u32;
         let qpn_ds = ((self.sqn & 0x00FF_FFFF) << 8) | ds_count;
         write_be32_raw(ctrl_ptr, wqe::ctrl::QPN_DS, qpn_ds);
-        // FM_CE_SE: completion enable
-        write_be32_raw(ctrl_ptr, wqe::ctrl::FM_CE_SE, 0x08); // CE=1 (completion requested)
+        write_be32_raw(ctrl_ptr, wqe::ctrl::FM_CE_SE, 0x08); // CE=1
 
-        // Ethernet Segment (16 bytes) at offset 16
+        // Ethernet Segment (16 bytes)
         let eth_ptr = ctrl_ptr.add(16);
-        // Inline header size
         let inline_sz = inline_hdr.len().min(18) as u16;
         write_be16_raw(eth_ptr, wqe::eth::INLINE_HDR_SZ, inline_sz);
-        // CS flags: L3/L4 checksum offload (only if supported)
-        let cs_flags = if self.csum_offload { 0x03 } else { 0x00 };
+
+        // チェックサムオフロードフラグの構築
+        let mut cs_flags = 0u16;
+        if self.csum_offload {
+            if options.l3_cs { cs_flags |= 0x01; }
+            if options.l4_cs { cs_flags |= 0x02; }
+        }
         write_be16_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
 
         // Copy inline header (Ethernet header)
@@ -218,8 +224,8 @@ impl SendQueue {
         // プロデューサカウンタを進める
         self.producer_counter = self.producer_counter.wrapping_add(1);
 
-        // SQドアベル更新
-        self.ring_doorbell();
+        // SQドアベル更新（BlueFlame 試行用 WQE ポインタを渡す）
+        self.ring_doorbell(wqe_ptr);
 
         Some(wqe_idx)
     }
@@ -228,7 +234,21 @@ impl SendQueue {
     ///
     /// # Safety
     /// - uar_base が有効であること
-    unsafe fn ring_doorbell(&self) {
+    unsafe fn ring_doorbell(&self, wqe_ptr: *const u8) {
+        // BlueFlame 試行: WQEの最初の8バイト（Control Segmentの一部）をUARに直接書き込む
+        // これにより、ドアベルのみの場合よりも低遅延で送信が開始される可能性がある。
+        // 注意: 64ビットアトミック書き込みが必要。
+        let bf_ptr = (self.uar_base as usize + crate::regs::uar::BLUEFLAME) as *mut u64;
+        let ctrl_8 = *(wqe_ptr as *const u64);
+        
+        // メモリバリア
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        
+        // BlueFlame 書き込み
+        core::ptr::write_volatile(bf_ptr, ctrl_8.to_be());
+        
+        // フォールバック: 標準的なドアベルレジスタへの通知
+        // (BlueFlameが失敗した場合や、一部のハードウェア制限に備える)
         let db_val: u32 = ((self.sqn & 0x00FF_FFFF) << 8) | (self.producer_counter as u32 & 0xFF);
         crate::mmio_write_be32(
             self.uar_base as usize + crate::regs::uar::SQ_DOORBELL,
@@ -264,6 +284,10 @@ pub struct RxBufferInfo {
     pub size: u32,
     /// 使用中フラグ
     pub in_use: bool,
+    /// L3 チェックサム検証成功
+    pub l3_ok: bool,
+    /// L4 チェックサム検証成功
+    pub l4_ok: bool,
 }
 
 /// Receive Queue (RQ) 管理構造体
@@ -381,10 +405,12 @@ impl ReceiveQueue {
     }
 
     /// 受信完了を処理して受信バッファ情報を返す
-    pub fn complete_rx(&mut self, wqe_counter: u16) -> Option<RxBufferInfo> {
+    pub fn complete_rx(&mut self, wqe_counter: u16, l3_ok: bool, l4_ok: bool) -> Option<RxBufferInfo> {
         let idx = (wqe_counter as u32 % self.rq_depth) as usize;
         if self.rx_buffers[idx].in_use {
-            let info = self.rx_buffers[idx];
+            let mut info = self.rx_buffers[idx];
+            info.l3_ok = l3_ok;
+            info.l4_ok = l4_ok;
             self.rx_buffers[idx] = RxBufferInfo::default();
             Some(info)
         } else {

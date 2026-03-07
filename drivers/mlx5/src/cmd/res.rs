@@ -144,9 +144,14 @@ pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
     layout.set_transport_domain(params.td);
 
     if let Some(ref rss) = params.rss {
-        let key_off = 0x20 + 0x28; // Context + 0x28
+        let key_off = 0x20 + 0x28; // Context + 0x28 (dword 10-19 for hash key)
         let copy_len = rss.hash_key.len().min(40);
         in_mbox.data[key_off..key_off + copy_len].copy_from_slice(&rss.hash_key[..copy_len]);
+
+        // Rx Hash Field Selector (dword 11 after context base 0x20 => 0x4C)
+        // Note: Actual bit layout depends on the specific mlx5 version, 
+        // but typically it starts at offset 0x4C within the mailbox for TIR.
+        in_mbox.write_be32(0x20 + 0x0C, rss.hash_fields);
     }
 }
 

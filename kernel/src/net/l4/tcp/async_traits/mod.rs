@@ -174,7 +174,7 @@ impl TcpStream {
                     {
                         dma_buf.as_mut_slice().copy_from_slice(&queued);
                         let mut packet =
-                            crate::net::datapath::mempool::PacketRef::from_dma_slice(dma_buf);
+                            crate::net::datapath::mempool::packet_ref_from_dma_slice(dma_buf);
                         packet.set_len(queued.len());
                         tcb.record_rx_delivered_stats(queued.len());
                         return Poll::Ready(Some(packet));
@@ -368,7 +368,7 @@ impl AsyncWrite for TcpStream {
                 {
                     dma_buf.as_mut_slice()[..len].copy_from_slice(&buf[..len]);
                     let mut packet =
-                        crate::net::datapath::mempool::PacketRef::from_dma_slice(dma_buf);
+                        crate::net::datapath::mempool::packet_ref_from_dma_slice(dma_buf);
                     packet.set_len(len);
                     tcb.enqueue_send_packet(packet);
                     tcb.record_tx_enqueued_stats(len);

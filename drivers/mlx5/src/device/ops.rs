@@ -143,6 +143,7 @@ impl Mlx5Device {
         data_virt: u64,
         data_len: u32,
         inline_hdr: &[u8],
+        options: crate::wq::TxOptions,
     ) -> Mlx5Result<u16> {
         if self.state != DeviceState::Active {
             return Err(Mlx5Error::DeviceNotReady);
@@ -151,14 +152,17 @@ impl Mlx5Device {
             .sqs
             .get_mut(sq_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
+
         let segments = [crate::wq::DmaSegment {
             device_addr: data_phys,
             virt_addr: data_virt,
             len: data_len,
         }];
-        sq.post_send(&segments, inline_hdr)
+
+        sq.post_send(&segments, inline_hdr, options)
             .ok_or(Mlx5Error::NoResources)
     }
+
 
     /// 受信バッファを投入
     pub unsafe fn post_receive(
@@ -228,10 +232,12 @@ impl Mlx5Device {
         &mut self,
         rq_index: usize,
         wqe_counter: u16,
+        l3_ok: bool,
+        l4_ok: bool,
     ) -> Option<crate::wq::RxBufferInfo> {
         self.rqs
             .get_mut(rq_index)
-            .and_then(|rq| rq.complete_rx(wqe_counter))
+            .and_then(|rq| rq.complete_rx(wqe_counter, l3_ok, l4_ok))
     }
 
     pub unsafe fn query_vhca_state(&mut self, function_id: u16) -> Mlx5Result<VhcaStateContext> {
@@ -335,6 +341,40 @@ impl Mlx5Device {
         Ok(link_state)
     }
 
+    /// EQエントリを処理 (MSI-X 割り込みハンドラ等から呼び出し)
+    pub unsafe fn process_events(&mut self) -> Mlx5Result<u32> {
+        let mut processed = 0;
+        for eq in &mut self.eqs {
+            while let Some(eqe) = eq.poll() {
+                processed += 1;
+                let event_type = eqe.event_type();
+                match event_type {
+                    crate::defs::EventType::PortStateChange => {
+                        let port_num = eqe.port_num();
+                        log::info!(target: "mlx5", "Port state change event for port {}", port_num);
+                        let _ = self.refresh_port_runtime_state((port_num as usize).saturating_sub(1));
+                    }
+                    crate::defs::EventType::NicVportChange => {
+                        log::info!(target: "mlx5", "NIC VPort change event detected (PF modified VF config)");
+                        // MACアドレスやMTUが変更された可能性があるため再照会
+                        let _ = self.query_port_mac(0);
+                        let _ = self.query_port_mtu(0);
+                    }
+                    crate::defs::EventType::PageRequest => {
+                        let (func_id, num_pages) = eqe.page_request_info();
+                        log::info!(target: "mlx5", "Page request: func_id={:#x}, num_pages={}", func_id, num_pages);
+                        // VF の場合は PF に任せるが、念のためログ出力
+                    }
+                    _ => {
+                        log::debug!(target: "mlx5", "Unhandled event type: {:?}", event_type);
+                    }
+                }
+            }
+            eq.arm();
+        }
+        Ok(processed)
+    }
+
     pub unsafe fn query_port_mac(&mut self, port_index: usize) -> Mlx5Result<MacAddr> {
         self.ports
             .get(port_index)
@@ -409,6 +449,46 @@ impl Mlx5Device {
         }
 
         Ok(MacAddr::ZERO)
+    }
+
+    /// VPort カウンタをクエリして統計情報を取得
+    pub unsafe fn query_vport_stats(&mut self, port_index: usize) -> Mlx5Result<crate::defs::VportCounters> {
+        let is_vf = self.is_vf();
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let vport_num = if is_vf { 0 } else { (port_index + 1) as u16 };
+
+        crate::cmd::hca::build_query_vport_counter_input(
+            in_mbox,
+            vport_num,
+            false, // self
+            None,
+            false, // clear=false
+        );
+
+        self.execute_cmd_with_uid_candidates(
+            CmdOpcode::QueryVportCounter,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let counters = crate::cmd::hca::parse_query_vport_counter_output(out_mbox);
+        
+        log::debug!(
+            target: "mlx5::stats",
+            "VPort {}: RX={}/{}B, TX={}/{}B, RX_ERR={}, TX_ERR={}",
+            vport_num,
+            counters.rx_unicast_packets,
+            counters.rx_unicast_bytes,
+            counters.tx_unicast_packets,
+            counters.tx_unicast_bytes,
+            counters.rx_error_packets,
+            counters.tx_error_packets
+        );
+
+        Ok(counters)
     }
 
     unsafe fn query_port_mtu(&mut self, port_index: usize) -> Mlx5Result<u32> {
@@ -608,6 +688,37 @@ impl Mlx5Device {
 
     pub unsafe fn health_check(&mut self) -> bool {
         !matches!(self.health_status(), HealthStatus::Critical)
+    }
+
+    /// プロミスキャスモードを設定
+    pub unsafe fn set_promiscuous_mode(&mut self, enable: bool) -> Mlx5Result<()> {
+        if self.flow_tables.is_empty() { return Err(Mlx5Error::NotSupported); }
+        let table_id = self.flow_tables[0].table_id;
+        let tirn = self.tir_list.first().map(|t| t.tirn).ok_or(Mlx5Error::NotSupported)?;
+        
+        let group_id = self.flow_groups.iter()
+            .find(|g| g.start_index == 64)
+            .map(|g| g.group_id)
+            .ok_or(Mlx5Error::NotSupported)?;
+
+        if enable {
+            let match_value = crate::flow::MatchValue::default();
+            self.set_flow_table_entry(
+                table_id,
+                64, 
+                group_id,
+                crate::flow::FlowAction::Allow,
+                Some(tirn),
+                &match_value,
+            )?;
+        } else {
+            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+            crate::cmd::flow::build_delete_flow_table_entry_input(in_mbox, table_id, 64);
+            self.execute_uid_sensitive_cmd(CmdOpcode::DeleteFlowTableEntry, 0x10, 0x10)?;
+        }
+        
+        log::info!(target: "mlx5", "Promiscuous mode: {}", if enable { "enabled" } else { "disabled" });
+        Ok(())
     }
 }
 

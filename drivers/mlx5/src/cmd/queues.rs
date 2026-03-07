@@ -77,23 +77,24 @@ pub fn parse_create_cq_output(out_mbox: &CmdMailbox) -> u32 {
     out_mbox.read_be24(0x05)
 }
 
-/// DESTROY_CQ コマンド入力の構築
-pub fn build_destroy_cq_input(in_mbox: &mut CmdMailbox, cqn: u32) {
-    *in_mbox = CmdMailbox::zeroed();
-    in_mbox.write_be32(0x04, cqn & 0x00FF_FFFF);
-}
-
-/// MODIFY_CQ コマンド入力の構築（CQモデレーション設定）
+/// MODIFY_CQ (Moderation) コマンド入力の構築
 pub fn build_modify_cq_moderation_input(
     in_mbox: &mut CmdMailbox,
     cqn: u32,
-    max_count: u16,
-    max_period_us: u16,
+    period_usec: u16,
+    count: u16,
 ) {
     *in_mbox = CmdMailbox::zeroed();
+    // CQN [23:0]
     in_mbox.write_be32(0x04, cqn & 0x00FF_FFFF);
-    in_mbox.write_be16(0x10, max_period_us);
-    in_mbox.write_be16(0x12, max_count);
+    
+    let ctx_base = 0x10;
+    // byte 0x10 (dword 4): [31:16]=cq_period, [15:0]=cq_max_count
+    in_mbox.write_be16(ctx_base, period_usec);
+    in_mbox.write_be16(ctx_base + 0x02, count);
+    
+    // field_select: bit 0 = cq_period, bit 1 = cq_max_count
+    in_mbox.write_be32(0x08, 0x0000_0003);
 }
 
 /// CREATE_SQ コマンド入力の構築

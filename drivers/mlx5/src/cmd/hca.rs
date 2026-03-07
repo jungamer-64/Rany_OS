@@ -35,14 +35,14 @@ pub fn build_set_issi_input(in_mbox: &mut CmdMailbox, current_issi: u16) {
 pub fn build_query_hca_cap_input(in_mbox: &mut CmdMailbox, cap_type: u16) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = QueryHcaCapInputLayout::new(&mut in_mbox.data[..]);
-    layout.set_op_mod(cap_type << 12);
+    layout.set_op_mod(cap_type << 1);
 }
 
 /// SET_HCA_CAP コマンド入力の構築
 pub fn build_set_hca_cap_input(in_mbox: &mut CmdMailbox, cap_type: u16, capability_payload: &[u8]) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = QueryHcaCapInputLayout::new(&mut in_mbox.data[..]);
-    layout.set_op_mod(cap_type << 12);
+    layout.set_op_mod(cap_type << 1);
 
     let in_mbox_ptr = in_mbox as *mut CmdMailbox as *mut u8;
     let dst_ptr = unsafe { in_mbox_ptr.add(0x10) };

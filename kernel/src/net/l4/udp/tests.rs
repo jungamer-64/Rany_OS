@@ -296,7 +296,7 @@ pub fn test_udp_endpoint_multiple_waiters_woken_on_deliver() {
     assert!(matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending));
 
     let mut packet = unsafe {
-        crate::net::datapath::mempool::PacketRef::from_static_raw_for_tests(
+        crate::net::datapath::mempool::packet_ref_from_static_raw_for_tests(
             addr_of_mut!(WAITERS_TEST_PACKET) as *mut u8,
             3,
         )
@@ -368,7 +368,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         buf[7] = 0;
         static mut UDP_PROCESS_TEST_PACKET: [u8; 2] = [0; 2];
         let mut packet = unsafe {
-            crate::net::datapath::mempool::PacketRef::from_static_raw_for_tests(
+            crate::net::datapath::mempool::packet_ref_from_static_raw_for_tests(
                 addr_of_mut!(UDP_PROCESS_TEST_PACKET) as *mut u8,
                 payload.len(),
             )

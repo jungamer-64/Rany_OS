@@ -80,11 +80,26 @@ impl Cqe {
         matches!(op, CqeOpcode::ReqErr | CqeOpcode::RespErr)
     }
 
-    /// チェックサムステータスビット
-    pub fn checksum_ok(&self) -> bool {
-        // CS flagsのbit 1 = L3 OK, bit 0 = L4 OK
-        let cs = self.data[cqe_regs::CHECKSUM];
-        (cs & 0x03) == 0x03
+    /// チェックサムステータス (L3 OK)
+    pub fn l3_ok(&self) -> bool {
+        let flags = u32::from_be_bytes([
+            self.data[cqe_regs::CHECKSUM],
+            self.data[cqe_regs::CHECKSUM + 1],
+            self.data[cqe_regs::CHECKSUM + 2],
+            self.data[cqe_regs::CHECKSUM + 3],
+        ]);
+        (flags & cqe_regs::L3_OK) != 0
+    }
+
+    /// チェックサムステータス (L4 OK)
+    pub fn l4_ok(&self) -> bool {
+        let flags = u32::from_be_bytes([
+            self.data[cqe_regs::CHECKSUM],
+            self.data[cqe_regs::CHECKSUM + 1],
+            self.data[cqe_regs::CHECKSUM + 2],
+            self.data[cqe_regs::CHECKSUM + 3],
+        ]);
+        (flags & cqe_regs::L4_OK) != 0
     }
 }
 
@@ -209,7 +224,8 @@ impl CompletionQueue {
                         byte_count: cqe.byte_count(),
                         opcode: cqe.opcode(),
                         qpn: cqe.qpn(),
-                        checksum_ok: cqe.checksum_ok(),
+                        l3_ok: cqe.l3_ok(),
+                        l4_ok: cqe.l4_ok(),
                     };
                     results.push(info);
                     self.advance_consumer();
@@ -238,6 +254,8 @@ pub struct CqeInfo {
     pub opcode: CqeOpcode,
     /// QP番号
     pub qpn: u32,
-    /// チェックサムOK
-    pub checksum_ok: bool,
+    /// L3 チェックサム検証成功
+    pub l3_ok: bool,
+    /// L4 チェックサム検証成功
+    pub l4_ok: bool,
 }

@@ -249,7 +249,7 @@ impl VirtioNetDevice {
 
         // Convert the completed RX DMA buffer into PacketRef (zero-copy handoff).
         if let Some(cpu_buf) = inflight.vbuf.take_cpu_buffer() {
-            let packet = crate::net::datapath::mempool::PacketRef::from_dma_slice(cpu_buf);
+            let packet = crate::net::datapath::mempool::packet_ref_from_dma_slice(cpu_buf);
             if let Some(if_id) = self.net_if_id().or_else(|| {
                 crate::net::runtime::bridge::lookup_if_by_virtio_index(self.virtio_index)
             }) {

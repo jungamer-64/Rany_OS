@@ -25,6 +25,18 @@ impl Mlx5Device {
         msix_vector: u32,
         event_bitmask: u64,
     ) -> Mlx5Result<u32> {
+        // VF 特有の MSI-X / EQ 数上限チェック
+        if let Some(caps) = self.hca_caps.as_ref() {
+            if msix_vector >= caps.max_eq {
+                log::error!(target: "mlx5", "Requested MSI-X vector {} exceeds hardware max_eq {}", msix_vector, caps.max_eq);
+                return Err(Mlx5Error::NoResources);
+            }
+            if self.eqs.len() >= caps.max_eq as usize {
+                log::error!(target: "mlx5", "Maximum EQ count reached ({})", caps.max_eq);
+                return Err(Mlx5Error::NoResources);
+            }
+        }
+
         let is_vf = self.is_vf();
         let sw_vhca_id = self.sw_vhca_id;
         let cmd_in_mbox_device = self.cmd_in_mbox_device;
@@ -144,6 +156,25 @@ impl Mlx5Device {
         self.cqs.push(cq);
         self.cq_db_records.push((db_virt, db_pa));
         Ok(cqn)
+    }
+
+    /// CQモデレーション（割り込み抑制）を設定
+    pub unsafe fn modify_cq_moderation(
+        &mut self,
+        cqn: u32,
+        period_usec: u16,
+        count: u16,
+    ) -> Mlx5Result<()> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_modify_cq_moderation_input(in_mbox, cqn, period_usec, count);
+
+        self.execute_uid_sensitive_cmd(
+            CmdOpcode::ModifyCq,
+            0x40, // input length
+            0x10, // output length
+        )?;
+        Ok(())
     }
 
     /// Send Queueを作成

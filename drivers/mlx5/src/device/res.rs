@@ -268,20 +268,57 @@ impl Mlx5Device {
         Ok(())
     }
 
-    pub unsafe fn setup_rx_flow_table(&mut self, tirn: u32) -> Mlx5Result<()> {
-        let ft_config = FlowTableConfig::default();
-        let table_id = self.create_flow_table(&ft_config)?;
-        let criteria = crate::flow::MatchCriteria::default();
-        let group_id = self.create_flow_group(table_id, 0, 0, &criteria)?;
-        let match_value = crate::flow::MatchValue::default();
+    /// フローテーブルに特定のMACアドレスフィルタを追加
+    pub unsafe fn add_mac_filter(
+        &mut self,
+        table_id: u32,
+        group_id: u32,
+        flow_index: u32,
+        mac: [u8; 6],
+        tirn: u32,
+    ) -> Mlx5Result<()> {
+        let mut criteria = crate::flow::MatchCriteria::default();
+        criteria.outer_l2 = true;
+
+        let mut match_value = crate::flow::MatchValue::default();
+        match_value.dst_mac = Some(mac);
+
         self.set_flow_table_entry(
             table_id,
-            0,
+            flow_index,
             group_id,
             crate::flow::FlowAction::Allow,
             Some(tirn),
             &match_value,
-        )?;
+        )
+    }
+
+    pub unsafe fn setup_rx_flow_table_advanced(&mut self, tirn: u32) -> Mlx5Result<()> {
+        let ft_config = FlowTableConfig {
+            table_type: crate::flow::FlowTableType::NicRx,
+            log_size: 7, // 128エントリ (Unicast + Multicast + Broadcast用)
+            level: 0,
+        };
+        let table_id = self.create_flow_table(&ft_config)?;
+
+        // グループ1: ユニキャスト/マルチキャスト用 (マッチ条件あり)
+        let mut criteria = crate::flow::MatchCriteria::default();
+        criteria.outer_l2 = true;
+        let group_id = self.create_flow_group(table_id, 0, 63, &criteria)?;
+
+        // 自分のMACアドレスを登録
+        let my_mac = self.ports.get(0).map(|p| p.mac_address().0).unwrap_or([0; 6]);
+        if my_mac != [0; 6] {
+            self.add_mac_filter(table_id, group_id, 0, my_mac, tirn)?;
+        }
+
+        // ブロードキャストを登録
+        self.add_mac_filter(table_id, group_id, 1, [0xFF; 6], tirn)?;
+
+        // グループ2: デフォルト（マッチしなかったパケットを捨てる、またはプロミスキャス用）
+        let criteria_all = crate::flow::MatchCriteria::default();
+        let _ = self.create_flow_group(table_id, 64, 127, &criteria_all)?;
+
         Ok(())
     }
 

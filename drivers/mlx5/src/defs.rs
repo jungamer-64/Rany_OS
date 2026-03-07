@@ -514,6 +514,8 @@ pub struct HcaCaps {
     pub num_vhca_ports: u16,
     /// VHCA ID (VF identification)
     pub vhca_id: u16,
+    /// 1WQEあたりの最大SGE数
+    pub max_sge: u8,
 }
 
 // ============================================================================

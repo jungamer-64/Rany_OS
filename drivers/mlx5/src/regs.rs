@@ -190,6 +190,16 @@ pub mod cqe {
     /// チェックサムステータスビット
     pub const CHECKSUM: usize = 0x10;
 
+    // byte 0x10 (dword 4) flags:
+    // bit 31-24: [31] l3_ok, [30] l4_ok, [29] ip_frag, [28] l3_type, [27:26] l4_type
+    pub const L3_OK: u32 = 1 << 31;
+    pub const L4_OK: u32 = 1 << 30;
+    pub const IP_FRAG: u32 = 1 << 29;
+    pub const L3_TYPE_IPV4: u32 = 0 << 28;
+    pub const L3_TYPE_IPV6: u32 = 1 << 28;
+    pub const L4_TYPE_TCP: u32 = 1 << 26;
+    pub const L4_TYPE_UDP: u32 = 2 << 26;
+
     /// LRO (Large Receive Offload) セグメントサイズ
     pub const LRO_SEG_SIZE: usize = 0x24;
 }

@@ -520,7 +520,8 @@ impl Mlx5Device {
         };
 
         // Finalize
-        let _ = self.setup_rx_flow_table(tirn);
+        let _ = self.setup_rx_flow_table_advanced(tirn);
+        let _ = self.set_port_admin_up(0);
         if let Some(port) = self.ports.get_mut(0) {
             port.admin_up();
         }

@@ -47,6 +47,10 @@ impl Mlx5Device {
         caps.eswitch_manager = cap_view.eswitch_manager();
         caps.num_vhca_ports = cap_view.num_vhca_ports() as u16;
 
+        // 最大 SGE 数 (Scatter/Gather Entry) の取得
+        // byte 0x12 (dword 4): [31:24] log_max_sge_sz
+        caps.max_sge = 1 << (out_mbox.data[0x10 + 0x12] >> 4);
+
         // MSI-X 制限の取得
         // byte 0x3c (dword 15): [31:0] max_num_eqs
         caps.max_eq = out_mbox.read_be32(0x10 + 0x3c);

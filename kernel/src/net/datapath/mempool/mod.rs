@@ -6,12 +6,13 @@
 // Building block: Memory pool types
 #![allow(dead_code)]
 
-use crate::domain_system::DomainId;
 use crate::ipc::rref::RRef;
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+pub use kernel_api::resource::net::{PacketMeta, PacketRef, PacketType};
+use kernel_api::resource::net::{PacketRefStorage, PacketRefVTable};
 use x86_64::PhysAddr;
 
 use crate::mm::types::PAGE_SIZE_4K;
@@ -136,11 +137,6 @@ impl PacketBuffer {
 }
 
 use crate::io::dma::{CpuOwned, TypedDmaSlice};
-/// パケットバッファへの参照
-/// 設計書 6.2: 所有権の連鎖
-///
-/// 拡張: 真のゼロコピーのために外部DMAバッファ（Virtio の vbuf）を
-/// PacketRef として扱えるように `Dma` バリアントを追加します。
 use alloc::sync::Arc;
 use spin::Mutex as SpinMutex;
 
@@ -169,570 +165,300 @@ impl DmaBuffer {
         }
     }
 
-    fn as_slice(&self) -> &[u8] {
-        unsafe { crate::util::raw_ptr_as_slice(self.ptr.as_ptr(), self.size) }
-    }
+}
 
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { crate::util::raw_ptr_as_slice_mut(self.ptr.as_ptr() as *mut u8, self.size) }
+#[derive(Debug, Clone, Copy)]
+struct PooledPacketState {
+    buffer: NonNull<PacketBuffer>,
+    pool: &'static Mempool,
+    offset: usize,
+    len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct DmaPacketState {
+    buf: Arc<DmaBuffer>,
+    offset: usize,
+    len: usize,
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+#[derive(Debug, Clone, Copy)]
+struct BorrowedTestPacketState {
+    ptr: NonNull<u8>,
+    cap: usize,
+    offset: usize,
+    len: usize,
+}
+
+unsafe fn pooled_state_ref(storage: &PacketRefStorage) -> &PooledPacketState {
+    unsafe { storage.as_state_ref::<PooledPacketState>() }
+}
+
+unsafe fn pooled_state_mut(storage: &mut PacketRefStorage) -> &mut PooledPacketState {
+    unsafe { storage.as_state_mut::<PooledPacketState>() }
+}
+
+unsafe fn pooled_data_ptr(storage: &PacketRefStorage) -> *const u8 {
+    let state = unsafe { pooled_state_ref(storage) };
+    unsafe { state.buffer.as_ref().as_ptr().add(state.offset) }
+}
+
+unsafe fn pooled_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
+    let state = unsafe { pooled_state_mut(storage) };
+    unsafe { (*state.buffer.as_ptr()).as_mut_ptr().add(state.offset) }
+}
+
+unsafe fn pooled_len(storage: &PacketRefStorage) -> usize {
+    unsafe { pooled_state_ref(storage) }.len
+}
+
+unsafe fn pooled_set_len(storage: &mut PacketRefStorage, len: usize) {
+    let state = unsafe { pooled_state_mut(storage) };
+    let new_len = len.min(DEFAULT_BUFFER_SIZE.saturating_sub(state.offset));
+    state.len = new_len;
+    unsafe { state.buffer.as_ref().set_len(new_len) };
+}
+
+unsafe fn pooled_capacity(_: &PacketRefStorage) -> usize {
+    DEFAULT_BUFFER_SIZE
+}
+
+unsafe fn pooled_phys_addr(storage: &PacketRefStorage) -> u64 {
+    let state = unsafe { pooled_state_ref(storage) };
+    unsafe { state.buffer.as_ref().phys_addr().as_u64() + state.offset as u64 }
+}
+
+unsafe fn pooled_device_address(storage: &PacketRefStorage) -> u64 {
+    let state = unsafe { pooled_state_ref(storage) };
+    unsafe { state.buffer.as_ref().device_address() + state.offset as u64 }
+}
+
+unsafe fn pooled_advance(storage: &mut PacketRefStorage, size: usize) {
+    let state = unsafe { pooled_state_mut(storage) };
+    state.offset = state.offset.saturating_add(size).min(DEFAULT_BUFFER_SIZE);
+    state.len = state.len.saturating_sub(size);
+}
+
+unsafe fn pooled_clone(storage: &PacketRefStorage) -> PacketRefStorage {
+    let state = unsafe { pooled_state_ref(storage) };
+    unsafe { state.buffer.as_ref().add_ref() };
+    unsafe { PacketRefStorage::from_state(*state) }
+}
+
+unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
+    let state = unsafe { pooled_state_mut(storage) };
+    unsafe {
+        if state.buffer.as_ref().release() {
+            state.pool.return_buffer(state.buffer);
+        }
     }
 }
 
-/// PacketRef の内部バリアント
-#[derive(Debug)]
-enum PacketRefKind {
-    /// 既存の Mempool バッファを指す標準バリアント
-    Pooled {
-        buffer: NonNull<PacketBuffer>,
-        pool: &'static Mempool,
-        offset: usize,
-        len: usize,
-    },
-    /// DMA バッファから構成されるゼロコピーバリアント
-    Dma {
-        buf: Arc<DmaBuffer>,
-        offset: usize,
-        len: usize,
-    },
-    /// Test-only borrowed packet bytes that avoid heap allocations in long QEMU full-boot runs.
-    #[cfg(any(test, feature = "qemu-test-export"))]
-    BorrowedTest {
-        ptr: NonNull<u8>,
-        cap: usize,
-        offset: usize,
-        len: usize,
-    },
+static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
+    data_ptr: pooled_data_ptr,
+    data_mut_ptr: pooled_data_mut_ptr,
+    len: pooled_len,
+    set_len: pooled_set_len,
+    capacity: pooled_capacity,
+    phys_addr: pooled_phys_addr,
+    device_address: pooled_device_address,
+    advance: pooled_advance,
+    clone_storage: pooled_clone,
+    drop_storage: pooled_drop,
+};
+
+unsafe fn dma_state_ref(storage: &PacketRefStorage) -> &DmaPacketState {
+    unsafe { storage.as_state_ref::<DmaPacketState>() }
 }
 
-/// パケットの事前解析済みメタデータ
+unsafe fn dma_state_mut(storage: &mut PacketRefStorage) -> &mut DmaPacketState {
+    unsafe { storage.as_state_mut::<DmaPacketState>() }
+}
+
+unsafe fn dma_data_ptr(storage: &PacketRefStorage) -> *const u8 {
+    let state = unsafe { dma_state_ref(storage) };
+    unsafe { state.buf.ptr.as_ptr().add(state.offset) }
+}
+
+unsafe fn dma_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
+    let state = unsafe { dma_state_mut(storage) };
+    unsafe { state.buf.ptr.as_ptr().add(state.offset) }
+}
+
+unsafe fn dma_len(storage: &PacketRefStorage) -> usize {
+    unsafe { dma_state_ref(storage) }.len
+}
+
+unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) {
+    let state = unsafe { dma_state_mut(storage) };
+    state.len = len.min(state.buf.size.saturating_sub(state.offset));
+}
+
+unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
+    unsafe { dma_state_ref(storage) }.buf.size
+}
+
+unsafe fn dma_phys_addr(storage: &PacketRefStorage) -> u64 {
+    let state = unsafe { dma_state_ref(storage) };
+    state.buf.phys_addr.as_u64() + state.offset as u64
+}
+
+unsafe fn dma_device_address(storage: &PacketRefStorage) -> u64 {
+    unsafe { dma_phys_addr(storage) }
+}
+
+unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) {
+    let state = unsafe { dma_state_mut(storage) };
+    state.offset = state.offset.saturating_add(size).min(state.buf.size);
+    state.len = state.len.saturating_sub(size);
+}
+
+unsafe fn dma_clone(storage: &PacketRefStorage) -> PacketRefStorage {
+    let state = unsafe { dma_state_ref(storage) };
+    unsafe { PacketRefStorage::from_state(state.clone()) }
+}
+
+unsafe fn dma_drop(storage: &mut PacketRefStorage) {
+    unsafe { core::ptr::drop_in_place(storage.as_state_mut::<DmaPacketState>()) };
+}
+
+static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
+    data_ptr: dma_data_ptr,
+    data_mut_ptr: dma_data_mut_ptr,
+    len: dma_len,
+    set_len: dma_set_len,
+    capacity: dma_capacity,
+    phys_addr: dma_phys_addr,
+    device_address: dma_device_address,
+    advance: dma_advance,
+    clone_storage: dma_clone,
+    drop_storage: dma_drop,
+};
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_state_ref(storage: &PacketRefStorage) -> &BorrowedTestPacketState {
+    unsafe { storage.as_state_ref::<BorrowedTestPacketState>() }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_state_mut(storage: &mut PacketRefStorage) -> &mut BorrowedTestPacketState {
+    unsafe { storage.as_state_mut::<BorrowedTestPacketState>() }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_data_ptr(storage: &PacketRefStorage) -> *const u8 {
+    let state = unsafe { borrowed_state_ref(storage) };
+    unsafe { state.ptr.as_ptr().add(state.offset) }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
+    let state = unsafe { borrowed_state_mut(storage) };
+    unsafe { state.ptr.as_ptr().add(state.offset) }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_len(storage: &PacketRefStorage) -> usize {
+    unsafe { borrowed_state_ref(storage) }.len
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_set_len(storage: &mut PacketRefStorage, len: usize) {
+    let state = unsafe { borrowed_state_mut(storage) };
+    state.len = len.min(state.cap.saturating_sub(state.offset));
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_capacity(storage: &PacketRefStorage) -> usize {
+    unsafe { borrowed_state_ref(storage) }.cap
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_phys_addr(storage: &PacketRefStorage) -> u64 {
+    unsafe { borrowed_state_ref(storage) }.offset as u64
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_device_address(storage: &PacketRefStorage) -> u64 {
+    unsafe { borrowed_phys_addr(storage) }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_advance(storage: &mut PacketRefStorage, size: usize) {
+    let state = unsafe { borrowed_state_mut(storage) };
+    state.offset = state.offset.saturating_add(size).min(state.cap);
+    state.len = state.len.saturating_sub(size);
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_clone(storage: &PacketRefStorage) -> PacketRefStorage {
+    let state = unsafe { borrowed_state_ref(storage) };
+    unsafe { PacketRefStorage::from_state(*state) }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_drop(_: &mut PacketRefStorage) {}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
+    data_ptr: borrowed_data_ptr,
+    data_mut_ptr: borrowed_data_mut_ptr,
+    len: borrowed_len,
+    set_len: borrowed_set_len,
+    capacity: borrowed_capacity,
+    phys_addr: borrowed_phys_addr,
+    device_address: borrowed_device_address,
+    advance: borrowed_advance,
+    clone_storage: borrowed_clone,
+    drop_storage: borrowed_drop,
+};
+
+fn new_pooled_packet_ref(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> PacketRef {
+    let state = PooledPacketState {
+        buffer,
+        pool,
+        offset: 0,
+        len: unsafe { buffer.as_ref().len() },
+    };
+
+    unsafe {
+        PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &POOLED_PACKET_VTABLE)
+    }
+}
+
+pub fn packet_ref_from_dma_slice(slice: TypedDmaSlice<CpuOwned>) -> PacketRef {
+    let state = DmaPacketState {
+        buf: Arc::new(DmaBuffer::from_typed(slice)),
+        offset: 0,
+        len: 0,
+    };
+
+    unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_PACKET_VTABLE) }
+}
+
+/// Construct a `PacketRef` borrowing caller-managed storage (no allocation).
 ///
-/// プロトコルスタックの各層で解析済みオフセットをキャッシュし、
-/// 後続の層で再解析を回避することで CPU サイクルを削減する。
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PacketMeta {
-    /// Ethernet ヘッダ長（0 = 未解析）
-    pub l2_len: u8,
-    /// IP ヘッダ長（0 = 未解析）
-    pub l3_len: u8,
-    /// L4 ヘッダ長（0 = 未解析）
-    pub l4_len: u8,
-    /// L4 プロトコル番号（6=TCP, 17=UDP, 1=ICMP, 0=未解析）
-    pub l4_proto: u8,
-    /// RSS / フローハッシュ（0 = 未計算）
-    pub flow_hash: u32,
-    /// チェックサム検証済みフラグ（ビットフィールド）
-    /// bit0: IP checksum verified, bit1: L4 checksum verified
-    pub csum_flags: u8,
-    /// パケット種別ヒント
-    pub pkt_type: PacketType,
+/// # Safety
+/// Caller must ensure `ptr..ptr+cap` remains valid and uniquely mutable for the
+/// lifetime of the returned `PacketRef` and any clones created from it.
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub unsafe fn packet_ref_from_static_raw_for_tests(ptr: *mut u8, cap: usize) -> Option<PacketRef> {
+    if cap == 0 {
+        return None;
+    }
+
+    let state = BorrowedTestPacketState {
+        ptr: NonNull::new(ptr)?,
+        cap,
+        offset: 0,
+        len: 0,
+    };
+
+    Some(unsafe {
+        PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &BORROWED_PACKET_VTABLE)
+    })
 }
-
-/// パケット種別
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[repr(u8)]
-pub enum PacketType {
-    #[default]
-    Unknown = 0,
-    Unicast = 1,
-    Multicast = 2,
-    Broadcast = 3,
-}
-
-impl PacketMeta {
-    /// IP チェックサム検証済みか
-    #[inline]
-    pub fn ip_csum_verified(&self) -> bool {
-        self.csum_flags & 0x01 != 0
-    }
-
-    /// L4 チェックサム検証済みか
-    #[inline]
-    pub fn l4_csum_verified(&self) -> bool {
-        self.csum_flags & 0x02 != 0
-    }
-
-    /// IP チェックサム検証済みフラグを設定
-    #[inline]
-    pub fn set_ip_csum_verified(&mut self) {
-        self.csum_flags |= 0x01;
-    }
-
-    /// L4 チェックサム検証済みフラグを設定
-    #[inline]
-    pub fn set_l4_csum_verified(&mut self) {
-        self.csum_flags |= 0x02;
-    }
-
-    /// ヘッダ合計サイズ（L2+L3+L4）を取得
-    #[inline]
-    pub fn header_len(&self) -> usize {
-        self.l2_len as usize + self.l3_len as usize + self.l4_len as usize
-    }
-
-    /// L3 ペイロードのオフセットを取得
-    #[inline]
-    pub fn l3_offset(&self) -> usize {
-        self.l2_len as usize
-    }
-
-    /// L4 ペイロードのオフセットを取得
-    #[inline]
-    pub fn l4_offset(&self) -> usize {
-        self.l2_len as usize + self.l3_len as usize
-    }
-
-    /// ペイロードのオフセットを取得
-    #[inline]
-    pub fn payload_offset(&self) -> usize {
-        self.header_len()
-    }
-}
-
-#[derive(Debug)]
-pub struct PacketRef {
-    kind: PacketRefKind,
-    /// 事前解析済みメタデータ（ゼロコスト: スタック上に保持）
-    meta_cache: PacketMeta,
-}
-
-impl PacketRef {
-    /// Create new PacketRef (internal) from pooled buffer
-    fn new(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> Self {
-        let len = unsafe { buffer.as_ref().len() };
-        Self {
-            kind: PacketRefKind::Pooled {
-                buffer,
-                pool,
-                offset: 0,
-                len,
-            },
-            meta_cache: PacketMeta::default(),
-        }
-    }
-
-    /// 事前解析済みメタデータへの参照を取得
-    #[inline]
-    pub fn meta(&self) -> &PacketMeta {
-        &self.meta_cache
-    }
-
-    /// 事前解析済みメタデータへの可変参照を取得
-    #[inline]
-    pub fn meta_mut(&mut self) -> &mut PacketMeta {
-        &mut self.meta_cache
-    }
-
-    /// メタデータを設定
-    #[inline]
-    pub fn set_meta(&mut self, meta: PacketMeta) {
-        self.meta_cache = meta;
-    }
-
-    /// 生ポインタを取得（バッファ先頭 + オフセット）
-    #[inline]
-    pub fn as_ptr(&self) -> *const u8 {
-        match &self.kind {
-            PacketRefKind::Pooled { buffer, offset, .. } => unsafe {
-                buffer.as_ref().as_ptr().add(*offset)
-            },
-            PacketRefKind::Dma { buf, offset, .. } => unsafe { buf.ptr.as_ptr().add(*offset) },
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest { ptr, offset, .. } => unsafe { ptr.as_ptr().add(*offset) },
-        }
-    }
-
-    /// Create new PacketRef (internal) from pooled buffer — kept for back compat
-    fn _new_pooled_inner(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> Self {
-        let len = unsafe { buffer.as_ref().len() };
-        Self {
-            kind: PacketRefKind::Pooled {
-                buffer,
-                pool,
-                offset: 0,
-                len,
-            },
-            meta_cache: PacketMeta::default(),
-        }
-    }
-
-    /// Create PacketRef from a TypedDmaSlice (zero-copy)
-    pub fn from_dma_slice(slice: TypedDmaSlice<CpuOwned>) -> Self {
-        let db = DmaBuffer::from_typed(slice);
-        let arc = Arc::new(db);
-        Self {
-            kind: PacketRefKind::Dma {
-                buf: arc,
-                offset: 0,
-                len: 0,
-            },
-            meta_cache: PacketMeta::default(),
-        }
-    }
-
-    /// Construct a PacketRef borrowing caller-managed storage (no allocation).
-    ///
-    /// # Safety
-    /// Caller must ensure `ptr..ptr+cap` remains valid and uniquely mutable for
-    /// the lifetime of the returned `PacketRef` and any clones created from it.
-    #[cfg(any(test, feature = "qemu-test-export"))]
-    pub unsafe fn from_static_raw_for_tests(ptr: *mut u8, cap: usize) -> Option<Self> {
-        if cap == 0 {
-            return None;
-        }
-        let ptr = NonNull::new(ptr)?;
-        Some(Self {
-            kind: PacketRefKind::BorrowedTest {
-                ptr,
-                cap,
-                offset: 0,
-                len: 0,
-            },
-            meta_cache: PacketMeta::default(),
-        })
-    }
-
-    /// データスライスを取得
-    pub fn data(&self) -> &[u8] {
-        match &self.kind {
-            PacketRefKind::Pooled {
-                buffer,
-                offset,
-                len,
-                ..
-            } => unsafe {
-                let slice = buffer.as_ref().data();
-                if *offset >= slice.len() {
-                    return &[];
-                }
-                let end = offset.saturating_add(*len).min(slice.len());
-                &slice[*offset..end]
-            },
-            PacketRefKind::Dma { buf, offset, len } => {
-                let cap = buf.size;
-                if *offset >= cap {
-                    return &[];
-                }
-                let end = offset.saturating_add(*len).min(cap);
-                unsafe {
-                    crate::util::raw_ptr_as_slice(buf.ptr.as_ptr().add(*offset), end - *offset)
-                }
-            }
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest {
-                ptr,
-                cap,
-                offset,
-                len,
-            } => {
-                if *offset >= *cap {
-                    return &[];
-                }
-                let end = offset.saturating_add(*len).min(*cap);
-                unsafe { crate::util::raw_ptr_as_slice(ptr.as_ptr().add(*offset), end - *offset) }
-            }
-        }
-    }
-
-    /// 可変データスライスを取得（排他的所有時のみ）
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        match &mut self.kind {
-            PacketRefKind::Pooled {
-                buffer,
-                offset,
-                len,
-                ..
-            } => unsafe {
-                let slice = buffer.as_mut().data_mut();
-                if *offset >= slice.len() {
-                    return &mut [];
-                }
-                let end = offset.saturating_add(*len).min(slice.len());
-                &mut slice[*offset..end]
-            },
-            PacketRefKind::Dma { buf, offset, len } => {
-                let cap = buf.size;
-                if *offset >= cap {
-                    return &mut [];
-                }
-                let end = offset.saturating_add(*len).min(cap);
-                // SAFETY: We hold Arc to owner which keeps memory alive.
-                unsafe {
-                    crate::util::raw_ptr_as_slice_mut(buf.ptr.as_ptr().add(*offset), end - *offset)
-                }
-            }
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest {
-                ptr,
-                cap,
-                offset,
-                len,
-            } => {
-                if *offset >= *cap {
-                    return &mut [];
-                }
-                let end = offset.saturating_add(*len).min(*cap);
-                unsafe {
-                    crate::util::raw_ptr_as_slice_mut(ptr.as_ptr().add(*offset), end - *offset)
-                }
-            }
-        }
-    }
-
-    /// データ長を設定
-    ///
-    /// Pooled の場合、内部 PacketBuffer.meta.len も同期更新する。
-    /// これにより data() / data_mut() が返すスライスの範囲が正しくなる。
-    pub fn set_len(&mut self, len_val: usize) {
-        match &mut self.kind {
-            PacketRefKind::Pooled { buffer, len, .. } => {
-                *len = len_val;
-                unsafe {
-                    buffer.as_ref().set_len(len_val);
-                }
-            }
-            PacketRefKind::Dma { len, .. } => *len = len_val,
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest { len, .. } => *len = len_val,
-        }
-    }
-
-    /// データ長を取得
-    pub fn len(&self) -> usize {
-        match &self.kind {
-            PacketRefKind::Pooled { len, .. } => *len,
-            PacketRefKind::Dma { len, .. } => *len,
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest { len, .. } => *len,
-        }
-    }
-
-    /// 容量を取得
-    pub fn capacity(&self) -> usize {
-        match &self.kind {
-            PacketRefKind::Pooled { .. } => DEFAULT_BUFFER_SIZE,
-            PacketRefKind::Dma { buf, .. } => buf.size,
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest { cap, .. } => *cap,
-        }
-    }
-
-    /// 物理アドレスを取得
-    pub fn phys_addr(&self) -> PhysAddr {
-        match &self.kind {
-            PacketRefKind::Pooled { buffer, offset, .. } => unsafe {
-                buffer.as_ref().phys_addr() + *offset as u64
-            },
-            PacketRefKind::Dma { buf, offset, .. } => {
-                let phys = buf.phys_addr;
-                phys + *offset as u64
-            }
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest { offset, .. } => PhysAddr::new(*offset as u64),
-        }
-    }
-
-    /// デバイスアドレスを取得（IOMMU用）
-    pub fn device_address(&self) -> u64 {
-        match &self.kind {
-            PacketRefKind::Pooled { buffer, offset, .. } => unsafe {
-                buffer.as_ref().device_address() + *offset as u64
-            },
-            PacketRefKind::Dma { buf, offset, .. } => {
-                // For Dma variant, we assume it's already a device address or can be used as such
-                buf.phys_addr.as_u64() + *offset as u64
-            }
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest { offset, .. } => *offset as u64,
-        }
-    }
-
-    /// ヘッドルームを消費（オフセットを進める）
-    pub fn advance(&mut self, size: usize) {
-        match &mut self.kind {
-            PacketRefKind::Pooled { offset, len, .. } => {
-                *offset += size;
-                if *len >= size {
-                    *len -= size;
-                } else {
-                    *len = 0;
-                }
-            }
-            PacketRefKind::Dma { offset, len, .. } => {
-                *offset += size;
-                if *len >= size {
-                    *len -= size;
-                } else {
-                    *len = 0;
-                }
-            }
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest { offset, len, .. } => {
-                *offset += size;
-                if *len >= size {
-                    *len -= size;
-                } else {
-                    *len = 0;
-                }
-            }
-        }
-    }
-
-    /// クローン（参照カウントをインクリメント）
-    pub fn clone_ref(&self) -> Self {
-        match &self.kind {
-            PacketRefKind::Pooled {
-                buffer,
-                pool,
-                offset,
-                len,
-            } => unsafe {
-                buffer.as_ref().add_ref();
-                Self {
-                    kind: PacketRefKind::Pooled {
-                        buffer: *buffer,
-                        pool: *pool,
-                        offset: *offset,
-                        len: *len,
-                    },
-                    meta_cache: self.meta_cache,
-                }
-            },
-            PacketRefKind::Dma { buf, offset, len } => Self {
-                kind: PacketRefKind::Dma {
-                    buf: buf.clone(),
-                    offset: *offset,
-                    len: *len,
-                },
-                meta_cache: self.meta_cache,
-            },
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest {
-                ptr,
-                cap,
-                offset,
-                len,
-            } => Self {
-                kind: PacketRefKind::BorrowedTest {
-                    ptr: *ptr,
-                    cap: *cap,
-                    offset: *offset,
-                    len: *len,
-                },
-                meta_cache: self.meta_cache,
-            },
-        }
-    }
-
-    /// Convert to RRef for zero-copy IPC
-    /// Consumes the PacketRef and returns an RRef owned by target_domain.
-    /// Requires exclusive access (ref_count == 1).
-    /// NOTE: only supported for pooled packet refs (mempool buffers).
-    pub fn into_rref(self, target_domain: DomainId) -> Result<RRef<PacketBuffer>, Self> {
-        match self.kind {
-            PacketRefKind::Pooled {
-                buffer, pool: _, ..
-            } => {
-                // Reconstruct original behavior: ensure exclusive ownership
-                unsafe {
-                    if buffer.as_ref().meta.ref_count.load(Ordering::Acquire) != 1 {
-                        return Err(self);
-                    }
-
-                    match crate::sas::transfer_ownership(
-                        buffer.as_ptr() as usize,
-                        crate::sas::DomainId::new(0),
-                        crate::sas::DomainId::new(target_domain.as_u64()),
-                    ) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            log::error!("Failed to transfer packet ownership: {:?}", e);
-                            return Err(self);
-                        }
-                    }
-                }
-
-                // Prevent Drop from running
-                core::mem::forget(self);
-
-                unsafe { Ok(RRef::from_raw(buffer, target_domain)) }
-            }
-            PacketRefKind::Dma { .. } => Err(self), // Cannot convert arbitrary DMA buffer to RRef yet
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest { .. } => Err(self),
-        }
-    }
-}
-
-impl Clone for PacketRefKind {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Pooled {
-                buffer,
-                pool,
-                offset,
-                len,
-            } => {
-                unsafe {
-                    buffer.as_ref().add_ref();
-                }
-                Self::Pooled {
-                    buffer: *buffer,
-                    pool,
-                    offset: *offset,
-                    len: *len,
-                }
-            }
-            Self::Dma { buf, offset, len } => Self::Dma {
-                buf: buf.clone(),
-                offset: *offset,
-                len: *len,
-            },
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            Self::BorrowedTest {
-                ptr,
-                cap,
-                offset,
-                len,
-            } => Self::BorrowedTest {
-                ptr: *ptr,
-                cap: *cap,
-                offset: *offset,
-                len: *len,
-            },
-        }
-    }
-}
-
-impl Clone for PacketRef {
-    fn clone(&self) -> Self {
-        Self {
-            kind: self.kind.clone(),
-            meta_cache: self.meta_cache,
-        }
-    }
-}
-
-impl Drop for PacketRef {
-    fn drop(&mut self) {
-        match &self.kind {
-            PacketRefKind::Pooled { buffer, pool, .. } => unsafe {
-                if buffer.as_ref().release() {
-                    pool.return_buffer(*buffer);
-                }
-            },
-            PacketRefKind::Dma { .. } => {
-                // Arc drop will reclaim the TypedDmaSlice when last reference is gone
-            }
-            #[cfg(any(test, feature = "qemu-test-export"))]
-            PacketRefKind::BorrowedTest { .. } => {
-                // Caller-owned test buffer; nothing to reclaim.
-            }
-        }
-    }
-}
-
-// PacketRefはSend可能（別のスレッド/コアに移動可能）
-unsafe impl Send for PacketRef {}
 
 /// メモリプール
 /// 設計書 6.2: バッファ管理
@@ -865,7 +591,7 @@ impl Mempool {
 
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
 
-        Some(PacketRef::new(buffer, self))
+        Some(new_pooled_packet_ref(buffer, self))
     }
 
     /// バッファを返却
@@ -996,7 +722,7 @@ impl PerCoreMempoolCache {
 
         buffer.as_ref().meta.len.store(0, Ordering::Release);
         buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
-        PacketRef::new(buffer, pool)
+        new_pooled_packet_ref(buffer, pool)
     }
 
     /// バッファを割り当て（ローカルキャッシュから優先）
