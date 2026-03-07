@@ -758,7 +758,7 @@ fn resolve_cell_entry(
         let cell = r.get(cell_id)?;
         cell.exports
             .iter()
-            .find(|(n, _)| n == DRIVER_EXPORTS_SYMBOL)
+            .find(|(n, _)| crate::loader::str_eq(n.as_str(), DRIVER_EXPORTS_SYMBOL))
             .map(|(_, addr)| *addr)
     });
 
@@ -773,7 +773,7 @@ fn resolve_cell_entry(
         let cell = r.get(cell_id)?;
         cell.exports
             .iter()
-            .find(|(n, _)| n == DRIVER_ENTRY_SYMBOL)
+            .find(|(n, _)| crate::loader::str_eq(n.as_str(), DRIVER_ENTRY_SYMBOL))
             .map(|(_, addr)| *addr)
     });
 

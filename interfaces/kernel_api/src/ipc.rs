@@ -57,7 +57,10 @@ pub trait TypeIdHash {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeHashError {
-    HashMismatch { expected: TypeHash, actual: TypeHash },
+    HashMismatch {
+        expected: TypeHash,
+        actual: TypeHash,
+    },
     VersionMismatch,
 }
 
@@ -89,9 +92,7 @@ pub const fn fnv1a_hash(bytes: &[u8]) -> u64 {
 }
 
 const fn mix_u64(value: u64) -> u64 {
-    value
-        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        .rotate_left(13)
+    value.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(13)
 }
 
 pub const fn compute_simple_type_hash(type_name: &str, size: usize, align: usize) -> TypeHash {

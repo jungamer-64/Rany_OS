@@ -4,10 +4,10 @@
 //!
 //! FFI adapter for the HID (Human Interface Device) driver.
 
-use kernel_api::driver::DriverType;
 use kernel_api::abi::driver::{
     DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
 };
+use kernel_api::driver::DriverType;
 
 extern "C" fn hid_probe(_ctx: *mut DriverContext) -> i32 {
     0
@@ -61,7 +61,7 @@ fn hid_driver_vtable() -> *const DriverVTable {
 }
 
 #[cfg(feature = "export_driver_entry")]
-#[export_name = "_exorust_driver_entry"]
+#[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     hid_driver_vtable()
 }

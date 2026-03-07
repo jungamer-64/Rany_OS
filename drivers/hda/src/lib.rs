@@ -6,6 +6,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "standalone")]
+kernel_api::register_cell_runtime!();
+
 pub mod codec;
 pub mod hda;
 pub mod mixer;

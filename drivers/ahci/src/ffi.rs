@@ -6,10 +6,10 @@
 //!
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
-use kernel_api::driver::DriverType;
 use kernel_api::abi::driver::{
     DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
 };
+use kernel_api::driver::DriverType;
 
 // ============================================================================
 // Driver Probe/Remove Functions
@@ -98,7 +98,7 @@ fn ahci_driver_vtable() -> *const DriverVTable {
 // emitting the same symbol from multiple drivers when they are statically
 // linked into the kernel.
 #[cfg(feature = "export_driver_entry")]
-#[export_name = "_exorust_driver_entry"]
+#[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     ahci_driver_vtable()
 }

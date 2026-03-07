@@ -288,6 +288,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "driver_cell_probe"
+version = "0.1.0"
+dependencies = [
+ "kernel_api",
+]
+
+[[package]]
 name = "ed25519-compact"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -580,6 +587,7 @@ dependencies = [
 name = "kernel_api"
 version = "0.1.0"
 dependencies = [
+ "log",
  "spin",
 ]
 

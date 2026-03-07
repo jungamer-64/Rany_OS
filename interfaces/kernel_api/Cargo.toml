@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 # Spinlock for global Once registration
 spin = "0.10"
+log = "0.4"
 
 [features]
 # When set, generated driver macros will emit exported driver entry symbols

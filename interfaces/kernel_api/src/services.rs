@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+use crate::KapiResult;
 use crate::abi::driver::KernelApiV2;
 use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::ChannelHandle;
@@ -19,7 +20,6 @@ use crate::resource::storage::{
 };
 use crate::resource::task::TaskHandle;
 use crate::service::{gui::GuiServices, shell::ShellServices, time::TimeService};
-use crate::KapiResult;
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
@@ -264,19 +264,12 @@ pub trait KernelServices: Send + Sync {
     ///
     /// Allocates a DMA buffer, copies data into it, creates IOMMU mappings,
     /// and builds PRP list.
-    fn nvme_prepare_dma_write(
-        &self,
-        device_id: u64,
-        data: &[u8],
-    ) -> KapiResult<NvmeDmaHandle>;
+    fn nvme_prepare_dma_write(&self, device_id: u64, data: &[u8]) -> KapiResult<NvmeDmaHandle>;
 
     /// Complete DMA context after read I/O finished
     ///
     /// Returns the data read from the device. Releases all DMA resources.
-    fn nvme_complete_dma_read(
-        &self,
-        handle: NvmeDmaHandle,
-    ) -> KapiResult<alloc::vec::Vec<u8>>;
+    fn nvme_complete_dma_read(&self, handle: NvmeDmaHandle) -> KapiResult<alloc::vec::Vec<u8>>;
 
     /// Complete DMA context after write I/O finished
     ///
@@ -425,8 +418,8 @@ pub fn abi() -> &'static KernelApiV2 {
 #[cfg(feature = "cell_runtime")]
 mod standalone {
     use super::*;
-    use crate::abi::driver::{AbiDmaSlice, AbiError};
     use crate::KapiError;
+    use crate::abi::driver::{AbiDmaSlice, AbiError};
 
     static STANDALONE_KERNEL: StandaloneKernelServices = StandaloneKernelServices;
 
@@ -515,7 +508,11 @@ mod standalone {
             alloc_dma(size)
         }
 
-        fn alloc_dma_for_device(&self, size: usize, device_id: u64) -> KapiResult<DmaSlice<CpuOwned>> {
+        fn alloc_dma_for_device(
+            &self,
+            size: usize,
+            device_id: u64,
+        ) -> KapiResult<DmaSlice<CpuOwned>> {
             alloc_dma_for_device(size, device_id)
         }
 
@@ -684,19 +681,12 @@ mod standalone {
             Err(KapiError::NotSupported)
         }
 
-        fn nvme_prepare_dma_write(
-            &self,
-            device_id: u64,
-            data: &[u8],
-        ) -> KapiResult<NvmeDmaHandle> {
+        fn nvme_prepare_dma_write(&self, device_id: u64, data: &[u8]) -> KapiResult<NvmeDmaHandle> {
             let _ = (device_id, data);
             Err(KapiError::NotSupported)
         }
 
-        fn nvme_complete_dma_read(
-            &self,
-            handle: NvmeDmaHandle,
-        ) -> KapiResult<alloc::vec::Vec<u8>> {
+        fn nvme_complete_dma_read(&self, handle: NvmeDmaHandle) -> KapiResult<alloc::vec::Vec<u8>> {
             let _ = handle;
             Err(KapiError::NotSupported)
         }

@@ -12,11 +12,13 @@ Drivers are intended to be built separately from the kernel core and must not de
 - Drivers SHOULD depend on `kernel_api` for kernel-provided services and types
 - Drivers may depend on `hal` for hardware access wrappers (MMIO, port I/O, etc.)
 - Drivers SHOULD only use the kernel API for functionalities such as memory allocation and DMA.
+- Drivers that expose a `standalone` feature SHOULD treat it as a complete cell build contract: exported ABI entry symbol plus `kernel_api/cell_runtime`.
 
 ## What to do when needing kernel capabilities
 
 - Request access via `kernel_api::service::kernel::instance()`, which provides `KernelServices` trait methods such as `alloc_dma()`. DMA buffers are reclaimed automatically on Drop.
 - If additional kernel capabilities are required, add them to `interfaces/kernel_api` and implement them inside the kernel service implementation.
+- For standalone cells, enable the crate's `standalone` feature so `kernel_api::register_cell_runtime!()` can bind allocator/panic/logging to the kernel ABI table.
 
 ## CI enforcement
 
@@ -26,6 +28,7 @@ Drivers are intended to be built separately from the kernel core and must not de
 ## Example
 
 - Correct: driver depends on `kernel_api` and `hal`.
+- Correct: standalone driver feature expands to `["export_driver_entry", "kernel_api/cell_runtime"]`.
 - Incorrect: driver depends on `kernel` crate or uses types from `kernel::io::dma` directly.
 
 

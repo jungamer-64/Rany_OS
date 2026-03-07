@@ -12,7 +12,8 @@ description = "USB Driver for RanyOS"
 
 [lib]
 path = "src/lib.rs"
-# Note: Use 'cargo build --features standalone' with custom linker to produce standalone .a
+# Note: `standalone` enables the kernel-backed cell runtime plus the exported
+# driver entry symbol for standalone cell builds.
 # For normal static linking with kernel, rlib is sufficient
 
 [dependencies]
@@ -27,6 +28,6 @@ vfs = { path = "../../filesystems/vfs", optional = true }
 default = []
 # Enables VFS integration for block device support
 vfs_integration = ["vfs"]
-# Enables panic handler and dummy allocator for freestanding build
-standalone = ["export_driver_entry"]
-export_driver_entry = []
+# Build as a standalone cell with kernel-provided runtime stubs and exported ABI entry.
+standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
+export_driver_entry = ["kernel_api/export_driver_entry"]

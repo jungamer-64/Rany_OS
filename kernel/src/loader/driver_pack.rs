@@ -249,3 +249,85 @@ pub fn verify_driver_pack(pack: &DriverPack<'_>) -> Result<bool, LoadError> {
 
     Ok(true)
 }
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) fn build_unsigned_driver_pack(
+    name: &str,
+    elf: &[u8],
+    kernel_api_min_version: u32,
+) -> Vec<u8> {
+    build_unsigned_driver_pack_with_versions(
+        name,
+        elf,
+        DRIVER_ABI_VERSION as u32,
+        kernel_api_min_version,
+    )
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) fn build_unsigned_driver_pack_with_versions(
+    name: &str,
+    elf: &[u8],
+    driver_abi_version: u32,
+    kernel_api_min_version: u32,
+) -> Vec<u8> {
+    use core::mem::size_of;
+
+    fn copy_repr_c<T>(dst: &mut Vec<u8>, value: &T) {
+        let bytes = unsafe {
+            core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+        };
+        dst.extend_from_slice(bytes);
+    }
+
+    let mut name_bytes = [0u8; 32];
+    let raw_name = name.as_bytes();
+    let name_len = core::cmp::min(raw_name.len(), name_bytes.len());
+    name_bytes[..name_len].copy_from_slice(&raw_name[..name_len]);
+
+    let header_size = size_of::<DriverPackHeader>() as u32;
+    let manifest_size = size_of::<DriverManifestV1>() as u32;
+    let manifest_offset = header_size;
+    let elf_offset = manifest_offset + manifest_size;
+
+    let header = DriverPackHeader {
+        magic: DRIVER_PACK_MAGIC,
+        version: DRIVER_PACK_VERSION,
+        header_size,
+        manifest_offset,
+        manifest_size,
+        elf_offset,
+        elf_size: elf.len() as u32,
+        signature_offset: 0,
+        signature_size: 0,
+    };
+
+    let manifest = DriverManifestV1 {
+        abi_version: DRIVER_MANIFEST_VERSION,
+        abi_size: manifest_size,
+        flags: 0,
+        name_len: name_len as u16,
+        _reserved0: 0,
+        name: name_bytes,
+        driver_version: 0,
+        driver_abi_version,
+        kernel_api_min_version,
+        required_caps: 0,
+        pci_vendor_id: 0,
+        pci_device_id: 0,
+        pci_class: 0,
+        pci_subclass: 0,
+        pci_prog_if: 0,
+        _reserved1: 0,
+        _reserved2: [0; 4],
+    };
+
+    let mut pack = Vec::with_capacity(header_size as usize + manifest_size as usize + elf.len());
+    copy_repr_c(&mut pack, &header);
+    copy_repr_c(&mut pack, &manifest);
+    pack.extend_from_slice(elf);
+    pack
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+use kernel_api::abi::driver::DRIVER_ABI_VERSION;

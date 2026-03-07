@@ -108,7 +108,15 @@ impl DmaSlice<CpuOwned> {
     }
 
     /// Decompose the DMA slice into raw parts for kernel-side bookkeeping.
-    pub fn into_raw_parts(self) -> (u64, u64, *mut u8, usize, Option<unsafe fn(*mut u8, usize, u64)>) {
+    pub fn into_raw_parts(
+        self,
+    ) -> (
+        u64,
+        u64,
+        *mut u8,
+        usize,
+        Option<unsafe fn(*mut u8, usize, u64)>,
+    ) {
         let parts = (
             self.phys_addr,
             self.device_addr,
@@ -204,8 +212,7 @@ impl Drop for DmaGuard {
             #[cfg(debug_assertions)]
             panic!(
                 "DmaGuard dropped without complete(); phys={:#x} size={}",
-                self.phys_addr,
-                self.size
+                self.phys_addr, self.size
             );
             #[cfg(not(debug_assertions))]
             log::warn!(

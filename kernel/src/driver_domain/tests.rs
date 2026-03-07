@@ -354,6 +354,7 @@ struct RuntimeContext {
     driver_domain_id: DriverDomainId,
     v1_cell: Vec<u8>,
     v2_cell: Vec<u8>,
+    too_new_pack: Vec<u8>,
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -387,6 +388,11 @@ pub fn run_driver_domain_runtime_suite() -> DriverDomainRuntimeSuiteSummary {
 
     let old_grace = crate::loader::live_update::set_rollback_grace_period_for_test(1_000);
 
+    run_case(
+        &mut summary,
+        "loader_rejects_too_new_kernel_api",
+        case_loader_rejects_too_new_kernel_api(&ctx),
+    );
     run_case(
         &mut summary,
         "update_validating",
@@ -454,6 +460,11 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
 
     let v1_cell = read_fixture_cell("/cells/driver_cell_probe_v1.cell")?;
     let v2_cell = read_fixture_cell("/cells/driver_cell_probe_v2.cell")?;
+    let too_new_pack = crate::loader::driver_pack::build_unsigned_driver_pack(
+        "driver_cell_probe_too_new",
+        &v1_cell,
+        kernel_api::abi::driver::KERNEL_API_ABI_VERSION + 1,
+    );
     runtime_log_line("[driver-cell-runtime] preflight: fixtures loaded");
 
     runtime_log_line("[driver-cell-runtime] preflight: wait_for_tick_progress");
@@ -468,7 +479,87 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
         driver_domain_id,
         v1_cell,
         v2_cell,
+        too_new_pack,
     })
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_loader_rejects_too_new_kernel_api(ctx: &RuntimeContext) -> Result<(), RuntimeCaseError> {
+    ensure_running_idle(ctx.driver_domain_id)?;
+
+    let driver_registry = crate::driver_registry::driver_registry();
+    let driver_count_before = driver_registry.count();
+    let running_driver_count_before = driver_registry.running_count();
+    let cell_count_before = crate::loader::with_registry(|r| r.all_cells().count());
+    let running_domains_before = driver_domain_manager().cells_by_state(DriverDomainState::Running);
+    let health_before = super::hot_swap::health_status(ctx.driver_domain_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
+
+    match crate::loader::load_driver_pack("driver_cell_probe_too_new", &ctx.too_new_pack, true) {
+        Err(crate::loader::LoadError::AbiIncompatible(msg))
+            if crate::loader::str_eq(msg.as_str(), "Kernel API ABI version too old") => {}
+        Err(e) => {
+            return Err(RuntimeCaseError::failed(format!(
+                "unexpected load_driver_pack error: {}",
+                e
+            )));
+        }
+        Ok(handle) => {
+            return Err(RuntimeCaseError::failed(format!(
+                "load_driver_pack unexpectedly succeeded: {:?}",
+                handle
+            )));
+        }
+    }
+
+    let driver_count_after = driver_registry.count();
+    let running_driver_count_after = driver_registry.running_count();
+    let cell_count_after = crate::loader::with_registry(|r| r.all_cells().count());
+    let running_domains_after = driver_domain_manager().cells_by_state(DriverDomainState::Running);
+    let health_after = super::hot_swap::health_status(ctx.driver_domain_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
+
+    if driver_count_after != driver_count_before {
+        return Err(RuntimeCaseError::failed(format!(
+            "driver count changed after ABI rejection: {} -> {}",
+            driver_count_before, driver_count_after
+        )));
+    }
+    if running_driver_count_after != running_driver_count_before {
+        return Err(RuntimeCaseError::failed(format!(
+            "running driver count changed after ABI rejection: {} -> {}",
+            running_driver_count_before, running_driver_count_after
+        )));
+    }
+    if cell_count_after != cell_count_before {
+        return Err(RuntimeCaseError::failed(format!(
+            "loader cell count changed after ABI rejection: {} -> {}",
+            cell_count_before, cell_count_after
+        )));
+    }
+    if running_domains_after != running_domains_before {
+        return Err(RuntimeCaseError::failed(
+            "running DriverDomain set changed after ABI rejection",
+        ));
+    }
+    if health_after.hot_swap_state != health_before.hot_swap_state {
+        return Err(RuntimeCaseError::failed(format!(
+            "hot_swap state changed after ABI rejection: {} -> {}",
+            health_before.hot_swap_state, health_after.hot_swap_state
+        )));
+    }
+    if health_after.loader_cell_id != health_before.loader_cell_id {
+        return Err(RuntimeCaseError::failed(
+            "loader CellId changed after ABI rejection",
+        ));
+    }
+    if health_after.last_health_failure != health_before.last_health_failure {
+        return Err(RuntimeCaseError::failed(
+            "last_health_failure changed after ABI rejection",
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "qemu-test-export")]

@@ -468,15 +468,10 @@ pub(crate) fn print_system_stats() {
 
 /// カーネルシンボルを登録（セルローダー用）
 pub(crate) fn register_kernel_symbols() {
-    loader::with_registry_mut(|registry| {
-        registry.register_symbol(
-            alloc::string::String::from(kernel_api::abi::driver::KERNEL_API_SYMBOL),
-            crate::driver_registry::kernel_api_v2() as *const kernel_api::abi::driver::KernelApiV2
-                as usize,
-        );
-    });
-
-    debug!(target: "loader", "Kernel API symbol registered for cell loader");
+    debug!(
+        target: "loader",
+        "Kernel API symbol is resolved via dedicated loader path"
+    );
 }
 
 /// ExoRustロゴを表示

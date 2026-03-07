@@ -6,10 +6,10 @@
 //!
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
-use kernel_api::driver::DriverType;
 use kernel_api::abi::driver::{
     DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
 };
+use kernel_api::driver::DriverType;
 
 // ============================================================================
 // Driver Lifecycle Functions
@@ -96,7 +96,7 @@ fn usb_driver_vtable() -> *const DriverVTable {
 
 // Export canonical symbol only when the export_driver_entry feature is enabled
 #[cfg(feature = "export_driver_entry")]
-#[export_name = "_exorust_driver_entry"]
+#[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     usb_driver_vtable()
 }

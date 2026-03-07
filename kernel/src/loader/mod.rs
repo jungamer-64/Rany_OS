@@ -38,6 +38,23 @@ use alloc::vec::Vec;
 use kernel_api::abi::driver::{DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverExportsV1};
 use spin::Mutex;
 
+#[inline]
+pub(crate) fn str_eq(lhs: &str, rhs: &str) -> bool {
+    let lhs_bytes = lhs.as_bytes();
+    let rhs_bytes = rhs.as_bytes();
+    if lhs_bytes.len() != rhs_bytes.len() {
+        return false;
+    }
+    let mut idx = 0usize;
+    while idx < lhs_bytes.len() {
+        if lhs_bytes[idx] != rhs_bytes[idx] {
+            return false;
+        }
+        idx += 1;
+    }
+    true
+}
+
 /// セルの状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellState {
@@ -154,14 +171,19 @@ impl CellRegistry {
     }
 
     pub fn register_symbol(&mut self, symbol: String, addr: usize) {
-        if self.symbol_table.iter().any(|(name, _)| name == &symbol) {
+        if self
+            .symbol_table
+            .iter()
+            .any(|(name, _)| str_eq(name.as_str(), symbol.as_str()))
+        {
             return;
         }
         self.symbol_table.push((symbol, addr));
     }
 
     fn unregister_symbol(&mut self, symbol: &str) {
-        self.symbol_table.retain(|(name, _)| name != symbol);
+        self.symbol_table
+            .retain(|(name, _)| !str_eq(name.as_str(), symbol));
     }
 
     /// 新しいセルIDを生成
@@ -214,9 +236,16 @@ impl CellRegistry {
 
     /// シンボルを解決
     pub fn resolve_symbol(&self, name: &str) -> Option<usize> {
+        if str_eq(name, kernel_api::abi::driver::KERNEL_API_SYMBOL) {
+            return Some(
+                crate::driver_registry::kernel_api_v2()
+                    as *const kernel_api::abi::driver::KernelApiV2 as usize,
+            );
+        }
+
         self.symbol_table
             .iter()
-            .find_map(|(symbol, addr)| (symbol == name).then_some(*addr))
+            .find_map(|(symbol, addr)| str_eq(symbol.as_str(), name).then_some(*addr))
     }
 
     /// セルをアンロード
@@ -245,7 +274,7 @@ impl CellRegistry {
 
     /// 名前でセルを検索
     pub fn find_by_name(&self, name: &str) -> Option<&CellEntry> {
-        self.cells.values().find(|c| c.name == name)
+        self.cells.values().find(|c| str_eq(c.name.as_str(), name))
     }
 
     /// 全セルを列挙
@@ -569,7 +598,7 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
         let cell = r.get(cell_id)?;
         cell.exports
             .iter()
-            .find(|(n, _)| n == DRIVER_EXPORTS_SYMBOL)
+            .find(|(n, _)| str_eq(n.as_str(), DRIVER_EXPORTS_SYMBOL))
             .map(|(_, addr)| *addr)
     });
 
@@ -598,7 +627,7 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
         let cell = r.get(cell_id)?;
         cell.exports
             .iter()
-            .find(|(n, _)| n == DRIVER_ENTRY_SYMBOL)
+            .find(|(n, _)| str_eq(n.as_str(), DRIVER_ENTRY_SYMBOL))
             .map(|(_, addr)| *addr)
     });
 
@@ -779,4 +808,43 @@ pub fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_ELF_BYTES: &[u8] = b"\x7fELFdriver-pack-test";
+
+    #[test_case]
+    fn load_driver_pack_rejects_too_new_kernel_api_version() {
+        let pack = driver_pack::build_unsigned_driver_pack(
+            "test_driver",
+            TEST_ELF_BYTES,
+            kernel_api::abi::driver::KERNEL_API_ABI_VERSION + 1,
+        );
+
+        match load_driver_pack("test_driver", &pack, true) {
+            Err(LoadError::AbiIncompatible(message)) => {
+                assert!(str_eq(message.as_str(), "Kernel API ABI version too old"));
+            }
+            other => panic!("expected Kernel API ABI version rejection, got {:?}", other),
+        }
+    }
+
+    #[test_case]
+    fn artifact_path_rejects_too_new_kernel_api_version() {
+        let pack = driver_pack::build_unsigned_driver_pack(
+            "test_driver",
+            TEST_ELF_BYTES,
+            kernel_api::abi::driver::KERNEL_API_ABI_VERSION + 1,
+        );
+
+        match load_driver_artifact("test_driver", &pack, true) {
+            Err(LoadError::AbiIncompatible(message)) => {
+                assert!(str_eq(message.as_str(), "Kernel API ABI version too old"));
+            }
+            other => panic!("expected Kernel API ABI version rejection, got {:?}", other),
+        }
+    }
 }

@@ -21,6 +21,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "standalone")]
+kernel_api::register_cell_runtime!();
+
 pub mod ffi;
 
 pub use graphic_types::{Color, FramebufferInfo, PixelFormat, Point, Rect};

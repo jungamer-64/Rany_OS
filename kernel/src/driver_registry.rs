@@ -29,13 +29,13 @@ use alloc::string::String;
 
 use alloc::vec::Vec;
 use core::fmt;
-use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::abi::driver::{
     AbiDmaSlice, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle,
     DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
     DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
     DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV2,
 };
+use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::error::{KapiError, KapiResult};
 mod registration_api;
 pub use registration_api::*;
@@ -556,9 +556,18 @@ extern "C" fn kapi_release_dma_raw(virt_addr: u64, size: usize, phys_addr: u64) 
         return AbiErrorCode::InvalidParam as i32;
     }
 
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
     unsafe {
         crate::service_impl::release_dma_buffer(virt_addr as usize as *mut u8, size, phys_addr);
     }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    let _ = (virt_addr, size, phys_addr);
+
     AbiErrorCode::Success as i32
 }
 

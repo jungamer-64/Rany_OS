@@ -24,6 +24,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "standalone")]
+kernel_api::register_cell_runtime!();
+
 // Core modules (no kernel deps)
 pub mod command;
 pub mod fis;

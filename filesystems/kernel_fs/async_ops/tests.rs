@@ -213,7 +213,7 @@ pub fn test_direct_block_handle_flush_nonblocking_poll_shape() {
 #[cfg_attr(test, test_case)]
 pub fn test_direct_block_handle_success_paths_with_mock_scheduler() {
     assert!(
-        kernel_api::is_kernel_registered(),
+        kernel_api::service::kernel::is_installed(),
         "kernel services must be registered for DirectBlockHandle success-path test"
     );
 

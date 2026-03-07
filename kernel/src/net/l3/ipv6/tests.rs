@@ -1,4 +1,5 @@
 use super::*;
+use alloc::vec;
 
 // --- Address tests ---
 

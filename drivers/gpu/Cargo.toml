@@ -12,7 +12,8 @@ description = "GPU Driver for RanyOS"
 
 [lib]
 path = "src/lib.rs"
-# Note: Use 'cargo build --features standalone' with custom linker to produce standalone .a
+# Note: `standalone` enables the kernel-backed cell runtime plus the exported
+# driver entry symbol for standalone cell builds.
 
 [dependencies]
 graphic_types = { path = "../../libs/graphic_types" }
@@ -23,6 +24,6 @@ kernel_api = { path = "../../interfaces/kernel_api" }
 
 [features]
 default = []
-# Enables panic handler and dummy allocator for freestanding build
-standalone = ["export_driver_entry"]
-export_driver_entry = []
+# Build as a standalone cell with kernel-provided runtime stubs and exported ABI entry.
+standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
+export_driver_entry = ["kernel_api/export_driver_entry"]

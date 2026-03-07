@@ -19,6 +19,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "standalone")]
+kernel_api::register_cell_runtime!();
+
 pub mod driver;
 pub mod ffi;
 pub mod keyboard;

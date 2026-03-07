@@ -21,6 +21,9 @@
 
 extern crate alloc;
 
+#[cfg(feature = "standalone")]
+kernel_api::register_cell_runtime!();
+
 pub mod core;
 pub mod defs;
 pub mod transport;

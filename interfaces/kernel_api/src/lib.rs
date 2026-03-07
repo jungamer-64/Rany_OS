@@ -47,6 +47,11 @@ mod driver_abi_impl;
 #[path = "cell_runtime.rs"]
 mod runtime_impl;
 
+#[cfg(feature = "cell_runtime")]
+pub mod cell_runtime {
+    pub use crate::runtime_impl::*;
+}
+
 #[path = "services.rs"]
 mod service_kernel_impl;
 
@@ -105,11 +110,8 @@ macro_rules! declare_rany_type_id_section {
         const _: () = {
             #[used]
             #[unsafe(link_section = ".rany_type_id")]
-            static RANY_TYPE_ID_SECTION: [u8; 12] = [
-                b'R', b'T', b'I', b'D',
-                1, 0, 0, 0,
-                0, 0, 0, 0,
-            ];
+            static RANY_TYPE_ID_SECTION: [u8; 12] =
+                [b'R', b'T', b'I', b'D', 1, 0, 0, 0, 0, 0, 0, 0];
         };
     };
 }

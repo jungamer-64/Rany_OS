@@ -46,6 +46,7 @@ CELL_TARGET_DIR_NAME="x86_64-exorust-cell"
 BUILD_PROFILE_DIR="$ROOT_DIR/target/$CELL_TARGET_DIR_NAME/$PROFILE"
 DEPLOY_DIR="$ROOT_DIR/target/x86_64-exorust/$PROFILE/cells"
 INITRAMFS_PATH="$ROOT_DIR/target/initramfs.tar"
+CELL_PROBE_MANIFEST="$ROOT_DIR/tools/driver_cell_probe/Cargo.toml"
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -59,6 +60,11 @@ require_cmd tar
 
 if [[ ! -f "$CELL_TARGET_SPEC" ]]; then
     echo "missing target spec: $CELL_TARGET_SPEC" >&2
+    exit 1
+fi
+
+if [[ ! -f "$CELL_PROBE_MANIFEST" ]]; then
+    echo "missing driver_cell_probe manifest: $CELL_PROBE_MANIFEST" >&2
     exit 1
 fi
 
@@ -85,28 +91,26 @@ build_variant() {
     local out_name="$2"   # driver_cell_probe_v1.cell / driver_cell_probe_v2.cell
 
     local cargo_args=(
-        rustc
+        build
         -Zbuild-std=core,alloc
         -Zbuild-std-features=compiler-builtins-mem
+        --manifest-path "$CELL_PROBE_MANIFEST"
+        --target-dir "$ROOT_DIR/target"
         -Zjson-target-spec
-        -p driver_cell_probe
         --target "$CELL_TARGET_SPEC"
         --features "standalone,${variant}"
-        --
-        --crate-type cdylib
     )
     if [[ "$PROFILE" == "release" ]]; then
         cargo_args=(
-            rustc
+            build
             -Zbuild-std=core,alloc
             -Zbuild-std-features=compiler-builtins-mem
+            --manifest-path "$CELL_PROBE_MANIFEST"
+            --target-dir "$ROOT_DIR/target"
             -Zjson-target-spec
-            -p driver_cell_probe
             --target "$CELL_TARGET_SPEC"
             --release
             --features "standalone,${variant}"
-            --
-            --crate-type cdylib
         )
     fi
 

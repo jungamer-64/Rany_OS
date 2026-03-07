@@ -1,4 +1,4 @@
-use kernel_api::abi::driver::{DriverContext};
+use kernel_api::abi::driver::DriverContext;
 use kernel_api::driver::DriverType;
 
 // Minimal probe function for the ABI export. In a real driver this
@@ -14,21 +14,39 @@ extern "C" fn nvme_remove(_ctx: *mut DriverContext) -> i32 {
     0
 }
 
-fn nvme_name() -> &'static str { "nvme" }
+fn nvme_name() -> &'static str {
+    "nvme"
+}
 
 // Export the ABI vtable using the provided macro.
 // The driver type is Block (storage), and we pack a trivial version.
 // Provide the vtable; export canonical symbol for standalone builds and
 // a crate-unique symbol when compiled into the kernel to avoid collisions.
 fn nvme_driver_vtable() -> *const kernel_api::abi::driver::DriverVTable {
-    extern "C" fn probe_adapter(_ctx: *mut kernel_api::abi::driver::DriverContext) -> i32 { 0 }
-    extern "C" fn start_adapter(_ctx: *mut kernel_api::abi::driver::DriverContext) -> i32 { 0 }
-    extern "C" fn stop_adapter(_ctx: *mut kernel_api::abi::driver::DriverContext) -> i32 { 0 }
-    extern "C" fn remove_adapter(_ctx: *mut kernel_api::abi::driver::DriverContext) -> i32 { 0 }
-    extern "C" fn name_adapter() -> *const u8 { b"nvme\0".as_ptr() }
-    extern "C" fn name_len_adapter() -> usize { 4 }
-    extern "C" fn type_adapter() -> u32 { kernel_api::driver::DriverType::Block as u32 }
-    extern "C" fn version_adapter() -> u64 { kernel_api::abi::driver::pack_version(0, 1, 0) }
+    extern "C" fn probe_adapter(_ctx: *mut kernel_api::abi::driver::DriverContext) -> i32 {
+        0
+    }
+    extern "C" fn start_adapter(_ctx: *mut kernel_api::abi::driver::DriverContext) -> i32 {
+        0
+    }
+    extern "C" fn stop_adapter(_ctx: *mut kernel_api::abi::driver::DriverContext) -> i32 {
+        0
+    }
+    extern "C" fn remove_adapter(_ctx: *mut kernel_api::abi::driver::DriverContext) -> i32 {
+        0
+    }
+    extern "C" fn name_adapter() -> *const u8 {
+        b"nvme\0".as_ptr()
+    }
+    extern "C" fn name_len_adapter() -> usize {
+        4
+    }
+    extern "C" fn type_adapter() -> u32 {
+        kernel_api::driver::DriverType::Block as u32
+    }
+    extern "C" fn version_adapter() -> u64 {
+        kernel_api::abi::driver::pack_version(0, 1, 0)
+    }
 
     static VTABLE: kernel_api::abi::driver::DriverVTable = kernel_api::abi::driver::DriverVTable {
         abi_version: kernel_api::abi::driver::DRIVER_ABI_VERSION,
@@ -49,7 +67,7 @@ fn nvme_driver_vtable() -> *const kernel_api::abi::driver::DriverVTable {
 }
 
 #[cfg(feature = "export_driver_entry")]
-#[export_name = "_exorust_driver_entry"]
+#[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const kernel_api::abi::driver::DriverVTable {
     nvme_driver_vtable()
 }
