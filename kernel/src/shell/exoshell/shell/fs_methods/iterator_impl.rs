@@ -2,7 +2,6 @@ use super::*;
 
 mod cd_eval;
 impl ExoShell {
-
     pub(crate) async fn materialize_iterator(&mut self, iter: ExoIterator) -> ExoValue<'static> {
         let source_expr = match parser::expr_parser::parse_expression(iter.source.as_str()) {
             Ok(expr) => expr,
@@ -19,7 +18,7 @@ impl ExoShell {
                 return ExoValue::Error(format!(
                     "Iterator source did not evaluate to an array (got {:?})",
                     other
-                ))
+                ));
             }
         };
 
@@ -214,10 +213,8 @@ impl ExoShell {
                 ExoValue::Array(chars)
             }
             "bytes" => {
-                let bytes: Vec<ExoValue<'static>> = s
-                    .bytes()
-                    .map(|b| ExoValue::Int(b as i64))
-                    .collect();
+                let bytes: Vec<ExoValue<'static>> =
+                    s.bytes().map(|b| ExoValue::Int(b as i64)).collect();
                 ExoValue::Array(bytes)
             }
             "split" => {
@@ -333,7 +330,9 @@ impl ExoShell {
                 if current_len >= width {
                     ExoValue::String(Cow::Owned(s))
                 } else {
-                    let padding: String = core::iter::repeat(pad_char).take(width - current_len).collect();
+                    let padding: String = core::iter::repeat(pad_char)
+                        .take(width - current_len)
+                        .collect();
                     ExoValue::String(Cow::Owned(alloc::format!("{}{}", padding, s)))
                 }
             }
@@ -356,7 +355,9 @@ impl ExoShell {
                 if current_len >= width {
                     ExoValue::String(Cow::Owned(s))
                 } else {
-                    let padding: String = core::iter::repeat(pad_char).take(width - current_len).collect();
+                    let padding: String = core::iter::repeat(pad_char)
+                        .take(width - current_len)
+                        .collect();
                     ExoValue::String(Cow::Owned(alloc::format!("{}{}", s, padding)))
                 }
             }
@@ -420,9 +421,7 @@ impl ExoShell {
                 ExoValue::FileEntry(entry) => {
                     self.check_file_entry_condition(entry, field, op, &value)
                 }
-                ExoValue::Domain(domain) => {
-                    self.check_domain_condition(domain, field, op, &value)
-                }
+                ExoValue::Domain(domain) => self.check_domain_condition(domain, field, op, &value),
                 ExoValue::Map(map) => self.check_map_condition(map, field, op, &value),
                 _ => true,
             })
@@ -542,7 +541,11 @@ impl ExoShell {
     }
 
     /// 配列のフィールドを抽出
-    pub(super) fn map_array(&self, list: Vec<ExoValue<'static>>, field_or_closure: &str) -> ExoValue<'static> {
+    pub(super) fn map_array(
+        &self,
+        list: Vec<ExoValue<'static>>,
+        field_or_closure: &str,
+    ) -> ExoValue<'static> {
         let field_or_closure = field_or_closure.trim();
 
         if field_or_closure.starts_with('|') {
@@ -576,7 +579,11 @@ impl ExoShell {
     }
 
     /// シンプルなフィールド抽出
-    pub(super) fn map_array_simple(&self, list: Vec<ExoValue<'static>>, field: &str) -> ExoValue<'static> {
+    pub(super) fn map_array_simple(
+        &self,
+        list: Vec<ExoValue<'static>>,
+        field: &str,
+    ) -> ExoValue<'static> {
         let mapped: Vec<ExoValue<'static>> = list
             .into_iter()
             .map(|item| match item {
@@ -660,7 +667,11 @@ impl ExoShell {
     }
 
     /// フィールド値を取得
-    pub(super) fn get_field_value(&self, value: &ExoValue<'static>, field: &str) -> ExoValue<'static> {
+    pub(super) fn get_field_value(
+        &self,
+        value: &ExoValue<'static>,
+        field: &str,
+    ) -> ExoValue<'static> {
         match value {
             ExoValue::FileEntry(entry) => match field {
                 "name" => ExoValue::String(Cow::Owned(entry.name.clone())),
@@ -737,7 +748,11 @@ impl ExoShell {
             "netstat" => NetNamespace::netstat_async().await,
             "route" => {
                 if parts.len() > 1 {
-                    Self::dispatch_namespace_command(&["net", &format!("route_{}", parts[1])], "net").await
+                    Self::dispatch_namespace_command(
+                        &["net", &format!("route_{}", parts[1])],
+                        "net",
+                    )
+                    .await
                 } else {
                     NetNamespace::routes_async().await
                 }
@@ -746,8 +761,7 @@ impl ExoShell {
             "free" => SysNamespace::memory(),
             "net" => Self::dispatch_namespace_command(&parts, parts[0]).await,
             "uptime" => SysNamespace::time(),
-            _ => ExoValue::Error(
-format!(
+            _ => ExoValue::Error(format!(
                 "Unknown: '{}'\nTry 'help' or use ExoShell syntax: fs.entries(), net.config(), etc.",
                 cmd
             )),

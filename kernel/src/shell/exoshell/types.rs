@@ -41,7 +41,7 @@ pub enum ExoValue<'a> {
     /// イテレータ（遅延評価）
     Iterator(ExoIterator),
     /// ゼロコピーバッファ参照（カーネルバッファへの参照）
-    /// 
+    ///
     /// NOTE: Arc でラップされているため Clone が安価。
     /// データはコピーせず、参照カウントのみ増加。
     BufferRef(super::buffer_view::KernelBufferView),

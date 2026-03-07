@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
@@ -32,4 +31,3 @@ impl ShellNamespace for CapNamespace {
         })
     }
 }
-

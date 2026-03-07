@@ -301,7 +301,8 @@ pub fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
             continue;
         }
 
-        let pass_filter_to_inner = str_eq(profile, "network") && str_eq(case.id, "network.runtime_suite");
+        let pass_filter_to_inner =
+            str_eq(profile, "network") && str_eq(case.id, "network.runtime_suite");
 
         if let Some(filter) = case_filter {
             if !pass_filter_to_inner && !str_eq(case.id, filter) {

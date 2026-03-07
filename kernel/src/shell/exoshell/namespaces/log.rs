@@ -17,10 +17,10 @@
 //! ```
 
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::boxed::Box;
 
 use super::{BoxFuture, ShellNamespace};
 use crate::shell::exoshell::types::ExoValue;
@@ -39,7 +39,10 @@ impl LogNamespace {
     pub fn level() -> ExoValue<'static> {
         let level = crate::io::log::current_log_level();
         let mut map = BTreeMap::new();
-        map.insert(s("current"), ExoValue::String(Cow::Owned(format!("{}", level))));
+        map.insert(
+            s("current"),
+            ExoValue::String(Cow::Owned(format!("{}", level))),
+        );
         map.insert(
             s("console_mirror"),
             ExoValue::Bool(crate::io::log::console_mirror_enabled()),
@@ -59,9 +62,7 @@ impl LogNamespace {
         };
 
         match crate::io::log::set_log_level_from_str(level_str) {
-            Ok(level) => ExoValue::String(Cow::Owned(format!(
-                "Log level set to {}", level
-            ))),
+            Ok(level) => ExoValue::String(Cow::Owned(format!("Log level set to {}", level))),
             Err(e) => ExoValue::Error(format!(
                 "Invalid log level '{}': {}. Valid: off, error, warn, info, debug, trace",
                 level_str, e
@@ -95,9 +96,7 @@ impl LogNamespace {
                     if *enabled { "enabled" } else { "disabled" }
                 )))
             }
-            _ => ExoValue::Error(String::from(
-                "Usage: log.serial(true) or log.serial(false)",
-            )),
+            _ => ExoValue::Error(String::from("Usage: log.serial(true) or log.serial(false)")),
         }
     }
 

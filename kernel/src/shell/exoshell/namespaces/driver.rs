@@ -106,7 +106,7 @@ impl DriverNamespace {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
-        
+
         let elf_data = match shell.read_file(path) {
             Ok(data) => data,
             Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
@@ -127,13 +127,13 @@ impl DriverNamespace {
                 use super::dynamic_driver::DynamicDriverNamespace;
                 use super::registry;
                 use alloc::sync::Arc;
-                
+
                 let dynamic_ns = Arc::new(DynamicDriverNamespace::new(
                     String::from(driver_name),
                     handle,
                 ));
                 registry::register_namespace(dynamic_ns);
-                
+
                 let mut map = BTreeMap::new();
                 map.insert(String::from("success"), ExoValue::Bool(true));
                 map.insert(
@@ -192,21 +192,30 @@ impl DriverNamespace {
 
     /// ドライバをライブアップデート
     /// Requires CAP_SYS_MODULE
-    fn update_with_caps(id: i64, path: &str, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
+    fn update_with_caps(
+        id: i64,
+        path: &str,
+        caps: &crate::security::CapabilitySet,
+    ) -> ExoValue<'static> {
         if !caps.has_capability(CAP_SYS_MODULE) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_MODULE required"));
         }
 
         if path.is_empty() {
-             return ExoValue::Error(String::from("Path is required"));
+            return ExoValue::Error(String::from("Path is required"));
         }
 
         let handle = driver_registry::DriverHandle::from_index(id as usize);
-        
+
         // Find owning cell
         let cell_id = match loader::find_cell_by_driver(handle) {
             Some(id) => id,
-            None => return ExoValue::Error(format!("Driver {} not found or not associated with a cell", id)),
+            None => {
+                return ExoValue::Error(format!(
+                    "Driver {} not found or not associated with a cell",
+                    id
+                ));
+            }
         };
 
         // Read ELF
@@ -214,7 +223,7 @@ impl DriverNamespace {
             Some(s) => s,
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
-        
+
         let elf_data = match shell.read_file(path) {
             Ok(data) => data,
             Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
@@ -222,18 +231,24 @@ impl DriverNamespace {
 
         // Perform Update
         match loader::live_update_manager().perform_update(cell_id.as_u64(), &elf_data) {
-             Ok(new_cell_id) => {
-                 let mut map = BTreeMap::new();
-                 map.insert(String::from("success"), ExoValue::Bool(true));
-                 map.insert(String::from("old_driver_id"), ExoValue::Int(id));
-                 map.insert(String::from("new_cell_id"), ExoValue::Int(new_cell_id as i64));
-                 map.insert(
-                     String::from("message"),
-                     ExoValue::String(Cow::Owned(format!("Driver {} updated successfully. New Cell ID: {}", id, new_cell_id))),
-                 );
-                 ExoValue::Map(map)
-             }
-             Err(e) => ExoValue::Error(format!("Live update failed: {}", e)),
+            Ok(new_cell_id) => {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("success"), ExoValue::Bool(true));
+                map.insert(String::from("old_driver_id"), ExoValue::Int(id));
+                map.insert(
+                    String::from("new_cell_id"),
+                    ExoValue::Int(new_cell_id as i64),
+                );
+                map.insert(
+                    String::from("message"),
+                    ExoValue::String(Cow::Owned(format!(
+                        "Driver {} updated successfully. New Cell ID: {}",
+                        id, new_cell_id
+                    ))),
+                );
+                ExoValue::Map(map)
+            }
+            Err(e) => ExoValue::Error(format!("Live update failed: {}", e)),
         }
     }
 }

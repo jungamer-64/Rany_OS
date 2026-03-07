@@ -4,9 +4,8 @@
 
 use alloc::string::{String, ToString};
 
-
 /// Shell history navigation state
-/// 
+///
 /// Manages the state when navigating up/down through command history.
 /// Does NOT store the history itself; the shell instance does that.
 pub struct HistoryNavigator {

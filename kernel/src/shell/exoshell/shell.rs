@@ -12,14 +12,14 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use super::command::{ClearCommand, CommandRegistry, ExitCommand, HelpCommand};
+use super::environment::Environment;
+use super::error::ExoResult;
 use super::namespaces::*;
 use super::parser; // Import module itself
+use super::parser::ast::Stmt;
 use super::parser::*; // Import items from module
 use super::types::*;
-use super::environment::Environment;
-use super::command::{CommandRegistry, HelpCommand, ExitCommand, ClearCommand};
-use super::error::ExoResult;
-use super::parser::ast::Stmt;
 use crate::security::CapabilitySet;
 use alloc::sync::Arc;
 
@@ -28,7 +28,7 @@ use alloc::sync::Arc;
 // ============================================================================
 
 /// Arc<dyn ShellNamespace> を Box<dyn ShellNamespace> として使うためのラッパー
-/// 
+///
 /// レジストリは Arc で名前空間を保持するが、既存のシェル API は Box を期待する。
 /// このラッパーにより両方の API を統一できる。
 mod fs_methods; // Contains filesystem-related namespace helpers
@@ -52,9 +52,8 @@ impl ShellNamespace for ArcNamespaceWrapper {
     }
 }
 
-
 /// ExoShell REPLインタプリタ
-/// 
+///
 /// ## Capability-based Security
 /// シェルインスタンス自体が CapabilitySet を保持し、
 /// 名前空間呼び出し時にこれを証明として渡す。
@@ -89,28 +88,30 @@ impl ExoShell {
     }
 
     /// 指定された権限でシェルを作成
-    /// 
+    ///
     /// グローバルレジストリから名前空間を取得。
     /// レジストリが空の場合はビルトイン名前空間を登録してから取得。
     pub fn with_capabilities(capabilities: CapabilitySet) -> Self {
         use super::namespaces::registry;
-        
+
         // レジストリが空なら初期化
         if registry::list_namespaces().is_empty() {
             registry::register_builtin_namespaces();
         }
-        
+
         // レジストリから名前空間を取得（Arc -> Box への変換）
         let namespaces = {
             let mut m = BTreeMap::new();
             for (name, ns) in registry::get_all_namespaces() {
                 // Arc<dyn ShellNamespace> を Box<dyn ShellNamespace> にラップ
                 // ArcをそのままBoxに入れることで、共有参照を維持
-                m.insert(name, Box::new(ArcNamespaceWrapper(ns)) as Box<dyn super::namespaces::ShellNamespace>);
+                m.insert(
+                    name,
+                    Box::new(ArcNamespaceWrapper(ns)) as Box<dyn super::namespaces::ShellNamespace>,
+                );
             }
             m
         };
-        
 
         let mut commands = CommandRegistry::new();
         commands.register(HelpCommand);
@@ -190,7 +191,9 @@ impl ExoShell {
             && input_bytes[14] == b'('
             && input_bytes[15] == b')'
         {
-            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_state_async().await);
+            return Some(
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_state_async().await,
+            );
         }
         if input_bytes.len() == 16
             && input_bytes[0] == b'n'
@@ -210,7 +213,9 @@ impl ExoShell {
             && input_bytes[14] == b'('
             && input_bytes[15] == b')'
         {
-            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_renew_async().await);
+            return Some(
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_renew_async().await,
+            );
         }
         if input_bytes.len() == 19
             && input_bytes[0] == b'n'
@@ -233,7 +238,9 @@ impl ExoShell {
             && input_bytes[17] == b'('
             && input_bytes[18] == b')'
         {
-            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_discover_async().await);
+            return Some(
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_discover_async().await,
+            );
         }
         if input_bytes.len() == 18
             && input_bytes[0] == b'n'
@@ -255,7 +262,9 @@ impl ExoShell {
             && input_bytes[16] == b'('
             && input_bytes[17] == b')'
         {
-            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_release_async().await);
+            return Some(
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_release_async().await,
+            );
         }
         if input_bytes.len() == 24
             && input_bytes[0] == b'n'
@@ -284,7 +293,8 @@ impl ExoShell {
             && input_bytes[23] == b')'
         {
             return Some(
-                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_declined_async().await,
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_declined_async()
+                    .await,
             );
         }
         if input_bytes.len() == 24
@@ -314,7 +324,8 @@ impl ExoShell {
             && input_bytes[23] == b')'
         {
             return Some(
-                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_released_async().await,
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_released_async()
+                    .await,
             );
         }
         if input_bytes.len() == 11
@@ -330,10 +341,14 @@ impl ExoShell {
             && input_bytes[9] == b'('
             && input_bytes[10] == b')'
         {
-            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::stats_async().await);
+            return Some(
+                crate::shell::exoshell::namespaces::net::NetNamespace::stats_async().await,
+            );
         }
         if let Some((ip, count)) = Self::parse_ping_call(input_bytes) {
-            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::ping(ip, count).await);
+            return Some(
+                crate::shell::exoshell::namespaces::net::NetNamespace::ping(ip, count).await,
+            );
         }
 
         None
@@ -440,7 +455,11 @@ impl ExoShell {
     }
 
     /// Command文の評価
-    async fn eval_command_stmt(&mut self, name: String, args: Vec<Expr<'_>>) -> ExoResult<ExoValue<'static>> {
+    async fn eval_command_stmt(
+        &mut self,
+        name: String,
+        args: Vec<Expr<'_>>,
+    ) -> ExoResult<ExoValue<'static>> {
         // 1. Try built-in command
         if let Some(cmd) = self.commands.get(&name) {
             let mut eval_args = Vec::new();
@@ -458,7 +477,7 @@ impl ExoShell {
             // Alias fallback (legacy)
             let alias_result = self.eval_alias(&name).await;
             if matches!(alias_result, ExoValue::Error(_)) {
-                 return Err(super::error::ShellError::CommandNotFound(name));
+                return Err(super::error::ShellError::CommandNotFound(name));
             }
             return Ok(alias_result);
         }
@@ -477,7 +496,9 @@ impl ExoShell {
 
             Stmt::Break => {
                 if self.loop_depth == 0 {
-                    Err(super::error::ShellError::Runtime("break used outside loop".to_string()))
+                    Err(super::error::ShellError::Runtime(
+                        "break used outside loop".to_string(),
+                    ))
                 } else {
                     Ok(ExoValue::Break)
                 }
@@ -485,7 +506,9 @@ impl ExoShell {
 
             Stmt::Continue => {
                 if self.loop_depth == 0 {
-                    Err(super::error::ShellError::Runtime("continue used outside loop".to_string()))
+                    Err(super::error::ShellError::Runtime(
+                        "continue used outside loop".to_string(),
+                    ))
                 } else {
                     Ok(ExoValue::Continue)
                 }
@@ -525,9 +548,11 @@ impl ExoShell {
     /// Evaluate composite expression types (collections, control flow, method calls).
     async fn eval_complex_expr(&mut self, expr: &Expr<'_>, depth: usize) -> ExoValue<'static> {
         match expr {
-            Expr::MethodCall { object, method, args } => {
-                self.eval_method_call(object, method, args, depth).await
-            }
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+            } => self.eval_method_call(object, method, args, depth).await,
             Expr::FieldAccess { object, field } => {
                 let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
                 eval::get_field(&obj, &field)
@@ -543,12 +568,19 @@ impl ExoShell {
     async fn eval_control_flow_expr(&mut self, expr: &Expr<'_>, depth: usize) -> ExoValue<'static> {
         match expr {
             Expr::Block(stmts) => self.eval_block(stmts, depth).await,
-            Expr::If { cond, then_block, else_block } => {
-                self.eval_if_expr(cond, then_block, else_block.as_deref(), depth).await
+            Expr::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                self.eval_if_expr(cond, then_block, else_block.as_deref(), depth)
+                    .await
             }
-            Expr::For { param, iterable, body } => {
-                self.eval_for(param, iterable, body, depth).await
-            }
+            Expr::For {
+                param,
+                iterable,
+                body,
+            } => self.eval_for(param, iterable, body, depth).await,
             _ => ExoValue::Error("Internal: unexpected expression type".to_string()),
         }
     }
@@ -557,11 +589,7 @@ impl ExoShell {
     async fn eval_ident(&mut self, name: &str, _depth: usize) -> ExoValue<'static> {
         // 変数参照 ($var) または予約語
         if name.starts_with('$') {
-            return self
-                .env
-                .get(&name[1..])
-                .cloned()
-                .unwrap_or(ExoValue::Nil);
+            return self.env.get(&name[1..]).cloned().unwrap_or(ExoValue::Nil);
         }
         match name {
             "true" => ExoValue::Bool(true),
@@ -605,7 +633,11 @@ impl ExoShell {
         depth: usize,
     ) -> ExoValue<'static> {
         match right {
-            Expr::MethodCall { object, method, args } => {
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+            } => {
                 let mut new_args = Vec::with_capacity(args.len() + 1);
                 new_args.push(Expr::Literal(left_val));
                 new_args.extend(args.iter().cloned());
@@ -625,9 +657,7 @@ impl ExoShell {
                 let new_args = vec![Expr::Literal(left_val.clone())];
                 self.apply_method(left_val, func_name, &new_args).await
             }
-            _ => ExoValue::Error(format!(
-                "Pipe operator requires method call on right side"
-            )),
+            _ => ExoValue::Error(format!("Pipe operator requires method call on right side")),
         }
     }
 
@@ -675,11 +705,7 @@ impl ExoShell {
                 if i < arr.len() {
                     arr[i].clone()
                 } else {
-                    ExoValue::Error(format!(
-                        "Index {} out of bounds (len={})",
-                        i,
-                        arr.len()
-                    ))
+                    ExoValue::Error(format!("Index {} out of bounds (len={})", i, arr.len()))
                 }
             }
             (ExoValue::String(s), ExoValue::Int(i)) => {
@@ -695,11 +721,7 @@ impl ExoShell {
     }
 
     /// Evaluate a map literal.
-    async fn eval_map(
-        &mut self,
-        pairs: &[(String, Expr<'_>)],
-        depth: usize,
-    ) -> ExoValue<'static> {
+    async fn eval_map(&mut self, pairs: &[(String, Expr<'_>)], depth: usize) -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         for (key, value_expr) in pairs.iter() {
             let value = Box::pin(self.evaluate_expr_inner(value_expr, depth + 1)).await;
@@ -811,9 +833,17 @@ impl ExoShell {
             self.env.pop_scope();
 
             match res {
-                ExoValue::Break => { break; }
-                ExoValue::Continue => { crate::task::yield_now().await; continue; }
-                ExoValue::Error(_) => { self.loop_depth -= 1; return res; }
+                ExoValue::Break => {
+                    break;
+                }
+                ExoValue::Continue => {
+                    crate::task::yield_now().await;
+                    continue;
+                }
+                ExoValue::Error(_) => {
+                    self.loop_depth -= 1;
+                    return res;
+                }
                 other => last_result = other,
             }
 

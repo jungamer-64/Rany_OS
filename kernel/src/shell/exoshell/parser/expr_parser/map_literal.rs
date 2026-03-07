@@ -1,7 +1,6 @@
 use super::*;
 
 impl ExprParser {
-
     /// マップリテラル: { key: value, ... }
     pub(super) fn parse_map_literal(&mut self) -> Result<Expr<'static>, ParseError> {
         self.advance();

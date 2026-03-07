@@ -5,7 +5,9 @@ use alloc::format;
 use alloc::string::String;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::net::drivers::mlx5_registry::{Mlx5SriovStatus, mlx5_disable_vfs, mlx5_enable_vfs, mlx5_sriov_status};
+use crate::net::drivers::mlx5_registry::{
+    Mlx5SriovStatus, mlx5_disable_vfs, mlx5_enable_vfs, mlx5_sriov_status,
+};
 use crate::security::capability::CAP_NET_ADMIN;
 use crate::shell::exoshell::types::ExoValue;
 

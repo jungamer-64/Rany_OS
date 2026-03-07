@@ -196,7 +196,7 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
         // 制御構造は eval.rs (コンテキストなし式評価) ではサポートしない
         // これらは shell.rs (ステートフル環境) で処理されるべき
         Expr::Block(_) | Expr::If { .. } | Expr::For { .. } => ExoValue::Error(
-            "Control flow expressions are not supported in pure expression context".to_string()
+            "Control flow expressions are not supported in pure expression context".to_string(),
         ),
     }
 }
@@ -561,4 +561,3 @@ mod tests {
         assert!(matches!(result, ExoValue::Bool(false)));
     }
 }
-

@@ -99,7 +99,6 @@ impl ExprParser {
     // Public API
     // ========================================================================
 
-
     /// 文をパース
     pub fn parse_stmt(&mut self) -> Result<Stmt<'static>, ParseError> {
         if self.match_token(&Token::Let) {
@@ -124,7 +123,7 @@ impl ExprParser {
 
         // `=`
         if !self.match_operator("=") {
-             return Err(ParseError::UnexpectedToken {
+            return Err(ParseError::UnexpectedToken {
                 expected: "'='".to_string(),
                 found: format!("{:?}", self.peek()),
             });
@@ -138,37 +137,47 @@ impl ExprParser {
     /// 式文またはコマンド文
     fn parse_expr_stmt(&mut self) -> Result<Stmt<'static>, ParseError> {
         let expr = self.parse_expr()?;
-        
+
         // トップレベルの識別子のみの場合はコマンドとして扱う可能性があるが、
         // 現状は Expr として返し、Evaluator 側で処理するか、
         // ここで Stmt::Command に変換するか。
         // リファクタ案では `Command` を AST レベルでサポートする。
-        
+
         match expr {
             // `cmd arg1 arg2` 形式はサポートしていない（Rust式ではない）。
             // しかし、 `help` や `exit` のような単独識別子はコマンドとして扱いたい。
             // また `cmd(arg)` 形式の MethodCall で object が空文字の場合もコマンド。
-            
             Expr::Ident(name) => {
                 if name == "break" {
                     Ok(Stmt::Break)
                 } else if name == "continue" {
                     Ok(Stmt::Continue)
                 } else {
-                    Ok(Stmt::Command { name, args: Vec::new() })
+                    Ok(Stmt::Command {
+                        name,
+                        args: Vec::new(),
+                    })
                 }
             }
-            
-            Expr::MethodCall { object, method, args } => {
+
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+            } => {
                 // object が Ident("") の場合はグローバル関数呼び出し -> コマンド
                 if let Expr::Ident(ref s) = *object {
                     if s.is_empty() {
-                         return Ok(Stmt::Command { name: method, args });
+                        return Ok(Stmt::Command { name: method, args });
                     }
                 }
-                Ok(Stmt::Expr(Box::new(Expr::MethodCall { object, method, args })))
+                Ok(Stmt::Expr(Box::new(Expr::MethodCall {
+                    object,
+                    method,
+                    args,
+                })))
             }
-            
+
             _ => Ok(Stmt::Expr(Box::new(expr))),
         }
     }
@@ -631,8 +640,12 @@ impl ExprParser {
     /// 波括弧式: マップリテラルまたはブロック式
     fn parse_brace_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         // Heuristic: look ahead for `ident`/`string` followed by `:` to detect map
-        if self.peek_next().map_or(false, |t| matches!(t, Token::Ident(_) | Token::StringLit(_)))
-            && self.tokens.get(self.pos + 2).map_or(false, |t| matches!(t, Token::Colon))
+        if self.peek_next().map_or(false, |t| {
+            matches!(t, Token::Ident(_) | Token::StringLit(_))
+        }) && self
+            .tokens
+            .get(self.pos + 2)
+            .map_or(false, |t| matches!(t, Token::Colon))
         {
             self.parse_map_literal()
         } else {
@@ -645,7 +658,6 @@ impl ExprParser {
 // ============================================================================
 // Convenience Function
 // ============================================================================
-
 
 /// 文字列から直接文をパース
 pub fn parse(input: &str) -> Result<Stmt<'static>, ParseError> {
@@ -671,4 +683,3 @@ pub fn parse_expression(input: &str) -> Result<Expr<'static>, ParseError> {
 
 #[cfg(test)]
 mod tests;
-

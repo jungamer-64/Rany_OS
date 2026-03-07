@@ -907,7 +907,43 @@ impl KernelServices for ExoKernel {
     }
 
     fn time_service(&self) -> Option<&dyn kernel_api::service::time::TimeService> {
-        Some(crate::drivers::time::concrete_service())
+        crate::provider_registry::time_service()
+    }
+
+    fn platform_acpi(&self) -> Option<&dyn kernel_api::service::platform::AcpiServices> {
+        crate::provider_registry::acpi_service()
+    }
+
+    fn platform_pci(&self) -> Option<&dyn kernel_api::service::platform::PciServices> {
+        crate::provider_registry::pci_service()
+    }
+
+    fn platform_apic(&self) -> Option<&dyn kernel_api::service::platform::ApicServices> {
+        crate::provider_registry::apic_service()
+    }
+
+    fn storage(&self) -> Option<&dyn kernel_api::service::storage::StorageServices> {
+        crate::provider_registry::storage_service()
+    }
+
+    fn netdev(&self) -> Option<&dyn kernel_api::service::netdev::NetDeviceServices> {
+        crate::provider_registry::netdev_service()
+    }
+
+    fn input(&self) -> Option<&dyn kernel_api::service::input::InputServices> {
+        crate::provider_registry::input_service()
+    }
+
+    fn serial(&self) -> Option<&dyn kernel_api::service::serial::SerialServices> {
+        crate::provider_registry::serial_service()
+    }
+
+    fn graphics(&self) -> Option<&dyn kernel_api::service::graphics::GraphicsServices> {
+        crate::provider_registry::graphics_service()
+    }
+
+    fn audio(&self) -> Option<&dyn kernel_api::service::audio::AudioServices> {
+        crate::provider_registry::audio_service()
     }
 
     fn gui(&self) -> Option<&dyn kernel_api::service::gui::GuiServices> {

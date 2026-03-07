@@ -1,8 +1,8 @@
 use super::*;
+use kernel_api::service::platform::PciDeviceInfo;
 
 impl SystemIntegration {
-
-    pub(super) fn init_virtio_gpu_device(&mut self, dev: &crate::drivers::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_gpu_device(&mut self, dev: &PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-GPU at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -23,14 +23,12 @@ impl SystemIntegration {
         if let Some(bar0) = dev.bars[0] {
             let bar0_phys = bar0.base();
             let bar0_virt =
-                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
-                    .as_u64();
+                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
 
             let mut initialized_via_pci = false;
-            if let Some(transport) = try_create_pci_transport(
-                dev,
-                crate::drivers::virtio::VirtioDeviceType::Gpu,
-            ) {
+            if let Some(transport) =
+                try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Gpu)
+            {
                 match unsafe {
                     crate::drivers::gpu::init_virtio_gpu_for_device(
                         alloc::boxed::Box::new(transport),
@@ -51,20 +49,26 @@ impl SystemIntegration {
             }
 
             if !initialized_via_pci {
-                use alloc::boxed::Box;
-                use crate::driver_registry::{register_driver, driver_registry};
+                use crate::driver_registry::{driver_registry, register_driver};
                 use crate::drivers::gpu::gpu_driver::VirtioGpuDriver;
+                use alloc::boxed::Box;
 
                 let drv = Box::new(VirtioGpuDriver::new(bar0_virt, iommu_device));
                 match register_driver(drv) {
                     Ok(handle) => {
                         if let Err(e) = driver_registry().probe_and_start(handle) {
-                            self.log(&alloc::format!("    VirtIO-gpu driver start failed: {:?}", e));
+                            self.log(&alloc::format!(
+                                "    VirtIO-gpu driver start failed: {:?}",
+                                e
+                            ));
                         } else {
                             self.log("    VirtIO-gpu driver initialized via DriverRegistry");
                         }
                     }
-                    Err(e) => self.log(&alloc::format!("    VirtIO-gpu driver registration failed: {:?}", e)),
+                    Err(e) => self.log(&alloc::format!(
+                        "    VirtIO-gpu driver registration failed: {:?}",
+                        e
+                    )),
                 }
             }
         } else {
@@ -74,7 +78,7 @@ impl SystemIntegration {
 
     pub(super) fn init_nvme_devices(&mut self) {
         let mut nvme_controller_id: u8 = 0;
-        let nvme_devices = crate::drivers::pci::find_by_class(0x01, 0x08);
+        let nvme_devices = crate::platform::pci::find_by_class(0x01, 0x08);
         for dev in nvme_devices {
             self.log(&alloc::format!(
                 "  Initializing NVMe controller at {:02x}:{:02x}.{}",
@@ -102,8 +106,7 @@ impl SystemIntegration {
             if let Some(bar0) = dev.bars[0] {
                 let bar0_phys = bar0.base();
                 let bar0_virt =
-                    crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
-                        .as_u64();
+                    crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
                 let num_cores = crate::smp::cpu_count();
                 let packed_device_id = Some(
                     ((dev.segment as u64) << 32)
@@ -112,10 +115,14 @@ impl SystemIntegration {
                         | (dev.bdf.function() as u64),
                 );
 
-                match crate::drivers::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
+                match crate::drivers::nvme::init_nvme_polling(
+                    bar0_virt,
+                    num_cores,
+                    packed_device_id,
+                ) {
                     Ok(()) => {
                         self.log("    NVMe driver initialized (polling)");
-                        let apic_id = crate::drivers::apic::local_apic().id() as u32;
+                        let apic_id = crate::platform::apic::local_apic_id();
                         let core_id = crate::smp::current_cpu();
                         crate::drivers::nvme::per_core::register_apic_mapping(apic_id, core_id);
                         if let Err(e) = crate::drivers::nvme::register_with_io_scheduler(
@@ -130,10 +137,7 @@ impl SystemIntegration {
                         }
                     }
                     Err(e) => {
-                        self.log(&alloc::format!(
-                            "    NVMe driver init failed: {}",
-                            e
-                        ));
+                        self.log(&alloc::format!("    NVMe driver init failed: {}", e));
                     }
                 }
             } else {
@@ -145,9 +149,9 @@ impl SystemIntegration {
     }
 
     pub(super) fn init_hda_devices(&mut self) {
-        let hda_devices = crate::drivers::pci::find_by_class(0x04, 0x03);
+        let hda_devices = crate::platform::pci::find_by_class(0x04, 0x03);
         for dev in hda_devices {
-             self.log(&alloc::format!(
+            self.log(&alloc::format!(
                 "  Initializing HDA Audio at {:02x}:{:02x}.{}",
                 dev.bdf.bus(),
                 dev.bdf.device(),
@@ -158,24 +162,28 @@ impl SystemIntegration {
             dev.enable_memory_space();
 
             if let Some(bar0) = dev.bars[0] {
-                 let bar0_phys = bar0.base();
-                 let bar0_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
-                 
-                 use crate::drivers::audio::hda::HdaDriver;
-                 use crate::driver_registry::{register_driver, driver_registry};
-                 use alloc::boxed::Box;
+                let bar0_phys = bar0.base();
+                let bar0_virt =
+                    crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
 
-                 let drv = Box::new(HdaDriver::new(dev, bar0_virt));
-                 match register_driver(drv) {
-                     Ok(handle) => {
-                         if let Err(e) = driver_registry().probe_and_start(handle) {
-                             self.log(&alloc::format!("    HDA driver start failed: {:?}", e));
-                         } else {
-                             self.log("    HDA driver initialized via DriverRegistry");
-                         }
-                     }
-                     Err(e) => self.log(&alloc::format!("    HDA driver registration failed: {:?}", e)),
-                 }
+                use crate::driver_registry::{driver_registry, register_driver};
+                use crate::drivers::audio::hda::HdaDriver;
+                use alloc::boxed::Box;
+
+                let drv = Box::new(HdaDriver::new(dev, bar0_virt));
+                match register_driver(drv) {
+                    Ok(handle) => {
+                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                            self.log(&alloc::format!("    HDA driver start failed: {:?}", e));
+                        } else {
+                            self.log("    HDA driver initialized via DriverRegistry");
+                        }
+                    }
+                    Err(e) => self.log(&alloc::format!(
+                        "    HDA driver registration failed: {:?}",
+                        e
+                    )),
+                }
             } else {
                 self.log("    HDA device found but BAR0 is missing");
             }

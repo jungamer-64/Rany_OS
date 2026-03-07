@@ -2,15 +2,17 @@ use super::*;
 
 mod iterator_impl;
 impl ExoShell {
-
     /// fs.* メソッド（構造化版）- async版
-    pub(super) async fn eval_fs_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_fs_method(
+        &mut self,
+        name: &str,
+        args: &[Expr<'_>],
+    ) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
             "entries" => {
-                let path = Self::extract_string_arg(&args)
-                    .unwrap_or_else(|| self.cwd.clone());
+                let path = Self::extract_string_arg(&args).unwrap_or_else(|| self.cwd.clone());
                 FsNamespace::entries(&path).await
             }
             "read" => {
@@ -30,8 +32,7 @@ impl ExoShell {
                 FsNamespace::remove(&path).await
             }
             "cd" => {
-                let path = Self::extract_string_arg(&args)
-                    .unwrap_or_else(|| String::from("/"));
+                let path = Self::extract_string_arg(&args).unwrap_or_else(|| String::from("/"));
                 self.cwd = if path.starts_with('/') {
                     path
                 } else {
@@ -52,7 +53,11 @@ impl ExoShell {
     }
 
     /// net.* メソッド（構造化版）- async版
-    pub(super) async fn eval_net_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_net_method(
+        &mut self,
+        name: &str,
+        args: &[Expr<'_>],
+    ) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
@@ -157,7 +162,11 @@ impl ExoShell {
     }
 
     /// domain.* メソッド（構造化版）
-    pub(super) async fn eval_domain_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_domain_method(
+        &mut self,
+        name: &str,
+        args: &[Expr<'_>],
+    ) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
@@ -180,7 +189,8 @@ impl ExoShell {
                         _ => None,
                     })
                     .unwrap_or(0);
-                self.call_namespace("domain", "kill", &[ExoValue::Int(id as i64)]).await
+                self.call_namespace("domain", "kill", &[ExoValue::Int(id as i64)])
+                    .await
             }
             _ => ExoValue::Error(
                 ParseError::UnknownMethod {
@@ -194,7 +204,11 @@ impl ExoShell {
     }
 
     /// cap.* メソッド（構造化版）
-    pub(super) async fn eval_cap_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_cap_method(
+        &mut self,
+        name: &str,
+        args: &[Expr<'_>],
+    ) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
@@ -212,15 +226,13 @@ impl ExoShell {
             "grant" => Self::eval_cap_grant(&args),
             "tokens" => {
                 // Optional domain id as first arg
-                let domain = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::Int(n) => Some(*n as u64),
-                        ExoValue::String(s) => s.parse().ok(),
-                        _ => None,
-                    });
+                let domain = args.first().and_then(|v| match v {
+                    ExoValue::Int(n) => Some(*n as u64),
+                    ExoValue::String(s) => s.parse().ok(),
+                    _ => None,
+                });
                 CapNamespace::tokens(domain)
-            },
+            }
             _ => ExoValue::Error(
                 ParseError::UnknownMethod {
                     namespace: String::from("cap"),
@@ -303,7 +315,9 @@ impl ExoShell {
     }
 
     /// grant対象のターゲットを解決する
-    pub(super) fn resolve_grant_target(args: &[ExoValue<'static>]) -> Result<String, ExoValue<'static>> {
+    pub(super) fn resolve_grant_target(
+        args: &[ExoValue<'static>],
+    ) -> Result<String, ExoValue<'static>> {
         let target_arg = if args.len() >= 3 {
             args.get(2)
         } else if args.len() == 2 {
@@ -358,13 +372,21 @@ impl ExoShell {
     }
 
     /// sys.* メソッド（名前空間経由）
-    pub(super) async fn eval_sys_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_sys_method(
+        &mut self,
+        name: &str,
+        args: &[Expr<'_>],
+    ) -> ExoValue<'static> {
         let evaluated = self.evaluate_args(args).await;
         self.call_namespace("sys", name, &evaluated).await
     }
 
     /// driver.* メソッド（名前空間経由）
-    pub(super) async fn eval_driver_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_driver_method(
+        &mut self,
+        name: &str,
+        args: &[Expr<'_>],
+    ) -> ExoValue<'static> {
         let evaluated = self.evaluate_args(args).await;
         self.call_namespace("driver", name, &evaluated).await
     }
@@ -414,7 +436,11 @@ impl ExoShell {
     }
 
     /// 整数(Int)に対するメソッド
-    pub(super) fn apply_int_method(n: i64, method: &str, args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub(super) fn apply_int_method(
+        n: i64,
+        method: &str,
+        args: &[ExoValue<'static>],
+    ) -> ExoValue<'static> {
         match method {
             "abs" => ExoValue::Int(n.abs()),
             "hex" => ExoValue::String(Cow::Owned(alloc::format!("0x{:x}", n))),
@@ -435,11 +461,17 @@ impl ExoShell {
             "clamp" => {
                 let min = args
                     .first()
-                    .and_then(|v| match v { ExoValue::Int(n) => Some(*n), _ => None })
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n),
+                        _ => None,
+                    })
                     .unwrap_or(i64::MIN);
                 let max = args
                     .get(1)
-                    .and_then(|v| match v { ExoValue::Int(n) => Some(*n), _ => None })
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n),
+                        _ => None,
+                    })
                     .unwrap_or(i64::MAX);
                 ExoValue::Int(n.clamp(min, max))
             }
@@ -456,11 +488,23 @@ impl ExoShell {
     }
 
     /// 浮動小数点(Float)に対するメソッド
-    pub(super) fn apply_float_method(f: f64, method: &str, args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub(super) fn apply_float_method(
+        f: f64,
+        method: &str,
+        args: &[ExoValue<'static>],
+    ) -> ExoValue<'static> {
         match method {
             "abs" => ExoValue::Float(if f < 0.0 { -f } else { f }),
-            "ceil" => ExoValue::Float(if f >= 0.0 { (f as i64 + if f > f as i64 as f64 { 1 } else { 0 }) as f64 } else { (f as i64) as f64 }),
-            "floor" => ExoValue::Float(if f >= 0.0 { (f as i64) as f64 } else { (f as i64 - if f < f as i64 as f64 { 1 } else { 0 }) as f64 }),
+            "ceil" => ExoValue::Float(if f >= 0.0 {
+                (f as i64 + if f > f as i64 as f64 { 1 } else { 0 }) as f64
+            } else {
+                (f as i64) as f64
+            }),
+            "floor" => ExoValue::Float(if f >= 0.0 {
+                (f as i64) as f64
+            } else {
+                (f as i64 - if f < f as i64 as f64 { 1 } else { 0 }) as f64
+            }),
             "round" => {
                 let precision = args
                     .first()
@@ -469,18 +513,22 @@ impl ExoShell {
                         _ => None,
                     })
                     .unwrap_or(0);
-                
+
                 // Simple rounding without pow/libm
                 if precision == 0 {
-                    ExoValue::Float(if f >= 0.0 { (f + 0.5) as i64 as f64 } else { (f - 0.5) as i64 as f64 })
+                    ExoValue::Float(if f >= 0.0 {
+                        (f + 0.5) as i64 as f64
+                    } else {
+                        (f - 0.5) as i64 as f64
+                    })
                 } else {
                     // For non-zero precision, we'd need pow, but we avoid libm.
                     // Return as-is or implement simple int pow if critical.
-                    ExoValue::Float(f) 
+                    ExoValue::Float(f)
                 }
             }
             "sqrt" => {
-                // sqrt without libm is hard in no_std core. 
+                // sqrt without libm is hard in no_std core.
                 // Using a very simple Newton-Raphson for basic shell needs if f > 0
                 if f < 0.0 {
                     ExoValue::Error(String::from("Cannot take sqrt of negative number"))
@@ -489,7 +537,8 @@ impl ExoShell {
                 } else {
                     let mut x = f;
                     let mut y = 1.0;
-                    for _ in 0..10 { // 10 iterations is enough for shell display
+                    for _ in 0..10 {
+                        // 10 iterations is enough for shell display
                         x = (x + y) / 2.0;
                         y = f / x;
                     }
@@ -519,7 +568,9 @@ impl ExoShell {
             "name" => ExoValue::String(Cow::Owned(entry.name)),
             "path" => ExoValue::String(Cow::Owned(entry.path)),
             "size" => ExoValue::Int(entry.size as i64),
-            "type" | "file_type" => ExoValue::String(Cow::Owned(alloc::format!("{:?}", entry.file_type))),
+            "type" | "file_type" => {
+                ExoValue::String(Cow::Owned(alloc::format!("{:?}", entry.file_type)))
+            }
             "owner" => ExoValue::String(Cow::Owned(entry.owner)),
             "inode" => ExoValue::Int(entry.inode as i64),
             "is_dir" => ExoValue::Bool(entry.file_type == FileType::Directory),
@@ -527,11 +578,23 @@ impl ExoShell {
             "is_symlink" => ExoValue::Bool(entry.file_type == FileType::Symlink),
             "to_map" => {
                 let mut map = BTreeMap::new();
-                map.insert(String::from("name"), ExoValue::String(Cow::Owned(entry.name)));
-                map.insert(String::from("path"), ExoValue::String(Cow::Owned(entry.path)));
+                map.insert(
+                    String::from("name"),
+                    ExoValue::String(Cow::Owned(entry.name)),
+                );
+                map.insert(
+                    String::from("path"),
+                    ExoValue::String(Cow::Owned(entry.path)),
+                );
                 map.insert(String::from("size"), ExoValue::Int(entry.size as i64));
-                map.insert(String::from("type"), ExoValue::String(Cow::Owned(alloc::format!("{:?}", entry.file_type))));
-                map.insert(String::from("owner"), ExoValue::String(Cow::Owned(entry.owner)));
+                map.insert(
+                    String::from("type"),
+                    ExoValue::String(Cow::Owned(alloc::format!("{:?}", entry.file_type))),
+                );
+                map.insert(
+                    String::from("owner"),
+                    ExoValue::String(Cow::Owned(entry.owner)),
+                );
                 map.insert(String::from("inode"), ExoValue::Int(entry.inode as i64));
                 ExoValue::Map(map)
             }
@@ -554,9 +617,7 @@ impl ExoShell {
             "first" | "head" => list.first().cloned().unwrap_or(ExoValue::Nil),
             "last" | "tail" => list.last().cloned().unwrap_or(ExoValue::Nil),
             "reverse" => ExoValue::Array(list.into_iter().rev().collect()),
-            "sum" | "avg" | "average" | "min" | "max" => {
-                Self::apply_array_aggregate(list, method)
-            }
+            "sum" | "avg" | "average" | "min" | "max" => Self::apply_array_aggregate(list, method),
             "take" | "limit" | "skip" | "offset" => {
                 self.apply_array_slice(list, method, args).await
             }
@@ -613,8 +674,7 @@ impl ExoShell {
             }
             "group_by" => {
                 let args = self.evaluate_args(args).await;
-                let field = Self::extract_string_arg(&args)
-                    .unwrap_or_else(|| String::from("name"));
+                let field = Self::extract_string_arg(&args).unwrap_or_else(|| String::from("name"));
                 let mut groups: BTreeMap<String, Vec<ExoValue<'static>>> = BTreeMap::new();
                 for item in list {
                     let key = match self.get_field_value(&item, &field) {
@@ -649,8 +709,7 @@ impl ExoShell {
                 // reduce(initial, |acc, x| acc + x) — 遅延クロージャ不対応のため簡易版
                 // reduce("sum") / reduce("product") / reduce("concat") の既定演算
                 let args = self.evaluate_args(args).await;
-                let op = Self::extract_string_arg(&args)
-                    .unwrap_or_else(|| String::from("sum"));
+                let op = Self::extract_string_arg(&args).unwrap_or_else(|| String::from("sum"));
                 match op.as_str() {
                     "sum" => {
                         let sum: i64 = list
@@ -673,15 +732,11 @@ impl ExoShell {
                         ExoValue::Int(product)
                     }
                     "concat" => {
-                        let parts: Vec<String> = list
-                            .iter()
-                            .map(|v| alloc::format!("{}", v))
-                            .collect();
+                        let parts: Vec<String> =
+                            list.iter().map(|v| alloc::format!("{}", v)).collect();
                         ExoValue::String(Cow::Owned(parts.join("")))
                     }
-                    _ => ExoValue::Error(alloc::format!(
-                        "reduce supports: sum, product, concat"
-                    )),
+                    _ => ExoValue::Error(alloc::format!("reduce supports: sum, product, concat")),
                 }
             }
             "is_empty" => ExoValue::Bool(list.is_empty()),
@@ -693,7 +748,10 @@ impl ExoShell {
     }
 
     /// 配列の集約メソッド（sum, avg, min, max）
-    pub(super) fn apply_array_aggregate(list: Vec<ExoValue<'static>>, method: &str) -> ExoValue<'static> {
+    pub(super) fn apply_array_aggregate(
+        list: Vec<ExoValue<'static>>,
+        method: &str,
+    ) -> ExoValue<'static> {
         match method {
             "sum" => {
                 let sum: i64 = list
@@ -751,19 +809,13 @@ impl ExoShell {
         args: &[Expr<'_>],
     ) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
-        let n = args
-            .first()
-            .and_then(|v| match v {
-                ExoValue::Int(n) => Some(*n as usize),
-                _ => None,
-            });
+        let n = args.first().and_then(|v| match v {
+            ExoValue::Int(n) => Some(*n as usize),
+            _ => None,
+        });
         match method {
-            "take" | "limit" => {
-                ExoValue::Array(list.into_iter().take(n.unwrap_or(10)).collect())
-            }
-            "skip" | "offset" => {
-                ExoValue::Array(list.into_iter().skip(n.unwrap_or(0)).collect())
-            }
+            "take" | "limit" => ExoValue::Array(list.into_iter().take(n.unwrap_or(10)).collect()),
+            "skip" | "offset" => ExoValue::Array(list.into_iter().skip(n.unwrap_or(0)).collect()),
             _ => ExoValue::Nil,
         }
     }
@@ -830,8 +882,8 @@ impl ExoShell {
                 self.sort_array(list, field.as_deref(), desc)
             }
             "join" => {
-                let sep = Self::extract_string_arg(&evaluated_args)
-                    .unwrap_or_else(|| String::from(", "));
+                let sep =
+                    Self::extract_string_arg(&evaluated_args).unwrap_or_else(|| String::from(", "));
                 let joined: String = list
                     .iter()
                     .map(|v| format!("{}", v))

@@ -26,7 +26,9 @@ impl DomainNamespace {
             .into_iter()
             .map(|d| {
                 let state = match d.state {
-                    kernel_api::service::shell::DomainState::Initializing => DomainState::Initializing,
+                    kernel_api::service::shell::DomainState::Initializing => {
+                        DomainState::Initializing
+                    }
                     kernel_api::service::shell::DomainState::Running => DomainState::Running,
                     kernel_api::service::shell::DomainState::Suspended => DomainState::Suspended,
                     kernel_api::service::shell::DomainState::Stopped => DomainState::Stopped,
@@ -77,10 +79,7 @@ impl DomainNamespace {
 
     /// ドメインを終了
     /// Requires owner or CAP_KILL
-    fn terminate_with_caps(
-        id: u64,
-        caps: &crate::security::CapabilitySet,
-    ) -> ExoValue<'static> {
+    fn terminate_with_caps(id: u64, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
         if let Some(shell) = kernel_api::service::kernel::instance().shell() {
             let caller = shell.current_domain();
             let has_cap_kill = caps.has_capability(CAP_KILL);

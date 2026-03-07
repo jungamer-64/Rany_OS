@@ -37,6 +37,7 @@ pub mod driver;
 pub mod error;
 
 pub mod ipc;
+pub mod provider;
 
 pub mod resource;
 
@@ -58,8 +59,29 @@ mod service_kernel_impl;
 #[path = "gui.rs"]
 mod service_gui_impl;
 
+#[path = "graphics.rs"]
+mod service_graphics_impl;
+
+#[path = "input.rs"]
+mod service_input_impl;
+
+#[path = "netdev.rs"]
+mod service_netdev_impl;
+
+#[path = "platform.rs"]
+mod service_platform_impl;
+
+#[path = "audio.rs"]
+mod service_audio_impl;
+
+#[path = "serial.rs"]
+mod service_serial_impl;
+
 #[path = "shell.rs"]
 mod service_shell_impl;
+
+#[path = "storage.rs"]
+mod service_storage_impl;
 
 #[path = "time.rs"]
 mod service_time_impl;
@@ -67,6 +89,10 @@ mod service_time_impl;
 pub mod abi {
     pub mod driver {
         pub use crate::driver_abi_impl::*;
+    }
+
+    pub mod provider {
+        pub use crate::provider::*;
     }
 
     #[cfg(feature = "cell_runtime")]
@@ -84,8 +110,36 @@ pub mod service {
         pub use crate::service_gui_impl::*;
     }
 
+    pub mod graphics {
+        pub use crate::service_graphics_impl::*;
+    }
+
+    pub mod input {
+        pub use crate::service_input_impl::*;
+    }
+
+    pub mod netdev {
+        pub use crate::service_netdev_impl::*;
+    }
+
+    pub mod platform {
+        pub use crate::service_platform_impl::*;
+    }
+
+    pub mod audio {
+        pub use crate::service_audio_impl::*;
+    }
+
+    pub mod serial {
+        pub use crate::service_serial_impl::*;
+    }
+
     pub mod shell {
         pub use crate::service_shell_impl::*;
+    }
+
+    pub mod storage {
+        pub use crate::service_storage_impl::*;
     }
 
     pub mod time {

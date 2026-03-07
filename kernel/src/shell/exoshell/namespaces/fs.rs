@@ -36,8 +36,8 @@ impl FsNamespace {
                         let file_type = match e.file_type {
                             kernel_api::service::shell::FileType::Directory => FileType::Directory,
                             kernel_api::service::shell::FileType::Symlink => FileType::Symlink,
-                            kernel_api::service::shell::FileType::CharDevice | 
-                            kernel_api::service::shell::FileType::BlockDevice => FileType::Device,
+                            kernel_api::service::shell::FileType::CharDevice
+                            | kernel_api::service::shell::FileType::BlockDevice => FileType::Device,
                             kernel_api::service::shell::FileType::Socket => FileType::Socket,
                             kernel_api::service::shell::FileType::Fifo => FileType::Pipe,
                             _ => FileType::Regular,
@@ -55,7 +55,8 @@ impl FsNamespace {
                             permissions: Permissions {
                                 read: true,
                                 write: true,
-                                execute: e.file_type == kernel_api::service::shell::FileType::Directory,
+                                execute: e.file_type
+                                    == kernel_api::service::shell::FileType::Directory,
                                 delete: true,
                                 grant: false,
                             },
@@ -74,7 +75,7 @@ impl FsNamespace {
     /// ファイルを読み取り（ゼロコピー対応）
     pub async fn read(path: &str) -> ExoValue<'static> {
         use crate::shell::exoshell::buffer_view::KernelBufferView;
-        
+
         crate::task::yield_now().await;
 
         let shell = match kernel_api::service::kernel::instance().shell() {
@@ -243,7 +244,11 @@ impl FsNamespace {
         }
     }
 
-    fn extract_str_arg<'a>(args: &'a [ExoValue<'static>], index: usize, default: &'a str) -> &'a str {
+    fn extract_str_arg<'a>(
+        args: &'a [ExoValue<'static>],
+        index: usize,
+        default: &'a str,
+    ) -> &'a str {
         args.get(index)
             .and_then(|v| match v {
                 ExoValue::String(s) => Some(s.as_ref()),
@@ -252,22 +257,28 @@ impl FsNamespace {
             .unwrap_or(default)
     }
 
-    fn check_write_cap(caps: &crate::security::CapabilitySet, operation: &str) -> Result<(), ExoValue<'static>> {
+    fn check_write_cap(
+        caps: &crate::security::CapabilitySet,
+        operation: &str,
+    ) -> Result<(), ExoValue<'static>> {
         if caps.has_capability(CAP_DAC_OVERRIDE) {
             Ok(())
         } else {
             Err(ExoValue::Error(format!(
-                "Permission denied: CAP_DAC_OVERRIDE required for {}", operation
+                "Permission denied: CAP_DAC_OVERRIDE required for {}",
+                operation
             )))
         }
     }
 
     fn extract_write_data(args: &[ExoValue<'static>]) -> Vec<u8> {
-        args.get(1).map(|v| match v {
-            ExoValue::String(s) => s.as_bytes().to_vec(),
-            ExoValue::BufferRef(buf) => buf.to_vec(),
-            _ => Vec::new(),
-        }).unwrap_or_default()
+        args.get(1)
+            .map(|v| match v {
+                ExoValue::String(s) => s.as_bytes().to_vec(),
+                ExoValue::BufferRef(buf) => buf.to_vec(),
+                _ => Vec::new(),
+            })
+            .unwrap_or_default()
     }
 
     async fn call_read_op(method: &str, args: &[ExoValue<'static>]) -> ExoValue<'static> {
@@ -279,7 +290,10 @@ impl FsNamespace {
         }
     }
 
-    async fn call_write_single_arg_op(method: &str, args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    async fn call_write_single_arg_op(
+        method: &str,
+        args: &[ExoValue<'static>],
+    ) -> ExoValue<'static> {
         let path = Self::extract_str_arg(args, 0, "");
         match method {
             "mkdir" => Self::mkdir(path).await,

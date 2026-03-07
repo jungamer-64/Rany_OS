@@ -26,8 +26,8 @@
 //! ```
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 /// グローバルエポック
@@ -86,11 +86,15 @@ impl EpochGuard {
         let core_id = core_id.min(MAX_CORES - 1);
 
         // このコアをアクティブにマーク
-        PER_CORE_EPOCHS[core_id].active.store(true, Ordering::Release);
+        PER_CORE_EPOCHS[core_id]
+            .active
+            .store(true, Ordering::Release);
 
         // 現在のグローバルエポックを記録
         let current_epoch = GLOBAL_EPOCH.load(Ordering::Acquire);
-        PER_CORE_EPOCHS[core_id].epoch.store(current_epoch, Ordering::Release);
+        PER_CORE_EPOCHS[core_id]
+            .epoch
+            .store(current_epoch, Ordering::Release);
 
         Self { core_id }
     }
@@ -104,7 +108,9 @@ impl EpochGuard {
 impl Drop for EpochGuard {
     fn drop(&mut self) {
         // Quiescent Point: クリティカルセクションを離脱
-        PER_CORE_EPOCHS[self.core_id].active.store(false, Ordering::Release);
+        PER_CORE_EPOCHS[self.core_id]
+            .active
+            .store(false, Ordering::Release);
     }
 }
 
@@ -377,4 +383,3 @@ mod tests {
         assert!(all_cores_past_epoch(start_epoch));
     }
 }
-

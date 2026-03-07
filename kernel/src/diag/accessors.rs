@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// パフォーマンス統計にアクセス
 pub fn with_perf_stats<F, R>(f: F) -> Option<R>
 where
@@ -44,4 +43,3 @@ pub fn increment(name: &'static str) {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

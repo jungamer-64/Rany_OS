@@ -6,6 +6,11 @@ pub(crate) fn concrete_service() -> &'static dyn TimeService {
     time_driver::time_service()
 }
 
+#[inline]
+pub fn register_builtin_service() {
+    crate::provider_registry::provider_registry().register_builtin_time(concrete_service());
+}
+
 /// Preferred time access path for kernel code.
 ///
 /// Once the kernel service table is installed, this resolves through

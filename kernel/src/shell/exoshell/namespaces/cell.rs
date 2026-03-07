@@ -16,8 +16,8 @@ use crate::driver_domain::fault::{self, TestFaultKind};
 use crate::driver_domain::hot_swap::{self, HotSwapState};
 use crate::driver_domain::lifecycle;
 use crate::driver_domain::{DriverDomainId, DriverDomainSnapshot};
-use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_MODULE};
 use crate::security::CapabilitySet;
+use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_MODULE};
 use crate::shell::exoshell::types::ExoValue;
 
 pub struct CellNamespace;
@@ -70,7 +70,11 @@ impl CellNamespace {
         v.map(ExoValue::Bool).unwrap_or(ExoValue::Nil)
     }
 
-    fn map_insert(map: &mut BTreeMap<String, ExoValue<'static>>, key: &str, val: ExoValue<'static>) {
+    fn map_insert(
+        map: &mut BTreeMap<String, ExoValue<'static>>,
+        key: &str,
+        val: ExoValue<'static>,
+    ) {
         map.insert(String::from(key), val);
     }
 
@@ -111,14 +115,20 @@ impl CellNamespace {
                 if let Ok(id) = s.parse::<u64>() {
                     Ok(DriverDomainId::new(id))
                 } else {
-                    Err(String::from("Expected driver_domain_id (int or numeric string)"))
+                    Err(String::from(
+                        "Expected driver_domain_id (int or numeric string)",
+                    ))
                 }
             }
-            _ => Err(String::from("Expected driver_domain_id (int or numeric string)")),
+            _ => Err(String::from(
+                "Expected driver_domain_id (int or numeric string)",
+            )),
         }
     }
 
-    fn resolve_driver_domain_ref(args: &[ExoValue<'static>]) -> Result<DriverDomainId, ExoValue<'static>> {
+    fn resolve_driver_domain_ref(
+        args: &[ExoValue<'static>],
+    ) -> Result<DriverDomainId, ExoValue<'static>> {
         let Some(first) = args.first() else {
             return Err(ExoValue::Error(String::from(
                 "Missing driver cell target (id or name)",
@@ -140,20 +150,46 @@ impl CellNamespace {
             .ok_or_else(|| ExoValue::Error(format!("DriverCell '{}' not found", name)))
     }
 
-    fn driver_domain_stats_map(stats: &crate::driver_domain::stats::DriverDomainStats) -> ExoValue<'static> {
+    fn driver_domain_stats_map(
+        stats: &crate::driver_domain::stats::DriverDomainStats,
+    ) -> ExoValue<'static> {
         let mut map = BTreeMap::new();
-        Self::map_insert(&mut map, "start_count", Self::vint_u64(stats.start_count as u64));
-        Self::map_insert(&mut map, "stop_count", Self::vint_u64(stats.stop_count as u64));
-        Self::map_insert(&mut map, "fault_count", Self::vint_u64(stats.fault_count as u64));
-        Self::map_insert(&mut map, "restart_count", Self::vint_u64(stats.restart_count as u64));
-        Self::map_insert(&mut map, "hot_swap_count", Self::vint_u64(stats.hot_swap_count as u64));
+        Self::map_insert(
+            &mut map,
+            "start_count",
+            Self::vint_u64(stats.start_count as u64),
+        );
+        Self::map_insert(
+            &mut map,
+            "stop_count",
+            Self::vint_u64(stats.stop_count as u64),
+        );
+        Self::map_insert(
+            &mut map,
+            "fault_count",
+            Self::vint_u64(stats.fault_count as u64),
+        );
+        Self::map_insert(
+            &mut map,
+            "restart_count",
+            Self::vint_u64(stats.restart_count as u64),
+        );
+        Self::map_insert(
+            &mut map,
+            "hot_swap_count",
+            Self::vint_u64(stats.hot_swap_count as u64),
+        );
         ExoValue::Map(map)
     }
 
     fn driver_domain_snapshot_to_map(snap: &DriverDomainSnapshot) -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         Self::map_insert(&mut map, "id", Self::vint_u64(snap.id.as_u64()));
-        Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(snap.id.as_u64()));
+        Self::map_insert(
+            &mut map,
+            "driver_domain_id",
+            Self::vint_u64(snap.id.as_u64()),
+        );
         Self::map_insert(&mut map, "name", Self::vstr(snap.name.clone()));
         Self::map_insert(&mut map, "state", Self::vstr(format!("{}", snap.state)));
         Self::map_insert(
@@ -171,8 +207,16 @@ impl CellNamespace {
             "domain_id",
             Self::opt_u64(snap.domain_id.map(|d| d.as_u64())),
         );
-        Self::map_insert(&mut map, "driver_count", Self::vint_usize(snap.driver_count));
-        Self::map_insert(&mut map, "priority", Self::vstr(format!("{:?}", snap.priority)));
+        Self::map_insert(
+            &mut map,
+            "driver_count",
+            Self::vint_usize(snap.driver_count),
+        );
+        Self::map_insert(
+            &mut map,
+            "priority",
+            Self::vstr(format!("{:?}", snap.priority)),
+        );
         Self::map_insert(
             &mut map,
             "cpu_limit_percent",
@@ -190,7 +234,11 @@ impl CellNamespace {
             "consecutive_faults",
             Self::vint_u64(snap.consecutive_faults as u64),
         );
-        Self::map_insert(&mut map, "total_faults", Self::vint_u64(snap.total_faults as u64));
+        Self::map_insert(
+            &mut map,
+            "total_faults",
+            Self::vint_u64(snap.total_faults as u64),
+        );
         Self::map_insert(
             &mut map,
             "restart_policy",
@@ -206,7 +254,11 @@ impl CellNamespace {
             "last_health_failure",
             Self::opt_string(snap.last_health_failure.clone()),
         );
-        Self::map_insert(&mut map, "stats", Self::driver_domain_stats_map(&snap.stats));
+        Self::map_insert(
+            &mut map,
+            "stats",
+            Self::driver_domain_stats_map(&snap.stats),
+        );
         ExoValue::Map(map)
     }
 
@@ -268,7 +320,7 @@ impl CellNamespace {
             _ => {
                 return Err(ExoValue::Error(String::from(
                     "Usage: cell.load(path, { name: \"...\", allow_unsafe: bool }?)",
-                )))
+                )));
             }
         };
 
@@ -284,7 +336,7 @@ impl CellNamespace {
                             _ => {
                                 return Err(ExoValue::Error(String::from(
                                     "cell.load opts.name must be string",
-                                )))
+                                )));
                             }
                         }
                     }
@@ -299,7 +351,7 @@ impl CellNamespace {
                 _ => {
                     return Err(ExoValue::Error(String::from(
                         "cell.load second argument must be a map",
-                    )))
+                    )));
                 }
             }
         }
@@ -318,7 +370,7 @@ impl CellNamespace {
             _ => {
                 return Err(ExoValue::Error(String::from(
                     "Usage: cell.wait_quiescent(target_epoch, max_attempts?)",
-                )))
+                )));
             }
         };
 
@@ -333,7 +385,7 @@ impl CellNamespace {
             _ => {
                 return Err(ExoValue::Error(String::from(
                     "cell.wait_quiescent max_attempts must be non-negative integer",
-                )))
+                )));
             }
         };
 
@@ -348,7 +400,11 @@ impl CellNamespace {
             .to_string()
     }
 
-    fn parse_path_arg(args: &[ExoValue<'static>], idx: usize, usage: &str) -> Result<String, ExoValue<'static>> {
+    fn parse_path_arg(
+        args: &[ExoValue<'static>],
+        idx: usize,
+        usage: &str,
+    ) -> Result<String, ExoValue<'static>> {
         match args.get(idx) {
             Some(ExoValue::String(s)) => Ok(s.as_ref().to_string()),
             _ => Err(ExoValue::Error(String::from(usage))),
@@ -366,7 +422,11 @@ impl CellNamespace {
         match hot_swap::health_status(id) {
             Ok(h) => {
                 let mut map = BTreeMap::new();
-                Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(h.driver_domain_id.as_u64()));
+                Self::map_insert(
+                    &mut map,
+                    "driver_domain_id",
+                    Self::vint_u64(h.driver_domain_id.as_u64()),
+                );
                 Self::map_insert(&mut map, "state", Self::vstr(format!("{}", h.state)));
                 Self::map_insert(
                     &mut map,
@@ -403,13 +463,19 @@ impl CellNamespace {
         let Some(cid) = loader_cell_id else {
             return ExoValue::Nil;
         };
-        let Some(p) = crate::loader::live_update::live_update_manager().pending_status(cid.as_u64()) else {
+        let Some(p) =
+            crate::loader::live_update::live_update_manager().pending_status(cid.as_u64())
+        else {
             return ExoValue::Nil;
         };
         let mut map = BTreeMap::new();
         Self::map_insert(&mut map, "old_cell_id", Self::vint_u64(p.old_cell_id));
         Self::map_insert(&mut map, "new_cell_id", Self::vint_u64(p.new_cell_id));
-        Self::map_insert(&mut map, "started_at_tick", Self::vint_u64(p.started_at_tick));
+        Self::map_insert(
+            &mut map,
+            "started_at_tick",
+            Self::vint_u64(p.started_at_tick),
+        );
         Self::map_insert(&mut map, "deadline_tick", Self::vint_u64(p.deadline_tick));
         Self::map_insert(&mut map, "health_failed", ExoValue::Bool(p.health_failed));
         ExoValue::Map(map)
@@ -421,7 +487,11 @@ impl CellNamespace {
             .into_iter()
             .map(|snap| {
                 let mut map = BTreeMap::new();
-                Self::map_insert(&mut map, "driver_domain_id", Self::vint_u64(snap.id.as_u64()));
+                Self::map_insert(
+                    &mut map,
+                    "driver_domain_id",
+                    Self::vint_u64(snap.id.as_u64()),
+                );
                 Self::map_insert(&mut map, "name", Self::vstr(snap.name));
                 Self::map_insert(&mut map, "state", Self::vstr(format!("{}", snap.state)));
                 Self::map_insert(
@@ -439,7 +509,11 @@ impl CellNamespace {
                     "domain_id",
                     Self::opt_u64(snap.domain_id.map(|d| d.as_u64())),
                 );
-                Self::map_insert(&mut map, "driver_count", Self::vint_usize(snap.driver_count));
+                Self::map_insert(
+                    &mut map,
+                    "driver_count",
+                    Self::vint_usize(snap.driver_count),
+                );
                 Self::map_insert(
                     &mut map,
                     "validation_deadline_tick",
@@ -460,7 +534,9 @@ impl CellNamespace {
         let manager = driver_domain::driver_domain_manager();
         let snap = match manager.with_cell(id, |cell| cell.snapshot()) {
             Ok(s) => s,
-            Err(e) => return ExoValue::Error(format!("DriverCell {} not found: {}", id.as_u64(), e)),
+            Err(e) => {
+                return ExoValue::Error(format!("DriverCell {} not found: {}", id.as_u64(), e));
+            }
         };
 
         let loader_cell = snap.cell_id.and_then(|cid| {
@@ -478,8 +554,16 @@ impl CellNamespace {
         let current_epoch = crate::epoch::current_epoch();
         let target_epoch = current_epoch.saturating_sub(1);
         let mut epoch_hint = BTreeMap::new();
-        Self::map_insert(&mut epoch_hint, "current_epoch", Self::vint_u64(current_epoch));
-        Self::map_insert(&mut epoch_hint, "target_epoch", Self::vint_u64(target_epoch));
+        Self::map_insert(
+            &mut epoch_hint,
+            "current_epoch",
+            Self::vint_u64(current_epoch),
+        );
+        Self::map_insert(
+            &mut epoch_hint,
+            "target_epoch",
+            Self::vint_u64(target_epoch),
+        );
         Self::map_insert(
             &mut epoch_hint,
             "all_cores_past_target",
@@ -492,8 +576,16 @@ impl CellNamespace {
         );
 
         let mut out = BTreeMap::new();
-        Self::map_insert(&mut out, "driver_domain", Self::driver_domain_snapshot_to_map(&snap));
-        Self::map_insert(&mut out, "loader_cell", loader_cell.unwrap_or(ExoValue::Nil));
+        Self::map_insert(
+            &mut out,
+            "driver_domain",
+            Self::driver_domain_snapshot_to_map(&snap),
+        );
+        Self::map_insert(
+            &mut out,
+            "loader_cell",
+            loader_cell.unwrap_or(ExoValue::Nil),
+        );
         Self::map_insert(&mut out, "live_update", ExoValue::Map(live_update));
         Self::map_insert(&mut out, "epoch_hint", ExoValue::Map(epoch_hint));
         ExoValue::Map(out)
@@ -535,7 +627,11 @@ impl CellNamespace {
                     "required_caps_hex",
                     Self::vstr(format!("{:#x}", cell.required_caps)),
                 );
-                Self::map_insert(&mut node, "pkey", Self::opt_u64(cell.pkey.map(|p| p as u64)));
+                Self::map_insert(
+                    &mut node,
+                    "pkey",
+                    Self::opt_u64(cell.pkey.map(|p| p as u64)),
+                );
                 Self::map_insert(
                     &mut node,
                     "driver_domain_id",
@@ -614,44 +710,55 @@ impl CellNamespace {
         for dep in deps.dependencies.iter() {
             let kernel = crate::loader::type_id::get_kernel_interface(&dep.interface);
             let mut m = BTreeMap::new();
-            let (kernel_present, kernel_hash_hex, kernel_version, hash_match, version_compatible, compatible, error) =
-                if let Some(info) = kernel {
-                    let hash_match = info.hash == dep.hash;
-                    let version_compatible = info.version.is_backward_compatible(&dep.min_version);
-                    let compatible = hash_match && version_compatible;
-                    let error = if compatible {
-                        None
-                    } else if !hash_match {
-                        Some(String::from("hash_mismatch"))
-                    } else {
-                        Some(String::from("version_incompatible"))
-                    };
-                    (
-                        Some(true),
-                        Some(format!("{:#x}", info.hash)),
-                        Some(format!("{}", info.version)),
-                        Some(hash_match),
-                        Some(version_compatible),
-                        Some(compatible),
-                        error,
-                    )
+            let (
+                kernel_present,
+                kernel_hash_hex,
+                kernel_version,
+                hash_match,
+                version_compatible,
+                compatible,
+                error,
+            ) = if let Some(info) = kernel {
+                let hash_match = info.hash == dep.hash;
+                let version_compatible = info.version.is_backward_compatible(&dep.min_version);
+                let compatible = hash_match && version_compatible;
+                let error = if compatible {
+                    None
+                } else if !hash_match {
+                    Some(String::from("hash_mismatch"))
                 } else {
-                    (
-                        Some(false),
-                        None,
-                        None,
-                        Some(false),
-                        Some(false),
-                        Some(false),
-                        Some(String::from("kernel_interface_not_found")),
-                    )
+                    Some(String::from("version_incompatible"))
                 };
+                (
+                    Some(true),
+                    Some(format!("{:#x}", info.hash)),
+                    Some(format!("{}", info.version)),
+                    Some(hash_match),
+                    Some(version_compatible),
+                    Some(compatible),
+                    error,
+                )
+            } else {
+                (
+                    Some(false),
+                    None,
+                    None,
+                    Some(false),
+                    Some(false),
+                    Some(false),
+                    Some(String::from("kernel_interface_not_found")),
+                )
+            };
 
             let compatible_flag = compatible.unwrap_or(false);
             all_compatible &= compatible_flag;
 
             Self::map_insert(&mut m, "interface", Self::vstr(dep.interface.clone()));
-            Self::map_insert(&mut m, "required_hash_hex", Self::vstr(format!("{:#x}", dep.hash)));
+            Self::map_insert(
+                &mut m,
+                "required_hash_hex",
+                Self::vstr(format!("{:#x}", dep.hash)),
+            );
             Self::map_insert(
                 &mut m,
                 "required_min_version",
@@ -671,11 +778,16 @@ impl CellNamespace {
             dep_vals.push(ExoValue::Map(m));
         }
 
-        let verify_ok = crate::loader::type_id::verify_cell_dependencies(&deps).is_ok() && all_compatible;
+        let verify_ok =
+            crate::loader::type_id::verify_cell_dependencies(&deps).is_ok() && all_compatible;
 
         Self::map_insert(&mut out, "abi_metadata_present", ExoValue::Bool(true));
         Self::map_insert(&mut out, "verify_ok", ExoValue::Bool(verify_ok));
-        Self::map_insert(&mut out, "cell_version", Self::vstr(format!("{}", deps.cell_version)));
+        Self::map_insert(
+            &mut out,
+            "cell_version",
+            Self::vstr(format!("{}", deps.cell_version)),
+        );
         Self::map_insert(
             &mut out,
             "dependency_count",
@@ -691,13 +803,21 @@ impl CellNamespace {
         let target_epoch = current_epoch.saturating_sub(1);
 
         let mut epoch = BTreeMap::new();
-        Self::map_insert(&mut epoch, "current_epoch", Self::vint_u64(stats.current_epoch));
+        Self::map_insert(
+            &mut epoch,
+            "current_epoch",
+            Self::vint_u64(stats.current_epoch),
+        );
         Self::map_insert(
             &mut epoch,
             "deferred_queue_size",
             Self::vint_usize(stats.deferred_queue_size),
         );
-        Self::map_insert(&mut epoch, "active_cores", Self::vint_usize(stats.active_cores));
+        Self::map_insert(
+            &mut epoch,
+            "active_cores",
+            Self::vint_usize(stats.active_cores),
+        );
 
         let mut validating_cells = Vec::new();
         for snap in driver_domain::driver_domain_manager().list_snapshots() {
@@ -725,7 +845,11 @@ impl CellNamespace {
         }
 
         let mut quiescent_check = BTreeMap::new();
-        Self::map_insert(&mut quiescent_check, "target_epoch", Self::vint_u64(target_epoch));
+        Self::map_insert(
+            &mut quiescent_check,
+            "target_epoch",
+            Self::vint_u64(target_epoch),
+        );
         Self::map_insert(
             &mut quiescent_check,
             "all_cores_past",
@@ -739,7 +863,11 @@ impl CellNamespace {
             "live_update_epoch",
             Self::vint_u64(crate::loader::live_update::current_epoch()),
         );
-        Self::map_insert(&mut out, "validating_cells", ExoValue::Array(validating_cells));
+        Self::map_insert(
+            &mut out,
+            "validating_cells",
+            ExoValue::Array(validating_cells),
+        );
         Self::map_insert(&mut out, "quiescent_check", ExoValue::Map(quiescent_check));
         ExoValue::Map(out)
     }
@@ -780,10 +908,15 @@ impl CellNamespace {
 
         let name = name_override.unwrap_or_else(|| Self::infer_name_from_path(&path));
         if name.is_empty() {
-            return ExoValue::Error(String::from("Failed to infer cell name from path; specify opts.name"));
+            return ExoValue::Error(String::from(
+                "Failed to infer cell name from path; specify opts.name",
+            ));
         }
 
-        if driver_domain::driver_domain_manager().find_by_name(&name).is_some() {
+        if driver_domain::driver_domain_manager()
+            .find_by_name(&name)
+            .is_some()
+        {
             return ExoValue::Error(format!("DriverCell '{}' already exists", name));
         }
 
@@ -801,7 +934,9 @@ impl CellNamespace {
             Ok((driver_domain_id, handles)) => {
                 let handle_list = handles
                     .iter()
-                    .map(|h| ExoValue::Int(core::cmp::min(h.index() as u64, i64::MAX as u64) as i64))
+                    .map(
+                        |h| ExoValue::Int(core::cmp::min(h.index() as u64, i64::MAX as u64) as i64),
+                    )
                     .collect::<Vec<_>>();
                 let mut map = BTreeMap::new();
                 Self::map_insert(&mut map, "success", ExoValue::Bool(true));
@@ -912,7 +1047,11 @@ impl CellNamespace {
                 );
                 ExoValue::Map(map)
             }
-            Err(e) => ExoValue::Error(format!("Failed to unload DriverCell {}: {}", id.as_u64(), e)),
+            Err(e) => ExoValue::Error(format!(
+                "Failed to unload DriverCell {}: {}",
+                id.as_u64(),
+                e
+            )),
         }
     }
 
@@ -981,13 +1120,13 @@ impl CellNamespace {
                 None => {
                     return ExoValue::Error(String::from(
                         "Usage: cell.debug_fault(id_or_name, \"panic\"|\"timeout\"|\"other\")",
-                    ))
+                    ));
                 }
             },
             _ => {
                 return ExoValue::Error(String::from(
                     "Usage: cell.debug_fault(id_or_name, \"panic\"|\"timeout\"|\"other\")",
-                ))
+                ));
             }
         };
 
@@ -1004,7 +1143,11 @@ impl CellNamespace {
                     "requested_kind",
                     Self::vstr(format!("{}", outcome.requested_kind)),
                 );
-                Self::map_insert(&mut map, "action", Self::vstr(format!("{}", outcome.action)));
+                Self::map_insert(
+                    &mut map,
+                    "action",
+                    Self::vstr(format!("{}", outcome.action)),
+                );
                 Self::map_insert(
                     &mut map,
                     "driver_domain_state_after",
@@ -1140,7 +1283,10 @@ mod tests {
     fn test_mutating_api_requires_module_cap() {
         let ns = CellNamespace;
         let caps = CapabilitySet::empty();
-        let args = [CellNamespace::vstr("dummy"), CellNamespace::vstr("/tmp/x.cell")];
+        let args = [
+            CellNamespace::vstr("dummy"),
+            CellNamespace::vstr("/tmp/x.cell"),
+        ];
         let res = block_on(ns.call("swap", &args, &caps));
         match res {
             ExoValue::Error(s) => assert!(s.contains("CAP_SYS_MODULE")),
@@ -1152,7 +1298,10 @@ mod tests {
     fn test_update_alias_uses_same_permission_gate_as_swap() {
         let ns = CellNamespace;
         let caps = CapabilitySet::empty();
-        let args = [CellNamespace::vstr("dummy"), CellNamespace::vstr("/tmp/x.cell")];
+        let args = [
+            CellNamespace::vstr("dummy"),
+            CellNamespace::vstr("/tmp/x.cell"),
+        ];
         let swap_res = block_on(ns.call("swap", &args, &caps));
         let update_res = block_on(ns.call("update", &args, &caps));
         assert_eq!(swap_res, update_res);

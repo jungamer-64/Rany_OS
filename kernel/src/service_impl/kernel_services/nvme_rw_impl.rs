@@ -1,14 +1,13 @@
 use super::*;
 
 impl KernelServices for ExoKernel {
-
     fn nvme_submit_rw(
         &self,
         request: NvmeRwRequest,
         io_type: NvmeIoType,
     ) -> KapiResult<NvmeIoHandle> {
         use crate::io::io_scheduler::{
-            DeviceId as IoDeviceId, IoPriority, IoCommand, DmaBufHandle,
+            DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority,
         };
 
         let device = IoDeviceId::Nvme {
@@ -51,9 +50,8 @@ impl KernelServices for ExoKernel {
             },
         };
 
-        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
-            device, command, priority,
-        );
+        let future = crate::io::io_scheduler::hybrid_coordinator()
+            .submit_io_command(device, command, priority);
         let request_id = future.request_id().0;
 
         Ok(NvmeIoHandle::new(request_id))
@@ -66,17 +64,21 @@ impl KernelServices for ExoKernel {
         use crate::io::io_scheduler::{IoRequestId, IoResult as SchedIoResult};
 
         let request_id = IoRequestId(handle.request_id());
-        
+
         Box::pin(async move {
             // Poll the io_scheduler for completion
             loop {
-                if let Some(result) = crate::io::io_scheduler::io_scheduler().take_result(request_id) {
+                if let Some(result) =
+                    crate::io::io_scheduler::io_scheduler().take_result(request_id)
+                {
                     return match result {
                         SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
                         SchedIoResult::Error(e) => match e {
                             crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
                             crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
-                            crate::io::io_scheduler::IoError::InvalidParameter => NvmeIoResult::InvalidParameter,
+                            crate::io::io_scheduler::IoError::InvalidParameter => {
+                                NvmeIoResult::InvalidParameter
+                            }
                             _ => NvmeIoResult::DeviceError,
                         },
                     };
@@ -95,14 +97,16 @@ impl KernelServices for ExoKernel {
         use crate::io::io_scheduler::{CompletionHook, IoRequestId, IoResult as SchedIoResult};
 
         let request_id = IoRequestId(handle.request_id());
-        
+
         let wrapper: CompletionHook = Box::new(move |result: SchedIoResult| {
             let converted = match result {
                 SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
                 SchedIoResult::Error(e) => match e {
                     crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
                     crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
-                    crate::io::io_scheduler::IoError::InvalidParameter => NvmeIoResult::InvalidParameter,
+                    crate::io::io_scheduler::IoError::InvalidParameter => {
+                        NvmeIoResult::InvalidParameter
+                    }
                     _ => NvmeIoResult::DeviceError,
                 },
             };
@@ -138,7 +142,43 @@ impl KernelServices for ExoKernel {
     }
 
     fn time_service(&self) -> Option<&dyn kernel_api::service::time::TimeService> {
-        Some(crate::drivers::time::concrete_service())
+        crate::provider_registry::time_service()
+    }
+
+    fn platform_acpi(&self) -> Option<&dyn kernel_api::service::platform::AcpiServices> {
+        crate::provider_registry::acpi_service()
+    }
+
+    fn platform_pci(&self) -> Option<&dyn kernel_api::service::platform::PciServices> {
+        crate::provider_registry::pci_service()
+    }
+
+    fn platform_apic(&self) -> Option<&dyn kernel_api::service::platform::ApicServices> {
+        crate::provider_registry::apic_service()
+    }
+
+    fn storage(&self) -> Option<&dyn kernel_api::service::storage::StorageServices> {
+        crate::provider_registry::storage_service()
+    }
+
+    fn netdev(&self) -> Option<&dyn kernel_api::service::netdev::NetDeviceServices> {
+        crate::provider_registry::netdev_service()
+    }
+
+    fn input(&self) -> Option<&dyn kernel_api::service::input::InputServices> {
+        crate::provider_registry::input_service()
+    }
+
+    fn serial(&self) -> Option<&dyn kernel_api::service::serial::SerialServices> {
+        crate::provider_registry::serial_service()
+    }
+
+    fn graphics(&self) -> Option<&dyn kernel_api::service::graphics::GraphicsServices> {
+        crate::provider_registry::graphics_service()
+    }
+
+    fn audio(&self) -> Option<&dyn kernel_api::service::audio::AudioServices> {
+        crate::provider_registry::audio_service()
     }
 
     fn gui(&self) -> Option<&dyn kernel_api::service::gui::GuiServices> {

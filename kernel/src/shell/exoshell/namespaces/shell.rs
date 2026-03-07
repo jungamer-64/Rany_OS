@@ -3,12 +3,12 @@
 // ============================================================================
 
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::string::ToString;
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
 use super::{BoxFuture, ShellNamespace};
 use crate::shell::exoshell::types::*;
@@ -47,7 +47,9 @@ impl ShellControlNamespace {
         };
 
         // push requested caps
-        let reqs = proxy.remove("__requested").unwrap_or(ExoValue::Array(Vec::new()));
+        let reqs = proxy
+            .remove("__requested")
+            .unwrap_or(ExoValue::Array(Vec::new()));
         let mut arr = match reqs {
             ExoValue::Array(a) => a,
             _ => Vec::new(),
@@ -157,14 +159,19 @@ impl ShellControlNamespace {
             ));
         }
 
-        let reqs = m.remove("__requested").unwrap_or(ExoValue::Array(Vec::new()));
+        let reqs = m
+            .remove("__requested")
+            .unwrap_or(ExoValue::Array(Vec::new()));
         let mut arr = match reqs {
             ExoValue::Array(a) => a,
             _ => Vec::new(),
         };
 
         let mut entry = BTreeMap::new();
-        entry.insert("resource".to_string(), ExoValue::String(Cow::Owned(resource.to_string())));
+        entry.insert(
+            "resource".to_string(),
+            ExoValue::String(Cow::Owned(resource.to_string())),
+        );
         entry.insert("cap".to_string(), ExoValue::Int(cap_bit as i64));
         if let Some(e) = expires {
             entry.insert("expires".to_string(), ExoValue::Int(e as i64));
@@ -238,7 +245,10 @@ impl ShellControlNamespace {
     ) -> ExoValue<'static> {
         let cap = map.get("cap").and_then(|v| v.as_int()).unwrap_or(0) as u64;
         let resource = map.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-        let expires = map.get("expires").and_then(|v| v.as_int()).map(|n| n as u64);
+        let expires = map
+            .get("expires")
+            .and_then(|v| v.as_int())
+            .map(|n| n as u64);
         let delegatable = map
             .get("delegatable")
             .and_then(|v| match v {
@@ -259,9 +269,7 @@ impl ShellControlNamespace {
     // -- run ----------------------------------------------------------------
 
     /// Parse an `ExoValue` array of capability entries into `RequestedCap` structs.
-    fn parse_requested_caps(
-        reqs: &[ExoValue<'static>],
-    ) -> Vec<crate::domain_system::RequestedCap> {
+    fn parse_requested_caps(reqs: &[ExoValue<'static>]) -> Vec<crate::domain_system::RequestedCap> {
         let mut out = Vec::new();
         for r in reqs {
             if let ExoValue::Map(map) = r {
@@ -365,15 +373,23 @@ impl ShellNamespace for ShellControlNamespace {
                         })
                         .unwrap_or("");
                     if name.is_empty() {
-                        return ExoValue::Error(String::from("spawn_with_caps(name, caps) requires a name"));
+                        return ExoValue::Error(String::from(
+                            "spawn_with_caps(name, caps) requires a name",
+                        ));
                     }
-                    let caps_arr = args.get(1).and_then(|v| match v {
-                        ExoValue::Array(arr) => Some(arr.as_slice()),
-                        _ => None,
-                    }).unwrap_or(&[]);
+                    let caps_arr = args
+                        .get(1)
+                        .and_then(|v| match v {
+                            ExoValue::Array(arr) => Some(arr.as_slice()),
+                            _ => None,
+                        })
+                        .unwrap_or(&[]);
                     Self::spawn_with_caps(name, caps_arr)
                 }
-                _ => ExoValue::Error(format!("Unknown method 'shell.{}'\nValid methods: spawn, spawn_with_caps", method)),
+                _ => ExoValue::Error(format!(
+                    "Unknown method 'shell.{}'\nValid methods: spawn, spawn_with_caps",
+                    method
+                )),
             }
         })
     }
@@ -382,11 +398,11 @@ impl ShellNamespace for ShellControlNamespace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
+    use crate::security::capability::{CAP_NET_BIND, CapabilitySet, manager};
+    use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
     use alloc::boxed::Box;
     use alloc::sync::Arc;
-    use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
-    use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
-    use crate::security::capability::{manager, CapabilitySet, CAP_NET_BIND};
 
     fn idle_entry(_: u64) -> ! {
         loop {
@@ -413,8 +429,8 @@ mod tests {
     fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
         let cpu_id = crate::smp::current_cpu() as usize;
         let prev = get_current_task(cpu_id);
-        let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
-            .expect("failed to create test TCB");
+        let mut tcb =
+            TaskControlBlock::new(idle_entry, 0, 0, domain_id).expect("failed to create test TCB");
         let caps = manager().get_capabilities(domain_id.as_u64());
         tcb.security = Arc::new(DomainSecurity {
             credentials: DomainCredentials::ROOT,
@@ -452,7 +468,10 @@ mod tests {
         // Create caps array for spawn_with_caps
         let cap_map = {
             let mut m = BTreeMap::new();
-            m.insert("resource".to_string(), ExoValue::String(Cow::Owned("/net/bind".to_string())));
+            m.insert(
+                "resource".to_string(),
+                ExoValue::String(Cow::Owned("/net/bind".to_string())),
+            );
             m.insert("expires".to_string(), ExoValue::Int(0));
             ExoValue::Map(m)
         };
@@ -477,9 +496,11 @@ mod tests {
         };
 
         // with_cap
-        let res = ShellControlNamespace::proxy_dispatch(proxy, "with_cap", &[
-            ExoValue::String(Cow::Owned("/net/bind".to_string())),
-        ]);
+        let res = ShellControlNamespace::proxy_dispatch(
+            proxy,
+            "with_cap",
+            &[ExoValue::String(Cow::Owned("/net/bind".to_string()))],
+        );
 
         let proxy2 = match res {
             ExoValue::Map(m) => m,
@@ -487,18 +508,29 @@ mod tests {
         };
 
         // run
-        let run_res = ShellControlNamespace::proxy_dispatch(proxy2, "run", &[
-            ExoValue::String(Cow::Owned("child_chain".to_string())),
-        ]);
+        let run_res = ShellControlNamespace::proxy_dispatch(
+            proxy2,
+            "run",
+            &[ExoValue::String(Cow::Owned("child_chain".to_string()))],
+        );
 
         match run_res {
             ExoValue::Map(m) => {
                 let domain_id = m
                     .get("domain")
-                    .and_then(|v| match v { ExoValue::Int(n) => Some(*n as u64), _ => None })
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n as u64),
+                        _ => None,
+                    })
                     .unwrap();
                 // token present
-                let tokens = m.get("tokens").and_then(|v| match v { ExoValue::Array(a) => Some(a.clone()), _ => None }).unwrap();
+                let tokens = m
+                    .get("tokens")
+                    .and_then(|v| match v {
+                        ExoValue::Array(a) => Some(a.clone()),
+                        _ => None,
+                    })
+                    .unwrap();
                 assert!(!tokens.is_empty());
                 // child has cap
                 assert!(manager().has_capability(domain_id, CAP_NET_BIND));

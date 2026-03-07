@@ -151,6 +151,9 @@ jobs:
     - name: Run syscall-boundary guard
       run: bash scripts/check-no-sys-symbol-boundary.sh
 
+    - name: Run kernel driver boundary guard
+      run: bash scripts/check-kernel-driver-boundary.sh
+
     - name: Run M05 QoS enforcement guard
       run: bash scripts/check-m05-qos-enforcement.sh
 

@@ -12,16 +12,16 @@
 //! - ライフタイムによる安全性保証
 //! - 将来的なRRef統合への足がかり
 
-use core::ops::Deref;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::ops::Deref;
 
 // ============================================================================
 // Kernel Buffer View
 // ============================================================================
 
 /// カーネルバッファへの不変参照
-/// 
+///
 /// data を Arc で包むことで、複数のビューで共有可能。
 /// 将来的にはページキャッシュへの直接参照に置き換え可能。
 #[derive(Debug, Clone)]
@@ -46,7 +46,7 @@ impl KernelBufferView {
     }
 
     /// 既存のArc<Vec<u8>>からバッファビューを作成（ゼロコピー）
-    /// 
+    ///
     /// ShellServices::read_file_zero_copy()との統合用。
     /// データのコピーは一切発生しない。
     pub fn from_arc(data: Arc<Vec<u8>>) -> Self {
@@ -91,7 +91,7 @@ impl KernelBufferView {
     }
 
     /// 所有権を持つ Vec<u8> に変換（コピーが発生）
-    /// 
+    ///
     /// NOTE: これはゼロコピーの利点を打ち消すため、
     /// 必要な場合のみ使用すること。
     pub fn to_vec(&self) -> Vec<u8> {
@@ -127,7 +127,7 @@ pub struct StringView {
 
 impl StringView {
     /// バッファビューから文字列ビューを作成
-    /// 
+    ///
     /// UTF-8として無効なバイト列の場合はNoneを返す
     pub fn new(buffer: KernelBufferView) -> Option<Self> {
         // UTF-8の妥当性をチェック
@@ -183,7 +183,7 @@ mod tests {
     fn test_buffer_view_basic() {
         let data = vec![1, 2, 3, 4, 5];
         let view = KernelBufferView::new(data);
-        
+
         assert_eq!(view.len(), 5);
         assert_eq!(view.as_bytes(), &[1, 2, 3, 4, 5]);
     }
@@ -192,7 +192,7 @@ mod tests {
     fn test_buffer_view_slice() {
         let data = vec![1, 2, 3, 4, 5];
         let view = KernelBufferView::new(data);
-        
+
         let slice = view.slice(1, 4).unwrap();
         assert_eq!(slice.as_bytes(), &[2, 3, 4]);
     }
@@ -202,7 +202,7 @@ mod tests {
         let data = vec![1, 2, 3, 4, 5];
         let view1 = KernelBufferView::new(data);
         let view2 = view1.clone();
-        
+
         // Both views should point to the same Arc data
         assert_eq!(view1.as_bytes(), view2.as_bytes());
     }
@@ -212,7 +212,7 @@ mod tests {
         let data = "Hello, World!".as_bytes().to_vec();
         let buffer = KernelBufferView::new(data);
         let string_view = StringView::new(buffer).unwrap();
-        
+
         assert_eq!(string_view.as_str(), "Hello, World!");
     }
 
@@ -227,13 +227,13 @@ mod tests {
     fn test_buffer_view_from_arc() {
         let data = vec![10, 20, 30, 40, 50];
         let arc_data = Arc::new(data);
-        
+
         // Create view from existing Arc (zero-copy)
         let view = KernelBufferView::from_arc(arc_data.clone());
-        
+
         assert_eq!(view.len(), 5);
         assert_eq!(view.as_bytes(), &[10, 20, 30, 40, 50]);
-        
+
         // Arc reference count should be 2 (original + view)
         assert_eq!(Arc::strong_count(&arc_data), 2);
     }
@@ -242,10 +242,10 @@ mod tests {
     fn test_buffer_view_from_arc_shares_data() {
         let original = vec![1, 2, 3];
         let arc = Arc::new(original);
-        
+
         let view1 = KernelBufferView::from_arc(arc.clone());
         let view2 = KernelBufferView::from_arc(arc.clone());
-        
+
         // All three should share the same data
         assert_eq!(Arc::strong_count(&arc), 3);
         assert_eq!(view1.as_bytes(), view2.as_bytes());
@@ -255,10 +255,9 @@ mod tests {
     fn test_buffer_view_from_arc_slice() {
         let arc = Arc::new(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         let view = KernelBufferView::from_arc(arc);
-        
+
         // Slice still shares the same Arc
         let slice = view.slice(3, 7).unwrap();
         assert_eq!(slice.as_bytes(), &[3, 4, 5, 6]);
     }
 }
-

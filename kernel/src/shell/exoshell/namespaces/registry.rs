@@ -25,20 +25,21 @@ use super::ShellNamespace;
 // ============================================================================
 
 /// グローバル名前空間レジストリ
-/// 
+///
 /// RwLock を使用し、読み取りは並行可能、書き込みは排他的。
 /// Arc でラップされた名前空間を保持し、複数のシェルインスタンスで共有可能。
-static GLOBAL_REGISTRY: RwLock<BTreeMap<String, Arc<dyn ShellNamespace>>> = RwLock::new(BTreeMap::new());
+static GLOBAL_REGISTRY: RwLock<BTreeMap<String, Arc<dyn ShellNamespace>>> =
+    RwLock::new(BTreeMap::new());
 
 // ============================================================================
 // Public API
 // ============================================================================
 
 /// 名前空間を登録
-/// 
+///
 /// # Arguments
 /// * `namespace` - 登録する名前空間（Arc でラップされている必要あり）
-/// 
+///
 /// # Example
 /// ```ignore
 /// let gpu_ns = Arc::new(GpuNamespace::new());
@@ -50,7 +51,7 @@ pub fn register_namespace(namespace: Arc<dyn ShellNamespace>) {
 }
 
 /// 名前空間の登録を解除
-/// 
+///
 /// # Returns
 /// 解除された名前空間（存在した場合）
 pub fn unregister_namespace(name: &str) -> Option<Arc<dyn ShellNamespace>> {
@@ -58,7 +59,7 @@ pub fn unregister_namespace(name: &str) -> Option<Arc<dyn ShellNamespace>> {
 }
 
 /// 登録されている全ての名前空間を取得
-/// 
+///
 /// シェルインスタンス生成時にコピーを取得するために使用。
 pub fn get_all_namespaces() -> BTreeMap<String, Arc<dyn ShellNamespace>> {
     GLOBAL_REGISTRY.read().clone()
@@ -84,11 +85,15 @@ pub fn list_namespaces() -> alloc::vec::Vec<String> {
 // ============================================================================
 
 /// ビルトイン名前空間を登録
-/// 
+///
 /// シェルシステム初期化時に呼び出される。
 pub fn register_builtin_namespaces() {
-    use super::{AsyncSwapoutNamespace, CapNamespace, CellNamespace, DomainNamespace, DriverNamespace, FsNamespace, LogNamespace, Mlx5Namespace, NetNamespace, ReclaimNamespace, ShellControlNamespace, SysNamespace, TaskNamespace};
-    
+    use super::{
+        AsyncSwapoutNamespace, CapNamespace, CellNamespace, DomainNamespace, DriverNamespace,
+        FsNamespace, LogNamespace, Mlx5Namespace, NetNamespace, ReclaimNamespace,
+        ShellControlNamespace, SysNamespace, TaskNamespace,
+    };
+
     register_namespace(Arc::new(FsNamespace));
     register_namespace(Arc::new(NetNamespace));
     register_namespace(Arc::new(DomainNamespace));

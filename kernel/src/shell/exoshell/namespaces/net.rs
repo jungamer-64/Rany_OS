@@ -9,9 +9,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::security::capability::{CAP_NET_RAW, CAP_NET_BIND, CAP_NET_ADMIN, manager};
+use crate::net::runtime::stack::{bind_udp_endpoint_async, bind_udp_endpoint_with_token_async};
+use crate::security::capability::{CAP_NET_ADMIN, CAP_NET_BIND, CAP_NET_RAW, manager};
 use crate::shell::exoshell::types::ExoValue;
-use crate::net::runtime::stack::{bind_udp_endpoint_with_token_async, bind_udp_endpoint_async};
 use alloc::boxed::Box;
 
 /// ネットワーク名前空間
@@ -55,12 +55,30 @@ impl NetNamespace {
         match crate::net::api::config::get_network_stats_async().await {
             Some(stats) => {
                 let mut map = BTreeMap::new();
-                map.insert(String::from("rx_packets"), ExoValue::Int(stats.rx_packets as i64));
-                map.insert(String::from("tx_packets"), ExoValue::Int(stats.tx_packets as i64));
-                map.insert(String::from("rx_bytes"), ExoValue::Int(stats.rx_bytes as i64));
-                map.insert(String::from("tx_bytes"), ExoValue::Int(stats.tx_bytes as i64));
-                map.insert(String::from("rx_errors"), ExoValue::Int(stats.rx_errors as i64));
-                map.insert(String::from("rx_dropped"), ExoValue::Int(stats.rx_dropped as i64));
+                map.insert(
+                    String::from("rx_packets"),
+                    ExoValue::Int(stats.rx_packets as i64),
+                );
+                map.insert(
+                    String::from("tx_packets"),
+                    ExoValue::Int(stats.tx_packets as i64),
+                );
+                map.insert(
+                    String::from("rx_bytes"),
+                    ExoValue::Int(stats.rx_bytes as i64),
+                );
+                map.insert(
+                    String::from("tx_bytes"),
+                    ExoValue::Int(stats.tx_bytes as i64),
+                );
+                map.insert(
+                    String::from("rx_errors"),
+                    ExoValue::Int(stats.rx_errors as i64),
+                );
+                map.insert(
+                    String::from("rx_dropped"),
+                    ExoValue::Int(stats.rx_dropped as i64),
+                );
                 ExoValue::Map(map)
             }
             None => ExoValue::Error(String::from("No network statistics")),
@@ -135,7 +153,7 @@ impl NetNamespace {
                     }
                 }
                 crate::net::l2::ethernet::MacAddress::from_octets(
-                    octets[0], octets[1], octets[2], octets[3], octets[4], octets[5]
+                    octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
                 )
             }
             _ => return ExoValue::Error(String::from("mac must be string")),
@@ -213,11 +231,17 @@ impl NetNamespace {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("server_ip"),
-                ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", info.server_ip[0], info.server_ip[1], info.server_ip[2], info.server_ip[3]))),
+                ExoValue::String(Cow::Owned(format!(
+                    "{}.{}.{}.{}",
+                    info.server_ip[0], info.server_ip[1], info.server_ip[2], info.server_ip[3]
+                ))),
             );
             map.insert(
                 String::from("offered_ip"),
-                ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", info.offered_ip[0], info.offered_ip[1], info.offered_ip[2], info.offered_ip[3]))),
+                ExoValue::String(Cow::Owned(format!(
+                    "{}.{}.{}.{}",
+                    info.offered_ip[0], info.offered_ip[1], info.offered_ip[2], info.offered_ip[3]
+                ))),
             );
             ExoValue::Map(map)
         } else {
@@ -239,7 +263,10 @@ impl NetNamespace {
                 if let Some(ref client) = *guard {
                     if let Some(ip) = client.last_declined_ip() {
                         let o = ip.as_bytes();
-                        return ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])));
+                        return ExoValue::String(Cow::Owned(format!(
+                            "{}.{}.{}.{}",
+                            o[0], o[1], o[2], o[3]
+                        )));
                     }
                 }
                 ExoValue::Nil
@@ -256,7 +283,10 @@ impl NetNamespace {
                 if let Some(ref client) = *guard {
                     if let Some(ip) = client.last_released_ip() {
                         let o = ip.as_bytes();
-                        return ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])));
+                        return ExoValue::String(Cow::Owned(format!(
+                            "{}.{}.{}.{}",
+                            o[0], o[1], o[2], o[3]
+                        )));
                     }
                 }
                 ExoValue::Nil
@@ -293,7 +323,10 @@ impl NetNamespace {
                     let mut map = BTreeMap::new();
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
                     // rtt_us（マイクロ秒）をミリ秒に変換
-                    map.insert(String::from("rtt_ms"), ExoValue::Float(echo.rtt_us as f64 / 1000.0));
+                    map.insert(
+                        String::from("rtt_ms"),
+                        ExoValue::Float(echo.rtt_us as f64 / 1000.0),
+                    );
                     map.insert(String::from("success"), ExoValue::Bool(true));
                     results.push(ExoValue::Map(map));
                 }
@@ -302,8 +335,8 @@ impl NetNamespace {
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
                     map.insert(
                         String::from("error"),
-                        ExoValue::String(Cow::Owned(alloc::format!("{:?}", e)),
-                    ));
+                        ExoValue::String(Cow::Owned(alloc::format!("{:?}", e))),
+                    );
                     map.insert(String::from("success"), ExoValue::Bool(false));
                     results.push(ExoValue::Map(map));
                 }
@@ -328,8 +361,14 @@ impl NetNamespace {
             .into_iter()
             .map(|c| {
                 let mut map = BTreeMap::new();
-                map.insert(String::from("local"), ExoValue::String(Cow::Owned(c.local_addr)));
-                map.insert(String::from("remote"), ExoValue::String(Cow::Owned(c.remote_addr)));
+                map.insert(
+                    String::from("local"),
+                    ExoValue::String(Cow::Owned(c.local_addr)),
+                );
+                map.insert(
+                    String::from("remote"),
+                    ExoValue::String(Cow::Owned(c.remote_addr)),
+                );
                 map.insert(String::from("state"), ExoValue::String(Cow::Owned(c.state)));
                 ExoValue::Map(map)
             })
@@ -344,8 +383,14 @@ impl NetNamespace {
             .into_iter()
             .map(|e| {
                 let mut map = BTreeMap::new();
-                map.insert(String::from("local"), ExoValue::String(Cow::Owned(e.local_addr)));
-                map.insert(String::from("remote"), ExoValue::String(Cow::Owned(e.remote_addr)));
+                map.insert(
+                    String::from("local"),
+                    ExoValue::String(Cow::Owned(e.local_addr)),
+                );
+                map.insert(
+                    String::from("remote"),
+                    ExoValue::String(Cow::Owned(e.remote_addr)),
+                );
                 ExoValue::Map(map)
             })
             .collect();
@@ -361,9 +406,18 @@ impl NetNamespace {
             .into_iter()
             .map(|c| {
                 let mut map = BTreeMap::new();
-                map.insert(String::from("proto"), ExoValue::String(Cow::Borrowed("TCP")));
-                map.insert(String::from("local"), ExoValue::String(Cow::Owned(c.local_addr)));
-                map.insert(String::from("remote"), ExoValue::String(Cow::Owned(c.remote_addr)));
+                map.insert(
+                    String::from("proto"),
+                    ExoValue::String(Cow::Borrowed("TCP")),
+                );
+                map.insert(
+                    String::from("local"),
+                    ExoValue::String(Cow::Owned(c.local_addr)),
+                );
+                map.insert(
+                    String::from("remote"),
+                    ExoValue::String(Cow::Owned(c.remote_addr)),
+                );
                 map.insert(String::from("state"), ExoValue::String(Cow::Owned(c.state)));
                 ExoValue::Map(map)
             })
@@ -373,9 +427,18 @@ impl NetNamespace {
             .into_iter()
             .map(|e| {
                 let mut map = BTreeMap::new();
-                map.insert(String::from("proto"), ExoValue::String(Cow::Borrowed("UDP")));
-                map.insert(String::from("local"), ExoValue::String(Cow::Owned(e.local_addr)));
-                map.insert(String::from("remote"), ExoValue::String(Cow::Owned(e.remote_addr)));
+                map.insert(
+                    String::from("proto"),
+                    ExoValue::String(Cow::Borrowed("UDP")),
+                );
+                map.insert(
+                    String::from("local"),
+                    ExoValue::String(Cow::Owned(e.local_addr)),
+                );
+                map.insert(
+                    String::from("remote"),
+                    ExoValue::String(Cow::Owned(e.remote_addr)),
+                );
                 map.insert(String::from("state"), ExoValue::String(Cow::Borrowed("-")));
                 ExoValue::Map(map)
             })
@@ -399,7 +462,10 @@ impl NetNamespace {
                     .map(|iface| {
                         let mut map = BTreeMap::new();
                         map.insert(String::from("id"), ExoValue::Int(iface.if_id.0 as i64));
-                        map.insert(String::from("name"), ExoValue::String(Cow::Owned(iface.name)));
+                        map.insert(
+                            String::from("name"),
+                            ExoValue::String(Cow::Owned(iface.name)),
+                        );
                         map.insert(String::from("admin_up"), ExoValue::Bool(iface.admin_up));
                         if let Some(cfg) = &iface.config {
                             let ip = cfg.ipv4.address;
@@ -477,7 +543,10 @@ impl NetNamespace {
         if let Ok(routes) = crate::net::runtime::manager::list_ipv4_routes() {
             for r in routes {
                 let mut map = BTreeMap::new();
-                map.insert(String::from("family"), ExoValue::String(Cow::Borrowed("IPv4")));
+                map.insert(
+                    String::from("family"),
+                    ExoValue::String(Cow::Borrowed("IPv4")),
+                );
                 map.insert(
                     String::from("destination"),
                     ExoValue::String(Cow::Owned(format!("{}/{}", r.destination, r.prefix_len))),
@@ -492,11 +561,22 @@ impl NetNamespace {
                 map.insert(String::from("if_id"), ExoValue::Int(r.if_id.0 as i64));
                 map.insert(String::from("metric"), ExoValue::Int(r.metric as i64));
                 let mut flags_str = String::new();
-                if r.flags.connected { flags_str.push('C'); }
-                if r.flags.static_route { flags_str.push('S'); }
-                if r.flags.default_route { flags_str.push('D'); }
-                if !r.admin_enabled { flags_str.push_str("(down)"); }
-                map.insert(String::from("flags"), ExoValue::String(Cow::Owned(flags_str)));
+                if r.flags.connected {
+                    flags_str.push('C');
+                }
+                if r.flags.static_route {
+                    flags_str.push('S');
+                }
+                if r.flags.default_route {
+                    flags_str.push('D');
+                }
+                if !r.admin_enabled {
+                    flags_str.push_str("(down)");
+                }
+                map.insert(
+                    String::from("flags"),
+                    ExoValue::String(Cow::Owned(flags_str)),
+                );
                 entries.push(ExoValue::Map(map));
             }
         }
@@ -505,7 +585,10 @@ impl NetNamespace {
         if let Ok(routes) = crate::net::runtime::manager::list_ipv6_routes() {
             for r in routes {
                 let mut map = BTreeMap::new();
-                map.insert(String::from("family"), ExoValue::String(Cow::Borrowed("IPv6")));
+                map.insert(
+                    String::from("family"),
+                    ExoValue::String(Cow::Borrowed("IPv6")),
+                );
                 map.insert(
                     String::from("destination"),
                     ExoValue::String(Cow::Owned(format!("{}/{}", r.destination, r.prefix_len))),
@@ -520,11 +603,22 @@ impl NetNamespace {
                 map.insert(String::from("if_id"), ExoValue::Int(r.if_id.0 as i64));
                 map.insert(String::from("metric"), ExoValue::Int(r.metric as i64));
                 let mut flags_str = String::new();
-                if r.flags.connected { flags_str.push('C'); }
-                if r.flags.static_route { flags_str.push('S'); }
-                if r.flags.default_route { flags_str.push('D'); }
-                if !r.admin_enabled { flags_str.push_str("(down)"); }
-                map.insert(String::from("flags"), ExoValue::String(Cow::Owned(flags_str)));
+                if r.flags.connected {
+                    flags_str.push('C');
+                }
+                if r.flags.static_route {
+                    flags_str.push('S');
+                }
+                if r.flags.default_route {
+                    flags_str.push('D');
+                }
+                if !r.admin_enabled {
+                    flags_str.push_str("(down)");
+                }
+                map.insert(
+                    String::from("flags"),
+                    ExoValue::String(Cow::Owned(flags_str)),
+                );
                 entries.push(ExoValue::Map(map));
             }
         }
@@ -547,7 +641,7 @@ impl NetNamespace {
         if args.len() < 4 {
             return ExoValue::Error(String::from(
                 "usage: net.route_add(dest, prefix_len, gateway, if_id [, metric])\n\
-                 例: net.route_add(\"192.168.1.0\", 24, \"10.0.2.1\", 0)"
+                 例: net.route_add(\"192.168.1.0\", 24, \"10.0.2.1\", 0)",
             ));
         }
         let dest = match Self::parse_ipv4_arg(&args[0]) {
@@ -569,8 +663,12 @@ impl NetNamespace {
             ExoValue::Int(n) => crate::net::runtime::manager::NetIfId(*n as u16),
             _ => return ExoValue::Error(String::from("if_id must be integer")),
         };
-        let metric = args.get(4)
-            .and_then(|v| match v { ExoValue::Int(n) => Some(*n as u32), _ => None })
+        let metric = args
+            .get(4)
+            .and_then(|v| match v {
+                ExoValue::Int(n) => Some(*n as u32),
+                _ => None,
+            })
             .unwrap_or(100);
 
         let route = crate::net::runtime::manager::Ipv4Route {
@@ -604,7 +702,7 @@ impl NetNamespace {
         if args.len() < 3 {
             return ExoValue::Error(String::from(
                 "usage: net.route_del(dest, prefix_len, if_id)\n\
-                 例: net.route_del(\"192.168.1.0\", 24, 0)"
+                 例: net.route_del(\"192.168.1.0\", 24, 0)",
             ));
         }
         let dest = match Self::parse_ipv4_arg(&args[0]) {
@@ -702,7 +800,7 @@ impl NetNamespace {
         if args.len() < 8 {
             return ExoValue::Error(String::from(
                 "usage: net.firewall_add(action, direction, src_ip, dst_ip, protocol, src_port, dst_port, priority [, name])\n\
-                 例: net.firewall_add(\"deny\", \"in\", \"*\", \"*\", \"tcp\", \"*\", \"22\", 50, \"block-ssh\")"
+                 例: net.firewall_add(\"deny\", \"in\", \"*\", \"*\", \"tcp\", \"*\", \"22\", 50, \"block-ssh\")",
             ));
         }
         let str_arg = |i: usize| -> Result<&str, ExoValue<'static>> {
@@ -711,20 +809,45 @@ impl NetNamespace {
                 _ => Err(ExoValue::Error(format!("arg {} must be a string", i + 1))),
             }
         };
-        let action = match str_arg(0) { Ok(v) => v, Err(e) => return e };
-        let direction = match str_arg(1) { Ok(v) => v, Err(e) => return e };
-        let src_ip = match str_arg(2) { Ok(v) => v, Err(e) => return e };
-        let dst_ip = match str_arg(3) { Ok(v) => v, Err(e) => return e };
-        let protocol = match str_arg(4) { Ok(v) => v, Err(e) => return e };
-        let src_port = match str_arg(5) { Ok(v) => v, Err(e) => return e };
-        let dst_port = match str_arg(6) { Ok(v) => v, Err(e) => return e };
+        let action = match str_arg(0) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let direction = match str_arg(1) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let src_ip = match str_arg(2) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let dst_ip = match str_arg(3) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let protocol = match str_arg(4) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let src_port = match str_arg(5) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let dst_port = match str_arg(6) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
         let priority = match &args[7] {
             ExoValue::Int(n) => *n as u16,
             ExoValue::String(s) => s.parse::<u16>().unwrap_or(100),
             _ => 100,
         };
-        let name = args.get(8)
-            .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
+        let name = args
+            .get(8)
+            .and_then(|v| match v {
+                ExoValue::String(s) => Some(s.as_ref()),
+                _ => None,
+            })
             .unwrap_or("");
 
         match crate::net::api::firewall::firewall_add_rule(
@@ -788,7 +911,7 @@ impl NetNamespace {
         if args.len() < 2 {
             return ExoValue::Error(String::from(
                 "usage: net.firewall_policy(direction, action)\n\
-                 例: net.firewall_policy(\"in\", \"deny\")"
+                 例: net.firewall_policy(\"in\", \"deny\")",
             ));
         }
         let direction = match &args[0] {
@@ -815,7 +938,11 @@ impl NetNamespace {
     pub async fn dns_resolve_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let hostname = match args.first() {
             Some(ExoValue::String(s)) => s.as_ref(),
-            _ => return ExoValue::Error(String::from("usage: net.dns(hostname)\n例: net.dns(\"example.com\")")),
+            _ => {
+                return ExoValue::Error(String::from(
+                    "usage: net.dns(hostname)\n例: net.dns(\"example.com\")",
+                ));
+            }
         };
         match crate::net::services::dns::resolve_ipv4(hostname).await {
             Some(addr) => ExoValue::String(Cow::Owned(format!("{}", addr))),
@@ -831,25 +958,50 @@ impl NetNamespace {
     pub async fn snapshot_async() -> ExoValue<'static> {
         let snap = crate::net::api::diagnostics::network_snapshot();
         let mut map = BTreeMap::new();
-        map.insert(String::from("rx_packets"), ExoValue::Int(snap.rx_packets as i64));
-        map.insert(String::from("tx_packets"), ExoValue::Int(snap.tx_packets as i64));
-        map.insert(String::from("rx_bytes"), ExoValue::Int(snap.rx_bytes as i64));
-        map.insert(String::from("tx_bytes"), ExoValue::Int(snap.tx_bytes as i64));
+        map.insert(
+            String::from("rx_packets"),
+            ExoValue::Int(snap.rx_packets as i64),
+        );
+        map.insert(
+            String::from("tx_packets"),
+            ExoValue::Int(snap.tx_packets as i64),
+        );
+        map.insert(
+            String::from("rx_bytes"),
+            ExoValue::Int(snap.rx_bytes as i64),
+        );
+        map.insert(
+            String::from("tx_bytes"),
+            ExoValue::Int(snap.tx_bytes as i64),
+        );
         map.insert(String::from("drops"), ExoValue::Int(snap.drops as i64));
         map.insert(String::from("errors"), ExoValue::Int(snap.errors as i64));
 
-        let ifaces: Vec<ExoValue> = snap.interfaces
+        let ifaces: Vec<ExoValue> = snap
+            .interfaces
             .into_iter()
             .map(|iface| {
                 let mut m = BTreeMap::new();
-                m.insert(String::from("name"), ExoValue::String(Cow::Owned(iface.name)));
-                m.insert(String::from("rx_packets"), ExoValue::Int(iface.rx_packets as i64));
-                m.insert(String::from("tx_packets"), ExoValue::Int(iface.tx_packets as i64));
+                m.insert(
+                    String::from("name"),
+                    ExoValue::String(Cow::Owned(iface.name)),
+                );
+                m.insert(
+                    String::from("rx_packets"),
+                    ExoValue::Int(iface.rx_packets as i64),
+                );
+                m.insert(
+                    String::from("tx_packets"),
+                    ExoValue::Int(iface.tx_packets as i64),
+                );
                 ExoValue::Map(m)
             })
             .collect();
         map.insert(String::from("interfaces"), ExoValue::Array(ifaces));
-        map.insert(String::from("recent_events_count"), ExoValue::Int(snap.recent_events.len() as i64));
+        map.insert(
+            String::from("recent_events_count"),
+            ExoValue::Int(snap.recent_events.len() as i64),
+        );
 
         ExoValue::Map(map)
     }
@@ -858,17 +1010,30 @@ impl NetNamespace {
     ///
     /// usage: net.events(limit)  — デフォルト20件
     pub async fn events_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let limit = args.first()
-            .and_then(|v| match v { ExoValue::Int(n) => Some(*n as usize), _ => None })
+        let limit = args
+            .first()
+            .and_then(|v| match v {
+                ExoValue::Int(n) => Some(*n as usize),
+                _ => None,
+            })
             .unwrap_or(20);
         let events = crate::net::api::diagnostics::network_recent_events(limit);
         let values: Vec<ExoValue> = events
             .into_iter()
             .map(|e| {
                 let mut map = BTreeMap::new();
-                map.insert(String::from("layer"), ExoValue::String(Cow::Owned(format!("{:?}", e.layer))));
-                map.insert(String::from("kind"), ExoValue::String(Cow::Owned(format!("{:?}", e.kind))));
-                map.insert(String::from("message"), ExoValue::String(Cow::Owned(e.message)));
+                map.insert(
+                    String::from("layer"),
+                    ExoValue::String(Cow::Owned(format!("{:?}", e.layer))),
+                );
+                map.insert(
+                    String::from("kind"),
+                    ExoValue::String(Cow::Owned(format!("{:?}", e.kind))),
+                );
+                map.insert(
+                    String::from("message"),
+                    ExoValue::String(Cow::Owned(e.message)),
+                );
                 map.insert(String::from("ts_ms"), ExoValue::Int(e.ts_ms as i64));
                 ExoValue::Map(map)
             })
@@ -890,7 +1055,8 @@ impl NetNamespace {
                 }
                 let mut octets = [0u8; 4];
                 for (i, part) in parts.iter().enumerate() {
-                    octets[i] = part.parse::<u8>()
+                    octets[i] = part
+                        .parse::<u8>()
                         .map_err(|_| format!("invalid octet '{}' in '{}'", part, s))?;
                 }
                 Ok(octets)
@@ -904,7 +1070,11 @@ impl NetNamespace {
         let port = match _args.get(0) {
             Some(ExoValue::Int(n)) => *n as u16,
             Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
-            _ => { return ExoValue::Error(String::from("open(port[, token]) requires a port integer")); }
+            _ => {
+                return ExoValue::Error(String::from(
+                    "open(port[, token]) requires a port integer",
+                ));
+            }
         };
         if port == 0 {
             return ExoValue::Error(String::from("Invalid port"));

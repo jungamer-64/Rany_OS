@@ -60,7 +60,10 @@ impl ReclaimNamespace {
             String::from("async_fail"),
             ExoValue::Int(stats.async_fail as i64),
         );
-        map.insert(String::from("requeued"), ExoValue::Int(stats.requeued as i64));
+        map.insert(
+            String::from("requeued"),
+            ExoValue::Int(stats.requeued as i64),
+        );
         map.insert(
             String::from("blocked_unsafe"),
             ExoValue::Int(stats.blocked_unsafe as i64),
@@ -90,10 +93,7 @@ impl ReclaimNamespace {
         ExoValue::Map(map)
     }
 
-    fn set_with_caps(
-        enabled: bool,
-        caps: &crate::security::CapabilitySet,
-    ) -> ExoValue<'static> {
+    fn set_with_caps(enabled: bool, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
         if !caps.has_capability(CAP_SYS_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_ADMIN required"));
         }
@@ -125,7 +125,10 @@ impl ShellNamespace for ReclaimNamespace {
                     };
                     Self::set_with_caps(enabled, caps)
                 }
-                _ => ExoValue::Error(format!("Unknown method 'reclaim.{}'. Valid: status,get,set", method)),
+                _ => ExoValue::Error(format!(
+                    "Unknown method 'reclaim.{}'. Valid: status,get,set",
+                    method
+                )),
             }
         })
     }

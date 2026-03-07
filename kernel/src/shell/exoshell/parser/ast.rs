@@ -31,15 +31,9 @@ use crate::shell::exoshell::types::ExoValue;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt<'a> {
     /// 変数束縛: `let x = 10`
-    Let {
-        name: String,
-        value: Box<Expr<'a>>,
-    },
+    Let { name: String, value: Box<Expr<'a>> },
     /// コマンド呼び出し: `help`, `exit`, `clear`
-    Command {
-        name: String,
-        args: Vec<Expr<'a>>,
-    },
+    Command { name: String, args: Vec<Expr<'a>> },
     /// 式だけの文: `fs.list("/")`
     Expr(Box<Expr<'a>>),
 
@@ -468,4 +462,3 @@ mod tests {
         }
     }
 }
-

@@ -234,11 +234,7 @@ impl CapNamespace {
         // First, attempt to revoke a grant token with the given id.
         match manager().revoke_grant(domain_id, cap_id, false) {
             Ok(_) => {
-                log::info!(
-                    "[CAP] Revoked token {} by domain {}\n",
-                    cap_id,
-                    domain_id
-                );
+                log::info!("[CAP] Revoked token {} by domain {}\n", cap_id, domain_id);
                 return ExoValue::Bool(true);
             }
             Err(capability::CapabilityError::InvalidCapability) => {
@@ -249,7 +245,10 @@ impl CapNamespace {
                 caps.drop_permanently(cap_id);
                 manager().set_capabilities(domain_id, caps);
 
-                log::info!("[CAP] Revoked capability bit {} from self (legacy)\n", cap_id);
+                log::info!(
+                    "[CAP] Revoked capability bit {} from self (legacy)\n",
+                    cap_id
+                );
                 return ExoValue::Bool(true);
             }
             Err(e) => return ExoValue::Error(format!("Failed to revoke: {:?}", e)),
@@ -281,9 +280,7 @@ impl CapNamespace {
 
         // If requesting another domain's tokens, require CAP_SYS_ADMIN
         if target != caller_domain && !manager().has_capability(caller_domain, CAP_SYS_ADMIN) {
-            return ExoValue::Error(String::from(
-                "Permission denied: CAP_SYS_ADMIN required",
-            ));
+            return ExoValue::Error(String::from("Permission denied: CAP_SYS_ADMIN required"));
         }
 
         let grants = manager().list_grants(target);
@@ -521,13 +518,11 @@ impl CapNamespace {
 
     /// Dispatch handler for `cap.tokens(...)` shell call.
     fn call_tokens(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain = args
-            .first()
-            .and_then(|v| match v {
-                ExoValue::Int(n) => Some(*n as u64),
-                ExoValue::String(s) => s.parse().ok(),
-                _ => None,
-            });
+        let domain = args.first().and_then(|v| match v {
+            ExoValue::Int(n) => Some(*n as u64),
+            ExoValue::String(s) => s.parse().ok(),
+            _ => None,
+        });
         Self::tokens(domain)
     }
 

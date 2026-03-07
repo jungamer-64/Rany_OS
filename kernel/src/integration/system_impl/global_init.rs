@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl Default for SystemIntegration {
     fn default() -> Self {
         Self::new()

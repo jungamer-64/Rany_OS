@@ -1,9 +1,9 @@
 use super::*;
+use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
+use crate::security::capability::*;
+use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use crate::security::capability::*;
-use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
-use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
 
 fn idle_entry(_: u64) -> ! {
     loop {
@@ -30,8 +30,8 @@ impl Drop for CurrentTaskGuard {
 fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
     let cpu_id = crate::smp::current_cpu() as usize;
     let prev = get_current_task(cpu_id);
-    let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
-        .expect("failed to create test TCB");
+    let mut tcb =
+        TaskControlBlock::new(idle_entry, 0, 0, domain_id).expect("failed to create test TCB");
     let caps = manager().get_capabilities(domain_id.as_u64());
     tcb.security = Arc::new(DomainSecurity {
         credentials: DomainCredentials::ROOT,
@@ -54,7 +54,13 @@ fn test_grant_requires_permissions() {
 
     let target = DomainId::new(101);
 
-    let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
+    let res = CapNamespace::grant(
+        "/net/bind",
+        &[],
+        &format!("{}", target.as_u64()),
+        None,
+        false,
+    );
     match res {
         ExoValue::Error(_) => {}
         other => panic!("Expected error, got {:?}", other),
@@ -70,7 +76,13 @@ fn test_grant_with_permitted() {
 
     let target = DomainId::new(111);
 
-    let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
+    let res = CapNamespace::grant(
+        "/net/bind",
+        &[],
+        &format!("{}", target.as_u64()),
+        None,
+        false,
+    );
 
     match res {
         ExoValue::Capability(cap) => {
@@ -96,7 +108,13 @@ fn test_tokens_listing_and_revoke() {
     let target = DomainId::new(121);
 
     // Grant a token
-    let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
+    let res = CapNamespace::grant(
+        "/net/bind",
+        &[],
+        &format!("{}", target.as_u64()),
+        None,
+        false,
+    );
     let token_id = match res {
         ExoValue::Capability(cap) => cap.id,
         other => panic!("grant failed: {:?}", other),
@@ -141,7 +159,13 @@ fn test_sysadmin_can_revoke() {
 
     let target = DomainId::new(131);
 
-    let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
+    let res = CapNamespace::grant(
+        "/net/bind",
+        &[],
+        &format!("{}", target.as_u64()),
+        None,
+        false,
+    );
     let token_id = match res {
         ExoValue::Capability(cap) => cap.id,
         other => panic!("grant failed: {:?}", other),
@@ -169,14 +193,21 @@ fn test_delegation_allows_regrant() {
     let grand = DomainId::new(142);
 
     // Parent grants to child with delegatable=true
-    let _t = match CapNamespace::grant("/net/bind", &[], &format!("{}", child.as_u64()), None, true) {
+    let _t = match CapNamespace::grant("/net/bind", &[], &format!("{}", child.as_u64()), None, true)
+    {
         ExoValue::Capability(cap) => cap.id,
         other => panic!("grant failed: {:?}", other),
     };
 
     // Child re-grants to grand
     _guard = set_current_subject(child);
-    let res = CapNamespace::grant("/net/bind", &[], &format!("{}", grand.as_u64()), None, false);
+    let res = CapNamespace::grant(
+        "/net/bind",
+        &[],
+        &format!("{}", grand.as_u64()),
+        None,
+        false,
+    );
     match res {
         ExoValue::Capability(cap) => {
             assert!(manager().has_capability(grand.as_u64(), CAP_NET_BIND));
@@ -195,14 +226,26 @@ fn test_delegation_denies_regrant_when_not_delegatable() {
     let grand = DomainId::new(152);
 
     // Parent grants to child with delegatable=false
-    let _t = match CapNamespace::grant("/net/bind", &[], &format!("{}", child.as_u64()), None, false) {
+    let _t = match CapNamespace::grant(
+        "/net/bind",
+        &[],
+        &format!("{}", child.as_u64()),
+        None,
+        false,
+    ) {
         ExoValue::Capability(cap) => cap.id,
         other => panic!("grant failed: {:?}", other),
     };
 
     // Child tries to re-grant to grand and should fail
     _guard = set_current_subject(child);
-    match CapNamespace::grant("/net/bind", &[], &format!("{}", grand.as_u64()), None, false) {
+    match CapNamespace::grant(
+        "/net/bind",
+        &[],
+        &format!("{}", grand.as_u64()),
+        None,
+        false,
+    ) {
         ExoValue::Error(_) => {}
         other => panic!("Expected regrant to fail, got {:?}", other),
     }

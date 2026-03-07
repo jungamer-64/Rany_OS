@@ -12,6 +12,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use kernel_api::service::platform::PciDeviceInfo;
 use spin::Mutex;
 
 pub mod device_manager;
@@ -19,13 +20,13 @@ pub mod interrupt_routing;
 pub mod security_integration;
 // Re-exports
 mod system_impl;
-pub use system_impl::*;
 #[allow(dead_code)]
 pub use device_manager::{DeviceInfo, DeviceManager};
 pub use interrupt_routing::InterruptRouter;
 pub use security_integration::SecurityIntegration;
+pub use system_impl::*;
 
-fn register_pci_dma_width(dev: &crate::io::pci::PciDeviceInfo, bits: u8) {
+fn register_pci_dma_width(dev: &PciDeviceInfo, bits: u8) {
     let device = crate::io::iommu::types::DeviceId::new(
         dev.segment,
         dev.bdf.bus(),
@@ -51,7 +52,7 @@ struct VirtioCapabilities {
 }
 
 /// PCI vendor-specific ケーパビリティから VirtIO 構成を解析
-fn parse_virtio_capabilities(dev: &crate::io::pci::PciDeviceInfo) -> VirtioCapabilities {
+fn parse_virtio_capabilities(dev: &PciDeviceInfo) -> VirtioCapabilities {
     let bus = dev.bdf.bus();
     let device = dev.bdf.device();
     let function = dev.bdf.function();
@@ -92,10 +93,7 @@ fn parse_virtio_capabilities(dev: &crate::io::pci::PciDeviceInfo) -> VirtioCapab
 }
 
 /// BAR 情報からオプショナルな仮想アドレスを解決
-fn resolve_bar_virt_addr(
-    dev: &crate::io::pci::PciDeviceInfo,
-    cfg: Option<(u8, u32, u32)>,
-) -> usize {
+fn resolve_bar_virt_addr(dev: &PciDeviceInfo, cfg: Option<(u8, u32, u32)>) -> usize {
     let (bar, offset, _) = match cfg {
         Some(c) => c,
         None => return 0,
@@ -118,7 +116,7 @@ fn resolve_bar_virt_addr(
 /// from VirtIO PCI capability structures. Returns `None` if the required capabilities
 /// are not present or if BAR resolution fails.
 fn try_create_pci_transport(
-    dev: &crate::io::pci::PciDeviceInfo,
+    dev: &PciDeviceInfo,
     device_type: crate::io::virtio::VirtioDeviceType,
 ) -> Option<crate::io::virtio::VirtioPciTransport> {
     let caps = parse_virtio_capabilities(dev);

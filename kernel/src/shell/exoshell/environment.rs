@@ -2,10 +2,10 @@
 // kernel/src/shell/exoshell/environment.rs
 // ============================================================================
 
+use crate::shell::exoshell::types::ExoValue;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::shell::exoshell::types::ExoValue;
 
 /// 変数環境（スコープ対応）
 pub struct Environment {
@@ -61,7 +61,7 @@ impl Environment {
         }
         false
     }
-    
+
     /// 全ての変数を取得（デバッグ用）
     pub fn get_all(&self) -> BTreeMap<String, ExoValue<'static>> {
         let mut result = BTreeMap::new();

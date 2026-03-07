@@ -49,8 +49,14 @@ impl SysNamespace {
         let mut map = BTreeMap::new();
         map.insert(s("os"), ExoValue::String(Cow::Borrowed(si::os_name())));
         map.insert(s("arch"), ExoValue::String(Cow::Borrowed(si::arch_name())));
-        map.insert(s("version"), ExoValue::String(Cow::Borrowed(si::kernel_version())));
-        map.insert(s("kernel"), ExoValue::String(Cow::Borrowed(si::kernel_name())));
+        map.insert(
+            s("version"),
+            ExoValue::String(Cow::Borrowed(si::kernel_version())),
+        );
+        map.insert(
+            s("kernel"),
+            ExoValue::String(Cow::Borrowed(si::kernel_name())),
+        );
         let ticks = kernel_api::service::kernel::instance()
             .shell()
             .map(|sh| sh.current_tick())
@@ -65,13 +71,20 @@ impl SysNamespace {
         let total_kb = si::memory_total_kb();
         let free_kb = si::memory_free_kb();
         let used_kb = total_kb.saturating_sub(free_kb);
-        let usage_percent = if total_kb > 0 { (used_kb * 100) / total_kb } else { 0 };
+        let usage_percent = if total_kb > 0 {
+            (used_kb * 100) / total_kb
+        } else {
+            0
+        };
 
         let mut map = BTreeMap::new();
         map.insert(s("total_kb"), ExoValue::Int(total_kb as i64));
         map.insert(s("free_kb"), ExoValue::Int(free_kb as i64));
         map.insert(s("used_kb"), ExoValue::Int(used_kb as i64));
-        map.insert(s("available_kb"), ExoValue::Int((free_kb + free_kb / 4) as i64));
+        map.insert(
+            s("available_kb"),
+            ExoValue::Int((free_kb + free_kb / 4) as i64),
+        );
         map.insert(s("usage_percent"), ExoValue::Int(usage_percent as i64));
         ExoValue::Map(map)
     }
@@ -122,9 +135,15 @@ impl SysNamespace {
         use crate::system_info as si;
         let mut map = BTreeMap::new();
         map.insert(s("timer_ticks"), ExoValue::Int(si::timer_ticks() as i64));
-        map.insert(s("context_switches"), ExoValue::Int(si::context_switch_count() as i64));
+        map.insert(
+            s("context_switches"),
+            ExoValue::Int(si::context_switch_count() as i64),
+        );
         map.insert(s("boot_time"), ExoValue::Int(si::boot_time_secs() as i64));
-        map.insert(s("domains"), ExoValue::Int(si::domain_snapshots().len() as i64));
+        map.insert(
+            s("domains"),
+            ExoValue::Int(si::domain_snapshots().len() as i64),
+        );
         map.insert(s("cpu_count"), ExoValue::Int(si::cpu_count() as i64));
         ExoValue::Map(map)
     }
@@ -134,8 +153,14 @@ impl SysNamespace {
         use crate::system_info as si;
         let mut map = BTreeMap::new();
         map.insert(s("hostname"), ExoValue::String(Cow::Borrowed("exorust")));
-        map.insert(s("ostype"), ExoValue::String(Cow::Borrowed(si::kernel_name())));
-        map.insert(s("version"), ExoValue::String(Cow::Borrowed(si::kernel_version())));
+        map.insert(
+            s("ostype"),
+            ExoValue::String(Cow::Borrowed(si::kernel_name())),
+        );
+        map.insert(
+            s("version"),
+            ExoValue::String(Cow::Borrowed(si::kernel_version())),
+        );
         ExoValue::Map(map)
     }
 
@@ -189,39 +214,67 @@ impl SysNamespace {
         let mut map = BTreeMap::new();
         map.insert(s("id"), ExoValue::Int(snap.id.as_u64() as i64));
         map.insert(s("name"), ExoValue::String(Cow::Owned(snap.name.clone())));
-        map.insert(s("state"), ExoValue::String(Cow::Borrowed(
-            crate::system_info::state_str(snap.state),
-        )));
+        map.insert(
+            s("state"),
+            ExoValue::String(Cow::Borrowed(crate::system_info::state_str(snap.state))),
+        );
         map.insert(s("tasks"), ExoValue::Int(snap.tasks as i64));
-        map.insert(s("memory_kb"), ExoValue::Int((snap.memory_bytes / 1024) as i64));
+        map.insert(
+            s("memory_kb"),
+            ExoValue::Int((snap.memory_bytes / 1024) as i64),
+        );
         map.insert(s("memory_bytes"), ExoValue::Int(snap.memory_bytes as i64));
         map.insert(s("rrefs"), ExoValue::Int(snap.rrefs as i64));
         map.insert(s("runtime_ticks"), ExoValue::Int(snap.runtime_ticks as i64));
-        map.insert(s("context_switches"), ExoValue::Int(snap.context_switches as i64));
+        map.insert(
+            s("context_switches"),
+            ExoValue::Int(snap.context_switches as i64),
+        );
         map.insert(s("created_at"), ExoValue::Int(snap.created_at as i64));
-        map.insert(s("numa_node"), snap.numa_node
-            .map(|n| ExoValue::Int(n as i64))
-            .unwrap_or(ExoValue::Nil));
+        map.insert(
+            s("numa_node"),
+            snap.numa_node
+                .map(|n| ExoValue::Int(n as i64))
+                .unwrap_or(ExoValue::Nil),
+        );
         if let Some(msg) = &snap.panic_message {
-            map.insert(s("panic_message"), ExoValue::String(Cow::Owned(msg.clone())));
+            map.insert(
+                s("panic_message"),
+                ExoValue::String(Cow::Owned(msg.clone())),
+            );
         }
         if let Some(err) = &snap.last_error {
             map.insert(s("last_error"), ExoValue::String(Cow::Owned(err.clone())));
         }
-        let task_ids: Vec<ExoValue> = snap.task_ids.iter()
-            .map(|&id| ExoValue::Int(id as i64)).collect();
+        let task_ids: Vec<ExoValue> = snap
+            .task_ids
+            .iter()
+            .map(|&id| ExoValue::Int(id as i64))
+            .collect();
         map.insert(s("task_ids"), ExoValue::Array(task_ids));
-        let deps: Vec<ExoValue> = snap.dependencies.iter()
-            .map(|id| ExoValue::Int(id.as_u64() as i64)).collect();
+        let deps: Vec<ExoValue> = snap
+            .dependencies
+            .iter()
+            .map(|id| ExoValue::Int(id.as_u64() as i64))
+            .collect();
         map.insert(s("dependencies"), ExoValue::Array(deps));
-        let depts: Vec<ExoValue> = snap.dependents.iter()
-            .map(|id| ExoValue::Int(id.as_u64() as i64)).collect();
+        let depts: Vec<ExoValue> = snap
+            .dependents
+            .iter()
+            .map(|id| ExoValue::Int(id.as_u64() as i64))
+            .collect();
         map.insert(s("dependents"), ExoValue::Array(depts));
         ExoValue::Map(map)
     }
 
     /// ネットワークインターフェース ExoValue 生成ヘルパー
-    fn net_iface(name: &'static str, rx_b: i64, tx_b: i64, rx_p: i64, tx_p: i64) -> ExoValue<'static> {
+    fn net_iface(
+        name: &'static str,
+        rx_b: i64,
+        tx_b: i64,
+        rx_p: i64,
+        tx_p: i64,
+    ) -> ExoValue<'static> {
         let mut m = BTreeMap::new();
         m.insert(s("name"), ExoValue::String(Cow::Borrowed(name)));
         m.insert(s("rx_bytes"), ExoValue::Int(rx_b));
@@ -326,20 +379,48 @@ impl SysNamespace {
         log::info!("┌──────────────────────────────────────────────────────────────────────┐\n");
         log::info!("│                    ExoRust System Monitor                            │\n");
         log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
-        log::info!("│  Tick: {:>12}  │  CPU: {:>3}%                                   │\n", info.timestamp, info.cpu_usage);
+        log::info!(
+            "│  Tick: {:>12}  │  CPU: {:>3}%                                   │\n",
+            info.timestamp,
+            info.cpu_usage
+        );
         log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
         log::info!("│  MEMORY                                                              │\n");
-        log::info!("│    Used:  {:>10} bytes ({:>2}%)                                  │\n", info.memory.heap_used, info.memory.usage_percent);
-        log::info!("│    Free:  {:>10} bytes                                          │\n", info.memory.heap_free);
-        log::info!("│    Total: {:>10} bytes                                          │\n", info.memory.heap_total);
+        log::info!(
+            "│    Used:  {:>10} bytes ({:>2}%)                                  │\n",
+            info.memory.heap_used,
+            info.memory.usage_percent
+        );
+        log::info!(
+            "│    Free:  {:>10} bytes                                          │\n",
+            info.memory.heap_free
+        );
+        log::info!(
+            "│    Total: {:>10} bytes                                          │\n",
+            info.memory.heap_total
+        );
         log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
         log::info!("│  DOMAINS                                                             │\n");
-        log::info!("│    Total:   {:>6}  │  Running: {:>6}  │  Stopped: {:>6}         │\n", info.domains.total, info.domains.running, info.domains.stopped);
+        log::info!(
+            "│    Total:   {:>6}  │  Running: {:>6}  │  Stopped: {:>6}         │\n",
+            info.domains.total,
+            info.domains.running,
+            info.domains.stopped
+        );
         log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
         log::info!("│  TASKS                                                               │\n");
-        log::info!("│    Context Switches: {:>10}                                     │\n", info.tasks.context_switches);
-        log::info!("│    Voluntary Yields: {:>10}                                     │\n", info.tasks.voluntary_yields);
-        log::info!("│    Forced Preempts:  {:>10}                                     │\n", info.tasks.forced_preemptions);
+        log::info!(
+            "│    Context Switches: {:>10}                                     │\n",
+            info.tasks.context_switches
+        );
+        log::info!(
+            "│    Voluntary Yields: {:>10}                                     │\n",
+            info.tasks.voluntary_yields
+        );
+        log::info!(
+            "│    Forced Preempts:  {:>10}                                     │\n",
+            info.tasks.forced_preemptions
+        );
         log::info!("└──────────────────────────────────────────────────────────────────────┘\n");
 
         ExoValue::String(Cow::Borrowed("Dashboard displayed"))
@@ -360,7 +441,7 @@ impl SysNamespace {
             });
 
         let mut map = BTreeMap::new();
-        
+
         if let Some(c) = info.cpu_celsius {
             map.insert(String::from("cpu_celsius"), ExoValue::Float(c as f64));
         } else {
@@ -369,7 +450,7 @@ impl SysNamespace {
                 ExoValue::String(Cow::Borrowed("N/A")),
             );
         }
-        
+
         map.insert(
             String::from("polling_count"),
             ExoValue::Int(info.polling_count as i64),
@@ -387,18 +468,22 @@ impl SysNamespace {
             ExoValue::Int(info.throttle_count as i64),
         );
 
-        let sensors: Vec<ExoValue> = info.sensors.into_iter().map(|s| {
-            let mut smap = BTreeMap::new();
-            smap.insert(String::from("id"), ExoValue::Int(s.id as i64));
-            smap.insert(String::from("name"), ExoValue::String(Cow::Owned(s.name)));
-            if let Some(temp) = s.current_c {
-                smap.insert(String::from("temperature"), ExoValue::Float(temp as f64));
-            }
-            smap.insert(String::from("is_hot"), ExoValue::Bool(s.is_hot));
-            smap.insert(String::from("is_critical"), ExoValue::Bool(s.is_critical));
-            ExoValue::Map(smap)
-        }).collect();
-        
+        let sensors: Vec<ExoValue> = info
+            .sensors
+            .into_iter()
+            .map(|s| {
+                let mut smap = BTreeMap::new();
+                smap.insert(String::from("id"), ExoValue::Int(s.id as i64));
+                smap.insert(String::from("name"), ExoValue::String(Cow::Owned(s.name)));
+                if let Some(temp) = s.current_c {
+                    smap.insert(String::from("temperature"), ExoValue::Float(temp as f64));
+                }
+                smap.insert(String::from("is_hot"), ExoValue::Bool(s.is_hot));
+                smap.insert(String::from("is_critical"), ExoValue::Bool(s.is_critical));
+                ExoValue::Map(smap)
+            })
+            .collect();
+
         map.insert(String::from("sensors"), ExoValue::Array(sensors));
 
         ExoValue::Map(map)
@@ -420,10 +505,7 @@ impl SysNamespace {
             String::from("timeouts"),
             ExoValue::Int(info.timeouts as i64),
         );
-        map.insert(
-            String::from("checks"),
-            ExoValue::Int(info.checks as i64),
-        );
+        map.insert(String::from("checks"), ExoValue::Int(info.checks as i64));
         map.insert(
             String::from("deadlocks_detected"),
             ExoValue::Int(info.deadlocks_detected as i64),
@@ -457,11 +539,20 @@ impl SysNamespace {
             String::from("sleep_button"),
             ExoValue::Int(info.sleep_button_presses as i64),
         );
-        
+
         let mut idle = BTreeMap::new();
-        idle.insert(String::from("c1_count"), ExoValue::Int(info.cpu_idle.c1_count as i64));
-        idle.insert(String::from("c2_count"), ExoValue::Int(info.cpu_idle.c2_count as i64));
-        idle.insert(String::from("c3_count"), ExoValue::Int(info.cpu_idle.c3_count as i64));
+        idle.insert(
+            String::from("c1_count"),
+            ExoValue::Int(info.cpu_idle.c1_count as i64),
+        );
+        idle.insert(
+            String::from("c2_count"),
+            ExoValue::Int(info.cpu_idle.c2_count as i64),
+        );
+        idle.insert(
+            String::from("c3_count"),
+            ExoValue::Int(info.cpu_idle.c3_count as i64),
+        );
         map.insert(String::from("cpu_idle"), ExoValue::Map(idle));
 
         ExoValue::Map(map)
@@ -483,7 +574,9 @@ impl SysNamespace {
             map.insert(
                 String::from("message"),
                 ExoValue::String(Cow::Owned(
-                    message.map(String::from).unwrap_or_else(|| String::from("<invalid>")),
+                    message
+                        .map(String::from)
+                        .unwrap_or_else(|| String::from("<invalid>")),
                 )),
             );
         } else {
@@ -501,11 +594,11 @@ impl SysNamespace {
         }
 
         log::info!("[SYS] Shutdown requested via shell\n");
-        
+
         if let Some(shell) = kernel_api::service::kernel::instance().shell() {
             shell.shutdown();
         }
-        
+
         ExoValue::Nil
     }
 
@@ -517,7 +610,7 @@ impl SysNamespace {
         }
 
         log::info!("[SYS] Reboot requested via shell\n");
-        
+
         if let Some(shell) = kernel_api::service::kernel::instance().shell() {
             shell.reboot();
         }

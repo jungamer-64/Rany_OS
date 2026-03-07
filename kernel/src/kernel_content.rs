@@ -5,21 +5,19 @@ extern crate alloc;
 
 // use alloc::string::String;
 // use core::panic::PanicInfo;
-use boot_proto::{ExoBootInfo, EXO_BOOT_INFO_VERSION};
+use boot_proto::{EXO_BOOT_INFO_VERSION, ExoBootInfo};
 
 use log::{debug, error, info, warn};
 
-
-
+mod crypto;
+mod debug;
 mod domain;
 mod domain_system;
-mod crypto;
+mod durability;
 mod epoch;
 mod error;
 #[path = "../../filesystems/kernel_fs/mod.rs"]
 mod fs;
-mod durability;
-mod debug;
 mod kernel_main;
 pub use kernel_main::*;
 #[macro_use]
@@ -28,28 +26,30 @@ mod interrupt_macros;
 // Macro Re-exports (from drivers)
 // ============================================================================
 
+mod driver_domain;
+pub mod drivers;
 mod graphics;
 pub mod interrupts;
 pub mod io;
-pub mod drivers;
 mod ipc;
 mod loader;
-mod driver_domain;
 mod memory;
 mod mm;
 mod net;
+mod panic_handler;
+mod platform;
+mod power;
+mod provider_registry;
 #[cfg(feature = "qemu-test-export")]
 mod qemu_tests;
-mod panic_handler;
-mod power;
 mod sas;
 mod security;
 mod shell;
 mod smp;
 // spectre は security/spectre.rs に移動済み。security::spectre として参照する。
+mod per_cpu;
 mod sync;
 mod task;
-mod per_cpu;
 mod time;
 mod unwind;
 mod util;
@@ -59,7 +59,6 @@ mod util;
 mod console;
 mod diag;
 mod system_info;
-
 
 // Phase 5: Extended Features & System Integration
 // gpu は io/ 配下に移動済み (io::gpu)
@@ -118,7 +117,8 @@ fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
         let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
 
         let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
-        let mut manager = unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+        let mut manager =
+            unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
         let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
 
         match unsafe {
@@ -144,12 +144,16 @@ fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
                 crate::io::log::early_print_hex(base_phys);
                 crate::io::log::early_print(" err=");
                 let err_str = match e {
-                    crate::mm::virt::higher_half::MapError::FrameAllocationFailed => "FrameAllocationFailed",
+                    crate::mm::virt::higher_half::MapError::FrameAllocationFailed => {
+                        "FrameAllocationFailed"
+                    }
                     crate::mm::virt::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
                     crate::mm::virt::higher_half::MapError::NotMapped => "NotMapped",
                     crate::mm::virt::higher_half::MapError::InvalidAddress => "InvalidAddress",
                     crate::mm::virt::higher_half::MapError::AlignmentError => "AlignmentError",
-                    crate::mm::virt::higher_half::MapError::ParentEntryHugePage => "ParentEntryHugePage",
+                    crate::mm::virt::higher_half::MapError::ParentEntryHugePage => {
+                        "ParentEntryHugePage"
+                    }
                     crate::mm::virt::higher_half::MapError::HardwareError => "HardwareError",
                 };
                 crate::io::log::early_print(err_str);
@@ -172,7 +176,9 @@ fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
 
             if pte.is_present() {
                 if pte.phys_addr() != phys_expected {
-                    crate::io::log::early_print("[AHCI] PTE mapped to different phys - skipping init\n");
+                    crate::io::log::early_print(
+                        "[AHCI] PTE mapped to different phys - skipping init\n",
+                    );
                     return None;
                 }
                 // Already mapped as expected
@@ -258,7 +264,7 @@ fn init_sse() {
 
         let mut cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4);
-        cr4 |= 1 << 9;  // OSFXSR
+        cr4 |= 1 << 9; // OSFXSR
         cr4 |= 1 << 10; // OSXMMEXCPT
         asm!("mov cr4, {}", in(reg) cr4);
     }
@@ -375,7 +381,10 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
 }
 
 /// Parse IOMMU configuration from kernel command line.
-fn parse_iommu_cmdline(boot_info: &ExoBootInfo, phys_mem_offset: u64) -> io::iommu::runtime::config::IommuConfig {
+fn parse_iommu_cmdline(
+    boot_info: &ExoBootInfo,
+    phys_mem_offset: u64,
+) -> io::iommu::runtime::config::IommuConfig {
     let mut config = io::iommu::runtime::config::IommuConfig::default();
     if boot_info.cmdline_len == 0 {
         return config;
@@ -437,8 +446,11 @@ fn parse_iommu_cmdline(boot_info: &ExoBootInfo, phys_mem_offset: u64) -> io::iom
 }
 
 /// Try to register and start an IOMMU driver (Intel VT-d or AMD-Vi).
-fn init_iommu_driver(parser: &io::acpi::AcpiParser, iommu_config: &io::iommu::runtime::config::IommuConfig) {
-    use crate::driver_registry::{register_driver, driver_registry};
+fn init_iommu_driver(
+    parser: &io::acpi::AcpiParser,
+    iommu_config: &io::iommu::runtime::config::IommuConfig,
+) {
+    use crate::driver_registry::{driver_registry, register_driver};
 
     match parser.find_table(b"DMAR") {
         Ok(dmar_addr) => {
@@ -491,7 +503,7 @@ fn init_nvme_controllers() {
     info!(target: "init", "Scanning for NVMe controllers...");
 
     let mut nvme_controller_id: u8 = 0;
-    let nvme_devices = drivers::pci::find_by_class(0x01, 0x08);
+    let nvme_devices = crate::platform::pci::find_by_class(0x01, 0x08);
     for dev in nvme_devices {
         info!(target: "init", "NVMe controller found at {}", dev.bdf);
         dev.enable_bus_master();
@@ -516,7 +528,10 @@ fn init_nvme_controllers() {
 }
 
 /// Initialize a single NVMe controller from a PCI device.
-fn init_single_nvme_controller(dev: &drivers::pci::PciDeviceInfo, nvme_controller_id: u8) {
+fn init_single_nvme_controller(
+    dev: &kernel_api::service::platform::PciDeviceInfo,
+    nvme_controller_id: u8,
+) {
     let bar0 = match dev.bars[0] {
         Some(b) => b,
         None => {
@@ -543,10 +558,12 @@ fn init_single_nvme_controller(dev: &drivers::pci::PciDeviceInfo, nvme_controlle
     match crate::drivers::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
         Ok(()) => {
             info!(target: "init", "NVMe driver initialized (polling)");
-            let apic_id = crate::drivers::apic::local_apic().id() as u32;
+            let apic_id = crate::platform::apic::local_apic_id();
             let core_id = crate::smp::current_cpu();
             crate::drivers::nvme::per_core::register_apic_mapping(apic_id, core_id);
-            if let Err(e) = crate::drivers::nvme::register_with_io_scheduler(nvme_controller_id, 1, num_cores) {
+            if let Err(e) =
+                crate::drivers::nvme::register_with_io_scheduler(nvme_controller_id, 1, num_cores)
+            {
                 warn!(target: "init", "NVMe IoScheduler registration failed: {}", e);
             }
             crate::io::log::early_print("[HEAP_CHECK] after NVMe controller init\n");
@@ -561,7 +578,7 @@ fn init_ahci_controllers() {
     io::log::early_print("[DEBUG] AHCI scan STARTING\n");
     info!(target: "init", "Scanning for AHCI controllers...");
 
-    let ahci_devices = drivers::pci::find_by_class(0x01, 0x06);
+    let ahci_devices = crate::platform::pci::find_by_class(0x01, 0x06);
     for dev in ahci_devices {
         info!(target: "init", "AHCI controller found at {}", dev.bdf);
         dev.enable_bus_master();
@@ -571,7 +588,7 @@ fn init_ahci_controllers() {
 }
 
 /// Initialize a single AHCI controller from its BAR5 address.
-fn init_single_ahci_controller(dev: &drivers::pci::PciDeviceInfo) {
+fn init_single_ahci_controller(dev: &kernel_api::service::platform::PciDeviceInfo) {
     let bar5 = match dev.bars[5] {
         Some(b) => b,
         None => {
@@ -603,7 +620,9 @@ fn init_single_ahci_controller(dev: &drivers::pci::PciDeviceInfo) {
     }
 
     // Diagnostic PTE log
-    if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(crate::mm::virt::higher_half::VirtAddr::new(base_virt)) {
+    if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(
+        crate::mm::virt::higher_half::VirtAddr::new(base_virt),
+    ) {
         crate::io::log::early_print("[AHCI] PTE: present=");
         crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });
         crate::io::log::early_print(" phys=");

@@ -1,11 +1,11 @@
-use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::format;
+use alloc::string::String;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::shell::exoshell::types::ExoValue;
 use crate::security::capability::CAP_SYS_ADMIN;
+use crate::shell::exoshell::types::ExoValue;
 
 pub struct AsyncSwapoutNamespace;
 
@@ -15,17 +15,41 @@ impl AsyncSwapoutNamespace {
         let (total, file_q) = crate::mm::reclaim::async_swapout::queued_counts();
         map.insert(String::from("queue_total"), ExoValue::Int(total as i64));
         map.insert(String::from("file_queue"), ExoValue::Int(file_q as i64));
-        map.insert(String::from("token_count"), ExoValue::Int(crate::mm::reclaim::async_swapout::token_count() as i64));
-        map.insert(String::from("token_bucket_capacity"), ExoValue::Int(crate::mm::reclaim::async_swapout::token_bucket_capacity() as i64));
-        map.insert(String::from("token_refill_per_batch"), ExoValue::Int(crate::mm::reclaim::async_swapout::token_refill_per_batch() as i64));
-        map.insert(String::from("reserved_file_slots"), ExoValue::Int(crate::mm::reclaim::async_swapout::reserved_file_slots() as i64));
-        map.insert(String::from("worker_running"), ExoValue::Bool(crate::mm::reclaim::async_swapout::is_worker_running()));
+        map.insert(
+            String::from("token_count"),
+            ExoValue::Int(crate::mm::reclaim::async_swapout::token_count() as i64),
+        );
+        map.insert(
+            String::from("token_bucket_capacity"),
+            ExoValue::Int(crate::mm::reclaim::async_swapout::token_bucket_capacity() as i64),
+        );
+        map.insert(
+            String::from("token_refill_per_batch"),
+            ExoValue::Int(crate::mm::reclaim::async_swapout::token_refill_per_batch() as i64),
+        );
+        map.insert(
+            String::from("reserved_file_slots"),
+            ExoValue::Int(crate::mm::reclaim::async_swapout::reserved_file_slots() as i64),
+        );
+        map.insert(
+            String::from("worker_running"),
+            ExoValue::Bool(crate::mm::reclaim::async_swapout::is_worker_running()),
+        );
 
         // Expose ZSWAP / async dealloc metrics
-        map.insert(String::from("zswap_fail_count"), ExoValue::Int(crate::mm::reclaim::async_swapout::stats_zswap_fail_count() as i64));
-        map.insert(String::from("async_dealloc_count"), ExoValue::Int(crate::mm::reclaim::async_swapout::stats_async_dealloc_count() as i64));
+        map.insert(
+            String::from("zswap_fail_count"),
+            ExoValue::Int(crate::mm::reclaim::async_swapout::stats_zswap_fail_count() as i64),
+        );
+        map.insert(
+            String::from("async_dealloc_count"),
+            ExoValue::Int(crate::mm::reclaim::async_swapout::stats_async_dealloc_count() as i64),
+        );
         // Huge-page related metrics (2MiB)
-        map.insert(String::from("huge_2m_skipped"), ExoValue::Int(crate::mm::reclaim::async_swapout::stats_huge_2m_skip_count() as i64));
+        map.insert(
+            String::from("huge_2m_skipped"),
+            ExoValue::Int(crate::mm::reclaim::async_swapout::stats_huge_2m_skip_count() as i64),
+        );
 
         // Buffer pool stats for 4K, 2M, 1G
         let (h4k, m4k, o4k) = crate::mm::reclaim::async_swapout::buffer_pool_4k_stats();
@@ -52,7 +76,12 @@ impl AsyncSwapoutNamespace {
         ExoValue::Map(map)
     }
 
-    fn set_with_caps(token_capacity: Option<i64>, refill: Option<i64>, reserved: Option<i64>, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
+    fn set_with_caps(
+        token_capacity: Option<i64>,
+        refill: Option<i64>,
+        reserved: Option<i64>,
+        caps: &crate::security::CapabilitySet,
+    ) -> ExoValue<'static> {
         if !caps.has_capability(CAP_SYS_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_ADMIN required"));
         }
@@ -101,7 +130,10 @@ impl ShellNamespace for AsyncSwapoutNamespace {
                     let reserved = args.get(2).and_then(|v| v.as_int());
                     Self::set_with_caps(token_capacity, refill, reserved, caps)
                 }
-                _ => ExoValue::Error(format!("Unknown method 'async_swapout.{}'. Valid: status,get,set", method)),
+                _ => ExoValue::Error(format!(
+                    "Unknown method 'async_swapout.{}'. Valid: status,get,set",
+                    method
+                )),
             }
         })
     }
@@ -110,8 +142,8 @@ impl ShellNamespace for AsyncSwapoutNamespace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::exoshell::types::ExoValue;
     use crate::security::CapabilitySet;
+    use crate::shell::exoshell::types::ExoValue;
 
     #[test_case]
     fn test_status_contains_expected_keys() {
@@ -154,4 +186,3 @@ mod tests {
         }
     }
 }
-

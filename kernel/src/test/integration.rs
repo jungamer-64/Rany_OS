@@ -255,8 +255,8 @@ pub fn test_network() -> IntegrationTestSuite {
 // ============================================================================
 
 use crate::fs::page_cluster_buffer::{PageClusterBuffer, PageClusterBufferAllocator};
-use crate::mm::types::PAGE_SIZE_4K;
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
+use crate::mm::types::PAGE_SIZE_4K;
 use crate::task::block_on;
 use alloc::sync::Arc as StdArc;
 use vfs::block::{BlockError, BlockResult, ZcFuture, ZeroCopyBlockDevice};
@@ -415,7 +415,8 @@ pub fn test_storage() -> IntegrationTestSuite {
             return Ok(String::from("NVMe driver not initialized; skipped"));
         }
 
-        let queue_ready = crate::io::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
+        let queue_ready =
+            crate::io::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
         if !queue_ready {
             return Err(String::from("NVMe queue missing for core 0"));
         }
@@ -539,15 +540,16 @@ pub fn test_iommu() -> IntegrationTestSuite {
             return Ok(String::from("NVMe driver not initialized; skipped"));
         }
 
-        let queue_ready = crate::io::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
+        let queue_ready =
+            crate::io::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
         if !queue_ready {
             return Err(String::from("NVMe queue missing for core 0"));
         }
 
         use nvme_ns::fs::BlockIo;
 
-        let adapter = crate::io::nvme::NvmeBlockIoAdapter::from_driver()
-            .map_err(|e| String::from(e))?;
+        let adapter =
+            crate::io::nvme::NvmeBlockIoAdapter::from_driver().map_err(|e| String::from(e))?;
         let mut buf = alloc::vec![0u8; adapter.block_size() as usize];
 
         crate::io::iommu::api::reset_map_unmap_counts();
@@ -558,9 +560,14 @@ pub fn test_iommu() -> IntegrationTestSuite {
         if crate::io::iommu::api::is_iommu_enabled() {
             let maps = crate::io::iommu::api::get_map_count();
             if maps == 0 {
-                Err(String::from("IOMMU enabled but NVMe BlockIo path recorded no map calls"))
+                Err(String::from(
+                    "IOMMU enabled but NVMe BlockIo path recorded no map calls",
+                ))
             } else {
-                Ok(alloc::format!("NVMe BlockIo read ok ({} IOMMU map calls)", maps))
+                Ok(alloc::format!(
+                    "NVMe BlockIo read ok ({} IOMMU map calls)",
+                    maps
+                ))
             }
         } else {
             Ok(String::from("NVMe BlockIo read ok (IOMMU disabled)"))

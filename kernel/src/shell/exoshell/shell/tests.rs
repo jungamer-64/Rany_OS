@@ -1,7 +1,7 @@
 use super::*;
+use crate::security::CapabilitySet;
 use crate::shell::exoshell::parser::parse_expression;
 use crate::task::block_on;
-use crate::security::CapabilitySet;
 
 #[test_case]
 fn test_block_scoping() {

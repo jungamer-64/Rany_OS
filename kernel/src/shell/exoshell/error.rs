@@ -2,10 +2,10 @@
 // kernel/src/shell/exoshell/error.rs - ExoShell Error Handling
 // ============================================================================
 
+use crate::shell::exoshell::parser::error::ParseError;
 use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt::{self, Display};
-use crate::shell::exoshell::parser::error::ParseError;
 
 /// Shell core errors
 #[derive(Debug, Clone)]

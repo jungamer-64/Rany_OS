@@ -19,7 +19,18 @@ use crate::resource::storage::{
     DirectBlockHandle, NvmeDmaHandle, NvmeIoHandle, NvmeIoResult, NvmeIoType, NvmeRwRequest,
 };
 use crate::resource::task::TaskHandle;
-use crate::service::{gui::GuiServices, shell::ShellServices, time::TimeService};
+use crate::service::{
+    audio::AudioServices,
+    graphics::GraphicsServices,
+    gui::GuiServices,
+    input::InputServices,
+    netdev::NetDeviceServices,
+    platform::{AcpiServices, ApicServices, PciServices},
+    serial::SerialServices,
+    shell::ShellServices,
+    storage::StorageServices,
+    time::TimeService,
+};
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
@@ -342,6 +353,51 @@ pub trait KernelServices: Send + Sync {
 
     /// Access time management services
     fn time_service(&self) -> Option<&dyn TimeService>;
+
+    /// Access ACPI platform services if available
+    fn platform_acpi(&self) -> Option<&dyn AcpiServices> {
+        None
+    }
+
+    /// Access PCI platform services if available
+    fn platform_pci(&self) -> Option<&dyn PciServices> {
+        None
+    }
+
+    /// Access APIC platform services if available
+    fn platform_apic(&self) -> Option<&dyn ApicServices> {
+        None
+    }
+
+    /// Access storage services if available
+    fn storage(&self) -> Option<&dyn StorageServices> {
+        None
+    }
+
+    /// Access network device services if available
+    fn netdev(&self) -> Option<&dyn NetDeviceServices> {
+        None
+    }
+
+    /// Access input services if available
+    fn input(&self) -> Option<&dyn InputServices> {
+        None
+    }
+
+    /// Access serial services if available
+    fn serial(&self) -> Option<&dyn SerialServices> {
+        None
+    }
+
+    /// Access graphics services if available
+    fn graphics(&self) -> Option<&dyn GraphicsServices> {
+        None
+    }
+
+    /// Access audio services if available
+    fn audio(&self) -> Option<&dyn AudioServices> {
+        None
+    }
 
     /// Access GUI services if available
     fn gui(&self) -> Option<&dyn GuiServices>;

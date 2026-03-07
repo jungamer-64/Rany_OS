@@ -15,8 +15,8 @@
 //! gpu.status()
 //! ```
 
-use alloc::boxed::Box;
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
@@ -26,7 +26,7 @@ use crate::driver_registry::{self, DriverHandle};
 use crate::shell::exoshell::types::ExoValue;
 
 /// ドライバ固有の名前空間
-/// 
+///
 /// ドライバがロードされると、そのドライバ名に基づいて
 /// この名前空間が自動的にレジストリに登録される。
 pub struct DynamicDriverNamespace {
@@ -45,7 +45,7 @@ impl DynamicDriverNamespace {
     /// ドライバ情報を取得
     fn info(&self) -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
-        
+
         let mut map = BTreeMap::new();
         map.insert(
             String::from("name"),
@@ -55,21 +55,21 @@ impl DynamicDriverNamespace {
             String::from("handle_id"),
             ExoValue::Int(self.handle.index() as i64),
         );
-        
+
         if let Some(state) = registry.state(self.handle) {
             map.insert(
                 String::from("state"),
                 ExoValue::String(Cow::Owned(format!("{:?}", state))),
             );
         }
-        
+
         ExoValue::Map(map)
     }
 
     /// ドライバステータスを取得
     fn status(&self) -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
-        
+
         match registry.state(self.handle) {
             Some(state) => ExoValue::String(Cow::Owned(format!("{:?}", state))),
             None => ExoValue::Error(String::from("Driver not found")),
@@ -79,7 +79,7 @@ impl DynamicDriverNamespace {
     /// ドライバを停止
     fn stop(&self) -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
-        
+
         match registry.stop(self.handle) {
             Ok(()) => ExoValue::String(Cow::Owned(format!(
                 "Driver '{}' stopped successfully",
@@ -92,12 +92,12 @@ impl DynamicDriverNamespace {
     /// ドライバを再起動
     fn restart(&self) -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
-        
+
         // Stop then start
         if let Err(e) = registry.stop(self.handle) {
             return ExoValue::Error(format!("Failed to stop driver: {:?}", e));
         }
-        
+
         match registry.start(self.handle) {
             Ok(()) => ExoValue::String(Cow::Owned(format!(
                 "Driver '{}' restarted successfully",

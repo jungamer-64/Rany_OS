@@ -14,10 +14,10 @@
 //! task.yield()        → 手動yield
 //! ```
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
-use alloc::boxed::Box;
 
 use super::{BoxFuture, ShellNamespace};
 use crate::shell::exoshell::types::ExoValue;
@@ -66,9 +66,18 @@ impl TaskNamespace {
     pub fn preemption() -> ExoValue<'static> {
         let stats = crate::task::preemption::preemption_controller().stats();
         let mut map = BTreeMap::new();
-        map.insert(s("forced_preemptions"), ExoValue::Int(stats.forced_preemptions as i64));
-        map.insert(s("voluntary_yields"), ExoValue::Int(stats.voluntary_yields as i64));
-        map.insert(s("current_time_slice"), ExoValue::Int(stats.current_time_slice as i64));
+        map.insert(
+            s("forced_preemptions"),
+            ExoValue::Int(stats.forced_preemptions as i64),
+        );
+        map.insert(
+            s("voluntary_yields"),
+            ExoValue::Int(stats.voluntary_yields as i64),
+        );
+        map.insert(
+            s("current_time_slice"),
+            ExoValue::Int(stats.current_time_slice as i64),
+        );
         map.insert(s("enabled"), ExoValue::Bool(stats.enabled));
         ExoValue::Map(map)
     }

@@ -2,35 +2,35 @@
 // src/shell/exoshell/namespaces/mod.rs - Namespace module exports
 // ============================================================================
 
+pub mod async_swapout;
 pub mod cap;
 pub mod cell;
+pub mod domain;
 pub mod driver;
 pub mod dynamic_driver;
 pub mod fs;
 pub mod log;
 pub mod mlx5;
 pub mod net;
-pub mod domain;
-pub mod registry;
-pub mod sys;
-pub mod shell;
-pub mod task;
-pub mod async_swapout;
 pub mod reclaim;
+pub mod registry;
+pub mod shell;
+pub mod sys;
+pub mod task;
 
+pub use async_swapout::AsyncSwapoutNamespace;
 pub use cap::CapNamespace;
 pub use cell::CellNamespace;
+pub use domain::DomainNamespace;
 pub use driver::DriverNamespace;
 pub use fs::FsNamespace;
 pub use log::LogNamespace;
 pub use mlx5::Mlx5Namespace;
 pub use net::NetNamespace;
-pub use domain::DomainNamespace;
-pub use sys::SysNamespace;
-pub use shell::ShellControlNamespace;
-pub use task::TaskNamespace;
-pub use async_swapout::AsyncSwapoutNamespace;
 pub use reclaim::ReclaimNamespace;
+pub use shell::ShellControlNamespace;
+pub use sys::SysNamespace;
+pub use task::TaskNamespace;
 
 use crate::security::CapabilitySet;
 use crate::shell::exoshell::types::ExoValue;
@@ -43,7 +43,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// シェル名前空間トレイト
 /// 新しい機能群を追加するためのインターフェース
-/// 
+///
 /// ## Capability-based Security
 /// メソッド呼び出し時に呼び出し元の CapabilitySet を明示的に渡す。
 /// これにより主体IDベースの権限チェックではなく、トークンベースの
@@ -53,7 +53,7 @@ pub trait ShellNamespace: Send + Sync {
     fn name(&self) -> &str;
 
     /// メソッド呼び出し
-    /// 
+    ///
     /// # Arguments
     /// * `method` - メソッド名
     /// * `args` - 評価済みの引数リスト

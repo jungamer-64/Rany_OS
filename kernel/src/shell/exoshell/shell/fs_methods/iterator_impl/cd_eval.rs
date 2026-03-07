@@ -1,15 +1,13 @@
 use super::*;
 
 impl ExoShell {
-
     /// Evaluate `cd` path argument and update working directory.
     pub(super) fn eval_cd(&mut self, parts: &[&str]) -> ExoValue<'static> {
         if let Some(path) = parts.get(1) {
             self.cwd = if path.starts_with('/') {
                 path.to_string()
             } else if *path == ".." {
-                let mut segs: Vec<&str> =
-                    self.cwd.split('/').filter(|s| !s.is_empty()).collect();
+                let mut segs: Vec<&str> = self.cwd.split('/').filter(|s| !s.is_empty()).collect();
                 segs.pop();
                 if segs.is_empty() {
                     String::from("/")
@@ -32,15 +30,11 @@ impl ExoShell {
         if let Some(host) = parts.get(1) {
             let ip_parts: Vec<&str> = host.split('.').collect();
             if ip_parts.len() == 4 {
-                let ip: Result<Vec<u8>, _> =
-                    ip_parts.iter().map(|p| p.parse::<u8>()).collect();
+                let ip: Result<Vec<u8>, _> = ip_parts.iter().map(|p| p.parse::<u8>()).collect();
                 if let Ok(octets) = ip {
                     if octets.len() == 4 {
-                        return NetNamespace::ping(
-                            [octets[0], octets[1], octets[2], octets[3]],
-                            4,
-                        )
-                        .await;
+                        return NetNamespace::ping([octets[0], octets[1], octets[2], octets[3]], 4)
+                            .await;
                     }
                 }
             }
@@ -54,9 +48,14 @@ impl ExoShell {
     ///
     /// イベントキュー経由の非同期APIを使用し、
     /// NETWORK_STACKロックの同期取得を完全に回避する。
-    pub(super) async fn dispatch_namespace_command(parts: &[&str], namespace: &str) -> ExoValue<'static> {
+    pub(super) async fn dispatch_namespace_command(
+        parts: &[&str],
+        namespace: &str,
+    ) -> ExoValue<'static> {
         if let Some(method) = parts.get(1) {
-            let args: Vec<ExoValue> = parts.iter().skip(2)
+            let args: Vec<ExoValue> = parts
+                .iter()
+                .skip(2)
                 .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
                 .collect();
             match namespace {
@@ -64,11 +63,17 @@ impl ExoShell {
                     let ns = crate::shell::exoshell::namespaces::net::NetNamespace;
                     let caps = crate::security::CapabilitySet::empty();
                     ns.call(method, &args, &caps).await
-                },
-                _ => ExoValue::String(Cow::Owned(format!("Usage: {} <method> [args...]", namespace))),
+                }
+                _ => ExoValue::String(Cow::Owned(format!(
+                    "Usage: {} <method> [args...]",
+                    namespace
+                ))),
             }
         } else {
-            ExoValue::String(Cow::Owned(format!("Usage: {} <method> [args...]", namespace)))
+            ExoValue::String(Cow::Owned(format!(
+                "Usage: {} <method> [args...]",
+                namespace
+            )))
         }
     }
 
@@ -373,20 +378,29 @@ impl ExoShell {
 
         // ビルトインコマンド
         let builtins = [
-            "help", "exit", "clear", "echo", "history", "env", "type",
-            "whoami", "date", "set", "unset",
+            "help", "exit", "clear", "echo", "history", "env", "type", "whoami", "date", "set",
+            "unset",
         ];
 
         // 名前空間
         let namespaces = [
-            "fs", "net", "domain", "cap", "sys", "driver", "cell",
-            "shell", "task", "log", "async_swapout", "reclaim",
+            "fs",
+            "net",
+            "domain",
+            "cap",
+            "sys",
+            "driver",
+            "cell",
+            "shell",
+            "task",
+            "log",
+            "async_swapout",
+            "reclaim",
         ];
 
         // Unixエイリアス
         let aliases = [
-            "ls", "cd", "pwd", "cat", "mkdir", "rm", "ifconfig",
-            "ping", "netstat", "route",
+            "ls", "cd", "pwd", "cat", "mkdir", "rm", "ifconfig", "ping", "netstat", "route",
         ];
 
         if !input.contains('.') {
@@ -420,10 +434,31 @@ impl ExoShell {
         if input.starts_with('.') {
             let method_prefix = &input[1..];
             let chain_methods = [
-                "filter", "map", "sort", "first", "last", "len", "take",
-                "skip", "reverse", "sum", "avg", "min", "max", "join",
-                "contains", "find", "any", "all", "flatten", "unique",
-                "enumerate", "zip", "group_by", "chunks", "reduce",
+                "filter",
+                "map",
+                "sort",
+                "first",
+                "last",
+                "len",
+                "take",
+                "skip",
+                "reverse",
+                "sum",
+                "avg",
+                "min",
+                "max",
+                "join",
+                "contains",
+                "find",
+                "any",
+                "all",
+                "flatten",
+                "unique",
+                "enumerate",
+                "zip",
+                "group_by",
+                "chunks",
+                "reduce",
                 "is_empty",
             ];
             return chain_methods
@@ -446,35 +481,93 @@ impl ExoShell {
                 "entries", "read", "stat", "mkdir", "remove", "cd", "pwd", "write",
             ],
             "net" => &[
-                "config", "stats", "arp", "arp_insert", "ping",
-                "dhcp_state", "dhcp_renew", "dhcp_discover", "dhcp_release",
-                "dhcp_last_declined", "dhcp_last_released",
-                "open", "connections", "netstat", "tcp", "udp",
-                "interfaces", "ifaces", "if_up", "if_down",
-                "routes", "route_add", "route_del",
-                "firewall", "firewall_enable", "firewall_disable",
-                "firewall_rules", "firewall_stats", "firewall_add",
-                "firewall_remove", "firewall_clear", "firewall_policy",
-                "dns", "resolve", "snapshot", "events",
+                "config",
+                "stats",
+                "arp",
+                "arp_insert",
+                "ping",
+                "dhcp_state",
+                "dhcp_renew",
+                "dhcp_discover",
+                "dhcp_release",
+                "dhcp_last_declined",
+                "dhcp_last_released",
+                "open",
+                "connections",
+                "netstat",
+                "tcp",
+                "udp",
+                "interfaces",
+                "ifaces",
+                "if_up",
+                "if_down",
+                "routes",
+                "route_add",
+                "route_del",
+                "firewall",
+                "firewall_enable",
+                "firewall_disable",
+                "firewall_rules",
+                "firewall_stats",
+                "firewall_add",
+                "firewall_remove",
+                "firewall_clear",
+                "firewall_policy",
+                "dns",
+                "resolve",
+                "snapshot",
+                "events",
             ],
             "domain" => &["list", "info", "kill"],
             "cap" => &["list", "grant", "revoke"],
             "sys" => &[
-                "info", "memory", "time", "monitor", "dashboard",
-                "thermal", "watchdog", "power", "panic_record",
-                "shutdown", "reboot",
+                "info",
+                "memory",
+                "time",
+                "monitor",
+                "dashboard",
+                "thermal",
+                "watchdog",
+                "power",
+                "panic_record",
+                "shutdown",
+                "reboot",
             ],
             "driver" => &["list", "stats", "status", "load", "unload"],
             "cell" => &[
-                "list", "info", "graph", "inspect_artifact",
-                "epoch_status", "wait_quiescent", "load", "swap",
-                "update", "commit", "rollback", "unload",
+                "list",
+                "info",
+                "graph",
+                "inspect_artifact",
+                "epoch_status",
+                "wait_quiescent",
+                "load",
+                "swap",
+                "update",
+                "commit",
+                "rollback",
+                "unload",
             ],
-            "shell" => &["spawn", "spawn_with_caps", "with_cap", "revoke", "list_caps", "run"],
+            "shell" => &[
+                "spawn",
+                "spawn_with_caps",
+                "with_cap",
+                "revoke",
+                "list_caps",
+                "run",
+            ],
             "task" => &["stats", "fuel", "preemption", "tick", "yield"],
             "log" => &[
-                "level", "status", "set_level", "console", "serial",
-                "trace", "debug", "info", "warn", "error",
+                "level",
+                "status",
+                "set_level",
+                "console",
+                "serial",
+                "trace",
+                "debug",
+                "info",
+                "warn",
+                "error",
             ],
             "async_swapout" => &["status", "get", "set"],
             "reclaim" => &["status", "get", "set"],

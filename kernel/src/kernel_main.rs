@@ -386,6 +386,12 @@ fn register_spl_kernel_services() {
     info!(target: "init", "Kernel services registered");
 }
 
+fn register_builtin_kernel_providers() {
+    crate::platform::register_builtin_services();
+    crate::drivers::time::register_builtin_service();
+    info!(target: "init", "Kernel providers registered");
+}
+
 fn enable_async_logging_for_boot() {
     // qemu-test-export/full-boot profiles can run with interrupts disabled
     // (`qemu_no_if=1`), so keep synchronous logging there to avoid async
@@ -445,6 +451,7 @@ fn phase_platform_and_security_base(context: &mut KernelBootContext) {
     io::log::notify_heap_available();
 
     register_spl_kernel_services();
+    register_builtin_kernel_providers();
     enable_async_logging_for_boot();
     context.graphics_console_ready = init_graphics_console(context);
 }
@@ -831,12 +838,11 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
 pub(crate) fn init_usb_controllers() {
     info!(target: "init", "Scanning for USB xHCI controllers...");
 
+    use crate::drivers::usb::UsbDriverWrapper;
     use alloc::boxed::Box;
     use driver_registry::register_driver;
-    use crate::drivers::pci::find_by_class;
-    use crate::drivers::usb::UsbDriverWrapper;
 
-    let devices = find_by_class(0x0C, 0x03);
+    let devices = crate::platform::pci::find_by_class(0x0C, 0x03);
     for device_info in devices.iter().filter(|d| d.class_code.is_xhci()) {
         info!(target: "init", "USB xHCI controller found at {}", device_info.bdf);
 

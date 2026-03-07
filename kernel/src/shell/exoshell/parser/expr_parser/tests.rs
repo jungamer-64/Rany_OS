@@ -73,7 +73,11 @@ fn test_parse_block_expression() {
 fn test_parse_if_expression() {
     let expr = parse_expression("if true { 1 } else { 2 }").unwrap();
     match expr {
-        Expr::If { cond, then_block, else_block } => {
+        Expr::If {
+            cond,
+            then_block,
+            else_block,
+        } => {
             assert!(matches!(*cond, Expr::Literal(ExoValue::Bool(true))));
             assert!(matches!(*then_block, Expr::Block(_)));
             assert!(else_block.is_some());
@@ -86,7 +90,11 @@ fn test_parse_if_expression() {
 fn test_parse_for_expression() {
     let expr = parse_expression("for x in [1,2,3] { x }").unwrap();
     match expr {
-        Expr::For { param, iterable, body } => {
+        Expr::For {
+            param,
+            iterable,
+            body,
+        } => {
             assert_eq!(param, "x");
             assert!(matches!(*iterable, Expr::Array(_)));
             assert!(matches!(*body, Expr::Block(_)));

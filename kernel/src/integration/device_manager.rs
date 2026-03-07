@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::drivers::pci::PciDeviceInfo;
+use kernel_api::service::platform::PciDeviceInfo;
 
 /// Device type classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,7 +123,7 @@ impl DeviceInfo {
                 0x1000 | 0x1041 => DeviceType::Network, // VirtIO Network
                 0x1001 | 0x1042 => DeviceType::Storage, // VirtIO Block
                 0x1003 | 0x1043 => DeviceType::Serial,  // VirtIO Console
-                0x1005 | 0x1045 => DeviceType::Unknown,  // VirtIO Balloon (no dedicated type)
+                0x1005 | 0x1045 => DeviceType::Unknown, // VirtIO Balloon (no dedicated type)
                 0x1050 => DeviceType::Display,          // VirtIO GPU
                 0x1052 => DeviceType::Input,            // VirtIO Input
                 _ => DeviceType::Unknown,
