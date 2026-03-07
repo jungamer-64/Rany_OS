@@ -34,28 +34,6 @@ impl Drop for NetVirtQueue {
 // VirtIO Net Device
 // ============================================================================
 
-/// VirtIO ネットワークデバイス設定
-#[derive(Debug, Clone)]
-pub struct VirtioNetConfig {
-    /// MACアドレス
-    pub mac: [u8; 6],
-    /// 最大キュー数
-    pub max_queues: u16,
-    /// MTU
-    pub mtu: u16,
-}
-
-impl Default for VirtioNetConfig {
-    fn default() -> Self {
-        Self {
-            // 初期プレースホルダ: デバイス初期化時にVirtIO config spaceから読み取られる
-            mac: [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
-            max_queues: 1,
-            mtu: 1500,
-        }
-    }
-}
-
 /// In-flight entry for a zero-copy TX packet. Holds cleanup handles for unmapping when completed.
 #[derive(Debug)]
 pub(crate) struct TxPacketInflight {

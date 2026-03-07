@@ -26,6 +26,7 @@ kernel_api::register_cell_runtime!();
 
 pub mod core;
 pub mod defs;
+pub mod net;
 pub mod transport;
 
 // Re-export core types

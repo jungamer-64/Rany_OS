@@ -560,6 +560,8 @@ pub enum CqeOpcode {
     ReqErr = 0x0D,
     /// 受信エラー
     RespErr = 0x0E,
+    /// 圧縮された CQE
+    Compressed = 0x03,
     /// 無効
     Invalid = 0x0F,
 }
@@ -571,6 +573,7 @@ impl CqeOpcode {
             0x01 => Self::RespOk,
             0x0D => Self::ReqErr,
             0x0E => Self::RespErr,
+            0x03 => Self::Compressed,
             _ => Self::Invalid,
         }
     }

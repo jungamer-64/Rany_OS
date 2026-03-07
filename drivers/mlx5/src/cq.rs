@@ -101,6 +101,21 @@ impl Cqe {
         ]);
         (flags & cqe_regs::L4_OK) != 0
     }
+
+    /// VLANタグが存在するか確認
+    pub fn vlan_present(&self) -> bool {
+        // byte 0x1a (word 6 in dword 6) contains vlan_info
+        // Actual bit depends on format, but typically CV bit or similar
+        (self.data[cqe_regs::VLAN_INFO] != 0) || (self.data[cqe_regs::VLAN_INFO + 1] != 0)
+    }
+
+    /// VLANタグ（TCI: Tag Control Information）を取得
+    pub fn vlan_tag(&self) -> u16 {
+        u16::from_be_bytes([
+            self.data[cqe_regs::VLAN_INFO],
+            self.data[cqe_regs::VLAN_INFO + 1],
+        ])
+    }
 }
 
 /// Completion Queue 管理構造体
@@ -226,6 +241,7 @@ impl CompletionQueue {
                         qpn: cqe.qpn(),
                         l3_ok: cqe.l3_ok(),
                         l4_ok: cqe.l4_ok(),
+                        vlan_tag: if cqe.vlan_present() { Some(cqe.vlan_tag()) } else { None },
                     };
                     results.push(info);
                     self.advance_consumer();
@@ -258,4 +274,6 @@ pub struct CqeInfo {
     pub l3_ok: bool,
     /// L4 チェックサム検証成功
     pub l4_ok: bool,
+    /// 抽出された VLAN タグ (TCI)
+    pub vlan_tag: Option<u16>,
 }

@@ -62,6 +62,12 @@ pub fn build_create_cq_input(
     layout.set_c_eqn(eqn);
     layout.set_dbr_addr(db_pa);
 
+    if _cqe_comp {
+        // CQ context byte 0x08 (dword 2): [16] cqe_comp_en
+        // EqContextLayout/CqContextLayout を介さず直接書き込むか、Layoutを拡張する
+        in_mbox.data[0x10 + 0x08 + 1] |= 0x01; // bit 16 is byte 2 offset within dword
+    }
+
     let cq_bytes = (1usize << (log_cq_size as usize)) * crate::regs::cqe::SIZE;
     let cq_pages = (cq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
     for i in 0..cq_pages {

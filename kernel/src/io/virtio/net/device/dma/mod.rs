@@ -1,4 +1,5 @@
 use super::*;
+pub use virtio_driver::net::VirtioNetError;
 
 // ============================================================================
 // DMA Preparation Helpers (shared by poll implementations)
@@ -657,37 +658,6 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
         } else {
             rx_queue.register_waker(cx.waker().clone());
             Poll::Pending
-        }
-    }
-}
-
-// ============================================================================
-// Error Types
-// ============================================================================
-
-/// VirtIO ネットワークエラー
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VirtioNetError {
-    /// デバイスが初期化されていない
-    NotInitialized,
-    /// キューが満杯
-    QueueFull,
-    /// バッファが不足
-    BufferTooSmall,
-    /// デバイスエラー
-    DeviceError,
-    /// タイムアウト
-    Timeout,
-}
-
-impl core::fmt::Display for VirtioNetError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            VirtioNetError::NotInitialized => write!(f, "Device not initialized"),
-            VirtioNetError::QueueFull => write!(f, "Queue is full"),
-            VirtioNetError::BufferTooSmall => write!(f, "Buffer too small"),
-            VirtioNetError::DeviceError => write!(f, "Device error"),
-            VirtioNetError::Timeout => write!(f, "Operation timed out"),
         }
     }
 }

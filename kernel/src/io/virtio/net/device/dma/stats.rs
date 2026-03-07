@@ -1,17 +1,9 @@
 use super::*;
+pub use virtio_driver::net::VirtioNetStats;
 
 // ============================================================================
 // Statistics
 // ============================================================================
-
-/// VirtIO ネットワーク統計
-#[derive(Debug, Clone)]
-pub struct VirtioNetStats {
-    pub tx_packets: u32,
-    pub rx_packets: u32,
-    pub tx_bytes: u32,
-    pub rx_bytes: u32,
-}
 
 impl VirtioNetDevice {
     /// 統計を取得

@@ -256,7 +256,10 @@ impl Mlx5Device {
     pub unsafe fn set_driver_version(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        let version = b"RanyOS mlx5 0.1.0";
+        
+        // Linux 互換のバージョン文字列形式: "mlx5_core, ExoRust, 0.1.0"
+        // ファームウェアはこの文字列を見て、特定のバグ回避策を有効にすることがある。
+        let version = b"mlx5_core, ExoRust, 0.1.0";
         build_set_driver_version_input(in_mbox, version);
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::SetDriverVersion,

@@ -27,6 +27,9 @@ use crate::io::virtio::virtqueue::{VirtQueue, VringAvail, VringDesc, VringUsed, 
 use crate::sync::IrqPoisonLock;
 // Import PacketRef for zero-copy
 use crate::net::datapath::mempool::PacketRef;
+pub use virtio_driver::net::{
+    NetDmaPurpose, NetRuntime, VirtioNetConfig, VirtioNetError, VirtioNetHeader, VirtioNetStats,
+};
 
 pub mod device;
 pub use device::*;
@@ -92,66 +95,6 @@ fn unmap_iommu_addr(device: Option<IommuDeviceId>, iova: u64, len: usize) {
         log::warn!("[VIRTIO-NET] failed to unmap DMA buffer: {:?}", err);
     }
 }
-
-// ============================================================================
-// VirtIO Net Header
-// ============================================================================
-
-/// VirtIO ネットワークヘッダ
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct VirtioNetHeader {
-    /// フラグ
-    pub flags: u8,
-    /// GSOタイプ
-    pub gso_type: u8,
-    /// ヘッダ長
-    pub hdr_len: u16,
-    /// GSOサイズ
-    pub gso_size: u16,
-    /// チェックサム開始オフセット
-    pub csum_start: u16,
-    /// チェックサムオフセット
-    pub csum_offset: u16,
-    /// バッファ数（マルチバッファモード用）
-    pub num_buffers: u16,
-}
-
-impl VirtioNetHeader {
-    pub const SIZE: usize = core::mem::size_of::<Self>();
-
-    /// VIRTIO_NET_HDR_F_NEEDS_CSUM
-    pub const F_NEEDS_CSUM: u8 = 1;
-    /// VIRTIO_NET_HDR_GSO_TCPV4
-    pub const GSO_TCPV4: u8 = 1;
-
-    /// 単純な送信用ヘッダを作成
-    pub fn new_tx() -> Self {
-        Self::default()
-    }
-
-    /// チェックサムオフロードを有効化
-    pub fn with_checksum_offload(mut self, start: u16, offset: u16) -> Self {
-        self.flags |= Self::F_NEEDS_CSUM;
-        self.csum_start = start;
-        self.csum_offset = offset;
-        self
-    }
-
-    /// TCPv4 GSOを有効化
-    pub fn with_gso_tcpv4(mut self, hdr_len: u16, gso_size: u16) -> Self {
-        self.gso_type = Self::GSO_TCPV4;
-        self.hdr_len = hdr_len;
-        self.gso_size = gso_size;
-        self
-    }
-}
-
-// ============================================================================
-// VirtQueue for Network
-// ============================================================================
-
-// Redundant vring and descriptor definitions removed. Uses common definitions from virtqueue module.
 
 // ============================================================================
 // Send-safe pointer wrapper

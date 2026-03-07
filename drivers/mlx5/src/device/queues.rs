@@ -117,6 +117,7 @@ impl Mlx5Device {
         }
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let cqe_comp = self.hca_caps.as_ref().map(|c| c.cqe_compression).unwrap_or(false);
         build_create_cq_input(
             in_mbox,
             log_cq_size,
@@ -124,7 +125,7 @@ impl Mlx5Device {
             db_pa,
             self.uar_page,
             eqn,
-            false,
+            cqe_comp,
         );
 
         let cq_bytes = (1usize << (log_cq_size as usize)) * crate::regs::cqe::SIZE;

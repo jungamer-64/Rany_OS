@@ -154,6 +154,8 @@ pub struct TxOptions {
     pub inline_len: u16,
     /// TSO MSS。0 の場合は TSO を使用しない。
     pub mss: u16,
+    /// 挿入する VLAN タグ。0 の場合は挿入しない。
+    pub vlan_tag: u16,
 }
 
 impl SendQueue {
