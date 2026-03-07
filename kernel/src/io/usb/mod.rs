@@ -19,6 +19,7 @@
 #![allow(dead_code)]
 
 // Re-exports from usb_driver
+pub use usb_driver::driver_impl::UsbDriverWrapper;
 pub use usb_driver::{
     DeviceAddress, EndpointAddress, PortNumber, PortStatus, SetupPacket, SlotId, TransferDirection,
     TransferStatus, TransferType, UsbClassDriver, UsbDevice, UsbError, UsbManager, UsbResult,

@@ -26,8 +26,6 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use super::timer::current_tick;
 use super::{Executor, Task, TaskId};
-use kernel_api::service::time::TimeService;
-use time_driver::TIME_MANAGER;
 
 // ============================================================================
 // Timeout Support (設計書 4.4)
@@ -93,12 +91,13 @@ impl<F: Future> Future for TimeoutFuture<F> {
         let this = unsafe { self.get_unchecked_mut() };
 
         let now = current_tick();
+        let time_service = crate::drivers::time::service();
 
         // タイムアウトチェック
         if now >= this.deadline {
             // タイマー登録を解除
             if this.timer_registered {
-                TIME_MANAGER.unregister_sleep(this.deadline);
+                time_service.unregister_sleep(this.deadline);
                 this.timer_registered = false;
             }
             return Poll::Ready(TimeoutResult::TimedOut);
@@ -111,7 +110,7 @@ impl<F: Future> Future for TimeoutFuture<F> {
             Poll::Ready(result) => {
                 // 完了時にタイマー登録を解除
                 if this.timer_registered {
-                    TIME_MANAGER.unregister_sleep(this.deadline);
+                    time_service.unregister_sleep(this.deadline);
                     this.timer_registered = false;
                 }
                 Poll::Ready(TimeoutResult::Completed(result))
@@ -119,7 +118,7 @@ impl<F: Future> Future for TimeoutFuture<F> {
             Poll::Pending => {
                 // デッドライン到達時にタスクを起床させるためタイマーwaker登録
                 if !this.timer_registered {
-                    TIME_MANAGER.register_sleep(this.deadline, cx.waker().clone());
+                    time_service.register_sleep(this.deadline, cx.waker().clone());
                     this.timer_registered = true;
                 }
                 Poll::Pending
@@ -131,7 +130,7 @@ impl<F: Future> Future for TimeoutFuture<F> {
 impl<F: Future> Drop for TimeoutFuture<F> {
     fn drop(&mut self) {
         if self.timer_registered {
-            TIME_MANAGER.unregister_sleep(self.deadline);
+            crate::drivers::time::service().unregister_sleep(self.deadline);
         }
     }
 }

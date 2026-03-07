@@ -321,7 +321,7 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     }
 
     let rsdp_addr = boot_info.rsdp_addr as usize;
-    let parser = match unsafe { io::acpi::init(rsdp_addr as u64) } {
+    let parser = match unsafe { drivers::acpi::init(rsdp_addr as u64) } {
         Ok(p) => p,
         Err(e) => {
             warn!(target: "init", "ACPI initialization failed: {:?}", e);
@@ -353,10 +353,10 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
         Err(_) => warn!(target: "init", "No MCFG table found."),
     }
 
-    pci_driver::init();
+    drivers::pci::init();
     info!(target: "init", "PCI driver initialized");
     if io::iommu::api::is_iommu_enabled() {
-        let mut devices = pci_driver::scan_all_devices();
+        let mut devices = drivers::pci::scan_all_devices();
         if let Err(e) = io::iommu::runtime::pci::setup_iommu_for_all_pci_devices(&mut devices) {
             warn!(target: "init", "PCI IOMMU setup failed for some devices: {:?}", e);
         }
@@ -491,7 +491,7 @@ fn init_nvme_controllers() {
     info!(target: "init", "Scanning for NVMe controllers...");
 
     let mut nvme_controller_id: u8 = 0;
-    let nvme_devices = pci_driver::find_by_class(0x01, 0x08);
+    let nvme_devices = drivers::pci::find_by_class(0x01, 0x08);
     for dev in nvme_devices {
         info!(target: "init", "NVMe controller found at {}", dev.bdf);
         dev.enable_bus_master();
@@ -516,7 +516,7 @@ fn init_nvme_controllers() {
 }
 
 /// Initialize a single NVMe controller from a PCI device.
-fn init_single_nvme_controller(dev: &pci_driver::PciDeviceInfo, nvme_controller_id: u8) {
+fn init_single_nvme_controller(dev: &drivers::pci::PciDeviceInfo, nvme_controller_id: u8) {
     let bar0 = match dev.bars[0] {
         Some(b) => b,
         None => {
@@ -561,7 +561,7 @@ fn init_ahci_controllers() {
     io::log::early_print("[DEBUG] AHCI scan STARTING\n");
     info!(target: "init", "Scanning for AHCI controllers...");
 
-    let ahci_devices = pci_driver::find_by_class(0x01, 0x06);
+    let ahci_devices = drivers::pci::find_by_class(0x01, 0x06);
     for dev in ahci_devices {
         info!(target: "init", "AHCI controller found at {}", dev.bdf);
         dev.enable_bus_master();
@@ -571,7 +571,7 @@ fn init_ahci_controllers() {
 }
 
 /// Initialize a single AHCI controller from its BAR5 address.
-fn init_single_ahci_controller(dev: &pci_driver::PciDeviceInfo) {
+fn init_single_ahci_controller(dev: &drivers::pci::PciDeviceInfo) {
     let bar5 = match dev.bars[5] {
         Some(b) => b,
         None => {

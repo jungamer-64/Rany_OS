@@ -907,7 +907,7 @@ impl KernelServices for ExoKernel {
     }
 
     fn time_service(&self) -> Option<&dyn kernel_api::service::time::TimeService> {
-        Some(time_driver::time_service())
+        Some(crate::drivers::time::concrete_service())
     }
 
     fn gui(&self) -> Option<&dyn kernel_api::service::gui::GuiServices> {

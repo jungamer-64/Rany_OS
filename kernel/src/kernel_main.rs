@@ -99,7 +99,7 @@ pub(crate) fn init_hid_and_serial_drivers() {
     // PS/2 Keyboard
     info!(target: "init", "Initializing HID drivers via DriverRegistry");
     {
-        use io::hid::Ps2KeyboardDriver;
+        use crate::drivers::hid::Ps2KeyboardDriver;
         let kb_handle = register_driver(Box::new(Ps2KeyboardDriver::new()));
         if let Err(e) = driver_registry::driver_registry()
             .probe_and_start(kb_handle.expect("Failed to register PS/2 Keyboard driver"))
@@ -115,7 +115,7 @@ pub(crate) fn init_hid_and_serial_drivers() {
     // Serial port
     info!(target: "init", "Initializing serial port via DriverRegistry");
     {
-        use io::serial::SerialDriver;
+        use crate::drivers::serial::SerialDriver;
         let serial_handle = register_driver(Box::new(SerialDriver::new()));
         if let Err(e) = driver_registry::driver_registry()
             .probe_and_start(serial_handle.expect("Failed to register Serial driver"))
@@ -833,8 +833,8 @@ pub(crate) fn init_usb_controllers() {
 
     use alloc::boxed::Box;
     use driver_registry::register_driver;
-    use pci_driver::find_by_class;
-    use usb_driver::driver_impl::UsbDriverWrapper;
+    use crate::drivers::pci::find_by_class;
+    use crate::drivers::usb::UsbDriverWrapper;
 
     let devices = find_by_class(0x0C, 0x03);
     for device_info in devices.iter().filter(|d| d.class_code.is_xhci()) {

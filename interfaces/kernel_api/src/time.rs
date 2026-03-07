@@ -16,6 +16,10 @@
 
 extern crate alloc;
 
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+
 /// タイマーハンドル（登録されたタイマーを識別）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimerHandle(pub u64);
@@ -149,4 +153,80 @@ pub trait TimeService: Send + Sync {
 
     /// スリープレジストリからWakerを削除
     fn unregister_sleep(&self, wake_tick: u64);
+}
+
+/// Access the registered time service if the kernel installed one.
+#[inline]
+pub fn try_instance() -> Option<&'static dyn TimeService> {
+    if !crate::service::kernel::is_installed() {
+        return None;
+    }
+
+    crate::service::kernel::instance().time_service()
+}
+
+/// Access the registered time service.
+///
+/// # Panics
+/// Panics when the kernel runtime has not installed a time service yet.
+#[inline]
+pub fn instance() -> &'static dyn TimeService {
+    try_instance().expect("TimeService not installed")
+}
+
+/// Generic sleep future backed by the installed [`TimeService`].
+pub struct SleepFuture {
+    wake_tick: u64,
+    registered: bool,
+}
+
+impl SleepFuture {
+    pub fn new(duration_ms: u64) -> Self {
+        Self {
+            wake_tick: instance().compute_wake_tick(duration_ms),
+            registered: false,
+        }
+    }
+}
+
+impl Future for SleepFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let service = instance();
+
+        if service.current_tick_ms() >= self.wake_tick {
+            return Poll::Ready(());
+        }
+
+        if !self.registered {
+            service.register_sleep(self.wake_tick, cx.waker().clone());
+            self.registered = true;
+        }
+
+        Poll::Pending
+    }
+}
+
+impl Drop for SleepFuture {
+    fn drop(&mut self) {
+        if self.registered {
+            instance().unregister_sleep(self.wake_tick);
+        }
+    }
+}
+
+#[inline]
+pub fn sleep_ms(duration_ms: u64) -> SleepFuture {
+    SleepFuture::new(duration_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_instance_is_none_before_kernel_install() {
+        assert!(try_instance().is_none());
+    }
 }

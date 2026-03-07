@@ -26,3 +26,4 @@ pub use crate::io::rtc;
 pub use crate::io::serial;
 pub use crate::io::usb;
 pub use crate::io::virtio;
+pub mod time;
