@@ -65,14 +65,14 @@ pub(crate) fn mmio_write_be32(addr: usize, value: u32) {
 }
 
 // Re-export core types
+pub use bootstrap::{
+    Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion, Mlx5PciIdentity,
+    Mlx5QueueDmaRegion, Mlx5QueueProfile,
+};
 pub use defs::{
     CONNECTX4_DEVICE_ID, CONNECTX4_LX_DEVICE_ID, CONNECTX4_LX_VF_DEVICE_ID, CONNECTX5_DEVICE_ID,
     CONNECTX5_EX_DEVICE_ID, CONNECTX6_DEVICE_ID, CONNECTX6_DX_DEVICE_ID, CONNECTX6_LX_DEVICE_ID,
     CONNECTX7_DEVICE_ID, ConnectXVariant, MELLANOX_VENDOR_ID, MLX5_MAX_PORTS, SUPPORTED_DEVICE_IDS,
-};
-pub use bootstrap::{
-    Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion,
-    Mlx5PciIdentity, Mlx5QueueDmaRegion, Mlx5QueueProfile,
 };
 pub use device::Mlx5Device;
 pub use error::Mlx5Error;

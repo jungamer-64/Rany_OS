@@ -561,7 +561,11 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
     };
     let _ = crate::net::runtime::manager::set_interface_config(if_id, config);
     super::ensure_bridge_if_state(if_id, None);
-    super::shared::install_port(if_id, Arc::new(Mlx5Runtime), super::primary_bridge_if().is_none())?;
+    super::shared::install_port(
+        if_id,
+        Arc::new(Mlx5Runtime),
+        super::primary_bridge_if().is_none(),
+    )?;
     log::info!(target: "mlx5::bridge", "mlx5 bridge initialized (if={})", if_id.0);
 
     Ok(())

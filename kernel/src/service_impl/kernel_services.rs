@@ -1,5 +1,6 @@
 use super::*;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::nvme::dma::{NvmeDmaError, NvmeDmaRegion};
 
 /// Pack IommuDeviceId into u64 for API boundary
 fn pack_device_id(d: IommuDeviceId) -> u64 {
@@ -16,6 +17,16 @@ fn unpack_device_id(id: u64) -> IommuDeviceId {
         bus: (id >> 16) as u8,
         device: (id >> 8) as u8,
         function: id as u8,
+    }
+}
+
+fn map_nvme_dma_error(err: NvmeDmaError) -> KapiError {
+    match err {
+        NvmeDmaError::OutOfMemory => KapiError::OutOfMemory,
+        NvmeDmaError::InvalidLen
+        | NvmeDmaError::IommuDeviceMissing
+        | NvmeDmaError::IommuIdentityBlocked
+        | NvmeDmaError::IommuMappingFailed => KapiError::IoError,
     }
 }
 
@@ -45,7 +56,10 @@ pub(crate) unsafe fn release_dma_buffer(virt_ptr: *mut u8, _size: usize, _phys_a
         return;
     }
 
-    log::info!("[KAPI] release_dma_buffer: unknown buffer: {:x}\n", virt_ptr);
+    log::info!(
+        "[KAPI] release_dma_buffer: unknown buffer: {:x}\n",
+        virt_ptr
+    );
 }
 
 impl KernelServices for ExoKernel {
@@ -608,31 +622,21 @@ impl KernelServices for ExoKernel {
         }
 
         let caller = context::current_subject().domain.as_u64();
-        let alloc_len = align_up_page(len);
-        let data = TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(KapiError::OutOfMemory)?;
-        let data_phys = data.phys_addr().as_u64();
+        let dma = NvmeDmaRegion::for_read(len, crate::io::nvme::iommu_device())
+            .map_err(map_nvme_dma_error)?;
+        let prp1 = dma.prp1();
+        let prp2 = dma.prp2();
+        let logical_len = dma.logical_len();
+        let data_phys = dma.phys_addr().as_u64();
+        let alloc_len = dma.alloc_len();
 
         // SECURITY: Track physical address ownership
         PHYS_OWNERSHIP_REGISTRY.register(data_phys, alloc_len, caller);
 
-        let device = crate::io::nvme::iommu_device();
-        let (data_addr, data_map) = map_for_iommu(device, data_phys, alloc_len)?;
-        let (prp2, prp_list) = build_prp_list_internal(device, data_addr, alloc_len)?;
-
-        let (data_dev, data_guard) = data.start_dma();
-
-        let entry = NvmeDmaContextEntry {
-            data_dev: Some(data_dev),
-            data_guard: Some(data_guard),
-            prp_list,
-            data_map,
-            logical_len: len,
-            phys: data_phys,
-            owner: caller,
-        };
+        let entry = NvmeDmaContextEntry { dma, owner: caller };
 
         let id = NVME_DMA_CONTEXT_REGISTRY.register(entry);
-        Ok(NvmeDmaHandle::new(id, data_addr, prp2, len))
+        Ok(NvmeDmaHandle::new(id, prp1, prp2, logical_len))
     }
 
     fn nvme_prepare_dma_write(&self, _device_id: u64, data: &[u8]) -> KapiResult<NvmeDmaHandle> {
@@ -641,39 +645,21 @@ impl KernelServices for ExoKernel {
         }
 
         let caller = context::current_subject().domain.as_u64();
-        let alloc_len = align_up_page(data.len());
-        let mut dma_buf =
-            TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(KapiError::OutOfMemory)?;
-
-        // Copy data into DMA buffer
-        dma_buf.as_mut_slice()[..data.len()].copy_from_slice(data);
-        if alloc_len > data.len() {
-            dma_buf.as_mut_slice()[data.len()..].fill(0);
-        }
-
-        let data_phys = dma_buf.phys_addr().as_u64();
+        let dma = NvmeDmaRegion::for_write(data.len(), data, crate::io::nvme::iommu_device())
+            .map_err(map_nvme_dma_error)?;
+        let prp1 = dma.prp1();
+        let prp2 = dma.prp2();
+        let logical_len = dma.logical_len();
+        let data_phys = dma.phys_addr().as_u64();
+        let alloc_len = dma.alloc_len();
 
         // SECURITY: Track physical address ownership
         PHYS_OWNERSHIP_REGISTRY.register(data_phys, alloc_len, caller);
 
-        let device = crate::io::nvme::iommu_device();
-        let (data_addr, data_map) = map_for_iommu(device, data_phys, alloc_len)?;
-        let (prp2, prp_list) = build_prp_list_internal(device, data_addr, alloc_len)?;
-
-        let (data_dev, data_guard) = dma_buf.start_dma();
-
-        let entry = NvmeDmaContextEntry {
-            data_dev: Some(data_dev),
-            data_guard: Some(data_guard),
-            prp_list,
-            data_map,
-            logical_len: data.len(),
-            phys: data_phys,
-            owner: caller,
-        };
+        let entry = NvmeDmaContextEntry { dma, owner: caller };
 
         let id = NVME_DMA_CONTEXT_REGISTRY.register(entry);
-        Ok(NvmeDmaHandle::new(id, data_addr, prp2, data.len()))
+        Ok(NvmeDmaHandle::new(id, prp1, prp2, logical_len))
     }
 
     fn nvme_complete_dma_read(&self, handle: NvmeDmaHandle) -> KapiResult<alloc::vec::Vec<u8>> {
@@ -694,14 +680,12 @@ impl KernelServices for ExoKernel {
         }
 
         // Unregister physical ownership
-        PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
-
-        let logical_len = entry.logical_len;
-        let dma_slice = entry.complete();
+        PHYS_OWNERSHIP_REGISTRY.unregister(entry.dma.phys_addr().as_u64());
 
         // Copy data from DMA buffer
+        let logical_len = entry.dma.logical_len();
         let mut result = alloc::vec![0u8; logical_len];
-        result.copy_from_slice(&dma_slice.as_slice()[..logical_len]);
+        entry.dma.copy_into(&mut result);
         Ok(result)
     }
 
@@ -722,9 +706,9 @@ impl KernelServices for ExoKernel {
         }
 
         // Unregister physical ownership
-        PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
+        PHYS_OWNERSHIP_REGISTRY.unregister(entry.dma.phys_addr().as_u64());
 
-        let _ = entry.complete();
+        drop(entry.dma);
         Ok(())
     }
 

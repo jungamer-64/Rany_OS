@@ -706,7 +706,8 @@ mod tests {
     fn activate_vfs_rebuilds_vhca_query_mailboxes_and_only_admins_up_after_validation() {
         let mut in_mbox = CmdMailbox::zeroed();
         let mut out_mbox = CmdMailbox::zeroed();
-        let mut transport = FakeTransport::new(&in_mbox, &mut out_mbox, 0xffff, VhcaState::Allocated);
+        let mut transport =
+            FakeTransport::new(&in_mbox, &mut out_mbox, 0xffff, VhcaState::Allocated);
 
         unsafe {
             Mlx5Device::activate_vfs_with_transport(
@@ -732,14 +733,19 @@ mod tests {
         assert_eq!(transport.calls[1].encoded_uid, 0xffff);
         assert_eq!(transport.calls[1].function_id, 1);
         assert_eq!(transport.calls[2].opcode, CmdOpcode::ModifyVportState);
-        assert_eq!(transport.calls[2].op_mod, MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT);
+        assert_eq!(
+            transport.calls[2].op_mod,
+            MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT
+        );
         assert!(transport.calls[2].other_vport);
         assert_eq!(transport.calls[2].vport_number, 1);
         assert_eq!(transport.calls[2].admin_state, VPORT_ADMIN_STATE_UP);
-        assert!(!transport
-            .calls
-            .iter()
-            .any(|call| call.opcode == CmdOpcode::ModifyVhcaState));
+        assert!(
+            !transport
+                .calls
+                .iter()
+                .any(|call| call.opcode == CmdOpcode::ModifyVhcaState)
+        );
     }
 
     #[test]
@@ -765,10 +771,12 @@ mod tests {
         assert_eq!(err, Mlx5Error::InvalidResponse);
         assert_eq!(transport.calls.len(), 1);
         assert_eq!(transport.calls[0].opcode, CmdOpcode::QueryVhcaState);
-        assert!(!transport
-            .calls
-            .iter()
-            .any(|call| call.opcode == CmdOpcode::ModifyVportState));
+        assert!(
+            !transport
+                .calls
+                .iter()
+                .any(|call| call.opcode == CmdOpcode::ModifyVportState)
+        );
     }
 
     #[test]
@@ -777,25 +785,30 @@ mod tests {
         let mut out_mbox = CmdMailbox::zeroed();
         let mut transport = FakeTransport::new(&in_mbox, &mut out_mbox, 0, VhcaState::Allocated);
 
-        unsafe {
-            Mlx5Device::deactivate_vfs_with_transport(&mut transport, &mut in_mbox, 0, 0, 2)
-        }
-        .unwrap();
+        unsafe { Mlx5Device::deactivate_vfs_with_transport(&mut transport, &mut in_mbox, 0, 0, 2) }
+            .unwrap();
 
         assert_eq!(transport.calls.len(), 2);
-        assert!(transport
-            .calls
-            .iter()
-            .all(|call| call.opcode == CmdOpcode::ModifyVportState));
-        assert_eq!(transport.calls[0].op_mod, MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT);
+        assert!(
+            transport
+                .calls
+                .iter()
+                .all(|call| call.opcode == CmdOpcode::ModifyVportState)
+        );
+        assert_eq!(
+            transport.calls[0].op_mod,
+            MODIFY_VPORT_STATE_OP_MOD_ESW_VPORT
+        );
         assert!(transport.calls[0].other_vport);
         assert_eq!(transport.calls[0].vport_number, 1);
         assert_eq!(transport.calls[0].admin_state, VPORT_ADMIN_STATE_DOWN);
         assert_eq!(transport.calls[1].vport_number, 2);
         assert_eq!(transport.calls[1].admin_state, VPORT_ADMIN_STATE_DOWN);
-        assert!(!transport
-            .calls
-            .iter()
-            .any(|call| call.opcode == CmdOpcode::QueryVhcaState));
+        assert!(
+            !transport
+                .calls
+                .iter()
+                .any(|call| call.opcode == CmdOpcode::QueryVhcaState)
+        );
     }
 }

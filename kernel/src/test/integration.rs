@@ -533,6 +533,40 @@ pub fn test_iommu() -> IntegrationTestSuite {
         }
     }));
 
+    suite.add_result(run_test("iommu_nvme_block_io_path", || {
+        let active = crate::io::nvme::with_driver(|d| d.is_active()).unwrap_or(false);
+        if !active {
+            return Ok(String::from("NVMe driver not initialized; skipped"));
+        }
+
+        let queue_ready = crate::io::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
+        if !queue_ready {
+            return Err(String::from("NVMe queue missing for core 0"));
+        }
+
+        use nvme_ns::fs::BlockIo;
+
+        let adapter = crate::io::nvme::NvmeBlockIoAdapter::from_driver()
+            .map_err(|e| String::from(e))?;
+        let mut buf = alloc::vec![0u8; adapter.block_size() as usize];
+
+        crate::io::iommu::api::reset_map_unmap_counts();
+        adapter
+            .read_block(0, &mut buf)
+            .map_err(|e| alloc::format!("NvmeBlockIo read failed: {:?}", e))?;
+
+        if crate::io::iommu::api::is_iommu_enabled() {
+            let maps = crate::io::iommu::api::get_map_count();
+            if maps == 0 {
+                Err(String::from("IOMMU enabled but NVMe BlockIo path recorded no map calls"))
+            } else {
+                Ok(alloc::format!("NVMe BlockIo read ok ({} IOMMU map calls)", maps))
+            }
+        } else {
+            Ok(String::from("NVMe BlockIo read ok (IOMMU disabled)"))
+        }
+    }));
+
     suite
 }
 

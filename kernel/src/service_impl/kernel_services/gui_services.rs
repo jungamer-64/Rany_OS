@@ -11,11 +11,11 @@ mod nvme_tests;
 // GuiServices Implementation
 // ============================================================================
 
+use kernel_api::capability::DomainCapabilities;
 use kernel_api::service::gui::{
     FramebufferInfo as KapiFramebufferInfo, GuiServices, InputStreamHandle,
     PixelFormat as KapiPixelFormat,
 };
-use kernel_api::capability::DomainCapabilities;
 
 impl GuiServices for ExoKernel {
     fn request_framebuffer(
@@ -72,7 +72,9 @@ impl GuiServices for ExoKernel {
 
     fn poll_input_event(&self) -> Option<kernel_api::service::gui::InputEvent> {
         use crate::io::hid::keyboard::KeyEventExt;
-        use kernel_api::service::gui::{InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState};
+        use kernel_api::service::gui::{
+            InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState,
+        };
         crate::console::install_keyboard_tap();
         let hid_event_opt = crate::console::try_pop_key_event();
 
@@ -363,14 +365,18 @@ impl ShellServices for ExoKernel {
                             crate::fs::FileType::Directory => {
                                 kernel_api::service::shell::FileType::Directory
                             }
-                            crate::fs::FileType::Symlink => kernel_api::service::shell::FileType::Symlink,
+                            crate::fs::FileType::Symlink => {
+                                kernel_api::service::shell::FileType::Symlink
+                            }
                             crate::fs::FileType::CharDevice => {
                                 kernel_api::service::shell::FileType::CharDevice
                             }
                             crate::fs::FileType::BlockDevice => {
                                 kernel_api::service::shell::FileType::BlockDevice
                             }
-                            crate::fs::FileType::Socket => kernel_api::service::shell::FileType::Socket,
+                            crate::fs::FileType::Socket => {
+                                kernel_api::service::shell::FileType::Socket
+                            }
                             crate::fs::FileType::Fifo => kernel_api::service::shell::FileType::Fifo,
                             _ => kernel_api::service::shell::FileType::File,
                         };
@@ -407,14 +413,23 @@ impl ShellServices for ExoKernel {
         crate::fs::write_file_content(path, "/", data).map_err(|_| "Failed to write file")
     }
 
-    fn stat_file(&self, path: &str) -> Result<kernel_api::service::shell::FileAttributes, &'static str> {
+    fn stat_file(
+        &self,
+        path: &str,
+    ) -> Result<kernel_api::service::shell::FileAttributes, &'static str> {
         match crate::fs::stat_file(path, "/") {
             Ok(attr) => {
                 let file_type = match attr.file_type {
-                    crate::fs::FileType::Directory => kernel_api::service::shell::FileType::Directory,
+                    crate::fs::FileType::Directory => {
+                        kernel_api::service::shell::FileType::Directory
+                    }
                     crate::fs::FileType::Symlink => kernel_api::service::shell::FileType::Symlink,
-                    crate::fs::FileType::CharDevice => kernel_api::service::shell::FileType::CharDevice,
-                    crate::fs::FileType::BlockDevice => kernel_api::service::shell::FileType::BlockDevice,
+                    crate::fs::FileType::CharDevice => {
+                        kernel_api::service::shell::FileType::CharDevice
+                    }
+                    crate::fs::FileType::BlockDevice => {
+                        kernel_api::service::shell::FileType::BlockDevice
+                    }
                     crate::fs::FileType::Socket => kernel_api::service::shell::FileType::Socket,
                     crate::fs::FileType::Fifo => kernel_api::service::shell::FileType::Fifo,
                     _ => kernel_api::service::shell::FileType::File,

@@ -472,10 +472,7 @@ mod tests {
 
         assert_eq!(
             transport.calls,
-            vec![
-                (CmdOpcode::CreateSq, 0x1234),
-                (CmdOpcode::CreateSq, 0xffff),
-            ]
+            vec![(CmdOpcode::CreateSq, 0x1234), (CmdOpcode::CreateSq, 0xffff),]
         );
         assert_eq!(transport.uid(), 0x1234);
     }

@@ -1,5 +1,5 @@
-use crate::io::dma::{CpuOwned, TypedDmaSlice};
 use crate::io::nvme;
+use crate::io::nvme::dma::NvmeDmaRegion;
 
 use super::{WalBackend, WalError};
 
@@ -14,6 +14,11 @@ pub struct NvmeRawWalBackend {
 }
 
 impl NvmeRawWalBackend {
+    #[inline]
+    fn iommu_device(&self) -> Option<crate::io::iommu::types::DeviceId> {
+        nvme::iommu_device()
+    }
+
     pub fn new(nsid: u32, lba_start: u64, lba_len: u64) -> Result<Self, WalError> {
         if nsid == 0 || lba_len == 0 {
             return Err(WalError::InvalidConfig);
@@ -62,15 +67,16 @@ impl NvmeRawWalBackend {
             return Err(WalError::InvalidConfig);
         }
 
-        let dma = TypedDmaSlice::<CpuOwned>::new(lba_bytes).ok_or(WalError::BackendIo)?;
-        let phys = dma.phys_addr().as_u64();
+        let dma = NvmeDmaRegion::for_read(lba_bytes, self.iommu_device())
+            .map_err(|_| WalError::BackendIo)?;
         let cid = nvme::with_driver(|d| unsafe {
-            d.submit_read(NVME_CORE_ID, self.nsid, lba, 0, phys, 0).ok()
+            d.submit_read(NVME_CORE_ID, self.nsid, lba, 0, dma.prp1(), dma.prp2())
+                .ok()
         })
         .flatten()
         .ok_or(WalError::BackendIo)?;
         self.wait_for_cid(cid)?;
-        dst.copy_from_slice(dma.as_slice());
+        dma.copy_into(dst);
         Ok(())
     }
 
@@ -80,11 +86,10 @@ impl NvmeRawWalBackend {
             return Err(WalError::InvalidConfig);
         }
 
-        let mut dma = TypedDmaSlice::<CpuOwned>::new(lba_bytes).ok_or(WalError::BackendIo)?;
-        dma.as_mut_slice().copy_from_slice(src);
-        let phys = dma.phys_addr().as_u64();
+        let dma = NvmeDmaRegion::for_write(lba_bytes, src, self.iommu_device())
+            .map_err(|_| WalError::BackendIo)?;
         let cid = nvme::with_driver(|d| unsafe {
-            d.submit_write(NVME_CORE_ID, self.nsid, lba, 0, phys, 0)
+            d.submit_write(NVME_CORE_ID, self.nsid, lba, 0, dma.prp1(), dma.prp2())
                 .ok()
         })
         .flatten()

@@ -1,7 +1,5 @@
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::obs::{
@@ -10,6 +8,8 @@ use crate::net::obs::{
 };
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use spin::RwLock;
 
@@ -99,7 +99,11 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
     Ok(())
 }
 
-pub fn install_port(if_id: NetIfId, port: Arc<dyn NetBridgePort>, make_primary: bool) -> Result<(), &'static str> {
+pub fn install_port(
+    if_id: NetIfId,
+    port: Arc<dyn NetBridgePort>,
+    make_primary: bool,
+) -> Result<(), &'static str> {
     port.start(RxDispatchHandle::new(if_id))?;
 
     {

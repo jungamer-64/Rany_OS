@@ -172,11 +172,7 @@ impl Mlx5Device {
         let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
         let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let sq_in_len = (0x110 + sq_pages * 8) as u32;
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::CreateSq,
-            sq_in_len,
-            0x10,
-        )?;
+        self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10)?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let sqn = parse_create_sq_output(out_mbox);
         self.transition_sq_to_ready(sqn)?;
@@ -230,11 +226,7 @@ impl Mlx5Device {
         let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
         let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rq_in_len = (0x110 + rq_pages * 8) as u32;
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::CreateRq,
-            rq_in_len,
-            0x10,
-        )?;
+        self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10)?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let rqn = parse_create_rq_output(out_mbox);
         self.transition_rq_to_ready(rqn)?;

@@ -10,15 +10,15 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use kernel_api::dma::{CpuOwned, DmaSlice};
-use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
-use kernel_api::abi::driver::{AbiMmioHandle, DriverContext, KernelApiV2};
 #[cfg(test)]
 use kernel_api::abi::driver::AbiDmaSlice;
+use kernel_api::abi::driver::{AbiMmioHandle, DriverContext, KernelApiV2};
+use kernel_api::dma::{CpuOwned, DmaSlice};
+use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
 
 use crate::bootstrap::{
-    Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion,
-    Mlx5PciIdentity, Mlx5QueueDmaRegion, Mlx5QueueProfile,
+    Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion, Mlx5PciIdentity,
+    Mlx5QueueDmaRegion, Mlx5QueueProfile,
 };
 use crate::defs::MLX5_CMD_MBOX_SIZE;
 use crate::device::Mlx5Device;
@@ -366,7 +366,10 @@ impl AsyncDriver for Mlx5AsyncDriver {
         DriverType::Network
     }
 
-    fn probe(&mut self, ctx: &mut DriverContext) -> DriverFuture<'_, kernel_api::error::KapiResult<()>> {
+    fn probe(
+        &mut self,
+        ctx: &mut DriverContext,
+    ) -> DriverFuture<'_, kernel_api::error::KapiResult<()>> {
         let bar0_phys = ctx.device_address;
         let device_id = ctx.device_id;
         Box::pin(async move {
@@ -451,7 +454,9 @@ impl AsyncDriver for Mlx5AsyncDriver {
 fn map_driver_error(err: Mlx5Error) -> kernel_api::error::KapiError {
     match err {
         Mlx5Error::NotSupported => kernel_api::error::KapiError::NotSupported,
-        Mlx5Error::NoResources | Mlx5Error::DmaAllocFailed => kernel_api::error::KapiError::OutOfMemory,
+        Mlx5Error::NoResources | Mlx5Error::DmaAllocFailed => {
+            kernel_api::error::KapiError::OutOfMemory
+        }
         Mlx5Error::DeviceNotFound => kernel_api::error::KapiError::NotFound,
         _ => kernel_api::error::KapiError::IoError,
     }
@@ -514,8 +519,14 @@ mod tests {
 
     #[test]
     fn fw_pages_use_iova_addresses() {
-        let fw_pages = [slot(0x1000, 0x2000, 0, 0x1000), slot(0x3000, 0x4000, 0, 0x1000)];
+        let fw_pages = [
+            slot(0x1000, 0x2000, 0, 0x1000),
+            slot(0x3000, 0x4000, 0, 0x1000),
+        ];
 
-        assert_eq!(Mlx5DmaResources::device_addresses(&fw_pages), vec![0x2000, 0x4000]);
+        assert_eq!(
+            Mlx5DmaResources::device_addresses(&fw_pages),
+            vec![0x2000, 0x4000]
+        );
     }
 }

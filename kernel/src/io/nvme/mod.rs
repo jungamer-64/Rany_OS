@@ -19,6 +19,7 @@ use spin::Mutex;
 
 // Kernel-local modules
 pub mod block_io;
+pub(crate) mod dma;
 pub mod driver;
 pub mod ns_mount;
 pub mod scheduler;

@@ -1,7 +1,7 @@
 use crate::polling_driver::NvmePollingDriver;
 use kernel_api::KapiResult;
-use kernel_api::driver::{Driver, DriverType};
 use kernel_api::abi::driver::DriverContext;
+use kernel_api::driver::{Driver, DriverType};
 
 use spin::Mutex;
 

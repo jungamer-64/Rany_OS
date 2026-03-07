@@ -237,10 +237,9 @@ impl CellRegistry {
     /// シンボルを解決
     pub fn resolve_symbol(&self, name: &str) -> Option<usize> {
         if str_eq(name, kernel_api::abi::driver::KERNEL_API_SYMBOL) {
-            return Some(
-                crate::driver_registry::kernel_api_v2()
-                    as *const kernel_api::abi::driver::KernelApiV2 as usize,
-            );
+            return Some(crate::driver_registry::kernel_api_v2()
+                as *const kernel_api::abi::driver::KernelApiV2
+                as usize);
         }
 
         self.symbol_table

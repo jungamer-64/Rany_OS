@@ -6,7 +6,9 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH};
+use crate::defs::{
+    MLX5_CMD_MBOX_SIZE, MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH,
+};
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::regs::{cmd_entry, cqe, eqe, wqe};
 use crate::resources::MkeyParams;
@@ -47,7 +49,9 @@ impl Mlx5QueueProfile {
     }
 
     pub fn max_queue_count(&self) -> usize {
-        self.eq_count.max(self.tx_queue_count).max(self.rx_queue_count)
+        self.eq_count
+            .max(self.tx_queue_count)
+            .max(self.rx_queue_count)
     }
 }
 
@@ -227,10 +231,30 @@ impl Mlx5BootstrapPlan {
         }
 
         validate_region_list(&resources.eqs, self.queue_profile.eq_count, self.eq_size)?;
-        validate_queue_list(&resources.tx_cqs, self.queue_profile.tx_queue_count, self.cq_size, self.db_record_size)?;
-        validate_queue_list(&resources.rx_cqs, self.queue_profile.rx_queue_count, self.cq_size, self.db_record_size)?;
-        validate_queue_list(&resources.sqs, self.queue_profile.tx_queue_count, self.sq_size, self.db_record_size)?;
-        validate_queue_list(&resources.rqs, self.queue_profile.rx_queue_count, self.rq_size, self.db_record_size)?;
+        validate_queue_list(
+            &resources.tx_cqs,
+            self.queue_profile.tx_queue_count,
+            self.cq_size,
+            self.db_record_size,
+        )?;
+        validate_queue_list(
+            &resources.rx_cqs,
+            self.queue_profile.rx_queue_count,
+            self.cq_size,
+            self.db_record_size,
+        )?;
+        validate_queue_list(
+            &resources.sqs,
+            self.queue_profile.tx_queue_count,
+            self.sq_size,
+            self.db_record_size,
+        )?;
+        validate_queue_list(
+            &resources.rqs,
+            self.queue_profile.rx_queue_count,
+            self.rq_size,
+            self.db_record_size,
+        )?;
 
         Ok(())
     }
@@ -257,7 +281,11 @@ fn validate_region(region: Mlx5DmaRegion, expected_len: usize) -> Mlx5Result<()>
     Ok(())
 }
 
-fn validate_region_list(regions: &[Mlx5DmaRegion], expected_count: usize, expected_len: usize) -> Mlx5Result<()> {
+fn validate_region_list(
+    regions: &[Mlx5DmaRegion],
+    expected_count: usize,
+    expected_len: usize,
+) -> Mlx5Result<()> {
     if regions.len() < expected_count {
         return Err(Mlx5Error::InvalidParameter);
     }
@@ -329,16 +357,40 @@ mod tests {
                 })
                 .collect(),
             tx_cqs: (0..profile.tx_queue_count)
-                .map(|i| queue_region(0x40_000 + (i as u64 * 0x4000), plan.cq_size(), plan.db_record_size()))
+                .map(|i| {
+                    queue_region(
+                        0x40_000 + (i as u64 * 0x4000),
+                        plan.cq_size(),
+                        plan.db_record_size(),
+                    )
+                })
                 .collect(),
             rx_cqs: (0..profile.rx_queue_count)
-                .map(|i| queue_region(0x80_000 + (i as u64 * 0x4000), plan.cq_size(), plan.db_record_size()))
+                .map(|i| {
+                    queue_region(
+                        0x80_000 + (i as u64 * 0x4000),
+                        plan.cq_size(),
+                        plan.db_record_size(),
+                    )
+                })
                 .collect(),
             sqs: (0..profile.tx_queue_count)
-                .map(|i| queue_region(0xc0_000 + (i as u64 * 0x4000), plan.sq_size(), plan.db_record_size()))
+                .map(|i| {
+                    queue_region(
+                        0xc0_000 + (i as u64 * 0x4000),
+                        plan.sq_size(),
+                        plan.db_record_size(),
+                    )
+                })
                 .collect(),
             rqs: (0..profile.rx_queue_count)
-                .map(|i| queue_region(0x100_000 + (i as u64 * 0x4000), plan.rq_size(), plan.db_record_size()))
+                .map(|i| {
+                    queue_region(
+                        0x100_000 + (i as u64 * 0x4000),
+                        plan.rq_size(),
+                        plan.db_record_size(),
+                    )
+                })
                 .collect(),
         }
     }

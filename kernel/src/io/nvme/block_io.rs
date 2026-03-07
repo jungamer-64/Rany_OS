@@ -8,12 +8,13 @@
 //! 適合させるアダプタ。同期ポーリングモードで単一ブロック I/O を実行する。
 //!
 //! ## フロー
-//! 1. DMA バッファを割り当て (`kernel_api::service::kernel::instance().alloc_dma()`)
-//! 2. PRP1 として `device_address()` を設定
+//! 1. page-padded な NVMe DMA 領域を確保し、必要なら device-scoped IOMMU map を作成
+//! 2. `prp1` / `prp2` を構築
 //! 3. `NvmePollingDriver::submit_read/write()` でコマンド発行
 //! 4. `poll_completion_by_cid()` でスピンポーリング待機
-//! 5. データコピー & DMA バッファ解放
+//! 5. 論理長ぶんだけデータコピーし、DMA/IOMMU/PRP リソースを解放
 
+use crate::io::nvme::dma::{NvmeDmaError, NvmeDmaRegion};
 use nvme_ns::NsError;
 use nvme_ns::fs::BlockIo;
 
@@ -31,6 +32,20 @@ pub struct NvmeBlockIoAdapter {
 }
 
 impl NvmeBlockIoAdapter {
+    fn map_dma_error(err: NvmeDmaError) -> NsError {
+        match err {
+            NvmeDmaError::OutOfMemory => {
+                NsError::Internal(alloc::string::String::from("DMA alloc failed"))
+            }
+            NvmeDmaError::InvalidLen => {
+                NsError::Internal(alloc::string::String::from("invalid DMA length"))
+            }
+            NvmeDmaError::IommuDeviceMissing
+            | NvmeDmaError::IommuIdentityBlocked
+            | NvmeDmaError::IommuMappingFailed => NsError::IoError,
+        }
+    }
+
     /// ドライバから名前空間情報を取得してアダプタを作成
     ///
     /// NVMe グローバルドライバが初期化済みであること。
@@ -80,81 +95,53 @@ impl NvmeBlockIoAdapter {
         out: Option<&mut [u8]>,
     ) -> Result<(), NsError> {
         let bs = self.block_size as usize;
-        let kernel = kernel_api::service::kernel::instance();
-
-        // DMA バッファ割り当て
-        let mut dma_buf = kernel
-            .alloc_dma(bs)
-            .map_err(|_| NsError::Internal(alloc::string::String::from("DMA alloc failed")))?;
-
-        // 書き込み時: データを DMA バッファにコピー
-        if is_write {
-            if let Some(src) = data {
-                let len = src.len().min(bs);
-                unsafe {
-                    let dst = dma_buf.as_slice_mut();
-                    dst[..len].copy_from_slice(&src[..len]);
-                    if len < bs {
-                        // ゼロ埋め
-                        for byte in &mut dst[len..] {
-                            *byte = 0;
-                        }
-                    }
-                }
-            }
+        let dma = if is_write {
+            let src = data.unwrap_or(&[]);
+            NvmeDmaRegion::for_write(
+                bs,
+                &src[..src.len().min(bs)],
+                crate::io::nvme::iommu_device(),
+            )
+        } else {
+            NvmeDmaRegion::for_read(bs, crate::io::nvme::iommu_device())
         }
+        .map_err(Self::map_dma_error)?;
 
-        let prp1 = dma_buf.device_address();
         let core_id = Self::core_id();
 
         // コマンド発行
         let cid = crate::io::nvme::with_driver(|d| {
             if is_write {
-                unsafe { d.submit_write(core_id, self.nsid, lba, 1, prp1, 0) }
+                unsafe { d.submit_write(core_id, self.nsid, lba, 0, dma.prp1(), dma.prp2()) }
             } else {
-                unsafe { d.submit_read(core_id, self.nsid, lba, 1, prp1, 0) }
+                unsafe { d.submit_read(core_id, self.nsid, lba, 0, dma.prp1(), dma.prp2()) }
             }
         })
         .ok_or(NsError::IoError)?
         .map_err(|_| NsError::IoError)?;
 
         // 完了をポーリング
-        let mut completed = false;
         for _ in 0..MAX_POLL_ITERATIONS {
             if let Some(cqe) =
                 crate::io::nvme::with_driver(|d| unsafe { d.poll_completion_by_cid(core_id, cid) })
                     .flatten()
             {
                 if !cqe.is_success() {
-                    drop(dma_buf);
                     return Err(NsError::IoError);
                 }
-                completed = true;
-                break;
+                if !is_write {
+                    if let Some(dst) = out {
+                        dma.copy_into(dst);
+                    }
+                }
+                return Ok(());
             }
             core::hint::spin_loop();
         }
 
-        if !completed {
-            drop(dma_buf);
-            return Err(NsError::Internal(alloc::string::String::from(
-                "NVMe timeout",
-            )));
-        }
-
-        // 読み取り時: DMA バッファからデータをコピー
-        if !is_write {
-            if let Some(dst) = out {
-                let len = dst.len().min(bs);
-                unsafe {
-                    let src = dma_buf.as_slice();
-                    dst[..len].copy_from_slice(&src[..len]);
-                }
-            }
-        }
-
-        drop(dma_buf);
-        Ok(())
+        Err(NsError::Internal(alloc::string::String::from(
+            "NVMe timeout",
+        )))
     }
 }
 

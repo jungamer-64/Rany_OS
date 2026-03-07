@@ -6,9 +6,9 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use kernel_api::abi::driver::DriverContext;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DeviceId, Driver, DriverFuture, DriverType, DriverVersion};
-use kernel_api::abi::driver::DriverContext;
 use kernel_api::error::{KapiError, KapiResult};
 use kernel_api::service::kernel::instance as kernel;
 
@@ -18,8 +18,8 @@ use crate::io::pci::{PcieBdf, PcieError, SriovCapability, SriovController, pcie_
 use crate::sync::{PoisonLock, PoisonLockGuard};
 use mlx5_driver::{
     ConnectXVariant, MELLANOX_VENDOR_ID, Mlx5AllocatedResources, Mlx5BootstrapConfig,
-    Mlx5BootstrapPlan, Mlx5Device, Mlx5DmaRegion, Mlx5Error, Mlx5PciIdentity,
-    Mlx5QueueDmaRegion, Mlx5QueueProfile, SUPPORTED_DEVICE_IDS,
+    Mlx5BootstrapPlan, Mlx5Device, Mlx5DmaRegion, Mlx5Error, Mlx5PciIdentity, Mlx5QueueDmaRegion,
+    Mlx5QueueProfile, SUPPORTED_DEVICE_IDS,
 };
 const KAPI_EINVAL: i32 = -22;
 
@@ -99,7 +99,9 @@ fn map_pcie_error(err: PcieError) -> KapiError {
     match err {
         PcieError::DeviceNotFound => KapiError::NotFound,
         PcieError::CapabilityNotFound | PcieError::NotSupported => KapiError::NotSupported,
-        PcieError::ResourceExhausted | PcieError::VfAllocationFailed => KapiError::ResourceExhausted,
+        PcieError::ResourceExhausted | PcieError::VfAllocationFailed => {
+            KapiError::ResourceExhausted
+        }
         PcieError::ConfigError | PcieError::AerError => KapiError::IoError,
     }
 }
@@ -270,8 +272,7 @@ pub fn mlx5_enable_vfs(num_vfs: u16) -> KapiResult<Mlx5SriovStatus> {
     let mut guard = lock_mlx5_sriov_state("mlx5_enable_vfs");
     let state = guard.as_mut().ok_or(KapiError::NotFound)?;
     enable_vfs_with_runtime_state(state, num_vfs, bridge_initialized, |count| {
-        crate::net::runtime::bridge::mlx5_bridge::activate_mlx5_vfs(count)
-            .map_err(map_mlx5_error)
+        crate::net::runtime::bridge::mlx5_bridge::activate_mlx5_vfs(count).map_err(map_mlx5_error)
     })
 }
 
@@ -280,8 +281,7 @@ pub fn mlx5_disable_vfs() -> KapiResult<Mlx5SriovStatus> {
     let mut guard = lock_mlx5_sriov_state("mlx5_disable_vfs");
     let state = guard.as_mut().ok_or(KapiError::NotFound)?;
     disable_vfs_with_runtime_state(state, bridge_initialized, |count| {
-        crate::net::runtime::bridge::mlx5_bridge::deactivate_mlx5_vfs(count)
-            .map_err(map_mlx5_error)
+        crate::net::runtime::bridge::mlx5_bridge::deactivate_mlx5_vfs(count).map_err(map_mlx5_error)
     })
 }
 
@@ -542,7 +542,11 @@ impl Mlx5AsyncDriver {
         let mut rq_dbs = Vec::with_capacity(profile.rx_queue_count);
 
         for _ in 0..profile.eq_count {
-            eqs.push(Self::alloc_dma_for_device(plan.eq_size(), packed_device_id, "eq")?);
+            eqs.push(Self::alloc_dma_for_device(
+                plan.eq_size(),
+                packed_device_id,
+                "eq",
+            )?);
         }
 
         for _ in 0..profile.tx_queue_count {
@@ -556,7 +560,11 @@ impl Mlx5AsyncDriver {
                 packed_device_id,
                 "tx_cq_db",
             )?);
-            sqs.push(Self::alloc_dma_for_device(plan.sq_size(), packed_device_id, "sq")?);
+            sqs.push(Self::alloc_dma_for_device(
+                plan.sq_size(),
+                packed_device_id,
+                "sq",
+            )?);
             sq_dbs.push(Self::alloc_dma_for_device(
                 plan.db_record_size(),
                 packed_device_id,
@@ -575,7 +583,11 @@ impl Mlx5AsyncDriver {
                 packed_device_id,
                 "rx_cq_db",
             )?);
-            rqs.push(Self::alloc_dma_for_device(plan.rq_size(), packed_device_id, "rq")?);
+            rqs.push(Self::alloc_dma_for_device(
+                plan.rq_size(),
+                packed_device_id,
+                "rq",
+            )?);
             rq_dbs.push(Self::alloc_dma_for_device(
                 plan.db_record_size(),
                 packed_device_id,

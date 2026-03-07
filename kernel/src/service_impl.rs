@@ -222,13 +222,10 @@ static PHYS_OWNERSHIP_REGISTRY: PhysOwnershipRegistry = PhysOwnershipRegistry::n
 // NVMe DMA Context Registry (Option B-2: Full Abstraction)
 // ============================================================================
 
-use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use x86_64::PhysAddr;
 mod kernel_services;
 pub use kernel_services::*;
-
-const NVME_PAGE_SIZE: usize = 4096;
 
 /// IOMMU mapping info for cleanup
 struct IommuMapping {
@@ -243,61 +240,10 @@ impl IommuMapping {
     }
 }
 
-/// PRP list page (DMA buffer for PRP entries)
-struct PrpListPage {
-    dev: TypedDmaSlice<DeviceOwned>,
-    guard: SliceDmaGuard,
-    map: Option<IommuMapping>,
-    iova: u64,
-}
-
-/// Chain of PRP list pages
-struct PrpListChain {
-    pages: alloc::vec::Vec<PrpListPage>,
-}
-
-impl PrpListChain {
-    fn first_iova(&self) -> u64 {
-        self.pages.first().map(|p| p.iova).unwrap_or(0)
-    }
-
-    fn complete(self) {
-        for page in self.pages {
-            let _ = page.guard.complete(page.dev);
-            if let Some(m) = page.map {
-                m.unmap();
-            }
-        }
-    }
-}
-
 /// Stored DMA context entry
 struct NvmeDmaContextEntry {
-    data_dev: Option<TypedDmaSlice<DeviceOwned>>,
-    data_guard: Option<SliceDmaGuard>,
-    prp_list: Option<PrpListChain>,
-    data_map: Option<IommuMapping>,
-    logical_len: usize,
-    phys: u64,
+    dma: crate::io::nvme::dma::NvmeDmaRegion,
     owner: u64,
-}
-
-impl NvmeDmaContextEntry {
-    fn complete(mut self) -> TypedDmaSlice<CpuOwned> {
-        if let Some(prp) = self.prp_list.take() {
-            prp.complete();
-        }
-        let data_dev = self.data_dev.take().expect("missing data_dev");
-        let data_guard = self.data_guard.take().expect("missing data_guard");
-        let data = data_guard.complete(data_dev);
-        if let Some(m) = self.data_map.take() {
-            m.unmap();
-        }
-
-        // SECURITY: Physical ownership is unregistered in the service call
-        // using the phys field.
-        data
-    }
 }
 
 struct NvmeDmaContextRegistry {
@@ -353,11 +299,6 @@ impl IommuMappingRegistry {
 
 static IOMMU_MAPPING_REGISTRY: IommuMappingRegistry = IommuMappingRegistry::new();
 
-// Helper: align up to page size
-fn align_up_page(value: usize) -> usize {
-    (value + NVME_PAGE_SIZE - 1) & !(NVME_PAGE_SIZE - 1)
-}
-
 // Helper: map physical address for IOMMU
 fn map_for_iommu(
     device: Option<IommuDeviceId>,
@@ -375,7 +316,7 @@ fn map_for_iommu(
     }
 
     let dev = device.ok_or(KapiError::IoError)?;
-    let map_len = align_up_page(size);
+    let map_len = crate::io::nvme::dma::align_up_page(size);
     let iova = unsafe {
         crate::io::iommu::api::map_for_device(&dev, PhysAddr::new(phys_addr), map_len as u64)
     }
@@ -389,113 +330,6 @@ fn map_for_iommu(
             size: map_len as u64,
         }),
     ))
-}
-
-// Helper: build PRP list for multi-page transfers
-fn build_prp_list_internal(
-    device: Option<IommuDeviceId>,
-    base_addr: u64,
-    len: usize,
-) -> Result<(u64, Option<PrpListChain>), KapiError> {
-    if len == 0 {
-        return Err(KapiError::IoError);
-    }
-
-    let pages = (len + NVME_PAGE_SIZE - 1) / NVME_PAGE_SIZE;
-    if pages <= 1 {
-        return Ok((0, None));
-    }
-    if pages == 2 {
-        return Ok((base_addr + NVME_PAGE_SIZE as u64, None));
-    }
-
-    // Need PRP list for > 2 pages
-    let total_entries = pages - 1;
-    let (mut list_buffers, list_iovas, list_maps) =
-        allocate_prp_list_buffers(device, total_entries)?;
-
-    fill_prp_entries(&mut list_buffers, &list_iovas, base_addr, total_entries)?;
-
-    let mut prp_pages = alloc::vec::Vec::with_capacity(list_buffers.len());
-    for ((list, map), iova) in list_buffers.into_iter().zip(list_maps).zip(list_iovas) {
-        let (dev, guard) = list.start_dma();
-        prp_pages.push(PrpListPage {
-            dev,
-            guard,
-            map,
-            iova,
-        });
-    }
-
-    let chain = PrpListChain { pages: prp_pages };
-    let prp2 = chain.first_iova();
-    Ok((prp2, Some(chain)))
-}
-
-/// PRP リスト用のDMAバッファを確保しIOMMUマッピングを行う
-fn allocate_prp_list_buffers(
-    device: Option<IommuDeviceId>,
-    total_entries: usize,
-) -> Result<
-    (
-        alloc::vec::Vec<TypedDmaSlice<CpuOwned>>,
-        alloc::vec::Vec<u64>,
-        alloc::vec::Vec<Option<IommuMapping>>,
-    ),
-    KapiError,
-> {
-    let mut remaining = total_entries;
-    let mut list_buffers = alloc::vec::Vec::new();
-
-    while remaining > 0 {
-        let list = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(KapiError::OutOfMemory)?;
-        list_buffers.push(list);
-        remaining = if remaining > 512 { remaining - 511 } else { 0 };
-    }
-
-    let mut list_iovas = alloc::vec::Vec::with_capacity(list_buffers.len());
-    let mut list_maps = alloc::vec::Vec::with_capacity(list_buffers.len());
-    for list in &list_buffers {
-        let list_phys = list.phys_addr().as_u64();
-        let (list_addr, list_map) = map_for_iommu(device, list_phys, NVME_PAGE_SIZE)?;
-        list_iovas.push(list_addr);
-        list_maps.push(list_map);
-    }
-
-    Ok((list_buffers, list_iovas, list_maps))
-}
-
-/// PRPエントリにページアドレスとチェインポインタを書き込む
-fn fill_prp_entries(
-    list_buffers: &mut [TypedDmaSlice<CpuOwned>],
-    list_iovas: &[u64],
-    base_addr: u64,
-    total_entries: usize,
-) -> Result<(), KapiError> {
-    let mut filled = 0usize;
-    for idx in 0..list_buffers.len() {
-        let remaining_entries = total_entries - filled;
-        let needs_chain = remaining_entries > 512;
-        let data_capacity = if needs_chain { 511 } else { remaining_entries };
-
-        let entries = unsafe {
-            core::slice::from_raw_parts_mut(
-                list_buffers[idx].as_mut_slice().as_mut_ptr() as *mut u64,
-                NVME_PAGE_SIZE / 8,
-            )
-        };
-
-        for j in 0..data_capacity {
-            entries[j] = base_addr + ((filled + j + 1) * NVME_PAGE_SIZE) as u64;
-        }
-
-        if needs_chain {
-            entries[511] = list_iovas.get(idx + 1).copied().ok_or(KapiError::IoError)?;
-        }
-
-        filled += data_capacity;
-    }
-    Ok(())
 }
 
 // ============================================================================

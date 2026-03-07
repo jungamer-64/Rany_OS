@@ -8,8 +8,8 @@
 //! unified DriverRegistry system.
 
 use alloc::boxed::Box;
-use kernel_api::driver::{AsyncDriver, DeviceId, Driver, DriverFuture, DriverType, DriverVersion};
 use kernel_api::abi::driver::DriverContext;
+use kernel_api::driver::{AsyncDriver, DeviceId, Driver, DriverFuture, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
 use crate::io::iommu::types::DeviceId as IommuDeviceId;

@@ -68,11 +68,7 @@ impl Mlx5Device {
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::res::build_create_tis_input(in_mbox, params);
 
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::CreateTis,
-            0xC0,
-            0x10,
-        )?;
+        self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0xC0, 0x10)?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);

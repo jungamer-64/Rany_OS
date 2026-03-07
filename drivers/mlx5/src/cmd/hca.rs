@@ -504,7 +504,10 @@ mod tests {
         );
         assert_eq!(get_bits_u32(&in_mbox.data[..], 64, 1), 1);
         assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 4);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 120, 4), VPORT_ADMIN_STATE_UP as u32);
+        assert_eq!(
+            get_bits_u32(&in_mbox.data[..], 120, 4),
+            VPORT_ADMIN_STATE_UP as u32
+        );
     }
 
     #[test]
