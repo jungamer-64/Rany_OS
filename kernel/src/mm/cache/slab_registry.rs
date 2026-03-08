@@ -1,7 +1,7 @@
 use crate::mm::cache::slab_cache::SlabCache;
+use crate::sync::PoisonLock;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use spin::Mutex;
 
 /// Flags configuring Slab Cache behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,7 +25,7 @@ impl Default for SlabFlags {
 struct RegistryEntry {
     object_size: usize,
     flags: SlabFlags,
-    cache: Weak<Mutex<SlabCache>>,
+    cache: Weak<PoisonLock<SlabCache>>,
 }
 
 /// Global registry for Slab Caches
@@ -37,7 +37,7 @@ pub struct SlabCacheRegistry {
 }
 
 // Global singleton instance
-static REGISTRY: Mutex<SlabCacheRegistry> = Mutex::new(SlabCacheRegistry::new());
+static REGISTRY: PoisonLock<SlabCacheRegistry> = PoisonLock::new(SlabCacheRegistry::new());
 
 impl SlabCacheRegistry {
     const fn new() -> Self {
@@ -47,12 +47,16 @@ impl SlabCacheRegistry {
     }
 
     /// Access the global registry
-    pub fn global() -> spin::MutexGuard<'static, SlabCacheRegistry> {
-        REGISTRY.lock()
+    pub fn global() -> crate::sync::PoisonLockGuard<'static, SlabCacheRegistry> {
+        REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Get an existing compatible cache or create a new one
-    pub fn get_or_create(&mut self, object_size: usize, flags: SlabFlags) -> Arc<Mutex<SlabCache>> {
+    pub fn get_or_create(
+        &mut self,
+        object_size: usize,
+        flags: SlabFlags,
+    ) -> Arc<PoisonLock<SlabCache>> {
         // 1. Clean up dead references
         self.cleanup();
 
@@ -68,7 +72,7 @@ impl SlabCacheRegistry {
         }
 
         // 3. Create new cache
-        let cache = Arc::new(Mutex::new(SlabCache::new(object_size)));
+        let cache = Arc::new(PoisonLock::new(SlabCache::new(object_size)));
 
         // 4. Register if mergeable
         if flags.mergeable {

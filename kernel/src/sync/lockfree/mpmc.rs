@@ -321,6 +321,15 @@ impl<T, const N: usize> Default for MpmcRingBuffer<T, N> {
     }
 }
 
+impl<T, const N: usize> core::fmt::Debug for MpmcRingBuffer<T, N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MpmcRingBuffer")
+            .field("capacity", &N)
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
 impl<T, const N: usize> Drop for MpmcRingBuffer<T, N> {
     fn drop(&mut self) {
         // 残っている要素をドロップ

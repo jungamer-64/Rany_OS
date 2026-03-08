@@ -372,6 +372,7 @@ pub fn process_deferred_wakes() {
 /// - `register()`: Safe to call from async task context
 /// - `wake_all()`: Safe to call from any context (including ISR via deferred)
 /// - `wake_all_from_isr()`: Safe to call from ISR context (uses deferred queue)
+#[derive(Debug)]
 pub struct WakerQueue {
     /// Registered wakers
     wakers: Mutex<Vec<Waker>>,

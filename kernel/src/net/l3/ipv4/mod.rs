@@ -418,7 +418,12 @@ impl Ipv4Header {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
 
-        !(sum as u16)
+        let result = !(sum as u16);
+        if result == 0 {
+            0xFFFF
+        } else {
+            result
+        }
     }
 }
 

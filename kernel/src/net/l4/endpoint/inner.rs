@@ -330,18 +330,22 @@ impl EndpointInner {
     }
 
     /// 受信バッファにデータ追加（内部用 - カーネル/ドライバから呼ばれる）
+    /// 実際にバッファに追加されたバイト数を返す。
     #[inline]
-    pub fn push_recv_data(&mut self, data: &[u8]) {
+    pub fn push_recv_data(&mut self, data: &[u8]) -> usize {
         let available = self
             .recv_buffer_limit
             .saturating_sub(self.recv_buffer.len());
         let len = data.len().min(available);
-        self.recv_buffer.extend(data[..len].iter().copied());
+        if len > 0 {
+            self.recv_buffer.extend(data[..len].iter().copied());
 
-        // データが到着したので受信待ちを起こす
-        if let Some(waker) = self.recv_waker.take() {
-            waker.wake();
+            // データが到着したので受信待ちを起こす
+            if let Some(waker) = self.recv_waker.take() {
+                waker.wake();
+            }
         }
+        len
     }
 
     /// 接続完了通知（内部用 - TCPスタックから呼ばれる）

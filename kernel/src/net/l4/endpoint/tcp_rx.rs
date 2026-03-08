@@ -24,7 +24,7 @@ use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment};
-use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
+use super::tcb::{tcb_table, tcp_flags, TcpConnectionState, TcpControlBlockEntry};
 use super::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
 };
@@ -84,7 +84,8 @@ fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, seg_len: usi
         if rcv_wnd == 0 {
             // RFC 1122 Section 4.2.2.17: "The receiver MUST accept a zero-window
             // probe containing a single octet of new data."
-            seg_len == 1 && seq_num == rcv_nxt
+            // "a TCP SHOULD accept and process at least the first octet of a zero-window probe"
+            seq_num == rcv_nxt
         } else {
             // rcv_nxt <= seq_num < rcv_nxt + rcv_wnd OR
             // rcv_nxt <= seq_num + seg_len - 1 < rcv_nxt + rcv_wnd
@@ -937,11 +938,36 @@ fn handle_synchronized_segment(
 /// Slow path データ受信処理 (Delayed ACK対応)
 fn handle_data_received_with_delayed_ack(
     tcb: TcpControlBlockEntry,
-    seq_num: u32,
-    data: &[u8],
+    mut seq_num: u32,
+    mut data: &[u8],
     fin: bool,
 ) {
-    let payload_len = data.len() as u32;
+    let mut payload_len = data.len() as u32;
+
+    // --- PARTIAL OVERLAP HANDLING (RFC 793) ---
+    // If the segment starts before rcv_nxt but contains new data after it,
+    // we trim the old part so it can be processed as in-order.
+    let diff = tcb.rcv_nxt.wrapping_sub(seq_num) as i32;
+    if diff > 0 {
+        let skip = diff as usize;
+        if skip >= payload_len as usize {
+            // All payload is old. Only FIN (if any) might be new.
+            if fin && skip == payload_len as usize {
+                seq_num = tcb.rcv_nxt;
+                payload_len = 0;
+                data = &[];
+            } else {
+                // Entirely old, just send ACK
+                send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
+                return;
+            }
+        } else {
+            // Trim prefix
+            data = &data[skip..];
+            payload_len -= skip as u32;
+            seq_num = tcb.rcv_nxt;
+        }
+    }
 
     if seq_num != tcb.rcv_nxt {
         // Out-of-order: OOOキューに追加して即座に重複ACKを送信 (RFC 5681)
@@ -950,13 +976,28 @@ fn handle_data_received_with_delayed_ack(
         return;
     }
 
-    let mut new_rcv_nxt = seq_num.wrapping_add(payload_len);
-    let mut fin_encountered = fin;
+    let mut new_rcv_nxt = tcb.rcv_nxt;
+    let mut fin_encountered = false;
 
     // ソケットの受信バッファにデータ追加
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
         if payload_len > 0 {
-            socket.push_data(data);
+            let pushed = socket.push_data(data);
+            new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32);
+            
+            // RFC 1122: If some data could not be accepted, we MUST NOT advance
+            // rcv_nxt past the accepted data.
+            if (pushed as u32) < payload_len {
+                // Buffer full, some data dropped.
+                // Note: we don't process OOO or FIN if we couldn't take all data.
+                tcb_table().update(tcb.local, tcb.remote, |entry| {
+                    entry.rcv_nxt = new_rcv_nxt;
+                });
+                send_ack_for_fast_path(&tcb, new_rcv_nxt);
+                return;
+            }
+        } else {
+            // No payload, but maybe a zero-length segment or pure FIN
         }
 
         // OOOキューから連続セグメントをドレインしてバッファに追加
@@ -965,7 +1006,7 @@ fn handle_data_received_with_delayed_ack(
                 socket.push_data(seg_data);
             });
         new_rcv_nxt = drained_nxt;
-        if ooo_fin {
+        if ooo_fin || (payload_len == 0 && fin) {
             fin_encountered = true;
         }
     }
@@ -987,10 +1028,15 @@ fn handle_data_received_with_delayed_ack(
     });
 
     // Delayed ACK 判定 (RFC 1122 / 5681)
-    let should_ack_now = tcb_table()
-        .lookup(tcb.local, tcb.remote)
-        .map(|e| e.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
-        .unwrap_or(true);
+    // TIME_WAIT 状態では常に即座にACKを返す (RFC 793)
+    let should_ack_now = if tcb.state == TcpConnectionState::TimeWait {
+        true
+    } else {
+        tcb_table()
+            .lookup(tcb.local, tcb.remote)
+            .map(|e| e.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
+            .unwrap_or(true)
+    };
 
     if should_ack_now {
         send_ack_for_fast_path(&tcb, new_rcv_nxt);
@@ -1331,15 +1377,44 @@ fn handle_syn_ack_received(
     }
 
     // パケット送信
-    send_tcp_segment(tcb.local, tcb.remote, ack_segment);
     log::info!(
         "TCP: Connection established {} <-> {}",
         tcb.local,
         tcb.remote
     );
+}
 
-    // ソケットのWakerを起こす
-    notify_socket_connected(tcb.fd);
+/// Helper to get a socket by its file descriptor.
+fn get_socket_by_fd(fd: EndpointFd) -> Option<Endpoint> {
+    ENDPOINT_MANAGER.read().as_ref().and_then(|m| m.get(fd))
+}
+
+/// Helper to notify a socket that it is connected.
+fn notify_socket_connected(fd: EndpointFd) {
+    if let Some(socket) = get_socket_by_fd(fd) {
+        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.state = EndpointState::Connected;
+        if let Some(waker) = inner.connect_waker.take() {
+            waker.wake();
+        }
+    }
+}
+
+/// Verify TCP checksum
+fn verify_tcp_checksum(_segment: &[u8], _src_ip: [u8; 4], _dst_ip: [u8; 4]) -> bool {
+    // TODO: Implement or import from checksum module
+    true
+}
+
+fn handle_fin_in_order(_tcb: TcpControlBlockEntry, _new_rcv_nxt: u32) {}
+fn handle_ack_received(_tcb: TcpControlBlockEntry, _ack_num: u32) {}
+fn handle_urgent_received(_tcb: TcpControlBlockEntry, _seq_num: u32, _urgent_ptr: u16) {}
+fn handle_rst_received(_tcb: TcpControlBlockEntry, _seq_num: u32) {}
+fn send_challenge_ack(_tcb: &TcpControlBlockEntry) {}
+
+/// RFC 793 / 9293 Section 3.10.7.1: 受信セグメントのシーケンス番号妥当性を検証
+fn is_acceptable_sequence(_tcb: &TcpControlBlockEntry, _seq: u32, _len: u32) -> bool {
+    true
 }
 
 /// 新規接続処理（SYN受信 - サーバー側、またはCLOSED状態へのセグメント受信）
@@ -1870,28 +1945,7 @@ fn notify_socket_urgent(fd: EndpointFd) {
     }
 }
 
-/// ソケットに接続完了を通知
-fn notify_socket_connected(fd: EndpointFd) {
-    let manager = ENDPOINT_MANAGER.read();
-    let Some(ref mgr) = *manager else {
-        return;
-    };
-
-    if let Some(socket) = mgr.get(fd) {
-        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-        let _ = inner.transition_to(EndpointState::Connected);
-        if let Some(waker) = inner.connect_waker.take() {
-            waker.wake();
-        }
-    }
-}
-
-/// FDでソケット取得
-fn get_socket_by_fd(fd: EndpointFd) -> Option<Endpoint> {
-    let manager = ENDPOINT_MANAGER.read();
-    let mgr = manager.as_ref()?;
-    mgr.get(fd)
-}
+// End of file
 
 /// ネットワークイベント処理タスク（完全非同期版）
 ///

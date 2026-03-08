@@ -100,6 +100,11 @@ impl NetworkStack {
         _config: &NetworkConfig,
         current_time: u64,
     ) -> Option<MacAddress> {
+        // RFC 1122: Loopback address MUST NOT be sent to a physical interface.
+        if dst_ip.is_loopback() {
+            return None;
+        }
+
         // Broadcast address
         if dst_ip.is_broadcast() {
             return Some(MacAddress::BROADCAST);

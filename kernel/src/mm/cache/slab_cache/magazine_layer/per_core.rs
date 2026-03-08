@@ -222,7 +222,7 @@ pub type SlabDtor = fn(NonNull<u8>);
 /// ```
 pub struct TypedSlabCache {
     /// 内部のSlabキャッシュ (Shared via Registry)
-    inner: Arc<Mutex<SlabCache>>,
+    inner: Arc<PoisonLock<SlabCache>>,
     /// コンストラクタ関数（初回割り当て時に呼ばれる）
     ctor: Option<SlabCtor>,
     /// デストラクタ関数（解放時に呼ばれる）
@@ -283,9 +283,9 @@ impl TypedSlabCache {
         // NUMA aware, not mergeable currently (registry doesn't track node yet, or assume non-mergeable)
         // For now, create direct since Registry doesn't support NUMA constraints yet
         // OR wrapper allowing new_on_node.
-        // Let's stick to simple Arc<Mutex> wrap for now, bypassing registry for NUMA explicit calls
+        // Let's stick to simple Arc<PoisonLock> wrap for now, bypassing registry for NUMA explicit calls
         // until Registry is upgraded.
-        let inner = Arc::new(Mutex::new(SlabCache::new_on_node(object_size, numa_node)));
+        let inner = Arc::new(PoisonLock::new(SlabCache::new_on_node(object_size, numa_node)));
         Self {
             inner,
             ctor: Some(ctor),
@@ -301,7 +301,7 @@ impl TypedSlabCache {
     ///
     /// 初回割り当てではコンストラクタが呼ばれ、再利用時はスキップ
     pub fn allocate(&mut self) -> Option<NonNull<u8>> {
-        let ptr = self.inner.lock().allocate()?;
+        let ptr = self.inner.lock().unwrap_or_else(|e| e.into_inner()).allocate()?;
 
         // オブジェクトのインデックスを計算（簡易実装: アドレス下位ビットから）
         let obj_index = self.ptr_to_index(ptr);
@@ -344,19 +344,19 @@ impl TypedSlabCache {
         }
 
         // 内部キャッシュに返却（初期化フラグは維持）
-        self.inner.lock().deallocate(ptr);
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).deallocate(ptr);
     }
 
     /// ポインタからオブジェクトインデックスを計算（簡易実装）
     pub(super) fn ptr_to_index(&self, ptr: NonNull<u8>) -> usize {
         // アドレス下位12ビット（ページ内オフセット）をオブジェクトサイズで割る
         let offset = (ptr.as_ptr() as usize) & 0xFFF;
-        offset / self.inner.lock().object_size
+        offset / self.inner.lock().unwrap_or_else(|e| e.into_inner()).object_size
     }
 
     /// 統計情報を取得
     pub fn stats(&self) -> TypedSlabStats {
-        let inner_stats = self.inner.lock().stats();
+        let inner_stats = self.inner.lock().unwrap_or_else(|e| e.into_inner()).stats();
         TypedSlabStats {
             alloc_count: inner_stats.alloc_count,
             dealloc_count: inner_stats.dealloc_count,
@@ -378,7 +378,7 @@ impl TypedSlabCache {
     }
 
     /// 内部SlabCacheへのアクセス（統計等） - ロックが必要
-    pub fn inner(&self) -> Arc<Mutex<SlabCache>> {
+    pub fn inner(&self) -> Arc<PoisonLock<SlabCache>> {
         self.inner.clone()
     }
 }
@@ -511,13 +511,13 @@ pub struct ObjectCache<T> {
     /// 名前（デバッグ用）
     name: &'static str,
     /// 内部Slabキャッシュ
-    inner: Arc<Mutex<SlabCache>>,
+    inner: Arc<PoisonLock<SlabCache>>,
     /// プールされたオブジェクト
-    pool: spin::Mutex<Vec<NonNull<T>>>,
+    pool: PoisonLock<Vec<NonNull<T>>>,
     /// 設定
     config: ObjectCacheConfig,
     /// 統計
-    stats: spin::Mutex<ObjectCacheStats>,
+    stats: PoisonLock<ObjectCacheStats>,
 }
 
 // SAFETY: ObjectCacheはスレッドセーフなロックで保護されている
@@ -542,9 +542,9 @@ impl<T> ObjectCache<T> {
         Self {
             name,
             inner,
-            pool: spin::Mutex::new(Vec::with_capacity(config.max_pooled)),
+            pool: PoisonLock::new(Vec::with_capacity(config.max_pooled)),
             config,
-            stats: spin::Mutex::new(ObjectCacheStats::default()),
+            stats: PoisonLock::new(ObjectCacheStats::default()),
         }
     }
 
@@ -559,12 +559,12 @@ impl<T> ObjectCache<T> {
     ///
     /// 返されたポインタは未初期化状態。使用前に初期化が必要。
     pub unsafe fn alloc_uninit(&self) -> Option<NonNull<T>> {
-        let mut stats = self.stats.lock();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.allocations += 1;
 
         // プールから取得を試みる
         {
-            let mut pool = self.pool.lock();
+            let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ptr) = pool.pop() {
                 stats.pool_hits += 1;
                 return Some(ptr);
@@ -573,7 +573,7 @@ impl<T> ObjectCache<T> {
 
         // キャッシュミス: Slabから新規割り当て
         stats.pool_misses += 1;
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.allocate().map(|ptr| ptr.cast())
     }
 
@@ -584,12 +584,12 @@ impl<T> ObjectCache<T> {
     /// - `ptr`はこのキャッシュから割り当てられたもの
     /// - 解放後は使用禁止
     pub unsafe fn free(&self, ptr: NonNull<T>) {
-        let mut stats = self.stats.lock();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.deallocations += 1;
 
         // プールに返却を試みる
         {
-            let mut pool = self.pool.lock();
+            let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
             if pool.len() < self.config.max_pooled {
                 pool.push(ptr);
                 stats.pool_returns += 1;
@@ -599,7 +599,7 @@ impl<T> ObjectCache<T> {
 
         // プール満杯: Slabに返却
         stats.pool_overflows += 1;
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.deallocate(ptr.cast());
     }
 
@@ -610,7 +610,7 @@ impl<T> ObjectCache<T> {
     /// 返されたポインタは全て未初期化状態。
     pub unsafe fn alloc_batch_uninit(&self, count: usize) -> Vec<NonNull<T>> {
         let mut result = Vec::with_capacity(count);
-        let mut stats = self.stats.lock();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.batch_allocs += 1;
         drop(stats);
 
@@ -640,8 +640,8 @@ impl<T> ObjectCache<T> {
     ///
     /// `shrink_threshold`を超えるオブジェクトをSlabに返却。
     pub fn shrink(&self) {
-        let mut pool = self.pool.lock();
-        let mut inner = self.inner.lock();
+        let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         while pool.len() > self.config.shrink_threshold {
             if let Some(ptr) = pool.pop() {
@@ -654,8 +654,8 @@ impl<T> ObjectCache<T> {
 
     /// プールをクリア
     pub fn clear_pool(&self) {
-        let mut pool = self.pool.lock();
-        let mut inner = self.inner.lock();
+        let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         while let Some(ptr) = pool.pop() {
             unsafe {
@@ -666,12 +666,12 @@ impl<T> ObjectCache<T> {
 
     /// 統計を取得
     pub fn stats(&self) -> ObjectCacheStats {
-        *self.stats.lock()
+        *self.stats.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// キャッシュヒット率を計算
     pub fn hit_rate(&self) -> f32 {
-        let stats = self.stats.lock();
+        let stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         let total = stats.pool_hits + stats.pool_misses;
         if total == 0 {
             0.0
@@ -682,7 +682,7 @@ impl<T> ObjectCache<T> {
 
     /// プールのサイズを取得
     pub fn pool_size(&self) -> usize {
-        self.pool.lock().len()
+        self.pool.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 
@@ -692,12 +692,12 @@ impl<T: Default> ObjectCache<T> {
     /// プールから取得した場合、`skip_init_on_reuse`が`true`なら
     /// 初期化をスキップする。
     pub fn alloc(&self) -> Option<NonNull<T>> {
-        let mut stats = self.stats.lock();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.allocations += 1;
 
         // プールから取得を試みる
         {
-            let mut pool = self.pool.lock();
+            let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ptr) = pool.pop() {
                 stats.pool_hits += 1;
                 if self.config.skip_init_on_reuse {
@@ -716,7 +716,7 @@ impl<T: Default> ObjectCache<T> {
         stats.pool_misses += 1;
         drop(stats);
 
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.allocate().map(|ptr| {
             let typed_ptr: NonNull<T> = ptr.cast();
             unsafe {

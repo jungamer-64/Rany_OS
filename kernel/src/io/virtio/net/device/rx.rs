@@ -1,4 +1,6 @@
 use super::*;
+use core::sync::atomic::Ordering;
+use alloc::boxed::Box;
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},

@@ -1,4 +1,7 @@
 use super::*;
+use crate::sync::lockfree::MpmcRingBuffer;
+use core::sync::atomic::Ordering;
+use alloc::boxed::Box;
 use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
 
 mod dma;
@@ -104,9 +107,9 @@ pub struct VirtioNetDevice {
     /// 送信用インフライトバッファ (キュー別, desc_idx -> CoherentDmaBuffer)
     pub(crate) tx_inflight: Vec<Box<[core::sync::atomic::AtomicPtr<CoherentDmaBuffer>]>>,
     /// プール済み送信用バウンスバッフェ (Here we keep the lock as it's a global pool, not per-descriptor)
-    tx_bounce_pool: IrqPoisonLock<Vec<CoherentDmaBuffer>>,
+    tx_bounce_pool: MpmcRingBuffer<CoherentDmaBuffer, 256>,
     /// プール済み受信用バウンスバッファ
-    rx_bounce_pool: IrqPoisonLock<Vec<CoherentDmaBuffer>>,
+    rx_bounce_pool: MpmcRingBuffer<CoherentDmaBuffer, 256>,
 }
 
 impl VirtioNetDevice {
@@ -155,8 +158,8 @@ impl VirtioNetDevice {
             rx_packetrefs: Vec::new(),
             tx_packetrefs: Vec::new(),
             tx_inflight: Vec::new(),
-            tx_bounce_pool: IrqPoisonLock::new(Vec::new()),
-            rx_bounce_pool: IrqPoisonLock::new(Vec::new()),
+            tx_bounce_pool: MpmcRingBuffer::new(),
+            rx_bounce_pool: MpmcRingBuffer::new(),
         }
     }
 
@@ -255,7 +258,7 @@ impl VirtioNetDevice {
     pub fn refill_rx_queues(&self) {
         for rx_queue in &self.rx_queues {
             let mut count = 0;
-            let queue_size = rx_queue.inner().queue_size();
+            let queue_size = rx_queue.inner.lock().expect("virtqueue lock poisoned").vq.queue_size();
             // API drift fallback: post until the queue rejects new buffers.
             while count < queue_size {
                 match self.try_post_rx_packet(rx_queue) {
@@ -268,7 +271,7 @@ impl VirtioNetDevice {
                 log::info!(
                     "[VIRTIO-NET] Refilled {} RX buffers for queue {}",
                     count,
-                    rx_queue.inner().queue_index()
+                    rx_queue.inner.lock().expect("virtqueue lock poisoned").vq.queue_index()
                 );
                 rx_queue.notify(self.transport.as_ref());
             }
@@ -279,14 +282,6 @@ impl VirtioNetDevice {
         // Pre-allocate 128 bounce buffers for TX and RX (4KB each)
         let pool_size = 128;
         let buffer_size = 4096;
-        let mut tx_guard = self
-            .tx_bounce_pool
-            .lock()
-            .map_err(|_| VirtioNetError::DeviceError)?;
-        let mut rx_guard = self
-            .rx_bounce_pool
-            .lock()
-            .map_err(|_| VirtioNetError::DeviceError)?;
 
         for _ in 0..pool_size {
             let tx_buf = match self.iommu_device_id {
@@ -296,7 +291,7 @@ impl VirtioNetDevice {
                 None => CoherentDmaBuffer::new(buffer_size, DmaMemoryAttributes::MMIO),
             }
             .ok_or(VirtioNetError::DeviceError)?;
-            tx_guard.push(tx_buf);
+            let _ = self.tx_bounce_pool.push(tx_buf);
 
             let rx_buf = match self.iommu_device_id {
                 Some(dev) => {
@@ -305,7 +300,7 @@ impl VirtioNetDevice {
                 None => CoherentDmaBuffer::new(buffer_size, DmaMemoryAttributes::MMIO),
             }
             .ok_or(VirtioNetError::DeviceError)?;
-            rx_guard.push(rx_buf);
+            let _ = self.rx_bounce_pool.push(rx_buf);
         }
         Ok(())
     }
@@ -314,15 +309,11 @@ impl VirtioNetDevice {
         &self,
         size: usize,
     ) -> Result<crate::io::dma::CoherentDmaBuffer, VirtioNetError> {
-        let mut guard = self
-            .tx_bounce_pool
-            .lock()
-            .map_err(|_| VirtioNetError::DeviceError)?;
-        if let Some(buf) = guard.pop() {
+        if let Some(buf) = self.tx_bounce_pool.pop() {
             if buf.size() >= size {
                 return Ok(buf);
             }
-            guard.push(buf);
+            let _ = self.tx_bounce_pool.push(buf);
         }
         let alloc_size = core::cmp::max(size, 4096);
         match self.iommu_device_id {
@@ -340,24 +331,18 @@ impl VirtioNetDevice {
     }
 
     pub(crate) fn return_tx_bounce_buffer(&self, buffer: crate::io::dma::CoherentDmaBuffer) {
-        if let Ok(mut guard) = self.tx_bounce_pool.lock() {
-            guard.push(buffer);
-        }
+        let _ = self.tx_bounce_pool.push(buffer);
     }
 
     pub(crate) fn get_rx_bounce_buffer(
         &self,
         size: usize,
     ) -> Result<crate::io::dma::CoherentDmaBuffer, VirtioNetError> {
-        let mut guard = self
-            .rx_bounce_pool
-            .lock()
-            .map_err(|_| VirtioNetError::DeviceError)?;
-        if let Some(buf) = guard.pop() {
+        if let Some(buf) = self.rx_bounce_pool.pop() {
             if buf.size() >= size {
                 return Ok(buf);
             }
-            guard.push(buf);
+            let _ = self.rx_bounce_pool.push(buf);
         }
         let alloc_size = core::cmp::max(size, 4096);
         match self.iommu_device_id {
@@ -375,9 +360,7 @@ impl VirtioNetDevice {
     }
 
     pub(crate) fn return_rx_bounce_buffer(&self, buffer: crate::io::dma::CoherentDmaBuffer) {
-        if let Ok(mut guard) = self.rx_bounce_pool.lock() {
-            guard.push(buffer);
-        }
+        let _ = self.rx_bounce_pool.push(buffer);
     }
 
     /// VirtQueue を設定。`core.config.max_queues` に従いキューペアを並列構築する。
@@ -766,6 +749,44 @@ impl VirtioNetDevice {
         // Use the normal completion path so descriptor chains are reclaimed via
         // `take_completion()` and TX rings do not leak into QueueFull.
         self.process_tx_completions();
+    }
+}
+
+impl Drop for VirtioNetDevice {
+    fn drop(&mut self) {
+        // Clean up all in-flight trackers to avoid memory leaks
+        for tracker in &self.rx_buffers {
+            for slot in tracker.iter() {
+                let ptr = slot.swap(core::ptr::null_mut(), Ordering::AcqRel);
+                if !ptr.is_null() {
+                    unsafe { let _ = Box::from_raw(ptr); }
+                }
+            }
+        }
+        for tracker in &self.rx_packetrefs {
+            for slot in tracker.iter() {
+                let ptr = slot.swap(core::ptr::null_mut(), Ordering::AcqRel);
+                if !ptr.is_null() {
+                    unsafe { let _ = Box::from_raw(ptr); }
+                }
+            }
+        }
+        for tracker in &self.tx_packetrefs {
+            for slot in tracker.iter() {
+                let ptr = slot.swap(core::ptr::null_mut(), Ordering::AcqRel);
+                if !ptr.is_null() {
+                    unsafe { let _ = Box::from_raw(ptr); }
+                }
+            }
+        }
+        for tracker in &self.tx_inflight {
+            for slot in tracker.iter() {
+                let ptr = slot.swap(core::ptr::null_mut(), Ordering::AcqRel);
+                if !ptr.is_null() {
+                    unsafe { let _ = Box::from_raw(ptr); }
+                }
+            }
+        }
     }
 }
 

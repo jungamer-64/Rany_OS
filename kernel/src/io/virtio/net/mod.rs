@@ -100,9 +100,10 @@ pub struct NetVirtQueue {
     /// 最後に処理した Used インデックス (Atomic for non-blocking poll)
     pub last_used_idx: AtomicU16,
     /// 割り込み待機中のWaker
-    pub pending_wakers: IrqPoisonLock<Vec<Waker>>,
+    pub pending_wakers: crate::sync::WakerQueue,
     /// 完了済みディスクリプタの長さ (desc_id -> used len)
-    pub pending_completions: IrqPoisonLock<Vec<Option<u32>>>,
+    /// 31ビット目に有効フラグ(0x8000_0000)を立てる
+    pub pending_completions: Box<[core::sync::atomic::AtomicU32]>,
     /// Optional IOMMU mapping for queue memory
     pub iommu_map: Option<IommuMapping>,
     /// DMA Buffer to keep memory alive (Shared logic doesn't hold this)
@@ -153,13 +154,15 @@ impl NetVirtQueue {
         );
 
         let mut pending = Vec::with_capacity(size as usize);
-        pending.resize_with(size as usize, || None);
+        for _ in 0..size {
+            pending.push(core::sync::atomic::AtomicU32::new(0));
+        }
 
         Self {
             inner: IrqPoisonLock::new(net_vq_core),
             last_used_idx: AtomicU16::new(0),
-            pending_wakers: IrqPoisonLock::new(Vec::new()),
-            pending_completions: IrqPoisonLock::new(pending),
+            pending_wakers: crate::sync::WakerQueue::new(),
+            pending_completions: pending.into_boxed_slice(),
             iommu_map,
             dma_buffer,
         }
@@ -168,7 +171,7 @@ impl NetVirtQueue {
     /// Notify the device that new buffers are available.
     pub fn notify(&self, transport: &dyn VirtioTransport) {
         if let Ok(inner) = self.inner.lock() {
-            unsafe { inner.vq.notify(transport); }
+            inner.vq.notify(transport);
         }
     }
 
@@ -237,21 +240,16 @@ impl NetVirtQueue {
 
         let mut count = 0;
         while let Some((desc_idx, len)) = inner.vq.poll_complete() {
-            if let Ok(mut pending) = self.pending_completions.lock() {
-                if let Some(slot) = pending.get_mut(desc_idx as usize) {
-                    *slot = Some(len);
-                }
+            if let Some(slot) = self.pending_completions.get(desc_idx as usize) {
+                // Set the completion length and the high bit for validity
+                slot.store(len | 0x8000_0000, Ordering::Release);
             }
             on_complete(desc_idx, len);
             count += 1;
         }
 
         if count > 0 {
-            if let Ok(mut wakers) = self.pending_wakers.lock() {
-                for waker in wakers.drain(..) {
-                    waker.wake();
-                }
-            }
+            self.pending_wakers.wake_all();
         }
 
         count
@@ -267,9 +265,7 @@ impl NetVirtQueue {
 
     /// Wakerを登録
     pub fn register_waker(&self, waker: Waker) {
-        if let Ok(mut wakers) = self.pending_wakers.lock() {
-            wakers.push(waker);
-        }
+        self.pending_wakers.register(&waker);
     }
 
     /// 利用可能なディスクリプタ数を取得
@@ -282,30 +278,28 @@ impl NetVirtQueue {
 
     /// ポリングで完了を確認
     pub fn take_completion(&self, desc_idx: u16) -> Option<u32> {
-        if let Ok(mut pending) = self.pending_completions.lock() {
-            if let Some(slot) = pending.get_mut(desc_idx as usize) {
-                if let Some(len) = slot.take() {
-                    drop(pending);
-                    self.free_desc_chain(desc_idx);
-                    return Some(len);
-                }
+        if let Some(slot) = self.pending_completions.get(desc_idx as usize) {
+            let val = slot.load(Ordering::Acquire);
+            if (val & 0x8000_0000) != 0 {
+                // Clear the slot
+                slot.store(0, Ordering::Release);
+                self.free_desc_chain(desc_idx);
+                return Some(val & 0x7FFF_FFFF);
             }
         }
 
         let _ = self.process_used_with(|_, _| {});
 
-        if let Ok(mut pending) = self.pending_completions.lock() {
-            let len = pending
-                .get_mut(desc_idx as usize)
-                .and_then(|slot| slot.take());
-            if len.is_some() {
-                drop(pending);
+        if let Some(slot) = self.pending_completions.get(desc_idx as usize) {
+            let val = slot.load(Ordering::Acquire);
+            if (val & 0x8000_0000) != 0 {
+                // Clear the slot
+                slot.store(0, Ordering::Release);
                 self.free_desc_chain(desc_idx);
+                return Some(val & 0x7FFF_FFFF);
             }
-            len
-        } else {
-            None
         }
+        None
     }
 
     fn free_desc_chain(&self, head: u16) {

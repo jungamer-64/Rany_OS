@@ -360,18 +360,21 @@ impl Endpoint {
 
     /// 受信バッファにデータ追加（内部用）
     /// プロトコルスタックから呼ばれる
-    pub fn push_data(&self, data: &[u8]) {
-        let waker = {
+    /// 実際にバッファに追加されたバイト数を返す。
+    pub fn push_data(&self, data: &[u8]) -> usize {
+        let (pushed, waker) = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.push_recv_data(data);
-            // 待機中のタスクを起こす準備
-            inner.recv_waker.take()
+            let pushed = inner.push_recv_data(data);
+            // 待機中のタスクを起こす準備 (push_recv_dataがwakeする場合もあるが、
+            // ここでwakerを取り出すのは古いコードとの互換性/安全策)
+            (pushed, inner.recv_waker.take())
         };
 
         // ロック外でWakerを起こす（デッドロック回避）
         if let Some(w) = waker {
             w.wake();
         }
+        pushed
     }
 
     /// UDPパケット追加（内部用）
