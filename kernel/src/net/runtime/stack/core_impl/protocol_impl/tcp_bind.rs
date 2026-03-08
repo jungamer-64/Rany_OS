@@ -236,7 +236,7 @@ impl NetworkStack {
                     total_len as u32,
                 );
                 let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
-                let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+                let final_checksum = checksum; // TCP checksums can be 0
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
             } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
                 crate::net::l4::tcp::calculate_tcp_checksum(&mut buffer[..total_len], lv4, rv4);

@@ -305,12 +305,10 @@ impl TcpSegmentBuilder {
         let src = Ipv4Address::new(src_ip);
         let dst = Ipv4Address::new(dst_ip);
         let pseudo = pseudo_header_checksum(src, dst, IpProtocol::Tcp, segment.len() as u16);
-        let mut checksum = data_checksum(segment, pseudo);
+        let checksum = data_checksum(segment, pseudo);
 
-        // RFC 793/1122: If the computed checksum is zero, it is transmitted as all ones (0xFFFF).
-        if checksum == 0 {
-            checksum = 0xFFFF;
-        }
+        // TCP checksums are allowed to be 0 (0xFFFF one's complement).
+        // Only UDP requires replacing 0 with 0xFFFF.
 
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
@@ -335,13 +333,10 @@ impl TcpSegmentBuilder {
 
         let pseudo =
             ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
-        let mut checksum = data_checksum(segment, pseudo);
+        let checksum = data_checksum(segment, pseudo);
 
-        // RFC 8200: UDP over IPv6 MUST NOT have a zero checksum (it becomes 0xFFFF).
-        // For TCP, RFC 793/1122 specify the same for consistency.
-        if checksum == 0 {
-            checksum = 0xFFFF;
-        }
+        // TCP checksums are allowed to be 0 (0xFFFF one's complement).
+        // Only UDP requires replacing 0 with 0xFFFF.
 
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }

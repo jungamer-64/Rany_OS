@@ -413,7 +413,11 @@ pub(super) fn recompute_ipv4_transport_checksum(
         transport.len() as u16,
     );
     let checksum = crate::net::l3::ipv4::data_checksum(transport, pseudo);
-    let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+    let final_checksum = if checksum == 0 && protocol == IpProtocol::Udp {
+        0xFFFF
+    } else {
+        checksum
+    };
     transport[checksum_off..checksum_off + 2].copy_from_slice(&final_checksum.to_be_bytes());
 }
 

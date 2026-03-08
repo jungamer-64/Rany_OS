@@ -829,7 +829,6 @@ impl Mlx5AsyncDriver {
         let allocated = dma_resources.to_allocated_resources();
         crate::io::log::early_print("[MLX5_PROBE] DMA allocated\n");
 
-
         log::info!(
             target: "mlx5",
             "CMD DMA IOVA: cmdq={:#x} in_mbox={:#x} out_mbox={:#x}",

@@ -853,9 +853,15 @@ fn handle_synchronized_segment(
         // Timestamp (RFC 7323 Section 5.3)
         if tcb.ts_enabled {
             if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
-                // RFC 7323: SEG.SEQ <= last.ACK.sent の場合に更新。
-                // 簡略化して in-order セグメントの場合のみ更新する。
-                if seq_num == tcb.rcv_nxt {
+                // RFC 7323: SEG.SEQ <= last.ACK.sent < SEG.SEQ + SEG.LEN の場合に更新。
+                // last.ACK.sent はここでは tcb.rcv_nxt。
+                let seg_len_u32 = payload_len as u32
+                    + (if is_syn { 1 } else { 0 })
+                    + (if is_fin { 1 } else { 0 });
+                let is_in_window = (seq_num.wrapping_sub(tcb.rcv_nxt) as i32) <= 0
+                    && (tcb.rcv_nxt.wrapping_sub(seq_num) as i32) < seg_len_u32 as i32;
+
+                if is_in_window || seq_num == tcb.rcv_nxt {
                     tcb_table().update(tcb.local, tcb.remote, |entry| {
                         entry.ts_ecr = peer_ts_val; // 次のACKのTSecrに使用
                         entry.ts_val = generate_tcp_timestamp();

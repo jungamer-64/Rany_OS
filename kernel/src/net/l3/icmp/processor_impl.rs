@@ -198,8 +198,9 @@ impl IcmpProcessor {
             }
         }
 
-        // RFC 1122: Include the full IP header + at least 8 octets of the data.
-        let copy_len = original_packet.len().min(payload.len() - 4);
+        // RFC 1122 / RFC 1812: Include the full IP header + at least 8 octets of the data.
+        // MUST NOT exceed 576 bytes total (IP header 20 + ICMP header 8 + payload 4 + copy_len <= 576 -> copy_len <= 544).
+        let copy_len = original_packet.len().min(payload.len() - 4).min(544);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
         builder.set_payload_len(4 + copy_len);
@@ -224,7 +225,8 @@ impl IcmpProcessor {
         let payload = builder.payload_mut();
         payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
 
-        let copy_len = original_packet.len().min(payload.len() - 4);
+        // RFC 1122 / RFC 1812: MUST NOT exceed 576 bytes total.
+        let copy_len = original_packet.len().min(payload.len() - 4).min(544);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
         builder.set_payload_len(4 + copy_len);
@@ -248,7 +250,8 @@ impl IcmpProcessor {
         payload[0] = pointer; // Pointer to the byte in the original header where the error was detected
         payload[1..4].copy_from_slice(&[0, 0, 0]); // Unused
 
-        let copy_len = original_packet.len().min(payload.len() - 4);
+        // RFC 1122 / RFC 1812: MUST NOT exceed 576 bytes total.
+        let copy_len = original_packet.len().min(payload.len() - 4).min(544);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
 
         builder.set_payload_len(4 + copy_len);

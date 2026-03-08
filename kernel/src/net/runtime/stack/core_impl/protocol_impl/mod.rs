@@ -441,7 +441,7 @@ impl NetworkStack {
                     total_len as u32,
                 );
                 let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
-                let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+                let final_checksum = checksum; // TCP checksums can be 0
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
 
                 // Send over IPv6
@@ -681,7 +681,7 @@ impl NetworkStack {
                     total_len as u32,
                 );
                 let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
-                let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+                let final_checksum = checksum; // TCP checksums can be 0
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
                 self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
             } else {

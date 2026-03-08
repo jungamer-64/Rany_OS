@@ -710,6 +710,20 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
+            NetworkEvent::AsyncTcpConnectStream {
+                local,
+                remote,
+                result_slot,
+                waker,
+            } => {
+                // スタックロック保持版: TcpStreamを作成して返す
+                let result = stack.connect_tcp(local, remote);
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
             NetworkEvent::AsyncMulticastJoin {
                 group,
                 result_slot,

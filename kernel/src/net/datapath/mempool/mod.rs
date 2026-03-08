@@ -164,7 +164,6 @@ impl DmaBuffer {
             owner,
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy)]

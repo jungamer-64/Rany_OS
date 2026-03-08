@@ -16,8 +16,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 use virtio_driver::defs::{
-    vring_flags, VringAvailHeader as VringAvail, VringDesc, VringUsedElem,
-    VringUsedHeader as VringUsed, VRING_USED_ALIGN,
+    VRING_USED_ALIGN, VringAvailHeader as VringAvail, VringDesc, VringUsedElem,
+    VringUsedHeader as VringUsed, vring_flags,
 };
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};

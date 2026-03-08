@@ -6,9 +6,9 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU16, Ordering};
 
 pub use virtio_driver::defs::{
-    vring_flags, VringAvailHeader as VringAvail, VringDesc, VringUsedElem,
-    VringUsedHeader as VringUsed, VIRTIO_F_INDIRECT_DESC, VIRTQUEUE_MAX_SIZE, VRING_AVAIL_ALIGN,
-    VRING_DESC_ALIGN, VRING_USED_ALIGN,
+    VIRTIO_F_INDIRECT_DESC, VIRTQUEUE_MAX_SIZE, VRING_AVAIL_ALIGN, VRING_DESC_ALIGN,
+    VRING_USED_ALIGN, VringAvailHeader as VringAvail, VringDesc, VringUsedElem,
+    VringUsedHeader as VringUsed, vring_flags,
 };
 
 /// Virtqueue implementation

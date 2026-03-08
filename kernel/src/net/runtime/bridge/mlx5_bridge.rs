@@ -330,7 +330,7 @@ fn submit_mlx5_tx(data: &[u8], vlan_tag: Option<u16>) -> bool {
         tx_options.vlan_tag = vlan_tag.unwrap_or(0);
         tx_options.l3_cs = true;
         tx_options.l4_cs = true;
-        
+
         match unsafe {
             device.transmit(
                 sq_index,
@@ -467,12 +467,12 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                 let infos = device.process_tx_completions(sq_index, cqe.wqe_counter);
                 for _info in infos {
                     let idx = (cqe.wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
-                    // Note: In MPWQE, we'd need a more complex mapping if we wanted to 
+                    // Note: In MPWQE, we'd need a more complex mapping if we wanted to
                     // precisely take the right buf from the bridge's tracking.
                     // For now, we clear the tracking based on the buf_idx.
                     if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
-                        // For simple post_send, idx is correct. For MPWQE, 
-                        // multiple slots (WQEBBs) were used. complete_tx already 
+                        // For simple post_send, idx is correct. For MPWQE,
+                        // multiple slots (WQEBBs) were used. complete_tx already
                         // cleared the hardware-side tracking.
                         // We need to clear bridge-side tracking for all 4 slots.
                         for i in 0..4 {
