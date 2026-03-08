@@ -12,7 +12,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
+use exorust_sync::PoisonLock;
 
 use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, IoError, IoRequestId, IoResult, ModeThresholds, PollHandler,
@@ -35,7 +35,7 @@ pub struct NvmePollHandler {
     /// 名前空間ID
     nsid: u32,
     /// 保留中のI/OリクエストID → NVMeコマンドID
-    pending: Mutex<BTreeMap<IoRequestId, u16>>,
+    pending: PoisonLock<BTreeMap<IoRequestId, u16>>,
 }
 
 impl NvmePollHandler {
@@ -44,23 +44,23 @@ impl NvmePollHandler {
         Self {
             core_id,
             nsid,
-            pending: Mutex::new(BTreeMap::new()),
+            pending: PoisonLock::new(BTreeMap::new()),
         }
     }
 
     /// I/OリクエストIDとNVMeコマンドIDを紐付け
     pub fn register_request(&self, io_id: IoRequestId, cid: u16) {
-        self.pending.lock().insert(io_id, cid);
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(io_id, cid);
     }
 
     /// I/OリクエストIDからNVMeコマンドIDを取得
     pub fn get_cid(&self, io_id: &IoRequestId) -> Option<u16> {
-        self.pending.lock().get(io_id).copied()
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).get(io_id).copied()
     }
 
     /// 完了したリクエストを削除
     pub fn remove_request(&self, io_id: &IoRequestId) -> Option<u16> {
-        self.pending.lock().remove(io_id)
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(io_id)
     }
 }
 
@@ -74,7 +74,7 @@ impl PollHandler for NvmePollHandler {
                 while let Some(cqe) = unsafe { queue.poll() } {
                     let cid = cqe.cid;
 
-                    let pending = self.pending.lock();
+                    let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some((&io_id, _)) = pending.iter().find(|&(_, &c)| c == cid) {
                         let result = if cqe.is_success() {
                             IoResult::Success(512)
@@ -89,7 +89,7 @@ impl PollHandler for NvmePollHandler {
 
         // 完了したリクエストを削除
         for (io_id, _) in &results {
-            self.pending.lock().remove(io_id);
+            self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(io_id);
         }
 
         results
