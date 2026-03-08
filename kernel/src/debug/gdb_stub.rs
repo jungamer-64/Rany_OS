@@ -48,13 +48,24 @@ pub trait GdbTransport: Send + Sync {
     fn write_bytes(&self, bytes: &[u8]);
 }
 
-#[derive(Default)]
 struct KernelGdbTarget {
     regs: [u8; KERNEL_GDB_REG_BYTES],
     stop_signal: u8,
     resume_requested: bool,
     single_step: bool,
     breakpoints: Vec<(u64, u8)>,
+}
+
+impl Default for KernelGdbTarget {
+    fn default() -> Self {
+        Self {
+            regs: [0u8; KERNEL_GDB_REG_BYTES],
+            stop_signal: 0,
+            resume_requested: false,
+            single_step: false,
+            breakpoints: Vec::new(),
+        }
+    }
 }
 
 impl KernelGdbTarget {

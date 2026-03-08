@@ -56,9 +56,9 @@ impl ThermalZone {
 
 /// サーマルマネージャ
 pub struct ThermalManager {
-    cpu_driver: Mutex<CpuThermalDriver>,
-    sensors: RwLock<Vec<ThermalSensor>>,
-    zones: RwLock<Vec<ThermalZone>>,
+    cpu_driver: PoisonLock<CpuThermalDriver>,
+    sensors: PoisonRwLock<Vec<ThermalSensor>>,
+    zones: PoisonRwLock<Vec<ThermalZone>>,
     throttle: ThrottleController,
     fans: FanController,
 
@@ -73,9 +73,9 @@ pub struct ThermalManager {
 impl ThermalManager {
     pub fn new() -> Self {
         Self {
-            cpu_driver: Mutex::new(CpuThermalDriver::new()),
-            sensors: RwLock::new(Vec::new()),
-            zones: RwLock::new(Vec::new()),
+            cpu_driver: PoisonLock::new(CpuThermalDriver::new()),
+            sensors: PoisonRwLock::new(Vec::new()),
+            zones: PoisonRwLock::new(Vec::new()),
             throttle: ThrottleController::new(),
             fans: FanController::new(),
             next_sensor_id: AtomicU32::new(1),
@@ -88,7 +88,7 @@ impl ThermalManager {
     /// 初期化
     pub fn init(&self) -> ThermalResult<()> {
         // CPUドライバを初期化
-        self.cpu_driver.lock().init()?;
+        self.cpu_driver.lock().unwrap_or_else(|e| e.into_inner()).init()?;
 
         // CPUセンサーを登録
         self.register_cpu_sensors()?;
@@ -100,12 +100,12 @@ impl ThermalManager {
     }
 
     pub(super) fn register_cpu_sensors(&self) -> ThermalResult<()> {
-        let driver = self.cpu_driver.lock();
+        let driver = self.cpu_driver.lock().unwrap_or_else(|e| e.into_inner());
 
         // パッケージセンサー
         let pkg_id = self.next_sensor_id.fetch_add(1, Ordering::SeqCst);
         let pkg_sensor = ThermalSensor::new(pkg_id, "CPU Package".into(), SensorType::CpuPackage);
-        self.sensors.write().push(pkg_sensor);
+        self.sensors.write().unwrap_or_else(|e| e.into_inner()).push(pkg_sensor);
 
         // コアセンサー
         for core in 0..driver.num_cores() {
@@ -115,7 +115,7 @@ impl ThermalManager {
                 alloc::format!("CPU Core {}", core),
                 SensorType::CpuCore(core as u8),
             );
-            self.sensors.write().push(core_sensor);
+            self.sensors.write().unwrap_or_else(|e| e.into_inner()).push(core_sensor);
         }
 
         Ok(())
@@ -126,7 +126,7 @@ impl ThermalManager {
         let mut zone = ThermalZone::new(zone_id, "CPU".into());
 
         // CPUセンサーを追加
-        let sensors = self.sensors.read();
+        let sensors = self.sensors.read().unwrap_or_else(|e| e.into_inner());
         for sensor in sensors.iter() {
             if matches!(
                 sensor.sensor_type,
@@ -153,15 +153,15 @@ impl ThermalManager {
             0,
         );
 
-        self.zones.write().push(zone);
+        self.zones.write().unwrap_or_else(|e| e.into_inner()).push(zone);
     }
 
     /// センサーを更新
     pub fn poll_sensors(&self) {
         self.polling_count.fetch_add(1, Ordering::Relaxed);
 
-        let driver = self.cpu_driver.lock();
-        let mut sensors = self.sensors.write();
+        let driver = self.cpu_driver.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sensors = self.sensors.write().unwrap_or_else(|e| e.into_inner());
 
         for sensor in sensors.iter_mut() {
             let temp = match sensor.sensor_type {
@@ -179,8 +179,8 @@ impl ThermalManager {
 
     /// サーマルゾーンを処理
     pub fn process_zones(&self) {
-        let sensors = self.sensors.read();
-        let mut zones = self.zones.write();
+        let sensors = self.sensors.read().unwrap_or_else(|e| e.into_inner());
+        let mut zones = self.zones.write().unwrap_or_else(|e| e.into_inner());
 
         for zone in zones.iter_mut() {
             // ゾーン内のセンサーから最高温度を取得
@@ -249,22 +249,22 @@ impl ThermalManager {
         self.process_zones();
     }
 
-    /// 全センサーを取得（ガード付き参照）
-    ///
-    /// Vec clone() を避け、ゼロコスト参照を提供。
-    pub fn sensors(&self) -> spin::RwLockReadGuard<'_, Vec<ThermalSensor>> {
-        self.sensors.read()
-    }
-
-    /// センサー数を取得（clone不要）
-    #[inline]
+    /// 全センサーを取得
     pub fn sensor_count(&self) -> usize {
-        self.sensors.read().len()
+        self.sensors.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// 特定のセンサーを取得
     pub fn sensor(&self, id: u32) -> Option<ThermalSensor> {
-        self.sensors.read().iter().find(|s| s.id == id).cloned()
+        self.sensors.read().unwrap_or_else(|e| e.into_inner()).iter().find(|s| s.id == id).cloned()
+    }
+
+    /// 全センサーのスナップショットを取得
+    pub fn sensors(&self) -> alloc::vec::Vec<ThermalSensor> {
+        self.sensors
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// スロットリングコントローラを取得
@@ -308,8 +308,8 @@ pub fn periodic_poll() {
 
 /// CPU温度を取得
 pub fn cpu_temperature() -> Option<Temperature> {
-    thermal_manager()
-        .sensors()
+    let sensors = thermal_manager().sensors.read().unwrap_or_else(|e| e.into_inner());
+    sensors
         .iter()
         .find(|s| s.sensor_type == SensorType::CpuPackage)
         .map(|s| s.current)

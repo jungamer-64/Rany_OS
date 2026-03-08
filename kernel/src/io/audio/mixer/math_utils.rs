@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::PoisonLock;
 
 // ============================================================================
 // Math Approximations (for no_std)
@@ -7,7 +8,6 @@ use super::*;
 /// Sine approximation using Taylor series
 /// Good for angles 0 to π/2
 pub(crate) fn sin_approx(x: f32) -> f32 {
-    // Taylor series: sin(x) ≈ x - x³/6 + x⁵/120 - x⁷/5040
     let x2 = x * x;
     let x3 = x2 * x;
     let x5 = x3 * x2;
@@ -18,7 +18,6 @@ pub(crate) fn sin_approx(x: f32) -> f32 {
 /// Cosine approximation using Taylor series
 /// Good for angles 0 to π/2
 pub(crate) fn cos_approx(x: f32) -> f32 {
-    // Taylor series: cos(x) ≈ 1 - x²/2 + x⁴/24 - x⁶/720
     let x2 = x * x;
     let x4 = x2 * x2;
     let x6 = x4 * x2;
@@ -29,13 +28,11 @@ pub(crate) fn cos_approx(x: f32) -> f32 {
 // Global Mixer Instance
 // ============================================================================
 
-use spin::Mutex;
-
-pub(crate) static GLOBAL_MIXER: Mutex<Option<Mixer>> = Mutex::new(None);
+pub(crate) static GLOBAL_MIXER: PoisonLock<Option<Mixer>> = PoisonLock::new(None);
 
 /// グローバルミキサーを初期化
 pub fn init() {
-    let mut mixer = GLOBAL_MIXER.lock();
+    let mut mixer = GLOBAL_MIXER.lock().unwrap_or_else(|e| e.into_inner());
     if mixer.is_none() {
         *mixer = Some(Mixer::default_mixer());
     }
@@ -46,7 +43,11 @@ pub fn with_mixer<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&Mixer) -> R,
 {
-    GLOBAL_MIXER.lock().as_ref().map(f)
+    GLOBAL_MIXER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(f)
 }
 
 /// グローバルミキサーに可変アクセス
@@ -54,7 +55,11 @@ pub fn with_mixer_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Mixer) -> R,
 {
-    GLOBAL_MIXER.lock().as_mut().map(f)
+    GLOBAL_MIXER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .map(f)
 }
 
 /// チャンネルを追加

@@ -17,14 +17,14 @@ use crate::io::iommu::types::{DeviceId, IommuDomainType};
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 #[cfg(not(test))]
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 #[cfg(not(test))]
 #[allow(unused_imports)]
 use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
 
 #[cfg(not(test))]
-static AHCI_PASSTHROUGH_DOMAIN: Mutex<Option<u16>> = Mutex::new(None);
+static AHCI_PASSTHROUGH_DOMAIN: PoisonLock<Option<u16>> = PoisonLock::new(None);
 
 #[cfg(not(test))]
 fn is_ahci_legacy(device: &crate::io::pci::PciDeviceInfo) -> bool {

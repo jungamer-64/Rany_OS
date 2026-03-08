@@ -9,10 +9,10 @@
 // 統合する場合は loader/mod.rs の定義と慎重にマージしてください。
 // ============================================================================
 
+use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::RwLock;
 
 use crate::driver_registry::DriverHandle;
 
@@ -128,14 +128,14 @@ pub struct CellInfo {
     pub driver_count: usize,
 }
 
-static REGISTRY: RwLock<CellRegistry> = RwLock::new(CellRegistry::new());
+static REGISTRY: PoisonRwLock<CellRegistry> = PoisonRwLock::new(CellRegistry::new());
 
 /// Access the registry read-only
 pub fn with_registry<F, R>(f: F) -> R
 where
     F: FnOnce(&CellRegistry) -> R,
 {
-    let registry = REGISTRY.read();
+    let registry = REGISTRY.read().unwrap_or_else(|e| e.into_inner());
     f(&registry)
 }
 
@@ -144,7 +144,7 @@ pub fn with_registry_mut<F, R>(f: F) -> R
 where
     F: FnOnce(&mut CellRegistry) -> R,
 {
-    let mut registry = REGISTRY.write();
+    let mut registry = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
     f(&mut registry)
 }
 
@@ -203,7 +203,7 @@ pub fn init_kernel_cell() {
     };
 
     // Insert directly
-    let mut r = REGISTRY.write();
+    let mut r = REGISTRY.write().unwrap_or_else(|e| e.into_inner());
     r.cells.insert(CellId(0), kernel_cell);
     log::info!("Kernel cell initialized (ID 0)");
 }

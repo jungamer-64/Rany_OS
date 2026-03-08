@@ -7,15 +7,6 @@
 //! This module implements the `KernelServices` trait from `kernel_api`,
 //! bridging the contract defined in the interface to the kernel's internal
 //! implementations.
-//!
-//! ## Design (設計書準拠)
-//! - SPL: Single Privilege Level - all calls are direct function calls
-//! - No syscall overhead - just vtable dispatch
-//! - Type-safe capability model via traits
-//!
-//! ## Task Integration
-//! Uses `per_core_executor::Task::new_boxed()` to avoid double-boxing
-//! when receiving pre-boxed futures from external callers.
 
 #![allow(dead_code)]
 
@@ -37,9 +28,9 @@ use kernel_api::resource::storage::{
 };
 use kernel_api::resource::task::TaskHandle;
 use kernel_api::service::kernel::KernelServices;
-use spin::Mutex;
 
 use crate::io::dma;
+use crate::sync::PoisonLock;
 use crate::task::context;
 use crate::task::per_core_executor::{Priority, Task, executor_manager};
 use crate::task::timer;
@@ -50,7 +41,6 @@ type DmaBuffer = DmaSlice<KapiCpuOwned>;
 // File Handle Registry
 // ============================================================================
 
-/// Entry for an open file handle
 struct FileHandleEntry {
     path: String,
     mode: OpenMode,
@@ -59,21 +49,14 @@ struct FileHandleEntry {
     owner: u64,
 }
 
-// Channel Registry for IPC
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChannelRole {
-    Sender,
-    Receiver,
-}
+enum ChannelRole { Sender, Receiver }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ChannelEntry {
-    channel_id: u64,
-    role: ChannelRole,
-}
+struct ChannelEntry { channel_id: u64, role: ChannelRole }
 
 struct ChannelRegistry {
-    channels: Mutex<BTreeMap<u64, ChannelEntry>>,
+    channels: PoisonLock<BTreeMap<u64, ChannelEntry>>,
     next_id: AtomicU64,
     next_channel_id: AtomicU64,
 }
@@ -81,58 +64,47 @@ struct ChannelRegistry {
 impl ChannelRegistry {
     const fn new() -> Self {
         Self {
-            channels: Mutex::new(BTreeMap::new()),
+            channels: PoisonLock::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
             next_channel_id: AtomicU64::new(1),
         }
     }
-
-    fn allocate_channel_id(&self) -> u64 {
-        self.next_channel_id.fetch_add(1, Ordering::Relaxed)
-    }
-
+    fn allocate_channel_id(&self) -> u64 { self.next_channel_id.fetch_add(1, Ordering::Relaxed) }
     fn register(&self, entry: ChannelEntry) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.channels.lock().insert(id, entry);
+        self.channels.lock().unwrap_or_else(|e| e.into_inner()).insert(id, entry);
         id
     }
-
     fn unregister(&self, id: u64) -> Option<ChannelEntry> {
-        self.channels.lock().remove(&id)
+        self.channels.lock().unwrap_or_else(|e| e.into_inner()).remove(&id)
     }
 }
 
-/// Registry for tracking open file handles
 struct FileHandleRegistry {
-    handles: Mutex<BTreeMap<u64, FileHandleEntry>>,
+    handles: PoisonLock<BTreeMap<u64, FileHandleEntry>>,
     next_id: AtomicU64,
 }
 
 impl FileHandleRegistry {
     const fn new() -> Self {
         Self {
-            handles: Mutex::new(BTreeMap::new()),
+            handles: PoisonLock::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
-
     fn register(&self, entry: FileHandleEntry) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.handles.lock().insert(id, entry);
+        self.handles.lock().unwrap_or_else(|e| e.into_inner()).insert(id, entry);
         id
     }
-
     fn unregister(&self, id: u64) -> Option<FileHandleEntry> {
-        self.handles.lock().remove(&id)
+        self.handles.lock().unwrap_or_else(|e| e.into_inner()).remove(&id)
     }
 }
 
-/// Global file handle registry
 static FILE_HANDLE_REGISTRY: FileHandleRegistry = FileHandleRegistry::new();
 static CHANNEL_REGISTRY: ChannelRegistry = ChannelRegistry::new();
 
-// DMA registry stores heap allocated TypedDmaSlice instances keyed by
-// the virtual pointer to the buffer so we can free them later.
 struct DmaEntry {
     buffer: Box<dyn core::any::Any + Send>,
     phys: u64,
@@ -140,18 +112,15 @@ struct DmaEntry {
 }
 
 struct DmaRegistry {
-    /// Registry of DMA buffers keyed by virtual address.
-    /// Uses `Box<dyn Any + Send>` to support both CoherentDmaBuffer and TypedDmaSlice.
-    buffers: Mutex<BTreeMap<usize, DmaEntry>>,
+    buffers: PoisonLock<BTreeMap<usize, DmaEntry>>,
 }
 
 impl DmaRegistry {
     const fn new() -> Self {
         Self {
-            buffers: Mutex::new(BTreeMap::new()),
+            buffers: PoisonLock::new(BTreeMap::new()),
         }
     }
-
     fn register_with_key(
         &self,
         key: usize,
@@ -159,55 +128,36 @@ impl DmaRegistry {
         phys: u64,
         owner: u64,
     ) {
-        self.buffers.lock().insert(
-            key,
-            DmaEntry {
-                buffer,
-                phys,
-                owner,
-            },
-        );
+        self.buffers.lock().unwrap_or_else(|e| e.into_inner()).insert(key, DmaEntry { buffer, phys, owner });
     }
-
     fn unregister(&self, virt_ptr: usize) -> Option<DmaEntry> {
-        self.buffers.lock().remove(&virt_ptr)
+        self.buffers.lock().unwrap_or_else(|e| e.into_inner()).remove(&virt_ptr)
     }
-
     fn get_owner(&self, virt_ptr: usize) -> Option<u64> {
-        self.buffers.lock().get(&virt_ptr).map(|e| e.owner)
+        self.buffers.lock().unwrap_or_else(|e| e.into_inner()).get(&virt_ptr).map(|e| e.owner)
     }
 }
 
-/// Registry for physical address ownership tracking to prevent IOMMU mapping vulnerabilities.
 struct PhysOwnershipRegistry {
-    /// Mapping from physical start address to its size and owner domain ID.
-    ranges: Mutex<BTreeMap<u64, (usize, u64)>>,
+    ranges: PoisonLock<BTreeMap<u64, (usize, u64)>>,
 }
 
 impl PhysOwnershipRegistry {
     const fn new() -> Self {
         Self {
-            ranges: Mutex::new(BTreeMap::new()),
+            ranges: PoisonLock::new(BTreeMap::new()),
         }
     }
-
     fn register(&self, phys: u64, size: usize, owner: u64) {
-        self.ranges.lock().insert(phys, (size, owner));
+        self.ranges.lock().unwrap_or_else(|e| e.into_inner()).insert(phys, (size, owner));
     }
-
     fn unregister(&self, phys: u64) {
-        self.ranges.lock().remove(&phys);
+        self.ranges.lock().unwrap_or_else(|e| e.into_inner()).remove(&phys);
     }
-
-    /// Check if a given physical range is fully owned by the specified domain.
     fn is_owned_by(&self, phys: u64, size: usize, domain_id: u64) -> bool {
-        let ranges = self.ranges.lock();
-        // Find the range that starts at or before 'phys'
+        let ranges = self.ranges.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((&start, &(r_size, r_owner))) = ranges.range(..=phys).next_back() {
-            if r_owner == domain_id
-                && phys >= start
-                && (phys + size as u64) <= (start + r_size as u64)
-            {
+            if r_owner == domain_id && phys >= start && (phys + size as u64) <= (start + r_size as u64) {
                 return true;
             }
         }
@@ -218,16 +168,11 @@ impl PhysOwnershipRegistry {
 static DMA_REGISTRY: DmaRegistry = DmaRegistry::new();
 static PHYS_OWNERSHIP_REGISTRY: PhysOwnershipRegistry = PhysOwnershipRegistry::new();
 
-// ============================================================================
-// NVMe DMA Context Registry (Option B-2: Full Abstraction)
-// ============================================================================
-
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use x86_64::PhysAddr;
 mod kernel_services;
 pub use kernel_services::*;
 
-/// IOMMU mapping info for cleanup
 struct IommuMapping {
     device: IommuDeviceId,
     iova: u64,
@@ -240,103 +185,75 @@ impl IommuMapping {
     }
 }
 
-/// Stored DMA context entry
 struct NvmeDmaContextEntry {
     dma: crate::io::nvme::dma::NvmeDmaRegion,
     owner: u64,
 }
 
 struct NvmeDmaContextRegistry {
-    contexts: Mutex<BTreeMap<u64, NvmeDmaContextEntry>>,
+    contexts: PoisonLock<BTreeMap<u64, NvmeDmaContextEntry>>,
     next_id: AtomicU64,
 }
 
 impl NvmeDmaContextRegistry {
     const fn new() -> Self {
         Self {
-            contexts: Mutex::new(BTreeMap::new()),
+            contexts: PoisonLock::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
-
     fn register(&self, entry: NvmeDmaContextEntry) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.contexts.lock().insert(id, entry);
+        self.contexts.lock().unwrap_or_else(|e| e.into_inner()).insert(id, entry);
         id
     }
-
     fn unregister(&self, id: u64) -> Option<NvmeDmaContextEntry> {
-        self.contexts.lock().remove(&id)
+        self.contexts.lock().unwrap_or_else(|e| e.into_inner()).remove(&id)
     }
 }
 
 static NVME_DMA_CONTEXT_REGISTRY: NvmeDmaContextRegistry = NvmeDmaContextRegistry::new();
 
-// IOMMU Mapping Registry for tracking active mappings
 struct IommuMappingRegistry {
-    mappings: Mutex<BTreeMap<u64, IommuMapping>>,
+    mappings: PoisonLock<BTreeMap<u64, IommuMapping>>,
     next_id: AtomicU64,
 }
 
 impl IommuMappingRegistry {
     const fn new() -> Self {
         Self {
-            mappings: Mutex::new(BTreeMap::new()),
+            mappings: PoisonLock::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
-
     fn register(&self, mapping: IommuMapping) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.mappings.lock().insert(id, mapping);
+        self.mappings.lock().unwrap_or_else(|e| e.into_inner()).insert(id, mapping);
         id
     }
-
     fn unregister(&self, id: u64) -> Option<IommuMapping> {
-        self.mappings.lock().remove(&id)
+        self.mappings.lock().unwrap_or_else(|e| e.into_inner()).remove(&id)
     }
 }
 
 static IOMMU_MAPPING_REGISTRY: IommuMappingRegistry = IommuMappingRegistry::new();
 
-// Helper: map physical address for IOMMU
 fn map_for_iommu(
     device: Option<IommuDeviceId>,
     phys_addr: u64,
     size: usize,
 ) -> Result<(u64, Option<IommuMapping>), KapiError> {
     if !crate::io::iommu::api::is_iommu_enabled() {
-        if crate::io::iommu::api::is_iommu_required() {
-            return Err(KapiError::IoError);
-        }
-        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
-            return Err(KapiError::IoError);
-        }
+        if crate::io::iommu::api::is_iommu_required() { return Err(KapiError::IoError); }
+        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() { return Err(KapiError::IoError); }
         return Ok((phys_addr, None));
     }
-
     let dev = device.ok_or(KapiError::IoError)?;
     let map_len = crate::io::nvme::dma::align_up_page(size);
-    let iova = unsafe {
-        crate::io::iommu::api::map_for_device(&dev, PhysAddr::new(phys_addr), map_len as u64)
-    }
-    .map_err(|_| KapiError::IoError)?;
-
-    Ok((
-        iova,
-        Some(IommuMapping {
-            device: dev,
-            iova,
-            size: map_len as u64,
-        }),
-    ))
+    let iova = unsafe { crate::io::iommu::api::map_for_device(&dev, PhysAddr::new(phys_addr), map_len as u64) }.map_err(|_| KapiError::IoError)?;
+    Ok((iova, Some(IommuMapping { device: dev, iova, size: map_len as u64 })))
 }
 
-// ============================================================================
-// NVMe Direct Handle Registry
-// ============================================================================
-
-/// Entry for a kernel-opened direct block handle
 struct NvmeOpenEntry {
     device_id: u64,
     start_block: u64,
@@ -347,18 +264,17 @@ struct NvmeOpenEntry {
 }
 
 struct NvmeDirectRegistry {
-    opens: Mutex<BTreeMap<u64, NvmeOpenEntry>>,
+    opens: PoisonLock<BTreeMap<u64, NvmeOpenEntry>>,
     next_id: AtomicU64,
 }
 
 impl NvmeDirectRegistry {
     const fn new() -> Self {
         Self {
-            opens: Mutex::new(BTreeMap::new()),
+            opens: PoisonLock::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
         }
     }
-
     fn register(
         &self,
         device_id: u64,
@@ -369,30 +285,15 @@ impl NvmeDirectRegistry {
         token: Option<u64>,
     ) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.opens.lock().insert(
-            id,
-            NvmeOpenEntry {
-                device_id,
-                start_block,
-                block_count,
-                block_size,
-                owner,
-                token,
-            },
-        );
+        self.opens.lock().unwrap_or_else(|e| e.into_inner()).insert(id, NvmeOpenEntry { device_id, start_block, block_count, block_size, owner, token });
         id
     }
-
-    /// Unregister only if caller is owner or has CAP_SYS_ADMIN
     fn unregister_if_owner_or_admin(&self, id: u64, caller: u64) -> Option<NvmeOpenEntry> {
-        // Check permission first
         let mgr = crate::security::capability::manager();
         let has_admin = mgr.has_capability(caller, crate::security::capability::CAP_SYS_ADMIN);
-        let mut opens = self.opens.lock();
+        let mut opens = self.opens.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = opens.get(&id) {
-            if entry.owner == caller || has_admin {
-                return opens.remove(&id);
-            }
+            if entry.owner == caller || has_admin { return opens.remove(&id); }
         }
         None
     }
@@ -400,20 +301,8 @@ impl NvmeDirectRegistry {
 
 static NVME_DIRECT_REGISTRY: NvmeDirectRegistry = NvmeDirectRegistry::new();
 
-// ============================================================================
-// ExoKernel: The KernelServices Implementation
-// ============================================================================
-
-/// ExoKernel - The concrete implementation of KernelServices
-///
-/// This struct has no fields; all state is managed via static globals
-/// within the kernel. This keeps the implementation simple and allows
-/// registration as a `&'static dyn KernelServices`.
 pub struct ExoKernel;
 
 impl ExoKernel {
-    /// Create the singleton instance
-    pub const fn new() -> Self {
-        ExoKernel
-    }
+    pub const fn new() -> Self { ExoKernel }
 }

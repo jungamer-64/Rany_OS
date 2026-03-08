@@ -1025,7 +1025,10 @@ pub fn pcid_status() -> PcidStatus {
     PcidStatus {
         pcid_available: super::pcid::is_available(),
         invpcid_available: super::pcid::has_invpcid(),
-        used_pcids: PCID_ALLOCATOR.lock().used_count(),
+        used_pcids: PCID_ALLOCATOR
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .used_count(),
         max_pcids: super::pcid::MAX_PCID as usize,
     }
 }
@@ -1070,12 +1073,18 @@ pub fn init_pcid() -> bool {
 
 /// 現在のCPUにPCIDを割り当て（プロセス作成時）
 pub fn allocate_pcid() -> Option<u16> {
-    PCID_ALLOCATOR.lock().allocate()
+    PCID_ALLOCATOR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .allocate()
 }
 
 /// PCIDを解放（プロセス終了時）
 pub fn deallocate_pcid(pcid: u16) {
-    PCID_ALLOCATOR.lock().deallocate(pcid);
+    PCID_ALLOCATOR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .deallocate(pcid);
 }
 
 /// PCID対応のコンテキストスイッチ（公開API）

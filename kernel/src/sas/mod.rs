@@ -17,7 +17,6 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use once_cell::race::OnceBox;
-use spin::Mutex;
 
 // SAS は `domain_system::DomainId` をそのまま使用する。
 // 非testビルドでは正規版 domain_system.rs の DomainId、

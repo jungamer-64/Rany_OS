@@ -39,7 +39,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use exorust_sync::{PoisonLock, PoisonRwLock};
-use spin::{Mutex, RwLock};
 
 use crate::types::InodeNum;
 

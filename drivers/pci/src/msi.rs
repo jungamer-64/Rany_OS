@@ -15,7 +15,7 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use spin::Mutex;
+use exorust_sync::PoisonLock;
 
 use crate::bus::{PciDeviceInfo, command_bits, config_regs};
 use crate::traits::ConfigSpaceAccessor;
@@ -28,7 +28,7 @@ use crate::types::BdfAddress;
 /// MSI capability ID
 pub const MSI_CAP_ID: u8 = 0x05;
 /// MSI-X capability ID
-pub const MSIX_CAP_ID: u8 = 0x11;
+pub const MSIX_CAP_ID: u16 = 0x11;
 
 /// MSI message address base (for x2APIC)
 const MSI_ADDRESS_BASE: u64 = 0xFEE00000;
@@ -519,16 +519,16 @@ impl InterruptAllocator {
     }
 }
 
-static INTERRUPT_ALLOCATOR: Mutex<InterruptAllocator> = Mutex::new(InterruptAllocator::new());
+static INTERRUPT_ALLOCATOR: PoisonLock<InterruptAllocator> = PoisonLock::new(InterruptAllocator::new());
 
 /// Allocate an interrupt vector for a device
 pub fn allocate_vector(bdf: BdfAddress) -> Option<u8> {
-    INTERRUPT_ALLOCATOR.lock().allocate(bdf)
+    INTERRUPT_ALLOCATOR.lock().unwrap_or_else(|e| e.into_inner()).allocate(bdf)
 }
 
 /// Allocate multiple contiguous interrupt vectors
 pub fn allocate_vectors(bdf: BdfAddress, count: u8) -> Option<u8> {
-    INTERRUPT_ALLOCATOR.lock().allocate_range(bdf, count)
+    INTERRUPT_ALLOCATOR.lock().unwrap_or_else(|e| e.into_inner()).allocate_range(bdf, count)
 }
 
 // ============================================================================

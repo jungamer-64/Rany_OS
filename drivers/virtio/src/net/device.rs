@@ -191,10 +191,10 @@ impl VirtioNetDevice {
             None => return Ok(false),
         };
 
-        let phys = packet.physical_address();
+        let phys = packet.phys_addr();
         let len = packet.capacity();
 
-        match unsafe { vq.add_rx_buffer(phys, len) } {
+        match unsafe { vq.add_rx_buffer(phys.as_u64(), len) } {
             Ok(desc_idx) => {
                 tracker.put(desc_idx, RxInflight {
                     packet,

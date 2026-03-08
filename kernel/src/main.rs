@@ -1,6 +1,18 @@
 #![feature(custom_test_frameworks)]
-#![cfg_attr(not(any(test, feature = "std", feature = "bench")), no_std)]
-#![cfg_attr(not(any(test, feature = "std", feature = "bench")), no_main)]
+#![cfg_attr(
+    all(
+        not(any(test, feature = "std", feature = "bench")),
+        target_os = "none"
+    ),
+    no_std
+)]
+#![cfg_attr(
+    all(
+        not(any(test, feature = "std", feature = "bench")),
+        target_os = "none"
+    ),
+    no_main
+)]
 #![feature(abi_x86_interrupt)]
 #![feature(thread_local)]
 #![feature(ptr_metadata)]
@@ -38,7 +50,10 @@ pub static __tls_end: u8 = 0;
 
 // Explicit _start entry point for the linker
 // This references kmain to prevent the linker from stripping it
-#[cfg(not(any(test, feature = "std", feature = "bench")))]
+#[cfg(all(
+    not(any(test, feature = "std", feature = "bench")),
+    target_os = "none"
+))]
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub unsafe extern "C" fn _start() -> ! {
@@ -54,6 +69,12 @@ pub unsafe extern "C" fn _start() -> ! {
         "jmp kmain"      // Jump to main kernel entry
     )
 }
+
+#[cfg(all(
+    not(any(test, feature = "std", feature = "bench")),
+    not(target_os = "none")
+))]
+fn main() {}
 
 // Dummy main for benchmarking (std mode)
 #[cfg(feature = "bench")]

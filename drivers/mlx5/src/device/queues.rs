@@ -75,6 +75,19 @@ impl Mlx5Device {
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let eqn = parse_create_eq_output(out_mbox);
+        log::info!(
+            target: "mlx5",
+            "CREATE_EQ output: status={:#x} syndrome={:#x} eqn8={} eqn24@0x05={} eqn24@0x09={} dw0={:#010x} dw1={:#010x} dw2={:#010x} dw3={:#010x}",
+            out_mbox.data[0],
+            out_mbox.read_be32(0x04),
+            out_mbox.data[0x0B] as u32,
+            out_mbox.read_be24(0x05),
+            out_mbox.read_be24(0x09),
+            out_mbox.read_be32(0x00),
+            out_mbox.read_be32(0x04),
+            out_mbox.read_be32(0x08),
+            out_mbox.read_be32(0x0C),
+        );
         let eq = EventQueue::new(
             eqn,
             eq_buf_virt,
@@ -124,15 +137,29 @@ impl Mlx5Device {
         if let Err(err) = self.execute_uid_sensitive_cmd(CmdOpcode::CreateCq, cq_in_len, 0x10) {
             log::info!(
                 target: "mlx5",
-                "CREATE_CQ input: log_cq_size={} cq_buf_pa={:#x} db_pa={:#x} uar_page={} eqn={} in_len={:#x}",
+                "CREATE_CQ input: log_cq_size={} cq_buf_pa={:#x} db_pa={:#x} uar_page={} eqn={} cqe_comp={} in_len={:#x}",
                 log_cq_size,
                 cq_buf_pa,
                 db_pa,
                 self.uar_page,
                 eqn,
+                cqe_comp,
                 cq_in_len
             );
             Self::debug_dump_mailbox_words("CREATE_CQ in", in_mbox, 32);
+            let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+            log::info!(
+                target: "mlx5",
+                "CREATE_CQ output(last): status={:#x} syndrome={:#x} cqn24@0x05={} cqn24@0x09={} dw0={:#010x} dw1={:#010x} dw2={:#010x} dw3={:#010x}",
+                out_mbox.data[0],
+                out_mbox.read_be32(0x04),
+                out_mbox.read_be24(0x05),
+                out_mbox.read_be24(0x09),
+                out_mbox.read_be32(0x00),
+                out_mbox.read_be32(0x04),
+                out_mbox.read_be32(0x08),
+                out_mbox.read_be32(0x0C),
+            );
             return Err(err);
         }
 

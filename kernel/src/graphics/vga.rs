@@ -5,8 +5,8 @@
 // グラフィックス出力の一形態であるため graphics/ モジュール配下に移動。
 // ============================================================================
 #![allow(dead_code)]
+use crate::sync::PoisonLock;
 use core::fmt;
-use spin::Mutex;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -146,7 +146,7 @@ impl fmt::Write for Writer {
 // SAFETY: VGA バッファは固定アドレスにあり、Writerは単一スレッドでのみ使用される
 unsafe impl Send for Writer {}
 
-static WRITER: Mutex<Writer> = Mutex::new(Writer {
+static WRITER: PoisonLock<Writer> = PoisonLock::new(Writer {
     column_position: 0,
     color_code: ColorCode::new(Color::Yellow, Color::Black),
     buffer: 0xb8000 as *mut Buffer,
@@ -171,7 +171,7 @@ pub fn init() {
     #[cfg(feature = "force_vga")]
     {
         VGA_AVAILABLE.store(true, core::sync::atomic::Ordering::Release);
-        WRITER.lock().clear_row(BUFFER_HEIGHT - 1);
+        WRITER.lock().unwrap_or_else(|e| e.into_inner()).clear_row(BUFFER_HEIGHT - 1);
     }
 }
 
@@ -181,7 +181,7 @@ pub fn _print(args: fmt::Arguments) {
 
     // VGAが利用可能な場合のみ書き込み
     if VGA_AVAILABLE.load(core::sync::atomic::Ordering::Acquire) {
-        let _ = WRITER.lock().write_fmt(args);
+        let _ = WRITER.lock().unwrap_or_else(|e| e.into_inner()).write_fmt(args);
     }
     // それ以外の場合はシリアル出力を使用（io::logが処理）
 }

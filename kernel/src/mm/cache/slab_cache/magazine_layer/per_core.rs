@@ -729,7 +729,7 @@ impl<T: Default> ObjectCache<T> {
     /// バッチ割り当て（デフォルト初期化済み）
     pub fn alloc_batch(&self, count: usize) -> Vec<NonNull<T>> {
         let mut result = Vec::with_capacity(count);
-        let mut stats = self.stats.lock();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.batch_allocs += 1;
         drop(stats);
 

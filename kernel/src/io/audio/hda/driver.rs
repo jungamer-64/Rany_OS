@@ -50,7 +50,7 @@ impl Driver for HdaDriver {
         match controller.init() {
             Ok(_) => {
                 // Register global instance
-                *global::HDA_DRIVER.lock() = Some(controller);
+                *global::HDA_DRIVER.lock().unwrap_or_else(|e| e.into_inner()) = Some(controller);
 
                 // Store IRQ
                 if self.irq > 0 && self.irq < 16 {

@@ -58,6 +58,10 @@ impl<'a> CqContextLayout<'a> {
     pub fn set_state(&mut self, val: u8) {
         set_bits_u32(self.data, 20, 4, val as u32);
     }
+    // cqe_comp_en: bit 17 (dword 0)
+    pub fn set_cqe_comp_en(&mut self, val: bool) {
+        set_bits_u32(self.data, 17, 1, if val { 1 } else { 0 });
+    }
     // log_cq_size: bit 99-103 (dword 3)
     pub fn set_log_cq_size(&mut self, val: u8) {
         set_bits_u32(self.data, 99, 5, val as u32);

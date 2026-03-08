@@ -1028,7 +1028,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         if let Some(cached_block) = self.block_cache.get(self.device_id, sector) {
             // キャッシュヒット: データをコピー
             let data = cached_block.data();
-            let data_guard = data.read();
+            let data_guard = data.read().unwrap_or_else(|e| e.into_inner());
             let copy_len = buffer.len().min(data_guard.len());
             buffer[..copy_len].copy_from_slice(&data_guard[..copy_len]);
             return Ok(());
@@ -1057,7 +1057,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
     ) -> FsResult<()> {
         if let Some(cached_block) = self.block_cache.get(self.device_id, sector) {
             let data = cached_block.data();
-            let data_guard = data.read();
+            let data_guard = data.read().unwrap_or_else(|e| e.into_inner());
             let copy_len = buffer.len().min(data_guard.len());
             buffer[..copy_len].copy_from_slice(&data_guard[..copy_len]);
             return Ok(());
@@ -1182,7 +1182,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
     pub(crate) fn update_cache_only(&self, sector: u64, data: &[u8]) {
         if let Some(cached_block) = self.block_cache.get(self.device_id, sector) {
             let block_data = cached_block.data();
-            let mut data_guard = block_data.write();
+            let mut data_guard = block_data.write().unwrap_or_else(|e| e.into_inner());
             let copy_len = data.len().min(data_guard.len());
             data_guard[..copy_len].copy_from_slice(&data[..copy_len]);
             cached_block.mark_clean();
@@ -1211,7 +1211,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         if let Some(cached_block) = self.block_cache.get(self.device_id, sector) {
             // キャッシュに存在する場合は更新
             let block_data = cached_block.data();
-            let mut data_guard = block_data.write();
+            let mut data_guard = block_data.write().unwrap_or_else(|e| e.into_inner());
             let copy_len = data.len().min(data_guard.len());
             data_guard[..copy_len].copy_from_slice(&data[..copy_len]);
             // デバイスへ同期済みなのでクリーンとして扱う
@@ -1244,7 +1244,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
 
         if let Some(cached_block) = self.block_cache.get(self.device_id, sector) {
             let block_data = cached_block.data();
-            let mut data_guard = block_data.write();
+            let mut data_guard = block_data.write().unwrap_or_else(|e| e.into_inner());
             let copy_len = buffer.len().min(data_guard.len());
             data_guard[..copy_len].copy_from_slice(&buffer.as_slice()[..copy_len]);
             cached_block.mark_clean();

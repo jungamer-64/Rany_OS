@@ -5,7 +5,8 @@ pub fn with_perf_stats<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&PerfStats) -> R,
 {
-    PERF_STATS.lock().as_ref().map(f)
+    let guard = PERF_STATS.lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().map(f)
 }
 
 /// リソースモニターにアクセス
@@ -13,7 +14,8 @@ pub fn with_resource_monitor<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&ResourceMonitor) -> R,
 {
-    RESOURCE_MONITOR.lock().as_ref().map(f)
+    let guard = RESOURCE_MONITOR.lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().map(f)
 }
 
 /// トレースバッファにアクセス
@@ -21,7 +23,8 @@ pub fn with_trace_buffer<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&TraceBuffer) -> R,
 {
-    TRACE_BUFFER.lock().as_ref().map(f)
+    let guard = TRACE_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
+    guard.as_ref().map(f)
 }
 
 // Removed: `with_profiler()` — deprecated. Use `crate::profiler::profiler().cpu` instead.

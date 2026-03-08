@@ -555,10 +555,12 @@ impl CoherentDmaBuffer {
 /// A DMA releaser that only performs deallocation.
 ///
 /// Use this when IOMMU unmapping is handled elsewhere (e.g. by a side-band tracker).
-pub unsafe fn release_dealloc_only(ptr: *mut u8, size: usize, _phys: u64) {
-    // CoherentDmaBuffer always uses 4K alignment
-    let layout = core::alloc::Layout::from_size_align_unchecked(size, 4096);
-    core::alloc::dealloc(ptr, layout);
+pub fn release_dealloc_only(ptr: *mut u8, size: usize, _phys: u64) {
+    unsafe {
+        // CoherentDmaBuffer always uses 4K alignment
+        let layout = core::alloc::Layout::from_size_align_unchecked(size, 4096);
+        alloc::alloc::dealloc(ptr, layout);
+    }
 }
 
 impl Drop for CoherentDmaBuffer {

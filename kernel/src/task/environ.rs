@@ -6,6 +6,7 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -26,16 +27,12 @@ impl EnvKey {
 
     /// 有効な環境変数名かチェック
     pub fn is_valid(&self) -> bool {
-        // as_bytes() + get() でイテレータ生成を回避
-        // chars().next().unwrap() は UTF-8 デコード + Option チェック
-        // as_bytes()[0] は単純な配列アクセス（bounds check のみ）
-        // アセンブリ: call chars + call next + cmp + panic → mov + cmp
         let bytes = self.0.as_bytes();
         if bytes.is_empty() {
             return false;
         }
 
-        // 最初の文字は英字またはアンダースコア（ASCII前提で高速化）
+        // 最初の文字は英字またはアンダースコア
         let first = bytes[0];
         if !(first.is_ascii_alphabetic() || first == b'_') {
             return false;
@@ -71,12 +68,10 @@ impl EnvValue {
         self.0.is_empty()
     }
 
-    /// 数値として解析
     pub fn parse_int(&self) -> Option<i64> {
         self.0.parse().ok()
     }
 
-    /// ブール値として解析
     pub fn parse_bool(&self) -> Option<bool> {
         match self.0.to_lowercase().as_str() {
             "1" | "true" | "yes" | "on" => Some(true),
@@ -85,7 +80,6 @@ impl EnvValue {
         }
     }
 
-    /// パス一覧として解析 (PATH など)
     pub fn parse_path_list(&self) -> Vec<&str> {
         self.0.split(':').filter(|s| !s.is_empty()).collect()
     }
@@ -100,20 +94,16 @@ impl From<&str> for EnvValue {
 /// 環境変数エラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvError {
-    /// 無効なキー
     InvalidKey,
-    /// 変数が見つからない
     NotFound,
-    /// 値が大きすぎる
     ValueTooLarge,
-    /// 変数数上限
     TooManyVariables,
 }
 
 /// 環境変数コンテナ
 pub struct Environment {
     /// 変数マップ
-    vars: spin::RwLock<BTreeMap<EnvKey, EnvValue>>,
+    vars: PoisonRwLock<BTreeMap<EnvKey, EnvValue>>,
     /// 変数数
     count: AtomicUsize,
     /// 最大変数数
@@ -129,7 +119,7 @@ impl Environment {
     /// 新しい環境を作成
     pub const fn new() -> Self {
         Self {
-            vars: spin::RwLock::new(BTreeMap::new()),
+            vars: PoisonRwLock::new(BTreeMap::new()),
             count: AtomicUsize::new(0),
             max_vars: Self::DEFAULT_MAX_VARS,
             max_value_size: Self::DEFAULT_MAX_VALUE_SIZE,
@@ -139,7 +129,7 @@ impl Environment {
     /// 制限付きで作成
     pub fn with_limits(max_vars: usize, max_value_size: usize) -> Self {
         Self {
-            vars: spin::RwLock::new(BTreeMap::new()),
+            vars: PoisonRwLock::new(BTreeMap::new()),
             count: AtomicUsize::new(0),
             max_vars,
             max_value_size,
@@ -177,7 +167,7 @@ impl Environment {
 
         let value = EnvValue::new(value);
 
-        let mut vars = self.vars.write();
+        let mut vars = self.vars.write().unwrap_or_else(|e| e.into_inner());
 
         if !vars.contains_key(&key) {
             if self.count.load(Ordering::Acquire) >= self.max_vars {
@@ -193,14 +183,14 @@ impl Environment {
     /// 環境変数を取得
     pub fn get(&self, key: &str) -> Option<EnvValue> {
         let key = EnvKey::new(key);
-        let vars = self.vars.read();
+        let vars = self.vars.read().unwrap_or_else(|e| e.into_inner());
         vars.get(&key).cloned()
     }
 
     /// 環境変数を削除
     pub fn unset(&self, key: &str) -> Result<(), EnvError> {
         let key = EnvKey::new(key);
-        let mut vars = self.vars.write();
+        let mut vars = self.vars.write().unwrap_or_else(|e| e.into_inner());
 
         if vars.remove(&key).is_some() {
             self.count.fetch_sub(1, Ordering::AcqRel);
@@ -213,13 +203,13 @@ impl Environment {
     /// 環境変数が存在するか
     pub fn contains(&self, key: &str) -> bool {
         let key = EnvKey::new(key);
-        let vars = self.vars.read();
+        let vars = self.vars.read().unwrap_or_else(|e| e.into_inner());
         vars.contains_key(&key)
     }
 
     /// 全環境変数を取得
     pub fn all(&self) -> Vec<(String, String)> {
-        let vars = self.vars.read();
+        let vars = self.vars.read().unwrap_or_else(|e| e.into_inner());
         vars.iter()
             .map(|(k, v)| (String::from(k.as_str()), String::from(v.as_str())))
             .collect()
@@ -227,7 +217,7 @@ impl Environment {
 
     /// 環境変数一覧を "KEY=VALUE" 形式で取得
     pub fn to_strings(&self) -> Vec<String> {
-        let vars = self.vars.read();
+        let vars = self.vars.read().unwrap_or_else(|e| e.into_inner());
         vars.iter()
             .map(|(k, v)| alloc::format!("{}={}", k.as_str(), v.as_str()))
             .collect()
@@ -254,29 +244,18 @@ impl Environment {
 
     /// クリア
     pub fn clear(&self) {
-        let mut vars = self.vars.write();
+        let mut vars = self.vars.write().unwrap_or_else(|e| e.into_inner());
         vars.clear();
         self.count.store(0, Ordering::Release);
     }
 
     /// 環境をコピー
-    ///
-    /// # パフォーマンス最適化
-    /// clone()の代わりに String::from() を使用。
-    /// BTreeMapは自己バランス木のため、reserve()は提供されていないが、
-    /// 個別のnew()呼び出しはvtable lookupを回避する。
     pub fn clone_from(&self, other: &Environment) {
-        let other_vars = other.vars.read();
-        let mut vars = self.vars.write();
+        let other_vars = other.vars.read().unwrap_or_else(|e| e.into_inner());
+        let mut vars = self.vars.write().unwrap_or_else(|e| e.into_inner());
 
         vars.clear();
-        // Note: BTreeMapはreserve()を持たないが、各insertは O(log n) で
-        // アロケーションも最小限。clone() の代わりに明示的な構築で
-        // monomorphization を促進。
         for (k, v) in other_vars.iter() {
-            // EnvKey/EnvValue が Clone を実装している場合でも、
-            // 内部の String を直接参照してコピーすることで
-            // vtable lookupを回避（monomorphization）
             vars.insert(EnvKey::new(k.as_str()), EnvValue::new(v.as_str()));
         }
 
@@ -300,14 +279,11 @@ impl Environment {
                             chars.next();
                             break;
                         }
-                        // peek()で存在確認済みなので、next()は必ずSome
-                        // SAFETY: peek() returned Some, so next() will too
                         var_name.push(chars.next().unwrap());
                     }
                 } else {
                     while let Some(&c) = chars.peek() {
                         if c.is_ascii_alphanumeric() || c == '_' {
-                            // SAFETY: peek() returned Some, so next() will too
                             var_name.push(chars.next().unwrap());
                         } else {
                             break;
@@ -339,8 +315,6 @@ pub fn kernel_env() -> &'static Environment {
 pub fn init() {
     KERNEL_ENV.set_defaults();
 }
-
-/// 標準的な環境変数へのショートカット
 
 /// PATH を取得
 pub fn get_path() -> Option<EnvValue> {

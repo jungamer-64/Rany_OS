@@ -1400,23 +1400,6 @@ fn notify_socket_connected(fd: EndpointFd) {
     }
 }
 
-/// Verify TCP checksum
-fn verify_tcp_checksum(_segment: &[u8], _src_ip: [u8; 4], _dst_ip: [u8; 4]) -> bool {
-    // TODO: Implement or import from checksum module
-    true
-}
-
-fn handle_fin_in_order(_tcb: TcpControlBlockEntry, _new_rcv_nxt: u32) {}
-fn handle_ack_received(_tcb: TcpControlBlockEntry, _ack_num: u32) {}
-fn handle_urgent_received(_tcb: TcpControlBlockEntry, _seq_num: u32, _urgent_ptr: u16) {}
-fn handle_rst_received(_tcb: TcpControlBlockEntry, _seq_num: u32) {}
-fn send_challenge_ack(_tcb: &TcpControlBlockEntry) {}
-
-/// RFC 793 / 9293 Section 3.10.7.1: 受信セグメントのシーケンス番号妥当性を検証
-fn is_acceptable_sequence(_tcb: &TcpControlBlockEntry, _seq: u32, _len: u32) -> bool {
-    true
-}
-
 /// 新規接続処理（SYN受信 - サーバー側、またはCLOSED状態へのセグメント受信）
 fn process_tcp_new_connection(
     local: EndpointAddr,

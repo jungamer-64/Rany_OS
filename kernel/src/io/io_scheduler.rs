@@ -203,6 +203,7 @@ impl NvmeSglDescriptor {
 }
 
 /// I/Oリクエスト記述子
+#[derive(Clone)]
 pub struct IoRequest {
     /// リクエストID
     pub id: IoRequestId,

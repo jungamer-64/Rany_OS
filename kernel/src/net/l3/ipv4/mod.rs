@@ -185,7 +185,7 @@ impl fmt::Display for Ipv4Address {
 }
 
 /// IPv4 protocol numbers
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum IpProtocol {
     /// Internet Control Message Protocol

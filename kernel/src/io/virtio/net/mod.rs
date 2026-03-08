@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -24,6 +25,7 @@ use crate::io::virtio::defs::{VirtioDeviceType, status};
 use crate::io::virtio::transport::{TransportType, VirtioTransport};
 use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
 use crate::sync::IrqPoisonLock;
+use crate::sync::PoisonLock;
 // Import PacketRef for zero-copy
 use crate::net::datapath::mempool::PacketRef;
 pub use virtio_driver::net::{
@@ -104,6 +106,8 @@ pub struct NetVirtQueue {
     pub iommu_map: Option<IommuMapping>,
     /// DMA Buffer to keep memory alive (Shared logic doesn't hold this)
     pub dma_buffer: Option<CoherentDmaBuffer>,
+    /// Completed descriptors for async waiters
+    completion_map: PoisonLock<BTreeMap<u16, u32>>,
 }
 
 // NetVirtQueueをSend/Syncにする
@@ -155,6 +159,7 @@ impl NetVirtQueue {
             pending_wakers: crate::sync::WakerQueue::new(),
             iommu_map,
             dma_buffer,
+            completion_map: PoisonLock::new(BTreeMap::new()),
         }
     }
 
@@ -230,6 +235,10 @@ impl NetVirtQueue {
 
         let mut count = 0;
         while let Some((desc_idx, len)) = inner.vq.poll_complete() {
+            self.completion_map
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(desc_idx, len);
             on_complete(desc_idx, len);
             count += 1;
         }
@@ -247,6 +256,27 @@ impl NetVirtQueue {
             completed.push((desc_idx, len));
         });
         completed
+    }
+
+    pub fn register_waker(&self, waker: core::task::Waker) {
+        self.pending_wakers.register(&waker);
+    }
+
+    pub fn take_completion(&self, desc_idx: u16) -> Option<u32> {
+        if let Some(len) = self
+            .completion_map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&desc_idx)
+        {
+            return Some(len);
+        }
+
+        let _ = self.process_used();
+        self.completion_map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&desc_idx)
     }
 
     pub(crate) fn free_desc_chain(&self, head: u16) {

@@ -15,7 +15,6 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 // Re-export from kernel_api
 pub use kernel_api::app::{AppContext, Application};
@@ -124,21 +123,16 @@ impl DomainManager {
     }
 }
 
-impl Default for DomainManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
+use crate::sync::PoisonLock;
 // ============================================================================
 // Global Instance
 // ============================================================================
 
-static DOMAIN_MANAGER: Mutex<Option<DomainManager>> = Mutex::new(None);
+static DOMAIN_MANAGER: PoisonLock<Option<DomainManager>> = PoisonLock::new(None);
 
 /// Initialize domain manager
 pub fn init() {
-    *DOMAIN_MANAGER.lock() = Some(DomainManager::new());
+    *DOMAIN_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) = Some(DomainManager::new());
     log::info!("[Application] Runtime initialized (SPL Domain Model)\n");
 }
 
@@ -147,7 +141,7 @@ pub fn with_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut DomainManager) -> R,
 {
-    DOMAIN_MANAGER.lock().as_mut().map(f)
+    DOMAIN_MANAGER.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(f)
 }
 
 /// Start an application
@@ -164,10 +158,12 @@ where
 pub fn domain_count() -> usize {
     DOMAIN_MANAGER
         .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .map(|m| m.count())
         .unwrap_or(0)
 }
+
 
 // ============================================================================
 // Backward Compatibility

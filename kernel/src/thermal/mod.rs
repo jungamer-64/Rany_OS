@@ -10,10 +10,10 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use spin::{Mutex, RwLock};
 
 // =============================================================================
 // 定数
@@ -227,8 +227,6 @@ impl CpuThermalDriver {
 
     /// コア温度を読み取り
     pub fn read_core_temp(&self, _core: u32) -> ThermalResult<Temperature> {
-        // 特定のコアへのアフィニティ設定が必要
-        // ここでは現在のコアの温度を読む
         let status = self.read_msr(msr::IA32_THERM_STATUS)?;
 
         if (status & (1 << 31)) == 0 {
@@ -285,8 +283,6 @@ impl CpuThermalDriver {
             let ecx: u32;
             let edx: u32;
 
-            // CPUID leaf 0x1
-            // rbxはLLVMに予約されているため、pushq/popqで保存する
             core::arch::asm!(
                 "push rbx",
                 "mov eax, 1",
@@ -337,21 +333,16 @@ pub struct ThermalStatus {
 /// スロットリングポリシー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThrottlePolicy {
-    /// スロットリングなし
     None,
-    /// 軽度（P-state調整のみ）
     Light,
-    /// 中度（クロック25%削減）
     Medium,
-    /// 重度（クロック50%削減）
     Heavy,
-    /// 緊急（最低クロック）
     Emergency,
 }
 
 /// スロットリングコントローラ
 pub struct ThrottleController {
-    current_policy: Mutex<ThrottlePolicy>,
+    current_policy: PoisonLock<ThrottlePolicy>,
     enabled: AtomicBool,
     throttle_count: AtomicU64,
 }
@@ -359,7 +350,7 @@ pub struct ThrottleController {
 impl ThrottleController {
     pub fn new() -> Self {
         Self {
-            current_policy: Mutex::new(ThrottlePolicy::None),
+            current_policy: PoisonLock::new(ThrottlePolicy::None),
             enabled: AtomicBool::new(true),
             throttle_count: AtomicU64::new(0),
         }
@@ -373,7 +364,6 @@ impl ThrottleController {
         self.enabled.store(false, Ordering::SeqCst);
     }
 
-    /// 温度に基づいてスロットリングポリシーを決定
     pub fn calculate_policy(&self, temp: Temperature, sensor: &ThermalSensor) -> ThrottlePolicy {
         if !temp.is_valid() {
             return ThrottlePolicy::None;
@@ -397,13 +387,12 @@ impl ThrottleController {
         }
     }
 
-    /// スロットリングを適用
     pub fn apply(&self, policy: ThrottlePolicy) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
 
-        let mut current = self.current_policy.lock();
+        let mut current = self.current_policy.lock().unwrap_or_else(|e| e.into_inner());
         if *current == policy {
             return;
         }
@@ -424,9 +413,7 @@ impl ThrottleController {
     }
 
     fn clear_throttle(&self) {
-        // スロットリングをクリア
         unsafe {
-            // IA32_CLOCK_MODULATIONをクリア
             let msr_clock_mod: u32 = 0x19A;
             core::arch::asm!(
                 "wrmsr",
@@ -438,17 +425,12 @@ impl ThrottleController {
         }
     }
 
-    fn apply_light_throttle(&self) {
-        // P-state調整のみ
-        // 実際にはACPIまたはIntel Speed Stepを使用
-    }
+    fn apply_light_throttle(&self) {}
 
     fn apply_medium_throttle(&self) {
-        // 25%デューティサイクル削減
         unsafe {
             let msr_clock_mod: u32 = 0x19A;
-            // Bit 4 = Enable, Bits 3:1 = Duty cycle (6 = 75%)
-            let value: u32 = 0x1C; // Enable + 75% duty cycle
+            let value: u32 = 0x1C;
             core::arch::asm!(
                 "wrmsr",
                 in("ecx") msr_clock_mod,
@@ -460,10 +442,9 @@ impl ThrottleController {
     }
 
     fn apply_heavy_throttle(&self) {
-        // 50%デューティサイクル削減
         unsafe {
             let msr_clock_mod: u32 = 0x19A;
-            let value: u32 = 0x18; // Enable + 50% duty cycle
+            let value: u32 = 0x18;
             core::arch::asm!(
                 "wrmsr",
                 in("ecx") msr_clock_mod,
@@ -475,10 +456,9 @@ impl ThrottleController {
     }
 
     fn apply_emergency_throttle(&self) {
-        // 最低クロック（12.5%）
         unsafe {
             let msr_clock_mod: u32 = 0x19A;
-            let value: u32 = 0x12; // Enable + 12.5% duty cycle
+            let value: u32 = 0x12;
             core::arch::asm!(
                 "wrmsr",
                 in("ecx") msr_clock_mod,
@@ -490,7 +470,7 @@ impl ThrottleController {
     }
 
     pub fn current_policy(&self) -> ThrottlePolicy {
-        *self.current_policy.lock()
+        *self.current_policy.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn throttle_count(&self) -> u64 {
@@ -502,7 +482,6 @@ impl ThrottleController {
 // ファン制御
 // =============================================================================
 
-/// ファンレベル
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FanLevel {
     Auto,
@@ -513,31 +492,28 @@ pub enum FanLevel {
     Full,
 }
 
-/// ファン情報
 #[derive(Debug, Clone)]
 pub struct Fan {
     pub id: u32,
     pub name: String,
     pub rpm: u32,
     pub level: FanLevel,
-    pub pwm: u8, // 0-255
+    pub pwm: u8,
 }
 
-/// ファンコントローラ（ACPI/SMBus経由）
 pub struct FanController {
-    fans: RwLock<Vec<Fan>>,
+    fans: PoisonRwLock<Vec<Fan>>,
     auto_mode: AtomicBool,
 }
 
 impl FanController {
     pub fn new() -> Self {
         Self {
-            fans: RwLock::new(Vec::new()),
+            fans: PoisonRwLock::new(Vec::new()),
             auto_mode: AtomicBool::new(true),
         }
     }
 
-    /// ファンを登録
     pub fn register(&self, id: u32, name: String) {
         let fan = Fan {
             id,
@@ -546,20 +522,18 @@ impl FanController {
             level: FanLevel::Auto,
             pwm: 128,
         };
-        self.fans.write().push(fan);
+        self.fans.write().unwrap_or_else(|e| e.into_inner()).push(fan);
     }
 
-    /// ファン速度を更新
     pub fn update_rpm(&self, id: u32, rpm: u32) {
-        let mut fans = self.fans.write();
+        let mut fans = self.fans.write().unwrap_or_else(|e| e.into_inner());
         if let Some(fan) = fans.iter_mut().find(|f| f.id == id) {
             fan.rpm = rpm;
         }
     }
 
-    /// ファンレベルを設定
     pub fn set_level(&self, id: u32, level: FanLevel) {
-        let mut fans = self.fans.write();
+        let mut fans = self.fans.write().unwrap_or_else(|e| e.into_inner());
         if let Some(fan) = fans.iter_mut().find(|f| f.id == id) {
             fan.level = level;
             fan.pwm = match level {
@@ -573,8 +547,6 @@ impl FanController {
         }
     }
 
-    /// 温度に基づいてファンを自動制御
-    /// Map temperature to fan level.
     fn temp_to_fan_level(celsius: i32) -> FanLevel {
         if celsius >= 85 {
             FanLevel::Full
@@ -596,7 +568,7 @@ impl FanController {
 
         let level = Self::temp_to_fan_level(temp.celsius());
 
-        let mut fans = self.fans.write();
+        let mut fans = self.fans.write().unwrap_or_else(|e| e.into_inner());
         for fan in fans.iter_mut() {
             if fan.level == FanLevel::Auto {
                 fan.pwm = match level {
@@ -611,26 +583,15 @@ impl FanController {
         }
     }
 
-    /// 全ファンを取得（ガード付き参照を返す）
-    ///
-    /// Vec clone() を避け、参照カウント不要のゼロコスト参照を提供。
-    /// 呼び出し側は RwLockReadGuard の寿命内でのみアクセス可能。
-    pub fn fans(&self) -> spin::RwLockReadGuard<'_, Vec<Fan>> {
-        self.fans.read()
-    }
-
-    /// ファンの数を取得（clone不要）
-    #[inline]
     pub fn fan_count(&self) -> usize {
-        self.fans.read().len()
+        self.fans.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    /// コールバックで全ファンを処理（clone不要）
     pub fn for_each_fan<F>(&self, mut f: F)
     where
         F: FnMut(&Fan),
     {
-        let fans = self.fans.read();
+        let fans = self.fans.read().unwrap_or_else(|e| e.into_inner());
         for fan in fans.iter() {
             f(fan);
         }
@@ -641,29 +602,22 @@ impl FanController {
 // サーマルゾーン
 // =============================================================================
 
-/// サーマルゾーンタイプ
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TripPointType {
-    /// アクティブ冷却（ファンオン）
     Active(u8),
-    /// パッシブ冷却（スロットリング）
     Passive,
-    /// ホット（警告）
     Hot,
-    /// クリティカル（シャットダウン）
     Critical,
 }
 
-/// トリップポイント
 #[derive(Debug, Clone)]
 pub struct TripPoint {
     pub trip_type: TripPointType,
     pub temperature: Temperature,
-    pub hysteresis: i32, // ミリ摂氏度
+    pub hysteresis: i32,
     pub triggered: bool,
 }
 
-/// サーマルゾーン
 #[derive(Debug)]
 pub struct ThermalZone {
     pub id: u32,
@@ -674,7 +628,6 @@ pub struct ThermalZone {
     pub mode: ThermalZoneMode,
 }
 
-/// サーマルゾーンモード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThermalZoneMode {
     Enabled,

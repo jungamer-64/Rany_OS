@@ -24,7 +24,6 @@ use crate::mm::cache::slab_registry::{SlabCacheRegistry, SlabFlags};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 // リモートフリー用の型定義
 use crate::mm::remote_free::RemoteFreeRing;

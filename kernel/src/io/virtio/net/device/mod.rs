@@ -77,6 +77,9 @@ pub struct VirtioNetDevice {
     rx_bounce_pool: MpmcRingBuffer<CoherentDmaBuffer, 256>,
 }
 
+unsafe impl Send for VirtioNetDevice {}
+unsafe impl Sync for VirtioNetDevice {}
+
 impl VirtioNetDevice {
     /// 新しいデバイスを作成
     pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
@@ -451,6 +454,30 @@ impl VirtioNetDevice {
     pub fn notify_queue(&mut self, queue_index: u16) {
         self.transport.notify_queue(queue_index);
     }
+
+    pub(crate) fn handle_legacy_rx_completion(
+        &self,
+        _rx_queue: &NetVirtQueue,
+        _q_idx: usize,
+        _desc_id: u16,
+        _len: u32,
+    ) -> bool {
+        false
+    }
+
+    pub(crate) fn handle_legacy_tx_completion(
+        &self,
+        _tx_queue: &NetVirtQueue,
+        _q_idx: usize,
+        _desc_id: u16,
+        _len: u32,
+    ) -> bool {
+        false
+    }
+
+    pub(crate) fn release_unknown_rx_completion(&self, _rx_queue: &NetVirtQueue, _desc_id: u16) {}
+
+    pub(crate) fn release_unknown_tx_completion(&self, _tx_queue: &NetVirtQueue, _desc_id: u16) {}
 }
 
 impl Drop for VirtioNetDevice {

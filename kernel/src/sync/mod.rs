@@ -26,10 +26,11 @@
 //!
 //! ## 推奨される同期プリミティブ
 //!
-//! - `IrqMutex<T>`: 割り込みを無効化してロックする（ISRセーフ）
-//! - `spin::Mutex<T>`: 軽量スピンロック（同一ドメイン内のみ）
-//! - `PoisonLock<T>`: パニック時自動毒入れMutex（推奨）
-//! - `IrqPoisonLock<T>`: 割り込み禁止 + パニック時毒入れ
+//! - `PoisonLock<T>`: パニック時自動毒入れMutex（標準）
+//! - `PoisonRwLock<T>`: パニック時自動毒入れRwLock（読み取り並列化用）
+//! - `IrqPoisonLock<T>`: 割り込み禁止 + パニック時毒入れ（ISRセーフな標準）
+//! - `IrqMutex<T>`: 割り込みを無効化してロックする（ISRセーフ、毒入れなし）
+//! - `spin::Mutex<T>`: 軽量スピンロック（毒入れ不要な極めて局所的な同期のみ）
 //! - `Seqlock<T>`: 読み取り優先のシーケンスロック
 //! - `MpmcRingBuffer<T>`: ロックフリーな複数プロデューサ・複数コンシューマキュー
 //!
@@ -52,7 +53,8 @@ pub use irq_mutex::{IrqMutex, IrqMutexGuard};
 #[allow(unused_imports)]
 pub use poison_lock::{
     IrqPoisonLock, IrqPoisonLockGuard, LockResult, PoisonError, PoisonLock, PoisonLockGuard,
-    get_current_core_id_for_debug, is_panicking_for_debug, set_panicking,
+    PoisonRwLock, PoisonRwLockReadGuard, PoisonRwLockWriteGuard, get_current_core_id_for_debug,
+    is_panicking_for_debug, set_panicking,
 };
 
 #[allow(unused_imports)]

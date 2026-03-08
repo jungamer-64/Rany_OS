@@ -68,6 +68,20 @@ impl<T> fmt::Display for PoisonError<T> {
 /// PoisonLock::lock()の戻り値型
 pub type LockResult<Guard> = Result<Guard, PoisonError<Guard>>;
 
+pub enum TryLockError<Guard> {
+    Poisoned(PoisonError<Guard>),
+    WouldBlock,
+}
+
+impl<Guard> TryLockError<Guard> {
+    pub fn into_inner(self) -> Guard {
+        match self {
+            Self::Poisoned(e) => e.into_inner(),
+            Self::WouldBlock => panic!("try_lock would block"),
+        }
+    }
+}
+
 // ============================================================================
 // PoisonRwLock - パニック時自動毒入れRwLock
 // ============================================================================
@@ -75,14 +89,14 @@ pub type LockResult<Guard> = Result<Guard, PoisonError<Guard>>;
 /// パニック時自動毒入れRwLock
 ///
 /// 読み取り/書き込み分離ロックにPoisoning機能を追加。
-pub struct PoisonRwLock<T: ?Sized> {
+pub struct PoisonRwLock<T> {
     inner: spin::RwLock<T>,
     poisoned: AtomicBool,
 }
 
 // SAFETY: PoisonRwLock は排他的/共有アクセスを保証する
-unsafe impl<T: ?Sized + Send + Sync> Sync for PoisonRwLock<T> {}
-unsafe impl<T: ?Sized + Send> Send for PoisonRwLock<T> {}
+unsafe impl<T: Send + Sync> Sync for PoisonRwLock<T> {}
+unsafe impl<T: Send> Send for PoisonRwLock<T> {}
 
 impl<T> PoisonRwLock<T> {
     /// 新しいPoisonRwLockを作成
@@ -94,7 +108,7 @@ impl<T> PoisonRwLock<T> {
     }
 }
 
-impl<T: ?Sized> PoisonRwLock<T> {
+impl<T> PoisonRwLock<T> {
     /// 読み取りロックを取得
     pub fn read(&self) -> LockResult<PoisonRwLockReadGuard<'_, T>> {
         #[cfg(all(test, feature = "std"))]
@@ -192,15 +206,16 @@ impl<T: ?Sized> PoisonRwLock<T> {
     pub fn clear_poison(&self) {
         self.poisoned.store(false, Ordering::Release);
     }
+
 }
 
 /// PoisonRwLockの読み取りガード
-pub struct PoisonRwLockReadGuard<'a, T: ?Sized> {
+pub struct PoisonRwLockReadGuard<'a, T> {
     lock: &'a PoisonRwLock<T>,
     guard: spin::RwLockReadGuard<'a, T>,
 }
 
-impl<T: ?Sized> Deref for PoisonRwLockReadGuard<'_, T> {
+impl<T> Deref for PoisonRwLockReadGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
         &*self.guard
@@ -208,25 +223,25 @@ impl<T: ?Sized> Deref for PoisonRwLockReadGuard<'_, T> {
 }
 
 /// PoisonRwLockの書き込みガード
-pub struct PoisonRwLockWriteGuard<'a, T: ?Sized> {
+pub struct PoisonRwLockWriteGuard<'a, T> {
     lock: &'a PoisonRwLock<T>,
     guard: spin::RwLockWriteGuard<'a, T>,
 }
 
-impl<T: ?Sized> Deref for PoisonRwLockWriteGuard<'_, T> {
+impl<T> Deref for PoisonRwLockWriteGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
         &*self.guard
     }
 }
 
-impl<T: ?Sized> DerefMut for PoisonRwLockWriteGuard<'_, T> {
+impl<T> DerefMut for PoisonRwLockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         &mut *self.guard
     }
 }
 
-impl<T: ?Sized> Drop for PoisonRwLockWriteGuard<'_, T> {
+impl<T> Drop for PoisonRwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
         if is_panicking() {
             self.lock.poisoned.store(true, Ordering::Release);
@@ -347,7 +362,7 @@ impl<T> PoisonLock<T> {
     }
 
     /// ロックを試行（失敗したら即座に返る）
-    pub fn try_lock(&self) -> Option<LockResult<PoisonLockGuard<'_, T>>> {
+    pub fn try_lock(&self) -> Result<PoisonLockGuard<'_, T>, TryLockError<PoisonLockGuard<'_, T>>> {
         // try_lock は即時取得成功時のみ計測する
         #[cfg(all(test, feature = "std"))]
         let start = std::time::Instant::now();
@@ -373,12 +388,12 @@ impl<T> PoisonLock<T> {
             };
 
             if self.poisoned.load(Ordering::Acquire) {
-                Some(Err(PoisonError::new(guard)))
+                Err(TryLockError::Poisoned(PoisonError::new(guard)))
             } else {
-                Some(Ok(guard))
+                Ok(guard)
             }
         } else {
-            None
+            Err(TryLockError::WouldBlock)
         }
     }
 
@@ -417,6 +432,11 @@ impl<T> PoisonLock<T> {
     /// 呼び出し側は、データの整合性が回復されたことを保証する必要がある
     pub fn clear_poison(&self) {
         self.poisoned.store(false, Ordering::Release);
+    }
+
+    /// 強制アンロック（障害回復専用）
+    pub fn force_unlock(&self) {
+        self.locked.store(false, Ordering::Release);
     }
 
     /// 内部データへの参照を取得（ロックなし、unsafeのみ）
@@ -702,6 +722,29 @@ impl<T: ?Sized> IrqPoisonLock<T> {
         } else {
             Ok(guard)
         }
+    }
+
+    /// ロックを試行（取得できない場合は即座にNoneを返す）
+    pub fn try_lock(&self) -> Option<IrqPoisonLockGuard<'_, T>> {
+        let irq_was_enabled = super::irq_mutex::save_and_disable_interrupts();
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            super::irq_mutex::restore_interrupts(irq_was_enabled);
+            return None;
+        }
+
+        if self.poisoned.load(Ordering::Acquire) {
+            // Best-effort path for panic/debug output callers that cannot handle Result.
+            self.poisoned.store(false, Ordering::Release);
+        }
+
+        Some(IrqPoisonLockGuard {
+            lock: self,
+            irq_was_enabled,
+        })
     }
 
     /// 毒入れ状態を確認

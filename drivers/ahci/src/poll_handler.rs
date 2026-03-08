@@ -9,7 +9,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
+use exorust_sync::PoisonLock;
 
 use crate::io::io_scheduler::{
     hybrid_coordinator, DeviceId, IoError, IoRequestId, IoResult, PollHandler,
@@ -21,19 +21,19 @@ use super::types::{PortNumber, SlotNumber, PX_CI, PX_TFD};
 /// AHCI PollHandler 実装
 pub struct AhciPollHandler {
     /// コントローラへの参照
-    controller: Arc<Mutex<AhciController>>,
+    controller: Arc<PoisonLock<AhciController>>,
     /// 保留中リクエスト (IoRequestId -> (PortNumber, SlotNumber))
-    pending: Mutex<BTreeMap<IoRequestId, (PortNumber, SlotNumber)>>,
+    pending: PoisonLock<BTreeMap<IoRequestId, (PortNumber, SlotNumber)>>,
     /// 次のリクエストID
     next_request_id: AtomicU64,
 }
 
 impl AhciPollHandler {
     /// 新しい AhciPollHandler を作成
-    pub fn new(controller: Arc<Mutex<AhciController>>) -> Self {
+    pub fn new(controller: Arc<PoisonLock<AhciController>>) -> Self {
         Self {
             controller,
-            pending: Mutex::new(BTreeMap::new()),
+            pending: PoisonLock::new(BTreeMap::new()),
             next_request_id: AtomicU64::new(1),
         }
     }
@@ -45,12 +45,12 @@ impl AhciPollHandler {
 
     /// リクエストを追加
     pub fn add_pending(&self, id: IoRequestId, port: PortNumber, slot: SlotNumber) {
-        self.pending.lock().insert(id, (port, slot));
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, (port, slot));
     }
 
     /// コマンド完了をチェック
     fn check_completion(&self, port: PortNumber, slot: SlotNumber) -> Option<bool> {
-        let controller = self.controller.lock();
+        let controller = self.controller.lock().unwrap_or_else(|e| e.into_inner());
         let ci = controller.read_port_reg(port, PX_CI);
 
         // スロットのコマンドが完了していれば CI ビットがクリアされる
@@ -71,7 +71,7 @@ impl PollHandler for AhciPollHandler {
         let mut completed = Vec::new();
 
         {
-            let pending = self.pending.lock();
+            let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             for (&request_id, &(port, slot)) in pending.iter() {
                 if let Some(success) = self.check_completion(port, slot) {
                     let result = if success {
@@ -86,7 +86,7 @@ impl PollHandler for AhciPollHandler {
         }
 
         // 完了したリクエストを削除
-        let mut pending = self.pending.lock();
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         for id in completed {
             pending.remove(&id);
         }
@@ -101,7 +101,7 @@ impl PollHandler for AhciPollHandler {
 }
 
 /// AHCI を IoScheduler に登録
-pub fn register_ahci_with_io_scheduler(controller: Arc<Mutex<AhciController>>, port_number: u8) {
+pub fn register_ahci_with_io_scheduler(controller: Arc<PoisonLock<AhciController>>, port_number: u8) {
     let handler = AhciPollHandler::new(controller);
     let handler: Box<dyn PollHandler + Send + Sync> = Box::new(handler);
 

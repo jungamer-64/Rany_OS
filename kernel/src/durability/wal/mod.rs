@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 //! Durable write-ahead log (WAL) manager.
 
+use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 
 mod backend_nvme;
 mod codec;
@@ -98,8 +98,8 @@ struct BackendState {
 pub struct WalManager {
     next_tx: AtomicU64,
     next_seq: AtomicU64,
-    records: Mutex<Vec<WalRecord>>,
-    backend: Mutex<Option<BackendState>>,
+    records: PoisonLock<Vec<WalRecord>>,
+    backend: PoisonLock<Option<BackendState>>,
 }
 
 impl WalManager {
@@ -107,8 +107,8 @@ impl WalManager {
         Self {
             next_tx: AtomicU64::new(1),
             next_seq: AtomicU64::new(1),
-            records: Mutex::new(Vec::new()),
-            backend: Mutex::new(None),
+            records: PoisonLock::new(Vec::new()),
+            backend: PoisonLock::new(None),
         }
     }
 
@@ -127,7 +127,7 @@ impl WalManager {
     }
 
     fn persist_record(&self, rec: &WalRecord) -> Result<(), WalError> {
-        let mut backend_guard = self.backend.lock();
+        let mut backend_guard = self.backend.lock().unwrap_or_else(|e| e.into_inner());
         let Some(state) = backend_guard.as_mut() else {
             return Ok(());
         };
@@ -202,7 +202,7 @@ impl WalManager {
             seq: self.alloc_seq(),
             kind: WalRecordKind::Begin,
         };
-        self.records.lock().push(rec.clone());
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec.clone());
         let _ = self.persist_record(&rec);
         tx_id
     }
@@ -214,7 +214,7 @@ impl WalManager {
             seq: self.alloc_seq(),
             kind: WalRecordKind::Append(op),
         };
-        self.records.lock().push(rec.clone());
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec.clone());
         let _ = self.persist_record(&rec);
     }
 
@@ -225,13 +225,11 @@ impl WalManager {
             seq: self.alloc_seq(),
             kind: WalRecordKind::Commit,
         };
-        self.records.lock().push(rec.clone());
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec.clone());
         let _ = self.persist_record(&rec);
     }
 
     /// Replay committed operations in log order.
-    ///
-    /// Records from transactions without `Commit` are ignored.
     pub fn replay<F>(&self, mut apply: F) -> ReplayStats
     where
         F: FnMut(u64, &WalOperation),
@@ -290,7 +288,7 @@ impl WalManager {
             }
         };
 
-        let mut guard = self.backend.lock();
+        let mut guard = self.backend.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(BackendState {
             backend,
             cfg,
@@ -307,7 +305,7 @@ impl WalManager {
     {
         let mut recovered = Vec::new();
         {
-            let mut backend_guard = self.backend.lock();
+            let mut backend_guard = self.backend.lock().unwrap_or_else(|e| e.into_inner());
             let Some(state) = backend_guard.as_mut() else {
                 return Ok(self.replay(apply));
             };
@@ -357,7 +355,7 @@ impl WalManager {
         }
 
         {
-            let mut records = self.records.lock();
+            let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
             *records = recovered;
             self.recalc_counters_locked(&records);
         }
@@ -382,14 +380,14 @@ impl WalManager {
             }
         }
 
-        let removed = self.records.lock().len().saturating_sub(retained.len());
+        let removed = self.records.lock().unwrap_or_else(|e| e.into_inner()).len().saturating_sub(retained.len());
         {
-            let mut records = self.records.lock();
+            let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
             *records = retained.clone();
             self.recalc_counters_locked(&records);
         }
 
-        let mut backend_guard = self.backend.lock();
+        let mut backend_guard = self.backend.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = backend_guard.as_mut() {
             Self::rewrite_backend_locked(state, &retained)?;
         }
@@ -403,12 +401,12 @@ impl WalManager {
 
     /// Remove all WAL records.
     pub fn clear(&self) {
-        self.records.lock().clear();
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// Return a cloned snapshot of current WAL records.
     pub fn snapshot(&self) -> Vec<WalRecord> {
-        self.records.lock().clone()
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 

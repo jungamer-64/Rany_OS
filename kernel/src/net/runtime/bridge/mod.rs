@@ -150,6 +150,15 @@ impl Future for TxEventWaitFuture {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeInterfaceStats {
+    pub if_id: NetIfId,
+    pub tx_packets: u64,
+    pub rx_packets: u64,
+    pub initialized: bool,
+    pub virtio_index: Option<u8>,
+}
+
 /// Per-interface bridge stats
 static BRIDGE_IF_STATS: PoisonRwLock<BTreeMap<NetIfId, BridgeInterfaceStats>> =
     PoisonRwLock::new(BTreeMap::new());
@@ -704,6 +713,31 @@ pub fn get_bridge_stats_for_interface(if_id: NetIfId) -> Option<BridgeInterfaceS
 
 pub fn list_bridge_stats() -> Vec<BridgeInterfaceStats> {
     BRIDGE_IF_STATS.read().unwrap_or_else(|e| e.into_inner()).values().copied().collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeStats {
+    pub initialized: bool,
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+}
+
+pub fn get_bridge_stats() -> BridgeStats {
+    let mut rx = 0u64;
+    let mut tx = 0u64;
+    for s in BRIDGE_IF_STATS.read().unwrap_or_else(|e| e.into_inner()).values() {
+        rx = rx.saturating_add(s.rx_packets);
+        tx = tx.saturating_add(s.tx_packets);
+    }
+    BridgeStats {
+        initialized: is_initialized(),
+        rx_packets: rx,
+        tx_packets: tx,
+    }
+}
+
+pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<NetIfId> {
+    manager::lookup_if_by_virtio_index(virtio_index)
 }
 
 pub fn get_real_config() -> Option<NetworkConfigSnapshot> {

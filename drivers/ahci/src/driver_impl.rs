@@ -1,6 +1,6 @@
 // use alloc::boxed::Box;
 use alloc::sync::Arc;
-use spin::Mutex;
+use exorust_sync::PoisonLock;
 
 use kernel_api::KapiResult;
 use kernel_api::driver::{Driver, DriverType};
@@ -10,7 +10,7 @@ use super::controller::{AhciController, init_from_pci};
 pub struct AhciDriverWrapper {
     base_addr: u64,
     irq: u8,
-    controller: Option<Arc<Mutex<AhciController>>>,
+    controller: Option<Arc<PoisonLock<AhciController>>>,
 }
 
 impl AhciDriverWrapper {

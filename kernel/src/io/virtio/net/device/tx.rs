@@ -1,4 +1,5 @@
 use super::*;
+use kernel_api::dma::{CpuOwned, DmaSlice};
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
@@ -78,15 +79,20 @@ impl VirtioNetDevice {
             let q_idx = 0; // First TX queue index in per-queue vectors
             let device_addr = buffer.device_addr();
             let iova = if buffer.is_iommu_mapped() { Some(device_addr) } else { None };
-            let iommu_len = buffer.size() as u32;
-            let slice = unsafe { buffer.as_slice() };
+            let iommu_len = buffer.size() as u64;
 
             match tx_queue.add_tx_buffer_zero_copy(device_addr, data_len) {
                 Ok(desc_idx) => {
                     let tracker = &self.core.tx_trackers[q_idx];
+                    let (phys, iova2, virt, len, _rel) = buffer.into_raw_parts();
+                    let bounce = unsafe { DmaSlice::<CpuOwned>::from_raw_parts(phys, iova2, virt, len, None) };
+                    let packet = match crate::net::datapath::mempool::alloc_packet() {
+                        Some(p) => p,
+                        None => return Err(VirtioNetError::DeviceError),
+                    };
                     tracker.put(desc_idx, virtio_driver::net::TxInflight {
-                        packet: crate::net::datapath::mempool::packet_ref_from_dma_slice(slice),
-                        bounce_buffer: Some(buffer.into_dma_slice()), 
+                        packet,
+                        bounce_buffer: Some(bounce),
                         iommu_iova: iova,
                         iommu_map_len: iommu_len,
                     });
@@ -209,7 +215,10 @@ impl VirtioNetDevice {
                     desc_idx,
                     virtio_driver::net::TxInflight {
                         packet,
-                        bounce_buffer: bounce_buffer.map(|buf| buf.into_dma_slice()),
+                        bounce_buffer: bounce_buffer.map(|buf| {
+                            let (phys, iova, virt, len, _rel) = buf.into_raw_parts();
+                            unsafe { DmaSlice::<CpuOwned>::from_raw_parts(phys, iova, virt, len, None) }
+                        }),
                         iommu_iova: mapped_iova,
                         iommu_map_len: mapped_len as u64,
                     },

@@ -49,14 +49,15 @@ pub use window::CompositorWindow;
 // ============================================================================
 
 use crate::graphics::Framebuffer;
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 /// グローバルコンポジタ
-static COMPOSITOR: Mutex<Option<Compositor>> = Mutex::new(None);
+static COMPOSITOR: PoisonLock<Option<Compositor>> = PoisonLock::new(None);
 
 /// コンポジタを初期化
 pub fn init(screen_width: u32, screen_height: u32) {
-    *COMPOSITOR.lock() = Some(Compositor::new(screen_width, screen_height));
+    *COMPOSITOR.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(Compositor::new(screen_width, screen_height));
 }
 
 /// コンポジタにアクセス
@@ -64,7 +65,7 @@ pub fn with_compositor<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&Compositor) -> R,
 {
-    COMPOSITOR.lock().as_ref().map(f)
+    COMPOSITOR.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(f)
 }
 
 /// コンポジタにミュータブルアクセス
@@ -72,7 +73,7 @@ pub fn with_compositor_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Compositor) -> R,
 {
-    COMPOSITOR.lock().as_mut().map(f)
+    COMPOSITOR.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(f)
 }
 
 /// ウィンドウを作成

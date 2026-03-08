@@ -13,7 +13,6 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use kernel_api::service::platform::PciDeviceInfo;
-use spin::Mutex;
 
 pub mod device_manager;
 pub mod interrupt_routing;

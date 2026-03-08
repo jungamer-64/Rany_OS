@@ -7,7 +7,6 @@ use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_PAGE_SIZE};
 use crate::structs::queues::{CqContextLayout, EqContextLayout, RqContextLayout, SqContextLayout};
 
 const MLX5_EQ_STATE_ARMED: u8 = 0x9;
-const MLX5_CQ_STATE_NOTIFICATION_ARMED: u8 = 0x9;
 const CREATE_EQ_EVENT_MASK_OFFSET: usize = 0x58;
 const CREATE_EQ_EVENT_MASK_LEN: usize = 0x20;
 
@@ -78,24 +77,18 @@ pub fn build_create_cq_input(
     db_pa: u64,
     uar_page: u32,
     eqn: u32,
-    _cqe_comp: bool,
+    cqe_comp: bool,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = CqContextLayout::new(&mut in_mbox.data[0x10..]);
 
-    layout.set_state(MLX5_CQ_STATE_NOTIFICATION_ARMED);
     layout.set_page_offset(0);
     layout.set_log_cq_size(log_cq_size);
     layout.set_uar_page(uar_page);
     layout.set_c_eqn(eqn);
     layout.set_log_page_size(0);
+    layout.set_cqe_comp_en(cqe_comp);
     layout.set_dbr_addr(db_pa);
-
-    if _cqe_comp {
-        // CQ context byte 0x08 (dword 2): [16] cqe_comp_en
-        // EqContextLayout/CqContextLayout を介さず直接書き込むか、Layoutを拡張する
-        in_mbox.data[0x10 + 0x08 + 1] |= 0x01; // bit 16 is byte 2 offset within dword
-    }
 
     let cq_bytes = (1usize << (log_cq_size as usize)) * crate::regs::cqe::SIZE;
     let cq_pages = (cq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
@@ -109,7 +102,7 @@ pub fn build_create_cq_input(
 
 /// CREATE_CQ 出力からCQ番号を解析
 pub fn parse_create_cq_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be24(0x05)
+    out_mbox.read_be24(0x09)
 }
 
 /// DESTROY_CQ コマンド入力の構築
@@ -320,13 +313,38 @@ mod tests {
         build_create_cq_input(&mut in_mbox, 6, 0x4000, 0x5000, 0x123, 0x456, false);
 
         let ctx = &in_mbox.data[0x10..];
-        assert_eq!(get_bits_u32(ctx, 20, 4), MLX5_CQ_STATE_NOTIFICATION_ARMED as u32);
+        assert_eq!(get_bits_u32(ctx, 20, 4), 0);
         assert_eq!(get_bits_u32(ctx, 84, 6), 0);
         assert_eq!(get_bits_u32(ctx, 99, 5), 6);
         assert_eq!(get_bits_u32(ctx, 104, 24), 0x123);
         assert_eq!(get_bits_u32(ctx, 160, 32), 0x456);
         assert_eq!(get_bits_u32(ctx, 195, 5), 0);
+        assert_eq!(get_bits_u32(ctx, 17, 1), 0);
         assert_eq!(in_mbox.read_be64(0x48), 0x5000);
+    }
+
+    #[test]
+    fn create_cq_enables_cqe_compression_bit() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_create_cq_input(&mut in_mbox, 6, 0x4000, 0x5000, 0x123, 0x456, true);
+        let ctx = &in_mbox.data[0x10..];
+        assert_eq!(get_bits_u32(ctx, 17, 1), 1);
+    }
+
+    #[test]
+    fn parse_create_eq_output_reads_eqn_from_linux_ifc_offset() {
+        let mut out_mbox = CmdMailbox::zeroed();
+        out_mbox.data[0x0B] = 0x7A;
+        assert_eq!(parse_create_eq_output(&out_mbox), 0x7A);
+    }
+
+    #[test]
+    fn parse_create_cq_output_reads_cqn_from_linux_ifc_offset() {
+        let mut out_mbox = CmdMailbox::zeroed();
+        out_mbox.data[0x09] = 0xAB;
+        out_mbox.data[0x0A] = 0xCD;
+        out_mbox.data[0x0B] = 0x12;
+        assert_eq!(parse_create_cq_output(&out_mbox), 0x00ab_cd12);
     }
 
     #[test]

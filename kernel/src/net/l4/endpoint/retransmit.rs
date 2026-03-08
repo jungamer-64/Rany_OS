@@ -5,10 +5,10 @@
 //!
 //! RtoCalculator, RetransmitQueue, UnackedSegment
 
+use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
-use spin::RwLock;
 
 use super::segment::send_tcp_segment;
 use super::tcb::tcb_table;
@@ -31,7 +31,7 @@ pub struct UnackedSegment {
     /// RTOサンプル用フラグ（再送済みはRTTサンプルに使わない）
     pub is_retransmit: bool,
     /// SACK（Selective ACK）済みフラグ (RFC 2018)
-    /// 受信側からSACKで通知されたが、累積ACKはまだ届いていない状態。
+    /// 受信側からSACKで通知されたが、累積ACKは届いていない状態。
     pub is_sacked: bool,
 }
 
@@ -152,7 +152,6 @@ impl RetransmitQueue {
             let seg_end = seg.seq.wrapping_add(seg_len);
 
             // セグメントの末尾まで確認されているか？
-            // seq_leq(seg_end, ack_num) を使用
             if Self::seq_leq(seg_end, ack_num) {
                 let seg = self.unacked.pop_front().unwrap();
                 // 再送でないセグメントのみRTTサンプルとして使用（Karnのアルゴリズム）
@@ -171,7 +170,7 @@ impl RetransmitQueue {
     /// タイムアウトチェック
     /// 再送が必要なセグメントがあるかチェック
     pub fn check_timeout(&self, current_tick: u64) -> Option<&UnackedSegment> {
-        // SACK済みのセグメントは再送不要 (RFC 2018/6675)
+        // SACK済みのセグメントは再送不要
         self.unacked
             .iter()
             .find(|seg| !seg.is_sacked)
@@ -212,7 +211,6 @@ impl RetransmitQueue {
     }
 
     /// シーケンス番号比較（wrapping考慮）
-    /// typesモジュールの統一実装へ委譲
     pub fn seq_before(a: u32, b: u32) -> bool {
         seq_before_fn(a, b)
     }
@@ -241,36 +239,32 @@ fn retransmit_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize 
 }
 
 /// シャード化されたグローバル再送キューテーブル
-static RETRANSMIT_SHARDS: [RwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>>;
+static RETRANSMIT_SHARDS: [PoisonRwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>>;
     RETRANSMIT_SHARD_COUNT] = {
-    const EMPTY: RwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>> =
-        RwLock::new(BTreeMap::new());
+    const EMPTY: PoisonRwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>> =
+        PoisonRwLock::new(BTreeMap::new());
     [EMPTY; RETRANSMIT_SHARD_COUNT]
 };
 
 /// グローバルタイミングホイール
-///
-/// 再送タイマーの満了検知を $O(1)$ amortized で行う。
-/// `retransmit_queue_push` 時にタイマーを登録し、
-/// `check_retransmit_timeouts` で満了した接続のみを処理する。
-static TIMER_WHEEL: spin::Mutex<Option<TimingWheel>> = spin::Mutex::new(None);
+static TIMER_WHEEL: PoisonLock<Option<TimingWheel>> = PoisonLock::new(None);
 
-/// タイミングホイールを初期化する（ネットワークスタック初期化時に呼ぶ）
+/// タイミングホイールを初期化する
 pub fn init_timer_wheel() {
-    let mut tw = TIMER_WHEEL.lock();
+    let mut tw = TIMER_WHEEL.lock().unwrap_or_else(|e| e.into_inner());
     *tw = Some(TimingWheel::new());
 }
 
-/// タイミングホイールにタイマーを登録する内部ヘルパー
+/// タイミングホイールにタイマーを登録する
 fn schedule_retransmit_timer(local: EndpointAddr, remote: EndpointAddr, deadline: u64) {
-    if let Some(ref mut tw) = *TIMER_WHEEL.lock() {
+    if let Some(ref mut tw) = *TIMER_WHEEL.lock().unwrap_or_else(|e| e.into_inner()) {
         tw.reschedule(local, remote, deadline);
     }
 }
 
-/// タイミングホイールからタイマーをキャンセルする内部ヘルパー
+/// タイミングホイールからタイマーをキャンセルする
 fn cancel_retransmit_timer(local: &EndpointAddr, remote: &EndpointAddr) {
-    if let Some(ref mut tw) = *TIMER_WHEEL.lock() {
+    if let Some(ref mut tw) = *TIMER_WHEEL.lock().unwrap_or_else(|e| e.into_inner()) {
         tw.cancel(local, remote);
     }
 }
@@ -278,7 +272,7 @@ fn cancel_retransmit_timer(local: &EndpointAddr, remote: &EndpointAddr) {
 /// 再送キュー取得または作成
 pub fn get_or_create_retransmit_queue(local: EndpointAddr, remote: EndpointAddr) -> bool {
     let idx = retransmit_shard_index(&local, &remote);
-    let mut queues = RETRANSMIT_SHARDS[idx].write();
+    let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
     if !queues.contains_key(&(local, remote)) {
         queues.insert((local, remote), RetransmitQueue::new());
         true
@@ -291,9 +285,8 @@ pub fn get_or_create_retransmit_queue(local: EndpointAddr, remote: EndpointAddr)
 pub fn retransmit_queue_push(local: EndpointAddr, remote: EndpointAddr, seq: u32, data: Vec<u8>) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
-    let mut queues = RETRANSMIT_SHARDS[idx].write();
+    let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
-        // キューが空だった場合、タイミングホイールにタイマーを登録
         let was_empty = queue.is_empty();
         queue.push(seq, data, current_tick);
         if was_empty {
@@ -307,36 +300,30 @@ pub fn retransmit_queue_push(local: EndpointAddr, remote: EndpointAddr, seq: u32
 pub fn retransmit_queue_ack(local: EndpointAddr, remote: EndpointAddr, ack_num: u32) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
-    let mut queues = RETRANSMIT_SHARDS[idx].write();
+    let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         queue.ack_received(ack_num, current_tick);
         if queue.is_empty() {
-            // 全セグメント確認済み → タイマーキャンセル
             cancel_retransmit_timer(&local, &remote);
         } else {
-            // まだ未確認セグメントがある → タイマーを再スケジュール
             let deadline = current_tick + queue.get_rto();
             schedule_retransmit_timer(local, remote, deadline);
         }
     }
 }
 
-/// SACKオプションで通知された領域を再送キューから取り除く
+/// SACKオプションで通知された領域をマーク
 pub fn retransmit_queue_process_sack(
     local: EndpointAddr,
     remote: EndpointAddr,
     blocks: &[(u32, u32)],
 ) {
     let idx = retransmit_shard_index(&local, &remote);
-    let mut queues = RETRANSMIT_SHARDS[idx].write();
+    let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
-        // RFC 2018: "The sender SHOULD NOT drop data that has been SACKed until the
-        // data has been acknowledged by a cumulative acknowledgment."
-        // We mark is_sacked = true instead of removing the segment.
         for seg in queue.unacked.iter_mut() {
             let seg_end = seg.seq.wrapping_add(seg.data.len() as u32);
             for &(l, r) in blocks {
-                // シーケンスレンジがブロック内に完全に含まれるか
                 let in_left = (seg.seq.wrapping_sub(l) as i32) >= 0;
                 let in_right = (r.wrapping_sub(seg_end) as i32) >= 0;
                 if in_left && in_right {
@@ -351,28 +338,22 @@ pub fn retransmit_queue_process_sack(
 /// 再送キュー削除
 pub fn retransmit_queue_remove(local: EndpointAddr, remote: EndpointAddr) {
     let idx = retransmit_shard_index(&local, &remote);
-    RETRANSMIT_SHARDS[idx].write().remove(&(local, remote));
+    RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner()).remove(&(local, remote));
     cancel_retransmit_timer(&local, &remote);
 }
 
-/// タイマー駆動の再送チェック（定期的に呼ばれる）
-///
-/// タイミングホイールを使って、満了した接続のみを $O(1)$ amortized で取得し、
-/// 対象のシャードのみをロックして再送処理を行う。
-/// タイミングホイールが未初期化の場合はフォールバックとして全シャードを探索する。
+/// タイマー駆動の再送チェック
 pub fn check_retransmit_timeouts() {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
 
-    // タイミングホイールから満了した接続を取得
     let expired: Vec<(EndpointAddr, EndpointAddr)> = {
-        let mut tw_guard = TIMER_WHEEL.lock();
+        let mut tw_guard = TIMER_WHEEL.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref mut tw) = *tw_guard {
             tw.advance(current_tick)
         } else {
-            // フォールバック: 全シャードを探索（ホイール未初期化時）
             let mut result = Vec::new();
             for shard in &RETRANSMIT_SHARDS {
-                let queues = shard.read();
+                let queues = shard.read().unwrap_or_else(|e| e.into_inner());
                 for ((local, remote), queue) in queues.iter() {
                     if queue.check_timeout(current_tick).is_some() {
                         result.push((*local, *remote));
@@ -383,22 +364,17 @@ pub fn check_retransmit_timeouts() {
         }
     };
 
-    // 満了した各接続を処理
     for (local, remote) in expired {
         let idx = retransmit_shard_index(&local, &remote);
-        let mut queues = RETRANSMIT_SHARDS[idx].write();
+        let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
 
         if let Some(queue) = queues.get_mut(&(local, remote)) {
-            // 実際にタイムアウトしているか再確認（ホイールのスロット粒度による誤差対策）
             if queue.check_timeout(current_tick).is_some() {
                 if let Some(segment_data) = queue.retransmit(current_tick) {
-                    // 再送実行
                     send_tcp_segment(local, remote, segment_data);
-                    // 次のタイムアウトをスケジュール
                     let deadline = current_tick + queue.get_rto();
                     schedule_retransmit_timer(local, remote, deadline);
                 } else {
-                    // 最大再送回数超過 - 接続をリセット
                     log::info!(
                         "TCP: Max retransmit exceeded for {:?} -> {:?}",
                         local,
@@ -408,7 +384,6 @@ pub fn check_retransmit_timeouts() {
                     tcb_table().remove(local, remote);
                 }
             } else if !queue.is_empty() {
-                // まだタイムアウトしていない → 再スケジュール
                 let deadline = current_tick + queue.get_rto();
                 schedule_retransmit_timer(local, remote, deadline);
             }
@@ -427,26 +402,18 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_rto_calculator_initial() {
         let calc = RtoCalculator::new();
-        assert_eq!(calc.get_rto(), 1000); // 初期値1秒
+        assert_eq!(calc.get_rto(), 1000);
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_rto_calculator_update() {
         let mut calc = RtoCalculator::new();
-
-        // 最初のRTTサンプル
         calc.update(100);
         let rto1 = calc.get_rto();
-
-        // RTT=100, SRTT=100, RTTVAR=50
-        // RTO = SRTT + 4*RTTVAR = 100 + 200 = 300
-        // ただしrto_min=200なので200-300の範囲
         assert!(rto1 >= 200 && rto1 <= 1000);
-
-        // 2回目のRTTサンプル（安定）
         calc.update(100);
         let rto2 = calc.get_rto();
-        assert!(rto2 <= rto1); // 安定してきたらRTOは下がる傾向
+        assert!(rto2 <= rto1);
     }
 
     #[cfg_attr(test, test_case)]
@@ -454,12 +421,8 @@ pub mod tests {
         let mut calc = RtoCalculator::new();
         calc.update(100);
         let rto_before = calc.get_rto();
-
-        // バックオフ（再送時）
         calc.backoff();
         let rto_after = calc.get_rto();
-
-        // 指数バックオフで倍増
         assert!(rto_after >= rto_before);
     }
 
@@ -467,19 +430,11 @@ pub mod tests {
     pub fn test_retransmit_queue_push_and_ack() {
         let mut queue = RetransmitQueue::new();
         assert!(queue.is_empty());
-
-        // セグメント追加
         queue.push(1000, alloc::vec![1, 2, 3], 100);
         queue.push(1003, alloc::vec![4, 5, 6], 110);
         assert!(!queue.is_empty());
-
-        // ACK受信（最初のセグメントのみ確認）
         queue.ack_received(1003, 150);
-
-        // 2番目のセグメントはまだ残っている
         assert!(!queue.is_empty());
-
-        // 全て確認
         queue.ack_received(1006, 160);
         assert!(queue.is_empty());
     }
@@ -487,14 +442,8 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_retransmit_queue_timeout() {
         let mut queue = RetransmitQueue::new();
-
-        // セグメント追加（tick=0で送信）
         queue.push(1000, alloc::vec![1, 2, 3], 0);
-
-        // タイムアウト前
         assert!(queue.check_timeout(500).is_none());
-
-        // タイムアウト後（初期RTO=1000）
         let timed_out = queue.check_timeout(1500);
         assert!(timed_out.is_some());
     }
@@ -503,14 +452,9 @@ pub mod tests {
     pub fn test_retransmit_queue_retransmit() {
         let mut queue = RetransmitQueue::new();
         let original_data = alloc::vec![1, 2, 3, 4, 5];
-
         queue.push(1000, original_data.clone(), 0);
-
-        // 再送
         let retransmitted = queue.retransmit(1500).unwrap();
         assert_eq!(retransmitted, original_data);
-
-        // 再送カウント増加を確認
         let seg = queue.check_timeout(1500 + queue.get_rto()).unwrap();
         assert_eq!(seg.retransmit_count, 1);
         assert!(seg.is_retransmit);
@@ -521,18 +465,12 @@ pub mod tests {
         use super::EndpointAddr;
         let local = EndpointAddr::new([192, 168, 0, 1], 10000);
         let remote = EndpointAddr::new([192, 168, 0, 2], 20000);
-
-        // 再送キュー作成とセグメント追加
         get_or_create_retransmit_queue(local, remote);
         retransmit_queue_push(local, remote, 1000, alloc::vec![1, 2, 3]);
         retransmit_queue_push(local, remote, 1003, alloc::vec![4, 5, 6]);
-
-        // SACKで最初のセグメント(1000..1003)が通知される
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
-
-        // 内部状態を確認（RFC 2018: 累積ACKが来るまで削除はしないが、is_sackedフラグが立つ）
         let idx = retransmit_shard_index(&local, &remote);
-        let qs = RETRANSMIT_SHARDS[idx].read();
+        let qs = RETRANSMIT_SHARDS[idx].read().unwrap_or_else(|e| e.into_inner());
         let q = qs.get(&(local, remote)).unwrap();
         assert_eq!(q.unacked.len(), 2);
         assert!(q.unacked.front().unwrap().is_sacked);
@@ -540,11 +478,8 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_seq_comparison() {
-        // シーケンス番号の比較（wrapping考慮）
         assert!(RetransmitQueue::seq_before(1000, 2000));
         assert!(!RetransmitQueue::seq_before(2000, 1000));
-
-        // wrappingケース
         assert!(RetransmitQueue::seq_before(0xFFFF_FFF0, 0x0000_0010));
     }
 }
@@ -565,7 +500,6 @@ pub mod qemu_tests {
         if !(200..=1000).contains(&rto1) {
             return false;
         }
-
         calc.update(100);
         let rto2 = calc.get_rto();
         rto2 <= rto1
@@ -582,21 +516,12 @@ pub mod qemu_tests {
 
     pub fn retransmit_queue_push_and_ack_smoke() -> bool {
         let mut queue = RetransmitQueue::new();
-        if !queue.is_empty() {
-            return false;
-        }
-
+        if !queue.is_empty() { return false; }
         queue.push(1000, alloc::vec![1, 2, 3], 100);
         queue.push(1003, alloc::vec![4, 5, 6], 110);
-        if queue.is_empty() {
-            return false;
-        }
-
+        if queue.is_empty() { return false; }
         queue.ack_received(1003, 150);
-        if queue.is_empty() {
-            return false;
-        }
-
+        if queue.is_empty() { return false; }
         queue.ack_received(1006, 160);
         queue.is_empty()
     }
@@ -604,11 +529,7 @@ pub mod qemu_tests {
     pub fn retransmit_queue_timeout_smoke() -> bool {
         let mut queue = RetransmitQueue::new();
         queue.push(1000, alloc::vec![1, 2, 3], 0);
-
-        if queue.check_timeout(500).is_some() {
-            return false;
-        }
-
+        if queue.check_timeout(500).is_some() { return false; }
         queue.check_timeout(1500).is_some()
     }
 
@@ -616,42 +537,26 @@ pub mod qemu_tests {
         let mut queue = RetransmitQueue::new();
         let original_data = alloc::vec![1, 2, 3, 4, 5];
         queue.push(1000, original_data.clone(), 0);
-
-        let Some(retransmitted) = queue.retransmit(1500) else {
-            return false;
-        };
-        if retransmitted != original_data {
-            return false;
-        }
-
-        let Some(seg) = queue.check_timeout(1500 + queue.get_rto()) else {
-            return false;
-        };
-
+        let Some(retransmitted) = queue.retransmit(1500) else { return false; };
+        if retransmitted != original_data { return false; }
+        let Some(seg) = queue.check_timeout(1500 + queue.get_rto()) else { return false; };
         seg.retransmit_count == 1 && seg.is_retransmit
     }
 
     pub fn retransmit_queue_process_sack_smoke() -> bool {
         let local = EndpointAddr::new([192, 168, 0, 1], 10000);
         let remote = EndpointAddr::new([192, 168, 0, 2], 20000);
-
         retransmit_queue_remove(local, remote);
-
         get_or_create_retransmit_queue(local, remote);
         retransmit_queue_push(local, remote, 1000, alloc::vec![1, 2, 3]);
         retransmit_queue_push(local, remote, 1003, alloc::vec![4, 5, 6]);
-
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
-
         let ok = {
             let idx = retransmit_shard_index(&local, &remote);
-            let qs = RETRANSMIT_SHARDS[idx].read();
-            let Some(q) = qs.get(&(local, remote)) else {
-                return false;
-            };
+            let qs = RETRANSMIT_SHARDS[idx].read().unwrap_or_else(|e| e.into_inner());
+            let Some(q) = qs.get(&(local, remote)) else { return false; };
             q.unacked.len() == 2 && q.unacked.front().map(|x| x.is_sacked) == Some(true)
         };
-
         retransmit_queue_remove(local, remote);
         ok
     }

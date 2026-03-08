@@ -519,3 +519,109 @@ pub fn peek_global_log(dst: &mut [u8]) -> usize {
 pub fn get_log_len() -> usize {
     LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
+
+/// ロガー初期化
+pub fn init() -> Result<(), SetLoggerError> {
+    init_serial();
+    if LOGGER_INITIALIZED.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    log::set_logger(&LOGGER)?;
+    log::set_max_level(MAX_LOG_LEVEL);
+    Ok(())
+}
+
+/// ヒープ利用可能通知
+pub fn notify_heap_available() {
+    HEAP_AVAILABLE.store(true, Ordering::Release);
+}
+
+/// 実行時ログレベルを設定
+pub fn set_log_level(level: LevelFilter) {
+    CURRENT_LOG_LEVEL.store(level as u8, Ordering::Relaxed);
+    log::set_max_level(level);
+}
+
+/// 現在のログレベルを取得
+pub fn current_log_level() -> LevelFilter {
+    LevelFilter::iter()
+        .nth(CURRENT_LOG_LEVEL.load(Ordering::Relaxed) as usize)
+        .unwrap_or(LevelFilter::Info)
+}
+
+pub fn set_console_mirror_enabled(enabled: bool) {
+    CONSOLE_MIRROR_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn console_mirror_enabled() -> bool {
+    CONSOLE_MIRROR_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_serial_output_enabled(enabled: bool) {
+    SERIAL_OUTPUT_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn serial_output_enabled() -> bool {
+    SERIAL_OUTPUT_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn is_in_panic() -> bool {
+    IN_PANIC.load(Ordering::Relaxed)
+}
+
+pub fn set_in_panic(in_panic: bool) {
+    IN_PANIC.store(in_panic, Ordering::Relaxed);
+}
+
+pub fn enter_panic_mode() {
+    set_in_panic(true);
+    KernelLogger::reset_serial_for_panic();
+}
+
+/// 早期ブート出力（文字列）
+pub fn early_print(s: &str) {
+    let _guard = SERIAL_LOCK.try_lock();
+    KernelLogger::write_raw(s);
+}
+
+/// 早期ブート出力（1文字）
+pub fn early_print_char(c: u8) {
+    let _guard = SERIAL_LOCK.try_lock();
+    KernelLogger::write_char_raw(c);
+}
+
+/// 10進数出力
+pub fn early_print_dec(n: u64) {
+    use alloc::format;
+    early_print(&format!("{}", n));
+}
+
+/// 16進数出力
+pub fn early_print_hex(n: u64) {
+    use alloc::format;
+    early_print(&format!("0x{:016x}", n));
+}
+
+/// 改行直前の空白を除去する
+pub fn trim_spaces_before_newline(s: &str) -> alloc::string::String {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return alloc::string::String::new();
+    }
+
+    let mut out = alloc::string::String::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\n' {
+            while out.as_bytes().last().copied() == Some(b' ') {
+                out.pop();
+            }
+            out.push('\n');
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}

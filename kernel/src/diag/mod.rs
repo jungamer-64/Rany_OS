@@ -23,12 +23,12 @@
 
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::Mutex;
 
 // ============================================================================
 // Time Measurement
@@ -96,7 +96,7 @@ impl Drop for MeasureScope {
     fn drop(&mut self) {
         let cycles = self.elapsed_cycles();
         // 統計に記録
-        if let Some(ref stats) = *PERF_STATS.lock() {
+        if let Some(ref stats) = *PERF_STATS.lock().unwrap_or_else(|e| e.into_inner()) {
             stats.record(self.name, cycles);
         }
     }
@@ -249,22 +249,22 @@ pub struct HistogramStats {
 /// パフォーマンス統計コレクション
 pub struct PerfStats {
     /// 名前付きヒストグラム
-    histograms: Mutex<BTreeMap<&'static str, Box<Histogram>>>,
+    histograms: PoisonLock<BTreeMap<&'static str, Box<Histogram>>>,
     /// カウンタ
-    counters: Mutex<BTreeMap<&'static str, AtomicU64>>,
+    counters: PoisonLock<BTreeMap<&'static str, AtomicU64>>,
 }
 
 impl PerfStats {
     pub fn new() -> Self {
         Self {
-            histograms: Mutex::new(BTreeMap::new()),
-            counters: Mutex::new(BTreeMap::new()),
+            histograms: PoisonLock::new(BTreeMap::new()),
+            counters: PoisonLock::new(BTreeMap::new()),
         }
     }
 
     /// 値を記録
     pub fn record(&self, name: &'static str, value: u64) {
-        let mut histograms = self.histograms.lock();
+        let mut histograms = self.histograms.lock().unwrap_or_else(|e| e.into_inner());
         if !histograms.contains_key(name) {
             histograms.insert(name, Box::new(Histogram::new()));
         }
@@ -280,7 +280,7 @@ impl PerfStats {
 
     /// カウンタに加算
     pub fn add(&self, name: &'static str, value: u64) {
-        let mut counters = self.counters.lock();
+        let mut counters = self.counters.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(counter) = counters.get(name) {
             counter.fetch_add(value, Ordering::Relaxed);
         } else {
@@ -291,13 +291,18 @@ impl PerfStats {
 
     /// ヒストグラム統計を取得
     pub fn get_histogram_stats(&self, name: &'static str) -> Option<HistogramStats> {
-        self.histograms.lock().get(name).map(|h| h.stats())
+        self.histograms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .map(|h| h.stats())
     }
 
     /// カウンタ値を取得
     pub fn get_counter(&self, name: &'static str) -> u64 {
         self.counters
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .get(name)
             .map(|c| c.load(Ordering::Relaxed))
             .unwrap_or(0)
@@ -305,12 +310,22 @@ impl PerfStats {
 
     /// すべてのヒストグラム名を取得
     pub fn histogram_names(&self) -> Vec<&'static str> {
-        self.histograms.lock().keys().copied().collect()
+        self.histograms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .copied()
+            .collect()
     }
 
     /// すべてのカウンタ名を取得
     pub fn counter_names(&self) -> Vec<&'static str> {
-        self.counters.lock().keys().copied().collect()
+        self.counters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .copied()
+            .collect()
     }
 }
 
@@ -344,9 +359,9 @@ pub struct ResourceSnapshot {
 /// リソースモニター
 pub struct ResourceMonitor {
     /// 最新のスナップショット
-    latest: Mutex<ResourceSnapshot>,
+    latest: PoisonLock<ResourceSnapshot>,
     /// 履歴
-    history: Mutex<Vec<ResourceSnapshot>>,
+    history: PoisonLock<Vec<ResourceSnapshot>>,
     /// 履歴の最大サイズ
     history_max: usize,
     /// サンプリング間隔（サイクル）
@@ -358,8 +373,8 @@ pub struct ResourceMonitor {
 impl ResourceMonitor {
     pub fn new(history_max: usize) -> Self {
         Self {
-            latest: Mutex::new(ResourceSnapshot::default()),
-            history: Mutex::new(Vec::with_capacity(history_max)),
+            latest: PoisonLock::new(ResourceSnapshot::default()),
+            history: PoisonLock::new(Vec::with_capacity(history_max)),
             history_max,
             sample_interval: AtomicU64::new(1_000_000_000), // 1秒相当
             last_sample: AtomicU64::new(0),
@@ -379,10 +394,10 @@ impl ResourceMonitor {
 
         self.last_sample.store(now, Ordering::Relaxed);
 
-        let mut latest = self.latest.lock();
+        let mut latest = self.latest.lock().unwrap_or_else(|e| e.into_inner());
         *latest = snapshot.clone();
 
-        let mut history = self.history.lock();
+        let mut history = self.history.lock().unwrap_or_else(|e| e.into_inner());
         if history.len() >= self.history_max {
             history.remove(0);
         }
@@ -391,12 +406,18 @@ impl ResourceMonitor {
 
     /// 最新のスナップショットを取得
     pub fn latest(&self) -> ResourceSnapshot {
-        self.latest.lock().clone()
+        self.latest
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 履歴を取得
     pub fn history(&self) -> Vec<ResourceSnapshot> {
-        self.history.lock().clone()
+        self.history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// サンプリング間隔を設定
@@ -425,7 +446,7 @@ pub struct TraceEvent {
 /// トレースバッファ
 pub struct TraceBuffer {
     /// イベントバッファ
-    events: Mutex<Vec<TraceEvent>>,
+    events: PoisonLock<Vec<TraceEvent>>,
     /// 最大サイズ
     max_events: usize,
     /// 有効フラグ
@@ -437,7 +458,7 @@ pub struct TraceBuffer {
 impl TraceBuffer {
     pub fn new(max_events: usize) -> Self {
         Self {
-            events: Mutex::new(Vec::with_capacity(max_events)),
+            events: PoisonLock::new(Vec::with_capacity(max_events)),
             max_events,
             enabled: AtomicBool::new(false),
             dropped: AtomicU64::new(0),
@@ -467,7 +488,7 @@ impl TraceBuffer {
             data,
         };
 
-        let mut events = self.events.lock();
+        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
         if events.len() >= self.max_events {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             events.remove(0);
@@ -477,7 +498,7 @@ impl TraceBuffer {
 
     /// イベントを取得してクリア
     pub fn drain(&self) -> Vec<TraceEvent> {
-        let mut events = self.events.lock();
+        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
         core::mem::take(&mut *events)
     }
 
@@ -498,22 +519,8 @@ macro_rules! trace_point {
 }
 
 // ============================================================================
-// CPU Profiler - profiler/ に委譲
-// ============================================================================
-// 旧 diag::CpuProfiler は profiler::CpuProfiler と責務が重複していたため削除。
-// CPUプロファイリングは `crate::profiler` モジュールを使用してください。
-//
-// 使用例:
-//   use crate::profiler::{profiler, ProfileMode};
-//   profiler().cpu.start(1000);
-//   profiler().cpu.record_sample();
-//   let stats = profiler().cpu.stats();
-
-// ============================================================================
 // Micro-Benchmark Framework (diag固有)
 // ============================================================================
-// サイクル単位の低レベルベンチマーク。
-// ナノ秒単位のベンチマークスイートは `benchmark/` モジュールを使用してください。
 
 /// マイクロベンチマーク結果（サイクル単位）
 #[derive(Debug, Clone)]
@@ -527,8 +534,6 @@ pub struct MicroBenchmarkResult {
 }
 
 /// マイクロベンチマークランナー（サイクル単位の低レベル計測）
-///
-/// ナノ秒単位でのベンチマークには `benchmark::BenchmarkRunner` を使用してください。
 pub struct MicroBenchmarkRunner;
 
 impl MicroBenchmarkRunner {
@@ -610,15 +615,13 @@ pub struct ThroughputResult {
 // Global Instances
 // ============================================================================
 
-static PERF_STATS: Mutex<Option<PerfStats>> = Mutex::new(None);
-static RESOURCE_MONITOR: Mutex<Option<ResourceMonitor>> = Mutex::new(None);
-static TRACE_BUFFER: Mutex<Option<TraceBuffer>> = Mutex::new(None);
+static PERF_STATS: PoisonLock<Option<PerfStats>> = PoisonLock::new(None);
+static RESOURCE_MONITOR: PoisonLock<Option<ResourceMonitor>> = PoisonLock::new(None);
+static TRACE_BUFFER: PoisonLock<Option<TraceBuffer>> = PoisonLock::new(None);
 
 /// 診断システムを初期化
-///
-/// CPUプロファイラは `profiler` モジュールが管理するため、ここでは初期化しない。
 pub fn init() {
-    *PERF_STATS.lock() = Some(PerfStats::new());
-    *RESOURCE_MONITOR.lock() = Some(ResourceMonitor::new(1000));
-    *TRACE_BUFFER.lock() = Some(TraceBuffer::new(10000));
+    *PERF_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(PerfStats::new());
+    *RESOURCE_MONITOR.lock().unwrap_or_else(|e| e.into_inner()) = Some(ResourceMonitor::new(1000));
+    *TRACE_BUFFER.lock().unwrap_or_else(|e| e.into_inner()) = Some(TraceBuffer::new(10000));
 }

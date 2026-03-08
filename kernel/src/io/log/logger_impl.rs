@@ -78,7 +78,7 @@ impl KernelLogger {
         let _guard = if IN_PANIC.load(Ordering::Relaxed) {
             None
         } else {
-            SERIAL_LOCK.try_lock()
+            SERIAL_LOCK.try_lock().ok()
         };
 
         let mut tracker = LastCharTracker::new(SyncLogWriter);

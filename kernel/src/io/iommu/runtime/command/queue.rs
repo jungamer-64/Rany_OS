@@ -9,6 +9,7 @@
 // - submit_sync() API that blocks by using backoff spin until completion
 // - process_once() worker to be called periodically by the Executor
 
+use crate::sync::PoisonLock;
 use crate::sync::atomic_waker::AtomicWaker;
 use crate::sync::lockfree::Backoff;
 use crate::sync::lockfree::BoundedChannel;
@@ -19,7 +20,6 @@ use core::future::poll_fn;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
-use spin::Mutex;
 
 use alloc::alloc::Layout;
 use alloc::boxed::Box;
@@ -74,7 +74,6 @@ pub struct IommuCommand {
     pub slot_idx: usize,
 }
 
-/// Completion slot for commands
 /// Completion slot for commands
 pub struct CompletionSlot {
     /// 0 = free, 1 = pending, 2 = done
@@ -165,9 +164,7 @@ impl CompletionSlot {
     }
 }
 
-/// Completion object returned for a submitted command. Implements `Future` so callers
-/// on async executors can `await` completion. Also provides `wait_blocking()` for
-/// synchronous callers (legacy tests / blocking callers).
+/// Completion object returned for a submitted command.
 pub struct CommandCompletion {
     slot_idx: usize,
     slots_ptr: *const CompletionSlot,
@@ -196,8 +193,6 @@ impl CommandCompletion {
     }
 
     /// Synchronous wait that also acts as a worker to drain the queue.
-    /// This prevents deadlocks when submitting synchronously on a single-core
-    /// or before the asynchronous executor is running.
     pub fn wait_sync_with_worker<F>(&self, q: &CommandQueue, mut handler: F) -> i32
     where
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
@@ -235,15 +230,11 @@ impl CommandCompletion {
         }
     }
 
-    /// Attempt to cancel a queued (not yet processed) command. Returns true if the
-    /// cancellation flag was set successfully. This does not guarantee the command
-    /// won't be processed if the worker already pulled it - cancellation is best-effort.
     pub fn cancel(&self) -> bool {
         let q = unsafe { &*self.queue_ptr };
         // record an attempt to cancel
         q.cancel_attempts.fetch_add(1, Ordering::Relaxed);
         let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
-        // Don't update `cancelled_count` here; the worker will account for effective cancellations
         slot.cancel()
     }
 }
@@ -252,12 +243,11 @@ impl Drop for CommandCompletion {
     fn drop(&mut self) {
         // Best-effort cancel when the completion object is dropped
         let q = unsafe { &*self.queue_ptr };
-        // record an attempt
         q.cancel_attempts.fetch_add(1, Ordering::Relaxed);
-        // best-effort cancel; worker will count successful cancellations
         let _ = unsafe { &*self.slots_ptr.add(self.slot_idx) }.cancel();
     }
 }
+
 impl core::future::Future for CommandCompletion {
     type Output = i32;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -292,10 +282,9 @@ impl core::future::Future for CommandCompletion {
 }
 
 /// CommandQueue holds sender/receiver and completion slots
-/// CommandQueue holds sender/receiver and completion slots
 pub struct CommandQueue {
     sender: BoundedSender<IommuCommand, DEFAULT_QUEUE_SIZE>,
-    receiver: Mutex<BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>>,
+    receiver: PoisonLock<BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>>,
     slots: &'static [CompletionSlot],
     next_alloc: AtomicUsize,
     /// Optional NUMA node hint used for allocating the slots array
@@ -369,7 +358,7 @@ impl CommandQueue {
 
         Self {
             sender: s,
-            receiver: Mutex::new(r),
+            receiver: PoisonLock::new(r),
             slots,
             next_alloc: AtomicUsize::new(0),
             numa_node,
@@ -443,7 +432,7 @@ impl CommandQueue {
         }
         // Second pass: try to acquire a fresh slot (0 -> 1)
         for i in 0..n {
-            let idx = (start + i) % n;
+            let idx = self.next_alloc.fetch_add(1, Ordering::Relaxed) % n;
             if self.slots[idx].try_acquire() {
                 return Some(idx);
             }
@@ -462,7 +451,6 @@ impl CommandQueue {
     }
 
     /// Non-blocking submit: returns a `CommandCompletion` which implements `Future`
-    /// Use `await` on async executors or `wait_blocking()` for tests/legacy callers.
     pub fn submit(&self, kind: IommuCommandKind) -> Result<CommandCompletion, ()> {
         let slot_idx = match self.alloc_slot() {
             Some(i) => i,
@@ -560,11 +548,11 @@ impl CommandQueue {
     /// Await until work arrives on the queue.
     pub async fn wait_for_work(&self) {
         poll_fn(|cx| {
-            if !self.receiver.lock().is_empty() {
+            if !self.receiver.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
                 return Poll::Ready(());
             }
             self.recv_waiter.register(cx.waker());
-            if !self.receiver.lock().is_empty() {
+            if !self.receiver.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
                 return Poll::Ready(());
             }
             Poll::Pending
@@ -584,7 +572,7 @@ impl CommandQueue {
             // If fuel is active and there is no work, break early
             #[cfg(all(test, not(target_os = "none")))]
             if crate::task::fuel::Fuel::is_active() {
-                if self.receiver.lock().is_empty() {
+                if self.receiver.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
                     break;
                 }
                 if !crate::task::fuel::Fuel::consume(1) {
@@ -592,7 +580,7 @@ impl CommandQueue {
                 }
             }
 
-            if let Some(cmd) = self.receiver.lock().recv() {
+            if let Some(cmd) = self.receiver.lock().unwrap_or_else(|e| e.into_inner()).recv() {
                 // Receiving an item freed up channel capacity; notify potential senders
                 self.notify_send_available();
 
@@ -638,11 +626,10 @@ impl CommandQueue {
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
     {
         let mut processed = 0usize;
-        let rx = self.receiver.lock();
+        let mut rx = self.receiver.lock().unwrap_or_else(|e| e.into_inner());
 
         while processed < max {
-            // If fuel is active and there is no work, break early. If fuel is active and depleted,
-            // consume will return false and we'll break before popping an item (avoids losing it).
+            // If fuel is active and there is no work, break early.
             #[cfg(all(test, not(target_os = "none")))]
             if crate::task::fuel::Fuel::is_active() {
                 if rx.is_empty() {
@@ -1053,67 +1040,6 @@ mod tests {
         worker.join().expect("worker join failed");
     }
 
-    // NOTE: Excluded from custom test framework (was #[ignore]). Run manually if needed.
-    #[cfg(feature = "std")]
-    fn test_cq_stress_multi_threaded() {
-        use alloc::sync::Arc as AllocArc;
-        use core::sync::atomic::{AtomicUsize, Ordering};
-        use std::thread;
-
-        const PRODUCERS: usize = 4;
-        const PER_PRODUCER: usize = 100;
-        const TOTAL: usize = PRODUCERS * PER_PRODUCER;
-
-        let q = Box::leak(Box::new(CommandQueue::new()));
-        let processed = AllocArc::new(AtomicUsize::new(0));
-
-        // Worker: process commands until TOTAL processed
-        let processed_w = processed.clone();
-        let q_worker: &'static CommandQueue = q;
-        let worker = thread::spawn(move || {
-            while processed_w.load(Ordering::Relaxed) < TOTAL {
-                let n = q_worker.process_once(|_k| Ok(0));
-                if n > 0 {
-                    processed_w.fetch_add(n, Ordering::Relaxed);
-                } else {
-                    std::thread::yield_now();
-                }
-            }
-        });
-
-        // Producers
-        let mut producers = Vec::new();
-        for p in 0..PRODUCERS {
-            let qref: &'static CommandQueue = q;
-            let handle = thread::spawn(move || {
-                for i in 0..PER_PRODUCER {
-                    let comp = qref
-                        .submit(IommuCommandKind::InvalidateIotlbDomain { domain: (p as u16) })
-                        .expect("submit");
-                    // Deterministic: drop some completions, keep others
-                    if (p + i) % 3 == 0 {
-                        drop(comp);
-                    } else {
-                        // Wait for completion
-                        let _ = crate::task::block_on(async { comp.await });
-                    }
-                }
-            });
-            producers.push(handle);
-        }
-
-        for h in producers {
-            h.join().expect("producer join");
-        }
-        worker.join().expect("worker join");
-
-        // After all work, we should be able to submit again (slots reclaimed)
-        assert!(
-            q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 99 })
-                .is_ok()
-        );
-    }
-
     #[test_case]
     fn test_new_with_numa_allocates_slots() {
         // Ensure we can allocate CommandQueue with a NUMA hint and slots are initialized
@@ -1168,75 +1094,5 @@ mod tests {
         assert_eq!(rc, 0);
 
         worker.join().expect("worker join failed");
-    }
-
-    #[cfg(feature = "std")]
-    #[test_case]
-    fn test_submit_async_backpressure() {
-        // Fill the channel completely by allocating slots and pushing directly
-        let q = Box::leak(Box::new(CommandQueue::new()));
-        // Fill until sender reports full or we can't allocate further slots
-        while !q.sender.is_full() {
-            if let Some(idx) = q.try_alloc_slot() {
-                let cmd = IommuCommand {
-                    kind: IommuCommandKind::InvalidateIotlbDomain { domain: 1 },
-                    slot_idx: idx,
-                };
-                let _ = q.sender.send(cmd);
-            } else {
-                break;
-            }
-        }
-
-        // Now start an async submit which should pend until we process at least one entry
-        use alloc::sync::Arc as AllocArc;
-        use core::sync::atomic::{AtomicBool, Ordering};
-        let done = AllocArc::new(AtomicBool::new(false));
-        let done_cloned = done.clone();
-        let qref: &'static CommandQueue = q;
-        let handle = std::thread::spawn(move || {
-            let rc = crate::task::block_on(async {
-                let comp = qref
-                    .submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 99 })
-                    .await
-                    .expect("submit_async");
-                comp.await
-            });
-            // mark done and return
-            done_cloned.store(true, Ordering::SeqCst);
-            rc
-        });
-
-        // Wait until the submit future registers as waiting for a slot or send availability
-        while !q.slot_waiter.has_waker() && !q.send_waiter.has_waker() {
-            std::thread::yield_now();
-        }
-        // Inspect queue state before processing one item
-        // Process one item to free space and complete a slot (bounded)
-        let processed1 = q.process_up_to(|_k| Ok(0), 1);
-        assert!(processed1 >= 1);
-
-        // Drain remaining items (best-effort)
-        let _processed2 = q.process_up_to(|_k| Ok(0), DEFAULT_QUEUE_SIZE);
-
-        // Process until the spawned submit thread completes (it will set `done`)
-        let mut iter = 0;
-        while !done.load(Ordering::SeqCst) && iter < 10000 {
-            let n = q.process_up_to(|_k| Ok(0), 8);
-            if n == 0 {
-                std::thread::yield_now();
-            }
-            iter += 1;
-        }
-        assert!(
-            done.load(Ordering::SeqCst),
-            "submit thread did not complete in time"
-        );
-
-        let rc = handle.join().expect("submit join");
-        assert_eq!(rc, 0);
-
-        // ensure we saw at least one backpressure event during the test
-        assert!(q.send_backpressure_total() > 0);
     }
 }

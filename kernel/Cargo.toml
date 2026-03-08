@@ -14,6 +14,7 @@ description = "Single Address Space, Async-First Rust OS Kernel - Pure Performan
 name = "exorust_kernel"
 path = "src/main.rs"
 test = false
+required-features = ["kernel_bin"]
 
 [lib]
 name = "rany_os"
@@ -100,6 +101,7 @@ criterion = { version = "0.5", optional = true }
 
 [features]
 default = []
+kernel_bin = []
 debug_mlx5_cmd = ["mlx5_driver/debug_mlx5_cmd"]
 verbose_logging = []
 serial = ["uart_16550"]

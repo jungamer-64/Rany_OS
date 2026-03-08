@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use crate::mm::phys::buddy_allocator;
-use crate::mm::phys::frame_allocator::FrameIndex;
+use crate::mm::types::FrameIndex;
 use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering, AtomicU64, AtomicBool};
@@ -275,6 +275,14 @@ static BUFFER_POOL_1G_POOL: IrqPoisonLock<Vec<Vec<u8>>> =
 static BUFFER_POOL_1G_HITS: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_1G_MISSES: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_1G_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_1G_DEFAULT_CAPACITY);
+static TOKEN_BUCKET_CAPACITY: AtomicUsize = AtomicUsize::new(0);
+static TOKEN_REFILL_PER_BATCH: AtomicUsize = AtomicUsize::new(0);
+static RESERVED_FILE_SLOTS: AtomicUsize = AtomicUsize::new(0);
+static TOKEN_COUNT: AtomicUsize = AtomicUsize::new(0);
+static ZSWAP_FAIL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static ASYNC_DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+static HUGE_2M_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub fn buffer_pool_get_1g() -> Vec<u8> {
     let mut pool = BUFFER_POOL_1G_POOL.lock().unwrap_or_else(|e| e.into_inner());
@@ -324,3 +332,71 @@ pub fn buffer_pool_1g_clear() {
 }
 
 // ... (rest of helper functions unchanged)
+
+#[derive(Debug, Clone, Copy)]
+pub enum SwapKind {
+    Anon,
+    File { ino: u64, page_num: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapError {
+    AlreadyPending,
+    QueueFull,
+    NotSupported,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SwapEnqueueHandle;
+
+pub fn try_enqueue_swapout(_frame: FrameIndex, _kind: SwapKind) -> Result<SwapEnqueueHandle, SwapError> {
+    Err(SwapError::NotSupported)
+}
+
+pub fn queued_counts() -> (usize, usize) {
+    (0, 0)
+}
+
+pub fn token_count() -> usize {
+    TOKEN_COUNT.load(AtomicOrdering::Relaxed)
+}
+
+pub fn token_bucket_capacity() -> usize {
+    TOKEN_BUCKET_CAPACITY.load(AtomicOrdering::Relaxed)
+}
+
+pub fn token_refill_per_batch() -> usize {
+    TOKEN_REFILL_PER_BATCH.load(AtomicOrdering::Relaxed)
+}
+
+pub fn reserved_file_slots() -> usize {
+    RESERVED_FILE_SLOTS.load(AtomicOrdering::Relaxed)
+}
+
+pub fn is_worker_running() -> bool {
+    WORKER_RUNNING.load(AtomicOrdering::Relaxed)
+}
+
+pub fn stats_zswap_fail_count() -> usize {
+    ZSWAP_FAIL_COUNT.load(AtomicOrdering::Relaxed)
+}
+
+pub fn stats_async_dealloc_count() -> usize {
+    ASYNC_DEALLOC_COUNT.load(AtomicOrdering::Relaxed)
+}
+
+pub fn stats_huge_2m_skip_count() -> usize {
+    HUGE_2M_SKIP_COUNT.load(AtomicOrdering::Relaxed)
+}
+
+pub fn set_token_bucket_capacity(v: usize) {
+    TOKEN_BUCKET_CAPACITY.store(v, AtomicOrdering::Relaxed);
+}
+
+pub fn set_token_refill_per_batch(v: usize) {
+    TOKEN_REFILL_PER_BATCH.store(v, AtomicOrdering::Relaxed);
+}
+
+pub fn set_reserved_file_slots(v: usize) {
+    RESERVED_FILE_SLOTS.store(v, AtomicOrdering::Relaxed);
+}

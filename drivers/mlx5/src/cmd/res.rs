@@ -73,7 +73,7 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
 
 /// CREATE_MKEY 出力からMKEY値を解析
 pub fn parse_create_mkey_output(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be24(0x05)
+    out_mbox.read_be24(0x09)
 }
 
 /// DESTROY_MKEY コマンド入力の構築
@@ -189,4 +189,18 @@ pub fn build_query_special_contexts_input(in_mbox: &mut CmdMailbox) {
 /// QUERY_SPECIAL_CONTEXTS 出力から reserved lkey を取得
 pub fn parse_query_special_contexts_resd_lkey(out_mbox: &CmdMailbox) -> u32 {
     out_mbox.read_be32(0x10)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_create_mkey_output_reads_index_from_linux_ifc_offset() {
+        let mut out_mbox = CmdMailbox::zeroed();
+        out_mbox.data[0x09] = 0x34;
+        out_mbox.data[0x0A] = 0x56;
+        out_mbox.data[0x0B] = 0x78;
+        assert_eq!(parse_create_mkey_output(&out_mbox), 0x0034_5678);
+    }
 }

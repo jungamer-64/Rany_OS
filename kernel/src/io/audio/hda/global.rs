@@ -11,8 +11,8 @@
 
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use spin::Mutex;
 
 use crate::platform::pci::find_by_class;
 use crate::task::interrupt_waker;
@@ -27,7 +27,6 @@ use hda_driver::hda::HdaController;
 // ============================================================================
 
 /// HDA 割り込みベクタ番号
-/// HDA 割り込みベクタ番号
 /// PCI デバイスの interrupt_line から動的に決定される
 pub(crate) static HDA_IRQ: AtomicU8 = AtomicU8::new(0);
 
@@ -41,7 +40,7 @@ static HDA_INTERRUPT_PENDING: AtomicBool = AtomicBool::new(false);
 // Global HDA Driver Instance
 // ============================================================================
 
-pub(crate) static HDA_DRIVER: Mutex<Option<HdaController>> = Mutex::new(None);
+pub(crate) static HDA_DRIVER: PoisonLock<Option<HdaController>> = PoisonLock::new(None);
 
 /// Initialize the HDA driver
 pub fn init() -> HdaResult<()> {
@@ -98,7 +97,7 @@ pub fn init() -> HdaResult<()> {
     let mut controller = HdaController::new(mmio_base);
     controller.init()?;
 
-    *HDA_DRIVER.lock() = Some(controller);
+    *HDA_DRIVER.lock().unwrap_or_else(|e| e.into_inner()) = Some(controller);
 
     Ok(())
 }
@@ -108,7 +107,11 @@ pub fn with_driver<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&HdaController) -> R,
 {
-    HDA_DRIVER.lock().as_ref().map(f)
+    HDA_DRIVER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(f)
 }
 
 /// Access the HDA driver mutably
@@ -116,12 +119,16 @@ pub fn with_driver_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut HdaController) -> R,
 {
-    HDA_DRIVER.lock().as_mut().map(f)
+    HDA_DRIVER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .map(f)
 }
 
 /// Play a beep using the codec's beep generator
 pub fn beep(_frequency_hz: u32, _duration_ms: u32) -> HdaResult<()> {
-    let driver = HDA_DRIVER.lock();
+    let driver = HDA_DRIVER.lock().unwrap_or_else(|e| e.into_inner());
     let _driver = driver.as_ref().ok_or(HdaError::NoDevice)?;
 
     // Beep functionality temporarily disabled during driver migration
@@ -134,7 +141,7 @@ pub fn beep(_frequency_hz: u32, _duration_ms: u32) -> HdaResult<()> {
 
 /// Play a square wave tone
 pub fn play_tone(_frequency_hz: u32, _duration_ms: u32) -> HdaResult<()> {
-    let mut driver = HDA_DRIVER.lock();
+    let mut driver = HDA_DRIVER.lock().unwrap_or_else(|e| e.into_inner());
     let _driver = driver.as_mut().ok_or(HdaError::NoDevice)?;
 
     // driver.play_square_wave(frequency_hz, duration_ms)
@@ -176,7 +183,11 @@ pub fn handle_interrupt() {
     let count = HDA_INTERRUPT_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
 
     // コントローラーの割り込みステータスを読み取り・クリア
-    if let Some(driver) = HDA_DRIVER.lock().as_ref() {
+    if let Some(driver) = HDA_DRIVER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
         // INTSTS レジスタを読み取り
         let intsts = driver.read32(REG_INTSTS);
 
