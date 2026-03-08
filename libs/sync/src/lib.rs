@@ -36,6 +36,6 @@ mod poison_lock;
 
 pub use backoff::Backoff;
 pub use poison_lock::{
-    LockResult, PoisonError, PoisonLock, PoisonLockGuard, PoisonRwLock, PoisonRwLockReadGuard,
-    PoisonRwLockWriteGuard,
+    IrqPoisonLock, IrqPoisonLockGuard, LockResult, PoisonError, PoisonLock, PoisonLockGuard,
+    PoisonRwLock, PoisonRwLockReadGuard, PoisonRwLockWriteGuard,
 };

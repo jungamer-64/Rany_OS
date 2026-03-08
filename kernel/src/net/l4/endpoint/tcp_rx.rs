@@ -1386,7 +1386,7 @@ fn handle_syn_ack_received(
 
 /// Helper to get a socket by its file descriptor.
 fn get_socket_by_fd(fd: EndpointFd) -> Option<Endpoint> {
-    ENDPOINT_MANAGER.read().as_ref().and_then(|m| m.get(fd))
+    ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(fd))
 }
 
 /// Helper to notify a socket that it is connected.
@@ -1422,7 +1422,7 @@ fn process_tcp_new_connection(
     }
 
     // リッスン中のソケットを探す
-    let manager = ENDPOINT_MANAGER.read();
+    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
     let mgr = if let Some(ref m) = *manager {
         m
     } else {
@@ -1741,7 +1741,7 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
 
 /// Accept用の新規ソケットを作成
 fn create_accepted_socket(tcb: &TcpControlBlockEntry) -> Option<AcceptedConnection> {
-    let manager = ENDPOINT_MANAGER.read();
+    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
     let mgr = manager.as_ref()?;
 
     // 新しいFDを割り当て
@@ -1768,7 +1768,7 @@ fn create_accepted_socket(tcb: &TcpControlBlockEntry) -> Option<AcceptedConnecti
 
 /// Listeningソケットを探してAcceptキューに追加
 fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
-    let manager = ENDPOINT_MANAGER.read();
+    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
     let Some(ref mgr) = *manager else {
         return false;
     };
@@ -1880,7 +1880,7 @@ fn handle_fin_in_order(tcb: TcpControlBlockEntry, rcv_nxt_at_fin: u32) {
 /// recv_wakerを起こすことで、アプリケーション側のread操作が
 /// EOF (0バイト読み取り) を返せるようにする。
 fn notify_socket_peer_fin(fd: EndpointFd) {
-    let manager = ENDPOINT_MANAGER.read();
+    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
     let Some(ref mgr) = *manager else {
         return;
     };
@@ -1912,7 +1912,7 @@ fn handle_urgent_received(tcb: TcpControlBlockEntry, seq_num: u32, urgent_ptr: u
 
 /// ソケットにurgent data到着を通知
 fn notify_socket_urgent(fd: EndpointFd) {
-    let manager = ENDPOINT_MANAGER.read();
+    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
     let Some(ref mgr) = *manager else {
         return;
     };

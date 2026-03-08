@@ -412,7 +412,7 @@ impl TcbTable {
                         continue;
                     }
                     if entry.flow_control.should_send_probe(current_tick) {
-                        let manager = ENDPOINT_MANAGER.read();
+                        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
                         if let Some(ref mgr) = *manager {
                             if let Some(socket) = mgr.get(entry.fd) {
                                 let mut inner =

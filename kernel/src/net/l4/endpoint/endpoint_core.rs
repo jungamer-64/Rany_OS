@@ -210,7 +210,7 @@ impl Endpoint {
             }
 
             // ソケットマネージャに登録
-            if let Some(ref mgr) = *ENDPOINT_MANAGER.read() {
+            if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
                 mgr.register(new_socket.clone());
             }
 
@@ -635,7 +635,7 @@ impl OwnedEndpoint {
     pub fn new(ep_type: EndpointType) -> Self {
         let ep = Endpoint::new(ep_type);
         // EndpointManagerに登録
-        if let Some(ref manager) = *ENDPOINT_MANAGER.read() {
+        if let Some(ref manager) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
             manager.register(ep.clone());
         }
         Self { endpoint: Some(ep) }
@@ -792,7 +792,7 @@ impl Drop for OwnedEndpoint {
             let _ = ep.close();
 
             // EndpointManagerから登録解除
-            if let Some(ref manager) = *ENDPOINT_MANAGER.read() {
+            if let Some(ref manager) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
                 manager.unregister(ep.fd());
             }
         }

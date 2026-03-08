@@ -83,23 +83,14 @@ impl ShardedSleepRegistry {
 
     fn drain_expired(&self, current_tick: u64, out: &mut Vec<Waker>) {
         for shard in &self.shards {
-            if let Ok(mut guard) = shard.try_lock() {
+            if let Some(res) = shard.try_lock() {
+                let mut guard = res.unwrap_or_else(|e| e.into_inner());
                 let expired_keys: Vec<u64> =
                     guard.range(..=current_tick).map(|(k, _)| *k).collect();
 
                 for key in expired_keys {
                     if let Some(wakers) = guard.remove(&key) {
                         out.extend(wakers);
-                    }
-                }
-            } else if let Some(e) = shard.try_lock().err() {
-                if let exorust_sync::PoisonError::Poisoned(mut guard) = e {
-                    let expired_keys: Vec<u64> =
-                        guard.range(..=current_tick).map(|(k, _)| *k).collect();
-                    for key in expired_keys {
-                        if let Some(wakers) = guard.remove(&key) {
-                            out.extend(wakers);
-                        }
                     }
                 }
             }
@@ -332,12 +323,9 @@ impl TimeManagement {
     }
 
     fn process_expired_timers(&self, current_tick: u64) {
-        if let Ok(mut timers) = self.timers.try_lock() {
+        if let Some(res) = self.timers.try_lock() {
+            let mut timers = res.unwrap_or_else(|e| e.into_inner());
             self.do_process_expired_timers(&mut timers, current_tick);
-        } else if let Some(e) = self.timers.try_lock().err() {
-            if let exorust_sync::PoisonError::Poisoned(mut timers) = e {
-                self.do_process_expired_timers(&mut timers, current_tick);
-            }
         }
     }
 
@@ -434,10 +422,9 @@ impl TimeService for TimeManagement {
 
     fn stats(&self) -> TimerServiceStats {
         let (enq, drop) = self.pending_wakers.stats();
-        let active = self
-            .timers
-            .try_lock()
-            .map_or_else(|e| e.into_inner().len(), |t| t.len());
+        let active = self.timers.try_lock().map_or(0, |res| {
+            res.unwrap_or_else(|e| e.into_inner()).len()
+        });
 
         TimerServiceStats {
             active_timers: active,

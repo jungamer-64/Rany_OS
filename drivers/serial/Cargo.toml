@@ -12,6 +12,7 @@ description = "Serial Driver for RanyOS"
 
 [dependencies]
 spin = "0.10"
+exorust_sync = { path = "../../libs/sync" }
 x86_64 = "0.15"
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }

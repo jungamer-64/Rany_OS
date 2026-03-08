@@ -949,6 +949,7 @@ dependencies = [
 name = "serial_driver"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
  "hal",
  "kernel_api",
  "spin",
@@ -1117,6 +1118,7 @@ dependencies = [
 name = "virtio_driver"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
  "hal",
  "kernel_api",
  "log",

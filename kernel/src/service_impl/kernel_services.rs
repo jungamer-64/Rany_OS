@@ -194,7 +194,7 @@ impl KernelServices for ExoKernel {
         let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
         if let Some(mgr_lock) = endpoint_manager() {
-            let guard = mgr_lock.read();
+            let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
             if let Some(mgr) = guard.as_ref() {
                 if mgr.unregister(fd).is_some() {
                     return Ok(());
@@ -215,7 +215,7 @@ impl KernelServices for ExoKernel {
             let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
             if let Some(mgr_lock) = endpoint_manager() {
-                let guard = mgr_lock.read();
+                let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
                         // Create and await RecvFuture
@@ -250,7 +250,7 @@ impl KernelServices for ExoKernel {
             let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
             if let Some(mgr_lock) = endpoint_manager() {
-                let guard = mgr_lock.read();
+                let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
                         // Clone/convert packet data for socket send
@@ -293,7 +293,7 @@ impl KernelServices for ExoKernel {
         let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
         if let Some(mgr_lock) = endpoint_manager() {
-            let guard = mgr_lock.read();
+            let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
             if let Some(mgr) = guard.as_ref() {
                 if mgr.unregister(fd).is_some() {
                     return Ok(());
@@ -314,7 +314,7 @@ impl KernelServices for ExoKernel {
             let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
             if let Some(mgr_lock) = endpoint_manager() {
-                let guard = mgr_lock.read();
+                let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
                         let fut = crate::net::l4::endpoint::futures::RecvFuture::new(
@@ -348,7 +348,7 @@ impl KernelServices for ExoKernel {
             let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
             if let Some(mgr_lock) = endpoint_manager() {
-                let guard = mgr_lock.read();
+                let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
                         let data = packet.data().to_vec();

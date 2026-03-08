@@ -1539,7 +1539,7 @@ impl NetworkEventHandler {
         let remote = EndpointAddr::new(src_ip, src_port);
 
         let mut found = false;
-        if let Some(ref mgr) = *ENDPOINT_MANAGER.read() {
+        if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
             if let Some(socket) = mgr.find_by_port(EndpointType::Udp, dst_port) {
                 socket.push_packet(remote, data.to_vec());
                 found = true;
@@ -1588,7 +1588,7 @@ impl NetworkEventHandler {
         fd: EndpointFd,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -1675,7 +1675,7 @@ impl NetworkEventHandler {
         data: Vec<u8>,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -1712,7 +1712,7 @@ impl NetworkEventHandler {
 
     /// SetPriorityイベント処理
     fn handle_set_priority(&self, fd: EndpointFd, priority: u8) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -1744,7 +1744,7 @@ impl NetworkEventHandler {
 
     /// SetNoDelayイベント処理
     fn handle_set_nodelay(&self, fd: EndpointFd, nodelay: bool) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -1777,7 +1777,7 @@ impl NetworkEventHandler {
     /// DataReadyイベント処理
     /// 送信バッファにデータがあるのでTCPで送信
     fn handle_data_ready(&self, fd: EndpointFd, _socket_type: EndpointType) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -1897,7 +1897,7 @@ impl NetworkEventHandler {
     fn handle_tx_available(&self) -> EventHandleResult {
         // 送信待ちのソケットに DataReady イベントを再送して再試行を促す（TCP）
         // また、イベントキュー満杯で待機していた UDP ソケットの send_waker も起床させる
-        if let Some(ref mgr) = *ENDPOINT_MANAGER.read() {
+        if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
             mgr.for_each(|socket| {
                 if socket.send_buffer_len() > 0 {
                     super::event::send_event_ignore(super::event::NetworkEvent::DataReady {
@@ -1927,7 +1927,7 @@ impl NetworkEventHandler {
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -2038,7 +2038,7 @@ impl NetworkEventHandler {
         local: EndpointAddr,
         backlog: u32,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -2078,7 +2078,7 @@ impl NetworkEventHandler {
     /// Closeイベント処理
     /// 接続を終了
     fn handle_close(&self, fd: EndpointFd) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -2191,7 +2191,7 @@ impl NetworkEventHandler {
         remote: EndpointAddr,
         data: Vec<u8>,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read();
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
