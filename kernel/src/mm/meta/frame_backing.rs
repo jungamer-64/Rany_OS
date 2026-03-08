@@ -8,9 +8,9 @@
 //! coarse global sync.
 // ============================================================================
 
+use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use core::fmt;
-use spin::RwLock;
 
 use crate::fs::InodeNum;
 use crate::mm::types::FrameIndex;
@@ -32,31 +32,31 @@ impl fmt::Display for FrameBackingInfo {
 
 /// Tracker structure
 pub struct FrameBackingTracker {
-    mapping: RwLock<BTreeMap<FrameIndex, FrameBackingInfo>>,
+    mapping: PoisonRwLock<BTreeMap<FrameIndex, FrameBackingInfo>>,
 }
 
 impl FrameBackingTracker {
     pub const fn new() -> Self {
         Self {
-            mapping: RwLock::new(BTreeMap::new()),
+            mapping: PoisonRwLock::new(BTreeMap::new()),
         }
     }
 
     /// Track a frame's backing
     pub fn track(&self, frame: FrameIndex, ino: InodeNum, page_num: u64) {
-        let mut m = self.mapping.write();
+        let mut m = self.mapping.write().unwrap_or_else(|e| e.into_inner());
         m.insert(frame, FrameBackingInfo { ino, page_num });
     }
 
     /// Untrack a frame and return its backing info (if any)
     pub fn untrack(&self, frame: FrameIndex) -> Option<FrameBackingInfo> {
-        let mut m = self.mapping.write();
+        let mut m = self.mapping.write().unwrap_or_else(|e| e.into_inner());
         m.remove(&frame)
     }
 
     /// Get backing info for a frame
     pub fn get(&self, frame: FrameIndex) -> Option<FrameBackingInfo> {
-        let m = self.mapping.read();
+        let m = self.mapping.read().unwrap_or_else(|e| e.into_inner());
         m.get(&frame).copied()
     }
 }

@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 use super::console::TextConsole;
 use super::framebuffer::Framebuffer;
@@ -31,19 +31,17 @@ impl Write for EarlyBuf {
 // ============================================================================
 
 /// グローバルフレームバッファ
-static FRAMEBUFFER: Mutex<Option<Framebuffer>> = Mutex::new(None);
+static FRAMEBUFFER: PoisonLock<Option<Framebuffer>> = PoisonLock::new(None);
 
 /// フレームバッファを初期化
 pub fn init(info: FramebufferInfo) {
     let mut fb = unsafe { Framebuffer::new(info) };
     fb.clear(Color::BLACK);
 
-    *FRAMEBUFFER.lock() = Some(fb);
+    *FRAMEBUFFER.lock().unwrap_or_else(|e| e.into_inner()) = Some(fb);
 
-    // ロックを1回だけ取得して情報を取り出す（2回のlock+unwrap → 1回のlockで変数コピー）
-    // アセンブリ: 2x (lock acquire + memory fence + unwrap check) → 1x lock + 2x mov
     let (w, h) = {
-        let guard = FRAMEBUFFER.lock();
+        let guard = FRAMEBUFFER.lock().unwrap_or_else(|e| e.into_inner());
         let fb = guard.as_ref().expect("framebuffer must be initialized");
         (fb.width(), fb.height())
     };
@@ -51,39 +49,26 @@ pub fn init(info: FramebufferInfo) {
 }
 
 /// ExoLoader (UEFI) からのフレームバッファ情報を使用してグラフィックスを初期化
-///
-/// ブートローダーから提供されたフレームバッファ情報を使用して
-/// グラフィックスサブシステムを初期化します。
-/// WC (Write-Combining) 属性での再マッピングも試みます。
 pub fn init_from_boot_info(info: &FramebufferInfo, phys_mem_offset: u64) -> bool {
     crate::io::log::early_print("[GFX] init_from_boot_info entry\n");
 
     let mut final_info = *info;
 
-    // 1. Fix BPP if missing (ExoLoader might set 0)
     if final_info.bpp == 0 {
         let bpp = match final_info.format {
             PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => 32,
             PixelFormat::Rgb888 | PixelFormat::Bgr888 => 24,
             PixelFormat::Rgb565 => 16,
-            // _ => 32,
         };
         final_info.bpp = bpp;
     }
 
-    // 2. Fix Stride if it looks like Pixels (UEFI GOP returns pixels, we want bytes)
-    // If stride is exactly width, it's almost certainly pixels.
-    // Real hardware usually aligns stride (e.g. width=1920, stride=2048 bytes?),
-    // but if stride == width, it's pixels.
     if final_info.stride == final_info.width {
         final_info.stride = final_info.width * (final_info.bpp as u32 / 8);
     }
 
     let limine_virt_addr = final_info.address;
 
-    // Calculate physical address.
-    // If coming from ExoLoader, address is typically Physical (e.g. 0x80000000).
-    // If it was already virtual (HHDM), subtracting offset gives Physical.
     let phys_addr = if limine_virt_addr >= phys_mem_offset {
         limine_virt_addr - phys_mem_offset
     } else {
@@ -92,8 +77,6 @@ pub fn init_from_boot_info(info: &FramebufferInfo, phys_mem_offset: u64) -> bool
 
     crate::io::log::early_print("[GFX] Calculated phys addr\n");
 
-    // Calculate the HHDM virtual address.
-    // This is known to be mapped by the bootloader.
     let hhdm_virt_addr = phys_mem_offset + phys_addr;
 
     let _ = write!(
@@ -111,10 +94,6 @@ pub fn init_from_boot_info(info: &FramebufferInfo, phys_mem_offset: u64) -> bool
 
     crate::io::log::early_print("[GFX] About to call map_framebuffer_vram\n");
 
-    // Try to explicitly map with Write-Combining.
-    // If it fails (likely because it's already mapped in HHDM as WB),
-    // we fall back to using the HHDM address (hhdm_virt_addr).
-    // We DO NOT fall back to 'limine_virt_addr' if it looks physical (low address).
     let mapped_virt_addr = {
         let result = map_framebuffer_vram(phys_addr, fb_size, phys_mem_offset);
         if result == 0 {
@@ -148,18 +127,11 @@ pub fn init_from_boot_info(info: &FramebufferInfo, phys_mem_offset: u64) -> bool
     true
 }
 
-/// Map framebuffer VRAM to kernel virtual address space with Write-Combining attributes
-///
-/// Returns the virtual address where the framebuffer is mapped, or 0 on failure.
 fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
     use crate::mm::virt::higher_half::PhysAddr;
 
     crate::io::log::early_print("[GFX] map_framebuffer_vram entry\n");
 
-    let _manager = unsafe { PageTableManager::from_current_cr3(offset) };
-
-    // Use a dedicated virtual address range for MMIO mappings
-    // We'll use HHDM_OFFSET + phys_addr but explicitly map it
     let virt_addr = offset + phys_addr;
     let virt_start = VirtAddr::new(virt_addr);
     let phys_start = PhysAddr::new(phys_addr);
@@ -175,11 +147,9 @@ fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
     crate::io::log::early_print("[GFX] About to call global_unmap_range and global_map_range\n");
 
     unsafe {
-        // First unmap existing HHDM mapping (ignore errors, it may not be mapped)
         let _ = crate::mm::virt::higher_half::global_unmap_range(virt_start, size);
         crate::io::log::early_print("[GFX] Existing mapping cleared\n");
 
-        // Map with Write-Combining attributes for optimal VRAM performance
         match crate::mm::virt::higher_half::global_map_range(
             virt_start,
             phys_start,
@@ -200,19 +170,12 @@ fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
     }
 }
 
-/// フレームバッファをWrite-Combiningで再マッピング
-///
-/// デフォルトのキャッシュ属性（通常はUncacheableまたはWrite-Through）を
-/// Write-Combiningに変更して、描画パフォーマンスを向上させる。
 fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
     let offset = physical_memory_offset();
     let manager = unsafe { PageTableManager::from_current_cr3(offset) };
 
-    // 仮想アドレスと物理アドレスの開始位置を取得
     let virt_start = VirtAddr::new(virt_addr);
 
-    // カーネル空間（Higher Half）にマップされていると仮定して物理アドレスを計算
-    // Limineはリニアにマップしてくれているはずだが、念のためtranslateで確認
     let phys_start = if let Some(phys) = manager.translate(virt_start) {
         phys
     } else {
@@ -223,14 +186,10 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
         return;
     };
 
-    // 物理アドレスを逆算（HHDMオフセットを引く）
-    // オフセットが設定されていない場合は、Limineが提供する物理アドレス取得手段がないため
-    // 仮想アドレスからオフセットを引いて計算する
     let offset = physical_memory_offset();
     let phys_addr = if virt_addr >= offset {
         virt_addr - offset
     } else {
-        // HHDM外？
         virt_addr
     };
 
@@ -256,12 +215,8 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
     );
 
     unsafe {
-        // 1. 既存のマッピングを範囲解除
-        // エラーは無視（一部マップされていない可能性もあるため許容）
         let _ = crate::mm::virt::higher_half::global_unmap_range(virt_start, size);
 
-        // 2. Write-Combining属性で範囲マップ
-        // map_rangeはアラインメントとサイズに基づいて自動的にHuge Page (2MiB/1GiB)を使用する
         match crate::mm::virt::higher_half::global_map_range(
             virt_start,
             phys_start,
@@ -278,7 +233,6 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
     }
 }
 
-/// 32bpp フォーマットを判定
 fn detect_32bpp_format(red_shift: u8, green_shift: u8, blue_shift: u8) -> PixelFormat {
     if red_shift == 16 && green_shift == 8 && blue_shift == 0 {
         PixelFormat::Bgra8888
@@ -289,7 +243,6 @@ fn detect_32bpp_format(red_shift: u8, green_shift: u8, blue_shift: u8) -> PixelF
     }
 }
 
-/// 24bpp フォーマットを判定
 fn detect_24bpp_format(red_shift: u8, green_shift: u8, blue_shift: u8) -> PixelFormat {
     if red_shift == 16 && green_shift == 8 && blue_shift == 0 {
         PixelFormat::Bgr888
@@ -298,7 +251,6 @@ fn detect_24bpp_format(red_shift: u8, green_shift: u8, blue_shift: u8) -> PixelF
     }
 }
 
-/// 16bpp フォーマットを判定
 fn detect_16bpp_format(red_size: u8, green_size: u8, blue_size: u8) -> PixelFormat {
     if red_size == 5 && green_size == 6 && blue_size == 5 {
         PixelFormat::Rgb565
@@ -307,7 +259,6 @@ fn detect_16bpp_format(red_size: u8, green_size: u8, blue_size: u8) -> PixelForm
     }
 }
 
-/// マスク情報からピクセルフォーマットを判定
 fn detect_pixel_format(
     red_size: u8,
     red_shift: u8,
@@ -325,33 +276,13 @@ fn detect_pixel_format(
     }
 }
 
-// Note: TextConsole is now managed by crate::console as a driver
-// We keep CONSOLE for legacy direct access if needed, but primary output goes through ConsoleManager.
-// Actually, TextConsole now implements ConsoleDriver and does NOT own VirtualConsole.
-// So direct access to TextConsole for 'write_str' (which depended on VC) is no longer possible in the same way.
-// We must repurpose CONSOLE to be a holder if we want `with_console` to still work for accessing font/colors?
-// Or we should remove `with_console` access to TextConsole directly and route everything through ConsoleManager.
-// However `with_console` returns `Option<R>`, used by `boot_splash`? No, boot_splash uses `with_framebuffer`.
-
-// Let's remove the global CONSOLE mutex and route everything via ConsoleManager.
-// This is a breaking change for `with_console`.
-// I checked `with_console` usage via grep:
-// users: graphics/global.rs (self), graphics/mod.rs (re-export).
-// If external crates don't use it, we are fine.
-
 /// グラフィカルコンソールを初期化
 pub fn init_console() {
-    let mut fb_guard = FRAMEBUFFER.lock();
+    let mut fb_guard = FRAMEBUFFER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref mut fb) = *fb_guard {
-        // Create TextConsole and get dimensions
         let (console, cols, rows) = TextConsole::new(fb);
-
-        // Initialize ConsoleManager with correct dimensions
         crate::console::init(cols, rows);
-
-        // Register TextConsole as the driver
         crate::console::set_driver(alloc::boxed::Box::new(console));
-
         drop(fb_guard);
         log::info!("[GRAPHICS] Text console initialized as driver\n");
     }
@@ -362,15 +293,13 @@ pub fn with_framebuffer<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Framebuffer) -> R,
 {
-    let mut guard = FRAMEBUFFER.lock();
+    let mut guard = FRAMEBUFFER.lock().unwrap_or_else(|e| e.into_inner());
     guard.as_mut().map(f)
 }
 
-// `with_console` and `try_lock_console` are removed; use `crate::console` APIs instead.
-
 /// フレームバッファが初期化されているか確認
 pub fn framebuffer() -> Option<()> {
-    if FRAMEBUFFER.lock().is_some() {
+    if FRAMEBUFFER.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         Some(())
     } else {
         None
@@ -383,10 +312,6 @@ pub fn console_print(s: &str) {
 }
 
 /// フレームバッファのロックを強制解除（パニック時用）
-///
-/// # Safety
-/// この関数は、デッドロックが発生しているパニックハンドラからのみ呼び出してください。
-/// 競合状態を引き起こす可能性があります。
 pub unsafe fn force_unlock_framebuffer() {
     FRAMEBUFFER.force_unlock();
 }

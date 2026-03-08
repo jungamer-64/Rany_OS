@@ -8,11 +8,11 @@
 
 #![allow(dead_code)]
 
+use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::{Mutex, RwLock};
 
 use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, DeviceOps, DmaBufHandle, IoCommand, IoError, IoRequest, IoRequestId,
@@ -280,8 +280,8 @@ struct PendingNvmeRequest {
     bytes: usize,
 }
 
-static NVME_POLL_HANDLERS: RwLock<BTreeMap<NvmeHandlerKey, Vec<Arc<NvmePollHandler>>>> =
-    RwLock::new(BTreeMap::new());
+static NVME_POLL_HANDLERS: PoisonRwLock<BTreeMap<NvmeHandlerKey, Vec<Arc<NvmePollHandler>>>> =
+    PoisonRwLock::new(BTreeMap::new());
 
 /// NVMe用PollHandlerラッパー
 ///
@@ -294,7 +294,7 @@ pub struct NvmePollHandler {
     nsid: u32,
     /// 保留中のNVMeコマンドID → I/Oリクエスト
     /// Vec を使用して O(1) アクセス（CID は通常 0-1023 の範囲）
-    pending: Mutex<Vec<Option<PendingNvmeRequest>>>,
+    pending: PoisonLock<Vec<Option<PendingNvmeRequest>>>,
 }
 
 /// NVMe キューの最大コマンドID数（2^10 = 1024）
@@ -308,13 +308,13 @@ impl NvmePollHandler {
         Self {
             core_id,
             nsid,
-            pending: Mutex::new(pending),
+            pending: PoisonLock::new(pending),
         }
     }
 
     /// I/OリクエストIDとNVMeコマンドIDを紐付け
     pub fn register_request(&self, io_id: IoRequestId, cid: u16, bytes: usize) {
-        let mut pending = self.pending.lock();
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(slot) = pending.get_mut(cid as usize) {
             *slot = Some(PendingNvmeRequest { io_id, bytes });
         } else {
@@ -338,6 +338,7 @@ impl PollHandler for NvmePollHandler {
                         let entry = self
                             .pending
                             .lock()
+                            .unwrap_or_else(|e| e.into_inner())
                             .get_mut(cid as usize)
                             .and_then(|slot| slot.take());
 
@@ -457,6 +458,7 @@ pub fn register_with_io_scheduler(
     // 5. Global Registry 更新 (Fallback用)
     NVME_POLL_HANDLERS
         .write()
+        .unwrap_or_else(|e| e.into_inner())
         .insert((controller_id, namespace_id), handlers.clone());
 
     log::info!(
@@ -473,7 +475,7 @@ fn handler_for_device(
     namespace_id: u32,
     core_id: u32,
 ) -> Option<Arc<NvmePollHandler>> {
-    let handlers = NVME_POLL_HANDLERS.read();
+    let handlers = NVME_POLL_HANDLERS.read().unwrap_or_else(|e| e.into_inner());
     handlers
         .get(&(controller_id, namespace_id))
         .and_then(|list| list.get(core_id as usize))

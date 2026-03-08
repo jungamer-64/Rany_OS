@@ -15,10 +15,10 @@ pub mod runtime_dispatch;
 // pub mod ipc_tests;
 // pub mod benchmark;
 
+use crate::sync::PoisonLock;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::Mutex;
 
 /// Test result
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +54,7 @@ pub struct TestCase {
 /// Test runner
 pub struct TestRunner {
     /// All registered test cases
-    tests: Mutex<Vec<TestCase>>,
+    tests: PoisonLock<Vec<TestCase>>,
     /// Passed count
     passed: AtomicU64,
     /// Failed count
@@ -72,7 +72,7 @@ impl TestRunner {
     /// Create new test runner
     pub fn new() -> Self {
         TestRunner {
-            tests: Mutex::new(Vec::new()),
+            tests: PoisonLock::new(Vec::new()),
             passed: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
@@ -82,7 +82,7 @@ impl TestRunner {
 
     /// Register a test case
     pub fn register(&self, name: &'static str, category: &'static str, func: fn() -> TestResult) {
-        self.tests.lock().push(TestCase {
+        self.tests.lock().unwrap_or_else(|e| e.into_inner()).push(TestCase {
             name,
             category,
             func,
@@ -105,7 +105,7 @@ impl TestRunner {
             "================================================================================\n\n"
         );
 
-        let tests = self.tests.lock();
+        let tests = self.tests.lock().unwrap_or_else(|e| e.into_inner());
         let total = tests.len();
         let mut results = Vec::new();
 
@@ -183,7 +183,7 @@ impl TestRunner {
 
     /// Run tests for a specific category
     pub fn run_category(&self, category: &str) -> TestSummary {
-        let tests = self.tests.lock();
+        let tests = self.tests.lock().unwrap_or_else(|e| e.into_inner());
         let filtered: Vec<_> = tests.iter().filter(|t| t.category == category).collect();
 
         log::info!(

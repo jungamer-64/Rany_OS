@@ -16,6 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 # Lock-free synchronization
 spin = "0.10"
+exorust_sync = { path = "../../libs/sync" }
 
 # x86_64 port I/O
 x86_64 = "0.15"

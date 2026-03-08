@@ -7,7 +7,7 @@ impl ProcessAddressSpace {
         Self {
             asid: allocate_asid(),
             page_table_root: AtomicU64::new(0),
-            regions: RwLock::new(BTreeMap::new()),
+            regions: PoisonRwLock::new(BTreeMap::new()),
             vma_list: VmaList::new(),
             heap_end: AtomicU64::new(DEFAULT_HEAP_START),
             mapping_hint: AtomicU64::new(DEFAULT_MAPPING_BASE),
@@ -80,7 +80,7 @@ impl ProcessAddressSpace {
             return Err(AddressSpaceError::InvalidRange);
         }
 
-        let mut regions = self.regions.write();
+        let mut regions = self.regions.write().unwrap_or_else(|e| e.into_inner());
 
         // 重複チェック
         for existing in regions.values() {
@@ -102,13 +102,13 @@ impl ProcessAddressSpace {
 
     /// 領域を取得
     pub fn get_region(&self, start_addr: u64) -> Option<Protection> {
-        let regions = self.regions.read();
+        let regions = self.regions.read().unwrap_or_else(|e| e.into_inner());
         regions.get(&start_addr).map(|r| r.protection)
     }
 
     /// 領域を削除
     pub fn remove_region(&self, start_addr: u64) -> Result<(), AddressSpaceError> {
-        let mut regions = self.regions.write();
+        let mut regions = self.regions.write().unwrap_or_else(|e| e.into_inner());
 
         if let Some(region) = regions.remove(&start_addr) {
             let _ = self.vma_list.remove(region.start);
@@ -143,16 +143,13 @@ impl ProcessAddressSpace {
             return Err(AddressSpaceError::InvalidSize);
         }
 
-        // 脆弱性修正: ページアラインメント時の整数オーバーフローを防止
         let aligned_size = size
             .checked_add(PAGE_SIZE - 1)
             .ok_or(AddressSpaceError::InvalidSize)?
             & !(PAGE_SIZE - 1);
 
-        // アドレスを決定
         let start_addr = if let Some(hint) = addr_hint {
             let addr = hint.as_u64();
-            // ヒントがユーザー空間内かチェック
             if addr < USER_SPACE_START
                 || addr
                     .checked_add(aligned_size)
@@ -162,7 +159,6 @@ impl ProcessAddressSpace {
             }
             addr
         } else {
-            // マッピング領域から割り当て
             loop {
                 let hint = self.mapping_hint.load(Ordering::Acquire);
                 let next_hint = hint
@@ -186,12 +182,8 @@ impl ProcessAddressSpace {
         let start = VirtAddr::new(start_addr);
         let end = VirtAddr::new(start_addr + aligned_size);
 
-        // 領域を作成
         let region = MemoryRegion::new(start, end, region_type, prot);
         self.add_region(region)?;
-
-        // Demand Pagingを使用するため、実際のページ割り当ては遅延
-        // （ページフォルト時に割り当て）
 
         Ok(start)
     }
@@ -258,7 +250,7 @@ impl ProcessAddressSpace {
             .find_region(addr)
             .ok_or(AddressSpaceError::RegionNotFound)?;
 
-        let mut regions = self.regions.write();
+        let mut regions = self.regions.write().unwrap_or_else(|e| e.into_inner());
 
         let region = match regions.remove(&start_key) {
             Some(region) => region,
@@ -305,14 +297,12 @@ impl ProcessAddressSpace {
     pub fn set_brk(&self, new_brk: u64) -> Result<u64, AddressSpaceError> {
         let current = self.heap_end.load(Ordering::Acquire);
 
-        // 脆弱性修正: ヒープ終了アドレスがユーザー空間内かチェック
         if new_brk < DEFAULT_HEAP_START || new_brk > DEFAULT_MAPPING_BASE {
             return Err(AddressSpaceError::InvalidRange);
         }
 
-        let mut regions = self.regions.write();
+        let mut regions = self.regions.write().unwrap_or_else(|e| e.into_inner());
 
-        // 脆弱性修正: ヒープ拡張が既存の領域と重ならないかチェック
         if new_brk > current {
             for (&start, existing) in regions.iter() {
                 if start == DEFAULT_HEAP_START {
@@ -323,7 +313,6 @@ impl ProcessAddressSpace {
                 }
             }
 
-            // ヒープ拡張時の Memcg チャージ
             let size = new_brk - current;
             let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
             let pages = aligned_size / PAGE_SIZE;
@@ -331,11 +320,9 @@ impl ProcessAddressSpace {
                 return Err(AddressSpaceError::OutOfMemory);
             }
         } else if new_brk < current {
-            // ヒープ縮小
             let size = current - new_brk;
             let pages = size / PAGE_SIZE;
 
-            // ページを解放
             for i in 0..pages {
                 let addr = VirtAddr::new(new_brk + i * PAGE_SIZE);
                 if let Some(phys) = global_translate(addr) {
@@ -349,7 +336,6 @@ impl ProcessAddressSpace {
             memcg_uncharge(self.memcg_id, pages, ChargeType::Anon);
         }
 
-        // ヒープ VMA を更新（demand paging が機能するように登録）
         let region = MemoryRegion::new(
             VirtAddr::new(DEFAULT_HEAP_START),
             VirtAddr::new(new_brk),
@@ -373,20 +359,14 @@ impl ProcessAddressSpace {
     // ========================================================================
 
     /// アドレス空間を複製（fork用）
-    ///
-    /// Copy-on-Writeを使用して効率的に複製する。
-    /// 全ての書き込み可能ページをRead-onlyに変更し、
-    /// フォルト時に実際のコピーを行う。
     pub fn fork(&self) -> Result<Box<ProcessAddressSpace>, AddressSpaceError> {
         let child = Box::new(ProcessAddressSpace::new());
 
-        // ページテーブルを初期化
         child.init_page_table()?;
 
-        let regions = self.regions.read();
+        let regions = self.regions.read().unwrap_or_else(|e| e.into_inner());
 
         for (&start, region) in regions.iter() {
-            // 子プロセス用の新しい領域を作成
             let mut child_region = MemoryRegion::new(
                 region.start,
                 region.end,
@@ -396,34 +376,25 @@ impl ProcessAddressSpace {
             child_region.cow = true;
             child_region.file_info = region.file_info.clone();
 
-            // 親のページをCoWとしてマーク
             if region.protection.write {
                 let page_count = region.page_count();
                 for i in 0..page_count {
                     let addr = VirtAddr::new(region.start.as_u64() + i * PAGE_SIZE);
 
-                    // ページが存在する場合のみ処理
                     if let Some(phys) = global_translate(addr) {
-                        // 親をRead-onlyに変更（CoWマーク）
                         let _ = cow_mark_page(addr);
-
-                        // 参照カウントを増加
                         page_get(phys.as_u64());
-
-                        // 子のページテーブルにエントリをコピー
                         let _ = cow_copy_pte(addr, child.page_table_root());
                     }
                 }
             }
 
-            // 子に領域を追加
-            let mut child_regions = child.regions.write();
+            let mut child_regions = child.regions.write().unwrap_or_else(|e| e.into_inner());
             let child_vma = child_region.to_vma();
             child_regions.insert(start, Box::new(child_region));
             child.vma_list.insert(Box::new(child_vma));
         }
 
-        // ヒープとスタック境界をコピー
         child
             .heap_end
             .store(self.heap_end.load(Ordering::Acquire), Ordering::Release);
@@ -442,18 +413,13 @@ impl ProcessAddressSpace {
     // ========================================================================
 
     /// アドレス空間をリセット（exec用）
-    ///
-    /// 全てのユーザー空間マッピングを解除し、
-    /// 新しいプログラムのロード準備をする。
     pub fn exec_reset(&self) -> Result<(), AddressSpaceError> {
-        let mut regions = self.regions.write();
+        let mut regions = self.regions.write().unwrap_or_else(|e| e.into_inner());
 
-        // 全領域を削除
         let keys: Vec<u64> = regions.keys().copied().collect();
         for start in keys {
             if let Some(region) = regions.remove(&start) {
                 let _ = self.vma_list.remove(region.start);
-                // ユーザー空間のみ解除
                 if region.start.as_u64() < KERNEL_SPACE_START {
                     let page_count = region.page_count();
                     for i in 0..page_count {
@@ -469,7 +435,6 @@ impl ProcessAddressSpace {
             }
         }
 
-        // 境界をリセット
         self.heap_end.store(DEFAULT_HEAP_START, Ordering::Release);
         self.mapping_hint
             .store(DEFAULT_MAPPING_BASE, Ordering::Release);
@@ -507,7 +472,6 @@ impl ProcessAddressSpace {
         initial_size: u64,
         max_size: u64,
     ) -> Result<VirtAddr, AddressSpaceError> {
-        // スタック領域を作成
         let stack_bottom = VirtAddr::new(stack_top.as_u64() - initial_size);
 
         let region = MemoryRegion::new(
@@ -518,7 +482,6 @@ impl ProcessAddressSpace {
         );
         self.add_region(region)?;
 
-        // スタック管理に登録
         match create_stack(self.asid, stack_top, initial_size, max_size) {
             StackResult::Ok => {
                 self.stack_top.store(stack_top.as_u64(), Ordering::Release);
@@ -534,7 +497,7 @@ impl ProcessAddressSpace {
 
     /// 統計情報を取得
     pub fn stats(&self) -> AddressSpaceStats {
-        let regions = self.regions.read();
+        let regions = self.regions.read().unwrap_or_else(|e| e.into_inner());
 
         let mut total_virtual = 0u64;
         let mut region_count = 0usize;
@@ -552,6 +515,7 @@ impl ProcessAddressSpace {
             heap_size: self.heap_end.load(Ordering::Relaxed) - DEFAULT_HEAP_START,
         }
     }
+
     /// 領域内のページをスキャンしてNUMAヒントを設定する
     pub(super) fn scan_region_numa_hints(
         &self,
@@ -580,12 +544,6 @@ impl ProcessAddressSpace {
     }
 
     /// NUMAヒントスキャンを実行
-    ///
-    /// 指定されたアドレスからスキャンを開始し、PresentなページのPresentフラグを落とし、
-    /// NUMA_HINTフラグを立てる。
-    ///
-    /// # Returns
-    /// (scanned_pages, faults_set, next_scan_addr)
     pub fn scan_numa_hints(
         &self,
         start_addr: VirtAddr,
@@ -594,20 +552,19 @@ impl ProcessAddressSpace {
         let mut scanned = 0;
         let mut faults = 0;
         let mut current_addr = start_addr;
-        let regions = self.regions.read();
+        let regions = self.regions.read().unwrap_or_else(|e| e.into_inner());
 
         for (&_r_start, region) in regions.range(..).filter(|&(&_s, ref r)| r.end > start_addr) {
             if scanned >= batch_size {
                 break;
             }
 
-            // スキャン対象外の領域（カーネル、デバイスなど）はスキップ
             match region.region_type {
                 RegionType::Data
                 | RegionType::Stack
                 | RegionType::Heap
                 | RegionType::Bss
-                | RegionType::Mapping => {} // OK
+                | RegionType::Mapping => {}
                 _ => {
                     if current_addr < region.end {
                         current_addr = region.end;
@@ -632,22 +589,14 @@ impl ProcessAddressSpace {
 
     /// PTEを更新してNUMAヒントを設定
     pub(super) fn update_pte_for_numa_hint(&self, addr: VirtAddr) -> bool {
-        // 脆弱性修正: 手動のページテーブルウォークを with_current_pte_mut に置き換え。
-        // これにより、PAGE_TABLE_MANAGER ロックによる適切な同期が保証され、
-        // マルチコア環境でのデータレースが防止される。
         crate::mm::virt::higher_half::with_current_pte_mut(addr, |pte| {
-            // Hint設定
             if pte.is_present() {
                 let mut flags = pte.flags();
-                // 既にHintが立っている場合はスキップ
                 if flags.contains(PageFlags::NUMA_HINT) {
                     return false;
                 }
-                // Presentを落とし、Hintを立てる
                 flags = flags.clear(PageFlags::PRESENT).set(PageFlags::NUMA_HINT);
                 pte.set_flags(flags);
-
-                // TLB Invalidation handled by with_current_pte_mut
                 return true;
             }
             false
@@ -656,9 +605,6 @@ impl ProcessAddressSpace {
     }
 
     /// THP昇格候補を検索
-    ///
-    /// 指定されたアドレスからスキャンを開始し、昇格可能な2MB領域を探す。
-    /// Scan a 2MB-aligned range within a region for THP candidates.
     pub(super) fn scan_aligned_range_for_thp(
         &self,
         scan_start: VirtAddr,
@@ -683,19 +629,16 @@ impl ProcessAddressSpace {
     ) -> (Vec<ThpCandidate>, VirtAddr) {
         let mut candidates = Vec::new();
         let mut current_addr = start_addr;
-        let regions = self.regions.read();
+        let regions = self.regions.read().unwrap_or_else(|e| e.into_inner());
 
-        // Iterate regions starting from start_addr
         for (&_r_start, region) in regions.range(..).filter(|&(&_s, ref r)| r.end > start_addr) {
             if candidates.len() >= limit {
                 break;
             }
 
-            // Skip unsuitable regions (e.g. non-Anon, non-aligned size check?)
             match region.region_type {
                 RegionType::Heap | RegionType::Bss | RegionType::Data => {}
                 _ => {
-                    // Determine skip
                     if current_addr < region.end {
                         current_addr = region.end;
                     }
@@ -703,7 +646,6 @@ impl ProcessAddressSpace {
                 }
             }
 
-            // Adjust scan start within this region
             let region_scan_start = if current_addr < region.start {
                 region.start
             } else {
@@ -722,10 +664,8 @@ impl ProcessAddressSpace {
 
     /// Check if a 2MB range is a candidate
     pub(super) fn check_if_thp_candidate(&self, start: VirtAddr) -> Option<ThpCandidate> {
-        // Here we need to check if pages are mapped and present
         let mut used_pages = 0;
 
-        // Use thread-safe global_translate
         for i in 0..512 {
             let addr = VirtAddr::new(start.as_u64() + i * 4096);
             if let Some(_phys) = global_translate(addr) {
@@ -733,12 +673,11 @@ impl ProcessAddressSpace {
             }
         }
 
-        // Threshold: 50%
         if used_pages > 256 {
             Some(ThpCandidate {
                 start_addr: start,
                 used_pages: used_pages as u16,
-                flags: 0, // Fill later or get from first page
+                flags: 0,
                 priority: ((used_pages * 100 / 512).min(255)) as u8,
             })
         } else {
@@ -748,43 +687,34 @@ impl ProcessAddressSpace {
 
     /// Promote a 2MB range to a Huge Page
     pub fn promote_huge_page(&self, start_addr: VirtAddr) -> bool {
-        // 1. alignment check
         if !start_addr.is_page_aligned() || start_addr.as_u64() & 0x1FFFFF != 0 {
             return false;
         }
 
-        // 2. Get protection flags from region
         let protection = match self.get_region(start_addr.as_u64()) {
             Some(p) => p,
             None => return false,
         };
 
-        // 3. Allocate Huge Frame
         let huge_frame: PhysFrame<Size2MiB> = match alloc_huge_frame() {
             Some(f) => f,
             None => return false,
         };
-        let huge_phys_x64 = huge_frame.start_address(); // x86_64::PhysAddr
-        let huge_virt = crate::mm::virt::mapping::phys_to_virt(huge_phys_x64); // mapping uses x86_64 types
-        // For higher_half functions, convert:
-        let _huge_phys = PhysAddr::new(huge_phys_x64.as_u64());
+        let huge_phys_x64 = huge_frame.start_address();
+        let huge_virt = crate::mm::virt::mapping::phys_to_virt(huge_phys_x64);
 
-        // 4. Zero the huge page (safety)
         unsafe {
             core::ptr::write_bytes(huge_virt.as_mut_ptr::<u8>(), 0, 0x200000);
         }
 
-        // 5. Copy data and prepare for switch
         let pt_root = self.page_table_root.load(Ordering::Acquire);
         if pt_root == 0 {
             buddy_dealloc_frame_2m(huge_frame);
             return false;
         }
 
-        // Walk to PDE
         let indices = start_addr.page_table_indices();
 
-        // Scope for unsafe PT walk and updates
         let result = unsafe { self.perform_promotion(pt_root, indices, huge_phys_x64, protection) };
 
         if !result {

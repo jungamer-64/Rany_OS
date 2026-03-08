@@ -2,6 +2,7 @@
 //!
 //! Supported packets: `? g G m M c s Z0 z0`
 #![allow(dead_code)]
+use crate::sync::PoisonLock;
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;
@@ -9,7 +10,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
 
 const ACTIVE_NONE: usize = usize::MAX;
@@ -48,24 +48,13 @@ pub trait GdbTransport: Send + Sync {
     fn write_bytes(&self, bytes: &[u8]);
 }
 
+#[derive(Default)]
 struct KernelGdbTarget {
     regs: [u8; KERNEL_GDB_REG_BYTES],
     stop_signal: u8,
     resume_requested: bool,
     single_step: bool,
     breakpoints: Vec<(u64, u8)>,
-}
-
-impl Default for KernelGdbTarget {
-    fn default() -> Self {
-        Self {
-            regs: [0u8; KERNEL_GDB_REG_BYTES],
-            stop_signal: 5,
-            resume_requested: false,
-            single_step: false,
-            breakpoints: Vec::new(),
-        }
-    }
 }
 
 impl KernelGdbTarget {
@@ -165,7 +154,6 @@ impl GdbStub {
         Self
     }
 
-    /// Handle a decoded payload (without `$...#xx` framing).
     pub fn handle_payload<T: GdbTarget>(
         &self,
         payload: &str,
@@ -219,7 +207,6 @@ impl GdbStub {
         payload: &str,
         target: &mut T,
     ) -> Result<Option<String>, GdbStubError> {
-        // Format: "0,ADDR,KIND"
         let mut parts = payload.split(',');
         let typ = parts.next().ok_or(GdbStubError::InvalidCommand)?;
         let addr = parts.next().ok_or(GdbStubError::InvalidCommand)?;
@@ -245,8 +232,8 @@ struct TransportSlot {
 
 pub struct GdbServer {
     stub: GdbStub,
-    target: Mutex<KernelGdbTarget>,
-    transports: Mutex<Vec<TransportSlot>>,
+    target: PoisonLock<KernelGdbTarget>,
+    transports: PoisonLock<Vec<TransportSlot>>,
     active_transport: AtomicUsize,
     enabled: AtomicBool,
 }
@@ -255,8 +242,8 @@ impl GdbServer {
     pub fn new() -> Self {
         Self {
             stub: GdbStub::new(),
-            target: Mutex::new(KernelGdbTarget::default()),
-            transports: Mutex::new(Vec::new()),
+            target: PoisonLock::new(KernelGdbTarget::default()),
+            transports: PoisonLock::new(Vec::new()),
             active_transport: AtomicUsize::new(ACTIVE_NONE),
             enabled: AtomicBool::new(false),
         }
@@ -270,7 +257,7 @@ impl GdbServer {
     }
 
     pub fn register_transport(&self, transport: Arc<dyn GdbTransport>) -> usize {
-        let mut slots = self.transports.lock();
+        let mut slots = self.transports.lock().unwrap_or_else(|e| e.into_inner());
         slots.push(TransportSlot {
             transport,
             rx: Vec::new(),
@@ -303,7 +290,7 @@ impl GdbServer {
             Ok(payload) => {
                 slot.transport.write_bytes(b"+");
                 let response = {
-                    let mut target = self.target.lock();
+                    let mut target = self.target.lock().unwrap_or_else(|e| e.into_inner());
                     self.stub.handle_payload(payload, &mut *target)?
                 };
                 if let Some(resp_payload) = response {
@@ -325,7 +312,7 @@ impl GdbServer {
             return false;
         }
 
-        let mut slots = self.transports.lock();
+        let mut slots = self.transports.lock().unwrap_or_else(|e| e.into_inner());
         let active = self.active_transport.load(Ordering::Acquire);
 
         for (idx, slot) in slots.iter_mut().enumerate() {
@@ -345,13 +332,13 @@ impl GdbServer {
         }
 
         {
-            let mut target = self.target.lock();
+            let mut target = self.target.lock().unwrap_or_else(|e| e.into_inner());
             target.capture_trap(signal, frame);
         }
 
         loop {
             let _ = self.poll_once();
-            if self.target.lock().resume_requested {
+            if self.target.lock().unwrap_or_else(|e| e.into_inner()).resume_requested {
                 break;
             }
             core::hint::spin_loop();
@@ -380,13 +367,13 @@ impl GdbTransport for SerialCom1Transport {
 }
 
 pub struct VirtioConsoleTransport {
-    staged_rx: Mutex<VecDeque<u8>>,
+    staged_rx: PoisonLock<VecDeque<u8>>,
 }
 
 impl VirtioConsoleTransport {
     pub fn new() -> Self {
         Self {
-            staged_rx: Mutex::new(VecDeque::new()),
+            staged_rx: PoisonLock::new(VecDeque::new()),
         }
     }
 }
@@ -394,7 +381,7 @@ impl VirtioConsoleTransport {
 impl GdbTransport for VirtioConsoleTransport {
     fn try_read_byte(&self) -> Option<u8> {
         {
-            let mut staged = self.staged_rx.lock();
+            let mut staged = self.staged_rx.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(b) = staged.pop_front() {
                 return Some(b);
             }
@@ -406,7 +393,7 @@ impl GdbTransport for VirtioConsoleTransport {
             return None;
         }
 
-        let mut staged = self.staged_rx.lock();
+        let mut staged = self.staged_rx.lock().unwrap_or_else(|e| e.into_inner());
         for b in bytes {
             staged.push_back(b);
         }
@@ -601,7 +588,6 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicU32, Ordering};
-    use spin::Mutex;
 
     #[derive(Default)]
     struct DummyTarget {
@@ -763,20 +749,20 @@ mod tests {
 
     #[derive(Default)]
     struct DummyTransport {
-        rx: Mutex<VecDeque<u8>>,
-        tx: Mutex<Vec<u8>>,
+        rx: PoisonLock<VecDeque<u8>>,
+        tx: PoisonLock<Vec<u8>>,
     }
 
     impl DummyTransport {
         fn push_packet(&self, packet: &[u8]) {
-            let mut rx = self.rx.lock();
+            let mut rx = self.rx.lock().unwrap_or_else(|e| e.into_inner());
             for b in packet {
                 rx.push_back(*b);
             }
         }
 
         fn take_tx(&self) -> Vec<u8> {
-            let mut tx = self.tx.lock();
+            let mut tx = self.tx.lock().unwrap_or_else(|e| e.into_inner());
             let out = tx.clone();
             tx.clear();
             out
@@ -785,11 +771,11 @@ mod tests {
 
     impl GdbTransport for DummyTransport {
         fn try_read_byte(&self) -> Option<u8> {
-            self.rx.lock().pop_front()
+            self.rx.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
         }
 
         fn write_bytes(&self, bytes: &[u8]) {
-            self.tx.lock().extend_from_slice(bytes);
+            self.tx.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(bytes);
         }
     }
 
@@ -797,7 +783,7 @@ mod tests {
     fn gdb_server_uses_single_active_transport_lock() {
         let server = GdbServer::new();
         let t0 = Arc::new(DummyTransport::default());
-        let t1 = Arc::new(DummyTransport::default());
+        let t1 = Arc::new(DummyTransport::new());
 
         let _ = server.register_transport(t0.clone());
         let _ = server.register_transport(t1.clone());
@@ -820,5 +806,14 @@ mod tests {
             tx1.is_empty(),
             "second transport should stay inactive until active lock is released"
         );
+    }
+
+    impl DummyTransport {
+        fn new() -> Self {
+            Self {
+                rx: PoisonLock::new(VecDeque::new()),
+                tx: PoisonLock::new(Vec::new()),
+            }
+        }
     }
 }

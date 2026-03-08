@@ -18,10 +18,10 @@
 
 #![allow(dead_code)]
 
+use crate::domain_system::DomainId;
+use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-use crate::domain_system::DomainId;
 
 /// ドメイン優先度
 ///
@@ -523,31 +523,31 @@ pub fn select_oom_victim(quotas: &BTreeMap<DomainId, DomainQuota>) -> Option<Oom
 /// ドメインクォータマネージャ
 pub struct QuotaManager {
     /// ドメインID -> クォータのマッピング
-    quotas: spin::Mutex<BTreeMap<DomainId, DomainQuota>>,
+    quotas: PoisonLock<BTreeMap<DomainId, DomainQuota>>,
 }
 
 impl QuotaManager {
     pub const fn new() -> Self {
         Self {
-            quotas: spin::Mutex::new(BTreeMap::new()),
+            quotas: PoisonLock::new(BTreeMap::new()),
         }
     }
 
     /// ドメインのクォータを登録
     pub fn register(&self, quota: DomainQuota) {
-        let mut quotas = self.quotas.lock();
+        let mut quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         quotas.insert(quota.domain_id, quota);
     }
 
     /// ドメインのクォータを削除
     pub fn unregister(&self, domain_id: DomainId) {
-        let mut quotas = self.quotas.lock();
+        let mut quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         quotas.remove(&domain_id);
     }
 
     /// メモリ割り当てを試行
     pub fn try_allocate_memory(&self, domain_id: DomainId, bytes: u64) -> Result<(), QuotaError> {
-        let quotas = self.quotas.lock();
+        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(quota) = quotas.get(&domain_id) {
             quota.memory.try_allocate(bytes)
         } else {
@@ -558,7 +558,7 @@ impl QuotaManager {
 
     /// メモリ解放を記録
     pub fn deallocate_memory(&self, domain_id: DomainId, bytes: u64) {
-        let quotas = self.quotas.lock();
+        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(quota) = quotas.get(&domain_id) {
             quota.memory.deallocate(bytes);
         }
@@ -571,7 +571,7 @@ impl QuotaManager {
         elapsed_ns: u64,
         current_time_ns: u64,
     ) -> bool {
-        let quotas = self.quotas.lock();
+        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(quota) = quotas.get(&domain_id) {
             let exceeded = quota.cpu.consume(elapsed_ns, current_time_ns);
             if exceeded {
@@ -590,7 +590,7 @@ impl QuotaManager {
         bytes: u64,
         current_time_ns: u64,
     ) -> Result<(), QuotaError> {
-        let quotas = self.quotas.lock();
+        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(quota) = quotas.get(&domain_id) {
             quota.network_io.try_io(bytes, current_time_ns)
         } else {
@@ -604,7 +604,7 @@ impl QuotaManager {
         bytes: u64,
         current_time_ns: u64,
     ) -> Result<(), QuotaError> {
-        let quotas = self.quotas.lock();
+        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(quota) = quotas.get(&domain_id) {
             quota.storage_io.try_io(bytes, current_time_ns)
         } else {
@@ -614,13 +614,13 @@ impl QuotaManager {
 
     /// OOMキラーによる犠牲ドメイン選択
     pub fn select_oom_victim(&self) -> Option<OomVictim> {
-        let quotas = self.quotas.lock();
+        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         select_oom_victim(&quotas)
     }
 
     /// ドメインの統計情報を取得
     pub fn get_stats(&self, domain_id: DomainId) -> Option<DomainStats> {
-        let quotas = self.quotas.lock();
+        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         quotas.get(&domain_id).map(|q| DomainStats {
             domain_id,
             priority: q.priority,

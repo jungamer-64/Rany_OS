@@ -1,18 +1,11 @@
 use super::*;
+use crate::sync::PoisonLock;
 
 impl PacketPool {
     /// Create a new packet pool
     pub fn new(capacity: usize, buffer_size: usize) -> Self {
-        // NOTE: the original implementation allocated `capacity` separate
-        // vectors, which may end up scattered across the heap and defeat
-        // cache locality.  A proper slab allocator (single large allocation
-        // split into fixed-size chunks) would be ideal; this is left as a
-        // TODO for a future refactor.  For now we at least reserve each
-        // individual buffer ahead of time to avoid re‑allocations.
         let mut buffers = Vec::with_capacity(capacity);
         for _ in 0..capacity {
-            // start with zero-length vector but pre‑allocate capacity
-            // clients will set `len` to the amount of data they write themselves.
             let buf = Vec::with_capacity(buffer_size);
             buffers.push(buf);
         }
@@ -26,19 +19,12 @@ impl PacketPool {
 
     /// Allocate a buffer from the pool
     pub fn alloc(&self) -> Option<Vec<u8>> {
-        match self.buffers.lock() {
-            Ok(mut buffers) => buffers.pop(),
-            Err(_) => {
-                log::error!("[NET] PacketPool buffers lock poisoned (alloc) - allocation failed");
-                None
-            }
-        }
+        self.buffers.lock().unwrap_or_else(|e| e.into_inner()).pop()
     }
 
     /// Return a buffer to the pool
     pub fn free(&self, mut buffer: Vec<u8>) {
-        // Security: Zero out the buffer content to prevent information leaks
-        // between different connections or users of the pool.
+        // Security: Zero out the buffer content
         unsafe {
             let cap = buffer.capacity();
             let ptr = buffer.as_mut_ptr();
@@ -46,24 +32,15 @@ impl PacketPool {
         }
 
         if buffer.capacity() != self.buffer_size {
-            // drop whatever the caller gave us and create a fresh one
             buffer = Vec::with_capacity(self.buffer_size);
         } else {
-            // simply reset length to zero; existing capacity stays intact
             buffer.clear();
         }
 
-        match self.buffers.lock() {
-            Ok(mut buffers) => {
-                if buffers.len() < self.capacity {
-                    buffers.push(buffer);
-                }
-            }
-            Err(_) => {
-                log::error!("[NET] PacketPool buffers lock poisoned (free) - dropping buffer")
-            }
+        let mut buffers = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
+        if buffers.len() < self.capacity {
+            buffers.push(buffer);
         }
-        // Otherwise drop the buffer
     }
 
     /// Get buffer size
@@ -73,59 +50,37 @@ impl PacketPool {
 
     /// Get available buffer count
     pub fn available(&self) -> usize {
-        match self.buffers.lock() {
-            Ok(b) => b.len(),
-            Err(_) => {
-                log::error!("[NET] PacketPool buffers lock poisoned (available) - returning 0");
-                0
-            }
-        }
+        self.buffers.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Allocate multiple buffers at once (batch allocation)
-    ///
-    /// 一度のロック取得で最大 `count` 個のバッファを取得する。
-    /// 返り値の Vec は実際に取得できた分のみ含む。
     pub fn alloc_batch(&self, count: usize) -> Vec<Vec<u8>> {
-        match self.buffers.lock() {
-            Ok(mut buffers) => {
-                let to_take = count.min(buffers.len());
-                let split_at = buffers.len() - to_take;
-                buffers.split_off(split_at)
-            }
-            Err(_) => {
-                log::error!("[NET] PacketPool buffers lock poisoned (alloc_batch)");
-                Vec::new()
-            }
-        }
+        let mut buffers = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
+        let to_take = count.min(buffers.len());
+        let split_at = buffers.len() - to_take;
+        buffers.split_off(split_at)
     }
 
     /// Return multiple buffers at once (batch free)
-    ///
-    /// 一度のロック取得で複数バッファを返却する。
     pub fn free_batch(&self, batch: Vec<Vec<u8>>) {
-        match self.buffers.lock() {
-            Ok(mut buffers) => {
-                for mut buffer in batch {
-                    // Security: Zero out buffer content
-                    unsafe {
-                        let cap = buffer.capacity();
-                        let ptr = buffer.as_mut_ptr();
-                        core::ptr::write_bytes(ptr, 0, cap);
-                    }
-
-                    if buffer.capacity() != self.buffer_size {
-                        buffer = Vec::with_capacity(self.buffer_size);
-                    } else {
-                        buffer.clear();
-                    }
-
-                    if buffers.len() < self.capacity {
-                        buffers.push(buffer);
-                    }
-                }
+        let mut buffers = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
+        for mut buffer in batch {
+            // Security: Zero out buffer content
+            unsafe {
+                let cap = buffer.capacity();
+                let ptr = buffer.as_mut_ptr();
+                core::ptr::write_bytes(ptr, 0, cap);
             }
-            Err(_) => log::error!("[NET] PacketPool buffers lock poisoned (free_batch)"),
+
+            if buffer.capacity() != self.buffer_size {
+                buffer = Vec::with_capacity(self.buffer_size);
+            } else {
+                buffer.clear();
+            }
+
+            if buffers.len() < self.capacity {
+                buffers.push(buffer);
+            }
         }
     }
 }
@@ -135,13 +90,9 @@ impl PacketPool {
 // ============================================================================
 
 /// コアローカルな TX バッファキャッシュ
-///
-/// `PacketPool` の alloc/free 時のロック競合を排除するため、
-/// 各 CPU コアに独立したキャッシュを持たせる。
-/// ExoRust ガイドライン: Per-Core Cache を活用しロックフリー割り当てを実現
 pub struct PerCoreTxCache {
     /// CPU ごとのバッファキャッシュ
-    caches: Vec<spin::Mutex<Vec<Vec<u8>>>>,
+    caches: Vec<PoisonLock<Vec<Vec<u8>>>>,
     /// キャッシュあたりの最大バッファ数
     per_core_capacity: usize,
     /// 親プール
@@ -161,7 +112,7 @@ impl PerCoreTxCache {
         let count = cpu_count.max(1);
         let mut caches = Vec::with_capacity(count);
         for _ in 0..count {
-            caches.push(spin::Mutex::new(Vec::with_capacity(TX_PER_CORE_CACHE_SIZE)));
+            caches.push(PoisonLock::new(Vec::with_capacity(TX_PER_CORE_CACHE_SIZE)));
         }
         Self {
             caches,
@@ -176,7 +127,7 @@ impl PerCoreTxCache {
         let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
         let idx = cpu_id % self.caches.len();
 
-        let mut cache = self.caches[idx].lock();
+        let mut cache = self.caches[idx].lock().unwrap_or_else(|e| e.into_inner());
         if let Some(buf) = cache.pop() {
             return Some(buf);
         }
@@ -206,7 +157,7 @@ impl PerCoreTxCache {
         let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
         let idx = cpu_id % self.caches.len();
 
-        let mut cache = self.caches[idx].lock();
+        let mut cache = self.caches[idx].lock().unwrap_or_else(|e| e.into_inner());
         if cache.len() < self.per_core_capacity {
             cache.push(buffer);
         } else {

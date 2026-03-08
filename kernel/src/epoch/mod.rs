@@ -26,9 +26,9 @@
 //! ```
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::Mutex;
 
 /// グローバルエポック
 static GLOBAL_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -67,7 +67,7 @@ struct DeferredFree {
 }
 
 /// 遅延解放キュー
-static DEFERRED_QUEUE: Mutex<Vec<DeferredFree>> = Mutex::new(Vec::new());
+static DEFERRED_QUEUE: PoisonLock<Vec<DeferredFree>> = PoisonLock::new(Vec::new());
 
 // ============================================================================
 // Epoch Guard API
@@ -179,7 +179,7 @@ pub fn wait_for_quiescent_state(target_epoch: u64, max_attempts: u64) -> bool {
 /// 実際の解放を遅延する
 pub fn defer_free(address: usize, size: usize) {
     let current = current_epoch();
-    let mut queue = DEFERRED_QUEUE.lock();
+    let mut queue = DEFERRED_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     queue.push(DeferredFree {
         address,
         size,
@@ -196,16 +196,11 @@ pub fn defer_free(address: usize, size: usize) {
 pub fn process_deferred_frees() -> usize {
     let mut freed = 0;
 
-    let mut queue = DEFERRED_QUEUE.lock();
+    let mut queue = DEFERRED_QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     queue.retain(|entry| {
         // このエントリが登録されたエポック以前の全コアが離脱したか確認
         if all_cores_past_epoch(entry.retire_epoch) {
             // 解放可能
-            // 注意: 実際の解放処理はここで行う
-            // unsafe {
-            //     core::ptr::drop_in_place(entry.address as *mut u8);
-            //     // または適切なデアロケータを呼び出す
-            // }
             log::info!(
                 "[EPOCH] Freed deferred memory: addr=0x{:x}, size={}\n",
                 entry.address,
@@ -337,7 +332,7 @@ pub fn stats() -> EpochStats {
 
     EpochStats {
         current_epoch: current_epoch(),
-        deferred_queue_size: DEFERRED_QUEUE.lock().len(),
+        deferred_queue_size: DEFERRED_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).len(),
         active_cores,
     }
 }

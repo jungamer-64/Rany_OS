@@ -22,6 +22,7 @@
 
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -485,18 +486,19 @@ fn parse_type_id_section(data: &[u8]) -> Option<CellDependencies> {
 }
 
 /// グローバルインターフェースレジストリ
-static INTERFACE_REGISTRY: spin::Mutex<InterfaceRegistry> =
-    spin::Mutex::new(InterfaceRegistry::new());
+static INTERFACE_REGISTRY: PoisonLock<InterfaceRegistry> =
+    PoisonLock::new(InterfaceRegistry::new());
 
 /// カーネルインターフェースを登録
 pub fn register_kernel_interface<T: TypeIdHash>() {
-    INTERFACE_REGISTRY.lock().register::<T>();
+    INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).register::<T>();
 }
 
 /// カーネルインターフェースを手動登録
 pub fn register_kernel_interface_manual(name: &str, hash: TypeHash, version: SemVer) {
     INTERFACE_REGISTRY
         .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .register_manual(String::from(name), hash, version);
 }
 
@@ -504,6 +506,7 @@ pub fn register_kernel_interface_manual(name: &str, hash: TypeHash, version: Sem
 pub fn get_kernel_interface(name: &str) -> Option<TypeIdInfo> {
     INTERFACE_REGISTRY
         .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .interfaces
         .iter()
         .find(|i| i.name == name)
@@ -512,12 +515,12 @@ pub fn get_kernel_interface(name: &str) -> Option<TypeIdInfo> {
 
 /// 登録済みカーネルインターフェースを列挙（シェル観測用）
 pub fn list_kernel_interfaces() -> Vec<TypeIdInfo> {
-    INTERFACE_REGISTRY.lock().interfaces.clone()
+    INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).interfaces.clone()
 }
 
 /// セルの依存関係を検証
 pub fn verify_cell_dependencies(deps: &CellDependencies) -> Result<(), TypeIdError> {
-    let registry = INTERFACE_REGISTRY.lock();
+    let registry = INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
 
     for dep in &deps.dependencies {
         registry.verify_with_version(&dep.interface, dep.hash, dep.min_version)?;
@@ -584,7 +587,7 @@ impl TypeIdHash for IpcInterface {
 /// カーネルインターフェースの初期化
 pub fn init_kernel_interfaces() {
     crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: enter\n");
-    let mut registry = INTERFACE_REGISTRY.lock();
+    let mut registry = INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: locked\n");
 
     // 標準カーネルインターフェースを登録

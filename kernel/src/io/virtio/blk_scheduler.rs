@@ -12,11 +12,11 @@
 
 extern crate alloc;
 
+use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::{Mutex, RwLock};
 
 use crate::io::io_scheduler::{
     DeviceId, DeviceOps, IoCommand, IoError, IoRequest, IoRequestId, IoResult, PollHandler,
@@ -54,7 +54,7 @@ pub struct VirtioBlkPollHandler {
     device_index: u8,
     /// 保留中リクエスト: queue_idx -> { desc_id -> PendingBlkRequest }
     /// マルチキュー対応のためキューごとに分離してロック競合を回避する
-    pending: Vec<Mutex<BTreeMap<u16, PendingBlkRequest>>>,
+    pending: Vec<PoisonLock<BTreeMap<u16, PendingBlkRequest>>>,
 }
 
 impl VirtioBlkPollHandler {
@@ -62,7 +62,7 @@ impl VirtioBlkPollHandler {
     pub fn new(device_index: u8, queue_count: usize) -> Self {
         let mut pending = Vec::with_capacity(queue_count);
         for _ in 0..queue_count {
-            pending.push(Mutex::new(BTreeMap::new()));
+            pending.push(PoisonLock::new(BTreeMap::new()));
         }
         Self {
             device_index,
@@ -79,7 +79,7 @@ impl VirtioBlkPollHandler {
         let mut results = Vec::new();
         for &(queue_idx, desc_id, _len) in raw_completions {
             let mut pending_guard = if let Some(p) = self.pending.get(queue_idx) {
-                p.lock()
+                p.lock().unwrap_or_else(|e| e.into_inner())
             } else {
                 continue;
             };
@@ -105,7 +105,10 @@ impl VirtioBlkPollHandler {
                 };
 
                 if let Some(queue_arc) = device.queue(queue_idx) {
-                    queue_arc.lock().expect("lock poisoned").free_desc(desc_id);
+                    queue_arc
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .free_desc(desc_id);
                 }
 
                 results.push((req.io_id, result));
@@ -117,15 +120,18 @@ impl VirtioBlkPollHandler {
     /// リクエストを保留マップに追加（submit 成功後に呼ぶ）
     pub fn add_pending(&self, io_id: IoRequestId, queue_idx: usize, desc_id: u16, bytes: usize) {
         if let Some(pending_queue) = self.pending.get(queue_idx) {
-            pending_queue.lock().insert(
-                desc_id,
-                PendingBlkRequest {
-                    io_id,
-                    queue_idx,
+            pending_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(
                     desc_id,
-                    bytes,
-                },
-            );
+                    PendingBlkRequest {
+                        io_id,
+                        queue_idx,
+                        desc_id,
+                        bytes,
+                    },
+                );
         }
     }
 
@@ -137,6 +143,7 @@ impl VirtioBlkPollHandler {
         self.pending
             .get(queue_idx)?
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&desc_id)
             .map(|req| (req.io_id, req.bytes))
     }
@@ -155,7 +162,7 @@ impl PollHandler for VirtioBlkPollHandler {
         let queue_count = device.queue_count();
         for q_idx in 0..queue_count {
             if let Some(queue_arc) = device.queue(q_idx) {
-                let mut queue_guard = queue_arc.lock().expect("lock poisoned");
+                let mut queue_guard = queue_arc.lock().unwrap_or_else(|e| e.into_inner());
                 queue_guard.poll_completions(|desc_id, len| {
                     raw_completions.push((q_idx, desc_id, len));
                 });
@@ -299,12 +306,16 @@ impl PollHandler for VirtioBlkPollHandlerWrapper {
 }
 
 /// グローバル PollHandler レジストリ (device_index -> handler)
-static VIRTIO_BLK_POLL_HANDLERS: RwLock<BTreeMap<u8, Arc<VirtioBlkPollHandler>>> =
-    RwLock::new(BTreeMap::new());
+static VIRTIO_BLK_POLL_HANDLERS: PoisonRwLock<BTreeMap<u8, Arc<VirtioBlkPollHandler>>> =
+    PoisonRwLock::new(BTreeMap::new());
 
 /// 指定デバイスの PollHandler を取得（割り込みハンドラから使用）
 pub fn get_poll_handler(device_index: u8) -> Option<Arc<VirtioBlkPollHandler>> {
-    VIRTIO_BLK_POLL_HANDLERS.read().get(&device_index).cloned()
+    VIRTIO_BLK_POLL_HANDLERS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&device_index)
+        .cloned()
 }
 
 // ============================================================================
@@ -338,6 +349,7 @@ pub fn register_virtio_blk_with(
     // 3. グローバルレジストリに保存（割り込みハンドラからの参照用）
     VIRTIO_BLK_POLL_HANDLERS
         .write()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(device_index, handler.clone());
 
     // 4. DeviceOps を作成して登録

@@ -45,6 +45,7 @@ pub use capability::CapabilitySet;
 
 // The security module uses alloc types uniformly. No std dependency needed.
 extern crate alloc;
+use crate::sync::PoisonLock;
 use alloc::string::String as KernelString;
 use alloc::vec::Vec;
 
@@ -59,7 +60,6 @@ macro_rules! log {
     });
 }
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::Mutex;
 
 // ============================================================================
 // ドメインセキュリティコンテキスト
@@ -176,7 +176,7 @@ impl SecurityLevel {
 /// ドメイン間アクセス制御
 pub struct AccessControlManager {
     /// ドメインごとの権限マップ
-    domain_caps: Mutex<Vec<(u64, SecurityCapabilities)>>,
+    domain_caps: PoisonLock<Vec<(u64, SecurityCapabilities)>>,
     /// セキュリティ違反カウント
     violations: AtomicU64,
     /// 監査ログ有効化
@@ -187,7 +187,7 @@ impl AccessControlManager {
     /// 新しいマネージャを作成
     pub const fn new() -> Self {
         Self {
-            domain_caps: Mutex::new(Vec::new()),
+            domain_caps: PoisonLock::new(Vec::new()),
             violations: AtomicU64::new(0),
             audit_enabled: AtomicBool::new(true),
         }
@@ -195,7 +195,7 @@ impl AccessControlManager {
 
     /// ドメインの権限を設定
     pub fn set_capabilities(&self, domain_id: u64, caps: SecurityCapabilities) {
-        let mut caps_map = self.domain_caps.lock();
+        let mut caps_map = self.domain_caps.lock().unwrap_or_else(|e| e.into_inner());
 
         // 既存エントリを更新または追加
         if let Some(entry) = caps_map.iter_mut().find(|(id, _)| *id == domain_id) {
@@ -209,6 +209,7 @@ impl AccessControlManager {
     pub fn get_capabilities(&self, domain_id: u64) -> SecurityCapabilities {
         self.domain_caps
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|(id, _)| *id == domain_id)
             .map(|(_, caps)| *caps)
@@ -524,7 +525,7 @@ pub struct AuditEvent {
 /// 監査ログ
 pub struct AuditLog {
     /// イベントバッファ
-    events: Mutex<Vec<AuditEvent>>,
+    events: PoisonLock<Vec<AuditEvent>>,
     /// 最大イベント数
     max_events: usize,
     /// 有効化フラグ
@@ -535,7 +536,7 @@ impl AuditLog {
     /// 新しい監査ログを作成
     pub const fn new(max_events: usize) -> Self {
         Self {
-            events: Mutex::new(Vec::new()),
+            events: PoisonLock::new(Vec::new()),
             max_events,
             enabled: AtomicBool::new(true),
         }
@@ -547,7 +548,7 @@ impl AuditLog {
             return;
         }
 
-        let mut events = self.events.lock();
+        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
 
         // 最大数を超えたら古いイベントを削除
         if events.len() >= self.max_events {
@@ -559,12 +560,12 @@ impl AuditLog {
 
     /// イベントを取得
     pub fn get_events(&self) -> Vec<AuditEvent> {
-        self.events.lock().clone()
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// ログをクリア
     pub fn clear(&self) {
-        self.events.lock().clear();
+        self.events.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// 有効化/無効化

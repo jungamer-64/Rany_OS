@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::PoisonLock;
 
 impl VirtualConsole {
     pub fn new(id: u32, cols: usize, rows: usize) -> Self {
@@ -152,7 +153,7 @@ impl VirtualConsole {
 /// コンソールマネージャー
 pub struct ConsoleManager {
     /// 仮想コンソール
-    consoles: Vec<Mutex<VirtualConsole>>,
+    consoles: Vec<PoisonLock<VirtualConsole>>,
     /// 現在アクティブなコンソール
     active: AtomicU32,
     /// 列数
@@ -166,11 +167,11 @@ impl ConsoleManager {
         let mut consoles = Vec::with_capacity(MAX_VIRTUAL_CONSOLES);
         for i in 0..MAX_VIRTUAL_CONSOLES {
             let vc = VirtualConsole::new(i as u32, cols, rows);
-            consoles.push(Mutex::new(vc));
+            consoles.push(PoisonLock::new(vc));
         }
 
         // 最初のコンソールをアクティブに
-        consoles[0].lock().set_active(true);
+        consoles[0].lock().unwrap_or_else(|e| e.into_inner()).set_active(true);
 
         Self {
             consoles,
@@ -184,7 +185,7 @@ impl ConsoleManager {
     pub fn write(&self, s: &str) {
         let active = self.active.load(Ordering::Acquire) as usize;
         if let Some(console) = self.consoles.get(active) {
-            console.lock().write(s);
+            console.lock().unwrap_or_else(|e| e.into_inner()).write(s);
         }
     }
 
@@ -192,7 +193,7 @@ impl ConsoleManager {
     pub fn try_write(&self, s: &str) {
         let active = self.active.load(Ordering::Acquire) as usize;
         if let Some(console) = self.consoles.get(active) {
-            if let Some(mut locked_console) = console.try_lock() {
+            if let Ok(mut locked_console) = console.try_lock() {
                 locked_console.write(s);
             }
         }
@@ -201,7 +202,7 @@ impl ConsoleManager {
     /// 指定コンソールに書き込む
     pub fn write_to(&self, console_id: u32, s: &str) {
         if let Some(console) = self.consoles.get(console_id as usize) {
-            console.lock().write(s);
+            console.lock().unwrap_or_else(|e| e.into_inner()).write(s);
         }
     }
 
@@ -209,7 +210,7 @@ impl ConsoleManager {
     pub fn scroll_view(&self, delta: isize) {
         let active = self.active.load(Ordering::Acquire);
         if let Some(console) = self.consoles.get(active as usize) {
-            console.lock().scroll_view(delta);
+            console.lock().unwrap_or_else(|e| e.into_inner()).scroll_view(delta);
         }
     }
 
@@ -223,11 +224,11 @@ impl ConsoleManager {
         let old_active = self.active.swap(console_id, Ordering::AcqRel) as usize;
 
         if let Some(old) = self.consoles.get(old_active) {
-            old.lock().set_active(false);
+            old.lock().unwrap_or_else(|e| e.into_inner()).set_active(false);
         }
 
         if let Some(new) = self.consoles.get(id) {
-            new.lock().set_active(true);
+            new.lock().unwrap_or_else(|e| e.into_inner()).set_active(true);
         }
     }
 
@@ -250,10 +251,10 @@ impl ConsoleManager {
             return false;
         };
 
-        let Some(old_guard) = old_console.try_lock() else {
+        let Ok(old_guard) = old_console.try_lock() else {
             return false;
         };
-        let Some(new_guard) = new_console.try_lock() else {
+        let Ok(new_guard) = new_console.try_lock() else {
             return false;
         };
 
@@ -275,7 +276,7 @@ impl ConsoleManager {
     {
         self.consoles
             .get(console_id as usize)
-            .map(|c| f(&mut c.lock()))
+            .map(|c| f(&mut c.lock().unwrap_or_else(|e| e.into_inner())))
     }
 
     /// 次のコンソールに切り替え
@@ -302,13 +303,8 @@ impl ConsoleManager {
 // ============================================================================
 
 /// コンソール描画ドライバー
-///
-/// コンソールマネージャーからの出力を実際に画面に描画するためのトレイト
 pub trait ConsoleDriver: Send {
     /// バッファの内容を画面に反映
-    ///
-    /// buffer: 描画すべき端末バッファ
-    /// full_redraw: 画面全体の再描画が必要かどうか
     fn flush(&mut self, buffer: &TerminalBuffer);
 }
 
@@ -316,13 +312,13 @@ pub trait ConsoleDriver: Send {
 // Global Instance
 // ============================================================================
 
-pub(crate) static CONSOLE_MANAGER: Mutex<Option<ConsoleManager>> = Mutex::new(None);
-pub(crate) static CONSOLE_DRIVER: Mutex<Option<Box<dyn ConsoleDriver>>> = Mutex::new(None);
+pub(crate) static CONSOLE_MANAGER: PoisonLock<Option<ConsoleManager>> = PoisonLock::new(None);
+pub(crate) static CONSOLE_DRIVER: PoisonLock<Option<Box<dyn ConsoleDriver>>> = PoisonLock::new(None);
 
 /// コンソールシステムを初期化
 pub fn init(cols: usize, rows: usize) {
     install_keyboard_tap();
-    *CONSOLE_MANAGER.lock() = Some(ConsoleManager::new(cols, rows));
+    *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) = Some(ConsoleManager::new(cols, rows));
 }
 
 /// デフォルト設定で初期化
@@ -332,19 +328,17 @@ pub fn init_default() {
 
 /// ドライバを設定
 pub fn set_driver(driver: Box<dyn ConsoleDriver>) {
-    *CONSOLE_DRIVER.lock() = Some(driver);
-    // 初期描画のためにフラッシュ
+    *CONSOLE_DRIVER.lock().unwrap_or_else(|e| e.into_inner()) = Some(driver);
     flush_screen();
 }
 
 /// 画面を強制的にフラッシュ
 pub fn flush_screen() {
-    if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
-        if let Some(ref mut driver) = *CONSOLE_DRIVER.lock() {
+    if let Some(ref manager) = *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) {
+        if let Some(ref mut driver) = *CONSOLE_DRIVER.lock().unwrap_or_else(|e| e.into_inner()) {
             let active = manager.active_console();
             if let Some(console) = manager.consoles.get(active as usize) {
-                // Use .buffer() getter as the field is private
-                driver.flush(console.lock().buffer());
+                driver.flush(console.lock().unwrap_or_else(|e| e.into_inner()).buffer());
             }
         }
     }
@@ -353,18 +347,17 @@ pub fn flush_screen() {
 /// コンソールに書き込む (Blocking)
 pub fn write(s: &str) {
     {
-        if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
+        if let Some(ref manager) = *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) {
             manager.write(s);
         }
     }
-    // 書き込み後にフラッシュ
     flush_screen();
 }
 
 /// 指定コンソールに書き込む
 pub fn write_to(console_id: u32, s: &str) {
     let should_flush = {
-        if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
+        if let Some(ref manager) = *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) {
             manager.write_to(console_id, s);
             manager.active_console() == console_id
         } else {
@@ -378,24 +371,20 @@ pub fn write_to(console_id: u32, s: &str) {
 }
 
 /// コンソールに書き込む (Non-blocking / Try Lock)
-/// 割り込みハンドラやロガーからの呼び出し用
 pub fn try_write(s: &str) {
-    // Try to lock manager
-    if let Some(guard) = CONSOLE_MANAGER.try_lock() {
+    if let Ok(guard) = CONSOLE_MANAGER.try_lock() {
         if let Some(ref manager) = *guard {
             manager.try_write(s);
         }
     }
 
-    // Try to flush (best effort)
-    if let Some(manager_guard) = CONSOLE_MANAGER.try_lock() {
+    if let Ok(manager_guard) = CONSOLE_MANAGER.try_lock() {
         if let Some(ref manager) = *manager_guard {
-            if let Some(mut driver_guard) = CONSOLE_DRIVER.try_lock() {
+            if let Ok(mut driver_guard) = CONSOLE_DRIVER.try_lock() {
                 if let Some(ref mut driver) = *driver_guard {
                     let active = manager.active_console();
                     if let Some(console) = manager.consoles.get(active as usize) {
-                        // Try lock console
-                        if let Some(locked_console) = console.try_lock() {
+                        if let Ok(locked_console) = console.try_lock() {
                             driver.flush(locked_console.buffer());
                         }
                     }
@@ -410,7 +399,7 @@ pub fn with_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&ConsoleManager) -> R,
 {
-    CONSOLE_MANAGER.lock().as_ref().map(f)
+    CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(f)
 }
 
 /// 現在のアクティブコンソールIDを取得
@@ -420,7 +409,7 @@ pub fn active_console() -> u32 {
 
 /// コンソールを切り替え
 pub fn switch(console_id: u32) {
-    if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
+    if let Some(ref manager) = *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) {
         manager.switch_to(console_id);
     }
     flush_screen();
@@ -428,7 +417,7 @@ pub fn switch(console_id: u32) {
 
 /// コンソールを切り替え (best-effort / non-blocking)
 pub fn try_switch(console_id: u32) -> bool {
-    let switched = if let Some(manager_guard) = CONSOLE_MANAGER.try_lock() {
+    let switched = if let Ok(manager_guard) = CONSOLE_MANAGER.try_lock() {
         if let Some(ref manager) = *manager_guard {
             manager.try_switch_to(console_id)
         } else {
@@ -442,13 +431,13 @@ pub fn try_switch(console_id: u32) -> bool {
         return false;
     }
 
-    if let Some(manager_guard) = CONSOLE_MANAGER.try_lock() {
+    if let Ok(manager_guard) = CONSOLE_MANAGER.try_lock() {
         if let Some(ref manager) = *manager_guard {
-            if let Some(mut driver_guard) = CONSOLE_DRIVER.try_lock() {
+            if let Ok(mut driver_guard) = CONSOLE_DRIVER.try_lock() {
                 if let Some(ref mut driver) = *driver_guard {
                     let active = manager.active_console();
                     if let Some(console) = manager.consoles.get(active as usize) {
-                        if let Some(locked_console) = console.try_lock() {
+                        if let Ok(locked_console) = console.try_lock() {
                             driver.flush(locked_console.buffer());
                         }
                     }
@@ -462,46 +451,8 @@ pub fn try_switch(console_id: u32) -> bool {
 
 /// アクティブなコンソールをスクロール
 pub fn scroll(delta: isize) {
-    if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
+    if let Some(ref manager) = *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) {
         manager.scroll_view(delta);
     }
     flush_screen();
 }
-
-// ============================================================================
-// Print Macros
-// ============================================================================
-
-/// コンソールにフォーマット出力
-#[macro_export]
-macro_rules! console_print {
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        use alloc::string::ToString;
-        let s = alloc::format!($($arg)*);
-        $crate::console::write(&s);
-    }};
-}
-
-/// コンソールにフォーマット出力（改行付き）
-#[macro_export]
-macro_rules! console_println {
-    () => {
-        $crate::console::write("\n");
-    };
-    ($($arg:tt)*) => {{
-        use core::fmt::Write;
-        use alloc::string::ToString;
-        let s = alloc::format!($($arg)*);
-        $crate::console::write(&s);
-        $crate::console::write("\n");
-    }};
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

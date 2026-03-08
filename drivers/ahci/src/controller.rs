@@ -6,7 +6,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
+use exorust_sync::PoisonLock;
 
 use super::port::AhciPort;
 use super::types::{
@@ -18,7 +18,7 @@ use super::types::{
 pub struct AhciController {
     base: u64,
     ports_implemented: u32,
-    ports: Vec<Arc<Mutex<AhciPort>>>,
+    ports: Vec<Arc<PoisonLock<AhciPort>>>,
     version: u32,
     command_slots: u8,
     device_id: Option<u64>,
@@ -51,7 +51,7 @@ impl AhciController {
                         // Device detected, init it
                         // If init fails, we still keep the port structure but maybe not active
                         if port.init().is_ok() {
-                            ports.push(Arc::new(Mutex::new(port)));
+                            ports.push(Arc::new(PoisonLock::new(port)));
                         }
                     }
                 }
@@ -98,13 +98,7 @@ impl AhciController {
         self.command_slots
     }
 
-    pub fn port(&self, _port: PortNumber) -> Option<Arc<Mutex<AhciPort>>> {
-        // This is tricky with Mutex. We probably want to return a reference or clone if Arc.
-        // But AhciPort is not Clone.
-        // For the driver interface, we usually need to perform operations on the port.
-        // Or we return a locked guard?
-        // For now, let's just make `ports` accessible via a method that takes a closure?
-        // Or typically, the driver wrapper holds Arc<Mutex<AhciController>> and we lock it.
+    pub fn port(&self, _port: PortNumber) -> Option<Arc<PoisonLock<AhciPort>>> {
         None
     }
 
@@ -124,8 +118,8 @@ impl AhciController {
     where
         F: FnOnce(&mut AhciPort) -> R,
     {
-        if let Some(port_mutex) = self.ports.get(port_num.as_usize()) {
-            let mut port = port_mutex.lock();
+        if let Some(port_lock) = self.ports.get(port_num.as_usize()) {
+            let mut port = port_lock.lock().unwrap_or_else(|e| e.into_inner());
             Some(f(&mut *port))
         } else {
             None
@@ -147,8 +141,8 @@ impl AhciController {
     }
 }
 
-pub fn init_from_pci(base_addr: u64) -> AhciResult<Arc<Mutex<AhciController>>> {
+pub fn init_from_pci(base_addr: u64) -> AhciResult<Arc<PoisonLock<AhciController>>> {
     let mut controller = AhciController::new(base_addr, None)?;
     controller.init()?;
-    Ok(Arc::new(Mutex::new(controller)))
+    Ok(Arc::new(PoisonLock::new(controller)))
 }

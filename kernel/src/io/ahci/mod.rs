@@ -27,8 +27,8 @@ pub use ahci_driver::identify;
 pub use ahci_driver::port;
 pub use ahci_driver::types;
 
+pub use crate::sync::PoisonLock;
 pub use alloc::sync::Arc;
-pub use spin::Mutex;
 
 // Re-export types from ahci_driver for convenience
 pub use command::{CommandHeader, CommandTable, PhysicalRegionDescriptor, ReceivedFis};
@@ -91,7 +91,7 @@ pub use port::AhciPort;
 pub fn init_from_pci(
     base_virt: u64,
     device_id: Option<crate::io::iommu::types::DeviceId>,
-) -> AhciResult<Arc<Mutex<AhciController>>> {
+) -> AhciResult<Arc<PoisonLock<AhciController>>> {
     let packed_id = device_id.map(|d| {
         ((d.segment as u64) << 32)
             | ((d.bus as u64) << 16)
@@ -99,6 +99,6 @@ pub fn init_from_pci(
             | (d.function as u64)
     });
     let controller = AhciController::new(base_virt, packed_id)?;
-    let arc = Arc::new(Mutex::new(controller));
+    let arc = Arc::new(PoisonLock::new(controller));
     Ok(arc)
 }

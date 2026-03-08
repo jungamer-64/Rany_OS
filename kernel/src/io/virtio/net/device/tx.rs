@@ -77,11 +77,19 @@ impl VirtioNetDevice {
         if let Some(tx_queue) = self.tx_queues.first() {
             let q_idx = 0; // First TX queue index in per-queue vectors
             let device_addr = buffer.device_addr();
+            let iova = if buffer.is_iommu_mapped() { Some(device_addr) } else { None };
+            let iommu_len = buffer.size() as u32;
+            let slice = unsafe { buffer.as_slice() };
+
             match tx_queue.add_tx_buffer_zero_copy(device_addr, data_len) {
                 Ok(desc_idx) => {
-                    if let Some(tracker) = self.tx_inflight.get(q_idx) {
-                        tracker.put(desc_idx, buffer);
-                    }
+                    let tracker = &self.core.tx_trackers[q_idx];
+                    tracker.put(desc_idx, virtio_driver::net::TxInflight {
+                        packet: crate::net::datapath::mempool::packet_ref_from_dma_slice(slice),
+                        bounce_buffer: Some(buffer.into_dma_slice()), 
+                        iommu_iova: iova,
+                        iommu_map_len: iommu_len,
+                    });
 
                     tx_queue.notify(self.transport.as_ref());
 
@@ -194,21 +202,20 @@ impl VirtioNetDevice {
         }
 
         match tx_queue.add_tx_buffer_zero_copy(dma_addr, data.len()) {
-                Ok(desc_idx) => {
-                    let entry = TxPacketInflight {
+            Ok(desc_idx) => {
+                let q_idx = 0; // Simplified for first TX queue
+                let tracker = &self.core.tx_trackers[q_idx];
+                tracker.put(
+                    desc_idx,
+                    virtio_driver::net::TxInflight {
                         packet,
-                        bounce_handle: None,
-                        dma_iova: mapped_iova,
-                        dma_len: mapped_len,
-                        pool_bounce_buffer: bounce_buffer,
-                    };
+                        bounce_buffer: bounce_buffer.map(|buf| buf.into_dma_slice()),
+                        iommu_iova: mapped_iova,
+                        iommu_map_len: mapped_len as u64,
+                    },
+                );
 
-                    let q_idx = 0; // Simplified for first TX queue
-                    if let Some(tracker) = self.tx_packetrefs.get(q_idx) {
-                        tracker.put(desc_idx, entry);
-                    }
-
-                    tx_queue.notify(self.transport.as_ref());
+                tx_queue.notify(self.transport.as_ref());
                 trace::push_event(
                     NetLayer::Driver,
                     NetEventKind::Tx,
@@ -369,13 +376,11 @@ impl VirtioNetDevice {
 
     /// TXキュー完了を処理し、インフライトバッファを解放
     pub(super) fn process_tx_completions(&self) {
-        for (q_idx, tx_queue) in self.tx_queues.iter().enumerate() {
-            let completions = tx_queue.process_used();
-            if completions.is_empty() {
-                continue;
-            }
+        for (q_idx_pair, tx_queue) in self.tx_queues.iter().enumerate() {
+            let q_idx = (q_idx_pair * 2 + 1) as u16; // TX queue index in VirtIO is odd
+            let mut inner = tx_queue.inner.lock().expect("Failed to lock TX queue");
 
-            for (desc_idx, len) in completions {
+            while let Some((desc_idx, len)) = inner.poll_complete() {
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 self.tx_bytes.fetch_add(len, Ordering::Relaxed);
                 trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio tx completion");
@@ -385,38 +390,44 @@ impl VirtioNetDevice {
                 // IoScheduler path: completion belongs to a pending IoRequest.
                 if let Some(handler) = get_poll_handler(self.virtio_index) {
                     if let Some((io_id, requested_bytes)) = handler.take_pending_tx(desc_idx) {
-                        let result = if tx_queue.take_completion(desc_idx).is_some() {
-                            crate::io::io_scheduler::IoResult::Success(requested_bytes)
-                        } else {
-                            log::warn!(
-                                "[VIRTIO-NET] TX scheduler completion disappeared desc={}",
-                                desc_idx
-                            );
-                            counters::global().record_error();
-                            trace::push_event(
-                                NetLayer::Driver,
-                                NetEventKind::Error,
-                                "virtio tx scheduler completion missing",
-                            );
-                            crate::io::io_scheduler::IoResult::Error(
-                                crate::io::io_scheduler::IoError::DeviceError,
-                            )
-                        };
+                        inner.free_desc_chain(desc_idx);
+
                         let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
                             index: self.virtio_index,
                         };
                         let bridge =
                             crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
-                        bridge.handle_interrupt(device_id, &[(io_id, result)]);
+                        bridge.handle_interrupt(
+                            device_id,
+                            &[(
+                                io_id,
+                                crate::io::io_scheduler::IoResult::Success(requested_bytes),
+                            )],
+                        );
                         continue;
                     }
                 }
 
-                if self.handle_legacy_tx_completion(tx_queue, q_idx, desc_idx, len) {
+                // Core tracker path
+                let tracker = &self.core.tx_trackers[q_idx_pair];
+                if let Some(inflight) = tracker.take(desc_idx) {
+                    inner.free_desc_chain(desc_idx);
+
+                    // Cleanup DMA resources if any
+                    if let Some(iova) = inflight.iommu_iova {
+                        let _ = unmap_iommu_addr(
+                            self.iommu_device_id,
+                            iova,
+                            inflight.iommu_map_len as usize,
+                        );
+                    }
+                    // packet and bounce_buffer will be dropped/freed automatically
                     continue;
                 }
 
-                self.release_unknown_tx_completion(tx_queue, desc_idx);
+                log::warn!("[VIRTIO-NET] TX completion for unknown desc {}", desc_idx);
+                inner.free_desc_chain(desc_idx);
+                counters::global().record_error();
             }
 
             // Notify network stack that TX resources became available
@@ -424,88 +435,5 @@ impl VirtioNetDevice {
                 crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
             );
         }
-    }
-
-    /// Legacy TX completion handler shared by IRQ path and PollHandler path.
-    ///
-    /// Returns true when the descriptor belonged to the legacy data path and was handled.
-    pub(super) fn handle_legacy_tx_completion(
-        &self,
-        tx_queue: &NetVirtQueue,
-        q_idx: usize,
-        desc_idx: u16,
-        _len: u32,
-    ) -> bool {
-        let inflight = if let Some(tracker) = self.tx_inflight.get(q_idx) {
-            tracker.take(desc_idx)
-        } else {
-            None
-        };
-
-        if let Some(_buf) = inflight {
-            if tx_queue.take_completion(desc_idx).is_none() {
-                log::warn!(
-                    "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",
-                    desc_idx
-                );
-                counters::global().record_error();
-                trace::push_event(
-                    NetLayer::Driver,
-                    NetEventKind::Error,
-                    "virtio tx legacy completion missing",
-                );
-            }
-            return true;
-        }
-
-        let inflight = if let Some(tracker) = self.tx_packetrefs.get(q_idx) {
-            tracker.take(desc_idx)
-        } else {
-            None
-        };
-
-        if let Some(entry) = inflight {
-            if tx_queue.take_completion(desc_idx).is_none() {
-                log::warn!(
-                    "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",
-                    desc_idx
-                );
-                counters::global().record_error();
-                trace::push_event(
-                    NetLayer::Driver,
-                    NetEventKind::Error,
-                    "virtio tx zero-copy completion missing",
-                );
-            }
-            if let Some(buf) = entry.pool_bounce_buffer {
-                self.return_tx_bounce_buffer(buf);
-            }
-            if let Some(handle) = entry.bounce_handle {
-                let _ = handle.unmap();
-            }
-            if let Some(iova) = entry.dma_iova {
-                let _ = unmap_iommu_addr(self.iommu_device_id, iova, entry.dma_len);
-            }
-            return true;
-        }
-
-        false
-    }
-
-    /// Release unknown TX completion to avoid descriptor leaks.
-    pub(super) fn release_unknown_tx_completion(&self, tx_queue: &NetVirtQueue, desc_idx: u16) {
-        if tx_queue.take_completion(desc_idx).is_none() {
-            log::warn!(
-                "[VIRTIO-NET] TX completion missing pending slot for unknown desc {}",
-                desc_idx
-            );
-        }
-        log::warn!("[VIRTIO-NET] TX completion for unknown desc {}", desc_idx);
-        counters::global().record_error();
-        trace::push_event(
-            NetLayer::Driver,
-            NetEventKind::Error,
-            "virtio tx completion unknown desc",
-        );
     }
 }

@@ -650,7 +650,7 @@ fn init_single_ahci_controller(dev: &kernel_api::service::platform::PciDeviceInf
     match crate::drivers::ahci::init_from_pci(base_virt, Some(iommu_device)) {
         Ok(controller) => {
             info!(target: "init", "AHCI controller initialized");
-            let first_port = controller.lock().get_port_start_index().unwrap_or(0) as u8;
+            let first_port = controller.lock().unwrap_or_else(|e| e.into_inner()).get_port_start_index().unwrap_or(0) as u8;
             crate::drivers::ahci::register_ahci_with_io_scheduler(controller.clone(), first_port);
             crate::io::log::early_print("[HEAP_CHECK] after AHCI controller init\n");
             crate::memory::verify_buddy_integrity();

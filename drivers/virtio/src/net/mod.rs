@@ -12,6 +12,24 @@ pub mod inflight;
 
 pub use inflight::InflightTracker;
 
+/// In-flight RX packet state.
+#[derive(Debug)]
+pub struct RxInflight {
+    pub packet: PacketRef,
+    pub iommu_iova: Option<u64>,
+    pub iommu_map_len: u64,
+}
+
+/// In-flight TX packet state.
+#[derive(Debug)]
+pub struct TxInflight {
+    pub packet: PacketRef,
+    /// Bounce buffer if used (owned via DmaSlice)
+    pub bounce_buffer: Option<DmaSlice<CpuOwned>>,
+    pub iommu_iova: Option<u64>,
+    pub iommu_map_len: u64,
+}
+
 /// Runtime DMA allocation purpose for virtio-net queue and bounce memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetDmaPurpose {
@@ -22,7 +40,7 @@ pub enum NetDmaPurpose {
 }
 
 /// Kernel-owned allocation hooks used by the portable virtio-net core.
-pub trait NetRuntime {
+pub trait NetRuntime: Send + Sync {
     fn alloc_dma(
         &self,
         size: usize,
@@ -33,6 +51,9 @@ pub trait NetRuntime {
     
     /// Schedule a waker for a queue event.
     fn schedule_wake(&self, queue_index: u16);
+
+    /// Log a message from the driver core.
+    fn log(&self, level: log::Level, msg: core::fmt::Arguments);
 }
 
 /// Shared VirtIO network queue implementation.
@@ -125,6 +146,26 @@ impl NetVirtQueue {
         }
 
         Ok(desc_idx)
+    }
+
+    /// Get the number of available descriptors.
+    pub fn available_descriptors(&self) -> u16 {
+        self.vq.free_count()
+    }
+
+    /// Poll for completed buffers.
+    pub fn poll_complete(&self) -> Option<(u16, u32)> {
+        self.vq.poll_complete()
+    }
+
+    /// Reclaim a descriptor chain.
+    pub fn free_desc_chain(&self, head: u16) {
+        self.vq.free_desc_chain(head);
+    }
+
+    /// Notify the device.
+    pub fn notify(&self, transport: &dyn crate::transport::VirtioTransport) {
+        self.vq.notify(transport);
     }
 }
 

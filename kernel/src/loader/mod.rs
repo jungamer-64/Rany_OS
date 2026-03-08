@@ -32,11 +32,11 @@ pub use signature::{
 };
 
 use crate::driver_registry::{DriverHandle, register_abi_driver, register_exports_driver};
+use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kernel_api::abi::driver::{DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverExportsV1};
-use spin::Mutex;
 
 #[inline]
 pub(crate) fn str_eq(lhs: &str, rhs: &str) -> bool {
@@ -196,11 +196,6 @@ impl CellRegistry {
     /// セルを登録
     pub fn register(&mut self, entry: CellEntry) {
         crate::io::log::early_print("[LDBG] registry.register: begin\n");
-        // Live-update shadow loads can register a second cell with the same logical
-        // name before the swap commit. During this staging phase we don't need to
-        // mutate the global symbol table yet; touching it has been a hot crash point
-        // in the driver_domain runtime path, while per-cell exports remain available
-        // via `entry.exports`.
         let is_shadow_staging = entry.name.starts_with("update-")
             || self.cells.values().any(|cell| cell.name == entry.name);
         if is_shadow_staging {
@@ -208,7 +203,6 @@ impl CellRegistry {
                 "[LDBG] registry.register: staging duplicate-name, skip symtab\n",
             );
         }
-        // シンボルテーブルにエクスポートを追加
         if !is_shadow_staging {
             for (_idx, (symbol, addr)) in entry.exports.iter().enumerate() {
                 if (_idx & 0x3f) == 0 {
@@ -250,7 +244,6 @@ impl CellRegistry {
     /// セルをアンロード
     pub fn unload(&mut self, id: CellId) -> Option<CellEntry> {
         if let Some(entry) = self.cells.remove(&id) {
-            // シンボルテーブルからエクスポートを削除
             let live_update_shadow_involved = entry.name.starts_with("update-")
                 || self
                     .cells
@@ -312,14 +305,14 @@ pub struct ExoCellInfo {
 }
 
 /// グローバルセルレジストリ
-static CELL_REGISTRY: Mutex<CellRegistry> = Mutex::new(CellRegistry::new());
+static CELL_REGISTRY: PoisonLock<CellRegistry> = PoisonLock::new(CellRegistry::new());
 
 /// セルレジストリにアクセス
 pub fn with_registry<F, R>(f: F) -> R
 where
     F: FnOnce(&CellRegistry) -> R,
 {
-    f(&CELL_REGISTRY.lock())
+    f(&CELL_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// セルレジストリを変更
@@ -327,7 +320,7 @@ pub fn with_registry_mut<F, R>(f: F) -> R
 where
     F: FnOnce(&mut CellRegistry) -> R,
 {
-    f(&mut CELL_REGISTRY.lock())
+    f(&mut CELL_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// ロードエラー
@@ -373,12 +366,6 @@ impl core::fmt::Display for LoadError {
 }
 
 /// セルをロード（メインAPI）
-///
-/// # 設計書 3.3: ロード時検証
-/// 1. ELFフォーマットの検証
-/// 2. 署名の検証
-/// 3. 依存関係の解決
-/// 4. メモリへの配置
 pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<CellId, LoadError> {
     // 1. 署名の検証
     let signature = signature::extract_signature(elf_data)?;
@@ -437,30 +424,25 @@ fn load_cell_with_flags(
 ) -> Result<CellId, LoadError> {
     validate_cell_requirements(name, elf_data, allow_unsafe, contains_unsafe)?;
 
-    // 3. ELFをパース
     crate::io::log::early_print("[LDBG] new\n");
     let loader = elf::ElfLoader::new(elf_data)?;
     crate::io::log::early_print("[LDBG] parse\n");
     let cell_info = loader.parse()?;
     crate::io::log::early_print("[LDBG] parsed\n");
 
-    // 4. 依存関係のチェック
     for import in &cell_info.imports {
         if with_registry(|r| r.resolve_symbol(*import)).is_none() {
             return Err(LoadError::UnresolvedDependency((*import).to_string()));
         }
     }
 
-    // 5. メモリ割り当てとロード
     crate::io::log::early_print("[LDBG] load\n");
     let loaded = loader.load(&cell_info)?;
 
-    // 6. リロケーション
     let resolver = |s: &str| with_registry(|r| r.resolve_symbol(s));
     crate::io::log::early_print("[LDBG] relocate\n");
     loader.relocate(&loaded, resolver)?;
 
-    // 6. レジストリに登録
     crate::io::log::early_print("[LDBG] register\n");
     let id = with_registry_mut(|r| {
         crate::io::log::early_print("[LDBG] register: alloc_id\n");
@@ -516,9 +498,7 @@ pub fn load_driver(
     elf_data: &[u8],
     allow_unsafe: bool,
 ) -> Result<DriverHandle, LoadError> {
-    // Load the cell first
     let cell_id = load_cell(name, elf_data, allow_unsafe)?;
-
     register_driver_from_cell(cell_id)
 }
 
@@ -592,7 +572,6 @@ fn record_driver_handle(cell_id: CellId, handle: DriverHandle) {
 
 pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError> {
     crate::io::log::early_print("[LDR] regdrv: begin\n");
-    // Prefer DRIVER_EXPORTS when available
     let exports_addr = with_registry(|r| {
         let cell = r.get(cell_id)?;
         cell.exports
@@ -621,7 +600,6 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
         }
     }
 
-    // Resolve driver entry symbol address from the specific cell
     let entry_addr = with_registry(|r| {
         let cell = r.get(cell_id)?;
         cell.exports
@@ -633,7 +611,6 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
     let entry_addr = match entry_addr {
         Some(a) => a,
         None => {
-            // Unload cell if entry not found
             with_registry_mut(|r| {
                 r.unload(cell_id);
             });
@@ -644,11 +621,9 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
     };
     crate::io::log::early_print("[LDR] regdrv: abi path\n");
 
-    // Cast address to function pointer
     let entry_fn: kernel_api::abi::driver::DriverEntryFn =
         unsafe { core::mem::transmute(entry_addr) };
 
-    // Register with driver registry
     match register_abi_driver(entry_fn) {
         Ok(handle) => {
             crate::io::log::early_print("[LDR] regdrv: abi registered\n");
@@ -656,7 +631,6 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
             Ok(handle)
         }
         Err(_) => {
-            // registration failed - unload cell to clean up
             with_registry_mut(|r| {
                 r.unload(cell_id);
             });
@@ -668,15 +642,8 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
 }
 
 /// セルをアンロード
-///
-/// 設計書 3.5.3: Epoch-based Reclamation
-/// - アンロード前にグローバルエポックをインクリメント
-/// - 全コアがQuiescent Stateに到達するまで待機
-/// - その後にメモリを安全に解放
 pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
-    // 依存しているセルがないかチェック
     let has_dependents = with_registry(|r| r.all_cells().any(|c| c.dependencies.contains(&id)));
-    // Check if this cell has any registered drivers
     let has_drivers = with_registry(|r| {
         r.get(id)
             .map(|c| !c.registered_drivers.is_empty())
@@ -694,7 +661,6 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
         ));
     }
 
-    // セルのメモリ情報と PKEY を取得（unload前に必要）
     let (load_address, load_size, allocation_base, allocation_size, pkey_opt) =
         with_registry(|r| {
             r.get(id)
@@ -710,7 +676,6 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
                 .ok_or(LoadError::CellNotFound)
         })?;
 
-    // Epoch-based Reclamation: グローバルエポックをインクリメント
     let old_epoch = live_update::current_epoch();
     log::info!(
         "[Loader] Unloading cell {:?}, waiting for epoch {} quiescence\n",
@@ -718,26 +683,18 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
         old_epoch
     );
 
-    // Unload runs outside the code being reclaimed; mark the current core as
-    // quiescent before waiting so we don't self-deadlock if the caller forgot
-    // to exit a live-update critical section.
     live_update::enter_quiescent_state();
-
-    // 全コアがQuiescent Stateに到達するまで待機
     live_update::wait_for_quiescent_state(old_epoch);
 
-    // レジストリから削除
     with_registry_mut(|r| {
         r.unload(id);
     });
 
-    // Protection Key を解放（存在する場合）
     if let Some(_pk) = pkey_opt {
         #[cfg(any(feature = "pkey_integration_test", not(any(test, feature = "bench"))))]
         crate::security::mpk::free_protection_key(_pk);
     }
 
-    // メモリ解放
     let dealloc_base = if allocation_base != 0 {
         allocation_base
     } else {
@@ -752,8 +709,6 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     if dealloc_base != 0 && dealloc_size > 0 {
         unsafe {
             use alloc::alloc::{Layout, dealloc};
-            // ELFローダーは4KiBアラインメントで割り当てる。ASLR時は
-            // `load_address` ではなく `allocation_base` で解放する必要がある。
             let layout = Layout::from_size_align_unchecked(dealloc_size, 4096);
             dealloc(dealloc_base as *mut u8, layout);
             log::debug!(
@@ -769,11 +724,8 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     Ok(())
 }
 
-/// Unload a registered driver by handle, unregistering from the DriverRegistry
-/// and removing it from the cell's registered_drivers. This ensures the cell
-/// can be unloaded safely by freeing the driver reference.
+/// Unload a registered driver by handle.
 pub fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
-    // Unregister from driver registry first
     match crate::driver_registry::unregister_driver(handle) {
         Ok(()) => {}
         Err(_) => {
@@ -783,7 +735,6 @@ pub fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
         }
     }
 
-    // Remove handle from cell entries
     let mut found = false;
     with_registry_mut(|r| {
         for entry in r.cells.values_mut() {

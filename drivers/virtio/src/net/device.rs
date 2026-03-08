@@ -7,11 +7,14 @@ use crate::transport::TransportError;
 use crate::net::*;
 use crate::net::features::*;
 
-/// Shared VirtIO Network Device logic.
 #[derive(Debug, Default)]
 pub struct VirtioNetDevice {
     pub config: VirtioNetConfig,
     pub stats: VirtioNetStats,
+    /// TX inflight trackers (per queue)
+    pub tx_trackers: alloc::vec::Vec<InflightTracker<TxInflight>>,
+    /// RX inflight trackers (per queue)
+    pub rx_trackers: alloc::vec::Vec<InflightTracker<RxInflight>>,
 }
 
 impl VirtioNetDevice {
@@ -114,5 +117,95 @@ impl VirtioNetDevice {
         transport.set_queue_avail_addr(avail_addr);
         transport.set_queue_used_addr(used_addr);
         transport.enable_queue();
+    }
+
+    /// Process completions on a TX queue.
+    pub fn process_tx_completions(&self, queue_index: u16, vq: &NetVirtQueue) -> usize {
+        let tracker = match self.tx_trackers.get(queue_index as usize) {
+            Some(t) => t,
+            None => return 0,
+        };
+
+        let mut count = 0;
+        while let Some((desc_idx, _)) = vq.poll_complete() {
+            if let Some(inflight) = tracker.take(desc_idx) {
+                // Return packet and bounce buffer to runtime/heap
+                // Logic for cleaning up inflight.packet and inflight.bounce_buffer
+                // will be handled by their respective Drop implementations.
+                // If IOMMU was used, the caller might need to unmap it.
+                // For now, we just reclaim the descriptor.
+                vq.free_desc_chain(desc_idx);
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Process completions on an RX queue.
+    pub fn process_rx_completions<F>(&self, queue_index: u16, vq: &NetVirtQueue, mut handler: F) -> usize 
+    where F: FnMut(RxInflight, u32) 
+    {
+        let tracker = match self.rx_trackers.get(queue_index as usize) {
+            Some(t) => t,
+            None => return 0,
+        };
+
+        let mut count = 0;
+        while let Some((desc_idx, len)) = vq.poll_complete() {
+            if let Some(inflight) = tracker.take(desc_idx) {
+                handler(inflight, len);
+                vq.free_desc_chain(desc_idx);
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Refill an RX queue with buffers from the runtime.
+    pub fn refill_rx_queue(&self, runtime: &dyn NetRuntime, queue_index: u16, vq: &NetVirtQueue) -> usize {
+        let mut count = 0;
+        
+        while vq.available_descriptors() > 0 {
+            match self.try_post_rx_packet(runtime, queue_index, vq) {
+                Ok(true) => count += 1,
+                Ok(false) => break, // Out of packets or queue full
+                Err(_) => break,
+            }
+        }
+        count
+    }
+
+    /// Try to allocate and post a single RX packet to a queue.
+    pub fn try_post_rx_packet(&self, runtime: &dyn NetRuntime, queue_index: u16, vq: &NetVirtQueue) -> Result<bool, VirtioNetError> {
+        let tracker = match self.rx_trackers.get(queue_index as usize) {
+            Some(t) => t,
+            None => return Ok(false),
+        };
+
+        if vq.available_descriptors() == 0 {
+            return Ok(false);
+        }
+
+        let packet = match runtime.alloc_packet() {
+            Some(p) => p,
+            None => return Ok(false),
+        };
+
+        let phys = packet.physical_address();
+        let len = packet.capacity();
+
+        match unsafe { vq.add_rx_buffer(phys, len) } {
+            Ok(desc_idx) => {
+                tracker.put(desc_idx, RxInflight {
+                    packet,
+                    iommu_iova: None, 
+                    iommu_map_len: 0,
+                });
+                Ok(true)
+            }
+            Err(e) => {
+                Err(e)
+            }
+        }
     }
 }

@@ -3,10 +3,10 @@
 //! This module implements a flexible rule-based security policy
 //! system for controlling access and operations.
 
+use crate::sync::PoisonRwLock;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
-use spin::RwLock;
 
 extern crate alloc;
 
@@ -489,7 +489,7 @@ pub struct PolicyStats {
 }
 
 /// Global policy engine
-static POLICY: RwLock<SecurityPolicy> = RwLock::new(SecurityPolicy {
+static POLICY: PoisonRwLock<SecurityPolicy> = PoisonRwLock::new(SecurityPolicy {
     name: String::new(),
     version: 0,
     rules: Vec::new(),
@@ -504,7 +504,7 @@ static POLICY: RwLock<SecurityPolicy> = RwLock::new(SecurityPolicy {
 
 /// Load a policy
 pub fn load_policy(policy: SecurityPolicy) {
-    *POLICY.write() = policy;
+    *POLICY.write().unwrap_or_else(|e| e.into_inner()) = policy;
 }
 
 /// Check policy
@@ -515,7 +515,7 @@ pub fn check_policy(
     resource_type: &str,
     operation: PolicyOperation,
 ) -> PolicyDecision {
-    POLICY.write().check(
+    POLICY.write().unwrap_or_else(|e| e.into_inner()).check(
         domain_id,
         domain_type,
         resource_id,
@@ -533,17 +533,18 @@ pub fn check_path_policy(
 ) -> PolicyDecision {
     POLICY
         .write()
+        .unwrap_or_else(|e| e.into_inner())
         .check_path(domain_id, domain_type, path, operation)
 }
 
 /// Add a rule to global policy
 pub fn add_rule(rule: PolicyRule) {
-    POLICY.write().add_rule(rule);
+    POLICY.write().unwrap_or_else(|e| e.into_inner()).add_rule(rule);
 }
 
 /// Remove a rule from global policy
 pub fn remove_rule(rule_id: u64) -> bool {
-    POLICY.write().remove_rule(rule_id)
+    POLICY.write().unwrap_or_else(|e| e.into_inner()).remove_rule(rule_id)
 }
 
 /// Initialize policy engine with default rules

@@ -4,19 +4,19 @@ impl CapabilityManager {
     /// Create a new capability manager
     pub const fn new() -> Self {
         CapabilityManager {
-            domains: Mutex::new(Vec::new()),
-            bounding_set: Mutex::new(CAP_ALL),
-            grants: Mutex::new(Vec::new()),
+            domains: PoisonLock::new(Vec::new()),
+            bounding_set: PoisonLock::new(CAP_ALL),
+            grants: PoisonLock::new(Vec::new()),
             next_grant_id: AtomicU64::new(1),
-            in_flight: Mutex::new(Vec::new()),
+            in_flight: PoisonLock::new(Vec::new()),
             #[cfg(test)]
-            fail_next_grant_for: Mutex::new(None),
+            fail_next_grant_for: PoisonLock::new(None),
         }
     }
 
     /// Get or create capabilities for a domain
     pub fn get_capabilities(&self, domain_id: u64) -> CapabilitySet {
-        let domains = self.domains.lock();
+        let domains = self.domains.lock().unwrap_or_else(|e| e.into_inner());
         domains
             .iter()
             .find(|d| d.domain_id == domain_id)
@@ -26,8 +26,8 @@ impl CapabilityManager {
 
     /// Set capabilities for a domain
     pub fn set_capabilities(&self, domain_id: u64, caps: CapabilitySet) {
-        let mut domains = self.domains.lock();
-        let bounding = *self.bounding_set.lock();
+        let mut domains = self.domains.lock().unwrap_or_else(|e| e.into_inner());
+        let bounding = *self.bounding_set.lock().unwrap_or_else(|e| e.into_inner());
 
         // Apply bounding set
         let bounded_caps = CapabilitySet {
@@ -53,13 +53,6 @@ impl CapabilityManager {
     }
 
     /// Grant a capability to a target domain on behalf of caller.
-    ///
-    /// Permission rule: caller must either have `CAP_SYS_ADMIN` or be
-    /// permitted the capability being granted.
-    ///
-    /// This mirrors the logic used by the ExoShell's `cap.grant` helper and
-    /// centralises it so it can be tested without pulling in the full shell
-    /// machinery.
     pub fn grant_capability(
         &self,
         caller_domain: u64,
@@ -88,7 +81,7 @@ impl CapabilityManager {
         if caller_caps.is_permitted(cap) {
             return true;
         }
-        let grants = self.grants.lock();
+        let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
         grants
             .iter()
             .any(|t| t.target == caller_domain && t.cap == cap && t.delegatable)
@@ -113,7 +106,7 @@ impl CapabilityManager {
         // Test hook: optionally force a grant failure for a specific cap
         #[cfg(test)]
         {
-            let mut f = self.fail_next_grant_for.lock();
+            let mut f = self.fail_next_grant_for.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(fcap) = *f {
                 if fcap == cap {
                     *f = None;
@@ -140,7 +133,7 @@ impl CapabilityManager {
             revoked: false,
             revoked_at: None,
         };
-        self.grants.lock().push(token.clone());
+        self.grants.lock().unwrap_or_else(|e| e.into_inner()).push(token.clone());
 
         // Audit
         crate::security::audit::log_event(
@@ -166,7 +159,7 @@ impl CapabilityManager {
         self.expire_grants();
 
         // Find token
-        let mut grants = self.grants.lock();
+        let mut grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pos) = grants.iter().position(|t| t.id == token_id) {
             // Authorization: issuer or sysadmin
             if caller_domain != grants[pos].issuer
@@ -236,7 +229,7 @@ impl CapabilityManager {
     /// List active grants targeting the given domain
     pub fn list_grants(&self, domain_id: u64) -> Vec<GrantToken> {
         self.expire_grants();
-        let grants = self.grants.lock();
+        let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
         grants
             .iter()
             .filter(|t| t.target == domain_id)
@@ -246,7 +239,6 @@ impl CapabilityManager {
 
     /// Expire grants whose expiry <= current tick
     pub(super) fn expire_grants(&self) {
-        // Acquire 'now' in ticks. In tests this is 0.
         #[cfg(not(test))]
         let now = crate::task::timer::current_tick();
         #[cfg(test)]
@@ -254,13 +246,13 @@ impl CapabilityManager {
 
         let mut expired: Vec<GrantToken> = Vec::new();
         {
-            let mut grants = self.grants.lock();
+            let mut grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
             let mut i = 0;
             while i < grants.len() {
                 if let Some(e) = grants[i].expires {
                     if e <= now {
                         expired.push(grants.remove(i));
-                        continue; // don't increment i
+                        continue;
                     }
                 }
                 i += 1;
@@ -286,7 +278,7 @@ impl CapabilityManager {
     /// Test helper: force the next grant of `cap` to fail once
     #[cfg(test)]
     pub fn force_fail_next_grant_for(&self, cap: Capability) {
-        let mut f = self.fail_next_grant_for.lock();
+        let mut f = self.fail_next_grant_for.lock().unwrap_or_else(|e| e.into_inner());
         *f = Some(cap);
     }
 
@@ -305,24 +297,24 @@ impl CapabilityManager {
 
     /// Drop a capability from the bounding set (permanent)
     pub fn drop_from_bounding(&self, cap: Capability) {
-        let mut bounding = self.bounding_set.lock();
+        let mut bounding = self.bounding_set.lock().unwrap_or_else(|e| e.into_inner());
         *bounding &= !cap;
     }
 
     /// Get the bounding set
     pub fn bounding_set(&self) -> Capability {
-        *self.bounding_set.lock()
+        *self.bounding_set.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Remove domain
     pub fn remove_domain(&self, domain_id: u64) {
-        let mut domains = self.domains.lock();
+        let mut domains = self.domains.lock().unwrap_or_else(|e| e.into_inner());
         domains.retain(|d| d.domain_id != domain_id);
     }
 
     /// Get reclamation status for a token (Active or Revoked with timestamp)
     pub fn reclamation_status(&self, token_id: u64) -> Option<ReclamationStatus> {
-        let grants = self.grants.lock();
+        let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
         grants.iter().find(|t| t.id == token_id).map(|t| {
             if t.revoked {
                 ReclamationStatus::Revoked {
@@ -334,11 +326,10 @@ impl CapabilityManager {
         })
     }
 
-    /// Forcefully reclaim a revoked token (physically remove it); returns Err if not revoked or not found
+    /// Forcefully reclaim a revoked token (physically remove it)
     pub fn reclaim_token(&self, token_id: u64) -> Result<(), CapabilityError> {
-        // Can't reclaim while there are in-flight users
         let in_flight = {
-            let m = self.in_flight.lock();
+            let m = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
             m.iter()
                 .find(|(id, _)| *id == token_id)
                 .map(|(_, cnt)| *cnt)
@@ -348,14 +339,13 @@ impl CapabilityManager {
             return Err(CapabilityError::ReclamationBusy);
         }
 
-        let mut grants = self.grants.lock();
+        let mut grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pos) = grants.iter().position(|t| t.id == token_id) {
             if !grants[pos].revoked {
                 return Err(CapabilityError::InvalidCapability);
             }
             grants.remove(pos);
-            // Clean up any residual in-flight entry
-            let mut m = self.in_flight.lock();
+            let mut m = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(p) = m.iter().position(|(id, _)| *id == token_id) {
                 m.remove(p);
             }
@@ -365,11 +355,10 @@ impl CapabilityManager {
         }
     }
 
-    /// Increment the in-flight counter for a token. Fails if token doesn't exist or is revoked.
+    /// Increment the in-flight counter for a token
     pub fn increment_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
-        // Validate token exists and is not revoked
         {
-            let grants = self.grants.lock();
+            let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(t) = grants.iter().find(|t| t.id == token_id) {
                 if t.revoked {
                     return Err(CapabilityError::InvalidCapability);
@@ -379,7 +368,7 @@ impl CapabilityManager {
             }
         }
 
-        let mut m = self.in_flight.lock();
+        let mut m = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pair) = m.iter_mut().find(|(id, _)| *id == token_id) {
             pair.1 += 1;
         } else {
@@ -388,9 +377,9 @@ impl CapabilityManager {
         Ok(())
     }
 
-    /// Decrement the in-flight counter for a token. Fails if no in-flight count exists.
+    /// Decrement the in-flight counter for a token
     pub fn decrement_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
-        let mut m = self.in_flight.lock();
+        let mut m = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pos) = m.iter().position(|(id, _)| *id == token_id) {
             if m[pos].1 == 0 {
                 return Err(CapabilityError::InvalidCapability);
@@ -407,20 +396,19 @@ impl CapabilityManager {
 
     /// Current in-flight count for a token
     pub fn in_flight_count(&self, token_id: u64) -> u64 {
-        let m = self.in_flight.lock();
+        let m = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         m.iter()
             .find(|(id, _)| *id == token_id)
             .map(|(_, cnt)| *cnt)
             .unwrap_or(0)
     }
 
-    /// Reclaim revoked tokens that have no in-flight users. Safe to call repeatedly.
+    /// Reclaim revoked tokens that have no in-flight users
     pub fn reclaim_revoked_now(&self) {
-        // Collect candidates while holding grants + in_flight snapshot
         let mut to_reclaim: Vec<u64> = Vec::new();
         {
-            let grants = self.grants.lock();
-            let in_flight = self.in_flight.lock();
+            let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
+            let in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
             for t in grants.iter() {
                 if t.revoked {
                     let cnt = in_flight
@@ -436,10 +424,10 @@ impl CapabilityManager {
         }
 
         for id in to_reclaim {
-            let mut grants = self.grants.lock();
+            let mut grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(pos) = grants.iter().position(|t| t.id == id && t.revoked) {
                 grants.remove(pos);
-                let mut m = self.in_flight.lock();
+                let mut m = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(p) = m.iter().position(|(tid, _)| *tid == id) {
                     m.remove(p);
                 }
@@ -454,12 +442,9 @@ impl CapabilityManager {
 
     /// Validate if a token is valid for a given capability
     pub fn validate_token(&self, _pid: u64, token_id: u64, required_cap: Capability) -> bool {
-        // Check if token exists and grants the required capability
-        // This is a simplified check. In a real system we'd check if token is assigned to pid or delegation chain.
-        let grants = self.grants.lock();
+        let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(token) = grants.iter().find(|t| t.id == token_id) {
             if token.cap == required_cap && !token.revoked {
-                // Check expiry
                 if let Some(exp) = token.expires {
                     #[cfg(not(test))]
                     let now = crate::task::timer::current_tick();

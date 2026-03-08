@@ -1,8 +1,15 @@
 use super::*;
 use crate::sync::lockfree::MpmcRingBuffer;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
+use kernel_api::dma::{CpuOwned, DmaSlice};
+use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes, iommu_align_len};
+use crate::io::iommu::api::{is_iommu_enabled, is_iommu_required, unmap_dma, unmap_for_device};
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::defs::{VirtioDeviceType, status};
+use crate::io::virtio::transport::{TransportType, VirtioTransport};
 
 mod dma;
 pub use dma::*;
@@ -12,10 +19,10 @@ mod registry;
 mod rx;
 mod tx;
 pub use registry::*;
+
 impl Drop for NetVirtQueue {
     fn drop(&mut self) {
         if let Some(map) = self.iommu_map.take() {
-            // Prefer DmaHandle unmap if available
             if let Some(handle) = map.handle {
                 if let Err(err) = handle.unmap() {
                     log::warn!("[VIRTIO-NET] failed to unmap DMA handle: {:?}", err);
@@ -37,39 +44,6 @@ impl Drop for NetVirtQueue {
 // VirtIO Net Device
 // ============================================================================
 
-/// In-flight entry for a zero-copy TX packet. Holds cleanup handles for unmapping when completed.
-#[derive(Debug)]
-pub(crate) struct TxPacketInflight {
-    packet: crate::net::datapath::mempool::PacketRef,
-    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
-    dma_iova: Option<u64>,
-    dma_len: usize,
-    /// Bounce buffer from the pool, if used.
-    pool_bounce_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
-}
-
-/// In-flight entry for a zero-copy RX PacketRef. Holds IOMMU mapping for cleanup on completion.
-#[derive(Debug)]
-pub(crate) struct RxPacketInflight {
-    packet: crate::net::datapath::mempool::PacketRef,
-    /// IOVA mapped through IOMMU for this buffer (None when IOMMU is inactive)
-    iommu_iova: Option<u64>,
-    /// Size of the IOMMU mapping
-    iommu_map_len: u64,
-}
-
-/// In-flight entry for a VirtioNetRxDmaBuffer. Holds IOMMU mapping for cleanup on completion.
-#[derive(Debug)]
-pub(crate) struct RxVbufInflight {
-    vbuf: VirtioNetRxDmaBuffer,
-    /// IOVA mapped through IOMMU for this buffer (None when IOMMU is inactive)
-    iommu_iova: Option<u64>,
-    /// Size of the IOMMU mapping
-    iommu_map_len: u64,
-}
-
-// Queue memory layout calculation result.
-
 /// VirtIO ネットワークデバイス
 #[derive(Debug)]
 pub struct VirtioNetDevice {
@@ -89,23 +63,15 @@ pub struct VirtioNetDevice {
     tx_queues: Vec<NetVirtQueue>,
     /// 初期化済みフラグ
     initialized: AtomicBool,
-    /// 統計: 送信パケット数
-    tx_packets: AtomicU32,
     /// 統計: 受信パケット数
-    rx_packets: AtomicU32,
-    /// 統計: 送信バイト数
-    tx_bytes: AtomicU32,
+    pub(crate) rx_packets: AtomicU32,
     /// 統計: 受信バイト数
-    rx_bytes: AtomicU32,
-    /// 受信用バッファマップ (キュー別, desc_idx -> RxVbufInflight)
-    pub(crate) rx_buffers: Vec<virtio_driver::net::InflightTracker<RxVbufInflight>>,
-    /// 受信用バッファマップ (キュー別, desc_idx -> RxPacketInflight) - zero-copy posted buffers from mempool
-    pub(crate) rx_packetrefs: Vec<virtio_driver::net::InflightTracker<RxPacketInflight>>,
-    /// 送信用 PacketRef インフライトマップ (キュー別, desc_idx -> TxPacketInflight)
-    pub(crate) tx_packetrefs: Vec<virtio_driver::net::InflightTracker<TxPacketInflight>>,
-    /// 送信用インフライトバッファ (キュー別, desc_idx -> CoherentDmaBuffer)
-    pub(crate) tx_inflight: Vec<virtio_driver::net::InflightTracker<CoherentDmaBuffer>>,
-    /// プール済み送信用バウンスバッフェ (Here we keep the lock as it's a global pool, not per-descriptor)
+    pub(super) rx_bytes: AtomicU32,
+    /// 統計: 送信パケット数
+    pub(crate) tx_packets: AtomicU32,
+    /// 統計: 送信バイト数
+    pub(super) tx_bytes: AtomicU32,
+    /// プール済み送信用バウンスバッファ
     tx_bounce_pool: MpmcRingBuffer<CoherentDmaBuffer, 256>,
     /// プール済み受信用バウンスバッファ
     rx_bounce_pool: MpmcRingBuffer<CoherentDmaBuffer, 256>,
@@ -113,10 +79,6 @@ pub struct VirtioNetDevice {
 
 impl VirtioNetDevice {
     /// 新しいデバイスを作成
-    ///
-    /// # Arguments
-    /// * `transport` - 初期化済みの VirtioTransport 実装（MMIO または PCI）
-    ///   トランスポートはmagic/version検証を通過している必要がある
     pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
         Self::new_with_index_and_device(0, transport, None)
     }
@@ -149,43 +111,31 @@ impl VirtioNetDevice {
             rx_queues: Vec::new(),
             tx_queues: Vec::new(),
             initialized: AtomicBool::new(false),
-            tx_packets: AtomicU32::new(0),
             rx_packets: AtomicU32::new(0),
-            tx_bytes: AtomicU32::new(0),
             rx_bytes: AtomicU32::new(0),
-            rx_buffers: Vec::new(),
-            rx_packetrefs: Vec::new(),
-            tx_packetrefs: Vec::new(),
-            tx_inflight: Vec::new(),
+            tx_packets: AtomicU32::new(0),
+            tx_bytes: AtomicU32::new(0),
             tx_bounce_pool: MpmcRingBuffer::new(),
             rx_bounce_pool: MpmcRingBuffer::new(),
         }
     }
 
-    /// Return first RX queue (index 0) if present.
     pub fn first_rx_queue(&self) -> Option<&NetVirtQueue> {
         self.rx_queues.get(0)
     }
 
-    /// Return first TX queue (index 1) if present.
     pub fn first_tx_queue(&self) -> Option<&NetVirtQueue> {
         self.tx_queues.get(0)
     }
 
-    /// Return the IOMMU device identifier, if assigned.
-    ///
-    /// Used by the bridge layer to allocate DMA buffers with correct IOMMU
-    /// mappings when submitting TX via the IoScheduler path.
     pub fn iommu_device_id(&self) -> Option<IommuDeviceId> {
         self.iommu_device_id
     }
 
-    /// Bind this VirtIO device to a logical network interface identifier.
     pub fn set_net_if_id(&mut self, if_id: crate::net::runtime::manager::NetIfId) {
         self.net_if_id = Some(if_id);
     }
 
-    /// Return the logical network interface identifier, if assigned.
     pub fn net_if_id(&self) -> Option<crate::net::runtime::manager::NetIfId> {
         self.net_if_id
     }
@@ -195,10 +145,6 @@ impl VirtioNetDevice {
             .expect("Transport must not be shared during init")
     }
 
-    /// Validate strict IOMMU policy for VirtIO-Net.
-    ///
-    /// In strict mode, when IOMMU translation is active, device-scoped mappings
-    /// require a concrete device identifier.
     fn validate_iommu_device_requirement(
         iommu_enabled: bool,
         iommu_device_id: Option<IommuDeviceId>,
@@ -212,20 +158,15 @@ impl VirtioNetDevice {
         Ok(())
     }
 
-    /// デバイスを初期化
     pub fn init(&mut self) -> Result<(), VirtioNetError> {
-        // 1. デバイスタイプ確認（トランスポートはすでにmagic/version検証済み）
         if self.transport.device_type() != VirtioDeviceType::Network {
             return Err(VirtioNetError::DeviceError);
         }
 
-        // Strict policy: device-scoped DMA mapping requires device ID when IOMMU is active.
         Self::validate_iommu_device_requirement(is_iommu_enabled(), self.iommu_device_id)?;
 
-        // 2-7. Perform common VirtIO initialization using shared core
-        self.core.init(self.transport.as_ref())?;
+        self.core.init(self.transport.as_ref()).map_err(|_| VirtioNetError::DeviceError)?;
 
-        // 8. キューの設定
         if let Err(e) = self.setup_queues() {
             log::error!("[VIRTIO-NET] Failed to setup queues: {:?}", e);
             self.mut_transport()
@@ -233,15 +174,12 @@ impl VirtioNetDevice {
             return Err(e);
         }
 
-        // 9. DRIVER_OK を設定
         self.mut_transport().add_status(status::VIRTIO_STATUS_DRIVER_OK);
 
-        // 10. DRIVER_OK後にRXキューを再通知（VirtIO spec準拠）
         for rxq in &self.rx_queues {
             rxq.notify(self.transport.as_ref());
         }
 
-        // Initialize bounce buffer pools for IOMMU paths
         if let Err(e) = self.init_bounce_pools() {
             log::error!("[VIRTIO-NET] Failed to init bounce pools: {:?}", e);
             self.mut_transport()
@@ -252,33 +190,56 @@ impl VirtioNetDevice {
         self.initialized.store(true, Ordering::Release);
         Ok(())
     }
+}
 
-    /// RXキューが空になっている場合にバッファを補充する（スタベーション回復）
-    pub fn refill_rx_queues(&self) {
-        for rx_queue in &self.rx_queues {
-            let mut count = 0;
-            let queue_size = rx_queue.inner.lock().expect("virtqueue lock poisoned").vq.queue_size();
-            // API drift fallback: post until the queue rejects new buffers.
-            while count < queue_size {
-                match self.try_post_rx_packet(rx_queue) {
-                    Ok(true) => count += 1,
-                    Ok(false) => break, // queue full or mempool empty
-                    Err(_) => break,
-                }
+impl virtio_driver::net::NetRuntime for VirtioNetDevice {
+    fn alloc_dma(
+        &self,
+        size: usize,
+        _purpose: virtio_driver::net::NetDmaPurpose,
+    ) -> Result<DmaSlice<CpuOwned>, VirtioNetError> {
+        let buffer = CoherentDmaBuffer::new(size, DmaMemoryAttributes::MMIO)
+            .ok_or(VirtioNetError::DeviceError)?;
+        
+        let (phys, iova, virt, len, _releaser) = buffer.into_raw_parts();
+        Ok(unsafe { DmaSlice::from_raw_parts(phys, iova, virt, len, None) })
+    }
+
+    fn alloc_packet(&self) -> Option<PacketRef> {
+        crate::net::datapath::mempool::alloc_packet()
+    }
+
+    fn schedule_wake(&self, queue_index: u16) {
+        if (queue_index % 2) == 0 {
+            if let Some(q) = self.rx_queues.get((queue_index / 2) as usize) {
+                q.pending_wakers.wake_all();
             }
-            if count > 0 {
-                log::info!(
-                    "[VIRTIO-NET] Refilled {} RX buffers for queue {}",
-                    count,
-                    rx_queue.inner.lock().expect("virtqueue lock poisoned").vq.queue_index()
-                );
-                rx_queue.notify(self.transport.as_ref());
+        } else {
+            if let Some(q) = self.tx_queues.get((queue_index / 2) as usize) {
+                q.pending_wakers.wake_all();
+            }
+        }
+    }
+
+    fn log(&self, _level: log::Level, msg: core::fmt::Arguments) {
+        log::info!("[VIRTIO-NET-CORE] {}", msg);
+    }
+}
+
+impl VirtioNetDevice {
+    pub fn refill_rx_queues(&self) {
+        for (i, rx_queue) in self.rx_queues.iter().enumerate() {
+            let q_idx = (i * 2) as u16;
+            if let Ok(inner) = rx_queue.inner.lock() {
+                let count = self.core.refill_rx_queue(self, q_idx, &inner);
+                if count > 0 {
+                    rx_queue.notify(self.transport.as_ref());
+                }
             }
         }
     }
 
     fn init_bounce_pools(&self) -> Result<(), VirtioNetError> {
-        // Pre-allocate 128 bounce buffers for TX and RX (4KB each)
         let pool_size = 128;
         let buffer_size = 4096;
 
@@ -362,7 +323,6 @@ impl VirtioNetDevice {
         let _ = self.rx_bounce_pool.push(buffer);
     }
 
-    /// VirtQueue を設定。`core.config.max_queues` に従いキューペアを並列構築する。
     pub(super) fn setup_queues(&mut self) -> Result<(), VirtioNetError> {
         let pair_count = self.core.get_pair_count();
         for i in 0..pair_count {
@@ -378,16 +338,13 @@ impl VirtioNetDevice {
         Ok(())
     }
 
-    /// 単一のキューを設定
     pub(super) fn setup_single_queue(
         &mut self,
         queue_index: u16,
     ) -> Result<NetVirtQueue, VirtioNetError> {
-        // Prepare queue using driver-side logic
         let (queue_size, layout) = self.core.prepare_queue(self.transport.as_ref(), queue_index)
             .map_err(|_| VirtioNetError::DeviceError)?;
 
-        // DMAバッファを割り当て
         let (buffer, _dma_len) = self.allocate_queue_dma(layout.total_size)?;
 
         let phys_base = buffer.device_addr();
@@ -399,7 +356,6 @@ impl VirtioNetDevice {
         let notify_addr = self.mut_transport().get_notify_addr(queue_index);
         let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
-        // IOMMU DMAマッピングを設定
         let (dma_base, iommu_map) = self.setup_iommu_dma_mapping(&buffer, layout.total_size, phys_base)?;
 
         let (tx_headers, tx_header_dma_base) = if (queue_index % 2) == 1 {
@@ -410,22 +366,16 @@ impl VirtioNetDevice {
             (None, None)
         };
 
-        // キューを作成
         let features = self.transport.get_device_features_low() as u64
             | ((self.transport.get_device_features_high() as u64) << 32);
 
-        // Create trackers for this queue
+        // Core trackers
         if (queue_index % 2) == 0 {
-            // RX queue
-            self.rx_buffers.push(virtio_driver::net::InflightTracker::new(queue_size));
-            self.rx_packetrefs.push(virtio_driver::net::InflightTracker::new(queue_size));
+            self.core.rx_trackers.push(virtio_driver::net::InflightTracker::new(queue_size));
         } else {
-            // TX queue
-            self.tx_packetrefs.push(virtio_driver::net::InflightTracker::new(queue_size));
-            self.tx_inflight.push(virtio_driver::net::InflightTracker::new(queue_size));
+            self.core.tx_trackers.push(virtio_driver::net::InflightTracker::new(queue_size));
         }
 
-        // Commit queue addresses using driver-side logic
         let desc_addr = dma_base;
         let avail_addr = dma_base + layout.desc_size as u64;
         let used_addr = dma_base + layout.used_offset as u64;
@@ -448,9 +398,10 @@ impl VirtioNetDevice {
             )
         };
 
-        // RXキューの場合は初期バッファを投稿
         if (queue_index % 2) == 0 {
-            self.pre_allocate_rx_buffers_for_queue(&queue);
+            if let Ok(inner) = queue.inner.lock() {
+                self.core.refill_rx_queue(self, queue_index, &inner);
+            }
         }
 
         self.mut_transport().enable_queue();
@@ -458,8 +409,6 @@ impl VirtioNetDevice {
         Ok(queue)
     }
 
-
-    /// キュー用のDMAバッファを割り当てる
     pub(super) fn allocate_queue_dma(
         &self,
         total_size: usize,
@@ -471,9 +420,6 @@ impl VirtioNetDevice {
         if is_iommu_enabled() {
             let aligned_len = iommu_align_len(total_size).ok_or(VirtioNetError::DeviceError)?;
             let device_id = self.iommu_device_id.ok_or_else(|| {
-                log::error!(
-                    "[VIRTIO-NET] queue DMA allocation requires iommu_device_id when IOMMU is enabled"
-                );
                 VirtioNetError::DeviceError
             })?;
             let buffer = CoherentDmaBuffer::new_for_device(
@@ -482,12 +428,6 @@ impl VirtioNetDevice {
                 &device_id,
             )
             .ok_or(VirtioNetError::DeviceError)?;
-            if !buffer.is_iommu_mapped() {
-                log::error!(
-                    "[VIRTIO-NET] queue DMA buffer was not mapped for device; refusing phys fallback"
-                );
-                return Err(VirtioNetError::DeviceError);
-            }
             Ok((buffer, aligned_len))
         } else {
             let buffer = CoherentDmaBuffer::new(total_size, DmaMemoryAttributes::MMIO)
@@ -496,7 +436,6 @@ impl VirtioNetDevice {
         }
     }
 
-    /// キューメモリのIOMMU DMAマッピングを設定する
     pub(super) fn setup_iommu_dma_mapping(
         &self,
         buffer: &CoherentDmaBuffer,
@@ -506,216 +445,16 @@ impl VirtioNetDevice {
         if !is_iommu_enabled() {
             return Ok((phys_base, None));
         }
-
-        if self.iommu_device_id.is_some() && !buffer.is_iommu_mapped() {
-            log::error!(
-                "[VIRTIO-NET] queue memory is not mapped for device DMA despite IOMMU being enabled"
-            );
-            return Err(VirtioNetError::DeviceError);
-        }
-
-        // Queue memory must be shared between CPU and device.
-        // Use the same coherent buffer backing with device-visible address.
         Ok((buffer.device_addr(), None))
     }
 
-    /// RXバッファ用のIOMMUマッピングを実行する
-    ///
-    /// Returns (dma_addr, iommu_iova, iommu_map_len).
-    pub(super) fn map_buffer_for_rx(
-        &self,
-        phys: u64,
-        buf_len: usize,
-    ) -> Result<(u64, Option<u64>, u64), VirtioNetError> {
-        if !is_iommu_enabled() {
-            return Ok((phys, None, 0));
-        }
-
-        if let Some(ref device_id) = self.iommu_device_id {
-            let map_size = iommu_align_len(buf_len).unwrap_or(buf_len) as u64;
-            // Intel VT-d: R=0,W=1 is invalid (W is reserved when R=0)
-            // RX buffers need R+W even though device only writes
-            match unsafe {
-                map_for_device_with_perms(device_id, PhysAddr::new(phys), map_size, true, true)
-            } {
-                Ok(iova) => Ok((iova, Some(iova), map_size)),
-                Err(e) => {
-                    log::warn!("[VIRTIO-NET] IOMMU map failed for RX buffer: {:?}", e);
-                    Err(VirtioNetError::DeviceError)
-                }
-            }
-        } else {
-            Ok((phys, None, 0))
-        }
-    }
-
-    /// PacketRefの割り当てとRXキューへのポストを試みる
-    ///
-    /// Returns: Ok(true) = posted successfully (continue to next),
-    ///          Ok(false) = not posted (fall through to vbuf),
-    ///          Err = skip this iteration (e.g. IOMMU failure)
-    pub(super) fn try_post_rx_packet(&self, rxq: &NetVirtQueue) -> Result<bool, VirtioNetError> {
-        // キューに空きディスクリプタがなければ、PacketRef割り当てを回避する
-        if rxq.available_descriptors() == 0 {
-            return Ok(false);
-        }
-
-        let packet = match crate::net::datapath::mempool::alloc_packet() {
-            Some(p) => p,
-            None => return Ok(false),
-        };
-
-        let phys = packet.phys_addr().as_u64();
-        let buf_len = packet.capacity();
-
-        let (dma_addr, iommu_iova, iommu_map_len) = self.map_buffer_for_rx(phys, buf_len)?;
-
-        match rxq.add_rx_buffer_zero_copy(dma_addr, buf_len) {
-            Ok(desc_idx) => {
-                let q_idx = self
-                    .rx_queues
-                    .iter()
-                    .position(|q| core::ptr::eq(q, rxq))
-                    .unwrap_or(0);
-                if let Some(tracker) = self.rx_packetrefs.get(q_idx) {
-                    tracker.put(desc_idx, RxPacketInflight {
-                        packet,
-                        iommu_iova,
-                        iommu_map_len,
-                    });
-                }
-                Ok(true)
-            }
-            Err(e) => {
-                if let (Some(iova), Some(device_id)) = (iommu_iova, &self.iommu_device_id) {
-                    let _ = unmap_for_device(device_id, iova, iommu_map_len);
-                }
-                // QueueFullはリフィル時に正常に発生するため、traceレベルで記録
-                log::trace!("[VIRTIO-NET] failed to post PacketRef rx buffer: {:?}", e);
-                Ok(false)
-            }
-        }
-    }
-
-    /// VirtioNetRxDmaBufferの割り当てとRXキューへのポストを試みる
-    ///
-    /// Returns: Ok(true) = posted successfully,
-    ///          Ok(false) = not posted (continue),
-    ///          Err = no more buffers available (stop)
-    pub(super) fn try_post_rx_vbuf(&self, rxq: &NetVirtQueue) -> Result<bool, VirtioNetError> {
-        // キューに空きディスクリプタがなければ、バッファ割り当てを回避する
-        if rxq.available_descriptors() == 0 {
-            return Ok(false);
-        }
-
-        let mut vbuf = match VirtioNetRxDmaBuffer::new() {
-            Some(v) => v,
-            None => {
-                log::warn!("[VIRTIO-NET] failed to allocate rx buffer");
-                return Err(VirtioNetError::DeviceError);
-            }
-        };
-
-        let phys = match vbuf.start_receive() {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("[VIRTIO-NET] failed to start rx buffer: {}", e);
-                return Ok(false);
-            }
-        };
-        let buf_len = vbuf.alloc_size;
-
-        let (dma_addr, iommu_iova, iommu_map_len) = match self.map_buffer_for_rx(phys, buf_len) {
-            Ok(v) => v,
-            Err(_) => return Ok(false),
-        };
-
-        match rxq.add_rx_buffer_zero_copy(dma_addr, buf_len) {
-            Ok(desc_idx) => {
-                let q_idx = self
-                    .rx_queues
-                    .iter()
-                    .position(|q| core::ptr::eq(q, rxq))
-                    .unwrap_or(0);
-                if let Some(tracker) = self.rx_buffers.get(q_idx) {
-                    tracker.put(desc_idx, RxVbufInflight {
-                        vbuf,
-                        iommu_iova,
-                        iommu_map_len,
-                    });
-                }
-                Ok(true)
-            }
-            Err(e) => {
-                if let (Some(iova), Some(device_id)) = (iommu_iova, &self.iommu_device_id) {
-                    let _ = unmap_for_device(device_id, iova, iommu_map_len);
-                }
-                log::trace!("[VIRTIO-NET] failed to add rx buffer: {:?}", e);
-                Ok(false)
-            }
-        }
-    }
-
-    /// RXキューにバッファを事前割り当てする（特定キュー版）
-    pub(super) fn pre_allocate_rx_buffers_for_queue(&self, rxq: &NetVirtQueue) {
-        let mut added = 0usize;
-        for _ in 0..8 {
-            match self.try_post_rx_packet(rxq) {
-                Ok(true) => {
-                    added += 1;
-                    continue;
-                }
-                Ok(false) => {}
-                Err(_) => {
-                    continue;
-                }
-            }
-            match self.try_post_rx_vbuf(rxq) {
-                Ok(true) => {
-                    added += 1;
-                }
-                Ok(false) => {}
-                Err(_) => {
-                    break;
-                }
-            }
-        }
-        log::info!("[VIRTIO-NET] posted {} initial RX buffers", added);
-        // Notify the device that new RX buffers are available
-        if added > 0 {
-            rxq.notify(self.transport.as_ref());
-        }
-    }
-
-    /// 登録済み全 RX キューにバッファを事前割り当てする
-    pub(super) fn pre_allocate_rx_buffers(&self) {
-        for rxq in &self.rx_queues {
-            self.pre_allocate_rx_buffers_for_queue(rxq);
-        }
-    }
-
-    /// デバイスに通知（キュー更新）
-    pub fn notify(&mut self, queue_index: u16) {
+    pub fn notify_queue(&mut self, queue_index: u16) {
         self.transport.notify_queue(queue_index);
-    }
-
-    /// Submit a transmit packet synchronously by copying into a coherent DMA buffer and
-    /// adding it to the TX queue. The buffer is retained in `tx_inflight` until completion
-    /// and freed in the interrupt handler.
-    pub(super) fn process_post_notify_completions(&self) {
-        // Use the normal completion path so descriptor chains are reclaimed via
-        // `take_completion()` and TX rings do not leak into QueueFull.
-        self.process_tx_completions();
     }
 }
 
 impl Drop for VirtioNetDevice {
     fn drop(&mut self) {
-        // InflightTracker's Drop handles freeing individual boxed entries.
-        self.rx_buffers.clear();
-        self.rx_packetrefs.clear();
-        self.tx_packetrefs.clear();
-        self.tx_inflight.clear();
     }
 }
 

@@ -24,6 +24,7 @@
 // pub mod display;
 // pub mod collectors;
 
+use crate::sync::PoisonLock;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -189,24 +190,20 @@ pub fn snapshot() -> SystemSnapshot {
 
 /// Estimate CPU usage (simplified)
 fn estimate_cpu_usage() -> u8 {
-    // In a real implementation, this would track idle time
-    // For now, return a placeholder
     static LAST_TICK: AtomicU64 = AtomicU64::new(0);
 
     let current = crate::interrupts::get_timer_ticks();
     let last = LAST_TICK.swap(current, Ordering::Relaxed);
 
     if last == 0 {
-        return 5; // First call
+        return 5;
     }
 
-    // Simplified: assume some baseline usage
     10
 }
 
 /// Collect network statistics
 fn collect_network_stats() -> NetworkStats {
-    // Collect from network stack if available
     NetworkStats::default()
 }
 
@@ -447,14 +444,6 @@ impl MonitorHistory {
 // ============================================================================
 // ヘルスモニタリング（設計書 §10.4）
 // ============================================================================
-//
-// システム全体の健全性を監視し、異常を検知する機構。
-//
-// ## 機能
-// - CPU/メモリ使用率の閾値監視
-// - ドメインの応答性チェック（ハートビート）
-// - メトリクスのエクスポート
-// - 異常検知とアラート発行
 
 use core::sync::atomic::AtomicU32;
 
@@ -522,7 +511,7 @@ pub struct HealthMetrics {
 /// ヘルスモニター
 pub struct HealthMonitor {
     thresholds: HealthThresholds,
-    metrics: spin::Mutex<HealthMetrics>,
+    metrics: PoisonLock<HealthMetrics>,
     enabled: AtomicBool,
 }
 
@@ -537,7 +526,7 @@ impl HealthMonitor {
                 memory_critical: 95,
                 consecutive_failures: 3,
             },
-            metrics: spin::Mutex::new(HealthMetrics {
+            metrics: PoisonLock::new(HealthMetrics {
                 cpu_usage: 0,
                 memory_usage: 0,
                 consecutive_warnings: 0,
@@ -572,7 +561,7 @@ impl HealthMonitor {
             return HealthStatus::Unknown;
         }
 
-        let mut metrics = self.metrics.lock();
+        let mut metrics = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
         metrics.cpu_usage = snap.cpu_usage;
         metrics.memory_usage = snap.memory.usage_percent;
         metrics.last_check_tick = snap.timestamp;
@@ -596,7 +585,7 @@ impl HealthMonitor {
             HealthStatus::Healthy
         };
 
-        // 総合判定（より重い方を採用）
+        // 総合判定
         let overall = match (cpu_status, mem_status) {
             (HealthStatus::Critical, _) | (_, HealthStatus::Critical) => {
                 metrics.consecutive_criticals += 1;
@@ -622,13 +611,13 @@ impl HealthMonitor {
 
     /// 現在のメトリクスを取得
     pub fn metrics(&self) -> HealthMetrics {
-        self.metrics.lock().clone()
+        self.metrics.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// メトリクスをPrometheus形式でエクスポート
     pub fn export_prometheus(&self) -> String {
         use alloc::fmt::Write;
-        let metrics = self.metrics.lock();
+        let metrics = self.metrics.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = String::new();
 
         let _ = writeln!(s, "# HELP exorust_cpu_usage CPU usage percentage");
@@ -671,7 +660,7 @@ pub fn health_monitor() -> &'static HealthMonitor {
     &HEALTH_MONITOR
 }
 
-/// ヘルスチェックを実行（snapshot付き）
+/// ヘルスチェックを実行
 pub fn health_check() -> HealthStatus {
     let snap = snapshot();
     HEALTH_MONITOR.check(&snap)

@@ -24,8 +24,8 @@
 // - Intel SDM Vol. 3A 4.10.1 Process-Context Identifiers (PCIDs)
 // ============================================================================
 
+use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::Mutex;
 
 /// 最大PCID数（12ビット = 4096）
 pub const MAX_PCID: usize = 4096;
@@ -138,7 +138,7 @@ impl PcidAllocator {
 }
 
 /// グローバルPCIDアロケータ
-pub static PCID_ALLOCATOR: Mutex<PcidAllocator> = Mutex::new(PcidAllocator::new());
+pub static PCID_ALLOCATOR: PoisonLock<PcidAllocator> = PoisonLock::new(PcidAllocator::new());
 
 /// PCID機能を初期化
 pub fn init_features() {
@@ -146,7 +146,6 @@ pub fn init_features() {
         return;
     }
 
-    #[cfg(target_arch = "x86_64")]
     #[cfg(target_arch = "x86_64")]
     {
         // CPUID.01H:ECX.PCID[bit 17]
@@ -163,7 +162,7 @@ pub fn init_features() {
     PCID_INITIALIZED.store(true, Ordering::Release);
 
     // アロケータ初期化
-    PCID_ALLOCATOR.lock().init();
+    PCID_ALLOCATOR.lock().unwrap_or_else(|e| e.into_inner()).init();
 }
 
 /// PCIDが使用可能か

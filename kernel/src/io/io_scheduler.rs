@@ -11,6 +11,7 @@
 
 #![allow(dead_code)]
 
+use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
@@ -19,7 +20,6 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
-use spin::{Mutex, RwLock};
 
 // ============================================================================
 // I/O Operation Types
@@ -535,17 +535,17 @@ impl Default for IoModeStats {
 /// I/Oスケジューラ
 pub struct IoScheduler {
     /// 優先度別キュー
-    queues: [Mutex<VecDeque<IoRequestId>>; 5],
+    queues: [PoisonLock<VecDeque<IoRequestId>>; 5],
     /// リクエストマップ
-    requests: RwLock<BTreeMap<IoRequestId, IoRequest>>,
+    requests: PoisonRwLock<BTreeMap<IoRequestId, IoRequest>>,
     /// デバイスごとのモードコントローラ
-    mode_controllers: RwLock<BTreeMap<DeviceId, Arc<DeviceIoModeController>>>,
+    mode_controllers: PoisonRwLock<BTreeMap<DeviceId, Arc<DeviceIoModeController>>>,
     /// デバイス操作ハンドラ（依存逆転用）
-    device_ops: RwLock<BTreeMap<DeviceId, Arc<dyn DeviceOps>>>,
+    device_ops: PoisonRwLock<BTreeMap<DeviceId, Arc<dyn DeviceOps>>>,
     /// グローバルI/O統計
     stats: IoSchedulerStats,
     /// 完了フック
-    completion_hooks: Mutex<BTreeMap<IoRequestId, CompletionHook>>,
+    completion_hooks: PoisonLock<BTreeMap<IoRequestId, CompletionHook>>,
     /// ポーリング有効フラグ
     polling_enabled: AtomicBool,
     /// シャットダウンフラグ
@@ -581,5 +581,199 @@ impl IoSchedulerStats {
 impl Default for IoSchedulerStats {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================================
+// Polling Executor
+// ============================================================================
+
+/// ポーリングエグゼキュータ
+///
+/// 高負荷時にポーリングベースでI/O完了を処理
+pub struct PollingExecutor {
+    /// スケジューラ参照
+    scheduler: Arc<IoScheduler>,
+    /// ポーリングハンドラ
+    poll_handlers: PoisonRwLock<BTreeMap<DeviceId, Vec<Box<dyn PollHandler + Send + Sync>>>>,
+    /// 最大ポーリング反復回数
+    max_poll_iterations: u32,
+    /// ポーリング間隔（μs）
+    poll_interval_us: u64,
+    /// アクティブフラグ
+    active: AtomicBool,
+}
+
+/// ポーリングハンドラトレイト
+pub trait PollHandler {
+    /// 完了をポーリング
+    fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)>;
+
+    /// デバイスが準備完了か
+    fn is_ready(&self) -> bool;
+
+    /// このハンドラを処理すべきCPU index（None = 全CPU、Some(n) = CPU n のみ）
+    ///
+    /// cpu_index() と同じ 0-based 連番を返す。
+    fn affinity_cpu_index(&self) -> Option<usize> {
+        None // デフォルト: どのCPUでも処理可
+    }
+}
+
+impl PollingExecutor {
+    pub fn new(scheduler: Arc<IoScheduler>) -> Self {
+        Self {
+            scheduler,
+            poll_handlers: PoisonRwLock::new(BTreeMap::new()),
+            max_poll_iterations: 64,
+            poll_interval_us: 10,
+            active: AtomicBool::new(false),
+        }
+    }
+
+    /// ポーリングハンドラを登録
+    pub fn register_handler(&self, device: DeviceId, handler: Box<dyn PollHandler + Send + Sync>) {
+        self.poll_handlers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(device)
+            .or_insert_with(Vec::new)
+            .push(handler);
+    }
+
+    /// ポーリングを開始
+    pub fn start(&self) {
+        self.active.store(true, Ordering::Release);
+    }
+
+    /// ポーリングを停止
+    pub fn stop(&self) {
+        self.active.store(false, Ordering::Release);
+    }
+
+    /// 1回のポーリングサイクル
+    pub fn poll_once(&self) -> usize {
+        if !self.active.load(Ordering::Acquire) {
+            return 0;
+        }
+
+        let mut completed = 0;
+        let handlers = self.poll_handlers.read().unwrap_or_else(|e| e.into_inner());
+
+        for (_device, handlers) in handlers.iter() {
+            for handler in handlers.iter() {
+                if handler.is_ready() {
+                    for (id, result) in handler.poll_completions() {
+                        self.scheduler.complete_request(id, result);
+                        completed += 1;
+                    }
+                }
+            }
+        }
+
+        completed
+    }
+
+    /// コールバック付きポーリング（pending_requests 掃除用）
+    ///
+    /// 完了ごとに (DeviceId, IoRequestId, IoResult) でコールバックを呼ぶ.
+    pub fn poll_once_with<F>(&self, mut on_complete: F) -> usize
+    where
+        F: FnMut(DeviceId, IoRequestId, IoResult),
+    {
+        if !self.active.load(Ordering::Acquire) {
+            return 0;
+        }
+
+        let mut completed = 0;
+        let handlers = self.poll_handlers.read().unwrap_or_else(|e| e.into_inner());
+
+        for (device, handlers) in handlers.iter() {
+            for handler in handlers.iter() {
+                if handler.is_ready() {
+                    for (id, result) in handler.poll_completions() {
+                        on_complete(*device, id, result.clone());
+                        self.scheduler.complete_request(id, result);
+                        completed += 1;
+                    }
+                }
+            }
+        }
+
+        completed
+    }
+
+    /// 現在のCPUに紐づくハンドラのみポーリング（per-CPU tick用）
+    pub fn poll_once_local(&self) -> usize {
+        if !self.active.load(Ordering::Acquire) {
+            return 0;
+        }
+
+        let cpu_idx = crate::smp::cpu_index();
+        let mut completed = 0;
+        let handlers = self.poll_handlers.read().unwrap_or_else(|e| e.into_inner());
+
+        for (_device, handlers) in handlers.iter() {
+            for handler in handlers.iter() {
+                match handler.affinity_cpu_index() {
+                    Some(idx) if idx != cpu_idx => continue,
+                    _ => {}
+                }
+
+                if handler.is_ready() {
+                    for (id, result) in handler.poll_completions() {
+                        self.scheduler.complete_request(id, result);
+                        completed += 1;
+                    }
+                }
+            }
+        }
+
+        completed
+    }
+
+    /// バッチポーリング
+    pub fn poll_batch(&self) -> usize {
+        let mut total = 0;
+
+        for _ in 0..self.max_poll_iterations {
+            let count = self.poll_once();
+            if count == 0 {
+                break;
+            }
+            total += count;
+        }
+
+        total
+    }
+
+    /// アクティブ状態か
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+}
+
+// ============================================================================
+// I/O Future
+// ============================================================================
+
+/// I/O操作のFuture
+pub struct IoFuture {
+    scheduler: Arc<IoScheduler>,
+    request_id: IoRequestId,
+    registered: bool,
+}
+
+impl IoFuture {
+    pub fn new(scheduler: Arc<IoScheduler>, request_id: IoRequestId) -> Self {
+        Self {
+            scheduler,
+            request_id,
+            registered: false,
+        }
+    }
+
+    pub fn request_id(&self) -> IoRequestId {
+        self.request_id
     }
 }

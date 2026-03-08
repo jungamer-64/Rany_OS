@@ -110,6 +110,7 @@ impl VirtioNetPollHandler {
         &self,
         rx_queue: &NetVirtQueue,
         desc_id: u16,
+        completion_len: u32,
     ) -> Option<(IoRequestId, IoResult)> {
         let pending = self
             .pending_rx
@@ -118,19 +119,8 @@ impl VirtioNetPollHandler {
             .remove(&desc_id);
         let Some(req) = pending else { return None };
 
-        let completion_len = match rx_queue.take_completion(desc_id) {
-            Some(completion_len) => completion_len,
-            None => {
-                log::warn!(
-                    "[VIRTIO-NET] poll_completions: RX completion disappeared desc={}",
-                    desc_id
-                );
-                return Some((
-                    req.io_id,
-                    IoResult::Error(crate::io::io_scheduler::IoError::DeviceError),
-                ));
-            }
-        };
+        // Reclaim descriptor
+        rx_queue.free_desc_chain(desc_id);
 
         let header_size = VirtioNetHeader::SIZE;
         let payload_len = (completion_len as usize).saturating_sub(header_size);
@@ -143,6 +133,7 @@ impl VirtioNetPollHandler {
         &self,
         tx_queue: &NetVirtQueue,
         desc_id: u16,
+        _len: u32,
     ) -> Option<(IoRequestId, IoResult)> {
         let pending = self
             .pending_tx
@@ -151,16 +142,8 @@ impl VirtioNetPollHandler {
             .remove(&desc_id);
         let Some(req) = pending else { return None };
 
-        if tx_queue.take_completion(desc_id).is_none() {
-            log::warn!(
-                "[VIRTIO-NET] poll_completions: TX completion disappeared desc={}",
-                desc_id
-            );
-            return Some((
-                req.io_id,
-                IoResult::Error(crate::io::io_scheduler::IoError::DeviceError),
-            ));
-        }
+        // Reclaim descriptor
+        tx_queue.free_desc_chain(desc_id);
 
         Some((req.io_id, IoResult::Success(req.requested_bytes)))
     }
@@ -178,7 +161,11 @@ impl VirtioNetPollHandler {
             .expect("lock poisoned")
             .vq
             .queue_index() as usize;
-        device.handle_legacy_rx_completion(rx_queue, q_idx, desc_id, len)
+        let handled = device.handle_legacy_rx_completion(rx_queue, q_idx, desc_id, len);
+        if handled {
+            rx_queue.free_desc_chain(desc_id);
+        }
+        handled
     }
 
     fn route_legacy_tx_completion(
@@ -194,7 +181,11 @@ impl VirtioNetPollHandler {
             .expect("lock poisoned")
             .vq
             .queue_index() as usize;
-        device.handle_legacy_tx_completion(tx_queue, q_idx, desc_id, len)
+        let handled = device.handle_legacy_tx_completion(tx_queue, q_idx, desc_id, len);
+        if handled {
+            tx_queue.free_desc_chain(desc_id);
+        }
+        handled
     }
 
     fn release_unknown_rx_completion(
@@ -204,6 +195,7 @@ impl VirtioNetPollHandler {
         desc_id: u16,
     ) {
         device.release_unknown_rx_completion(rx_queue, desc_id);
+        rx_queue.free_desc_chain(desc_id);
     }
 
     fn release_unknown_tx_completion(
@@ -213,6 +205,7 @@ impl VirtioNetPollHandler {
         desc_id: u16,
     ) {
         device.release_unknown_tx_completion(tx_queue, desc_id);
+        tx_queue.free_desc_chain(desc_id);
     }
 
     #[cfg(test)]
@@ -234,7 +227,7 @@ impl PollHandler for VirtioNetPollHandler {
                 for (desc_id, len) in rx_queue.process_used() {
                     device.rx_packets.fetch_add(1, Ordering::Relaxed);
 
-                    if let Some(result) = self.route_scheduler_rx_completion(rx_queue, desc_id) {
+                    if let Some(result) = self.route_scheduler_rx_completion(rx_queue, desc_id, len) {
                         results.push(result);
                         continue;
                     }
@@ -254,7 +247,7 @@ impl PollHandler for VirtioNetPollHandler {
                     device.tx_packets.fetch_add(1, Ordering::Relaxed);
                     device.tx_bytes.fetch_add(len, Ordering::Relaxed);
 
-                    if let Some(result) = self.route_scheduler_tx_completion(tx_queue, desc_id) {
+                    if let Some(result) = self.route_scheduler_tx_completion(tx_queue, desc_id, len) {
                         results.push(result);
                         continue;
                     }

@@ -12,10 +12,10 @@
 //! - **テスト用**: `tools/cap_harness/src/lib.rs` (QEMUテスト用stub)
 
 use crate::security::audit::{AuditEvent, AuditEventType};
+use crate::sync::PoisonLock;
 use alloc::format;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 use spin::Once;
 
 extern crate alloc;
@@ -47,22 +47,18 @@ struct DomainCapabilities {
 }
 
 /// Capability manager (カーネル版: 監査ログ・カーネルタイマー連携付き)
-///
-/// 共通の型定義 (`CapabilitySet`, `CapabilityError`, `GrantToken`, `ReclamationStatus`)
-/// は `libs/security` クレートに一元化されており、本構造体はカーネル固有の
-/// `CapabilityManager` 実装のみを提供します。
 pub struct CapabilityManager {
     /// Domain capabilities
-    domains: Mutex<Vec<DomainCapabilities>>,
+    domains: PoisonLock<Vec<DomainCapabilities>>,
     /// Bounding set (maximum capabilities for any domain)
-    bounding_set: Mutex<Capability>,
+    bounding_set: PoisonLock<Capability>,
     /// Active grant tokens
-    grants: Mutex<Vec<GrantToken>>,
+    grants: PoisonLock<Vec<GrantToken>>,
     /// Next grant token id
     next_grant_id: AtomicU64,
-    /// In-flight usage counters for tokens (token_id -> count) - stored as Vec to allow const init
-    in_flight: Mutex<Vec<(u64, u64)>>,
+    /// In-flight usage counters for tokens (token_id -> count)
+    in_flight: PoisonLock<Vec<(u64, u64)>>,
     /// Test-only hook: force a failure for the next grant of a particular capability
     #[cfg(test)]
-    fail_next_grant_for: Mutex<Option<Capability>>,
+    fail_next_grant_for: PoisonLock<Option<Capability>>,
 }

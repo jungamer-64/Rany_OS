@@ -9,8 +9,8 @@
 
 use crate::traits::ConfigSpaceAccessor;
 use crate::types::BdfAddress;
+use exorust_sync::PoisonLock;
 use hal::port_io::PortU32;
-use spin::Mutex;
 
 // ============================================================================
 // Constants
@@ -41,7 +41,7 @@ impl LegacyPciPorts {
 }
 
 /// グローバルな Legacy PCI アクセサ
-static LEGACY_PCI: Mutex<LegacyPciPorts> = Mutex::new(LegacyPciPorts::new());
+static LEGACY_PCI: PoisonLock<LegacyPciPorts> = PoisonLock::new(LegacyPciPorts::new());
 
 /// Legacy PCI Configuration Space アクセサ
 ///
@@ -67,7 +67,7 @@ impl LegacyPciAccessor {
     /// 32ビット読み取り（内部）
     fn read_dword(&self, bdf: BdfAddress, offset: u8) -> u32 {
         let address = Self::make_address(bdf, offset);
-        let mut ports = LEGACY_PCI.lock();
+        let mut ports = LEGACY_PCI.lock().unwrap_or_else(|e| e.into_inner());
         ports.address_port.write(address);
         ports.data_port.read()
     }
@@ -75,7 +75,7 @@ impl LegacyPciAccessor {
     /// 32ビット書き込み（内部）
     fn write_dword(&self, bdf: BdfAddress, offset: u8, value: u32) {
         let address = Self::make_address(bdf, offset);
-        let mut ports = LEGACY_PCI.lock();
+        let mut ports = LEGACY_PCI.lock().unwrap_or_else(|e| e.into_inner());
         ports.address_port.write(address);
         ports.data_port.write(value);
     }

@@ -33,11 +33,11 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use crate::sync::PoisonRwLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::RwLock;
 
 use super::cow::{cow_copy_pte, cow_mark_page, page_get, page_put};
 use super::higher_half::{PageFlags, PhysAddr, VirtAddr, global_translate, global_unmap_page};
@@ -352,7 +352,7 @@ pub struct ProcessAddressSpace {
     /// ページテーブルの物理アドレス（CR3に設定する値）
     page_table_root: AtomicU64,
     /// メモリ領域のマップ（start_addr -> region）
-    regions: RwLock<BTreeMap<u64, Box<MemoryRegion>>>,
+    regions: PoisonRwLock<BTreeMap<u64, Box<MemoryRegion>>>,
     /// RCU保護されたVMAリスト
     vma_list: VmaList,
     /// ヒープ境界（brk）

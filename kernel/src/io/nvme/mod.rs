@@ -15,7 +15,7 @@
 #![allow(dead_code)]
 
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 // Kernel-local modules
 pub mod block_io;
@@ -28,16 +28,16 @@ pub mod scheduler;
 // IOMMU Device Registration (Kernel-only)
 // ============================================================================
 
-static NVME_IOMMU_DEVICE: Mutex<Option<IommuDeviceId>> = Mutex::new(None);
+static NVME_IOMMU_DEVICE: PoisonLock<Option<IommuDeviceId>> = PoisonLock::new(None);
 
 /// Register NVMe device ID for IOMMU mapping
 pub fn set_iommu_device(device: IommuDeviceId) {
-    *NVME_IOMMU_DEVICE.lock() = Some(device);
+    *NVME_IOMMU_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device);
 }
 
 /// Get NVMe device ID for IOMMU mapping
 pub fn iommu_device() -> Option<IommuDeviceId> {
-    *NVME_IOMMU_DEVICE.lock()
+    *NVME_IOMMU_DEVICE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // ============================================================================

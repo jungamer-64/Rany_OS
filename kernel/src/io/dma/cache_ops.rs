@@ -515,6 +515,50 @@ impl CoherentDmaBuffer {
     pub fn size(&self) -> usize {
         self.size
     }
+
+    /// Convert to a DmaSlice for cross-layer ownership transfer.
+    pub fn into_dma_slice(self) -> crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned> {
+        let (phys, device_addr, ptr, size, releaser) = self.into_raw_parts();
+        unsafe {
+            crate::io::dma::TypedDmaSlice::from_raw_parts(
+                phys,
+                device_addr,
+                ptr,
+                size,
+                releaser,
+            )
+        }
+    }
+
+    /// Decompose into raw parts.
+    ///
+    /// WARNING: This leaks the buffer; the caller must ensure proper deallocation.
+    pub fn into_raw_parts(
+        self,
+    ) -> (
+        u64,
+        u64,
+        *mut u8,
+        usize,
+        Option<fn(*mut u8, usize, u64)>,
+    ) {
+        let phys = self.phys_addr.as_u64();
+        let device_addr = self.device_addr();
+        let ptr = self.ptr.as_ptr();
+        let size = self.size;
+
+        core::mem::forget(self);
+        (phys, device_addr, ptr, size, Some(release_dealloc_only))
+    }
+}
+
+/// A DMA releaser that only performs deallocation.
+///
+/// Use this when IOMMU unmapping is handled elsewhere (e.g. by a side-band tracker).
+pub unsafe fn release_dealloc_only(ptr: *mut u8, size: usize, _phys: u64) {
+    // CoherentDmaBuffer always uses 4K alignment
+    let layout = core::alloc::Layout::from_size_align_unchecked(size, 4096);
+    core::alloc::dealloc(ptr, layout);
 }
 
 impl Drop for CoherentDmaBuffer {

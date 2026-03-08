@@ -1,40 +1,41 @@
 use super::{VirtioNetDevice, VirtioNetError};
 use crate::io::virtio::transport::VirtioMmioTransport;
 use crate::io::virtio::transport::VirtioTransport;
+use crate::sync::{PoisonLock, PoisonRwLock};
 use crate::task::{InterruptSource, spawn, wait_for_interrupt};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::RwLock;
 
 // ============================================================================
 // Global Device Instance
 // ============================================================================
 
 /// Primary (legacy) VirtIO-Net device slot kept for compatibility (`index=0`).
-pub(crate) static VIRTIO_NET_DEVICE: crate::sync::PoisonLock<Option<VirtioNetDevice>> =
-    crate::sync::PoisonLock::new(None);
+pub(crate) static VIRTIO_NET_DEVICE: PoisonLock<Option<VirtioNetDevice>> =
+    PoisonLock::new(None);
 /// Additional VirtIO-Net devices (`index != 0`).
-pub(crate) static VIRTIO_NET_DEVICES: RwLock<
-    BTreeMap<u8, Arc<crate::sync::PoisonLock<VirtioNetDevice>>>,
-> = RwLock::new(BTreeMap::new());
+pub(crate) static VIRTIO_NET_DEVICES: PoisonRwLock<
+    BTreeMap<u8, Arc<PoisonLock<VirtioNetDevice>>>,
+> = PoisonRwLock::new(BTreeMap::new());
 /// ISR-safe access to transport layer for interrupt acknowledgement.
-pub(crate) static VIRTIO_NET_TRANSPORTS: RwLock<BTreeMap<u8, Arc<dyn VirtioTransport>>> =
-    RwLock::new(BTreeMap::new());
+pub(crate) static VIRTIO_NET_TRANSPORTS: PoisonRwLock<BTreeMap<u8, Arc<dyn VirtioTransport>>> =
+    PoisonRwLock::new(BTreeMap::new());
 
 fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
     let transport = device.transport.clone();
     if index == 0 {
         *VIRTIO_NET_DEVICE
             .lock()
-            .expect("VIRTIO_NET_DEVICE lock poisoned") = Some(device);
+            .unwrap_or_else(|e| e.into_inner()) = Some(device);
     } else {
         VIRTIO_NET_DEVICES
             .write()
-            .insert(index, Arc::new(crate::sync::PoisonLock::new(device)));
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(index, Arc::new(PoisonLock::new(device)));
     }
-    VIRTIO_NET_TRANSPORTS.write().insert(index, transport);
+    VIRTIO_NET_TRANSPORTS.write().unwrap_or_else(|e| e.into_inner()).insert(index, transport);
 
     // ポスト・インタラプト（BH）ワーカータスクを起動
     spawn_virtio_net_worker(index);
@@ -49,22 +50,14 @@ fn spawn_virtio_net_worker(index: u8) {
 async fn virtio_net_worker_task(index: u8) {
     log::info!("[VIRTIO-NET] Worker task for index {} started", index);
     loop {
-        // 1. 割り込みを待機
         wait_for_interrupt(InterruptSource::VirtioNet(index)).await;
 
-        // 2. デバイスをロックして後処理（非ISRコンテキストなので安全）
-        // デバイスロック保持中にRX処理→ブリッジ→TX送信→デバイスロック再取得の
-        // デッドロックを防止するため、deferred RXモードを使用する。
         crate::net::runtime::bridge::enter_deferred_rx_mode();
         let result = with_virtio_net_device_at_index(index, |device| {
             device.handle_interrupt();
-            // スタベーション回復: 不足しているRXバッファを補充
             device.refill_rx_queues();
         });
         crate::net::runtime::bridge::drain_deferred_rx_packets();
-        // Flush any packets that were enqueued in the batch processor during drain.
-        // Without this, single packets (e.g. DHCP OFFER) would sit in the batch
-        // until the next timer-tick driven check_batch_timeout() fires.
         crate::net::runtime::bridge::flush_batch();
 
         if result.is_none() {
@@ -84,13 +77,13 @@ where
     if index == 0 {
         return VIRTIO_NET_DEVICE
             .lock()
-            .expect("VIRTIO_NET_DEVICE lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(f);
     }
 
-    let device = VIRTIO_NET_DEVICES.read().get(&index).cloned()?;
-    let guard = device.lock().expect("virtqueue lock poisoned");
+    let device = VIRTIO_NET_DEVICES.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned()?;
+    let guard = device.lock().unwrap_or_else(|e| e.into_inner());
     Some(f(&guard))
 }
 
@@ -101,12 +94,12 @@ where
     if index == 0 {
         let mut guard = VIRTIO_NET_DEVICE
             .lock()
-            .expect("VIRTIO_NET_DEVICE lock poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         return guard.as_mut().map(f);
     }
 
-    let device = VIRTIO_NET_DEVICES.read().get(&index).cloned()?;
-    let mut guard = device.lock().expect("virtqueue lock poisoned");
+    let device = VIRTIO_NET_DEVICES.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned()?;
+    let mut guard = device.lock().unwrap_or_else(|e| e.into_inner());
     Some(f(&mut guard))
 }
 
@@ -114,22 +107,22 @@ pub(crate) fn has_virtio_net_device(index: u8) -> bool {
     if index == 0 {
         return VIRTIO_NET_DEVICE
             .lock()
-            .expect("VIRTIO_NET_DEVICE lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .is_some();
     }
-    VIRTIO_NET_DEVICES.read().contains_key(&index)
+    VIRTIO_NET_DEVICES.read().unwrap_or_else(|e| e.into_inner()).contains_key(&index)
 }
 
 fn collect_registered_virtio_net_indices() -> Vec<u8> {
     let mut indices = Vec::new();
     if VIRTIO_NET_DEVICE
         .lock()
-        .expect("VIRTIO_NET_DEVICE lock poisoned")
+        .unwrap_or_else(|e| e.into_inner())
         .is_some()
     {
         indices.push(0);
     }
-    indices.extend(VIRTIO_NET_DEVICES.read().keys().copied());
+    indices.extend(VIRTIO_NET_DEVICES.read().unwrap_or_else(|e| e.into_inner()).keys().copied());
     indices
 }
 
@@ -231,21 +224,14 @@ where
 }
 
 /// 指定 index の VirtIO-Net 割り込みを処理する。
-///
-/// 重要: この関数は ISR (Interrupt Service Routine) コンテキストから呼ばれる。
-/// デッドロックを避けるため、デバイス全体のロックを取得してはならない。
 pub fn handle_virtio_net_interrupt_for_index(index: u8) {
-    // 1. ISR安全なトランスポートレジストリから取得
-    let transport = VIRTIO_NET_TRANSPORTS.read().get(&index).cloned();
+    let transport = VIRTIO_NET_TRANSPORTS.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned();
 
     if let Some(transport) = transport {
-        // 2. 割り込みステータスを確認してACK（ISR安全）
         let status = transport.get_interrupt_status();
         if status != 0 {
             transport.ack_interrupt(status);
 
-            // 3. Wakerを叩いてワーカータスクに後処理を委ねる（ISR安全）
-            // これにより、デバイスロック取得に伴うデッドロックを回避する。
             crate::task::interrupt_waker::wake_from_interrupt(
                 crate::task::interrupt_waker::InterruptSource::VirtioNet(index),
             );
@@ -255,7 +241,7 @@ pub fn handle_virtio_net_interrupt_for_index(index: u8) {
 
 /// Acknowledge a VirtIO-Net interrupt without processing queues.
 pub fn ack_virtio_net_interrupt_for_index(index: u8) -> bool {
-    let transport = VIRTIO_NET_TRANSPORTS.read().get(&index).cloned();
+    let transport = VIRTIO_NET_TRANSPORTS.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned();
     if let Some(transport) = transport {
         let status = transport.get_interrupt_status();
         if status != 0 {
@@ -293,10 +279,6 @@ pub fn handle_virtio_net_interrupt() {
 }
 
 /// 同期的にRX/TXキューをポーリングしてパケットを処理する。
-///
-/// `handle_all_virtio_net_interrupts` と異なり、非同期ワーカーに委ねず
-/// 直接 `process_rx_completions` / `process_tx_completions` を呼ぶ。
-/// ISR外の同期コンテキスト（例: 初期化時のpingループ）で使用する。
 pub fn poll_all_virtio_net_queues() {
     let indices = collect_registered_virtio_net_indices();
     for index in indices {
@@ -304,13 +286,8 @@ pub fn poll_all_virtio_net_queues() {
     }
 }
 
-/// 指定インデックスのVirtIO-Netデバイスのキューを同期ポーリングする。
-///
-/// RXパケットのブリッジ/スタック処理はデバイスロック解放後に実行する。
-/// これにより、RX処理→ARP応答→TX送信→デバイスロック再取得のデッドロックを防止する。
 fn poll_virtio_net_queues_for_index(index: u8) {
-    // ISR statusを確認してACK
-    let transport = VIRTIO_NET_TRANSPORTS.read().get(&index).cloned();
+    let transport = VIRTIO_NET_TRANSPORTS.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned();
     if let Some(transport) = transport {
         let status = transport.get_interrupt_status();
         if status != 0 {
@@ -318,16 +295,13 @@ fn poll_virtio_net_queues_for_index(index: u8) {
         }
     }
 
-    // Phase 1: デバイスロック保持中にRX/TX完了を収集（ブリッジ転送は遅延）
     crate::net::runtime::bridge::enter_deferred_rx_mode();
     with_virtio_net_device_at_index(index, |device| {
         device.handle_interrupt();
         device.refill_rx_queues();
     });
 
-    // Phase 2: デバイスロック解放後にバッファされたパケットをディスパッチ
     crate::net::runtime::bridge::drain_deferred_rx_packets();
-    // Flush any packets sitting in the batch processor after drain
     crate::net::runtime::bridge::flush_batch();
 }
 
@@ -335,6 +309,6 @@ fn poll_virtio_net_queues_for_index(index: u8) {
 pub(crate) fn clear_virtio_net_devices_for_tests() {
     *VIRTIO_NET_DEVICE
         .lock()
-        .expect("VIRTIO_NET_DEVICE lock poisoned") = None;
-    VIRTIO_NET_DEVICES.write().clear();
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    VIRTIO_NET_DEVICES.write().unwrap_or_else(|e| e.into_inner()).clear();
 }

@@ -12,6 +12,7 @@
 //!   - NUMA アフィニティを考慮
 //!   - ISR 内での動的メモリ割り当てを避ける
 
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -28,9 +29,6 @@ const DEFAULT_FLUSH_DELAY_US: u64 = 50;
 const MAX_CPUS: usize = 64;
 
 /// Per-CPU バッチキュー（各コア専用）
-///
-/// ロックフリー: 各コアは自分専用のキューのみ操作する。
-/// 他コアからのフラッシュ要求は AtomicBool フラグで通知。
 struct CpuBatchQueue {
     /// パケット格納バッファ（固定サイズリングバッファ）
     ring: [Option<PacketRef>; PER_CPU_BATCH_CAPACITY],
@@ -132,15 +130,9 @@ impl CpuBatchQueue {
 }
 
 /// Per-CPU バッチプロセッサ
-///
-/// 各CPUコアに対応するキューを管理し、
-/// ロックなしの高速バッチ処理を提供する。
 pub struct PerCpuBatchProcessor {
     /// CPUごとのバッチキュー
-    ///
-    /// 各CPUは自分のインデックスにのみアクセスするためロック不要。
-    /// 初期化後は静的に確保される。
-    queues: Vec<spin::Mutex<CpuBatchQueue>>,
+    queues: Vec<PoisonLock<CpuBatchQueue>>,
     /// 有効CPU数
     cpu_count: usize,
     /// グローバル統計: 総フラッシュ数
@@ -159,7 +151,7 @@ impl PerCpuBatchProcessor {
         let count = cpu_count.min(MAX_CPUS).max(1);
         let mut queues = Vec::with_capacity(count);
         for _ in 0..count {
-            queues.push(spin::Mutex::new(CpuBatchQueue::new()));
+            queues.push(PoisonLock::new(CpuBatchQueue::new()));
         }
 
         Self {
@@ -173,13 +165,10 @@ impl PerCpuBatchProcessor {
     }
 
     /// パケットをバッチに追加（ロック最小化）
-    ///
-    /// 現在のCPU IDに基づき、対応するキューにパケットを追加する。
-    /// キューが満杯の場合は即座にフラッシュしてバッチを返す。
     pub fn enqueue(&self, packet: PacketRef) -> Option<PacketBatch> {
         let cpu_id = current_cpu_id() % self.cpu_count;
 
-        let mut queue = self.queues[cpu_id].lock();
+        let mut queue = self.queues[cpu_id].lock().unwrap_or_else(|e| e.into_inner());
 
         if queue.is_full() {
             // 満杯 → まずフラッシュしてパケットを空ける
@@ -212,18 +201,12 @@ impl PerCpuBatchProcessor {
     }
 
     /// 全CPUのキューを強制フラッシュ（非ブロッキング・ゼロアロケーション）
-    ///
-    /// 他のCPUがロック保持中のキューはスキップし、
-    /// 待機によるスループット低下を回避する。
-    ///
-    /// 固定配列を使用し、ホットパスでのヒープ割り当てを回避。
     pub fn flush_all(&self) -> ([Option<PacketBatch>; MAX_CPUS], usize) {
         const NONE: Option<PacketBatch> = None;
         let mut batches = [NONE; MAX_CPUS];
         let mut count = 0;
         for queue_lock in &self.queues {
-            // try_lock で非ブロッキング取得—他CPUが使用中ならスキップ
-            if let Some(mut queue) = queue_lock.try_lock() {
+            if let Ok(mut queue) = queue_lock.try_lock() {
                 if let Some(batch) = queue.flush() {
                     self.total_flushes.fetch_add(1, Ordering::Relaxed);
                     self.total_packets
@@ -241,7 +224,7 @@ impl PerCpuBatchProcessor {
     /// 特定CPUのキューをフラッシュ
     pub fn flush_cpu(&self, cpu_id: usize) -> Option<PacketBatch> {
         let idx = cpu_id % self.cpu_count;
-        let mut queue = self.queues[idx].lock();
+        let mut queue = self.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
         let batch = queue.flush();
         if let Some(ref b) = batch {
             self.total_flushes.fetch_add(1, Ordering::Relaxed);
@@ -252,9 +235,6 @@ impl PerCpuBatchProcessor {
     }
 
     /// タイムアウトチェック（全CPU、非ブロッキング・ゼロアロケーション）
-    ///
-    /// 他のCPUがロック保持中のキューはスキップする。
-    /// 固定配列を使用し、ホットパスでのヒープ割り当てを回避。
     pub fn check_timeouts(
         &self,
         current_tsc: u64,
@@ -264,8 +244,7 @@ impl PerCpuBatchProcessor {
         let mut batches = [NONE; MAX_CPUS];
         let mut count = 0;
         for queue_lock in &self.queues {
-            // try_lock で非ブロッキング取得
-            if let Some(mut queue) = queue_lock.try_lock() {
+            if let Ok(mut queue) = queue_lock.try_lock() {
                 if let Some(batch) = queue.flush_if_timeout(current_tsc, tsc_freq_mhz) {
                     self.total_flushes.fetch_add(1, Ordering::Relaxed);
                     self.timeout_flushes.fetch_add(1, Ordering::Relaxed);
@@ -320,8 +299,6 @@ pub fn per_cpu_batch() -> Option<&'static PerCpuBatchProcessor> {
 }
 
 /// 現在のCPU IDを取得
-///
-/// ISRコンテキストでも安全に取得できるラッパー。
 #[inline]
 fn current_cpu_id() -> usize {
     crate::per_cpu::try_current_cpu_id().unwrap_or(0)

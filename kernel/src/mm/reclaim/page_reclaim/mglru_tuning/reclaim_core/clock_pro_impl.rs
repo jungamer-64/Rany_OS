@@ -3,7 +3,7 @@ use super::*;
 impl ClockProList {
     pub const fn new() -> Self {
         Self {
-            pages: spin::Mutex::new(VecDeque::new()),
+            pages: PoisonLock::new(VecDeque::new()),
             hand_cold: AtomicUsize::new(0),
             hand_hot: AtomicUsize::new(0),
             hand_test: AtomicUsize::new(0),
@@ -22,14 +22,14 @@ impl ClockProList {
     pub fn add_page(&self, frame: FrameIndex, timestamp: u64) {
         let entry = ClockProEntry::new(frame, ClockProState::Cold, timestamp);
 
-        let mut pages = self.pages.lock();
+        let mut pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
         pages.push_back(entry);
         self.cold_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// ページアクセスを記録
     pub fn access_page(&self, frame: FrameIndex) {
-        let pages = self.pages.lock();
+        let pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
 
         for entry in pages.iter() {
             if entry.frame == frame {
@@ -40,10 +40,6 @@ impl ClockProList {
     }
 
     /// Hand Coldを進めて非参照Coldページを回収
-    ///
-    /// # Returns
-    /// 回収するフレームのリスト
-    /// Coldエントリを回収試行し、成功時はTestエントリに変換する
     pub(super) fn try_evict_cold_entry(
         &self,
         pages: &mut alloc::collections::VecDeque<ClockProEntry>,
@@ -65,7 +61,7 @@ impl ClockProList {
     }
 
     pub fn run_hand_cold(&self, target_count: usize) -> Vec<FrameIndex> {
-        let mut pages = self.pages.lock();
+        let mut pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
         let mut victims = Vec::new();
 
         if pages.is_empty() {
@@ -110,7 +106,7 @@ impl ClockProList {
 
     /// Hand Hotを進めて非参照Hotページを降格
     pub fn run_hand_hot(&self, scan_count: usize) -> usize {
-        let mut pages = self.pages.lock();
+        let mut pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
 
         if pages.is_empty() {
             return 0;
@@ -149,12 +145,8 @@ impl ClockProList {
     }
 
     /// Testエントリにヒットした場合の処理
-    ///
-    /// Testにあるページが再度アクセスされた場合、
-    /// そのページはワーキングセットの一部とみなしてHotに昇格する。
-    /// また、ターゲットCold数を増加させる。
     pub fn handle_test_hit(&self, frame: FrameIndex) -> bool {
-        let mut pages = self.pages.lock();
+        let mut pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
 
         for entry in pages.iter_mut() {
             if entry.frame == frame && entry.state == ClockProState::Test {
@@ -169,7 +161,6 @@ impl ClockProList {
                 // ターゲットCold数を増加（ワーキングセット拡大の兆候）
                 let old_target = self.target_cold.fetch_add(1, Ordering::Relaxed);
                 if old_target < 1000 {
-                    // 上限
                     self.target_adjustments.fetch_add(1, Ordering::Relaxed);
                 }
 
@@ -195,7 +186,7 @@ impl ClockProList {
 
     /// リストのサイズ
     pub fn len(&self) -> usize {
-        let pages = self.pages.lock();
+        let pages = self.pages.lock().unwrap_or_else(|e| e.into_inner());
         pages.len()
     }
 

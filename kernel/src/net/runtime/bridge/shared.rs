@@ -8,10 +8,10 @@ use crate::net::obs::{
 };
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
+use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
-use spin::RwLock;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BridgePortStats {
@@ -56,8 +56,8 @@ impl RxDispatchHandle {
     }
 }
 
-static BRIDGE_PORTS: RwLock<BTreeMap<NetIfId, Arc<dyn NetBridgePort>>> =
-    RwLock::new(BTreeMap::new());
+static BRIDGE_PORTS: PoisonRwLock<BTreeMap<NetIfId, Arc<dyn NetBridgePort>>> =
+    PoisonRwLock::new(BTreeMap::new());
 
 pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static str> {
     if super::BRIDGE_INITIALIZED.load(Ordering::Acquire) {
@@ -107,12 +107,12 @@ pub fn install_port(
     port.start(RxDispatchHandle::new(if_id))?;
 
     {
-        let mut ports = BRIDGE_PORTS.write();
+        let mut ports = BRIDGE_PORTS.write().unwrap_or_else(|e| e.into_inner());
         ports.insert(if_id, port);
     }
 
     super::ensure_bridge_if_state(if_id, None);
-    let mut primary = super::PRIMARY_BRIDGE_IF.write();
+    let mut primary = super::PRIMARY_BRIDGE_IF.write().unwrap_or_else(|e| e.into_inner());
     if primary.is_none() || make_primary {
         *primary = Some(if_id);
     }
@@ -121,13 +121,13 @@ pub fn install_port(
 }
 
 pub fn remove_port(if_id: NetIfId) {
-    if let Some(port) = BRIDGE_PORTS.write().remove(&if_id) {
+    if let Some(port) = BRIDGE_PORTS.write().unwrap_or_else(|e| e.into_inner()).remove(&if_id) {
         port.stop();
     }
 }
 
 pub fn lookup_port(if_id: NetIfId) -> Option<Arc<dyn NetBridgePort>> {
-    BRIDGE_PORTS.read().get(&if_id).cloned()
+    BRIDGE_PORTS.read().unwrap_or_else(|e| e.into_inner()).get(&if_id).cloned()
 }
 
 pub fn transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
@@ -225,8 +225,11 @@ mod tests {
 
     #[test_case]
     fn install_port_registers_runtime_and_transmit_dispatches() {
-        let prev_primary = *super::super::PRIMARY_BRIDGE_IF.read();
-        let prev_stats = core::mem::take(&mut *super::super::BRIDGE_IF_STATS.write());
+        let prev_primary = super::primary_bridge_if();
+        let prev_stats = {
+            let guard = super::super::BRIDGE_IF_STATS.read().unwrap_or_else(|e| e.into_inner());
+            guard.clone()
+        };
         let port = Arc::new(FakePort::new());
         let if_id = NetIfId(123);
 
@@ -235,7 +238,15 @@ mod tests {
         assert_eq!(port.stats().tx_packets, 1);
 
         remove_port(if_id);
-        *super::super::PRIMARY_BRIDGE_IF.write() = prev_primary;
-        *super::super::BRIDGE_IF_STATS.write() = prev_stats;
+        
+        // Restore state
+        {
+            let mut prim = super::super::PRIMARY_BRIDGE_IF.write().unwrap_or_else(|e| e.into_inner());
+            *prim = prev_primary;
+        }
+        {
+            let mut stats = super::super::BRIDGE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
+            *stats = prev_stats;
+        }
     }
 }

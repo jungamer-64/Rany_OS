@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::PoisonRwLock;
 
 // ============================================================================
 // Global Device Instance
@@ -9,17 +10,17 @@ pub(crate) static VIRTIO_CONSOLE_DEVICE: crate::sync::PoisonLock<Option<Arc<Virt
     crate::sync::PoisonLock::new(None);
 
 /// Additional VirtIO console devices (`index != 0`).
-pub(crate) static VIRTIO_CONSOLE_DEVICES: spin::RwLock<
+pub(crate) static VIRTIO_CONSOLE_DEVICES: PoisonRwLock<
     alloc::collections::BTreeMap<u8, Arc<VirtioConsoleDevice>>,
-> = spin::RwLock::new(alloc::collections::BTreeMap::new());
+> = PoisonRwLock::new(alloc::collections::BTreeMap::new());
 
 fn install_virtio_console_device(index: u8, device_arc: Arc<VirtioConsoleDevice>) {
     if index == 0 {
         *VIRTIO_CONSOLE_DEVICE
             .lock()
-            .expect("VIRTIO_CONSOLE_DEVICE lock poisoned") = Some(device_arc);
+            .unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
     } else {
-        VIRTIO_CONSOLE_DEVICES.write().insert(index, device_arc);
+        VIRTIO_CONSOLE_DEVICES.write().unwrap_or_else(|e| e.into_inner()).insert(index, device_arc);
     }
 }
 
@@ -28,10 +29,10 @@ pub fn get_virtio_console_device_at_index(index: u8) -> Option<Arc<VirtioConsole
     if index == 0 {
         VIRTIO_CONSOLE_DEVICE
             .lock()
-            .expect("VIRTIO_CONSOLE_DEVICE lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
     } else {
-        VIRTIO_CONSOLE_DEVICES.read().get(&index).cloned()
+        VIRTIO_CONSOLE_DEVICES.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned()
     }
 }
 

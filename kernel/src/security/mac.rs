@@ -3,11 +3,11 @@
 //! This module implements a Bell-LaPadula style MAC policy
 //! with support for security levels and categories.
 
+use crate::sync::PoisonLock;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
-use spin::Mutex;
 
 extern crate alloc;
 
@@ -52,7 +52,7 @@ impl Default for SecurityLevel {
 }
 
 impl fmt::Display for SecurityLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.name())
     }
 }
@@ -162,7 +162,6 @@ impl SecurityContext {
     }
 
     /// Check if this context dominates another (Bell-LaPadula)
-    /// A dominates B if A.level >= B.level AND A.categories ⊇ B.categories
     pub fn dominates(&self, other: &SecurityContext) -> bool {
         self.level.dominates(other.level) && other.categories.is_subset(&self.categories)
     }
@@ -180,7 +179,7 @@ impl Default for SecurityContext {
 }
 
 impl fmt::Display for SecurityContext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "{}:u{}:r{}:{}",
@@ -220,7 +219,7 @@ pub enum MacError {
 }
 
 impl fmt::Display for MacError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             MacError::LevelDenied {
                 subject_level,
@@ -269,9 +268,9 @@ pub struct MacPolicy {
     /// Enforce mode (false = permissive/audit only)
     enforcing: bool,
     /// Domain contexts
-    domain_contexts: Mutex<Vec<(u64, SecurityContext)>>,
-    /// Object contexts (simplified - keyed by object ID)
-    object_contexts: Mutex<Vec<(u64, SecurityContext)>>,
+    domain_contexts: PoisonLock<Vec<(u64, SecurityContext)>>,
+    /// Object contexts
+    object_contexts: PoisonLock<Vec<(u64, SecurityContext)>>,
 }
 
 impl MacPolicy {
@@ -280,8 +279,8 @@ impl MacPolicy {
         MacPolicy {
             enabled: false,
             enforcing: false,
-            domain_contexts: Mutex::new(Vec::new()),
-            object_contexts: Mutex::new(Vec::new()),
+            domain_contexts: PoisonLock::new(Vec::new()),
+            object_contexts: PoisonLock::new(Vec::new()),
         }
     }
 
@@ -307,7 +306,7 @@ impl MacPolicy {
 
     /// Set context for a domain
     pub fn set_domain_context(&self, domain_id: u64, context: SecurityContext) {
-        let mut contexts = self.domain_contexts.lock();
+        let mut contexts = self.domain_contexts.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = contexts.iter_mut().find(|(id, _)| *id == domain_id) {
             entry.1 = context;
         } else {
@@ -319,6 +318,7 @@ impl MacPolicy {
     pub fn get_domain_context(&self, domain_id: u64) -> Option<SecurityContext> {
         self.domain_contexts
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|(id, _)| *id == domain_id)
             .map(|(_, ctx)| ctx.clone())
@@ -326,7 +326,7 @@ impl MacPolicy {
 
     /// Set context for an object
     pub fn set_object_context(&self, object_id: u64, context: SecurityContext) {
-        let mut contexts = self.object_contexts.lock();
+        let mut contexts = self.object_contexts.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = contexts.iter_mut().find(|(id, _)| *id == object_id) {
             entry.1 = context;
         } else {
@@ -338,15 +338,12 @@ impl MacPolicy {
     pub fn get_object_context(&self, object_id: u64) -> Option<SecurityContext> {
         self.object_contexts
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|(id, _)| *id == object_id)
             .map(|(_, ctx)| ctx.clone())
     }
 
-    /// Enforce Bell-LaPadula dominance check.
-    ///
-    /// `dominant` must dominate `subordinate` for the access to be allowed.
-    /// `subject`/`object` are the original contexts used for error reporting.
     fn enforce_dominance(
         &self,
         dominant: &SecurityContext,
@@ -387,11 +384,9 @@ impl MacPolicy {
 
         match access_type {
             AccessType::Read | AccessType::Execute => {
-                // Simple Security Property: No Read Up
                 self.enforce_dominance(subject, object, subject.level, object.level)
             }
             AccessType::Write | AccessType::Append | AccessType::Create | AccessType::Delete => {
-                // *-Property (Star Property): No Write Down
                 self.enforce_dominance(object, subject, subject.level, object.level)
             }
         }
@@ -422,7 +417,7 @@ impl Default for MacPolicy {
 }
 
 /// Global MAC policy
-static MAC_POLICY: Mutex<MacPolicy> = Mutex::new(MacPolicy::new());
+static MAC_POLICY: PoisonLock<MacPolicy> = PoisonLock::new(MacPolicy::new());
 
 /// Check access using global policy
 pub fn check_access(
@@ -430,22 +425,22 @@ pub fn check_access(
     object: &SecurityContext,
     access_type: AccessType,
 ) -> Result<MacDecision, MacError> {
-    MAC_POLICY.lock().check_access(subject, object, access_type)
+    MAC_POLICY.lock().unwrap_or_else(|e| e.into_inner()).check_access(subject, object, access_type)
 }
 
 /// Get current context for a domain
 pub fn current_context(domain_id: u64) -> Option<SecurityContext> {
-    MAC_POLICY.lock().get_domain_context(domain_id)
+    MAC_POLICY.lock().unwrap_or_else(|e| e.into_inner()).get_domain_context(domain_id)
 }
 
 /// Set context for a domain
 pub fn set_context(domain_id: u64, context: SecurityContext) {
-    MAC_POLICY.lock().set_domain_context(domain_id, context);
+    MAC_POLICY.lock().unwrap_or_else(|e| e.into_inner()).set_domain_context(domain_id, context);
 }
 
 /// Initialize MAC subsystem
 pub fn init() {
-    let mut policy = MAC_POLICY.lock();
+    let mut policy = MAC_POLICY.lock().unwrap_or_else(|e| e.into_inner());
 
     // Set kernel context
     policy.set_domain_context(0, SecurityContext::kernel());
@@ -457,7 +452,7 @@ pub fn init() {
 
 /// Enable enforcement
 pub fn set_enforcing(enforcing: bool) {
-    MAC_POLICY.lock().set_enforcing(enforcing);
+    MAC_POLICY.lock().unwrap_or_else(|e| e.into_inner()).set_enforcing(enforcing);
 }
 
 #[cfg(test)]
@@ -493,10 +488,7 @@ mod tests {
         let low = SecurityContext::new(SecurityLevel::Internal, 0, 0);
         let high = SecurityContext::new(SecurityLevel::Secret, 0, 0);
 
-        // Low cannot read high (No Read Up)
         assert!(policy.check_access(&low, &high, AccessType::Read).is_err());
-
-        // High can read low
         assert!(policy.check_access(&high, &low, AccessType::Read).is_ok());
     }
 
@@ -509,10 +501,7 @@ mod tests {
         let low = SecurityContext::new(SecurityLevel::Internal, 0, 0);
         let high = SecurityContext::new(SecurityLevel::Secret, 0, 0);
 
-        // High cannot write to low (No Write Down)
         assert!(policy.check_access(&high, &low, AccessType::Write).is_err());
-
-        // Low can write to high
         assert!(policy.check_access(&low, &high, AccessType::Write).is_ok());
     }
 }

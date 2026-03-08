@@ -560,8 +560,8 @@ unsafe impl Send for DropGuard {}
 unsafe impl Sync for DropGuard {}
 
 /// グローバルなDrop guard registry
-static DROP_GUARD_REGISTRY: spin::Mutex<DropGuardRegistry> =
-    spin::Mutex::new(DropGuardRegistry::new());
+static DROP_GUARD_REGISTRY: crate::sync::PoisonLock<DropGuardRegistry> =
+    crate::sync::PoisonLock::new(DropGuardRegistry::new());
 
 struct DropGuardRegistry {
     guards: alloc::vec::Vec<DropGuard>,
@@ -597,12 +597,12 @@ impl DropGuardRegistry {
 
 /// Drop guardを登録するマクロ用の関数
 pub fn register_drop_guard(guard: DropGuard) {
-    DROP_GUARD_REGISTRY.lock().register(guard);
+    DROP_GUARD_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).register(guard);
 }
 
 /// Drop guardの登録を解除する関数
 pub fn unregister_drop_guard(stack_addr: u64) {
-    DROP_GUARD_REGISTRY.lock().unregister(stack_addr);
+    DROP_GUARD_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).unregister(stack_addr);
 }
 
 // ============================================================================
@@ -618,8 +618,8 @@ pub struct DomainLockInfo {
 }
 
 /// グローバルなDomain lock registry
-static DOMAIN_LOCK_REGISTRY: spin::Mutex<DomainLockRegistry> =
-    spin::Mutex::new(DomainLockRegistry::new());
+static DOMAIN_LOCK_REGISTRY: crate::sync::PoisonLock<DomainLockRegistry> =
+    crate::sync::PoisonLock::new(DomainLockRegistry::new());
 
 struct DomainLockRegistry {
     locks: alloc::vec::Vec<DomainLockInfo>,
@@ -653,10 +653,10 @@ impl DomainLockRegistry {
 
 /// ドメインがロックを取得したことを記録
 pub fn register_domain_lock(info: DomainLockInfo) {
-    DOMAIN_LOCK_REGISTRY.lock().register(info);
+    DOMAIN_LOCK_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).register(info);
 }
 
 /// ドメインがロックを解放したことを記録
 pub fn unregister_domain_lock(lock_addr: usize) {
-    DOMAIN_LOCK_REGISTRY.lock().unregister(lock_addr);
+    DOMAIN_LOCK_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).unregister(lock_addr);
 }

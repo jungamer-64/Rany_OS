@@ -6,12 +6,12 @@
 #![allow(dead_code)]
 
 use crate::per_cpu;
+use crate::sync::IrqPoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use spin::Mutex;
 
 /// RCUのグレース期間を追跡するためのエポックカウンタ
 ///
@@ -144,8 +144,6 @@ pub fn rcu_note_context_switch() {
             }
         }
     }
-    // Also update global for compatibility if needed, but we rely on local now.
-    // RCU_CONTEXT_SWITCHES.fetch_add(1, Ordering::Release);
 }
 
 /// 現在のコンテキストスイッチカウントを取得
@@ -154,12 +152,6 @@ pub fn rcu_context_switch_count() -> usize {
     RCU_CONTEXT_SWITCHES.load(Ordering::Acquire)
 }
 
-/// 同期的にグレース期間の終了を待つ
-///
-/// 呼び出し時点で存在した全てのRCU読み取りセクションが終了するまでブロック
-///
-/// # Warning
-/// これはビジーウェイトなので、割り込みコンテキストでは使用しないこと
 /// 同期的にグレース期間の終了を待つ
 ///
 /// 呼び出し時点で存在した全てのRCU読み取りセクションが終了するまでブロック
@@ -224,23 +216,9 @@ unsafe impl Send for RcuCallbackEntry {}
 
 /// 遅延コールバックキュー（簡易実装: グローバル1つ）
 /// 本格実装ではPer-CPUキューを使用する
-static RCU_CALLBACK_QUEUE: spin::Mutex<VecDeque<RcuCallbackEntry>> =
-    spin::Mutex::new(VecDeque::new());
+static RCU_CALLBACK_QUEUE: IrqPoisonLock<VecDeque<RcuCallbackEntry>> =
+    IrqPoisonLock::new(VecDeque::new());
 
-/// グレース期間後にコールバックを呼び出す（非同期版synchronize_rcu）
-///
-/// # Arguments
-/// * `ptr` - 解放対象のポインタ
-/// * `callback` - グレース期間後に呼び出されるコールバック
-///
-/// # Example
-/// ```ignore
-/// fn free_old_vma(ptr: *mut u8) {
-///     unsafe { drop(Box::from_raw(ptr as *mut VmArea)); }
-/// }
-///
-/// call_rcu(old_vma as *mut u8, free_old_vma);
-/// ```
 /// グレース期間後にコールバックを呼び出す（非同期版synchronize_rcu）
 ///
 /// # Arguments
@@ -258,13 +236,16 @@ pub fn call_rcu(ptr: *mut u8, callback: RcuCallback) {
         let gs_base = per_cpu::read_gsbase_any();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-            pcp.rcu_state.batch_queue.lock().push_back(entry);
+            pcp.rcu_state
+                .batch_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(entry);
         } else {
-            // Fallback for early boot / non-PerCPU context (should be rare)
-            // Just leak or use a temporary global?
-            // For now, panic/warn or use static fallback.
-            // Using the static fallback defined previously (if kept) or simple static.
-            RCU_CALLBACK_QUEUE.lock().push_back(entry);
+            RCU_CALLBACK_QUEUE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(entry);
         }
     }
 }
@@ -281,7 +262,7 @@ pub fn rcu_process_callbacks() {
             return;
         }
         let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-        let mut queue = pcp.rcu_state.batch_queue.lock();
+        let mut queue = pcp.rcu_state.batch_queue.lock().unwrap_or_else(|e| e.into_inner());
 
         // グレース期間が経過したコールバックを処理
         while let Some(entry) = queue.front() {
@@ -294,7 +275,7 @@ pub fn rcu_process_callbacks() {
                 (entry.callback)(entry.ptr);
 
                 // ロック再取得
-                queue = pcp.rcu_state.batch_queue.lock();
+                queue = pcp.rcu_state.batch_queue.lock().unwrap_or_else(|e| e.into_inner());
             } else {
                 break;
             }
@@ -308,9 +289,9 @@ pub fn rcu_pending_callbacks() -> usize {
         let gs_base = per_cpu::read_gsbase_any();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-            pcp.rcu_state.batch_queue.lock().len()
+            pcp.rcu_state.batch_queue.lock().unwrap_or_else(|e| e.into_inner()).len()
         } else {
-            RCU_CALLBACK_QUEUE.lock().len()
+            RCU_CALLBACK_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).len()
         }
     }
 }
@@ -320,10 +301,6 @@ pub fn rcu_pending_callbacks() -> usize {
 // ============================================================================
 
 /// RCU保護されたポインタ（統合版）
-///
-/// rcu_vma.rs から移動。AtomicPtr ベースで安全な get() API を提供。
-/// 読み取り側: rcu_read_lock() のガード内で安全にアクセス
-/// 書き込み側: 新しい値を公開後、古い値を call_rcu() で解放
 #[repr(transparent)]
 pub struct RcuPointer<T> {
     ptr: AtomicPtr<T>,
@@ -345,8 +322,6 @@ impl<T> RcuPointer<T> {
     }
 
     /// RCU読み取りセクション内でポインタを取得
-    ///
-    /// ガードのライフタイム内でのみ有効な参照を返す。
     #[inline]
     pub fn get<'a>(&self, _guard: &'a RcuReadGuard) -> Option<&'a T> {
         let ptr = self.ptr.load(Ordering::Acquire);
@@ -365,9 +340,6 @@ impl<T> RcuPointer<T> {
     }
 
     /// RCUポインタを更新
-    ///
-    /// 古いポインタはグレース期間後に解放コールバックで処理する必要がある。
-    /// 返される古いポインタは呼び出し側で `call_rcu` に渡すこと。
     #[inline]
     pub fn rcu_assign(&self, new_value: Box<T>) -> *mut T {
         let new_ptr = Box::into_raw(new_value);
@@ -431,8 +403,6 @@ pub type RcuPtr<T> = RcuPointer<T>;
 // ============================================================================
 
 /// Per-CPU RCU状態
-///
-/// 本格実装ではPer-CPU変数として配置する
 #[derive(Debug)]
 pub struct PerCpuRcuState {
     /// このCPUがquiescent state（静止状態）に入った回数
@@ -442,7 +412,7 @@ pub struct PerCpuRcuState {
     /// このCPUでの読み取りセクションネスト深度
     pub read_depth: AtomicUsize,
     /// Callbacks buffered on this CPU (to be moved to global/batch list)
-    pub batch_queue: Mutex<VecDeque<RcuCallbackEntry>>,
+    pub batch_queue: IrqPoisonLock<VecDeque<RcuCallbackEntry>>,
 }
 
 impl PerCpuRcuState {
@@ -452,13 +422,11 @@ impl PerCpuRcuState {
             qs_count: AtomicUsize::new(0),
             last_gp: AtomicUsize::new(0),
             read_depth: AtomicUsize::new(0),
-            batch_queue: Mutex::new(VecDeque::new()),
+            batch_queue: IrqPoisonLock::new(VecDeque::new()),
         }
     }
 
     /// Quiescent stateを報告
-    ///
-    /// コンテキストスイッチ時やアイドル時に呼び出す
     pub fn report_qs(&self) {
         self.qs_count.fetch_add(1, Ordering::Release);
     }

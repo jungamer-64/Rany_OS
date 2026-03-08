@@ -15,9 +15,9 @@ use std::string::String;
 
 #[cfg(any(not(test), not(feature = "std")))]
 use alloc::vec::Vec;
+use crate::sync::PoisonLock;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::Mutex;
 #[cfg(all(test, feature = "std"))]
 use std::vec::Vec;
 
@@ -266,7 +266,7 @@ impl AuditEvent {
 /// Audit log storage
 pub struct AuditLog {
     /// Records buffer
-    records: Mutex<VecDeque<AuditRecord>>,
+    records: PoisonLock<VecDeque<AuditRecord>>,
     /// Maximum number of records
     max_records: usize,
     /// Enabled flag
@@ -283,7 +283,7 @@ impl AuditLog {
     /// Create a new audit log
     pub const fn new(max_records: usize) -> Self {
         AuditLog {
-            records: Mutex::new(VecDeque::new()),
+            records: PoisonLock::new(VecDeque::new()),
             max_records,
             enabled: AtomicBool::new(true),
             total_records: AtomicU64::new(0),
@@ -310,7 +310,7 @@ impl AuditLog {
             log::info!("[AUDIT] {}\n", record.format());
         }
 
-        let mut records = self.records.lock();
+        let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
 
         // Drop oldest if at capacity
         if records.len() >= self.max_records {
@@ -336,7 +336,7 @@ impl AuditLog {
             log::info!("[AUDIT] {}\n", record.format());
         }
 
-        let mut records = self.records.lock();
+        let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
 
         if records.len() >= self.max_records {
             records.pop_front();
@@ -349,13 +349,14 @@ impl AuditLog {
 
     /// Get all records
     pub fn get_records(&self) -> Vec<AuditRecord> {
-        self.records.lock().iter().cloned().collect()
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
     }
 
     /// Get records by type
     pub fn get_by_type(&self, event_type: AuditEventType) -> Vec<AuditRecord> {
         self.records
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|r| r.event_type == event_type)
             .cloned()
@@ -366,6 +367,7 @@ impl AuditLog {
     pub fn get_by_domain(&self, domain_id: u64) -> Vec<AuditRecord> {
         self.records
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|r| r.domain_id == domain_id)
             .cloned()
@@ -376,6 +378,7 @@ impl AuditLog {
     pub fn get_failures(&self) -> Vec<AuditRecord> {
         self.records
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|r| !r.success)
             .cloned()
@@ -384,7 +387,7 @@ impl AuditLog {
 
     /// Clear the log
     pub fn clear(&self) {
-        self.records.lock().clear();
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// Enable/disable logging
@@ -402,7 +405,7 @@ impl AuditLog {
         AuditStats {
             total_records: self.total_records.load(Ordering::Relaxed),
             dropped_records: self.dropped_records.load(Ordering::Relaxed),
-            current_records: self.records.lock().len() as u64,
+            current_records: self.records.lock().unwrap_or_else(|e| e.into_inner()).len() as u64,
             max_records: self.max_records as u64,
         }
     }
