@@ -11,6 +11,8 @@ pub use interrupt_sync::*;
 #[path = "../tests.rs"]
 mod tests;
 
+const MAX_BLK_COMPLETIONS_PER_POLL: usize = 128;
+
 /// Future for async read operation
 pub struct ReadFuture<'a> {
     pub(crate) device: &'a VirtioBlkDevice,
@@ -30,7 +32,13 @@ pub(crate) fn poll_for_completion(
     let queue = &device.queues[queue_idx];
     let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
     let mut target = None;
-    while let Some((completed_id, len)) = queue_guard.poll_complete() {
+    let mut processed = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Completion drain is capped per poll and exits on empty queue or MAX_BLK_COMPLETIONS_PER_POLL.;
+    while processed < MAX_BLK_COMPLETIONS_PER_POLL {
+        let Some((completed_id, len)) = queue_guard.poll_complete() else {
+            break;
+        };
+        processed += 1;
         device.process_completion_entry(&*queue_guard, queue_idx, completed_id, len);
         if completed_id == desc_id {
             target = Some((completed_id, len));
@@ -180,23 +188,7 @@ impl<'a> Future for DmaReadFuture<'a> {
         }
 
         if let Some(desc_id) = self.desc_id {
-            let queue = &self.device.queues[self.queue_idx];
-            let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
-
-            let mut is_completed = false;
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while let Some((completed_id, len)) = queue_guard.poll_complete() {
-                self.device.process_completion_entry(
-                    &*queue_guard,
-                    self.queue_idx,
-                    completed_id,
-                    len,
-                );
-                if completed_id == desc_id {
-                    is_completed = true;
-                }
-            }
-            if is_completed {
+            if poll_for_completion(self.device, self.queue_idx, desc_id).is_some() {
                 return Poll::Ready(Ok(self.buf.len()));
             }
         }
@@ -241,23 +233,7 @@ impl<'a> Future for DmaWriteFuture<'a> {
         }
 
         if let Some(desc_id) = self.desc_id {
-            let queue = &self.device.queues[self.queue_idx];
-            let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
-
-            let mut is_completed = false;
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while let Some((completed_id, len)) = queue_guard.poll_complete() {
-                self.device.process_completion_entry(
-                    &*queue_guard,
-                    self.queue_idx,
-                    completed_id,
-                    len,
-                );
-                if completed_id == desc_id {
-                    is_completed = true;
-                }
-            }
-            if is_completed {
+            if poll_for_completion(self.device, self.queue_idx, desc_id).is_some() {
                 return Poll::Ready(Ok(self.buf.len()));
             }
         }
@@ -419,9 +395,9 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
             name: "virtio-blk",
             total_blocks,
             block_size,
-            read_only: false, 
+            read_only: false,
             max_sectors: self.core.seg_max,
-            num_queues: 1, 
+            num_queues: 1,
         }
     }
 
@@ -562,23 +538,26 @@ pub(crate) static VIRTIO_BLK_DEVICES: PoisonRwLock<
 
 fn install_virtio_blk_device(index: u8, device_arc: Arc<VirtioBlkDevice>) {
     if index == 0 {
-        *VIRTIO_BLK_DEVICE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
+        *VIRTIO_BLK_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
     } else {
-        VIRTIO_BLK_DEVICES.write().unwrap_or_else(|e| e.into_inner()).insert(index, device_arc);
+        VIRTIO_BLK_DEVICES
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(index, device_arc);
     }
 }
 
 /// Get a shared reference to the VirtIO block device by index.
 pub fn get_virtio_blk_device_at_index(index: u8) -> Option<Arc<VirtioBlkDevice>> {
     if index == 0 {
-        let device_guard = VIRTIO_BLK_DEVICE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let device_guard = VIRTIO_BLK_DEVICE.lock().unwrap_or_else(|e| e.into_inner());
         device_guard.clone()
     } else {
-        VIRTIO_BLK_DEVICES.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned()
+        VIRTIO_BLK_DEVICES
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&index)
+            .cloned()
     }
 }
 

@@ -6,8 +6,40 @@ use alloc::sync::Arc;
 mod graphics_manager;
 pub use self::graphics_manager::*;
 use crate::io::virtio::VIRTQUEUE_MAX_SIZE;
+
+const GPU_QUEUE_WAIT_SPINS: usize = 1_000_000;
+const GPU_QUEUE_WAIT_WARN_INTERVAL: usize = 250_000;
+
 unsafe impl Send for VirtioGpu {}
 unsafe impl Sync for VirtioGpu {}
+
+fn wait_for_queue_completion(
+    queue_name: &str,
+    queue: &mut crate::io::virtio::virtqueue::VirtQueue,
+) -> GpuResult<()> {
+    // LOOP_PROOF: mode=condition; reason=GPU synchronous waits are capped by GPU_QUEUE_WAIT_SPINS and return Timeout instead of spinning forever.;
+    for spin in 0..GPU_QUEUE_WAIT_SPINS {
+        if queue.poll_complete().is_some() {
+            return Ok(());
+        }
+        if spin > 0 && (spin % GPU_QUEUE_WAIT_WARN_INTERVAL) == 0 {
+            log::warn!(
+                target: "virtio_gpu",
+                "timed wait still pending on {} queue after {} spins",
+                queue_name,
+                spin
+            );
+        }
+        core::hint::spin_loop();
+    }
+    log::error!(
+        target: "virtio_gpu",
+        "timed out waiting for {} queue completion after {} spins; leaving descriptors owned by device",
+        queue_name,
+        GPU_QUEUE_WAIT_SPINS
+    );
+    Err(GpuError::Timeout)
+}
 
 impl VirtioGpu {
     pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
@@ -214,15 +246,12 @@ impl VirtioGpu {
 
         queue_guard.notify(self.transport.as_ref());
 
-        // Poll for completion (synchronous)
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            if let Some((_id, _len)) = queue_guard.poll_complete() {
-                queue_guard.free_desc_chain(desc0);
-                break;
-            }
-            core::hint::spin_loop();
+        if let Err(err) = wait_for_queue_completion("control", &mut queue_guard) {
+            core::mem::forget(req_buf);
+            core::mem::forget(resp_buf);
+            return Err(err);
         }
+        queue_guard.free_desc_chain(desc0);
 
         Ok(resp_buf)
     }
@@ -270,15 +299,11 @@ impl VirtioGpu {
 
         queue_guard.notify(self.transport.as_ref());
 
-        // Poll for completion
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            if let Some((_id, _len)) = queue_guard.poll_complete() {
-                queue_guard.free_desc_chain(desc0);
-                break;
-            }
-            core::hint::spin_loop();
+        if let Err(err) = wait_for_queue_completion("cursor", &mut queue_guard) {
+            core::mem::forget(req_buf);
+            return Err(err);
         }
+        queue_guard.free_desc_chain(desc0);
 
         Ok(())
     }
@@ -355,9 +380,11 @@ impl VirtioGpu {
 
         queue_guard.notify(self.transport.as_ref());
 
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while queue_guard.poll_complete().is_none() {
-            core::hint::spin_loop();
+        if let Err(err) = wait_for_queue_completion("control", &mut queue_guard) {
+            core::mem::forget(req_buf);
+            core::mem::forget(data_buf);
+            core::mem::forget(resp_buf);
+            return Err(err);
         }
         queue_guard.free_desc_chain(desc0);
 

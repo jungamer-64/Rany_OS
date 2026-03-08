@@ -2,14 +2,15 @@
 // drivers/virtio/src/core/virtqueue.rs - VirtQueue Core Implementation
 // ============================================================================
 
-use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use crate::defs::*;
 use crate::transport::VirtioTransport;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 /// Standard VirtIO feature bits
 pub const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 pub const VIRTIO_F_IOMMU_PLATFORM: u64 = 1 << 33;
+const MAX_DESC_ALLOC_RETRIES: usize = 16;
 
 /// VirtQueue management structure.
 #[derive(Debug)]
@@ -66,7 +67,9 @@ impl VirtQueue {
         }
 
         for i in 0..queue_size {
-            unsafe { *desc_table.add(i as usize) = VringDesc::default(); }
+            unsafe {
+                *desc_table.add(i as usize) = VringDesc::default();
+            }
         }
 
         unsafe {
@@ -76,16 +79,38 @@ impl VirtQueue {
             (*used_ring).idx = 0;
         }
 
-        let b0 = if queue_size >= 64 { u64::MAX } else { (1 << queue_size) - 1 };
-        let b1 = if queue_size > 64 { 
-            if queue_size >= 128 { u64::MAX } else { (1 << (queue_size - 64)) - 1 } 
-        } else { 0 };
-        let b2 = if queue_size > 128 { 
-            if queue_size >= 192 { u64::MAX } else { (1 << (queue_size - 128)) - 1 } 
-        } else { 0 };
-        let b3 = if queue_size > 192 { 
-            if queue_size >= 256 { u64::MAX } else { (1 << (queue_size - 192)) - 1 } 
-        } else { 0 };
+        let b0 = if queue_size >= 64 {
+            u64::MAX
+        } else {
+            (1 << queue_size) - 1
+        };
+        let b1 = if queue_size > 64 {
+            if queue_size >= 128 {
+                u64::MAX
+            } else {
+                (1 << (queue_size - 64)) - 1
+            }
+        } else {
+            0
+        };
+        let b2 = if queue_size > 128 {
+            if queue_size >= 192 {
+                u64::MAX
+            } else {
+                (1 << (queue_size - 128)) - 1
+            }
+        } else {
+            0
+        };
+        let b3 = if queue_size > 192 {
+            if queue_size >= 256 {
+                u64::MAX
+            } else {
+                (1 << (queue_size - 192)) - 1
+            }
+        } else {
+            0
+        };
 
         Ok(Self {
             queue_index,
@@ -104,9 +129,15 @@ impl VirtQueue {
         })
     }
 
-    pub fn queue_index(&self) -> u16 { self.queue_index }
-    pub fn queue_size(&self) -> u16 { self.queue_size }
-    pub fn features(&self) -> u64 { self.features }
+    pub fn queue_index(&self) -> u16 {
+        self.queue_index
+    }
+    pub fn queue_size(&self) -> u16 {
+        self.queue_size
+    }
+    pub fn features(&self) -> u64 {
+        self.features
+    }
 
     pub fn free_count(&self) -> u16 {
         let mut count = 0;
@@ -117,32 +148,34 @@ impl VirtQueue {
     }
 
     pub fn alloc_desc(&self) -> Option<u16> {
-        for (i, bitmap) in self.free_bitmap.iter().enumerate() {
-            loop {
+        for _ in 0..MAX_DESC_ALLOC_RETRIES {
+            for (i, bitmap) in self.free_bitmap.iter().enumerate() {
                 let bits = bitmap.load(Ordering::Acquire);
-                if bits == 0 { break; }
+                if bits == 0 {
+                    continue;
+                }
                 let bit_idx = bits.trailing_zeros() as u16;
                 let new_bits = bits & !(1u64 << bit_idx);
-                if bitmap.compare_exchange(bits, new_bits, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                if bitmap
+                    .compare_exchange(bits, new_bits, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
                     return Some((i as u16 * 64) + bit_idx);
                 }
             }
+            core::hint::spin_loop();
         }
         None
     }
 
     pub fn free_desc(&self, idx: u16) {
-        if idx >= self.queue_size { return; }
+        if idx >= self.queue_size {
+            return;
+        }
         let bank = (idx / 64) as usize;
         let bit = (idx % 64) as u16;
         let bitmap = &self.free_bitmap[bank];
-        loop {
-            let bits = bitmap.load(Ordering::Acquire);
-            let new_bits = bits | (1u64 << bit);
-            if bitmap.compare_exchange(bits, new_bits, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                return;
-            }
-        }
+        bitmap.fetch_or(1u64 << bit, Ordering::AcqRel);
     }
 
     pub fn free_desc_chain(&self, mut head: u16) {
@@ -183,7 +216,9 @@ impl VirtQueue {
         desc.len = (count as u32) * (core::mem::size_of::<VringDesc>() as u32);
         desc.flags = VringDesc::F_INDIRECT;
         desc.next = 0;
-        unsafe { self.submit_avail(head); }
+        unsafe {
+            self.submit_avail(head);
+        }
         Some(head)
     }
 
@@ -199,9 +234,11 @@ impl VirtQueue {
         if last_used == used.idx {
             return None;
         }
-        let ring_ptr = unsafe { (self.used_ring.as_ptr() as *const u8).add(4) as *const VringUsedElem };
+        let ring_ptr =
+            unsafe { (self.used_ring.as_ptr() as *const u8).add(4) as *const VringUsedElem };
         let elem = unsafe { *ring_ptr.add((last_used % self.queue_size) as usize) };
-        self.last_used_idx.store(last_used.wrapping_add(1), Ordering::Release);
+        self.last_used_idx
+            .store(last_used.wrapping_add(1), Ordering::Release);
         Some((elem.id as u16, elem.len))
     }
 
@@ -220,7 +257,9 @@ impl VirtQueue {
     }
 
     pub fn submit(&self, head: u16) -> u16 {
-        unsafe { self.submit_avail(head); }
+        unsafe {
+            self.submit_avail(head);
+        }
         head
     }
 }

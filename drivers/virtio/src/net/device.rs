@@ -2,12 +2,13 @@
 // drivers/virtio/src/net/device.rs - Shared VirtIO Network Device Logic
 // ============================================================================
 
-use crate::transport::VirtioTransport;
-use crate::transport::TransportError;
-use crate::net::*;
 use crate::net::features::*;
+use crate::net::*;
+use crate::transport::TransportError;
+use crate::transport::VirtioTransport;
 
 const MAX_VIRTIO_COMPLETIONS_PER_PASS: usize = 256;
+const MAX_VIRTIO_RX_REFILLS_PER_PASS: usize = 128;
 
 #[derive(Debug, Default)]
 pub struct VirtioNetDevice {
@@ -53,14 +54,13 @@ impl VirtioNetDevice {
 
     pub fn negotiate_features(&mut self, transport: &dyn VirtioTransport) -> u64 {
         let device_features = transport.get_device_features();
-        let accepted_features = device_features & (
-            crate::core::VIRTIO_F_VERSION_1 |
-            VIRTIO_NET_F_MAC |
-            VIRTIO_NET_F_STATUS |
-            VIRTIO_NET_F_CSUM |
-            VIRTIO_NET_F_MTU |
-            VIRTIO_NET_F_MQ
-        );
+        let accepted_features = device_features
+            & (crate::core::VIRTIO_F_VERSION_1
+                | VIRTIO_NET_F_MAC
+                | VIRTIO_NET_F_STATUS
+                | VIRTIO_NET_F_CSUM
+                | VIRTIO_NET_F_MTU
+                | VIRTIO_NET_F_MQ);
 
         transport.set_driver_features(accepted_features);
         accepted_features
@@ -150,8 +150,14 @@ impl VirtioNetDevice {
     }
 
     /// Process completions on an RX queue.
-    pub fn process_rx_completions<F>(&self, queue_index: u16, vq: &NetVirtQueue, mut handler: F) -> usize 
-    where F: FnMut(RxInflight, u32) 
+    pub fn process_rx_completions<F>(
+        &self,
+        queue_index: u16,
+        vq: &NetVirtQueue,
+        mut handler: F,
+    ) -> usize
+    where
+        F: FnMut(RxInflight, u32),
     {
         let tracker = match self.rx_trackers.get(queue_index as usize) {
             Some(t) => t,
@@ -176,11 +182,16 @@ impl VirtioNetDevice {
     }
 
     /// Refill an RX queue with buffers from the runtime.
-    pub fn refill_rx_queue(&self, runtime: &dyn NetRuntime, queue_index: u16, vq: &NetVirtQueue) -> usize {
+    pub fn refill_rx_queue(
+        &self,
+        runtime: &dyn NetRuntime,
+        queue_index: u16,
+        vq: &NetVirtQueue,
+    ) -> usize {
         let mut count = 0;
-        
-        // LOOP_PROOF: mode=condition; reason=Refill loop is bounded by descriptor availability and exits on allocation or post failure.;
-        while vq.available_descriptors() > 0 {
+
+        // LOOP_PROOF: mode=condition; reason=Refill loop is capped per pass and exits on descriptor exhaustion, allocation failure, or MAX_VIRTIO_RX_REFILLS_PER_PASS.;
+        while count < MAX_VIRTIO_RX_REFILLS_PER_PASS && vq.available_descriptors() > 0 {
             match self.try_post_rx_packet(runtime, queue_index, vq) {
                 Ok(true) => count += 1,
                 Ok(false) => break, // Out of packets or queue full
@@ -191,7 +202,12 @@ impl VirtioNetDevice {
     }
 
     /// Try to allocate and post a single RX packet to a queue.
-    pub fn try_post_rx_packet(&self, runtime: &dyn NetRuntime, queue_index: u16, vq: &NetVirtQueue) -> Result<bool, VirtioNetError> {
+    pub fn try_post_rx_packet(
+        &self,
+        runtime: &dyn NetRuntime,
+        queue_index: u16,
+        vq: &NetVirtQueue,
+    ) -> Result<bool, VirtioNetError> {
         let tracker = match self.rx_trackers.get(queue_index as usize) {
             Some(t) => t,
             None => return Ok(false),
@@ -211,16 +227,17 @@ impl VirtioNetDevice {
 
         match unsafe { vq.add_rx_buffer(phys.as_u64(), len) } {
             Ok(desc_idx) => {
-                tracker.put(desc_idx, RxInflight {
-                    packet,
-                    iommu_iova: None, 
-                    iommu_map_len: 0,
-                });
+                tracker.put(
+                    desc_idx,
+                    RxInflight {
+                        packet,
+                        iommu_iova: None,
+                        iommu_map_len: 0,
+                    },
+                );
                 Ok(true)
             }
-            Err(e) => {
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
 }
