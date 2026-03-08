@@ -26,7 +26,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::RwLock;
+use crate::sync::PoisonRwLock;
 
 use super::cow::{CowResult, cow_map_zero_page, zero_page_phys};
 use super::fault_handler::PageSetup;
@@ -64,7 +64,7 @@ impl Default for DemandPagingConfig {
     }
 }
 
-static CONFIG: RwLock<DemandPagingConfig> = RwLock::new(DemandPagingConfig {
+static CONFIG: PoisonRwLock<DemandPagingConfig> = PoisonRwLock::new(DemandPagingConfig {
     use_zero_page_cow: true,
     prefault_pages: 4,
     max_prefault_size: 64 * 1024,
@@ -73,12 +73,12 @@ static CONFIG: RwLock<DemandPagingConfig> = RwLock::new(DemandPagingConfig {
 
 /// 設定を更新
 pub fn set_config(config: DemandPagingConfig) {
-    *CONFIG.write() = config;
+    *CONFIG.write().unwrap_or_else(|e| e.into_inner()) = config;
 }
 
 /// 現在の設定を取得
 pub fn get_config() -> DemandPagingConfig {
-    *CONFIG.read()
+    *CONFIG.read().unwrap_or_else(|e| e.into_inner())
 }
 
 // ============================================================================
@@ -303,7 +303,7 @@ impl DemandPagingManager {
     }
 }
 
-static DEMAND_MANAGER: RwLock<DemandPagingManager> = RwLock::new(DemandPagingManager::new());
+static DEMAND_MANAGER: PoisonRwLock<DemandPagingManager> = PoisonRwLock::new(DemandPagingManager::new());
 
 // ============================================================================
 // Statistics
@@ -377,7 +377,7 @@ pub fn handle_demand_fault(task_id: u64, fault_addr: VirtAddr, is_write: bool) -
     let config = get_config();
 
     // 領域を検索
-    let mut manager = DEMAND_MANAGER.write();
+    let mut manager = DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner());
     let region = match manager.find_region_mut(task_id, page_addr) {
         Some(r) => r,
         None => return DemandResult::RegionNotFound,
@@ -492,7 +492,7 @@ fn prepare_file_page_data(
 
     let mut memcg_charged = false;
     let mut memcg_id = MemcgId::ROOT;
-    if CONFIG.read().memcg_enabled {
+    if get_config().memcg_enabled {
         memcg_id = crate::mm::meta::memcg::current_memcg_id();
         if memcg_charge(memcg_id, 1, ChargeType::Cache).is_err() {
             return Err(DemandResult::OutOfMemory);
@@ -583,7 +583,7 @@ pub fn prefault_pages(task_id: u64, center_addr: VirtAddr, count: usize) -> usiz
     let max_pages = config.prefault_pages.min(count);
     let mut populated = 0;
 
-    let mut manager = DEMAND_MANAGER.write();
+    let mut manager = DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner());
 
     // 中心アドレスの前後にプリフォルト
     for i in 0..max_pages {
@@ -629,7 +629,7 @@ pub fn register_anonymous(task_id: u64, start: VirtAddr, size: u64, prot: ProtFl
     let end = VirtAddr::new(start.as_u64() + size);
     let region = VmRegion::new_anonymous(start, end, prot);
 
-    DEMAND_MANAGER.write().register_region(task_id, region);
+    DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner()).register_region(task_id, region);
 }
 
 /// ファイルマッピング領域を登録
@@ -651,17 +651,17 @@ pub fn register_file_mapping(
     };
     let region = VmRegion::new_file(start, end, prot, shared, file_info);
 
-    DEMAND_MANAGER.write().register_region(task_id, region);
+    DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner()).register_region(task_id, region);
 }
 
 /// 領域を削除
 pub fn unregister_region(task_id: u64, start: VirtAddr) -> Option<VmRegion> {
-    DEMAND_MANAGER.write().remove_region(task_id, start)
+    DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner()).remove_region(task_id, start)
 }
 
 /// タスクの全領域を削除
 pub fn cleanup_task(task_id: u64) -> Vec<VmRegion> {
-    DEMAND_MANAGER.write().remove_all_regions(task_id)
+    DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner()).remove_all_regions(task_id)
 }
 
 // ============================================================================

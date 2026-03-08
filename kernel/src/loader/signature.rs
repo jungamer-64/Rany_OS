@@ -20,6 +20,7 @@
 #![allow(unexpected_cfgs)]
 
 use super::LoadError;
+use crate::sync::PoisonLock;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -233,15 +234,12 @@ pub enum VerificationError {
 }
 
 /// 署名検証器
-///
-/// 信頼された公開鍵のリストを保持し、
-/// セル署名を検証する。
 pub struct SignatureVerifier {
     /// 信頼された公開鍵（KeyId -> record）
     trusted_keys: BTreeMap<KeyId, TrustedKeyRecord>,
     /// 公開鍵からKeyIdを逆引きする索引
     key_index: BTreeMap<[u8; ED25519_PUBLIC_KEY_SIZE], KeyId>,
-    /// 開発モードを許可するか（デフォルト: false）
+    /// 開発モードを許可するか
     allow_dev_mode: bool,
     /// 失効リスト
     revocation_set: RevocationSet,
@@ -274,7 +272,7 @@ impl SignatureVerifier {
         }
     }
 
-    /// 本番モードの検証器を作成（開発モード無効）
+    /// 本番モードの検証器を作成
     pub fn production() -> Self {
         Self {
             trusted_keys: BTreeMap::new(),
@@ -367,7 +365,6 @@ impl SignatureVerifier {
     ) -> Result<(), VerificationError> {
         self.stats.verification_attempts += 1;
 
-        // 開発モードのバイパス（設定されている場合のみ）
         if self.allow_dev_mode && signature.is_dev_signature() {
             self.stats.dev_mode_bypasses += 1;
             self.stats.successful_verifications += 1;
@@ -385,7 +382,7 @@ impl SignatureVerifier {
             return Err(VerificationError::RevokedCell);
         }
 
-        // 2. 公開鍵の信頼チェック（trusted keyが必須）
+        // 2. 公開鍵の信頼チェック
         if self.trusted_keys.is_empty() {
             self.stats.failed_verifications += 1;
             return Err(VerificationError::UntrustedKey);
@@ -416,41 +413,29 @@ impl SignatureVerifier {
         Ok(())
     }
 
-    /// SHA-256ハッシュを計算
-    ///
-    /// 設計書 3.3: SHA-256によるコード完全性検証
     fn compute_hash(&self, data: &[u8]) -> [u8; 32] {
         crate::crypto::sha256::compute(data)
     }
 
-    /// Ed25519署名を検証
-    ///
-    /// 設計書 3.3: Ed25519による署名検証
     fn verify_ed25519(&self, public_key: &[u8; 32], message: &[u8; 32], signature: &[u8]) -> bool {
-        // 基本的な形式チェック
         if signature.len() != ED25519_SIGNATURE_SIZE {
             return false;
         }
 
-        // 公開鍵が空でないこと
         if public_key.iter().all(|&b| b == 0) {
             return false;
         }
 
-        // メッセージが空でないこと
         if message.iter().all(|&b| b == 0) {
             return false;
         }
 
-        // 署名配列に変換
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(signature);
 
-        // Ed25519検証を実行
         crate::crypto::ed25519::verify(public_key, message, &sig_bytes)
     }
 
-    /// 統計を取得
     pub fn stats(&self) -> &VerifierStats {
         &self.stats
     }
@@ -466,19 +451,14 @@ impl Default for SignatureVerifier {
 // 署名抽出
 // ============================================================================
 
-/// ELFデータから署名を抽出
 pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
-    // ELFヘッダーを読み取り
     if elf_data.len() < 64 {
         return Err(LoadError::InvalidFormat("ELF too small".into()));
     }
 
-    // 署名セクションを探す
     if let Some(sig_data) = find_signature_section(elf_data) {
         parse_signature_section(sig_data)
     } else {
-        // 署名セクションが見つからない場合
-        // 開発モード: 署名なしでもロードを許可（ただし制限付き）
         log::info!("[SIGNATURE] Warning: Loading unsigned cell (dev mode)\n");
         Ok(CellSignature {
             version: SIGNATURE_VERSION,
@@ -493,7 +473,6 @@ pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
     }
 }
 
-/// ELFヘッダーからセクション名文字列テーブルを取得する
 fn get_shstrtab<'a>(elf_data: &'a [u8], header: &super::elf::Elf64Header) -> Option<&'a [u8]> {
     use super::elf::Elf64SectionHeader;
     use core::mem;
@@ -517,7 +496,6 @@ fn get_shstrtab<'a>(elf_data: &'a [u8], header: &super::elf::Elf64Header) -> Opt
     Some(&elf_data[shstrtab_start..shstrtab_end])
 }
 
-/// セクション名文字列テーブルからセクション名を取得する
 fn get_section_name<'a>(shstrtab: &'a [u8], name_offset: usize) -> Option<&'a [u8]> {
     if name_offset >= shstrtab.len() {
         return None;
@@ -530,7 +508,6 @@ fn get_section_name<'a>(shstrtab: &'a [u8], name_offset: usize) -> Option<&'a [u
     Some(&shstrtab[name_offset..name_end])
 }
 
-/// ELFヘッダーとshstrtabを検証・取得
 fn validate_and_get_shstrtab<'a>(
     elf_data: &'a [u8],
 ) -> Option<(super::elf::Elf64Header, &'a [u8])> {
@@ -551,14 +528,12 @@ fn validate_and_get_shstrtab<'a>(
     Some((header, shstrtab))
 }
 
-/// 署名セクションを検索
 fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
     use super::elf::Elf64SectionHeader;
     use core::mem;
 
     let (header, shstrtab) = validate_and_get_shstrtab(elf_data)?;
 
-    // 全セクションを走査して署名セクションを探す
     for i in 0..header.e_shnum {
         let sh_offset = header.e_shoff as usize + (i as usize * header.e_shentsize as usize);
 
@@ -602,7 +577,6 @@ fn read_compiler_version(data: &[u8], header: &SignatureHeader) -> Result<String
     }
 }
 
-/// 署名セクションをパース
 fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
     use core::mem;
 
@@ -615,12 +589,10 @@ fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
     let header: SignatureHeader = crate::util::read_struct(data, 0)
         .ok_or_else(|| LoadError::InvalidFormat("Invalid signature header".into()))?;
 
-    // マジックナンバーの検証
     if header.magic != SIGNATURE_MAGIC {
         return Err(LoadError::InvalidSignature);
     }
 
-    // バージョンの検証
     if header.version != SIGNATURE_VERSION {
         return Err(LoadError::InvalidFormat(
             "Unsupported signature version".into(),
@@ -629,7 +601,6 @@ fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
 
     let compiler_version = read_compiler_version(data, &header)?;
 
-    // 署名データを読み取り
     let sig_start = mem::size_of::<SignatureHeader>();
     let sig_end = sig_start + header.signature_len as usize;
 
@@ -655,14 +626,12 @@ fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
 // グローバルAPI
 // ============================================================================
 
-use spin::Mutex;
-
 /// グローバル検証器
-static GLOBAL_VERIFIER: Mutex<Option<SignatureVerifier>> = Mutex::new(None);
+static GLOBAL_VERIFIER: PoisonLock<Option<SignatureVerifier>> = PoisonLock::new(None);
 
 /// グローバル検証器を初期化
 pub fn init_verifier() {
-    let mut verifier = GLOBAL_VERIFIER.lock();
+    let mut verifier = GLOBAL_VERIFIER.lock().unwrap_or_else(|e| e.into_inner());
     if verifier.is_none() {
         let mut v = SignatureVerifier::new();
         v.add_trusted_key(BUILTIN_TRUSTED_KEY);
@@ -673,7 +642,7 @@ pub fn init_verifier() {
 
 /// グローバル検証器を本番モードで初期化
 pub fn init_verifier_production() {
-    let mut verifier = GLOBAL_VERIFIER.lock();
+    let mut verifier = GLOBAL_VERIFIER.lock().unwrap_or_else(|e| e.into_inner());
     let mut v = SignatureVerifier::production();
     v.add_trusted_key(BUILTIN_TRUSTED_KEY);
     *verifier = Some(v);
@@ -682,7 +651,7 @@ pub fn init_verifier_production() {
 
 /// 信頼された公開鍵を追加
 pub fn add_trusted_key(key: [u8; ED25519_PUBLIC_KEY_SIZE]) {
-    let mut verifier = GLOBAL_VERIFIER.lock();
+    let mut verifier = GLOBAL_VERIFIER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(v) = verifier.as_mut() {
         v.add_trusted_key(key);
     }
@@ -694,7 +663,7 @@ pub fn add_trusted_key_with_level(
     level: KeyLevel,
     issuer: Option<KeyId>,
 ) -> Option<KeyId> {
-    let mut verifier = GLOBAL_VERIFIER.lock();
+    let mut verifier = GLOBAL_VERIFIER.lock().unwrap_or_else(|e| e.into_inner());
     verifier
         .as_mut()
         .map(|v| v.add_trusted_key_with_level(key, level, issuer))
@@ -702,7 +671,7 @@ pub fn add_trusted_key_with_level(
 
 /// 署名鍵を失効させる
 pub fn revoke_key(key_id: KeyId) {
-    let mut verifier = GLOBAL_VERIFIER.lock();
+    let mut verifier = GLOBAL_VERIFIER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(v) = verifier.as_mut() {
         v.revoke_key(key_id);
     }
@@ -710,7 +679,7 @@ pub fn revoke_key(key_id: KeyId) {
 
 /// セルハッシュを失効させる
 pub fn revoke_cell_hash(hash: [u8; 32]) {
-    let mut verifier = GLOBAL_VERIFIER.lock();
+    let mut verifier = GLOBAL_VERIFIER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(v) = verifier.as_mut() {
         v.revoke_cell_hash(hash);
     }
@@ -718,15 +687,13 @@ pub fn revoke_cell_hash(hash: [u8; 32]) {
 
 /// 署名を検証（グローバル検証器を使用）
 pub fn verify_signature(signature: &CellSignature, data: &[u8]) -> bool {
-    let mut verifier_guard = GLOBAL_VERIFIER.lock();
+    let mut verifier_guard = GLOBAL_VERIFIER.lock().unwrap_or_else(|e| e.into_inner());
 
-    // 未初期化の場合は自動初期化
     if verifier_guard.is_none() {
         let mut v = SignatureVerifier::production();
         v.add_trusted_key(BUILTIN_TRUSTED_KEY);
         #[cfg(any(feature = "qemu-test-export", debug_assertions))]
         {
-            // デバッグビルドおよびQEMUテストでは署名なしセルのロードを許可
             v.set_dev_mode(true);
         }
         *verifier_guard = Some(v);
@@ -747,7 +714,7 @@ pub fn verify_cell(elf_data: &[u8]) -> Result<bool, LoadError> {
 
 /// 検証統計を取得
 pub fn get_verifier_stats() -> Option<VerifierStats> {
-    GLOBAL_VERIFIER.lock().as_ref().map(|v| v.stats().clone())
+    GLOBAL_VERIFIER.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|v| v.stats().clone())
 }
 
 #[cfg(test)]

@@ -1,13 +1,12 @@
+use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-use spin::Mutex;
 
 use crate::io::hid::keyboard::{self, KeyCode, KeyEvent, KeyEventExt, KeyState};
 
 const TTY_RX_CAPACITY: usize = 4096;
 const GUI_EVENT_CAPACITY: usize = 256;
 
-static INPUT_HUB: Mutex<ConsoleInputHub> = Mutex::new(ConsoleInputHub::new());
+static INPUT_HUB: PoisonLock<ConsoleInputHub> = PoisonLock::new(ConsoleInputHub::new());
 static INPUT_TAP_INSTALLED: AtomicBool = AtomicBool::new(false);
 static DROPPED_TTY_BYTES: AtomicU64 = AtomicU64::new(0);
 static DROPPED_GUI_EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -123,7 +122,7 @@ fn handle_keyboard_tap_event(event: KeyEvent) {
         return;
     }
 
-    if let Some(mut hub) = INPUT_HUB.try_lock() {
+    if let Ok(mut hub) = INPUT_HUB.try_lock() {
         if !hub.push_gui_event(event) {
             increment_dropped_gui_events();
         }
@@ -231,13 +230,13 @@ pub fn read_tty_bytes(buf: &mut [u8]) -> usize {
     if buf.is_empty() {
         return 0;
     }
-    let mut hub = INPUT_HUB.lock();
+    let mut hub = INPUT_HUB.lock().unwrap_or_else(|e| e.into_inner());
     hub.pop_tty_bytes(buf)
 }
 
 /// Non-blocking pop for GUI polling path.
 pub fn try_pop_key_event() -> Option<KeyEvent> {
-    let mut hub = INPUT_HUB.try_lock()?;
+    let mut hub = INPUT_HUB.try_lock().ok()?;
     hub.pop_gui_event()
 }
 
@@ -251,7 +250,7 @@ pub fn dropped_input_counts() -> (u64, u64) {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub fn reset_input_hub_for_tests() {
     {
-        let mut hub = INPUT_HUB.lock();
+        let mut hub = INPUT_HUB.lock().unwrap_or_else(|e| e.into_inner());
         hub.reset();
     }
     DROPPED_TTY_BYTES.store(0, Ordering::Relaxed);
@@ -265,6 +264,6 @@ pub fn inject_key_event_for_tests(event: KeyEvent) {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub fn inject_tty_bytes_for_tests(bytes: &[u8]) {
-    let mut hub = INPUT_HUB.lock();
+    let mut hub = INPUT_HUB.lock().unwrap_or_else(|e| e.into_inner());
     push_tty_bytes(&mut hub, bytes);
 }

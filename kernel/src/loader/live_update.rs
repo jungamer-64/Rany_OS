@@ -11,7 +11,7 @@
 //! ## 設計書準拠
 //!
 //! - セクション 3.5.1: セルのホットスワップ
-//! - セクション 3.5.2: 状態移行プロトコル
+//! - セクション 3.5.2: 状態移行プロトコール
 //! - セクション 3.5.3: Epoch-based Reclamation
 //! - セクション 3.5.4: ロールバックと障害回復
 //!
@@ -27,13 +27,13 @@
 
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use kernel_api::abi::driver::{
     DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverEntryFn, DriverExportsV1,
 };
-use spin::Mutex;
 
 // ============================================================================
 // Epoch Management
@@ -328,7 +328,7 @@ struct SwapDriversResult {
 /// ライブアップデートマネージャ
 pub struct LiveUpdateManager {
     /// 現在の状態
-    state: Mutex<LiveUpdateState>,
+    state: PoisonLock<LiveUpdateState>,
     /// 更新中フラグ
     updating: AtomicBool,
     /// ロールバック猶予期間のエポック
@@ -336,43 +336,36 @@ pub struct LiveUpdateManager {
     /// デフォルトロールバック猶予期間（ティック）
     rollback_grace_period: AtomicU64,
     /// 検証猶予中の更新コンテキスト
-    pending: Mutex<Option<PendingUpdateContext>>,
+    pending: PoisonLock<Option<PendingUpdateContext>>,
     /// 直近の更新結果（DriverCell側の状態同期用）
-    recent_outcomes: Mutex<Vec<CompletedUpdateOutcome>>,
+    recent_outcomes: PoisonLock<Vec<CompletedUpdateOutcome>>,
 }
 
 impl LiveUpdateManager {
     /// 新しいLiveUpdateManagerを作成
     pub const fn new() -> Self {
         Self {
-            state: Mutex::new(LiveUpdateState::Ready),
+            state: PoisonLock::new(LiveUpdateState::Ready),
             updating: AtomicBool::new(false),
             rollback_epoch: AtomicU64::new(0),
             rollback_grace_period: AtomicU64::new(60 * 1000), // 60秒（ミリ秒）
-            pending: Mutex::new(None),
-            recent_outcomes: Mutex::new(Vec::new()),
+            pending: PoisonLock::new(None),
+            recent_outcomes: PoisonLock::new(Vec::new()),
         }
     }
 
     /// 現在の状態を取得
     pub fn state(&self) -> LiveUpdateState {
-        *self.state.lock()
+        *self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// ライブアップデートを実行
-    ///
-    /// # Arguments
-    /// - `cell_id`: 更新対象のセルID
-    /// - `new_elf_data`: 新しいセルのELFデータ
-    ///
-    /// # Returns
-    /// 成功時は新しいセルIDを返す
     pub fn perform_update(
         &self,
         _cell_id: u64,
         _new_elf_data: &[u8],
     ) -> Result<u64, LiveUpdateError> {
-        if self.pending.lock().is_some() {
+        if self.pending.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
             return Err(LiveUpdateError::UpdateInProgress);
         }
         // 排他制御
@@ -408,7 +401,7 @@ impl LiveUpdateManager {
         }
 
         // Step 1: Load new cell
-        *self.state.lock() = LiveUpdateState::Loading;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Loading;
         log::info!("[LIVE_UPDATE] Loading new cell version...\n");
 
         let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
@@ -428,7 +421,7 @@ impl LiveUpdateManager {
         );
 
         // Step 3: Swap (Update Driver Registry)
-        *self.state.lock() = LiveUpdateState::Switching;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Switching;
 
         let swap_result = match Self::swap_drivers(old_cell_id, new_cell_id, &old_drivers) {
             Ok(r) => r,
@@ -506,7 +499,7 @@ impl LiveUpdateManager {
         old_epoch: u64,
         swap_result: SwapDriversResult,
     ) -> Result<u64, LiveUpdateError> {
-        *self.state.lock() = LiveUpdateState::WaitingQuiescent;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::WaitingQuiescent;
         log::info!("[LIVE_UPDATE] Waiting for quiescent state...\n");
         wait_for_quiescent_state(old_epoch);
         log::info!("[LIVE_UPDATE] All cores reached quiescent state\n");
@@ -515,7 +508,7 @@ impl LiveUpdateManager {
         let grace = self.rollback_grace_period.load(Ordering::Acquire);
         let deadline = now.saturating_add(grace);
         {
-            let mut pending = self.pending.lock();
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             *pending = Some(PendingUpdateContext {
                 old_cell_id,
                 new_cell_id,
@@ -529,7 +522,7 @@ impl LiveUpdateManager {
             });
         }
 
-        *self.state.lock() = LiveUpdateState::Complete;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Complete;
         self.rollback_epoch.store(old_epoch + 1, Ordering::Release);
 
         Ok(new_cell_id.as_u64())
@@ -550,7 +543,7 @@ impl LiveUpdateManager {
     }
 
     pub fn pending_status(&self, cell_id: u64) -> Option<PendingUpdateStatus> {
-        let pending = self.pending.lock();
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let p = pending.as_ref()?;
         if p.old_cell_id.as_u64() != cell_id && p.new_cell_id.as_u64() != cell_id {
             return None;
@@ -565,7 +558,7 @@ impl LiveUpdateManager {
     }
 
     pub fn mark_health_failure(&self, cell_id: u64, reason: impl Into<String>) -> bool {
-        let mut pending = self.pending.lock();
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let Some(p) = pending.as_mut() else {
             return false;
         };
@@ -574,19 +567,19 @@ impl LiveUpdateManager {
         }
         p.health_failed = true;
         p.health_failure_reason = Some(reason.into());
-        *self.state.lock() = LiveUpdateState::Error;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Error;
         true
     }
 
     pub fn take_recent_outcome_for_cell(&self, cell_id: u64) -> Option<CompletedUpdateOutcome> {
-        let mut outcomes = self.recent_outcomes.lock();
+        let mut outcomes = self.recent_outcomes.lock().unwrap_or_else(|e| e.into_inner());
         let idx = outcomes.iter().position(|o| o.matches_cell(cell_id))?;
         Some(outcomes.remove(idx))
     }
 
     pub fn poll_pending_updates(&self) {
         let (deadline_expired, health_failed) = {
-            let pending = self.pending.lock();
+            let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             let Some(p) = pending.as_ref() else {
                 return;
             };
@@ -612,7 +605,7 @@ impl LiveUpdateManager {
 
     fn commit_pending_update(&self) -> Result<UpdateTransition, LiveUpdateError> {
         let ctx = {
-            let mut pending = self.pending.lock();
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending.take().ok_or(LiveUpdateError::CellNotFound)?
         };
         self.commit_context(ctx)
@@ -620,7 +613,7 @@ impl LiveUpdateManager {
 
     fn commit_pending_update_for(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
         let ctx = {
-            let mut pending = self.pending.lock();
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             let matches = pending
                 .as_ref()
                 .map(|p| p.old_cell_id.as_u64() == cell_id || p.new_cell_id.as_u64() == cell_id)
@@ -637,7 +630,7 @@ impl LiveUpdateManager {
         &self,
         ctx: PendingUpdateContext,
     ) -> Result<UpdateTransition, LiveUpdateError> {
-        *self.state.lock() = LiveUpdateState::WaitingQuiescent;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::WaitingQuiescent;
         log::info!(
             "[LIVE_UPDATE] Committing update old={} new={}\n",
             ctx.old_cell_id.as_u64(),
@@ -648,8 +641,8 @@ impl LiveUpdateManager {
         wait_for_quiescent_state(ctx.old_epoch);
 
         if crate::loader::unload_cell(ctx.old_cell_id).is_err() {
-            *self.pending.lock() = Some(ctx);
-            *self.state.lock() = LiveUpdateState::Error;
+            *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Error;
             return Err(LiveUpdateError::LoadFailed);
         }
 
@@ -662,14 +655,14 @@ impl LiveUpdateManager {
             new_cell_id: result.new_cell_id,
             at_tick: crate::task::timer::current_tick(),
         });
-        *self.state.lock() = LiveUpdateState::Ready;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Ready;
         self.rollback_epoch.store(0, Ordering::Release);
         Ok(result)
     }
 
     fn rollback_pending_update(&self) -> Result<UpdateTransition, LiveUpdateError> {
         let ctx = {
-            let mut pending = self.pending.lock();
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending.take().ok_or(LiveUpdateError::CellNotFound)?
         };
         self.rollback_context(ctx)
@@ -680,7 +673,7 @@ impl LiveUpdateManager {
         cell_id: u64,
     ) -> Result<UpdateTransition, LiveUpdateError> {
         let ctx = {
-            let mut pending = self.pending.lock();
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             let matches = pending
                 .as_ref()
                 .map(|p| p.old_cell_id.as_u64() == cell_id || p.new_cell_id.as_u64() == cell_id)
@@ -697,7 +690,7 @@ impl LiveUpdateManager {
         &self,
         ctx: PendingUpdateContext,
     ) -> Result<UpdateTransition, LiveUpdateError> {
-        *self.state.lock() = LiveUpdateState::Switching;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Switching;
         log::info!(
             "[LIVE_UPDATE] Rolling back update old={} new={}\n",
             ctx.old_cell_id.as_u64(),
@@ -708,8 +701,8 @@ impl LiveUpdateManager {
         Self::migrate_driver_ownership(ctx.new_cell_id, ctx.old_cell_id, &ctx.updated_handles);
 
         if crate::loader::unload_cell(ctx.new_cell_id).is_err() {
-            *self.pending.lock() = Some(ctx);
-            *self.state.lock() = LiveUpdateState::Error;
+            *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
+            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Error;
             return Err(LiveUpdateError::LoadFailed);
         }
 
@@ -723,13 +716,13 @@ impl LiveUpdateManager {
             at_tick: crate::task::timer::current_tick(),
             reason: ctx.health_failure_reason,
         });
-        *self.state.lock() = LiveUpdateState::Ready;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Ready;
         self.rollback_epoch.store(0, Ordering::Release);
         Ok(result)
     }
 
     fn push_outcome(&self, outcome: CompletedUpdateOutcome) {
-        let mut outcomes = self.recent_outcomes.lock();
+        let mut outcomes = self.recent_outcomes.lock().unwrap_or_else(|e| e.into_inner());
         outcomes.push(outcome);
         if outcomes.len() > 32 {
             let drain = outcomes.len() - 32;
@@ -855,11 +848,8 @@ pub fn init() {
 
 /// 現在のCPUコアIDを取得
 fn get_current_core_id() -> usize {
-    // LAPICからコアIDを取得（簡易版）
-    // 実際にはLAPIC IDをコアインデックスに変換する必要がある
     #[cfg(target_arch = "x86_64")]
     {
-        // CPUID経由でLAPIC IDを取得
         use core::arch::x86_64::__cpuid;
         let result = __cpuid(0x01);
         ((result.ebx >> 24) & 0xFF) as usize
@@ -958,44 +948,17 @@ impl ExportedState {
 
 /// 状態移行トレイト
 /// 設計書 3.5.2: セルが内部状態を持つ場合、ライブアップデート時に状態を新バージョンに移行
-///
-/// # 使用例
-/// ```rust
-/// impl StateTransfer for NetworkDriver {
-///     const STATE_VERSION: u32 = 1;
-///     
-///     fn export_state(&self) -> Result<ExportedState, StateExportError> {
-///         // 内部状態をシリアライズ
-///         let mut data = Vec::new();
-///         // ... シリアライズ処理 ...
-///         Ok(ExportedState::new(Self::STATE_VERSION, self.cell_id(), data))
-///     }
-///     
-///     fn import_state(state: ExportedState) -> Result<Self, StateImportError> {
-///         if state.metadata.version != Self::STATE_VERSION {
-///             return Err(StateImportError::VersionMismatch);
-///         }
-///         // 状態を復元
-///         // ... デシリアライズ処理 ...
-///         Ok(Self::new_from_state(...))
-///     }
-/// }
-/// ```
 pub trait StateTransfer: Sized {
     /// 状態のバージョン番号
-    /// 新バージョンが旧フォーマットを理解できない場合はロールバック
     const STATE_VERSION: u32;
 
     /// 内部状態をエクスポート（シリアライズ）
-    /// 設計書 3.5.2: 旧セルが内部状態を交換ヒープ上の形式にエクスポート
     fn export_state(&self) -> Result<ExportedState, StateExportError>;
 
     /// 状態をインポート（デシリアライズ）して新インスタンスを構築
-    /// 設計書 3.5.2: 新セルがエクスポートされた状態をインポートして復元
     fn import_state(state: ExportedState) -> Result<Self, StateImportError>;
 
     /// バージョン互換性をチェック
-    /// デフォルトでは完全一致のみ許可
     fn is_version_compatible(exported_version: u32) -> bool {
         exported_version == Self::STATE_VERSION
     }
@@ -1006,32 +969,26 @@ pub trait StateTransfer: Sized {
     }
 
     /// 状態移行を試行
-    /// バージョン互換性チェック + インポートを一括で行う
     fn try_migrate(state: ExportedState) -> Result<Self, StateImportError> {
-        // データ整合性検証
         if !state.verify() {
             return Err(StateImportError::CorruptedData);
         }
 
-        // バージョン互換性チェック
         if !Self::is_version_compatible(state.metadata.version) {
             return Err(StateImportError::VersionMismatch);
         }
 
-        // 状態をインポート
         Self::import_state(state)
     }
 }
 
 /// StateTransferを実装しないセル用のダミー実装
-/// 状態を持たないセルはこれを使用可能
 pub struct StatelessCell;
 
 impl StateTransfer for StatelessCell {
     const STATE_VERSION: u32 = 0;
 
     fn export_state(&self) -> Result<ExportedState, StateExportError> {
-        // 状態なし - 空のデータをエクスポート
         Ok(ExportedState::new(Self::STATE_VERSION, 0, Vec::new()))
     }
 
