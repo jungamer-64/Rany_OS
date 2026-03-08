@@ -69,7 +69,6 @@ pub(crate) struct RxVbufInflight {
 }
 
 // Queue memory layout calculation result.
-pub(crate) use virtio_driver::net::QueueMemoryLayout;
 
 /// VirtIO ネットワークデバイス
 #[derive(Debug)]
@@ -99,13 +98,13 @@ pub struct VirtioNetDevice {
     /// 統計: 受信バイト数
     rx_bytes: AtomicU32,
     /// 受信用バッファマップ (キュー別, desc_idx -> RxVbufInflight)
-    pub(crate) rx_buffers: Vec<Box<[core::sync::atomic::AtomicPtr<RxVbufInflight>]>>,
+    pub(crate) rx_buffers: Vec<virtio_driver::net::InflightTracker<RxVbufInflight>>,
     /// 受信用バッファマップ (キュー別, desc_idx -> RxPacketInflight) - zero-copy posted buffers from mempool
-    pub(crate) rx_packetrefs: Vec<Box<[core::sync::atomic::AtomicPtr<RxPacketInflight>]>>,
+    pub(crate) rx_packetrefs: Vec<virtio_driver::net::InflightTracker<RxPacketInflight>>,
     /// 送信用 PacketRef インフライトマップ (キュー別, desc_idx -> TxPacketInflight)
-    pub(crate) tx_packetrefs: Vec<Box<[core::sync::atomic::AtomicPtr<TxPacketInflight>]>>,
+    pub(crate) tx_packetrefs: Vec<virtio_driver::net::InflightTracker<TxPacketInflight>>,
     /// 送信用インフライトバッファ (キュー別, desc_idx -> CoherentDmaBuffer)
-    pub(crate) tx_inflight: Vec<Box<[core::sync::atomic::AtomicPtr<CoherentDmaBuffer>]>>,
+    pub(crate) tx_inflight: Vec<virtio_driver::net::InflightTracker<CoherentDmaBuffer>>,
     /// プール済み送信用バウンスバッフェ (Here we keep the lock as it's a global pool, not per-descriptor)
     tx_bounce_pool: MpmcRingBuffer<CoherentDmaBuffer, 256>,
     /// プール済み受信用バウンスバッファ
@@ -384,21 +383,9 @@ impl VirtioNetDevice {
         &mut self,
         queue_index: u16,
     ) -> Result<NetVirtQueue, VirtioNetError> {
-        // キューを選択
-        self.mut_transport().select_queue(queue_index);
-
-        // 最大キューサイズを取得
-        let max_size = self.transport.get_queue_max_size();
-        if max_size == 0 {
-            return Err(VirtioNetError::DeviceError);
-        }
-
-        // キューサイズを設定（最大256エントリに制限）
-        let queue_size = self.core.calculate_queue_size(max_size);
-        self.mut_transport().set_queue_size(queue_size);
-
-        // Standardized layout calculation
-        let layout = QueueMemoryLayout::calculate(queue_index, queue_size);
+        // Prepare queue using driver-side logic
+        let (queue_size, layout) = self.core.prepare_queue(self.transport.as_ref(), queue_index)
+            .map_err(|_| VirtioNetError::DeviceError)?;
 
         // DMAバッファを割り当て
         let (buffer, _dma_len) = self.allocate_queue_dma(layout.total_size)?;
@@ -423,51 +410,27 @@ impl VirtioNetDevice {
             (None, None)
         };
 
-        // 各リングを初期化
-        // setup_queues handles the queue setup
-
-        // デバイスにアドレスを設定
-        let desc_addr = dma_base;
-        let avail_addr = dma_base + layout.desc_size as u64;
-        let used_addr = dma_base + layout.used_offset as u64;
-
-        self.mut_transport().set_queue_desc_addr(desc_addr);
-        self.mut_transport().set_queue_avail_addr(avail_addr);
-        self.mut_transport().set_queue_used_addr(used_addr);
+        // キューを作成
+        let features = self.transport.get_device_features_low() as u64
+            | ((self.transport.get_device_features_high() as u64) << 32);
 
         // Create trackers for this queue
         if (queue_index % 2) == 0 {
             // RX queue
-            let mut tracker_vec = Vec::with_capacity(queue_size as usize);
-            for _ in 0..queue_size {
-                tracker_vec.push(core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()));
-            }
-            self.rx_buffers.push(tracker_vec.into_boxed_slice());
-
-            let mut pr_vec = Vec::with_capacity(queue_size as usize);
-            for _ in 0..queue_size {
-                pr_vec.push(core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()));
-            }
-            self.rx_packetrefs.push(pr_vec.into_boxed_slice());
+            self.rx_buffers.push(virtio_driver::net::InflightTracker::new(queue_size));
+            self.rx_packetrefs.push(virtio_driver::net::InflightTracker::new(queue_size));
         } else {
             // TX queue
-            let mut tracker_vec = Vec::with_capacity(queue_size as usize);
-            for _ in 0..queue_size {
-                tracker_vec.push(core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()));
-            }
-            self.tx_packetrefs.push(tracker_vec.into_boxed_slice());
-
-            let mut inflight_vec = Vec::with_capacity(queue_size as usize);
-            for _ in 0..queue_size {
-                inflight_vec.push(core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()));
-            }
-            self.tx_inflight.push(inflight_vec.into_boxed_slice());
+            self.tx_packetrefs.push(virtio_driver::net::InflightTracker::new(queue_size));
+            self.tx_inflight.push(virtio_driver::net::InflightTracker::new(queue_size));
         }
 
-        let features = self.transport.get_device_features_low() as u64
-            | ((self.transport.get_device_features_high() as u64) << 32);
+        // Commit queue addresses using driver-side logic
+        let desc_addr = dma_base;
+        let avail_addr = dma_base + layout.desc_size as u64;
+        let used_addr = dma_base + layout.used_offset as u64;
+        self.core.commit_queue(self.transport.as_ref(), queue_index, desc_addr, avail_addr, used_addr);
 
-        // キューを作成
         let queue = unsafe {
             NetVirtQueue::new(
                 queue_index,
@@ -615,14 +578,11 @@ impl VirtioNetDevice {
                     .position(|q| core::ptr::eq(q, rxq))
                     .unwrap_or(0);
                 if let Some(tracker) = self.rx_packetrefs.get(q_idx) {
-                    if let Some(slot) = tracker.get(desc_idx as usize) {
-                        let entry = Box::new(RxPacketInflight {
-                            packet,
-                            iommu_iova,
-                            iommu_map_len,
-                        });
-                        slot.store(Box::into_raw(entry), Ordering::Release);
-                    }
+                    tracker.put(desc_idx, RxPacketInflight {
+                        packet,
+                        iommu_iova,
+                        iommu_map_len,
+                    });
                 }
                 Ok(true)
             }
@@ -678,14 +638,11 @@ impl VirtioNetDevice {
                     .position(|q| core::ptr::eq(q, rxq))
                     .unwrap_or(0);
                 if let Some(tracker) = self.rx_buffers.get(q_idx) {
-                    if let Some(slot) = tracker.get(desc_idx as usize) {
-                        let entry = Box::new(RxVbufInflight {
-                            vbuf,
-                            iommu_iova,
-                            iommu_map_len,
-                        });
-                        slot.store(Box::into_raw(entry), Ordering::Release);
-                    }
+                    tracker.put(desc_idx, RxVbufInflight {
+                        vbuf,
+                        iommu_iova,
+                        iommu_map_len,
+                    });
                 }
                 Ok(true)
             }
@@ -754,39 +711,11 @@ impl VirtioNetDevice {
 
 impl Drop for VirtioNetDevice {
     fn drop(&mut self) {
-        // Clean up all in-flight trackers to avoid memory leaks
-        for tracker in &self.rx_buffers {
-            for slot in tracker.iter() {
-                let ptr = slot.swap(core::ptr::null_mut(), Ordering::AcqRel);
-                if !ptr.is_null() {
-                    unsafe { let _ = Box::from_raw(ptr); }
-                }
-            }
-        }
-        for tracker in &self.rx_packetrefs {
-            for slot in tracker.iter() {
-                let ptr = slot.swap(core::ptr::null_mut(), Ordering::AcqRel);
-                if !ptr.is_null() {
-                    unsafe { let _ = Box::from_raw(ptr); }
-                }
-            }
-        }
-        for tracker in &self.tx_packetrefs {
-            for slot in tracker.iter() {
-                let ptr = slot.swap(core::ptr::null_mut(), Ordering::AcqRel);
-                if !ptr.is_null() {
-                    unsafe { let _ = Box::from_raw(ptr); }
-                }
-            }
-        }
-        for tracker in &self.tx_inflight {
-            for slot in tracker.iter() {
-                let ptr = slot.swap(core::ptr::null_mut(), Ordering::AcqRel);
-                if !ptr.is_null() {
-                    unsafe { let _ = Box::from_raw(ptr); }
-                }
-            }
-        }
+        // InflightTracker's Drop handles freeing individual boxed entries.
+        self.rx_buffers.clear();
+        self.rx_packetrefs.clear();
+        self.tx_packetrefs.clear();
+        self.tx_inflight.clear();
     }
 }
 

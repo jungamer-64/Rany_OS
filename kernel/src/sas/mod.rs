@@ -268,8 +268,11 @@ static ATOMIC_SAS_STATS: AtomicSasStats = AtomicSasStats::new();
 // グローバルインスタンス
 // ============================================================================
 
+use crate::sync::PoisonLock;
+
 /// グローバルSAS Manager
-static SAS_MANAGER: Mutex<SingleAddressSpaceManager> = Mutex::new(SingleAddressSpaceManager::new());
+static SAS_MANAGER: PoisonLock<SingleAddressSpaceManager> =
+    PoisonLock::new(SingleAddressSpaceManager::new());
 
 /// SAS Managerにアクセス
 /// Note: 基本的な操作（所有権転送など）はこれを使わず、直接以下の関数を使用すること。
@@ -277,7 +280,7 @@ pub fn with_sas_manager<F, R>(f: F) -> R
 where
     F: FnOnce(&SingleAddressSpaceManager) -> R,
 {
-    f(&SAS_MANAGER.lock())
+    f(&SAS_MANAGER.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// SAS Managerを変更
@@ -285,7 +288,7 @@ pub fn with_sas_manager_mut<F, R>(f: F) -> R
 where
     F: FnOnce(&mut SingleAddressSpaceManager) -> R,
 {
-    f(&mut SAS_MANAGER.lock())
+    f(&mut SAS_MANAGER.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// SASを初期化

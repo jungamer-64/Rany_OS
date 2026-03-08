@@ -1,6 +1,4 @@
 use super::*;
-use core::sync::atomic::Ordering;
-use alloc::boxed::Box;
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
@@ -345,16 +343,13 @@ impl VirtioNetDevice {
         desc_idx: u16,
         len: u32,
     ) -> bool {
-        let pr_ptr = if let Some(tracker) = self.rx_packetrefs.get(q_idx) {
-            tracker.get(desc_idx as usize)
-                .map(|slot| slot.swap(core::ptr::null_mut(), Ordering::AcqRel))
-                .unwrap_or(core::ptr::null_mut())
+        let inflight = if let Some(tracker) = self.rx_packetrefs.get(q_idx) {
+            tracker.take(desc_idx)
         } else {
-            core::ptr::null_mut()
+            None
         };
 
-        if !pr_ptr.is_null() {
-            let inflight = unsafe { Box::from_raw(pr_ptr) };
+        if let Some(inflight) = inflight {
             let completion_len = match rx_queue.take_completion(desc_idx) {
                 Some(completion_len) => completion_len,
                 None => {
@@ -371,20 +366,17 @@ impl VirtioNetDevice {
                     len
                 }
             };
-            self.complete_rx_packetref(rx_queue, desc_idx, completion_len, *inflight);
+            self.complete_rx_packetref(rx_queue, desc_idx, completion_len, inflight);
             return true;
         }
 
-        let vbuf_ptr = if let Some(tracker) = self.rx_buffers.get(q_idx) {
-            tracker.get(desc_idx as usize)
-                .map(|slot| slot.swap(core::ptr::null_mut(), Ordering::AcqRel))
-                .unwrap_or(core::ptr::null_mut())
+        let inflight = if let Some(tracker) = self.rx_buffers.get(q_idx) {
+            tracker.take(desc_idx)
         } else {
-            core::ptr::null_mut()
+            None
         };
 
-        if !vbuf_ptr.is_null() {
-            let inflight = unsafe { Box::from_raw(vbuf_ptr) };
+        if let Some(inflight) = inflight {
             let completion_len = match rx_queue.take_completion(desc_idx) {
                 Some(completion_len) => completion_len,
                 None => {
@@ -401,7 +393,7 @@ impl VirtioNetDevice {
                     len
                 }
             };
-            self.complete_rx_vbuf(rx_queue, desc_idx, completion_len, *inflight);
+            self.complete_rx_vbuf(rx_queue, desc_idx, completion_len, inflight);
             return true;
         }
 
@@ -427,4 +419,5 @@ impl VirtioNetDevice {
             "virtio rx completion unknown desc",
         );
     }
+
 }

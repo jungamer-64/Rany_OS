@@ -22,7 +22,7 @@ use crate::io::iommu::api::{
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::defs::{VirtioDeviceType, status};
 use crate::io::virtio::transport::{TransportType, VirtioTransport};
-use crate::io::virtio::virtqueue::{VirtQueue, VringAvail, VringDesc, VringUsed};
+use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
 use crate::sync::IrqPoisonLock;
 // Import PacketRef for zero-copy
 use crate::net::datapath::mempool::PacketRef;
@@ -54,7 +54,6 @@ fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
     (addr as u128) <= (mask as u128) && (end as u128) <= limit
 }
 
-use crate::util::align_up_usize as align_up;
 
 fn check_device_dma_mask(
     device: Option<IommuDeviceId>,

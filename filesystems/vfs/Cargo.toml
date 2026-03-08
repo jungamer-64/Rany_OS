@@ -13,6 +13,7 @@ categories.workspace = true
 [dependencies]
 bitflags = "2.4"
 spin = "0.10"
+exorust_sync = { path = "../../libs/sync" }
 
 [dev-dependencies]
 futures = "0.3"

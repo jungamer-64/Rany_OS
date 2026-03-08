@@ -38,6 +38,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use exorust_sync::{PoisonLock, PoisonRwLock};
 use spin::{Mutex, RwLock};
 
 use crate::types::InodeNum;
@@ -80,17 +81,17 @@ pub enum PageState {
 /// A cached page of data
 ///
 /// ## 安全性
-/// データは `Arc<RwLock<Box<[u8]>>>` で保護されており、
+/// データは `Arc<PoisonRwLock<Box<[u8]>>>` で保護されており、
 /// 読み取り/書き込みは適切にロックされる。
 /// これにより、複数のスレッドからの同時アクセスでも
 /// データ競合（UB）が発生しない。
 pub struct CachedPage {
-    /// Page data (RwLock で保護された固定長バッファ)
-    data: Arc<RwLock<Box<[u8]>>>,
+    /// Page data (PoisonRwLock で保護された固定長バッファ)
+    data: Arc<PoisonRwLock<Box<[u8]>>>,
     /// Page offset in file (page number)
     page_num: u64,
     /// Page state
-    state: Mutex<PageState>,
+    state: PoisonLock<PageState>,
     /// Last access time (for LRU)
     last_access: AtomicU64,
     /// Reference count for pinning
@@ -104,9 +105,9 @@ impl CachedPage {
     pub fn new(page_num: u64, data: Vec<u8>) -> Self {
         let boxed: Box<[u8]> = data.into_boxed_slice();
         Self {
-            data: Arc::new(RwLock::new(boxed)),
+            data: Arc::new(PoisonRwLock::new(boxed)),
             page_num,
-            state: Mutex::new(PageState::Clean),
+            state: PoisonLock::new(PageState::Clean),
             last_access: AtomicU64::new(0),
             pin_count: AtomicU64::new(0),
             dirty: AtomicBool::new(false),
@@ -124,7 +125,7 @@ impl CachedPage {
     /// この操作はデータのコピーを伴う。
     /// 読み取り専用なら `read_with` を使用することを推奨。
     #[inline]
-    pub fn data(&self) -> Arc<RwLock<Box<[u8]>>> {
+    pub fn data(&self) -> Arc<PoisonRwLock<Box<[u8]>>> {
         Arc::clone(&self.data)
     }
 
@@ -137,7 +138,7 @@ impl CachedPage {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        let guard = self.data.read();
+        let guard = self.data.read().unwrap_or_else(|e| e.into_inner());
         f(&guard)
     }
 
@@ -148,12 +149,12 @@ impl CachedPage {
 
     /// Get page state
     pub fn state(&self) -> PageState {
-        *self.state.lock()
+        *self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Set page state
     pub fn set_state(&self, state: PageState) {
-        *self.state.lock() = state;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = state;
     }
 
     /// Check if page is dirty
@@ -200,7 +201,7 @@ impl CachedPage {
 
     /// Read from page at offset (safe version)
     pub fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
-        let guard = self.data.read();
+        let guard = self.data.read().unwrap_or_else(|e| e.into_inner());
         let available = guard.len().saturating_sub(offset);
         let to_read = buf.len().min(available);
 
@@ -217,7 +218,7 @@ impl CachedPage {
     /// 書き込みロックを取得してから書き込みを行うため、
     /// 読み取り操作との競合が発生しない。
     pub fn write(&self, offset: usize, buf: &[u8]) -> usize {
-        let mut guard = self.data.write();
+        let mut guard = self.data.write().unwrap_or_else(|e| e.into_inner());
         let available = guard.len().saturating_sub(offset);
         let to_write = buf.len().min(available);
 
@@ -240,7 +241,7 @@ impl CachedPage {
     /// # Safety Note
     /// この関数は flush 操作のために読み取りロックを取得してデータをコピーする。
     pub fn data_for_sync(&self) -> Vec<u8> {
-        let guard = self.data.read();
+        let guard = self.data.read().unwrap_or_else(|e| e.into_inner());
         guard.to_vec()
     }
 }
@@ -336,13 +337,13 @@ pub struct CacheStats {
 /// Global page cache
 pub struct PageCache {
     /// Per-file caches
-    files: RwLock<BTreeMap<InodeNum, FileCache>>,
+    files: PoisonRwLock<BTreeMap<InodeNum, FileCache>>,
     /// Cache size limit in bytes
     limit: usize,
     /// Current cache size in bytes
     current_size: AtomicU64,
     /// Statistics
-    stats: Mutex<CacheStats>,
+    stats: PoisonLock<CacheStats>,
     /// Global time counter for LRU
     time: AtomicU64,
 }
@@ -351,10 +352,10 @@ impl PageCache {
     /// Create a new page cache
     pub fn new(limit: usize) -> Self {
         Self {
-            files: RwLock::new(BTreeMap::new()),
+            files: PoisonRwLock::new(BTreeMap::new()),
             limit,
             current_size: AtomicU64::new(0),
-            stats: Mutex::new(CacheStats::default()),
+            stats: PoisonLock::new(CacheStats::default()),
             time: AtomicU64::new(0),
         }
     }
@@ -366,7 +367,7 @@ impl PageCache {
 
     /// Get or allocate file cache
     fn get_or_create_file_cache(&self, ino: InodeNum, file_size: u64) -> Option<()> {
-        let mut files = self.files.write();
+        let mut files = self.files.write().unwrap_or_else(|e| e.into_inner());
         files
             .entry(ino)
             .or_insert_with(|| FileCache::new(ino, file_size));
@@ -392,20 +393,20 @@ impl PageCache {
         let page_offset = (offset % PAGE_SIZE as u64) as usize;
         let time = self.tick();
 
-        let files = self.files.read();
+        let files = self.files.read().unwrap_or_else(|e| e.into_inner());
         let file_cache = files.get(&ino)?;
 
         if let Some(page) = file_cache.get_page(page_num) {
             page.touch(time);
 
-            let mut stats = self.stats.lock();
+            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
             stats.hits += 1;
             drop(stats);
 
             return Some(page.read(page_offset, buf));
         }
 
-        let mut stats = self.stats.lock();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.misses += 1;
 
         None
@@ -424,13 +425,13 @@ impl PageCache {
         let page = Arc::new(CachedPage::new(page_num, data));
         page.touch(self.tick());
 
-        let mut files = self.files.write();
+        let mut files = self.files.write().unwrap_or_else(|e| e.into_inner());
         if let Some(file_cache) = files.get_mut(&ino) {
             file_cache.insert_page(page);
             self.current_size
                 .fetch_add(PAGE_SIZE as u64, Ordering::AcqRel);
 
-            let mut stats = self.stats.lock();
+            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
             stats.pages += 1;
             stats.bytes = self.current_size.load(Ordering::Acquire);
         }
@@ -438,13 +439,13 @@ impl PageCache {
 
     /// Mark a page as dirty
     pub fn mark_dirty(&self, ino: InodeNum, page_num: u64) -> bool {
-        let files = self.files.read();
+        let files = self.files.read().unwrap_or_else(|e| e.into_inner());
 
         if let Some(file_cache) = files.get(&ino) {
             if let Some(page) = file_cache.get_page(page_num) {
                 page.mark_dirty();
 
-                let mut stats = self.stats.lock();
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.dirty_pages += 1;
 
                 return true;
@@ -479,7 +480,7 @@ impl PageCache {
     /// Evict pages to free space
     fn evict_pages(&self, needed: usize) {
         let mut freed = 0;
-        let mut files = self.files.write();
+        let mut files = self.files.write().unwrap_or_else(|e| e.into_inner());
 
         while freed < needed {
             if let Some((ino, page_num)) = Self::find_lru_page_globally(&files) {
@@ -489,7 +490,7 @@ impl PageCache {
                         self.current_size
                             .fetch_sub(PAGE_SIZE as u64, Ordering::AcqRel);
 
-                        let mut stats = self.stats.lock();
+                        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                         stats.evictions += 1;
                         stats.pages = stats.pages.saturating_sub(1);
                         stats.bytes = self.current_size.load(Ordering::Acquire);
@@ -511,7 +512,7 @@ impl PageCache {
     where
         F: FnMut(u64, &[u8]) -> Result<(), ()>,
     {
-        let files = self.files.read();
+        let files = self.files.read().unwrap_or_else(|e| e.into_inner());
 
         if let Some(file_cache) = files.get(&ino) {
             let dirty_pages = file_cache.dirty_pages();
@@ -524,7 +525,7 @@ impl PageCache {
                 page.mark_clean();
                 synced += 1;
 
-                let mut stats = self.stats.lock();
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.writebacks += 1;
                 stats.dirty_pages = stats.dirty_pages.saturating_sub(1);
             }
@@ -544,7 +545,7 @@ impl PageCache {
     where
         F: FnMut(InodeNum, u64, &[u8]) -> Result<(), ()>,
     {
-        let files = self.files.read();
+        let files = self.files.read().unwrap_or_else(|e| e.into_inner());
         let mut total_synced = 0;
 
         for (ino, file_cache) in &*files {
@@ -557,7 +558,7 @@ impl PageCache {
                 page.mark_clean();
                 total_synced += 1;
 
-                let mut stats = self.stats.lock();
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.writebacks += 1;
                 stats.dirty_pages = stats.dirty_pages.saturating_sub(1);
             }
@@ -568,7 +569,7 @@ impl PageCache {
 
     /// Invalidate all pages for a file
     pub fn invalidate(&self, ino: InodeNum) {
-        let mut files = self.files.write();
+        let mut files = self.files.write().unwrap_or_else(|e| e.into_inner());
 
         if let Some(file_cache) = files.remove(&ino) {
             let pages = file_cache.page_count();
@@ -576,7 +577,7 @@ impl PageCache {
 
             self.current_size.fetch_sub(freed as u64, Ordering::AcqRel);
 
-            let mut stats = self.stats.lock();
+            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
             stats.pages = stats.pages.saturating_sub(pages as u64);
             stats.bytes = self.current_size.load(Ordering::Acquire);
         }
@@ -584,7 +585,7 @@ impl PageCache {
 
     /// Get cache statistics
     pub fn stats(&self) -> CacheStats {
-        self.stats.lock().clone()
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Get current cache size in bytes
@@ -599,7 +600,7 @@ impl PageCache {
 
     /// Get hit ratio
     pub fn hit_ratio(&self) -> f64 {
-        let stats = self.stats.lock();
+        let stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         let total = stats.hits + stats.misses;
         if total == 0 {
             0.0
@@ -757,17 +758,17 @@ impl BlockCacheKey {
 /// A cached block of data
 ///
 /// ## 安全性
-/// データは `Arc<RwLock<Box<[u8]>>>` で保護されており、
+/// データは `Arc<PoisonRwLock<Box<[u8]>>>` で保護されており、
 /// 読み取り/書き込みは適切にロックされる。
 pub struct CachedBlock {
     /// Block key (device_id, block_num)
     key: BlockCacheKey,
-    /// Block data (RwLock で保護された固定長バッファ)
-    data: Arc<RwLock<Box<[u8]>>>,
+    /// Block data (PoisonRwLock で保護された固定長バッファ)
+    data: Arc<PoisonRwLock<Box<[u8]>>>,
     /// Block size
     block_size: usize,
     /// State
-    state: Mutex<PageState>,
+    state: PoisonLock<PageState>,
     /// Last access time (for LRU)
     last_access: AtomicU64,
     /// Dirty flag
@@ -780,9 +781,9 @@ impl CachedBlock {
         let boxed: Box<[u8]> = data.into_boxed_slice();
         Self {
             key,
-            data: Arc::new(RwLock::new(boxed)),
+            data: Arc::new(PoisonRwLock::new(boxed)),
             block_size,
-            state: Mutex::new(PageState::Clean),
+            state: PoisonLock::new(PageState::Clean),
             last_access: AtomicU64::new(0),
             dirty: AtomicBool::new(false),
         }
@@ -795,7 +796,7 @@ impl CachedBlock {
 
     /// Get block data (Arc clone)
     #[inline]
-    pub fn data(&self) -> Arc<RwLock<Box<[u8]>>> {
+    pub fn data(&self) -> Arc<PoisonRwLock<Box<[u8]>>> {
         Arc::clone(&self.data)
     }
 
@@ -805,13 +806,13 @@ impl CachedBlock {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        let guard = self.data.read();
+        let guard = self.data.read().unwrap_or_else(|e| e.into_inner());
         f(&guard)
     }
 
     /// Get block data for sync operations
     pub fn data_for_sync(&self) -> Vec<u8> {
-        let guard = self.data.read();
+        let guard = self.data.read().unwrap_or_else(|e| e.into_inner());
         guard.to_vec()
     }
 
@@ -833,13 +834,13 @@ impl CachedBlock {
     /// Mark block as dirty
     pub fn mark_dirty(&self) {
         self.dirty.store(true, Ordering::Release);
-        *self.state.lock() = PageState::Dirty;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = PageState::Dirty;
     }
 
     /// Mark block as clean
     pub fn mark_clean(&self) {
         self.dirty.store(false, Ordering::Release);
-        *self.state.lock() = PageState::Clean;
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = PageState::Clean;
     }
 
     /// Update last access time
@@ -854,7 +855,7 @@ impl CachedBlock {
 
     /// Read from block at offset (safe version)
     pub fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
-        let guard = self.data.read();
+        let guard = self.data.read().unwrap_or_else(|e| e.into_inner());
         let available = guard.len().saturating_sub(offset);
         let to_read = buf.len().min(available);
 
@@ -871,7 +872,7 @@ impl CachedBlock {
     /// 書き込みロックを取得してから書き込みを行うため、
     /// 読み取り操作との競合が発生しない。
     pub fn write(&self, offset: usize, buf: &[u8]) -> usize {
-        let mut guard = self.data.write();
+        let mut guard = self.data.write().unwrap_or_else(|e| e.into_inner());
         let available = guard.len().saturating_sub(offset);
         let to_write = buf.len().min(available);
 
@@ -1113,18 +1114,13 @@ impl LruList {
 ///
 /// ## 設計 (v2.0 - O(1) LRU)
 /// - O(1) LRUリスト: Index-based Doubly Linked List + HashMap
-/// - 安全なデータアクセス: RwLockによる排他制御
+/// - 安全なデータアクセス: PoisonLockによる排他制御
 /// - Write-back: ダーティブロックは明示的にフラッシュ
-///
-/// ## LRU操作の計算量
-/// - `get`: O(1) - HashMap検索 + リストの先頭移動
-/// - `insert`: O(1) - HashMap挿入 + リスト先頭追加
-/// - `evict`: O(1) - リスト末尾削除
 pub struct LRUBlockCache {
     /// Cached blocks (key -> block)
-    blocks: Mutex<BTreeMap<BlockCacheKey, Arc<CachedBlock>>>,
+    blocks: PoisonLock<BTreeMap<BlockCacheKey, Arc<CachedBlock>>>,
     /// O(1) LRU list
-    lru_list: Mutex<LruList>,
+    lru_list: PoisonLock<LruList>,
     /// Block size
     block_size: usize,
     /// Cache size limit in bytes
@@ -1132,7 +1128,7 @@ pub struct LRUBlockCache {
     /// Current cache size in bytes
     current_size: AtomicU64,
     /// Statistics
-    stats: Mutex<BlockCacheStats>,
+    stats: PoisonLock<BlockCacheStats>,
     /// Global time counter for LRU
     time: AtomicU64,
 }
@@ -1141,12 +1137,12 @@ impl LRUBlockCache {
     /// Create a new LRU block cache
     pub fn new(block_size: usize, limit: usize) -> Self {
         Self {
-            blocks: Mutex::new(BTreeMap::new()),
-            lru_list: Mutex::new(LruList::new()),
+            blocks: PoisonLock::new(BTreeMap::new()),
+            lru_list: PoisonLock::new(LruList::new()),
             block_size,
             limit,
             current_size: AtomicU64::new(0),
-            stats: Mutex::new(BlockCacheStats::default()),
+            stats: PoisonLock::new(BlockCacheStats::default()),
             time: AtomicU64::new(0),
         }
     }
@@ -1163,7 +1159,7 @@ impl LRUBlockCache {
 
     /// Move a key to the front of LRU list (most recently used) - O(1)
     fn touch_lru(&self, key: BlockCacheKey) {
-        let mut lru_list = self.lru_list.lock();
+        let mut lru_list = self.lru_list.lock().unwrap_or_else(|e| e.into_inner());
         lru_list.touch(&key);
     }
 
@@ -1172,7 +1168,7 @@ impl LRUBlockCache {
         let key = BlockCacheKey::new(device_id, block_num);
         let time = self.tick();
 
-        let blocks = self.blocks.lock();
+        let blocks = self.blocks.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(block) = blocks.get(&key) {
             // Cache hit
@@ -1182,7 +1178,7 @@ impl LRUBlockCache {
 
             self.touch_lru(key);
 
-            let mut stats = self.stats.lock();
+            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
             stats.hits += 1;
 
             return Some(block_clone);
@@ -1190,7 +1186,7 @@ impl LRUBlockCache {
 
         // Cache miss
         drop(blocks);
-        let mut stats = self.stats.lock();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.misses += 1;
 
         None
@@ -1209,20 +1205,20 @@ impl LRUBlockCache {
         let block = Arc::new(CachedBlock::new(key, data, self.block_size));
         block.touch(self.tick());
 
-        let mut blocks = self.blocks.lock();
+        let mut blocks = self.blocks.lock().unwrap_or_else(|e| e.into_inner());
         blocks.insert(key, block);
         drop(blocks);
 
         // Add to LRU list (O(1))
         {
-            let mut lru_list = self.lru_list.lock();
+            let mut lru_list = self.lru_list.lock().unwrap_or_else(|e| e.into_inner());
             lru_list.insert(key);
         }
 
         self.current_size
             .fetch_add(self.block_size as u64, Ordering::AcqRel);
 
-        let mut stats = self.stats.lock();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.blocks += 1;
         stats.bytes = self.current_size.load(Ordering::Acquire);
     }
@@ -1251,7 +1247,7 @@ impl LRUBlockCache {
         let written = block.write(offset, buf);
 
         if written > 0 {
-            let mut stats = self.stats.lock();
+            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
             stats.dirty_blocks += 1;
         }
 
@@ -1261,8 +1257,8 @@ impl LRUBlockCache {
     /// Evict blocks to free space - O(1) per eviction
     fn evict_blocks(&self, needed: usize) {
         let mut freed = 0;
-        let mut lru_list = self.lru_list.lock();
-        let mut blocks = self.blocks.lock();
+        let mut lru_list = self.lru_list.lock().unwrap_or_else(|e| e.into_inner());
+        let mut blocks = self.blocks.lock().unwrap_or_else(|e| e.into_inner());
         let mut dirty_keys = Vec::new();
 
         while freed < needed && !lru_list.is_empty() {
@@ -1283,7 +1279,7 @@ impl LRUBlockCache {
                     self.current_size
                         .fetch_sub(self.block_size as u64, Ordering::AcqRel);
 
-                    let mut stats = self.stats.lock();
+                    let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                     stats.evictions += 1;
                     stats.blocks = stats.blocks.saturating_sub(1);
                     stats.bytes = self.current_size.load(Ordering::Acquire);
@@ -1304,7 +1300,7 @@ impl LRUBlockCache {
     where
         F: FnMut(u64, &[u8]) -> Result<(), ()>,
     {
-        let blocks = self.blocks.lock();
+        let blocks = self.blocks.lock().unwrap_or_else(|e| e.into_inner());
         let mut flushed = 0;
 
         for (key, block) in &*blocks {
@@ -1314,7 +1310,7 @@ impl LRUBlockCache {
                 block.mark_clean();
                 flushed += 1;
 
-                let mut stats = self.stats.lock();
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.writebacks += 1;
                 stats.dirty_blocks = stats.dirty_blocks.saturating_sub(1);
             }
@@ -1329,7 +1325,7 @@ impl LRUBlockCache {
         F: FnMut(&[u8]) -> Result<(), ()>,
     {
         let key = BlockCacheKey::new(device_id, block_num);
-        let blocks = self.blocks.lock();
+        let blocks = self.blocks.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(block) = blocks.get(&key) {
             if block.is_dirty() {
@@ -1337,7 +1333,7 @@ impl LRUBlockCache {
                 writer(&data)?;
                 block.mark_clean();
 
-                let mut stats = self.stats.lock();
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.writebacks += 1;
                 stats.dirty_blocks = stats.dirty_blocks.saturating_sub(1);
 
@@ -1353,7 +1349,7 @@ impl LRUBlockCache {
     where
         F: FnMut(u64, u64, &[u8]) -> Result<(), ()>,
     {
-        let blocks = self.blocks.lock();
+        let blocks = self.blocks.lock().unwrap_or_else(|e| e.into_inner());
         let mut flushed = 0;
 
         for (key, block) in &*blocks {
@@ -1363,7 +1359,7 @@ impl LRUBlockCache {
                 block.mark_clean();
                 flushed += 1;
 
-                let mut stats = self.stats.lock();
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.writebacks += 1;
                 stats.dirty_blocks = stats.dirty_blocks.saturating_sub(1);
             }
@@ -1374,8 +1370,8 @@ impl LRUBlockCache {
 
     /// Invalidate all blocks for a device
     pub fn invalidate_device(&self, device_id: u64) {
-        let mut blocks = self.blocks.lock();
-        let mut lru_list = self.lru_list.lock();
+        let mut blocks = self.blocks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut lru_list = self.lru_list.lock().unwrap_or_else(|e| e.into_inner());
 
         // Remove all blocks for this device
         let keys_to_remove: Vec<_> = blocks
@@ -1392,7 +1388,7 @@ impl LRUBlockCache {
                 self.current_size
                     .fetch_sub(self.block_size as u64, Ordering::AcqRel);
 
-                let mut stats = self.stats.lock();
+                let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
                 stats.blocks = stats.blocks.saturating_sub(1);
                 stats.bytes = self.current_size.load(Ordering::Acquire);
             }
@@ -1401,7 +1397,7 @@ impl LRUBlockCache {
 
     /// Get cache statistics
     pub fn stats(&self) -> BlockCacheStats {
-        self.stats.lock().clone()
+        self.stats.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Get current cache size in bytes
@@ -1421,7 +1417,7 @@ impl LRUBlockCache {
 
     /// Get hit ratio
     pub fn hit_ratio(&self) -> f64 {
-        let stats = self.stats.lock();
+        let stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         let total = stats.hits + stats.misses;
         if total == 0 {
             0.0
@@ -1432,7 +1428,7 @@ impl LRUBlockCache {
 
     /// Get number of cached blocks
     pub fn block_count(&self) -> usize {
-        self.blocks.lock().len()
+        self.blocks.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

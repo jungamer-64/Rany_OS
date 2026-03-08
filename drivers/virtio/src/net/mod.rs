@@ -8,6 +8,9 @@ use kernel_api::resource::net::PacketRef;
 
 pub mod features;
 pub mod device;
+pub mod inflight;
+
+pub use inflight::InflightTracker;
 
 /// Runtime DMA allocation purpose for virtio-net queue and bounce memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

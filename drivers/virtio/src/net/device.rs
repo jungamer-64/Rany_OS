@@ -80,4 +80,39 @@ impl VirtioNetDevice {
     pub fn calculate_queue_size(&self, max_size: u16) -> u16 {
         max_size.min(256)
     }
+
+    /// Prepare a queue for initialization.
+    /// Returns the negotiated queue size and memory layout.
+    pub fn prepare_queue(
+        &self,
+        transport: &dyn VirtioTransport,
+        queue_index: u16,
+    ) -> Result<(u16, QueueMemoryLayout), TransportError> {
+        transport.select_queue(queue_index);
+        let max_size = transport.get_queue_max_size();
+        if max_size == 0 {
+            return Err(TransportError::DeviceError);
+        }
+
+        let queue_size = self.calculate_queue_size(max_size);
+        transport.set_queue_size(queue_size);
+
+        let layout = QueueMemoryLayout::calculate(queue_index, queue_size);
+        Ok((queue_size, layout))
+    }
+
+    /// Commit queue addresses to the transport.
+    pub fn commit_queue(
+        &self,
+        transport: &dyn VirtioTransport,
+        _queue_index: u16,
+        desc_addr: u64,
+        avail_addr: u64,
+        used_addr: u64,
+    ) {
+        transport.set_queue_desc_addr(desc_addr);
+        transport.set_queue_avail_addr(avail_addr);
+        transport.set_queue_used_addr(used_addr);
+        transport.enable_queue();
+    }
 }

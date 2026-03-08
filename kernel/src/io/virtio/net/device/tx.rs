@@ -1,6 +1,4 @@
 use super::*;
-use core::sync::atomic::Ordering;
-use alloc::boxed::Box;
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
@@ -82,9 +80,7 @@ impl VirtioNetDevice {
             match tx_queue.add_tx_buffer_zero_copy(device_addr, data_len) {
                 Ok(desc_idx) => {
                     if let Some(tracker) = self.tx_inflight.get(q_idx) {
-                        if let Some(slot) = tracker.get(desc_idx as usize) {
-                            slot.store(Box::into_raw(Box::new(buffer)), Ordering::Release);
-                        }
+                        tracker.put(desc_idx, buffer);
                     }
 
                     tx_queue.notify(self.transport.as_ref());
@@ -198,23 +194,21 @@ impl VirtioNetDevice {
         }
 
         match tx_queue.add_tx_buffer_zero_copy(dma_addr, data.len()) {
-            Ok(desc_idx) => {
-                let entry = TxPacketInflight {
-                    packet,
-                    bounce_handle: None,
-                    dma_iova: mapped_iova,
-                    dma_len: mapped_len,
-                    pool_bounce_buffer: bounce_buffer,
-                };
+                Ok(desc_idx) => {
+                    let entry = TxPacketInflight {
+                        packet,
+                        bounce_handle: None,
+                        dma_iova: mapped_iova,
+                        dma_len: mapped_len,
+                        pool_bounce_buffer: bounce_buffer,
+                    };
 
-                let q_idx = 0; // Simplified for first TX queue
-                if let Some(tracker) = self.tx_packetrefs.get(q_idx) {
-                    if let Some(slot) = tracker.get(desc_idx as usize) {
-                        slot.store(Box::into_raw(Box::new(entry)), Ordering::Release);
+                    let q_idx = 0; // Simplified for first TX queue
+                    if let Some(tracker) = self.tx_packetrefs.get(q_idx) {
+                        tracker.put(desc_idx, entry);
                     }
-                }
 
-                tx_queue.notify(self.transport.as_ref());
+                    tx_queue.notify(self.transport.as_ref());
                 trace::push_event(
                     NetLayer::Driver,
                     NetEventKind::Tx,
@@ -442,16 +436,13 @@ impl VirtioNetDevice {
         desc_idx: u16,
         _len: u32,
     ) -> bool {
-        let buf_ptr = if let Some(tracker) = self.tx_inflight.get(q_idx) {
-            tracker.get(desc_idx as usize)
-                .map(|slot| slot.swap(core::ptr::null_mut(), Ordering::AcqRel))
-                .unwrap_or(core::ptr::null_mut())
+        let inflight = if let Some(tracker) = self.tx_inflight.get(q_idx) {
+            tracker.take(desc_idx)
         } else {
-            core::ptr::null_mut()
+            None
         };
 
-        if !buf_ptr.is_null() {
-            let _buf = unsafe { Box::from_raw(buf_ptr) };
+        if let Some(_buf) = inflight {
             if tx_queue.take_completion(desc_idx).is_none() {
                 log::warn!(
                     "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",
@@ -467,16 +458,13 @@ impl VirtioNetDevice {
             return true;
         }
 
-        let entry_ptr = if let Some(tracker) = self.tx_packetrefs.get(q_idx) {
-            tracker.get(desc_idx as usize)
-                .map(|slot| slot.swap(core::ptr::null_mut(), Ordering::AcqRel))
-                .unwrap_or(core::ptr::null_mut())
+        let inflight = if let Some(tracker) = self.tx_packetrefs.get(q_idx) {
+            tracker.take(desc_idx)
         } else {
-            core::ptr::null_mut()
+            None
         };
 
-        if !entry_ptr.is_null() {
-            let entry = unsafe { Box::from_raw(entry_ptr) };
+        if let Some(entry) = inflight {
             if tx_queue.take_completion(desc_idx).is_none() {
                 log::warn!(
                     "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",

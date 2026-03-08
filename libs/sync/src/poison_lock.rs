@@ -77,6 +77,144 @@ impl<T> fmt::Display for PoisonError<T> {
 pub type LockResult<Guard> = Result<Guard, PoisonError<Guard>>;
 
 // ============================================================================
+// PoisonRwLock - パニック時自動毒入れRwLock
+// ============================================================================
+
+/// パニック時自動毒入れRwLock
+///
+/// 読み取り/書き込み分離ロックにPoisoning機能を追加。
+pub struct PoisonRwLock<T> {
+    inner: spin::RwLock<T>,
+    poisoned: AtomicBool,
+}
+
+// SAFETY: PoisonRwLock は排他的/共有アクセスを保証する
+unsafe impl<T: Send + Sync> Sync for PoisonRwLock<T> {}
+unsafe impl<T: Send> Send for PoisonRwLock<T> {}
+
+impl<T> PoisonRwLock<T> {
+    /// 新しい`PoisonRwLock`を作成
+    pub const fn new(data: T) -> Self {
+        Self {
+            inner: spin::RwLock::new(data),
+            poisoned: AtomicBool::new(false),
+        }
+    }
+}
+
+impl<T> PoisonRwLock<T> {
+    /// 読み取りロックを取得
+    pub fn read(&self) -> LockResult<PoisonRwLockReadGuard<'_, T>> {
+        let guard = self.inner.read();
+        let p_guard = PoisonRwLockReadGuard {
+            lock: self,
+            guard,
+        };
+
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(PoisonError::new(p_guard))
+        } else {
+            Ok(p_guard)
+        }
+    }
+
+    /// 書き込みロックを取得
+    pub fn write(&self) -> LockResult<PoisonRwLockWriteGuard<'_, T>> {
+        let guard = self.inner.write();
+        let p_guard = PoisonRwLockWriteGuard {
+            lock: self,
+            guard,
+        };
+
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(PoisonError::new(p_guard))
+        } else {
+            Ok(p_guard)
+        }
+    }
+
+    /// 読み取りロックを試行
+    pub fn try_read(&self) -> Option<LockResult<PoisonRwLockReadGuard<'_, T>>> {
+        self.inner.try_read().map(|guard| {
+            let p_guard = PoisonRwLockReadGuard {
+                lock: self,
+                guard,
+            };
+            if self.poisoned.load(Ordering::Acquire) {
+                Err(PoisonError::new(p_guard))
+            } else {
+                Ok(p_guard)
+            }
+        })
+    }
+
+    /// 書き込みロックを試行
+    pub fn try_write(&self) -> Option<LockResult<PoisonRwLockWriteGuard<'_, T>>> {
+        self.inner.try_write().map(|guard| {
+            let p_guard = PoisonRwLockWriteGuard {
+                lock: self,
+                guard,
+            };
+            if self.poisoned.load(Ordering::Acquire) {
+                Err(PoisonError::new(p_guard))
+            } else {
+                Ok(p_guard)
+            }
+        })
+    }
+
+    /// 毒入れ状態を確認
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Relaxed)
+    }
+
+    /// 毒入れ状態をクリア
+    pub fn clear_poison(&self) {
+        self.poisoned.store(false, Ordering::Release);
+    }
+}
+
+/// `PoisonRwLock`の読み取りガード
+pub struct PoisonRwLockReadGuard<'a, T> {
+    lock: &'a PoisonRwLock<T>,
+    guard: spin::RwLockReadGuard<'a, T>,
+}
+
+impl<T> Deref for PoisonRwLockReadGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &*self.guard
+    }
+}
+
+/// `PoisonRwLock`の書き込みガード
+pub struct PoisonRwLockWriteGuard<'a, T> {
+    lock: &'a PoisonRwLock<T>,
+    guard: spin::RwLockWriteGuard<'a, T>,
+}
+
+impl<T> Deref for PoisonRwLockWriteGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &*self.guard
+    }
+}
+
+impl<T> DerefMut for PoisonRwLockWriteGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut *self.guard
+    }
+}
+
+impl<T> Drop for PoisonRwLockWriteGuard<'_, T> {
+    fn drop(&mut self) {
+        if is_panicking() {
+            self.lock.poisoned.store(true, Ordering::Release);
+        }
+    }
+}
+
+// ============================================================================
 // PoisonLock - パニック時自動毒入れMutex
 // ============================================================================
 
