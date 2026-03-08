@@ -635,10 +635,7 @@ impl Icmpv6Builder {
 
         // Compute checksum with IPv6 pseudo-header
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
-        let mut cksum = data_checksum(&message, pseudo);
-        if cksum == 0 {
-            cksum = 0xFFFF;
-        }
+        let cksum = data_checksum(&message, pseudo);
         let cksum_bytes = cksum.to_be_bytes();
         message[2] = cksum_bytes[0];
         message[3] = cksum_bytes[1];
@@ -728,10 +725,7 @@ impl Icmpv6Builder {
 
         // Compute checksum
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
-        let mut cksum = data_checksum(&message, pseudo);
-        if cksum == 0 {
-            cksum = 0xFFFF;
-        }
+        let cksum = data_checksum(&message, pseudo);
         let cksum_bytes = cksum.to_be_bytes();
         message[2] = cksum_bytes[0];
         message[3] = cksum_bytes[1];

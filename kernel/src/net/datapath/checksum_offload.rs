@@ -288,7 +288,10 @@ impl ChecksumOffloadManager {
             // ソフトウェア計算
             udp_data[6] = 0;
             udp_data[7] = 0;
-            let cksum = tcp_udp_checksum(src_ip, dst_ip, 17, udp_data);
+            let mut cksum = tcp_udp_checksum(src_ip, dst_ip, 17, udp_data);
+            if cksum == 0 {
+                cksum = 0xFFFF;
+            }
 
             let bytes = cksum.to_be_bytes();
             udp_data[6] = bytes[0];
@@ -428,11 +431,7 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
 
-    let mut result = !(sum as u16);
-    if result == 0 {
-        result = 0xFFFF;
-    }
-    result
+    !(sum as u16)
 }
 
 /// 疑似ヘッダの部分和 (HWオフロード用)
@@ -488,11 +487,7 @@ fn tcp_udp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], protocol: u8, data: &[u8
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
 
-    let mut result = !(sum as u16);
-    if result == 0 {
-        result = 0xFFFF;
-    }
-    result
+    !(sum as u16)
 }
 
 /// TCP/UDPチェックサム検証
