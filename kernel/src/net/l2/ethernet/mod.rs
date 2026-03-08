@@ -688,7 +688,7 @@ pub fn insert_vlan_tag(
 /// Removes the 4-byte VLAN tag and shifts payload back.
 /// Returns (vlan_id, new_frame_len).
 pub fn strip_vlan_tag(frame: &mut [u8], frame_len: usize) -> Option<(u16, usize)> {
-    if frame_len < VlanEthernetFrameMut::HEADER_SIZE {
+    if frame_len < VlanEthernetFrameMut::HEADER_SIZE || frame_len > frame.len() {
         return None;
     }
 

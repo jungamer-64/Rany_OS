@@ -620,6 +620,9 @@ pub(crate) fn process_ipv4_packet(ip_offset: usize, packet: &PacketRef) {
     };
 
     let header_len = ip_header.header_len();
+    if header_len < Ipv4Header::MIN_HEADER_LEN || data.len() < ip_offset + header_len {
+        return;
+    }
     let tcp_offset = ip_offset + header_len;
 
     match ip_header.protocol {

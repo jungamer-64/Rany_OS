@@ -190,14 +190,19 @@ impl ScatterGatherList {
     /// # Safety
     /// 各エントリの `addr` が有効である必要がある
     pub unsafe fn linearize(&self, output: &mut [u8]) -> Result<usize, ()> {
-        if output.len() < self.total_len as usize {
+        let actual_total_len: usize = self.iter().map(|e| e.len as usize).sum();
+        if output.len() < actual_total_len {
             return Err(());
         }
         let mut offset = 0;
         for entry in self.iter() {
-            let src = core::slice::from_raw_parts(entry.addr as *const u8, entry.len as usize);
-            output[offset..offset + entry.len as usize].copy_from_slice(src);
-            offset += entry.len as usize;
+            let entry_len = entry.len as usize;
+            if offset + entry_len > output.len() {
+                return Err(());
+            }
+            let src = core::slice::from_raw_parts(entry.addr as *const u8, entry_len);
+            output[offset..offset + entry_len].copy_from_slice(src);
+            offset += entry_len;
         }
         Ok(offset)
     }
