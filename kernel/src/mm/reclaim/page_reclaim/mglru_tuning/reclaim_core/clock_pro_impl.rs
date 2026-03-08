@@ -72,6 +72,7 @@ impl ClockProList {
         let mut scanned = 0;
         let max_scan = pages.len() * 2; // 最大2周
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while victims.len() < target_count && scanned < max_scan {
             if pages.is_empty() {
                 break;

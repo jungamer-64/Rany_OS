@@ -123,6 +123,7 @@ fn enqueue_file_with_retry(
     drain_rounds: usize,
 ) -> Result<(), SwapError> {
     let mut attempts = 0usize;
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match enqueue_file(frame, ino, page_num) {
             Ok(()) => return Ok(()),
@@ -143,6 +144,7 @@ fn enqueue_anon_with_retry(
     drain_rounds: usize,
 ) -> Result<(), SwapError> {
     let mut attempts = 0usize;
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match enqueue_anon(frame) {
             Ok(()) => return Ok(()),

@@ -363,6 +363,7 @@ fn find_named_section_data<'a>(
 
         let name_start = shstrtab_start + name_offset;
         let mut name_end = name_start;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while name_end < elf_data.len() && elf_data[name_end] != 0 {
             name_end += 1;
         }

@@ -110,6 +110,7 @@ impl SerialPort {
     pub fn line_status(&self) -> LineStatus { LineStatus::from_u8(self.port_at(reg::LSR).read()) }
     pub fn can_transmit(&self) -> bool { self.line_status().is_tx_ready() }
     pub fn can_receive(&self) -> bool { self.line_status().is_data_ready() }
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     pub fn send(&self, byte: u8) { while !self.can_transmit() { core::hint::spin_loop(); } self.port_at(reg::DATA).write(byte); }
     pub fn send_str(&self, s: &str) { for byte in s.bytes() { self.send(byte); } }
     pub fn try_receive(&self) -> Result<u8, SerialError> { if self.can_receive() { Ok(self.port_at(reg::DATA).read()) } else { Err(SerialError::NoData) } }
@@ -161,6 +162,7 @@ impl AsyncSerialPort {
     }
     pub fn init(&self, baud_rate: BaudRate) -> Result<(), SerialError> { self.port.init(baud_rate, DataBits::Bits8, StopBits::Stop1, Parity::None) }
     pub fn handle_interrupt(&self) {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Ok(byte) = self.port.try_receive() { self.rx_buffer.push(byte); }
         if let Some(waker) = self.waker.lock().unwrap_or_else(|e| e.into_inner()).take() { waker.wake(); }
     }
@@ -203,6 +205,7 @@ impl LineEditor {
 
 pub async fn read_line_advanced(editor: &mut LineEditor) -> InputEvent {
     let port = &SERIAL1;
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         let byte = port.read_byte().await;
         match byte {

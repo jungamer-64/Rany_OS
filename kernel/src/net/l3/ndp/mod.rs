@@ -130,6 +130,7 @@ pub fn parse_ndp_options(data: &[u8]) -> Vec<NdpOption> {
     let mut options = Vec::new();
     let mut offset = 0;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset + 2 <= data.len() {
         let opt_type = NdpOptionType::from(data[offset]);
         let opt_len_units = data[offset + 1] as usize;
@@ -195,6 +196,7 @@ pub fn parse_ndp_options(data: &[u8]) -> Vec<NdpOption> {
                         u32::from_be_bytes([opt_data[4], opt_data[5], opt_data[6], opt_data[7]]);
                     let mut servers = Vec::new();
                     let mut addr_offset = 8;
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while addr_offset + 16 <= opt_len {
                         let mut addr_bytes = [0u8; 16];
                         addr_bytes.copy_from_slice(&opt_data[addr_offset..addr_offset + 16]);

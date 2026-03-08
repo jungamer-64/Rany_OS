@@ -10,6 +10,7 @@ impl BuddyFrameAllocator {
         let mut current_order = order;
 
         // 反復的に合体を試みる
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while current_order < MAX_ORDER {
             let buddy = current_block ^ 1;
             if buddy >= self.order_block_counts[current_order] {

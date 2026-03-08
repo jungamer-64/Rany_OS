@@ -557,6 +557,7 @@ impl Future for StartListeningFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             match &mut this.phase {
                 StartListeningPhase::Init => {

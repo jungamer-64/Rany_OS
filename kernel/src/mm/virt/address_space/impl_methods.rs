@@ -159,6 +159,7 @@ impl ProcessAddressSpace {
             }
             addr
         } else {
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let hint = self.mapping_hint.load(Ordering::Acquire);
                 let next_hint = hint
@@ -533,6 +534,7 @@ impl ProcessAddressSpace {
         let mut page_addr = region_scan_start;
         let mut scanned = 0;
         let mut faults = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while page_addr < region_end && scanned < remaining {
             if self.update_pte_for_numa_hint(page_addr) {
                 faults += 1;
@@ -613,6 +615,7 @@ impl ProcessAddressSpace {
         candidates: &mut Vec<ThpCandidate>,
     ) -> VirtAddr {
         let mut cursor = VirtAddr::new((scan_start.as_u64() + 0x1FFFFF) & !0x1FFFFF);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while cursor.as_u64() + 0x200000 <= region_end.as_u64() && candidates.len() < limit {
             if let Some(candidate) = self.check_if_thp_candidate(cursor) {
                 candidates.push(candidate);

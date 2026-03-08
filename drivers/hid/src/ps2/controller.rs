@@ -348,6 +348,7 @@ impl Ps2Controller {
         self.write_command(commands::DISABLE_PORT2);
 
         // 出力バッファをフラッシュ
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while (self.read_status() & status::OUTPUT_FULL) != 0 {
             let _ = self.read_data();
         }

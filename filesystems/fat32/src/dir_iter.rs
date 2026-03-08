@@ -91,6 +91,7 @@ impl<'a, B: ZeroCopyBufferMut + 'static> Iterator for DirectoryIterator<'a, B> {
 
         let cluster_size = self.fs.cluster_size();
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             // バッファの範囲を超えたら次のクラスタを読み込む
             if self.offset + DIR_ENTRY_SIZE > cluster_size {

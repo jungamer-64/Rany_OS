@@ -60,6 +60,7 @@ fn poll_once<F: Future>(fut: Pin<&mut F>) -> Poll<F::Output> {
 
 fn drive_with_io_scheduler<F: Future>(future: F) -> F::Output {
     let mut fut = core::pin::pin!(future);
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match poll_once(fut.as_mut()) {
             Poll::Ready(out) => return out,

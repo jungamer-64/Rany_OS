@@ -162,6 +162,7 @@ impl WalManager {
     ) -> Result<(), WalError> {
         let zero = [0u8; 512];
         let mut off = 0u64;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while off < state.ring_len {
             let n = core::cmp::min(zero.len() as u64, state.ring_len - off) as usize;
             state
@@ -324,6 +325,7 @@ impl WalManager {
                     .backend
                     .read_at(codec::SUPERBLOCK_SIZE as u64, &mut log_bytes)?;
                 let mut offset = 0usize;
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while offset < log_bytes.len() {
                     match decode_record(&log_bytes[offset..]) {
                         Ok((rec, consumed)) => {

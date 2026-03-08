@@ -1901,6 +1901,7 @@ fn test_iova_quarantine_and_epoch_drain() {
     // (Bitmap might find another slot if available, but if we exhaust space...)
     // Let's exhaust most of the space first.
     let mut allocated = alloc::vec::Vec::new();
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Ok(addr) = ctrl.allocate_iova(4096) {
         allocated.push(addr);
     }

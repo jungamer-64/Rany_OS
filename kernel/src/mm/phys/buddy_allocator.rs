@@ -352,6 +352,7 @@ const TOTAL_DETAIL_WORDS: usize = total_detail_words();
 const fn total_detail_words() -> usize {
     let mut total = 0usize;
     let mut order = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while order <= MAX_ORDER {
         let blocks = MAX_4K_FRAMES >> order;
         let detail_words = (blocks + 63) / 64;
@@ -367,6 +368,7 @@ const TOTAL_SUMMARY_WORDS: usize = total_summary_words();
 const fn total_summary_words() -> usize {
     let mut total = 0usize;
     let mut order = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while order <= MAX_ORDER {
         let blocks = MAX_4K_FRAMES >> order;
         let detail_words = (blocks + 63) / 64;

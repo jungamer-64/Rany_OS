@@ -111,6 +111,7 @@ impl Mlx5Device {
     unsafe fn wait_post_cmdif_ready(&mut self, timeout_ms: u64) -> Mlx5Result<()> {
         let start_ms = kernel_api::service::kernel::instance().current_tick();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while kernel_api::service::kernel::instance().current_tick().saturating_sub(start_ms)
             < timeout_ms
         {
@@ -420,6 +421,7 @@ impl Mlx5Device {
             }
             // 200ms 待機
             let start_ms = kernel_api::service::kernel::instance().current_tick();
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while kernel_api::service::kernel::instance().current_tick() - start_ms < 200 {
                 core::hint::spin_loop();
             }
@@ -793,6 +795,7 @@ impl Mlx5Device {
 
         // Give the firmware a moment to reflect the port state change before reporting active
         let start_ms = kernel_api::service::kernel::instance().current_tick();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while kernel_api::service::kernel::instance().current_tick() - start_ms < 50 {
             core::hint::spin_loop();
         }
@@ -809,6 +812,7 @@ impl Mlx5Device {
 
         // initializing bit がセットされるまで待機
         let start_ms = kernel_api::service::kernel::instance().current_tick();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while kernel_api::service::kernel::instance().current_tick() - start_ms < 2000 {
             let initializing = crate::mmio_read_be32(
                 self.bar0_base as usize + crate::regs::init_seg::INITIALIZING,

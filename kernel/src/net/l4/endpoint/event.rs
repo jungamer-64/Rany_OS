@@ -489,6 +489,7 @@ impl NetworkEventQueue {
     /// CAS ベースでスロットを確保し、ロック取得なしでイベントを書き込む。
     /// キュー満杯時は `false` を返す（バックプレッシャー）。
     pub fn send(&self, event: NetworkEvent) -> bool {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let write = self.write_pos.load(Ordering::Relaxed);
             let read = self.read_pos.load(Ordering::Acquire);
@@ -566,6 +567,7 @@ impl NetworkEventQueue {
     /// 全イベント取得（バッチ処理用）
     pub fn drain_all(&self) -> Vec<NetworkEvent> {
         let mut events = Vec::new();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(event) = self.recv() {
             events.push(event);
         }

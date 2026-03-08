@@ -341,6 +341,7 @@ pub fn kernel_async_swapout_sim_smoke() -> bool {
         }
     }
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Some(entry) = state.queue.pop_front() {
         state.pending.remove(&entry.frame);
         if entry.kind == SwapKind::File && state.file_queue_count > 0 {

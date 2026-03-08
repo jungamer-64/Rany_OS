@@ -309,6 +309,7 @@ fn grow_stack_to(stack: &mut StackRegion, target_addr: VirtAddr) -> StackResult 
     let mut addr = stack.current_bottom.as_u64() - 4096;
     let mut pages_grown = 0u64;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while addr >= new_bottom.as_u64() {
         let result = grow_single_page(VirtAddr::new(addr));
         match result {
@@ -383,6 +384,7 @@ pub fn create_stack(
 
     // 初期ページをマッピング
     let mut addr = stack.current_bottom.as_u64();
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while addr < stack.stack_top.as_u64() {
         let result = grow_single_page(VirtAddr::new(addr));
         if result != StackResult::Ok {

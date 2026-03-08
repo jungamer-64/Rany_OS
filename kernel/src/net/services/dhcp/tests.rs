@@ -10,6 +10,7 @@ fn dhcp_options_contain(opts_with_cookie: &[u8], target: DhcpOption) -> bool {
     } else {
         0
     };
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < opts_with_cookie.len() {
         let code = opts_with_cookie[i];
         if code == DhcpOption::End as u8 {

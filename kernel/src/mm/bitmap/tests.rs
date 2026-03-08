@@ -34,6 +34,7 @@ fn test_exhaustion() {
     let mut allocated = Vec::new();
 
     // Allocate all
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Some(idx) = bitmap.allocate_one() {
         allocated.push(idx);
     }
@@ -91,6 +92,7 @@ fn test_last_word_partial() {
 
     // Allocate all 100 units
     let mut count = 0;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while bitmap.allocate_one().is_some() {
         count += 1;
     }

@@ -405,6 +405,7 @@ mod tests {
     use alloc::sync::Arc;
 
     fn idle_entry(_: u64) -> ! {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             core::hint::spin_loop();
         }

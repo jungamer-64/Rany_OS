@@ -312,6 +312,7 @@ pub fn cow_mark_range(start: VirtAddr, end: VirtAddr) -> CowResult {
     let mut addr = start.as_u64() & !0xFFF;
     let end_addr = end.as_u64();
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while addr < end_addr {
         let result = cow_mark_page(VirtAddr::new(addr));
         if result != CowResult::Ok && result != CowResult::PageNotFound {

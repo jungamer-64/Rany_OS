@@ -82,6 +82,7 @@ impl VirtualConsole {
         let mut attr = self.buffer.current_attr;
         let mut i = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < params.len() {
             match params[i] {
                 0 => attr = CharAttributes::new(),

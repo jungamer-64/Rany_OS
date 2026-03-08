@@ -58,6 +58,7 @@ impl NumaNodeStats {
         self.allocations.fetch_add(1, Ordering::Relaxed);
         let new_used = self.used_bytes.fetch_add(size as u64, Ordering::Relaxed) + size as u64;
         // ピーク値を更新（CASループ）
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let peak = self.peak_bytes.load(Ordering::Relaxed);
             if new_used <= peak {
@@ -291,6 +292,7 @@ impl NumaTopology {
 
             for i in 1..self.node_count {
                 let mut j = i;
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while j > 0 && pairs[j - 1].1 > pairs[j].1 {
                     pairs.swap(j - 1, j);
                     j -= 1;

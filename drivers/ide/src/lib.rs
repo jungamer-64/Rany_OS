@@ -217,6 +217,7 @@ impl IdentifyData {
             bytes.push((words[i] & 0xFF) as u8);
         }
         // 末尾スペースを削除
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while bytes.last() == Some(&b' ') {
             bytes.pop();
         }

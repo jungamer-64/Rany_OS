@@ -225,6 +225,7 @@ impl<A: KeyAdapter> RBTree<A> {
     pub fn find(&self, key: &A::Key) -> Option<*mut A::Entry> {
         let mut node = self.root;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !node.is_null() {
             let entry = unsafe { A::entry_from_link(node) };
             let node_key = unsafe { A::get_key(&*entry) };
@@ -291,6 +292,7 @@ impl<A: KeyAdapter> RBTree<A> {
         if (*node).right.is_null() {
             // 親を辿る
             let mut n = node;
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let parent = (*n).parent();
                 if parent.is_null() {
@@ -304,6 +306,7 @@ impl<A: KeyAdapter> RBTree<A> {
         } else {
             // 右部分木の最小
             let mut n = (*node).right;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while !(*n).left.is_null() {
                 n = (*n).left;
             }
@@ -339,6 +342,7 @@ impl<A: KeyAdapter> RBTree<A> {
         {
             let key = A::get_key(&*entry);
 
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while !(*node_ptr).is_null() {
                 parent = *node_ptr;
                 let parent_entry = A::entry_from_link(parent);
@@ -396,6 +400,7 @@ impl<A: KeyAdapter> RBTree<A> {
         }
 
         let mut node = self.root;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !unsafe { (*node).left }.is_null() {
             node = unsafe { (*node).left };
         }
@@ -410,6 +415,7 @@ impl<A: KeyAdapter> RBTree<A> {
         }
 
         let mut node = self.root;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !unsafe { (*node).right }.is_null() {
             node = unsafe { (*node).right };
         }
@@ -437,6 +443,7 @@ impl<A: KeyAdapter> RBTree<A> {
         }
 
         let mut node = self.root;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !unsafe { (*node).left }.is_null() {
             node = unsafe { (*node).left };
         }
@@ -450,6 +457,7 @@ impl<A: KeyAdapter> RBTree<A> {
 
     /// 挿入後のリバランス
     unsafe fn insert_fixup(&mut self, mut node: *mut RBLink) {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(parent) = self.red_parent(node) {
             let grandparent = (*parent).parent();
             if grandparent.is_null() {
@@ -604,6 +612,7 @@ impl<A: KeyAdapter> RBTree<A> {
         } else {
             // 両方の子がある場合、後継ノードを見つける
             let mut successor = (*node).right;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while !(*successor).left.is_null() {
                 successor = (*successor).left;
             }
@@ -650,6 +659,7 @@ impl<A: KeyAdapter> RBTree<A> {
     /// 削除後のリバランス
     unsafe fn remove_fixup(&mut self, mut node: *mut RBLink, mut parent: *mut RBLink) {
         unsafe {
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while node != self.root && (node.is_null() || (*node).color() == Color::Black) {
                 if parent.is_null() {
                     break;

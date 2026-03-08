@@ -206,6 +206,7 @@ impl SegregatedFreeListHeap {
         let mut prev: Option<NonNull<FreeBlock>> = None;
         let mut current = self.free_lists[class];
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(block) = current {
             if block.as_ptr() == target_ptr {
                 // Found the block, remove it

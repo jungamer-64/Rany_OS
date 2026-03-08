@@ -90,6 +90,7 @@ impl PagedContent {
         let mut bytes_read = 0;
         let mut current_offset = offset;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while bytes_read < buf.len() {
             let page_idx = current_offset >> PAGE_SHIFT;
             let offset_in_page = (current_offset as usize) & PAGE_MASK;
@@ -121,6 +122,7 @@ impl PagedContent {
         let mut bytes_written = 0;
         let mut current_offset = offset;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while bytes_written < data.len() {
             let page_idx = current_offset >> PAGE_SHIFT;
             let offset_in_page = (current_offset as usize) & PAGE_MASK;

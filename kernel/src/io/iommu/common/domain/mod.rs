@@ -534,6 +534,7 @@ impl DmaResourceRegistry {
         let mut prev_idx = REGISTRY_INVALID_INDEX;
         let mut curr_idx = state.hash_buckets[bucket];
 
+        // LOOP_PROOF: mode=condition; reason=Hash-chain traversal advances via next pointers and exits at REGISTRY_INVALID_INDEX sentinel.;
         while curr_idx != REGISTRY_INVALID_INDEX {
             let slot = state.get_slot(curr_idx);
 
@@ -579,6 +580,7 @@ impl DmaResourceRegistry {
         let mut state = self.state.lock().map_err(|_| IommuError::Poisoned)?;
 
         let mut curr_idx = state.hash_buckets[bucket];
+        // LOOP_PROOF: mode=condition; reason=Mark loop follows hash next links and exits when target is found or sentinel end is reached.;
         while curr_idx != REGISTRY_INVALID_INDEX {
             let slot = state.get_slot_mut(curr_idx);
             if slot.in_use && slot.entry.iova == iova {
@@ -661,6 +663,7 @@ impl DmaResourceRegistry {
         };
 
         let mut curr_idx = state.hash_buckets[bucket];
+        // LOOP_PROOF: mode=condition; reason=Containment check walks finite hash chain and exits at first match or invalid-index terminator.;
         while curr_idx != REGISTRY_INVALID_INDEX {
             let slot = state.get_slot(curr_idx);
             if slot.in_use && slot.entry.iova == iova {

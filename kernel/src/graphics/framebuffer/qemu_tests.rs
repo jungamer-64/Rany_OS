@@ -235,6 +235,7 @@ pub fn wave6_draw_hline_32bit_backbuffer_smoke() -> bool {
         let sx = if x1 < x2 { 1 } else { -1 };
         let sy = if y1 < y2 { 1 } else { -1 };
         let mut err = dx + dy;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             fb_naive.set_pixel(x, y, color);
             if x == x2 && y == y2 {
@@ -368,6 +369,7 @@ pub fn wave6_draw_line_matches_naive_32bit_backbuffer_smoke() -> bool {
         let sy = if y1 < y2 { 1 } else { -1 };
         let mut err = dx + dy;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             fb_naive.set_pixel(x, y, color);
             if x == x2 && y == y2 {
@@ -445,6 +447,7 @@ pub fn wave6_draw_line_matches_naive_24bit_backbuffer_smoke() -> bool {
         let sx = if x1 < x2 { 1 } else { -1 };
         let sy = if y1 < y2 { 1 } else { -1 };
         let mut err = dx + dy;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             fb_naive.set_pixel(x, y, color);
             if x == x2 && y == y2 {

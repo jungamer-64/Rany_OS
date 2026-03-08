@@ -165,6 +165,7 @@ impl<'a> SafeEhFrameParser<'a> {
 
     pub(super) fn read_null_terminated_string(&mut self) -> Option<&'a [u8]> {
         let start = self.reader.position();
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop { if self.reader.read_u8().ok()? == 0 { break; } }
         let end = self.reader.position() - 1;
         Some(&self.reader.data()[start..end])

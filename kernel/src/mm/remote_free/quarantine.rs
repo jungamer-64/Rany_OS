@@ -173,6 +173,7 @@ impl<const N: usize> QuarantineRing<N> {
     {
         let mut drained = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while drained < max && self.count > 0 {
             let entry = &self.entries[self.tail];
 
@@ -194,6 +195,7 @@ impl<const N: usize> QuarantineRing<N> {
     pub fn drain_all(&mut self, out: &mut [QuarantineEntry]) -> usize {
         let mut drained = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while drained < out.len() && self.count > 0 {
             out[drained] = self.entries[self.tail];
             self.tail = (self.tail + 1) % N;
@@ -211,6 +213,7 @@ impl<const N: usize> QuarantineRing<N> {
     {
         let mut drained = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.count > 0 {
             f(self.entries[self.tail]);
             self.tail = (self.tail + 1) % N;

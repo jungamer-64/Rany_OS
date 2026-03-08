@@ -31,6 +31,7 @@ impl IommuController {
             return None;
         }
         let timeout_ns = timeout_us.saturating_mul(1000);
+        // LOOP_PROOF: mode=event; reason=Busy-wait exits on condition success or precise-time timeout threshold.;
         loop {
             if condition() {
                 return Some(Ok(()));
@@ -50,6 +51,7 @@ impl IommuController {
     {
         let cycles = timeout_us.saturating_mul(3000);
         let start = unsafe { core::arch::x86_64::_rdtsc() };
+        // LOOP_PROOF: mode=event; reason=RDTSC wait exits on condition success or cycle-budget timeout.;
         loop {
             if condition() {
                 return Ok(());
@@ -85,6 +87,7 @@ impl IommuUtils for IommuController {
                 let timeout_ms = (timeout_us + 999) / 1000;
                 let end_tick = crate::task::timer::current_tick().saturating_add(timeout_ms);
 
+                // LOOP_PROOF: mode=event; reason=Yielding wait exits on condition success or end_tick timeout boundary.;
                 loop {
                     if condition() {
                         return Ok(());

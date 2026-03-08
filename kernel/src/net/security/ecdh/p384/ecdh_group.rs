@@ -84,6 +84,7 @@ impl EcdhKeyPair {
                 // 有効なスカラー (1 <= k < n) になるまでリトライ
                 // 通常は最初の試行で成功する
                 let mut attempts = 0;
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while !crate::net::security::ecdh::scalar_is_valid(&sk_bytes) {
                     attempts += 1;
                     if attempts > 16 {

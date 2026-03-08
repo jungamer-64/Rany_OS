@@ -157,6 +157,7 @@ impl Histogram {
 
         // 最小値更新
         let mut current_min = self.min.load(Ordering::Relaxed);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while value < current_min {
             match self.min.compare_exchange_weak(
                 current_min,
@@ -171,6 +172,7 @@ impl Histogram {
 
         // 最大値更新
         let mut current_max = self.max.load(Ordering::Relaxed);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while value > current_max {
             match self.max.compare_exchange_weak(
                 current_max,

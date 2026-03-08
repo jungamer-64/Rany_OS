@@ -77,6 +77,7 @@ impl Md5 {
         }
 
         // 64バイトブロックを直接処理
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset + 64 <= data.len() {
             let mut block = [0u8; 64];
             block.copy_from_slice(&data[offset..offset + 64]);
@@ -221,6 +222,7 @@ impl Sha1 {
             }
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset + 64 <= data.len() {
             let mut block = [0u8; 64];
             block.copy_from_slice(&data[offset..offset + 64]);
@@ -393,6 +395,7 @@ fn p_md5(secret: &[u8], seed: &[u8], output: &mut [u8]) {
     let mut a = hmac_md5(secret, seed); // A(1)
     let mut offset = 0;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < output.len() {
         let mut a_seed = Vec::with_capacity(a.len() + seed.len());
         a_seed.extend_from_slice(&a);
@@ -412,6 +415,7 @@ fn p_sha1(secret: &[u8], seed: &[u8], output: &mut [u8]) {
     let mut a = hmac_sha1(secret, seed); // A(1)
     let mut offset = 0;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < output.len() {
         let mut a_seed = Vec::with_capacity(a.len() + seed.len());
         a_seed.extend_from_slice(&a);

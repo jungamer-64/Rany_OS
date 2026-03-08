@@ -411,6 +411,7 @@ fn resolve_virtio_index(if_id: Option<NetIfId>) -> u8 {
 
 async fn tx_worker_task() {
     log::info!("[TX-WORKER] tx_worker_task started (fully async)");
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         let mut drained = tx_queue_drain_all();
         if drained.is_empty() {

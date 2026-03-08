@@ -14,6 +14,7 @@ impl TlsConnection {
 
         let mut plaintext = Vec::new();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.recv_buffer.len() >= 5 {
             let content_type = self.recv_buffer[0];
             let length = ((self.recv_buffer[3] as usize) << 8) | self.recv_buffer[4] as usize;
@@ -217,6 +218,7 @@ impl TlsConnection {
         }
 
         let mut offset = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset < data.len() {
             if data.len() - offset < 4 {
                 return Err(TlsError::DecodeError);
@@ -347,6 +349,7 @@ impl TlsConnection {
         let mut eoff = ext_offset + 2;
         let extensions_end = eoff + extensions_len;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while eoff + 4 <= extensions_end && eoff + 4 <= data.len() {
             let ext_type = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
             let ext_len = ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;

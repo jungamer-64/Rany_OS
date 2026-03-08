@@ -83,6 +83,7 @@ impl fmt::Display for TypeHashError {
 pub const fn fnv1a_hash(bytes: &[u8]) -> u64 {
     let mut state = 0xcbf2_9ce4_8422_2325u64;
     let mut index = 0;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while index < bytes.len() {
         state ^= bytes[index] as u64;
         state = state.wrapping_mul(0x0100_0000_01b3);

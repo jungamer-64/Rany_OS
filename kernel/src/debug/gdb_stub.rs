@@ -281,6 +281,7 @@ impl GdbServer {
         idx: usize,
         slot: &mut TransportSlot,
     ) -> Result<bool, GdbStubError> {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(b) = slot.transport.try_read_byte() {
             slot.rx.push(b);
             if slot.rx.len() > MAX_PACKET_BUFFER {
@@ -347,6 +348,7 @@ impl GdbServer {
             target.capture_trap(signal, frame);
         }
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let _ = self.poll_once();
             if self.target.lock().unwrap_or_else(|e| e.into_inner()).resume_requested {

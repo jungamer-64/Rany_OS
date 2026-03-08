@@ -66,6 +66,7 @@ impl MemoryCollector {
         let total = used + free;
         
         // Update peak
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let peak = self.peak_used.load(Ordering::Relaxed);
             if used as u64 > peak {

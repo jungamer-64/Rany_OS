@@ -157,6 +157,9 @@ jobs:
     - name: Run M05 QoS enforcement guard
       run: bash scripts/check-m05-qos-enforcement.sh
 
+    - name: Run loop boundary proof guard
+      run: bash scripts/check-loop-boundary-proof.sh
+
   # ============================================================================
   # Documentation Job
   # ============================================================================

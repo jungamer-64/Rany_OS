@@ -555,6 +555,7 @@ impl XhciController {
         let expected_cycle = event_ring.cycle_bit;
         let mut event_handler = self.event_handler.lock();
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let idx = event_ring.dequeue_index;
             let trb =
@@ -584,6 +585,7 @@ impl XhciController {
     /// 保留中のイベントを処理 (タスク/ポーリングループから呼び出し)
     pub fn process_pending_events(&self) {
         let mut event_handler = self.event_handler.lock();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(event) = event_handler.pop_pending_event() {
             drop(event_handler); // ハンドラロックを一旦解放（コールバック内でのロック競合回避）
 

@@ -63,6 +63,7 @@ pub(crate) fn mgf1(seed: &[u8], length: usize, hash_alg: HashAlgorithm) -> Vec<u
     let mut output = Vec::with_capacity(length + h_len);
     let mut counter: u32 = 0;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while output.len() < length {
         let mut input = Vec::with_capacity(seed.len() + 4);
         input.extend_from_slice(seed);

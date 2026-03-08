@@ -14,6 +14,7 @@ fn bench_submit_sync_single_thread(c: &mut Criterion) {
     let running = Arc::new(AtomicBool::new(true));
     let r2 = running.clone();
     let worker = thread::spawn(move || {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while r2.load(Ordering::Relaxed) {
             let n = q_worker.process_up_to(|_k| Ok(0), 256);
             if n == 0 {
@@ -39,6 +40,7 @@ fn bench_submit_sync_4_producers(c: &mut Criterion) {
     let running = Arc::new(AtomicBool::new(true));
     let r2 = running.clone();
     let worker = thread::spawn(move || {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while r2.load(Ordering::Relaxed) {
             let n = q_worker.process_up_to(|_k| Ok(0), 256);
             if n == 0 {
@@ -79,6 +81,7 @@ fn bench_submit_async_single_thread(c: &mut Criterion) {
     let running = Arc::new(AtomicBool::new(true));
     let r2 = running.clone();
     let worker = thread::spawn(move || {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while r2.load(Ordering::Relaxed) {
             let n = q_worker.process_up_to(|_k| Ok(0), 256);
             if n == 0 {
@@ -119,6 +122,7 @@ fn bench_submit_sync_scaling(c: &mut Criterion) {
         let running = Arc::new(AtomicBool::new(true));
         let r2 = running.clone();
         let worker = thread::spawn(move || {
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while r2.load(Ordering::Relaxed) {
                 let n = q_worker.process_up_to(|_k| Ok(0), 256);
                 if n == 0 { thread::yield_now(); }
@@ -159,6 +163,7 @@ fn bench_submit_sync_numa(c: &mut Criterion) {
         let running = Arc::new(AtomicBool::new(true));
         let r2 = running.clone();
         let worker = thread::spawn(move || {
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while r2.load(Ordering::Relaxed) {
                 let n = q_worker.process_up_to(|_k| Ok(0), 256);
                 if n == 0 { thread::yield_now(); }
@@ -232,6 +237,7 @@ fn run_harness(args: &Vec<String>) {
                     let running = Arc::new(AtomicBool::new(true));
                     let r2 = running.clone();
                     let worker = thread::spawn(move || {
+                        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                         while r2.load(Ordering::Relaxed) {
                             let n = q_worker.process_up_to(|_k| Ok(0), 256);
                             if n == 0 { thread::yield_now(); }
@@ -271,6 +277,7 @@ fn run_harness(args: &Vec<String>) {
                 let running = Arc::new(AtomicBool::new(true));
                 let r2 = running.clone();
                 let worker = thread::spawn(move || {
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while r2.load(Ordering::Relaxed) {
                         let n = q_worker.process_up_to(|_k| Ok(0), 256);
                         if n == 0 { thread::yield_now(); }

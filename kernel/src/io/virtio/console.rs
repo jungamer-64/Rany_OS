@@ -379,6 +379,7 @@ impl VirtioConsoleDevice {
     fn process_tx_completions(&self) {
         if let Some(ref tx_queue) = self.tx_queue {
             let mut queue_guard = tx_queue.lock().expect("tx_queue lock poisoned");
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while let Some((desc_id, _len)) = queue_guard.poll_complete() {
                 // Free the inflight DMA buffer
                 if let Some(_buf) = self

@@ -385,10 +385,12 @@ impl Zpool {
         let mut compressed = Vec::with_capacity(data.len());
         let mut i = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < data.len() {
             let byte = data[i];
             let mut run_len = 1u8;
 
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while (i + run_len as usize) < data.len()
                 && data[i + run_len as usize] == byte
                 && run_len < 255
@@ -472,6 +474,7 @@ impl Zpool {
         let mut out_idx = 0;
         let mut in_idx = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while in_idx < data.len() && out_idx < out.len() {
             let byte = data[in_idx];
             in_idx += 1;

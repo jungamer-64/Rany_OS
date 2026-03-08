@@ -222,6 +222,7 @@ impl Future for CharFutureArc<'_> {
         self.driver.process_pending_wake();
 
         let mut events_processed = 0;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if events_processed >= DEFAULT_POLL_BUDGET {
                 cx.waker().wake_by_ref();

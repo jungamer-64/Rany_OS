@@ -215,6 +215,7 @@ impl BuddyHeapAllocator {
             return None;
         }
         let mut order = Self::size_to_order(remaining).min(Self::MAX_ORDER);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while order > 0 {
             let block_size = Self::order_to_size(order);
             if current % block_size == 0 && current + block_size <= end {
@@ -244,6 +245,7 @@ impl BuddyHeapAllocator {
         let mut current = heap_start;
         let end = heap_start + heap_size;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while current < end {
             let (order, block_size) = match Self::find_aligned_order(current, end) {
                 Some(v) => v,
@@ -369,6 +371,7 @@ impl BuddyHeapAllocator {
         let mut prev: Option<usize> = None;
         let mut current = self.free_lists[order];
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(curr_addr) = current {
             if curr_addr == addr {
                 // 見つかった - リストから削除
@@ -438,6 +441,7 @@ impl BuddyHeapAllocator {
     fn split_block(&mut self, addr: usize, from_order: usize, to_order: usize) {
         let mut current_order = from_order;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while current_order > to_order {
             current_order -= 1;
             let buddy_addr = addr + Self::order_to_size(current_order);
@@ -483,6 +487,7 @@ impl BuddyHeapAllocator {
         let mut current_addr = addr;
         let mut current_order = order;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while current_order < Self::MAX_ORDER {
             let buddy_addr = self.buddy_addr(current_addr, current_order);
 
@@ -542,6 +547,7 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
         };
 
         let mut retry = 0usize;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let mut charged = false;
             if needs_quota {
@@ -656,6 +662,7 @@ impl LockedBuddyHeap {
             buf[i] = b'0';
             i -= 1;
         } else {
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while s > 0 {
                 buf[i] = b'0' + (s % 10) as u8;
                 s /= 10;

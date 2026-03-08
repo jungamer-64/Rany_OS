@@ -369,6 +369,7 @@ fn cluster_chain_cycle_detection_smoke() -> bool {
     fs.fat_sector_cache.clear();
 
     let mut iter = fs.clusters(Cluster(2));
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match iter.next() {
             Some(Ok(_)) => continue,

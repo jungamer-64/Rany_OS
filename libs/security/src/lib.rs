@@ -405,6 +405,7 @@ impl CapabilityManager {
         {
             let mut grants = self.grants.lock();
             let mut i = 0usize;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while i < grants.len() {
                 if grants[i].expires.is_some_and(|e| e <= now) {
                     expired.push(grants.remove(i));
@@ -587,6 +588,7 @@ static EXPIRY_DAEMON: Once = Once::new();
 pub fn spawn_expiry_daemon_task() {
     EXPIRY_DAEMON.call_once(|| {
         std::thread::spawn(|| {
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 manager().expire_grants();
                 std::thread::sleep(std::time::Duration::from_millis(
@@ -610,6 +612,7 @@ static RECLAIM_DAEMON: Once = Once::new();
 pub fn spawn_reclamation_daemon_task() {
     RECLAIM_DAEMON.call_once(|| {
         std::thread::spawn(|| {
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 manager().reclaim_revoked_now();
                 std::thread::sleep(std::time::Duration::from_millis(

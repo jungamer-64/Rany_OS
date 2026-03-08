@@ -303,6 +303,7 @@ pub fn poly1305_mac(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
     let mut h = [0u64; 5];
 
     let mut offset = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < message.len() {
         let block_len = (message.len() - offset).min(16);
         let mut block = [0u8; 17];

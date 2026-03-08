@@ -414,6 +414,7 @@ impl Ipv4Header {
         }
 
         // Fold 32-bit sum to 16 bits
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while sum >> 16 != 0 {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }

@@ -297,6 +297,7 @@ impl<T> XArray<T> {
     fn grow_for_index(&mut self, index: usize) {
         let required = Self::required_height(index);
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.height < required {
             match self.root.take() {
                 None => {
@@ -541,6 +542,7 @@ impl<'a, T> Iterator for XArrayIter<'a, T> {
     type Item = (usize, &'a T);
 
     fn next(&mut self) -> Option<Self::Item> {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.next_index <= self.max_index {
             let idx = self.next_index;
             self.next_index += 1;

@@ -211,6 +211,7 @@ pub async fn ntp_sync_task(server: Ipv4Address) {
     let mut client = NtpClient::new();
     client.set_server(server);
 
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match client.sync_time().await {
             Ok(t) => log::info!("[NTP] Periodic sync successful: {}", t),

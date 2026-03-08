@@ -404,6 +404,7 @@ fn load_cmdline_from_file(image_handle: Handle) -> Option<Vec<u8>> {
     match load_kernel(image_handle, "exoloader.cmdline") {
         Ok(data) => {
             let mut len = data.len();
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while len > 0
                 && (data[len - 1] == b'\n' || data[len - 1] == b'\r' || data[len - 1] == 0)
             {

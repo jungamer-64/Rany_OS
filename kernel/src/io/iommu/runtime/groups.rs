@@ -338,6 +338,7 @@ impl IommuGroupManager {
         }
 
         // PCIヒエラルキーをルートコンプレックスに向かって走査
+        // LOOP_PROOF: mode=event; reason=Topology walk moves upward each pass and breaks at bus 0 or when parent topology is unavailable.;
         loop {
             // ... (rest of the loop is correct as it updates bus/dev and resets func to 0 on bridge merge)
             let header_type = match topology.read_header_type(

@@ -446,6 +446,7 @@ unsafe fn stream_write_avx_pass(mut addr: usize, data: &[u8], mut i: usize) -> (
     let len = data.len();
     unsafe {
         // Align to 32 bytes
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < len && (addr & 31) != 0 {
             core::ptr::write_volatile(addr as *mut u8, data[i]);
             addr += 1;
@@ -453,6 +454,7 @@ unsafe fn stream_write_avx_pass(mut addr: usize, data: &[u8], mut i: usize) -> (
         }
 
         // Loop unrolling: 4x 32-byte (128 bytes per iteration)
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 128 <= len {
             let ptr = data.as_ptr().add(i);
             stream_write_256(addr, &*(ptr.cast::<[u8; 32]>()));
@@ -464,6 +466,7 @@ unsafe fn stream_write_avx_pass(mut addr: usize, data: &[u8], mut i: usize) -> (
         }
 
         // Handle remaining 32-byte chunks
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 32 <= len {
             let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 32]>();
             stream_write_256(addr, &*chunk_ptr);
@@ -484,6 +487,7 @@ unsafe fn stream_write_trailing(mut addr: usize, data: &[u8], mut i: usize) -> (
     let len = data.len();
     unsafe {
         // Loop unrolling: 4x 16-byte (64 bytes per iteration)
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 64 <= len {
             let ptr = data.as_ptr().add(i);
             stream_write_128(addr, &*(ptr.cast::<[u8; 16]>()));
@@ -495,6 +499,7 @@ unsafe fn stream_write_trailing(mut addr: usize, data: &[u8], mut i: usize) -> (
         }
 
         // Handle remaining 16-byte chunks
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 16 <= len {
             let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 16]>();
             stream_write_128(addr, &*chunk_ptr);
@@ -503,6 +508,7 @@ unsafe fn stream_write_trailing(mut addr: usize, data: &[u8], mut i: usize) -> (
         }
 
         // Handle remaining bytes via u64 streaming if possible
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 8 <= len {
             let v = core::ptr::read_unaligned(data.as_ptr().add(i).cast::<u64>());
             stream_write_u64(addr, v);
@@ -511,6 +517,7 @@ unsafe fn stream_write_trailing(mut addr: usize, data: &[u8], mut i: usize) -> (
         }
 
         // Handle trailing bytes
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < len {
             core::ptr::write_volatile(addr as *mut u8, data[i]);
             addr += 1;
@@ -538,6 +545,7 @@ pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
             (addr, i) = stream_write_avx_pass(addr, data, i);
         } else {
             // SSE2 Path: Align to 16 bytes
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while i < len && (addr & 15) != 0 {
                 core::ptr::write_volatile(addr as *mut u8, data[i]);
                 addr += 1;

@@ -22,6 +22,7 @@ impl KernelLogger {
             // Compute timeout cycles for TX_TIMEOUT_US microseconds (may be 0 for very low freq)
             let timeout_cycles: u64 = (freq as u64).saturating_mul(TX_TIMEOUT_US) / 1_000_000u64;
             let start = read_tsc_serialized();
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while (status_port.read() & LSR_TX_EMPTY) == 0 {
                 if read_tsc_serialized().saturating_sub(start) > timeout_cycles {
                     break;
@@ -36,6 +37,7 @@ impl KernelLogger {
         } else {
             // Fallback to loop-count-based wait (early boot / when time subsystem isn't initialized)
             let mut timeout = TX_TIMEOUT_LOOPS;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while (status_port.read() & LSR_TX_EMPTY) == 0 && timeout > 0 {
                 core::hint::spin_loop(); // CPU省電力ヒント
                 timeout -= 1;

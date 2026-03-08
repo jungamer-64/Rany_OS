@@ -89,6 +89,7 @@ impl InterruptQueue {
     /// ISRコンテキストから呼び出し可能。ロックを取得しない。
     #[inline]
     pub fn push(&self, vector: u8) -> bool {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let write = self.write_pos.load(Ordering::Relaxed);
             let read = self.read_pos.load(Ordering::Acquire);
@@ -122,6 +123,7 @@ impl InterruptQueue {
     /// 通常コンテキストから呼び出すこと
     #[inline]
     pub fn pop(&self) -> Option<u8> {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let read = self.read_pos.load(Ordering::Relaxed);
             let write = self.write_pos.load(Ordering::Acquire);
@@ -267,6 +269,7 @@ pub fn push_interrupt_event(vector: u8) -> bool {
 /// }
 /// ```
 pub fn process_pending_interrupts() {
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Some(vector) = INTERRUPT_QUEUE.pop() {
         // 統計を記録
         INTERRUPT_MANAGER.record_interrupt(vector);

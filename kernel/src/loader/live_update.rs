@@ -135,6 +135,7 @@ pub fn enter_quiescent_state() {
 pub fn wait_for_quiescent_state(old_epoch: u64) {
     let active_cores = ACTIVE_CORES.load(Ordering::Acquire) as usize;
 
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         let all_departed = (0..active_cores.min(MAX_CORES)).all(|cpu| {
             let core_epoch = PER_CORE_EPOCHS[cpu].local_epoch.load(Ordering::Acquire);
@@ -200,6 +201,7 @@ impl RequestTracker {
     /// ドレインを開始し、全リクエストの完了を待機
     pub fn wait_for_drain(&self) {
         self.drain_signal.store(true, Ordering::Release);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.active_count.load(Ordering::Acquire) > 0 {
             core::hint::spin_loop();
         }

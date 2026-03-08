@@ -113,6 +113,7 @@ impl HttpClient {
         // Helper function for write_all
         async fn write_all(stream: &mut TcpStream, buf: &[u8]) -> Result<(), HttpClientError> {
             let mut written = 0;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while written < buf.len() {
                 let n = stream
                     .write(&buf[written..])
@@ -137,6 +138,7 @@ impl HttpClient {
             write_all(&mut stream, &client_hello).await?;
 
             // ハンドシェイク
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while tls.state() != TlsState::Established && tls.state() != TlsState::Error {
                 let mut in_buf = [0u8; 4096];
                 let read_len = stream
@@ -190,6 +192,7 @@ impl HttpClient {
             write_all(&mut stream, &encrypted_request).await?;
 
             // HTTPレスポンスの受信と復号
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let mut in_buf = [0u8; 4096];
                 let read_len = stream
@@ -223,6 +226,7 @@ impl HttpClient {
             // HTTP
             write_all(&mut stream, &request_bytes).await?;
 
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let mut in_buf = [0u8; 4096];
                 let read_len = stream

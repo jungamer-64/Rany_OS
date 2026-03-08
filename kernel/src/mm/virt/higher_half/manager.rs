@@ -574,6 +574,7 @@ impl PageTableManager {
         let mut phys = phys_start.as_u64();
         let end = virt + size;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while virt < end {
             let remaining = end - virt;
             let step = unsafe { self.map_one_page(virt, phys, remaining, flags)? };
@@ -589,6 +590,7 @@ impl PageTableManager {
         let mut virt = virt_start.as_u64();
         let end = virt + size;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while virt < end {
             match unsafe { self.unmap_page(VirtAddr::new(virt)) } {
                 Ok(_) => {
@@ -815,6 +817,7 @@ pub unsafe fn global_map_range(
         } else {
             let mut addr = virt.as_u64();
             let end = addr + size;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while addr < end {
                 invalidate_page(VirtAddr::new(addr));
                 addr += 4096;
@@ -841,6 +844,7 @@ pub unsafe fn global_unmap_range(virt: VirtAddr, size: u64) -> Result<(), MapErr
         } else {
             let mut addr = virt.as_u64();
             let end = addr + size;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while addr < end {
                 invalidate_page(VirtAddr::new(addr));
                 addr += 4096;

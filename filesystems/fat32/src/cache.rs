@@ -250,6 +250,7 @@ impl DirEntryCache {
         }
 
         // キャッシュが満杯の場合、最も古いエントリを削除
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while inner.entries.len() >= self.max_dirs && !inner.access_order.is_empty() {
             if let Some(oldest) = inner.access_order.first().copied() {
                 inner.access_order.remove(0);

@@ -185,6 +185,7 @@ pub fn buffer_pool_4k_extended_stats() -> (usize, usize, usize, usize) {
 pub fn buffer_pool_4k_set_capacity(n: usize) {
     BUFFER_POOL_4K_CAPACITY.store(n, AtomicOrdering::Release);
     let mut pool = BUFFER_POOL_4K_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while pool.len() > n {
         pool.pop();
     }
@@ -255,6 +256,7 @@ pub fn buffer_pool_2m_stats() -> (usize, usize, usize) {
 pub fn buffer_pool_2m_set_capacity(n: usize) {
     BUFFER_POOL_2M_CAPACITY.store(n, AtomicOrdering::Release);
     let mut pool = BUFFER_POOL_2M_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while pool.len() > n {
         pool.pop();
     }
@@ -320,6 +322,7 @@ pub fn buffer_pool_1g_stats() -> (usize, usize, usize) {
 pub fn buffer_pool_1g_set_capacity(n: usize) {
     BUFFER_POOL_1G_CAPACITY.store(n, AtomicOrdering::Release);
     let mut pool = BUFFER_POOL_1G_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while pool.len() > n {
         pool.pop();
     }

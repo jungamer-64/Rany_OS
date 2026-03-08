@@ -80,6 +80,7 @@ impl VirtQueue {
     pub fn poll_completions<F>(&mut self, mut on_complete: F) -> usize
     where F: FnMut(u16, u32) {
         let mut count = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some((id, len)) = self.inner.poll_complete() {
             on_complete(id, len);
             count += 1;

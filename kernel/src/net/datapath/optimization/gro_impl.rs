@@ -404,6 +404,7 @@ impl TsoEngine {
 
         // TCP header + data
         let mut i = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 1 < tcp_data.len() {
             let word = u16::from_be_bytes([tcp_data[i], tcp_data[i + 1]]);
             sum += word as u32;
@@ -414,6 +415,7 @@ impl TsoEngine {
         }
 
         // Fold carry
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while sum >> 16 != 0 {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }

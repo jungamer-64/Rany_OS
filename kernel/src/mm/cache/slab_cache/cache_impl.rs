@@ -391,6 +391,7 @@ impl SlabCache {
 
         // 2. Partial List
         let mut curr = self.partial_list;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(page) = curr {
             unsafe {
                 let p = page.as_ref();
@@ -401,6 +402,7 @@ impl SlabCache {
 
         // 3. Empty List
         let mut curr = self.empty_list;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(page) = curr {
             unsafe {
                 let p = page.as_ref();
@@ -478,6 +480,7 @@ impl SlabCache {
         let mut returned = 0;
 
         // Remove from empty_list
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while returned < max_pages && self.empty_page_count > keep_pages {
             if let Some(mut page) = self.empty_list {
                 unsafe {
@@ -571,6 +574,7 @@ impl SlabCache {
         let mut free_mask = [0u64; 8];
 
         let mut curr = header.next_free;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(idx) = curr {
             let i = idx as usize;
             if i < 512 {

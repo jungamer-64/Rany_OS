@@ -298,6 +298,7 @@ impl IommuDomain {
         pte_format: PteFormat,
     ) -> Option<(*mut SlPte, usize, usize)> {
         let mut idx = start_idx;
+        // LOOP_PROOF: mode=condition; reason=Index increments each iteration and loop exits at PT_ENTRIES or returns once a child table is found.;
         while idx < PT_ENTRIES {
             let pte = unsafe { *table_ptr.add(idx) };
             idx += 1;
@@ -368,6 +369,7 @@ impl IommuDomain {
             };
             let mut stack_top: usize = 1;
 
+            // LOOP_PROOF: mode=condition; reason=Explicit traversal stack is popped as children finish and loop exits when stack_top reaches zero.;
             while stack_top > 0 {
                 let entry_idx = stack_top - 1;
 

@@ -127,6 +127,7 @@ impl VirtioNetDevice {
         };
 
         let mut count = 0;
+        // LOOP_PROOF: mode=condition; reason=TX completion loop drains used descriptors and exits when poll_complete reports no completion.;
         while let Some((desc_idx, _)) = vq.poll_complete() {
             if let Some(inflight) = tracker.take(desc_idx) {
                 // Return packet and bounce buffer to runtime/heap
@@ -151,6 +152,7 @@ impl VirtioNetDevice {
         };
 
         let mut count = 0;
+        // LOOP_PROOF: mode=condition; reason=RX completion loop drains used descriptors and exits once queue completion is empty.;
         while let Some((desc_idx, len)) = vq.poll_complete() {
             if let Some(inflight) = tracker.take(desc_idx) {
                 handler(inflight, len);
@@ -165,6 +167,7 @@ impl VirtioNetDevice {
     pub fn refill_rx_queue(&self, runtime: &dyn NetRuntime, queue_index: u16, vq: &NetVirtQueue) -> usize {
         let mut count = 0;
         
+        // LOOP_PROOF: mode=condition; reason=Refill loop is bounded by descriptor availability and exits on allocation or post failure.;
         while vq.available_descriptors() > 0 {
             match self.try_post_rx_packet(runtime, queue_index, vq) {
                 Ok(true) => count += 1,

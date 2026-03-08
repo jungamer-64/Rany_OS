@@ -114,6 +114,7 @@ fn test_lock_free_index_stack_new_filled_drains_unique() {
 
     let mut seen = [false; 8];
     let mut popped = Vec::new();
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Some(idx) = stack.pop() {
         popped.push(idx);
         seen[idx as usize] = true;

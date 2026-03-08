@@ -252,6 +252,7 @@ pub mod fnv {
 pub const fn fnv1a_hash(data: &[u8]) -> u64 {
     let mut hash = fnv::FNV_OFFSET_BASIS;
     let mut i = 0;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < data.len() {
         hash ^= data[i] as u64;
         hash = hash.wrapping_mul(fnv::FNV_PRIME);

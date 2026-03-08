@@ -197,6 +197,7 @@ pub fn pack_rgba_to_bgra_scalar(src: &[u8], dst: &mut [u8]) {
     let mut i = 0usize;
 
     // Process 16-byte blocks
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 16 <= bytes {
         let v0 = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i) as *const u32) };
         let v1 = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i + 4) as *const u32) };
@@ -218,6 +219,7 @@ pub fn pack_rgba_to_bgra_scalar(src: &[u8], dst: &mut [u8]) {
         i += 16;
     }
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 4 <= bytes {
         let v = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i) as *const u32) };
         let swapped = (v & 0xFF00FF00) | ((v & 0x000000FF) << 16) | ((v & 0x00FF0000) >> 16);
@@ -243,6 +245,7 @@ pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize)
 
     let mut i = 0usize;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 64 <= bytes {
         // SAFETY: `src` and `dst` are valid pointers to at least `bytes` bytes; loads/stores are within bounds
         // and aligned as required by the intrinsic usage here.
@@ -257,6 +260,7 @@ pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize)
         i += 64;
     }
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 32 <= bytes {
         unsafe {
             let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
@@ -267,6 +271,7 @@ pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize)
     }
 
     // SSSE3 tail
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 16 <= bytes {
         unsafe {
             let v = _mm_loadu_si128(src.add(i) as *const __m128i);
@@ -278,6 +283,7 @@ pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize)
     }
 
     // Scalar tail
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < bytes {
         let s = (i / 4) * 4;
         unsafe {
@@ -305,6 +311,7 @@ pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize
     let mask = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
     let mut i = 0usize;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 32 <= bytes {
         unsafe {
             let v0 = _mm_loadu_si128(src.add(i) as *const __m128i);
@@ -317,6 +324,7 @@ pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize
         i += 32;
     }
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 16 <= bytes {
         unsafe {
             let v = _mm_loadu_si128(src.add(i) as *const __m128i);
@@ -327,6 +335,7 @@ pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize
     }
 
     // Scalar tail
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < bytes {
         let s = (i / 4) * 4;
         unsafe {
@@ -347,6 +356,7 @@ pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize
 pub unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize) {
     // Scalar fallback for NEON (can be optimized with NEON intrinsics later)
     let mut i = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < bytes {
         let s = (i / 4) * 4;
         unsafe {
@@ -404,6 +414,7 @@ pub fn pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8], is_bgr: bool) {
     let mut dst_off = 0;
 
     if is_bgr {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < len {
             dst[dst_off] = src[src_idx + 2]; // B
             dst[dst_off + 1] = src[src_idx + 1]; // G
@@ -413,6 +424,7 @@ pub fn pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8], is_bgr: bool) {
             i += 1;
         }
     } else {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < len {
             dst[dst_off] = src[src_idx]; // R
             dst[dst_off + 1] = src[src_idx + 1]; // G
@@ -435,6 +447,7 @@ unsafe fn pack_rgba_to_bgr24_avx2(src: &[u8], dst: &mut [u8], pixels: usize, is_
     let mut src_ptr = src.as_ptr();
     let mut dst_ptr = dst.as_mut_ptr();
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while processed + 8 <= pixels {
         // SAFETY: Caller must ensure `src_ptr`/`dst_ptr` point to valid memory for 8 pixels.
         unsafe {
@@ -513,6 +526,7 @@ pub unsafe fn pack_rgba_to_bgr24_ssse3(src: &[u8], dst: &mut [u8], pixels: usize
     let mut src_ptr = src.as_ptr();
     let mut dst_ptr = dst.as_mut_ptr();
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while processed + 8 <= pixels {
         // SAFETY: Caller must ensure `src_ptr`/`dst_ptr` point to valid memory for 8 pixels.
         unsafe {

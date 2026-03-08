@@ -107,6 +107,7 @@ impl IoScheduler {
             + 1;
 
         // 最大キュー長を更新
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let max = self.stats.max_queue_depth.load(Ordering::Relaxed);
             if depth <= max {
@@ -172,6 +173,7 @@ impl IoScheduler {
             .current_queue_depth
             .fetch_add(1, Ordering::Relaxed)
             + 1;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let max = self.stats.max_queue_depth.load(Ordering::Relaxed);
             if depth <= max {

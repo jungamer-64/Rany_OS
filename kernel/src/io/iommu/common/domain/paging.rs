@@ -30,6 +30,7 @@ impl IommuDomain {
         let mut table_phys = self.root_table_phys();
         let mut level = self.page_table_levels();
 
+        // LOOP_PROOF: mode=condition; reason=Level decreases toward target_level on each iteration so table-path construction is strictly bounded.;
         while level > target_level {
             let idx = Self::level_index(iova, level);
             let next_level = level - 1;
@@ -92,6 +93,7 @@ impl IommuDomain {
         let mut level = self.page_table_levels();
         table_phys_by_level[level as usize] = self.root_table_phys();
 
+        // LOOP_PROOF: mode=condition; reason=Walk loop decrements level each pass and exits once target_level is reached or an error returns.;
         while level > target_level {
             let idx = Self::level_index(iova, level);
             let entry = unsafe { table_ptr.add(idx) };
@@ -138,6 +140,7 @@ impl IommuDomain {
         table_phys_by_level: &[u64; MAX_TABLE_PATH_DEPTH],
         parent_entry_by_level: &[*mut SlPte; MAX_TABLE_PATH_DEPTH],
     ) {
+        // LOOP_PROOF: mode=condition; reason=Cascade loop raises emptied_level toward root and exits when refcount propagation can no longer continue.;
         while emptied_level < self.page_table_levels() {
             let parent_entry = parent_entry_by_level[emptied_level as usize];
             if parent_entry.is_null() {

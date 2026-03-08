@@ -398,6 +398,7 @@ impl QrCode {
         let mut placed_bits = 0usize;
 
         let mut right = QR_SIZE - 1;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while right > 0 {
             if right == 6 {
                 right -= 1;
@@ -720,9 +721,11 @@ impl QrCode {
         for row in 0..QR_SIZE {
             let py = y + ((quiet_zone as i32 + row as i32) * module_size as i32);
             let mut col = 0;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while col < QR_SIZE {
                 if self.modules[row][col].is_dark() {
                     let start = col;
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while col < QR_SIZE && self.modules[row][col].is_dark() {
                         col += 1;
                     }
@@ -743,6 +746,7 @@ impl QrCode {
 
 fn gf_mul(mut x: u8, mut y: u8) -> u8 {
     let mut r = 0u8;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while y != 0 {
         if (y & 1) != 0 {
             r ^= x;

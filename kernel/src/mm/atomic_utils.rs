@@ -65,6 +65,7 @@ impl AtomicU8 {
     /// CASループを使用（AtomicUsizeの操作は全ビットに影響するため）
     #[inline]
     pub fn fetch_and(&self, val: u8, order: Ordering) -> u8 {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let current = self.0.load(Ordering::Acquire);
             let new_val = (current as u8) & val;
@@ -84,6 +85,7 @@ impl AtomicU8 {
     /// CASループを使用（AtomicUsizeの操作は全ビットに影響するため）
     #[inline]
     pub fn fetch_or(&self, val: u8, order: Ordering) -> u8 {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let current = self.0.load(Ordering::Acquire);
             let new_val = (current as u8) | val;
@@ -101,6 +103,7 @@ impl AtomicU8 {
     /// アトミックにXOR演算を行い、以前の値を返す
     #[inline]
     pub fn fetch_xor(&self, val: u8, order: Ordering) -> u8 {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let current = self.0.load(Ordering::Acquire);
             let new_val = (current as u8) ^ val;
@@ -118,6 +121,7 @@ impl AtomicU8 {
     /// アトミックに加算を行い、以前の値を返す
     #[inline]
     pub fn fetch_add(&self, val: u8, order: Ordering) -> u8 {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let current = self.0.load(Ordering::Acquire);
             let new_val = (current as u8).wrapping_add(val);
@@ -135,6 +139,7 @@ impl AtomicU8 {
     /// アトミックに減算を行い、以前の値を返す
     #[inline]
     pub fn fetch_sub(&self, val: u8, order: Ordering) -> u8 {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let current = self.0.load(Ordering::Acquire);
             let new_val = (current as u8).wrapping_sub(val);

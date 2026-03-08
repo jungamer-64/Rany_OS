@@ -230,6 +230,7 @@ impl EventHandler {
     /// キューに溜まったイベントを順次処理し、コールバックを実行する。
     /// ドライバのポーリングループやReactorから呼び出すこと。
     pub fn process_pending_events(&mut self) {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(event) = self.event_queue.pop_front() {
             match event {
                 ProcessedEvent::CommandCompletion(evt) => {

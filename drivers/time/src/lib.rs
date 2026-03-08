@@ -127,6 +127,7 @@ impl LockFreePendingWakers {
         let boxed = Box::new(waker);
         let ptr = Box::into_raw(boxed) as usize;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let head = self.head.load(Ordering::Acquire);
             let tail = self.tail.load(Ordering::Acquire);
@@ -162,6 +163,7 @@ impl LockFreePendingWakers {
     fn drain(&self) -> Vec<Waker> {
         let mut wakers = Vec::new();
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let tail = self.tail.load(Ordering::Acquire);
             let head = self.head.load(Ordering::Acquire);

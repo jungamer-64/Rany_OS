@@ -147,6 +147,7 @@ impl RetransmitQueue {
     /// 確認されたセグメントを削除し、RTTサンプルを収集
     pub fn ack_received(&mut self, ack_num: u32, current_tick: u64) {
         // 累積ACKによって完全に確認されたセグメントを全て削除
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(seg) = self.unacked.front() {
             let seg_len = seg.data.len() as u32;
             let seg_end = seg.seq.wrapping_add(seg_len);

@@ -98,6 +98,7 @@ impl<F: ShellFrontend> ShellSession<F> {
         // Initial Prompt
         self.frontend.print_prompt(self.shell.cwd.as_str());
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             // 1. Read Line
             match self.frontend.read_line(&mut self.shell).await {

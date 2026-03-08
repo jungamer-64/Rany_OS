@@ -255,6 +255,7 @@ fn determine_trust_level(
     let mut current_bus = device.bdf.bus();
 
     // Check all bridges in the path from device to root complex
+    // LOOP_PROOF: mode=event; reason=Parent-bridge traversal updates current_bus toward root and breaks at bus 0 or missing parent.;
     loop {
         if let Some((parent_bus, parent_dev, parent_func)) =
             topology.find_parent_bridge(current_bus)

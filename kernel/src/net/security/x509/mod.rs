@@ -549,12 +549,14 @@ fn parse_tbs_fields<'a>(
     let mut is_ca = false;
     let mut path_len_constraint = None;
     let mut san_raw = None;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Some((tag, content)) = tbs.read_tlv() {
         // Tag 0xA3 = [3] Context-specific EXPLICIT
         if tag == 0xA3 {
             let mut ext_parser = DerParser::new(content);
             if let Some(ext_seq_content) = ext_parser.read_sequence() {
                 let mut seq_parser = DerParser::new(ext_seq_content);
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while let Some(ext_item_content) = seq_parser.read_sequence() {
                     let mut item_parser = DerParser::new(ext_item_content);
                     let oid = item_parser.read_oid()?;
@@ -974,6 +976,7 @@ fn match_hostname_in_san(san_der: &[u8], hostname: &str) -> bool {
         None => return false,
     };
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while !inner.is_empty() {
         let tag = match inner.read_tag() {
             Some(t) => t,
@@ -1083,6 +1086,7 @@ fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
     };
 
     let mut inner = DerParser::new(content);
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while !inner.is_empty() {
         // Name is a SEQUENCE of SETs
         let (_tag, rdn_content) = match inner.read_tlv() {
@@ -1091,6 +1095,7 @@ fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
         };
 
         let mut rdn_parser = DerParser::new(rdn_content);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !rdn_parser.is_empty() {
             // RelativeDistinguishedName is a SEQUENCE of AttributeTypeAndValue
             let atv_content = match rdn_parser.read_sequence() {

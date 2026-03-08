@@ -583,6 +583,7 @@ pub fn parse_configuration(data: &[u8]) -> Option<ParsedConfiguration> {
     let mut current_interface: Option<ParsedInterface> = None;
     let mut offset = 9; // Skip configuration descriptor
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset + 2 <= total_length {
         let length = data[offset] as usize;
 

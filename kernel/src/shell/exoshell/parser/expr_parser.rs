@@ -213,6 +213,7 @@ impl ExprParser {
     fn parse_or_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut left = self.parse_and_expr()?;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.match_operator("||") {
             let right = self.parse_and_expr()?;
             left = Expr::Binary {
@@ -325,6 +326,7 @@ impl ExprParser {
     fn parse_mul_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut left = self.parse_unary_expr()?;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let op = if self.match_operator("*") {
                 BinaryOp::Mul
@@ -374,6 +376,7 @@ impl ExprParser {
     fn parse_postfix_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut expr = self.parse_primary()?;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             // `.field` または `.method(args)`
             if self.match_token(&Token::Dot) {
@@ -618,6 +621,7 @@ impl ExprParser {
             elements.push(self.parse_expr()?);
 
             // カンマ区切りで残りの要素
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while self.match_token(&Token::Comma) {
                 // 末尾カンマ対応
                 if matches!(self.peek(), Some(Token::RBracket)) {

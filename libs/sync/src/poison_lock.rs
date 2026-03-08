@@ -147,6 +147,7 @@ impl<T> PoisonLock<T> {
 
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
         let mut backoff = Backoff::new();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.locked.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
             backoff.spin();
         }

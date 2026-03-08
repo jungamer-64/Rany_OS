@@ -1800,6 +1800,7 @@ impl NetworkEventHandler {
             (local, remote)
         };
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             // 現在の送信可能データを決定 (MSS, Window, SWS考慮)
             let send_params = tcb_table().lookup(local, remote).and_then(|tcb| {
@@ -2502,6 +2503,7 @@ pub mod qemu_tests {
     pub fn handle_tx_available_requeues_dataready_smoke() -> bool {
         init_endpoint_manager();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while event_queue().recv().is_some() {}
 
         let sock = create_tcp_endpoint();

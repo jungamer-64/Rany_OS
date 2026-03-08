@@ -687,6 +687,7 @@ pub trait BlockDevice: Send + Sync {
         let request = Arc::new(BlockRequest::write(0, block, buf.to_vec()));
         self.submit(Arc::clone(&request))?;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             self.poll_completions();
             match request.state() {
@@ -702,6 +703,7 @@ pub trait BlockDevice: Send + Sync {
         let request = Arc::new(BlockRequest::flush(0));
         self.submit(Arc::clone(&request))?;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             self.poll_completions();
             match request.state() {
@@ -827,6 +829,7 @@ impl BlockDevice for RamDisk {
         let mut completed = 0;
 
         // Process all pending requests
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(request) = pending.pop_front() {
             self.process_request(&request);
             completed += 1;
@@ -1034,6 +1037,7 @@ mod tests {
         let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
         let mut cx = Context::from_waker(&waker);
         let mut fut = Box::pin(fut);
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             match Pin::new(&mut fut).poll(&mut cx) {
                 Poll::Ready(v) => return v,

@@ -469,6 +469,7 @@ pub fn compute_igmp_checksum(data: &[u8]) -> u16 {
     let mut i = 0;
 
     // Sum 16-bit words
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 1 < data.len() {
         sum += u16::from_be_bytes([data[i], data[i + 1]]) as u32;
         i += 2;
@@ -480,6 +481,7 @@ pub fn compute_igmp_checksum(data: &[u8]) -> u16 {
     }
 
     // Fold 32-bit sum to 16 bits
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while sum >> 16 != 0 {
         sum = (sum & 0xffff) + (sum >> 16);
     }

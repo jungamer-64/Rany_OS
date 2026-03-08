@@ -641,6 +641,7 @@ pub fn wave1_cmdqueue_pressure_smoke() -> bool {
 
     // Process all using process_once (which updates internal metrics)
     let mut total_processed = 0;
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         let n = cq.process_once(|_| Ok(0));
         total_processed += n;

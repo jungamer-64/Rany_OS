@@ -601,6 +601,7 @@ impl FastBitmapAllocator {
 
         // Simple linear scan for contiguous free pages
         let mut start_page = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while start_page < total_pages {
             // Align start address, taking self.base into account
             let addr = self.base + (start_page as u64) * PAGE_SIZE_4K;

@@ -152,6 +152,25 @@ mod types_impl;
 
 pub use error::{KapiError, KapiResult};
 
+/// Emit a minimal `.rany_loop_proof` section consumed by kernel-side loop proof
+/// checks.
+///
+/// Format:
+/// - 4 bytes magic "RLOP"
+/// - 4 bytes format version (u32 LE)
+/// - 4 bytes policy flags (u32 LE, currently reserved)
+#[macro_export]
+macro_rules! declare_rany_loop_proof_section {
+    () => {
+        const _: () = {
+            #[used]
+            #[unsafe(link_section = ".rany_loop_proof")]
+            static RANY_LOOP_PROOF_SECTION: [u8; 12] =
+                [b'R', b'L', b'O', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
+        };
+    };
+}
+
 /// Emit a minimal `.rany_type_id` section consumed by kernel-side ABI checks.
 ///
 /// Format:
@@ -161,6 +180,7 @@ pub use error::{KapiError, KapiResult};
 #[macro_export]
 macro_rules! declare_rany_type_id_section {
     () => {
+        $crate::declare_rany_loop_proof_section!();
         const _: () = {
             #[used]
             #[unsafe(link_section = ".rany_type_id")]

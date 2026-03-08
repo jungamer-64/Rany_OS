@@ -43,6 +43,7 @@ impl IdeChannel {
     /// ビジーフラグが解除されるまで待機
     unsafe fn wait_not_busy(&self) -> Result<(), IdeError> {
         let mut timeout = 100_000;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while timeout > 0 {
             let status = self.read_alt_status();
             if (status & status::BSY) == 0 {
@@ -56,6 +57,7 @@ impl IdeChannel {
     /// DRQがセットされるまで待機
     unsafe fn wait_drq(&self) -> Result<(), IdeError> {
         let mut timeout = 100_000;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while timeout > 0 {
             let status = self.read_alt_status();
             if (status & status::BSY) == 0 {

@@ -643,6 +643,7 @@ impl<T> ObjectCache<T> {
         let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while pool.len() > self.config.shrink_threshold {
             if let Some(ptr) = pool.pop() {
                 unsafe {
@@ -657,6 +658,7 @@ impl<T> ObjectCache<T> {
         let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(ptr) = pool.pop() {
             unsafe {
                 inner.deallocate(ptr.cast());

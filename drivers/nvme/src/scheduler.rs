@@ -71,6 +71,7 @@ impl PollHandler for NvmePollHandler {
         with_driver(|driver| {
             if let Some(queue) = driver.get_queue(self.core_id) {
                 // SAFETY: poll は内部で適切に同期されている
+                // LOOP_PROOF: mode=condition; reason=Completion polling drains CQ entries and exits immediately when controller reports no completion.;
                 while let Some(cqe) = unsafe { queue.poll() } {
                     let cid = cqe.cid;
 

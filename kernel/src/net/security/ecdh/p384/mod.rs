@@ -699,6 +699,7 @@ pub mod p384 {
     pub(super) fn normalize_integer_48(data: &[u8]) -> Result<[u8; 48], EcdsaError> {
         // 先頭の0x00を除去
         let mut stripped = data;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while stripped.len() > 1 && stripped[0] == 0 {
             stripped = &stripped[1..];
         }

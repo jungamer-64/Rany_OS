@@ -163,6 +163,7 @@ impl<T, const N: usize> Default for SpscRingBuffer<T, N> {
 impl<T, const N: usize> Drop for SpscRingBuffer<T, N> {
     fn drop(&mut self) {
         // 残っている要素をドロップ
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.pop().is_some() {}
     }
 }

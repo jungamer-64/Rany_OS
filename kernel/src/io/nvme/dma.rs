@@ -117,6 +117,7 @@ fn allocate_prp_list_buffers(
     let mut remaining = total_entries;
     let mut list_buffers = Vec::new();
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while remaining > 0 {
         let list =
             TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(NvmeDmaError::OutOfMemory)?;

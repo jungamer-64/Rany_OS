@@ -79,6 +79,7 @@ impl MemcgCounter {
         let new = self.current.fetch_add(pages, Ordering::Relaxed) + pages;
         // ピーク更新
         let mut peak = self.peak.load(Ordering::Relaxed);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while new > peak {
             match self
                 .peak
@@ -537,6 +538,7 @@ impl MemcgManager {
         let mut current_id = Some(id);
         let mut charged_ids = Vec::new();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(cid) = current_id {
             if let Some(cg) = cgroups.get(&cid) {
                 if let Err(e) = cg.charge(pages, charge_type) {
@@ -565,6 +567,7 @@ impl MemcgManager {
         // 階層的にアンチャージ
         let mut current_id = Some(id);
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(cid) = current_id {
             if let Some(cg) = cgroups.get(&cid) {
                 cg.uncharge(pages, charge_type);
@@ -616,6 +619,7 @@ impl MemcgManager {
         let mut result = Vec::new();
         let mut current_id = Some(id);
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(cid) = current_id {
             result.push(cid);
             current_id = cgroups.get(&cid).and_then(|cg| cg.parent_id);

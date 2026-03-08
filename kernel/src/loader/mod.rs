@@ -11,6 +11,7 @@ pub mod elf;
 #[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod initramfs; // Initramfs TAR アーカイブからのセルロード
 pub mod live_update; // 新: ライブアップデート・Epoch-based Reclamation (設計書 3.5)
+pub mod loop_proof;
 pub mod signature;
 pub mod type_id;
 
@@ -46,6 +47,7 @@ pub(crate) fn str_eq(lhs: &str, rhs: &str) -> bool {
         return false;
     }
     let mut idx = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while idx < lhs_bytes.len() {
         if lhs_bytes[idx] != rhs_bytes[idx] {
             return false;
@@ -340,6 +342,10 @@ pub enum LoadError {
     AlreadyLoaded,
     /// 【設計書 3.4】ABI非互換
     AbiIncompatible(String),
+    /// ループ境界証明セクションが欠落
+    LoopProofMissing,
+    /// ループ境界証明セクションが不正
+    LoopProofInvalid(String),
     /// セルが見つからない
     CellNotFound,
     /// リロケーション失敗
@@ -358,6 +364,12 @@ impl core::fmt::Display for LoadError {
             LoadError::UnsafeNotAllowed => write!(f, "Unsafe code not allowed for this cell"),
             LoadError::AlreadyLoaded => write!(f, "Cell already loaded"),
             LoadError::AbiIncompatible(msg) => write!(f, "ABI incompatibility: {}", msg),
+            LoadError::LoopProofMissing => {
+                write!(f, "Loop proof metadata missing (.rany_loop_proof)")
+            }
+            LoadError::LoopProofInvalid(msg) => {
+                write!(f, "Loop proof metadata invalid: {}", msg)
+            }
             LoadError::CellNotFound => write!(f, "Cell not found"),
             LoadError::RelocationFailed(msg) => write!(f, "Relocation failed: {}", msg),
             LoadError::InvalidPermissions(msg) => write!(f, "Invalid permissions: {}", msg),
@@ -410,6 +422,29 @@ fn validate_cell_requirements(
             name,
             deps.cell_version
         );
+    }
+
+    match loop_proof::verify_loop_proof_metadata(elf_data) {
+        Ok(meta) => {
+            log::info!(
+                "[Loader] Loop proof verified for '{}' (version={}, flags={})\n",
+                name,
+                meta.version,
+                meta.policy_flags
+            );
+        }
+        Err(loop_proof::LoopProofError::MissingSection) => {
+            log::warn!(
+                "[Loader] Missing loop proof metadata for '{}': {}\n",
+                name,
+                loop_proof::LOOP_PROOF_SECTION_NAME
+            );
+            return Err(LoadError::LoopProofMissing);
+        }
+        Err(e) => {
+            log::warn!("[Loader] Invalid loop proof metadata for '{}': {}\n", name, e);
+            return Err(LoadError::LoopProofInvalid(alloc::format!("{}", e)));
+        }
     }
     Ok(())
 }
@@ -766,6 +801,81 @@ mod tests {
 
     const TEST_ELF_BYTES: &[u8] = b"\x7fELFdriver-pack-test";
 
+    fn write_u16(buf: &mut [u8], offset: usize, value: u16) {
+        buf[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_u32(buf: &mut [u8], offset: usize, value: u32) {
+        buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_u64(buf: &mut [u8], offset: usize, value: u64) {
+        buf[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn align_up(value: usize, align: usize) -> usize {
+        (value + (align - 1)) & !(align - 1)
+    }
+
+    fn build_test_elf(loop_proof_section: Option<(&str, &[u8])>) -> Vec<u8> {
+        const ELF_HEADER_SIZE: usize = 64;
+        const SECTION_HEADER_SIZE: usize = 64;
+
+        let mut shstrtab = Vec::new();
+        shstrtab.push(0);
+        let shstrtab_name_offset = shstrtab.len() as u32;
+        shstrtab.extend_from_slice(b".shstrtab");
+        shstrtab.push(0);
+
+        let (section_name, payload) = loop_proof_section.unwrap_or((".dummy", b"dummy"));
+        let section_name_offset = shstrtab.len() as u32;
+        shstrtab.extend_from_slice(section_name.as_bytes());
+        shstrtab.push(0);
+
+        let mut cursor = ELF_HEADER_SIZE;
+        let payload_offset = align_up(cursor, 8);
+        cursor = payload_offset + payload.len();
+        let shstrtab_offset = align_up(cursor, 8);
+        cursor = shstrtab_offset + shstrtab.len();
+        let section_table_offset = align_up(cursor, 8);
+
+        let section_count = 3usize;
+        let total_size = section_table_offset + section_count * SECTION_HEADER_SIZE;
+        let mut elf = vec![0u8; total_size];
+
+        elf[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        elf[4] = 2; // ELF64
+        elf[5] = 1; // little-endian
+        elf[6] = 1; // version
+        write_u16(&mut elf, 0x10, 1); // ET_REL
+        write_u16(&mut elf, 0x12, 0x3E); // x86_64
+        write_u32(&mut elf, 0x14, 1); // EV_CURRENT
+        write_u16(&mut elf, 0x34, ELF_HEADER_SIZE as u16);
+        write_u64(&mut elf, 0x28, section_table_offset as u64);
+        write_u16(&mut elf, 0x3A, SECTION_HEADER_SIZE as u16);
+        write_u16(&mut elf, 0x3C, section_count as u16);
+        write_u16(&mut elf, 0x3E, 1); // shstrtab index
+
+        elf[payload_offset..payload_offset + payload.len()].copy_from_slice(payload);
+        elf[shstrtab_offset..shstrtab_offset + shstrtab.len()].copy_from_slice(&shstrtab);
+
+        // Section #1: .shstrtab
+        let sh1 = section_table_offset + SECTION_HEADER_SIZE;
+        write_u32(&mut elf, sh1, shstrtab_name_offset);
+        write_u32(&mut elf, sh1 + 0x04, 3); // SHT_STRTAB
+        write_u64(&mut elf, sh1 + 0x18, shstrtab_offset as u64);
+        write_u64(&mut elf, sh1 + 0x20, shstrtab.len() as u64);
+
+        // Section #2: payload section
+        let sh2 = section_table_offset + 2 * SECTION_HEADER_SIZE;
+        write_u32(&mut elf, sh2, section_name_offset);
+        write_u32(&mut elf, sh2 + 0x04, 1); // SHT_PROGBITS
+        write_u64(&mut elf, sh2 + 0x18, payload_offset as u64);
+        write_u64(&mut elf, sh2 + 0x20, payload.len() as u64);
+
+        elf
+    }
+
     #[test_case]
     fn load_driver_pack_rejects_too_new_kernel_api_version() {
         let pack = driver_pack::build_unsigned_driver_pack(
@@ -796,5 +906,38 @@ mod tests {
             }
             other => panic!("expected Kernel API ABI version rejection, got {:?}", other),
         }
+    }
+
+    #[test_case]
+    fn validate_requirements_rejects_missing_loop_proof_section() {
+        let elf = build_test_elf(None);
+        let err = validate_cell_requirements("test-cell", &elf, true, false)
+            .expect_err("missing loop proof must be rejected");
+        assert!(matches!(err, LoadError::LoopProofMissing));
+    }
+
+    #[test_case]
+    fn validate_requirements_rejects_invalid_loop_proof_section() {
+        let bad = [b'R', b'L', b'X', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
+        let elf = build_test_elf(Some((loop_proof::LOOP_PROOF_SECTION_NAME, &bad)));
+        let err = validate_cell_requirements("test-cell", &elf, true, false)
+            .expect_err("invalid loop proof must be rejected");
+        assert!(matches!(err, LoadError::LoopProofInvalid(_)));
+    }
+
+    #[test_case]
+    fn validate_requirements_accepts_valid_loop_proof_section() {
+        let good = [b'R', b'L', b'O', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
+        let elf = build_test_elf(Some((loop_proof::LOOP_PROOF_SECTION_NAME, &good)));
+        validate_cell_requirements("test-cell", &elf, true, false)
+            .expect("valid loop proof should pass");
+    }
+
+    #[test_case]
+    fn load_cell_with_flags_rejects_missing_loop_proof_section() {
+        let elf = build_test_elf(None);
+        let err = load_cell_with_flags("test-cell", &elf, true, false, false, 0)
+            .expect_err("cell load path must reject missing loop proof");
+        assert!(matches!(err, LoadError::LoopProofMissing));
     }
 }

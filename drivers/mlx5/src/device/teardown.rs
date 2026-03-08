@@ -57,15 +57,19 @@ impl Mlx5Device {
         }
 
         // 4. SQ / RQ / CQ / EQ の破棄
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(sq) = self.sqs.pop() {
             let _ = self.destroy_sq_hw(sq.sqn);
         }
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(rq) = self.rqs.pop() {
             let _ = self.destroy_rq_hw(rq.rqn);
         }
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(cq) = self.cqs.pop() {
             let _ = self.destroy_cq_hw(cq.cqn);
         }
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(eq) = self.eqs.pop() {
             let _ = self.destroy_eq_hw(eq.eqn);
         }
@@ -84,6 +88,7 @@ impl Mlx5Device {
             let _ = self.dealloc_td_hw(self.td);
             self.td = 0;
         }
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(uar) = self.allocated_uars.pop() {
             let _ = self.dealloc_uar_hw(uar);
         }

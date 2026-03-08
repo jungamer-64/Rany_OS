@@ -409,6 +409,7 @@ pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuCon
     let mut count = 0;
     let mut _overflow_cleared = false;
 
+    // LOOP_PROOF: mode=condition; reason=Deferred-fault drain consumes one queued event per pass and exits once the queue becomes empty.;
     while let Some(event) = DEFERRED_FAULT_QUEUE.pop() {
         if event.is_overflow {
             log::warn!("[IOMMU] Fault overflow cleared");
@@ -472,6 +473,7 @@ const FAULT_HANDLER_INTERVAL_MS: u64 = 100;
 pub async fn fault_handler_task() {
     log::info!("[IOMMU] Fault handler task started");
 
+    // LOOP_PROOF: mode=event; reason=Fault-handler task intentionally runs for system lifetime and yields between bounded drain passes.;
     loop {
         // Drain any pending faults
         let count = drain_deferred_faults();

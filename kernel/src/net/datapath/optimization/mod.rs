@@ -236,6 +236,7 @@ impl BatchStats {
 
         // 最大サイズの更新
         let mut current_max = self.max_batch_size.load(Ordering::Relaxed);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while size > current_max {
             match self.max_batch_size.compare_exchange_weak(
                 current_max,
@@ -597,6 +598,7 @@ impl FlowAffinity {
             let mut cpu_idx = 0;
             for (i, entry) in table.iter_mut().enumerate() {
                 // Round-robinでCPUを割り当て
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while !available_cpus.allows(cpu_idx) {
                     cpu_idx = (cpu_idx + 1) % 64;
                 }

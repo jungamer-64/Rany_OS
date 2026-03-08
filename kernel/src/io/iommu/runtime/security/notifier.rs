@@ -97,6 +97,7 @@ impl IommuSecurityMonitor {
         F: FnMut(SecurityEvent),
     {
         let mut count = 0;
+        // LOOP_PROOF: mode=condition; reason=Security-event drain is bounded by max and exits early when the queue becomes empty.;
         while count < max {
             let Some(event) = self.queue.pop() else {
                 break;

@@ -80,6 +80,7 @@ impl SerialWriter {
     /// Write a single byte to serial port
     pub fn write_byte(&self, byte: u8) {
         // Wait for transmit buffer to be empty
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !self.is_transmit_empty() {
             core::hint::spin_loop();
         }

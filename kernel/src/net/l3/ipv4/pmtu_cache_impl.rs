@@ -610,6 +610,7 @@ pub(crate) fn calculate_ip_checksum(header: &[u8]) -> u16 {
         sum += word as u32;
     }
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
@@ -969,6 +970,7 @@ pub fn data_checksum(data: &[u8], initial: u32) -> u16 {
     }
 
     // Fold 32-bit sum to 16 bits
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }

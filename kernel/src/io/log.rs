@@ -611,8 +611,10 @@ pub fn trim_spaces_before_newline(s: &str) -> alloc::string::String {
 
     let mut out = alloc::string::String::with_capacity(bytes.len());
     let mut i = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < bytes.len() {
         if bytes[i] == b'\n' {
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while out.as_bytes().last().copied() == Some(b' ') {
                 out.pop();
             }

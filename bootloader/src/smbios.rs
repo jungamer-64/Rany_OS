@@ -221,6 +221,7 @@ fn parse_smbios_structures(info: &mut SmbiosInfo, table_addr: u64, max_size: usi
     let mut offset: usize = 0;
     let table_ptr = table_addr as *const u8;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < max_size {
         // ヘッダを読み取り
         let header = unsafe { ptr::read_unaligned(table_ptr.add(offset) as *const SmbiosHeader) };
@@ -247,6 +248,7 @@ fn parse_smbios_structures(info: &mut SmbiosInfo, table_addr: u64, max_size: usi
         offset += header.length as usize;
 
         // 文字列テーブルをスキップ
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset + 1 < max_size {
             let b0 = unsafe { *table_ptr.add(offset) };
             let b1 = unsafe { *table_ptr.add(offset + 1) };

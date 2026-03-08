@@ -376,6 +376,7 @@ impl ExoShell {
         let mut acc = 0u16;
         let mut has_digit = false;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if idx >= input.len() {
                 return None;
@@ -412,6 +413,7 @@ impl ExoShell {
             return None;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while idx < input.len() && input[idx] == b' ' {
             idx += 1;
         }
@@ -419,11 +421,13 @@ impl ExoShell {
         let mut count = 4u16;
         if idx < input.len() && input[idx] == b',' {
             idx += 1;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while idx < input.len() && input[idx] == b' ' {
                 idx += 1;
             }
             let mut parsed_digit = false;
             let mut val: u32 = 0;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while idx < input.len() && input[idx].is_ascii_digit() {
                 parsed_digit = true;
                 val = val
@@ -438,6 +442,7 @@ impl ExoShell {
                 return None;
             }
             count = val as u16;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while idx < input.len() && input[idx] == b' ' {
                 idx += 1;
             }

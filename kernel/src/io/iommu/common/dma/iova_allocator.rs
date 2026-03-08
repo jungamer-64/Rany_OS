@@ -326,6 +326,7 @@ impl IovaAllocator {
             return Err(IommuError::InvalidAlignment);
         }
 
+        // LOOP_PROOF: mode=condition; reason=Free loop decreases remaining size by step each iteration until the requested range is fully released.;
         while size > 0 {
             let (granularity, step) = Self::select_free_granularity(addr, size);
             self.free_with_granularity(addr, granularity)?;
@@ -359,6 +360,7 @@ impl IovaAllocator {
                     use crate::mm::phys::fast_allocator::PAGE_SIZE_4K;
                     let mut p = addr;
                     let end = addr.saturating_add(size);
+                    // LOOP_PROOF: mode=condition; reason=Fallback release loop advances p by PAGE_SIZE_4K each pass until it reaches end.;
                     while p < end {
                         let _ = self.inner.free_immediate(p, PageGranularity::Page4K);
                         p = p.saturating_add(PAGE_SIZE_4K);
@@ -379,6 +381,7 @@ impl IovaAllocator {
     ///
     /// Use this only during initialization or teardown when no IOTLB caching is active.
     pub fn free_immediate(&self, mut addr: u64, mut size: u64) -> Result<(), IommuError> {
+        // LOOP_PROOF: mode=condition; reason=Immediate-free loop subtracts a positive step from size each pass until zero.;
         while size > 0 {
             let (granularity, step) = Self::select_free_granularity(addr, size);
             self.inner
@@ -413,6 +416,7 @@ impl IovaAllocator {
         // Using compare_exchange loop because fetch_max uses unsigned comparison
         // which breaks when the 32-bit epoch wraps around.
         let mut current = self.completed_epoch.load(Ordering::Acquire);
+        // LOOP_PROOF: mode=event; reason=Epoch CAS loop exits when update is no longer needed or compare_exchange successfully publishes epoch.;
         loop {
             // Check if 'epoch' is ahead of 'current' in a wrap-around safe way
             if (epoch.wrapping_sub(current) as i32) <= 0 {
@@ -451,6 +455,7 @@ impl IovaAllocator {
         // This minimizes lock hold time on the quarantine ring
         let mut entries = [QuarantineEntry::default(); 32];
 
+        // LOOP_PROOF: mode=event; reason=Drain loop exits when no reclaimable entries remain or when batch count falls below buffer length.;
         loop {
             let count = if let Some(ref qbox) = self.quarantines {
                 let mut ring = qbox[cpu_id].lock();
@@ -497,6 +502,7 @@ impl IovaAllocator {
     fn drain_fallback_for_epoch(&self, completed_epoch: u32, force: bool) {
         let mut entries = [QuarantineEntry::default(); FALLBACK_DRAIN_BATCH];
 
+        // LOOP_PROOF: mode=event; reason=Fallback drain loop exits when ring is empty or when drained batch is smaller than buffer capacity.;
         loop {
             let count = {
                 let mut fb = FALLBACK_QUARANTINE.lock();

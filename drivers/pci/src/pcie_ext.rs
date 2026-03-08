@@ -215,6 +215,7 @@ impl PcieConfig {
         // Capabilities Pointerから開始
         let mut ptr = self.read8(bdf, 0x34)? & 0xFC;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while ptr != 0 {
             let id = self.read8(bdf, ptr as u16)?;
             if id == cap_id {
@@ -230,6 +231,7 @@ impl PcieConfig {
     pub fn find_ext_capability(&self, bdf: PcieBdf, ext_cap_id: u16) -> Option<u16> {
         let mut offset = PCIE_EXT_CAP_START;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset != 0 {
             let header = self.read32(bdf, offset)?;
             let id = (header & 0xFFFF) as u16;

@@ -176,6 +176,7 @@ impl CommandCompletion {
     pub fn wait_blocking(&self) -> i32 {
         let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
         let mut backoff = Backoff::new();
+        // LOOP_PROOF: mode=event; reason=Blocking wait exits when slot state reaches completed and otherwise only performs bounded backoff steps.;
         loop {
             if slot.state.load(Ordering::Acquire) == 2 {
                 let r = slot.result.load(Ordering::Acquire);
@@ -200,6 +201,7 @@ impl CommandCompletion {
         let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
         let mut backoff = Backoff::new();
         let mut spins = 0u64;
+        // LOOP_PROOF: mode=event; reason=Worker wait loop exits on completion and each iteration either drains one command or backs off.;
         loop {
             if slot.state.load(Ordering::Acquire) == 2 {
                 let r = slot.result.load(Ordering::Acquire);
@@ -463,6 +465,7 @@ impl CommandQueue {
 
         // Wait for sender to accept (bounded). Try with small backoff
         let mut backoff = Backoff::new();
+        // LOOP_PROOF: mode=event; reason=Submit loop exits immediately after sender accepts command and otherwise retries with backoff.;
         loop {
             match self.sender.send(cmd.clone()) {
                 Ok(_) => {
@@ -506,6 +509,7 @@ impl CommandQueue {
         // Allocate a slot first
         let mut slot_idx = None;
         let mut backoff = Backoff::new();
+        // LOOP_PROOF: mode=condition; reason=Slot-allocation loop exits as soon as alloc_slot returns Some for the pending submission.;
         while slot_idx.is_none() {
             slot_idx = self.alloc_slot();
             if slot_idx.is_none() {
@@ -519,6 +523,7 @@ impl CommandQueue {
 
         // Wait for sender to accept (bounded). Try with small backoff and drain queue
         backoff.reset();
+        // LOOP_PROOF: mode=event; reason=Send loop exits on successful enqueue and otherwise processes queued work to free channel capacity.;
         loop {
             match self.sender.send(cmd.clone()) {
                 Ok(_) => {
@@ -568,6 +573,7 @@ impl CommandQueue {
     {
         let mut processed = 0usize;
 
+        // LOOP_PROOF: mode=event; reason=Processing loop exits when receiver is empty or fuel gate stops and each recv handles one command.;
         loop {
             // If fuel is active and there is no work, break early
             #[cfg(all(test, not(target_os = "none")))]
@@ -628,6 +634,7 @@ impl CommandQueue {
         let mut processed = 0usize;
         let mut rx = self.receiver.lock().unwrap_or_else(|e| e.into_inner());
 
+        // LOOP_PROOF: mode=condition; reason=Loop is explicitly bounded by max and also exits early when receiver is empty or fuel is exhausted.;
         while processed < max {
             // If fuel is active and there is no work, break early.
             #[cfg(all(test, not(target_os = "none")))]
@@ -1013,6 +1020,7 @@ mod tests {
 
         let worker = std::thread::spawn(move || {
             let mut attempts = 0;
+            // LOOP_PROOF: mode=event; reason=Test worker exits after first processed command or panics via attempts timeout guard.;
             loop {
                 let processed = worker_q.process_once(|k| match k {
                     IommuCommandKind::InvalidateIotlbDomain { domain } => {

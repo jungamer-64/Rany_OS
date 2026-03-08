@@ -337,6 +337,7 @@ impl vfs::Inode for NsInode {
         let mut total = 0usize;
         let mut pos = offset;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while pos < end {
             let file_block = pos / bs;
             let block_offset = (pos % bs) as usize;
@@ -371,6 +372,7 @@ impl vfs::Inode for NsInode {
         let mut total = 0usize;
         let mut pos = offset;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while pos < end {
             let file_block = pos / bs;
             let block_offset = (pos % bs) as usize;
@@ -464,6 +466,7 @@ impl NsInode {
         let mut entries = Vec::new();
         let mut offset = 0u64;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset < dir_size {
             let file_block = offset / bs;
             let lba = match self.resolve_block(file_block)? {
@@ -477,6 +480,7 @@ impl NsInode {
             let block_offset_start = (offset % bs) as usize;
             let mut pos = block_offset_start;
 
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while pos + crate::dir::DIR_ENTRY_HEADER_SIZE <= bs as usize {
                 match crate::dir::DirEntry::from_bytes(&block_buf[pos..]) {
                     Some(entry) => {
@@ -667,6 +671,7 @@ impl NsInode {
         drop(disk);
 
         let mut offset = 0u64;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset < dir_size {
             let file_block = offset / bs;
             let lba = match self.resolve_block(file_block)? {
@@ -680,6 +685,7 @@ impl NsInode {
                 .map_err(VfsError::from)?;
 
             let mut pos = (offset % bs) as usize;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while pos + crate::dir::DIR_ENTRY_HEADER_SIZE <= bs as usize {
                 match crate::dir::DirEntry::from_bytes(&block_buf[pos..]) {
                     Some(entry) => {

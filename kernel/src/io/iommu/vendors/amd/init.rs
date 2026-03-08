@@ -38,6 +38,7 @@ const AMD_COMMAND_QUEUE_BATCH: usize = 64;
 
 #[cfg(not(test))]
 async fn command_queue_worker() {
+    // LOOP_PROOF: mode=event; reason=Worker exits if AMD backend or command queue disappears and otherwise waits after each finite batch.;
     loop {
         let driver = get_iommu_driver().and_then(|backend| match backend.as_ref() {
             IommuBackend::Amd(driver) => Some(driver),

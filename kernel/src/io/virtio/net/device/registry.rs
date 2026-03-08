@@ -49,6 +49,7 @@ fn spawn_virtio_net_worker(index: u8) {
 /// VirtIO-Net の割り込み後処理ループ
 async fn virtio_net_worker_task(index: u8) {
     log::info!("[VIRTIO-NET] Worker task for index {} started", index);
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         wait_for_interrupt(InterruptSource::VirtioNet(index)).await;
 

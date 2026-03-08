@@ -170,6 +170,7 @@ impl TlsConnection {
     /// - KeyUpdate (type 24)
     pub(crate) fn tls13_process_post_handshake(&mut self, data: &[u8]) -> TlsResult<()> {
         let mut offset = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset < data.len() {
             if data.len() - offset < 4 {
                 return Err(TlsError::DecodeError);
@@ -226,6 +227,7 @@ impl TlsConnection {
         let ext_total_len = ((data[off] as usize) << 8) | data[off + 1] as usize;
         let mut eoff = off + 2;
         let ext_end = eoff + ext_total_len;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while eoff + 4 <= ext_end && eoff + 4 <= data.len() {
             let ext_type = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
             let ext_len = ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;

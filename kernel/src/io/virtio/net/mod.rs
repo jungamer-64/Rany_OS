@@ -234,6 +234,7 @@ impl NetVirtQueue {
         };
 
         let mut count = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some((desc_idx, len)) = inner.vq.poll_complete() {
             self.completion_map
                 .lock()

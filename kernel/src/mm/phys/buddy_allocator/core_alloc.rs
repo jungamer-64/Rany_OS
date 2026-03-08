@@ -248,6 +248,7 @@ impl BuddyFrameAllocator {
             end_idx = MAX_4K_FRAMES;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while current < end_idx {
             // 現在位置からアラインされた最大ブロックを見つける
             let remaining = end_idx - current;
@@ -357,6 +358,7 @@ impl BuddyFrameAllocator {
 
         for summary_idx in begin..end {
             let mut summary_word = self.free_summary[summary_start + summary_idx];
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while summary_word != 0 {
                 let bit = fast_tzcnt_u64(summary_word) as usize;
                 let detail_idx = summary_idx * 64 + bit;
@@ -520,6 +522,7 @@ impl BuddyFrameAllocator {
     pub(super) fn split_block(&mut self, frame: FrameIndex, from_order: usize, to_order: usize) {
         let mut current_order = from_order;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while current_order > to_order {
             current_order -= 1;
 
@@ -644,6 +647,7 @@ impl BuddyFrameAllocator {
 
         // 全ブロックをスキャンして結合可能なペアを探す
         let mut block_idx = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while block_idx < max_blocks {
             // 偶数インデックスのブロックのみチェック（奇数はBuddyなので）
             if block_idx % 2 != 0 {

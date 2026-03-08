@@ -665,6 +665,7 @@ impl DhcpV6Client {
         let mut domain_search: Vec<alloc::string::String> = Vec::new();
         let mut status_code: Option<u16> = None;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while off + 4 <= data.len() {
             let code = u16::from_be_bytes([data[off], data[off + 1]]);
             let len = u16::from_be_bytes([data[off + 2], data[off + 3]]) as usize;
@@ -698,6 +699,7 @@ impl DhcpV6Client {
                             data[off + 11],
                         ]);
                         let mut sub_off = off + 12; // skip IAID/T1/T2
+                        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                         while sub_off + 4 <= off + len {
                             let sc = u16::from_be_bytes([data[sub_off], data[sub_off + 1]]);
                             let sl =
@@ -813,8 +815,10 @@ impl DhcpV6Client {
     /// DNS エンコードされたドメインサーチリストをパースする (RFC 1035 Section 4.1.4 形式)
     fn parse_domain_search_list(data: &[u8], out: &mut Vec<alloc::string::String>) {
         let mut off = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while off < data.len() {
             let mut labels: Vec<&[u8]> = Vec::new();
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 if off >= data.len() {
                     break;
@@ -1621,6 +1625,7 @@ pub(crate) mod tests {
         // Rebind should NOT contain Server Identifier (option 2)
         let mut found_server_id = false;
         let mut off = 4usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while off + 4 <= len {
             let code = u16::from_be_bytes([buf[off], buf[off + 1]]);
             let opt_len = u16::from_be_bytes([buf[off + 2], buf[off + 3]]) as usize;

@@ -192,6 +192,7 @@ impl PtQuicklist {
     fn process_pending(&mut self) {
         let mut i = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < self.pending_count {
             let entry = self.pending[i];
 

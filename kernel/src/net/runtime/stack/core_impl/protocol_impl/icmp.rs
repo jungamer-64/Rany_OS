@@ -1120,6 +1120,7 @@ impl NetworkStack {
         let mut sum: u32 = 0;
         let mut i = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < data.len() - 1 {
             sum += ((data[i] as u32) << 8) | (data[i + 1] as u32);
             i += 2;
@@ -1129,6 +1130,7 @@ impl NetworkStack {
             sum += (data[i] as u32) << 8;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while sum > 0xFFFF {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }

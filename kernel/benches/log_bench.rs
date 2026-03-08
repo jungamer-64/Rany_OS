@@ -23,6 +23,7 @@ fn run_benchmark(per_core: bool, threads: usize, entries: usize, entry_size: usi
     let producers_done_consumer = producers_done.clone();
     let consumer = thread::spawn(move || {
         let mut tmp = vec![0u8; 1024];
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let mut consumed = 0usize;
             consumed += bench_pop_global_buf(&mut tmp);

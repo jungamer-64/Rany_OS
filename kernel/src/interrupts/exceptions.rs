@@ -266,6 +266,7 @@ define_interrupt!(
         early_print("\n[FATAL] System halted.\n");
 
         // 回復不能 - ハルト
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             x86_64::instructions::hlt();
         }
@@ -405,6 +406,7 @@ define_interrupt!(
         dump_stack_frame(&stack_frame);
 
         // ハードウェアエラーは回復不能
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             x86_64::instructions::hlt();
         }

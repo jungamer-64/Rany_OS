@@ -96,6 +96,7 @@ impl LockFreeGlobalInjector {
         let boxed = alloc::boxed::Box::new(task);
         let ptr = alloc::boxed::Box::into_raw(boxed) as usize;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let head = self.head.load(Ordering::Acquire);
             let tail = self.tail.load(Ordering::Acquire);
@@ -135,6 +136,7 @@ impl LockFreeGlobalInjector {
 
     /// Steal a task from the global queue (lock-free)
     fn steal(&self) -> Option<Task> {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let tail = self.tail.load(Ordering::Acquire);
             let head = self.head.load(Ordering::Acquire);
@@ -156,6 +158,7 @@ impl LockFreeGlobalInjector {
                 Ok(_) => {
                     // Wait for the producer to finish writing
                     let mut ptr;
+                    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
                     loop {
                         ptr = self.buffer[idx].swap(0, Ordering::Acquire);
                         if ptr != 0 {

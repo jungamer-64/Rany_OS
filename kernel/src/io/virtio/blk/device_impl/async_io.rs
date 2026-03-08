@@ -184,6 +184,7 @@ impl<'a> Future for DmaReadFuture<'a> {
             let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
 
             let mut is_completed = false;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while let Some((completed_id, len)) = queue_guard.poll_complete() {
                 self.device.process_completion_entry(
                     &*queue_guard,
@@ -244,6 +245,7 @@ impl<'a> Future for DmaWriteFuture<'a> {
             let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
 
             let mut is_completed = false;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while let Some((completed_id, len)) = queue_guard.poll_complete() {
                 self.device.process_completion_entry(
                     &*queue_guard,

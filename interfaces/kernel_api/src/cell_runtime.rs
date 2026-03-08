@@ -215,6 +215,9 @@ unsafe impl GlobalAlloc for KernelAllocator {
 macro_rules! register_cell_runtime {
     () => {
         #[cfg(target_os = "none")]
+        $crate::declare_rany_type_id_section!();
+
+        #[cfg(target_os = "none")]
         #[global_allocator]
         static CELL_ALLOCATOR: $crate::cell_runtime::KernelAllocator =
             $crate::cell_runtime::KernelAllocator;

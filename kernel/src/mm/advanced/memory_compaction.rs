@@ -205,6 +205,7 @@ impl CompactionManager {
 
         let mut pos = (start + PAGES_PER_2MB - 1) & !(PAGES_PER_2MB - 1);
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while pos + PAGES_PER_2MB <= end {
             if let Some(zone) = self.analyze_zone(FrameIndex::new(pos)) {
                 if zone.needs_compaction() {

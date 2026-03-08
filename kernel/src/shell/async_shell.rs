@@ -73,6 +73,7 @@ pub async fn run_async_shell() {
     // Print initial prompt
     frontend.print_prompt(exoshell.cwd.as_str());
 
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match frontend.read_line(&mut exoshell).await {
             Some(line) => {

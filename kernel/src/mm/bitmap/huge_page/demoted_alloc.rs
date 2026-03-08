@@ -50,6 +50,7 @@ impl HugePageBitmap {
     pub(super) fn demote_2m_block(&self) -> Option<usize> {
         // Find a fully-free, non-demoted block
         for word_idx in 0..self.bitmap_2m.len() {
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let word = self.bitmap_2m[word_idx].load(Ordering::Acquire);
                 if word == 0 {
@@ -539,6 +540,7 @@ impl HugePageBitmap {
 
             // Iterate through partial blocks in this word
             let mut remaining = partial_word;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while remaining != 0 {
                 let bit_idx = remaining.trailing_zeros() as usize;
                 remaining &= remaining - 1; // Clear lowest bit

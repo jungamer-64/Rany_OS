@@ -66,6 +66,7 @@ pub(crate) fn encode_alnum_pairs(
     bit_idx: &mut usize,
 ) -> Option<()> {
     let mut i = 0;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < data.len() {
         let val1 = qr_alnum_value(data[i])?;
         if i + 1 < data.len() {
@@ -103,6 +104,7 @@ pub(crate) fn pad_qr_bitstream(bit_stream: &mut [u8], bit_idx: &mut usize) -> Op
     }
 
     let mut pad_val = 0xEC;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while *bit_idx < DATA_PAYLOAD_BITS {
         if !append_bits(bit_stream, bit_idx, pad_val as u32, 8) {
             return None;

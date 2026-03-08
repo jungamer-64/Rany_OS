@@ -13,6 +13,7 @@ pub fn flush_cache_range(addr: *const u8, size: usize) {
     let aligned_start = start & !(CACHE_LINE_SIZE - 1);
 
     let mut current = aligned_start;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while current < end {
         flush_line(current as *const u8);
         current += CACHE_LINE_SIZE;
@@ -35,6 +36,7 @@ pub fn writeback_cache_range(addr: *const u8, size: usize) {
     let aligned_start = start & !(CACHE_LINE_SIZE - 1);
 
     let mut current = aligned_start;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while current < end {
         // CLWBがサポートされていればCLWB、なければCLFLUSHOPT/CLFLUSHにフォールバック
         if SUPPORTS_CLWB.load(Ordering::Relaxed) {

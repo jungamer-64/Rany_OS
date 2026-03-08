@@ -313,6 +313,7 @@ impl MigrationEngine {
     {
         let mut processed = 0;
         let mut pending = self.pending_requests.lock().unwrap_or_else(|e| e.into_inner());
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while processed < self.batch_size && !pending.is_empty() {
             let request = pending.remove(0);
             let result = migrate_page(request.src_frame, request.dest_node);
@@ -405,6 +406,7 @@ impl NumaDistanceCache {
             }
             for i in 1..num_nodes {
                 let mut j = i;
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while j > 0 && nodes_with_dist[j - 1].1 > nodes_with_dist[j].1 {
                     nodes_with_dist.swap(j - 1, j);
                     j -= 1;

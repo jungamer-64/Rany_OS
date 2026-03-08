@@ -849,6 +849,7 @@ impl<T, const N: usize> FixedVec<T, N> {
         F: FnMut(&T) -> bool,
     {
         let mut i = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < self.len {
             // SAFETY: i < lenなので有効
             let keep = unsafe { f(self.data[i].assume_init_ref()) };

@@ -415,6 +415,7 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 1 < data.len() {
         let word = u16::from_be_bytes([data[i], data[i + 1]]);
         sum += word as u32;
@@ -427,6 +428,7 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
     }
 
     // キャリーを折りたたみ
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
@@ -453,6 +455,7 @@ pub fn pseudo_header_partial_sum(
     sum += protocol as u32;
     sum += length as u32;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
@@ -474,6 +477,7 @@ fn tcp_udp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], protocol: u8, data: &[u8
 
     // データ
     let mut i = 0;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 1 < data.len() {
         let word = u16::from_be_bytes([data[i], data[i + 1]]);
         sum += word as u32;
@@ -483,6 +487,7 @@ fn tcp_udp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], protocol: u8, data: &[u8
         sum += (data[i] as u32) << 8;
     }
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
@@ -504,6 +509,7 @@ fn verify_tcp_udp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], protocol: u8, dat
 
     // データ (チェックサムフィールド含む)
     let mut i = 0;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i + 1 < data.len() {
         let word = u16::from_be_bytes([data[i], data[i + 1]]);
         sum += word as u32;
@@ -513,6 +519,7 @@ fn verify_tcp_udp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], protocol: u8, dat
         sum += (data[i] as u32) << 8;
     }
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }

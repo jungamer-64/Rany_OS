@@ -146,6 +146,7 @@ pub fn init_panic_dma_pool_default() -> Result<(), IommuError> {
     use crate::io::log::{early_print, early_print_dec};
     early_print("[PANIC_DMA] init_panic_dma_pool_default: ENTER\n");
     let mut size = PANIC_DMA_POOL_BYTES;
+    // LOOP_PROOF: mode=condition; reason=Retry size shrinks each pass and loop exits on allocation success or when size drops below one page.;
     while size >= crate::mm::types::PAGE_SIZE_4K {
         early_print("[PANIC_DMA] trying size=");
         early_print_dec(size as u64);
@@ -180,6 +181,7 @@ pub fn panic_alloc_dma(bytes: usize) -> Option<PanicDmaRegion> {
     if size > pool.size {
         return None;
     }
+    // LOOP_PROOF: mode=event; reason=Atomic cursor reservation loop retries until compare_exchange succeeds and then breaks with a stable offset.;
     let offset = loop {
         let cursor = pool.cursor.load(Ordering::Acquire);
         let offset = cursor % pool.size;

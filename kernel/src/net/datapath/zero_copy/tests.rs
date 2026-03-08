@@ -200,6 +200,7 @@ pub fn test_per_cpu_cache_spill_and_refill() {
     // Drain the pool completely, then return all buffers. Returning more than
     // LOCAL_FREE_CACHE_CAPACITY entries forces spill from local -> global.
     let mut held = Vec::new();
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Some(b) = pool.alloc() {
         held.push(b);
     }

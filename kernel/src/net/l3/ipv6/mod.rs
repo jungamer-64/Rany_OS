@@ -791,6 +791,7 @@ pub fn skip_extension_headers<'a>(
 /// within the provided buffer.
 pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
     let mut headers_seen = 0;
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         headers_seen += 1;
         if headers_seen > MAX_EXTENSION_HEADERS {
@@ -1295,6 +1296,7 @@ impl Ipv6PmtuCache {
     pub fn evict_expired(&mut self, current_time: u64) {
         // Remove entries from the head while they are expired.
         // This avoids temporary allocation in runtime paths and keeps O(k log N).
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some((time, key)) = self.lru.first().copied() {
             if current_time.saturating_sub(time) <= Ipv6PmtuEntry::TIMEOUT_MS {
                 break;

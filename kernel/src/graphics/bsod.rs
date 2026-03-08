@@ -472,6 +472,7 @@ fn find_word_break(msg_bytes: &[u8], current_pos: usize, max_len: usize) -> (usi
         split = end;
     }
     let mut next = split;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while next < msg_bytes.len() && msg_bytes[next] == b' ' {
         next += 1;
     }
@@ -490,6 +491,7 @@ fn wrap_and_draw_message(
     let msg_bytes = msg.as_bytes();
     let mut current_pos = 0;
     let mut line_count = 0;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while current_pos < msg_bytes.len() && line_count < 5 {
         let (split, next) = find_word_break(msg_bytes, current_pos, max_len_chars);
         if let Ok(sub) = core::str::from_utf8(&msg_bytes[current_pos..split]) {

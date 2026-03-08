@@ -277,6 +277,7 @@ impl HttpParser {
         const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10MB
         const MAX_CHUNKS: usize = 1024;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             // Security: Limit number of chunks
             chunk_count += 1;

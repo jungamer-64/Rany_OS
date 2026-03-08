@@ -49,6 +49,7 @@ impl HdaController {
 
         // Wait for reset to complete
         let mut timeout = 1000;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while timeout > 0 {
             if (self.read8(stream_base + REG_SD_CTL0) & SD_CTL0_SRST) != 0 {
                 break;
@@ -60,6 +61,7 @@ impl HdaController {
         // Clear reset
         self.write8(stream_base + REG_SD_CTL0, 0);
         timeout = 1000;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while timeout > 0 {
             if (self.read8(stream_base + REG_SD_CTL0) & SD_CTL0_SRST) == 0 {
                 break;

@@ -215,6 +215,7 @@ impl VirtioGpu {
         queue_guard.notify(self.transport.as_ref());
 
         // Poll for completion (synchronous)
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if let Some((_id, _len)) = queue_guard.poll_complete() {
                 queue_guard.free_desc_chain(desc0);
@@ -270,6 +271,7 @@ impl VirtioGpu {
         queue_guard.notify(self.transport.as_ref());
 
         // Poll for completion
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if let Some((_id, _len)) = queue_guard.poll_complete() {
                 queue_guard.free_desc_chain(desc0);
@@ -353,6 +355,7 @@ impl VirtioGpu {
 
         queue_guard.notify(self.transport.as_ref());
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while queue_guard.poll_complete().is_none() {
             core::hint::spin_loop();
         }

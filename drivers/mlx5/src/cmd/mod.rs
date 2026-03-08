@@ -510,6 +510,7 @@ impl CommandTransport for CmdQueueTransport {
         crate::boot_trace_cmd(opcode, "wait_slot", self.uid);
         let queue_wait_start = kernel_api::service::kernel::instance().current_tick();
         let mut queue_wait_spins = 0u64;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while entry.is_owned_by_hw() {
             queue_wait_spins = queue_wait_spins.wrapping_add(1);
             if queue_wait_spins == 10_000_000 {
@@ -553,6 +554,7 @@ impl CommandTransport for CmdQueueTransport {
         crate::boot_trace_cmd(opcode, "wait_hw", self.uid);
         let start_ms = kernel_api::service::kernel::instance().current_tick();
         let mut hw_wait_spins = 0u64;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while entry.is_owned_by_hw() {
             hw_wait_spins = hw_wait_spins.wrapping_add(1);
             if hw_wait_spins == 10_000_000 {

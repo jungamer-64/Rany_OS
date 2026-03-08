@@ -624,6 +624,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     ) -> FsResult<()> {
         let mut curr_cluster = dest_inode.inner.lock().first_cluster;
         let cluster_size = self.fs.cluster_size();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while curr_cluster.0 != 0 && curr_cluster != self.fs.root_cluster {
             if curr_cluster == moved_cluster {
                 return Err(FsError::InvalidInput);
@@ -654,6 +655,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         let cluster_size = self.fs.cluster_size();
         let mut buffer =
             PooledClusterBuffer::new(self.fs.cluster_buffer_pool.as_ref(), cluster_size)?;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while curr_cluster.0 != 0 && curr_cluster != self.fs.root_cluster {
             chain_count += 1;
             if chain_count > MAX_CLUSTER_CHAIN {
@@ -930,6 +932,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         let mut current_cluster = start_cluster;
         let mut segments: Vec<ZeroCopySegment<B>> = Vec::new();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while remaining > 0 && current_cluster.is_valid() {
             let seg = self
                 .build_zero_copy_segment(current_cluster, current_offset, remaining)
@@ -973,6 +976,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
             ((max_bytes + self.fs.cluster_size() - 1) / self.fs.cluster_size()).max(1);
         let mut run_count = 1usize;
         let mut last = start;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while run_count < max_clusters {
             let next = self.fs.read_fat_entry_async(last).await?;
             if next.is_eof() || !next.is_valid() || next.0 != last.0 + 1 {

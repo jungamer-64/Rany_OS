@@ -78,6 +78,7 @@ pub(crate) fn map_hhdm_and_identity(
     let mut pages_2mb = 0u32;
     let mut pages_4kb = 0u32;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while current < map_limit {
         let remaining = map_limit - current;
         let (advance, page_type) = select_hhdm_page_size(current, remaining, cpu_features);

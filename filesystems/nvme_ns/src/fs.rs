@@ -200,6 +200,7 @@ impl NvmeNamespaceFs {
         let mut lba = start_lba;
         let mut offset = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset < data.len() {
             let end = (offset + bs_usize).min(data.len());
             let mut buf = vec![0u8; bs_usize];

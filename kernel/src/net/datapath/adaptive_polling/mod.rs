@@ -600,6 +600,7 @@ impl PerCorePolling {
             return; // Already polling
         }
 
+        // LOOP_PROOF: mode=condition; reason=Synchronous poll loop runs only while active flag remains set and exits as soon as stop clears it.;
         while self.active.load(Ordering::Acquire) {
             let work_done = self.poll_napi_list(&mut driver_poll);
 
@@ -629,6 +630,7 @@ impl PerCorePolling {
             return; // Already polling
         }
 
+        // LOOP_PROOF: mode=condition; reason=Async poll loop checks active every pass and exits when stop clears active state.;
         while self.active.load(Ordering::Acquire) {
             let work_done = self.poll_napi_list(&mut driver_poll);
 

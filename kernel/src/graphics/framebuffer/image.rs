@@ -360,6 +360,7 @@ impl Framebuffer {
         let chunk_24_pixels: usize = Self::choose_chunk_24_pixels(run_len);
 
         let mut processed = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while processed < run_len {
             let chunk = core::cmp::min(chunk_24_pixels, run_len - processed);
             let chunk_bytes = chunk * 3;
@@ -521,6 +522,7 @@ impl Framebuffer {
         dst_row: i32,
         img_ptr: *const u8,
     ) {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while *col < row_end {
             let idx = ((src_row * image.width() + *col) * 4) as usize;
             let alpha = unsafe { *img_ptr.add(idx + 3) };
@@ -544,6 +546,7 @@ impl Framebuffer {
         img_ptr: *const u8,
     ) -> usize {
         let run_start = *col;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while *col < row_end {
             let idx = ((src_row * image.width() + *col) * 4) as usize;
             let alpha = unsafe { *img_ptr.add(idx + 3) };
@@ -628,6 +631,7 @@ impl Framebuffer {
         let mut col = row_start;
         let img_ptr = image.data().as_ptr();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while col < row_end {
             self.skip_transparent_pixels(image, src_row, &mut col, row_end, x, dst_row, img_ptr);
 

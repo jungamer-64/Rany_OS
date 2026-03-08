@@ -48,6 +48,7 @@ fn draw_line_naive(fb: &mut Framebuffer, x1: i32, y1: i32, x2: i32, y2: i32, col
     let sx = if x1 < x2 { 1 } else { -1 };
     let sy = if y1 < y2 { 1 } else { -1 };
     let mut err = dx + dy;
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         fb.set_pixel(x, y, color);
         if x == x2 && y == y2 {
@@ -591,6 +592,7 @@ fn test_draw_hline_32bit_backbuffer() {
         let sy = if y1 < y2 { 1 } else { -1 };
         let mut err = dx + dy;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             fb_naive.set_pixel(x, y, color);
             if x == x2 && y == y2 {

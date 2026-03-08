@@ -133,6 +133,7 @@ impl ConnectionOooQueue {
 
         let mut fin_encountered = false;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if let Some(packet) = self.segments.remove(&rcv_nxt) {
                 GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);

@@ -173,6 +173,7 @@ impl<T: Copy, const N: usize> Magazine<T, N> {
     where
         F: FnMut(T),
     {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(value) = self.pop() {
             f(value);
         }

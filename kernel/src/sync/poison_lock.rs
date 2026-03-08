@@ -327,6 +327,7 @@ impl<T> PoisonLock<T> {
 
         let mut spin_count: u64 = 0;
         let mut backoff = Backoff::new();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -703,6 +704,7 @@ impl<T: ?Sized> IrqPoisonLock<T> {
 
         // 2. スピンロックを取得
         let mut backoff = Backoff::new();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)

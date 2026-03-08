@@ -61,6 +61,7 @@ impl<T> AsyncMutex<T> {
 
     /// Blocking acquisition (spin-waits). Intended for short critical sections only.
     pub fn blocking_lock(&self) -> BlockingGuard<'_, T> {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)

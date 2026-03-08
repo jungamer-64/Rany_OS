@@ -69,6 +69,7 @@ impl<T, const N: usize> MpscRingBuffer<T, N> {
     pub fn push(&self, value: T) -> Result<(), T> {
         let mut backoff = Backoff::new();
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let head = self.head.load(Ordering::Relaxed);
             let next_head = (head + 1) % N;
@@ -95,6 +96,7 @@ impl<T, const N: usize> MpscRingBuffer<T, N> {
                     // コミットを待機（順序保証）
                     // 前のスロットがコミットされるまで待つ
                     let mut commit_backoff = Backoff::new();
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while self.committed.load(Ordering::Acquire) != head {
                         commit_backoff.snooze();
                     }
@@ -142,6 +144,7 @@ impl<T, const N: usize> Default for MpscRingBuffer<T, N> {
 
 impl<T, const N: usize> Drop for MpscRingBuffer<T, N> {
     fn drop(&mut self) {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.pop().is_some() {}
     }
 }

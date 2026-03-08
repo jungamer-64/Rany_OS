@@ -248,6 +248,7 @@ impl CapabilityManager {
         {
             let mut grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
             let mut i = 0;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while i < grants.len() {
                 if let Some(e) = grants[i].expires {
                     if e <= now {

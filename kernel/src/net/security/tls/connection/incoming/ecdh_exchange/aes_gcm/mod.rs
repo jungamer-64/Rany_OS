@@ -239,6 +239,7 @@ impl TlsConnection {
     /// TLS 1.3: 暗号化ハンドシェイク内の複数メッセージを処理
     pub(super) fn tls13_process_handshake_messages(&mut self, data: &[u8]) -> TlsResult<()> {
         let mut offset = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset < data.len() {
             if data.len() - offset < 4 {
                 return Err(TlsError::DecodeError);
@@ -326,6 +327,7 @@ impl TlsConnection {
         // 拡張をパース（ALPN, early_data等）
         let mut eoff = 2usize;
         let ext_end = 2 + extensions_len;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while eoff + 4 <= ext_end && eoff + 4 <= data.len() {
             let ext_type = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
             let ext_len = ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;
@@ -392,6 +394,7 @@ impl TlsConnection {
         off += 2;
 
         let ext_end = off + ext_total_len;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while off + 4 <= ext_end && off + 4 <= data.len() {
             let ext_type = ((data[off] as u16) << 8) | data[off + 1] as u16;
             let ext_len = ((data[off + 2] as usize) << 8) | data[off + 3] as usize;

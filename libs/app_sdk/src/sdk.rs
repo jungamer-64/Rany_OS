@@ -23,6 +23,7 @@ pub async fn sleep(ms: u64) {
     let start = kernel().current_tick();
     let target = start + ms;
 
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         if kernel().current_tick() >= target {
             break;

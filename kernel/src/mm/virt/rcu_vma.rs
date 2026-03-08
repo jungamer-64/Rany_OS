@@ -194,6 +194,7 @@ impl VmaList {
         let guard = rcu_read_lock();
 
         let mut current_ptr = self.head.get_raw(&guard);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !current_ptr.is_null() {
             // Safety: RcuReadGuard 内
             let current = unsafe { &*current_ptr };
@@ -218,6 +219,7 @@ impl VmaList {
         let guard = rcu_read_lock();
 
         let mut current_ptr = self.head.get_raw(&guard);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !current_ptr.is_null() {
             let current = unsafe { &*current_ptr };
 
@@ -246,6 +248,7 @@ impl VmaList {
         let mut prev_ptr: *mut VmArea = core::ptr::null_mut();
         let mut current_ptr = self.head.load_raw_mut();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !current_ptr.is_null() {
             let current = unsafe { &*current_ptr };
             if new_vma.start < current.start {
@@ -277,6 +280,7 @@ impl VmaList {
         let mut prev_ptr: *mut VmArea = core::ptr::null_mut();
         let mut current_ptr = self.head.load_raw_mut();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !current_ptr.is_null() {
             let current = unsafe { &*current_ptr };
             if current.start == addr {

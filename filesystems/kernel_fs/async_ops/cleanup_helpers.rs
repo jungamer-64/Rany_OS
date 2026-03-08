@@ -212,6 +212,7 @@ pub(crate) fn read_via_page_cache(
     let cache = page_cache();
     let mut total = 0;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while total < buf.len() {
         let cur_offset = offset + total as u64;
         let page_num = cur_offset / CACHE_PAGE_SIZE as u64;
@@ -251,6 +252,7 @@ pub(crate) fn write_via_page_cache(
     let cache = page_cache();
     let mut total = 0;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while total < buf.len() {
         let cur_offset = offset + total as u64;
         let page_num = cur_offset / CACHE_PAGE_SIZE as u64;

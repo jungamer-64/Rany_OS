@@ -26,6 +26,7 @@ pub async fn read_line() -> String {
     let port = &SERIAL1;
     let mut buffer = Vec::with_capacity(256);
 
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         let byte = port.read_byte().await;
 

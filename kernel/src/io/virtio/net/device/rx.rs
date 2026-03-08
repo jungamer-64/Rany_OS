@@ -42,8 +42,9 @@ impl VirtioNetDevice {
     pub(super) fn process_rx_completions(&self) {
         for (q_idx_pair, rx_queue) in self.rx_queues.iter().enumerate() {
             let q_idx = (q_idx_pair * 2) as u16;
-            let mut inner = rx_queue.inner.lock().expect("Failed to lock RX queue");
+            let inner = rx_queue.inner.lock().unwrap_or_else(|e| e.into_inner());
             
+            // LOOP_PROOF: mode=condition; reason=RX completion loop drains descriptor completions and exits when poll_complete returns None.;
             while let Some((desc_idx, len)) = inner.poll_complete() {
                 self.rx_packets.fetch_add(1, Ordering::Relaxed);
                 self.rx_bytes.fetch_add(len, Ordering::Relaxed);

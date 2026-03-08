@@ -31,6 +31,7 @@ impl Framebuffer {
     #[inline]
     fn next_on_run(byte: u8, mut col: usize, max_bits: usize) -> (usize, usize, usize) {
         // Skip OFF pixels
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while col < max_bits {
             if (byte >> (7 - col)) & 1 != 0 {
                 break;
@@ -39,6 +40,7 @@ impl Framebuffer {
         }
         let run_start = col;
         // Count ON pixels
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while col < max_bits {
             if (byte >> (7 - col)) & 1 == 0 {
                 break;
@@ -56,6 +58,7 @@ impl Framebuffer {
         byte_idx: usize,
         width: usize,
     ) -> (usize, usize, usize) {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while col < 8 && (byte_idx * 8 + col) < width {
             if (byte >> (7 - col)) & 1 != 0 {
                 break;
@@ -63,6 +66,7 @@ impl Framebuffer {
             col += 1;
         }
         let run_start = col;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while col < 8 && (byte_idx * 8 + col) < width {
             if (byte >> (7 - col)) & 1 == 0 {
                 break;
@@ -144,6 +148,7 @@ impl Framebuffer {
         color: Color,
     ) {
         let mut col = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while col < 8 && (byte_idx * 8 + col) < width as usize {
             let (run_start, run_len, new_col) =
                 Self::next_on_run_bounded(byte, col, byte_idx, width as usize);
@@ -169,6 +174,7 @@ impl Framebuffer {
     ) -> bool {
         let mut wrote_mmio = false;
         let mut col = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while col < 8 && (byte_idx * 8 + col) < width as usize {
             let (run_start, run_len, new_col) =
                 Self::next_on_run_bounded(byte, col, byte_idx, width as usize);
@@ -361,6 +367,7 @@ impl Framebuffer {
     ) -> bool {
         let mut need_fence = false;
         let mut col = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while col < font_width {
             let (run_start, run_len, new_col) = Self::next_on_run(byte, col, font_width);
             col = new_col;
@@ -404,6 +411,7 @@ impl Framebuffer {
                     let pair = (pixel as u32) | ((pixel as u32) << 16);
                     let mut i = 0usize;
 
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while i + 1 < clipped_len {
                         unsafe {
                             ptr::write_unaligned(base.add(i * 2) as *mut u32, pair);
@@ -917,6 +925,7 @@ impl Framebuffer {
             3 => {
                 // 24bpp: run-coalesced writes
                 let mut col = 0usize;
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while col < 8 {
                     let (run_start, run_len, new_col) = Self::next_on_run(byte, col, 8);
                     col = new_col;
@@ -934,6 +943,7 @@ impl Framebuffer {
             2 => {
                 let mut wrote_mmio = false;
                 let mut col = 0usize;
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while col < 8 {
                     let (run_start, run_len, new_col) = Self::next_on_run(byte, col, 8);
                     col = new_col;

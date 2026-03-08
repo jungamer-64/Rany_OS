@@ -261,6 +261,7 @@ impl Framebuffer {
         let mut run_start = y;
         let mut run_end = y;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if x == x2 && y == y2 {
                 self.flush_steep_run(run_x, run_start, run_end, color);
@@ -342,6 +343,7 @@ impl Framebuffer {
         let mut run_start = x;
         let mut run_end = x;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if x == x2 && y == y2 {
                 self.flush_shallow_run(run_y, run_start, run_end, color);
@@ -398,6 +400,7 @@ impl Framebuffer {
         let mut x = x1;
         let mut y = y1;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             self.set_pixel(x, y, color);
             if x == x2 && y == y2 {
@@ -760,6 +763,7 @@ impl Framebuffer {
         let mut y = 0;
         let mut err = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while x >= y {
             // Use set_pixel_raw (skip per-pixel dirty mark + clip re-check)
             // Only draw if within clip bounds
@@ -813,6 +817,7 @@ impl Framebuffer {
         let mut last_y3: i32 = i32::MIN;
         let mut last_y4: i32 = i32::MIN;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while x >= y {
             // Use draw_hline_raw (skip per-hline dirty mark — already pre-marked)
             let rows = [

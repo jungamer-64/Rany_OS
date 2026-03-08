@@ -151,6 +151,7 @@ impl DirtyRegionManager {
             used[i] = true;
 
             // 他の矩形とマージを試みる
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while Self::merge_pass(&self.regions, &mut current, &mut used) {}
 
             optimized.push(DirtyRect::new(current));

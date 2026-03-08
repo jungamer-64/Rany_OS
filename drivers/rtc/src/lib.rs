@@ -95,6 +95,7 @@ impl DateTime {
         remaining /= 24;
         let day_of_week = ((remaining + 4) % 7 + 1) as u8;
         let mut year: u16 = 1970;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let days_in_year = if is_leap_year(year) { 366 } else { 365 };
             if remaining < days_in_year { break; }
@@ -103,6 +104,7 @@ impl DateTime {
         }
         let days_in_month = if is_leap_year(year) { [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] } else { [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] };
         let mut month: u8 = 1;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while month <= 12 && remaining >= days_in_month[month as usize] as i64 {
             remaining -= days_in_month[month as usize] as i64;
             month += 1;

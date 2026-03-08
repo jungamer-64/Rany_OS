@@ -614,6 +614,7 @@ impl PerCoreNvmeQueue {
 
         if let Some(qp) = qp_opt {
             // ISR loop: poll until empty
+            // LOOP_PROOF: mode=condition; reason=ISR completion loop keeps consuming CQEs and exits when poll_completion reports empty.;
             while let Some(cqe) = qp.poll_completion() {
                 self.stats
                     .commands_completed

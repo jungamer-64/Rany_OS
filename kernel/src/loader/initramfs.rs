@@ -137,6 +137,7 @@ impl<'a> TarArchive<'a> {
     pub fn files(&mut self) -> Vec<TarEntry<'a>> {
         let mut entries = Vec::new();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(entry) = self.next_entry() {
             entries.push(entry);
         }

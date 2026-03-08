@@ -612,6 +612,7 @@ impl MglruList {
         let mut to_rejuvenate = Vec::new();
         let mut to_age = Vec::new();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(mut entry) = source.pop_front() {
             if entry.test_clear_referenced() {
                 // 参照ビットあり → Gen0に若返り
@@ -648,6 +649,7 @@ impl MglruList {
         // 残りページを元の世代に戻す
         if !remaining.is_empty() {
             let mut source = self.generations[gen_idx].lock();
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while let Some(entry) = remaining.pop_front() {
                 source.push_back(entry);
             }
@@ -690,6 +692,7 @@ impl MglruList {
         let mut victims = Vec::with_capacity(count.min(gen3.len()));
 
         let mut i = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while victims.len() < count && i < gen3.len() {
             if let Some(entry) = gen3.get(i) {
                 if entry.is_reclaimable() && !entry.referenced.load(Ordering::Relaxed) {

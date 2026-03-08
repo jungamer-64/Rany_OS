@@ -54,6 +54,7 @@ pub(crate) fn fmt_dec_u64(value: u64, buf: &mut [u8; FMT_BUF_SIZE]) -> &str {
     let mut v = value;
     let mut temp = [0u8; 20]; // Max u64 digits = 20
 
+    // LOOP_PROOF: mode=condition; reason=Decimal conversion divides v by 10 each pass and stops when value reaches zero or digit cap.;
     while v > 0 && pos < 20 {
         temp[pos] = b'0' + (v % 10) as u8;
         v /= 10;

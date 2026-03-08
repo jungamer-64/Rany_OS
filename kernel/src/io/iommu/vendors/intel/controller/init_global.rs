@@ -38,6 +38,7 @@ const COMMAND_QUEUE_BATCH: usize = 64;
 
 #[cfg(not(test))]
 async fn command_queue_worker(controller: Arc<IommuController>) {
+    // LOOP_PROOF: mode=event; reason=Command worker exits when queue is unavailable and otherwise awaits new work after finite processing.;
     loop {
         let cq = match controller.command_queue.as_ref() {
             Some(cq) => cq,

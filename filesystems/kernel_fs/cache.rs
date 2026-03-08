@@ -499,6 +499,7 @@ impl PageCache {
         let mut freed = 0;
         let mut files = self.files.write();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while freed < needed {
             if let Some((ino, page_num)) = Self::find_lru_page_globally(&files) {
                 if let Some(file_cache) = files.get_mut(&ino) {

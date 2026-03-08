@@ -236,6 +236,7 @@ impl HierarchicalBitmap {
 
         // L1ワード内の全ビットを走査
         let mut temp_l1 = l1_word;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while temp_l1 != 0 {
             let l1_bit = temp_l1.trailing_zeros() as usize;
             let detail_idx = l1_idx * BITS_PER_WORD + l1_bit;
@@ -315,6 +316,7 @@ impl HierarchicalBitmap {
         };
         let mask = valid_mask & limit_mask;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let word = self.detail[word_idx].load(Ordering::Acquire);
             let available = word & mask;
@@ -365,6 +367,7 @@ impl HierarchicalBitmap {
         let bit_idx = index % BITS_PER_WORD;
         let bit_mask = 1u64 << bit_idx;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let word = self.detail[word_idx].load(Ordering::Acquire);
             if (word & bit_mask) == 0 {
@@ -403,6 +406,7 @@ impl HierarchicalBitmap {
         let bit_idx = index % BITS_PER_WORD;
         let bit_mask = 1u64 << bit_idx;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let word = self.detail[word_idx].load(Ordering::Acquire);
             if (word & bit_mask) != 0 {

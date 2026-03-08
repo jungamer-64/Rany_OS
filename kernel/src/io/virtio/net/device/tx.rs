@@ -84,8 +84,9 @@ impl VirtioNetDevice {
             match tx_queue.add_tx_buffer_zero_copy(device_addr, data_len) {
                 Ok(desc_idx) => {
                     let tracker = &self.core.tx_trackers[q_idx];
-                    let (phys, iova2, virt, len, _rel) = buffer.into_raw_parts();
-                    let bounce = unsafe { DmaSlice::<CpuOwned>::from_raw_parts(phys, iova2, virt, len, None) };
+                    let (phys, iova2, virt, len, rel) = buffer.into_raw_parts();
+                    let rel_unsafe: Option<unsafe fn(*mut u8, usize, u64)> = rel.map(|f| f as _);
+                    let bounce = unsafe { DmaSlice::<CpuOwned>::from_raw_parts(phys, iova2, virt, len, rel_unsafe) };
                     let packet = match crate::net::datapath::mempool::alloc_packet() {
                         Some(p) => p,
                         None => return Err(VirtioNetError::DeviceError),
@@ -216,8 +217,9 @@ impl VirtioNetDevice {
                     virtio_driver::net::TxInflight {
                         packet,
                         bounce_buffer: bounce_buffer.map(|buf| {
-                            let (phys, iova, virt, len, _rel) = buf.into_raw_parts();
-                            unsafe { DmaSlice::<CpuOwned>::from_raw_parts(phys, iova, virt, len, None) }
+                            let (phys, iova, virt, len, rel) = buf.into_raw_parts();
+                            let rel_unsafe: Option<unsafe fn(*mut u8, usize, u64)> = rel.map(|f| f as _);
+                            unsafe { DmaSlice::<CpuOwned>::from_raw_parts(phys, iova, virt, len, rel_unsafe) }
                         }),
                         iommu_iova: mapped_iova,
                         iommu_map_len: mapped_len as u64,
@@ -387,8 +389,9 @@ impl VirtioNetDevice {
     pub(super) fn process_tx_completions(&self) {
         for (q_idx_pair, tx_queue) in self.tx_queues.iter().enumerate() {
             let q_idx = (q_idx_pair * 2 + 1) as u16; // TX queue index in VirtIO is odd
-            let mut inner = tx_queue.inner.lock().expect("Failed to lock TX queue");
+            let inner = tx_queue.inner.lock().unwrap_or_else(|e| e.into_inner());
 
+            // LOOP_PROOF: mode=condition; reason=TX completion loop drains descriptor completions and exits when poll_complete returns None.;
             while let Some((desc_idx, len)) = inner.poll_complete() {
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 self.tx_bytes.fetch_add(len, Ordering::Relaxed);

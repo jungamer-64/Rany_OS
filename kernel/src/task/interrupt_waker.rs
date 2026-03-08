@@ -182,6 +182,7 @@ impl InterruptWakerRegistry {
         let Some(wakers) = self.wakers.get() else {
             return;
         };
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(encoded_idx) = self.event_queue.pop() {
             if encoded_idx == 0 {
                 continue;
@@ -288,6 +289,7 @@ impl InterruptEventQueue {
 
     #[inline]
     fn pop(&self) -> Option<usize> {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let tail = self.tail.load(Ordering::Relaxed);
             let head = self.head.load(Ordering::Acquire);

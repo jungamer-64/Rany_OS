@@ -71,6 +71,7 @@ impl LockFreeQueue {
 
     /// タスクIDをプッシュ（try）
     pub fn push(&self, task_id: TaskId) -> bool {
+        // LOOP_PROOF: mode=event; reason=Tail CAS retries until enqueue succeeds or queue-full detection returns false.;
         loop {
             let tail = self.tail.load(Ordering::Relaxed);
             let head = self.head.load(Ordering::Acquire);
@@ -103,6 +104,7 @@ impl LockFreeQueue {
 
     /// タスクIDをポップ（try）
     pub fn pop(&self) -> Option<TaskId> {
+        // LOOP_PROOF: mode=event; reason=Head CAS retries until dequeue succeeds or queue-empty detection returns None.;
         loop {
             let head = self.head.load(Ordering::Relaxed);
             let tail = self.tail.load(Ordering::Acquire);
@@ -348,6 +350,7 @@ impl Executor {
 
     /// メインループ
     pub fn run(&mut self) -> ! {
+        // LOOP_PROOF: mode=event; reason=Executor loop is intentional for kernel lifetime and each pass handles finite work slices.;
         loop {
             let initdbg_stage = EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed);
             if initdbg_stage == 0
@@ -531,6 +534,7 @@ impl Executor {
             crate::io::log::early_print("[RUNDBG2] run_ready entry\n");
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop drains local ready tasks and exits when queue empties or batch and preemption break triggers.;
         while let Some(mut task) = self.local_queue.pop_front() {
             if EXECUTOR_INITDBG_STAGE.load(Ordering::Relaxed) == 11 {
                 crate::io::log::early_print("[RUNDBG] popped one task\n");
@@ -665,6 +669,7 @@ impl Executor {
         let now_ns = crate::time::precise_time_nanos();
         let mut pending = VecDeque::with_capacity(self.suspended_queue.len());
 
+        // LOOP_PROOF: mode=condition; reason=Each suspended entry is visited once and loop exits after the suspended queue is fully consumed.;
         while let Some((deadline, task)) = self.suspended_queue.pop_front() {
             if now_ns >= deadline
                 && crate::domain_system::is_domain_runnable_now(task.domain_id, now_ns)
@@ -702,6 +707,7 @@ impl Executor {
     fn process_wake_queue(&mut self) {
         // ロックフリーでWake queueを処理
         let mut woken = 0;
+        // LOOP_PROOF: mode=condition; reason=Wake loop exits when wake queue is empty or when the configured batch limit is reached.;
         while let Some(task_id) = WAKE_QUEUE.pop() {
             if let Some(task) = self.find_task_in_stores(task_id, true) {
                 self.local_queue.push_back(task);
@@ -720,6 +726,7 @@ impl Executor {
     /// グローバルキューからタスクを取得
     fn fetch_from_global(&mut self) {
         let mut fetched = 0;
+        // LOOP_PROOF: mode=condition; reason=Fetch loop is bounded by batch_size and exits early when GLOBAL_QUEUE has no pending task ID.;
         while fetched < self.batch_size {
             if let Some(task_id) = GLOBAL_QUEUE.pop() {
                 if let Some(task) = self.find_task_in_stores(task_id, false) {

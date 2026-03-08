@@ -57,6 +57,7 @@ impl LockFreeWakeQueue {
     fn push(&self, task_id: TaskId) -> bool {
         let id_val = task_id.as_u64() as usize;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let head = self.head.load(Ordering::Acquire);
             let tail = self.tail.load(Ordering::Acquire);
@@ -91,6 +92,7 @@ impl LockFreeWakeQueue {
 
     /// Dequeue a task ID (single consumer)
     fn pop(&self) -> Option<TaskId> {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let tail = self.tail.load(Ordering::Acquire);
             let head = self.head.load(Ordering::Acquire);
@@ -112,6 +114,7 @@ impl LockFreeWakeQueue {
                 Ok(_) => {
                     // Wait for the producer to finish writing
                     let mut val;
+                    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
                     loop {
                         val = self.buffer[idx].swap(0, Ordering::Acquire);
                         if val != 0 {

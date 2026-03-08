@@ -157,6 +157,7 @@ pub fn drain_deferred_faults() -> usize {
 
 pub(crate) fn drain_deferred_faults_with_driver(driver: Option<&AmdIommuDriver>) -> usize {
     let mut count = 0usize;
+    // LOOP_PROOF: mode=condition; reason=AMD deferred-fault drain processes one queued event at a time and exits when queue is empty.;
     while let Some(event) = AMD_DEFERRED_FAULT_QUEUE.pop() {
         if event.is_overflow {
             log::warn!("[IOMMU][AMD-Vi] Event log overflow");
@@ -220,6 +221,7 @@ async fn wait_for_fault_events() {
 }
 
 pub async fn fault_handler_task() {
+    // LOOP_PROOF: mode=event; reason=AMD fault task runs continuously and awaits new events after each finite drain pass.;
     loop {
         let driver = get_iommu_driver().and_then(|backend| match backend.as_ref() {
             IommuBackend::Amd(driver) => Some(driver),

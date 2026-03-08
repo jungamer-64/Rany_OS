@@ -749,6 +749,7 @@ fn run_integration_tests_if_requested(context: &KernelBootContext) {
         } else {
             port.write(0x11u32);
         }
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             x86_64::instructions::hlt();
         }

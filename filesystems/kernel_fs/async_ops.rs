@@ -366,6 +366,7 @@ fn map_nvme_iommu(phys_addr: u64, size: usize) -> FsResult<(u64, Option<NvmeIomm
 fn allocate_prp_list_pages(total_entries: usize) -> FsResult<Vec<TypedDmaSlice<CpuOwned>>> {
     let mut remaining = total_entries;
     let mut list_buffers = Vec::new();
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while remaining > 0 {
         let list = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(FsError::NoSpace)?;
         list_buffers.push(list);

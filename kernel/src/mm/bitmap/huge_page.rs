@@ -186,6 +186,7 @@ impl HugePageBitmap {
         for offset in 0..self.bitmap_2m.len() {
             let word_idx = (hint + offset) % self.bitmap_2m.len();
 
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let word = self.bitmap_2m[word_idx].load(Ordering::Acquire);
                 if word == 0 {
@@ -342,6 +343,7 @@ impl HugePageBitmap {
     /// Returns the block index, or None if no fully-free 1GB blocks available.
     pub fn allocate_1g(&self) -> Option<usize> {
         for word_idx in 0..self.bitmap_1g.len() {
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let word = self.bitmap_1g[word_idx].load(Ordering::Acquire);
                 if word == 0 {
@@ -567,6 +569,7 @@ impl HugePageBitmap {
             if word_idx * BITS_PER_WORD >= limit_block {
                 return None;
             }
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let word = self.bitmap_2m[word_idx].load(Ordering::Acquire);
                 if word == 0 {
@@ -627,6 +630,7 @@ impl HugePageBitmap {
             if word_idx * BITS_PER_WORD >= limit_block_idx {
                 return None;
             }
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let word = self.bitmap_2m[word_idx].load(Ordering::Acquire);
                 if word == 0 {
@@ -691,6 +695,7 @@ impl HugePageBitmap {
             if word_idx * BITS_PER_WORD >= limit_block_idx {
                 return None;
             }
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 let word = self.bitmap_1g[word_idx].load(Ordering::Acquire);
                 if word == 0 {

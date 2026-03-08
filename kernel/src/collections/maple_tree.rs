@@ -132,6 +132,7 @@ impl<T: Clone + PartialEq> MapleTree<T> {
         }
 
         let mut i = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 1 < self.entries.len() {
             let merge = {
                 let a = &self.entries[i];

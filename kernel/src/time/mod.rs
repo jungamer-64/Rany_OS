@@ -138,6 +138,7 @@ fn compute_tsc_mult_shift(frequency: u64) -> (u64, u8) {
     }
 
     let mut shift: u8 = 63;
+    // LOOP_PROOF: mode=event; reason=Shift decreases every pass and loop exits once multiplier fits u64 or fallback shift reaches zero.;
     loop {
         let numerator = (NANOS_PER_SEC as u128) << shift;
         let mult = numerator / frequency as u128;
@@ -303,6 +304,7 @@ impl Rtc {
         const MAX_RETRIES: u32 = 3;
         const MAX_UPDATE_WAIT: u32 = 10000;
         let mut wait_count = 0;
+        // LOOP_PROOF: mode=condition; reason=RTC wait loop exits when update-in-progress bit clears or MAX_UPDATE_WAIT guard is exceeded.;
         while self.update_in_progress() {
             core::hint::spin_loop();
             wait_count += 1;
@@ -311,6 +313,7 @@ impl Rtc {
             }
         }
         let mut retries = 0;
+        // LOOP_PROOF: mode=event; reason=Retry loop returns on stable double-read match or exits at MAX_RETRIES bound.;
         loop {
             let first = self.read_datetime_internal();
             let second = self.read_datetime_internal();
@@ -495,6 +498,7 @@ impl Pit {
             let ticks_needed = (freq as u128 * microseconds as u128) / 1_000_000;
             let ticks_needed = ticks_needed as u64;
             let start = rdtsc_unserialized();
+            // LOOP_PROOF: mode=condition; reason=Delay loop exits once elapsed TSC ticks reach the computed ticks_needed threshold.;
             while rdtsc_unserialized().wrapping_sub(start) < ticks_needed {
                 core::hint::spin_loop();
             }
@@ -516,6 +520,7 @@ impl Pit {
         speaker_port.write((old_speaker & 0xFC) | 0x01);
         data_port.write((ticks & 0xFF) as u8);
         data_port.write((ticks >> 8) as u8);
+        // LOOP_PROOF: mode=condition; reason=PIT one-shot wait exits when channel 2 output bit signals completion.;
         while (speaker_port.read() & 0x20) == 0 {
             core::hint::spin_loop();
         }
@@ -536,6 +541,7 @@ fn perform_single_pit_measurement(
 ) -> Option<u64> {
     speaker_port.write(old_speaker & 0xFC);
     let mut timeout = 100_000;
+    // LOOP_PROOF: mode=condition; reason=Loop exits when speaker status bit clears or timeout counter reaches zero safeguard.;
     while (speaker_port.read() & 0x20) != 0 {
         core::hint::spin_loop();
         timeout -= 1;
@@ -552,6 +558,7 @@ fn perform_single_pit_measurement(
     data_port.write((pit_ticks & 0xFF) as u8);
     data_port.write((pit_ticks >> 8) as u8);
     let mut timeout = 100_000_000;
+    // LOOP_PROOF: mode=event; reason=Loop breaks on PIT output completion and returns None when timeout guard expires.;
     loop {
         if (speaker_port.read() & 0x20) != 0 {
             break;

@@ -107,6 +107,7 @@ impl PageRequestManager for IommuController {
                     prq.update_tail(tail);
 
                     // Pop all pending entries
+                    // LOOP_PROOF: mode=condition; reason=PRQ pop loop drains pending requests and exits when queue pop returns None.;
                     while let Some(entry) = prq.pop() {
                         requests.push(entry);
                     }

@@ -50,6 +50,7 @@ pub fn exhaustion_smoke() -> bool {
     let bitmap = HierarchicalBitmap::new(64);
     let mut allocated = alloc::vec::Vec::new();
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Some(idx) = bitmap.allocate_one() {
         allocated.push(idx);
     }
@@ -113,6 +114,7 @@ pub fn last_word_partial_smoke() -> bool {
     }
 
     let mut count = 0;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while bitmap.allocate_one().is_some() {
         count += 1;
     }

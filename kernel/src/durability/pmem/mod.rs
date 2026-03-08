@@ -67,6 +67,7 @@ impl PmemAllocator {
             return Err(PmemError::InvalidRange);
         }
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let current = self.cursor.load(Ordering::Acquire);
             let aligned = (current + align - 1) & !(align - 1);
@@ -191,6 +192,7 @@ fn flush_cachelines(addr: usize, len: usize) {
     let start = addr & !(CACHELINE_BYTES - 1);
     let end = addr.saturating_add(len);
     let mut p = start;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while p < end {
         crate::io::dma::clwb(p as *const u8);
         p = p.saturating_add(CACHELINE_BYTES);
@@ -209,6 +211,7 @@ fn read_u16(ptr: usize) -> u16 {
 fn read_u64(ptr: usize) -> u64 {
     let mut b = [0u8; 8];
     let mut i = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < 8 {
         b[i] = unsafe { core::ptr::read_unaligned((ptr + i) as *const u8) };
         i += 1;
@@ -234,6 +237,7 @@ pub fn init_from_nfit() -> Result<Option<PmemRegion>, PmemDiscoveryError> {
     let mut offset = nfit_addr + core::mem::size_of::<crate::io::acpi::AcpiSdtHeader>();
     let end = nfit_addr + table_len;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset + 4 <= end {
         let ty = read_u16(offset);
         let len = read_u16(offset + 2) as usize;

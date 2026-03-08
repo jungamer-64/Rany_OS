@@ -188,6 +188,7 @@ impl Backtrace {
         let mut frame_num = 0;
 
         // フレームポインタチェーンをたどる
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while frame_num < MAX_FRAMES {
             // フレームポインタの有効性チェック
             if !is_valid_stack_address(rbp) {
@@ -591,6 +592,7 @@ pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
     });
 
     // フレームチェーンをたどる
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while frame_num < MAX_FRAMES && is_valid_stack_address(current_rbp) {
         let return_addr = read_usize_checked(current_rbp + 8).unwrap_or(0);
         let next_rbp = read_usize_checked(current_rbp).unwrap_or(0);

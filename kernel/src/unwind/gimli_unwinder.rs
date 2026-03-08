@@ -84,6 +84,7 @@ impl<'a> GimliUnwinder<'a> {
     ) -> Result<gimli::FrameDescriptionEntry<GimliSlice<'a>>, GimliUnwindError> {
         let mut entries = self.eh_frame.entries(&self.bases);
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Ok(Some(entry)) = entries.next() {
             match entry {
                 CieOrFde::Cie(_) => continue,

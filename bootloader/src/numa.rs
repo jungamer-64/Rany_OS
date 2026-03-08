@@ -271,6 +271,7 @@ fn parse_srat(srat_phys: u64) -> NumaInfo {
     let entries_end = srat_phys + table_length as u64;
     let mut offset = entries_start;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < entries_end {
         let entry_type = unsafe { *(offset as *const u8) };
         let entry_length = unsafe { *((offset + 1) as *const u8) };

@@ -127,6 +127,7 @@ pub unsafe fn parse_dmar(addr: usize) -> Result<DmarInfo, &'static str> {
     let mut drhd_units = Vec::new();
     let mut rmrr_regions = Vec::new();
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < table_len {
         let entry_ptr = unsafe { base_ptr.add(offset) } as *const DmarRemappingHeader;
         let entry_type = unsafe { (*entry_ptr).type_code };
@@ -184,6 +185,7 @@ pub unsafe fn parse_dmar(addr: usize) -> Result<DmarInfo, &'static str> {
 unsafe fn parse_device_scopes(mut ptr: *const u8, mut len: usize) -> Vec<DeviceScope> {
     let mut scopes = Vec::new();
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while len >= mem::size_of::<DeviceScopeHeader>() {
         let header = unsafe { &*(ptr as *const DeviceScopeHeader) };
         let scope_len = header.length as usize;

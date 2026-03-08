@@ -112,6 +112,7 @@ impl LockFreeIndexStack {
         }
 
         let mut backoff = Backoff::new();
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let head = self.head.load(Ordering::Acquire);
             let (tag, head_idx) = Self::unpack_head(head);
@@ -139,6 +140,7 @@ impl LockFreeIndexStack {
     /// Pop an index from the stack.
     pub fn pop(&self) -> Option<u32> {
         let mut backoff = Backoff::new();
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let head = self.head.load(Ordering::Acquire);
             let (tag, head_idx) = Self::unpack_head(head);

@@ -683,6 +683,7 @@ impl FreeListBuddyAllocator {
     pub(super) fn add_free_region(&mut self, start_frame: usize, end_frame: usize) {
         let mut current = start_frame;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while current < end_frame {
             // 現在の位置から最大のアライメントブロックを見つける
             let remaining = end_frame - current;

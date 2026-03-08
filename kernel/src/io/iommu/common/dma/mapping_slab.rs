@@ -144,6 +144,7 @@ impl SlabStats {
 
         // Update high watermark
         let mut hw = self.high_watermark.load(Ordering::Relaxed);
+        // LOOP_PROOF: mode=condition; reason=CAS watermark loop exits once update succeeds or when current no longer exceeds observed watermark.;
         while current > hw {
             match self.high_watermark.compare_exchange_weak(
                 hw,
@@ -301,6 +302,7 @@ impl MappingSlab {
         let bucket = Self::hash_iova(iova);
         let mut idx = self.hash_buckets[bucket];
 
+        // LOOP_PROOF: mode=condition; reason=Lookup follows finite hash chain and exits at matching slot or INVALID_INDEX terminator.;
         while idx != INVALID_INDEX {
             let slot = &self.slots[idx as usize];
             if slot.mapping.iova == iova && slot.is_used() {
@@ -317,6 +319,7 @@ impl MappingSlab {
         let bucket = Self::hash_iova(iova);
         let mut idx = self.hash_buckets[bucket];
 
+        // LOOP_PROOF: mode=condition; reason=Mutable lookup advances through hash_next links and exits on hit or INVALID_INDEX sentinel.;
         while idx != INVALID_INDEX {
             let slot = &self.slots[idx as usize];
             if slot.mapping.iova == iova && slot.is_used() {
@@ -337,6 +340,7 @@ impl MappingSlab {
         let mut prev_hash_idx = INVALID_INDEX;
         let mut idx = self.hash_buckets[bucket];
 
+        // LOOP_PROOF: mode=condition; reason=Remove search traverses hash chain and exits on matching mapping or INVALID_INDEX end marker.;
         while idx != INVALID_INDEX {
             let slot = &self.slots[idx as usize];
             if slot.mapping.iova == iova && slot.is_used() {
@@ -392,6 +396,7 @@ impl MappingSlab {
 
         // Check all active mappings (could be optimized with range tree)
         let mut idx = self.active_head;
+        // LOOP_PROOF: mode=condition; reason=Overlap scan walks active linked list and exits at first overlap or INVALID_INDEX tail.;
         while idx != INVALID_INDEX {
             let slot = &self.slots[idx as usize];
             let mapping = &slot.mapping;

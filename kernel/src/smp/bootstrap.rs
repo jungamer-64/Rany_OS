@@ -201,6 +201,7 @@ impl LocalApic {
     /// Wait for IPI delivery
     unsafe fn wait_for_delivery(&self) {
         // Bit 12 = Delivery Status (0 = idle, 1 = pending)
+        // LOOP_PROOF: mode=condition; reason=Delivery wait loop exits as soon as LAPIC delivery-status pending bit clears.;
         while (self.read(Self::ICR_LOW) & (1 << 12)) != 0 {
             core::hint::spin_loop();
         }
@@ -299,6 +300,7 @@ impl ApBootstrap {
         let timeout = 100_000;
         let mut waited = 0u64;
 
+        // LOOP_PROOF: mode=condition; reason=Startup wait loop is timeout-bounded and exits early when AP started flag becomes true.;
         while !info.started.load(Ordering::Acquire) && waited < timeout {
             self.delay_us(100);
             waited += 100;

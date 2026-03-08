@@ -67,6 +67,7 @@ fn str_eq(a: &str, b: &str) -> bool {
         return false;
     }
     let mut i = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < a_bytes.len() {
         if a_bytes[i] != b_bytes[i] {
             return false;

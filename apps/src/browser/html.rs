@@ -36,6 +36,7 @@ impl HtmlParser {
 
     fn parse_nodes(&mut self) -> Vec<Node> {
         let mut nodes = Vec::new();
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             self.consume_whitespace();
             if self.eof() || self.starts_with("</") {
@@ -93,6 +94,7 @@ impl HtmlParser {
 
     fn parse_attributes(&mut self) -> BTreeMap<String, String> {
         let mut attrs = BTreeMap::new();
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             self.consume_whitespace();
             if self.next_char() == '>' || self.starts_with("/>") {
@@ -152,6 +154,7 @@ impl HtmlParser {
         F: Fn(char) -> bool,
     {
         let mut result = String::new();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !self.eof() && test(self.next_char()) {
             result.push(self.consume_char());
         }

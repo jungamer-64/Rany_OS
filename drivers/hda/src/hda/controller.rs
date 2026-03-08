@@ -258,6 +258,7 @@ impl HdaController {
 
         // Wait for controller to enter reset
         let mut timeout = RESET_TIMEOUT_US / 10;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while timeout > 0 {
             if (self.read32(REG_GCTL) & GCTL_CRST) == 0 {
                 break;
@@ -279,6 +280,7 @@ impl HdaController {
 
         // Wait for controller to exit reset
         timeout = RESET_TIMEOUT_US / 10;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while timeout > 0 {
             if (self.read32(REG_GCTL) & GCTL_CRST) != 0 {
                 break;
@@ -371,6 +373,7 @@ impl HdaController {
 
         // Wait for reset to complete
         let mut timeout = 1000;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while timeout > 0 {
             if (self.read16(REG_CORBRP) & CORBRP_RST) != 0 {
                 break;
@@ -382,6 +385,7 @@ impl HdaController {
         // Clear reset bit
         self.write16(REG_CORBRP, 0);
         timeout = 1000;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while timeout > 0 {
             if (self.read16(REG_CORBRP) & CORBRP_RST) == 0 {
                 break;
@@ -527,6 +531,7 @@ impl HdaController {
 
         let rp = self.rirb_rp.load(Ordering::SeqCst);
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while timeout > 0 {
             let wp = self.read16(REG_RIRBWP);
 

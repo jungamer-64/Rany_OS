@@ -186,6 +186,7 @@ impl TcpControlBlock {
         let mut current_rcv_nxt = self.seq.rcv_nxt;
         let mut fin_encountered = false;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(packet) = self.rx.ooo_queue.remove(&current_rcv_nxt) {
             GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
             let len = packet.len();
@@ -773,6 +774,7 @@ impl TcpControlBlock {
         let mut old_queue = core::mem::take(&mut self.timers.unacked_segments);
         let mut kept = VecDeque::with_capacity(old_queue.len());
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(mut seg) = old_queue.pop_front() {
             let end_seq = Self::unacked_end_seq(&seg);
 

@@ -38,6 +38,7 @@ impl ConsoleInputHub {
         self.gui_head = 0;
         self.gui_len = 0;
         let mut i = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < self.gui_buf.len() {
             self.gui_buf[i] = None;
             i += 1;
@@ -56,6 +57,7 @@ impl ConsoleInputHub {
 
     fn pop_tty_bytes(&mut self, dst: &mut [u8]) -> usize {
         let mut read = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while read < dst.len() && self.tty_len > 0 {
             dst[read] = self.tty_buf[self.tty_head];
             self.tty_head = (self.tty_head + 1) % self.tty_buf.len();

@@ -142,6 +142,7 @@ impl BigUint {
 
     /// 有効リム数を再計算
     fn normalize(&mut self) {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.len > 0 && self.limbs[self.len - 1] == 0 {
             self.len -= 1;
         }
@@ -519,6 +520,7 @@ pub fn rsa_pkcs1_encrypt(key: &RsaPublicKey, message: &[u8]) -> Result<Vec<u8>, 
     em.push(0x00);
     em.push(0x02);
     let mut ps_remaining = ps_len;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while ps_remaining > 0 {
         let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         for &b in &random_bytes {

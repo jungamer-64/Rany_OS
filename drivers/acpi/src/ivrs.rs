@@ -388,6 +388,7 @@ pub unsafe fn parse_ivrs(addr: usize) -> Result<IvrsInfo, &'static str> {
     let mut ivhds = Vec::new();
     let mut ivmds = Vec::new();
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset + mem::size_of::<IvrsBlockHeader>() <= table_len {
         let entry_ptr = unsafe { base_ptr.add(offset) } as *const IvrsBlockHeader;
         let entry_len = unsafe { (*entry_ptr).length } as usize;

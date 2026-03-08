@@ -45,6 +45,7 @@ impl<A: KeyAdapter> RBTreeIter<A> {
         // 右子がある場合、その左端
         if !(*node).right.is_null() {
             let mut n = (*node).right;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while !(*n).left.is_null() {
                 n = (*n).left;
             }
@@ -53,6 +54,7 @@ impl<A: KeyAdapter> RBTreeIter<A> {
 
         // 右子がない場合、親を辿る
         let mut n = node;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let parent = (*n).parent();
             if parent.is_null() {

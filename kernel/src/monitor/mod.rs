@@ -365,6 +365,7 @@ pub fn print_status_line(snap: &SystemSnapshot) {
 pub async fn monitor_loop() {
     log::info!("[MONITOR] Starting monitor loop\n");
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while is_running() {
         let snap = snapshot();
         print_status_line(&snap);

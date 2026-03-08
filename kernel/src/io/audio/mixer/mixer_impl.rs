@@ -272,6 +272,7 @@ impl Mixer {
             phase += ratio;
 
             // Update previous samples when crossing integer boundary
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while phase >= 1.0 {
                 phase -= 1.0;
                 buffer_pos += 2;

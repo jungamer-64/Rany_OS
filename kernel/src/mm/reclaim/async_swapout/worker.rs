@@ -131,6 +131,7 @@ mod test_impl {
 
     pub(super) fn refill_token_bucket() {
         let add = TEST_REFILL_PER_BATCH;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let cur = TEST_TOKENS.load(Ordering::Acquire);
             let cap = TEST_TOKEN_CAPACITY_DYNAMIC.load(Ordering::Acquire);

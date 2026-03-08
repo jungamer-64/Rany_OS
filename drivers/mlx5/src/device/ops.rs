@@ -203,6 +203,7 @@ impl Mlx5Device {
     pub unsafe fn handle_eq_interrupt(&mut self, eq_index: usize) -> Vec<EqEvent> {
         let mut events = Vec::new();
         if let Some(eq) = self.eqs.get_mut(eq_index) {
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 match eq.poll_eqe() {
                     Some(eqe) => {
@@ -255,6 +256,7 @@ impl Mlx5Device {
         let base = self.bar0_base as usize;
         
         // 64ビットカウンタを32ビットずつ2回に分けて読み取る（一貫性確保のためループ）
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let hi = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_H);
             let lo = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_L);
@@ -392,6 +394,7 @@ impl Mlx5Device {
         let mut processed = 0;
         let mut deferred = Vec::new();
         for eq in &mut self.eqs {
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while let Some(eqe) = eq.poll_eqe() {
                 processed += 1;
                 match eqe.event_type() {

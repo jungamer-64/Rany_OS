@@ -454,6 +454,7 @@ impl ZeroCopyBuffer {
     fn try_add_shared_ref(&self) -> Result<(), ZeroCopyError> {
         let slot = self.slot();
         let mut current = slot.ref_count.load(Ordering::Acquire);
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if current == u64::MAX {
                 return Err(ZeroCopyError::RefcountOverflow);

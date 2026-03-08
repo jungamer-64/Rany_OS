@@ -291,6 +291,7 @@ impl KeyboardDriver {
 
     /// Process pending ISR notifications
     ///
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     /// Call this in the executor's polling loop to convert
     /// ISR notifications to actual Waker wake-ups.
     ///

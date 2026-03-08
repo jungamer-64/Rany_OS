@@ -87,6 +87,7 @@ impl<'a> MmioWriter<'a> {
     fn write_bytes_tail(data: &[u8], mut ptr: usize, mut i: usize) {
         let len = data.len();
         // Remaining u32-aligned writes; unroll 4 at a time
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 16 <= len {
             unsafe {
                 let v0 = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32);
@@ -102,6 +103,7 @@ impl<'a> MmioWriter<'a> {
             i += 16;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 4 <= len {
             unsafe {
                 let v = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32);
@@ -112,6 +114,7 @@ impl<'a> MmioWriter<'a> {
         }
 
         // Remaining tail bytes
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < len {
             mmio::volatile_write::<u8>(ptr, data[i]);
             ptr += 1;
@@ -168,6 +171,7 @@ impl<'a> MmioWriter<'a> {
         }
 
         // Bulk write u64 when possible. Unroll 4 u64 writes per iteration.
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 32 <= len {
             unsafe {
                 #[cfg(target_endian = "little")]
@@ -199,6 +203,7 @@ impl<'a> MmioWriter<'a> {
             i += 32;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 8 <= len {
             unsafe {
                 let v = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u64);
@@ -233,6 +238,7 @@ impl<'a> MmioWriter<'a> {
         }
 
         // Write u64 pairs; unroll 4 pairs at a time for throughput.
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 7 < len {
             let p0 = (data[i] as u64) | ((data[i + 1] as u64) << 32);
             let p1 = (data[i + 2] as u64) | ((data[i + 3] as u64) << 32);
@@ -246,6 +252,7 @@ impl<'a> MmioWriter<'a> {
             i += 8;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 1 < len {
             let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
             mmio::mmio_write_u64(ptr, pair);
@@ -338,6 +345,7 @@ impl<'a> MmioWriter<'a> {
         }
 
         // Write u64 pairs using streaming stores
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 1 < len {
             let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
             #[cfg(all(feature = "std", feature = "bench"))]

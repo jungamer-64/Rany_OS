@@ -114,6 +114,7 @@ impl<T, const N: usize> MpmcRingBuffer<T, N> {
     pub fn push(&self, value: T) -> Result<(), T> {
         let mut backoff = Backoff::new();
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let head = self.head.load(Ordering::Relaxed);
             let tail = self.tail.load(Ordering::Acquire);
@@ -174,6 +175,7 @@ impl<T, const N: usize> MpmcRingBuffer<T, N> {
     pub fn pop(&self) -> Option<T> {
         let mut backoff = Backoff::new();
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let tail = self.tail.load(Ordering::Relaxed);
             let head = self.head.load(Ordering::Acquire);

@@ -65,6 +65,7 @@ pub(crate) fn read_uefi_file_contents(file: &mut RegularFile) -> Result<Vec<u8>,
     }
     let mut buffer = vec![0u8; size as usize];
     let mut total_read = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while total_read < buffer.len() {
         let read_size = file
             .read(&mut buffer[total_read..])

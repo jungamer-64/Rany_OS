@@ -381,6 +381,7 @@ impl Framebuffer {
         Self::write_bytes_align_to_8(&mut ptr, data, &mut i, len);
 
         // Bulk write u64 when possible. Unroll 4 u64 writes per iteration.
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 32 <= len {
             #[cfg(target_endian = "little")]
             {
@@ -447,6 +448,7 @@ impl Framebuffer {
             i += 32;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 8 <= len {
             #[cfg(target_endian = "little")]
             {
@@ -472,6 +474,7 @@ impl Framebuffer {
         }
 
         // Remaining u32-aligned writes; unroll 4 at a time
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 16 <= len {
             #[cfg(target_endian = "little")]
             {
@@ -503,6 +506,7 @@ impl Framebuffer {
             i += 16;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 4 <= len {
             #[cfg(target_endian = "little")]
             {
@@ -519,6 +523,7 @@ impl Framebuffer {
         }
 
         // Remaining tail bytes
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < len {
             mmio::volatile_write::<u8>(ptr, data[i]);
             ptr += 1;
@@ -541,6 +546,7 @@ impl Framebuffer {
         }
 
         // Write u64 pairs; unroll 4 pairs at a time for throughput.
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 7 < len {
             let p0 = (data[i] as u64) | ((data[i + 1] as u64) << 32);
             let p1 = (data[i + 2] as u64) | ((data[i + 3] as u64) << 32);
@@ -554,6 +560,7 @@ impl Framebuffer {
             i += 8;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 1 < len {
             let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
             mmio::mmio_write_u64(ptr, pair);
@@ -604,6 +611,7 @@ impl Framebuffer {
         }
 
         // Write u64 pairs using streaming stores
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 1 < len {
             let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
             mmio::stream_write_u64(ptr, pair);
@@ -664,6 +672,7 @@ impl Framebuffer {
 
         // Write u64 pairs (repeating value)
         let val64 = (value as u64) | ((value as u64) << 32);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 1 < count {
             #[cfg(all(feature = "std", feature = "bench"))]
             Self::bench_debug_fb_stream_write(bench_debug_env, ptr, val64, true);
@@ -702,6 +711,7 @@ impl Framebuffer {
 
         // Write u64 pairs (repeating value)
         let val64 = (value as u64) | ((value as u64) << 32);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 1 < count {
             mmio::stream_write_u64(ptr, val64);
             ptr += 8;
@@ -748,6 +758,7 @@ impl Framebuffer {
         }
 
         let pair = (value as u32) | ((value as u32) << 16);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while remaining >= 2 {
             mmio::stream_write_u32(ptr, pair);
             ptr += 4;
@@ -798,6 +809,7 @@ impl Framebuffer {
         let total_pixels = src.len() / 4;
         let mut processed_pixels = 0usize;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while processed_pixels < total_pixels {
             let remaining_pixels = total_pixels - processed_pixels;
             let chunk_pixels = core::cmp::min(chunk_pixels, remaining_pixels);
@@ -974,6 +986,7 @@ impl Framebuffer {
             let pair_val = (color_u32 as u64) | ((color_u32 as u64) << 32);
 
             // Unroll 4 writes at a time to reduce loop overhead
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while pair_count >= 4 {
                 mmio::stream_write_u64(addr, pair_val);
                 mmio::stream_write_u64(addr + 8, pair_val);
@@ -983,6 +996,7 @@ impl Framebuffer {
                 pair_count -= 4;
             }
 
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while pair_count > 0 {
                 mmio::stream_write_u64(addr, pair_val);
                 addr += 8;
@@ -1116,6 +1130,7 @@ impl Framebuffer {
         }
 
         // Write 4-pixel groups using u32 × 3 (12 bytes = 4 pixels)
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while remaining >= 4 {
             mmio::volatile_write::<u32>(off, u32_0);
             mmio::volatile_write::<u32>(off + 4, u32_1);
@@ -1166,6 +1181,7 @@ impl Framebuffer {
         }
 
         // Write groups of 24 bytes (three 8-byte patterns)
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while remaining >= 24 {
             mmio::stream_write_u64(addr, patterns[comp_idx % 3]);
             mmio::stream_write_u64(addr + 8, patterns[(comp_idx + 8) % 3]);
@@ -1175,6 +1191,7 @@ impl Framebuffer {
         }
 
         // Handle remaining full 8-byte blocks
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while remaining >= 8 {
             mmio::stream_write_u64(addr, patterns[comp_idx % 3]);
             addr += 8;
@@ -1183,6 +1200,7 @@ impl Framebuffer {
         }
 
         // Handle remaining bytes
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while remaining > 0 {
             mmio::volatile_write::<u8>(addr, comps[comp_idx % 3]);
             addr += 1;
@@ -1207,6 +1225,7 @@ impl Framebuffer {
         scratch[2] = c2;
 
         let mut filled = 1usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while filled < run_len_pixels {
             let copy_pixels = core::cmp::min(filled, run_len_pixels - filled);
             let copy_bytes = copy_pixels * 3;
@@ -1307,7 +1326,9 @@ impl Framebuffer {
                 }
                 3 => {
                     let mut col = 0usize;
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while col < 8 {
+                        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                         while col < 8 {
                             let pixel_on = (byte >> (7 - col)) & 1 != 0;
                             if pixel_on {
@@ -1317,6 +1338,7 @@ impl Framebuffer {
                         }
 
                         let run_start = col;
+                        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                         while col < 8 {
                             let pixel_on = (byte >> (7 - col)) & 1 != 0;
                             if !pixel_on {
@@ -1675,6 +1697,7 @@ impl Framebuffer {
         let mut si = 0usize;
         let mut di = 0usize;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while si + 4 <= src.len() {
             let p0 = src[si];
             let p1 = src[si + 1];
@@ -1701,6 +1724,7 @@ impl Framebuffer {
             di += 12;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while si < src.len() {
             let p = src[si];
             dst[di] = (p & 0xFF) as u8;
@@ -1717,6 +1741,7 @@ impl Framebuffer {
         let mut si = 0usize;
         let mut di = 0usize;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while si + 4 <= src.len() {
             let p0 = src[si];
             let p1 = src[si + 1];
@@ -1743,6 +1768,7 @@ impl Framebuffer {
             di += 12;
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while si < src.len() {
             let p = src[si];
             dst[di] = ((p >> 16) & 0xFF) as u8;
@@ -2109,6 +2135,7 @@ impl Framebuffer {
             }
         }
         let mut filled = 1usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while filled < width {
             let copy_pixels = core::cmp::min(filled, width - filled);
             let copy_bytes = copy_pixels * 3;

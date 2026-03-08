@@ -489,6 +489,7 @@ impl LRUBlockCache {
         let mut blocks = self.blocks.lock();
         let mut dirty_keys = Vec::new();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while freed < needed && !lru_list.is_empty() {
             // Get LRU block (from back of list) - O(1)
             if let Some(key) = lru_list.evict_lru() {

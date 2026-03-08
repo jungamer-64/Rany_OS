@@ -173,6 +173,7 @@ pub fn synchronize_rcu() {
     // 2. Wait for each active CPU to pass through a quiescent state
     // (switch context or go offline)
     for (cpu_id, snap_val) in snapshots {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if !per_cpu::is_cpu_online(cpu_id) {
                 // CPU went offline -> Quiescent State
@@ -265,6 +266,7 @@ pub fn rcu_process_callbacks() {
         let mut queue = pcp.rcu_state.batch_queue.lock().unwrap_or_else(|e| e.into_inner());
 
         // グレース期間が経過したコールバックを処理
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(entry) = queue.front() {
             // エポックが2以上離れていればグレース期間経過
             if current_epoch.wrapping_sub(entry.epoch) >= 2 {

@@ -230,6 +230,7 @@ impl IommuDomain {
         let mut remaining = size;
         const SIZE_4KB: u64 = 4096;
 
+        // LOOP_PROOF: mode=condition; reason=Remaining byte count is reduced by each successful unmap step until it reaches zero.;
         while remaining > 0 {
             if let Some(unmapped) = self.try_unmap_superpage(current)? {
                 if unmapped > remaining {

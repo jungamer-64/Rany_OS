@@ -130,6 +130,7 @@ fn repr_lines_for_decls(content: &str, decls: &[&str]) -> Vec<String> {
 
         // Scan forward to the next non-empty, non-comment, non-attribute line.
         let mut j = idx + 1;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while j < lines.len() {
             let next = lines[j].trim();
             if next.is_empty() || next.starts_with("//") {

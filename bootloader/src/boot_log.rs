@@ -131,6 +131,7 @@ impl BootLogger {
     /// 古いエントリを削除してスペースを確保
     fn truncate_old_entries(&mut self, needed: usize) {
         // 先頭の行を削除していく
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.buffer.len() + needed > self.max_size {
             if let Some(pos) = self.buffer.find('\n') {
                 self.buffer.drain(..=pos);

@@ -333,6 +333,7 @@ impl PollHandler for NvmePollHandler {
                 let pending_requests = queue.get_pending_requests();
                 // SAFETY: poll は内部で適切に同期されている
                 unsafe {
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while let Some(cqe) = queue.poll() {
                         let cid = cqe.cid;
                         let entry = self

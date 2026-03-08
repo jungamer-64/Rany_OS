@@ -43,6 +43,7 @@ impl AmdCommandWaitToken {
 
     pub(super) fn wait_blocking(self) -> Result<(), IommuError> {
         let mut spins = 0u64;
+        // LOOP_PROOF: mode=condition; reason=Blocking wait loop exits when completion flag flips true or timeout poll budget is exceeded.;
         while !self.is_complete() {
             spins += 1;
             if spins > AMD_CMD_WAIT_MAX_POLLS {

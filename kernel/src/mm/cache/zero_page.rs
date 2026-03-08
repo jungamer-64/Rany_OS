@@ -97,6 +97,7 @@ pub unsafe fn clear_page_nt(addr: *mut u8) {
     // XMM0 をゼロクリア
     asm!("xorps xmm0, xmm0", options(nomem, nostack, preserves_flags));
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while ptr < end {
         asm!(
             // 64バイト（1キャッシュライン）をゼロクリア
@@ -135,6 +136,7 @@ pub unsafe fn clear_huge_page_nt(addr: *mut u8) {
     asm!("xorps xmm0, xmm0", options(nomem, nostack, preserves_flags));
 
     // より大きな単位でアンロール（256バイト/iteration）
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while ptr < end {
         asm!(
             // 256バイト（4キャッシュライン）をゼロクリア

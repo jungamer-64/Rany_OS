@@ -304,6 +304,7 @@ pub(crate) fn test_draw_line_steep_rgb565_mmio() {
         let sx = if x1 < x2 { 1 } else { -1 };
         let sy = if y1 < y2 { 1 } else { -1 };
         let mut err = dx + dy;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             fb_naive.set_pixel(x, y, color);
             if x == x2 && y == y2 {

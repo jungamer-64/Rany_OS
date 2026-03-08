@@ -410,6 +410,7 @@ impl From<crate::loader::LoadError> for KernelError {
             LE::CellNotFound => LoaderError::LoadFailed,
             LE::RelocationFailed(_) => LoaderError::RelocationFailed,
             LE::InvalidPermissions(_) => LoaderError::InvalidSecurityLevel,
+            LE::LoopProofMissing | LE::LoopProofInvalid(_) => LoaderError::LoadFailed,
         })
     }
 }

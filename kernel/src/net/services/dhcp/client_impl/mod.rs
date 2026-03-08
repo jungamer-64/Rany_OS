@@ -467,8 +467,8 @@ impl DhcpClient {
             return Err("Packet too small");
         }
 
-        let header =
-            crate::util::get_ref::<DhcpHeader>(data, 0).expect("Dhcp header slice out of bounds");
+        let header = crate::util::get_ref::<DhcpHeader>(data, 0)
+            .ok_or("Dhcp header slice out of bounds")?;
 
         if header.xid() != self.xid.load(Ordering::SeqCst) {
             return Err("Transaction ID mismatch");
@@ -554,6 +554,7 @@ impl DhcpClient {
         };
 
         let mut offset = DhcpHeader::SIZE + 4;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset < data.len() {
             let opt = data[offset];
 

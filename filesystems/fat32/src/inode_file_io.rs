@@ -221,6 +221,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         let mut offset = cluster_offset;
         let mut bytes_written = 0usize;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while bytes_written < buf.len() {
             let copy_len = self.write_single_cluster(
                 current,
@@ -287,6 +288,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         let mut offset = cluster_offset;
         let mut bytes_written = 0usize;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while bytes_written < buf.len() {
             let written = self
                 .write_single_cluster_async(
@@ -401,6 +403,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         let mut count = 1u64;
         let mut chain_count = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while count < needed_clusters && cluster.is_valid() {
             chain_count += 1;
             if chain_count > MAX_CLUSTER_CHAIN {
@@ -480,6 +483,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         let mut remaining_buf = buf;
         let mut bytes_read = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !remaining_buf.is_empty() && current_cluster.is_valid() {
             self.fs
                 .read_cluster_async(current_cluster, &mut cluster_buf)

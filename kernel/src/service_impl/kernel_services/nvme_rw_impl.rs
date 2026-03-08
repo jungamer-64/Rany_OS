@@ -67,6 +67,7 @@ impl KernelServices for ExoKernel {
 
         Box::pin(async move {
             // Poll the io_scheduler for completion
+            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
                 if let Some(result) =
                     crate::io::io_scheduler::io_scheduler().take_result(request_id)

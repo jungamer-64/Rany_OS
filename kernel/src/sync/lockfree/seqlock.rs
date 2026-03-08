@@ -28,6 +28,7 @@ impl<T: Copy> Seqlock<T> {
 
     /// 読み取り（ロックフリー、整合性検証付き）
     pub fn read(&self) -> T {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let seq1 = self.sequence.load(Ordering::Acquire);
 

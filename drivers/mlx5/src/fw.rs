@@ -64,6 +64,7 @@ pub unsafe fn wait_fw_ready(bar0_base: u64, timeout_ms: u32) -> Mlx5Result<FwInf
     let mut invalid_reads = 0u64;
     let mut last_inaccessible_log = 0u64;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while kernel_api::service::kernel::instance().current_tick() - start_ms < timeout_ms as u64 {
         let initializing = crate::mmio_read_be32(base + init_seg::INITIALIZING);
         let cmdif_rev_fw_sub = crate::mmio_read_be32(base + init_seg::CMDIF_REV_FW_SUB);

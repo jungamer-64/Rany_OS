@@ -168,6 +168,7 @@ impl InterruptRouter {
 
     /// Allocate a new interrupt vector
     pub fn allocate_vector(&self) -> Option<u8> {
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let current = self.next_vector.load(Ordering::Relaxed);
             if current > Self::LAST_VECTOR {

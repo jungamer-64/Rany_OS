@@ -18,6 +18,7 @@ fn p_sha256(secret: &[u8], seed: &[u8], output: &mut [u8]) {
     let mut a = hmac_sha256(secret, seed); // A(1)
     let mut offset = 0;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < output.len() {
         // HMAC_hash(secret, A(i) + seed)
         let mut a_seed = Vec::with_capacity(a.len() + seed.len());
@@ -161,6 +162,7 @@ pub fn p_sha384(secret: &[u8], seed: &[u8], output: &mut [u8]) {
     let mut a = hmac_sha384(secret, seed); // A(1)
     let mut offset = 0;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < output.len() {
         // P_i = HMAC(secret, A(i) || seed)
         let mut input = Vec::with_capacity(SHA384_OUTPUT_SIZE + seed.len());

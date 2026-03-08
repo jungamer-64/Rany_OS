@@ -81,10 +81,12 @@ impl LineBuffer {
 
     pub fn move_word_left(&mut self) {
         // Skip whitespace
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.cursor > 0 && self.content.chars().nth(self.cursor - 1) == Some(' ') {
             self.cursor -= 1;
         }
         // Move to start of word
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.cursor > 0 && self.content.chars().nth(self.cursor - 1) != Some(' ') {
             self.cursor -= 1;
         }
@@ -93,10 +95,12 @@ impl LineBuffer {
     pub fn move_word_right(&mut self) {
         let len = self.content.len();
         // Move to end of word
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.cursor < len && self.content.chars().nth(self.cursor) != Some(' ') {
             self.cursor += 1;
         }
         // Skip whitespace
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.cursor < len && self.content.chars().nth(self.cursor) == Some(' ') {
             self.cursor += 1;
         }

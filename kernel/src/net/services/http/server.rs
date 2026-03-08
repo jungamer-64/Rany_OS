@@ -39,6 +39,7 @@ pub fn start_once(executor: &mut task::Executor) {
 /// 駆動されるため、ここでは yield / sleep でExecutorに制御を渡すのみ。
 async fn run_net_poller() {
     let mut consecutive_idle: u32 = 0;
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         // ISR + network_event_taskが非同期にパケット処理を行うため
         // 直接handle_all_virtio_net_interrupts()を呼ばずyieldで委ねる
@@ -74,6 +75,7 @@ async fn run_service() {
         }
     };
 
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match task::with_timeout(listener.next_connection(), 500).await {
             TimeoutResult::TimedOut => {
@@ -117,6 +119,7 @@ async fn run_service() {
 async fn handle_client(mut client: TcpStream) {
     let mut parser = super::parser::HttpParser::new();
 
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         let mut response_bytes = None;
         let mut keep_alive = false;

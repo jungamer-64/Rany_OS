@@ -173,6 +173,7 @@ impl EventQueue {
     pub unsafe fn process_events(&mut self) -> u32 {
         let mut count = 0;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             match self.poll_eqe() {
                 Some(_eqe) => {

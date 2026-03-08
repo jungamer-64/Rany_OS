@@ -502,6 +502,7 @@ pub async fn mlx5_poll_task() {
 
     let mut msix_vector = None;
 
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         if !MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire) {
             crate::task::yield_now().await;
@@ -533,6 +534,7 @@ pub async fn mlx5_poll_task() {
 }
 
 async fn mlx5_tx_worker_task() {
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         if !MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire) {
             crate::task::yield_now().await;
@@ -545,6 +547,7 @@ async fn mlx5_tx_worker_task() {
             request = recv_mlx5_tx();
         }
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(current) = request {
             let _ = submit_mlx5_tx(&current.data, current.vlan_tag);
             request = recv_mlx5_tx();

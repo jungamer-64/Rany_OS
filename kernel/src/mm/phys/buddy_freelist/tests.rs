@@ -246,6 +246,7 @@ fn test_freelist_fragmentation_stress() {
 
     // 全ページをorder-0で割り当て
     let mut frames = alloc::vec::Vec::new();
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Some(f) = allocator.allocate(0, MigrateType::Movable) {
         frames.push(f);
     }

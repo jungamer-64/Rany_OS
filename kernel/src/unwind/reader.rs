@@ -125,6 +125,7 @@ impl<'a> MemoryReader<'a> {
         let mut result: u64 = 0;
         let mut shift: u32 = 0;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let byte = self.read_u8()?;
 
@@ -156,6 +157,7 @@ impl<'a> MemoryReader<'a> {
         let mut shift: u32 = 0;
         let mut byte: u8;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             byte = self.read_u8()?;
 

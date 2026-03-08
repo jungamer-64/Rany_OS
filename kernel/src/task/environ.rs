@@ -267,6 +267,7 @@ impl Environment {
         let mut result = String::with_capacity(s.len());
         let mut chars = s.chars().peekable();
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(c) = chars.next() {
             if c == '$' {
                 let mut var_name = String::new();
@@ -274,6 +275,7 @@ impl Environment {
 
                 if braced {
                     chars.next(); // '{'
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while let Some(&c) = chars.peek() {
                         if c == '}' {
                             chars.next();
@@ -282,6 +284,7 @@ impl Environment {
                         var_name.push(chars.next().unwrap());
                     }
                 } else {
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while let Some(&c) = chars.peek() {
                         if c.is_ascii_alphanumeric() || c == '_' {
                             var_name.push(chars.next().unwrap());

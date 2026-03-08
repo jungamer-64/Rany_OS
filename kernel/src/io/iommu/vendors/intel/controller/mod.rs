@@ -506,6 +506,7 @@ impl IommuController {
         crate::io::log::early_print("[DMA] invalidate_iotlb_direct: waiting for IVT clear\n");
 
         // Wait for completion (IVT bit cleared)
+        // LOOP_PROOF: mode=condition; reason=Hardware wait loop exits once IOTLB IVT bit clears after domain invalidation command.;
         while (self.read64(offset + iotlb_regs::IOTLB) & iotlb_bits::IOTLB_IVT) != 0 {
             core::hint::spin_loop();
         }
@@ -529,6 +530,7 @@ impl IommuController {
 
         self.write64(offset + iotlb_regs::IOTLB, cmd);
 
+        // LOOP_PROOF: mode=condition; reason=Global IOTLB invalidate wait exits when hardware clears IVT completion bit.;
         while (self.read64(offset + iotlb_regs::IOTLB) & iotlb_bits::IOTLB_IVT) != 0 {
             core::hint::spin_loop();
         }
@@ -630,6 +632,7 @@ impl IommuController {
         self.write64(regs::CCMD, cmd);
 
         // Wait for completion (ICC bit cleared)
+        // LOOP_PROOF: mode=condition; reason=Context invalidate wait exits when CCMD ICC bit clears indicating command completion.;
         while (self.read64(regs::CCMD) & ccmd_bits::CCMD_ICC) != 0 {
             core::hint::spin_loop();
         }

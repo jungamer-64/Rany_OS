@@ -111,6 +111,7 @@ pub fn show_boot_menu(config: &BootConfig) -> MenuResult {
     draw_menu(config, selected, remaining_seconds);
 
     // Main loop
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         // Check for key press (non-blocking)
         if let Some(key) = read_key_nonblocking() {
@@ -209,6 +210,7 @@ fn print_number(stdout: &mut uefi::proto::console::text::Output, n: u32) {
     if num == 0 {
         buf[pos] = b'0' as u16;
     } else {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while num > 0 && pos > 0 {
             buf[pos] = b'0' as u16 + (num % 10) as u16;
             num /= 10;

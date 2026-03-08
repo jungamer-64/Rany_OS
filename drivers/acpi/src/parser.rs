@@ -200,6 +200,7 @@ impl AcpiParser {
         let entries_end = madt_address as usize + madt.header.length as usize;
 
         let mut offset = entries_start;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset < entries_end {
             let entry_header = unsafe { &*(offset as *const MadtEntryHeader) };
 
@@ -267,6 +268,7 @@ impl AcpiParser {
         let entry_size = core::mem::size_of::<McfgEntry>();
         let mut offset = entries_start;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset + entry_size <= entries_end {
             let entry = unsafe { &*(offset as *const McfgEntry) };
             info.pcie_ecam.push(PcieEcamInfo {
@@ -327,6 +329,7 @@ impl AcpiParser {
         let entries_end = srat_address as usize + header.length as usize;
 
         let mut offset = entries_start;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset + 2 <= entries_end {
             let entry_type = unsafe { core::ptr::read(offset as *const u8) };
             let entry_len = unsafe { core::ptr::read((offset + 1) as *const u8) } as usize;

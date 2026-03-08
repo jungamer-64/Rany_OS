@@ -234,6 +234,7 @@ impl CompletionQueue {
         let mut results = alloc::vec::Vec::new();
         let mut count = 0u32;
 
+        // LOOP_PROOF: mode=event; reason=Polling loop is capped by max_batch and also breaks when no new CQE is available.;
         loop {
             if count >= max_batch {
                 break;

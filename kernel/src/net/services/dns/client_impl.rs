@@ -178,6 +178,7 @@ impl DnsClient {
         let mut attempt = 0;
         let mut udp_response = None;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while attempt < DNS_MAX_RETRIES {
             match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
                 TimeoutResult::Completed(Some((src, _ttl, packet))) => {
@@ -376,6 +377,7 @@ impl DnsClient {
         // Security: トランザクションIDを保留中クエリに登録 (RFC 5452 キャッシュポイズニング防止)
         if let Ok(mut pending) = self.pending_ids.lock() {
             // 膨張防止: 256件を超えたら最も古いエントリを削除
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while pending.len() >= 256 {
                 if let Some(&oldest_id) = pending.keys().next() {
                     pending.remove(&oldest_id);
@@ -500,8 +502,8 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let header =
-            crate::util::get_ref::<DnsHeader>(data, 0).expect("DNS header slice out of bounds");
+        let header = crate::util::get_ref::<DnsHeader>(data, 0)
+            .ok_or(DnsResponseCode::FormatError)?;
 
         if !header.is_response() {
             return Err(DnsResponseCode::FormatError);
@@ -719,6 +721,7 @@ impl DnsClient {
         let mut txt_content = String::new();
         let mut offset = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while offset < rdlength && offset < rdata.len() {
             let txt_len = rdata[offset] as usize;
             offset += 1;
@@ -746,6 +749,7 @@ impl DnsClient {
         mut offset: usize,
     ) -> Result<usize, DnsResponseCode> {
         let mut labels = 0;
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if offset >= data.len() {
                 return Err(DnsResponseCode::FormatError);
@@ -819,6 +823,7 @@ impl DnsClient {
         let mut final_offset = offset;
         let mut jump_count = 0;
 
+        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             if offset >= data.len() {
                 return Err(DnsResponseCode::FormatError);

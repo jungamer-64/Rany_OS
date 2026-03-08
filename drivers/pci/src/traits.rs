@@ -304,6 +304,7 @@ pub trait ConfigSpaceAccessor {
         let mut cap_ptr = self.read_capabilities_ptr(bdf) & 0xFC;
         let target_id = cap_id as u8;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while cap_ptr != 0 {
             let cap_header = self.read16(bdf, cap_ptr as u16);
             let id = (cap_header & 0xFF) as u8;
@@ -361,6 +362,7 @@ pub trait ExtendedConfigSpaceAccessor: ConfigSpaceAccessor {
 
         let mut cap_offset: u16 = 0x100; // Extended capabilities start at offset 0x100
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while cap_offset != 0 && cap_offset < 0x1000 {
             let cap_header = self.read32(bdf, cap_offset);
             if cap_header == 0 || cap_header == 0xFFFFFFFF {

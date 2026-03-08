@@ -186,6 +186,7 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
         let mut glyph_idx = 0;
         let mut i = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < table_data.len() && glyph_idx < num_glyphs {
             let b = table_data[i];
 
@@ -237,6 +238,7 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
     /// 合成シーケンスをスキップしてセパレータ位置を返す
     fn skip_composite_sequence(table_data: &[u8], start: usize) -> usize {
         let mut i = start;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < table_data.len()
             && table_data[i] != PSF2_SEPARATOR
             && table_data[i] != PSF2_STARTSEQ
@@ -252,6 +254,7 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
         let mut glyph_idx = 0;
         let mut i = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i + 1 < table_data.len() && glyph_idx < num_glyphs {
             let code = u16::from_le_bytes([table_data[i], table_data[i + 1]]);
             i += 2;
@@ -263,6 +266,7 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
 
             if code == PSF1_STARTSEQ {
                 // Composite sequences are not fully supported; skip to separator.
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while i + 1 < table_data.len() {
                     let next = u16::from_le_bytes([table_data[i], table_data[i + 1]]);
                     i += 2;

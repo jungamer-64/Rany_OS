@@ -85,6 +85,7 @@ impl IdentifyData {
         }
 
         // 末尾のスペースを削除
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while bytes.last() == Some(&0x20) || bytes.last() == Some(&0x00) {
             bytes.pop();
         }

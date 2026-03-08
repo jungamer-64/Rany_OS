@@ -45,6 +45,7 @@ pub fn test_async_sleep() -> TestResult {
     let mut iterations = 0;
     const MAX_ITERATIONS: u64 = 100_000;
     
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while iterations < MAX_ITERATIONS {
         let current = crate::task::timer::current_tick();
         if current > start_tick {

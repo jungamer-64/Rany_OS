@@ -185,6 +185,7 @@ impl LocalApic {
         pit_data.write((count >> 8) as u8);
         self.set_timer_divisor(TimerDivisor::Div16);
         self.write_reg(LapicRegister::TimerIcr, 0xFFFFFFFF);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while (pit_gate.read() & 0x20) == 0 { core::hint::spin_loop(); }
         let current_count = self.read_reg(LapicRegister::TimerCcr);
         let elapsed = 0xFFFFFFFF - current_count;
@@ -212,6 +213,7 @@ impl LocalApic {
     pub fn send_ipi(&self, target_apic_id: u8, vector: u8) {
         self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
         self.write_reg(LapicRegister::IcrLow, LvtFlags::DELIVERY_FIXED.with_vector(vector));
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 { core::hint::spin_loop(); }
     }
 
@@ -223,12 +225,14 @@ impl LocalApic {
     pub fn send_init(&self, target_apic_id: u8) {
         self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
         self.write_reg(LapicRegister::IcrLow, (LvtFlags::DELIVERY_INIT | LvtFlags::LEVEL_TRIGGERED).bits());
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 { core::hint::spin_loop(); }
     }
 
     pub fn send_sipi(&self, target_apic_id: u8, vector: u8) {
         self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
         self.write_reg(LapicRegister::IcrLow, (vector as u32) | (0b110 << 8));
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 { core::hint::spin_loop(); }
     }
 }
