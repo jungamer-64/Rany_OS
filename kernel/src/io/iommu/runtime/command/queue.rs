@@ -100,6 +100,35 @@ impl core::fmt::Debug for CompletionSlot {
 const RESULT_OK: i32 = 0;
 const RESULT_HW_ERR: i32 = -1;
 const RESULT_CANCELLED: i32 = -2;
+const RESULT_TIMEOUT: i32 = -3;
+const MAX_COMPLETION_SPINS: usize = DEFAULT_QUEUE_SIZE * 256;
+const MAX_SUBMIT_RETRIES: usize = DEFAULT_QUEUE_SIZE * 4;
+const WAIT_WARN_INTERVAL: usize = DEFAULT_QUEUE_SIZE * 16;
+
+#[inline]
+fn reset_slot_to_free(slot: &CompletionSlot) {
+    slot.result.store(0, Ordering::Release);
+    slot.canceled.store(0, Ordering::Release);
+    slot.state.store(0, Ordering::Release);
+}
+
+#[inline]
+fn take_completed_result(slot: &CompletionSlot) -> Option<i32> {
+    if slot.state.load(Ordering::Acquire) != 2 {
+        return None;
+    }
+    let result = slot.result.load(Ordering::Acquire);
+    reset_slot_to_free(slot);
+    Some(result)
+}
+
+#[inline]
+fn take_completed_result_and_notify(slot: &CompletionSlot, queue_ptr: *const CommandQueue) -> Option<i32> {
+    let result = take_completed_result(slot)?;
+    let queue = unsafe { &*queue_ptr };
+    queue.notify_slot_available();
+    Some(result)
+}
 
 impl CompletionSlot {
     pub fn new() -> Self {
@@ -134,17 +163,13 @@ impl CompletionSlot {
     #[inline]
     pub fn wait_result_spin(&self) -> i32 {
         let mut backoff = Backoff::new();
-        loop {
-            if self.state.load(Ordering::Acquire) == 2 {
-                let r = self.result.load(Ordering::Acquire);
-                // free slot
-                self.result.store(0, Ordering::Release);
-                self.canceled.store(0, Ordering::Release);
-                self.state.store(0, Ordering::Release);
-                return r;
+        for _ in 0..MAX_COMPLETION_SPINS {
+            if let Some(result) = take_completed_result(self) {
+                return result;
             }
             backoff.spin();
         }
+        RESULT_TIMEOUT
     }
 
     #[inline]
@@ -176,21 +201,16 @@ impl CommandCompletion {
     pub fn wait_blocking(&self) -> i32 {
         let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
         let mut backoff = Backoff::new();
-        // LOOP_PROOF: mode=event; reason=Blocking wait exits when slot state reaches completed and otherwise only performs bounded backoff steps.;
-        loop {
-            if slot.state.load(Ordering::Acquire) == 2 {
-                let r = slot.result.load(Ordering::Acquire);
-                // reset slot state/result and return
-                slot.result.store(0, Ordering::Release);
-                slot.canceled.store(0, Ordering::Release);
-                slot.state.store(0, Ordering::Release);
-                // Notify tasks waiting for slots
-                let q = unsafe { &*self.queue_ptr };
-                q.notify_slot_available();
-                return r;
+        for spins in 0..MAX_COMPLETION_SPINS {
+            if let Some(result) = take_completed_result_and_notify(slot, self.queue_ptr) {
+                return result;
+            }
+            if spins > 0 && spins % WAIT_WARN_INTERVAL == 0 {
+                crate::io::log::early_print("[IOMMU] wait_blocking still pending\n");
             }
             backoff.spin();
         }
+        RESULT_TIMEOUT
     }
 
     /// Synchronous wait that also acts as a worker to drain the queue.
@@ -200,36 +220,25 @@ impl CommandCompletion {
     {
         let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
         let mut backoff = Backoff::new();
-        let mut spins = 0u64;
-        // LOOP_PROOF: mode=event; reason=Worker wait loop exits on completion and each iteration either drains one command or backs off.;
-        loop {
-            if slot.state.load(Ordering::Acquire) == 2 {
-                let r = slot.result.load(Ordering::Acquire);
-                // reset slot state/result and return
-                slot.result.store(0, Ordering::Release);
-                slot.canceled.store(0, Ordering::Release);
-                slot.state.store(0, Ordering::Release);
-                // Notify tasks waiting for slots
-                let q_ref = unsafe { &*self.queue_ptr };
-                q_ref.notify_slot_available();
-                return r;
+        for spins in 0..MAX_COMPLETION_SPINS {
+            if let Some(result) = take_completed_result_and_notify(slot, self.queue_ptr) {
+                return result;
             }
 
             // Try to make progress by processing the queue manually
             let processed = q.process_up_to(&mut handler, 1);
             if processed == 0 {
                 backoff.spin();
-                spins += 1;
-                if spins % 1000000 == 0 {
+                if spins > 0 && spins % WAIT_WARN_INTERVAL == 0 {
                     crate::io::log::early_print(
                         "[IOMMU] wait_sync_with_worker stuck spin warning\n",
                     );
                 }
             } else {
                 backoff = Backoff::new(); // reset backoff
-                spins = 0;
             }
         }
+        RESULT_TIMEOUT
     }
 
     pub fn cancel(&self) -> bool {
@@ -243,10 +252,14 @@ impl CommandCompletion {
 
 impl Drop for CommandCompletion {
     fn drop(&mut self) {
+        let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
+        if slot.state.load(Ordering::Acquire) != 1 {
+            return;
+        }
         // Best-effort cancel when the completion object is dropped
         let q = unsafe { &*self.queue_ptr };
         q.cancel_attempts.fetch_add(1, Ordering::Relaxed);
-        let _ = unsafe { &*self.slots_ptr.add(self.slot_idx) }.cancel();
+        let _ = slot.cancel();
     }
 }
 
@@ -254,31 +267,15 @@ impl core::future::Future for CommandCompletion {
     type Output = i32;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
-        if slot.state.load(Ordering::Acquire) == 2 {
-            let r = slot.result.load(Ordering::Acquire);
-            // clear canceled flag and free slot
-            slot.canceled.store(0, Ordering::Release);
-            slot.result.store(0, Ordering::Release);
-            slot.state.store(0, Ordering::Release);
-            // Notify tasks waiting for slots
-            let q = unsafe { &*self.queue_ptr };
-            q.notify_slot_available();
-            Poll::Ready(r)
+        if let Some(result) = take_completed_result_and_notify(slot, self.queue_ptr) {
+            return Poll::Ready(result);
+        }
+
+        slot.waker.register(cx.waker());
+        if let Some(result) = take_completed_result_and_notify(slot, self.queue_ptr) {
+            Poll::Ready(result)
         } else {
-            slot.waker.register(cx.waker());
-            if slot.state.load(Ordering::Acquire) == 2 {
-                let r = slot.result.load(Ordering::Acquire);
-                // clear canceled flag and free slot
-                slot.canceled.store(0, Ordering::Release);
-                slot.result.store(0, Ordering::Release);
-                slot.state.store(0, Ordering::Release);
-                // Notify tasks waiting for slots
-                let q = unsafe { &*self.queue_ptr };
-                q.notify_slot_available();
-                Poll::Ready(r)
-            } else {
-                Poll::Pending
-            }
+            Poll::Pending
         }
     }
 }
@@ -452,6 +449,12 @@ impl CommandQueue {
         self.send_waiter.wake();
     }
 
+    #[inline]
+    fn release_unsubmitted_slot(&self, slot_idx: usize) {
+        reset_slot_to_free(&self.slots[slot_idx]);
+        self.notify_slot_available();
+    }
+
     /// Non-blocking submit: returns a `CommandCompletion` which implements `Future`
     pub fn submit(&self, kind: IommuCommandKind) -> Result<CommandCompletion, ()> {
         let slot_idx = match self.alloc_slot() {
@@ -465,24 +468,24 @@ impl CommandQueue {
 
         // Wait for sender to accept (bounded). Try with small backoff
         let mut backoff = Backoff::new();
-        // LOOP_PROOF: mode=event; reason=Submit loop exits immediately after sender accepts command and otherwise retries with backoff.;
-        loop {
+        for _attempt in 0..MAX_SUBMIT_RETRIES {
             match self.sender.send(cmd.clone()) {
                 Ok(_) => {
                     self.recv_waiter.wake();
-                    break;
+                    return Ok(CommandCompletion {
+                        slot_idx,
+                        slots_ptr: self.slots.as_ptr() as *const CompletionSlot,
+                        queue_ptr: self as *const CommandQueue,
+                    });
                 }
                 Err(_) => {
+                    self.send_backpressure_count.fetch_add(1, Ordering::Relaxed);
                     backoff.spin();
                 }
             }
         }
-
-        Ok(CommandCompletion {
-            slot_idx,
-            slots_ptr: self.slots.as_ptr() as *const CompletionSlot,
-            queue_ptr: self as *const CommandQueue,
-        })
+        self.release_unsubmitted_slot(slot_idx);
+        Err(())
     }
 
     /// Async submit (non-busy): returns a Future that waits for slot & channel space
@@ -507,37 +510,47 @@ impl CommandQueue {
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
     {
         // Allocate a slot first
-        let mut slot_idx = None;
         let mut backoff = Backoff::new();
-        // LOOP_PROOF: mode=condition; reason=Slot-allocation loop exits as soon as alloc_slot returns Some for the pending submission.;
-        while slot_idx.is_none() {
+        let mut slot_idx = None;
+        for _attempt in 0..MAX_SUBMIT_RETRIES {
             slot_idx = self.alloc_slot();
-            if slot_idx.is_none() {
-                // If we can't allocate a slot, the queue might be full. Process to free slots.
-                let _ = self.process_up_to(&mut handler, 1);
-                backoff.snooze();
+            if slot_idx.is_some() {
+                break;
             }
+            // If we can't allocate a slot, the queue might be full. Process to free slots.
+            let _ = self.process_up_to(&mut handler, 1);
+            backoff.snooze();
         }
-        let slot_idx = slot_idx.unwrap();
+        let Some(slot_idx) = slot_idx else {
+            return Err(());
+        };
         let cmd = IommuCommand { kind, slot_idx };
 
         // Wait for sender to accept (bounded). Try with small backoff and drain queue
         backoff.reset();
-        // LOOP_PROOF: mode=event; reason=Send loop exits on successful enqueue and otherwise processes queued work to free channel capacity.;
-        loop {
+        let mut submitted = false;
+        for _attempt in 0..MAX_SUBMIT_RETRIES {
             match self.sender.send(cmd.clone()) {
                 Ok(_) => {
                     self.recv_waiter.wake();
+                    submitted = true;
                     break;
                 }
                 Err(_) => {
+                    self.send_backpressure_count.fetch_add(1, Ordering::Relaxed);
                     // Queue full, drain it to make progress
                     let processed = self.process_up_to(&mut handler, 1);
                     if processed == 0 {
                         backoff.snooze();
+                    } else {
+                        backoff.reset();
                     }
                 }
             }
+        }
+        if !submitted {
+            self.release_unsubmitted_slot(slot_idx);
+            return Err(());
         }
 
         let comp = CommandCompletion {
@@ -1060,6 +1073,40 @@ mod tests {
         assert_eq!(rc, RESULT_OK);
         // sanity check
         assert_eq!(q.numa_node, Some(0));
+    }
+
+    #[test_case]
+    fn test_wait_result_spin_times_out_for_never_completed_slot() {
+        let slot = CompletionSlot::new();
+        assert!(slot.try_acquire());
+        assert_eq!(slot.wait_result_spin(), RESULT_TIMEOUT);
+        assert_eq!(slot.state.load(Ordering::Acquire), 1);
+    }
+
+    #[test_case]
+    fn test_submit_releases_slot_when_channel_remains_full() {
+        let q = Box::leak(Box::new(CommandQueue::new()));
+
+        for idx in 0..(q.slots.len() - 1) {
+            assert!(q.slots[idx].try_acquire());
+        }
+
+        for domain in 0..DEFAULT_QUEUE_SIZE {
+            q.sender
+                .send(IommuCommand {
+                    kind: IommuCommandKind::InvalidateIotlbDomain {
+                        domain: domain as u16,
+                    },
+                    slot_idx: 0,
+                })
+                .expect("fill channel");
+        }
+
+        assert!(
+            q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 0xdead })
+                .is_err()
+        );
+        assert!(q.try_alloc_slot().is_some());
     }
 
     #[cfg(feature = "std")]

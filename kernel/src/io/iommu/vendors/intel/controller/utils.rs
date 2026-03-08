@@ -7,6 +7,26 @@
 use super::IommuController;
 use crate::io::iommu::types::IommuError;
 
+#[inline]
+fn wait_until<F, G, H>(condition: &F, mut should_wait: G, mut on_pending: H) -> Result<(), IommuError>
+where
+    F: Fn() -> bool,
+    G: FnMut() -> bool,
+    H: FnMut(),
+{
+    // LOOP_PROOF: mode=condition; reason=Shared wait helper rechecks condition each pass and exits when timeout predicate stops waiting.;
+    while {
+        if condition() {
+            return Ok(());
+        }
+        should_wait()
+    } {
+        on_pending();
+    }
+
+    Err(IommuError::Timeout)
+}
+
 /// Timer/Wait Utilities
 pub trait IommuUtils {
     /// Wait for a condition to be true with a timeout
@@ -31,17 +51,11 @@ impl IommuController {
             return None;
         }
         let timeout_ns = timeout_us.saturating_mul(1000);
-        // LOOP_PROOF: mode=event; reason=Busy-wait exits on condition success or precise-time timeout threshold.;
-        loop {
-            if condition() {
-                return Some(Ok(()));
-            }
-            let now_ns = crate::time::precise_time_nanos();
-            if now_ns.saturating_sub(start_ns) >= timeout_ns {
-                return Some(Err(IommuError::Timeout));
-            }
-            core::hint::spin_loop();
-        }
+        Some(wait_until(
+            condition,
+            || crate::time::precise_time_nanos().saturating_sub(start_ns) < timeout_ns,
+            || core::hint::spin_loop(),
+        ))
     }
 
     /// Busy-wait using rdtsc (early boot fallback with conservative 3GHz assumption).
@@ -51,17 +65,14 @@ impl IommuController {
     {
         let cycles = timeout_us.saturating_mul(3000);
         let start = unsafe { core::arch::x86_64::_rdtsc() };
-        // LOOP_PROOF: mode=event; reason=RDTSC wait exits on condition success or cycle-budget timeout.;
-        loop {
-            if condition() {
-                return Ok(());
-            }
-            let current = unsafe { core::arch::x86_64::_rdtsc() };
-            if current.saturating_sub(start) > cycles {
-                return Err(IommuError::Timeout);
-            }
-            core::hint::spin_loop();
-        }
+        wait_until(
+            condition,
+            || {
+                let current = unsafe { core::arch::x86_64::_rdtsc() };
+                current.saturating_sub(start) <= cycles
+            },
+            || core::hint::spin_loop(),
+        )
     }
 }
 
@@ -87,20 +98,15 @@ impl IommuUtils for IommuController {
                 let timeout_ms = (timeout_us + 999) / 1000;
                 let end_tick = crate::task::timer::current_tick().saturating_add(timeout_ms);
 
-                // LOOP_PROOF: mode=event; reason=Yielding wait exits on condition success or end_tick timeout boundary.;
-                loop {
-                    if condition() {
-                        return Ok(());
-                    }
-
-                    if crate::task::timer::current_tick() >= end_tick {
-                        return Err(IommuError::Timeout);
-                    }
-
-                    // Best-effort cooperative yield to avoid busy-looping
-                    crate::task::preemption::voluntary_yield();
-                    crate::task::preemption::yield_point();
-                }
+                return wait_until(
+                    &condition,
+                    || crate::task::timer::current_tick() < end_tick,
+                    || {
+                        // Best-effort cooperative yield to avoid busy-looping
+                        crate::task::preemption::voluntary_yield();
+                        crate::task::preemption::yield_point();
+                    },
+                );
             }
             // If scheduler isn't available, fallthrough to busy-wait below
         }

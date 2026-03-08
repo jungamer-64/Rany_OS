@@ -260,9 +260,14 @@ impl Ipv6FragmentBuffer {
                 covered_hole_bytes += intersection_end - intersection_start;
             }
         }
-        if covered_hole_bytes == 0 {
-            // Duplicate fragment - ignore it but don't drop the datagram
-            return Ok(());
+        if covered_hole_bytes == 0 && payload_len > 0 {
+            // Duplicate fragment - RFC 5722 requires dropping the entire datagram
+            log::warn!(
+                "[NET-IPV6] Duplicate fragment detected (offset={}, len={}), discarding datagram (RFC 5722)",
+                offset,
+                payload_len
+            );
+            return Err(Ipv6ReassemblyError::Overlap);
         }
         if covered_hole_bytes < payload_len {
             // Overlap detected with already received data

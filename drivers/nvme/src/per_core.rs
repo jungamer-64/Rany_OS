@@ -60,6 +60,7 @@ static QUEUES: [AtomicPtr<PerCoreNvmeQueue>; MAX_CORES] =
     [const { AtomicPtr::new(ptr::null_mut()) }; MAX_CORES];
 static APIC_TO_CORE: [AtomicU32; MAX_CORES] =
     [const { AtomicU32::new(INVALID_CORE_ID) }; MAX_CORES];
+const MAX_ISR_COMPLETIONS_PER_PASS: usize = 64;
 
 /// ISR用にキューを登録
 pub fn register_queue(core_id: u32, queue: &PerCoreNvmeQueue) {
@@ -613,9 +614,11 @@ impl PerCoreNvmeQueue {
         let mut count = 0;
 
         if let Some(qp) = qp_opt {
-            // ISR loop: poll until empty
-            // LOOP_PROOF: mode=condition; reason=ISR completion loop keeps consuming CQEs and exits when poll_completion reports empty.;
-            while let Some(cqe) = qp.poll_completion() {
+            // LOOP_PROOF: mode=condition; reason=ISR completion loop is capped per pass and exits on empty CQ or MAX_ISR_COMPLETIONS_PER_PASS.;
+            while count < MAX_ISR_COMPLETIONS_PER_PASS {
+                let Some(cqe) = qp.poll_completion() else {
+                    break;
+                };
                 self.stats
                     .commands_completed
                     .fetch_add(1, Ordering::Relaxed);

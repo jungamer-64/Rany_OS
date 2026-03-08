@@ -30,6 +30,21 @@ pub const NANOS_PER_MILLI: u64 = 1_000_000;
 /// 1マイクロ秒のナノ秒数
 pub const NANOS_PER_MICRO: u64 = 1_000;
 
+#[inline]
+fn spin_until_or_limit<F>(mut should_continue: F, max_spins: u32) -> bool
+where
+    F: FnMut() -> bool,
+{
+    // LOOP_PROOF: mode=condition; reason=Helper loop is bounded by max_spins and exits early when the observed hardware condition clears.;
+    for _ in 0..max_spins {
+        if !should_continue() {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    !should_continue()
+}
+
 /// Read the Time Stamp Counter (TSC) with LFENCE serialization
 #[inline]
 pub fn rdtsc() -> u64 {
@@ -137,22 +152,16 @@ fn compute_tsc_mult_shift(frequency: u64) -> (u64, u8) {
         return (0, 0);
     }
 
-    let mut shift: u8 = 63;
-    // LOOP_PROOF: mode=event; reason=Shift decreases every pass and loop exits once multiplier fits u64 or fallback shift reaches zero.;
-    loop {
+    for shift in (0..=63).rev() {
         let numerator = (NANOS_PER_SEC as u128) << shift;
         let mult = numerator / frequency as u128;
 
         if mult <= u64::MAX as u128 {
             return (mult as u64, shift);
         }
-
-        if shift == 0 {
-            return ((NANOS_PER_SEC / frequency), 0);
-        }
-
-        shift -= 1;
     }
+
+    ((NANOS_PER_SEC / frequency), 0)
 }
 
 /// PIT (Programmable Interval Timer) 定数
@@ -303,29 +312,21 @@ impl Rtc {
     pub fn read_datetime(&self) -> DateTime {
         const MAX_RETRIES: u32 = 3;
         const MAX_UPDATE_WAIT: u32 = 10000;
-        let mut wait_count = 0;
-        // LOOP_PROOF: mode=condition; reason=RTC wait loop exits when update-in-progress bit clears or MAX_UPDATE_WAIT guard is exceeded.;
-        while self.update_in_progress() {
-            core::hint::spin_loop();
-            wait_count += 1;
-            if wait_count > MAX_UPDATE_WAIT {
-                break;
-            }
-        }
-        let mut retries = 0;
-        // LOOP_PROOF: mode=event; reason=Retry loop returns on stable double-read match or exits at MAX_RETRIES bound.;
-        loop {
+        let _ = spin_until_or_limit(|| self.update_in_progress(), MAX_UPDATE_WAIT);
+
+        for retry in 0..MAX_RETRIES {
             let first = self.read_datetime_internal();
             let second = self.read_datetime_internal();
             if first == second {
                 return first;
             }
-            retries += 1;
-            if retries >= MAX_RETRIES {
+            if retry + 1 == MAX_RETRIES {
                 return second;
             }
             core::hint::spin_loop();
         }
+
+        self.read_datetime_internal()
     }
 
     fn read_datetime_internal(&self) -> DateTime {
@@ -510,6 +511,7 @@ impl Pit {
     fn delay_us_channel2(&self, microseconds: u64) {
         let ticks = (pit::BASE_FREQUENCY * microseconds) / 1_000_000;
         let ticks = ticks.max(1).min(65535) as u16;
+        let max_spins = (u32::from(ticks).saturating_mul(16)).max(1024);
         let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
         let mut data_port: PortU8 = IoPort::new(pit::CHANNEL2_DATA);
         let mut speaker_port: PortU8 = IoPort::new(pit::SPEAKER_PORT);
@@ -520,10 +522,7 @@ impl Pit {
         speaker_port.write((old_speaker & 0xFC) | 0x01);
         data_port.write((ticks & 0xFF) as u8);
         data_port.write((ticks >> 8) as u8);
-        // LOOP_PROOF: mode=condition; reason=PIT one-shot wait exits when channel 2 output bit signals completion.;
-        while (speaker_port.read() & 0x20) == 0 {
-            core::hint::spin_loop();
-        }
+        let _ = spin_until_or_limit(|| (speaker_port.read() & 0x20) == 0, max_spins);
         speaker_port.write(old_speaker);
     }
 
@@ -540,14 +539,8 @@ fn perform_single_pit_measurement(
     pit_ticks: u16,
 ) -> Option<u64> {
     speaker_port.write(old_speaker & 0xFC);
-    let mut timeout = 100_000;
-    // LOOP_PROOF: mode=condition; reason=Loop exits when speaker status bit clears or timeout counter reaches zero safeguard.;
-    while (speaker_port.read() & 0x20) != 0 {
-        core::hint::spin_loop();
-        timeout -= 1;
-        if timeout == 0 {
-            return None;
-        }
+    if !spin_until_or_limit(|| (speaker_port.read() & 0x20) != 0, 100_000) {
+        return None;
     }
     cmd_port.write(pit::CH2_MODE_ONE_SHOT);
     speaker_port.write((old_speaker & 0xFC) | 0x01);
@@ -557,17 +550,8 @@ fn perform_single_pit_measurement(
     };
     data_port.write((pit_ticks & 0xFF) as u8);
     data_port.write((pit_ticks >> 8) as u8);
-    let mut timeout = 100_000_000;
-    // LOOP_PROOF: mode=event; reason=Loop breaks on PIT output completion and returns None when timeout guard expires.;
-    loop {
-        if (speaker_port.read() & 0x20) != 0 {
-            break;
-        }
-        core::hint::spin_loop();
-        timeout -= 1;
-        if timeout == 0 {
-            return None;
-        }
+    if !spin_until_or_limit(|| (speaker_port.read() & 0x20) == 0, 100_000_000) {
+        return None;
     }
     let end_tsc = unsafe {
         core::arch::x86_64::_mm_lfence();

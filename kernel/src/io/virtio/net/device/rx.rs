@@ -4,6 +4,8 @@ use crate::net::obs::{
     trace::{self, NetEventKind, NetLayer},
 };
 
+const MAX_RX_COMPLETIONS_PER_PASS: usize = 256;
+
 impl VirtioNetDevice {
     /// パケットを受信（非同期）
     pub fn recv_async<'a>(&'a self, buffer: &'a mut [u8]) -> RecvFuture<'a> {
@@ -41,14 +43,18 @@ impl VirtioNetDevice {
     /// RXキュー完了を処理し、パケットをスタックに渡す
     pub(super) fn process_rx_completions(&self) {
         for (q_idx_pair, rx_queue) in self.rx_queues.iter().enumerate() {
-            let q_idx = (q_idx_pair * 2) as u16;
             let inner = rx_queue.inner.lock().unwrap_or_else(|e| e.into_inner());
-            
-            // LOOP_PROOF: mode=condition; reason=RX completion loop drains descriptor completions and exits when poll_complete returns None.;
-            while let Some((desc_idx, len)) = inner.poll_complete() {
+
+            let mut processed = 0usize;
+            // LOOP_PROOF: mode=condition; reason=RX completion loop is capped per pass and exits on empty queue or MAX_RX_COMPLETIONS_PER_PASS.;
+            while processed < MAX_RX_COMPLETIONS_PER_PASS {
+                let Some((desc_idx, len)) = inner.poll_complete() else {
+                    break;
+                };
                 self.rx_packets.fetch_add(1, Ordering::Relaxed);
                 self.rx_bytes.fetch_add(len, Ordering::Relaxed);
                 trace::push_event(NetLayer::Driver, NetEventKind::Rx, "virtio rx completion");
+                processed += 1;
 
                 // IoScheduler path: completion belongs to a pending IoRequest.
                 if let Some(handler) = get_poll_handler(self.virtio_index) {

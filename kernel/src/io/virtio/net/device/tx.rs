@@ -5,6 +5,8 @@ use crate::net::obs::{
     trace::{self, NetEventKind, NetLayer},
 };
 
+const MAX_TX_COMPLETIONS_PER_PASS: usize = 256;
+
 impl VirtioNetDevice {
     /// 同期パケット送信（非推奨：send_async または send_zero_copy を使用してください）
     ///
@@ -388,14 +390,18 @@ impl VirtioNetDevice {
     /// TXキュー完了を処理し、インフライトバッファを解放
     pub(super) fn process_tx_completions(&self) {
         for (q_idx_pair, tx_queue) in self.tx_queues.iter().enumerate() {
-            let q_idx = (q_idx_pair * 2 + 1) as u16; // TX queue index in VirtIO is odd
             let inner = tx_queue.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let mut processed = 0usize;
 
-            // LOOP_PROOF: mode=condition; reason=TX completion loop drains descriptor completions and exits when poll_complete returns None.;
-            while let Some((desc_idx, len)) = inner.poll_complete() {
+            // LOOP_PROOF: mode=condition; reason=TX completion loop is capped per pass and exits on empty queue or MAX_TX_COMPLETIONS_PER_PASS.;
+            while processed < MAX_TX_COMPLETIONS_PER_PASS {
+                let Some((desc_idx, len)) = inner.poll_complete() else {
+                    break;
+                };
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 self.tx_bytes.fetch_add(len, Ordering::Relaxed);
                 trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio tx completion");
+                processed += 1;
 
                 log::info!("[VIRTIO-NET][TX-COMP] desc={} len={}", desc_idx, len);
 

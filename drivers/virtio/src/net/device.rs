@@ -7,6 +7,8 @@ use crate::transport::TransportError;
 use crate::net::*;
 use crate::net::features::*;
 
+const MAX_VIRTIO_COMPLETIONS_PER_PASS: usize = 256;
+
 #[derive(Debug, Default)]
 pub struct VirtioNetDevice {
     pub config: VirtioNetConfig,
@@ -127,8 +129,13 @@ impl VirtioNetDevice {
         };
 
         let mut count = 0;
-        // LOOP_PROOF: mode=condition; reason=TX completion loop drains used descriptors and exits when poll_complete reports no completion.;
-        while let Some((desc_idx, _)) = vq.poll_complete() {
+        let mut processed = 0usize;
+        // LOOP_PROOF: mode=condition; reason=TX completion loop is capped per pass and exits on empty queue or MAX_VIRTIO_COMPLETIONS_PER_PASS.;
+        while processed < MAX_VIRTIO_COMPLETIONS_PER_PASS {
+            let Some((desc_idx, _)) = vq.poll_complete() else {
+                break;
+            };
+            processed += 1;
             if let Some(inflight) = tracker.take(desc_idx) {
                 // Return packet and bounce buffer to runtime/heap
                 // Logic for cleaning up inflight.packet and inflight.bounce_buffer
@@ -152,8 +159,13 @@ impl VirtioNetDevice {
         };
 
         let mut count = 0;
-        // LOOP_PROOF: mode=condition; reason=RX completion loop drains used descriptors and exits once queue completion is empty.;
-        while let Some((desc_idx, len)) = vq.poll_complete() {
+        let mut processed = 0usize;
+        // LOOP_PROOF: mode=condition; reason=RX completion loop is capped per pass and exits on empty queue or MAX_VIRTIO_COMPLETIONS_PER_PASS.;
+        while processed < MAX_VIRTIO_COMPLETIONS_PER_PASS {
+            let Some((desc_idx, len)) = vq.poll_complete() else {
+                break;
+            };
+            processed += 1;
             if let Some(inflight) = tracker.take(desc_idx) {
                 handler(inflight, len);
                 vq.free_desc_chain(desc_idx);
