@@ -1,137 +1,97 @@
 // ============================================================================
-// drivers/virtio/src/blk/mod.rs - Shared VirtIO Blk types
+// drivers/virtio/src/blk/mod.rs - Shared VirtIO Block types
 // ============================================================================
 
-use alloc::vec::Vec;
+pub mod device;
 
 /// VirtIO feature bits for block devices
 pub mod features {
-    /// Maximum size of any single segment is in `size_max`
     pub const VIRTIO_BLK_F_SIZE_MAX: u64 = 1 << 1;
-    /// Maximum number of segments in a request is in `seg_max`
     pub const VIRTIO_BLK_F_SEG_MAX: u64 = 1 << 2;
-    /// Disk-style geometry specified in `geometry`
     pub const VIRTIO_BLK_F_GEOMETRY: u64 = 1 << 4;
-    /// Device is read-only
     pub const VIRTIO_BLK_F_RO: u64 = 1 << 5;
-    /// Block size of disk is in `blk_size`
     pub const VIRTIO_BLK_F_BLK_SIZE: u64 = 1 << 6;
-    /// Device supports request flushing
     pub const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
-    /// Device supports topology information
     pub const VIRTIO_BLK_F_TOPOLOGY: u64 = 1 << 10;
-    /// Device supports multiqueue
+    pub const VIRTIO_BLK_F_CONFIG_WCE: u64 = 1 << 11;
     pub const VIRTIO_BLK_F_MQ: u64 = 1 << 12;
-    /// Device supports discard command
     pub const VIRTIO_BLK_F_DISCARD: u64 = 1 << 13;
-    /// Device supports write zeroes command
     pub const VIRTIO_BLK_F_WRITE_ZEROES: u64 = 1 << 14;
 }
 
-/// VirtIO block request types
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VirtioBlkReqType {
-    /// Read from device
-    In = 0,
-    /// Write to device
-    Out = 1,
-    /// Flush data to device
-    Flush = 4,
-    /// Get device ID
-    GetId = 8,
-    /// Discard sectors
-    Discard = 11,
-    /// Write zeroes
-    WriteZeroes = 13,
-}
-
-/// VirtIO block status codes
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VirtioBlkStatus {
-    /// Success
-    Ok = 0,
-    /// I/O error
-    IoErr = 1,
-    /// Unsupported request
-    Unsupported = 2,
-}
+pub use features::*;
 
 // ============================================================================
-// Block Request Format
+// Block Request Types
 // ============================================================================
 
-/// VirtIO block request header
+pub const VIRTIO_BLK_T_IN: u32 = 0;
+pub const VIRTIO_BLK_T_OUT: u32 = 1;
+pub const VIRTIO_BLK_T_FLUSH: u32 = 4;
+pub const VIRTIO_BLK_T_DISCARD: u32 = 11;
+pub const VIRTIO_BLK_T_WRITE_ZEROES: u32 = 13;
+
+pub const VIRTIO_BLK_S_OK: u8 = 0;
+pub const VIRTIO_BLK_S_IOERR: u8 = 1;
+pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
+
+/// Block request header
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct VirtioBlkReqHeader {
-    /// Request type (IN, OUT, FLUSH, etc.)
-    pub req_type: u32,
-    /// Reserved (for future use)
+    pub type_: u32,
     pub reserved: u32,
-    /// Sector number (512-byte sectors)
     pub sector: u64,
 }
 
-/// A block I/O request
-pub struct BlockRequest {
-    /// Request ID (descriptor index)
-    pub id: u16,
-    /// Request header
-    pub header: VirtioBlkReqHeader,
-    /// Data buffer
-    pub data: Vec<u8>,
-    /// Status byte (filled by device)
-    pub status: u8,
-}
-
 // ============================================================================
-// VirtIO Block Device
+// Block Device Configuration
 // ============================================================================
 
-/// Block device configuration
-#[derive(Clone, Debug)]
-pub struct BlockDeviceConfig {
-    /// Device capacity in 512-byte sectors
+/// Block device configuration (from device config space)
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VirtioBlkConfig {
     pub capacity: u64,
-    /// Block size (usually 512)
-    pub block_size: u32,
-    /// Maximum segment size
+    pub size_max: u32,
     pub seg_max: u32,
-    /// Number of queues
-    pub num_queues: u16,
-    /// Read-only flag
-    pub read_only: bool,
+    pub cylinders: u16,
+    pub heads: u8,
+    pub sectors: u8,
+    pub blk_size: u32,
+    pub physical_block_exp: u8,
+    pub alignment_offset: u8,
+    pub min_io_size: u16,
+    pub opt_io_size: u32,
 }
 
-impl Default for BlockDeviceConfig {
-    fn default() -> Self {
-        Self {
-            capacity: 0,
-            block_size: 512,
-            seg_max: 126,
-            num_queues: 1,
-            read_only: false,
-        }
-    }
-}
+// ============================================================================
+// Block Error Types
+// ============================================================================
 
 /// Block device error types
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockError {
     /// Device not ready
     NotReady,
-    /// Device is read-only
-    ReadOnly,
-    /// Invalid sector address
-    InvalidSector,
     /// I/O error from device
     IoError,
     /// Queue full
     QueueFull,
     /// Unsupported operation
     Unsupported,
-    /// Invalid buffer size
-    InvalidBufferSize,
+    /// Invalid parameter
+    InvalidParam,
+}
+
+impl core::fmt::Display for BlockError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            BlockError::NotReady => write!(f, "Device not ready"),
+            BlockError::IoError => write!(f, "I/O error"),
+            BlockError::QueueFull => write!(f, "Queue full"),
+            BlockError::Unsupported => write!(f, "Unsupported operation"),
+            BlockError::InvalidParam => write!(f, "Invalid parameter"),
+        }
+    }
 }

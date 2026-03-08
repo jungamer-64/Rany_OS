@@ -5,6 +5,7 @@ use alloc::sync::Arc;
 
 mod graphics_manager;
 pub use self::graphics_manager::*;
+use crate::io::virtio::VIRTQUEUE_MAX_SIZE;
 unsafe impl Send for VirtioGpu {}
 unsafe impl Sync for VirtioGpu {}
 
@@ -143,15 +144,14 @@ impl VirtioGpu {
         self.transport.enable_queue();
 
         let virtqueue = unsafe {
-            VirtQueue::new(
+            crate::io::virtio::virtqueue::VirtQueue::new(
                 queue_size,
                 desc_table,
                 avail_ring,
                 used_ring,
                 Some(buffer),
                 queue_idx,
-                notify_addr,
-                notify_is_32bit,
+                self.features,
             )
         };
 
@@ -177,7 +177,7 @@ impl VirtioGpu {
         resp_size: usize,
     ) -> GpuResult<CoherentDmaBuffer> {
         let queue = self.ctrl_queue.as_ref().ok_or(GpuError::InitFailed)?;
-        let queue_guard = queue.lock();
+        let mut queue_guard = queue.lock();
 
         let mut req_buf = self
             .alloc_coherent(req_bytes.len(), DmaMemoryAttributes::MMIO)
@@ -197,13 +197,13 @@ impl VirtioGpu {
         })?;
 
         unsafe {
-            (*queue_guard.desc_table.add(desc0 as usize)) = VringDesc {
+            (*queue_guard.desc_table_ptr().add(desc0 as usize)) = VringDesc {
                 addr: req_buf.device_addr(),
                 len: req_bytes.len() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
                 next: desc1,
             };
-            (*queue_guard.desc_table.add(desc1 as usize)) = VringDesc {
+            (*queue_guard.desc_table_ptr().add(desc1 as usize)) = VringDesc {
                 addr: resp_buf.device_addr(),
                 len: resp_size as u32,
                 flags: vring_flags::VRING_DESC_F_WRITE,
@@ -212,13 +212,12 @@ impl VirtioGpu {
             queue_guard.submit(desc0);
         }
 
-        queue_guard.notify();
+        queue_guard.notify(self.transport.as_ref());
 
         // Poll for completion (synchronous)
         loop {
-            if let Some((_id, _len)) = queue_guard.poll_completions() {
-                queue_guard.free_desc(desc0);
-                queue_guard.free_desc(desc1);
+            if let Some((_id, _len)) = queue_guard.poll_complete() {
+                queue_guard.free_desc_chain(desc0);
                 break;
             }
             core::hint::spin_loop();
@@ -244,7 +243,7 @@ impl VirtioGpu {
     /// Send a cursor command to the cursor queue.
     pub(super) fn send_cursor_command<Req: Copy>(&self, req: &Req) -> GpuResult<()> {
         let queue = self.cursor_queue.as_ref().ok_or(GpuError::InitFailed)?;
-        let queue_guard = queue.lock();
+        let mut queue_guard = queue.lock();
 
         let req_size = core::mem::size_of::<Req>();
         let mut req_buf = self
@@ -259,7 +258,7 @@ impl VirtioGpu {
         let desc0 = queue_guard.alloc_desc().ok_or(GpuError::OutOfMemory)?;
 
         unsafe {
-            (*queue_guard.desc_table.add(desc0 as usize)) = VringDesc {
+            (*queue_guard.desc_table_ptr().add(desc0 as usize)) = VringDesc {
                 addr: req_buf.device_addr(),
                 len: req_size as u32,
                 flags: 0,
@@ -268,12 +267,12 @@ impl VirtioGpu {
             queue_guard.submit(desc0);
         }
 
-        queue_guard.notify();
+        queue_guard.notify(self.transport.as_ref());
 
         // Poll for completion
         loop {
-            if let Some((_id, _len)) = queue_guard.poll_completions() {
-                queue_guard.free_desc(desc0);
+            if let Some((_id, _len)) = queue_guard.poll_complete() {
+                queue_guard.free_desc_chain(desc0);
                 break;
             }
             core::hint::spin_loop();
@@ -314,7 +313,7 @@ impl VirtioGpu {
         resp_size: usize,
     ) -> GpuResult<CoherentDmaBuffer> {
         let queue = self.ctrl_queue.as_ref().ok_or(GpuError::InitFailed)?;
-        let queue_guard = queue.lock();
+        let mut queue_guard = queue.lock();
 
         let (req_buf, data_buf, resp_buf) =
             self.alloc_command_buffers(req_bytes, data_bytes, resp_size)?;
@@ -331,19 +330,19 @@ impl VirtioGpu {
         })?;
 
         unsafe {
-            (*queue_guard.desc_table.add(desc0 as usize)) = VringDesc {
+            (*queue_guard.desc_table_ptr().add(desc0 as usize)) = VringDesc {
                 addr: req_buf.device_addr(),
                 len: req_bytes.len() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
                 next: desc1,
             };
-            (*queue_guard.desc_table.add(desc1 as usize)) = VringDesc {
+            (*queue_guard.desc_table_ptr().add(desc1 as usize)) = VringDesc {
                 addr: data_buf.device_addr(),
                 len: data_bytes.len() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
                 next: desc2,
             };
-            (*queue_guard.desc_table.add(desc2 as usize)) = VringDesc {
+            (*queue_guard.desc_table_ptr().add(desc2 as usize)) = VringDesc {
                 addr: resp_buf.device_addr(),
                 len: resp_size as u32,
                 flags: vring_flags::VRING_DESC_F_WRITE,
@@ -352,14 +351,12 @@ impl VirtioGpu {
             queue_guard.submit(desc0);
         }
 
-        queue_guard.notify();
+        queue_guard.notify(self.transport.as_ref());
 
-        while queue_guard.poll_completions().is_none() {
+        while queue_guard.poll_complete().is_none() {
             core::hint::spin_loop();
         }
-        queue_guard.free_desc(desc0);
-        queue_guard.free_desc(desc1);
-        queue_guard.free_desc(desc2);
+        queue_guard.free_desc_chain(desc0);
 
         Ok(resp_buf)
     }

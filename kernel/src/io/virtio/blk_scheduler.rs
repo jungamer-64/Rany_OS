@@ -89,7 +89,7 @@ impl VirtioBlkPollHandler {
                     if let Ok(mut dmas) = queue_dma.lock() {
                         dmas.get_mut(desc_id as usize)
                             .and_then(|slot| slot.take())
-                            .map(|dma| dma.status() == 0) // 0 is VIRTIO_BLK_S_OK
+                            .map(|dma| dma.status() == virtio_driver::blk::VIRTIO_BLK_S_OK)
                             .unwrap_or(true)
                     } else {
                         true
@@ -209,11 +209,9 @@ impl VirtioBlkOps {
         match e {
             BlockError::QueueFull => IoError::NoResources,
             BlockError::NotReady => IoError::Busy,
-            BlockError::ReadOnly => IoError::NotSupported,
-            BlockError::InvalidSector => IoError::InvalidParameter,
-            BlockError::InvalidBufferSize => IoError::InvalidParameter,
             BlockError::Unsupported => IoError::NotSupported,
             BlockError::IoError => IoError::DeviceError,
+            BlockError::InvalidParam => IoError::InvalidParameter,
         }
     }
     /// Validate block I/O parameters

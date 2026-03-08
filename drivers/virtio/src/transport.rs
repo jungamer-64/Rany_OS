@@ -102,6 +102,12 @@ pub trait VirtioTransport: Send + Sync + core::fmt::Debug {
         self.set_driver_features_high((features >> 32) as u32);
     }
 
+    /// ステータスビットを追加
+    fn add_status(&self, status: u8) {
+        let current = self.get_status();
+        self.set_status(current | status);
+    }
+
     /// キュー数を取得
     fn get_num_queues(&self) -> u16;
 

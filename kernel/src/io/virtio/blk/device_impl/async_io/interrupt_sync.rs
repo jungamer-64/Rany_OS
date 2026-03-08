@@ -23,7 +23,7 @@ pub fn blk_read_sync(_sector: u64, buf: &mut [u8]) -> Result<usize, BlockError> 
     // Placeholder: In production, this would submit the request and poll for completion
     // For now, just verify parameters
     if buf.is_empty() {
-        return Err(BlockError::InvalidBufferSize);
+        return Err(BlockError::InvalidParam);
     }
 
     // Would need to implement polling-based read here

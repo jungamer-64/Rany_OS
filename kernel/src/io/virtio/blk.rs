@@ -45,27 +45,12 @@ use vfs::block::{
 // VirtIO Common Definitions
 // ============================================================================
 
-/// VirtIO device status bits
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VirtioDeviceStatus {
-    /// Driver has noticed the device
-    Acknowledge = 1,
-    /// Driver knows how to drive the device
-    Driver = 2,
-    /// Driver is set up and ready to drive the device
-    DriverOk = 4,
-    /// Driver has finished configuring features
-    FeaturesOk = 8,
-    /// Device has experienced an error from which it can't recover
-    DeviceNeedsReset = 64,
-    /// Driver has given up on the device
-    Failed = 128,
-}
+use crate::io::virtio::VirtioDeviceStatus;
 
 pub use virtio_driver::blk::{
-    BlockDeviceConfig, BlockError, BlockRequest, VirtioBlkReqHeader, VirtioBlkReqType,
-    VirtioBlkStatus, features,
+    BlockError, VirtioBlkConfig, VirtioBlkReqHeader, features,
+    VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_FLUSH,
+    VIRTIO_BLK_S_OK, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_UNSUPP,
 };
 
 // ============================================================================
@@ -166,11 +151,13 @@ impl BlkRequestDma {
 
 use crate::sync::IrqPoisonLock;
 
+use virtio_driver::blk::device::VirtioBlkDevice as CoreBlkDevice;
+
 /// VirtIO block device driver
 #[derive(Debug)]
 pub struct VirtioBlkDevice {
-    /// Device configuration
-    config: BlockDeviceConfig,
+    /// Core logic from shared driver crate
+    pub(crate) core: CoreBlkDevice,
     /// Request queues (one per CPU for multiqueue)
     queues: Vec<Arc<IrqPoisonLock<VirtQueue>>>,
     /// Pending request wakers (one per queue)
@@ -181,8 +168,6 @@ pub struct VirtioBlkDevice {
     iommu_device_id: Option<IommuDeviceId>,
     /// Transport
     transport: Box<dyn crate::io::virtio::transport::VirtioTransport>,
-    /// Features negotiated
-    features: u64,
     /// DMA buffers for inflight requests (header + status), per queue, indexed by descriptor index
     pub(crate) inflight_dma: Vec<IrqPoisonLock<Vec<Option<BlkRequestDma>>>>,
 }

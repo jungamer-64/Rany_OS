@@ -79,11 +79,9 @@ impl VirtioNetDevice {
             let device_addr = buffer.device_addr();
             match tx_queue.add_tx_buffer_zero_copy(device_addr, data_len) {
                 Ok(desc_idx) => {
-                    if let Some(lock) = self.tx_inflight.get(q_idx) {
-                        if let Ok(mut guard) = lock.lock() {
-                            if let Some(slot) = guard.get_mut(desc_idx as usize) {
-                                *slot = Some(buffer);
-                            }
+                    if let Some(tracker) = self.tx_inflight.get(q_idx) {
+                        if let Some(slot) = tracker.get(desc_idx as usize) {
+                            slot.store(Box::into_raw(Box::new(buffer)), Ordering::Release);
                         }
                     }
 
@@ -208,11 +206,9 @@ impl VirtioNetDevice {
                 };
 
                 let q_idx = 0; // Simplified for first TX queue
-                if let Some(lock) = self.tx_packetrefs.get(q_idx) {
-                    if let Ok(mut guard) = lock.lock() {
-                        if let Some(slot) = guard.get_mut(desc_idx as usize) {
-                            *slot = Some(entry);
-                        }
+                if let Some(tracker) = self.tx_packetrefs.get(q_idx) {
+                    if let Some(slot) = tracker.get(desc_idx as usize) {
+                        slot.store(Box::into_raw(Box::new(entry)), Ordering::Release);
                     }
                 }
 
@@ -444,19 +440,16 @@ impl VirtioNetDevice {
         desc_idx: u16,
         _len: u32,
     ) -> bool {
-        let buf = if let Some(lock) = self.tx_inflight.get(q_idx) {
-            if let Ok(mut guard) = lock.lock() {
-                guard
-                    .get_mut(desc_idx as usize)
-                    .and_then(|slot| slot.take())
-            } else {
-                None
-            }
+        let buf_ptr = if let Some(tracker) = self.tx_inflight.get(q_idx) {
+            tracker.get(desc_idx as usize)
+                .map(|slot| slot.swap(core::ptr::null_mut(), Ordering::AcqRel))
+                .unwrap_or(core::ptr::null_mut())
         } else {
-            None
+            core::ptr::null_mut()
         };
 
-        if let Some(_buf) = buf {
+        if !buf_ptr.is_null() {
+            let _buf = unsafe { Box::from_raw(buf_ptr) };
             if tx_queue.take_completion(desc_idx).is_none() {
                 log::warn!(
                     "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",
@@ -472,19 +465,16 @@ impl VirtioNetDevice {
             return true;
         }
 
-        let entry = if let Some(lock) = self.tx_packetrefs.get(q_idx) {
-            if let Ok(mut guard) = lock.lock() {
-                guard
-                    .get_mut(desc_idx as usize)
-                    .and_then(|slot| slot.take())
-            } else {
-                None
-            }
+        let entry_ptr = if let Some(tracker) = self.tx_packetrefs.get(q_idx) {
+            tracker.get(desc_idx as usize)
+                .map(|slot| slot.swap(core::ptr::null_mut(), Ordering::AcqRel))
+                .unwrap_or(core::ptr::null_mut())
         } else {
-            None
+            core::ptr::null_mut()
         };
 
-        if let Some(entry) = entry {
+        if !entry_ptr.is_null() {
+            let entry = unsafe { Box::from_raw(entry_ptr) };
             if tx_queue.take_completion(desc_idx).is_none() {
                 log::warn!(
                     "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",

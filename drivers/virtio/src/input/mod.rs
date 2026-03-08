@@ -2,6 +2,8 @@
 // drivers/virtio/src/input/mod.rs - Shared VirtIO Input types
 // ============================================================================
 
+pub mod device;
+
 pub mod config_select {
     /// Unset / no selection
     pub const VIRTIO_INPUT_CFG_UNSET: u8 = 0x00;

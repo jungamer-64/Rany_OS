@@ -11,7 +11,6 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use core::task::{Context, Poll, Waker};
-use spin::MutexGuard;
 use x86_64::{PhysAddr, VirtAddr};
 
 // Import VirtIO common definitions
@@ -23,7 +22,7 @@ use crate::io::iommu::api::{
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::defs::{VirtioDeviceType, status};
 use crate::io::virtio::transport::{TransportType, VirtioTransport};
-use crate::io::virtio::virtqueue::{VirtQueue, VringAvail, VringDesc, VringUsed, vring_flags};
+use crate::io::virtio::virtqueue::{VirtQueue, VringAvail, VringDesc, VringUsed};
 use crate::sync::IrqPoisonLock;
 // Import PacketRef for zero-copy
 use crate::net::datapath::mempool::PacketRef;
@@ -33,24 +32,13 @@ pub use virtio_driver::net::{
 
 pub mod device;
 pub use device::*;
-pub mod features;
-pub mod queue;
+
+// Features re-exported from driver crate
+pub use virtio_driver::net::features;
 
 // ============================================================================
 // VirtIO Net Transport Helper Functions
 // ============================================================================
-
-/// トランスポートからMACアドレスを読み取り（Net device config space）
-fn read_mac_address(transport: &dyn VirtioTransport) -> [u8; 6] {
-    [
-        transport.read_config_u8(0),
-        transport.read_config_u8(1),
-        transport.read_config_u8(2),
-        transport.read_config_u8(3),
-        transport.read_config_u8(4),
-        transport.read_config_u8(5),
-    ]
-}
 
 fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
     if size == 0 {
@@ -104,29 +92,11 @@ fn unmap_iommu_addr(device: Option<IommuDeviceId>, iova: u64, len: usize) {
 // Internal Mutability and Synchronization
 // ============================================================================
 
-/// ネットワーク VirtQueue の送信/追加（Submission）側状態で、排他制御が必要なものをまとめた構造体
-pub struct NetVirtQueueInner {
-    /// ディスクリプタテーブル
-    desc_table: *mut VringDesc,
-    /// Available Ring
-    avail_ring: *mut VringAvail,
-    /// 空きディスクリプタ (desc_id stack)
-    free_descs: Vec<u16>,
-    /// TX header table (one header per descriptor)
-    tx_headers: Option<*mut VirtioNetHeader>,
-    /// TX header table DMA base (IOVA or phys)
-    tx_header_dma_base: Option<u64>,
-}
-
 /// ネットワーク VirtQueue
 #[derive(Debug)]
 pub struct NetVirtQueue {
-    /// VirtQueue core implementation (descriptor management, etc.)
-    pub vq: IrqPoisonLock<VirtQueue>,
-    /// TX header table (one header per descriptor)
-    pub tx_headers: Option<*mut VirtioNetHeader>,
-    /// TX header table DMA base (IOVA or phys)
-    pub tx_header_dma_base: Option<u64>,
+    /// Shared implementation from virtio-driver crate
+    pub inner: IrqPoisonLock<virtio_driver::net::NetVirtQueue>,
     /// 最後に処理した Used インデックス (Atomic for non-blocking poll)
     pub last_used_idx: AtomicU16,
     /// 割り込み待機中のWaker
@@ -135,12 +105,11 @@ pub struct NetVirtQueue {
     pub pending_completions: IrqPoisonLock<Vec<Option<u32>>>,
     /// Optional IOMMU mapping for queue memory
     pub iommu_map: Option<IommuMapping>,
+    /// DMA Buffer to keep memory alive (Shared logic doesn't hold this)
+    pub dma_buffer: Option<CoherentDmaBuffer>,
 }
 
 // NetVirtQueueをSend/Syncにする
-// SAFETY: Raw pointers are safely encapsulated. The `inner` state is protected by a Mutex,
-// ensuring no data races or Rust aliasing rules are violated during queue submisson.
-// The `used_ring` is read-only for the driver.
 unsafe impl Send for NetVirtQueue {}
 unsafe impl Sync for NetVirtQueue {}
 
@@ -168,46 +137,38 @@ impl NetVirtQueue {
         tx_header_dma_base: Option<u64>,
         features: u64,
     ) -> Self {
-        let vq = VirtQueue::new(
-            size, desc_table, avail_ring, used_ring, dma_buffer, index, features,
+        let vq_inner = virtio_driver::core::VirtQueue::new(
+            index,
+            size,
+            desc_table,
+            avail_ring as *mut virtio_driver::defs::VringAvailHeader,
+            used_ring as *mut virtio_driver::defs::VringUsedHeader,
+            features,
+        ).expect("[VIRTIO-NET] failed to init core virtqueue");
+
+        let net_vq_core = virtio_driver::net::NetVirtQueue::new(
+            vq_inner,
+            tx_header_dma_base,
+            tx_headers,
         );
 
         let mut pending = Vec::with_capacity(size as usize);
         pending.resize_with(size as usize, || None);
 
         Self {
-            vq: IrqPoisonLock::new(vq),
-            tx_headers,
-            tx_header_dma_base,
+            inner: IrqPoisonLock::new(net_vq_core),
             last_used_idx: AtomicU16::new(0),
             pending_wakers: IrqPoisonLock::new(Vec::new()),
             pending_completions: IrqPoisonLock::new(pending),
             iommu_map,
+            dma_buffer,
         }
-    }
-
-    /// ディスクリプタを割り当て
-    fn alloc_desc(inner: &mut MutexGuard<NetVirtQueueInner>) -> Option<u16> {
-        let idx = inner.free_descs.pop()?;
-        Some(idx)
-    }
-
-    fn alloc_desc_pair(inner: &mut MutexGuard<NetVirtQueueInner>) -> Option<(u16, u16)> {
-        let first = inner.free_descs.pop()?;
-        let second = match inner.free_descs.pop() {
-            Some(second) => second,
-            None => {
-                inner.free_descs.push(first);
-                return None;
-            }
-        };
-        Some((first, second))
     }
 
     /// Notify the device that new buffers are available.
     pub fn notify(&self, transport: &dyn VirtioTransport) {
-        if let Ok(vq) = self.vq.lock() {
-            vq.notify(transport);
+        if let Ok(inner) = self.inner.lock() {
+            unsafe { inner.vq.notify(transport); }
         }
     }
 
@@ -217,65 +178,10 @@ impl NetVirtQueue {
         header: &VirtioNetHeader,
         data: &[u8],
     ) -> Result<u16, VirtioNetError> {
-        let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
-
-        let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
-        let data_desc_idx = match vq_guard.alloc_desc() {
-            Some(idx) => idx,
-            None => {
-                vq_guard.free_desc(desc_idx);
-                return Err(VirtioNetError::QueueFull);
-            }
-        };
-
-        let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
-            (Some(ptr), Some(base)) => (ptr, base),
-            _ => {
-                vq_guard.free_desc(data_desc_idx);
-                vq_guard.free_desc(desc_idx);
-                return Err(VirtioNetError::DeviceError);
-            }
-        };
-
+        let inner = self.inner.lock().map_err(|_| VirtioNetError::DeviceError)?;
         unsafe {
-            let header_slot = &mut *header_ptr.add(desc_idx as usize);
-            *header_slot = *header;
-
-            let desc_table = vq_guard.desc_table.as_ptr();
-
-            // ヘッダーディスクリプタ
-            let desc_ptr = desc_table.add(desc_idx as usize);
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).addr),
-                header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64),
-            );
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).len),
-                VirtioNetHeader::SIZE as u32,
-            );
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).flags),
-                vring_flags::VRING_DESC_F_NEXT,
-            );
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), data_desc_idx);
-
-            // データーディスクリプタ
-            let data_desc_ptr = desc_table.add(data_desc_idx as usize);
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*data_desc_ptr).addr),
-                data.as_ptr() as u64,
-            );
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*data_desc_ptr).len),
-                data.len() as u32,
-            );
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).flags), 0);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).next), 0);
-
-            vq_guard.submit(desc_idx);
+            inner.add_tx_buffer(header, data.as_ptr() as u64, data.len())
         }
-
-        Ok(desc_idx)
     }
 
     /// ゼロコピー送信バッファを追加
@@ -285,70 +191,10 @@ impl NetVirtQueue {
         data_len: usize,
         header: VirtioNetHeader,
     ) -> Result<u16, VirtioNetError> {
-        // ゼロサイズバッファの防御チェック（QEMU "zero sized buffers are not allowed" 対策）
-        if data_len == 0 {
-            log::warn!(
-                "[VIRTIO-NET] add_tx_buffer_zero_copy_with_header: rejected zero-length data descriptor"
-            );
-            return Err(VirtioNetError::BufferTooSmall);
-        }
-
-        let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
-
-        let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
-        let data_desc_idx = match vq_guard.alloc_desc() {
-            Some(idx) => idx,
-            None => {
-                vq_guard.free_desc(desc_idx);
-                return Err(VirtioNetError::QueueFull);
-            }
-        };
-
-        let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
-            (Some(ptr), Some(base)) => (ptr, base),
-            _ => {
-                vq_guard.free_desc(data_desc_idx);
-                vq_guard.free_desc(desc_idx);
-                return Err(VirtioNetError::DeviceError);
-            }
-        };
-
+        let inner = self.inner.lock().map_err(|_| VirtioNetError::DeviceError)?;
         unsafe {
-            let header_slot = &mut *header_ptr.add(desc_idx as usize);
-            *header_slot = header;
-
-            let desc_table = vq_guard.desc_table.as_ptr();
-
-            // ヘッダーディスクリプタ
-            let desc_ptr = desc_table.add(desc_idx as usize);
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).addr),
-                header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64),
-            );
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).len),
-                VirtioNetHeader::SIZE as u32,
-            );
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).flags),
-                vring_flags::VRING_DESC_F_NEXT,
-            );
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), data_desc_idx);
-
-            // データーディスクリプタ
-            let data_desc_ptr = desc_table.add(data_desc_idx as usize);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).addr), phys_addr);
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*data_desc_ptr).len),
-                data_len as u32,
-            );
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).flags), 0);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).next), 0);
-
-            vq_guard.submit(desc_idx);
+            inner.add_tx_buffer(&header, phys_addr, data_len)
         }
-
-        Ok(desc_idx)
     }
 
     pub fn add_tx_buffer_zero_copy(
@@ -361,29 +207,10 @@ impl NetVirtQueue {
 
     /// 受信バッファを追加
     pub fn add_rx_buffer(&self, buffer: &mut [u8]) -> Result<u16, VirtioNetError> {
-        let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
-        let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
-
+        let inner = self.inner.lock().map_err(|_| VirtioNetError::DeviceError)?;
         unsafe {
-            let desc_ptr = vq_guard.desc_table.as_ptr().add(desc_idx as usize);
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).addr),
-                buffer.as_ptr() as u64,
-            );
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).len),
-                buffer.len() as u32,
-            );
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).flags),
-                vring_flags::VRING_DESC_F_WRITE,
-            );
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), 0);
-
-            vq_guard.submit(desc_idx);
+            inner.add_rx_buffer(buffer.as_ptr() as u64, buffer.len())
         }
-
-        Ok(desc_idx)
     }
 
     /// ゼロコピー受信バッファを追加
@@ -392,29 +219,10 @@ impl NetVirtQueue {
         phys_addr: u64,
         buffer_len: usize,
     ) -> Result<u16, VirtioNetError> {
-        // ゼロサイズバッファの防御チェック
-        if buffer_len == 0 {
-            log::warn!("[VIRTIO-NET] add_rx_buffer_zero_copy: rejected zero-length RX descriptor");
-            return Err(VirtioNetError::BufferTooSmall);
-        }
-
-        let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
-        let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
-
+        let inner = self.inner.lock().map_err(|_| VirtioNetError::DeviceError)?;
         unsafe {
-            let desc_ptr = vq_guard.desc_table.as_ptr().add(desc_idx as usize);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), phys_addr);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), buffer_len as u32);
-            core::ptr::write_volatile(
-                core::ptr::addr_of_mut!((*desc_ptr).flags),
-                vring_flags::VRING_DESC_F_WRITE,
-            );
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), 0);
-
-            vq_guard.submit(desc_idx);
+            inner.add_rx_buffer(phys_addr, buffer_len)
         }
-
-        Ok(desc_idx)
     }
 
     /// 完了したバッファを処理
@@ -422,19 +230,21 @@ impl NetVirtQueue {
     where
         F: FnMut(u16, u32),
     {
-        let mut vq_guard = match self.vq.lock() {
+        let inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(_) => return 0,
         };
 
-        let count = vq_guard.poll_completions(|desc_idx, len| {
+        let mut count = 0;
+        while let Some((desc_idx, len)) = inner.vq.poll_complete() {
             if let Ok(mut pending) = self.pending_completions.lock() {
                 if let Some(slot) = pending.get_mut(desc_idx as usize) {
                     *slot = Some(len);
                 }
             }
             on_complete(desc_idx, len);
-        });
+            count += 1;
+        }
 
         if count > 0 {
             if let Ok(mut wakers) = self.pending_wakers.lock() {
@@ -464,10 +274,8 @@ impl NetVirtQueue {
 
     /// 利用可能なディスクリプタ数を取得
     pub fn available_descriptors(&self) -> usize {
-        if let Ok(vq) = self.vq.lock() {
-            if let Ok(list) = vq.free_list.lock() {
-                return list.len();
-            }
+        if let Ok(inner) = self.inner.lock() {
+            return inner.vq.free_count() as usize;
         }
         0
     }
@@ -501,32 +309,14 @@ impl NetVirtQueue {
     }
 
     fn free_desc_chain(&self, head: u16) {
-        if let Ok(vq) = self.vq.lock() {
-            let mut current = head;
-            let size = vq.queue_size;
-            let desc_table = vq.desc_table.as_ptr();
-
-            for _ in 0..size {
-                if current >= size {
-                    break;
-                }
-                let desc = unsafe { &*desc_table.add(current as usize) };
-                let next = desc.next;
-                let flags = desc.flags;
-
-                vq.free_desc(current);
-
-                if (flags & vring_flags::VRING_DESC_F_NEXT) == 0 {
-                    break;
-                }
-                current = next;
-            }
+        if let Ok(inner) = self.inner.lock() {
+            inner.vq.free_desc_chain(head);
         }
     }
 
     pub fn has_pending(&self) -> bool {
-        if let Ok(vq) = self.vq.lock() {
-            vq.has_pending()
+        if let Ok(inner) = self.inner.lock() {
+            inner.vq.has_pending()
         } else {
             false
         }

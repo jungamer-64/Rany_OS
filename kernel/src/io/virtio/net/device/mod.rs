@@ -65,23 +65,16 @@ pub(crate) struct RxVbufInflight {
     iommu_map_len: u64,
 }
 
-/// Queue memory layout calculation result.
-pub(crate) struct QueueMemoryLayout {
-    desc_size: usize,
-    avail_size: usize,
-    used_size: usize,
-    used_offset: usize,
-    header_offset: usize,
-    total_size: usize,
-}
+// Queue memory layout calculation result.
+pub(crate) use virtio_driver::net::QueueMemoryLayout;
 
 /// VirtIO ネットワークデバイス
 #[derive(Debug)]
 pub struct VirtioNetDevice {
     /// トランスポート層（MMIO/PCI共通インターフェース）
     pub(crate) transport: alloc::sync::Arc<dyn VirtioTransport>,
-    /// 設定
-    config: VirtioNetConfig,
+    /// Shared device core
+    pub(crate) core: virtio_driver::net::device::VirtioNetDevice,
     /// VirtIO-Net device index (multi-NIC support)
     pub(crate) virtio_index: u8,
     /// Bound logical network interface id (assigned by NetworkManager)
@@ -103,14 +96,14 @@ pub struct VirtioNetDevice {
     /// 統計: 受信バイト数
     rx_bytes: AtomicU32,
     /// 受信用バッファマップ (キュー別, desc_idx -> RxVbufInflight)
-    pub(crate) rx_buffers: Vec<IrqPoisonLock<Vec<Option<RxVbufInflight>>>>,
+    pub(crate) rx_buffers: Vec<Box<[core::sync::atomic::AtomicPtr<RxVbufInflight>]>>,
     /// 受信用バッファマップ (キュー別, desc_idx -> RxPacketInflight) - zero-copy posted buffers from mempool
-    pub(crate) rx_packetrefs: Vec<IrqPoisonLock<Vec<Option<RxPacketInflight>>>>,
+    pub(crate) rx_packetrefs: Vec<Box<[core::sync::atomic::AtomicPtr<RxPacketInflight>]>>,
     /// 送信用 PacketRef インフライトマップ (キュー別, desc_idx -> TxPacketInflight)
-    pub(crate) tx_packetrefs: Vec<IrqPoisonLock<Vec<Option<TxPacketInflight>>>>,
+    pub(crate) tx_packetrefs: Vec<Box<[core::sync::atomic::AtomicPtr<TxPacketInflight>]>>,
     /// 送信用インフライトバッファ (キュー別, desc_idx -> CoherentDmaBuffer)
-    pub(crate) tx_inflight: Vec<IrqPoisonLock<Vec<Option<CoherentDmaBuffer>>>>,
-    /// プール済み送信用バウンスバッファ
+    pub(crate) tx_inflight: Vec<Box<[core::sync::atomic::AtomicPtr<CoherentDmaBuffer>]>>,
+    /// プール済み送信用バウンスバッフェ (Here we keep the lock as it's a global pool, not per-descriptor)
     tx_bounce_pool: IrqPoisonLock<Vec<CoherentDmaBuffer>>,
     /// プール済み受信用バウンスバッファ
     rx_bounce_pool: IrqPoisonLock<Vec<CoherentDmaBuffer>>,
@@ -147,7 +140,7 @@ impl VirtioNetDevice {
     ) -> Self {
         Self {
             transport: alloc::sync::Arc::from(transport),
-            config: VirtioNetConfig::default(),
+            core: virtio_driver::net::device::VirtioNetDevice::new(),
             virtio_index: index,
             net_if_id: None,
             iommu_device_id,
@@ -227,49 +220,8 @@ impl VirtioNetDevice {
         // Strict policy: device-scoped DMA mapping requires device ID when IOMMU is active.
         Self::validate_iommu_device_requirement(is_iommu_enabled(), self.iommu_device_id)?;
 
-        // 2. デバイスリセット
-        self.mut_transport().reset();
-
-        // 3. ACKNOWLEDGE ステータスビットを設定
-        self.mut_transport()
-            .set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
-
-        // 4. DRIVER ステータスビットを設定
-        self.mut_transport()
-            .set_status(status::VIRTIO_STATUS_ACKNOWLEDGE | status::VIRTIO_STATUS_DRIVER);
-
-        // 5. Feature negotiation
-        let device_features_low = self.transport.get_device_features_low();
-        let device_features_high = self.transport.get_device_features_high();
-
-        // 必要なフィーチャーのみを受け入れる
-        let accepted_features_low = device_features_low
-            & (features::VIRTIO_NET_F_MAC as u32 | features::VIRTIO_NET_F_CSUM as u32);
-        let accepted_features_high = device_features_high;
-
-        self.mut_transport()
-            .set_driver_features_low(accepted_features_low);
-        self.mut_transport()
-            .set_driver_features_high(accepted_features_high);
-
-        // 6. FEATURES_OK を設定
-        self.mut_transport().set_status(
-            status::VIRTIO_STATUS_ACKNOWLEDGE
-                | status::VIRTIO_STATUS_DRIVER
-                | status::VIRTIO_STATUS_FEATURES_OK,
-        );
-
-        // FEATURES_OK が設定されたか確認
-        if (self.transport.get_status() & status::VIRTIO_STATUS_FEATURES_OK) == 0 {
-            self.mut_transport()
-                .set_status(status::VIRTIO_STATUS_FAILED);
-            return Err(VirtioNetError::DeviceError);
-        }
-
-        // 7. MACアドレスを読み取り
-        if (accepted_features_low & features::VIRTIO_NET_F_MAC as u32) != 0 {
-            self.config.mac = read_mac_address(self.transport.as_ref());
-        }
+        // 2-7. Perform common VirtIO initialization using shared core
+        self.core.init(self.transport.as_ref())?;
 
         // 8. キューの設定
         if let Err(e) = self.setup_queues() {
@@ -280,21 +232,14 @@ impl VirtioNetDevice {
         }
 
         // 9. DRIVER_OK を設定
-        self.mut_transport().set_status(
-            status::VIRTIO_STATUS_ACKNOWLEDGE
-                | status::VIRTIO_STATUS_DRIVER
-                | status::VIRTIO_STATUS_FEATURES_OK
-                | status::VIRTIO_STATUS_DRIVER_OK,
-        );
+        self.mut_transport().add_status(status::VIRTIO_STATUS_DRIVER_OK);
 
         // 10. DRIVER_OK後にRXキューを再通知（VirtIO spec準拠）
-        // setup_queues()でRXバッファ投稿・通知がDRIVER_OK前に行われるため、
-        // デバイスが通知を見逃す可能性がある。再通知で確実にする。
         for rxq in &self.rx_queues {
             rxq.notify(self.transport.as_ref());
         }
 
-        // Initialize bounce buffer pools for IOMMU paths (performance optimization)
+        // Initialize bounce buffer pools for IOMMU paths
         if let Err(e) = self.init_bounce_pools() {
             log::error!("[VIRTIO-NET] Failed to init bounce pools: {:?}", e);
             self.mut_transport()
@@ -310,7 +255,7 @@ impl VirtioNetDevice {
     pub fn refill_rx_queues(&self) {
         for rx_queue in &self.rx_queues {
             let mut count = 0;
-            let queue_size = rx_queue.vq.lock().expect("virtqueue lock poisoned").size();
+            let queue_size = rx_queue.inner().queue_size();
             // API drift fallback: post until the queue rejects new buffers.
             while count < queue_size {
                 match self.try_post_rx_packet(rx_queue) {
@@ -323,7 +268,7 @@ impl VirtioNetDevice {
                 log::info!(
                     "[VIRTIO-NET] Refilled {} RX buffers for queue {}",
                     count,
-                    rx_queue.vq.lock().expect("virtqueue lock poisoned").index()
+                    rx_queue.inner().queue_index()
                 );
                 rx_queue.notify(self.transport.as_ref());
             }
@@ -435,18 +380,9 @@ impl VirtioNetDevice {
         }
     }
 
-    /// VirtQueue を設定。`config.max_queues` に従いキューペアを並列構築する。
+    /// VirtQueue を設定。`core.config.max_queues` に従いキューペアを並列構築する。
     pub(super) fn setup_queues(&mut self) -> Result<(), VirtioNetError> {
-        // まずマルチキュー機能を読み取るため、config の max_queues を更新
-        if (self.transport.get_device_features_low() & (features::VIRTIO_NET_F_MQ as u32)) != 0 {
-            // Virtio ネットワーク設定空間 offset 8 に max_virtqueue_pairs がある
-            let pairs = self.transport.read_config_u16(8);
-            if pairs > 0 {
-                self.config.max_queues = pairs;
-            }
-        }
-
-        let pair_count = core::cmp::max(self.config.max_queues as usize, 1);
+        let pair_count = self.core.get_pair_count();
         for i in 0..pair_count {
             let rx_index = (i * 2) as u16;
             let rxq = self.setup_single_queue(rx_index)?;
@@ -475,42 +411,30 @@ impl VirtioNetDevice {
         }
 
         // キューサイズを設定（最大256エントリに制限）
-        let queue_size = max_size.min(256);
+        let queue_size = self.core.calculate_queue_size(max_size);
         self.mut_transport().set_queue_size(queue_size);
 
         // Standardized layout calculation
-        let (desc_size, _avail_size, used_offset, vring_total_size) =
-            VirtQueue::calculate_layout(queue_size);
-
-        // Add space for network headers if this is a TX queue
-        let header_align = core::mem::align_of::<VirtioNetHeader>();
-        let header_offset = (vring_total_size + header_align - 1) & !(header_align - 1);
-        let header_table_size = VirtioNetHeader::SIZE * queue_size as usize;
-
-        let total_size = if (queue_index % 2) == 1 {
-            header_offset + header_table_size
-        } else {
-            vring_total_size
-        };
+        let layout = QueueMemoryLayout::calculate(queue_index, queue_size);
 
         // DMAバッファを割り当て
-        let (buffer, _dma_len) = self.allocate_queue_dma(total_size)?;
+        let (buffer, _dma_len) = self.allocate_queue_dma(layout.total_size)?;
 
         let phys_base = buffer.device_addr();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
 
         let desc_table = ptr as *mut VringDesc;
-        let avail_ring = unsafe { ptr.add(desc_size) as *mut VringAvail };
-        let used_ring = unsafe { ptr.add(used_offset) as *mut VringUsed };
+        let avail_ring = unsafe { ptr.add(layout.desc_size) as *mut VringAvail };
+        let used_ring = unsafe { ptr.add(layout.used_offset) as *mut VringUsed };
         let notify_addr = self.mut_transport().get_notify_addr(queue_index);
         let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // IOMMU DMAマッピングを設定
-        let (dma_base, iommu_map) = self.setup_iommu_dma_mapping(&buffer, total_size, phys_base)?;
+        let (dma_base, iommu_map) = self.setup_iommu_dma_mapping(&buffer, layout.total_size, phys_base)?;
 
         let (tx_headers, tx_header_dma_base) = if (queue_index % 2) == 1 {
-            let header_ptr = unsafe { ptr.add(header_offset) as *mut VirtioNetHeader };
-            let header_dma_base = dma_base + header_offset as u64;
+            let header_ptr = unsafe { ptr.add(layout.header_offset) as *mut VirtioNetHeader };
+            let header_dma_base = dma_base + layout.header_offset as u64;
             (Some(header_ptr), Some(header_dma_base))
         } else {
             (None, None)
@@ -521,8 +445,8 @@ impl VirtioNetDevice {
 
         // デバイスにアドレスを設定
         let desc_addr = dma_base;
-        let avail_addr = dma_base + desc_size as u64;
-        let used_addr = dma_base + used_offset as u64;
+        let avail_addr = dma_base + layout.desc_size as u64;
+        let used_addr = dma_base + layout.used_offset as u64;
 
         self.mut_transport().set_queue_desc_addr(desc_addr);
         self.mut_transport().set_queue_avail_addr(avail_addr);
@@ -532,21 +456,29 @@ impl VirtioNetDevice {
         if (queue_index % 2) == 0 {
             // RX queue
             let mut tracker_vec = Vec::with_capacity(queue_size as usize);
-            tracker_vec.resize_with(queue_size as usize, || None);
-            self.rx_buffers.push(IrqPoisonLock::new(tracker_vec));
+            for _ in 0..queue_size {
+                tracker_vec.push(core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()));
+            }
+            self.rx_buffers.push(tracker_vec.into_boxed_slice());
 
             let mut pr_vec = Vec::with_capacity(queue_size as usize);
-            pr_vec.resize_with(queue_size as usize, || None);
-            self.rx_packetrefs.push(IrqPoisonLock::new(pr_vec));
+            for _ in 0..queue_size {
+                pr_vec.push(core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()));
+            }
+            self.rx_packetrefs.push(pr_vec.into_boxed_slice());
         } else {
             // TX queue
             let mut tracker_vec = Vec::with_capacity(queue_size as usize);
-            tracker_vec.resize_with(queue_size as usize, || None);
-            self.tx_packetrefs.push(IrqPoisonLock::new(tracker_vec));
+            for _ in 0..queue_size {
+                tracker_vec.push(core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()));
+            }
+            self.tx_packetrefs.push(tracker_vec.into_boxed_slice());
 
             let mut inflight_vec = Vec::with_capacity(queue_size as usize);
-            inflight_vec.resize_with(queue_size as usize, || None);
-            self.tx_inflight.push(IrqPoisonLock::new(inflight_vec));
+            for _ in 0..queue_size {
+                inflight_vec.push(core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()));
+            }
+            self.tx_inflight.push(inflight_vec.into_boxed_slice());
         }
 
         let features = self.transport.get_device_features_low() as u64
@@ -580,37 +512,6 @@ impl VirtioNetDevice {
         Ok(queue)
     }
 
-    /// キューのメモリレイアウトを計算する
-    pub(super) fn compute_queue_memory_layout(
-        queue_index: u16,
-        queue_size: u16,
-    ) -> QueueMemoryLayout {
-        let desc_size = (core::mem::size_of::<VringDesc>() * queue_size as usize + 63) & !63;
-        let avail_size = 6 + 2 * queue_size as usize;
-        let used_size = 6 + 8 * queue_size as usize;
-
-        let used_align = 64usize; // Avoid false sharing with 64-byte alignment
-        let used_offset = align_up(desc_size + avail_size, used_align);
-
-        let header_align = core::mem::align_of::<VirtioNetHeader>();
-        let header_stride = VirtioNetHeader::SIZE;
-        let header_offset = align_up(used_offset + used_size, header_align);
-        let header_size = header_stride * queue_size as usize;
-        let total_size = if (queue_index % 2) == 1 {
-            header_offset + header_size
-        } else {
-            used_offset + used_size
-        };
-
-        QueueMemoryLayout {
-            desc_size,
-            avail_size,
-            used_size,
-            used_offset,
-            header_offset,
-            total_size,
-        }
-    }
 
     /// キュー用のDMAバッファを割り当てる
     pub(super) fn allocate_queue_dma(
@@ -730,15 +631,14 @@ impl VirtioNetDevice {
                     .iter()
                     .position(|q| core::ptr::eq(q, rxq))
                     .unwrap_or(0);
-                if let Some(lock) = self.rx_packetrefs.get(q_idx) {
-                    if let Ok(mut guard) = lock.lock() {
-                        if let Some(slot) = guard.get_mut(desc_idx as usize) {
-                            *slot = Some(RxPacketInflight {
-                                packet,
-                                iommu_iova,
-                                iommu_map_len,
-                            });
-                        }
+                if let Some(tracker) = self.rx_packetrefs.get(q_idx) {
+                    if let Some(slot) = tracker.get(desc_idx as usize) {
+                        let entry = Box::new(RxPacketInflight {
+                            packet,
+                            iommu_iova,
+                            iommu_map_len,
+                        });
+                        slot.store(Box::into_raw(entry), Ordering::Release);
                     }
                 }
                 Ok(true)
@@ -794,15 +694,14 @@ impl VirtioNetDevice {
                     .iter()
                     .position(|q| core::ptr::eq(q, rxq))
                     .unwrap_or(0);
-                if let Some(lock) = self.rx_buffers.get(q_idx) {
-                    if let Ok(mut guard) = lock.lock() {
-                        if let Some(slot) = guard.get_mut(desc_idx as usize) {
-                            *slot = Some(RxVbufInflight {
-                                vbuf,
-                                iommu_iova,
-                                iommu_map_len,
-                            });
-                        }
+                if let Some(tracker) = self.rx_buffers.get(q_idx) {
+                    if let Some(slot) = tracker.get(desc_idx as usize) {
+                        let entry = Box::new(RxVbufInflight {
+                            vbuf,
+                            iommu_iova,
+                            iommu_map_len,
+                        });
+                        slot.store(Box::into_raw(entry), Ordering::Release);
                     }
                 }
                 Ok(true)

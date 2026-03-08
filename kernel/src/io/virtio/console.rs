@@ -31,27 +31,12 @@ use core::task::Waker;
 // VirtIO Common Definitions
 // ============================================================================
 
-/// VirtIO device status bits
+use crate::io::virtio::VirtioDeviceStatus;
+
 mod global_init;
 pub use global_init::*;
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VirtioDeviceStatus {
-    /// Driver has noticed the device
-    Acknowledge = 1,
-    /// Driver knows how to drive the device
-    Driver = 2,
-    /// Driver is set up and ready to drive the device
-    DriverOk = 4,
-    /// Driver has finished configuring features
-    FeaturesOk = 8,
-    /// Device has experienced an error from which it can't recover
-    DeviceNeedsReset = 64,
-    /// Driver has given up on the device
-    Failed = 128,
-}
 
-pub use virtio_driver::console::{ConsoleError, VirtioConsoleConfig, features};
+pub use virtio_driver::console::{ConsoleError, VirtioConsoleConfig, features, device::VirtioConsoleDevice as CoreConsoleDevice};
 
 // ============================================================================
 // VirtIO Console Device
@@ -68,8 +53,6 @@ const RX_BUFFER_SIZE: usize = 4096;
 pub struct VirtioConsoleDevice {
     /// Transport layer (MMIO or PCI)
     transport: Box<dyn VirtioTransport>,
-    /// Device configuration
-    config: VirtioConsoleConfig,
     /// Receive queue (queue 0)
     rx_queue: Option<Arc<PoisonLock<VirtQueue>>>,
     /// Transmit queue (queue 1)
@@ -80,12 +63,12 @@ pub struct VirtioConsoleDevice {
     tx_inflight: PoisonLock<BTreeMap<u16, CoherentDmaBuffer>>,
     /// Pending wakers for async notification
     pending_wakers: PoisonLock<BTreeMap<usize, Waker>>,
+    /// Shared core device logic
+    core: CoreConsoleDevice,
     /// Device ready flag
     ready: AtomicBool,
     /// Optional IOMMU device identifier for device-scoped mappings
     iommu_device_id: Option<IommuDeviceId>,
-    /// Features negotiated
-    features: u64,
 }
 
 unsafe impl Send for VirtioConsoleDevice {}
@@ -114,7 +97,7 @@ impl VirtioConsoleDevice {
     ) -> Self {
         Self {
             transport,
-            config: VirtioConsoleConfig::default(),
+            core: CoreConsoleDevice::default(),
             rx_queue: None,
             tx_queue: None,
             rx_buffers: PoisonLock::new(BTreeMap::new()),
@@ -122,62 +105,20 @@ impl VirtioConsoleDevice {
             pending_wakers: PoisonLock::new(BTreeMap::new()),
             ready: AtomicBool::new(false),
             iommu_device_id,
-            features: 0,
         }
     }
 
     /// Initialize the device following the VirtIO initialization sequence.
     pub fn init(&mut self) -> Result<(), ConsoleError> {
-        // Step 1: Reset device
-        self.transport.set_status(0);
-
-        // Step 2: Acknowledge device
-        self.transport
-            .set_status(VirtioDeviceStatus::Acknowledge as u8);
-
-        // Step 3: Driver loaded
-        self.transport
-            .set_status(VirtioDeviceStatus::Acknowledge as u8 | VirtioDeviceStatus::Driver as u8);
-
-        // Step 4: Negotiate features
-        let device_features = self.transport.get_device_features();
-        let driver_features = device_features
-            & (features::VIRTIO_CONSOLE_F_SIZE
-                | features::VIRTIO_CONSOLE_F_MULTIPORT
-                | features::VIRTIO_CONSOLE_F_EMERG_WRITE);
-        self.transport.set_driver_features(driver_features);
-        self.features = driver_features;
-
-        // Step 5: Features OK
-        self.transport.set_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8,
-        );
-
-        // Verify features accepted
-        let status = self.transport.get_status();
-        if (status & VirtioDeviceStatus::FeaturesOk as u8) == 0 {
-            self.transport.set_status(VirtioDeviceStatus::Failed as u8);
-            return Err(ConsoleError::NotReady);
-        }
-
-        // Step 6: Read configuration
-        self.read_config()?;
+        // Step 1-6: Perform common VirtIO initialization using shared core
+        self.core.init(self.transport.as_ref()).map_err(|_| ConsoleError::NotReady)?;
 
         // Step 7: Setup queues (RX = queue 0, TX = queue 1)
         self.setup_queue(0)?;
         self.setup_queue(1)?;
 
-        // pending_wakers is now a BTreeMap, so no resizing is needed.
-
         // Step 8: Driver OK
-        self.transport.set_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8
-                | VirtioDeviceStatus::DriverOk as u8,
-        );
+        self.transport.add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
 
         self.ready.store(true, Ordering::Release);
 
@@ -187,23 +128,6 @@ impl VirtioConsoleDevice {
         Ok(())
     }
 
-    /// Read device configuration from config space.
-    fn read_config(&mut self) -> Result<(), ConsoleError> {
-        // Read cols (u16 at offset 0) and rows (u16 at offset 2)
-        // if VIRTIO_CONSOLE_F_SIZE is negotiated
-        if self.features & features::VIRTIO_CONSOLE_F_SIZE != 0 {
-            self.config.cols = self.transport.read_config_u16(config_offsets::COLS);
-            self.config.rows = self.transport.read_config_u16(config_offsets::ROWS);
-        }
-
-        // Read max_nr_ports (u32 at offset 4)
-        // if VIRTIO_CONSOLE_F_MULTIPORT is negotiated
-        if self.features & features::VIRTIO_CONSOLE_F_MULTIPORT != 0 {
-            self.config.max_nr_ports = self.transport.read_config_u32(config_offsets::MAX_NR_PORTS);
-        }
-
-        Ok(())
-    }
 
     /// Setup a virtqueue (same pattern as blk.rs)
     fn setup_queue(&mut self, queue_idx: u16) -> Result<(), ConsoleError> {
@@ -257,7 +181,7 @@ impl VirtioConsoleDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx,
-                self.features,
+                self.core.features,
             )
         };
 
@@ -386,7 +310,7 @@ impl VirtioConsoleDevice {
         let mut queue_guard = rx_queue.lock().expect("rx_queue lock poisoned");
 
         // Poll for a completed RX buffer
-        let (desc_id, len) = queue_guard.poll_completion()?;
+        let (desc_id, len) = queue_guard.poll_complete()?;
 
         // Extract the DMA buffer
         let buffer = self
@@ -455,7 +379,7 @@ impl VirtioConsoleDevice {
     fn process_tx_completions(&self) {
         if let Some(ref tx_queue) = self.tx_queue {
             let mut queue_guard = tx_queue.lock().expect("tx_queue lock poisoned");
-            while let Some((desc_id, _len)) = queue_guard.poll_completion() {
+            while let Some((desc_id, _len)) = queue_guard.poll_complete() {
                 // Free the inflight DMA buffer
                 if let Some(_buf) = self
                     .tx_inflight
@@ -509,7 +433,7 @@ impl VirtioConsoleDevice {
 
     /// Get device configuration.
     pub fn config(&self) -> &VirtioConsoleConfig {
-        &self.config
+        &self.core.config
     }
 
     /// Check if device is ready.
@@ -521,11 +445,6 @@ impl VirtioConsoleDevice {
     /// is supported. This writes directly to the `emerg_wr` config register
     /// at offset 8 and does not require queue initialization.
     pub fn emergency_write(&self, c: u8) {
-        if self.features & features::VIRTIO_CONSOLE_F_EMERG_WRITE != 0 {
-            // emerg_wr is a u32 at config space offset 8.
-            // Write the character in the low byte.
-            self.transport
-                .write_config_u32(config_offsets::EMERG_WR, c as u32);
-        }
+        self.core.emergency_write(self.transport.as_ref(), c);
     }
 }

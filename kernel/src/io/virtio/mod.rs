@@ -74,7 +74,7 @@ pub use virtqueue::{VringAvail, VringDesc, VringUsed};
 
 // Re-exports for VirtIO-Blk
 pub use blk::{
-    AsyncBlockDevice, BlockDeviceConfig, BlockError, VirtioBlkDevice, features as blk_features,
+    AsyncBlockDevice, VirtioBlkConfig, BlockError, VirtioBlkDevice, features as blk_features,
     handle_virtio_blk_interrupt, init_virtio_blk, init_virtio_blk_for_device,
     init_virtio_blk_with_transport,
 };

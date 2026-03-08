@@ -30,29 +30,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 // VirtIO Balloon Feature Bits
 // ============================================================================
 
-pub use virtio_driver::balloon::{BalloonError, features};
+pub use virtio_driver::balloon::{BalloonError, features, device::VirtioBalloonDevice as CoreBalloonDevice};
 
 // ============================================================================
 // VirtIO Common Definitions (local to balloon)
 // ============================================================================
 
-/// VirtIO device status bits
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VirtioDeviceStatus {
-    /// Driver has noticed the device
-    Acknowledge = 1,
-    /// Driver knows how to drive the device
-    Driver = 2,
-    /// Driver is set up and ready to drive the device
-    DriverOk = 4,
-    /// Driver has finished configuring features
-    FeaturesOk = 8,
-    /// Device has experienced an error from which it can't recover
-    DeviceNeedsReset = 64,
-    /// Driver has given up on the device
-    Failed = 128,
-}
+use crate::io::virtio::VirtioDeviceStatus;
 
 // ============================================================================
 // Balloon Error Types
@@ -87,8 +71,8 @@ pub struct VirtioBalloonDevice {
     ready: AtomicBool,
     /// Optional IOMMU device identifier for device-scoped mappings
     iommu_device_id: Option<IommuDeviceId>,
-    /// Features negotiated
-    features: u64,
+    /// Shared core device logic
+    core: CoreBalloonDevice,
     /// Guest page size in bytes (defaults to 4096)
     guest_page_size: u32,
 }
@@ -116,7 +100,7 @@ impl VirtioBalloonDevice {
             inflight_buffers: PoisonLock::new(BTreeMap::new()),
             ready: AtomicBool::new(false),
             iommu_device_id,
-            features: 0,
+            core: CoreBalloonDevice::default(),
             guest_page_size: 4096,
         }
     }
@@ -128,52 +112,17 @@ impl VirtioBalloonDevice {
 
     /// Initialize the device
     pub fn init(&mut self) -> Result<(), BalloonError> {
-        // Step 1: Reset device
-        self.transport.set_status(0);
+        // Step 1-6: Perform common VirtIO initialization using shared core
+        self.core.init(self.transport.as_ref()).map_err(|_| BalloonError::NotReady)?;
 
-        // Step 2: Acknowledge device
-        self.transport
-            .set_status(VirtioDeviceStatus::Acknowledge as u8);
-
-        // Step 3: Driver loaded
-        self.transport
-            .set_status(VirtioDeviceStatus::Acknowledge as u8 | VirtioDeviceStatus::Driver as u8);
-
-        // Step 4: Negotiate features
-        let device_features = self.transport.get_device_features();
-        let driver_features = device_features
-            & (features::VIRTIO_BALLOON_F_MUST_TELL_HOST
-                | features::VIRTIO_BALLOON_F_DEFLATE_ON_OOM);
-        self.transport.set_driver_features(driver_features);
-        self.features = driver_features;
-
-        // Step 5: Features OK
-        self.transport.set_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8,
-        );
-
-        // Verify features accepted
-        let status = self.transport.get_status();
-        if (status & VirtioDeviceStatus::FeaturesOk as u8) == 0 {
-            self.transport.set_status(VirtioDeviceStatus::Failed as u8);
-            return Err(BalloonError::NotReady);
-        }
-
-        // Step 6: Setup queues
+        // Step 7: Setup queues
         // Queue 0: inflateq
         self.setup_queue(0)?;
         // Queue 1: deflateq
         self.setup_queue(1)?;
 
-        // Step 7: Driver OK
-        self.transport.set_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8
-                | VirtioDeviceStatus::DriverOk as u8,
-        );
+        // Step 8: Driver OK
+        self.transport.add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
 
         self.ready.store(true, Ordering::Release);
         Ok(())
@@ -232,7 +181,7 @@ impl VirtioBalloonDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx,
-                self.features,
+                self.core.features,
             )
         };
 
@@ -337,19 +286,13 @@ impl VirtioBalloonDevice {
     }
 
     /// Read the target number of balloon pages from config space.
-    ///
-    /// The host writes `num_pages` to indicate the desired balloon size.
-    /// The driver should inflate/deflate to match this target.
     pub fn read_target(&self) -> u32 {
-        self.transport.read_config_u32(config_offsets::NUM_PAGES)
+        self.core.read_target(self.transport.as_ref())
     }
 
     /// Write the actual number of balloon pages to config space.
-    ///
-    /// The driver updates `actual` to report how many pages it currently holds.
     pub fn write_actual(&self, pages: u32) {
-        self.transport
-            .write_config_u32(config_offsets::ACTUAL, pages);
+        self.core.write_actual(self.transport.as_ref(), pages);
     }
 
     /// Handle interrupt from the balloon device.
@@ -377,7 +320,7 @@ impl VirtioBalloonDevice {
             // Process inflate queue completions
             if let Some(ref queue) = self.inflate_queue {
                 let mut queue_guard = queue.lock().expect("inflate_queue lock poisoned");
-                while let Some((desc_id, _len)) = queue_guard.poll_completion() {
+                while let Some((desc_id, _len)) = queue_guard.poll_complete() {
                     // Free the inflight DMA buffer
                     self.inflight_buffers
                         .lock()
@@ -391,7 +334,7 @@ impl VirtioBalloonDevice {
             // Process deflate queue completions
             if let Some(ref queue) = self.deflate_queue {
                 let mut queue_guard = queue.lock().expect("deflate_queue lock poisoned");
-                while let Some((desc_id, _len)) = queue_guard.poll_completion() {
+                while let Some((desc_id, _len)) = queue_guard.poll_complete() {
                     // Free the inflight DMA buffer
                     self.inflight_buffers
                         .lock()
@@ -411,7 +354,7 @@ impl VirtioBalloonDevice {
 
     /// Get negotiated features
     pub fn features(&self) -> u64 {
-        self.features
+        self.core.features
     }
 }
 

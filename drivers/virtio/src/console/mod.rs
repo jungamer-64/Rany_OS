@@ -2,6 +2,8 @@
 // drivers/virtio/src/console/mod.rs - Shared VirtIO Console types
 // ============================================================================
 
+pub mod device;
+
 /// VirtIO feature bits for console devices
 pub mod features {
     /// Console size (cols, rows) is available in config space

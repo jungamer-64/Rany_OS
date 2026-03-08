@@ -30,7 +30,7 @@ impl SystemIntegration {
                 try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Gpu)
             {
                 match unsafe {
-                    crate::drivers::gpu::init_virtio_gpu_for_device(
+                    crate::io::gpu::gpu_impl::init_virtio_gpu_for_device(
                         alloc::boxed::Box::new(transport),
                         iommu_device,
                     )

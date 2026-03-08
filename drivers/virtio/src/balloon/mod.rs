@@ -2,6 +2,8 @@
 // drivers/virtio/src/balloon/mod.rs - Shared VirtIO Balloon types
 // ============================================================================
 
+pub mod device;
+
 /// VirtIO feature bits for balloon devices
 pub mod features {
     /// Host must be told before pages are reclaimed

@@ -1208,14 +1208,13 @@ impl TcpControlBlock {
         }
 
         // --- 2. Sender SWS Avoidance: Window is large enough ---
-        // "at least half of the maximum window size seen so far on this connection"
-        let sws_threshold = self.seq.max_snd_wnd / 2;
-        if self.seq.snd_wnd >= sws_threshold && self.seq.snd_wnd > 0 && data_len > 0 {
-            // If the window is large enough to avoid SWS, we can potentially send.
-            // But we still need to check Nagle's algorithm.
-        } else if self.tx.outstanding_bytes > 0 {
-            // SWS avoidance: Window is small and we already have data in flight.
-            return true; // Delay
+        // RFC 1122 Section 4.2.3.4: "A TCP SHOULD delay sending a segment until it can send:
+        // (1) a full-sized segment...
+        // (2) a segment of size at least [Fw * Max(SND.WND)]...
+        // (3) it can send everything that it has and Nagle's algorithm is not applicable."
+        let sws_threshold = (self.seq.max_snd_wnd / 2) as usize;
+        if data_len >= sws_threshold && sws_threshold > 0 {
+            return false; // Send immediately per RFC 1122 (Case 2)
         }
 
         // --- 3. Nagle's Algorithm ---

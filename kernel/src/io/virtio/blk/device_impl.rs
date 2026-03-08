@@ -28,63 +28,24 @@ impl VirtioBlkDevice {
         iommu_device_id: Option<IommuDeviceId>,
     ) -> Self {
         Self {
-            config: BlockDeviceConfig::default(),
+            core: CoreBlkDevice::new(),
             queues: Vec::new(),
             pending_wakers: Vec::new(),
             ready: AtomicBool::new(false),
             iommu_device_id,
             transport,
-            features: 0,
             inflight_dma: Vec::new(),
         }
     }
 
     /// Initialize the device
     pub fn init(&mut self) -> Result<(), BlockError> {
-        // Step 1: Reset device
-        self.transport.set_status(0);
+        // Step 1: Perform common VirtIO initialization using shared core
+        self.core.init(self.transport.as_ref()).map_err(|_| BlockError::NotReady)?;
 
-        // Step 2: Acknowledge device
-        self.transport
-            .set_status(VirtioDeviceStatus::Acknowledge as u8);
-
-        // Step 3: Driver loaded
-        self.transport
-            .set_status(VirtioDeviceStatus::Acknowledge as u8 | VirtioDeviceStatus::Driver as u8);
-
-        // Step 4: Negotiate features
-        let device_features = self.transport.get_device_features();
-        let driver_features = device_features
-            & (features::VIRTIO_BLK_F_SIZE_MAX
-                | features::VIRTIO_BLK_F_SEG_MAX
-                | features::VIRTIO_BLK_F_BLK_SIZE
-                | features::VIRTIO_BLK_F_FLUSH
-                | features::VIRTIO_BLK_F_MQ
-                | crate::io::virtio::VIRTIO_F_INDIRECT_DESC);
-        self.transport.set_driver_features(driver_features);
-        self.features = driver_features;
-
-        // Step 5: Features OK
-        // Step 5: Features OK
-        self.transport.set_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8,
-        );
-
-        // Verify features accepted
-        let status = self.transport.get_status();
-        if (status & VirtioDeviceStatus::FeaturesOk as u8) == 0 {
-            self.transport.set_status(VirtioDeviceStatus::Failed as u8);
-            return Err(BlockError::NotReady);
-        }
-
-        // Step 6: Read configuration
-        self.read_config()?;
-
-        // Step 7: Setup queues
-        let num_queues = if self.features & features::VIRTIO_BLK_F_MQ != 0 {
-            self.config.num_queues
+        // Step 2: Setup queues
+        let num_queues = if self.core.features & features::VIRTIO_BLK_F_MQ != 0 {
+            self.core.num_queues
         } else {
             1
         };
@@ -93,15 +54,8 @@ impl VirtioBlkDevice {
             self.setup_queue(i)?;
         }
 
-        // pending_wakers is now a BTreeMap, so no resizing is needed.
-
-        // Step 8: Driver OK
-        self.transport.set_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8
-                | VirtioDeviceStatus::DriverOk as u8,
-        );
+        // Step 3: Driver OK
+        self.transport.add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
 
         self.ready.store(true, Ordering::Release);
         Ok(())
@@ -110,52 +64,6 @@ impl VirtioBlkDevice {
     // read_status, write_status, read_device_features, write_driver_features REMOVED
     // as we use self.transport methods directly.
 
-    /// Read device configuration
-    pub(super) fn read_config(&mut self) -> Result<(), BlockError> {
-        // Read capacity (8 bytes at offset 0)
-        self.config.capacity = self.transport.read_config_u64(config_offsets::CAPACITY);
-
-        // Read block size if feature supported
-        // Read block size if feature supported
-        if self.features & features::VIRTIO_BLK_F_BLK_SIZE != 0 {
-            // Block size (u32) at offset 0x14 - wait, offset depends on struct layout.
-            // But transport.read_config_u32(offset) works relative to config space.
-            // Offset 0 is capacity (u64, size 8).
-            // size_max (u32) at 8
-            // seg_max (u32) at 12
-            // geometry (cylinders, heads, sectors) at 16 (u16*3) -> 6 bytes
-            // blk_size (u32) is after geometry? Spec says:
-            // struct virtio_blk_config {
-            //     u64 capacity; (0)
-            //     u32 size_max; (8)
-            //     u32 seg_max; (12)
-            //     struct virtio_blk_geometry geometry; (16)
-            //     u32 blk_size; (20? 16+4+2+4=26? No, geometry is u16 cylinders, u8 heads, u8 sectors = 4 bytes total? 16+4=20)
-            //     ...
-            // }
-            // block_size (u32) at 20.
-            self.config.block_size = self.transport.read_config_u32(config_offsets::BLK_SIZE);
-        }
-
-        // Read num_queues if multiqueue supported
-        // Read num_queues if multiqueue supported
-        if self.features & features::VIRTIO_BLK_F_MQ != 0 {
-            // Number of queues (u16). Offset?
-            // topology (alignment etc) is after blk_size.
-            // writeback?
-            // Spec says num_queues is later?
-            // Existing code used 0x22 (34).
-            // Number of queues (u16) at 34.
-            self.config.num_queues = self.transport.read_config_u16(config_offsets::NUM_QUEUES);
-        }
-
-        // Check read-only
-        if self.features & features::VIRTIO_BLK_F_RO != 0 {
-            self.config.read_only = true;
-        }
-
-        Ok(())
-    }
 
     /// Setup a virtqueue
     pub(super) fn setup_queue(&mut self, queue_idx: u16) -> Result<(), BlockError> {
@@ -210,7 +118,7 @@ impl VirtioBlkDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx,
-                self.features,
+                self.core.features,
             )
         };
 
@@ -227,8 +135,8 @@ impl VirtioBlkDevice {
     }
 
     /// Get device configuration
-    pub fn config(&self) -> &BlockDeviceConfig {
-        &self.config
+    pub fn config(&self) -> &CoreBlkDevice {
+        &self.core
     }
 
     /// Check if device is ready
@@ -285,7 +193,7 @@ impl VirtioBlkDevice {
         // Process completions on all queues
         for (q_idx, queue) in self.queues.iter().enumerate() {
             if let Ok(mut queue_guard) = queue.lock() {
-                while let Some((desc_id, completed_len)) = queue_guard.poll_completion() {
+                while let Some((desc_id, completed_len)) = queue_guard.poll_complete() {
                     self.process_completion_entry(&queue_guard, q_idx, desc_id, completed_len);
                 }
             }
@@ -319,14 +227,14 @@ impl VirtioBlkDevice {
                     .and_then(|slot| slot.take())
                 {
                     let status = req_dma.status();
-                    if status != VirtioBlkStatus::Ok as u8 {
+                    if status != VIRTIO_BLK_S_OK {
                         log::warn!(
                             "[VIRTIO-BLK] request {} completed with status {}",
                             desc_id,
                             status
                         );
                     }
-                    status == VirtioBlkStatus::Ok as u8
+                    status == VIRTIO_BLK_S_OK
                 } else {
                     true
                 }
@@ -368,21 +276,6 @@ impl VirtioBlkDevice {
     }
 
     /// Submit a read request (internal)
-    pub(super) fn alloc_three_descriptors(
-        queue: &VirtQueue,
-    ) -> Result<(u16, u16, u16), BlockError> {
-        let desc0 = queue.alloc_desc().ok_or(BlockError::QueueFull)?;
-        let desc1 = queue.alloc_desc().ok_or_else(|| {
-            queue.free_desc(desc0);
-            BlockError::QueueFull
-        })?;
-        let desc2 = queue.alloc_desc().ok_or_else(|| {
-            queue.free_desc(desc0);
-            queue.free_desc(desc1);
-            BlockError::QueueFull
-        })?;
-        Ok((desc0, desc1, desc2))
-    }
 
     pub(crate) fn submit_read(
         &self,
@@ -395,8 +288,8 @@ impl VirtioBlkDevice {
             return Err(BlockError::NotReady);
         }
 
-        if sector >= self.config.capacity {
-            return Err(BlockError::InvalidSector);
+        if sector >= self.core.capacity {
+            return Err(BlockError::InvalidParam);
         }
 
         // SECURITY CHECK: If IOMMU is enabled and global mappings are disallowed,
@@ -411,17 +304,17 @@ impl VirtioBlkDevice {
         }
 
         let header = VirtioBlkReqHeader {
-            req_type: VirtioBlkReqType::In as u32,
+            type_: VIRTIO_BLK_T_IN,
             reserved: 0,
             sector,
         };
-        let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
+        let use_indirect = (self.core.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
         let mut req_dma =
             BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
                 .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
-        let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
+        let queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
         let desc_id = if use_indirect {
             let indirect_table = req_dma.indirect_table_mut().ok_or(BlockError::NotReady)?;
@@ -431,55 +324,29 @@ impl VirtioBlkDevice {
                 .ok_or(BlockError::NotReady)?;
 
             unsafe {
-                // Indirect Descriptor 0: Header
-                (*indirect_table.add(0)) = VringDesc {
-                    addr: req_dma.header_phys,
-                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
-                    flags: VringDesc::F_NEXT,
-                    next: 1,
-                };
-                // Indirect Descriptor 1: Data
-                (*indirect_table.add(1)) = VringDesc {
-                    addr: buf_addr,
+                self.core.build_request_indirect(
+                    &*queue_guard.inner(),
+                    VIRTIO_BLK_T_IN,
+                    sector,
+                    buf_addr,
                     len,
-                    flags: VringDesc::F_NEXT | VringDesc::F_WRITE,
-                    next: 2,
-                };
-                // Indirect Descriptor 2: Status
-                (*indirect_table.add(2)) = VringDesc {
-                    addr: req_dma.status_phys,
-                    len: 1,
-                    flags: VringDesc::F_WRITE,
-                    next: 0,
-                };
-
-                queue_guard
-                    .submit_indirect(indirect_phys, 3)
-                    .ok_or(BlockError::QueueFull)?
+                    req_dma.header_phys,
+                    req_dma.status_phys,
+                    indirect_table as *mut virtio_driver::defs::VringDesc,
+                    indirect_phys.as_u64(),
+                ).map_err(|_| BlockError::NotReady)?
             }
         } else {
-            let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
             unsafe {
-                let desc_table = queue_guard.desc_table_ptr();
-                (*desc_table.add(desc0 as usize)) = VringDesc {
-                    addr: req_dma.header_phys,
-                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
-                    flags: VringDesc::F_NEXT,
-                    next: desc1,
-                };
-                (*desc_table.add(desc1 as usize)) = VringDesc {
-                    addr: buf_addr,
+                self.core.build_request(
+                    &*queue_guard.inner(),
+                    VIRTIO_BLK_T_IN,
+                    sector,
+                    buf_addr,
                     len,
-                    flags: VringDesc::F_NEXT | VringDesc::F_WRITE,
-                    next: desc2,
-                };
-                (*desc_table.add(desc2 as usize)) = VringDesc {
-                    addr: req_dma.status_phys,
-                    len: 1,
-                    flags: VringDesc::F_WRITE,
-                    next: 0,
-                };
-                queue_guard.submit(desc0)
+                    req_dma.header_phys,
+                    req_dma.status_phys,
+                ).map_err(|_| BlockError::NotReady)?
             }
         };
 
@@ -492,7 +359,7 @@ impl VirtioBlkDevice {
             }
         }
 
-        queue_guard.notify(&*self.transport);
+        queue_guard.notify(self.transport.as_ref());
         log::info!(
             "[VIRTIO-BLK][DBG] submit_read notified q={} desc0={}",
             queue_idx,
@@ -507,18 +374,18 @@ impl VirtioBlkDevice {
         if !self.is_ready() {
             return Err(BlockError::NotReady);
         }
-        if self.config.read_only {
-            return Err(BlockError::ReadOnly);
+        if (self.core.features & features::VIRTIO_BLK_F_RO) != 0 {
+            return Err(BlockError::Unsupported);
         }
-        if sector >= self.config.capacity {
-            return Err(BlockError::InvalidSector);
+        if sector >= self.core.capacity {
+            return Err(BlockError::InvalidParam);
         }
         let header = VirtioBlkReqHeader {
-            req_type: VirtioBlkReqType::Out as u32,
+            type_: VIRTIO_BLK_T_OUT,
             reserved: 0,
             sector,
         };
-        let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
+        let use_indirect = (self.core.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
         BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
             .ok_or(BlockError::NotReady)
     }
@@ -542,10 +409,10 @@ impl VirtioBlkDevice {
         }
 
         let mut req_dma = self.prepare_write_request(sector)?;
-        let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
+        let use_indirect = (self.core.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
-        let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
+        let queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
         let desc_id = if use_indirect {
             let indirect_table = req_dma.indirect_table_mut().ok_or(BlockError::NotReady)?;
@@ -555,64 +422,29 @@ impl VirtioBlkDevice {
                 .ok_or(BlockError::NotReady)?;
 
             unsafe {
-                // Indirect Descriptor 0: Header
-                (*indirect_table.add(0)) = VringDesc {
-                    addr: req_dma.header_phys,
-                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
-                    flags: VringDesc::F_NEXT,
-                    next: 1,
-                };
-                // Indirect Descriptor 1: Data
-                (*indirect_table.add(1)) = VringDesc {
-                    addr: buf_addr,
+                self.core.build_request_indirect(
+                    &*queue_guard.inner(),
+                    VIRTIO_BLK_T_OUT,
+                    sector,
+                    buf_addr,
                     len,
-                    flags: VringDesc::F_NEXT,
-                    next: 2,
-                };
-                // Indirect Descriptor 2: Status
-                (*indirect_table.add(2)) = VringDesc {
-                    addr: req_dma.status_phys,
-                    len: 1,
-                    flags: VringDesc::F_WRITE,
-                    next: 0,
-                };
-
-                queue_guard
-                    .submit_indirect(indirect_phys, 3)
-                    .ok_or(BlockError::QueueFull)?
+                    req_dma.header_phys,
+                    req_dma.status_phys,
+                    indirect_table as *mut virtio_driver::defs::VringDesc,
+                    indirect_phys.as_u64(),
+                ).map_err(|_| BlockError::NotReady)?
             }
         } else {
-            // Allocate 3 descriptors
-            let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
-
             unsafe {
-                let desc_table = queue_guard.desc_table_ptr();
-
-                // Descriptor 0: Header (device reads from DMA memory)
-                (*desc_table.add(desc0 as usize)) = VringDesc {
-                    addr: req_dma.header_phys,
-                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
-                    flags: VringDesc::F_NEXT,
-                    next: desc1,
-                };
-
-                // Descriptor 1: Data buffer (device reads)
-                (*desc_table.add(desc1 as usize)) = VringDesc {
-                    addr: buf_addr,
+                self.core.build_request(
+                    &*queue_guard.inner(),
+                    VIRTIO_BLK_T_OUT,
+                    sector,
+                    buf_addr,
                     len,
-                    flags: VringDesc::F_NEXT,
-                    next: desc2,
-                };
-
-                // Descriptor 2: Status byte (device writes to DMA memory)
-                (*desc_table.add(desc2 as usize)) = VringDesc {
-                    addr: req_dma.status_phys,
-                    len: 1,
-                    flags: VringDesc::F_WRITE,
-                    next: 0,
-                };
-
-                queue_guard.submit(desc0)
+                    req_dma.header_phys,
+                    req_dma.status_phys,
+                ).map_err(|_| BlockError::NotReady)?
             }
         };
 
@@ -637,17 +469,17 @@ impl VirtioBlkDevice {
         }
 
         // Check if flush is supported
-        if self.features & features::VIRTIO_BLK_F_FLUSH == 0 {
+        if self.core.features & features::VIRTIO_BLK_F_FLUSH == 0 {
             return Err(BlockError::Unsupported);
         }
 
         // Allocate DMA-safe header + status byte
         let header = VirtioBlkReqHeader {
-            req_type: VirtioBlkReqType::Flush as u32,
+            type_: VIRTIO_BLK_T_FLUSH,
             reserved: 0,
             sector: 0, // sector is ignored for flush
         };
-        let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
+        let use_indirect = (self.core.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
         let mut req_dma =
             BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
                 .ok_or(BlockError::NotReady)?;

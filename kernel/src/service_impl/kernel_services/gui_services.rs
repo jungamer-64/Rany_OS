@@ -109,7 +109,7 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
         if device.is_ready() {
             flags |= STORAGE_FLAG_ACTIVE;
         }
-        if config.read_only {
+        if (config.features & virtio_driver::blk::features::VIRTIO_BLK_F_RO) != 0 {
             flags |= STORAGE_FLAG_READ_ONLY;
         }
 

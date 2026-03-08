@@ -1748,7 +1748,11 @@ impl TcpProcessor {
                     p.set_len(payload_len);
 
                     if tcb.enqueue_ooo_payload(seq_num, p, fin) {
-                        tcb.add_sack_block(seq_num, seq_num.wrapping_add(payload_len as u32));
+                        let mut sack_end = seq_num.wrapping_add(payload_len as u32);
+                        if fin {
+                            sack_end = sack_end.wrapping_add(1);
+                        }
+                        tcb.add_sack_block(seq_num, sack_end);
                     }
                 }
             } else {

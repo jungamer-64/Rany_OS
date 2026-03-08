@@ -172,7 +172,12 @@ impl VirtioNetPollHandler {
         desc_id: u16,
         len: u32,
     ) -> bool {
-        let q_idx = rx_queue.vq.lock().expect("lock poisoned").index() as usize;
+        let q_idx = rx_queue
+            .inner
+            .lock()
+            .expect("lock poisoned")
+            .vq
+            .queue_index() as usize;
         device.handle_legacy_rx_completion(rx_queue, q_idx, desc_id, len)
     }
 
@@ -183,7 +188,12 @@ impl VirtioNetPollHandler {
         desc_id: u16,
         len: u32,
     ) -> bool {
-        let q_idx = tx_queue.vq.lock().expect("lock poisoned").index() as usize;
+        let q_idx = tx_queue
+            .inner
+            .lock()
+            .expect("lock poisoned")
+            .vq
+            .queue_index() as usize;
         device.handle_legacy_tx_completion(tx_queue, q_idx, desc_id, len)
     }
 

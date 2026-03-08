@@ -25,7 +25,6 @@ use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -40,29 +39,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 mod global_init;
 pub use global_init::*;
 
-pub use virtio_driver::input::{InputError, VirtioInputEvent, config_select};
+pub use virtio_driver::input::{InputError, VirtioInputEvent, config_select, device::VirtioInputDevice as CoreInputDevice};
 
 // ============================================================================
 // VirtIO Common Definitions (local copies, same as blk.rs)
 // ============================================================================
 
-/// VirtIO device status bits
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VirtioDeviceStatus {
-    /// Driver has noticed the device
-    Acknowledge = 1,
-    /// Driver knows how to drive the device
-    Driver = 2,
-    /// Driver is set up and ready to drive the device
-    DriverOk = 4,
-    /// Driver has finished configuring features
-    FeaturesOk = 8,
-    /// Device has experienced an error from which it can't recover
-    DeviceNeedsReset = 64,
-    /// Driver has given up on the device
-    Failed = 128,
-}
+use crate::io::virtio::VirtioDeviceStatus;
 
 // ============================================================================
 
@@ -88,6 +71,8 @@ pub struct VirtioInputDevice {
     status_queue: Option<Arc<PoisonLock<VirtQueue>>>,
     /// DMA buffers for inflight event reads, keyed by descriptor index
     event_buffers: PoisonLock<BTreeMap<u16, CoherentDmaBuffer>>,
+    /// Shared core device logic
+    core: CoreInputDevice,
     /// Device ready flag
     ready: AtomicBool,
     /// Optional IOMMU device identifier for device-scoped mappings
@@ -127,6 +112,7 @@ impl VirtioInputDevice {
             event_queue: None,
             status_queue: None,
             event_buffers: PoisonLock::new(BTreeMap::new()),
+            core: CoreInputDevice::default(),
             ready: AtomicBool::new(false),
             iommu_device_id,
             event_handler: PoisonLock::new(None),
@@ -136,35 +122,8 @@ impl VirtioInputDevice {
 
     /// Initialize the device following the standard VirtIO initialization sequence.
     pub fn init(&mut self) -> Result<(), InputError> {
-        // Step 1: Reset device
-        self.transport.set_status(0);
-
-        // Step 2: Acknowledge device
-        self.transport
-            .set_status(VirtioDeviceStatus::Acknowledge as u8);
-
-        // Step 3: Driver loaded
-        self.transport
-            .set_status(VirtioDeviceStatus::Acknowledge as u8 | VirtioDeviceStatus::Driver as u8);
-
-        // Step 4: Negotiate features
-        // Input devices have no mandatory feature bits; accept none.
-        let _device_features = self.transport.get_device_features();
-        self.transport.set_driver_features(0);
-
-        // Step 5: Features OK
-        self.transport.set_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8,
-        );
-
-        // Verify features accepted
-        let status = self.transport.get_status();
-        if (status & VirtioDeviceStatus::FeaturesOk as u8) == 0 {
-            self.transport.set_status(VirtioDeviceStatus::Failed as u8);
-            return Err(InputError::NotReady);
-        }
+        // Step 1-5: Perform common VirtIO initialization using shared core
+        self.core.init(self.transport.as_ref()).map_err(|_| InputError::NotReady)?;
 
         // Step 6: Setup queues
         // Queue 0 = eventq, Queue 1 = statusq
@@ -172,12 +131,7 @@ impl VirtioInputDevice {
         self.setup_queue(1)?;
 
         // Step 7: Driver OK
-        self.transport.set_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8
-                | VirtioDeviceStatus::DriverOk as u8,
-        );
+        self.transport.add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
 
         // Step 8: Post event buffers so the device has somewhere to write events
         self.post_event_buffers()?;
@@ -356,48 +310,13 @@ impl VirtioInputDevice {
     }
 
     /// Query the device configuration space using the select/subsel mechanism.
-    ///
-    /// The VirtIO input config space layout:
-    /// - offset 0: select (u8, write)
-    /// - offset 1: subsel (u8, write)
-    /// - offset 2: size (u8, read)
-    /// - offset 8..136: data (128 bytes, read)
-    ///
-    /// Returns `None` if the device reports size 0 for the given query.
     pub fn query_config(&self, select: u8, subsel: u8) -> Option<Vec<u8>> {
-        // Write select and subsel to config space
-        self.transport
-            .write_config_u8(config_offsets::SELECT, select);
-        self.transport
-            .write_config_u8(config_offsets::SUBSEL, subsel);
-
-        // Memory barrier to ensure writes are visible before reading
-        core::sync::atomic::fence(Ordering::SeqCst);
-
-        // Read size from config space offset 2
-        let size = self.transport.read_config_u8(config_offsets::SIZE) as usize;
-
-        if size == 0 {
-            return None;
-        }
-
-        // Clamp to maximum data region (128 bytes)
-        let read_len = size.min(128);
-        let mut data = vec![0u8; read_len];
-
-        // Read data bytes from config space starting at offset 8
-        for i in 0..read_len {
-            data[i] = self.transport.read_config_u8(config_offsets::DATA + i);
-        }
-
-        Some(data)
+        Some(self.core.query_config(self.transport.as_ref(), select, subsel))
     }
 
     /// Query the device name string.
-    ///
-    /// Returns the raw bytes of the device name, or `None` if unavailable.
     pub fn device_name(&self) -> Option<Vec<u8>> {
-        self.query_config(config_select::VIRTIO_INPUT_CFG_ID_NAME, 0)
+        Some(self.core.device_name(self.transport.as_ref()))
     }
 
     /// Handle a device interrupt by polling the event queue for completed events.

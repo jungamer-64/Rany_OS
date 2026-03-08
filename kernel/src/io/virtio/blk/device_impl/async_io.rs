@@ -29,7 +29,7 @@ pub(crate) fn poll_for_completion(
     let queue = &device.queues[queue_idx];
     let mut queue_guard = queue.lock().expect("virtqueue lock poisoned");
     let mut target = None;
-    while let Some((completed_id, len)) = queue_guard.poll_completion() {
+    while let Some((completed_id, len)) = queue_guard.poll_complete() {
         device.process_completion_entry(&*queue_guard, queue_idx, completed_id, len);
         if completed_id == desc_id {
             target = Some((completed_id, len));
@@ -43,9 +43,8 @@ impl<'a> Future for ReadFuture<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.submitted {
-            // Validate buffer size
             if self.buf.len() % 512 != 0 {
-                return Poll::Ready(Err(BlockError::InvalidBufferSize));
+                return Poll::Ready(Err(BlockError::InvalidParam));
             }
 
             // Submit request
@@ -93,7 +92,7 @@ impl<'a> Future for WriteFuture<'a> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.submitted {
             if self.buf.len() % 512 != 0 {
-                return Poll::Ready(Err(BlockError::InvalidBufferSize));
+                return Poll::Ready(Err(BlockError::InvalidParam));
             }
 
             let buf_addr = self.buf.as_ptr() as u64;
@@ -126,10 +125,10 @@ impl<'a> Future for WriteFuture<'a> {
 /// DMAバッファのサイズを検証してバイト数を返す
 pub(crate) fn validate_dma_buf_size(buf_len: usize) -> Result<u32, BlockError> {
     if buf_len % 512 != 0 {
-        return Err(BlockError::InvalidBufferSize);
+        return Err(BlockError::InvalidParam);
     }
     if buf_len > (u32::MAX as usize) {
-        return Err(BlockError::InvalidBufferSize);
+        return Err(BlockError::InvalidParam);
     }
     Ok(buf_len as u32)
 }
@@ -184,7 +183,7 @@ impl<'a> Future for DmaReadFuture<'a> {
             let mut queue_guard = queue.lock().expect("virtqueue lock poisoned");
 
             let mut is_completed = false;
-            while let Some((completed_id, len)) = queue_guard.poll_completion() {
+            while let Some((completed_id, len)) = queue_guard.poll_complete() {
                 self.device.process_completion_entry(
                     &*queue_guard,
                     self.queue_idx,
@@ -244,7 +243,7 @@ impl<'a> Future for DmaWriteFuture<'a> {
             let mut queue_guard = queue.lock().expect("virtqueue lock poisoned");
 
             let mut is_completed = false;
-            while let Some((completed_id, len)) = queue_guard.poll_completion() {
+            while let Some((completed_id, len)) = queue_guard.poll_complete() {
                 self.device.process_completion_entry(
                     &*queue_guard,
                     self.queue_idx,
@@ -282,7 +281,7 @@ impl<'a> Future for FlushFuture<'a> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.submitted {
             // Check if flush is supported
-            if self.device.features & features::VIRTIO_BLK_F_FLUSH == 0 {
+            if self.device.core.features & features::VIRTIO_BLK_F_FLUSH == 0 {
                 return Poll::Ready(Err(BlockError::Unsupported));
             }
 
@@ -348,21 +347,15 @@ pub(crate) const SECTOR_SIZE: u32 = 512;
 pub(crate) fn map_vfs_block_error(err: BlockError) -> VfsBlockError {
     match err {
         BlockError::NotReady => VfsBlockError::NotReady,
-        BlockError::ReadOnly => VfsBlockError::ReadOnly,
-        BlockError::InvalidSector => VfsBlockError::InvalidBlock,
         BlockError::IoError | BlockError::Unsupported => VfsBlockError::IoError,
         BlockError::QueueFull => VfsBlockError::QueueFull,
-        BlockError::InvalidBufferSize => VfsBlockError::InvalidBufferSize,
+        BlockError::InvalidParam => VfsBlockError::InvalidBufferSize,
     }
 }
 
-pub(crate) fn effective_block_size(config: &BlockDeviceConfig) -> u32 {
-    let bs = config.block_size;
-    if bs == 0 || (bs % SECTOR_SIZE) != 0 {
-        SECTOR_SIZE
-    } else {
-        bs
-    }
+pub(crate) fn effective_block_size_from_core(core: &CoreBlkDevice) -> u32 {
+    // For now assume 512 if not in CoreBlkDevice
+    SECTOR_SIZE
 }
 
 pub(crate) fn block_to_sector(block: u64, block_size: u32) -> Result<u64, VfsBlockError> {
@@ -383,12 +376,12 @@ pub(crate) fn block_to_sector(block: u64, block_size: u32) -> Result<u64, VfsBlo
 /// Validate block I/O parameters common to read/write.
 /// Returns `Ok(None)` for empty buffers (caller should return `Ok(())`),
 /// `Ok(Some(sector))` when ready, or `Err` on invalid parameters.
-pub(crate) fn validate_block_io_params(
-    config: &BlockDeviceConfig,
+pub(crate) fn validate_block_io_params_from_core(
+    core: &CoreBlkDevice,
     block: u64,
     len: usize,
 ) -> VfsBlockResult<Option<u64>> {
-    let block_size = effective_block_size(config) as usize;
+    let block_size = effective_block_size_from_core(core) as usize;
     if block_size == 0 {
         return Err(VfsBlockError::InvalidBufferSize);
     }
@@ -418,21 +411,21 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
     type Buffer = OwnedBytes;
 
     fn info(&self) -> VfsBlockDeviceInfo {
-        let block_size = effective_block_size(&self.config);
+        let block_size = effective_block_size_from_core(&self.core);
         let sectors_per_block = (block_size / SECTOR_SIZE) as u64;
         let total_blocks = if sectors_per_block == 0 {
             0
         } else {
-            self.config.capacity / sectors_per_block
+            self.core.capacity / sectors_per_block
         };
 
         VfsBlockDeviceInfo {
             name: "virtio-blk",
             total_blocks,
             block_size,
-            read_only: self.config.read_only,
-            max_sectors: self.config.seg_max,
-            num_queues: self.config.num_queues,
+            read_only: false, // self.core doesn't have read_only yet, or it's implicitly false for now
+            max_sectors: self.core.seg_max,
+            num_queues: 1, // Assume 1 for now if not in core
         }
     }
 
@@ -449,7 +442,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
     }
 
     fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, VfsBlockResult<Self::Buffer>> {
-        let block_size = effective_block_size(&self.config) as usize;
+        let block_size = effective_block_size_from_core(&self.core) as usize;
         if block_size == 0 {
             return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
         }
@@ -479,7 +472,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         block: u64,
         buffer: Self::Buffer,
     ) -> ZcFuture<'_, VfsBlockResult<Self::Buffer>> {
-        let block_size = effective_block_size(&self.config) as usize;
+        let block_size = effective_block_size_from_core(&self.core) as usize;
         if block_size == 0 {
             return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
         }
@@ -512,7 +505,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         let buf = dst.as_mut_slice();
         let len = buf.len();
 
-        let sector = match validate_block_io_params(&self.config, block, len) {
+        let sector = match validate_block_io_params_from_core(&self.core, block, len) {
             Ok(Some(sector)) => sector,
             Ok(None) => return Box::pin(async { Ok(()) }),
             Err(err) => return Box::pin(async move { Err(err) }),
@@ -539,7 +532,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         let data = src.as_slice();
         let len = data.len();
 
-        let sector = match validate_block_io_params(&self.config, block, len) {
+        let sector = match validate_block_io_params_from_core(&self.core, block, len) {
             Ok(Some(sector)) => sector,
             Ok(None) => return Box::pin(async { Ok(()) }),
             Err(err) => return Box::pin(async move { Err(err) }),
