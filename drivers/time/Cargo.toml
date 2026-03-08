@@ -12,6 +12,7 @@ description = "Time Management Driver (Cell) for RanyOS - high-level timer servi
 
 [dependencies]
 spin = "0.10"
+exorust_sync = { path = "../../libs/sync" }
 kernel_api = { path = "../../interfaces/kernel_api" }
 
 [features]

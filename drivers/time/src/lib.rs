@@ -6,21 +6,6 @@
 //!
 //! ExoRust アーキテクチャにおける時間管理セル（ドライバ）。
 //! 高レベルのタイマーサービスを提供する。
-//!
-//! ## 設計原則
-//!
-//! - **Framework層（カーネル）**: PIT/TSC/APIC ハードウェア制御
-//! - **Cell層（本ドライバ）**: スリープ管理、タイマー登録、CPU時間統計
-//!
-//! ## 2段階Wake方式 (設計書 4.2)
-//!
-//! ISRから直接 `wake()` を呼ばず、ロックフリーリングバッファに追加。
-//! Executorのイベントループで実際の `wake()` を行う。
-//!
-//! ## ISR安全性
-//!
-//! - `ShardedSleepRegistry`: try_lock で ISR からのデッドロックを回避
-//! - `LockFreePendingWakers`: ロックフリー MPSC リングバッファ
 
 #![no_std]
 #![allow(dead_code)]
@@ -35,26 +20,19 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
+use exorust_sync::PoisonLock;
 use kernel_api::service::time::{
     CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats,
 };
-use spin::Mutex;
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/// ナノ秒/ミリ秒
 const NANOS_PER_MILLI: u64 = 1_000_000;
-
-/// ナノ秒/秒
 const NANOS_PER_SEC: u64 = 1_000_000_000;
-
-/// シャード数（2のべき乗）
 const SHARD_COUNT: usize = 16;
 const SHARD_MASK: usize = SHARD_COUNT - 1;
-
-/// ロックフリーキューサイズ（2のべき乗）
 const PENDING_QUEUE_SIZE: usize = 512;
 const PENDING_QUEUE_MASK: usize = PENDING_QUEUE_SIZE - 1;
 
@@ -62,19 +40,13 @@ const PENDING_QUEUE_MASK: usize = PENDING_QUEUE_SIZE - 1;
 // Sharded Sleep Registry
 // ============================================================================
 
-/// シャード化されたスリープレジストリ
-///
-/// ティック値でシャーディングすることで、ISRでのロック競合を減らす。
-/// `drain_expired()` は try_lock を使用し、ISRから安全に呼べる。
-///
-/// 同じティックに複数のWakerを登録できるよう `BTreeMap<u64, Vec<Waker>>` を使用。
 struct ShardedSleepRegistry {
-    shards: [Mutex<BTreeMap<u64, Vec<Waker>>>; SHARD_COUNT],
+    shards: [PoisonLock<BTreeMap<u64, Vec<Waker>>>; SHARD_COUNT],
 }
 
 impl ShardedSleepRegistry {
     const fn new() -> Self {
-        const EMPTY_SHARD: Mutex<BTreeMap<u64, Vec<Waker>>> = Mutex::new(BTreeMap::new());
+        const EMPTY_SHARD: PoisonLock<BTreeMap<u64, Vec<Waker>>> = PoisonLock::new(BTreeMap::new());
         Self {
             shards: [EMPTY_SHARD; SHARD_COUNT],
         }
@@ -89,6 +61,7 @@ impl ShardedSleepRegistry {
         let idx = Self::shard_index(tick);
         self.shards[idx]
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(tick)
             .or_insert_with(Vec::new)
             .push(waker);
@@ -96,7 +69,7 @@ impl ShardedSleepRegistry {
 
     fn remove(&self, tick: u64) -> Option<Waker> {
         let idx = Self::shard_index(tick);
-        let mut guard = self.shards[idx].lock();
+        let mut guard = self.shards[idx].lock().unwrap_or_else(|e| e.into_inner());
         if let Some(wakers) = guard.get_mut(&tick) {
             let w = wakers.pop();
             if wakers.is_empty() {
@@ -108,10 +81,9 @@ impl ShardedSleepRegistry {
         }
     }
 
-    /// 期限切れWakerを収集（ISR安全: try_lock使用）
     fn drain_expired(&self, current_tick: u64, out: &mut Vec<Waker>) {
         for shard in &self.shards {
-            if let Some(mut guard) = shard.try_lock() {
+            if let Ok(mut guard) = shard.try_lock() {
                 let expired_keys: Vec<u64> =
                     guard.range(..=current_tick).map(|(k, _)| *k).collect();
 
@@ -120,8 +92,17 @@ impl ShardedSleepRegistry {
                         out.extend(wakers);
                     }
                 }
+            } else if let Some(e) = shard.try_lock().err() {
+                if let exorust_sync::PoisonError::Poisoned(mut guard) = e {
+                    let expired_keys: Vec<u64> =
+                        guard.range(..=current_tick).map(|(k, _)| *k).collect();
+                    for key in expired_keys {
+                        if let Some(wakers) = guard.remove(&key) {
+                            out.extend(wakers);
+                        }
+                    }
+                }
             }
-            // try_lock失敗シャードは次回ISRで処理
         }
     }
 }
@@ -130,10 +111,6 @@ impl ShardedSleepRegistry {
 // Lock-Free Pending Wakers Queue
 // ============================================================================
 
-/// ロックフリー MPSC リングバッファ
-///
-/// ISR（複数コア）がプロデューサ、Executorがコンシューマ。
-/// Waker は Box 化してポインタとして格納。
 #[repr(C, align(64))]
 struct LockFreePendingWakers {
     head: AtomicUsize,
@@ -155,7 +132,6 @@ impl LockFreePendingWakers {
         }
     }
 
-    /// ISRからWakerをエンキュー（ロックフリー）
     fn enqueue(&self, waker: Waker) -> bool {
         let boxed = Box::new(waker);
         let ptr = Box::into_raw(boxed) as usize;
@@ -192,7 +168,6 @@ impl LockFreePendingWakers {
         }
     }
 
-    /// ExecutorがすべてのWakerをデキュー
     fn drain(&self) -> Vec<Waker> {
         let mut wakers = Vec::new();
 
@@ -243,18 +218,13 @@ impl LockFreePendingWakers {
 }
 
 // ============================================================================
-// Timer Entry (for register_timer / cancel_timer)
+// Timer Entry
 // ============================================================================
 
-/// 登録されたタイマーエントリ
 struct TimerEntry {
-    /// 次に発火するティック
     fire_tick: u64,
-    /// 間隔 (ミリ秒)
     interval_ms: u64,
-    /// モード
     mode: TimerMode,
-    /// 起床先
     waker: Waker,
 }
 
@@ -262,32 +232,26 @@ struct TimerEntry {
 // CPU Time Tracker
 // ============================================================================
 
-/// CPU時間エントリ
 struct CpuTimeEntry {
-    /// 累計CPU時間 (ナノ秒概算)
     cpu_time_ns: u64,
-    /// 現在のタスク実行開始ティック (0 = 実行中でない)
     start_tick: u64,
-    /// 最後にスケジュールされたティック
     last_scheduled_tick: u64,
-    /// スケジュール回数
     schedule_count: u64,
 }
 
-/// タスクCPU時間トラッカー
 struct TaskCpuTracker {
-    entries: Mutex<BTreeMap<u64, CpuTimeEntry>>,
+    entries: PoisonLock<BTreeMap<u64, CpuTimeEntry>>,
 }
 
 impl TaskCpuTracker {
     const fn new() -> Self {
         Self {
-            entries: Mutex::new(BTreeMap::new()),
+            entries: PoisonLock::new(BTreeMap::new()),
         }
     }
 
     fn record_start(&self, task_id: u64, current_tick: u64) {
-        let mut map = self.entries.lock();
+        let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let entry = map.entry(task_id).or_insert(CpuTimeEntry {
             cpu_time_ns: 0,
             start_tick: 0,
@@ -300,7 +264,7 @@ impl TaskCpuTracker {
     }
 
     fn record_stop(&self, task_id: u64, current_tick: u64) {
-        let mut map = self.entries.lock();
+        let mut map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = map.get_mut(&task_id) {
             if entry.start_tick > 0 {
                 let elapsed_ticks = current_tick.saturating_sub(entry.start_tick);
@@ -311,7 +275,7 @@ impl TaskCpuTracker {
     }
 
     fn get_stats(&self, task_id: u64) -> Option<CpuTimeStats> {
-        let map = self.entries.lock();
+        let map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         map.get(&task_id).map(|e| CpuTimeStats {
             cpu_time_ns: e.cpu_time_ns,
             last_scheduled_tick: e.last_scheduled_tick,
@@ -321,39 +285,25 @@ impl TaskCpuTracker {
 }
 
 // ============================================================================
-// TimeManagement - Main Driver Struct
+// TimeManagement
 // ============================================================================
 
-/// 時間管理ドライバ（セル）
-///
-/// ISR安全な2段階Wake方式で、スリープ/タイマー/CPU時間統計を管理する。
 pub struct TimeManagement {
-    /// グローバルティック (1ms単位)
     ticks: AtomicU64,
-    /// 起動時のUnixタイムスタンプ (初期化時にRTCから設定)
     boot_unix_timestamp_ms: AtomicU64,
-    /// ウォールクロック補正値 (ナノ秒、NTP用)
     wall_clock_adjustment_ns: AtomicI64,
-    /// スリープレジストリ
     sleep_registry: ShardedSleepRegistry,
-    /// ペンディングWakerキュー
     pending_wakers: LockFreePendingWakers,
-    /// 登録タイマー
-    timers: Mutex<BTreeMap<u64, TimerEntry>>,
-    /// 次のタイマーID
+    timers: PoisonLock<BTreeMap<u64, TimerEntry>>,
     next_timer_id: AtomicU64,
-    /// タイマー発火回数
     total_fired: AtomicU64,
-    /// CPU時間トラッカー
     cpu_tracker: TaskCpuTracker,
 }
 
-/// SAFETY: 全フィールドが Send + Sync
 unsafe impl Send for TimeManagement {}
 unsafe impl Sync for TimeManagement {}
 
 impl TimeManagement {
-    /// 新しいTimeManagementインスタンスを生成
     pub const fn new() -> Self {
         Self {
             ticks: AtomicU64::new(0),
@@ -361,63 +311,67 @@ impl TimeManagement {
             wall_clock_adjustment_ns: AtomicI64::new(0),
             sleep_registry: ShardedSleepRegistry::new(),
             pending_wakers: LockFreePendingWakers::new(),
-            timers: Mutex::new(BTreeMap::new()),
+            timers: PoisonLock::new(BTreeMap::new()),
             next_timer_id: AtomicU64::new(1),
             total_fired: AtomicU64::new(0),
             cpu_tracker: TaskCpuTracker::new(),
         }
     }
 
-    /// 起動時のUnixタイムスタンプを設定（RTCから）
     pub fn set_boot_timestamp_ms(&self, timestamp_ms: u64) {
         self.boot_unix_timestamp_ms
             .store(timestamp_ms, Ordering::SeqCst);
     }
 
-    /// ペンディングWaker数を取得
     pub fn pending_waker_count(&self) -> usize {
         self.pending_wakers.len()
     }
 
-    /// ペンディングキュー統計 (enqueued, dropped)
     pub fn pending_waker_stats(&self) -> (usize, usize) {
         self.pending_wakers.stats()
     }
 
-    /// タイマーテーブル内の期限切れタイマーを処理
     fn process_expired_timers(&self, current_tick: u64) {
-        if let Some(mut timers) = self.timers.try_lock() {
-            let mut to_fire: Vec<u64> = Vec::new();
-            let mut to_reschedule: Vec<(u64, TimerEntry)> = Vec::new();
+        if let Ok(mut timers) = self.timers.try_lock() {
+            self.do_process_expired_timers(&mut timers, current_tick);
+        } else if let Some(e) = self.timers.try_lock().err() {
+            if let exorust_sync::PoisonError::Poisoned(mut timers) = e {
+                self.do_process_expired_timers(&mut timers, current_tick);
+            }
+        }
+    }
 
-            for (&id, entry) in timers.iter() {
-                if entry.fire_tick <= current_tick {
-                    to_fire.push(id);
+    fn do_process_expired_timers(&self, timers: &mut BTreeMap<u64, TimerEntry>, current_tick: u64) {
+        let mut to_fire: Vec<u64> = Vec::new();
+        let mut to_reschedule: Vec<(u64, TimerEntry)> = Vec::new();
+
+        for (&id, entry) in timers.iter() {
+            if entry.fire_tick <= current_tick {
+                to_fire.push(id);
+            }
+        }
+
+        for id in &to_fire {
+            if let Some(entry) = timers.remove(id) {
+                let _ = self.pending_wakers.enqueue(entry.waker.clone());
+                self.total_fired.fetch_add(1, Ordering::Relaxed);
+
+                if entry.mode == TimerMode::Periodic {
+                    to_reschedule.push((
+                        *id,
+                        TimerEntry {
+                            fire_tick: current_tick + entry.interval_ms,
+                            interval_ms: entry.interval_ms,
+                            mode: entry.mode,
+                            waker: entry.waker,
+                        },
+                    ));
                 }
             }
+        }
 
-            for id in &to_fire {
-                if let Some(entry) = timers.remove(id) {
-                    let _ = self.pending_wakers.enqueue(entry.waker.clone());
-                    self.total_fired.fetch_add(1, Ordering::Relaxed);
-
-                    if entry.mode == TimerMode::Periodic {
-                        to_reschedule.push((
-                            *id,
-                            TimerEntry {
-                                fire_tick: current_tick + entry.interval_ms,
-                                interval_ms: entry.interval_ms,
-                                mode: entry.mode,
-                                waker: entry.waker,
-                            },
-                        ));
-                    }
-                }
-            }
-
-            for (id, entry) in to_reschedule {
-                timers.insert(id, entry);
-            }
+        for (id, entry) in to_reschedule {
+            timers.insert(id, entry);
         }
     }
 }
@@ -438,12 +392,19 @@ impl TimeService for TimeManagement {
             waker,
         };
 
-        self.timers.lock().insert(id, entry);
+        self.timers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, entry);
         TimerHandle(id)
     }
 
     fn cancel_timer(&self, handle: TimerHandle) -> bool {
-        self.timers.lock().remove(&handle.0).is_some()
+        self.timers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&handle.0)
+            .is_some()
     }
 
     fn current_tick_ms(&self) -> u64 {
@@ -473,7 +434,10 @@ impl TimeService for TimeManagement {
 
     fn stats(&self) -> TimerServiceStats {
         let (enq, drop) = self.pending_wakers.stats();
-        let active = self.timers.try_lock().map_or(0, |t| t.len());
+        let active = self
+            .timers
+            .try_lock()
+            .map_or_else(|e| e.into_inner().len(), |t| t.len());
 
         TimerServiceStats {
             active_timers: active,
@@ -500,25 +464,17 @@ impl TimeService for TimeManagement {
 
     fn on_timer_interrupt(&self) {
         let current_tick = self.ticks.fetch_add(1, Ordering::SeqCst) + 1;
-
-        // スリープレジストリから期限切れWakerを収集
         let mut expired = Vec::new();
         self.sleep_registry
             .drain_expired(current_tick, &mut expired);
-
-        // ロックフリーキューにエンキュー (ISR安全)
         for waker in expired {
             let _ok = self.pending_wakers.enqueue(waker);
         }
-
-        // 登録タイマーの期限切れチェック
         self.process_expired_timers(current_tick);
     }
 
     fn process_pending_wakers(&self) {
         let wakers = self.pending_wakers.drain();
-
-        // 非ISRコンテキストなので安全にwake()
         for waker in wakers {
             waker.wake();
         }
@@ -538,69 +494,42 @@ impl TimeService for TimeManagement {
     }
 }
 
-// ============================================================================
-// Global Instance
-// ============================================================================
-
-/// グローバル TimeManagement インスタンス
 pub static TIME_MANAGER: TimeManagement = TimeManagement::new();
 
-/// TimeService トレイトオブジェクトへの参照を取得
 pub fn time_service() -> &'static dyn TimeService {
     &TIME_MANAGER
 }
 
-// ============================================================================
-// Convenience Public API (後方互換 + 直接呼び出し用)
-// ============================================================================
-
-/// タイマー割り込みハンドラから呼ばれる
-///
-/// 【設計書 4.2】2段階Wake方式
 pub fn handle_timer_interrupt() {
     TIME_MANAGER.on_timer_interrupt();
 }
 
-/// 保留中のタイマーWakerを処理（Executorから呼び出す）
 pub fn process_pending_timer_wakers() {
     TIME_MANAGER.process_pending_wakers();
 }
 
-/// ペンディングWaker数
 pub fn pending_timer_waker_count() -> usize {
     TIME_MANAGER.pending_waker_count()
 }
 
-/// ペンディングキュー統計 (enqueued, dropped)
 pub fn pending_waker_stats() -> (usize, usize) {
     TIME_MANAGER.pending_waker_stats()
 }
 
-/// 現在のティック数を取得
 pub fn current_tick() -> u64 {
     TIME_MANAGER.current_tick_ms()
 }
 
-/// 指定ミリ秒スリープする非同期関数
 pub async fn sleep_ms(duration_ms: u64) {
     SleepFuture::new(duration_ms).await;
 }
 
-// ============================================================================
-// SleepFuture
-// ============================================================================
-
-/// スリープ用のFuture
-///
-/// `TIME_MANAGER` のスリープレジストリを使用して
-/// 指定ティックまで待機する。
 pub struct SleepFuture {
     wake_tick: u64,
     registered: bool,
 }
 
 impl SleepFuture {
-    /// 新しいスリープFutureを生成
     pub fn new(duration_ms: u64) -> Self {
         let wake_tick = TIME_MANAGER.compute_wake_tick(duration_ms);
         Self {
@@ -615,16 +544,13 @@ impl Future for SleepFuture {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let current = TIME_MANAGER.current_tick_ms();
-
         if current >= self.wake_tick {
             return Poll::Ready(());
         }
-
         if !self.registered {
             TIME_MANAGER.register_sleep(self.wake_tick, cx.waker().clone());
             self.registered = true;
         }
-
         Poll::Pending
     }
 }
@@ -645,10 +571,8 @@ mod tests {
     fn tick_increment_smoke() {
         let tm = TimeManagement::new();
         assert_eq!(tm.current_tick_ms(), 0);
-
         tm.on_timer_interrupt();
         assert_eq!(tm.current_tick_ms(), 1);
-
         tm.on_timer_interrupt();
         assert_eq!(tm.current_tick_ms(), 2);
     }
@@ -669,11 +593,16 @@ mod tests {
         tm.record_task_start(42);
         tm.on_timer_interrupt(); // tick=2
         tm.on_timer_interrupt(); // tick=3
-        tm.record_task_stop(42);
-
+        tm.record_stop(42, 3);
         let stats = tm.task_cpu_stats(42).expect("task stats should exist");
         assert_eq!(stats.schedule_count, 1);
         assert!(stats.cpu_time_ns > 0);
+    }
+
+    impl TimeManagement {
+        fn record_stop(&self, task_id: u64, current_tick: u64) {
+            self.cpu_tracker.record_stop(task_id, current_tick);
+        }
     }
 
     #[test]

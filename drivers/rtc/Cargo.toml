@@ -12,4 +12,5 @@ description = "RTC Driver for RanyOS"
 
 [dependencies]
 spin = "0.10"
+exorust_sync = { path = "../../libs/sync" }
 hal = { path = "../../hal" }
