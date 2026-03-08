@@ -58,7 +58,20 @@ impl Mlx5Device {
         let eq_pages = (eq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let eq_in_len = (0x110 + eq_pages * 8) as u32;
 
-        self.execute_uid_sensitive_cmd(CmdOpcode::CreateEq, eq_in_len, 0x10)?;
+        if let Err(err) = self.execute_uid_sensitive_cmd(CmdOpcode::CreateEq, eq_in_len, 0x10) {
+            log::info!(
+                target: "mlx5",
+                "CREATE_EQ input: log_eq_size={} eq_buf_pa={:#x} uar_page={} msix_vector={} event_mask={:#x} in_len={:#x}",
+                log_eq_size,
+                eq_buf_pa,
+                self.uar_page,
+                msix_vector,
+                event_bitmask,
+                eq_in_len
+            );
+            Self::debug_dump_mailbox_words("CREATE_EQ in", in_mbox, 32);
+            return Err(err);
+        }
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let eqn = parse_create_eq_output(out_mbox);
@@ -108,7 +121,20 @@ impl Mlx5Device {
         let cq_pages = (cq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let cq_in_len = (0x110 + cq_pages * 8) as u32;
 
-        self.execute_uid_sensitive_cmd(CmdOpcode::CreateCq, cq_in_len, 0x10)?;
+        if let Err(err) = self.execute_uid_sensitive_cmd(CmdOpcode::CreateCq, cq_in_len, 0x10) {
+            log::info!(
+                target: "mlx5",
+                "CREATE_CQ input: log_cq_size={} cq_buf_pa={:#x} db_pa={:#x} uar_page={} eqn={} in_len={:#x}",
+                log_cq_size,
+                cq_buf_pa,
+                db_pa,
+                self.uar_page,
+                eqn,
+                cq_in_len
+            );
+            Self::debug_dump_mailbox_words("CREATE_CQ in", in_mbox, 32);
+            return Err(err);
+        }
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let cqn = parse_create_cq_output(out_mbox);

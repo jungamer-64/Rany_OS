@@ -18,17 +18,17 @@ impl<'a> EqContextLayout<'a> {
     pub fn set_state(&mut self, val: u8) {
         set_bits_u32(self.data, 20, 4, val as u32);
     }
-    // log_eq_size: bit 123-127 (dword 3)
+    // log_eq_size: bit 99-103 (dword 3)
     pub fn set_log_eq_size(&mut self, val: u8) {
-        set_bits_u32(self.data, 123, 5, val as u32);
+        set_bits_u32(self.data, 99, 5, val as u32);
     }
     // page_offset: bit 84-89 (dword 2)
     pub fn set_page_offset(&mut self, val: u8) {
         set_bits_u32(self.data, 84, 6, val as u32);
     }
-    // uar_page: bit 96-119 (dword 3)
+    // uar_page: bit 104-127 (dword 3)
     pub fn set_uar_page(&mut self, val: u32) {
-        set_bits_u32(self.data, 96, 24, val);
+        set_bits_u32(self.data, 104, 24, val);
     }
     // intr: bit 180-191 (dword 5)
     pub fn set_intr(&mut self, val: u32) {
@@ -58,9 +58,9 @@ impl<'a> CqContextLayout<'a> {
     pub fn set_state(&mut self, val: u8) {
         set_bits_u32(self.data, 20, 4, val as u32);
     }
-    // log_cq_size: bit 96-101 (dword 3)
+    // log_cq_size: bit 99-103 (dword 3)
     pub fn set_log_cq_size(&mut self, val: u8) {
-        set_bits_u32(self.data, 123, 5, val as u32);
+        set_bits_u32(self.data, 99, 5, val as u32);
     }
     // page_offset: bit 84-89 (dword 2)
     pub fn set_page_offset(&mut self, val: u8) {
@@ -68,7 +68,7 @@ impl<'a> CqContextLayout<'a> {
     }
     // uar_page: bit 104-127 (dword 3)
     pub fn set_uar_page(&mut self, val: u32) {
-        set_bits_u32(self.data, 96, 24, val);
+        set_bits_u32(self.data, 104, 24, val);
     }
     // c_eqn: bit 160-191 (dword 5)
     pub fn set_c_eqn(&mut self, val: u32) {

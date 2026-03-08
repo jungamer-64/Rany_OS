@@ -78,6 +78,11 @@ fn boot_opcode_name(opcode: defs::CmdOpcode) -> Option<&'static str> {
         defs::CmdOpcode::QueryPages => Some("query_pages"),
         defs::CmdOpcode::ManagePages => Some("manage_pages"),
         defs::CmdOpcode::QueryAdapter => Some("query_adapter"),
+        defs::CmdOpcode::QueryVhcaState => Some("query_vhca_state"),
+        defs::CmdOpcode::QueryNicVportContext => Some("query_nic_vport_context"),
+        defs::CmdOpcode::CreateMkey => Some("create_mkey"),
+        defs::CmdOpcode::CreateEq => Some("create_eq"),
+        defs::CmdOpcode::CreateCq => Some("create_cq"),
         _ => None,
     }
 }

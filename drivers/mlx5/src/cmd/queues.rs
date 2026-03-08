@@ -303,7 +303,8 @@ mod tests {
         let ctx = &in_mbox.data[0x10..];
         assert_eq!(get_bits_u32(ctx, 20, 4), MLX5_EQ_STATE_ARMED as u32);
         assert_eq!(get_bits_u32(ctx, 84, 6), 0);
-        assert_eq!(get_bits_u32(ctx, 123, 5), 8);
+        assert_eq!(get_bits_u32(ctx, 99, 5), 8);
+        assert_eq!(get_bits_u32(ctx, 104, 24), 0x123);
         assert_eq!(get_bits_u32(ctx, 180, 12), 0x4);
         assert_eq!(get_bits_u32(ctx, 195, 5), 0);
         assert_eq!(
@@ -321,7 +322,8 @@ mod tests {
         let ctx = &in_mbox.data[0x10..];
         assert_eq!(get_bits_u32(ctx, 20, 4), MLX5_CQ_STATE_NOTIFICATION_ARMED as u32);
         assert_eq!(get_bits_u32(ctx, 84, 6), 0);
-        assert_eq!(get_bits_u32(ctx, 123, 5), 6);
+        assert_eq!(get_bits_u32(ctx, 99, 5), 6);
+        assert_eq!(get_bits_u32(ctx, 104, 24), 0x123);
         assert_eq!(get_bits_u32(ctx, 160, 32), 0x456);
         assert_eq!(get_bits_u32(ctx, 195, 5), 0);
         assert_eq!(in_mbox.read_be64(0x48), 0x5000);
