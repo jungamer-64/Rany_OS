@@ -301,9 +301,10 @@ impl Mlx5Device {
 
         let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
         let mut selected_mem_rq_type = 0u8;
-        // VF では mem_rq_type=1 が先に通る個体が多いため先行試行する。
-        // 失敗時は従来どおり mem_rq_type=0 へフォールバックする。
-        let mem_rq_type_attempts: &[u8] = if self.is_vf() { &[1, 0] } else { &[0] };
+        // この実装の RX WQE 生成は MEMORY_RQ_INLINE(mem_rq_type=0) を前提にしている。
+        // まず 0 を試し、VF で拒否される個体のみ 1 へフォールバックする。
+        let mem_rq_type_attempts: &[u8] = if self.is_vf() { &[0, 1] } else { &[0] };
+        let mut inline_rq_rejected = false;
         for &mem_rq_type in mem_rq_type_attempts {
             build_create_rq_input_with_mem_type(
                 in_mbox,
@@ -323,7 +324,12 @@ impl Mlx5Device {
                     last_err = Ok(());
                     break;
                 }
-                Err(err) => last_err = Err(err),
+                Err(err) => {
+                    if mem_rq_type == 0 {
+                        inline_rq_rejected = true;
+                    }
+                    last_err = Err(err);
+                }
             }
         }
         last_err?;
@@ -333,8 +339,9 @@ impl Mlx5Device {
         if selected_mem_rq_type != 0 {
             log::warn!(
                 target: "mlx5",
-                "CREATE_RQ accepted only with mem_rq_type={} (VF fallback path)",
-                selected_mem_rq_type
+                "CREATE_RQ fell back to mem_rq_type={} on VF (inline mode rejected={}): RX runtime may require RMP-specific handling",
+                selected_mem_rq_type,
+                inline_rq_rejected
             );
         }
         if let Err(err) = self.transition_rq_to_ready(rqn) {
