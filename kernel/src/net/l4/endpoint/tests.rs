@@ -349,4 +349,40 @@ pub mod tests {
             crate::net::l4::endpoint::tcb::TcpConnectionState::SynSent
         );
     }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_syncookie_and_isn_hmac() {
+        use crate::net::l4::endpoint::tcb::tcb_table;
+
+        // Initialize secrets
+        tcb_table().init_syncookies();
+
+        let local = EndpointAddr::new([127, 0, 0, 1], 80);
+        let remote = EndpointAddr::new([127, 0, 0, 1], 12345);
+        let client_isn = 1000000;
+
+        // Test SYN Cookie generation and verification
+        let cookie = tcb_table().generate_syncookie(local, remote, client_isn, 2);
+        assert_ne!(cookie, 0);
+        
+        // The cookie should be verifiable (ACK num is cookie + 1)
+        let ack_num = cookie.wrapping_add(1);
+        let mss_idx = tcb_table().verify_syncookie(local, remote, ack_num, client_isn);
+        assert_eq!(mss_idx, Some(2));
+
+        // Different parameters should fail verification
+        let wrong_remote = EndpointAddr::new([127, 0, 0, 1], 54321);
+        assert_eq!(tcb_table().verify_syncookie(local, wrong_remote, ack_num, client_isn), None);
+
+        // Test ISN generation
+        let isn1 = tcb_table().generate_isn(local, remote);
+        let isn2 = tcb_table().generate_isn(local, remote);
+        
+        // Successive ISNs should be different (due to counter and potentially time)
+        assert_ne!(isn1, isn2);
+
+        // Different endpoints should have very different ISNs (due to HMAC)
+        let isn3 = tcb_table().generate_isn(local, wrong_remote);
+        assert_ne!(isn1, isn3);
+    }
 }

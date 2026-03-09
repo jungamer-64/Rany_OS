@@ -120,16 +120,13 @@ static CLOSED_PORT_RST_LAST_RESET: AtomicU64 = AtomicU64::new(0);
 /// レート制限によりドロップされたパケット数（統計用）
 static CLOSED_PORT_RST_DROPPED: AtomicU64 = AtomicU64::new(0);
 
-/// Update closed-port RST rate statistics.
+/// Update closed-port RST rate statistics and check if a new RST should be sent.
 ///
-/// Historically we used this function to decide whether to drop a
-/// stateless reset in order to protect the event queue.  Dropping the
-/// packet was arguably a violation of RFC 793/RFC 9293 (the spec says a host
-/// "should" send a reset).  The new implementation always returns `true` so
-/// that callers attempt to send the RST; the return value is retained for
-/// backwards compatibility but is no longer used.  `CLOSED_PORT_RST_DROPPED`
-/// continues to count the number of times we would have suppressed a reset
-/// under the old policy, giving a rough idea of the scan volume.
+/// This function implements rate limiting for stateless resets to protect
+/// the kernel event queue from exhaustion during port scans.
+/// RFC 793/9293 says a host SHOULD send a reset, but we MUST also protect
+/// system resources. When the limit is exceeded, we drop the RST and
+/// increment `CLOSED_PORT_RST_DROPPED` for telemetry.
 fn check_closed_port_rst_rate() -> bool {
     let now = tcb_table().get_current_tick();
     let last_reset = CLOSED_PORT_RST_LAST_RESET.load(Ordering::Relaxed);
@@ -700,8 +697,16 @@ fn try_fast_path(
     }
 
     // データをソケットの受信バッファに追加
+    let mut pushed = 0;
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        socket.push_data(data);
+        pushed = socket.push_data(data);
+    }
+
+    // もしバッファが満杯で全データを受け入れられなかった場合は
+    // ファストパスを中断してスローパス（handle_data_received_with_delayed_ack）に
+    // 処理を委ねる。これにより正しい rcv_nxt の更新とリトライが行われる。
+    if pushed < payload_len {
+        return false;
     }
 
     // TCB更新: rcv_nxt を前進

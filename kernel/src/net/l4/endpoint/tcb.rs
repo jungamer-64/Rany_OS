@@ -303,6 +303,8 @@ pub struct TcbTable {
     syn_recv_count: AtomicUsize,
     /// SYN Cookie 用のシークレットキー
     syncookie_secret: PoisonRwLock<[u8; 32]>,
+    /// ISN 生成用の安定したシークレットキー (RFC 6528)
+    isn_secret: PoisonRwLock<[u8; 32]>,
 }
 
 const MAX_TCB_ENTRIES: usize = 8192;
@@ -324,16 +326,21 @@ impl TcbTable {
             total_count: AtomicUsize::new(0),
             syn_recv_count: AtomicUsize::new(0),
             syncookie_secret: PoisonRwLock::new([0u8; 32]),
+            isn_secret: PoisonRwLock::new([0u8; 32]),
         }
     }
 
     /// シークレットキーを初期化する
     pub fn init_syncookies(&self) {
         if let Ok(mut secret) = self.syncookie_secret.write() {
-            let random_bytes = crate::net::security::tls::generate_random();
+            let random_bytes = crate::net::security::tls::crypto::random::generate_random();
             secret.copy_from_slice(&random_bytes[0..32]);
-            log::info!("[TCP] SYN Cookies initialized with random secret.");
         }
+        if let Ok(mut secret) = self.isn_secret.write() {
+            let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+            secret.copy_from_slice(&random_bytes[0..32]);
+        }
+        log::info!("[TCP] SYN Cookies and ISN secrets initialized.");
     }
 
     /// SYN Cookie を生成する (RFC 4987)
@@ -344,6 +351,8 @@ impl TcbTable {
         client_isn: u32,
         mss_idx: u8,
     ) -> u32 {
+        use crate::net::security::tls::crypto::hmac::hmac_sha256;
+
         let mut data = Vec::with_capacity(64);
         data.extend_from_slice(&local.as_bytes());
         data.extend_from_slice(&remote.as_bytes());
@@ -351,22 +360,18 @@ impl TcbTable {
 
         // 5ビットのタイムスタンプ（分単位、32分でループ）
         let time_bits = ((self.current_tick.load(Ordering::Relaxed) / 60000) & 0x1F) as u32;
+        data.extend_from_slice(&time_bits.to_be_bytes());
 
-        // HMAC-SHA256 でハッシュ生成 (簡易版として FNV を使用)
-        let mut hash = 0x811c9dc5u32;
-        if let Ok(secret) = self.syncookie_secret.read() {
-            for &byte in secret.iter() {
-                hash ^= byte as u32;
-                hash = hash.wrapping_mul(0x01000193);
-            }
-        }
-        for &byte in &data {
-            hash ^= byte as u32;
-            hash = hash.wrapping_mul(0x01000193);
-        }
+        // HMAC-SHA256 でハッシュ生成 (RFC 4987)
+        let hash_val = if let Ok(secret) = self.syncookie_secret.read() {
+            let h = hmac_sha256(&*secret, &data);
+            u32::from_be_bytes([h[0], h[1], h[2], h[3]])
+        } else {
+            0 // フォールバック（通常は起こらない）
+        };
 
         // Cookie 構造: [ Hash(24 bits) | Time(5 bits) | MSS Index(3 bits) ]
-        (hash & 0xFFFFFF00) | (time_bits << 3) | (mss_idx as u32 & 0x07)
+        (hash_val & 0xFFFFFF00) | (time_bits << 3) | (mss_idx as u32 & 0x07)
     }
 
     /// SYN Cookie を検証し、有効なら MSS インデックスを返す
@@ -377,6 +382,8 @@ impl TcbTable {
         ack_num: u32,
         client_isn: u32,
     ) -> Option<u8> {
+        use crate::net::security::tls::crypto::hmac::hmac_sha256;
+
         let cookie = ack_num.wrapping_sub(1);
         let mss_idx = (cookie & 0x07) as u8;
         let time_bits_received = (cookie >> 3) & 0x1F;
@@ -395,66 +402,43 @@ impl TcbTable {
         data.extend_from_slice(&local.as_bytes());
         data.extend_from_slice(&remote.as_bytes());
         data.extend_from_slice(&client_isn.to_be_bytes());
+        data.extend_from_slice(&(time_bits_received as u32).to_be_bytes());
 
-        let mut hash = 0x811c9dc5u32;
-        if let Ok(secret) = self.syncookie_secret.read() {
-            for &byte in secret.iter() {
-                hash ^= byte as u32;
-                hash = hash.wrapping_mul(0x01000193);
-            }
-        }
-        for &byte in &data {
-            hash ^= byte as u32;
-            hash = hash.wrapping_mul(0x01000193);
-        }
+        let hash_val = if let Ok(secret) = self.syncookie_secret.read() {
+            let h = hmac_sha256(&*secret, &data);
+            u32::from_be_bytes([h[0], h[1], h[2], h[3]])
+        } else {
+            return None;
+        };
 
-        if (cookie & 0xFFFFFF00) == (hash & 0xFFFFFF00) {
+        if (cookie & 0xFFFFFF00) == (hash_val & 0xFFFFFF00) {
             Some(mss_idx)
         } else {
             None
         }
     }
 
+    /// RFC 6528 準拠の初期シーケンス番号 (ISN) 生成
     pub fn generate_isn(&self, local: EndpointAddr, remote: EndpointAddr) -> u32 {
-        let random_bytes = crate::net::security::tls::generate_random();
-        let mut hash: u32 = 0x811c9dc5;
-        const FNV_PRIME: u32 = 0x01000193;
-        for byte in random_bytes {
-            hash ^= byte as u32;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        let mix_addr = |h: &mut u32, addr: EndpointAddr| {
-            match addr {
-                EndpointAddr::V4 { ip, port } => {
-                    for &byte in &ip {
-                        *h ^= byte as u32;
-                        *h = h.wrapping_mul(FNV_PRIME);
-                    }
-                    for byte in port.to_le_bytes() {
-                        *h ^= byte as u32;
-                        *h = h.wrapping_mul(FNV_PRIME);
-                    }
-                }
-                EndpointAddr::V6 { ip, port } => {
-                    for &byte in &ip {
-                        *h ^= byte as u32;
-                        *h = h.wrapping_mul(FNV_PRIME);
-                    }
-                    for byte in port.to_le_bytes() {
-                        *h ^= byte as u32;
-                        *h = h.wrapping_mul(FNV_PRIME);
-                    }
-                }
-            }
+        use crate::net::security::tls::crypto::hmac::hmac_sha256;
+
+        // ISN = M + F(local, remote, secret)
+        // M: 4マイクロ秒精度のタイマー (ここでは tick * 250 で近似)
+        let m = (self.current_tick.load(Ordering::Relaxed) as u32).wrapping_mul(250);
+
+        let mut data = Vec::with_capacity(64);
+        data.extend_from_slice(&local.as_bytes());
+        data.extend_from_slice(&remote.as_bytes());
+
+        let hash_f = if let Ok(secret) = self.isn_secret.read() {
+            let h = hmac_sha256(&*secret, &data);
+            u32::from_be_bytes([h[0], h[1], h[2], h[3]])
+        } else {
+            0
         };
-        mix_addr(&mut hash, local);
-        mix_addr(&mut hash, remote);
+
         let counter = self.seq_counter.fetch_add(1, Ordering::Relaxed);
-        for byte in counter.to_le_bytes() {
-            hash ^= byte as u32;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        hash
+        m.wrapping_add(hash_f).wrapping_add(counter)
     }
 
     pub fn tick(&self) {
