@@ -117,8 +117,13 @@ impl ConnectionOooQueue {
         }
 
         for (seq, packet) in to_reinsert {
-            self.segments.insert(seq, packet);
-            // GLOBAL_OOO_COUNT は remove 時にも減らしていないため、再挿入時にも増やさない
+            if self.segments.insert(seq, packet).is_some() {
+                // If we overwrite an existing segment (e.g. multiple OOO segments trimmed to rcv_nxt),
+                // we must decrement the global count for the overwritten one.
+                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+            }
+            // GLOBAL_OOO_COUNT は remove 時にも減らしていないため、新規挿入（is_none）時には増やさない。
+            // これにより、差し引きゼロまたは減少（上書き時）となる。
         }
     }
 

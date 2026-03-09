@@ -1,4 +1,5 @@
 use super::*;
+use spin::Mutex;
 
 impl Default for SystemIntegration {
     fn default() -> Self {

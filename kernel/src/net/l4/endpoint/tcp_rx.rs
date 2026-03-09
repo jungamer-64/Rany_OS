@@ -143,9 +143,9 @@ fn check_closed_port_rst_rate() -> bool {
     if count < CLOSED_PORT_RST_MAX_COUNT {
         true
     } else {
-        // exceeding the window: record for telemetry but still send
+        // exceeding the window: record for telemetry and drop to protect event queue
         CLOSED_PORT_RST_DROPPED.fetch_add(1, Ordering::Relaxed);
-        true
+        false
     }
 }
 
@@ -442,6 +442,17 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     let ack_num = u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]);
     let data_off_flags = u16::from_be_bytes([segment[12], segment[13]]);
     let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
+
+    // Security: Check data offset validity (RFC 793)
+    if data_offset < 20 || data_offset > segment.len() {
+        log::warn!(
+            "[TCP] Invalid data offset {} in IPv4 segment (len={}), dropping",
+            data_offset,
+            segment.len()
+        );
+        return;
+    }
+
     // grab full low byte (includes CWR/ECE) rather than truncating to 6 bits
     let flags = (data_off_flags as u8);
     let window = u16::from_be_bytes([segment[14], segment[15]]);
@@ -1448,9 +1459,11 @@ fn process_tcp_new_connection(
         // queue may still drop packets if it is full, but the host has at least
         // made an effort to respond.  The counter returned by
         // `closed_port_rst_dropped_count()` now reflects the number of packets
-        // that *would have been* dropped under the old policy, useful for
+        // that *actually* dropped under the policy, useful for
         // telemetry.
-        check_closed_port_rst_rate();
+        if !check_closed_port_rst_rate() {
+            return;
+        }
 
         // RFC 793 / RFC 9293 Section 3.10.7.1:
         // If the segment has an ACK field, the reset takes its sequence number
