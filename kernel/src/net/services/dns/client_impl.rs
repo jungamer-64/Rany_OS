@@ -114,9 +114,12 @@ impl DnsClient {
         // 2. キャッシュになければネットワーククエリを実行
         let records = self.query_internal(name, DnsQueryType::A).await.ok()?;
 
+        // Security: 結果を名前でフィルタリング (RFC 5452)
         for record in records {
-            if let DnsRecordData::A(ip) = record.data {
-                return Some(ip);
+            if record.name.to_lowercase() == name.to_lowercase() {
+                if let DnsRecordData::A(ip) = record.data {
+                    return Some(ip);
+                }
             }
         }
         None
@@ -144,9 +147,12 @@ impl DnsClient {
         // 2. キャッシュになければネットワーククエリを実行
         let records = self.query_internal(name, DnsQueryType::AAAA).await.ok()?;
 
+        // Security: 結果を名前でフィルタリング (RFC 5452)
         for record in records {
-            if let DnsRecordData::AAAA(ip) = record.data {
-                return Some(ip);
+            if record.name.to_lowercase() == name.to_lowercase() {
+                if let DnsRecordData::AAAA(ip) = record.data {
+                    return Some(ip);
+                }
             }
         }
         None
@@ -206,7 +212,7 @@ impl DnsClient {
                 return self.query_tcp(server, name, qtype).await;
             }
 
-            return self.parse_response(&data, tick).map_err(|_| "Parse error");
+            return self.parse_response(&data, tick, name, qtype).map_err(|_| "Parse error");
         }
 
         Err("DNS query timed out")
@@ -274,7 +280,7 @@ impl DnsClient {
         }
 
         let tick = crate::task::timer::current_tick();
-        self.parse_response(&msg_data, tick)
+        self.parse_response(&msg_data, tick, name, qtype)
             .map_err(|_| "Parse error")
     }
 
@@ -497,6 +503,8 @@ impl DnsClient {
         &self,
         data: &[u8],
         current_tick: u64,
+        expected_name: &str,
+        expected_type: DnsQueryType,
     ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
         if data.len() < DnsHeader::SIZE {
             return Err(DnsResponseCode::FormatError);
@@ -550,18 +558,36 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        // 質問セクションをスキップ
+        // 質問セクションを解析して検証 (RFC 5452 Section 3.1)
         let mut offset = DnsHeader::SIZE;
+        let mut matched_question = false;
         for _ in 0..qcount {
-            offset = self.skip_name(data, offset)?;
-            if offset + 4 > data.len() {
+            let (qname, next_off) = self.parse_name(data, offset)?;
+            if next_off + 4 > data.len() {
                 return Err(DnsResponseCode::FormatError);
             }
-            offset += 4; // QTYPE + QCLASS
+            let qtype = u16::from_be_bytes([data[next_off], data[next_off + 1]]);
+            let _qclass = u16::from_be_bytes([data[next_off + 2], data[next_off + 3]]);
+            
+            // 期待される質問と一致するかチェック (Case-insensitive comparison for name)
+            if qname.to_lowercase() == expected_name.to_lowercase() && qtype == expected_type as u16 {
+                matched_question = true;
+            }
+            
+            offset = next_off + 4; // QTYPE + QCLASS
+        }
+
+        if !matched_question && qcount > 0 {
+            log::warn!(
+                "[NET] DNS: Response Question section does not match query ({:?} vs {}), dropping for security",
+                expected_type,
+                expected_name
+            );
+            return Err(DnsResponseCode::FormatError);
         }
 
         // 回答セクションを解析
-        let mut records = self.parse_answer_section(data, &mut offset, acount)?;
+        let records = self.parse_answer_section(data, &mut offset, acount)?;
 
         // 権威セクションをスキップ (キャッシュ対象外とする)
         for _ in 0..nscount {
@@ -576,23 +602,34 @@ impl DnsClient {
             offset += 10 + rdlength;
         }
 
-        // 追加セクションを解析
+        // 追加セクションを解析 (解析は行うがキャッシュには慎重に扱う)
         let additional_records = self.parse_answer_section(data, &mut offset, arcount)?;
 
-        // 必要な追加情報をメインレコードに追加 (例: SRVのターゲットアドレスなど)
-        for ar in additional_records {
-            // EDNS0 OPTレコードなどはキャッシュしないが、パースエラーを防ぐために処理
-            if ar.rtype != DnsQueryType::OPT {
-                records.push(ar);
+        // ====================================================================
+        // Security Fix: Cache Filtering (DNS Cache Poisoning Prevention)
+        // ====================================================================
+        // 1. 回答セクションのうち、クエリ名と一致するもの（またはCNAMEチェーン）のみキャッシュ
+        // 2. 追加セクションは原則キャッシュしない（または非常に厳格なGlue検証が必要）
+        // ここでは単純化のため、クエリ名と一致する回答のみをキャッシュ対象とする。
+        
+        let mut filter_cache_records = Vec::new();
+        for rec in &records {
+            if rec.name.to_lowercase() == expected_name.to_lowercase() {
+                filter_cache_records.push(rec.clone());
             }
         }
+        
+        // CNAME チェーンの追跡などは複雑なため、現状は完全一致のみをサポート
+        // (将来的に再帰リゾルバを実装する場合はここを拡張する)
 
         self.stats
             .responses_received
             .fetch_add(1, Ordering::Relaxed);
 
-        // キャッシュに追加
-        self.cache_dns_records(&records, current_tick);
+        // フィルタリングされたレコードのみをキャッシュに追加
+        if !filter_cache_records.is_empty() {
+            self.cache_dns_records(&filter_cache_records, current_tick);
+        }
 
         Ok(records)
     }

@@ -656,6 +656,18 @@ impl DhcpV6Client {
             return Err("not an advertise/reply");
         }
 
+        // Security Fix: Verify Transaction ID (XID) (RFC 8415 Section 7.1)
+        // XID is 3 bytes starting at offset 1.
+        let xid = u32::from_be_bytes([0, data[1], data[2], data[3]]);
+        if xid != self.xid.load(Ordering::SeqCst) {
+            log::warn!(
+                "[NET] DHCPv6: XID mismatch (expected 0x{:06x}, got 0x{:06x}) - possible spoofing",
+                self.xid.load(Ordering::SeqCst),
+                xid
+            );
+            return Err("XID mismatch");
+        }
+
         // iterate options after header
         let mut off = 4usize;
         let mut found_addr: Option<(Ipv6Address, u32, u32)> = None;
