@@ -46,9 +46,15 @@ use crate::io::iommu::types::DmaMapping;
 /// Maximum number of mappings per shard.
 /// 768 accommodates VirtIO-Net bounce pools (256), RX posted buffers (256),
 /// queue ring DMA, and TX in-flight buffers with headroom for other devices.
+#[cfg(test)]
+pub const SLAB_CAPACITY: usize = 256;
+#[cfg(not(test))]
 pub const SLAB_CAPACITY: usize = 768;
 
 /// Number of hash buckets (must be power of 2 for hash masking, ~2x capacity for good load factor).
+#[cfg(test)]
+const HASH_BUCKETS: usize = 512;
+#[cfg(not(test))]
 const HASH_BUCKETS: usize = 1024;
 
 /// Invalid slot index sentinel.

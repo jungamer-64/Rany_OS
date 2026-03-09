@@ -426,9 +426,9 @@ impl IommuController {
 
     /// Allocate root table, program its address, and wait for hardware acknowledgment.
     unsafe fn setup_and_program_root_table(&mut self) -> Result<(), IommuError> {
-        let root_table = HardwareTable::new(256, None)?;
         let root_phys = {
             let mut hw = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
+            let root_table = HardwareTable::new(256, None)?;
             hw.root_table = Some(root_table);
 
             let mut root_phys = hw
@@ -455,13 +455,13 @@ impl IommuController {
 
     /// Allocate context tables (legacy or scalable depending on mode).
     unsafe fn allocate_context_tables(&mut self, scalable: bool) -> Result<(), IommuError> {
+        let mut hw = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
         if scalable {
             let mut context_tables: Vec<HardwareTable<ScalableContextEntry>> =
                 Vec::with_capacity(256);
             for _ in 0..256 {
                 context_tables.push(HardwareTable::new(256, None)?);
             }
-            let mut hw = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
             hw.scalable_context_tables = context_tables;
             hw.legacy_context_tables.clear();
         } else {
@@ -469,7 +469,6 @@ impl IommuController {
             for _ in 0..256 {
                 context_tables.push(HardwareTable::new(256, None)?);
             }
-            let mut hw = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
             hw.legacy_context_tables = context_tables;
             hw.scalable_context_tables.clear();
         }

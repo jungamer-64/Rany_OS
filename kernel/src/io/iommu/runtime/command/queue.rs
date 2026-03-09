@@ -1111,7 +1111,6 @@ mod tests {
     use super::*;
     extern crate alloc;
     use alloc::boxed::Box;
-    use alloc::vec::Vec;
 
     #[cfg(feature = "std")]
     fn poison_receiver_lock(q: &CommandQueue) {
@@ -1265,7 +1264,7 @@ mod tests {
     #[test_case]
     fn test_new_with_numa_allocates_slots() {
         // Ensure we can allocate CommandQueue with a NUMA hint and slots are initialized
-        let q = Box::leak(Box::new(CommandQueue::new_with_numa(Some(0))));
+        let q = CommandQueue::new_with_numa(Some(0));
         assert_eq!(q.slots.len(), DEFAULT_QUEUE_SIZE);
         // try to acquire a slot and ensure completion works
         assert!(q.slots[0].try_acquire());
@@ -1286,7 +1285,7 @@ mod tests {
 
     #[test_case]
     fn test_submit_releases_slot_when_channel_remains_full() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
+        let q = CommandQueue::new();
 
         for idx in 0..(q.slots.len() - 1) {
             assert!(q.slots[idx].try_acquire());
@@ -1313,8 +1312,8 @@ mod tests {
     #[cfg(feature = "std")]
     #[test_case]
     fn test_submit_detects_receiver_poison() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
-        poison_receiver_lock(q);
+        let q = CommandQueue::new();
+        poison_receiver_lock(&q);
 
         assert!(
             q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 0xbeef })
@@ -1326,8 +1325,8 @@ mod tests {
     #[cfg(feature = "std")]
     #[test_case]
     fn test_submit_async_detects_receiver_poison() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
-        poison_receiver_lock(q);
+        let q = CommandQueue::new();
+        poison_receiver_lock(&q);
 
         let rc = crate::task::block_on(async {
             q.submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 0xcafe })
@@ -1341,19 +1340,21 @@ mod tests {
     #[cfg(feature = "std")]
     #[test_case]
     fn test_wait_for_work_returns_when_queue_poisoned() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
-        let worker_q: &'static CommandQueue = &*q;
+        let q = CommandQueue::new();
 
-        let worker = std::thread::spawn(move || {
-            crate::task::block_on(async {
-                worker_q.wait_for_work().await;
+        std::thread::scope(|scope| {
+            let worker_q = &q;
+            let worker = scope.spawn(move || {
+                crate::task::block_on(async {
+                    worker_q.wait_for_work().await;
+                });
             });
+
+            std::thread::yield_now();
+            q.poison();
+
+            worker.join().expect("wait_for_work join failed");
         });
-
-        std::thread::yield_now();
-        q.poison();
-
-        worker.join().expect("wait_for_work join failed");
         assert!(q.is_poisoned());
     }
 
