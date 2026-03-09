@@ -138,6 +138,12 @@ pub(crate) fn init_network_infra() {
     // Initialize hash secrets for sharded structures (e.g. OOO queue)
     crate::net::l4::endpoint::types::init_hash_secrets();
 
+    // Initialize firewall with secure default rules
+    crate::net::security::firewall::setup_default_firewall();
+
+    // Initialize TCP SYN cookies
+    crate::net::l4::endpoint::tcb::tcb_table().init_syncookies();
+
     let bridge_initialized = crate::net::runtime::bridge::is_initialized();
     let stack_initialized = crate::net::runtime::stack::stack()
         .lock()

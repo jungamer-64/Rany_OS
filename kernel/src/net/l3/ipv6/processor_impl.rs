@@ -143,13 +143,18 @@ impl Ipv6Processor {
 
     /// Check if a destination address is for this interface
     pub(crate) fn is_for_us(&self, addr: &Ipv6Address) -> bool {
-        // Direct matches: link-local, all-nodes multicast, solicited-node, loopback
+        // Direct matches: link-local, all-nodes multicast, solicited-node
         if *addr == self.config.link_local
             || *addr == Ipv6Address::ALL_NODES_LINK_LOCAL
             || *addr == self.config.link_local.solicited_node()
-            || addr.is_loopback()
         {
             return true;
+        }
+
+        // Security (RFC 4291): Loopback address (::1) must only be accepted
+        // if the interface itself is the loopback interface.
+        if addr.is_loopback() {
+            return self.config.link_local.is_loopback();
         }
 
         // Global address and its solicited-node multicast

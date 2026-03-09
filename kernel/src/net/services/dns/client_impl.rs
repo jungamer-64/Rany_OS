@@ -995,6 +995,8 @@ impl DnsClient {
         &self,
         data: &[u8],
         current_tick: u64,
+        expected_name: &str,
+        expected_type: DnsQueryType,
     ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
         // TCP responses have a 2-byte length prefix
         if data.len() < 2 {
@@ -1008,7 +1010,7 @@ impl DnsClient {
         }
 
         // Parse the actual DNS message (skip length prefix)
-        self.parse_response(&data[2..2 + msg_len], current_tick)
+        self.parse_response(&data[2..2 + msg_len], current_tick, expected_name, expected_type)
     }
 
     /// Check if a UDP response requires TCP fallback

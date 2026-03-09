@@ -12,8 +12,8 @@ use kernel_api::abi::driver::DriverContext;
 use kernel_api::driver::{AsyncDriver, DeviceId, Driver, DriverFuture, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
+use crate::drivers::virtio::init_virtio_net_for_device;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::virtio::init_virtio_net_for_device;
 
 /// Async-backed VirtIO-Net driver core.
 pub struct VirtioNetAsyncDriver {

@@ -109,11 +109,13 @@ pub fn build_tcp_query(
 pub fn parse_tcp_response(
     data: &[u8],
     current_tick: u64,
+    expected_name: &str,
+    expected_type: DnsQueryType,
 ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
     match DNS_CLIENT.lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
-                client.parse_tcp_response(data, current_tick)
+                client.parse_tcp_response(data, current_tick, expected_name, expected_type)
             } else {
                 Err(DnsResponseCode::ServerFailure)
             }

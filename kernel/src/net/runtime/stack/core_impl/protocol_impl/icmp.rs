@@ -120,6 +120,7 @@ impl NetworkStack {
             1, // ICMP
             0,
             0,
+            0,
         ) {
             self.stats.record_dropped();
             return;
@@ -287,6 +288,7 @@ impl NetworkStack {
             1, // ICMP
             0,
             0,
+            0,
         ) {
             self.stats.record_dropped();
             return;
@@ -366,6 +368,7 @@ impl NetworkStack {
             self.config.ipv4.address.octets(),
             dst_ip.octets(),
             1, // ICMP
+            0,
             0,
             0,
         ) {
@@ -455,6 +458,7 @@ impl NetworkStack {
             1, // ICMP
             0,
             0,
+            0,
         ) {
             self.stats.record_dropped();
             return false;
@@ -529,6 +533,7 @@ impl NetworkStack {
             self.config.ipv4.address.octets(),
             dst_ip.octets(),
             1, // ICMP
+            0,
             0,
             0,
         ) {

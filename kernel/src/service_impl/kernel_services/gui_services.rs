@@ -103,13 +103,13 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
         devices.push(info);
     }
 
-    if let Some(device) = crate::io::virtio::blk::get_virtio_blk_device() {
+    if let Some(device) = crate::drivers::virtio::blk::get_virtio_blk_device() {
         let config = device.config();
         let mut flags = 0;
         if device.is_ready() {
             flags |= STORAGE_FLAG_ACTIVE;
         }
-        if (config.features & virtio_driver::blk::features::VIRTIO_BLK_F_RO) != 0 {
+        if (config.features & crate::drivers::virtio::blk_features::VIRTIO_BLK_F_RO) != 0 {
             flags |= STORAGE_FLAG_READ_ONLY;
         }
 

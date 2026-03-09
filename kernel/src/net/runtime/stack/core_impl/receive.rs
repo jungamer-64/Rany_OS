@@ -178,13 +178,19 @@ impl NetworkStack {
             // ── ファイアウォール Reassembled パケットチェック ──
             // 再組立て後のパケットに対して再度ファイアウォールを適用する。
             // これにより、フラグメント化によるポートベースルールの回避を防止する。
-            let (src_port, dst_port) = match protocol {
-                IpProtocol::Tcp | IpProtocol::Udp if payload.len() >= 4 => {
+            let (src_port, dst_port, tcp_flags) = match protocol {
+                IpProtocol::Tcp if payload.len() >= 20 => {
                     let sp = u16::from_be_bytes([payload[0], payload[1]]);
                     let dp = u16::from_be_bytes([payload[2], payload[3]]);
-                    (sp, dp)
+                    let flags = payload[13];
+                    (sp, dp, flags)
                 }
-                _ => (0, 0),
+                IpProtocol::Udp if payload.len() >= 8 => {
+                    let sp = u16::from_be_bytes([payload[0], payload[1]]);
+                    let dp = u16::from_be_bytes([payload[2], payload[3]]);
+                    (sp, dp, 0)
+                }
+                _ => (0, 0, 0),
             };
 
             if !crate::net::security::firewall::check_ingress_v4(
@@ -193,6 +199,7 @@ impl NetworkStack {
                 protocol.into(),
                 src_port,
                 dst_port,
+                tcp_flags,
             ) {
                 log::warn!(
                     "[FIREWALL] Reassembled packet BLOCKED: {}:{} -> {}:{} proto={}",

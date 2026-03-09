@@ -1,5 +1,9 @@
 use super::*;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 pub use virtio_driver::net::VirtioNetError;
+use x86_64::VirtAddr;
 
 // ============================================================================
 // DMA Preparation Helpers (shared by poll implementations)
@@ -521,6 +525,7 @@ impl<'a> ZeroCopySendFuture<'a> {
                 self.dma_len = prep.mapped_len;
                 self.pool_bounce_buffer = prep.pool_bounce_buffer;
                 tx_queue.register_waker(cx.waker().clone());
+                tx_queue.notify(self.device.transport.as_ref());
                 Ok(())
             }
             Err(e) => {

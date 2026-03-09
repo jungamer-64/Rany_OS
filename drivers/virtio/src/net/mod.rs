@@ -49,6 +49,15 @@ pub trait NetRuntime: Send + Sync {
 
     fn alloc_packet(&self) -> Option<PacketRef>;
     
+    /// Unmap a DMA region previously mapped for a device.
+    fn unmap_dma(&self, iova: u64, size: u64);
+
+    /// Called when a packet has been received.
+    fn receive_packet(&self, queue_index: u16, packet: PacketRef, header_len: usize, payload_len: usize);
+
+    /// Called when a packet transmission is complete.
+    fn transmit_complete(&self, queue_index: u16, packet: PacketRef);
+
     /// Schedule a waker for a queue event.
     fn schedule_wake(&self, queue_index: u16);
 

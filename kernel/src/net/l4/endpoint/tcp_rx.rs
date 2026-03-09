@@ -405,17 +405,70 @@ pub fn process_tcp_segment_v6(
             data_offset,
         );
     } else {
-        // 新規接続要求の可能性（LISTENソケット検索）
-        process_tcp_new_connection(
-            local,
-            remote,
-            flags,
-            seq_num,
-            ack_num,
-            urgent_ptr,
-            segment,
-            data_offset,
-        );
+        // TCB が見つからない場合:
+        // 1. 新規接続要求 (SYN)
+        // 2. SYN Cookie の検証 (ACK)
+        
+        let is_syn = (flags & tcp_flags::SYN) != 0;
+        let is_ack = (flags & tcp_flags::ACK) != 0;
+        let is_rst = (flags & tcp_flags::RST) != 0;
+
+        if is_syn && !is_ack && !is_rst {
+            // 新規接続要求の可能性（LISTENソケット検索）
+            process_tcp_new_connection(
+                local,
+                remote,
+                flags,
+                seq_num,
+                ack_num,
+                urgent_ptr,
+                segment,
+                data_offset,
+            );
+        } else if is_ack && !is_rst {
+            // SYN Cookie の検証を試みる
+            let client_isn = seq_num.wrapping_sub(1);
+            if let Some(mss_idx) = tcb_table().verify_syncookie(local, remote, ack_num, client_isn) {
+                log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote);
+                
+                // 対応する LISTEN ソケットを探す
+                if let Some(socket) = crate::net::l4::endpoint::manager::find_listening_socket(local) {
+                    let mss = match mss_idx {
+                        2 => 1460,
+                        1 => 536,
+                        _ => 64,
+                    };
+
+                    let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
+                    tcb.snd_una = ack_num.wrapping_sub(1); // Cookie 値
+                    tcb.snd_nxt = ack_num;
+                    tcb.rcv_nxt = seq_num;
+                    tcb.state = TcpConnectionState::Established;
+                    tcb.mss = mss;
+                    
+                    // TCB を挿入
+                    if let Err(e) = tcb_table().insert(tcb.clone()) {
+                        log::warn!("[TCP] Failed to insert TCB after SYN Cookie verification: {}", e);
+                        return;
+                    }
+
+                    // 接続完了イベントを通知
+                    if let Some(accepted) = create_accepted_socket(&tcb) {
+                        let _ = push_to_accept_queue(local.port(), accepted);
+                    }
+
+                    // ACK 後のデータが含まれている場合は処理を継続
+                    let payload_len = if segment.len() > data_offset {
+                        segment.len() - data_offset
+                    } else {
+                        0
+                    };
+                    if payload_len > 0 {
+                        process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -537,17 +590,70 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
             data_offset,
         );
     } else {
-        // 新規接続要求の可能性（LISTENソケット検索）
-        process_tcp_new_connection(
-            local,
-            remote,
-            flags,
-            seq_num,
-            ack_num,
-            urgent_ptr,
-            segment,
-            data_offset,
-        );
+        // TCB が見つからない場合:
+        // 1. 新規接続要求 (SYN)
+        // 2. SYN Cookie の検証 (ACK)
+        
+        let is_syn = (flags & tcp_flags::SYN) != 0;
+        let is_ack = (flags & tcp_flags::ACK) != 0;
+        let is_rst = (flags & tcp_flags::RST) != 0;
+
+        if is_syn && !is_ack && !is_rst {
+            // 新規接続要求の可能性（LISTENソケット検索）
+            process_tcp_new_connection(
+                local,
+                remote,
+                flags,
+                seq_num,
+                ack_num,
+                urgent_ptr,
+                segment,
+                data_offset,
+            );
+        } else if is_ack && !is_rst {
+            // SYN Cookie の検証を試みる
+            let client_isn = seq_num.wrapping_sub(1);
+            if let Some(mss_idx) = tcb_table().verify_syncookie(local, remote, ack_num, client_isn) {
+                log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote);
+                
+                // 対応する LISTEN ソケットを探す
+                if let Some(socket) = crate::net::l4::endpoint::manager::find_listening_socket(local) {
+                    let mss = match mss_idx {
+                        2 => 1460,
+                        1 => 536,
+                        _ => 64,
+                    };
+
+                    let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
+                    tcb.snd_una = ack_num.wrapping_sub(1); // Cookie 値
+                    tcb.snd_nxt = ack_num;
+                    tcb.rcv_nxt = seq_num;
+                    tcb.state = TcpConnectionState::Established;
+                    tcb.mss = mss;
+                    
+                    // TCB を挿入
+                    if let Err(e) = tcb_table().insert(tcb.clone()) {
+                        log::warn!("[TCP] Failed to insert TCB after SYN Cookie verification: {}", e);
+                        return;
+                    }
+
+                    // 接続完了イベントを通知
+                    if let Some(accepted) = create_accepted_socket(&tcb) {
+                        let _ = push_to_accept_queue(local.port(), accepted);
+                    }
+
+                    // ACK 後のデータが含まれている場合は処理を継続
+                    let payload_len = if segment.len() > data_offset {
+                        segment.len() - data_offset
+                    } else {
+                        0
+                    };
+                    if payload_len > 0 {
+                        process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1531,7 +1637,22 @@ fn process_tcp_new_connection(
         };
 
     // TCB作成
-    let isn = tcb_table().generate_isn(local, remote);
+    // Security: SYN Flood 対策として SYN Cookie を使用
+    // SYN キューが半分以上埋まっている場合に発動
+    let use_syncookies = tcb_table().syn_recv_count() > 2048;
+
+    let isn = if use_syncookies {
+        // MSS インデックスを選択 (簡易版: 相手の MSS を見て適切なものを選択)
+        let mss_idx = match peer_mss {
+            Some(m) if m >= 1460 => 2, // 1460 (Ethernet)
+            Some(m) if m >= 536 => 1,  // 536 (Default)
+            _ => 0,                    // 64
+        };
+        tcb_table().generate_syncookie(local, remote, seq_num, mss_idx)
+    } else {
+        tcb_table().generate_isn(local, remote)
+    };
+
     let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
     tcb.initialize_seq(isn);
     tcb.set_nodelay(nodelay);
@@ -1567,14 +1688,19 @@ fn process_tcp_new_connection(
     let ts_enabled = tcb.ts_enabled;
     let isn = tcb.snd_nxt.wrapping_sub(1); // insert前のISN
 
-    // TCBをテーブルに挿入 (リソース制限チェック)
-    if let Err(e) = tcb_table().insert(tcb) {
-        log::warn!(
-            "[NET] TCP: Failed to accept new connection from {}: {}",
-            remote,
-            e
-        );
-        return;
+    // SYN Cookie 使用時は TCB をテーブルに挿入しない (Stateless)
+    if !use_syncookies {
+        // TCBをテーブルに挿入 (リソース制限チェック)
+        if let Err(e) = tcb_table().insert(tcb) {
+            log::warn!(
+                "[NET] TCP: Failed to accept new connection from {}: {}",
+                remote,
+                e
+            );
+            return;
+        }
+    } else {
+        log::info!("[TCP] SYN Cookie sent to {} (SYN flood protection)", remote);
     }
 
     // SYN-ACK送信 (TCPオプション付き)

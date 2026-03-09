@@ -832,16 +832,18 @@ impl Ipv4Processor {
 
         if is_fragment {
             // Security: RFC 1858 Tiny Fragment Filtering
-            // If FO=0 and protocol is TCP, the fragment MUST be large enough
-            // to contain the entire TCP header (20 bytes).
-            // If FO=1 (offset 8), it might contain part of the TCP header, which is also suspicious.
-            if packet.protocol() == IpProtocol::Tcp {
+            // If FO=0 and protocol is TCP or UDP, the fragment MUST be large enough
+            // to contain the entire transport header (20 bytes for TCP, 8 for UDP).
+            let protocol = packet.protocol();
+            if protocol == IpProtocol::Tcp || protocol == IpProtocol::Udp {
                 let fragment_offset = header.fragment_offset();
                 let payload_len = packet.payload().len();
+                let min_len = if protocol == IpProtocol::Tcp { 20 } else { 8 };
 
-                if fragment_offset == 0 && payload_len < 20 {
+                if fragment_offset == 0 && payload_len < min_len {
                     log::warn!(
-                        "[NET-IPV4] Dropping tiny fragment (FO=0, len={}) - RFC 1858 violation",
+                        "[NET-IPV4] Dropping tiny fragment (FO=0, protocol={:?}, len={}) - RFC 1858 violation",
+                        protocol,
                         payload_len
                     );
                     self.stats.rx_errors += 1;

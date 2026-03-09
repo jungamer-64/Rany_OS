@@ -301,6 +301,8 @@ pub struct TcbTable {
     pub current_tick: AtomicU64,
     total_count: AtomicUsize,
     syn_recv_count: AtomicUsize,
+    /// SYN Cookie 用のシークレットキー
+    syncookie_secret: PoisonRwLock<[u8; 32]>,
 }
 
 const MAX_TCB_ENTRIES: usize = 8192;
@@ -321,6 +323,95 @@ impl TcbTable {
             current_tick: AtomicU64::new(0),
             total_count: AtomicUsize::new(0),
             syn_recv_count: AtomicUsize::new(0),
+            syncookie_secret: PoisonRwLock::new([0u8; 32]),
+        }
+    }
+
+    /// シークレットキーを初期化する
+    pub fn init_syncookies(&self) {
+        if let Ok(mut secret) = self.syncookie_secret.write() {
+            let random_bytes = crate::net::security::tls::generate_random();
+            secret.copy_from_slice(&random_bytes[0..32]);
+            log::info!("[TCP] SYN Cookies initialized with random secret.");
+        }
+    }
+
+    /// SYN Cookie を生成する (RFC 4987)
+    pub fn generate_syncookie(
+        &self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        client_isn: u32,
+        mss_idx: u8,
+    ) -> u32 {
+        let mut data = Vec::with_capacity(64);
+        data.extend_from_slice(&local.as_bytes());
+        data.extend_from_slice(&remote.as_bytes());
+        data.extend_from_slice(&client_isn.to_be_bytes());
+
+        // 5ビットのタイムスタンプ（分単位、32分でループ）
+        let time_bits = ((self.current_tick.load(Ordering::Relaxed) / 60000) & 0x1F) as u32;
+
+        // HMAC-SHA256 でハッシュ生成 (簡易版として FNV を使用)
+        let mut hash = 0x811c9dc5u32;
+        if let Ok(secret) = self.syncookie_secret.read() {
+            for &byte in secret.iter() {
+                hash ^= byte as u32;
+                hash = hash.wrapping_mul(0x01000193);
+            }
+        }
+        for &byte in &data {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(0x01000193);
+        }
+
+        // Cookie 構造: [ Hash(24 bits) | Time(5 bits) | MSS Index(3 bits) ]
+        (hash & 0xFFFFFF00) | (time_bits << 3) | (mss_idx as u32 & 0x07)
+    }
+
+    /// SYN Cookie を検証し、有効なら MSS インデックスを返す
+    pub fn verify_syncookie(
+        &self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        ack_num: u32,
+        client_isn: u32,
+    ) -> Option<u8> {
+        let cookie = ack_num.wrapping_sub(1);
+        let mss_idx = (cookie & 0x07) as u8;
+        let time_bits_received = (cookie >> 3) & 0x1F;
+
+        let current_tick = self.current_tick.load(Ordering::Relaxed);
+        let time_bits_now = (current_tick / 60000) & 0x1F;
+
+        // タイムスタンプ有効期限チェック（最大数分間）
+        let diff = (time_bits_now as i32 - time_bits_received as i32).rem_euclid(32);
+        if diff > 4 {
+            return None;
+        }
+
+        // ハッシュ再計算
+        let mut data = Vec::with_capacity(64);
+        data.extend_from_slice(&local.as_bytes());
+        data.extend_from_slice(&remote.as_bytes());
+        data.extend_from_slice(&client_isn.to_be_bytes());
+
+        let mut hash = 0x811c9dc5u32;
+        if let Ok(secret) = self.syncookie_secret.read() {
+            for &byte in secret.iter() {
+                hash ^= byte as u32;
+                hash = hash.wrapping_mul(0x01000193);
+            }
+        }
+        for &byte in &data {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(0x01000193);
+        }
+
+        if (cookie & 0xFFFFFF00) == (hash & 0xFFFFFF00) {
+            Some(mss_idx)
+        } else {
+            None
         }
     }
 
@@ -538,6 +629,11 @@ impl TcbTable {
 
     pub fn get_current_tick(&self) -> u64 {
         self.current_tick.load(Ordering::Relaxed)
+    }
+
+    /// 受信済みの SYN の数
+    pub fn syn_recv_count(&self) -> usize {
+        self.syn_recv_count.load(Ordering::Relaxed)
     }
 
     pub fn insert(&self, entry: TcpControlBlockEntry) -> Result<(), &'static str> {

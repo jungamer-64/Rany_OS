@@ -116,8 +116,8 @@ fn resolve_bar_virt_addr(dev: &PciDeviceInfo, cfg: Option<(u8, u32, u32)>) -> us
 /// are not present or if BAR resolution fails.
 fn try_create_pci_transport(
     dev: &PciDeviceInfo,
-    device_type: crate::io::virtio::VirtioDeviceType,
-) -> Option<crate::io::virtio::VirtioPciTransport> {
+    device_type: crate::drivers::virtio::VirtioDeviceType,
+) -> Option<crate::drivers::virtio::VirtioPciTransport> {
     let caps = parse_virtio_capabilities(dev);
 
     let (cbar, coff, _) = caps.common_cfg?;
@@ -157,7 +157,7 @@ fn try_create_pci_transport(
     let isr_virt = resolve_bar_virt_addr(dev, caps.isr_cfg);
 
     unsafe {
-        crate::io::virtio::VirtioPciTransport::new(
+        crate::drivers::virtio::VirtioPciTransport::new(
             dev.bdf.to_u16() as u32,
             common_virt,
             notify_virt,

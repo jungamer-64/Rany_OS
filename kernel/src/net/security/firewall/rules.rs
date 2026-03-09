@@ -314,6 +314,9 @@ pub struct FirewallRule {
     pub src_port: PortMatch,
     /// 宛先ポート
     pub dst_port: PortMatch,
+    /// TCP フラグマッチ（全ビット一致、0 の場合は無視）
+    pub tcp_flags_mask: u8,
+    pub tcp_flags_value: u8,
 }
 
 impl FirewallRule {
@@ -331,6 +334,7 @@ impl FirewallRule {
         protocol: u8,
         src_port: u16,
         dst_port: u16,
+        tcp_flags: u8,
     ) -> bool {
         // 方向チェック
         let dir_match = self.direction == FirewallDirection::Both || self.direction == direction;
@@ -338,11 +342,24 @@ impl FirewallRule {
             return false;
         }
 
-        self.src_ip.matches(src_ip)
+        let ip_match = self.src_ip.matches(src_ip)
             && self.dst_ip.matches(dst_ip)
             && self.protocol.matches(protocol)
             && self.src_port.matches(src_port)
-            && self.dst_port.matches(dst_port)
+            && self.dst_port.matches(dst_port);
+
+        if !ip_match {
+            return false;
+        }
+
+        // TCP フラグチェック (TCP の場合のみ適用)
+        if protocol == 6 && self.tcp_flags_mask != 0 {
+            if (tcp_flags & self.tcp_flags_mask) != self.tcp_flags_value {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// ルールのサマリーを文字列で取得
@@ -387,6 +404,8 @@ pub struct FirewallRuleBuilder {
     protocol: FirewallProtocol,
     src_port: PortMatch,
     dst_port: PortMatch,
+    tcp_flags_mask: u8,
+    tcp_flags_value: u8,
 }
 
 impl FirewallRuleBuilder {
@@ -401,6 +420,8 @@ impl FirewallRuleBuilder {
             protocol: FirewallProtocol::Any,
             src_port: PortMatch::Any,
             dst_port: PortMatch::Any,
+            tcp_flags_mask: 0,
+            tcp_flags_value: 0,
         }
     }
 
@@ -493,10 +514,17 @@ impl FirewallRuleBuilder {
         self
     }
 
-    /// ルールをビルドする（ID はエンジンが割り当てるため 0 で初期化）
+    /// TCP フラグマッチを設定
+    pub fn tcp_flags(mut self, mask: u8, value: u8) -> Self {
+        self.tcp_flags_mask = mask;
+        self.tcp_flags_value = value;
+        self
+    }
+
+    /// ルールを構築
     pub fn build(self) -> FirewallRule {
         FirewallRule {
-            id: 0,
+            id: 0, // エンジン側で設定
             name: self.name,
             direction: self.direction,
             action: self.action,
@@ -506,6 +534,8 @@ impl FirewallRuleBuilder {
             protocol: self.protocol,
             src_port: self.src_port,
             dst_port: self.dst_port,
+            tcp_flags_mask: self.tcp_flags_mask,
+            tcp_flags_value: self.tcp_flags_value,
         }
     }
-}
+    }

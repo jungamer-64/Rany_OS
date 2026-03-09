@@ -271,6 +271,7 @@ impl NetworkStack {
             17, // UDP
             src_port,
             dst_port,
+            0,
         ) {
             self.stats.record_dropped();
             return false;
@@ -430,6 +431,11 @@ impl NetworkStack {
         if tcp_segment.len() >= 4 {
             let src_port = u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]);
             let dst_port = u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]);
+            let tcp_flags = if tcp_segment.len() >= 14 {
+                tcp_segment[13]
+            } else {
+                0
+            };
             // Security Fix: Use full IPv6 addresses for firewall check
             if !crate::net::security::firewall::check_egress(
                 crate::net::security::firewall::IpAddress::V6(src_ip.octets()),
@@ -437,6 +443,7 @@ impl NetworkStack {
                 6, // TCP
                 src_port,
                 dst_port,
+                tcp_flags,
             ) {
                 self.stats.record_dropped();
                 return false;
@@ -544,6 +551,7 @@ impl NetworkStack {
             self.config.ipv4.address.octets(),
             group_addr.octets(),
             2, // IGMP
+            0,
             0,
             0,
         ) {

@@ -22,8 +22,10 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::task::{Context, Poll, Waker};
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::sync::{LockFreeIndexStack, MpmcRingBuffer};
@@ -972,10 +974,6 @@ impl Ipv4HeaderView {
 // Async Zero-Copy Stream
 // ============================================================================
 
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
-
 /// 非同期ゼロコピーリーダー
 pub struct ZeroCopyReader {
     pool: Arc<MemoryPool>,
@@ -1058,12 +1056,13 @@ impl ZeroCopyWriter {
     ) -> Result<(), &'static str> {
         // Check device presence first to avoid moving packet into a closure that
         // might not be executed (which would drop the PacketRef unexpectedly).
-        if crate::io::virtio::with_virtio_net(|_| ()).is_none() {
+        if crate::drivers::virtio::with_virtio_net(|_| ()).is_none() {
             return Err("NotInitialized");
         }
 
-        match crate::io::virtio::with_virtio_net(|dev| dev.enqueue_send_zero_copy(packet)) {
+        match crate::drivers::virtio::with_virtio_net(|dev| dev.enqueue_send_zero_copy(packet)) {
             Some(Ok(())) => Ok(()),
+            Some(Err(crate::drivers::virtio::net::VirtioNetError::QueueFull)) => Err("QueueFull"),
             Some(Err(_)) => Err("DeviceError"),
             None => Err("NotInitialized"),
         }

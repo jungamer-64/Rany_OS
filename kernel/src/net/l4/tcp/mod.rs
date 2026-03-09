@@ -48,7 +48,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// 全接続での合計OOOセグメント数
 pub(crate) static GLOBAL_OOO_COUNT: AtomicUsize = AtomicUsize::new(0);
-const GLOBAL_MAX_OOO_SEGMENTS: usize = 512;
+const GLOBAL_MAX_OOO_SEGMENTS: usize = 4096; // Increased from 512 to prevent easy exhaustion DoS
 
 /// TCP状態マシン
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,23 +151,22 @@ struct TcpRxState {
     recv_queue_bytes: usize,
     /// `recv_queue` の総バイト上限
     recv_queue_limit_bytes: usize,
-    /// Out-of-order segments queue
-    ooo_queue: BTreeMap<u32, PacketRef>,
+    /// Out-of-order segments queue (wrapping-aware sorted Vec)
+    pub(crate) ooo_queue: Vec<(u32, PacketRef)>,
     /// Sequence number of the FIN segment, if received out-of-order
     ooo_fin_seq: Option<u32>,
 }
 
 impl TcpRxState {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             recv_buffer: VecDeque::new(),
             recv_buffer_bytes: 0,
             recv_buffer_limit_bytes: TCP_RECV_BUFFER_LIMIT_DEFAULT,
             recv_queue: VecDeque::new(),
             recv_queue_bytes: 0,
-            // limit initialized from constant above (currently zero)
             recv_queue_limit_bytes: TCP_RECV_COPY_FALLBACK_LIMIT_BYTES,
-            ooo_queue: BTreeMap::new(),
+            ooo_queue: Vec::new(),
             ooo_fin_seq: None,
         }
     }
@@ -348,27 +347,49 @@ impl TcpOptionsState {
 
     /// Process SACK option received from peer
     pub fn process_sack_option(&mut self, blocks: &[(u32, u32)]) {
+        use crate::net::l4::endpoint::types::{seq_max, seq_min};
         for &(left, right) in blocks {
-            // Merge or add to scoreboard
-            let mut merged = false;
-            for (l, r) in self.sack_scoreboard.iter_mut() {
+            // Validate: left must be before right (handling wrap-around)
+            if (right.wrapping_sub(left) as i32) <= 0 {
+                continue; // Ignore invalid or empty blocks
+            }
+
+            // RFC 2018: Merge or add to scoreboard.
+            // A new block might overlap or bridge multiple existing blocks.
+            // We collect all blocks that intersect with [left, right], 
+            // merge them into one, and remove the originals.
+            let mut merged_left = left;
+            let mut merged_right = right;
+            let mut i = 0;
+            
+            // LOOP_PROOF: mode=condition; reason=i is incremented and bounds-checked by sack_scoreboard.len().;
+            while i < self.sack_scoreboard.len() {
+                let (l, r) = self.sack_scoreboard[i];
                 // Check for overlap or adjacency
-                if Self::seq_in_range(left, *l, *r)
-                    || Self::seq_in_range(*l, left, right)
-                    || right == *l
-                    || *r == left
+                // Adjacency check: merged_left == r or merged_right == l
+                if Self::seq_in_range(merged_left, l, r)
+                    || Self::seq_in_range(merged_right, l, r)
+                    || Self::seq_in_range(l, merged_left, merged_right)
+                    || merged_left == r
+                    || merged_right == l
                 {
-                    *l = core::cmp::min(*l, left);
-                    *r = core::cmp::max(*r, right);
-                    merged = true;
-                    break;
+                    merged_left = seq_min(merged_left, l);
+                    merged_right = seq_max(merged_right, r);
+                    self.sack_scoreboard.remove(i);
+                    // Don't increment i, check the next element shifted into this position
+                } else {
+                    i += 1;
                 }
             }
-            if !merged {
-                // Security: Limit scoreboard size to prevent memory exhaustion (DoS)
-                if self.sack_scoreboard.len() < 64 {
-                    self.sack_scoreboard.push((left, right));
-                }
+            
+            // Security: Limit scoreboard size to prevent memory exhaustion (DoS)
+            // RFC 2018 recommends keeping the most recent SACK information.
+            // Since we merged everything, we only add one entry.
+            if self.sack_scoreboard.len() < 64 {
+                self.sack_scoreboard.push((merged_left, merged_right));
+            } else {
+                // Scoreboard full - evict the oldest or just don't add? 
+                // For simplicity we just don't add, but in a real stack we might rotate.
             }
         }
     }
@@ -550,3 +571,5 @@ struct UnackedSegment {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod security_tests;

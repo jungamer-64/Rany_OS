@@ -8,7 +8,8 @@ impl IcmpProcessor {
             stats: IcmpStats::default(),
             per_ip_rate_limits: alloc::collections::BTreeMap::new(),
             global_last_time: 0,
-            global_tokens: 100, // Max 100 tokens globally
+            global_tokens: 100, // Egress (sending) tokens
+            ingress_tokens: 200, // Ingress (receiving) tokens
         }
     }
 
@@ -17,16 +18,23 @@ impl IcmpProcessor {
         &self.stats
     }
 
-    /// Check rate limit for a given IP (Token Bucket)
-    /// Returns true if allowed, false if dropped.
-    pub fn check_rate_limit(&mut self, ip: Ipv4Address, current_time: u64) -> bool {
-        // Global rate limit: Add 1 token per 10ms (100 pkts/sec), max 100 tokens.
+    /// Update token buckets
+    fn update_tokens(&mut self, current_time: u64) {
         let elapsed_global = current_time.saturating_sub(self.global_last_time);
         if elapsed_global >= 10 {
             let new_global_tokens = (elapsed_global / 10) as u32;
+            // Egress: 100 pkts/sec, max 100
             self.global_tokens = (self.global_tokens + new_global_tokens).min(100);
+            // Ingress: 200 pkts/sec, max 400
+            self.ingress_tokens = (self.ingress_tokens + (new_global_tokens * 2)).min(400);
             self.global_last_time = current_time;
         }
+    }
+
+    /// Check rate limit for a given IP (Token Bucket) - Egress (Sending)
+    /// Returns true if allowed, false if dropped.
+    pub fn check_rate_limit(&mut self, ip: Ipv4Address, current_time: u64) -> bool {
+        self.update_tokens(current_time);
 
         if self.global_tokens == 0 {
             return false;
@@ -34,6 +42,7 @@ impl IcmpProcessor {
 
         // Per-IP rate limit: Add 1 token per 100ms, max 20 tokens per IP.
         const MAX_RATE_LIMIT_ENTRIES: usize = 1024;
+        // ... (rest of logic)
 
         // If entry doesn't exist and map is full, we need to evict.
         // We check this before taking the entry to avoid borrow checker issues.
@@ -65,6 +74,18 @@ impl IcmpProcessor {
         true
     }
 
+    /// Check rate limit for an incoming packet
+    pub fn check_ingress_rate_limit(&mut self, current_time: u64) -> bool {
+        self.update_tokens(current_time);
+
+        if self.ingress_tokens == 0 {
+            return false;
+        }
+
+        self.ingress_tokens -= 1;
+        true
+    }
+
     /// Process an incoming ICMP packet
     pub fn process(
         &mut self,
@@ -73,8 +94,8 @@ impl IcmpProcessor {
         dst_ip: Ipv4Address,
         current_time: u64,
     ) -> IcmpResult {
-        // Security: Check rate limit BEFORE expensive operations (like checksum)
-        if !self.check_rate_limit(src_ip, current_time) {
+        // Security: Check ingress rate limit BEFORE expensive operations
+        if !self.check_ingress_rate_limit(current_time) {
             return IcmpResult::Ignored;
         }
 
@@ -291,7 +312,7 @@ impl IcmpProcessor {
     pub(super) fn process_redirect(
         &mut self,
         packet: &IcmpPacket<'_>,
-        src_ip: Ipv4Address,
+        _src_ip: Ipv4Address,
     ) -> IcmpResult {
         // Security: ICMP Redirects are dangerous.
         // Even if we don't apply them here, we extract information for the stack to decide.

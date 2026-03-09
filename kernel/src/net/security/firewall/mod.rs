@@ -54,6 +54,7 @@ static FIREWALL: PoisonLock<FirewallEngine> = PoisonLock::new(FirewallEngine::ne
 /// - `protocol`: IP プロトコル番号（6=TCP, 17=UDP, 1=ICMP）
 /// - `src_port`: 送信元ポート（ICMP の場合は 0）
 /// - `dst_port`: 宛先ポート（ICMP の場合は 0）
+/// - `tcp_flags`: TCP フラグ（TCP 以外の場合は 0）
 ///
 /// ## 戻り値
 /// - `true`: パケットを許可
@@ -64,6 +65,7 @@ pub fn check_ingress(
     protocol: u8,
     src_port: u16,
     dst_port: u16,
+    tcp_flags: u8,
 ) -> bool {
     let src_ip = src_ip.into();
     let dst_ip = dst_ip.into();
@@ -76,6 +78,7 @@ pub fn check_ingress(
                 protocol,
                 src_port,
                 dst_port,
+                tcp_flags,
             ) == FirewallVerdict::Allow
         }
         Err(_) => {
@@ -95,6 +98,7 @@ pub fn check_egress(
     protocol: u8,
     src_port: u16,
     dst_port: u16,
+    tcp_flags: u8,
 ) -> bool {
     let src_ip = src_ip.into();
     let dst_ip = dst_ip.into();
@@ -107,6 +111,7 @@ pub fn check_egress(
                 protocol,
                 src_port,
                 dst_port,
+                tcp_flags,
             ) == FirewallVerdict::Allow
         }
         Err(_) => {
@@ -123,6 +128,7 @@ pub fn check_ingress_v4(
     protocol: u8,
     src_port: u16,
     dst_port: u16,
+    tcp_flags: u8,
 ) -> bool {
     check_ingress(
         IpAddress::V4(src_ip),
@@ -130,16 +136,18 @@ pub fn check_ingress_v4(
         protocol,
         src_port,
         dst_port,
+        tcp_flags,
     )
 }
 
-/// IPv4 用の下位互換 API
+/// IPv4 用の下位互換 API (Egress)
 pub fn check_egress_v4(
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
     protocol: u8,
     src_port: u16,
     dst_port: u16,
+    tcp_flags: u8,
 ) -> bool {
     check_egress(
         IpAddress::V4(src_ip),
@@ -147,6 +155,26 @@ pub fn check_egress_v4(
         protocol,
         src_port,
         dst_port,
+        tcp_flags,
+    )
+}
+
+/// IPv6 Ingress パケット照合 (下位互換 API)
+pub fn check_ingress_v6(
+    src_ip: [u8; 16],
+    dst_ip: [u8; 16],
+    protocol: u8,
+    src_port: u16,
+    dst_port: u16,
+    tcp_flags: u8,
+) -> bool {
+    check_ingress(
+        IpAddress::V6(src_ip),
+        IpAddress::V6(dst_ip),
+        protocol,
+        src_port,
+        dst_port,
+        tcp_flags,
     )
 }
 
@@ -158,6 +186,94 @@ pub fn add_rule(rule: FirewallRule) -> Result<RuleId, &'static str> {
     match FIREWALL.lock() {
         Ok(mut fw) => Ok(fw.add_rule(rule)),
         Err(_) => Err("firewall lock poisoned"),
+    }
+}
+
+/// セキュリティ向上のためのデフォルトルールセットを構築する
+pub fn setup_default_firewall() {
+    match FIREWALL.lock() {
+        Ok(mut fw) => {
+            // 全てのルールをクリア（初期化用）
+            fw.clear_rules();
+
+            // 1. ループバックパケットを許可 (127.0.0.1)
+            let _ = fw.add_rule(
+                FirewallRule::builder()
+                    .name("Allow Loopback Ingress")
+                    .ingress()
+                    .src_ip(IpMatch::Cidr([127, 0, 0, 0], 8))
+                    .allow()
+                    .priority(10)
+                    .build(),
+            );
+            let _ = fw.add_rule(
+                FirewallRule::builder()
+                    .name("Allow Loopback Egress")
+                    .egress()
+                    .dst_ip(IpMatch::Cidr([127, 0, 0, 0], 8))
+                    .allow()
+                    .priority(11)
+                    .build(),
+            );
+
+            // 2. 確立済みの TCP 接続を許可 (ACK フラグがセットされているもの)
+            let _ = fw.add_rule(
+                FirewallRule::builder()
+                    .name("Allow Established TCP")
+                    .ingress()
+                    .tcp()
+                    .tcp_flags(0x10, 0x10) // ACK=1
+                    .allow()
+                    .priority(20)
+                    .build(),
+            );
+
+            // 3. DHCP を許可 (UDP 67, 68)
+            let _ = fw.add_rule(
+                FirewallRule::builder()
+                    .name("Allow DHCP Ingress")
+                    .ingress()
+                    .udp()
+                    .dst_port(PortMatch::Exact(68))
+                    .allow()
+                    .priority(30)
+                    .build(),
+            );
+
+            // 4. DNS 応答を許可 (UDP 53)
+            let _ = fw.add_rule(
+                FirewallRule::builder()
+                    .name("Allow DNS Responses")
+                    .ingress()
+                    .udp()
+                    .src_port(PortMatch::Exact(53))
+                    .allow()
+                    .priority(40)
+                    .build(),
+            );
+
+            // 5. ICMP エコー応答（Ping）を許可
+            let _ = fw.add_rule(
+                FirewallRule::builder()
+                    .name("Allow ICMP Echo Reply")
+                    .ingress()
+                    .icmp()
+                    .allow()
+                    .priority(50)
+                    .build(),
+            );
+
+            // 6. 全ての外向き通信を許可
+            fw.set_default_policy(FirewallDirection::Egress, FirewallAction::Allow);
+            // 入向きはデフォルト拒否
+            fw.set_default_policy(FirewallDirection::Ingress, FirewallAction::Deny);
+
+            fw.set_enabled(true);
+            log::info!("[FIREWALL] Secure default rules applied.");
+        }
+        Err(_) => {
+            log::error!("[FIREWALL] Failed to setup default rules: lock poisoned.");
+        }
     }
 }
 

@@ -10,7 +10,7 @@ use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::endpoint_core::Endpoint;
-use super::types::{EndpointError, EndpointFd, EndpointResult, EndpointType};
+use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
 
 const EPHEMERAL_PORT_START: u16 = 49152;
 const EPHEMERAL_PORT_END: u16 = 65535;
@@ -175,4 +175,16 @@ pub fn is_endpoint_manager_initialized() -> bool {
 
 pub fn endpoint_manager() -> Option<&'static PoisonRwLock<Option<EndpointManager>>> {
     Some(&ENDPOINT_MANAGER)
+}
+
+pub fn find_listening_socket(local: EndpointAddr) -> Option<Endpoint> {
+    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+    let mgr = manager.as_ref()?;
+    let socket = mgr.find_by_port(EndpointType::Tcp, local.port())?;
+    let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+    if inner.state == super::types::EndpointState::Listening {
+        Some(socket.clone())
+    } else {
+        None
+    }
 }

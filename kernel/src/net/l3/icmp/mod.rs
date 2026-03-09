@@ -489,6 +489,8 @@ pub struct IcmpProcessor {
     global_last_time: u64,
     /// Global rate limiting: tokens
     global_tokens: u32,
+    /// Ingress rate limiting: tokens
+    ingress_tokens: u32,
 }
 
 /// ICMP statistics

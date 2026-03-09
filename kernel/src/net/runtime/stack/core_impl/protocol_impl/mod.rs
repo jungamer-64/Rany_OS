@@ -38,6 +38,7 @@ impl NetworkStack {
             2, // IGMP
             0,
             0,
+            0,
         ) {
             self.stats.record_dropped();
             return;

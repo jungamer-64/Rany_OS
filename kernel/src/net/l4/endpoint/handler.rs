@@ -490,6 +490,12 @@ impl NetworkEventHandler {
                                     (0, 0)
                                 };
 
+                                let tcp_flags = if u8::from(protocol) == 6 && transport_data.len() >= 14 {
+                                    transport_data[13]
+                                } else {
+                                    0
+                                };
+
                                 // Security Fix: Use full IPv6 addresses for firewall check
                                 if !crate::net::security::firewall::check_ingress(
                                     crate::net::security::firewall::IpAddress::V6(src_ip),
@@ -497,6 +503,7 @@ impl NetworkEventHandler {
                                     u8::from(protocol),
                                     src_port,
                                     dst_port,
+                                    tcp_flags,
                                 ) {
                                     stack.stats.record_dropped();
                                     return EventHandleResult::Success;
@@ -535,16 +542,19 @@ impl NetworkEventHandler {
                         // ── ファイアウォール Reassembled パケットチェック (IPv4) ──
                         // 再組立て後のパケットに対して再度ファイアウォールを適用する。
                         // これにより、フラグメント化によるポートベースルールの回避を防止する。
-                        let (src_port, dst_port) = match protocol {
-                            crate::net::l3::ipv4::IpProtocol::Tcp
-                            | crate::net::l3::ipv4::IpProtocol::Udp
-                                if payload.len() >= 4 =>
-                            {
+                        let (src_port, dst_port, tcp_flags) = match protocol {
+                            crate::net::l3::ipv4::IpProtocol::Tcp if payload.len() >= 20 => {
                                 let sp = u16::from_be_bytes([payload[0], payload[1]]);
                                 let dp = u16::from_be_bytes([payload[2], payload[3]]);
-                                (sp, dp)
+                                let flags = payload[13];
+                                (sp, dp, flags)
                             }
-                            _ => (0, 0),
+                            crate::net::l3::ipv4::IpProtocol::Udp if payload.len() >= 8 => {
+                                let sp = u16::from_be_bytes([payload[0], payload[1]]);
+                                let dp = u16::from_be_bytes([payload[2], payload[3]]);
+                                (sp, dp, 0)
+                            }
+                            _ => (0, 0, 0),
                         };
 
                         if !crate::net::security::firewall::check_ingress_v4(
@@ -553,6 +563,7 @@ impl NetworkEventHandler {
                             protocol.into(),
                             src_port,
                             dst_port,
+                            tcp_flags,
                         ) {
                             stack.stats.record_dropped();
                             return EventHandleResult::Success;
@@ -599,16 +610,19 @@ impl NetworkEventHandler {
                         let (protocol, payload) = packet.skip_extension_headers();
 
                         // ── ファイアウォール Reassembled パケットチェック (IPv6) ──
-                        let (src_port, dst_port) = match protocol {
-                            crate::net::l3::ipv4::IpProtocol::Tcp
-                            | crate::net::l3::ipv4::IpProtocol::Udp
-                                if payload.len() >= 4 =>
-                            {
+                        let (src_port, dst_port, tcp_flags) = match protocol {
+                            crate::net::l3::ipv4::IpProtocol::Tcp if payload.len() >= 20 => {
                                 let sp = u16::from_be_bytes([payload[0], payload[1]]);
                                 let dp = u16::from_be_bytes([payload[2], payload[3]]);
-                                (sp, dp)
+                                let flags = payload[13];
+                                (sp, dp, flags)
                             }
-                            _ => (0, 0),
+                            crate::net::l3::ipv4::IpProtocol::Udp if payload.len() >= 8 => {
+                                let sp = u16::from_be_bytes([payload[0], payload[1]]);
+                                let dp = u16::from_be_bytes([payload[2], payload[3]]);
+                                (sp, dp, 0)
+                            }
+                            _ => (0, 0, 0),
                         };
 
                         // Security Fix: Use full IPv6 addresses for firewall check
@@ -618,6 +632,7 @@ impl NetworkEventHandler {
                             protocol.into(),
                             src_port,
                             dst_port,
+                            tcp_flags,
                         ) {
                             stack.stats.record_dropped();
                             return EventHandleResult::Success;
@@ -1538,6 +1553,29 @@ impl NetworkEventHandler {
             // Security Fix: フラグメントのチェック。
             // 2番目以降のフラグメント (Offset > 0) は L4 ヘッダを含まないため、ポート抽出をスキップする。
             let fragment_offset = (u16::from_be_bytes([data[6], data[7]]) & 0x1FFF) * 8;
+            let more_fragments = (data[6] & 0x20) != 0;
+
+            // Tiny Fragment Attack Protection (RFC 3128)
+            // Offset 0 でかつ L4 ヘッダが不完全なフラグメントをドロップ
+            if fragment_offset == 0 && more_fragments {
+                let min_l4_len = match protocol {
+                    6 => 20, // TCP
+                    17 => 8, // UDP
+                    _ => 0,
+                };
+                if data.len() < ihl + min_l4_len {
+                    log::warn!("[FIREWALL] Dropping tiny fragment (RFC 3128): proto={}, len={}", protocol, data.len());
+                    stack.stats.record_dropped();
+                    return EventHandleResult::Success;
+                }
+            }
+
+            let tcp_flags = if protocol == 6 && data.len() >= ihl + 14 {
+                data[ihl + 13]
+            } else {
+                0
+            };
+
             let (src_port, dst_port) = if fragment_offset == 0 {
                 extract_ports(data, ihl, protocol)
             } else {
@@ -1545,7 +1583,7 @@ impl NetworkEventHandler {
             };
 
             if !crate::net::security::firewall::check_ingress_v4(
-                src_ip, dst_ip, protocol, src_port, dst_port,
+                src_ip, dst_ip, protocol, src_port, dst_port, tcp_flags,
             ) {
                 stack.stats.record_dropped();
                 return EventHandleResult::Success;

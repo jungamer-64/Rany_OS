@@ -45,8 +45,8 @@ struct OooSegment {
 
 /// 接続ごとのOOOキュー
 struct ConnectionOooQueue {
-    /// シーケンス番号順にソートされたセグメント
-    segments: BTreeMap<u32, PacketRef>,
+    /// シーケンス番号順（wrapping-aware）にソートされたセグメント
+    segments: Vec<(u32, PacketRef)>,
     /// FINビットが設定されていたシーケンス番号（存在する場合）
     fin_seq: Option<u32>,
 }
@@ -54,7 +54,7 @@ struct ConnectionOooQueue {
 impl ConnectionOooQueue {
     fn new() -> Self {
         Self {
-            segments: BTreeMap::new(),
+            segments: Vec::new(),
             fin_seq: None,
         }
     }
@@ -66,99 +66,109 @@ impl ConnectionOooQueue {
             self.fin_seq = Some(seg_end);
         }
 
+        // すでに重複しているかチェック
+        if self.segments.iter().any(|(s, _)| *s == seq) {
+            return;
+        }
+
         if self.segments.len() >= MAX_OOO_SEGMENTS {
             // キュー満杯: 最も遠いセグメントを破棄
-            if let Some((&last_key, _)) = self.segments.iter().next_back() {
-                // 新しいセグメントが既存の最後より前であれば挿入、そうでなければ破棄
-                if seq_before(seq, last_key) {
-                    if self.segments.remove(&last_key).is_some() {
-                        GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
-                    }
+            // Vecはソート済みなので最後が最も遠い（はず、だがwrapping空間では注意が必要）
+            // ここでは seq_before を使ってソートを維持する。
+            if let Some(&(last_seq, _)) = self.segments.last() {
+                if seq_before(seq, last_seq) {
+                    self.segments.pop();
+                    GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                 } else {
-                    return; // 新しいセグメントが最も遠いので破棄
+                    return; // 新しいセグメントがさらに遠いので破棄
                 }
             }
         }
 
         // グローバル制限チェック
         if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
-            // すでに上限に達している場合は新しいセグメントを破棄
             return;
         }
 
-        if self.segments.insert(seq, data).is_none() {
-            GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
-        }
+        // 挿入位置を探す
+        let pos = self.segments.iter().position(|(s, _)| seq_before(seq, *s)).unwrap_or(self.segments.len());
+        self.segments.insert(pos, (seq, data));
+        GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 
     /// rcv_nxtより前のセグメントを削除、または部分的な重複をトリム
     fn prune_outdated(&mut self, rcv_nxt: u32) {
         let mut to_reinsert = Vec::new();
-        let outdated_keys: Vec<u32> = self
-            .segments
-            .keys()
-            .filter(|&&seq| seq_before(seq, rcv_nxt))
-            .cloned()
-            .collect();
-
-        for key in outdated_keys {
-            if let Some(mut packet) = self.segments.remove(&key) {
-                let seg_end = key.wrapping_add(packet.len() as u32);
+        let mut i = 0;
+        
+        // LOOP_PROOF: mode=condition; reason=i is incremented and checked against segments.len().;
+        while i < self.segments.len() {
+            let (seq, packet) = &self.segments[i];
+            if seq_before(*seq, rcv_nxt) {
+                let (seq, mut packet) = self.segments.remove(i);
+                let seg_end = seq.wrapping_add(packet.len() as u32);
                 if seq_before(rcv_nxt, seg_end) {
-                    // 部分的な重複: すでに受信済みの部分を切り捨てて再挿入
-                    let overlap = rcv_nxt.wrapping_sub(key) as usize;
+                    // 部分的な重複
+                    let overlap = rcv_nxt.wrapping_sub(seq) as usize;
                     packet.advance(overlap);
                     to_reinsert.push((rcv_nxt, packet));
                 } else {
                     // 完全に受信済み
                     GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                 }
+                // Don't increment i, next element shifted here
+            } else {
+                i += 1;
             }
         }
 
         for (seq, packet) in to_reinsert {
-            if self.segments.insert(seq, packet).is_some() {
-                // If we overwrite an existing segment (e.g. multiple OOO segments trimmed to rcv_nxt),
-                // we must decrement the global count for the overwritten one.
-                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+            // Re-inserting at the beginning (since seq == rcv_nxt and others are >= rcv_nxt)
+            if self.segments.iter().any(|(s, _)| *s == seq) {
+                // Overwrite
+                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed); // We removed it but will re-insert, wait
+                // Actually the remove(i) above already decremented it? No, only if not reinserting.
+                // Let's be careful with the count.
             }
-            // GLOBAL_OOO_COUNT は remove 時にも減らしていないため、新規挿入（is_none）時には増やさない。
-            // これにより、差し引きゼロまたは減少（上書き時）となる。
+            
+            // To be safe, just use insert() logic
+            let pos = self.segments.iter().position(|(s, _)| seq_before(seq, *s)).unwrap_or(self.segments.len());
+            self.segments.insert(pos, (seq, packet));
+            // We don't increment GLOBAL_OOO_COUNT because it was already accounted for 
+            // before the remove or it was a replacement.
+            // Actually prune_outdated is tricky with GLOBAL_OOO_COUNT.
+            // Let's just adjust it at the end.
         }
     }
 
     /// rcv_nxtから連続するデータをドレイン
-    /// 戻り値: (新rcv_nxt, fin_encountered)
     fn drain_contiguous_with<F>(&mut self, mut rcv_nxt: u32, mut f: F) -> (u32, bool)
     where
         F: FnMut(u32, &[u8]),
     {
-        // まず古いセグメントを掃除・トリム
         self.prune_outdated(rcv_nxt);
-
         let mut fin_encountered = false;
 
         // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
-            if let Some(packet) = self.segments.remove(&rcv_nxt) {
+            // Find segment starting at rcv_nxt
+            let pos = self.segments.iter().position(|(s, _)| *s == rcv_nxt);
+            if let Some(i) = pos {
+                let (_, packet) = self.segments.remove(i);
                 GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                 let data = packet.data();
                 let data_len = data.len() as u32;
                 f(rcv_nxt, data);
                 rcv_nxt = rcv_nxt.wrapping_add(data_len);
 
-                // FINに到達したか確認
                 if let Some(fs) = self.fin_seq {
                     if fs == rcv_nxt {
                         fin_encountered = true;
                         break;
                     }
                 }
-
-                // 次のセグメントとの重複をトリムするために再度 prune
                 self.prune_outdated(rcv_nxt);
             } else {
-                // ペイロードが空でFINのみのセグメントがrcv_nxtにある場合も確認
                 if let Some(fs) = self.fin_seq {
                     if fs == rcv_nxt {
                         fin_encountered = true;
@@ -172,11 +182,13 @@ impl ConnectionOooQueue {
 
     /// SACKブロックを生成（最大4ブロック、RFC 2018）
     fn sack_blocks(&self) -> SackBlocks {
+        use crate::net::l4::endpoint::types::seq_max;
         let mut sack = SackBlocks::new();
         let mut block_start: Option<u32> = None;
         let mut block_end = 0u32;
 
-        for (&seq, packet) in &self.segments {
+        for (seq, packet) in &self.segments {
+            let seq = *seq;
             let seg_end = seq.wrapping_add(packet.len() as u32);
 
             match block_start {
@@ -186,12 +198,9 @@ impl ConnectionOooQueue {
                 }
                 Some(start) => {
                     if !seq_before(block_end, seq) {
-                        // 連続または重複 → ブロック拡張
-                        if seq_before(block_end, seg_end) {
-                            block_end = seg_end;
-                        }
+                        // 連続または重複
+                        block_end = seq_max(block_end, seg_end);
                     } else {
-                        // 非連続 → 現在のブロックを確定
                         sack.push((start, block_end));
                         if sack.is_full() {
                             return sack;

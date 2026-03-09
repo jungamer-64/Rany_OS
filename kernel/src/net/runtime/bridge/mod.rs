@@ -26,7 +26,7 @@ use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority, hybrid_coordinator,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::virtio::{
+use crate::drivers::virtio::{
     VIRTIO_NET_IOCTL_TX, VirtioNetDevice, bind_virtio_net_interface, with_virtio_net,
     with_virtio_net_at_index,
 };
@@ -35,7 +35,6 @@ use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
@@ -354,7 +353,7 @@ async fn submit_tx_via_io_scheduler(device_index: u8, data: &[u8]) -> Result<usi
     let iommu_dev: Option<IommuDeviceId> =
         with_virtio_net_at_index(device_index, |dev| dev.iommu_device_id()).flatten();
 
-    if crate::io::virtio::get_poll_handler(device_index).is_none() {
+    if crate::drivers::virtio::get_poll_handler(device_index).is_none() {
         log::warn!(
             "[IO-TX] PollHandler not registered for dev={}",
             device_index
@@ -460,7 +459,7 @@ fn transmit_packet_zero_copy(device: &VirtioNetDevice, data: &[u8]) -> Result<()
     buf[..len].copy_from_slice(&data[..len]);
 
     device.enqueue_send_zero_copy(packet).map_err(|e| match e {
-        crate::io::virtio::net::VirtioNetError::QueueFull => "TX queue full",
+        crate::drivers::virtio::net::VirtioNetError::QueueFull => "TX queue full",
         _ => "enqueue_send_zero_copy failed",
     })
 }
@@ -658,7 +657,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
         Err(_) => {}
     }
 
-    crate::io::virtio::register_virtio_net_with_io_scheduler(0);
+    crate::drivers::virtio::register_virtio_net_with_io_scheduler(0);
     RX_CSUM_HW_VERIFIED.store(true, Ordering::Release);
     Ok(())
 }

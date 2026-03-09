@@ -285,8 +285,10 @@ pub struct Icmpv6Processor {
     stats: Icmpv6Stats,
     /// Rate limiting: last time tokens were added (ms)
     last_token_time: AtomicU64,
-    /// Rate limiting: tokens for bucket (general TX rate limit)
+    /// Rate limiting: tokens for bucket (egress/sending)
     tx_tokens: AtomicU32,
+    /// Rate limiting: tokens for bucket (ingress/receiving)
+    rx_tokens: AtomicU32,
 }
 
 impl Icmpv6Processor {
@@ -297,28 +299,32 @@ impl Icmpv6Processor {
             stats: Icmpv6Stats::default(),
             last_token_time: AtomicU64::new(0),
             tx_tokens: AtomicU32::new(20), // Initial burst capacity
+            rx_tokens: AtomicU32::new(100), // Ingress limit is more generous
         }
     }
 
-    /// Check if an outgoing message is allowed by the rate limiter
-    ///
-    /// This should be called before sending ANY ICMPv6 error message
-    /// and optionally for informational messages.
-    pub fn check_tx_rate_limit(&self, current_time: u64) -> bool {
-        // Token Bucket: Add 1 token per 50ms (20 packets/sec)
+    /// Update token buckets
+    fn update_tokens(&self, current_time: u64) {
         let last_time = self.last_token_time.load(Ordering::Relaxed);
         let elapsed = current_time.saturating_sub(last_time);
         let new_tokens = (elapsed / 50) as u32;
 
         if new_tokens > 0 {
-            // Atomic update of tokens and time
-            // Note: simple load/store is usually fine for rate limiting in a kernel,
-            // but we use Relaxed atomic ops to be safe across cores.
-            let old_tokens = self.tx_tokens.load(Ordering::Relaxed);
-            let val = (old_tokens + new_tokens).min(50); // Max burst 50
-            self.tx_tokens.store(val, Ordering::Relaxed);
+            // Egress: 20 pkts/sec, max 50
+            let old_tx = self.tx_tokens.load(Ordering::Relaxed);
+            self.tx_tokens.store((old_tx + new_tokens).min(50), Ordering::Relaxed);
+
+            // Ingress: 100 pkts/sec, max 200
+            let old_rx = self.rx_tokens.load(Ordering::Relaxed);
+            self.rx_tokens.store((old_rx + (new_tokens * 5)).min(200), Ordering::Relaxed);
+
             self.last_token_time.store(current_time, Ordering::Relaxed);
         }
+    }
+
+    /// Check if an outgoing message is allowed by the rate limiter
+    pub fn check_tx_rate_limit(&self, current_time: u64) -> bool {
+        self.update_tokens(current_time);
 
         let current_tokens = self.tx_tokens.load(Ordering::Relaxed);
         if current_tokens == 0 {
@@ -329,6 +335,19 @@ impl Icmpv6Processor {
         }
 
         self.tx_tokens.fetch_sub(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Check if an incoming message is allowed by the rate limiter
+    pub fn check_rx_rate_limit(&self, current_time: u64) -> bool {
+        self.update_tokens(current_time);
+
+        let current_tokens = self.rx_tokens.load(Ordering::Relaxed);
+        if current_tokens == 0 {
+            return false;
+        }
+
+        self.rx_tokens.fetch_sub(1, Ordering::Relaxed);
         true
     }
 
@@ -359,8 +378,9 @@ impl Icmpv6Processor {
 
         self.stats.rx_messages.fetch_add(1, Ordering::Relaxed);
 
-        // Security: Check rate limit for incoming messages too to prevent DoS
-        if !self.check_tx_rate_limit(current_time) {
+        // Security: Check rate limit for incoming messages too to prevent DoS.
+        // We use a separate bucket (rx_tokens) from outgoing error messages.
+        if !self.check_rx_rate_limit(current_time) {
             return Icmpv6Result::Dropped;
         }
 
@@ -468,8 +488,13 @@ impl Icmpv6Processor {
 
         let identifier = u16::from_be_bytes([data[4], data[5]]);
         let sequence = u16::from_be_bytes([data[6], data[7]]);
-        let echo_data = if data.len() > ICMPV6_ECHO_HEADER_SIZE {
-            data[ICMPV6_ECHO_HEADER_SIZE..].to_vec()
+
+        // Security: Limit Echo payload size to prevent memory exhaustion.
+        // 1232 bytes is the max payload that fits in a minimum IPv6 MTU (1280).
+        let max_payload = 1232;
+        let echo_data_len = (data.len() - ICMPV6_ECHO_HEADER_SIZE).min(max_payload);
+        let echo_data = if echo_data_len > 0 {
+            data[ICMPV6_ECHO_HEADER_SIZE..ICMPV6_ECHO_HEADER_SIZE + echo_data_len].to_vec()
         } else {
             Vec::new()
         };

@@ -19,7 +19,7 @@ async fn network_bootstrap_task() {
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
     crate::io::log::early_print("[NET_BOOT] checking virtio presence\n");
-    let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
+    let virtio_net_present = crate::drivers::virtio::with_virtio_net(|_| ()).is_some();
     crate::io::log::early_print("[NET_BOOT] virtio presence checked\n");
     if virtio_net_present {
         let bridge_initialized = crate::net::runtime::bridge::is_initialized();

@@ -5,25 +5,15 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::future::Future;
-use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
-use core::task::{Context, Poll, Waker};
-use x86_64::{PhysAddr, VirtAddr};
-
-// Import VirtIO common definitions
-use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes, iommu_align_len};
-use crate::io::iommu::api::{
-    get_device_dma_mask, is_iommu_enabled, is_iommu_required, map_for_device_with_perms, unmap_dma,
-    unmap_for_device,
-};
-use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::virtio::defs::{VirtioDeviceType, status};
-use crate::io::virtio::transport::{TransportType, VirtioTransport};
+use core::sync::atomic::AtomicU16;
+use crate::io::virtio::transport::VirtioTransport;
 use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
+use crate::io::dma::CoherentDmaBuffer;
+use crate::io::iommu::api::{unmap_dma, unmap_for_device};
+use crate::io::iommu::runtime::registry::get_device_dma_mask;
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::sync::IrqPoisonLock;
 use crate::sync::PoisonLock;
 // Import PacketRef for zero-copy

@@ -80,10 +80,10 @@ impl FirewallEngine {
     /// const 初期化（static 変数用）
     pub const fn new_const() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             rules: Vec::new(),
             next_id: 1,
-            default_ingress: FirewallAction::Allow,
+            default_ingress: FirewallAction::Deny,
             default_egress: FirewallAction::Allow,
             stats_inner: FirewallStatsInner::new(),
         }
@@ -192,6 +192,7 @@ impl FirewallEngine {
         protocol: u8,
         src_port: u16,
         dst_port: u16,
+        tcp_flags: u8,
     ) -> FirewallVerdict {
         // 無効時は全て許可
         if !self.enabled {
@@ -205,12 +206,7 @@ impl FirewallEngine {
         // ルールを優先度順に走査
         for rule in &self.rules {
             if rule.matches(
-                direction,
-                src_ip,
-                dst_ip,
-                protocol,
-                src_port,
-                dst_port,
+                direction, src_ip, dst_ip, protocol, src_port, dst_port, tcp_flags,
             ) {
                 if rule.action.is_log() {
                     log::info!(
@@ -268,6 +264,7 @@ impl FirewallEngine {
         protocol: u8,
         src_port: u16,
         dst_port: u16,
+        tcp_flags: u8,
     ) -> FirewallVerdict {
         if !self.enabled {
             return FirewallVerdict::Allow;
@@ -277,12 +274,7 @@ impl FirewallEngine {
 
         for rule in &self.rules {
             if rule.matches(
-                direction,
-                src_ip,
-                dst_ip,
-                protocol,
-                src_port,
-                dst_port,
+                direction, src_ip, dst_ip, protocol, src_port, dst_port, tcp_flags,
             ) {
                 self.stats_inner.matched += 1;
 

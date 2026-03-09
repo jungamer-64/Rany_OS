@@ -311,6 +311,14 @@ impl EndpointAddr {
             EndpointAddr::V6 { ip, .. } => EndpointAddr::V6 { ip, port },
         }
     }
+
+    #[inline]
+    pub fn as_bytes(&self) -> [u8; 18] {
+        let mut bytes = [0u8; 18];
+        bytes[..16].copy_from_slice(&self.as_ipv6());
+        bytes[16..18].copy_from_slice(&self.port().to_be_bytes());
+        bytes
+    }
 }
 
 impl core::fmt::Display for EndpointAddr {
@@ -437,6 +445,18 @@ pub fn seq_before(a: u32, b: u32) -> bool {
 #[inline(always)]
 pub fn seq_leq(a: u32, b: u32) -> bool {
     a == b || seq_before(a, b)
+}
+
+/// a と b のうち前（earlier）の方を返す
+#[inline(always)]
+pub fn seq_min(a: u32, b: u32) -> u32 {
+    if seq_before(a, b) { a } else { b }
+}
+
+/// a と b のうち後（later）の方を返す
+#[inline(always)]
+pub fn seq_max(a: u32, b: u32) -> u32 {
+    if seq_after(a, b) { a } else { b }
 }
 
 /// a が b より後（strictly after）か判定する

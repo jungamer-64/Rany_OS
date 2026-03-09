@@ -122,7 +122,16 @@ impl VirtioNetDevice {
     }
 
     /// Process completions on a TX queue.
-    pub fn process_tx_completions(&self, queue_index: u16, vq: &NetVirtQueue) -> usize {
+    pub fn process_tx_completions<F>(
+        &self,
+        runtime: &dyn NetRuntime,
+        queue_index: u16,
+        vq: &NetVirtQueue,
+        mut handler: F,
+    ) -> usize
+    where
+        F: FnMut(u16, TxInflight, u32),
+    {
         let tracker = match self.tx_trackers.get(queue_index as usize) {
             Some(t) => t,
             None => return 0,
@@ -132,16 +141,17 @@ impl VirtioNetDevice {
         let mut processed = 0usize;
         // LOOP_PROOF: mode=condition; reason=TX completion loop is capped per pass and exits on empty queue or MAX_VIRTIO_COMPLETIONS_PER_PASS.;
         while processed < MAX_VIRTIO_COMPLETIONS_PER_PASS {
-            let Some((desc_idx, _)) = vq.poll_complete() else {
+            let Some((desc_idx, len)) = vq.poll_complete() else {
                 break;
             };
             processed += 1;
             if let Some(inflight) = tracker.take(desc_idx) {
-                // Return packet and bounce buffer to runtime/heap
-                // Logic for cleaning up inflight.packet and inflight.bounce_buffer
-                // will be handled by their respective Drop implementations.
-                // If IOMMU was used, the caller might need to unmap it.
-                // For now, we just reclaim the descriptor.
+                // If IOMMU was used, unmap it before returning the packet
+                if let Some(iova) = inflight.iommu_iova {
+                    runtime.unmap_dma(iova, inflight.iommu_map_len);
+                }
+
+                handler(desc_idx, inflight, len);
                 vq.free_desc_chain(desc_idx);
                 count += 1;
             }
@@ -152,12 +162,13 @@ impl VirtioNetDevice {
     /// Process completions on an RX queue.
     pub fn process_rx_completions<F>(
         &self,
+        runtime: &dyn NetRuntime,
         queue_index: u16,
         vq: &NetVirtQueue,
         mut handler: F,
     ) -> usize
     where
-        F: FnMut(RxInflight, u32),
+        F: FnMut(u16, RxInflight, u32),
     {
         let tracker = match self.rx_trackers.get(queue_index as usize) {
             Some(t) => t,
@@ -173,7 +184,12 @@ impl VirtioNetDevice {
             };
             processed += 1;
             if let Some(inflight) = tracker.take(desc_idx) {
-                handler(inflight, len);
+                // If IOMMU was used, unmap it
+                if let Some(iova) = inflight.iommu_iova {
+                    runtime.unmap_dma(iova, inflight.iommu_map_len);
+                }
+
+                handler(desc_idx, inflight, len);
                 vq.free_desc_chain(desc_idx);
                 count += 1;
             }

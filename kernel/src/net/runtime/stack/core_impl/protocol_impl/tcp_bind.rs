@@ -97,15 +97,17 @@ impl NetworkStack {
         ttl: u8,
     ) -> bool {
         // ── ファイアウォール Egress チェック ──
-        if tcp_segment.len() >= 4 {
+        if tcp_segment.len() >= 14 {
             let src_port = u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]);
             let dst_port = u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]);
+            let tcp_flags = tcp_segment[13];
             if !crate::net::security::firewall::check_egress_v4(
                 src_ip.octets(),
                 dst_ip.octets(),
                 6,
                 src_port,
                 dst_port,
+                tcp_flags,
             ) {
                 self.stats.record_dropped();
                 return false;

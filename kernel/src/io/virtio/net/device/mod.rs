@@ -212,6 +212,38 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         crate::net::datapath::mempool::alloc_packet()
     }
 
+    fn unmap_dma(&self, iova: u64, len: u64) {
+        unmap_iommu_addr(self.iommu_device_id, iova, len as usize);
+    }
+
+    fn receive_packet(&self, _queue_index: u16, packet: PacketRef, header_len: usize, payload_len: usize) {
+        // Pass PacketRef to bridge for zero-copy processing
+        if let Some(if_id) = self
+            .net_if_id()
+            .or_else(|| crate::net::runtime::bridge::lookup_if_by_virtio_index(self.virtio_index))
+        {
+            crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
+                if_id,
+                packet,
+                header_len,
+                payload_len,
+            );
+        } else {
+            crate::net::runtime::bridge::process_received_packet_zero_copy(
+                packet,
+                header_len,
+                payload_len,
+            );
+        }
+    }
+
+    fn transmit_complete(&self, _queue_index: u16, _packet: PacketRef) {
+        // Notify network stack that TX resources became available
+        crate::net::l4::endpoint::event::send_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
+        );
+    }
+
     fn schedule_wake(&self, queue_index: u16) {
         if (queue_index % 2) == 0 {
             if let Some(q) = self.rx_queues.get((queue_index / 2) as usize) {
