@@ -363,19 +363,29 @@ impl AcceptedConnection {
     }
 }
 
-// =====================================================
-// 接続キーのハッシュ関数（シャーディング用）
-// =====================================================
+/// 接続キーのハッシュ用シークレット（起動ごとにランダム化）
+static CONN_HASH_SECRET: AtomicU32 = AtomicU32::new(0);
+
+/// ハッシュシークレットを初期化（ネットワークスタック起動時に一度だけ呼ぶ）
+pub fn init_hash_secrets() {
+    let mut bytes = [0u8; 4];
+    // RDRAND または別のセキュアなソースから取得
+    let rand = crate::net::security::tls::crypto::random::generate_random();
+    bytes.copy_from_slice(&rand[0..4]);
+    let secret = u32::from_le_bytes(bytes);
+    CONN_HASH_SECRET.store(secret, core::sync::atomic::Ordering::Relaxed);
+}
 
 /// (EndpointAddr, EndpointAddr) の接続キーから FNV-1a ハッシュを計算する。
 ///
-/// シャードインデックスの決定に使用。暗号的安全性は不要。
+/// シャードインデックスの決定に使用。ハッシュフロッディング防止のため
+/// 起動ごとに生成されるシークレットをシードとして使用する。
 #[inline]
 pub fn conn_key_hash(local: &EndpointAddr, remote: &EndpointAddr) -> u32 {
     const FNV_OFFSET: u32 = 0x811c9dc5;
     const FNV_PRIME: u32 = 0x01000193;
 
-    let mut h = FNV_OFFSET;
+    let mut h = FNV_OFFSET ^ CONN_HASH_SECRET.load(core::sync::atomic::Ordering::Relaxed);
     let hash_bytes = |h: &mut u32, addr: &EndpointAddr| match addr {
         EndpointAddr::V4 { ip, port } => {
             for &b in ip {

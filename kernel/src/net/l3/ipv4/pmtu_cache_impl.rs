@@ -801,6 +801,32 @@ impl Ipv4Processor {
 
         let header = packet.header();
 
+        // Security: IPv4 Options Filtering
+        // RFC 7126: Source routing (LSRR/SSRR) is a major security risk and should be dropped.
+        let header_len = header.header_len();
+        if header_len > 20 {
+            let options = &data[20..header_len];
+            let mut i = 0;
+            while i < options.len() {
+                let opt_type = options[i];
+                if opt_type == 0 { break; } // End of Options
+                if opt_type == 1 { i += 1; continue; } // No-Op
+                
+                // 131: LSRR (Loose Source and Record Route)
+                // 137: SSRR (Strict Source and Record Route)
+                if opt_type == 131 || opt_type == 137 {
+                    log::warn!("[NET-IPV4] Dropping packet with Source Route option ({})", opt_type);
+                    self.stats.rx_dropped += 1;
+                    return Ipv4ProcessResult::Dropped;
+                }
+
+                if i + 1 >= options.len() { break; }
+                let opt_len = options[i + 1] as usize;
+                if opt_len < 2 { break; }
+                i += opt_len;
+            }
+        }
+
         // Check if this is a fragment
         let is_fragment = header.more_fragments() || header.fragment_offset() != 0;
 
@@ -975,10 +1001,5 @@ pub fn data_checksum(data: &[u8], initial: u32) -> u16 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
 
-    let result = !(sum as u16);
-    if result == 0 {
-        0xFFFF
-    } else {
-        result
-    }
+    !(sum as u16)
 }

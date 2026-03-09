@@ -303,8 +303,8 @@ pub struct TcbTable {
     syn_recv_count: AtomicUsize,
 }
 
-const MAX_TCB_ENTRIES: usize = 4096;
-const MAX_SYN_RECEIVED_ENTRIES: usize = 1024;
+const MAX_TCB_ENTRIES: usize = 8192;
+const MAX_SYN_RECEIVED_ENTRIES: usize = 4096;
 
 #[inline(always)]
 fn shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
@@ -495,33 +495,41 @@ impl TcbTable {
     }
 
     fn scavenge_syn_received(&self, current_tick: u64) {
+        // 通常のタイムアウト: 3秒
         const SYN_RECV_TIMEOUT_TICKS: u64 = 3000;
-        const MAX_SCAVENGE_PER_SHARD: usize = 8;
-        if self.syn_recv_count.load(Ordering::Relaxed) < MAX_SYN_RECEIVED_ENTRIES / 2 {
+        // 圧迫時のタイムアウト: 500ms
+        const AGGRESSIVE_TIMEOUT_TICKS: u64 = 500;
+
+        let count = self.syn_recv_count.load(Ordering::Relaxed);
+        if count < MAX_SYN_RECEIVED_ENTRIES / 4 {
             return;
         }
+
+        // 負荷に応じてタイムアウトを短縮し、1回のスキャンで消去する数を増やす
+        let (timeout, max_per_shard) = if count > (MAX_SYN_RECEIVED_ENTRIES * 3 / 4) {
+            (AGGRESSIVE_TIMEOUT_TICKS, 32) // 高負荷時
+        } else {
+            (SYN_RECV_TIMEOUT_TICKS, 8)    // 低・中負荷時
+        };
+
         for shard in &self.shards {
             let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
-            let mut to_remove: [Option<(EndpointAddr, EndpointAddr)>; 8] = [None; 8];
-            let mut remove_count = 0;
+            let mut to_remove: alloc::vec::Vec<(EndpointAddr, EndpointAddr)> = alloc::vec::Vec::with_capacity(max_per_shard);
             for (key, entry) in entries.iter() {
                 if entry.state == TcpConnectionState::SynReceived
-                    && current_tick.saturating_sub(entry.last_send_tick) > SYN_RECV_TIMEOUT_TICKS
+                    && current_tick.saturating_sub(entry.last_send_tick) > timeout
                 {
-                    to_remove[remove_count] = Some(*key);
-                    remove_count += 1;
-                    if remove_count >= MAX_SCAVENGE_PER_SHARD {
+                    to_remove.push(*key);
+                    if to_remove.len() >= max_per_shard {
                         break;
                     }
                 }
             }
-            for i in 0..remove_count {
-                if let Some(key) = to_remove[i] {
-                    if let Some(entry) = entries.remove(&key) {
-                        self.total_count.fetch_sub(1, Ordering::Relaxed);
-                        if entry.state == TcpConnectionState::SynReceived {
-                            self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
-                        }
+            for key in to_remove {
+                if let Some(entry) = entries.remove(&key) {
+                    self.total_count.fetch_sub(1, Ordering::Relaxed);
+                    if entry.state == TcpConnectionState::SynReceived {
+                        self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
                     }
                 }
             }

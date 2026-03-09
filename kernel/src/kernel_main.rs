@@ -134,6 +134,10 @@ pub(crate) fn init_hid_and_serial_drivers() {
 /// Executor起動後に完全非同期で実行される。
 pub(crate) fn init_network_infra() {
     info!(target: "init", "Initializing network infrastructure (pre-executor)");
+
+    // Initialize hash secrets for sharded structures (e.g. OOO queue)
+    crate::net::l4::endpoint::types::init_hash_secrets();
+
     let bridge_initialized = crate::net::runtime::bridge::is_initialized();
     let stack_initialized = crate::net::runtime::stack::stack()
         .lock()

@@ -18,24 +18,18 @@ use super::checksum_offload::internet_checksum;
 
 /// Scatter-Gather エントリ（1つの連続バッファ領域を表す）
 #[derive(Debug, Clone, Copy)]
-pub struct SgEntry {
-    /// バッファの仮想アドレス
-    pub addr: usize,
-    /// データ長
-    pub len: u16,
+pub struct SgEntry<'a> {
+    /// データスライス
+    pub slice: &'a [u8],
     /// DMA物理/IOVAアドレス（0 = 未マップ）
     pub dma_addr: u64,
 }
 
-impl SgEntry {
+impl<'a> SgEntry<'a> {
     /// 新しい SgEntry を作成
     #[inline]
-    pub const fn new(addr: usize, len: u16) -> Self {
-        Self {
-            addr,
-            len,
-            dma_addr: 0,
-        }
+    pub const fn new(slice: &'a [u8]) -> Self {
+        Self { slice, dma_addr: 0 }
     }
 
     /// DMAアドレスを設定
@@ -45,98 +39,78 @@ impl SgEntry {
     }
 
     /// データスライスを取得
-    ///
-    /// # Safety
-    /// `addr` が有効な仮想アドレスかつ `len` バイトが読み取り可能であること
     #[inline]
-    pub unsafe fn as_slice(&self) -> &[u8] {
-        core::slice::from_raw_parts(self.addr as *const u8, self.len as usize)
+    pub fn as_slice(&self) -> &'a [u8] {
+        self.slice
     }
 
-    /// 可変データスライスを取得
-    ///
-    /// # Safety
-    /// `addr` が有効な仮想アドレスかつ `len` バイトが書き込み可能であること
+    /// バッファの仮想アドレスを取得
     #[inline]
-    pub unsafe fn as_slice_mut(&mut self) -> &mut [u8] {
-        core::slice::from_raw_parts_mut(self.addr as *mut u8, self.len as usize)
+    pub fn addr(&self) -> usize {
+        self.slice.as_ptr() as usize
+    }
+
+    /// データ長を取得
+    #[inline]
+    pub fn len(&self) -> u16 {
+        self.slice.len() as u16
     }
 }
 
 /// Scatter-Gather リストの最大エントリ数
-///
-/// 典型的なパケット構成:
-/// - Ethernet ヘッダ (14バイト)
-/// - IP ヘッダ (20-60バイト)
-/// - TCP/UDP ヘッダ (8-60バイト)
-/// - ペイロード (1セグメントまたは複数)
 pub const MAX_SG_ENTRIES: usize = 8;
 
 /// Scatter-Gather リスト
-///
-/// 複数のバッファフラグメントを1つの送信単位としてまとめる。
-/// VirtIO の Descriptor Chain や DMA Scatter-Gather と1:1マッピング可能。
 #[derive(Debug)]
-pub struct ScatterGatherList {
-    /// エントリ配列（インラインでスタック上に配置）
-    entries: [SgEntry; MAX_SG_ENTRIES],
+pub struct ScatterGatherList<'a> {
+    /// エントリ配列
+    entries: [Option<SgEntry<'a>>; MAX_SG_ENTRIES],
     /// 使用中のエントリ数
     count: u8,
-    /// 総データ長（全エントリの len の合計）
+    /// 総データ長
     total_len: u32,
 }
 
-impl ScatterGatherList {
+impl<'a> ScatterGatherList<'a> {
     /// 空の SG リストを作成
     #[inline]
     pub const fn new() -> Self {
         Self {
-            entries: [SgEntry::new(0, 0); MAX_SG_ENTRIES],
+            entries: [None; MAX_SG_ENTRIES],
             count: 0,
             total_len: 0,
         }
     }
 
     /// エントリを追加
-    ///
-    /// `addr`: バッファの仮想アドレス
-    /// `len`: データ長
-    ///
-    /// 戻り値: 成功なら `Ok(エントリインデックス)`, 満杯なら `Err(())`
     #[inline]
-    pub fn push(&mut self, addr: usize, len: u16) -> Result<usize, ()> {
-        if self.count as usize >= MAX_SG_ENTRIES {
+    pub fn push(&mut self, slice: &'a [u8]) -> Result<usize, ()> {
+        if self.count as usize >= MAX_SG_ENTRIES || slice.len() > u16::MAX as usize {
             return Err(());
         }
         let idx = self.count as usize;
-        self.entries[idx] = SgEntry::new(addr, len);
+        let len = slice.len() as u32;
+        self.entries[idx] = Some(SgEntry::new(slice));
         self.count += 1;
-        self.total_len += len as u32;
+        self.total_len += len;
         Ok(idx)
-    }
-
-    /// スライスからエントリを追加
-    #[inline]
-    pub fn push_slice(&mut self, data: &[u8]) -> Result<usize, ()> {
-        if data.len() > u16::MAX as usize {
-            return Err(());
-        }
-        self.push(data.as_ptr() as usize, data.len() as u16)
     }
 
     /// DMAマップ済みエントリを追加
     #[inline]
-    pub fn push_dma(&mut self, addr: usize, len: u16, dma_addr: u64) -> Result<usize, ()> {
-        let idx = self.push(addr, len)?;
-        self.entries[idx].set_dma_addr(dma_addr);
+    pub fn push_dma(&mut self, slice: &'a [u8], dma_addr: u64) -> Result<usize, ()> {
+        let idx = self.push(slice)?;
+        if let Some(entry) = self.entries[idx].as_mut() {
+            entry.set_dma_addr(dma_addr);
+        }
         Ok(idx)
     }
 
     /// エントリを取得
     #[inline]
-    pub fn entry(&self, index: usize) -> Option<&SgEntry> {
+    pub fn entry(&self, index: usize) -> Option<&SgEntry<'a>> {
         if index < self.count as usize {
-            Some(&self.entries[index])
+            self.entries[index].as_ref()
         } else {
             None
         }
@@ -144,9 +118,9 @@ impl ScatterGatherList {
 
     /// 可変エントリを取得
     #[inline]
-    pub fn entry_mut(&mut self, index: usize) -> Option<&mut SgEntry> {
+    pub fn entry_mut(&mut self, index: usize) -> Option<&mut SgEntry<'a>> {
         if index < self.count as usize {
-            Some(&mut self.entries[index])
+            self.entries[index].as_mut()
         } else {
             None
         }
@@ -172,35 +146,26 @@ impl ScatterGatherList {
 
     /// 全エントリのイテレータ
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = &SgEntry> {
-        self.entries[..self.count as usize].iter()
+    pub fn iter(&self) -> impl Iterator<Item = &SgEntry<'a>> {
+        self.entries[..self.count as usize].iter().flatten()
     }
 
     /// 全エントリの可変イテレータ
     #[inline]
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut SgEntry> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut SgEntry<'a>> {
         let count = self.count as usize;
-        self.entries[..count].iter_mut()
+        self.entries[..count].iter_mut().flatten()
     }
 
     /// SG リスト全体をリニアバッファにコピー（フォールバック用）
-    ///
-    /// ハードウェアが SG に対応しない場合、連続バッファにフラットニングする。
-    ///
-    /// # Safety
-    /// 各エントリの `addr` が有効である必要がある
-    pub unsafe fn linearize(&self, output: &mut [u8]) -> Result<usize, ()> {
-        let actual_total_len: usize = self.iter().map(|e| e.len as usize).sum();
-        if output.len() < actual_total_len {
+    pub fn linearize(&self, output: &mut [u8]) -> Result<usize, ()> {
+        if output.len() < self.total_len as usize {
             return Err(());
         }
         let mut offset = 0;
         for entry in self.iter() {
-            let entry_len = entry.len as usize;
-            if offset + entry_len > output.len() {
-                return Err(());
-            }
-            let src = core::slice::from_raw_parts(entry.addr as *const u8, entry_len);
+            let src = entry.as_slice();
+            let entry_len = src.len();
             output[offset..offset + entry_len].copy_from_slice(src);
             offset += entry_len;
         }
@@ -210,12 +175,16 @@ impl ScatterGatherList {
     /// リセット
     #[inline]
     pub fn clear(&mut self) {
+        for entry in self.entries.iter_mut() {
+            *entry = None;
+        }
         self.count = 0;
         self.total_len = 0;
     }
 }
 
-impl Default for ScatterGatherList {
+
+impl Default for ScatterGatherList<'_> {
     fn default() -> Self {
         Self::new()
     }
@@ -336,21 +305,21 @@ impl SgTxBuilder {
     ///
     /// ヘッダバッファは `self` 内に保持されるため、戻り値の SG リストの
     /// ライフタイムは `self` のライフタイムに束縛される。
-    pub fn build(&mut self, payload: &[u8]) -> ScatterGatherList {
+    pub fn build<'a>(&'a mut self, payload: &'a [u8]) -> ScatterGatherList<'a> {
         let mut sg = ScatterGatherList::new();
 
         // Ethernet ヘッダ
-        let _ = sg.push(self.eth_header.as_ptr() as usize, 14);
+        let _ = sg.push(&self.eth_header);
 
         // IP + Transport ヘッダ
-        let hdr_total = self.ip_hdr_len as u16 + self.transport_hdr_len as u16;
+        let hdr_total = self.ip_hdr_len as usize + self.transport_hdr_len as usize;
         if hdr_total > 0 {
-            let _ = sg.push(self.ip_transport_header.as_ptr() as usize, hdr_total);
+            let _ = sg.push(&self.ip_transport_header[..hdr_total]);
         }
 
         // ペイロード
-        if !payload.is_empty() && payload.len() <= u16::MAX as usize {
-            let _ = sg.push(payload.as_ptr() as usize, payload.len() as u16);
+        if !payload.is_empty() {
+            let _ = sg.push(payload);
         }
 
         self.built = true;
@@ -429,8 +398,8 @@ mod tests {
         let data1 = [1u8, 2, 3, 4];
         let data2 = [5u8, 6, 7];
 
-        assert!(sg.push_slice(&data1).is_ok());
-        assert!(sg.push_slice(&data2).is_ok());
+        assert!(sg.push(&data1).is_ok());
+        assert!(sg.push(&data2).is_ok());
 
         assert_eq!(sg.count(), 2);
         assert_eq!(sg.total_len(), 7);
@@ -443,11 +412,11 @@ mod tests {
         let data = [0u8; 1];
 
         for _ in 0..MAX_SG_ENTRIES {
-            assert!(sg.push_slice(&data).is_ok());
+            assert!(sg.push(&data).is_ok());
         }
 
         // MAX超過
-        assert!(sg.push_slice(&data).is_err());
+        assert!(sg.push(&data).is_err());
     }
 
     #[test]
@@ -456,11 +425,11 @@ mod tests {
         let data1 = [0xAAu8, 0xBB];
         let data2 = [0xCCu8, 0xDD, 0xEE];
 
-        sg.push_slice(&data1).unwrap();
-        sg.push_slice(&data2).unwrap();
+        sg.push(&data1).unwrap();
+        sg.push(&data2).unwrap();
 
         let mut output = [0u8; 16];
-        let written = unsafe { sg.linearize(&mut output) }.unwrap();
+        let written = sg.linearize(&mut output).unwrap();
 
         assert_eq!(written, 5);
         assert_eq!(&output[..5], &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);

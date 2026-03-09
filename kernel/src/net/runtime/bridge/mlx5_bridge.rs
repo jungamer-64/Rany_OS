@@ -33,6 +33,7 @@ use crate::net::obs::{
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonLock;
 use crate::task::interrupt_waker::{InterruptSource, wait_for_interrupt};
+use crate::task::{TimeoutResult, with_timeout};
 
 use mlx5_driver::Mlx5Device;
 
@@ -71,6 +72,8 @@ static MLX5_RX_ERRORS: AtomicU64 = AtomicU64::new(0);
 
 /// 割り込み起床カウンタ
 static MLX5_WAKE_COUNTS: AtomicU64 = AtomicU64::new(0);
+/// 割り込み待ちタイムアウト回数（RX 診断用）
+static MLX5_WAKE_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 
 /// DMAマッピングエラー
 static MLX5_DMA_ERRORS: AtomicU64 = AtomicU64::new(0);
@@ -86,9 +89,11 @@ static MLX5_RX_DEBUG_SNAPSHOT_BUDGET: AtomicU64 = AtomicU64::new(16);
 /// RX CQ ポーリングバッチサイズ
 const MLX5_RX_POLL_BATCH: u32 = 64;
 /// RX が進まないときの診断ダンプ間隔（idle poll 回数）
-const MLX5_RX_DEBUG_IDLE_INTERVAL: u64 = 16_384;
+const MLX5_RX_DEBUG_IDLE_INTERVAL: u64 = 512;
 /// RX 問題切り分けのため、割り込み待ちを使わず常時ポーリングする
 const MLX5_FORCE_POLL_ONLY: bool = false;
+/// 割り込み待ちから再ポーリングに戻すタイムアウト（ms）
+const MLX5_INTERRUPT_WAIT_TIMEOUT_MS: u64 = 5;
 
 struct Mlx5TransmitRequest {
     data: Vec<u8>,
@@ -248,6 +253,8 @@ impl crate::net::runtime::bridge::shared::NetBridgePort for Mlx5Runtime {
         MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
         MLX5_RX_CQE_LOG_BUDGET.store(32, Ordering::Release);
         MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(16, Ordering::Release);
+        MLX5_WAKE_COUNTS.store(0, Ordering::Release);
+        MLX5_WAKE_TIMEOUTS.store(0, Ordering::Release);
         prefill_rx_buffers();
 
         if !MLX5_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
@@ -392,8 +399,10 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
     let _ = with_mlx5_device(|device| {
         log::warn!(
             target: "mlx5::bridge",
-            "RX debug snapshot: idle_polls={} rx_pkts={} tx_pkts={} rx_err={} tx_err={} rqs={} sqs={}",
+            "RX debug snapshot: idle_polls={} wakeups={} wake_timeouts={} rx_pkts={} tx_pkts={} rx_err={} tx_err={} rqs={} sqs={}",
             idle_polls,
+            MLX5_WAKE_COUNTS.load(Ordering::Relaxed),
+            MLX5_WAKE_TIMEOUTS.load(Ordering::Relaxed),
             MLX5_RX_PACKETS.load(Ordering::Relaxed),
             MLX5_TX_PACKETS.load(Ordering::Relaxed),
             MLX5_RX_ERRORS.load(Ordering::Relaxed),
@@ -665,9 +674,22 @@ pub async fn mlx5_poll_task() {
                 crate::task::yield_now().await;
             } else {
                 if let Some(vec) = msix_vector {
-                    // 割り込み待ち (Interrupt-Waker Bridge)
-                    wait_for_interrupt(InterruptSource::Irq(vec as u8)).await;
-                    MLX5_WAKE_COUNTS.fetch_add(1, Ordering::Relaxed);
+                    // 割り込み待ち (Interrupt-Waker Bridge)。
+                    // RX 問題切り分け時に永久待機しないよう、短いタイムアウトで
+                    // 定期的にポーリングへ戻す。
+                    match with_timeout(
+                        wait_for_interrupt(InterruptSource::Irq(vec as u8)),
+                        MLX5_INTERRUPT_WAIT_TIMEOUT_MS,
+                    )
+                    .await
+                    {
+                        TimeoutResult::Completed(_) => {
+                            MLX5_WAKE_COUNTS.fetch_add(1, Ordering::Relaxed);
+                        }
+                        TimeoutResult::TimedOut => {
+                            MLX5_WAKE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 } else {
                     // MSI-X未設定時は従来通り yield
                     crate::task::yield_now().await;
@@ -839,6 +861,10 @@ pub struct Mlx5BridgeStats {
     pub tx_errors: u64,
     /// 受信エラー数
     pub rx_errors: u64,
+    /// 割り込み起床回数
+    pub wakeups: u64,
+    /// 割り込み待ちタイムアウト回数
+    pub wake_timeouts: u64,
     /// 初期化済みフラグ
     pub initialized: bool,
 }
@@ -850,6 +876,8 @@ pub fn get_mlx5_bridge_stats() -> Mlx5BridgeStats {
         rx_packets: MLX5_RX_PACKETS.load(Ordering::Relaxed),
         tx_errors: MLX5_TX_ERRORS.load(Ordering::Relaxed),
         rx_errors: MLX5_RX_ERRORS.load(Ordering::Relaxed),
+        wakeups: MLX5_WAKE_COUNTS.load(Ordering::Relaxed),
+        wake_timeouts: MLX5_WAKE_TIMEOUTS.load(Ordering::Relaxed),
         initialized: MLX5_BRIDGE_INITIALIZED.load(Ordering::Acquire),
     }
 }
@@ -882,6 +910,8 @@ pub fn cleanup_mlx5_bridge() {
     MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
     MLX5_RX_CQE_LOG_BUDGET.store(0, Ordering::Release);
     MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(0, Ordering::Release);
+    MLX5_WAKE_COUNTS.store(0, Ordering::Release);
+    MLX5_WAKE_TIMEOUTS.store(0, Ordering::Release);
 
     // RX バッファの解放
     if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
