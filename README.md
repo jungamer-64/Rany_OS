@@ -125,7 +125,7 @@ block-beta
 
     block:MemorySpace
         columns 1
-        title "Single Virtual Address Space (64-bit)"
+        MemoryTitle["Single Virtual Address Space (64-bit)"]
         
         block:DomainA
             columns 3
