@@ -202,7 +202,9 @@ pub fn build_query_special_contexts_input(in_mbox: &mut CmdMailbox) {
 
 /// QUERY_SPECIAL_CONTEXTS 出力から reserved lkey を取得
 pub fn parse_query_special_contexts_resd_lkey(out_mbox: &CmdMailbox) -> u32 {
-    out_mbox.read_be32(0x10)
+    // mlx5_ifc_query_special_contexts_out_bits:
+    // dump_fill_mkey @0x08, resd_lkey @0x0c, null_mkey @0x10.
+    out_mbox.read_be32(0x0C)
 }
 
 #[cfg(test)]
@@ -217,6 +219,14 @@ mod tests {
         out_mbox.data[0x0A] = 0x56;
         out_mbox.data[0x0B] = 0x78;
         assert_eq!(parse_create_mkey_output(&out_mbox), 0x0034_5678);
+    }
+
+    #[test]
+    fn query_special_contexts_reserved_lkey_uses_correct_offset() {
+        let mut out_mbox = CmdMailbox::zeroed();
+        out_mbox.write_be32(0x0C, 0x1122_3344); // resd_lkey
+        out_mbox.write_be32(0x10, 0x5566_7788); // null_mkey (must be ignored)
+        assert_eq!(parse_query_special_contexts_resd_lkey(&out_mbox), 0x1122_3344);
     }
 
     #[test]
