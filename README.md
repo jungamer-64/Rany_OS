@@ -12,8 +12,8 @@ ExoRustは、ハードウェアによる強制的な隔離（MMU/Ring分離）�
 graph TD
     subgraph Legacy ["従来のOS (Linux/Windows)"]
         direction BT
-        App1[App Process A<br/>(Ring 3)]
-        App2[App Process B<br/>(Ring 3)]
+        App1["App Process A<br/>(Ring 3)"]
+        App2["App Process B<br/>(Ring 3)"]
         
         subgraph Kernel ["Kernel Space (Ring 0)"]
             SyscallHandler[Syscall Interface]
@@ -40,7 +40,7 @@ graph TD
             ExoApp2[Domain: Database]
             ExoNet[Domain: Net Stack]
             
-            Framework[ExoRust Framework<br/>(Safe/Unsafe Boundary)]
+            Framework["ExoRust Framework<br/>(Safe/Unsafe Boundary)"]
             
             %% Direct Function Calls
             ExoApp1 -- "Function Call<br/>(Zero Cost)" --> Framework
