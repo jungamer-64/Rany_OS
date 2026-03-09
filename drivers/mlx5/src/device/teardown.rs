@@ -65,6 +65,9 @@ impl Mlx5Device {
         while let Some(rq) = self.rqs.pop() {
             let _ = self.destroy_rq_hw(rq.rqn);
         }
+        while let Some(rmpn) = self.rmp_list.pop() {
+            let _ = self.destroy_rmp_hw(rmpn);
+        }
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(cq) = self.cqs.pop() {
             let _ = self.destroy_cq_hw(cq.cqn);
@@ -131,6 +134,20 @@ impl Mlx5Device {
         build_destroy_rq_input(in_mbox, rqn);
         self.execute_uid_sensitive_cmd(
             CmdOpcode::DestroyRq,
+            MLX5_CMD_MBOX_SIZE as u32,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+        Ok(())
+    }
+
+    pub unsafe fn destroy_rmp_hw(&mut self, rmpn: u32) -> Mlx5Result<()> {
+        self.cmd
+            .as_ref()
+            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_destroy_rmp_input(in_mbox, rmpn);
+        self.execute_uid_sensitive_cmd(
+            CmdOpcode::DestroyRmp,
             MLX5_CMD_MBOX_SIZE as u32,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;

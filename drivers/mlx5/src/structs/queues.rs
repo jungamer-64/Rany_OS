@@ -101,6 +101,9 @@ impl<'a> WqLayout<'a> {
     pub fn set_wq_type(&mut self, val: u8) {
         set_bits_u32(self.data, 0, 4, val as u32);
     }
+    pub fn set_end_padding_mode(&mut self, val: u8) {
+        set_bits_u32(self.data, 5, 2, val as u32);
+    }
     pub fn set_pd(&mut self, val: u32) {
         set_bits_u32(self.data, 72, 24, val);
     }
@@ -180,6 +183,9 @@ impl<'a> RqContextLayout<'a> {
     pub fn set_cqn(&mut self, val: u32) {
         set_bits_u32(self.data, 72, 24, val);
     }
+    pub fn set_rmpn(&mut self, val: u32) {
+        set_bits_u32(self.data, 136, 24, val);
+    }
     pub fn set_scatter_fcs(&mut self, val: bool) {
         set_bits_u32(self.data, 2, 1, if val { 1 } else { 0 });
     }
@@ -187,6 +193,29 @@ impl<'a> RqContextLayout<'a> {
         // RQC.vsd is VLAN strip disable; invert the semantic for callers that
         // pass "enable VLAN strip" as a boolean.
         set_bits_u32(self.data, 3, 1, if val { 0 } else { 1 });
+    }
+
+    pub fn wq(&mut self) -> WqLayout<'_> {
+        WqLayout::new(&mut self.data[0x30..])
+    }
+}
+
+/// RMP Context Layout
+pub struct RmpContextLayout<'a> {
+    pub(crate) data: &'a mut [u8],
+}
+
+impl<'a> RmpContextLayout<'a> {
+    pub fn new(data: &'a mut [u8]) -> Self {
+        Self { data }
+    }
+
+    pub fn set_state(&mut self, val: u8) {
+        set_bits_u32(self.data, 8, 4, val as u32);
+    }
+
+    pub fn set_basic_cyclic_rcv_wqe(&mut self, val: bool) {
+        set_bits_u32(self.data, 32, 1, if val { 1 } else { 0 });
     }
 
     pub fn wq(&mut self) -> WqLayout<'_> {

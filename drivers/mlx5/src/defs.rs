@@ -301,6 +301,12 @@ pub enum CmdOpcode {
     ModifyRq = 0x0909,
     /// RQ破棄
     DestroyRq = 0x090A,
+    /// RMP (Receive Memory Pool) 作成
+    CreateRmp = 0x090C,
+    /// RMP状態変更
+    ModifyRmp = 0x090D,
+    /// RMP破棄
+    DestroyRmp = 0x090E,
 
     /// TIR (Transport Interface Receive) 作成
     CreateTir = 0x0900,

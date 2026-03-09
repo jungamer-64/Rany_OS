@@ -88,6 +88,7 @@ pub struct Mlx5Device {
     pub(crate) cqs: Vec<CompletionQueue>,
     pub(crate) sqs: Vec<SendQueue>,
     pub(crate) rqs: Vec<ReceiveQueue>,
+    pub(crate) rmp_list: Vec<u32>,
     pub(crate) rq_tables: Vec<RqTable>,
     pub(crate) cq_db_records: Vec<(u64, u64)>,
     pub(crate) tx_cq_by_sq: Vec<usize>,
@@ -177,6 +178,7 @@ impl Mlx5Device {
             cqs: Vec::new(),
             sqs: Vec::new(),
             rqs: Vec::new(),
+            rmp_list: Vec::new(),
             rq_tables: Vec::new(),
             cq_db_records: Vec::new(),
             tx_cq_by_sq: Vec::new(),
@@ -354,8 +356,8 @@ impl Mlx5Device {
             match opcode {
                 // VF の CREATE_EQ は 0xffff が先に通る個体が多い。
                 CmdOpcode::CreateEq => push_uid(0xFFFF),
-                // VF の CREATE_RQ / CREATE_TIR は UID 0 が先に通りやすい。
-                CmdOpcode::CreateRq | CmdOpcode::CreateTir => push_uid(0),
+                // VF の CREATE_RQ / CREATE_RMP / CREATE_TIR は UID 0 が先に通りやすい。
+                CmdOpcode::CreateRq | CmdOpcode::CreateRmp | CmdOpcode::CreateTir => push_uid(0),
                 _ => {}
             }
         }

@@ -4,7 +4,9 @@
 
 use crate::cmd::CmdMailbox;
 use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_PAGE_SIZE};
-use crate::structs::queues::{CqContextLayout, EqContextLayout, RqContextLayout, SqContextLayout};
+use crate::structs::queues::{
+    CqContextLayout, EqContextLayout, RmpContextLayout, RqContextLayout, SqContextLayout,
+};
 
 const CREATE_EQ_EVENT_MASK_OFFSET: usize = 0x58;
 const CREATE_EQ_EVENT_MASK_LEN: usize = 0x20;
@@ -212,6 +214,7 @@ pub fn build_create_rq_input(
         scatter_fcs,
         vlan_strip,
         0,
+        None,
     );
 }
 
@@ -227,6 +230,7 @@ pub fn build_create_rq_input_with_mem_type(
     scatter_fcs: bool,
     vlan_strip: bool,
     mem_rq_type: u8,
+    rmpn: Option<u32>,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = RqContextLayout::new(&mut in_mbox.data[0x20..]);
@@ -235,10 +239,17 @@ pub fn build_create_rq_input_with_mem_type(
     layout.set_scatter_fcs(scatter_fcs);
     layout.set_vlan_strip(vlan_strip);
     layout.set_cqn(cqn);
+    if (mem_rq_type & 0x0f) == 1 {
+        if let Some(rmpn) = rmpn {
+            layout.set_rmpn(rmpn);
+        }
+    }
 
     {
         let mut wq = layout.wq();
         wq.set_wq_type(1); // cyclic
+        // Match Linux mlx5e default for cyclic RQ.
+        wq.set_end_padding_mode(1); // MLX5_WQ_END_PAD_MODE_ALIGN
         wq.set_pd(pd);
         wq.set_uar_page(uar_page);
         wq.set_dbr_addr(db_pa);
@@ -255,6 +266,68 @@ pub fn build_create_rq_input_with_mem_type(
             in_mbox.write_be64(off, rq_buf_pa + (i as u64) * (MLX5_PAGE_SIZE as u64));
         }
     }
+}
+
+/// CREATE_RMP コマンド入力の構築
+pub fn build_create_rmp_input(
+    in_mbox: &mut CmdMailbox,
+    log_rmp_size: u8,
+    rmp_buf_pa: u64,
+    db_pa: u64,
+    pd: u32,
+    uar_page: u32,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    let mut layout = RmpContextLayout::new(&mut in_mbox.data[0x20..]);
+    // RMPC has only RDY(1)/ERR(3); there is no RESET state.
+    layout.set_state(1); // RDY
+    layout.set_basic_cyclic_rcv_wqe(true);
+
+    {
+        let mut wq = layout.wq();
+        wq.set_wq_type(1); // cyclic
+        wq.set_end_padding_mode(1); // MLX5_WQ_END_PAD_MODE_ALIGN
+        wq.set_pd(pd);
+        wq.set_uar_page(uar_page);
+        wq.set_dbr_addr(db_pa);
+        wq.set_log_wq_stride(4); // 16B data segment
+        wq.set_log_wq_pg_sz(0); // 4KB
+        wq.set_log_wq_sz(log_rmp_size);
+    }
+
+    let rmp_bytes = (1usize << (log_rmp_size as usize)) * crate::defs::WQEBB_SIZE;
+    let rmp_pages = (rmp_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
+    for i in 0..rmp_pages {
+        let off = 0x110 + i * 8;
+        if off + 8 <= MLX5_CMD_MBOX_SIZE {
+            in_mbox.write_be64(off, rmp_buf_pa + (i as u64) * (MLX5_PAGE_SIZE as u64));
+        }
+    }
+}
+
+/// CREATE_RMP 出力からRMP番号を解析
+pub fn parse_create_rmp_output(out_mbox: &CmdMailbox) -> u32 {
+    out_mbox.read_be24(0x09)
+}
+
+/// DESTROY_RMP コマンド入力の構築
+pub fn build_destroy_rmp_input(in_mbox: &mut CmdMailbox, rmpn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, rmpn & 0x00FF_FFFF);
+}
+
+/// MODIFY_RMP コマンド入力の構築
+pub fn build_modify_rmp_input(
+    in_mbox: &mut CmdMailbox,
+    rmpn: u32,
+    current_state: u8,
+    next_state: u8,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    let rmp_state_and_num = (((current_state as u32) & 0x0F) << 28) | (rmpn & 0x00FF_FFFF);
+    in_mbox.write_be32(0x08, rmp_state_and_num);
+    let mut layout = RmpContextLayout::new(&mut in_mbox.data[0x20..]);
+    layout.set_state(next_state);
 }
 
 /// CREATE_RQ 出力からRQ番号を解析
@@ -383,6 +456,7 @@ mod tests {
         assert_eq!(get_bits_u32(ctx, 4, 4), 0); // mem_rq_type (MEMORY_RQ_INLINE)
         assert_eq!(get_bits_u32(ctx, 13, 1), 1); // flush_in_error_en
         assert_eq!(get_bits_u32(ctx, 72, 24), 0x123); // cqn
+        assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 5, 2), 1); // end_padding_mode=ALIGN
         assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 268, 4), 4); // log_wq_stride
     }
 

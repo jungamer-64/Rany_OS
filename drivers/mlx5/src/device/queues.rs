@@ -301,11 +301,27 @@ impl Mlx5Device {
 
         let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
         let mut selected_mem_rq_type = 0u8;
+        let mut selected_rmpn: Option<u32> = None;
         // この実装の RX WQE 生成は MEMORY_RQ_INLINE(mem_rq_type=0) を前提にしている。
         // まず 0 を試し、VF で拒否される個体のみ 1 へフォールバックする。
         let mem_rq_type_attempts: &[u8] = if self.is_vf() { &[0, 1] } else { &[0] };
         let mut inline_rq_rejected = false;
         for &mem_rq_type in mem_rq_type_attempts {
+            let mut rmpn_for_attempt = None;
+            if mem_rq_type == 1 {
+                match self.create_rmp_hw(rq_buf_pa, db_pa, log_rq_size) {
+                    Ok(rmpn) => {
+                        rmpn_for_attempt = Some(rmpn);
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            target: "mlx5",
+                            "CREATE_RMP failed for mem_rq_type=1 fallback ({:?}); retrying CREATE_RQ without explicit rmpn",
+                            err
+                        );
+                    }
+                }
+            }
             build_create_rq_input_with_mem_type(
                 in_mbox,
                 log_rq_size,
@@ -317,14 +333,19 @@ impl Mlx5Device {
                 scatter_fcs,
                 vlan_strip,
                 mem_rq_type,
+                rmpn_for_attempt,
             );
             match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10) {
                 Ok(()) => {
                     selected_mem_rq_type = mem_rq_type;
+                    selected_rmpn = rmpn_for_attempt;
                     last_err = Ok(());
                     break;
                 }
                 Err(err) => {
+                    if let Some(rmpn) = rmpn_for_attempt {
+                        let _ = self.destroy_rmp_hw(rmpn);
+                    }
                     if mem_rq_type == 0 {
                         inline_rq_rejected = true;
                     }
@@ -336,6 +357,9 @@ impl Mlx5Device {
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let rqn = parse_create_rq_output(out_mbox);
+        if let Some(rmpn) = selected_rmpn {
+            self.rmp_list.push(rmpn);
+        }
         if selected_mem_rq_type != 0 {
             log::warn!(
                 target: "mlx5",
@@ -372,6 +396,33 @@ impl Mlx5Device {
         self.rx_cq_by_rq.push(cq_index);
         crate::boot_trace("[MLX5_RQ] done\n");
         Ok(rqn)
+    }
+
+    unsafe fn create_rmp_hw(
+        &mut self,
+        rmp_buf_pa: u64,
+        db_pa: u64,
+        log_rmp_size: u8,
+    ) -> Mlx5Result<u32> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_create_rmp_input(
+            in_mbox,
+            log_rmp_size,
+            rmp_buf_pa,
+            db_pa,
+            self.pd,
+            self.uar_page,
+        );
+
+        let rmp_bytes = (1usize << (log_rmp_size as usize)) * crate::defs::WQEBB_SIZE;
+        let rmp_pages = (rmp_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
+        let rmp_in_len = (0x110 + rmp_pages * 8) as u32;
+        self.execute_uid_sensitive_cmd(CmdOpcode::CreateRmp, rmp_in_len, 0x10)?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let rmpn = parse_create_rmp_output(out_mbox);
+        Ok(rmpn)
     }
 
     /// RQTを作成
@@ -417,6 +468,20 @@ impl Mlx5Device {
         for current_state in [WqState::Reset as u8, WqState::Ready as u8] {
             build_modify_rq_input(in_mbox, rqn, current_state, WqState::Ready as u8);
             match self.execute_uid_sensitive_cmd(CmdOpcode::ModifyRq, 0x110, 0x10) {
+                Ok(()) => return Ok(()),
+                Err(err) => last_err = Err(err),
+            }
+        }
+        last_err
+    }
+
+    unsafe fn transition_rmp_to_ready(&mut self, rmpn: u32) -> Mlx5Result<()> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        for current_state in [WqState::Reset as u8, WqState::Ready as u8] {
+            build_modify_rmp_input(in_mbox, rmpn, current_state, WqState::Ready as u8);
+            match self.execute_uid_sensitive_cmd(CmdOpcode::ModifyRmp, 0x110, 0x10) {
                 Ok(()) => return Ok(()),
                 Err(err) => last_err = Err(err),
             }
