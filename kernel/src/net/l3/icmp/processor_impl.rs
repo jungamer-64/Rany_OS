@@ -289,7 +289,7 @@ impl IcmpProcessor {
 
     /// Process an ICMP Redirect packet.
     pub(super) fn process_redirect(
-        &self,
+        &mut self,
         packet: &IcmpPacket<'_>,
         src_ip: Ipv4Address,
     ) -> IcmpResult {
@@ -314,11 +314,9 @@ impl IcmpProcessor {
             }
         }
 
-        log::warn!(
-            "[NET] ICMP: Ignoring Redirect from {} (Security: disabled by default)",
-            src_ip
-        );
-        IcmpResult::Ignored
+        // Malformed or too short Redirect payload
+        self.stats.invalid += 1;
+        IcmpResult::Invalid
     }
 
     /// Process an ICMP Timestamp Request packet.

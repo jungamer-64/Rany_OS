@@ -864,14 +864,23 @@ impl NetworkStack {
                 target,
                 destination,
             } => {
-                log::info!(
-                    "NDP: Redirect for {} to target router {}",
-                    destination,
-                    target
-                );
-                // Update IPv6 Path MTU or routing table with redirect info
-                // Currently we don't have a separate IPv6 redirect cache like IPv4,
-                // but we could theoretically update the neighbor cache (already done in process_redirect).
+                // Security check 0: Is Redirect handling enabled globally?
+                if !self.config.icmpv6_redirect_enabled {
+                    log::warn!(
+                        "NDP: Ignoring Redirect for {} to target router {} (Security: disabled by default)",
+                        destination,
+                        target
+                    );
+                } else {
+                    log::info!(
+                        "NDP: Applying Redirect for {} to target router {}",
+                        destination,
+                        target
+                    );
+                    // Update IPv6 Path MTU or routing table with redirect info
+                    // Currently we don't have a separate IPv6 redirect cache like IPv4,
+                    // but we could theoretically update the neighbor cache (already done in process_redirect).
+                }
             }
             NdpResult::None | NdpResult::Error => {}
         }

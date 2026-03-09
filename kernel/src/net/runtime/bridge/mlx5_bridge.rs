@@ -736,6 +736,8 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
         ipv4: Ipv4Config::default(),
         ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
         icmp_echo_enabled: true,
+        icmp_redirect_enabled: false,
+        icmpv6_redirect_enabled: false,
     };
 
     super::shared::ensure_stack_initialized(config)?;

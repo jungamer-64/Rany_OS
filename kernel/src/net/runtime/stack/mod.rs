@@ -74,6 +74,10 @@ pub struct NetworkConfig {
     pub ipv6: Option<Ipv6Config>,
     /// Enable ICMP echo responses
     pub icmp_echo_enabled: bool,
+    /// Enable ICMPv4 Redirect handling (Security: default false)
+    pub icmp_redirect_enabled: bool,
+    /// Enable ICMPv6/NDP Redirect handling (Security: default false)
+    pub icmpv6_redirect_enabled: bool,
 }
 
 impl Default for NetworkConfig {
@@ -83,6 +87,8 @@ impl Default for NetworkConfig {
             ipv4: Ipv4Config::default(),
             ipv6: None,
             icmp_echo_enabled: true,
+            icmp_redirect_enabled: false,
+            icmpv6_redirect_enabled: false,
         }
     }
 }

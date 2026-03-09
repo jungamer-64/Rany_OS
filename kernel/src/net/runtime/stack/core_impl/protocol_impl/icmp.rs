@@ -921,6 +921,17 @@ impl NetworkStack {
         destination: Ipv4Address,
         redirect_source: Ipv4Address,
     ) {
+        // Security check 0: Is Redirect handling enabled globally?
+        if !self.config.icmp_redirect_enabled {
+            log::warn!(
+                "[NET] ICMP: Ignoring Redirect from {} to {} via {} (Security: disabled by default)",
+                redirect_source,
+                destination,
+                gateway
+            );
+            return;
+        }
+
         // Security check 1: Only accept redirects from our current gateway
         let current_gateway = self.config.ipv4.gateway;
         if redirect_source != current_gateway {
