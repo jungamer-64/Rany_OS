@@ -9,7 +9,6 @@
 use super::rules::{FirewallAction, FirewallDirection, FirewallRule, IpAddress, RuleId};
 use super::stats::FirewallStats;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 extern crate alloc;
 

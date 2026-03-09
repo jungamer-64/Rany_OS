@@ -332,7 +332,7 @@ impl VirtioInputDevice {
                 Some(q) => q,
                 None => continue,
             };
-            let mut eq = event_queue.lock().unwrap_or_else(|e| e.into_inner());
+            let eq = event_queue.lock().unwrap_or_else(|e| e.into_inner());
             eq.free_desc(desc_id);
             drop(eq);
 

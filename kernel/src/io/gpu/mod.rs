@@ -13,10 +13,10 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::{Mutex, RwLock};
 use virtio_driver::defs::{
-    VRING_USED_ALIGN, VringAvailHeader as VringAvail, VringDesc, VringUsedElem,
+    VRING_USED_ALIGN, VringAvailHeader as VringAvail, VringDesc,
     VringUsedHeader as VringUsed, vring_flags,
 };
 

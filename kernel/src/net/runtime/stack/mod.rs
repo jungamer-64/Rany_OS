@@ -14,7 +14,7 @@ use crate::net::l2::ethernet::{
     EtherType, EthernetFrameMut, EthernetHeader, EthernetProcessor, MacAddress,
 };
 use crate::net::l3::icmp::{
-    DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, IcmpType, RedirectCode,
+    DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, RedirectCode,
 };
 use crate::net::l3::icmpv6::{Icmpv6Builder, Icmpv6Processor, Icmpv6Result, Icmpv6Type};
 use crate::net::l3::igmp::{IgmpError, IgmpProcessor, IgmpResult, multicast_ip_to_mac};

@@ -308,7 +308,7 @@ fn submit_mlx5_tx_packet(pkt: PacketRef, vlan_tag: Option<u16>) -> bool {
         if !device.is_active() {
             return false;
         }
-        let mut pkt = pkt;
+        let pkt = pkt;
 
         let data_virt = pkt.as_ptr() as u64;
         let data_device = pkt.device_address(); // IOMMU-safe

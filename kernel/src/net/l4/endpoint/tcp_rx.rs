@@ -322,7 +322,7 @@ pub fn process_tcp_segment_v6(
     let data_off_flags = u16::from_be_bytes([segment[12], segment[13]]);
     let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
     // capture full flag byte (CWR/ECE/URG/ACK/PSH/RST/SYN/FIN)
-    let flags = (data_off_flags as u8);
+    let flags = data_off_flags as u8;
     let window = u16::from_be_bytes([segment[14], segment[15]]);
     let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
 
@@ -504,7 +504,7 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     }
 
     // grab full low byte (includes CWR/ECE) rather than truncating to 6 bits
-    let flags = (data_off_flags as u8);
+    let flags = data_off_flags as u8;
     let window = u16::from_be_bytes([segment[14], segment[15]]);
     let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
 

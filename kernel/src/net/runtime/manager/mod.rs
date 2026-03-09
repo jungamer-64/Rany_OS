@@ -2,7 +2,7 @@ use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::runtime::stack::NetworkConfig;
 use crate::net::types::NetworkError;
-use crate::sync::{PoisonLock, PoisonLockGuard};
+use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;

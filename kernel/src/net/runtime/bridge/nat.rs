@@ -3,7 +3,6 @@ use crate::net::runtime::manager::{self, NetIfId};
 use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Maximum number of NAT entries to prevent DoS
 const MAX_NAT_ENTRIES: usize = 1024;

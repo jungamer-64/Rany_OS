@@ -645,7 +645,7 @@ impl CommandQueue {
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
     {
         let mut processed = 0usize;
-        let mut rx = self.receiver.lock().unwrap_or_else(|e| e.into_inner());
+        let rx = self.receiver.lock().unwrap_or_else(|e| e.into_inner());
 
         // LOOP_PROOF: mode=condition; reason=Loop is explicitly bounded by max and also exits early when receiver is empty or fuel is exhausted.;
         while processed < max {
