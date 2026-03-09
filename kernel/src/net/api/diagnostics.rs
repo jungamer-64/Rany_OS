@@ -3,7 +3,6 @@
 // ============================================================================
 //! ネットワーク診断スナップショット、最新イベント取得、簡易DNS解決。
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::net::obs::{NetSnapshot, NetTraceEvent, snapshot};

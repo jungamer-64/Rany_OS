@@ -3,8 +3,6 @@
 // ============================================================================
 //! ICMP Echoリクエストの送信（同期・非同期）。
 
-use alloc::string::String;
-
 extern crate alloc;
 
 // Removed: `send_icmp_echo()` — deprecated, use `send_icmp_echo_async()` or `ping_async()` instead.

@@ -41,6 +41,7 @@ use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::timeouts::{TimeoutWheel, TimerKind}; // required for new transmit callback signature
 
 use crate::sync::PoisonLock;
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
@@ -305,7 +306,7 @@ pub(crate) struct PendingIpv6Packet {
     /// 送信元IPv6アドレス
     src: Ipv6Address,
     /// ICMPv6ペイロード
-    icmpv6_data: Vec<u8>,
+    icmpv6_data: Box<[u8]>,
     /// キューイング時刻
     queued_at: u64,
 }
@@ -337,7 +338,7 @@ impl NdpPendingQueue {
         self.packets.push_back(PendingIpv6Packet {
             dst,
             src,
-            icmpv6_data: icmpv6_data.to_vec(),
+            icmpv6_data: Box::from(icmpv6_data),
             queued_at: current_time,
         });
     }

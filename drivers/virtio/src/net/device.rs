@@ -238,22 +238,27 @@ impl VirtioNetDevice {
             None => return Ok(false),
         };
 
-        let phys = packet.phys_addr();
         let len = packet.capacity();
+        let (device_addr, iova) = runtime.map_packet(&packet, NetDmaDirection::FromDevice)?;
 
-        match unsafe { vq.add_rx_buffer(phys.as_u64(), len) } {
+        match unsafe { vq.add_rx_buffer(device_addr, len) } {
             Ok(desc_idx) => {
                 tracker.put(
                     desc_idx,
                     RxInflight {
                         packet,
-                        iommu_iova: None,
-                        iommu_map_len: 0,
+                        iommu_iova: iova,
+                        iommu_map_len: len as u64,
                     },
                 );
                 Ok(true)
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                if let Some(iova) = iova {
+                    runtime.unmap_dma(iova, len as u64);
+                }
+                Err(e)
+            }
         }
     }
 }

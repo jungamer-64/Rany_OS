@@ -25,7 +25,7 @@ pub fn detect_1g_page_support() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         use core::arch::x86_64::__cpuid;
-        let result = unsafe { __cpuid(0x80000001) };
+        let result = __cpuid(0x80000001);
         let supported = (result.edx & (1 << 26)) != 0;
         HUGE_PAGE_1G_AVAILABLE.store(supported, Ordering::Release);
         supported

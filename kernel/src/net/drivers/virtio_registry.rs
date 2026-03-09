@@ -4,8 +4,7 @@
 //!
 //! VirtIO-Net driver implementing the Driver trait for DriverRegistry integration.
 //!
-//! This wraps the existing driver_bridge functionality to work with the
-//! unified DriverRegistry system.
+//! This wraps the port runtime registration flow for DriverRegistry integration.
 
 use alloc::boxed::Box;
 use kernel_api::abi::driver::DriverContext;
@@ -76,18 +75,23 @@ impl AsyncDriver for VirtioNetAsyncDriver {
                 }
             }
 
-            if crate::net::runtime::bridge::is_initialized() {
-                self.initialized = true;
-                return Ok(());
+            let adapter = crate::drivers::virtio::virtio_net_driver_adapter(0);
+            if adapter.info().flags == 0 {
+                return Err(KapiError::NotFound);
             }
 
-            match crate::net::runtime::bridge::init_bridge() {
-                Ok(()) => {
-                    self.initialized = true;
-                    Ok(())
-                }
-                Err(_) => Err(KapiError::NotFound),
-            }
+            let if_id = crate::net::runtime::device::register_port_with_default_config(
+                crate::net::runtime::device::NetDeviceKey::Virtio(0),
+                adapter,
+                true,
+            )
+            .map_err(|_| KapiError::NotFound)?;
+
+            crate::net::runtime::bridge::register_stack_glue_interface(if_id, Some(0));
+            crate::net::runtime::bridge::set_rx_csum_hw_verified(true);
+            crate::drivers::virtio::register_virtio_net_with_io_scheduler(0);
+            self.initialized = true;
+            Ok(())
         })
     }
 

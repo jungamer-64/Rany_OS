@@ -5,6 +5,8 @@
 
 extern crate alloc;
 
+use crate::net::l2::ethernet::MacAddress as StackMacAddress;
+use crate::net::l3::ipv4::Ipv4Config;
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
 use crate::sync::atomic_waker::AtomicWaker;
@@ -12,14 +14,15 @@ use crate::sync::lockfree::MpmcRingBuffer;
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use core::task::{Context, Poll};
 use kernel_api::resource::net::PacketRef;
 use kernel_api::service::netdev::{
-    self as kapi_netdev, MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetLogLevel,
-    NetPortKind, NetPortRuntime, NetPortStats, NetRxMeta, NetTxMeta, NETDEV_FLAG_ADMIN_UP,
+    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetLogLevel, NetPortKind,
+    NetPortRuntime, NetPortStats, NetRxMeta, NetTxMeta, NETDEV_FLAG_ADMIN_UP,
     NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY,
 };
 
@@ -515,7 +518,25 @@ fn interface_for_key(
     }
 }
 
-pub fn register_device(
+fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
+    let mac_bytes = if info.mac == MacAddress::ZERO {
+        MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01)
+    } else {
+        info.mac
+    };
+    let mac = StackMacAddress::new(*mac_bytes.as_bytes());
+
+    NetworkConfig {
+        mac,
+        ipv4: Ipv4Config::default(),
+        ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
+        icmp_echo_enabled: true,
+        icmp_redirect_enabled: false,
+        icmpv6_redirect_enabled: false,
+    }
+}
+
+pub fn register_port(
     key: NetDeviceKey,
     driver: Arc<dyn NetDevicePort>,
     config: NetworkConfig,
@@ -558,7 +579,16 @@ pub fn register_device(
     Ok(if_id)
 }
 
-pub fn bind_device_interface(key: NetDeviceKey, if_id: NetIfId) -> Result<(), &'static str> {
+pub fn register_port_with_default_config(
+    key: NetDeviceKey,
+    driver: Arc<dyn NetDevicePort>,
+    make_primary: bool,
+) -> Result<NetIfId, &'static str> {
+    let config = default_config_for_port(driver.info());
+    register_port(key, driver, config, make_primary)
+}
+
+pub fn bind_port_interface(key: NetDeviceKey, if_id: NetIfId) -> Result<(), &'static str> {
     let handle = {
         let guard = DEVICE_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(bound_if_id) = guard.key_map.get(&key).copied() else {
@@ -591,7 +621,7 @@ pub fn bind_device_interface(key: NetDeviceKey, if_id: NetIfId) -> Result<(), &'
     Ok(())
 }
 
-pub fn unregister_device(if_id: NetIfId) -> bool {
+pub fn unregister_port(if_id: NetIfId) -> bool {
     let handle = {
         let mut guard = DEVICE_MANAGER.write().unwrap_or_else(|e| e.into_inner());
         let handle = guard.handles.remove(&if_id);
@@ -621,7 +651,7 @@ pub fn lookup_if_by_key(key: NetDeviceKey) -> Option<NetIfId> {
         .copied()
 }
 
-pub fn lookup_device(if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
+pub fn lookup_port(if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
     DEVICE_MANAGER
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -630,7 +660,7 @@ pub fn lookup_device(if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
         .cloned()
 }
 
-pub fn list_devices() -> Vec<Arc<NetDeviceHandle>> {
+pub fn list_ports() -> Vec<Arc<NetDeviceHandle>> {
     DEVICE_MANAGER
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -641,7 +671,30 @@ pub fn list_devices() -> Vec<Arc<NetDeviceHandle>> {
 }
 
 pub fn list_port_infos() -> Vec<NetDeviceInfo> {
-    list_devices().into_iter().map(|handle| handle.info()).collect()
+    list_ports().into_iter().map(|handle| handle.info()).collect()
+}
+
+pub fn port_info(key: NetDeviceKey) -> Option<NetDeviceInfo> {
+    let if_id = lookup_if_by_key(key)?;
+    let handle = lookup_port(if_id)?;
+    Some(handle.info())
+}
+
+pub fn port_stats(key: NetDeviceKey) -> Option<NetPortStats> {
+    let if_id = lookup_if_by_key(key)?;
+    let handle = lookup_port(if_id)?;
+    Some(handle.driver().stats())
+}
+
+pub fn list_port_keys(kind: Option<NetPortKind>) -> Vec<NetDeviceKey> {
+    DEVICE_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .key_map
+        .keys()
+        .copied()
+        .filter(|key| kind.is_none_or(|expected| key.kind() == expected))
+        .collect()
 }
 
 pub fn primary_if() -> Option<NetIfId> {
@@ -654,7 +707,7 @@ pub fn set_primary_interface(if_id: NetIfId) {
 
 pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMeta) -> bool {
     let resolved_if = if_id.or_else(primary_if);
-    let Some(handle) = resolved_if.and_then(lookup_device) else {
+    let Some(handle) = resolved_if.and_then(lookup_port) else {
         return false;
     };
     handle.enqueue_tx(packet, meta)
@@ -679,7 +732,7 @@ pub fn enqueue_event(key: NetDeviceKey, event: NetDriverEvent) -> bool {
     let Some(if_id) = lookup_if_by_key(key) else {
         return false;
     };
-    let Some(handle) = lookup_device(if_id) else {
+    let Some(handle) = lookup_port(if_id) else {
         return false;
     };
     handle.enqueue_event(event)
@@ -689,7 +742,7 @@ pub fn enqueue_event_from_isr(key: NetDeviceKey, event: NetDriverEvent) -> bool 
     let Some(if_id) = lookup_if_by_key(key) else {
         return false;
     };
-    let Some(handle) = lookup_device(if_id) else {
+    let Some(handle) = lookup_port(if_id) else {
         return false;
     };
     handle.enqueue_event_from_isr(event)
@@ -699,12 +752,17 @@ pub fn enqueue_event_from_isr(key: NetDeviceKey, event: NetDriverEvent) -> bool 
 mod tests {
     use super::*;
     use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
     struct FakeDriver {
         bind_calls: AtomicUsize,
         last_if_id: AtomicU16,
         last_event_queue: AtomicU16,
+        poll_calls: AtomicUsize,
+        stop_calls: AtomicUsize,
+        tx_packets: AtomicU64,
+        rx_packets: AtomicU64,
+        initialized: AtomicBool,
     }
 
     impl FakeDriver {
@@ -713,7 +771,18 @@ mod tests {
                 bind_calls: AtomicUsize::new(0),
                 last_if_id: AtomicU16::new(0),
                 last_event_queue: AtomicU16::new(u16::MAX),
+                poll_calls: AtomicUsize::new(0),
+                stop_calls: AtomicUsize::new(0),
+                tx_packets: AtomicU64::new(0),
+                rx_packets: AtomicU64::new(0),
+                initialized: AtomicBool::new(false),
             }
+        }
+
+        fn set_stats(&self, tx_packets: u64, rx_packets: u64, initialized: bool) {
+            self.tx_packets.store(tx_packets, Ordering::Release);
+            self.rx_packets.store(rx_packets, Ordering::Release);
+            self.initialized.store(initialized, Ordering::Release);
         }
     }
 
@@ -745,6 +814,12 @@ mod tests {
             Ok(())
         }
 
+        fn poll(&self, if_id: u16) -> Result<(), &'static str> {
+            self.last_if_id.store(if_id, Ordering::Release);
+            self.poll_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
         fn handle_event(&self, if_id: u16, event: NetDriverEvent) -> Result<(), &'static str> {
             self.last_if_id.store(if_id, Ordering::Release);
             if let NetDriverEvent::QueueWake { queue_index } = event {
@@ -754,10 +829,18 @@ mod tests {
         }
 
         fn stats(&self) -> NetPortStats {
-            NetPortStats::default()
+            NetPortStats {
+                tx_packets: self.tx_packets.load(Ordering::Acquire),
+                rx_packets: self.rx_packets.load(Ordering::Acquire),
+                tx_errors: 0,
+                rx_errors: 0,
+                initialized: self.initialized.load(Ordering::Acquire),
+            }
         }
 
-        fn stop(&self) {}
+        fn stop(&self) {
+            self.stop_calls.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[test_case]
@@ -806,5 +889,61 @@ mod tests {
         assert_eq!(handle.binding().if_id, NetIfId(22));
         assert_eq!(driver.bind_calls.load(Ordering::Relaxed), 1);
         assert_eq!(driver.last_if_id.load(Ordering::Acquire), 22);
+    }
+
+    #[test_case]
+    fn register_port_with_default_config_exposes_snapshot_smoke() {
+        let driver = Arc::new(FakeDriver::new());
+        driver.set_stats(11, 7, true);
+
+        let if_id = register_port_with_default_config(
+            NetDeviceKey::Virtio(90),
+            driver.clone(),
+            false,
+        )
+        .expect("register port");
+
+        let info = port_info(NetDeviceKey::Virtio(90)).expect("port info");
+        let stats = port_stats(NetDeviceKey::Virtio(90)).expect("port stats");
+
+        assert_eq!(lookup_if_by_key(NetDeviceKey::Virtio(90)), Some(if_id));
+        assert_eq!(info.port_id, NetDeviceKey::Virtio(90).port_id());
+        assert_eq!(info.if_id, Some(if_id.0));
+        assert_eq!(stats.tx_packets, 11);
+        assert_eq!(stats.rx_packets, 7);
+        assert!(list_port_keys(Some(NetPortKind::Virtio)).contains(&NetDeviceKey::Virtio(90)));
+
+        assert!(unregister_port(if_id));
+        assert_eq!(driver.stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test_case]
+    fn register_port_make_primary_updates_primary_selection_smoke() {
+        let driver_a = Arc::new(FakeDriver::new());
+        let driver_b = Arc::new(FakeDriver::new());
+
+        let if_a = register_port_with_default_config(
+            NetDeviceKey::Virtio(91),
+            driver_a,
+            false,
+        )
+        .expect("register first port");
+        let if_b = register_port_with_default_config(
+            NetDeviceKey::Virtio(92),
+            driver_b,
+            true,
+        )
+        .expect("register second port");
+
+        assert_eq!(primary_if(), Some(if_b));
+        assert!(port_info(NetDeviceKey::Virtio(92))
+            .expect("primary info")
+            .flags
+            & NETDEV_FLAG_PRIMARY
+            != 0);
+
+        assert!(unregister_port(if_b));
+        assert_eq!(primary_if(), Some(if_a));
+        assert!(unregister_port(if_a));
     }
 }

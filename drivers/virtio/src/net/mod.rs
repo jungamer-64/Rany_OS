@@ -39,6 +39,14 @@ pub enum NetDmaPurpose {
     TxHeaders,
 }
 
+/// DMA direction for IOMMU mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetDmaDirection {
+    ToDevice,
+    FromDevice,
+    Bidirectional,
+}
+
 /// Kernel-owned allocation hooks used by the portable virtio-net core.
 pub trait NetRuntime: Send + Sync {
     fn alloc_dma(
@@ -48,7 +56,15 @@ pub trait NetRuntime: Send + Sync {
     ) -> Result<DmaSlice<CpuOwned>, VirtioNetError>;
 
     fn alloc_packet(&self) -> Option<PacketRef>;
-    
+
+    /// Map a packet for DMA access by the device (IOMMU support).
+    /// Returns (device_address, optional_iova).
+    fn map_packet(
+        &self,
+        packet: &PacketRef,
+        direction: NetDmaDirection,
+    ) -> Result<(u64, Option<u64>), VirtioNetError>;
+
     /// Unmap a DMA region previously mapped for a device.
     fn unmap_dma(&self, iova: u64, size: u64);
 

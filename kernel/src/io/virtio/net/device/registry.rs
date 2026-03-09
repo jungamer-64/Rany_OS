@@ -219,7 +219,7 @@ pub(crate) fn has_virtio_net_device(index: u8) -> bool {
     VIRTIO_NET_DEVICES.read().unwrap_or_else(|e| e.into_inner()).contains_key(&index)
 }
 
-fn collect_registered_virtio_net_indices() -> Vec<u8> {
+fn collect_registered_virtio_net_indices() -> Vec<usize> {
     let mut indices = Vec::new();
     if VIRTIO_NET_DEVICE
         .lock()
@@ -228,7 +228,13 @@ fn collect_registered_virtio_net_indices() -> Vec<u8> {
     {
         indices.push(0);
     }
-    indices.extend(VIRTIO_NET_DEVICES.read().unwrap_or_else(|e| e.into_inner()).keys().copied());
+    indices.extend(
+        VIRTIO_NET_DEVICES
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .map(|index| *index as usize),
+    );
     indices
 }
 
@@ -318,6 +324,7 @@ where
 {
     let indices = collect_registered_virtio_net_indices();
     for index in indices {
+        let index = index as u8;
         let _ = with_virtio_net_device_at_index(index, |device| {
             f(index, device);
         });
@@ -330,89 +337,6 @@ where
     F: FnOnce(&VirtioNetDevice) -> R,
 {
     with_virtio_net_device_at_index(0, f)
-}
-
-/// 指定 index の VirtIO-Net 割り込みを処理する。
-pub fn handle_virtio_net_interrupt_for_index(index: u8) {
-    let transport = VIRTIO_NET_TRANSPORTS.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned();
-
-    if let Some(transport) = transport {
-        let status = transport.get_interrupt_status();
-        if status != 0 {
-            transport.ack_interrupt(status);
-
-            let _ = crate::net::runtime::device::enqueue_event_from_isr(
-                NetDeviceKey::Virtio(index),
-                NetDriverEvent::Interrupt,
-            );
-        }
-    }
-}
-
-/// Acknowledge a VirtIO-Net interrupt without processing queues.
-pub fn ack_virtio_net_interrupt_for_index(index: u8) -> bool {
-    let transport = VIRTIO_NET_TRANSPORTS.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned();
-    if let Some(transport) = transport {
-        let status = transport.get_interrupt_status();
-        if status != 0 {
-            transport.ack_interrupt(status);
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    }
-}
-
-/// Acknowledge all registered VirtIO-Net interrupt sources.
-pub fn ack_all_virtio_net_interrupts() -> bool {
-    let indices = collect_registered_virtio_net_indices();
-    let mut had_pending = false;
-    for index in indices {
-        had_pending |= ack_virtio_net_interrupt_for_index(index);
-    }
-    had_pending
-}
-
-/// 登録済みの全 VirtIO-Net デバイス割り込みを処理する（共有IRQ向け）。
-pub fn handle_all_virtio_net_interrupts() {
-    let indices = collect_registered_virtio_net_indices();
-    for index in indices {
-        handle_virtio_net_interrupt_for_index(index);
-    }
-}
-
-/// 割り込みハンドラ
-pub fn handle_virtio_net_interrupt() {
-    handle_all_virtio_net_interrupts();
-}
-
-/// 同期的にRX/TXキューをポーリングしてパケットを処理する。
-pub fn poll_all_virtio_net_queues() {
-    let indices = collect_registered_virtio_net_indices();
-    for index in indices {
-        poll_virtio_net_queues_for_index(index);
-    }
-}
-
-fn poll_virtio_net_queues_for_index(index: u8) {
-    let transport = VIRTIO_NET_TRANSPORTS.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned();
-    if let Some(transport) = transport {
-        let status = transport.get_interrupt_status();
-        if status != 0 {
-            transport.ack_interrupt(status);
-        }
-    }
-
-    crate::net::runtime::bridge::enter_deferred_rx_mode();
-    with_virtio_net_device_at_index(index, |device| {
-        device.handle_interrupt();
-        device.refill_rx_queues();
-    });
-
-    crate::net::runtime::bridge::drain_deferred_rx_packets();
-    crate::net::runtime::bridge::flush_batch();
 }
 
 #[cfg(test)]

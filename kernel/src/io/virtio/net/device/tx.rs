@@ -173,10 +173,22 @@ impl VirtioNetDevice {
         if let Some(tx_queue) = self.tx_queues.first() {
             let q_idx = 0;
             let data_len = packet.len();
-            let device_addr = packet.phys_addr().as_u64();
+            let phys_addr = packet.phys_addr();
             
-            // Simplified DMA handling for enqueue (matching bridge expectations)
-            let iova = if is_iommu_enabled() { Some(device_addr) } else { None };
+            let (device_addr, iova) = if is_iommu_enabled() {
+                let device_id = self.iommu_device_id.ok_or(VirtioNetError::DeviceError)?;
+                // Use a larger size (capacity) for mapping to be safe, although we only send len.
+                // VT-d mapping must be 4K-aligned, and PacketBuffer is 4K.
+                let size = packet.capacity() as u64;
+                unsafe {
+                    let iova = crate::io::iommu::api::map_for_device_with_perms(
+                        &device_id, phys_addr, size, true, false, // TX: read-only from device perspective
+                    ).map_err(|_| VirtioNetError::DeviceError)?;
+                    (iova, Some(iova))
+                }
+            } else {
+                (phys_addr.as_u64(), None)
+            };
             
             match tx_queue.add_tx_buffer_zero_copy(device_addr, data_len) {
                 Ok(desc_idx) => {
@@ -185,13 +197,19 @@ impl VirtioNetDevice {
                         packet,
                         bounce_buffer: None,
                         iommu_iova: iova,
-                        iommu_map_len: data_len as u64,
+                        iommu_map_len: packet.capacity() as u64,
                     });
                     tx_queue.notify(self.transport.as_ref());
                     self.process_tx_completions();
                     Ok(())
                 }
-                Err(e) => Err(e)
+                Err(e) => {
+                    if let Some(iova_to_unmap) = iova {
+                        let device_id = self.iommu_device_id.unwrap();
+                        let _ = crate::io::iommu::api::unmap_for_device(&device_id, iova_to_unmap, packet.capacity() as u64);
+                    }
+                    Err(e)
+                }
             }
         } else {
             Err(VirtioNetError::NotInitialized)
@@ -207,14 +225,15 @@ impl VirtioNetDevice {
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio tx completion");
 
+                // Cleanup DMA for ALL paths if mapped
+                if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
+                    let _ = crate::io::iommu::api::unmap_for_device(device_id, iova, inflight.iommu_map_len);
+                    inflight.iommu_iova = None; // Avoid double unmap
+                }
+
                 // IoScheduler path: completion belongs to a pending IoRequest.
                 if let Some(handler) = get_poll_handler(self.virtio_index) {
                     if let Some((io_id, _requested_bytes)) = handler.take_pending_tx(desc_idx) {
-                        // Cleanup DMA for IoScheduler path
-                        if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
-                            let _ = crate::io::iommu::api::unmap_for_device(device_id, iova, inflight.iommu_map_len);
-                        }
-
                         let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
                             index: self.virtio_index,
                         };

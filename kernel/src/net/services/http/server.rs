@@ -42,7 +42,7 @@ async fn run_net_poller() {
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         // ISR + network_event_taskが非同期にパケット処理を行うため
-        // 直接handle_all_virtio_net_interrupts()を呼ばずyieldで委ねる
+        // 直接ドライバポーリング helper を呼ばず yield で Executor に委ねる
         task::yield_now().await;
 
         let active = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
@@ -295,14 +295,39 @@ async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &
     }
 }
 
+fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
+    let keys = crate::net::runtime::device::list_port_keys(None);
+    let mut rx_packets = 0u64;
+    let mut tx_packets = 0u64;
+    let mut tx_errors = 0u64;
+    let mut rx_errors = 0u64;
+
+    for key in &keys {
+        if let Some(stats) = crate::net::runtime::device::port_stats(*key) {
+            rx_packets = rx_packets.saturating_add(stats.rx_packets);
+            tx_packets = tx_packets.saturating_add(stats.tx_packets);
+            tx_errors = tx_errors.saturating_add(stats.tx_errors);
+            rx_errors = rx_errors.saturating_add(stats.rx_errors);
+        }
+    }
+
+    (keys.len(), rx_packets, tx_packets, tx_errors, rx_errors)
+}
+
 fn build_health_response(keep_alive: bool) -> Vec<u8> {
-    let bridge = crate::net::runtime::bridge::is_initialized();
-    let stats = crate::net::runtime::bridge::get_bridge_stats();
+    let (ports, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
     let body = format!(
-        "{{\"status\":\"ok\",\"bridge\":{},\"rx\":{},\"tx\":{}}}",
-        if bridge { "true" } else { "false" },
-        stats.rx_packets,
-        stats.tx_packets
+        "{{\"status\":\"ok\",\"port_runtime\":{},\"ports\":{},\"rx\":{},\"tx\":{},\"tx_errors\":{},\"rx_errors\":{}}}",
+        if crate::net::runtime::device::is_initialized() {
+            "true"
+        } else {
+            "false"
+        },
+        ports,
+        rx_packets,
+        tx_packets,
+        tx_errors,
+        rx_errors
     );
     build_json_response("200 OK", &body, keep_alive)
 }

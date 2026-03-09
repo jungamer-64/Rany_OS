@@ -212,6 +212,31 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         crate::net::datapath::mempool::alloc_packet()
     }
 
+    fn map_packet(
+        &self,
+        packet: &PacketRef,
+        direction: virtio_driver::net::NetDmaDirection,
+    ) -> Result<(u64, Option<u64>), VirtioNetError> {
+        if !is_iommu_enabled() {
+            return Ok((packet.phys_addr().as_u64(), None));
+        }
+
+        let device_id = self.iommu_device_id.ok_or(VirtioNetError::DeviceError)?;
+        let phys = packet.phys_addr();
+        let size = packet.capacity() as u64;
+
+        let read = direction != virtio_driver::net::NetDmaDirection::FromDevice;
+        let write = direction != virtio_driver::net::NetDmaDirection::ToDevice;
+
+        unsafe {
+            let iova = crate::io::iommu::api::map_for_device_with_perms(
+                &device_id, phys, size, read, write,
+            ).map_err(|_| VirtioNetError::DeviceError)?;
+
+            Ok((iova, Some(iova)))
+        }
+    }
+
     fn unmap_dma(&self, iova: u64, len: u64) {
         unmap_iommu_addr(self.iommu_device_id, iova, len as usize);
     }

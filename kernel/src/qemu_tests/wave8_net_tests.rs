@@ -266,11 +266,11 @@ pub fn net_tls_wave8_rsa_biguint_mul_div_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_rsa_biguint_mul_div_smoke()
 }
 
-pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
+pub fn kernel_net_stack_glue_zero_copy_integration_smoke() -> bool {
     crate::net::runtime::bridge::tests::qemu_zero_copy_via_bridge_smoke()
 }
 
-pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
+pub fn kernel_net_stack_glue_zero_copy_integration_v6_smoke() -> bool {
     crate::net::runtime::bridge::tests::qemu_zero_copy_via_bridge_v6_smoke()
 }
 

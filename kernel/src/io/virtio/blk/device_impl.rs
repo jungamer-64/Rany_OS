@@ -337,17 +337,15 @@ impl VirtioBlkDevice {
                 ).map_err(|_| BlockError::NotReady)?
             }
         } else {
-            unsafe {
-                self.core.build_request(
-                    &*queue_guard.inner(),
-                    VIRTIO_BLK_T_IN,
-                    sector,
-                    buf_addr,
-                    len,
-                    req_dma.header_phys,
-                    req_dma.status_phys,
-                ).map_err(|_| BlockError::NotReady)?
-            }
+            self.core.build_request(
+                &*queue_guard.inner(),
+                VIRTIO_BLK_T_IN,
+                sector,
+                buf_addr,
+                len,
+                req_dma.header_phys,
+                req_dma.status_phys,
+            ).map_err(|_| BlockError::NotReady)?
         };
 
         // Retain DMA buffer until completion
@@ -421,31 +419,27 @@ impl VirtioBlkDevice {
                 .map(DmaAddr::new)
                 .ok_or(BlockError::NotReady)?;
 
-            unsafe {
-                self.core.build_request_indirect(
-                    &*queue_guard.inner(),
-                    VIRTIO_BLK_T_OUT,
-                    sector,
-                    buf_addr,
-                    len,
-                    req_dma.header_phys,
-                    req_dma.status_phys,
-                    indirect_table as *mut virtio_driver::defs::VringDesc,
-                    indirect_phys.as_u64(),
-                ).map_err(|_| BlockError::NotReady)?
-            }
+            self.core.build_request_indirect(
+                &*queue_guard.inner(),
+                VIRTIO_BLK_T_OUT,
+                sector,
+                buf_addr,
+                len,
+                req_dma.header_phys,
+                req_dma.status_phys,
+                indirect_table as *mut virtio_driver::defs::VringDesc,
+                indirect_phys.as_u64(),
+            ).map_err(|_| BlockError::NotReady)?
         } else {
-            unsafe {
-                self.core.build_request(
-                    &*queue_guard.inner(),
-                    VIRTIO_BLK_T_OUT,
-                    sector,
-                    buf_addr,
-                    len,
-                    req_dma.header_phys,
-                    req_dma.status_phys,
-                ).map_err(|_| BlockError::NotReady)?
-            }
+            self.core.build_request(
+                &*queue_guard.inner(),
+                VIRTIO_BLK_T_OUT,
+                sector,
+                buf_addr,
+                len,
+                req_dma.header_phys,
+                req_dma.status_phys,
+            ).map_err(|_| BlockError::NotReady)?
         };
 
         // Retain DMA buffer until completion

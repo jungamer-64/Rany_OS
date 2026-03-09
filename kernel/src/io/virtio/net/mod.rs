@@ -19,7 +19,7 @@ use crate::sync::PoisonLock;
 // Import PacketRef for zero-copy
 use crate::net::datapath::mempool::PacketRef;
 pub use virtio_driver::net::{
-    NetDmaPurpose, NetRuntime, VirtioNetConfig, VirtioNetError, VirtioNetHeader, VirtioNetStats,
+    NetDmaDirection, NetDmaPurpose, NetRuntime, VirtioNetConfig, VirtioNetError, VirtioNetHeader, VirtioNetStats,
 };
 
 pub mod device;

@@ -146,9 +146,16 @@ pub trait NetDeviceServices: Send + Sync {
     fn devices(&self) -> Vec<NetDeviceInfo>;
 
     fn primary_device(&self) -> Option<NetDeviceInfo> {
-        self.devices().into_iter().find(|device| {
-            device.flags & NETDEV_FLAG_PRIMARY != 0 || device.flags & NETDEV_FLAG_BOUND_PORT != 0
-        })
+        let devices = self.devices();
+        devices
+            .iter()
+            .copied()
+            .find(|device| device.flags & NETDEV_FLAG_PRIMARY != 0)
+            .or_else(|| {
+                devices
+                    .into_iter()
+                    .find(|device| device.flags & NETDEV_FLAG_BOUND_PORT != 0)
+            })
     }
 }
 
@@ -169,6 +176,46 @@ pub fn instance() -> &'static dyn NetDeviceServices {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
+
+    struct FakeServices {
+        devices: Vec<NetDeviceInfo>,
+    }
+
+    impl NetDeviceServices for FakeServices {
+        fn devices(&self) -> Vec<NetDeviceInfo> {
+            self.devices.clone()
+        }
+    }
+
+    struct FakePort {
+        info: NetDeviceInfo,
+        stats: NetPortStats,
+    }
+
+    impl NetDevicePort for FakePort {
+        fn info(&self) -> NetDeviceInfo {
+            self.info
+        }
+
+        fn start(&self, _runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
+            Ok(())
+        }
+
+        fn submit_tx(&self, _packet: PacketRef, _meta: NetTxMeta) -> Result<(), &'static str> {
+            Ok(())
+        }
+
+        fn handle_event(&self, _if_id: u16, _event: NetDriverEvent) -> Result<(), &'static str> {
+            Ok(())
+        }
+
+        fn stats(&self) -> NetPortStats {
+            self.stats
+        }
+
+        fn stop(&self) {}
+    }
 
     #[test]
     fn mac_address_helpers_roundtrip() {
@@ -179,5 +226,48 @@ mod tests {
     #[test]
     fn try_instance_is_none_before_kernel_install() {
         assert!(try_instance().is_none());
+    }
+
+    #[test]
+    fn primary_device_prefers_primary_flag_over_bound_port() {
+        let bound = NetDeviceInfo {
+            port_id: 1,
+            flags: NETDEV_FLAG_BOUND_PORT,
+            ..NetDeviceInfo::default()
+        };
+        let primary = NetDeviceInfo {
+            port_id: 2,
+            flags: NETDEV_FLAG_PRIMARY,
+            ..NetDeviceInfo::default()
+        };
+        let services = FakeServices {
+            devices: vec![bound, primary],
+        };
+
+        assert_eq!(services.primary_device(), Some(primary));
+    }
+
+    #[test]
+    fn net_device_port_trait_object_reports_info_and_stats() {
+        let port: Arc<dyn NetDevicePort> = Arc::new(FakePort {
+            info: NetDeviceInfo {
+                port_id: 99,
+                kind: NetPortKind::Virtio,
+                driver_name: "fake-port",
+                queue_pairs: 2,
+                flags: NETDEV_FLAG_HEALTHY,
+                ..NetDeviceInfo::default()
+            },
+            stats: NetPortStats {
+                tx_packets: 3,
+                rx_packets: 4,
+                initialized: true,
+                ..NetPortStats::default()
+            },
+        });
+
+        assert_eq!(port.info().port_id, 99);
+        assert_eq!(port.stats().rx_packets, 4);
+        assert!(port.stats().initialized);
     }
 }

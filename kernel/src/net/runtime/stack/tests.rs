@@ -326,8 +326,8 @@ pub fn test_ndp_pending_queue_drain_for_preserves_order() {
 
     let drained = queue.drain_for(&target);
     assert_eq!(drained.len(), 2);
-    assert_eq!(drained[0].icmpv6_data, alloc::vec![1]);
-    assert_eq!(drained[1].icmpv6_data, alloc::vec![2]);
+    assert_eq!(drained[0].icmpv6_data.as_ref(), [1]);
+    assert_eq!(drained[1].icmpv6_data.as_ref(), [2]);
 
     assert_eq!(queue.packets.len(), 1);
     assert_eq!(queue.packets[0].dst, other);

@@ -19,7 +19,7 @@
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
+use crate::io::virtio::transport::{VirtioMmioTransport, VirtioTransport};
 use crate::io::virtio::virtqueue::*;
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;

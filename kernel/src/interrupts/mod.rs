@@ -525,15 +525,19 @@ pub fn poll_timer_events() {
         crate::task::interrupt_waker::handle_timer_interrupt_waker();
 
         // Deferred VirtIO-Net completion fallback (non-ISR context).
-        // Use poll_all_virtio_net_queues() instead of handle_all_virtio_net_interrupts()
-        // because the latter checks get_interrupt_status() which may return 0 when
-        // there is no real PCI interrupt pending, causing RX packets to be missed.
-        // poll_all_virtio_net_queues() directly processes used rings regardless of
-        // interrupt status, which is the correct behavior for a timer-based fallback.
+        // Queue a generic poll event for each registered VirtIO port so the
+        // executor-side worker drains queues outside interrupt context.
         if VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
             && VIRTIO_NET_IRQ_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
         {
-            crate::drivers::virtio::poll_all_virtio_net_queues();
+            for key in crate::net::runtime::device::list_port_keys(Some(
+                kernel_api::service::netdev::NetPortKind::Virtio,
+            )) {
+                let _ = crate::net::runtime::device::enqueue_event(
+                    key,
+                    kernel_api::service::netdev::NetDriverEvent::Poll,
+                );
+            }
         }
 
         // PMMメンテナンス (非ISRコンテキスト)

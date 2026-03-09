@@ -144,13 +144,14 @@ pub(crate) fn init_network_infra() {
     // Initialize TCP SYN cookies
     crate::net::l4::endpoint::tcb::tcb_table().init_syncookies();
 
-    let bridge_initialized = crate::net::runtime::bridge::is_initialized();
-    let stack_initialized = crate::net::runtime::stack::stack()
-        .lock()
-        .map(|guard| guard.is_some())
-        .unwrap_or(false);
+    let stack_initialized = crate::net::runtime::device::is_initialized();
+    let port_runtime_initialized = !crate::net::runtime::device::list_port_keys(None).is_empty();
     let endpoint_manager_initialized = crate::net::l4::endpoint::is_endpoint_manager_initialized();
-    info!(target: "init", "Net Bridge initialized: {}", bridge_initialized);
+    info!(
+        target: "init",
+        "Network port runtime active: {}",
+        port_runtime_initialized
+    );
     info!(
         target: "init",
         "Network stack initialized: {}",
@@ -162,19 +163,22 @@ pub(crate) fn init_network_infra() {
         endpoint_manager_initialized
     );
 
-    if bridge_initialized {
+    if stack_initialized {
         info!(
             target: "init",
-            "Bridge already initialized; skipping default stack initialization"
+            "Network stack already initialized by port runtime; skipping default init"
         );
-    } else if !stack_initialized {
-        crate::net::runtime::stack::init(crate::net::runtime::stack::NetworkConfig::default());
-        info!(target: "init", "Network stack initialized (default)");
     } else {
-        info!(
-            target: "init",
-            "Network stack already initialized; skipping default init"
-        );
+        match crate::net::runtime::device::ensure_stack_initialized(
+            crate::net::runtime::stack::NetworkConfig::default(),
+        ) {
+            Ok(()) => info!(target: "init", "Network stack initialized via port runtime"),
+            Err(err) => warn!(
+                target: "init",
+                "Network stack init via port runtime failed: {}",
+                err
+            ),
+        }
     }
 
     if !crate::net::l4::endpoint::is_endpoint_manager_initialized() {

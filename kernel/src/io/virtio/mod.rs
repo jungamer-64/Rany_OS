@@ -61,14 +61,12 @@ pub use virtio_driver::transport::{
 // Re-exports for VirtIO-Net
 pub use net::{
     NetVirtQueue, VIRTIO_NET_IOCTL_RX, VIRTIO_NET_IOCTL_TX, VirtioNetConfig, VirtioNetDevice,
-    VirtioNetHeader, VirtioNetOps, VirtioNetStats, ack_all_virtio_net_interrupts,
-    features as net_features, for_each_virtio_net, get_poll_handler,
-    handle_all_virtio_net_interrupts, handle_virtio_net_interrupt,
-    handle_virtio_net_interrupt_for_index, init_virtio_net, init_virtio_net_at_index,
+    VirtioNetHeader, VirtioNetOps, VirtioNetStats, features as net_features, for_each_virtio_net,
+    get_poll_handler, init_virtio_net, init_virtio_net_at_index,
     init_virtio_net_for_device, init_virtio_net_for_device_at_index,
     init_virtio_net_with_transport, init_virtio_net_with_transport_at_index,
-    poll_all_virtio_net_queues, register_virtio_net_with_io_scheduler, with_virtio_net,
-    with_virtio_net_at_index, virtio_net_driver_adapter,
+    register_virtio_net_with_io_scheduler, with_virtio_net, with_virtio_net_at_index,
+    virtio_net_driver_adapter,
 };
 pub use virtqueue::{VringAvail, VringDesc, VringUsed};
 

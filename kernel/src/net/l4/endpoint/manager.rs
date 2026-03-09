@@ -39,22 +39,24 @@ impl EndpointManager {
             _ => return Some(0),
         };
 
-        let mut start = self.next_ephemeral_port.fetch_add(1, Ordering::Relaxed) as u16;
-        if start < EPHEMERAL_PORT_START || start > EPHEMERAL_PORT_END {
-            start = EPHEMERAL_PORT_START;
-            self.next_ephemeral_port
-                .store((EPHEMERAL_PORT_START + 1) as u32, Ordering::Relaxed);
-        }
-
+        // RFC 6056: Use a random starting point for port selection to prevent prediction attacks.
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        let random_start = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
+        
         let range_size = (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1) as u16;
+        let start_port = EPHEMERAL_PORT_START + (random_start % range_size);
+
         let ports_guard = ports.read().unwrap_or_else(|e| e.into_inner());
         for i in 0..range_size {
             let port = EPHEMERAL_PORT_START
-                + ((start
+                + ((start_port
                     .wrapping_sub(EPHEMERAL_PORT_START)
                     .wrapping_add(i))
                     % range_size);
             if !ports_guard.contains_key(&port) {
+                // Update the counter for the next sequential-ish attempt (if we still want it)
+                // but since we randomized the start above, the counter is less critical.
+                self.next_ephemeral_port.store(port.wrapping_add(1) as u32, Ordering::Relaxed);
                 return Some(port);
             }
         }

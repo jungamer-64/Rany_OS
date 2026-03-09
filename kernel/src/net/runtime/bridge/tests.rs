@@ -10,7 +10,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 struct BridgeStateGuard {
-    prev_if_stats: BTreeMap<NetIfId, BridgeInterfaceStats>,
+    prev_if_stats: BTreeMap<NetIfId, StackGlueInterfaceStats>,
     prev_primary_if: Option<NetIfId>,
     prev_nat_table: BTreeMap<u16, NatEntry>,
     prev_nat_next_port: u16,
@@ -20,9 +20,9 @@ struct BridgeStateGuard {
 
 impl BridgeStateGuard {
     fn new() -> Self {
-        let prev_if_stats = core::mem::take(&mut *BRIDGE_IF_STATS.write());
+        let prev_if_stats = core::mem::take(&mut *STACK_GLUE_IF_STATS.write());
         let prev_primary_if = {
-            let mut g = PRIMARY_BRIDGE_IF.write();
+            let mut g = PRIMARY_STACK_GLUE_IF.write();
             let v = *g;
             *g = None;
             v
@@ -49,8 +49,8 @@ impl BridgeStateGuard {
 
 impl Drop for BridgeStateGuard {
     fn drop(&mut self) {
-        *BRIDGE_IF_STATS.write() = core::mem::take(&mut self.prev_if_stats);
-        *PRIMARY_BRIDGE_IF.write() = self.prev_primary_if.take();
+        *STACK_GLUE_IF_STATS.write() = core::mem::take(&mut self.prev_if_stats);
+        *PRIMARY_STACK_GLUE_IF.write() = self.prev_primary_if.take();
         *NAT_TABLE.write() = core::mem::take(&mut self.prev_nat_table);
         NAT_NEXT_PORT.store(
             self.prev_nat_next_port,
@@ -854,19 +854,19 @@ pub fn test_per_interface_bridge_stats_are_separated() {
     let if0 = NetIfId(10);
     let if1 = NetIfId(11);
 
-    ensure_bridge_if_state(if0, Some(0));
-    ensure_bridge_if_state(if1, Some(1));
-    record_bridge_if_rx(if0);
-    record_bridge_if_rx(if0);
-    record_bridge_if_tx(if1);
+    ensure_stack_glue_if_state(if0, Some(0));
+    ensure_stack_glue_if_state(if1, Some(1));
+    record_stack_glue_if_rx(if0);
+    record_stack_glue_if_rx(if0);
+    record_stack_glue_if_tx(if1);
 
-    let s0 = get_bridge_stats_for_interface(if0).expect("if0 stats");
-    let s1 = get_bridge_stats_for_interface(if1).expect("if1 stats");
+    let s0 = get_stack_glue_stats_for_interface(if0).expect("if0 stats");
+    let s1 = get_stack_glue_stats_for_interface(if1).expect("if1 stats");
     assert_eq!(s0.rx_packets, 2);
     assert_eq!(s0.tx_packets, 0);
     assert_eq!(s1.rx_packets, 0);
     assert_eq!(s1.tx_packets, 1);
-    assert_eq!(list_bridge_stats().len(), 2);
+    assert_eq!(list_stack_glue_stats().len(), 2);
 }
 
 #[cfg_attr(test, test_case)]
@@ -882,11 +882,11 @@ pub fn test_register_virtio_port_is_idempotent_and_records_mapping() {
     assert_eq!(lookup_if_by_virtio_index(0), Some(if0));
     assert_eq!(lookup_if_by_virtio_index(1), Some(if1));
 
-    let s0 = get_bridge_stats_for_interface(if0).expect("if0 stats");
-    let s1 = get_bridge_stats_for_interface(if1).expect("if1 stats");
+    let s0 = get_stack_glue_stats_for_interface(if0).expect("if0 stats");
+    let s1 = get_stack_glue_stats_for_interface(if1).expect("if1 stats");
     assert_eq!(s0.virtio_index, Some(0));
     assert_eq!(s1.virtio_index, Some(1));
-    assert_eq!(list_bridge_stats().len(), 2);
+    assert_eq!(list_stack_glue_stats().len(), 2);
 }
 
 #[cfg_attr(test, test_case)]
@@ -894,19 +894,19 @@ pub fn test_register_virtio_port_prefers_vnet0_as_primary() {
     let _guard = BridgeStateGuard::new();
 
     let if1 = register_virtio_port(1, None).expect("register vnet1");
-    assert_eq!(primary_bridge_if(), Some(if1));
+    assert_eq!(primary_stack_glue_if(), Some(if1));
 
     let if0 = register_virtio_port(0, None).expect("register vnet0");
-    assert_eq!(primary_bridge_if(), Some(if0));
+    assert_eq!(primary_stack_glue_if(), Some(if0));
 
     let _if2 = register_virtio_port(2, None).expect("register vnet2");
-    assert_eq!(primary_bridge_if(), Some(if0));
+    assert_eq!(primary_stack_glue_if(), Some(if0));
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_virtio_transmit_interface_argument() {
+pub fn test_transmit_from_stack_interface_argument() {
     // using a dummy interface id should simply delegate to the
     // per-interface send function, which currently fails (no mapping)
     let dummy = NetIfId(7);
-    assert!(!virtio_transmit(Some(dummy), b"hello"));
+    assert!(!transmit_from_stack(Some(dummy), b"hello"));
 }

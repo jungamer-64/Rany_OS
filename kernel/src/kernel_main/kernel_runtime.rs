@@ -7,13 +7,32 @@ use super::*;
 
 /// ネットワークブートストラップ（完全非同期）
 ///
-/// Executor起動後にスポーンされ、VirtIO-Netドライバの登録・ブリッジ初期化・
+/// Executor起動後にスポーンされ、VirtIO-Net/mlx5 ドライバの port registration・
 /// DHCP完了待機・接続性確認をすべてasyncコンテキストで実行する。
 /// 設計書 §3「Async-First」原則に準拠し、同期ブロッキングI/Oを排除する。
-///
-/// `init_bridge()` が `init_dhcp_runtime()` 経由で DHCPv4/v6 クライアントタスクを
-/// `spawn_global` するため、ブリッジ初期化後はDHCPが自動的に非同期で走る。
-/// このタスクは状態がBoundになるのを待ってからpingで接続性を確認する。
+/// `net::runtime::device` が `init_dhcp_runtime()` 経由で DHCPv4/v6 クライアント
+/// タスクを `spawn_global` するため、port registration 後は DHCP が自動的に
+/// 非同期で走る。このタスクは状態が Bound になるのを待ってから ping で
+/// 接続性を確認する。
+fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
+    let keys = crate::net::runtime::device::list_port_keys(None);
+    let mut rx_packets = 0u64;
+    let mut tx_packets = 0u64;
+    let mut tx_errors = 0u64;
+    let mut rx_errors = 0u64;
+
+    for key in &keys {
+        if let Some(stats) = crate::net::runtime::device::port_stats(*key) {
+            rx_packets = rx_packets.saturating_add(stats.rx_packets);
+            tx_packets = tx_packets.saturating_add(stats.tx_packets);
+            tx_errors = tx_errors.saturating_add(stats.tx_errors);
+            rx_errors = rx_errors.saturating_add(stats.rx_errors);
+        }
+    }
+
+    (keys.len(), rx_packets, tx_packets, tx_errors, rx_errors)
+}
+
 async fn network_bootstrap_task() {
     crate::io::log::early_print("[NET_BOOT] task enter\n");
     info!(target: "net_boot", "Network bootstrap task started (async)");
@@ -22,12 +41,17 @@ async fn network_bootstrap_task() {
     let virtio_net_present = crate::drivers::virtio::virtio_net_driver_adapter(0).info().flags != 0;
     crate::io::log::early_print("[NET_BOOT] virtio presence checked\n");
     if virtio_net_present {
-        let bridge_initialized = crate::net::runtime::bridge::is_initialized();
-        if bridge_initialized {
-            info!(target: "net_boot", "Bridge already initialized; skipping VirtIO-Net startup");
+        let virtio_port_registered = crate::net::runtime::device::port_info(
+            crate::net::runtime::device::NetDeviceKey::Virtio(0),
+        )
+        .is_some();
+        if virtio_port_registered {
+            info!(
+                target: "net_boot",
+                "VirtIO-Net port already registered; skipping startup"
+            );
         } else {
-            // VirtIO-Net ドライバ登録 & ブリッジ初期化
-            // init_bridge() が init_dhcp_runtime() を呼び、DHCPv4/v6タスクが自動spawn
+            // VirtIO-Net ドライバ登録と port runtime への接続。
             info!(target: "net_boot", "Registering VirtIO-Net driver via DriverRegistry");
             {
                 use crate::net::drivers::virtio_registry::VirtioNetDriver;
@@ -89,23 +113,28 @@ async fn network_bootstrap_task() {
     // Yield して tx_worker / DHCPクライアント等のバックグラウンドタスクに実行機会を与える
     task::yield_now().await;
 
-    // VirtIO / mlx5 初期化後に有効なネットワーク経路がなければ DHCP 待機は行わない。
-    let virtio_bridge_ready = crate::net::runtime::bridge::is_initialized();
-    let mlx5_bridge_ready = crate::net::runtime::bridge::mlx5_bridge::is_mlx5_bridge_initialized();
-    if !virtio_bridge_ready && !mlx5_bridge_ready {
-        let virtio_stats = crate::net::runtime::bridge::get_bridge_stats();
-        let mlx5_stats = crate::net::runtime::bridge::mlx5_bridge::get_mlx5_bridge_stats();
+    // VirtIO / mlx5 probe 後に有効なポートがなければ DHCP 待機は行わない。
+    let virtio_port_ready = crate::net::runtime::device::port_info(
+        crate::net::runtime::device::NetDeviceKey::Virtio(0),
+    )
+    .is_some();
+    let mlx5_port_ready = crate::net::runtime::device::port_info(
+        crate::net::runtime::device::NetDeviceKey::Mlx5(0),
+    )
+    .is_some();
+    let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
+    if port_count == 0 {
         info!(
             target: "net_boot",
-            "No active network bridge after driver probes; skipping DHCP/connectivity checks (virtio_init={} virtio_rx={} virtio_tx={} mlx5_init={} mlx5_rx={} mlx5_tx={} mlx5_tx_err={} mlx5_rx_err={})",
-            virtio_stats.initialized,
-            virtio_stats.rx_packets,
-            virtio_stats.tx_packets,
-            mlx5_stats.initialized,
-            mlx5_stats.rx_packets,
-            mlx5_stats.tx_packets,
-            mlx5_stats.tx_errors,
-            mlx5_stats.rx_errors
+            "No active network ports after driver probes; skipping DHCP/connectivity checks (stack_init={} virtio_port={} mlx5_port={} ports={} rx={} tx={} tx_err={} rx_err={})",
+            crate::net::runtime::device::is_initialized(),
+            virtio_port_ready,
+            mlx5_port_ready,
+            port_count,
+            rx_packets,
+            tx_packets,
+            tx_errors,
+            rx_errors
         );
         return;
     }
@@ -148,19 +177,16 @@ async fn network_bootstrap_task() {
 
     let Some(ping_target) = ping_target else {
         warn!(target: "net_boot", "No gateway available (DHCP not bound); skipping connectivity check");
-        let virtio_stats = crate::net::runtime::bridge::get_bridge_stats();
-        let mlx5_stats = crate::net::runtime::bridge::mlx5_bridge::get_mlx5_bridge_stats();
+        let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) =
+            aggregate_port_runtime_stats();
         info!(
             target: "net_boot",
-            "Network bootstrap complete (no DHCP): virtio_init={} virtio_rx={} virtio_tx={} mlx5_init={} mlx5_rx={} mlx5_tx={} mlx5_tx_err={} mlx5_rx_err={}",
-            virtio_stats.initialized,
-            virtio_stats.rx_packets,
-            virtio_stats.tx_packets,
-            mlx5_stats.initialized,
-            mlx5_stats.rx_packets,
-            mlx5_stats.tx_packets,
-            mlx5_stats.tx_errors,
-            mlx5_stats.rx_errors
+            "Network bootstrap complete (no DHCP): ports={} rx={} tx={} tx_err={} rx_err={}",
+            port_count,
+            rx_packets,
+            tx_packets,
+            tx_errors,
+            rx_errors
         );
         return;
     };
@@ -171,19 +197,15 @@ async fn network_bootstrap_task() {
         Err(e) => warn!(target: "net_boot", "Async ping failed: {:?}", e),
     }
 
-    let virtio_stats = crate::net::runtime::bridge::get_bridge_stats();
-    let mlx5_stats = crate::net::runtime::bridge::mlx5_bridge::get_mlx5_bridge_stats();
+    let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
     info!(
         target: "net_boot",
-        "Network bootstrap complete: virtio_init={} virtio_rx={} virtio_tx={} mlx5_init={} mlx5_rx={} mlx5_tx={} mlx5_tx_err={} mlx5_rx_err={}",
-        virtio_stats.initialized,
-        virtio_stats.rx_packets,
-        virtio_stats.tx_packets,
-        mlx5_stats.initialized,
-        mlx5_stats.rx_packets,
-        mlx5_stats.tx_packets,
-        mlx5_stats.tx_errors,
-        mlx5_stats.rx_errors
+        "Network bootstrap complete: ports={} rx={} tx={} tx_err={} rx_err={}",
+        port_count,
+        rx_packets,
+        tx_packets,
+        tx_errors,
+        rx_errors
     );
 }
 
@@ -397,8 +419,17 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
             Err(e) => warn!(target: "net_test", "Ping failed: {:?}", e),
         }
 
-        let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
-        info!(target: "net_test", "Bridge stats after ping: init={} rx={} tx={} ", bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets);
+        let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) =
+            aggregate_port_runtime_stats();
+        info!(
+            target: "net_test",
+            "Port runtime stats after ping: ports={} rx={} tx={} tx_err={} rx_err={}",
+            port_count,
+            rx_packets,
+            tx_packets,
+            tx_errors,
+            rx_errors
+        );
     }));
     crate::io::log::early_print("[INITDBG] net_test spawned\n");
 

@@ -344,38 +344,38 @@ pub fn igmp_report_suppression_smoke() -> bool {
     run_case!(igmp::tests::test_report_suppression)
 }
 
-pub fn driver_bridge_zero_copy_via_bridge_smoke() -> bool {
-    driver_bridge::tests::qemu_zero_copy_via_bridge_smoke()
+pub fn stack_glue_zero_copy_via_bridge_smoke() -> bool {
+    stack_glue::tests::qemu_zero_copy_via_bridge_smoke()
 }
 
-pub fn driver_bridge_routing_and_nat_smoke() -> bool {
-    driver_bridge::tests::qemu_routing_and_nat_smoke()
+pub fn stack_glue_routing_and_nat_smoke() -> bool {
+    stack_glue::tests::qemu_routing_and_nat_smoke()
 }
 
-pub fn driver_bridge_nat_inbound_roundtrip_is_protocol_scoped_smoke() -> bool {
-    run_case!(driver_bridge::tests::test_nat_inbound_roundtrip_is_protocol_scoped)
+pub fn stack_glue_nat_inbound_roundtrip_is_protocol_scoped_smoke() -> bool {
+    run_case!(stack_glue::tests::test_nat_inbound_roundtrip_is_protocol_scoped)
 }
 
-pub fn driver_bridge_nat_gc_expires_idle_entries_smoke() -> bool {
-    run_case!(driver_bridge::tests::test_nat_gc_expires_idle_entries)
+pub fn stack_glue_nat_gc_expires_idle_entries_smoke() -> bool {
+    run_case!(stack_glue::tests::test_nat_gc_expires_idle_entries)
 }
 
-pub fn driver_bridge_zero_copy_via_bridge_v6_smoke() -> bool {
-    driver_bridge::tests::qemu_zero_copy_via_bridge_v6_smoke()
+pub fn stack_glue_zero_copy_via_bridge_v6_smoke() -> bool {
+    stack_glue::tests::qemu_zero_copy_via_bridge_v6_smoke()
 }
 
-pub fn driver_bridge_per_interface_bridge_stats_are_separated_smoke() -> bool {
-    run_case!(driver_bridge::tests::test_per_interface_bridge_stats_are_separated)
+pub fn stack_glue_per_interface_stats_are_separated_smoke() -> bool {
+    run_case!(stack_glue::tests::test_per_interface_bridge_stats_are_separated)
 }
 
-pub fn driver_bridge_register_virtio_port_is_idempotent_and_records_mapping_smoke() -> bool {
-    run_case!(driver_bridge::tests::test_register_virtio_port_is_idempotent_and_records_mapping)
+pub fn port_runtime_register_virtio_port_is_idempotent_and_records_mapping_smoke() -> bool {
+    run_case!(stack_glue::tests::test_register_virtio_port_is_idempotent_and_records_mapping)
 }
 
-pub fn driver_bridge_register_virtio_port_prefers_vnet0_as_primary_smoke() -> bool {
-    run_case!(driver_bridge::tests::test_register_virtio_port_prefers_vnet0_as_primary)
+pub fn port_runtime_register_virtio_port_prefers_vnet0_as_primary_smoke() -> bool {
+    run_case!(stack_glue::tests::test_register_virtio_port_prefers_vnet0_as_primary)
 }
 
-pub fn driver_bridge_virtio_transmit_interface_argument_smoke() -> bool {
-    run_case!(driver_bridge::tests::test_virtio_transmit_interface_argument)
+pub fn port_runtime_transmit_interface_argument_smoke() -> bool {
+    run_case!(stack_glue::tests::test_transmit_from_stack_interface_argument)
 }

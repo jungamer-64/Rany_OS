@@ -1,21 +1,20 @@
 // ============================================================================
-// src/net/driver_bridge.rs - VirtIO-Net <-> NetworkStack Bridge
+// src/net/runtime/bridge/mod.rs - Network stack glue
 // ============================================================================
 //!
-//! VirtIO-NetドライバとNetworkStackを接続するブリッジモジュール。
-//! 送信コールバック設定と受信パケット処理を統合します。
+//! ネットワークドライバと NetworkStack を接続する stack glue モジュール。
+//! deferred RX、batch/NAT、PacketRef の stack 受け渡しを担当します。
 
 use crate::net::api::config::NetworkConfigSnapshot;
 use crate::net::datapath::optimization::{BatchConfig, BatchProcessor};
-use crate::net::l2::ethernet::MacAddress;
-use crate::net::l3::ipv4::{Ipv4Address, Ipv4Config};
+use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
 };
 use crate::net::runtime::device;
 use crate::net::runtime::manager::{self, NetIfId};
-use crate::net::runtime::stack::{self, NetworkConfig};
+use crate::net::runtime::stack;
 
 mod nat;
 use nat::*;
@@ -32,7 +31,7 @@ extern crate alloc;
 // ============================================================================
 
 /// Bridge initialization state
-static BRIDGE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static STACK_GLUE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// RXチェックサムHW検証済みフラグ
 static RX_CSUM_HW_VERIFIED: AtomicBool = AtomicBool::new(false);
@@ -55,7 +54,7 @@ static BATCH_PROCESSOR: BatchProcessor = BatchProcessor::new(BatchConfig {
 });
 
 #[derive(Debug, Clone, Copy)]
-pub struct BridgeInterfaceStats {
+pub struct StackGlueInterfaceStats {
     pub if_id: NetIfId,
     pub tx_packets: u64,
     pub rx_packets: u64,
@@ -63,12 +62,12 @@ pub struct BridgeInterfaceStats {
     pub virtio_index: Option<u8>,
 }
 
-/// Per-interface bridge stats
-static BRIDGE_IF_STATS: PoisonRwLock<BTreeMap<NetIfId, BridgeInterfaceStats>> =
+/// Per-interface stack glue stats
+static STACK_GLUE_IF_STATS: PoisonRwLock<BTreeMap<NetIfId, StackGlueInterfaceStats>> =
     PoisonRwLock::new(BTreeMap::new());
 
-/// Primary interface used by legacy bridge wrappers.
-static PRIMARY_BRIDGE_IF: PoisonRwLock<Option<NetIfId>> = PoisonRwLock::new(None);
+/// Primary interface used by stack-glue fallback wrappers.
+static PRIMARY_STACK_GLUE_IF: PoisonRwLock<Option<NetIfId>> = PoisonRwLock::new(None);
 
 // ============================================================================
 // Deferred RX Dispatch (deadlock prevention)
@@ -131,9 +130,9 @@ fn is_local_ipv4(addr: Ipv4Address) -> bool {
     false
 }
 
-fn ensure_bridge_if_state(if_id: NetIfId, virtio_index: Option<u8>) {
-    let mut stats = BRIDGE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
-    let entry = stats.entry(if_id).or_insert(BridgeInterfaceStats {
+fn ensure_stack_glue_if_state(if_id: NetIfId, virtio_index: Option<u8>) {
+    let mut stats = STACK_GLUE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
+    let entry = stats.entry(if_id).or_insert(StackGlueInterfaceStats {
         if_id,
         tx_packets: 0,
         rx_packets: 0,
@@ -146,9 +145,9 @@ fn ensure_bridge_if_state(if_id: NetIfId, virtio_index: Option<u8>) {
     entry.initialized = true;
 }
 
-fn record_bridge_if_tx(if_id: NetIfId) {
-    let mut stats = BRIDGE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
-    let entry = stats.entry(if_id).or_insert(BridgeInterfaceStats {
+fn record_stack_glue_if_tx(if_id: NetIfId) {
+    let mut stats = STACK_GLUE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
+    let entry = stats.entry(if_id).or_insert(StackGlueInterfaceStats {
         if_id,
         tx_packets: 0,
         rx_packets: 0,
@@ -159,9 +158,9 @@ fn record_bridge_if_tx(if_id: NetIfId) {
     entry.initialized = true;
 }
 
-fn record_bridge_if_rx(if_id: NetIfId) {
-    let mut stats = BRIDGE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
-    let entry = stats.entry(if_id).or_insert(BridgeInterfaceStats {
+fn record_stack_glue_if_rx(if_id: NetIfId) {
+    let mut stats = STACK_GLUE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
+    let entry = stats.entry(if_id).or_insert(StackGlueInterfaceStats {
         if_id,
         tx_packets: 0,
         rx_packets: 0,
@@ -172,16 +171,28 @@ fn record_bridge_if_rx(if_id: NetIfId) {
     entry.initialized = true;
 }
 
-fn primary_bridge_if() -> Option<NetIfId> {
-    device::primary_if().or_else(|| *PRIMARY_BRIDGE_IF.read().unwrap_or_else(|e| e.into_inner()))
+fn primary_stack_glue_if() -> Option<NetIfId> {
+    device::primary_if().or_else(|| {
+        *PRIMARY_STACK_GLUE_IF
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+    })
 }
 
-fn set_primary_bridge_if_for_virtio(if_id: NetIfId, virtio_index: u8) {
-    let mut primary = PRIMARY_BRIDGE_IF.write().unwrap_or_else(|e| e.into_inner());
+fn set_primary_stack_glue_if(if_id: NetIfId, virtio_index: u8) {
+    let mut primary = PRIMARY_STACK_GLUE_IF.write().unwrap_or_else(|e| e.into_inner());
     if primary.is_none() || virtio_index == 0 {
         *primary = Some(if_id);
     }
     device::set_primary_interface(if_id);
+}
+
+pub fn register_stack_glue_interface(if_id: NetIfId, virtio_index: Option<u8>) {
+    ensure_stack_glue_if_state(if_id, virtio_index);
+    if let Some(virtio_index) = virtio_index {
+        set_primary_stack_glue_if(if_id, virtio_index);
+    }
+    STACK_GLUE_INITIALIZED.store(true, Ordering::Release);
 }
 
 // ============================================================================
@@ -189,12 +200,12 @@ fn set_primary_bridge_if_for_virtio(if_id: NetIfId, virtio_index: u8) {
 // ============================================================================
 
 pub fn transmit_from_stack(if_id: Option<NetIfId>, data: &[u8]) -> bool {
-    let resolved_if = if_id.or_else(primary_bridge_if);
+    let resolved_if = if_id.or_else(primary_stack_glue_if);
     let sent = device::transmit(if_id, data);
 
     if sent {
         if let Some(if_id) = resolved_if {
-            record_bridge_if_tx(if_id);
+            record_stack_glue_if_tx(if_id);
         }
         TX_PACKETS.fetch_add(1, Ordering::Relaxed);
         counters::global().record_tx(data.len());
@@ -209,10 +220,6 @@ pub fn transmit_from_stack(if_id: Option<NetIfId>, data: &[u8]) -> bool {
         );
         false
     }
-}
-
-pub fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
-    transmit_from_stack(if_id, data)
 }
 
 pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
@@ -240,7 +247,7 @@ pub fn process_received_packet_zero_copy(
         return;
     }
 
-    if let Some(if_id) = primary_bridge_if() {
+    if let Some(if_id) = primary_stack_glue_if() {
         process_received_packet_zero_copy_for_interface(if_id, packet, header_size, payload_len);
         return;
     }
@@ -280,10 +287,10 @@ pub fn process_received_packet_zero_copy_for_interface(
         return;
     }
 
-    ensure_bridge_if_state(if_id, None);
+    ensure_stack_glue_if_state(if_id, None);
     let rx_count = RX_PACKETS.fetch_add(1, Ordering::Relaxed).saturating_add(1);
     counters::global().record_rx(payload_len);
-    record_bridge_if_rx(if_id);
+    record_stack_glue_if_rx(if_id);
     nat_maybe_gc(rx_count);
 
     packet.set_len(header_size + payload_len);
@@ -315,41 +322,6 @@ fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketR
     // パケット毎のフラグを確認してセットするため、ここでは何もしません。
 }
 
-// ============================================================================
-// Initialization
-// ============================================================================
-
-pub fn init_bridge() -> Result<(), &'static str> {
-    let port = crate::drivers::virtio::virtio_net_driver_adapter(0).info();
-    if port.flags == 0 {
-        return Err("VirtIO-Net device not initialized");
-    }
-    let mac = MacAddress::new(port.mac.as_bytes());
-
-    let config = NetworkConfig {
-        mac,
-        ipv4: Ipv4Config::default(),
-        ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
-        icmp_echo_enabled: true,
-        icmp_redirect_enabled: false,
-        icmpv6_redirect_enabled: false,
-    };
-
-    let if_id = device::register_device(
-        crate::net::runtime::device::NetDeviceKey::Virtio(0),
-        crate::drivers::virtio::virtio_net_driver_adapter(0),
-        config,
-        true,
-    )?;
-    ensure_bridge_if_state(if_id, Some(0));
-    set_primary_bridge_if_for_virtio(if_id, 0);
-
-    crate::drivers::virtio::register_virtio_net_with_io_scheduler(0);
-    RX_CSUM_HW_VERIFIED.store(true, Ordering::Release);
-    BRIDGE_INITIALIZED.store(true, Ordering::Release);
-    Ok(())
-}
-
 #[inline]
 pub fn rx_csum_hw_verified() -> bool {
     RX_CSUM_HW_VERIFIED.load(Ordering::Relaxed)
@@ -357,10 +329,6 @@ pub fn rx_csum_hw_verified() -> bool {
 
 pub fn set_rx_csum_hw_verified(verified: bool) {
     RX_CSUM_HW_VERIFIED.store(verified, Ordering::Release);
-}
-
-pub fn is_initialized() -> bool {
-    BRIDGE_INITIALIZED.load(Ordering::Acquire) || device::is_initialized()
 }
 
 pub fn check_batch_timeout(current_tsc: u64, tsc_freq: u64) {
@@ -395,30 +363,43 @@ pub fn sync_process_network_events() {
     }
 }
 
-pub fn get_bridge_stats_for_interface(if_id: NetIfId) -> Option<BridgeInterfaceStats> {
-    BRIDGE_IF_STATS.read().unwrap_or_else(|e| e.into_inner()).get(&if_id).copied()
+pub fn get_stack_glue_stats_for_interface(if_id: NetIfId) -> Option<StackGlueInterfaceStats> {
+    STACK_GLUE_IF_STATS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&if_id)
+        .copied()
 }
 
-pub fn list_bridge_stats() -> Vec<BridgeInterfaceStats> {
-    BRIDGE_IF_STATS.read().unwrap_or_else(|e| e.into_inner()).values().copied().collect()
+pub fn list_stack_glue_stats() -> Vec<StackGlueInterfaceStats> {
+    STACK_GLUE_IF_STATS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .copied()
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct BridgeStats {
+pub struct StackGlueStats {
     pub initialized: bool,
     pub rx_packets: u64,
     pub tx_packets: u64,
 }
 
-pub fn get_bridge_stats() -> BridgeStats {
+pub fn get_stack_glue_stats() -> StackGlueStats {
     let mut rx = 0u64;
     let mut tx = 0u64;
-    for s in BRIDGE_IF_STATS.read().unwrap_or_else(|e| e.into_inner()).values() {
+    for s in STACK_GLUE_IF_STATS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+    {
         rx = rx.saturating_add(s.rx_packets);
         tx = tx.saturating_add(s.tx_packets);
     }
-    BridgeStats {
-        initialized: is_initialized(),
+    StackGlueStats {
+        initialized: STACK_GLUE_INITIALIZED.load(Ordering::Acquire) || device::is_initialized(),
         rx_packets: rx,
         tx_packets: tx,
     }
@@ -442,3 +423,6 @@ pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
         None => None,
     }
 }
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;

@@ -1,6 +1,5 @@
 use super::*;
 use crate::net::obs::{
-    counters,
     trace::{self, NetEventKind, NetLayer},
 };
 
@@ -50,17 +49,18 @@ impl VirtioNetDevice {
                 self.rx_bytes.fetch_add(len, Ordering::Relaxed);
                 trace::push_event(NetLayer::Driver, NetEventKind::Rx, "virtio rx completion");
 
+                // Cleanup DMA for ALL paths if mapped
+                if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
+                    let _ = crate::io::iommu::api::unmap_for_device(device_id, iova, inflight.iommu_map_len);
+                    inflight.iommu_iova = None; // Avoid double unmap
+                }
+
                 // IoScheduler path: completion belongs to a pending IoRequest.
                 if let Some(handler) = get_poll_handler(self.virtio_index) {
                     if let Some((io_id, requested_bytes)) = handler.take_pending_rx(desc_idx) {
                         let payload_len = (len as usize).saturating_sub(VirtioNetHeader::SIZE);
                         let payload_cap = requested_bytes.saturating_sub(VirtioNetHeader::SIZE);
                         let completed = core::cmp::min(payload_len, payload_cap);
-
-                        // Cleanup DMA for IoScheduler path
-                        if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
-                            let _ = crate::io::iommu::api::unmap_for_device(device_id, iova, inflight.iommu_map_len);
-                        }
 
                         let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
                             index: self.virtio_index,

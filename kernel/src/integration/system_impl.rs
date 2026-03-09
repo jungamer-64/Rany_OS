@@ -40,14 +40,29 @@ impl SystemIntegration {
         self.status = IntegrationStatus::Complete;
         self.log("System integration complete!");
 
-        // Diagnostic: print Net Bridge and Network configuration/stats
+        // Diagnostic: print network port runtime and stack configuration/stats
         // NOTE: ブートストラップ時はエグゼキュータ未起動のため同期版を使用（許容）
-        let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
+        let port_keys = crate::net::runtime::device::list_port_keys(None);
+        let mut rx_packets = 0u64;
+        let mut tx_packets = 0u64;
+        let mut tx_errors = 0u64;
+        let mut rx_errors = 0u64;
+        for key in &port_keys {
+            if let Some(stats) = crate::net::runtime::device::port_stats(*key) {
+                rx_packets = rx_packets.saturating_add(stats.rx_packets);
+                tx_packets = tx_packets.saturating_add(stats.tx_packets);
+                tx_errors = tx_errors.saturating_add(stats.tx_errors);
+                rx_errors = rx_errors.saturating_add(stats.rx_errors);
+            }
+        }
         self.log(&alloc::format!(
-            "  Net Bridge stats: init={} rx={} tx={}",
-            bridge_stats.initialized,
-            bridge_stats.rx_packets,
-            bridge_stats.tx_packets
+            "  Net port runtime: stack_init={} ports={} rx={} tx={} tx_err={} rx_err={}",
+            crate::net::runtime::device::is_initialized(),
+            port_keys.len(),
+            rx_packets,
+            tx_packets,
+            tx_errors,
+            rx_errors
         ));
         if let Some(cfg) = crate::net::runtime::bridge::get_real_config() {
             self.log(&alloc::format!(

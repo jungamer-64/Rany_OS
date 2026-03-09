@@ -25,8 +25,8 @@ impl Mlx5Namespace {
             ExoValue::Bool(status.driver_present),
         );
         map.insert(
-            String::from("bridge_initialized"),
-            ExoValue::Bool(status.bridge_initialized),
+            String::from("port_runtime_initialized"),
+            ExoValue::Bool(status.port_runtime_initialized),
         );
         map.insert(
             String::from("variant"),
@@ -144,7 +144,7 @@ mod tests {
     fn test_status_map_contains_expected_keys() {
         let value = Mlx5Namespace::status_value_from_snapshot(Mlx5SriovStatus {
             driver_present: true,
-            bridge_initialized: true,
+            port_runtime_initialized: true,
             variant: Some(mlx5_driver::ConnectXVariant::CX6),
             pf_bdf: Some(crate::io::pci::PcieBdf::new(0, 2, 0)),
             sriov_supported: true,
@@ -160,7 +160,7 @@ mod tests {
         match value {
             ExoValue::Map(map) => {
                 assert!(map.contains_key("driver_present"));
-                assert!(map.contains_key("bridge_initialized"));
+                assert!(map.contains_key("port_runtime_initialized"));
                 assert!(map.contains_key("variant"));
                 assert!(map.contains_key("pf_bdf"));
                 assert!(map.contains_key("sriov_supported"));

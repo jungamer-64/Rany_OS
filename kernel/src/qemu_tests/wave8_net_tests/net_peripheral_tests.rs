@@ -233,39 +233,39 @@ pub fn net_peripheral_igmp_report_suppression_smoke() -> bool {
     crate::net::qemu_tests::igmp_report_suppression_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_zero_copy_via_bridge_smoke() -> bool {
-    crate::net::qemu_tests::driver_bridge_zero_copy_via_bridge_smoke()
+pub fn net_peripheral_stack_glue_zero_copy_via_bridge_smoke() -> bool {
+    crate::net::qemu_tests::stack_glue_zero_copy_via_bridge_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_routing_and_nat_smoke() -> bool {
-    crate::net::qemu_tests::driver_bridge_routing_and_nat_smoke()
+pub fn net_peripheral_stack_glue_routing_and_nat_smoke() -> bool {
+    crate::net::qemu_tests::stack_glue_routing_and_nat_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_nat_inbound_roundtrip_is_protocol_scoped_smoke() -> bool {
-    crate::net::qemu_tests::driver_bridge_nat_inbound_roundtrip_is_protocol_scoped_smoke()
+pub fn net_peripheral_stack_glue_nat_inbound_roundtrip_is_protocol_scoped_smoke() -> bool {
+    crate::net::qemu_tests::stack_glue_nat_inbound_roundtrip_is_protocol_scoped_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_nat_gc_expires_idle_entries_smoke() -> bool {
-    crate::net::qemu_tests::driver_bridge_nat_gc_expires_idle_entries_smoke()
+pub fn net_peripheral_stack_glue_nat_gc_expires_idle_entries_smoke() -> bool {
+    crate::net::qemu_tests::stack_glue_nat_gc_expires_idle_entries_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_zero_copy_via_bridge_v6_smoke() -> bool {
-    crate::net::qemu_tests::driver_bridge_zero_copy_via_bridge_v6_smoke()
+pub fn net_peripheral_stack_glue_zero_copy_via_bridge_v6_smoke() -> bool {
+    crate::net::qemu_tests::stack_glue_zero_copy_via_bridge_v6_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_per_interface_bridge_stats_are_separated_smoke() -> bool {
-    crate::net::qemu_tests::driver_bridge_per_interface_bridge_stats_are_separated_smoke()
+pub fn net_peripheral_stack_glue_per_interface_stats_are_separated_smoke() -> bool {
+    crate::net::qemu_tests::stack_glue_per_interface_stats_are_separated_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_register_virtio_port_is_idempotent_and_records_mapping_smoke()
+pub fn net_peripheral_port_runtime_register_virtio_port_is_idempotent_and_records_mapping_smoke()
 -> bool {
-    crate::net::qemu_tests::driver_bridge_register_virtio_port_is_idempotent_and_records_mapping_smoke()
+    crate::net::qemu_tests::port_runtime_register_virtio_port_is_idempotent_and_records_mapping_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_register_virtio_port_prefers_vnet0_as_primary_smoke() -> bool {
-    crate::net::qemu_tests::driver_bridge_register_virtio_port_prefers_vnet0_as_primary_smoke()
+pub fn net_peripheral_port_runtime_register_virtio_port_prefers_vnet0_as_primary_smoke() -> bool {
+    crate::net::qemu_tests::port_runtime_register_virtio_port_prefers_vnet0_as_primary_smoke()
 }
 
-pub fn net_peripheral_driver_bridge_virtio_transmit_interface_argument_smoke() -> bool {
-    crate::net::qemu_tests::driver_bridge_virtio_transmit_interface_argument_smoke()
+pub fn net_peripheral_port_runtime_transmit_interface_argument_smoke() -> bool {
+    crate::net::qemu_tests::port_runtime_transmit_interface_argument_smoke()
 }

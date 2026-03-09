@@ -7,7 +7,7 @@ use crate::net::datapath::{adaptive_polling, mempool, zero_copy};
 use crate::net::l2::{arp, ethernet};
 use crate::net::l3::{icmp, icmpv6, igmp, ipv4, ipv6, ndp};
 use crate::net::l4::{tcp, udp};
-use crate::net::runtime::{bridge as driver_bridge, stack, timeouts as stack_timeouts};
+use crate::net::runtime::{bridge as stack_glue, stack, timeouts as stack_timeouts};
 use crate::net::services::{dhcp, dns, mdns};
 
 macro_rules! run_case {

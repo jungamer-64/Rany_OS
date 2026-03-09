@@ -31,7 +31,7 @@ static MLX5_SRIOV_STATE: PoisonLock<Option<GlobalMlx5SriovState>> = PoisonLock::
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mlx5SriovStatus {
     pub driver_present: bool,
-    pub bridge_initialized: bool,
+    pub port_runtime_initialized: bool,
     pub variant: Option<ConnectXVariant>,
     pub pf_bdf: Option<PcieBdf>,
     pub sriov_supported: bool,
@@ -91,8 +91,9 @@ fn lock_mlx5_sriov_state(context: &str) -> Mlx5SriovStateGuard {
     }
 }
 
-fn current_bridge_initialized() -> bool {
-    crate::net::runtime::bridge::mlx5_bridge::is_mlx5_bridge_initialized()
+fn current_port_runtime_initialized() -> bool {
+    crate::net::runtime::device::port_info(crate::net::runtime::device::NetDeviceKey::Mlx5(0))
+        .is_some()
 }
 
 fn map_pcie_error(err: PcieError) -> KapiError {
@@ -129,12 +130,12 @@ fn collect_vf_bdfs<C: SriovOps>(controller: &C) -> Vec<PcieBdf> {
 
 fn sriov_status_from_state<C: SriovOps>(
     state: Option<&Mlx5SriovRuntimeState<C>>,
-    bridge_initialized: bool,
+    port_runtime_initialized: bool,
 ) -> Mlx5SriovStatus {
     let Some(state) = state else {
         return Mlx5SriovStatus {
             driver_present: false,
-            bridge_initialized,
+            port_runtime_initialized,
             ..Mlx5SriovStatus::default()
         };
     };
@@ -144,7 +145,7 @@ fn sriov_status_from_state<C: SriovOps>(
 
     Mlx5SriovStatus {
         driver_present: true,
-        bridge_initialized,
+        port_runtime_initialized,
         variant: Some(state.variant),
         pf_bdf: Some(state.pf_bdf),
         sriov_supported: controller.is_some(),
@@ -160,8 +161,8 @@ fn sriov_status_from_state<C: SriovOps>(
 fn enable_vfs_with_runtime_state<C, F>(
     state: &mut Mlx5SriovRuntimeState<C>,
     num_vfs: u16,
-    bridge_initialized: bool,
-    mut bridge_activate: F,
+    port_runtime_initialized: bool,
+    mut activate_vports: F,
 ) -> KapiResult<Mlx5SriovStatus>
 where
     C: SriovOps,
@@ -170,24 +171,24 @@ where
     let controller = state.controller.as_mut().ok_or(KapiError::NotSupported)?;
     controller.enable_vfs(num_vfs).map_err(map_pcie_error)?;
 
-    if let Err(err) = bridge_activate(num_vfs) {
+    if let Err(err) = activate_vports(num_vfs) {
         if let Err(rollback_err) = controller.disable_vfs() {
             log::warn!(
                 target: "mlx5",
-                "SR-IOV bridge activation failed and PCI rollback also failed: {:?}",
+                "SR-IOV vport activation failed and PCI rollback also failed: {:?}",
                 rollback_err
             );
         }
         return Err(err);
     }
 
-    Ok(sriov_status_from_state(Some(state), bridge_initialized))
+    Ok(sriov_status_from_state(Some(state), port_runtime_initialized))
 }
 
 fn disable_vfs_with_runtime_state<C, F>(
     state: &mut Mlx5SriovRuntimeState<C>,
-    bridge_initialized: bool,
-    mut bridge_deactivate: F,
+    port_runtime_initialized: bool,
+    mut deactivate_vports: F,
 ) -> KapiResult<Mlx5SriovStatus>
 where
     C: SriovOps,
@@ -198,7 +199,7 @@ where
     let vport_err = if active_vfs == 0 {
         None
     } else {
-        bridge_deactivate(active_vfs).err()
+        deactivate_vports(active_vfs).err()
     };
     let pci_err = controller.disable_vfs().err();
 
@@ -213,7 +214,7 @@ where
         }
         (Some(vport_err), None) => Err(vport_err),
         (None, Some(pci_err)) => Err(map_pcie_error(pci_err)),
-        (None, None) => Ok(sriov_status_from_state(Some(state), bridge_initialized)),
+        (None, None) => Ok(sriov_status_from_state(Some(state), port_runtime_initialized)),
     }
 }
 
@@ -260,7 +261,7 @@ fn clear_mlx5_sriov_state() {
 
 pub fn mlx5_sriov_status() -> Mlx5SriovStatus {
     let guard = lock_mlx5_sriov_state("mlx5_sriov_status");
-    sriov_status_from_state(guard.as_ref(), current_bridge_initialized())
+    sriov_status_from_state(guard.as_ref(), current_port_runtime_initialized())
 }
 
 pub fn mlx5_enable_vfs(num_vfs: u16) -> KapiResult<Mlx5SriovStatus> {
@@ -268,19 +269,19 @@ pub fn mlx5_enable_vfs(num_vfs: u16) -> KapiResult<Mlx5SriovStatus> {
         return Err(KapiError::Internal(KAPI_EINVAL));
     }
 
-    let bridge_initialized = current_bridge_initialized();
+    let port_runtime_initialized = current_port_runtime_initialized();
     let mut guard = lock_mlx5_sriov_state("mlx5_enable_vfs");
     let state = guard.as_mut().ok_or(KapiError::NotFound)?;
-    enable_vfs_with_runtime_state(state, num_vfs, bridge_initialized, |count| {
+    enable_vfs_with_runtime_state(state, num_vfs, port_runtime_initialized, |count| {
         crate::net::runtime::bridge::mlx5_bridge::activate_mlx5_vfs(count).map_err(map_mlx5_error)
     })
 }
 
 pub fn mlx5_disable_vfs() -> KapiResult<Mlx5SriovStatus> {
-    let bridge_initialized = current_bridge_initialized();
+    let port_runtime_initialized = current_port_runtime_initialized();
     let mut guard = lock_mlx5_sriov_state("mlx5_disable_vfs");
     let state = guard.as_mut().ok_or(KapiError::NotFound)?;
-    disable_vfs_with_runtime_state(state, bridge_initialized, |count| {
+    disable_vfs_with_runtime_state(state, port_runtime_initialized, |count| {
         crate::net::runtime::bridge::mlx5_bridge::deactivate_mlx5_vfs(count).map_err(map_mlx5_error)
     })
 }
@@ -765,7 +766,7 @@ impl Mlx5AsyncDriver {
                         }
                     }
 
-                    // ハンドラを登録（Interrupt-Waker Bridge連携）
+                    // ハンドラを登録（Interrupt-Waker handoff）
                     for alloc in &msix_vectors {
                         let vec = alloc.vector;
                         crate::io::interrupt_manager::register_handler(
@@ -851,18 +852,27 @@ impl Mlx5AsyncDriver {
         crate::io::log::early_print("[MLX5_PROBE] bootstrap done\n");
 
         crate::net::runtime::bridge::mlx5_bridge::register_mlx5_device(device);
-        if let Err(e) = crate::net::runtime::bridge::mlx5_bridge::init_mlx5_bridge() {
-            log::error!(target: "mlx5", "Bridge initialization failed: {}", e);
+        let adapter = crate::net::runtime::bridge::mlx5_bridge::mlx5_net_driver_adapter();
+        let register_result = crate::net::runtime::device::register_port_with_default_config(
+            crate::net::runtime::device::NetDeviceKey::Mlx5(0),
+            adapter,
+            crate::net::runtime::device::primary_if().is_none(),
+        );
+        if let Err(e) = register_result {
+            log::error!(target: "mlx5", "Port runtime registration failed: {}", e);
 
             if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device() {
                 unsafe {
                     if let Err(teardown_err) = dev.teardown() {
-                        log::warn!(target: "mlx5", "Teardown after bridge failure failed: {:?}", teardown_err);
+                        log::warn!(target: "mlx5", "Teardown after registration failure failed: {:?}", teardown_err);
                     }
                 }
             }
 
             return Err(KapiError::IoError);
+        }
+        if let Ok(if_id) = register_result {
+            crate::net::runtime::bridge::register_stack_glue_interface(if_id, None);
         }
 
         self.variant = Some(variant);
@@ -880,7 +890,7 @@ impl Mlx5AsyncDriver {
 
         log::info!(
             target: "mlx5",
-            "{} device initialized and bridge activated",
+            "{} device initialized and port runtime activated",
             variant.name()
         );
         Ok(())
@@ -956,10 +966,12 @@ impl AsyncDriver for Mlx5AsyncDriver {
             }
             clear_mlx5_sriov_state();
 
-            if let Some(if_id) = crate::net::runtime::bridge::mlx5_bridge::mlx5_if_id() {
-                let _ = crate::net::runtime::device::unregister_device(if_id);
+            if let Some(if_id) =
+                crate::net::runtime::device::lookup_if_by_key(crate::net::runtime::device::NetDeviceKey::Mlx5(0))
+            {
+                let _ = crate::net::runtime::device::unregister_port(if_id);
             } else {
-                crate::net::runtime::bridge::mlx5_bridge::cleanup_mlx5_bridge();
+                crate::net::runtime::bridge::mlx5_bridge::reset_mlx5_port_runtime();
             }
 
             if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device() {
@@ -1182,7 +1194,7 @@ mod tests {
 
         let status = sriov_status_from_state(Some(&state), true);
         assert!(status.driver_present);
-        assert!(status.bridge_initialized);
+        assert!(status.port_runtime_initialized);
         assert_eq!(status.variant, Some(ConnectXVariant::CX5));
         assert_eq!(status.pf_bdf, Some(PcieBdf::new(0, 2, 0)));
         assert!(status.sriov_supported);
@@ -1196,7 +1208,7 @@ mod tests {
     }
 
     #[test_case]
-    fn enable_vfs_rolls_back_when_bridge_sync_fails() {
+    fn enable_vfs_rolls_back_when_port_runtime_sync_fails() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let mut state = Mlx5SriovRuntimeState {
             variant: ConnectXVariant::CX5,
@@ -1206,7 +1218,7 @@ mod tests {
 
         let err = enable_vfs_with_runtime_state(&mut state, 2, true, |count| {
             assert_eq!(count, 2);
-            events.borrow_mut().push("bridge_activate");
+            events.borrow_mut().push("port_runtime_activate");
             Err(KapiError::IoError)
         })
         .unwrap_err();
@@ -1214,7 +1226,7 @@ mod tests {
         assert_eq!(err, KapiError::IoError);
         assert_eq!(
             events.borrow().as_slice(),
-            ["enable", "bridge_activate", "disable"]
+            ["enable", "port_runtime_activate", "disable"]
         );
         assert_eq!(
             state
@@ -1237,13 +1249,16 @@ mod tests {
 
         let err = disable_vfs_with_runtime_state(&mut state, true, |count| {
             assert_eq!(count, 2);
-            events.borrow_mut().push("bridge_deactivate");
+            events.borrow_mut().push("port_runtime_deactivate");
             Err(KapiError::IoError)
         })
         .unwrap_err();
 
         assert_eq!(err, KapiError::IoError);
-        assert_eq!(events.borrow().as_slice(), ["bridge_deactivate", "disable"]);
+        assert_eq!(
+            events.borrow().as_slice(),
+            ["port_runtime_deactivate", "disable"]
+        );
         assert_eq!(
             state
                 .controller

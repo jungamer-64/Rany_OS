@@ -42,7 +42,7 @@ fn collect_interface_snapshots() -> Vec<InterfaceSnapshot> {
         }
     }
 
-    for stats in bridge::list_bridge_stats() {
+    for stats in bridge::list_stack_glue_stats() {
         if let Some(idx) = index_by_if.get(&stats.if_id).copied() {
             if let Some(entry) = interfaces.get_mut(idx) {
                 entry.rx_packets = stats.rx_packets;

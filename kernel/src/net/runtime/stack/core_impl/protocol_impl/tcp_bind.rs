@@ -454,7 +454,7 @@ impl NetworkStack {
         let ndp_ns_data: alloc::vec::Vec<(
             crate::net::l3::ipv6::Ipv6Address,
             crate::net::l3::ipv6::Ipv6Address,
-            alloc::vec::Vec<u8>,
+            alloc::boxed::Box<[u8]>,
         )> = {
             if let Some(ref mut ndp) = self.ndp {
                 let ns_messages = ndp.tick(current_time);
@@ -467,7 +467,7 @@ impl NetworkStack {
                             target_bytes.copy_from_slice(&ns_msg[8..24]);
                             let target = crate::net::l3::ipv6::Ipv6Address::new(target_bytes);
                             let sn_mcast = target.solicited_node();
-                            Some((our_ll, sn_mcast, ns_msg))
+                            Some((our_ll, sn_mcast, ns_msg.into_boxed_slice()))
                         } else {
                             None
                         }

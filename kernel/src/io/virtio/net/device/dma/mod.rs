@@ -92,6 +92,27 @@ pub(crate) fn prepare_dma_mapping_tx(
     };
 
     if is_iommu_enabled() {
+        let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
+        // If the buffer is page-aligned and fits in a page, we can direct-map it
+        // instead of using a bounce buffer (zero-copy support).
+        if (phys_addr_val & page_mask) == 0 && total_len <= crate::mm::types::PAGE_SIZE_4K {
+            let device_id = device.iommu_device_id().ok_or(VirtioNetError::DeviceError)?;
+            unsafe {
+                let iova = crate::io::iommu::api::map_for_device_with_perms(
+                    &device_id,
+                    x86_64::PhysAddr::new(phys_addr_val),
+                    crate::mm::types::PAGE_SIZE_4K as u64,
+                    true,  // Read
+                    false, // Write (TX is read-only)
+                ).map_err(|_| VirtioNetError::DeviceError)?;
+                
+                result.dma_addr = iova;
+                result.mapped_iova = Some(iova);
+                result.mapped_len = crate::mm::types::PAGE_SIZE_4K;
+                return Ok(result);
+            }
+        }
+
         prepare_iommu_bounce_tx(
             device,
             &mut result,
@@ -149,6 +170,26 @@ pub(crate) fn prepare_dma_mapping_rx(
     };
 
     if is_iommu_enabled() {
+        let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
+        // RX Zero-copy support: direct map if page-aligned
+        if (phys_addr_val & page_mask) == 0 && data_len <= crate::mm::types::PAGE_SIZE_4K {
+            let device_id = device.iommu_device_id().ok_or(VirtioNetError::DeviceError)?;
+            unsafe {
+                let iova = crate::io::iommu::api::map_for_device_with_perms(
+                    &device_id,
+                    x86_64::PhysAddr::new(phys_addr_val),
+                    crate::mm::types::PAGE_SIZE_4K as u64,
+                    true, // Read (for headers)
+                    true, // Write (for payload)
+                ).map_err(|_| VirtioNetError::DeviceError)?;
+                
+                result.dma_addr = iova;
+                result.mapped_iova = Some(iova);
+                result.mapped_len = crate::mm::types::PAGE_SIZE_4K;
+                return Ok(result);
+            }
+        }
+
         prepare_iommu_bounce_rx(device, &mut result, page_offset, can_map_page, data_len)?;
     } else if is_iommu_required() {
         return Err(VirtioNetError::DeviceError);
