@@ -539,6 +539,8 @@ pub struct HcaCaps {
     pub sw_owner_id_cap: bool,
     /// SET_DRIVER_VERSION を受け付ける
     pub driver_version_cap: bool,
+    /// QUERY_VHCA_STATE / MODIFY_VHCA_STATE を受け付ける
+    pub vhca_state_cap: bool,
     /// GENERAL_2 で sw_vhca_id_valid を有効化できる
     pub sw_vhca_id_valid_cap: bool,
     /// VHCA ポート数

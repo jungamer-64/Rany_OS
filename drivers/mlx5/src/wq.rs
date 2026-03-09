@@ -514,6 +514,49 @@ impl ReceiveQueue {
     pub fn buffer_device(&self) -> u64 {
         self.buf_device
     }
+
+    /// RQ の状態をデバッグ用に取得
+    ///
+    /// # Safety
+    /// - RQ バッファと doorbell_virt が有効であること
+    pub unsafe fn debug_state(&self) -> RxQueueDebugState {
+        let last_wqe_counter = self.producer_counter.wrapping_sub(1);
+        let last_idx = (last_wqe_counter as u32 % self.rq_depth) as usize;
+        let last_wqe_ptr = (self.buf_virt as usize + last_idx * WQEBB_SIZE) as *const u8;
+
+        let doorbell_be = core::ptr::read_volatile(self.doorbell_virt as *const u32);
+        let doorbell_host = u32::from_be(doorbell_be) & 0x0000_ffff;
+
+        RxQueueDebugState {
+            rqn: self.rqn,
+            producer_counter: self.producer_counter,
+            rq_depth: self.rq_depth,
+            available_slots: self.available_slots(),
+            doorbell_be,
+            doorbell_host,
+            last_wqe_counter,
+            last_wqe_addr: last_wqe_ptr as u64,
+            last_wqe_byte_count: read_be32_raw(last_wqe_ptr, wqe::data::BYTE_COUNT),
+            last_wqe_lkey: read_be32_raw(last_wqe_ptr, wqe::data::LKEY),
+            last_wqe_device_addr: read_be64_raw(last_wqe_ptr, wqe::data::ADDR),
+        }
+    }
+}
+
+/// Receive Queue のデバッグスナップショット
+#[derive(Debug, Clone, Copy)]
+pub struct RxQueueDebugState {
+    pub rqn: u32,
+    pub producer_counter: u16,
+    pub rq_depth: u32,
+    pub available_slots: u32,
+    pub doorbell_be: u32,
+    pub doorbell_host: u32,
+    pub last_wqe_counter: u16,
+    pub last_wqe_addr: u64,
+    pub last_wqe_byte_count: u32,
+    pub last_wqe_lkey: u32,
+    pub last_wqe_device_addr: u64,
 }
 
 // ============================================================================
@@ -540,4 +583,36 @@ unsafe fn write_be16_raw(base: *mut u8, offset: usize, value: u16) {
 unsafe fn write_be64_raw(base: *mut u8, offset: usize, value: u64) {
     let bytes = value.to_be_bytes();
     core::ptr::copy_nonoverlapping(bytes.as_ptr(), base.add(offset), 8);
+}
+
+/// ビッグエンディアンu32をrawポインタから読み込む
+///
+/// # Safety
+/// - `base` が有効なポインタであること
+/// - `offset + 4` がバッファ範囲内であること
+unsafe fn read_be32_raw(base: *const u8, offset: usize) -> u32 {
+    let ptr = base.add(offset);
+    let b0 = core::ptr::read_volatile(ptr);
+    let b1 = core::ptr::read_volatile(ptr.add(1));
+    let b2 = core::ptr::read_volatile(ptr.add(2));
+    let b3 = core::ptr::read_volatile(ptr.add(3));
+    u32::from_be_bytes([b0, b1, b2, b3])
+}
+
+/// ビッグエンディアンu64をrawポインタから読み込む
+///
+/// # Safety
+/// - `base` が有効なポインタであること
+/// - `offset + 8` がバッファ範囲内であること
+unsafe fn read_be64_raw(base: *const u8, offset: usize) -> u64 {
+    let ptr = base.add(offset);
+    let b0 = core::ptr::read_volatile(ptr);
+    let b1 = core::ptr::read_volatile(ptr.add(1));
+    let b2 = core::ptr::read_volatile(ptr.add(2));
+    let b3 = core::ptr::read_volatile(ptr.add(3));
+    let b4 = core::ptr::read_volatile(ptr.add(4));
+    let b5 = core::ptr::read_volatile(ptr.add(5));
+    let b6 = core::ptr::read_volatile(ptr.add(6));
+    let b7 = core::ptr::read_volatile(ptr.add(7));
+    u64::from_be_bytes([b0, b1, b2, b3, b4, b5, b6, b7])
 }

@@ -84,13 +84,27 @@ pub fn build_destroy_mkey_input(in_mbox: &mut CmdMailbox, mkey_index: u32) {
 
 /// CREATE_TIS コマンド入力の構築
 pub fn build_create_tis_input(in_mbox: &mut CmdMailbox, params: &TisParams) {
+    build_create_tis_input_with_options(in_mbox, params, false, 0);
+}
+
+/// CREATE_TIS コマンド入力の構築（互換性向けオプション付き）
+pub fn build_create_tis_input_with_options(
+    in_mbox: &mut CmdMailbox,
+    params: &TisParams,
+    include_pd: bool,
+    underlay_qpn: u32,
+) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = TisContextLayout::new(&mut in_mbox.data[0x20..]);
 
-    layout.set_lag_tx_port_affinity(params.port);
+    // Match Linux mlx5e default TIS setup: transport_domain + underlay_qpn.
+    // LAG affinity fields are only programmed in dedicated LAG affinity modes.
     layout.set_prio(params.prio);
     layout.set_transport_domain(params.td);
-    layout.set_pd(params.pd);
+    layout.set_underlay_qpn(underlay_qpn);
+    if include_pd {
+        layout.set_pd(params.pd);
+    }
 }
 
 /// CREATE_TIS 出力からTIS番号を解析
@@ -194,6 +208,7 @@ pub fn parse_query_special_contexts_resd_lkey(out_mbox: &CmdMailbox) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::structs::get_bits_u32;
 
     #[test]
     fn parse_create_mkey_output_reads_index_from_linux_ifc_offset() {
@@ -202,5 +217,62 @@ mod tests {
         out_mbox.data[0x0A] = 0x56;
         out_mbox.data[0x0B] = 0x78;
         assert_eq!(parse_create_mkey_output(&out_mbox), 0x0034_5678);
+    }
+
+    #[test]
+    fn create_tis_sets_linux_ifc_required_fields() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let params = TisParams {
+            td: 0x123,
+            pd: 0x456,
+            port: 1,
+            prio: 3,
+        };
+        build_create_tis_input(&mut in_mbox, &params);
+
+        let ctx = &in_mbox.data[0x20..];
+        assert_eq!(get_bits_u32(ctx, 12, 4), 0x3);
+        assert_eq!(get_bits_u32(ctx, 296, 24), 0x123);
+        assert_eq!(get_bits_u32(ctx, 328, 24), 0);
+        assert_eq!(get_bits_u32(ctx, 360, 24), 0);
+    }
+
+    #[test]
+    fn create_tis_can_optionally_program_pd_and_underlay_qpn() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let params = TisParams {
+            td: 0x123,
+            pd: 0x456,
+            port: 1,
+            prio: 0,
+        };
+        build_create_tis_input_with_options(&mut in_mbox, &params, true, 0xabcde);
+
+        let ctx = &in_mbox.data[0x20..];
+        assert_eq!(get_bits_u32(ctx, 12, 4), 0);
+        assert_eq!(get_bits_u32(ctx, 296, 24), 0x123);
+        assert_eq!(get_bits_u32(ctx, 328, 24), 0x0a_bcde);
+        assert_eq!(get_bits_u32(ctx, 360, 24), 0x456);
+    }
+
+    #[test]
+    fn create_tir_direct_rq_sets_linux_ifc_fields() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let params = TirParams {
+            receive_type: TirReceiveType::DirectRq,
+            td: 0x123,
+            inline_rqn: 0x456,
+            rqtn: 0,
+            rss: None,
+            scatter_fcs: false,
+            vlan_strip: false,
+        };
+        build_create_tir_input(&mut in_mbox, &params);
+
+        let ctx = &in_mbox.data[0x20..];
+        assert_eq!(get_bits_u32(ctx, 32, 4), 0); // disp_type=Direct
+        assert_eq!(get_bits_u32(ctx, 232, 24), 0x456); // inline_rqn
+        assert_eq!(get_bits_u32(ctx, 288, 4), 0); // rx_hash_fn=none
+        assert_eq!(get_bits_u32(ctx, 296, 24), 0x123); // transport_domain
     }
 }

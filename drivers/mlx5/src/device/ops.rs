@@ -236,6 +236,28 @@ impl Mlx5Device {
         result
     }
 
+    /// RX Queue のデバッグ状態を取得
+    ///
+    /// # Safety
+    /// - RQ メモリとドアベル領域が有効であること
+    pub unsafe fn debug_rx_queue_state(
+        &self,
+        rq_index: usize,
+    ) -> Option<crate::wq::RxQueueDebugState> {
+        self.rqs.get(rq_index).map(|rq| rq.debug_state())
+    }
+
+    /// Completion Queue のデバッグ状態を取得
+    ///
+    /// # Safety
+    /// - CQ メモリとドアベル領域が有効であること
+    pub unsafe fn debug_cq_state(
+        &self,
+        cq_index: usize,
+    ) -> Option<crate::cq::CqDebugState> {
+        self.cqs.get(cq_index).map(|cq| cq.debug_state())
+    }
+
     pub fn process_tx_completions(
         &mut self,
         sq_index: usize,
@@ -582,6 +604,20 @@ impl Mlx5Device {
         vport_number: u16,
         other_vport: bool,
     ) -> Mlx5Result<VnicEnvCounters> {
+        if self.is_vf() {
+            if !self.vnic_env_query_logged {
+                log::info!(
+                    target: "mlx5",
+                    "Skipping QUERY_VNIC_ENV on VF; using zero vNIC environment counters"
+                );
+                self.vnic_env_query_logged = true;
+            }
+            return Ok(VnicEnvCounters {
+                receive_discard_vport_down: 0,
+                transmit_discard_vport_down: 0,
+            });
+        }
+
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_query_vnic_env_input(in_mbox, vport_number, other_vport);
@@ -749,11 +785,10 @@ impl Mlx5Device {
             .get(port_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
 
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         unsafe {
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             build_modify_vport_state_input(in_mbox, 0, 0, false, VPORT_ADMIN_STATE_UP);
-            cmd.execute(
+            self.execute_cmd_with_uid_candidates(
                 CmdOpcode::ModifyVportState,
                 self.cmd_in_mbox_device,
                 MLX5_CMD_MBOX_SIZE as u32,
@@ -800,7 +835,13 @@ impl Mlx5Device {
         } else {
             let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
             crate::cmd::flow::build_delete_flow_table_entry_input(in_mbox, table_id, 64);
-            self.execute_uid_sensitive_cmd(CmdOpcode::DeleteFlowTableEntry, 0x10, 0x10)?;
+            self.execute_cmd_with_uid_candidates(
+                CmdOpcode::DeleteFlowTableEntry,
+                self.cmd_in_mbox_device,
+                0x10,
+                self.cmd_out_mbox_device,
+                0x10,
+            )?;
         }
         
         log::info!(target: "mlx5", "Promiscuous mode: {}", if enable { "enabled" } else { "disabled" });

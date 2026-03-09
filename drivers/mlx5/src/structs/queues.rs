@@ -74,7 +74,7 @@ impl<'a> CqContextLayout<'a> {
     pub fn set_uar_page(&mut self, val: u32) {
         set_bits_u32(self.data, 104, 24, val);
     }
-    // c_eqn: bit 160-191 (dword 5)
+    // c_eqn_or_apu_element: bit 160-191 (dword 5)
     pub fn set_c_eqn(&mut self, val: u32) {
         set_bits_u32(self.data, 160, 32, val);
     }
@@ -132,13 +132,16 @@ impl<'a> SqContextLayout<'a> {
     }
 
     pub fn set_state(&mut self, val: u8) {
-        set_bits_u32(self.data, 4, 4, val as u32);
+        set_bits_u32(self.data, 8, 4, val as u32);
     }
     pub fn set_flush_in_error_en(&mut self, val: bool) {
-        set_bits_u32(self.data, 0, 1, if val { 1 } else { 0 });
+        set_bits_u32(self.data, 3, 1, if val { 1 } else { 0 });
     }
-    pub fn set_mem_sq_type(&mut self, val: u8) {
-        set_bits_u32(self.data, 7, 1, val as u32);
+    pub fn set_allow_multi_pkt_send_wqe(&mut self, val: bool) {
+        set_bits_u32(self.data, 4, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_min_wqe_inline_mode(&mut self, val: u8) {
+        set_bits_u32(self.data, 5, 3, val as u32);
     }
     pub fn set_cqn(&mut self, val: u32) {
         set_bits_u32(self.data, 72, 24, val);
@@ -166,16 +169,24 @@ impl<'a> RqContextLayout<'a> {
     }
 
     pub fn set_state(&mut self, val: u8) {
+        set_bits_u32(self.data, 8, 4, val as u32);
+    }
+    pub fn set_mem_rq_type(&mut self, val: u8) {
         set_bits_u32(self.data, 4, 4, val as u32);
+    }
+    pub fn set_flush_in_error_en(&mut self, val: bool) {
+        set_bits_u32(self.data, 13, 1, if val { 1 } else { 0 });
     }
     pub fn set_cqn(&mut self, val: u32) {
         set_bits_u32(self.data, 72, 24, val);
     }
     pub fn set_scatter_fcs(&mut self, val: bool) {
-        set_bits_u32(self.data, 1, 1, if val { 1 } else { 0 });
+        set_bits_u32(self.data, 2, 1, if val { 1 } else { 0 });
     }
     pub fn set_vlan_strip(&mut self, val: bool) {
-        set_bits_u32(self.data, 0, 1, if val { 1 } else { 0 });
+        // RQC.vsd is VLAN strip disable; invert the semantic for callers that
+        // pass "enable VLAN strip" as a boolean.
+        set_bits_u32(self.data, 3, 1, if val { 0 } else { 1 });
     }
 
     pub fn wq(&mut self) -> WqLayout<'_> {

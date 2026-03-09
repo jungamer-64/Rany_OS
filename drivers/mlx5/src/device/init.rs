@@ -149,6 +149,12 @@ impl Mlx5Device {
         )?;
         crate::boot_trace("[MLX5_BOOT] enable_hca done\n");
 
+        if self.is_vf() {
+            log::info!(target: "mlx5", "Skipping QUERY_ISSI on VF; continuing with ISSI 0");
+            self.state = DeviceState::HcaEnabled;
+            return Ok(());
+        }
+
         crate::boot_trace("[MLX5_BOOT] query_issi start\n");
         log::info!(target: "mlx5", "Querying ISSI...");
         *in_mbox = CmdMailbox::zeroed();
@@ -603,34 +609,45 @@ impl Mlx5Device {
         }
 
         if self.is_vf() && self.sw_vhca_id == 0 {
-            match self.query_vhca_state(0) {
-                Ok(vhca_ctx) => {
-                    log::info!(
-                        target: "mlx5",
-                        "Local VF VHCA state: {:?}, sw_function_id={:#x}",
-                        vhca_ctx.state,
-                        vhca_ctx.sw_function_id
-                    );
-                    if vhca_ctx.sw_function_id != 0
-                        && vhca_ctx.sw_function_id <= u16::MAX as u32
-                    {
-                        self.sw_vhca_id = vhca_ctx.sw_function_id as u16;
+            let vhca_state_capable = self
+                .hca_caps()
+                .map(|caps| caps.vhca_state_cap)
+                .unwrap_or(false);
+            if vhca_state_capable {
+                match self.query_vhca_state(0) {
+                    Ok(vhca_ctx) => {
+                        log::info!(
+                            target: "mlx5",
+                            "Local VF VHCA state: {:?}, sw_function_id={:#x}",
+                            vhca_ctx.state,
+                            vhca_ctx.sw_function_id
+                        );
+                        if vhca_ctx.sw_function_id != 0
+                            && vhca_ctx.sw_function_id <= u16::MAX as u32
+                        {
+                            self.sw_vhca_id = vhca_ctx.sw_function_id as u16;
+                        }
+                        if !vhca_ctx.state.is_activation_ready() {
+                            log::warn!(
+                                target: "mlx5",
+                                "VF VHCA state {:?} is not activation-ready; later resource commands may still fail",
+                                vhca_ctx.state
+                            );
+                        }
                     }
-                    if !vhca_ctx.state.is_activation_ready() {
+                    Err(err) => {
                         log::warn!(
                             target: "mlx5",
-                            "VF VHCA state {:?} is not activation-ready; later resource commands may still fail",
-                            vhca_ctx.state
+                            "Failed to query local VF VHCA state after INIT_HCA: {:?}",
+                            err
                         );
                     }
                 }
-                Err(err) => {
-                    log::warn!(
-                        target: "mlx5",
-                        "Failed to query local VF VHCA state after INIT_HCA: {:?}",
-                        err
-                    );
-                }
+            } else {
+                log::info!(
+                    target: "mlx5",
+                    "Skipping QUERY_VHCA_STATE on VF: capability bit is not set"
+                );
             }
         }
 
@@ -650,41 +667,51 @@ impl Mlx5Device {
         self.alloc_pd()?;
         self.alloc_td()?;
 
-        // VF probe: try a short list of PD values when creating MKEY, falling
-        // back to the reserved lkey only if none succeed.
-        let mut pd_candidates = vec![0, 1];
-        if self.pd != 0 && self.pd != 1 {
-            pd_candidates.push(self.pd);
-        }
-
-        let mut effective_mkey_params = mkey_params.clone();
+        // VF では CREATE_MKEY が拒否される FW があるため、reserved lkey を優先する。
         let mut mkey_ok = false;
-        for &pd_try in &pd_candidates {
-            effective_mkey_params.pd = pd_try;
-            match self.create_mkey(&effective_mkey_params) {
-                Ok(_) => {
-                    mkey_ok = true;
-                    self.pd = pd_try;
-                    log::info!(target: "mlx5", "[5/8] MKEY created with PD {}", pd_try);
-                    break;
-                }
-                Err(e) => {
-                    log::warn!(target: "mlx5", "[5/8] MKEY creation failed with PD {}: {:?}", pd_try, e);
-                }
-            }
-        }
-
-        // 完全に失敗した場合は、VF特有の「予約済みLKEY」をPFから取得して使用する
-        if !mkey_ok && self.is_vf() {
-            log::info!(target: "mlx5", "Attempting to query reserved lkey for VF fallback...");
+        if self.is_vf() {
+            log::info!(target: "mlx5", "Attempting to use reserved lkey for VF first...");
             match self.query_reserved_lkey() {
                 Ok(lkey) => {
                     self.mkey = lkey;
                     mkey_ok = true;
-                    log::warn!(target: "mlx5", "[5/8] Using reserved lkey={:#x} as fallback", lkey);
+                    log::warn!(target: "mlx5", "[5/8] Using reserved lkey={:#x}", lkey);
                 }
                 Err(e) => {
-                    log::error!(target: "mlx5", "[5/8] Failed to query reserved lkey: {:?}", e);
+                    log::warn!(
+                        target: "mlx5",
+                        "[5/8] Reserved lkey query failed, falling back to CREATE_MKEY: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+
+        if !mkey_ok {
+            // PF では通常 CREATE_MKEY、VF でも reserved lkey が得られない場合は試行。
+            let mut pd_candidates = vec![0, 1];
+            if self.pd != 0 && self.pd != 1 {
+                pd_candidates.push(self.pd);
+            }
+
+            let mut effective_mkey_params = mkey_params.clone();
+            for &pd_try in &pd_candidates {
+                effective_mkey_params.pd = pd_try;
+                match self.create_mkey(&effective_mkey_params) {
+                    Ok(_) => {
+                        mkey_ok = true;
+                        self.pd = pd_try;
+                        log::info!(target: "mlx5", "[5/8] MKEY created with PD {}", pd_try);
+                        break;
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            target: "mlx5",
+                            "[5/8] MKEY creation failed with PD {}: {:?}",
+                            pd_try,
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -704,10 +731,13 @@ impl Mlx5Device {
                 eq_buf.1,
                 log_eq_size,
                 0,
-                crate::defs::eq_event_mask::STANDARD,
+                // Linux creates completion EQs with an empty event mask and
+                // treats command/async notifications via dedicated EQ types.
+                0,
             )?;
             eqns.push(eqn);
         }
+        crate::boot_trace("[MLX5_STAGE] eq_done\n");
 
         let mut tx_cqns = Vec::new();
         for (i, cq_buf) in tx_cq_bufs.iter().enumerate() {
@@ -715,6 +745,7 @@ impl Mlx5Device {
             let cqn = self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
             tx_cqns.push(cqn);
         }
+        crate::boot_trace("[MLX5_STAGE] tx_cq_done\n");
 
         let mut rx_cqns = Vec::new();
         for (i, cq_buf) in rx_cq_bufs.iter().enumerate() {
@@ -722,31 +753,101 @@ impl Mlx5Device {
             let cqn = self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
             rx_cqns.push(cqn);
         }
+        crate::boot_trace("[MLX5_STAGE] rx_cq_done\n");
 
-        let tisn = self.create_tis(&crate::resources::TisParams {
-            pd: self.pd,
-            td: self.td,
-            port: 1,
-            prio: 0,
-        })?;
-        for (i, sq_buf) in sq_bufs.iter().enumerate() {
-            let cqn = tx_cqns[i % tx_cqns.len()];
-            let _sqn = self.create_sq_hw(
-                sq_buf.0,
-                sq_buf.1,
-                sq_buf.2,
-                sq_buf.3,
-                log_sq_size,
-                cqn,
-                tisn,
-            )?;
+        let mut tx_path_enabled = true;
+        let mut tx_using_fallback_tis0 = false;
+        crate::boot_trace("[MLX5_STAGE] create_tis_enter\n");
+        let tisn = if self.is_vf() {
+            // On several VF firmware variants (including CX4-Lx SR-IOV),
+            // CREATE_TIS is rejected but SQ can still run with implicit TIS=0.
+            // Skip noisy retries and activate the proven fallback directly.
+            log::warn!(
+                target: "mlx5",
+                "Skipping CREATE_TIS on VF; using TX fallback with implicit TIS=0"
+            );
+            tx_using_fallback_tis0 = true;
+            0
+        } else {
+            self.create_tis(&crate::resources::TisParams {
+                pd: self.pd,
+                td: self.td,
+                port: 1,
+                prio: 0,
+            })?
+        };
+        crate::boot_trace("[MLX5_STAGE] create_tis_done\n");
+
+        let max_hw_sq = self
+            .hca_caps()
+            .map(|caps| core::cmp::max(caps.max_sq as usize, 1))
+            .unwrap_or(sq_bufs.len());
+        let sq_queue_count = core::cmp::min(sq_bufs.len(), max_hw_sq);
+        if sq_queue_count < sq_bufs.len() {
+            log::warn!(
+                target: "mlx5",
+                "Clamping SQ queue count from {} to {} based on HW capability",
+                sq_bufs.len(),
+                sq_queue_count
+            );
+        }
+
+        if tx_path_enabled {
+            for (i, sq_buf) in sq_bufs.iter().take(sq_queue_count).enumerate() {
+                let cqn = tx_cqns[i % tx_cqns.len()];
+                if let Err(err) = self.create_sq_hw(
+                    sq_buf.0,
+                    sq_buf.1,
+                    sq_buf.2,
+                    sq_buf.3,
+                    log_sq_size,
+                    cqn,
+                    tisn,
+                ) {
+                    if self.is_vf() {
+                        log::warn!(
+                            target: "mlx5",
+                            "CREATE_SQ failed on VF ({:?}); disabling TX path and continuing RX-only",
+                            err
+                        );
+                        tx_path_enabled = false;
+                        break;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+
+        if !tx_path_enabled {
+            log::warn!(
+                target: "mlx5",
+                "mlx5 VF fallback active: TX path disabled (no usable TIS/SQ), continuing RX setup"
+            );
+        } else if tx_using_fallback_tis0 {
+            log::warn!(
+                target: "mlx5",
+                "mlx5 VF fallback active: TX path running with implicit TIS=0"
+            );
         }
 
         let scatter_fcs = self.hca_caps().map(|c| c.scatter_fcs).unwrap_or(false);
         let vlan_strip = self.hca_caps().map(|c| c.vlan_strip).unwrap_or(false);
+        let max_hw_rq = self
+            .hca_caps()
+            .map(|caps| core::cmp::max(caps.max_rq as usize, 1))
+            .unwrap_or(rq_bufs.len());
+        let rq_queue_count = core::cmp::min(rq_bufs.len(), max_hw_rq);
+        if rq_queue_count < rq_bufs.len() {
+            log::warn!(
+                target: "mlx5",
+                "Clamping RQ queue count from {} to {} based on HW capability",
+                rq_bufs.len(),
+                rq_queue_count
+            );
+        }
 
         let mut rqns = Vec::new();
-        for (i, rq_buf) in rq_bufs.iter().enumerate() {
+        for (i, rq_buf) in rq_bufs.iter().take(rq_queue_count).enumerate() {
             let cqn = rx_cqns[i % rx_cqns.len()];
             let rqn = self.create_rq_hw(
                 rq_buf.0,
@@ -761,10 +862,14 @@ impl Mlx5Device {
             )?;
             rqns.push(rqn);
         }
+        crate::boot_trace("[MLX5_STAGE] rq_done\n");
 
         let tirn = if rqns.len() > 1 {
+            crate::boot_trace("[MLX5_STAGE] create_rqt_enter\n");
             let log_rqt_size = (32 - (rqns.len() as u32 - 1).leading_zeros()) as u8;
             let rqtn = self.create_rqt(&rqns, log_rqt_size)?;
+            crate::boot_trace("[MLX5_STAGE] create_rqt_done\n");
+            crate::boot_trace("[MLX5_STAGE] create_tir_rqt_enter\n");
             self.create_tir(&crate::resources::TirParams {
                 receive_type: crate::resources::TirReceiveType::Rqt,
                 td: self.td,
@@ -775,33 +880,57 @@ impl Mlx5Device {
                 vlan_strip,
             })?
         } else {
+            crate::boot_trace("[MLX5_STAGE] create_tir_direct_enter\n");
+            let inline_rqn = rqns.first().copied().ok_or(Mlx5Error::InvalidResponse)?;
             self.create_tir(&crate::resources::TirParams {
                 receive_type: crate::resources::TirReceiveType::DirectRq,
                 td: self.td,
-                inline_rqn: rqns[0],
+                inline_rqn,
                 rqtn: 0,
                 rss: None,
                 scatter_fcs,
                 vlan_strip,
             })?
         };
+        crate::boot_trace("[MLX5_STAGE] create_tir_done\n");
 
         // Finalize
-        let _ = self.setup_rx_flow_table_advanced(tirn);
-        let _ = self.set_port_admin_up(0);
+        if let Err(err) = self.setup_rx_flow_table_advanced(tirn) {
+            if self.is_vf() {
+                let _ = err;
+                crate::boot_trace("[MLX5_STAGE] rx_flow_table_vf_failed\n");
+            }
+        }
+        if self.is_vf() {
+            crate::boot_trace("[MLX5_STAGE] try_port_admin_up_vf\n");
+            if let Err(err) = self.set_port_admin_up(0) {
+                log::warn!(
+                    target: "mlx5",
+                    "VF MODIFY_VPORT_STATE(admin up) failed; continuing: {:?}",
+                    err
+                );
+            }
+        } else {
+            let _ = self.set_port_admin_up(0);
+        }
         if let Some(port) = self.ports.get_mut(0) {
             port.admin_up();
         }
 
-        // Give the firmware a moment to reflect the port state change before reporting active
-        let start_ms = kernel_api::service::kernel::instance().current_tick();
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while kernel_api::service::kernel::instance().current_tick() - start_ms < 50 {
-            core::hint::spin_loop();
+        // Give PF firmware a moment to reflect the port state change before
+        // reporting active. On VF bring-up in some environments the timer tick
+        // may not advance yet here, so skip this delay path.
+        if !self.is_vf() {
+            let start_ms = kernel_api::service::kernel::instance().current_tick();
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
+            while kernel_api::service::kernel::instance().current_tick() - start_ms < 50 {
+                core::hint::spin_loop();
+            }
         }
 
         self.resources_allocated = true;
         self.state = DeviceState::Active;
+        crate::boot_trace("[MLX5_STAGE] bootstrap_done\n");
         Ok(())
     }
 

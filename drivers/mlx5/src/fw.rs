@@ -272,6 +272,7 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         eswitch_manager: false,
         sw_owner_id_cap: false,
         driver_version_cap: false,
+        vhca_state_cap: false,
         sw_vhca_id_valid_cap: false,
         num_vhca_ports,
         vhca_id,

@@ -119,7 +119,10 @@ impl Mlx5Device {
         }
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        let cqe_comp = self.hca_caps.as_ref().map(|c| c.cqe_compression).unwrap_or(false);
+        // Keep CQE compression disabled in the generic CREATE_CQ path.
+        // Linux enables it selectively for RX CQs after programming
+        // companion CQC fields (mini_cqe_res_format/layout).
+        let cqe_comp = false;
         build_create_cq_input(
             in_mbox,
             log_cq_size,
@@ -134,6 +137,20 @@ impl Mlx5Device {
         let cq_pages = (cq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let cq_in_len = (0x110 + cq_pages * 8) as u32;
 
+        let cqc = &in_mbox.data[0x10..];
+        log::info!(
+            target: "mlx5",
+            "CREATE_CQ in(pre): st={} cqe_comp={} page_offset={} log_cq_size={} uar_page={} c_eqn={:#x} log_page_size={} dbr_addr={:#x} pas0={:#x}",
+            crate::structs::get_bits_u32(cqc, 20, 4),
+            crate::structs::get_bits_u32(cqc, 17, 1),
+            crate::structs::get_bits_u32(cqc, 84, 6),
+            crate::structs::get_bits_u32(cqc, 99, 5),
+            crate::structs::get_bits_u32(cqc, 104, 24),
+            crate::structs::get_bits_u32(cqc, 160, 32),
+            crate::structs::get_bits_u32(cqc, 195, 5),
+            in_mbox.read_be64(0x48),
+            in_mbox.read_be64(0x110),
+        );
         if let Err(err) = self.execute_uid_sensitive_cmd(CmdOpcode::CreateCq, cq_in_len, 0x10) {
             log::info!(
                 target: "mlx5",
@@ -221,13 +238,27 @@ impl Mlx5Device {
             self.uar_page,
             tisn,
         );
+        if tisn == 0 && self.tis_list.iter().all(|t| t.tisn != 0) {
+            // VF fallback: when CREATE_TIS is unavailable, try creating SQ
+            // without an explicit TIS list and let firmware use its default.
+            let mut layout = crate::structs::queues::SqContextLayout::new(&mut in_mbox.data[0x20..]);
+            layout.set_tis_lst_sz(0);
+            layout.set_tis_num_0(0);
+        }
         let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
         let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let sq_in_len = (0x110 + sq_pages * 8) as u32;
         self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10)?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let sqn = parse_create_sq_output(out_mbox);
-        self.transition_sq_to_ready(sqn)?;
+        if let Err(err) = self.transition_sq_to_ready(sqn) {
+            if self.is_vf() {
+                let _ = err;
+                crate::boot_trace("[MLX5_SQ] modify_sq failed on VF; continue\n");
+            } else {
+                return Err(err);
+            }
+        }
         let csum_offload = self.hca_caps.as_ref().map(|c| c.csum_cap).unwrap_or(false);
         let sq = SendQueue::new(
             sqn,
@@ -264,25 +295,58 @@ impl Mlx5Device {
     ) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        build_create_rq_input(
-            in_mbox,
-            log_rq_size,
-            rq_buf_pa,
-            db_pa,
-            cqn,
-            self.pd,
-            self.uar_page,
-            scatter_fcs,
-            vlan_strip,
-        );
         let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
         let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rq_in_len = (0x110 + rq_pages * 8) as u32;
-        self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10)?;
+
+        let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        let mut selected_mem_rq_type = 0u8;
+        // VF では mem_rq_type=1 が先に通る個体が多いため先行試行する。
+        // 失敗時は従来どおり mem_rq_type=0 へフォールバックする。
+        let mem_rq_type_attempts: &[u8] = if self.is_vf() { &[1, 0] } else { &[0] };
+        for &mem_rq_type in mem_rq_type_attempts {
+            build_create_rq_input_with_mem_type(
+                in_mbox,
+                log_rq_size,
+                rq_buf_pa,
+                db_pa,
+                cqn,
+                self.pd,
+                self.uar_page,
+                scatter_fcs,
+                vlan_strip,
+                mem_rq_type,
+            );
+            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10) {
+                Ok(()) => {
+                    selected_mem_rq_type = mem_rq_type;
+                    last_err = Ok(());
+                    break;
+                }
+                Err(err) => last_err = Err(err),
+            }
+        }
+        last_err?;
+
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let rqn = parse_create_rq_output(out_mbox);
-        self.transition_rq_to_ready(rqn)?;
+        if selected_mem_rq_type != 0 {
+            log::warn!(
+                target: "mlx5",
+                "CREATE_RQ accepted only with mem_rq_type={} (VF fallback path)",
+                selected_mem_rq_type
+            );
+        }
+        if let Err(err) = self.transition_rq_to_ready(rqn) {
+            if self.is_vf() {
+                let _ = err;
+                crate::boot_trace("[MLX5_RQ] modify_rq failed on VF; continue\n");
+            } else {
+                return Err(err);
+            }
+        }
         let csum_offload = self.hca_caps.as_ref().map(|c| c.csum_cap).unwrap_or(false);
+        crate::boot_trace("[MLX5_RQ] build rq object\n");
         let rq = ReceiveQueue::new(
             rqn,
             rq_buf_virt,
@@ -293,11 +357,13 @@ impl Mlx5Device {
             self.mkey,
             csum_offload,
         );
+        crate::boot_trace("[MLX5_RQ] rq object ready\n");
         let cq_index = self
             .cq_index_by_cqn(cqn)
             .ok_or(Mlx5Error::InvalidResponse)?;
         self.rqs.push(rq);
         self.rx_cq_by_rq.push(cq_index);
+        crate::boot_trace("[MLX5_RQ] done\n");
         Ok(rqn)
     }
 
@@ -326,38 +392,28 @@ impl Mlx5Device {
     unsafe fn transition_sq_to_ready(&mut self, sqn: u32) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        build_modify_sq_input(
-            in_mbox,
-            sqn,
-            WqState::Reset as u8,
-            WqState::Ready as u8,
-            0,
-            false,
-        );
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::ModifySq,
-            MLX5_CMD_MBOX_SIZE as u32,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
-        Ok(())
+        let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        for current_state in [WqState::Reset as u8, WqState::Ready as u8] {
+            build_modify_sq_input(in_mbox, sqn, current_state, WqState::Ready as u8);
+            match self.execute_uid_sensitive_cmd(CmdOpcode::ModifySq, 0x110, 0x10) {
+                Ok(()) => return Ok(()),
+                Err(err) => last_err = Err(err),
+            }
+        }
+        last_err
     }
 
     unsafe fn transition_rq_to_ready(&mut self, rqn: u32) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        build_modify_rq_input(
-            in_mbox,
-            rqn,
-            WqState::Reset as u8,
-            WqState::Ready as u8,
-            0,
-            false,
-        );
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::ModifyRq,
-            MLX5_CMD_MBOX_SIZE as u32,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
-        Ok(())
+        let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        for current_state in [WqState::Reset as u8, WqState::Ready as u8] {
+            build_modify_rq_input(in_mbox, rqn, current_state, WqState::Ready as u8);
+            match self.execute_uid_sensitive_cmd(CmdOpcode::ModifyRq, 0x110, 0x10) {
+                Ok(()) => return Ok(()),
+                Err(err) => last_err = Err(err),
+            }
+        }
+        last_err
     }
 }

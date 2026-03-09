@@ -6,21 +6,13 @@ use crate::cmd::CmdMailbox;
 use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_PAGE_SIZE};
 use crate::structs::queues::{CqContextLayout, EqContextLayout, RqContextLayout, SqContextLayout};
 
-const MLX5_EQ_STATE_ARMED: u8 = 0x9;
 const CREATE_EQ_EVENT_MASK_OFFSET: usize = 0x58;
 const CREATE_EQ_EVENT_MASK_LEN: usize = 0x20;
 
 fn encode_eq_event_mask(event_mask: u64, field: &mut [u8]) {
-    for event_type in 0..64usize {
-        if (event_mask & (1u64 << event_type)) == 0 {
-            continue;
-        }
-
-        let byte_index = event_type / 8;
-        let bit_in_byte = event_type % 8;
-        if byte_index < field.len() {
-            field[byte_index] |= 1u8 << (7 - bit_in_byte);
-        }
+    field.fill(0);
+    if field.len() >= 8 {
+        field[..8].copy_from_slice(&event_mask.to_be_bytes());
     }
 }
 
@@ -36,7 +28,6 @@ pub fn build_create_eq_input(
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = EqContextLayout::new(&mut in_mbox.data[0x10..]);
 
-    layout.set_state(MLX5_EQ_STATE_ARMED);
     layout.set_page_offset(0);
     layout.set_log_eq_size(log_eq_size);
     layout.set_uar_page(uar_page);
@@ -146,7 +137,6 @@ pub fn build_create_sq_input(
     let mut layout = SqContextLayout::new(&mut in_mbox.data[0x20..]);
 
     layout.set_flush_in_error_en(true);
-    layout.set_mem_sq_type(1); // external mem pas
     layout.set_cqn(cqn);
     layout.set_tis_lst_sz(1);
     layout.set_tis_num_0(tisn);
@@ -189,19 +179,14 @@ pub fn build_modify_sq_input(
     sqn: u32,
     current_state: u8,
     next_state: u8,
-    vport: u16,
-    other_vport: bool,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let sq_state_and_num = (((current_state as u32) & 0x0F) << 28) | (sqn & 0x00FF_FFFF);
-    in_mbox.write_be32(0x04, sq_state_and_num);
-    if other_vport {
-        in_mbox.data[0x08] |= 0x80;
-    }
-    in_mbox.write_be16(0x0A, vport);
-    in_mbox.write_be32(0x10, 0x01); // state bitmask
-    let ctx = 0x20usize;
-    in_mbox.write_be32(ctx, ((next_state as u32) & 0x0F) << 20);
+    // For state transition, Linux leaves modify_bitmask cleared and uses
+    // sq_state + ctx.state only.
+    in_mbox.write_be32(0x08, sq_state_and_num);
+    let mut layout = SqContextLayout::new(&mut in_mbox.data[0x20..]);
+    layout.set_state(next_state);
 }
 
 /// CREATE_RQ コマンド入力の構築
@@ -216,8 +201,37 @@ pub fn build_create_rq_input(
     scatter_fcs: bool,
     vlan_strip: bool,
 ) {
+    build_create_rq_input_with_mem_type(
+        in_mbox,
+        log_rq_size,
+        rq_buf_pa,
+        db_pa,
+        cqn,
+        pd,
+        uar_page,
+        scatter_fcs,
+        vlan_strip,
+        0,
+    );
+}
+
+/// CREATE_RQ コマンド入力の構築（mem_rq_type 指定）
+pub fn build_create_rq_input_with_mem_type(
+    in_mbox: &mut CmdMailbox,
+    log_rq_size: u8,
+    rq_buf_pa: u64,
+    db_pa: u64,
+    cqn: u32,
+    pd: u32,
+    uar_page: u32,
+    scatter_fcs: bool,
+    vlan_strip: bool,
+    mem_rq_type: u8,
+) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = RqContextLayout::new(&mut in_mbox.data[0x20..]);
+    layout.set_mem_rq_type(mem_rq_type & 0x0f);
+    layout.set_flush_in_error_en(true);
     layout.set_scatter_fcs(scatter_fcs);
     layout.set_vlan_strip(vlan_strip);
     layout.set_cqn(cqn);
@@ -260,19 +274,14 @@ pub fn build_modify_rq_input(
     rqn: u32,
     current_state: u8,
     next_state: u8,
-    vport: u16,
-    other_vport: bool,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let rq_state_and_num = (((current_state as u32) & 0x0F) << 28) | (rqn & 0x00FF_FFFF);
-    in_mbox.write_be32(0x04, rq_state_and_num);
-    if other_vport {
-        in_mbox.data[0x08] |= 0x80;
-    }
-    in_mbox.write_be16(0x0A, vport);
-    in_mbox.write_be32(0x10, 0x01); // state bitmask
-    let ctx = 0x20usize;
-    in_mbox.write_be32(ctx, ((next_state as u32) & 0x0F) << 20);
+    // For state transition, Linux leaves modify_bitmask cleared and uses
+    // rq_state + ctx.state only.
+    in_mbox.write_be32(0x08, rq_state_and_num);
+    let mut layout = RqContextLayout::new(&mut in_mbox.data[0x20..]);
+    layout.set_state(next_state);
 }
 
 #[cfg(test)]
@@ -294,7 +303,7 @@ mod tests {
         );
 
         let ctx = &in_mbox.data[0x10..];
-        assert_eq!(get_bits_u32(ctx, 20, 4), MLX5_EQ_STATE_ARMED as u32);
+        assert_eq!(get_bits_u32(ctx, 20, 4), 0);
         assert_eq!(get_bits_u32(ctx, 84, 6), 0);
         assert_eq!(get_bits_u32(ctx, 99, 5), 8);
         assert_eq!(get_bits_u32(ctx, 104, 24), 0x123);
@@ -303,7 +312,7 @@ mod tests {
         assert_eq!(
             &in_mbox.data
                 [CREATE_EQ_EVENT_MASK_OFFSET..CREATE_EQ_EVENT_MASK_OFFSET + 8],
-            &[0x80, 0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2e, 0x01]
         );
     }
 
@@ -370,6 +379,40 @@ mod tests {
             false,
         );
 
-        assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 268, 4), 4);
+        let ctx = &in_mbox.data[0x20..];
+        assert_eq!(get_bits_u32(ctx, 4, 4), 0); // mem_rq_type (MEMORY_RQ_INLINE)
+        assert_eq!(get_bits_u32(ctx, 13, 1), 1); // flush_in_error_en
+        assert_eq!(get_bits_u32(ctx, 72, 24), 0x123); // cqn
+        assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 268, 4), 4); // log_wq_stride
+    }
+
+    #[test]
+    fn modify_sq_uses_linux_ifc_offsets() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_modify_sq_input(
+            &mut in_mbox,
+            0x12345,
+            crate::defs::WqState::Reset as u8,
+            crate::defs::WqState::Ready as u8,
+        );
+
+        assert_eq!(in_mbox.read_be32(0x08), 0x0001_2345);
+        assert_eq!(in_mbox.read_be64(0x10), 0x0);
+        assert_eq!(get_bits_u32(&in_mbox.data[0x20..], 8, 4), crate::defs::WqState::Ready as u32);
+    }
+
+    #[test]
+    fn modify_rq_uses_linux_ifc_offsets() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_modify_rq_input(
+            &mut in_mbox,
+            0x23456,
+            crate::defs::WqState::Reset as u8,
+            crate::defs::WqState::Ready as u8,
+        );
+
+        assert_eq!(in_mbox.read_be32(0x08), 0x0002_3456);
+        assert_eq!(in_mbox.read_be64(0x10), 0x0);
+        assert_eq!(get_bits_u32(&in_mbox.data[0x20..], 8, 4), crate::defs::WqState::Ready as u32);
     }
 }

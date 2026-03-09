@@ -368,13 +368,11 @@ impl Mlx5Device {
             sqn,
             crate::defs::WqState::Ready as u8,
             crate::defs::WqState::Error as u8,
-            0,
-            false,
         );
         self.execute_uid_sensitive_cmd(
             CmdOpcode::ModifySq,
-            MLX5_CMD_MBOX_SIZE as u32,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x110,
+            0x10,
         )?;
         Ok(())
     }
@@ -389,13 +387,11 @@ impl Mlx5Device {
             rqn,
             crate::defs::WqState::Ready as u8,
             crate::defs::WqState::Error as u8,
-            0,
-            false,
         );
         self.execute_uid_sensitive_cmd(
             CmdOpcode::ModifyRq,
-            MLX5_CMD_MBOX_SIZE as u32,
-            MLX5_CMD_MBOX_SIZE as u32,
+            0x110,
+            0x10,
         )?;
         Ok(())
     }

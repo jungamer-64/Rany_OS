@@ -58,17 +58,25 @@ impl<'a> TisContextLayout<'a> {
     pub fn set_lag_tx_port_affinity(&mut self, val: u8) {
         set_bits_u32(self.data, 4, 4, val as u32);
     }
+    // strict_lag_tx_port_affinity: bit 0 (dword 0)
+    pub fn set_strict_lag_tx_port_affinity(&mut self, val: bool) {
+        set_bits_u32(self.data, 0, 1, if val { 1 } else { 0 });
+    }
     // prio: bits 12-15 (dword 0)
     pub fn set_prio(&mut self, val: u8) {
         set_bits_u32(self.data, 12, 4, val as u32);
     }
-    // transport_domain: bit 72-95 (byte 9-11)
+    // transport_domain: bit 296-319 (byte 37-39)
     pub fn set_transport_domain(&mut self, val: u32) {
-        set_bits_u32(self.data, 72, 24, val);
+        set_bits_u32(self.data, 296, 24, val);
     }
-    // pd: bit 200-223 (byte 25-27)
+    // pd: bit 360-383 (byte 45-47)
     pub fn set_pd(&mut self, val: u32) {
-        set_bits_u32(self.data, 200, 24, val);
+        set_bits_u32(self.data, 360, 24, val);
+    }
+    // underlay_qpn: bit 328-351 (byte 41-43)
+    pub fn set_underlay_qpn(&mut self, val: u32) {
+        set_bits_u32(self.data, 328, 24, val);
     }
 }
 
@@ -82,9 +90,9 @@ impl<'a> TirContextLayout<'a> {
         Self { data }
     }
 
-    // disp_type: bits 0-3 (dword 0)
+    // disp_type: bits 32-35 (dword 1)
     pub fn set_disp_type(&mut self, val: u8) {
-        set_bits_u32(self.data, 0, 4, val as u32);
+        set_bits_u32(self.data, 32, 4, val as u32);
     }
     // inline_rqn: bits 232-255 (dword 7)
     pub fn set_inline_rqn(&mut self, val: u32) {
@@ -98,20 +106,20 @@ impl<'a> TirContextLayout<'a> {
     pub fn set_rx_hash_fn(&mut self, val: u8) {
         set_bits_u32(self.data, 288, 4, val as u32);
     }
-    // transport_domain: bits 304-327 (dword 9)
+    // transport_domain: bits 296-319
     pub fn set_transport_domain(&mut self, val: u32) {
-        set_bits_u32(self.data, 304, 24, val);
+        set_bits_u32(self.data, 296, 24, val);
     }
 
     // LRO settings
     pub fn set_lro_enable_mask(&mut self, val: u8) {
-        set_bits_u32(self.data, 48, 4, val as u32);
+        set_bits_u32(self.data, 148, 4, val as u32);
     }
     pub fn set_lro_max_ip_payload_size(&mut self, val: u32) {
-        set_bits_u32(self.data, 64, 32, val);
+        set_bits_u32(self.data, 152, 8, val);
     }
     pub fn set_lro_timeout_period_usecs(&mut self, val: u16) {
-        set_bits_u32(self.data, 32, 16, val as u32);
+        set_bits_u32(self.data, 132, 16, val as u32);
     }
 }
 

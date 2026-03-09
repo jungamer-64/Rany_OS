@@ -266,6 +266,35 @@ impl CompletionQueue {
 
         results
     }
+
+    /// CQ のヘッド状態をデバッグ用に取得
+    ///
+    /// # Safety
+    /// - CQ バッファおよび doorbell_virt が有効であること
+    pub unsafe fn debug_state(&self) -> CqDebugState {
+        let idx = self.consumer_counter % self.cq_depth;
+        let cqe_ptr = (self.buf_virt as usize + (idx as usize) * cqe_regs::SIZE) as *const Cqe;
+        let cqe_ref = &*cqe_ptr;
+        let expected_owner = ((self.consumer_counter >> self.log_cq_size) & 1) as u8;
+
+        let doorbell_be = core::ptr::read_volatile(self.doorbell_virt as *const u32);
+        let doorbell_host = u32::from_be(doorbell_be) & 0x00ff_ffff;
+
+        CqDebugState {
+            cqn: self.cqn,
+            consumer_counter: self.consumer_counter,
+            cq_depth: self.cq_depth,
+            log_cq_size: self.log_cq_size,
+            head_index: idx,
+            expected_owner,
+            observed_owner: cqe_ref.owner_bit(),
+            observed_opcode: cqe_ref.opcode(),
+            observed_wqe_counter: cqe_ref.wqe_counter(),
+            observed_byte_count: cqe_ref.byte_count(),
+            doorbell_be,
+            doorbell_host,
+        }
+    }
 }
 
 /// CQE処理結果の情報
@@ -287,4 +316,21 @@ pub struct CqeInfo {
     pub vlan_tag: Option<u16>,
     /// ハードウェアタイムスタンプ
     pub timestamp: u64,
+}
+
+/// Completion Queue のデバッグスナップショット
+#[derive(Debug, Clone, Copy)]
+pub struct CqDebugState {
+    pub cqn: u32,
+    pub consumer_counter: u32,
+    pub cq_depth: u32,
+    pub log_cq_size: u8,
+    pub head_index: u32,
+    pub expected_owner: u8,
+    pub observed_owner: u8,
+    pub observed_opcode: CqeOpcode,
+    pub observed_wqe_counter: u16,
+    pub observed_byte_count: u32,
+    pub doorbell_be: u32,
+    pub doorbell_host: u32,
 }

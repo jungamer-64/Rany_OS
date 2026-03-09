@@ -61,37 +61,86 @@ impl Mlx5Device {
     /// TIS (Transport Interface Send) を作成
     pub unsafe fn create_tis(&mut self, params: &TisParams) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-
-        log::info!(target: "mlx5", "Creating TIS: td={} pd={} port={} prio={}", params.td, params.pd, params.port, params.prio);
+        crate::boot_trace("[MLX5_TIS] enter\n");
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        crate::cmd::res::build_create_tis_input(in_mbox, params);
+        // VF firmware behavior varies across revisions; keep a short, targeted
+        // retry set that mirrors Linux-like defaults first, then conservative
+        // compatibility variants.
+        let attempts = [
+            ("td-only", params.td, false, 0u32, 0u16, 0u8, false),
+            (
+                "td-only+lag-port",
+                params.td,
+                false,
+                0u32,
+                0u16,
+                params.port & 0x0f,
+                true,
+            ),
+            ("td+pd", params.td, true, 0u32, 0u16, 0u8, false),
+            ("td+opmod1", params.td, false, 0u32, 1u16, 0u8, false),
+            ("td0", 0u32, false, 0u32, 0u16, 0u8, false),
+        ];
+        let mut last_err = Err(Mlx5Error::NotSupported);
 
-        self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0xC0, 0x10)?;
+        for (_attempt_name, td, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in attempts {
+            crate::cmd::res::build_create_tis_input_with_options(
+                in_mbox,
+                params,
+                include_pd,
+                underlay_qpn,
+            );
+            if op_mod != 0 {
+                in_mbox.write_be16(0x06, op_mod);
+            }
+            if td != params.td {
+                let mut layout = crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
+                layout.set_transport_domain(td);
+            }
+            if lag_port != 0 || strict_lag {
+                let mut layout = crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
+                layout.set_lag_tx_port_affinity(lag_port);
+                layout.set_strict_lag_tx_port_affinity(strict_lag);
+            }
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
-        let info = TisInfo {
-            tisn,
-            port: params.port,
-        };
-        self.tis_list.push(info);
-        log::info!(target: "mlx5", "TIS created: tisn={}", tisn);
-        Ok(tisn)
+            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0xC0, 0x10) {
+                Ok(()) => {
+                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
+                    let info = TisInfo {
+                        tisn,
+                        port: params.port,
+                    };
+                    self.tis_list.push(info);
+                    crate::boot_trace("[MLX5_TIS] create ok\n");
+                    return Ok(tisn);
+                }
+                Err(err) => {
+                    crate::boot_trace("[MLX5_TIS] create fail\n");
+                    last_err = Err(err);
+                }
+            }
+        }
+        crate::boot_trace("[MLX5_TIS] exhausted\n");
+        last_err
     }
 
     /// TIR (Transport Interface Receive) を作成
     pub unsafe fn create_tir(&mut self, params: &TirParams) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        crate::boot_trace("[MLX5_TIR] enter\n");
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::res::build_create_tir_input(in_mbox, params);
+        crate::boot_trace("[MLX5_TIR] input_built\n");
 
         self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateTir,
             0x110, // mailbox input length (header + payload)
             0x10,  // output length
         )?;
+        crate::boot_trace("[MLX5_TIR] cmd_done\n");
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let tirn = crate::cmd::res::parse_create_tir_output(out_mbox);
@@ -102,7 +151,7 @@ impl Mlx5Device {
         };
         self.tir_list.push(info);
 
-        log::info!(target: "mlx5", "TIR created: tirn={}", tirn);
+        crate::boot_trace("[MLX5_TIR] done\n");
         Ok(tirn)
     }
 
@@ -359,9 +408,11 @@ impl Mlx5Device {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::flow::build_create_flow_table_input(in_mbox, config);
-        self.execute_uid_sensitive_cmd(
+        self.execute_cmd_with_uid_candidates(
             CmdOpcode::CreateFlowTable,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -391,9 +442,11 @@ impl Mlx5Device {
             end_index,
             criteria,
         );
-        self.execute_uid_sensitive_cmd(
+        self.execute_cmd_with_uid_candidates(
             CmdOpcode::CreateFlowGroup,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
@@ -428,9 +481,11 @@ impl Mlx5Device {
             destination_tirn,
             match_value,
         );
-        self.execute_uid_sensitive_cmd(
+        self.execute_cmd_with_uid_candidates(
             CmdOpcode::SetFlowTableEntry,
+            self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         self.flow_entries.push(FlowTableEntry {

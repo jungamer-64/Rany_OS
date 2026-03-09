@@ -38,8 +38,8 @@ pub enum FlowTableType {
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowAction {
-    /// パケット許可（TIRにフォワード）
-    Allow = 0x01,
+    /// 宛先リストへフォワード（通常の TIR 転送ルール）
+    Allow = 0x04,
     /// パケット破棄
     Drop = 0x02,
 }

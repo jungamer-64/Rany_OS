@@ -74,6 +74,7 @@ pub struct Mlx5Device {
     pub(crate) mkey_info: Option<MkeyInfo>,
     pub(crate) sw_vhca_id: u16,
     pub(crate) sw_owner_id: [u32; 4],
+    pub(crate) vnic_env_query_logged: bool,
     pub(crate) resources_allocated: bool,
     pub(crate) is_vf: bool,
     pub(crate) is_ecpf: bool,
@@ -165,6 +166,7 @@ impl Mlx5Device {
             mkey_info: None,
             sw_vhca_id: 0,
             sw_owner_id: [0; 4],
+            vnic_env_query_logged: false,
             resources_allocated: false,
             is_vf: ConnectXVariant::is_vf_device_id(device_id),
             is_ecpf: false,
@@ -332,6 +334,39 @@ impl Mlx5Device {
         (uids, len)
     }
 
+    fn uid_candidates_for_opcode(
+        prev_uid: u16,
+        is_vf: bool,
+        opcode: CmdOpcode,
+    ) -> ([u16; 4], usize) {
+        let (base, base_len) = Self::uid_candidates(prev_uid, is_vf);
+        let mut uids = [0u16; 4];
+        let mut len = 0usize;
+
+        let mut push_uid = |uid: u16| {
+            if !uids[..len].contains(&uid) {
+                uids[len] = uid;
+                len += 1;
+            }
+        };
+
+        if is_vf {
+            match opcode {
+                // VF の CREATE_EQ は 0xffff が先に通る個体が多い。
+                CmdOpcode::CreateEq => push_uid(0xFFFF),
+                // VF の CREATE_RQ / CREATE_TIR は UID 0 が先に通りやすい。
+                CmdOpcode::CreateRq | CmdOpcode::CreateTir => push_uid(0),
+                _ => {}
+            }
+        }
+
+        for &uid in &base[..base_len] {
+            push_uid(uid);
+        }
+
+        (uids, len)
+    }
+
     pub(crate) unsafe fn execute_with_uid_candidates<T, F, R>(
         cmd: &mut T,
         uid_candidates: &[u16],
@@ -377,10 +412,12 @@ impl Mlx5Device {
         }
 
         let prev_uid = cmd.uid();
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf);
+        let (uids, len) = Self::uid_candidates_for_opcode(prev_uid, is_vf, opcode);
         let mut last_err = Err(Mlx5Error::NotSupported);
+        cmd.snapshot_input(in_len)?;
 
         for &uid in &uids[..len] {
+            cmd.restore_input()?;
             crate::boot_trace_cmd(opcode, "uid_try", uid);
             cmd.set_uid(uid);
             match cmd.execute(opcode, in_mbox_phys, in_len, out_mbox_phys, out_len) {

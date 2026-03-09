@@ -137,6 +137,7 @@ impl Mlx5Device {
         caps.log_max_rq_sz = max_view.log_max_qp_sz() as u8;
         caps.log_max_eq_sz = max_view.log_max_eq_sz() as u8;
         caps.driver_version_cap = cap_view.driver_version();
+        caps.vhca_state_cap = cap_view.vhca_state();
         caps.vport_group_manager = cap_view.vport_group_manager();
         caps.csum_cap = cap_view.eth_net_offloads();
         caps.cqe_compression = cap_view.cqe_compression();

@@ -186,6 +186,18 @@ pub trait CommandTransport {
         out_len: u32,
     ) -> Mlx5Result<()>;
 
+    /// Snapshot the logical command input before a UID retry loop starts.
+    /// Default no-op for transports that don't rewrite input buffers.
+    unsafe fn snapshot_input(&mut self, _in_len: u32) -> Mlx5Result<()> {
+        Ok(())
+    }
+
+    /// Restore the logical command input before each UID retry attempt.
+    /// Default no-op for transports that don't rewrite input buffers.
+    unsafe fn restore_input(&mut self) -> Mlx5Result<()> {
+        Ok(())
+    }
+
     fn set_uid(&mut self, _uid: u16) {}
     fn uid(&self) -> u16 {
         0
@@ -203,6 +215,8 @@ pub struct CmdQueueTransport {
     out_mbox_virt: u64,
     next_token: u8,
     uid: u16,
+    in_snapshot: [u8; MLX5_CMD_MBOX_SIZE],
+    in_snapshot_len: usize,
 }
 
 #[repr(C)]
@@ -246,6 +260,11 @@ impl CmdQueueTransport {
                 | CmdOpcode::ModifyVhcaState
                 | CmdOpcode::QuerySpecialContexts
                 | CmdOpcode::SetDriverVersion
+                | CmdOpcode::DestroyFlowTable
+                | CmdOpcode::CreateFlowGroup
+                | CmdOpcode::DestroyFlowGroup
+                | CmdOpcode::SetFlowTableEntry
+                | CmdOpcode::DeleteFlowTableEntry
                 | CmdOpcode::AccessRegister
                 | CmdOpcode::Nop
         )
@@ -306,6 +325,8 @@ impl CmdQueueTransport {
             out_mbox_virt,
             next_token: 1,
             uid: 0,
+            in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
+            in_snapshot_len: 0,
         })
     }
 
@@ -415,8 +436,6 @@ impl CmdQueueTransport {
             let num_blocks = Self::chained_block_count(in_len);
             for i in (0..num_blocks).rev() {
                 let block_ptr = Self::block_ptr(self.in_mbox_virt, i);
-                core::ptr::write_bytes(block_ptr as *mut u8, 0, CMD_BLOCK_SIZE);
-                let block = &mut *block_ptr;
                 let offset = i * MLX5_CMD_DATA_BLOCK_SIZE;
                 let payload_len = (total_payload - offset).min(MLX5_CMD_DATA_BLOCK_SIZE);
                 let mut payload = [0u8; MLX5_CMD_DATA_BLOCK_SIZE];
@@ -425,6 +444,8 @@ impl CmdQueueTransport {
                     payload.as_mut_ptr(),
                     payload_len,
                 );
+                core::ptr::write_bytes(block_ptr as *mut u8, 0, CMD_BLOCK_SIZE);
+                let block = &mut *block_ptr;
                 block.data[..payload_len].copy_from_slice(&payload[..payload_len]);
                 let next = if i + 1 < num_blocks {
                     Self::block_phys(in_mbox_phys, i + 1)
@@ -483,6 +504,33 @@ impl CmdQueueTransport {
 }
 
 impl CommandTransport for CmdQueueTransport {
+    unsafe fn snapshot_input(&mut self, in_len: u32) -> Mlx5Result<()> {
+        let len = (in_len as usize).min(MLX5_CMD_MBOX_SIZE);
+        if len == 0 {
+            self.in_snapshot_len = 0;
+            return Ok(());
+        }
+        core::ptr::copy_nonoverlapping(
+            self.in_mbox_virt as *const u8,
+            self.in_snapshot.as_mut_ptr(),
+            len,
+        );
+        self.in_snapshot_len = len;
+        Ok(())
+    }
+
+    unsafe fn restore_input(&mut self) -> Mlx5Result<()> {
+        if self.in_snapshot_len == 0 {
+            return Ok(());
+        }
+        core::ptr::copy_nonoverlapping(
+            self.in_snapshot.as_ptr(),
+            self.in_mbox_virt as *mut u8,
+            self.in_snapshot_len,
+        );
+        Ok(())
+    }
+
     unsafe fn execute(
         &mut self,
         opcode: CmdOpcode,
@@ -651,6 +699,8 @@ mod tests {
             out_mbox_virt: 0,
             next_token: 1,
             uid: 0x1234,
+            in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
+            in_snapshot_len: 0,
         };
 
         let mut with_uid = CmdMailbox::zeroed();
@@ -658,16 +708,100 @@ mod tests {
         assert_eq!(with_uid.read_be16(0x00), CmdOpcode::CreateSq as u16);
         assert_eq!(with_uid.read_be16(0x02), 0x1234);
 
+        let mut flow_table_uid = CmdMailbox::zeroed();
+        transport.write_transport_header(CmdOpcode::CreateFlowTable, &mut flow_table_uid);
+        assert_eq!(flow_table_uid.read_be16(0x00), CmdOpcode::CreateFlowTable as u16);
+        assert_eq!(flow_table_uid.read_be16(0x02), 0x1234);
+
         let mut reserved_uid = CmdMailbox::zeroed();
         reserved_uid.write_be16(0x02, 0x55aa);
         transport.write_transport_header(CmdOpcode::QueryHcaCap, &mut reserved_uid);
         assert_eq!(reserved_uid.read_be16(0x00), CmdOpcode::QueryHcaCap as u16);
         assert_eq!(reserved_uid.read_be16(0x02), 0x55aa);
 
+        let mut flow_no_uid = CmdMailbox::zeroed();
+        flow_no_uid.write_be16(0x02, 0xbeef);
+        transport.write_transport_header(CmdOpcode::CreateFlowGroup, &mut flow_no_uid);
+        assert_eq!(flow_no_uid.read_be16(0x00), CmdOpcode::CreateFlowGroup as u16);
+        assert_eq!(flow_no_uid.read_be16(0x02), 0xbeef);
+
         let mut rebuilt_uid = CmdMailbox::zeroed();
         rebuilt_uid.write_be16(0x02, 0xabcd);
         transport.write_transport_header(CmdOpcode::QueryVhcaState, &mut rebuilt_uid);
         assert_eq!(rebuilt_uid.read_be16(0x00), CmdOpcode::QueryVhcaState as u16);
         assert_eq!(rebuilt_uid.read_be16(0x02), 0xabcd);
+    }
+
+    #[test]
+    fn prepare_in_block_preserves_input_payload_when_backing_overlaps_mailbox() {
+        let in_len = 0x118usize;
+        let payload_len = in_len - MLX5_CMD_INLINE_SIZE;
+        let mut in_backing = [0u8; MLX5_CMD_MBOX_BACKING_SIZE];
+        for (i, byte) in in_backing[..in_len].iter_mut().enumerate() {
+            *byte = (i as u8).wrapping_mul(3).wrapping_add(1);
+        }
+
+        let mut expected_inline = [0u8; MLX5_CMD_INLINE_SIZE];
+        expected_inline.copy_from_slice(&in_backing[..MLX5_CMD_INLINE_SIZE]);
+        let mut expected_payload = [0u8; MLX5_CMD_DATA_BLOCK_SIZE];
+        expected_payload[..payload_len]
+            .copy_from_slice(&in_backing[MLX5_CMD_INLINE_SIZE..in_len]);
+
+        let transport = CmdQueueTransport {
+            cmdq_phys: 0,
+            cmdq_virt: 0,
+            log_cmdq_size: 5,
+            log_cmd_stride: 6,
+            bar0_base: 0,
+            in_mbox_virt: in_backing.as_mut_ptr() as u64,
+            out_mbox_virt: 0,
+            next_token: 1,
+            uid: 0,
+            in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
+            in_snapshot_len: 0,
+        };
+
+        let in_inline =
+            unsafe { transport.prepare_in_block(0x5a, in_len, 0x2000).expect("prepare_in_block") };
+        assert_eq!(in_inline, expected_inline);
+
+        let block = unsafe { &*CmdQueueTransport::block_ptr(transport.in_mbox_virt, 0) };
+        assert_eq!(&block.data[..payload_len], &expected_payload[..payload_len]);
+        assert_eq!(u64::from_be(block.next), 0);
+    }
+
+    #[test]
+    fn restore_input_recovers_logical_mailbox_after_block_preparation() {
+        let in_len = 0x118usize;
+        let mut in_backing = [0u8; MLX5_CMD_MBOX_BACKING_SIZE];
+        for (i, byte) in in_backing[..in_len].iter_mut().enumerate() {
+            *byte = (i as u8).wrapping_mul(11).wrapping_add(5);
+        }
+        let mut expected = [0u8; MLX5_CMD_MBOX_SIZE];
+        expected[..in_len].copy_from_slice(&in_backing[..in_len]);
+
+        let mut transport = CmdQueueTransport {
+            cmdq_phys: 0,
+            cmdq_virt: 0,
+            log_cmdq_size: 5,
+            log_cmd_stride: 6,
+            bar0_base: 0,
+            in_mbox_virt: in_backing.as_mut_ptr() as u64,
+            out_mbox_virt: 0,
+            next_token: 1,
+            uid: 0,
+            in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
+            in_snapshot_len: 0,
+        };
+
+        unsafe {
+            CommandTransport::snapshot_input(&mut transport, in_len as u32).expect("snapshot_input");
+            let _ = transport
+                .prepare_in_block(0x33, in_len, 0x2000)
+                .expect("prepare_in_block");
+            CommandTransport::restore_input(&mut transport).expect("restore_input");
+        }
+
+        assert_eq!(&in_backing[..in_len], &expected[..in_len]);
     }
 }

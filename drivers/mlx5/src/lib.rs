@@ -62,8 +62,30 @@ pub(crate) fn boot_trace(msg: &str) {
 
 pub(crate) fn boot_trace_cmd(opcode: defs::CmdOpcode, stage: &str, uid: u16) {
     if let Some(name) = boot_opcode_name(opcode) {
-        let msg = alloc::format!("[MLX5_CMD] {} {} uid={:#x}\n", name, stage, uid);
-        boot_trace(&msg);
+        if let Some(serial) = kernel_api::service::serial::try_instance() {
+            let _ = serial.write(0, b"[MLX5_CMD] ");
+            let _ = serial.write(0, name.as_bytes());
+            let _ = serial.write(0, b" ");
+            let _ = serial.write(0, stage.as_bytes());
+            let _ = serial.write(0, b" uid=0x");
+            let mut uid_hex = [0u8; 4];
+            encode_hex_u16(uid, &mut uid_hex);
+            let _ = serial.write(0, &uid_hex);
+            let _ = serial.write(0, b"\n");
+        }
+    }
+}
+
+#[inline]
+fn encode_hex_u16(mut value: u16, out: &mut [u8; 4]) {
+    for i in (0..4).rev() {
+        let nibble = (value & 0x0f) as u8;
+        out[i] = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'a' + (nibble - 10)
+        };
+        value >>= 4;
     }
 }
 
@@ -83,6 +105,12 @@ fn boot_opcode_name(opcode: defs::CmdOpcode) -> Option<&'static str> {
         defs::CmdOpcode::CreateMkey => Some("create_mkey"),
         defs::CmdOpcode::CreateEq => Some("create_eq"),
         defs::CmdOpcode::CreateCq => Some("create_cq"),
+        defs::CmdOpcode::CreateTis => Some("create_tis"),
+        defs::CmdOpcode::CreateSq => Some("create_sq"),
+        defs::CmdOpcode::CreateRq => Some("create_rq"),
+        defs::CmdOpcode::ModifyRq => Some("modify_rq"),
+        defs::CmdOpcode::CreateRqt => Some("create_rqt"),
+        defs::CmdOpcode::CreateTir => Some("create_tir"),
         _ => None,
     }
 }
