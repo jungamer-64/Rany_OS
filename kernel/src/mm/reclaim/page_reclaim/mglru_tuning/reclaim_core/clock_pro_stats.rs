@@ -216,7 +216,11 @@ impl SwapPrefetcher {
         let hits = self.hits.load(Ordering::Relaxed);
         let misses = self.misses.load(Ordering::Relaxed);
         let total = hits + misses;
-        if total == 0 { 0.0 } else { (hits as f32 / total as f32) * 100.0 }
+        if total == 0 {
+            0.0
+        } else {
+            (hits as f32 / total as f32) * 100.0
+        }
     }
 }
 

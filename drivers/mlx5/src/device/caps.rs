@@ -130,7 +130,9 @@ impl Mlx5Device {
         caps.max_mkey = checked_pow2("log_max_mkey", max_view.log_max_mkey()).max(1);
         caps.max_msix = caps.max_eq;
         caps.max_mtu = crate::defs::MLX5_MAX_MTU;
-        caps.num_ports = cap_view.num_ports().clamp(1, crate::defs::MLX5_MAX_PORTS as u32) as u8;
+        caps.num_ports = cap_view
+            .num_ports()
+            .clamp(1, crate::defs::MLX5_MAX_PORTS as u32) as u8;
         caps.hca_cap_2 = cap_view.hca_cap_2();
         caps.log_max_cq_sz = max_view.log_max_cq_sz() as u8;
         caps.log_max_sq_sz = max_view.log_max_qp_sz() as u8;
@@ -205,7 +207,10 @@ impl Mlx5Device {
 
         log::info!(target: "mlx5", "Querying ETHERNET_OFFLOADS Capabilities...");
         *in_mbox = CmdMailbox::zeroed();
-        crate::cmd::hca::build_query_hca_cap_input(in_mbox, crate::cmd::hca::MLX5_CAP_ETHERNET_OFFLOADS);
+        crate::cmd::hca::build_query_hca_cap_input(
+            in_mbox,
+            crate::cmd::hca::MLX5_CAP_ETHERNET_OFFLOADS,
+        );
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::QueryHcaCap,
             self.cmd_in_mbox_device,

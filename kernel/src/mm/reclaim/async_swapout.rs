@@ -7,8 +7,8 @@ use crate::mm::phys::buddy_allocator;
 use crate::mm::types::FrameIndex;
 use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering, AtomicU64, AtomicBool};
-use x86_64::structures::paging::{PhysFrame, Size4KiB, Size2MiB, Size1GiB, PageSize};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+use x86_64::structures::paging::{PageSize, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
 // ... (skipping imports and types assumed present in the module)
 
@@ -20,8 +20,7 @@ const MAX_CPUS: usize = 64;
 const PER_CPU_CACHE_SIZE: usize = 4; // Number of buffers cached per CPU
 
 // Global pool (overflow/underflow)
-static BUFFER_POOL_4K_POOL: IrqPoisonLock<Vec<Vec<u8>>> =
-    IrqPoisonLock::new(Vec::new());
+static BUFFER_POOL_4K_POOL: IrqPoisonLock<Vec<Vec<u8>>> = IrqPoisonLock::new(Vec::new());
 static BUFFER_POOL_4K_HITS: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_4K_MISSES: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_4K_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_4K_DEFAULT_CAPACITY);
@@ -40,8 +39,7 @@ struct PerCpuBufferCache4K {
 
 impl PerCpuBufferCache4K {
     const fn new() -> Self {
-        const EMPTY: core::cell::UnsafeCell<Option<Vec<u8>>> =
-            core::cell::UnsafeCell::new(None);
+        const EMPTY: core::cell::UnsafeCell<Option<Vec<u8>>> = core::cell::UnsafeCell::new(None);
         Self {
             slots: [EMPTY; PER_CPU_CACHE_SIZE],
             count: AtomicUsize::new(0),
@@ -130,7 +128,9 @@ pub fn buffer_pool_get_4k() -> Vec<u8> {
     }
 
     // Slow path: try global pool
-    let mut pool = BUFFER_POOL_4K_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pool = BUFFER_POOL_4K_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(mut buf) = pool.pop() {
         BUFFER_POOL_4K_HITS.fetch_add(1, AtomicOrdering::AcqRel);
         if buf.len() != crate::mm::types::PAGE_SIZE_4K {
@@ -157,7 +157,9 @@ pub fn buffer_pool_put_4k(mut buf: Vec<u8>) {
     if let Some(buf) = overflow {
         // Local cache full, put in global pool
         let cap = BUFFER_POOL_4K_CAPACITY.load(AtomicOrdering::Acquire);
-        let mut pool = BUFFER_POOL_4K_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pool = BUFFER_POOL_4K_POOL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if pool.len() < cap {
             pool.push(buf);
         }
@@ -168,7 +170,10 @@ pub fn buffer_pool_4k_stats() -> (usize, usize, usize) {
     (
         BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire),
         BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire),
-        BUFFER_POOL_4K_POOL.lock().unwrap_or_else(|e| e.into_inner()).len(),
+        BUFFER_POOL_4K_POOL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len(),
     )
 }
 
@@ -178,13 +183,18 @@ pub fn buffer_pool_4k_extended_stats() -> (usize, usize, usize, usize) {
         BUFFER_POOL_4K_LOCAL_HITS.load(AtomicOrdering::Acquire),
         BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire),
         BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire),
-        BUFFER_POOL_4K_POOL.lock().unwrap_or_else(|e| e.into_inner()).len(),
+        BUFFER_POOL_4K_POOL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len(),
     )
 }
 
 pub fn buffer_pool_4k_set_capacity(n: usize) {
     BUFFER_POOL_4K_CAPACITY.store(n, AtomicOrdering::Release);
-    let mut pool = BUFFER_POOL_4K_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pool = BUFFER_POOL_4K_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while pool.len() > n {
         pool.pop();
@@ -195,7 +205,10 @@ pub fn buffer_pool_4k_clear() {
     BUFFER_POOL_4K_HITS.store(0, AtomicOrdering::Release);
     BUFFER_POOL_4K_MISSES.store(0, AtomicOrdering::Release);
     BUFFER_POOL_4K_LOCAL_HITS.store(0, AtomicOrdering::Release);
-    BUFFER_POOL_4K_POOL.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    BUFFER_POOL_4K_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 
     // Clear per-CPU caches too
     for cpu in 0..MAX_CPUS {
@@ -214,14 +227,15 @@ pub fn buffer_pool_4k_clear() {
 // 2MiB Buffer Pool
 // ---------------------------
 const BUFFER_POOL_2M_DEFAULT_CAPACITY: usize = 16;
-static BUFFER_POOL_2M_POOL: IrqPoisonLock<Vec<Vec<u8>>> =
-    IrqPoisonLock::new(Vec::new());
+static BUFFER_POOL_2M_POOL: IrqPoisonLock<Vec<Vec<u8>>> = IrqPoisonLock::new(Vec::new());
 static BUFFER_POOL_2M_HITS: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_2M_MISSES: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_2M_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_2M_DEFAULT_CAPACITY);
 
 pub fn buffer_pool_get_2m() -> Vec<u8> {
-    let mut pool = BUFFER_POOL_2M_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pool = BUFFER_POOL_2M_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(mut buf) = pool.pop() {
         BUFFER_POOL_2M_HITS.fetch_add(1, AtomicOrdering::AcqRel);
         if buf.len() != crate::mm::types::PAGE_SIZE_2M as usize {
@@ -239,7 +253,9 @@ pub fn buffer_pool_put_2m(mut buf: Vec<u8>) {
         buf.resize(crate::mm::types::PAGE_SIZE_2M as usize, 0);
     }
     let cap = BUFFER_POOL_2M_CAPACITY.load(AtomicOrdering::Acquire);
-    let mut pool = BUFFER_POOL_2M_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pool = BUFFER_POOL_2M_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if pool.len() < cap {
         pool.push(buf);
     }
@@ -249,13 +265,18 @@ pub fn buffer_pool_2m_stats() -> (usize, usize, usize) {
     (
         BUFFER_POOL_2M_HITS.load(AtomicOrdering::Acquire),
         BUFFER_POOL_2M_MISSES.load(AtomicOrdering::Acquire),
-        BUFFER_POOL_2M_POOL.lock().unwrap_or_else(|e| e.into_inner()).len(),
+        BUFFER_POOL_2M_POOL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len(),
     )
 }
 
 pub fn buffer_pool_2m_set_capacity(n: usize) {
     BUFFER_POOL_2M_CAPACITY.store(n, AtomicOrdering::Release);
-    let mut pool = BUFFER_POOL_2M_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pool = BUFFER_POOL_2M_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while pool.len() > n {
         pool.pop();
@@ -265,15 +286,17 @@ pub fn buffer_pool_2m_set_capacity(n: usize) {
 pub fn buffer_pool_2m_clear() {
     BUFFER_POOL_2M_HITS.store(0, AtomicOrdering::Release);
     BUFFER_POOL_2M_MISSES.store(0, AtomicOrdering::Release);
-    BUFFER_POOL_2M_POOL.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    BUFFER_POOL_2M_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 // ---------------------------
 // 1GiB Buffer Pool
 // ---------------------------
 const BUFFER_POOL_1G_DEFAULT_CAPACITY: usize = 1;
-static BUFFER_POOL_1G_POOL: IrqPoisonLock<Vec<Vec<u8>>> =
-    IrqPoisonLock::new(Vec::new());
+static BUFFER_POOL_1G_POOL: IrqPoisonLock<Vec<Vec<u8>>> = IrqPoisonLock::new(Vec::new());
 static BUFFER_POOL_1G_HITS: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_1G_MISSES: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_1G_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_1G_DEFAULT_CAPACITY);
@@ -287,7 +310,9 @@ static HUGE_2M_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub fn buffer_pool_get_1g() -> Vec<u8> {
-    let mut pool = BUFFER_POOL_1G_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pool = BUFFER_POOL_1G_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(mut buf) = pool.pop() {
         BUFFER_POOL_1G_HITS.fetch_add(1, AtomicOrdering::AcqRel);
         if buf.len() != crate::mm::types::PAGE_SIZE_1G as usize {
@@ -305,7 +330,9 @@ pub fn buffer_pool_put_1g(mut buf: Vec<u8>) {
         buf.resize(crate::mm::types::PAGE_SIZE_1G as usize, 0);
     }
     let cap = BUFFER_POOL_1G_CAPACITY.load(AtomicOrdering::Acquire);
-    let mut pool = BUFFER_POOL_1G_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pool = BUFFER_POOL_1G_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if pool.len() < cap {
         pool.push(buf);
     }
@@ -315,13 +342,18 @@ pub fn buffer_pool_1g_stats() -> (usize, usize, usize) {
     (
         BUFFER_POOL_1G_HITS.load(AtomicOrdering::Acquire),
         BUFFER_POOL_1G_MISSES.load(AtomicOrdering::Acquire),
-        BUFFER_POOL_1G_POOL.lock().unwrap_or_else(|e| e.into_inner()).len(),
+        BUFFER_POOL_1G_POOL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len(),
     )
 }
 
 pub fn buffer_pool_1g_set_capacity(n: usize) {
     BUFFER_POOL_1G_CAPACITY.store(n, AtomicOrdering::Release);
-    let mut pool = BUFFER_POOL_1G_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pool = BUFFER_POOL_1G_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while pool.len() > n {
         pool.pop();
@@ -331,7 +363,10 @@ pub fn buffer_pool_1g_set_capacity(n: usize) {
 pub fn buffer_pool_1g_clear() {
     BUFFER_POOL_1G_HITS.store(0, AtomicOrdering::Release);
     BUFFER_POOL_1G_MISSES.store(0, AtomicOrdering::Release);
-    BUFFER_POOL_1G_POOL.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    BUFFER_POOL_1G_POOL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 // ... (rest of helper functions unchanged)
@@ -352,7 +387,10 @@ pub enum SwapError {
 #[derive(Debug, Clone, Copy)]
 pub struct SwapEnqueueHandle;
 
-pub fn try_enqueue_swapout(_frame: FrameIndex, _kind: SwapKind) -> Result<SwapEnqueueHandle, SwapError> {
+pub fn try_enqueue_swapout(
+    _frame: FrameIndex,
+    _kind: SwapKind,
+) -> Result<SwapEnqueueHandle, SwapError> {
     Err(SwapError::NotSupported)
 }
 

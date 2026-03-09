@@ -367,7 +367,12 @@ impl LiveUpdateManager {
         _cell_id: u64,
         _new_elf_data: &[u8],
     ) -> Result<u64, LiveUpdateError> {
-        if self.pending.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        if self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
             return Err(LiveUpdateError::UpdateInProgress);
         }
         // 排他制御
@@ -574,7 +579,10 @@ impl LiveUpdateManager {
     }
 
     pub fn take_recent_outcome_for_cell(&self, cell_id: u64) -> Option<CompletedUpdateOutcome> {
-        let mut outcomes = self.recent_outcomes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut outcomes = self
+            .recent_outcomes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let idx = outcomes.iter().position(|o| o.matches_cell(cell_id))?;
         Some(outcomes.remove(idx))
     }
@@ -724,7 +732,10 @@ impl LiveUpdateManager {
     }
 
     fn push_outcome(&self, outcome: CompletedUpdateOutcome) {
-        let mut outcomes = self.recent_outcomes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut outcomes = self
+            .recent_outcomes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         outcomes.push(outcome);
         if outcomes.len() > 32 {
             let drain = outcomes.len() - 32;

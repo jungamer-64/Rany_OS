@@ -212,7 +212,9 @@ impl DnsClient {
                 return self.query_tcp(server, name, qtype).await;
             }
 
-            return self.parse_response(&data, tick, name, qtype).map_err(|_| "Parse error");
+            return self
+                .parse_response(&data, tick, name, qtype)
+                .map_err(|_| "Parse error");
         }
 
         Err("DNS query timed out")
@@ -510,8 +512,8 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let header = crate::util::get_ref::<DnsHeader>(data, 0)
-            .ok_or(DnsResponseCode::FormatError)?;
+        let header =
+            crate::util::get_ref::<DnsHeader>(data, 0).ok_or(DnsResponseCode::FormatError)?;
 
         if !header.is_response() {
             return Err(DnsResponseCode::FormatError);
@@ -568,12 +570,13 @@ impl DnsClient {
             }
             let qtype = u16::from_be_bytes([data[next_off], data[next_off + 1]]);
             let _qclass = u16::from_be_bytes([data[next_off + 2], data[next_off + 3]]);
-            
+
             // 期待される質問と一致するかチェック (Case-insensitive comparison for name)
-            if qname.to_lowercase() == expected_name.to_lowercase() && qtype == expected_type as u16 {
+            if qname.to_lowercase() == expected_name.to_lowercase() && qtype == expected_type as u16
+            {
                 matched_question = true;
             }
-            
+
             offset = next_off + 4; // QTYPE + QCLASS
         }
 
@@ -611,14 +614,14 @@ impl DnsClient {
         // 1. 回答セクションのうち、クエリ名と一致するもの（またはCNAMEチェーン）のみキャッシュ
         // 2. 追加セクションは原則キャッシュしない（または非常に厳格なGlue検証が必要）
         // ここでは単純化のため、クエリ名と一致する回答のみをキャッシュ対象とする。
-        
+
         let mut filter_cache_records = Vec::new();
         for rec in &records {
             if rec.name.to_lowercase() == expected_name.to_lowercase() {
                 filter_cache_records.push(rec.clone());
             }
         }
-        
+
         // CNAME チェーンの追跡などは複雑なため、現状は完全一致のみをサポート
         // (将来的に再帰リゾルバを実装する場合はここを拡張する)
 
@@ -1010,7 +1013,12 @@ impl DnsClient {
         }
 
         // Parse the actual DNS message (skip length prefix)
-        self.parse_response(&data[2..2 + msg_len], current_tick, expected_name, expected_type)
+        self.parse_response(
+            &data[2..2 + msg_len],
+            current_tick,
+            expected_name,
+            expected_type,
+        )
     }
 
     /// Check if a UDP response requires TCP fallback

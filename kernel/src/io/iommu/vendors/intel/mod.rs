@@ -28,7 +28,7 @@ use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::runtime::registry::init_driver;
 use crate::io::iommu::runtime::security::SecurityNotifier;
 
-use crate::io::iommu::runtime::command::queue::IommuCommandKind;
+use crate::io::iommu::runtime::command::queue::{IommuCommandKind, RESULT_POISONED};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 
 // Intel-specific registry access
@@ -85,6 +85,23 @@ fn validate_dma_params(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError>
     Ok(())
 }
 
+#[inline]
+fn controller_cq_submit_error(controller: &controller::IommuController) -> IommuError {
+    match controller.command_queue.as_ref() {
+        Some(cq) if cq.is_poisoned() => IommuError::Poisoned,
+        _ => IommuError::HardwareError,
+    }
+}
+
+#[inline]
+fn controller_cq_completion_error(rc: i32) -> IommuError {
+    if rc == RESULT_POISONED {
+        IommuError::Poisoned
+    } else {
+        IommuError::HardwareError
+    }
+}
+
 fn allocate_iova_for_device(
     controller: &Arc<controller::IommuController>,
     device: &DeviceId,
@@ -129,7 +146,7 @@ unsafe fn apply_mapping_sync(
                 let _ = controller.invalidate_iotlb_global_sync();
                 let _ = controller.free_iova_fast(iova, size);
             }
-            return Err(IommuError::HardwareError);
+            return Err(controller_cq_submit_error(controller));
         }
         return Ok(iova);
     }
@@ -177,7 +194,7 @@ async unsafe fn apply_mapping_async(
                     let _ = controller.invalidate_iotlb_global_sync();
                     let _ = controller.free_iova_fast(iova, size);
                 }
-                return Err(IommuError::HardwareError);
+                return Err(controller_cq_submit_error(controller));
             }
         };
         let rc = comp.await;
@@ -188,7 +205,7 @@ async unsafe fn apply_mapping_async(
             let _ = controller.invalidate_iotlb_global_sync();
             let _ = controller.free_iova_fast(iova, size);
         }
-        return Err(IommuError::HardwareError);
+        return Err(controller_cq_completion_error(rc));
     }
     if let Err(err) = domain_arc.map(iova, phys, size, true, true) {
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {

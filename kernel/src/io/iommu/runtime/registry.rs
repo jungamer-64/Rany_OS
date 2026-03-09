@@ -74,7 +74,10 @@ static DEVICE_DMA_MASKS: PoisonRwLock<BTreeMap<DeviceId, u64>> = PoisonRwLock::n
 ///
 /// Example: 32-bit DMA mask => 0xFFFF_FFFF.
 pub fn register_device_dma_mask(device: DeviceId, mask: u64) {
-    DEVICE_DMA_MASKS.write().unwrap_or_else(|e| e.into_inner()).insert(device, mask);
+    DEVICE_DMA_MASKS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(device, mask);
 }
 
 /// Register a device DMA mask using a bit width (1..=64).
@@ -94,12 +97,19 @@ pub fn register_device_dma_width(device: DeviceId, bits: u8) -> Result<(), Iommu
 
 /// Clear a previously registered DMA mask for a device.
 pub fn clear_device_dma_mask(device: DeviceId) {
-    DEVICE_DMA_MASKS.write().unwrap_or_else(|e| e.into_inner()).remove(&device);
+    DEVICE_DMA_MASKS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&device);
 }
 
 /// Get a device DMA mask if registered.
 pub fn get_device_dma_mask(device: &DeviceId) -> Option<u64> {
-    DEVICE_DMA_MASKS.read().unwrap_or_else(|e| e.into_inner()).get(device).copied()
+    DEVICE_DMA_MASKS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(device)
+        .copied()
 }
 
 fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {

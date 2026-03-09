@@ -30,7 +30,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 // VirtIO Balloon Feature Bits
 // ============================================================================
 
-pub use virtio_driver::balloon::{BalloonError, features, device::VirtioBalloonDevice as CoreBalloonDevice};
+pub use virtio_driver::balloon::{
+    BalloonError, device::VirtioBalloonDevice as CoreBalloonDevice, features,
+};
 
 // ============================================================================
 // VirtIO Common Definitions (local to balloon)
@@ -104,14 +106,17 @@ impl VirtioBalloonDevice {
 
     /// Initialize the device
     pub fn init(&mut self) -> Result<(), BalloonError> {
-        self.core.init(self.transport.as_ref()).map_err(|_| BalloonError::NotReady)?;
+        self.core
+            .init(self.transport.as_ref())
+            .map_err(|_| BalloonError::NotReady)?;
 
         // Queue 0: inflateq
         self.setup_queue(0)?;
         // Queue 1: deflateq
         self.setup_queue(1)?;
 
-        self.transport.add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
+        self.transport
+            .add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
         self.ready.store(true, Ordering::Release);
         Ok(())
     }
@@ -323,7 +328,10 @@ fn install_virtio_balloon_device(index: u8, device_arc: Arc<VirtioBalloonDevice>
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
     } else {
-        VIRTIO_BALLOON_DEVICES.write().unwrap_or_else(|e| e.into_inner()).insert(index, device_arc);
+        VIRTIO_BALLOON_DEVICES
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(index, device_arc);
     }
 }
 
@@ -334,7 +342,11 @@ pub fn get_virtio_balloon_device_at_index(index: u8) -> Option<Arc<VirtioBalloon
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     } else {
-        VIRTIO_BALLOON_DEVICES.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned()
+        VIRTIO_BALLOON_DEVICES
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&index)
+            .cloned()
     }
 }
 

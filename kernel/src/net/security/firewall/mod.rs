@@ -29,7 +29,8 @@ mod tests;
 
 pub use engine::{FirewallEngine, FirewallVerdict};
 pub use rules::{
-    FirewallAction, FirewallDirection, FirewallProtocol, FirewallRule, IpAddress, IpMatch, PortMatch, RuleId,
+    FirewallAction, FirewallDirection, FirewallProtocol, FirewallRule, IpAddress, IpMatch,
+    PortMatch, RuleId,
 };
 pub use stats::FirewallStats;
 

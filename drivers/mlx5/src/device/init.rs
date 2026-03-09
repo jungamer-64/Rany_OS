@@ -4,7 +4,7 @@
 
 use crate::bootstrap::{Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan};
 use crate::cmd::CmdQueueTransport; // needed for layout parsing
-use crate::cmd::hca::{build_enable_hca_input, build_set_issi_input, build_init_hca_input};
+use crate::cmd::hca::{build_enable_hca_input, build_init_hca_input, build_set_issi_input};
 use crate::cmd::{CmdMailbox, CmdQueue};
 use crate::defs::CmdOpcode;
 use crate::defs::MLX5_CMD_MBOX_SIZE;
@@ -112,11 +112,14 @@ impl Mlx5Device {
         let start_ms = kernel_api::service::kernel::instance().current_tick();
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while kernel_api::service::kernel::instance().current_tick().saturating_sub(start_ms)
+        while kernel_api::service::kernel::instance()
+            .current_tick()
+            .saturating_sub(start_ms)
             < timeout_ms
         {
-            let initializing =
-                crate::mmio_read_be32(self.bar0_base as usize + crate::regs::init_seg::INITIALIZING);
+            let initializing = crate::mmio_read_be32(
+                self.bar0_base as usize + crate::regs::init_seg::INITIALIZING,
+            );
 
             if initializing != 0 && initializing != u32::MAX {
                 if (initializing & crate::regs::fw_state::INITIALIZING_BIT) == 0 {
@@ -403,9 +406,10 @@ impl Mlx5Device {
 
         // Phase 1: Boot
         log::info!(target: "mlx5", "Phase 1: Waiting for firmware/BAR0 to become accessible...");
-        
+
         // ECPU (Embedded CPU / ECPF) 判定
-        let initializing = crate::mmio_read_be32(self.bar0_base as usize + crate::regs::init_seg::INITIALIZING);
+        let initializing =
+            crate::mmio_read_be32(self.bar0_base as usize + crate::regs::init_seg::INITIALIZING);
         if (initializing & crate::regs::fw_state::EMBEDDED_CPU_BIT) != 0 {
             self.is_ecpf = true;
             log::info!(target: "mlx5", "Device recognized as ECPF (Embedded CPU / SmartNIC mode)");
@@ -514,7 +518,7 @@ impl Mlx5Device {
         if let Some(caps) = self.hca_caps() {
             log::info!(target: "mlx5", "HCA Caps limits: max_mkey={}, max_cq={}, max_sq={}, max_rq={}", 
                 caps.max_mkey, caps.max_cq, caps.max_sq, caps.max_rq);
-            
+
             // VF では PF からのリソース割り当てが少ない場合があるため、警告を出力
             if caps.max_mkey < 16 {
                 log::warn!(target: "mlx5", "Device reports very few mkeys ({}); MKEY operations might fail", caps.max_mkey);
@@ -742,7 +746,8 @@ impl Mlx5Device {
         let mut tx_cqns = Vec::new();
         for (i, cq_buf) in tx_cq_bufs.iter().enumerate() {
             let eqn = eqns[i % eqns.len()];
-            let cqn = self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
+            let cqn =
+                self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
             tx_cqns.push(cqn);
         }
         crate::boot_trace("[MLX5_STAGE] tx_cq_done\n");
@@ -750,7 +755,8 @@ impl Mlx5Device {
         let mut rx_cqns = Vec::new();
         for (i, cq_buf) in rx_cq_bufs.iter().enumerate() {
             let eqn = eqns[i % eqns.len()];
-            let cqn = self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
+            let cqn =
+                self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
             rx_cqns.push(cqn);
         }
         crate::boot_trace("[MLX5_STAGE] rx_cq_done\n");

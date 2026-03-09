@@ -183,7 +183,6 @@ impl<'a> ScatterGatherList<'a> {
     }
 }
 
-
 impl Default for ScatterGatherList<'_> {
     fn default() -> Self {
         Self::new()

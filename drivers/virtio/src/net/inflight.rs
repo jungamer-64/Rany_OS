@@ -2,9 +2,9 @@
 // drivers/virtio/src/net/inflight.rs - Generic Inflight Request Tracker
 // ============================================================================
 
-use core::sync::atomic::{AtomicPtr, Ordering};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// A lock-free tracker for in-flight VirtIO requests.
 ///
@@ -38,7 +38,9 @@ impl<T> InflightTracker<T> {
         if !old.is_null() {
             // This should not happen in a well-behaved driver.
             // Safety: reclaim the old one to avoid leak, but it's a bug.
-            unsafe { let _ = Box::from_raw(old); }
+            unsafe {
+                let _ = Box::from_raw(old);
+            }
         }
     }
 
@@ -61,14 +63,16 @@ impl<T> InflightTracker<T> {
     /// Returns a raw pointer. The caller must not drop it or move it while
     /// the tracker still owns it.
     pub fn peek_raw(&self, desc_idx: u16) -> *mut T {
-        self.slots.get(desc_idx as usize)
+        self.slots
+            .get(desc_idx as usize)
             .map(|s| s.load(Ordering::Acquire))
             .unwrap_or(core::ptr::null_mut())
     }
 
     /// Swap a slot with a new pointer and return the old one.
     pub fn swap_raw(&self, desc_idx: u16, new_ptr: *mut T) -> *mut T {
-        self.slots.get(desc_idx as usize)
+        self.slots
+            .get(desc_idx as usize)
             .map(|s| s.swap(new_ptr, Ordering::AcqRel))
             .unwrap_or(core::ptr::null_mut())
     }
@@ -79,7 +83,9 @@ impl<T> Drop for InflightTracker<T> {
         for slot in self.slots.iter() {
             let ptr = slot.swap(core::ptr::null_mut(), Ordering::AcqRel);
             if !ptr.is_null() {
-                unsafe { let _ = Box::from_raw(ptr); }
+                unsafe {
+                    let _ = Box::from_raw(ptr);
+                }
             }
         }
     }

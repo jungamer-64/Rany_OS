@@ -75,7 +75,7 @@ pub unsafe fn wait_fw_ready(bar0_base: u64, timeout_ms: u32) -> Mlx5Result<FwInf
         {
             invalid_reads = invalid_reads.saturating_add(1);
             let now = kernel_api::service::kernel::instance().current_tick();
-            
+
             // Log every 2 seconds if BAR is still inaccessible
             if now - last_inaccessible_log > 2000 {
                 log::warn!(target: "mlx5", "BAR0 still inaccessible (PF might be initializing the device), retrying...");
@@ -86,7 +86,7 @@ pub unsafe fn wait_fw_ready(bar0_base: u64, timeout_ms: u32) -> Mlx5Result<FwInf
                 log::error!(target: "mlx5", "BAR0 remains inaccessible after multiple retries");
                 return Err(Mlx5Error::DeviceNotReady);
             }
-            
+
             // 小さなディレイを入れて CPU 負荷を下げる
             for _ in 0..1000 {
                 core::hint::spin_loop();
@@ -229,7 +229,8 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
     let log_max_tir = ((dw20 >> 8) & 0x1F) as u8;
     let log_max_tis = (dw20 & 0x1F) as u8;
     let max_sge = if cap_base + 0x12 < out_data.len() {
-        1u8.checked_shl((out_data[cap_base + 0x12] >> 4) as u32).unwrap_or(1)
+        1u8.checked_shl((out_data[cap_base + 0x12] >> 4) as u32)
+            .unwrap_or(1)
     } else {
         1
     };
@@ -279,9 +280,9 @@ pub fn parse_hca_caps(out_data: &[u8]) -> HcaCaps {
         max_sge,
         tso_ipv4,
         tso_ipv6,
-        rss_en: false,     // Will be updated by query_hca_cap_ethernet
-        lro_en: false,     // Will be updated by query_hca_cap_ethernet
-        nic_rx_ft: false,  // Will be updated by query_hca_cap_flow_table
+        rss_en: false,    // Will be updated by query_hca_cap_ethernet
+        lro_en: false,    // Will be updated by query_hca_cap_ethernet
+        nic_rx_ft: false, // Will be updated by query_hca_cap_flow_table
         rq_ts_format,
         sq_ts_format,
         device_frequency_khz,

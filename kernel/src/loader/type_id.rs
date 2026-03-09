@@ -492,7 +492,10 @@ static INTERFACE_REGISTRY: PoisonLock<InterfaceRegistry> =
 
 /// カーネルインターフェースを登録
 pub fn register_kernel_interface<T: TypeIdHash>() {
-    INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).register::<T>();
+    INTERFACE_REGISTRY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .register::<T>();
 }
 
 /// カーネルインターフェースを手動登録
@@ -516,7 +519,11 @@ pub fn get_kernel_interface(name: &str) -> Option<TypeIdInfo> {
 
 /// 登録済みカーネルインターフェースを列挙（シェル観測用）
 pub fn list_kernel_interfaces() -> Vec<TypeIdInfo> {
-    INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).interfaces.clone()
+    INTERFACE_REGISTRY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .interfaces
+        .clone()
 }
 
 /// セルの依存関係を検証

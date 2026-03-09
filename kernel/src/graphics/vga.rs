@@ -171,7 +171,10 @@ pub fn init() {
     #[cfg(feature = "force_vga")]
     {
         VGA_AVAILABLE.store(true, core::sync::atomic::Ordering::Release);
-        WRITER.lock().unwrap_or_else(|e| e.into_inner()).clear_row(BUFFER_HEIGHT - 1);
+        WRITER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear_row(BUFFER_HEIGHT - 1);
     }
 }
 
@@ -181,7 +184,10 @@ pub fn _print(args: fmt::Arguments) {
 
     // VGAが利用可能な場合のみ書き込み
     if VGA_AVAILABLE.load(core::sync::atomic::Ordering::Acquire) {
-        let _ = WRITER.lock().unwrap_or_else(|e| e.into_inner()).write_fmt(args);
+        let _ = WRITER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write_fmt(args);
     }
     // それ以外の場合はシリアル出力を使用（io::logが処理）
 }

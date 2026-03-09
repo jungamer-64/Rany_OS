@@ -427,22 +427,20 @@ impl IommuController {
     /// Allocate root table, program its address, and wait for hardware acknowledgment.
     unsafe fn setup_and_program_root_table(&mut self) -> Result<(), IommuError> {
         let root_table = HardwareTable::new(256, None)?;
-        self.hardware
-            .lock()
-            .expect("IOMMU hardware lock poisoned")
-            .root_table = Some(root_table);
+        let root_phys = {
+            let mut hw = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
+            hw.root_table = Some(root_table);
 
-        let mut root_phys = self
-            .hardware
-            .lock()
-            .expect("IOMMU hardware lock poisoned")
-            .root_table
-            .as_ref()
-            .unwrap()
-            .phys_addr();
-        if self.is_scalable_mode_enabled() {
-            root_phys |= rtaddr_bits::RTADDR_SMT;
-        }
+            let mut root_phys = hw
+                .root_table
+                .as_ref()
+                .expect("root table assigned before programming")
+                .phys_addr();
+            if self.is_scalable_mode_enabled() {
+                root_phys |= rtaddr_bits::RTADDR_SMT;
+            }
+            root_phys
+        };
         self.write64(regs::RTADDR, root_phys);
 
         self.write_gcmd_with_state(gcmd_bits::GCMD_SRTP);
@@ -463,7 +461,7 @@ impl IommuController {
             for _ in 0..256 {
                 context_tables.push(HardwareTable::new(256, None)?);
             }
-            let mut hw = self.hardware.lock().expect("IOMMU hardware lock poisoned");
+            let mut hw = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
             hw.scalable_context_tables = context_tables;
             hw.legacy_context_tables.clear();
         } else {
@@ -471,7 +469,7 @@ impl IommuController {
             for _ in 0..256 {
                 context_tables.push(HardwareTable::new(256, None)?);
             }
-            let mut hw = self.hardware.lock().expect("IOMMU hardware lock poisoned");
+            let mut hw = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
             hw.legacy_context_tables = context_tables;
             hw.scalable_context_tables.clear();
         }
@@ -763,5 +761,26 @@ impl IommuController {
 
     pub(crate) fn flush_dropped_security_events(&self) -> u64 {
         self.dropped_security_events.swap(0, Ordering::Relaxed)
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn test_setup_root_table_returns_poisoned_on_hardware_lock_poison() {
+        let mut controller = IommuController::new(0x1000, 0);
+
+        crate::sync::set_panicking(true);
+        {
+            let _guard = controller.hardware.lock().unwrap();
+        }
+        crate::sync::set_panicking(false);
+
+        let err = unsafe { controller.setup_and_program_root_table() }
+            .expect_err("poisoned hardware lock must fail closed");
+
+        assert_eq!(err, IommuError::Poisoned);
     }
 }

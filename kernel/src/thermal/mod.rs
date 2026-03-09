@@ -392,7 +392,10 @@ impl ThrottleController {
             return;
         }
 
-        let mut current = self.current_policy.lock().unwrap_or_else(|e| e.into_inner());
+        let mut current = self
+            .current_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if *current == policy {
             return;
         }
@@ -470,7 +473,10 @@ impl ThrottleController {
     }
 
     pub fn current_policy(&self) -> ThrottlePolicy {
-        *self.current_policy.lock().unwrap_or_else(|e| e.into_inner())
+        *self
+            .current_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn throttle_count(&self) -> u64 {
@@ -522,7 +528,10 @@ impl FanController {
             level: FanLevel::Auto,
             pwm: 128,
         };
-        self.fans.write().unwrap_or_else(|e| e.into_inner()).push(fan);
+        self.fans
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(fan);
     }
 
     pub fn update_rpm(&self, id: u32, rpm: u32) {

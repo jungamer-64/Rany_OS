@@ -76,7 +76,10 @@ pub fn allocate_protection_key() -> Option<u8> {
     if !is_pku_enabled() {
         return None;
     }
-    MPK_MANAGER.lock().unwrap_or_else(|e| e.into_inner()).allocate()
+    MPK_MANAGER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .allocate()
 }
 
 pub fn free_protection_key(pkey: u8) {

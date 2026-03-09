@@ -8,7 +8,11 @@ use super::IommuController;
 use crate::io::iommu::types::IommuError;
 
 #[inline]
-fn wait_until<F, G, H>(condition: &F, mut should_wait: G, mut on_pending: H) -> Result<(), IommuError>
+fn wait_until<F, G, H>(
+    condition: &F,
+    mut should_wait: G,
+    mut on_pending: H,
+) -> Result<(), IommuError>
 where
     F: Fn() -> bool,
     G: FnMut() -> bool,

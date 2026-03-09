@@ -2,10 +2,10 @@
 // drivers/virtio/src/blk/device.rs - Shared VirtIO Block Device Logic
 // ============================================================================
 
-use crate::transport::VirtioTransport;
+use crate::blk::*;
 use crate::core::virtqueue::VirtQueue;
 use crate::transport::TransportError;
-use crate::blk::*;
+use crate::transport::VirtioTransport;
 
 /// Shared VirtIO Block Device logic.
 #[derive(Debug, Default)]
@@ -52,17 +52,16 @@ impl VirtioBlkDevice {
 
     pub fn negotiate_features(&mut self, transport: &dyn VirtioTransport) -> u64 {
         let device_features = transport.get_device_features();
-        let accepted_features = device_features & (
-            crate::core::VIRTIO_F_VERSION_1 |
-            crate::defs::VIRTIO_F_INDIRECT_DESC |
-            VIRTIO_BLK_F_SIZE_MAX |
-            VIRTIO_BLK_F_SEG_MAX |
-            VIRTIO_BLK_F_GEOMETRY |
-            VIRTIO_BLK_F_RO |
-            VIRTIO_BLK_F_BLK_SIZE |
-            VIRTIO_BLK_F_TOPOLOGY |
-            VIRTIO_BLK_F_MQ
-        );
+        let accepted_features = device_features
+            & (crate::core::VIRTIO_F_VERSION_1
+                | crate::defs::VIRTIO_F_INDIRECT_DESC
+                | VIRTIO_BLK_F_SIZE_MAX
+                | VIRTIO_BLK_F_SEG_MAX
+                | VIRTIO_BLK_F_GEOMETRY
+                | VIRTIO_BLK_F_RO
+                | VIRTIO_BLK_F_BLK_SIZE
+                | VIRTIO_BLK_F_TOPOLOGY
+                | VIRTIO_BLK_F_MQ);
 
         transport.set_driver_features(accepted_features);
         self.features = accepted_features;
@@ -119,7 +118,9 @@ impl VirtioBlkDevice {
         d2.flags = crate::defs::vring_flags::VRING_DESC_F_WRITE;
         d2.next = 0;
 
-        unsafe { vq.submit_avail(head); }
+        unsafe {
+            vq.submit_avail(head);
+        }
         Ok(head)
     }
 
@@ -165,7 +166,9 @@ impl VirtioBlkDevice {
         d.flags = crate::defs::vring_flags::VRING_DESC_F_INDIRECT;
         d.next = 0;
 
-        unsafe { vq.submit_avail(head); }
+        unsafe {
+            vq.submit_avail(head);
+        }
         Ok(head)
     }
 }

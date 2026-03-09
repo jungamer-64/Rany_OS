@@ -100,9 +100,15 @@ impl MemoryBlock {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotplugEvent {
-    MemoryAdded { block_id: u64 },
-    MemoryGoingOffline { block_id: u64 },
-    MemoryRemoved { block_id: u64 },
+    MemoryAdded {
+        block_id: u64,
+    },
+    MemoryGoingOffline {
+        block_id: u64,
+    },
+    MemoryRemoved {
+        block_id: u64,
+    },
     OfflineFailed {
         block_id: u64,
         reason: OfflineFailReason,
@@ -286,7 +292,11 @@ impl HotplugManager {
         for cb in callbacks.iter() {
             cb.on_hotplug_event(HotplugEvent::OfflineFailed { block_id, reason });
         }
-        log::warn!("[Hotplug] Memory block {} offline failed: {:?}", block_id, e);
+        log::warn!(
+            "[Hotplug] Memory block {} offline failed: {:?}",
+            block_id,
+            e
+        );
     }
 
     pub fn remove_memory_block(&self, block_id: u64) -> Result<(), HotplugError> {
@@ -348,8 +358,12 @@ impl HotplugManager {
         Ok(())
     }
 
-    fn is_frame_in_use(&self, _frame: FrameIndex) -> bool { false }
-    fn try_migrate_frame(&self, _frame: FrameIndex, _numa_node: NumaNodeId) -> bool { true }
+    fn is_frame_in_use(&self, _frame: FrameIndex) -> bool {
+        false
+    }
+    fn try_migrate_frame(&self, _frame: FrameIndex, _numa_node: NumaNodeId) -> bool {
+        true
+    }
 
     pub fn get_block_info(&self, block_id: u64) -> Option<MemoryBlockInfo> {
         let blocks = self.blocks.read().unwrap_or_else(|e| e.into_inner());

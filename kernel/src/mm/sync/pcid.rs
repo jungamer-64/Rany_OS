@@ -162,7 +162,10 @@ pub fn init_features() {
     PCID_INITIALIZED.store(true, Ordering::Release);
 
     // アロケータ初期化
-    PCID_ALLOCATOR.lock().unwrap_or_else(|e| e.into_inner()).init();
+    PCID_ALLOCATOR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .init();
 }
 
 /// PCIDが使用可能か

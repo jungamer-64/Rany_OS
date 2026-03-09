@@ -298,7 +298,10 @@ impl MigrationEngine {
     }
 
     pub fn queue_migration(&self, request: MigrationRequest) {
-        let mut pending = self.pending_requests.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self
+            .pending_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         pending.push(request);
         pending.sort_by(|a, b| {
             b.priority
@@ -312,7 +315,10 @@ impl MigrationEngine {
         F: FnMut(FrameIndex, u8) -> MigrationResult,
     {
         let mut processed = 0;
-        let mut pending = self.pending_requests.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self
+            .pending_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while processed < self.batch_size && !pending.is_empty() {
             let request = pending.remove(0);
@@ -336,7 +342,11 @@ impl MigrationEngine {
             successful: self.successful.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             migrated_bytes: self.migrated_bytes.load(Ordering::Relaxed),
-            pending: self.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).len(),
+            pending: self
+                .pending_requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
         }
     }
 }
@@ -426,7 +436,9 @@ impl NumaDistanceCache {
 
     #[inline]
     pub fn get_distance(&self, from: usize, to: usize) -> u8 {
-        if from >= MAX_NUMA_NODES || to >= MAX_NUMA_NODES { return 255; }
+        if from >= MAX_NUMA_NODES || to >= MAX_NUMA_NODES {
+            return 255;
+        }
         self.distance_table[from][to].load(Ordering::Relaxed)
     }
 
@@ -504,8 +516,12 @@ pub fn suggest_migration(
     current_time: u64,
 ) -> Option<MigrationRequest> {
     let current_node = page_stats.current_node.load(Ordering::Acquire);
-    if current_node == task_preferred_node { return None; }
-    if !page_stats.can_migrate(current_time) { return None; }
+    if current_node == task_preferred_node {
+        return None;
+    }
+    if !page_stats.can_migrate(current_time) {
+        return None;
+    }
     let (hottest_node, access_count) = page_stats.get_hottest_node();
     let priority = if access_count >= NUMA_MIGRATION_THRESHOLD * 2 {
         10
@@ -520,7 +536,11 @@ pub fn suggest_migration(
         let dist_to_task =
             NUMA_DISTANCE_CACHE.get_distance(current_node as usize, task_preferred_node as usize);
         let dist_to_hot = NUMA_DISTANCE_CACHE.get_distance(current_node as usize, hottest_node);
-        if dist_to_task <= dist_to_hot { task_preferred_node } else { hottest_node as u8 }
+        if dist_to_task <= dist_to_hot {
+            task_preferred_node
+        } else {
+            hottest_node as u8
+        }
     };
     Some(MigrationRequest {
         src_frame: frame,
@@ -654,10 +674,14 @@ mod tests {
     fn test_raw_pte_numa_hint() {
         let mut pte = RawPte(pte_flags::PRESENT);
         assert!(!pte.has_numa_hint());
-        unsafe { pte.set_numa_hint(); }
+        unsafe {
+            pte.set_numa_hint();
+        }
         assert!(pte.has_numa_hint());
         assert_eq!(pte.0 & pte_flags::PRESENT, 0);
-        unsafe { pte.clear_numa_hint(); }
+        unsafe {
+            pte.clear_numa_hint();
+        }
         assert!(!pte.has_numa_hint());
         assert_ne!(pte.0 & pte_flags::PRESENT, 0);
     }

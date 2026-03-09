@@ -140,13 +140,7 @@ impl Mlx5Device {
 
             // Linux と同様に DisableHca を呼び出し、VF の HCA を無効化する
             build_enable_hca_input(in_mbox, function_id);
-            cmd.execute(
-                CmdOpcode::DisableHca,
-                in_mbox_phys,
-                0x10,
-                0,
-                0,
-            )?;
+            cmd.execute(CmdOpcode::DisableHca, in_mbox_phys, 0x10, 0, 0)?;
         }
 
         Ok(())
@@ -179,7 +173,6 @@ impl Mlx5Device {
         sq.post_send(&segments, inline_hdr, options)
             .ok_or(Mlx5Error::NoResources)
     }
-
 
     /// 受信バッファを投入
     pub unsafe fn post_receive(
@@ -251,10 +244,7 @@ impl Mlx5Device {
     ///
     /// # Safety
     /// - CQ メモリとドアベル領域が有効であること
-    pub unsafe fn debug_cq_state(
-        &self,
-        cq_index: usize,
-    ) -> Option<crate::cq::CqDebugState> {
+    pub unsafe fn debug_cq_state(&self, cq_index: usize) -> Option<crate::cq::CqDebugState> {
         self.cqs.get(cq_index).map(|cq| cq.debug_state())
     }
 
@@ -276,14 +266,14 @@ impl Mlx5Device {
     pub unsafe fn query_time(&self) -> u64 {
         use crate::regs::init_seg;
         let base = self.bar0_base as usize;
-        
+
         // 64ビットカウンタを32ビットずつ2回に分けて読み取る（一貫性確保のためループ）
         // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let hi = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_H);
             let lo = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_L);
             let hi2 = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_H);
-            
+
             if hi == hi2 {
                 return ((hi as u64) << 32) | (lo as u64);
             }
@@ -292,9 +282,9 @@ impl Mlx5Device {
 
     /// PTP (Precision Time Protocol) サポート状況を確認
     pub fn ptp_caps(&self) -> Option<(u8, u32)> {
-        self.hca_caps.as_ref().map(|caps| {
-            (caps.rq_ts_format, caps.device_frequency_khz)
-        })
+        self.hca_caps
+            .as_ref()
+            .map(|caps| (caps.rq_ts_format, caps.device_frequency_khz))
     }
 
     pub fn process_rx_completion(
@@ -536,17 +526,17 @@ impl Mlx5Device {
     }
 
     /// VPort カウンタをクエリして統計情報を取得
-    pub unsafe fn query_vport_stats(&mut self, port_index: usize) -> Mlx5Result<crate::defs::VportCounters> {
+    pub unsafe fn query_vport_stats(
+        &mut self,
+        port_index: usize,
+    ) -> Mlx5Result<crate::defs::VportCounters> {
         let is_vf = self.is_vf();
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         let vport_num = if is_vf { 0 } else { (port_index + 1) as u16 };
 
         crate::cmd::hca::build_query_vport_counter_input(
-            in_mbox,
-            vport_num,
-            false, // self
-            None,
-            false, // clear=false
+            in_mbox, vport_num, false, // self
+            None, false, // clear=false
         );
 
         self.execute_cmd_with_uid_candidates(
@@ -559,7 +549,7 @@ impl Mlx5Device {
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let counters = crate::cmd::hca::parse_query_vport_counter_output(out_mbox);
-        
+
         log::debug!(
             target: "mlx5::stats",
             "VPort {}: RX={}/{}B, TX={}/{}B, RX_ERR={}, TX_ERR={}",
@@ -813,11 +803,19 @@ impl Mlx5Device {
 
     /// プロミスキャスモードを設定
     pub unsafe fn set_promiscuous_mode(&mut self, enable: bool) -> Mlx5Result<()> {
-        if self.flow_tables.is_empty() { return Err(Mlx5Error::NotSupported); }
+        if self.flow_tables.is_empty() {
+            return Err(Mlx5Error::NotSupported);
+        }
         let table_id = self.flow_tables[0].table_id;
-        let tirn = self.tir_list.first().map(|t| t.tirn).ok_or(Mlx5Error::NotSupported)?;
-        
-        let group_id = self.flow_groups.iter()
+        let tirn = self
+            .tir_list
+            .first()
+            .map(|t| t.tirn)
+            .ok_or(Mlx5Error::NotSupported)?;
+
+        let group_id = self
+            .flow_groups
+            .iter()
             .find(|g| g.start_index == 64)
             .map(|g| g.group_id)
             .ok_or(Mlx5Error::NotSupported)?;
@@ -826,7 +824,7 @@ impl Mlx5Device {
             let match_value = crate::flow::MatchValue::default();
             self.set_flow_table_entry(
                 table_id,
-                64, 
+                64,
                 group_id,
                 crate::flow::FlowAction::Allow,
                 Some(tirn),
@@ -843,7 +841,7 @@ impl Mlx5Device {
                 0x10,
             )?;
         }
-        
+
         log::info!(target: "mlx5", "Promiscuous mode: {}", if enable { "enabled" } else { "disabled" });
         Ok(())
     }

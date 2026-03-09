@@ -203,7 +203,10 @@ impl WalManager {
             seq: self.alloc_seq(),
             kind: WalRecordKind::Begin,
         };
-        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec.clone());
+        self.records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(rec.clone());
         let _ = self.persist_record(&rec);
         tx_id
     }
@@ -215,7 +218,10 @@ impl WalManager {
             seq: self.alloc_seq(),
             kind: WalRecordKind::Append(op),
         };
-        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec.clone());
+        self.records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(rec.clone());
         let _ = self.persist_record(&rec);
     }
 
@@ -226,7 +232,10 @@ impl WalManager {
             seq: self.alloc_seq(),
             kind: WalRecordKind::Commit,
         };
-        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(rec.clone());
+        self.records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(rec.clone());
         let _ = self.persist_record(&rec);
     }
 
@@ -382,7 +391,12 @@ impl WalManager {
             }
         }
 
-        let removed = self.records.lock().unwrap_or_else(|e| e.into_inner()).len().saturating_sub(retained.len());
+        let removed = self
+            .records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+            .saturating_sub(retained.len());
         {
             let mut records = self.records.lock().unwrap_or_else(|e| e.into_inner());
             *records = retained.clone();
@@ -403,12 +417,18 @@ impl WalManager {
 
     /// Remove all WAL records.
     pub fn clear(&self) {
-        self.records.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// Return a cloned snapshot of current WAL records.
     pub fn snapshot(&self) -> Vec<WalRecord> {
-        self.records.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 

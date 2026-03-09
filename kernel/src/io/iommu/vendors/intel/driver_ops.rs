@@ -6,6 +6,24 @@ use super::*;
 
 mod domain_query;
 mod invalidation;
+
+#[inline]
+fn controller_cq_submit_error(controller: &controller::IommuController) -> IommuError {
+    match controller.command_queue.as_ref() {
+        Some(cq) if cq.is_poisoned() => IommuError::Poisoned,
+        _ => IommuError::HardwareError,
+    }
+}
+
+#[inline]
+fn controller_cq_completion_error(rc: i32) -> IommuError {
+    if rc == crate::io::iommu::runtime::command::queue::RESULT_POISONED {
+        IommuError::Poisoned
+    } else {
+        IommuError::HardwareError
+    }
+}
+
 impl IntelIommuDriver {
     pub(crate) fn is_enabled(&self) -> bool {
         if self.controller.is_some() {
@@ -539,7 +557,7 @@ impl IntelIommuDriver {
             };
             controller
                 .execute_sync_command(cmd)
-                .map_err(|_| IommuError::HardwareError)?;
+                .map_err(|_| controller_cq_submit_error(controller))?;
 
             // Check if unmap removed a PT (via mapping lookups since CQ is used)
             let pts_after = domain_arc
@@ -554,7 +572,7 @@ impl IntelIommuDriver {
                     .execute_sync_command(IommuCommandKind::InvalidateIotlbDomain {
                         domain: domain_arc.id(),
                     })
-                    .map_err(|_| IommuError::HardwareError)?;
+                    .map_err(|_| controller_cq_submit_error(controller))?;
                 let _ = domain_arc.flush(controller, controller);
             }
             return Ok(());
@@ -613,10 +631,10 @@ impl IntelIommuDriver {
         let comp = cq
             .submit_async(cmd)
             .await
-            .map_err(|_| IommuError::HardwareError)?;
+            .map_err(|_| controller_cq_submit_error(controller))?;
         let rc = comp.await;
         if rc != 0 {
-            return Err(IommuError::HardwareError);
+            return Err(controller_cq_completion_error(rc));
         }
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping_size) {
             if let Ok(_) = controller.invalidate_iotlb_global_sync() {
@@ -663,10 +681,10 @@ impl IntelIommuDriver {
                 let comp = cq
                     .submit_async(kind)
                     .await
-                    .map_err(|_| IommuError::HardwareError)?;
+                    .map_err(|_| controller_cq_submit_error(controller))?;
                 let rc = comp.await;
                 if rc != 0 {
-                    return Err(IommuError::HardwareError);
+                    return Err(controller_cq_completion_error(rc));
                 }
             } else {
                 controller.invalidate_iotlb(domain_id, true)?;

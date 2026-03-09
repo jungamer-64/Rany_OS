@@ -364,7 +364,7 @@ pub mod tests {
         // Test SYN Cookie generation and verification
         let cookie = tcb_table().generate_syncookie(local, remote, client_isn, 2);
         assert_ne!(cookie, 0);
-        
+
         // The cookie should be verifiable (ACK num is cookie + 1)
         let ack_num = cookie.wrapping_add(1);
         let mss_idx = tcb_table().verify_syncookie(local, remote, ack_num, client_isn);
@@ -372,12 +372,15 @@ pub mod tests {
 
         // Different parameters should fail verification
         let wrong_remote = EndpointAddr::new([127, 0, 0, 1], 54321);
-        assert_eq!(tcb_table().verify_syncookie(local, wrong_remote, ack_num, client_isn), None);
+        assert_eq!(
+            tcb_table().verify_syncookie(local, wrong_remote, ack_num, client_isn),
+            None
+        );
 
         // Test ISN generation
         let isn1 = tcb_table().generate_isn(local, remote);
         let isn2 = tcb_table().generate_isn(local, remote);
-        
+
         // Successive ISNs should be different (due to counter and potentially time)
         assert_ne!(isn1, isn2);
 

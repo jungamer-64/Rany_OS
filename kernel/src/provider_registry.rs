@@ -483,8 +483,8 @@ mod tests {
     use core::task::Waker;
     use kernel_api::service::audio::{AudioDeviceInfo, AudioServices};
     use kernel_api::service::netdev::{
-        MacAddress, NetDeviceInfo, NetDeviceServices, NetPortKind, NETDEV_FLAG_BOUND_PORT,
-        NETDEV_FLAG_PRIMARY,
+        MacAddress, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDeviceServices,
+        NetPortKind,
     };
     use kernel_api::service::platform::{
         BdfAddress, ClassCode, DeviceId, IoApicInfo, LocalApicInfo, PciDeviceInfo, VendorId,

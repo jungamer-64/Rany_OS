@@ -210,7 +210,7 @@ impl PowerManager {
 
         if config.pm1a_evt_blk != 0 {
             let mut port: PortU16 = PortU16::new(config.pm1a_evt_blk);
-            port.write(bits); 
+            port.write(bits);
         }
     }
 
@@ -235,7 +235,9 @@ impl PowerManager {
         match state {
             PowerState::Working => Ok(()),
             PowerState::Standby => {
-                unsafe { core::arch::asm!("hlt"); }
+                unsafe {
+                    core::arch::asm!("hlt");
+                }
                 Ok(())
             }
             PowerState::SoftOff => self.shutdown(),
@@ -338,7 +340,9 @@ impl CpuIdle {
         self.current_state
             .store(CpuPowerState::Halt as u8, Ordering::Relaxed);
         self.c1_count.fetch_add(1, Ordering::Relaxed);
-        unsafe { core::arch::asm!("sti", "hlt",); }
+        unsafe {
+            core::arch::asm!("sti", "hlt",);
+        }
         self.current_state
             .store(CpuPowerState::Active as u8, Ordering::Relaxed);
     }
@@ -347,7 +351,9 @@ impl CpuIdle {
         self.current_state
             .store(CpuPowerState::Halt as u8, Ordering::Relaxed);
         self.c1_count.fetch_add(1, Ordering::Relaxed);
-        unsafe { core::arch::asm!("sti", "hlt",); }
+        unsafe {
+            core::arch::asm!("sti", "hlt",);
+        }
         self.current_state
             .store(CpuPowerState::Active as u8, Ordering::Relaxed);
     }
@@ -392,12 +398,20 @@ pub fn init_from_fadt(fadt: &Fadt) {
 
 pub fn shutdown() -> ! {
     let _ = POWER_MANAGER.shutdown();
-    loop { unsafe { core::arch::asm!("hlt"); } }
+    loop {
+        unsafe {
+            core::arch::asm!("hlt");
+        }
+    }
 }
 
 pub fn reboot() -> ! {
     let _ = POWER_MANAGER.reboot();
-    loop { unsafe { core::arch::asm!("hlt"); } }
+    loop {
+        unsafe {
+            core::arch::asm!("hlt");
+        }
+    }
 }
 
 pub fn idle() {

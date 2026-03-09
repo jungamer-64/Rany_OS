@@ -306,7 +306,10 @@ impl MacPolicy {
 
     /// Set context for a domain
     pub fn set_domain_context(&self, domain_id: u64, context: SecurityContext) {
-        let mut contexts = self.domain_contexts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut contexts = self
+            .domain_contexts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = contexts.iter_mut().find(|(id, _)| *id == domain_id) {
             entry.1 = context;
         } else {
@@ -326,7 +329,10 @@ impl MacPolicy {
 
     /// Set context for an object
     pub fn set_object_context(&self, object_id: u64, context: SecurityContext) {
-        let mut contexts = self.object_contexts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut contexts = self
+            .object_contexts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = contexts.iter_mut().find(|(id, _)| *id == object_id) {
             entry.1 = context;
         } else {
@@ -425,17 +431,26 @@ pub fn check_access(
     object: &SecurityContext,
     access_type: AccessType,
 ) -> Result<MacDecision, MacError> {
-    MAC_POLICY.lock().unwrap_or_else(|e| e.into_inner()).check_access(subject, object, access_type)
+    MAC_POLICY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .check_access(subject, object, access_type)
 }
 
 /// Get current context for a domain
 pub fn current_context(domain_id: u64) -> Option<SecurityContext> {
-    MAC_POLICY.lock().unwrap_or_else(|e| e.into_inner()).get_domain_context(domain_id)
+    MAC_POLICY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_domain_context(domain_id)
 }
 
 /// Set context for a domain
 pub fn set_context(domain_id: u64, context: SecurityContext) {
-    MAC_POLICY.lock().unwrap_or_else(|e| e.into_inner()).set_domain_context(domain_id, context);
+    MAC_POLICY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .set_domain_context(domain_id, context);
 }
 
 /// Initialize MAC subsystem
@@ -452,7 +467,10 @@ pub fn init() {
 
 /// Enable enforcement
 pub fn set_enforcing(enforcing: bool) {
-    MAC_POLICY.lock().unwrap_or_else(|e| e.into_inner()).set_enforcing(enforcing);
+    MAC_POLICY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .set_enforcing(enforcing);
 }
 
 #[cfg(test)]

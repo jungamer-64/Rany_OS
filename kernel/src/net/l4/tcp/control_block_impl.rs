@@ -128,7 +128,9 @@ impl TcpControlBlock {
                 // This is either malicious or a peer bug.
                 log::warn!(
                     "[TCP] Dropping segment [{}, {}) extending beyond known FIN at {}",
-                    seq, seg_end, fs
+                    seq,
+                    seg_end,
+                    fs
                 );
                 return false;
             }
@@ -136,7 +138,8 @@ impl TcpControlBlock {
                 // Security: Inconsistent FIN sequence received.
                 log::warn!(
                     "[TCP] Dropping segment with inconsistent FIN: got {}, expected {}",
-                    seg_end, fs
+                    seg_end,
+                    fs
                 );
                 return false;
             }
@@ -203,11 +206,16 @@ impl TcpControlBlock {
         }
 
         // Insert while maintaining sorted order (wrapping-aware)
-        let pos = self.rx.ooo_queue.iter().position(|(s, _)| seq_before(seq, *s)).unwrap_or(self.rx.ooo_queue.len());
+        let pos = self
+            .rx
+            .ooo_queue
+            .iter()
+            .position(|(s, _)| seq_before(seq, *s))
+            .unwrap_or(self.rx.ooo_queue.len());
         self.rx.ooo_queue.insert(pos, (seq, packet));
         GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
         true
-        }
+    }
     /// Try to drain contiguous OOO segments into the receive buffer.
     /// Returns true if a FIN was encountered during drainage.
     pub fn drain_ooo_segments(&mut self) -> bool {
@@ -222,7 +230,11 @@ impl TcpControlBlock {
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by finding a matching segment.;
         loop {
             // Find if there's a segment starting at current_rcv_nxt
-            let pos = self.rx.ooo_queue.iter().position(|(s, _)| *s == current_rcv_nxt);
+            let pos = self
+                .rx
+                .ooo_queue
+                .iter()
+                .position(|(s, _)| *s == current_rcv_nxt);
             if let Some(i) = pos {
                 let (_, packet) = self.rx.ooo_queue.remove(i);
                 GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
@@ -244,7 +256,12 @@ impl TcpControlBlock {
                 } else {
                     // Buffer full, put it back
                     // Maintain sorted order (wrapping-aware)
-                    let pos = self.rx.ooo_queue.iter().position(|(s, _)| seq_before(current_rcv_nxt, *s)).unwrap_or(self.rx.ooo_queue.len());
+                    let pos = self
+                        .rx
+                        .ooo_queue
+                        .iter()
+                        .position(|(s, _)| seq_before(current_rcv_nxt, *s))
+                        .unwrap_or(self.rx.ooo_queue.len());
                     self.rx.ooo_queue.insert(pos, (current_rcv_nxt, packet));
                     GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
                     break;
@@ -257,7 +274,7 @@ impl TcpControlBlock {
         if drained_count > 0 {
             self.seq.rcv_nxt = current_rcv_nxt;
             self.wake_read_waiter();
-            
+
             // After updating rcv_nxt, we might have more segments that now overlap!
             // Prune/trim again to ensure consistency.
             self.prune_ooo_segments();
@@ -288,15 +305,17 @@ impl TcpControlBlock {
                 let (seq, mut packet) = self.rx.ooo_queue.remove(i);
                 let end = seq.wrapping_add(packet.len() as u32);
                 let diff = rcv_nxt.wrapping_sub(seq) as i32;
-                
+
                 if diff > 0 && (end.wrapping_sub(rcv_nxt) as i32) > 0 {
                     // Partial overlap: trim and re-insert at rcv_nxt
                     let skip = diff as usize;
                     packet.advance(skip);
-                    
+
                     // If rcv_nxt already has a segment, keep the longer one
                     let mut keep_new = true;
-                    if let Some(existing_idx) = self.rx.ooo_queue.iter().position(|(s, _)| *s == rcv_nxt) {
+                    if let Some(existing_idx) =
+                        self.rx.ooo_queue.iter().position(|(s, _)| *s == rcv_nxt)
+                    {
                         if self.rx.ooo_queue[existing_idx].1.len() >= packet.len() {
                             keep_new = false;
                         } else {
@@ -305,7 +324,7 @@ impl TcpControlBlock {
                             GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                         }
                     }
-                    
+
                     if keep_new {
                         to_reinsert.push((rcv_nxt, packet));
                     } else {
@@ -323,7 +342,12 @@ impl TcpControlBlock {
 
         for (seq, packet) in to_reinsert {
             // Maintain sorted order
-            let pos = self.rx.ooo_queue.iter().position(|(s, _)| seq_before(seq, *s)).unwrap_or(self.rx.ooo_queue.len());
+            let pos = self
+                .rx
+                .ooo_queue
+                .iter()
+                .position(|(s, _)| seq_before(seq, *s))
+                .unwrap_or(self.rx.ooo_queue.len());
             self.rx.ooo_queue.insert(pos, (seq, packet));
         }
     }
@@ -681,7 +705,10 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    pub fn push_backlog_connection_and_wake(&self, tcb_arc: &Arc<PoisonLock<TcpControlBlock>>) -> bool {
+    pub fn push_backlog_connection_and_wake(
+        &self,
+        tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
+    ) -> bool {
         if let Some(backlog_lock) = &self.waiters.backlog {
             if let Ok(mut backlog) = backlog_lock.lock() {
                 // Security: Limit backlog size to prevent SYN flood memory exhaustion

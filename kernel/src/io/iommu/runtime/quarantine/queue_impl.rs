@@ -355,16 +355,17 @@ impl QuarantineQueue {
             InvSlot::Reserved { expected_batch } => {
                 // Round 8 bonus: Verify batch hasn't advanced beyond what we reserved
                 if current_batch != *expected_batch {
-                    // Round 12 Fix: Fail-Stop logic.
-                    // If batch advanced, it means a race occured or logic error.
-                    // Since we are here (PTE cleared), we CANNOT safely clear the slot (would drop invalidation).
-                    // We also CANNOT safely catch-up because it might violate batch boundaries.
-                    // The only safe option is to HALT operations to prevent data corruption.
-                    drop(inner); // drop lock before calling helper (avoids recursion if helper took lock)
+                    drop(inner);
                     self.poison_system();
-                    panic!(
+                    log::error!(
                         "CRITICAL: Quarantine batch advanced before commit_invalidation. Queue POISONED."
                     );
+                    crate::io::iommu::runtime::security::notify_security_listener(
+                        crate::io::iommu::runtime::security::SecurityEvent::QuarantinePoisoned {
+                            domain_id: 0,
+                        },
+                    );
+                    return Err(QuarantineError::Poisoned);
                 }
                 *slot = InvSlot::Ready(req);
                 inner.ready_count += 1;
@@ -759,6 +760,48 @@ impl QuarantineQueue {
             completed_batch: self.completed_batch.load(Ordering::Relaxed),
             poisoned: self.poisoned.load(Ordering::Acquire),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn test_commit_invalidation_batch_advance_poisoned() {
+        let queue = QuarantineQueue::new();
+        let expected_batch = {
+            let inner = queue.inner.lock();
+            inner.current_batch
+        };
+        let (inv_slot_idx, inv_gen) = queue
+            .reserve_invalidation_slot(expected_batch)
+            .expect("reserve invalidation slot");
+
+        {
+            let mut inner = queue.inner.lock();
+            inner.current_batch = inner.current_batch.wrapping_add(1);
+        }
+
+        let err = queue
+            .commit_invalidation(inv_slot_idx, inv_gen, InvalidateRequest::domain(1))
+            .expect_err("batch advance should poison queue");
+
+        assert_eq!(err, QuarantineError::Poisoned);
+        assert!(queue.poisoned.load(Ordering::Acquire));
+        assert!(
+            matches!(
+                queue.inner.lock().pending_invalidations[inv_slot_idx],
+                InvSlot::Reserved { .. }
+            ),
+            "reserved invalidation slot must not be rolled back after PTE clear"
+        );
+        assert_eq!(
+            queue
+                .reserve_slot()
+                .expect_err("poisoned queue must reject new work"),
+            QuarantineError::Poisoned
+        );
     }
 }
 

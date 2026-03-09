@@ -538,4 +538,4 @@ impl FirewallRuleBuilder {
             tcp_flags_value: self.tcp_flags_value,
         }
     }
-    }
+}

@@ -263,7 +263,11 @@ pub fn rcu_process_callbacks() {
             return;
         }
         let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-        let mut queue = pcp.rcu_state.batch_queue.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = pcp
+            .rcu_state
+            .batch_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // グレース期間が経過したコールバックを処理
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
@@ -277,7 +281,11 @@ pub fn rcu_process_callbacks() {
                 (entry.callback)(entry.ptr);
 
                 // ロック再取得
-                queue = pcp.rcu_state.batch_queue.lock().unwrap_or_else(|e| e.into_inner());
+                queue = pcp
+                    .rcu_state
+                    .batch_queue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
             } else {
                 break;
             }
@@ -291,9 +299,16 @@ pub fn rcu_pending_callbacks() -> usize {
         let gs_base = per_cpu::read_gsbase_any();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-            pcp.rcu_state.batch_queue.lock().unwrap_or_else(|e| e.into_inner()).len()
+            pcp.rcu_state
+                .batch_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len()
         } else {
-            RCU_CALLBACK_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).len()
+            RCU_CALLBACK_QUEUE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len()
         }
     }
 }

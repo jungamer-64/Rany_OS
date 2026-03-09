@@ -88,7 +88,10 @@ impl ThermalManager {
     /// 初期化
     pub fn init(&self) -> ThermalResult<()> {
         // CPUドライバを初期化
-        self.cpu_driver.lock().unwrap_or_else(|e| e.into_inner()).init()?;
+        self.cpu_driver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .init()?;
 
         // CPUセンサーを登録
         self.register_cpu_sensors()?;
@@ -105,7 +108,10 @@ impl ThermalManager {
         // パッケージセンサー
         let pkg_id = self.next_sensor_id.fetch_add(1, Ordering::SeqCst);
         let pkg_sensor = ThermalSensor::new(pkg_id, "CPU Package".into(), SensorType::CpuPackage);
-        self.sensors.write().unwrap_or_else(|e| e.into_inner()).push(pkg_sensor);
+        self.sensors
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(pkg_sensor);
 
         // コアセンサー
         for core in 0..driver.num_cores() {
@@ -115,7 +121,10 @@ impl ThermalManager {
                 alloc::format!("CPU Core {}", core),
                 SensorType::CpuCore(core as u8),
             );
-            self.sensors.write().unwrap_or_else(|e| e.into_inner()).push(core_sensor);
+            self.sensors
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(core_sensor);
         }
 
         Ok(())
@@ -153,7 +162,10 @@ impl ThermalManager {
             0,
         );
 
-        self.zones.write().unwrap_or_else(|e| e.into_inner()).push(zone);
+        self.zones
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(zone);
     }
 
     /// センサーを更新
@@ -256,7 +268,12 @@ impl ThermalManager {
 
     /// 特定のセンサーを取得
     pub fn sensor(&self, id: u32) -> Option<ThermalSensor> {
-        self.sensors.read().unwrap_or_else(|e| e.into_inner()).iter().find(|s| s.id == id).cloned()
+        self.sensors
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
     }
 
     /// 全センサーのスナップショットを取得
@@ -308,7 +325,10 @@ pub fn periodic_poll() {
 
 /// CPU温度を取得
 pub fn cpu_temperature() -> Option<Temperature> {
-    let sensors = thermal_manager().sensors.read().unwrap_or_else(|e| e.into_inner());
+    let sensors = thermal_manager()
+        .sensors
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
     sensors
         .iter()
         .find(|s| s.sensor_type == SensorType::CpuPackage)

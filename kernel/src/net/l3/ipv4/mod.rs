@@ -420,11 +420,7 @@ impl Ipv4Header {
         }
 
         let result = !(sum as u16);
-        if result == 0 {
-            0xFFFF
-        } else {
-            result
-        }
+        if result == 0 { 0xFFFF } else { result }
     }
 }
 

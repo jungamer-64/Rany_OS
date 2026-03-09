@@ -172,7 +172,10 @@ impl ConsoleManager {
         }
 
         // 最初のコンソールをアクティブに
-        consoles[0].lock().unwrap_or_else(|e| e.into_inner()).set_active(true);
+        consoles[0]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_active(true);
 
         Self {
             consoles,
@@ -211,7 +214,10 @@ impl ConsoleManager {
     pub fn scroll_view(&self, delta: isize) {
         let active = self.active.load(Ordering::Acquire);
         if let Some(console) = self.consoles.get(active as usize) {
-            console.lock().unwrap_or_else(|e| e.into_inner()).scroll_view(delta);
+            console
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .scroll_view(delta);
         }
     }
 
@@ -225,11 +231,15 @@ impl ConsoleManager {
         let old_active = self.active.swap(console_id, Ordering::AcqRel) as usize;
 
         if let Some(old) = self.consoles.get(old_active) {
-            old.lock().unwrap_or_else(|e| e.into_inner()).set_active(false);
+            old.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_active(false);
         }
 
         if let Some(new) = self.consoles.get(id) {
-            new.lock().unwrap_or_else(|e| e.into_inner()).set_active(true);
+            new.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_active(true);
         }
     }
 
@@ -314,12 +324,14 @@ pub trait ConsoleDriver: Send {
 // ============================================================================
 
 pub(crate) static CONSOLE_MANAGER: PoisonLock<Option<ConsoleManager>> = PoisonLock::new(None);
-pub(crate) static CONSOLE_DRIVER: PoisonLock<Option<Box<dyn ConsoleDriver>>> = PoisonLock::new(None);
+pub(crate) static CONSOLE_DRIVER: PoisonLock<Option<Box<dyn ConsoleDriver>>> =
+    PoisonLock::new(None);
 
 /// コンソールシステムを初期化
 pub fn init(cols: usize, rows: usize) {
     install_keyboard_tap();
-    *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) = Some(ConsoleManager::new(cols, rows));
+    *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(ConsoleManager::new(cols, rows));
 }
 
 /// デフォルト設定で初期化
@@ -400,7 +412,11 @@ pub fn with_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&ConsoleManager) -> R,
 {
-    CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(f)
+    CONSOLE_MANAGER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(f)
 }
 
 /// 現在のアクティブコンソールIDを取得

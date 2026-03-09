@@ -29,10 +29,18 @@ pub struct PoisonError<T> {
 }
 
 impl<T> PoisonError<T> {
-    pub(crate) const fn new(guard: T) -> Self { Self { guard } }
-    pub fn into_inner(self) -> T { self.guard }
-    pub const fn get_ref(&self) -> &T { &self.guard }
-    pub fn get_mut(&mut self) -> &mut T { &mut self.guard }
+    pub(crate) const fn new(guard: T) -> Self {
+        Self { guard }
+    }
+    pub fn into_inner(self) -> T {
+        self.guard
+    }
+    pub const fn get_ref(&self) -> &T {
+        &self.guard
+    }
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.guard
+    }
 }
 
 impl<T> fmt::Display for PoisonError<T> {
@@ -66,31 +74,51 @@ impl<T> PoisonRwLock<T> {
     pub fn read(&self) -> LockResult<PoisonRwLockReadGuard<'_, T>> {
         let guard = self.inner.read();
         let p_guard = PoisonRwLockReadGuard { lock: self, guard };
-        if self.poisoned.load(Ordering::Acquire) { Err(PoisonError::new(p_guard)) } else { Ok(p_guard) }
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(PoisonError::new(p_guard))
+        } else {
+            Ok(p_guard)
+        }
     }
 
     pub fn write(&self) -> LockResult<PoisonRwLockWriteGuard<'_, T>> {
         let guard = self.inner.write();
         let p_guard = PoisonRwLockWriteGuard { lock: self, guard };
-        if self.poisoned.load(Ordering::Acquire) { Err(PoisonError::new(p_guard)) } else { Ok(p_guard) }
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(PoisonError::new(p_guard))
+        } else {
+            Ok(p_guard)
+        }
     }
 
     pub fn try_read(&self) -> Option<LockResult<PoisonRwLockReadGuard<'_, T>>> {
         self.inner.try_read().map(|guard| {
             let p_guard = PoisonRwLockReadGuard { lock: self, guard };
-            if self.poisoned.load(Ordering::Acquire) { Err(PoisonError::new(p_guard)) } else { Ok(p_guard) }
+            if self.poisoned.load(Ordering::Acquire) {
+                Err(PoisonError::new(p_guard))
+            } else {
+                Ok(p_guard)
+            }
         })
     }
 
     pub fn try_write(&self) -> Option<LockResult<PoisonRwLockWriteGuard<'_, T>>> {
         self.inner.try_write().map(|guard| {
             let p_guard = PoisonRwLockWriteGuard { lock: self, guard };
-            if self.poisoned.load(Ordering::Acquire) { Err(PoisonError::new(p_guard)) } else { Ok(p_guard) }
+            if self.poisoned.load(Ordering::Acquire) {
+                Err(PoisonError::new(p_guard))
+            } else {
+                Ok(p_guard)
+            }
         })
     }
 
-    pub fn is_poisoned(&self) -> bool { self.poisoned.load(Ordering::Relaxed) }
-    pub fn clear_poison(&self) { self.poisoned.store(false, Ordering::Release); }
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Relaxed)
+    }
+    pub fn clear_poison(&self) {
+        self.poisoned.store(false, Ordering::Release);
+    }
 }
 
 pub struct PoisonRwLockReadGuard<'a, T> {
@@ -100,7 +128,9 @@ pub struct PoisonRwLockReadGuard<'a, T> {
 
 impl<T> Deref for PoisonRwLockReadGuard<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T { &*self.guard }
+    fn deref(&self) -> &T {
+        &*self.guard
+    }
 }
 
 pub struct PoisonRwLockWriteGuard<'a, T> {
@@ -110,16 +140,22 @@ pub struct PoisonRwLockWriteGuard<'a, T> {
 
 impl<T> Deref for PoisonRwLockWriteGuard<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T { &*self.guard }
+    fn deref(&self) -> &T {
+        &*self.guard
+    }
 }
 
 impl<T> DerefMut for PoisonRwLockWriteGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T { &mut *self.guard }
+    fn deref_mut(&mut self) -> &mut T {
+        &mut *self.guard
+    }
 }
 
 impl<T> Drop for PoisonRwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        if is_panicking() { self.lock.poisoned.store(true, Ordering::Release); }
+        if is_panicking() {
+            self.lock.poisoned.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -148,25 +184,53 @@ impl<T> PoisonLock<T> {
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
         let mut backoff = Backoff::new();
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while self.locked.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             backoff.spin();
         }
-        let guard = PoisonLockGuard { lock: self, _nosend: core::marker::PhantomData };
-        if self.poisoned.load(Ordering::Acquire) { Err(PoisonError::new(guard)) } else { Ok(guard) }
+        let guard = PoisonLockGuard {
+            lock: self,
+            _nosend: core::marker::PhantomData,
+        };
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(PoisonError::new(guard))
+        } else {
+            Ok(guard)
+        }
     }
 
     pub fn try_lock(&self) -> Option<LockResult<PoisonLockGuard<'_, T>>> {
-        if self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-            let guard = PoisonLockGuard { lock: self, _nosend: core::marker::PhantomData };
-            if self.poisoned.load(Ordering::Acquire) { Some(Err(PoisonError::new(guard))) } else { Some(Ok(guard)) }
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            let guard = PoisonLockGuard {
+                lock: self,
+                _nosend: core::marker::PhantomData,
+            };
+            if self.poisoned.load(Ordering::Acquire) {
+                Some(Err(PoisonError::new(guard)))
+            } else {
+                Some(Ok(guard))
+            }
         } else {
             None
         }
     }
 
-    pub fn is_locked(&self) -> bool { self.locked.load(Ordering::Relaxed) }
-    pub fn is_poisoned(&self) -> bool { self.poisoned.load(Ordering::Relaxed) }
-    pub fn clear_poison(&self) { self.poisoned.store(false, Ordering::Release); }
+    pub fn is_locked(&self) -> bool {
+        self.locked.load(Ordering::Relaxed)
+    }
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Relaxed)
+    }
+    pub fn clear_poison(&self) {
+        self.poisoned.store(false, Ordering::Release);
+    }
 }
 
 pub struct PoisonLockGuard<'a, T: ?Sized> {
@@ -176,16 +240,22 @@ pub struct PoisonLockGuard<'a, T: ?Sized> {
 
 impl<T: ?Sized> Deref for PoisonLockGuard<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T { unsafe { &*self.lock.data.get() } }
+    fn deref(&self) -> &T {
+        unsafe { &*self.lock.data.get() }
+    }
 }
 
 impl<T: ?Sized> DerefMut for PoisonLockGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T { unsafe { &mut *self.lock.data.get() } }
+    fn deref_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.lock.data.get() }
+    }
 }
 
 impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
     fn drop(&mut self) {
-        if is_panicking() { self.lock.poisoned.store(true, Ordering::Release); }
+        if is_panicking() {
+            self.lock.poisoned.store(true, Ordering::Release);
+        }
         self.lock.locked.store(false, Ordering::Release);
     }
 }
@@ -202,7 +272,9 @@ pub struct IrqPoisonLock<T: ?Sized> {
 #[cfg(target_arch = "x86_64")]
 impl<T> IrqPoisonLock<T> {
     pub const fn new(data: T) -> Self {
-        Self { inner: PoisonLock::new(data) }
+        Self {
+            inner: PoisonLock::new(data),
+        }
     }
 
     pub fn lock(&self) -> LockResult<IrqPoisonLockGuard<'_, T>> {
@@ -212,8 +284,14 @@ impl<T> IrqPoisonLock<T> {
             core::arch::asm!("cli", options(nomem, nostack));
         }
         match self.inner.lock() {
-            Ok(guard) => Ok(IrqPoisonLockGuard { guard, rflags: flags }),
-            Err(e) => Err(PoisonError::new(IrqPoisonLockGuard { guard: e.into_inner(), rflags: flags })),
+            Ok(guard) => Ok(IrqPoisonLockGuard {
+                guard,
+                rflags: flags,
+            }),
+            Err(e) => Err(PoisonError::new(IrqPoisonLockGuard {
+                guard: e.into_inner(),
+                rflags: flags,
+            })),
         }
     }
 
@@ -224,10 +302,20 @@ impl<T> IrqPoisonLock<T> {
             core::arch::asm!("cli", options(nomem, nostack));
         }
         match self.inner.try_lock() {
-            Some(Ok(guard)) => Some(Ok(IrqPoisonLockGuard { guard, rflags: flags })),
-            Some(Err(e)) => Some(Err(PoisonError::new(IrqPoisonLockGuard { guard: e.into_inner(), rflags: flags }))),
+            Some(Ok(guard)) => Some(Ok(IrqPoisonLockGuard {
+                guard,
+                rflags: flags,
+            })),
+            Some(Err(e)) => Some(Err(PoisonError::new(IrqPoisonLockGuard {
+                guard: e.into_inner(),
+                rflags: flags,
+            }))),
             None => {
-                if (flags & (1 << 9)) != 0 { unsafe { core::arch::asm!("sti", options(nomem, nostack)); } }
+                if (flags & (1 << 9)) != 0 {
+                    unsafe {
+                        core::arch::asm!("sti", options(nomem, nostack));
+                    }
+                }
                 None
             }
         }
@@ -243,19 +331,27 @@ pub struct IrqPoisonLockGuard<'a, T: ?Sized> {
 #[cfg(target_arch = "x86_64")]
 impl<T: ?Sized> Deref for IrqPoisonLockGuard<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T { &*self.guard }
+    fn deref(&self) -> &T {
+        &*self.guard
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
 impl<T: ?Sized> DerefMut for IrqPoisonLockGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T { &mut *self.guard }
+    fn deref_mut(&mut self) -> &mut T {
+        &mut *self.guard
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
 impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
     fn drop(&mut self) {
         let restore_irq = (self.rflags & (1 << 9)) != 0;
-        if restore_irq { unsafe { core::arch::asm!("sti", options(nomem, nostack)); } }
+        if restore_irq {
+            unsafe {
+                core::arch::asm!("sti", options(nomem, nostack));
+            }
+        }
     }
 }
 
@@ -266,10 +362,16 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
 static PANICKING_CORES: AtomicU64 = AtomicU64::new(0);
 
 fn is_panicking() -> bool {
-    #[cfg(feature = "std")] { std::thread::panicking() }
-    #[cfg(not(feature = "std"))] {
+    #[cfg(feature = "std")]
+    {
+        std::thread::panicking()
+    }
+    #[cfg(not(feature = "std"))]
+    {
         let core_id = get_current_core_id();
-        if core_id >= 64 { return false; }
+        if core_id >= 64 {
+            return false;
+        }
         let mask = PANICKING_CORES.load(Ordering::Acquire);
         (mask & (1u64 << core_id)) != 0
     }
@@ -277,20 +379,36 @@ fn is_panicking() -> bool {
 
 pub fn set_panicking(panicking: bool) {
     let core_id = get_current_core_id();
-    if core_id >= 64 { return; }
+    if core_id >= 64 {
+        return;
+    }
     let bit = 1u64 << core_id;
-    if panicking { PANICKING_CORES.fetch_or(bit, Ordering::Release); } else { PANICKING_CORES.fetch_and(!bit, Ordering::Release); }
+    if panicking {
+        PANICKING_CORES.fetch_or(bit, Ordering::Release);
+    } else {
+        PANICKING_CORES.fetch_and(!bit, Ordering::Release);
+    }
 }
 
 #[inline]
 fn get_current_core_id() -> u32 {
-    #[cfg(test)] { return 0; }
-    #[cfg(not(test))] {
-        #[cfg(target_arch = "x86_64")] {
+    #[cfg(test)]
+    {
+        return 0;
+    }
+    #[cfg(not(test))]
+    {
+        #[cfg(target_arch = "x86_64")]
+        {
             let aux: u32;
-            unsafe { core::arch::asm!("rdtscp", out("ecx") aux, out("eax") _, out("edx") _, options(nomem, nostack)); }
+            unsafe {
+                core::arch::asm!("rdtscp", out("ecx") aux, out("eax") _, out("edx") _, options(nomem, nostack));
+            }
             aux
         }
-        #[cfg(not(target_arch = "x86_64"))] { 0 }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            0
+        }
     }
 }

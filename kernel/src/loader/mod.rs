@@ -442,7 +442,11 @@ fn validate_cell_requirements(
             return Err(LoadError::LoopProofMissing);
         }
         Err(e) => {
-            log::warn!("[Loader] Invalid loop proof metadata for '{}': {}\n", name, e);
+            log::warn!(
+                "[Loader] Invalid loop proof metadata for '{}': {}\n",
+                name,
+                e
+            );
             return Err(LoadError::LoopProofInvalid(alloc::format!("{}", e)));
         }
     }

@@ -9,8 +9,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use kernel_api::resource::net::PacketRef;
 use kernel_api::service::netdev::{
-    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
-    NetPortStats, NetTxMeta, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP,
+    MacAddress, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NetDeviceInfo, NetDevicePort,
+    NetDriverEvent, NetPortKind, NetPortRuntime, NetPortStats, NetTxMeta,
 };
 
 // ============================================================================
@@ -18,12 +18,10 @@ use kernel_api::service::netdev::{
 // ============================================================================
 
 /// Primary (legacy) VirtIO-Net device slot kept for compatibility (`index=0`).
-pub(crate) static VIRTIO_NET_DEVICE: PoisonLock<Option<VirtioNetDevice>> =
-    PoisonLock::new(None);
+pub(crate) static VIRTIO_NET_DEVICE: PoisonLock<Option<VirtioNetDevice>> = PoisonLock::new(None);
 /// Additional VirtIO-Net devices (`index != 0`).
-pub(crate) static VIRTIO_NET_DEVICES: PoisonRwLock<
-    BTreeMap<u8, Arc<PoisonLock<VirtioNetDevice>>>,
-> = PoisonRwLock::new(BTreeMap::new());
+pub(crate) static VIRTIO_NET_DEVICES: PoisonRwLock<BTreeMap<u8, Arc<PoisonLock<VirtioNetDevice>>>> =
+    PoisonRwLock::new(BTreeMap::new());
 /// ISR-safe access to transport layer for interrupt acknowledgement.
 pub(crate) static VIRTIO_NET_TRANSPORTS: PoisonRwLock<BTreeMap<u8, Arc<dyn VirtioTransport>>> =
     PoisonRwLock::new(BTreeMap::new());
@@ -48,16 +46,17 @@ fn install_virtio_net_runtime(index: u8, runtime: Arc<dyn NetPortRuntime>) {
 fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
     let transport = device.transport.clone();
     if index == 0 {
-        *VIRTIO_NET_DEVICE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(device);
+        *VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device);
     } else {
         VIRTIO_NET_DEVICES
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(index, Arc::new(PoisonLock::new(device)));
     }
-    VIRTIO_NET_TRANSPORTS.write().unwrap_or_else(|e| e.into_inner()).insert(index, transport);
+    VIRTIO_NET_TRANSPORTS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(index, transport);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,10 +72,12 @@ impl VirtioNetDriverAdapter {
 
 fn submit_zero_copy_tx(index: u8, packet: PacketRef, _meta: NetTxMeta) -> Result<(), &'static str> {
     with_virtio_net_device_at_index(index, |device| {
-        device.enqueue_send_zero_copy(packet).map_err(|err| match err {
-            crate::drivers::virtio::net::VirtioNetError::QueueFull => "TX queue full",
-            _ => "enqueue_send_zero_copy failed",
-        })
+        device
+            .enqueue_send_zero_copy(packet)
+            .map_err(|err| match err {
+                crate::drivers::virtio::net::VirtioNetError::QueueFull => "TX queue full",
+                _ => "enqueue_send_zero_copy failed",
+            })
     })
     .unwrap_or(Err("VirtIO-Net device not initialized"))
 }
@@ -147,16 +148,20 @@ impl NetDevicePort for VirtioNetDriverAdapter {
 
     fn handle_event(&self, _if_id: u16, event: NetDriverEvent) -> Result<(), &'static str> {
         match event {
-            NetDriverEvent::Interrupt
-            | NetDriverEvent::QueueWake { .. }
-            | NetDriverEvent::Poll => process_device_events(self.index),
+            NetDriverEvent::Interrupt | NetDriverEvent::QueueWake { .. } | NetDriverEvent::Poll => {
+                process_device_events(self.index)
+            }
         }
     }
 
     fn stats(&self) -> NetPortStats {
         with_virtio_net_device_at_index(self.index, |device| NetPortStats {
-            tx_packets: device.tx_packets.load(core::sync::atomic::Ordering::Relaxed) as u64,
-            rx_packets: device.rx_packets.load(core::sync::atomic::Ordering::Relaxed) as u64,
+            tx_packets: device
+                .tx_packets
+                .load(core::sync::atomic::Ordering::Relaxed) as u64,
+            rx_packets: device
+                .rx_packets
+                .load(core::sync::atomic::Ordering::Relaxed) as u64,
             tx_errors: 0,
             rx_errors: 0,
             initialized: true,
@@ -188,7 +193,11 @@ where
             .map(f);
     }
 
-    let device = VIRTIO_NET_DEVICES.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned()?;
+    let device = VIRTIO_NET_DEVICES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&index)
+        .cloned()?;
     let guard = device.lock().unwrap_or_else(|e| e.into_inner());
     Some(f(&guard))
 }
@@ -198,13 +207,15 @@ where
     F: FnOnce(&mut VirtioNetDevice) -> R,
 {
     if index == 0 {
-        let mut guard = VIRTIO_NET_DEVICE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner());
         return guard.as_mut().map(f);
     }
 
-    let device = VIRTIO_NET_DEVICES.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned()?;
+    let device = VIRTIO_NET_DEVICES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&index)
+        .cloned()?;
     let mut guard = device.lock().unwrap_or_else(|e| e.into_inner());
     Some(f(&mut guard))
 }
@@ -216,7 +227,10 @@ pub(crate) fn has_virtio_net_device(index: u8) -> bool {
             .unwrap_or_else(|e| e.into_inner())
             .is_some();
     }
-    VIRTIO_NET_DEVICES.read().unwrap_or_else(|e| e.into_inner()).contains_key(&index)
+    VIRTIO_NET_DEVICES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&index)
 }
 
 fn collect_registered_virtio_net_indices() -> Vec<usize> {
@@ -307,10 +321,7 @@ where
 }
 
 /// Bind a VirtIO-Net device index to a logical network interface id.
-pub fn bind_virtio_net_interface(
-    index: u8,
-    if_id: crate::net::runtime::manager::NetIfId,
-) -> bool {
+pub fn bind_virtio_net_interface(index: u8, if_id: crate::net::runtime::manager::NetIfId) -> bool {
     with_virtio_net_device_at_index_mut(index, |device| {
         device.set_net_if_id(if_id);
     })
@@ -341,8 +352,9 @@ where
 
 #[cfg(test)]
 pub(crate) fn clear_virtio_net_devices_for_tests() {
-    *VIRTIO_NET_DEVICE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = None;
-    VIRTIO_NET_DEVICES.write().unwrap_or_else(|e| e.into_inner()).clear();
+    *VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    VIRTIO_NET_DEVICES
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }

@@ -68,9 +68,20 @@ impl DeferredIoCompletionQueue {
         loop {
             let tail = self.tail.load(Ordering::Relaxed);
             let head = self.head.load(Ordering::Acquire);
-            if tail == head { return None; }
+            if tail == head {
+                return None;
+            }
             let idx = tail & IO_COMPLETION_QUEUE_MASK;
-            if self.tail.compare_exchange_weak(tail, tail.wrapping_add(1), Ordering::Release, Ordering::Relaxed).is_ok() {
+            if self
+                .tail
+                .compare_exchange_weak(
+                    tail,
+                    tail.wrapping_add(1),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
                 let device_raw = self.devices[idx].load(Ordering::Acquire);
                 let id_raw = self.ids[idx].load(Ordering::Acquire);
                 let result_raw = self.results[idx].load(Ordering::Acquire);
@@ -103,12 +114,16 @@ impl PerCpuDeferredCompletionQueues {
 
     pub(super) fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
         let cpu_idx = crate::smp::cpu_index();
-        if cpu_idx >= MAX_CPUS { return false; }
+        if cpu_idx >= MAX_CPUS {
+            return false;
+        }
         self.queues[cpu_idx].push(device, id, result)
     }
 
     pub(super) fn pop_from_cpu(&self, cpu_idx: usize) -> Option<(DeviceId, IoRequestId, IoResult)> {
-        if cpu_idx >= MAX_CPUS { return None; }
+        if cpu_idx >= MAX_CPUS {
+            return None;
+        }
         self.queues[cpu_idx].pop()
     }
 
@@ -167,24 +182,43 @@ pub(crate) fn encode_device_id(device: DeviceId) -> u64 {
     const KIND_CUSTOM: u64 = 6;
     const KIND_SHIFT: u64 = 56;
     match device {
-        DeviceId::Nvme { controller, namespace } => (KIND_NVME << KIND_SHIFT) | ((controller as u64) << 48) | (namespace as u64),
+        DeviceId::Nvme {
+            controller,
+            namespace,
+        } => (KIND_NVME << KIND_SHIFT) | ((controller as u64) << 48) | (namespace as u64),
         DeviceId::VirtioBlk { index } => (KIND_VIRTIO_BLK << KIND_SHIFT) | ((index as u64) << 48),
         DeviceId::VirtioNet { index } => (KIND_VIRTIO_NET << KIND_SHIFT) | ((index as u64) << 48),
         DeviceId::Ahci { port } => (KIND_AHCI << KIND_SHIFT) | ((port as u64) << 48),
-        DeviceId::Usb { bus, device } => (KIND_USB << KIND_SHIFT) | ((bus as u64) << 48) | ((device as u64) << 40),
+        DeviceId::Usb { bus, device } => {
+            (KIND_USB << KIND_SHIFT) | ((bus as u64) << 48) | ((device as u64) << 40)
+        }
         DeviceId::Custom(code) => (KIND_CUSTOM << KIND_SHIFT) | (code as u64),
     }
 }
 
 pub(crate) fn decode_device_id(raw: u64) -> Option<DeviceId> {
-    if raw == 0 { return None; }
+    if raw == 0 {
+        return None;
+    }
     let kind = (raw >> 56) & 0xFF;
     match kind {
-        1 => Some(DeviceId::Nvme { controller: ((raw >> 48) & 0xFF) as u8, namespace: (raw & 0xFFFF_FFFF) as u32 }),
-        2 => Some(DeviceId::VirtioBlk { index: ((raw >> 48) & 0xFF) as u8 }),
-        3 => Some(DeviceId::VirtioNet { index: ((raw >> 48) & 0xFF) as u8 }),
-        4 => Some(DeviceId::Ahci { port: ((raw >> 48) & 0xFF) as u8 }),
-        5 => Some(DeviceId::Usb { bus: ((raw >> 48) & 0xFF) as u8, device: ((raw >> 40) & 0xFF) as u8 }),
+        1 => Some(DeviceId::Nvme {
+            controller: ((raw >> 48) & 0xFF) as u8,
+            namespace: (raw & 0xFFFF_FFFF) as u32,
+        }),
+        2 => Some(DeviceId::VirtioBlk {
+            index: ((raw >> 48) & 0xFF) as u8,
+        }),
+        3 => Some(DeviceId::VirtioNet {
+            index: ((raw >> 48) & 0xFF) as u8,
+        }),
+        4 => Some(DeviceId::Ahci {
+            port: ((raw >> 48) & 0xFF) as u8,
+        }),
+        5 => Some(DeviceId::Usb {
+            bus: ((raw >> 48) & 0xFF) as u8,
+            device: ((raw >> 40) & 0xFF) as u8,
+        }),
         6 => Some(DeviceId::Custom((raw & 0xFFFF_FFFF) as u32)),
         _ => None,
     }
@@ -205,7 +239,9 @@ pub(crate) fn encode_io_result(result: IoResult) -> u64 {
 }
 
 pub(crate) fn decode_io_result(raw: u64) -> IoResult {
-    if (raw & IO_RESULT_ERROR_FLAG) == 0 { return IoResult::Success(raw as usize); }
+    if (raw & IO_RESULT_ERROR_FLAG) == 0 {
+        return IoResult::Success(raw as usize);
+    }
     let code = (raw & 0xFF) as u8;
     IoResult::Error(io_error_from_u8(code))
 }
@@ -257,8 +293,14 @@ impl IoInterruptBridge {
     }
 
     pub fn register_pending(&self, device: DeviceId, request_id: IoRequestId) {
-        let mut guard = self.pending_requests.write().unwrap_or_else(|e| e.into_inner());
-        guard.entry(device).or_insert_with(VecDeque::new).push_back(request_id);
+        let mut guard = self
+            .pending_requests
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        guard
+            .entry(device)
+            .or_insert_with(VecDeque::new)
+            .push_back(request_id);
     }
 
     pub fn handle_interrupt(&self, device: DeviceId, results: &[(IoRequestId, IoResult)]) {
@@ -279,7 +321,10 @@ impl IoInterruptBridge {
     }
 
     pub(super) fn complete_pending(&self, device: DeviceId, request_id: IoRequestId) {
-        let mut pending_requests = self.pending_requests.write().unwrap_or_else(|e| e.into_inner());
+        let mut pending_requests = self
+            .pending_requests
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(pending) = pending_requests.get_mut(&device) {
             pending.retain(|id| *id != request_id);
             if pending.is_empty() {
@@ -289,7 +334,10 @@ impl IoInterruptBridge {
     }
 
     pub fn pending_count(&self, device: DeviceId) -> usize {
-        let guard = self.pending_requests.read().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .pending_requests
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         guard.get(&device).map(|q| q.len()).unwrap_or(0)
     }
 }
@@ -317,11 +365,20 @@ impl HybridIoCoordinator {
         }
     }
 
-    pub fn polling_executor(&self) -> Arc<PollingExecutor> { self.polling_executor.clone() }
-    pub fn interrupt_bridge(&self) -> Arc<IoInterruptBridge> { self.interrupt_bridge.clone() }
+    pub fn polling_executor(&self) -> Arc<PollingExecutor> {
+        self.polling_executor.clone()
+    }
+    pub fn interrupt_bridge(&self) -> Arc<IoInterruptBridge> {
+        self.interrupt_bridge.clone()
+    }
 
     #[allow(deprecated)]
-    pub fn submit_io(&self, device: DeviceId, operation: IoOperationType, priority: IoPriority) -> IoFuture {
+    pub fn submit_io(
+        &self,
+        device: DeviceId,
+        operation: IoOperationType,
+        priority: IoPriority,
+    ) -> IoFuture {
         match operation {
             IoOperationType::Flush => self.submit_io_command(device, IoCommand::Flush, priority),
             _ => {
@@ -338,7 +395,12 @@ impl HybridIoCoordinator {
         }
     }
 
-    pub fn submit_io_command(&self, device: DeviceId, command: IoCommand, priority: IoPriority) -> IoFuture {
+    pub fn submit_io_command(
+        &self,
+        device: DeviceId,
+        command: IoCommand,
+        priority: IoPriority,
+    ) -> IoFuture {
         let id = self.scheduler.submit_command(device, command, priority);
         let global_mode = self.global_mode();
         if !matches!(global_mode, IoMode::Polling) {
@@ -352,12 +414,16 @@ impl HybridIoCoordinator {
 
     pub(super) fn recover_overflow(&self) {
         let was_active = self.polling_executor.is_active();
-        if !was_active { self.polling_executor.start(); }
+        if !was_active {
+            self.polling_executor.start();
+        }
         for _ in 0..self.polling_executor.max_poll_iterations {
             let n = self.polling_executor.poll_once_with(|device, id, _res| {
                 self.interrupt_bridge.complete_pending(device, id);
             });
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
         }
         if !was_active && matches!(self.global_mode(), IoMode::Interrupt) {
             self.polling_executor.stop();
@@ -366,20 +432,29 @@ impl HybridIoCoordinator {
 
     pub(super) fn poll_by_global_mode(&self) {
         match self.global_mode() {
-            IoMode::Polling => { self.polling_executor.poll_batch(); }
-            IoMode::Hybrid => { self.polling_executor.poll_once(); }
+            IoMode::Polling => {
+                self.polling_executor.poll_batch();
+            }
+            IoMode::Hybrid => {
+                self.polling_executor.poll_once();
+            }
             IoMode::Interrupt => {}
         }
     }
 
-    pub fn tick<F>(&self, process_interrupts: F) where F: FnOnce() {
+    pub fn tick<F>(&self, process_interrupts: F)
+    where
+        F: FnOnce(),
+    {
         process_interrupts();
         let cpu_idx = crate::smp::cpu_index();
         while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop_from_cpu(cpu_idx) {
             self.scheduler.complete_request(id, result);
             self.interrupt_bridge.complete_pending(device, id);
         }
-        if self.interrupt_bridge.check_and_clear_overflow() { self.recover_overflow(); }
+        if self.interrupt_bridge.check_and_clear_overflow() {
+            self.recover_overflow();
+        }
         self.scheduler.evaluate_modes(current_tick());
         self.dispatch_pending();
         self.poll_by_global_mode();
@@ -388,18 +463,35 @@ impl HybridIoCoordinator {
     pub(super) fn dispatch_pending(&self) {
         const DISPATCH_BATCH_LIMIT: usize = 64;
         for _ in 0..DISPATCH_BATCH_LIMIT {
-            let id = match self.scheduler.next_request() { Some(id) => id, None => break };
-            let request = match self.scheduler.start_request(id) { Some(request) => request, None => continue };
-            if !matches!(request.state, IoState::InProgress) { continue; }
+            let id = match self.scheduler.next_request() {
+                Some(id) => id,
+                None => break,
+            };
+            let request = match self.scheduler.start_request(id) {
+                Some(request) => request,
+                None => continue,
+            };
+            if !matches!(request.state, IoState::InProgress) {
+                continue;
+            }
             let ops = self.scheduler.get_device_ops(request.device);
             let cpu_idx = crate::smp::cpu_index();
-            let result = match ops { Some(ops) => ops.submit(&request, cpu_idx), None => Err(IoError::NotSupported) };
-            if let Err(err) = result { self.scheduler.complete_request(id, IoResult::Error(err)); }
+            let result = match ops {
+                Some(ops) => ops.submit(&request, cpu_idx),
+                None => Err(IoError::NotSupported),
+            };
+            if let Err(err) = result {
+                self.scheduler.complete_request(id, IoResult::Error(err));
+            }
         }
     }
 
     pub fn set_global_mode(&self, mode: IoMode) {
-        let mode_val = match mode { IoMode::Interrupt => 0, IoMode::Polling => 1, IoMode::Hybrid => 2 };
+        let mode_val = match mode {
+            IoMode::Interrupt => 0,
+            IoMode::Polling => 1,
+            IoMode::Hybrid => 2,
+        };
         self.global_mode.store(mode_val, Ordering::Release);
         match mode {
             IoMode::Polling | IoMode::Hybrid => self.polling_executor.start(),
@@ -408,7 +500,11 @@ impl HybridIoCoordinator {
     }
 
     pub fn global_mode(&self) -> IoMode {
-        match self.global_mode.load(Ordering::Acquire) { 0 => IoMode::Interrupt, 1 => IoMode::Polling, _ => IoMode::Hybrid }
+        match self.global_mode.load(Ordering::Acquire) {
+            0 => IoMode::Interrupt,
+            1 => IoMode::Polling,
+            _ => IoMode::Hybrid,
+        }
     }
 }
 
@@ -423,5 +519,8 @@ pub fn init_io_scheduler() {
 
 pub fn io_scheduler() -> Arc<IoScheduler> {
     IO_SCHEDULER.call_once(|| Arc::new(IoScheduler::new()));
-    IO_SCHEDULER.get().expect("IO_SCHEDULER must be initialized").clone()
+    IO_SCHEDULER
+        .get()
+        .expect("IO_SCHEDULER must be initialized")
+        .clone()
 }

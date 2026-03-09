@@ -7,7 +7,7 @@
 use x86_64::PhysAddr;
 
 use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
-use crate::io::iommu::runtime::command::queue::IommuCommandKind;
+use crate::io::iommu::runtime::command::queue::{IommuCommandKind, RESULT_POISONED};
 use crate::io::iommu::types::{DeviceId, IommuError};
 
 use super::AmdIommuDriver;
@@ -17,6 +17,23 @@ use super::AmdIommuDriver;
 // ---------------------------------------------------------------------------
 
 impl AmdIommuDriver {
+    #[inline]
+    fn cq_submit_error(&self) -> IommuError {
+        match self.command_queue.as_ref() {
+            Some(cq) if cq.is_poisoned() => IommuError::Poisoned,
+            _ => IommuError::HardwareError,
+        }
+    }
+
+    #[inline]
+    fn cq_completion_error(rc: i32) -> IommuError {
+        if rc == RESULT_POISONED {
+            IommuError::Poisoned
+        } else {
+            IommuError::HardwareError
+        }
+    }
+
     /// Allocate an IOVA address
     ///
     /// The IovaAllocatorFast is lock-free internally with per-CPU magazine caching.
@@ -214,14 +231,14 @@ impl AmdIommuDriver {
                 Ok(comp) => comp,
                 Err(_) => {
                     let _ = self.free_iova_fast(iova, size);
-                    return Err(IommuError::HardwareError);
+                    return Err(self.cq_submit_error());
                 }
             };
             let rc = comp.wait_blocking();
             if rc == 0 {
                 return Ok(iova);
             }
-            return Err(IommuError::HardwareError);
+            return Err(Self::cq_completion_error(rc));
         }
         self.direct_map_device(
             domain_id,
@@ -288,14 +305,14 @@ impl AmdIommuDriver {
                 Ok(comp) => comp,
                 Err(_) => {
                     let _ = self.free_iova_fast(iova, size);
-                    return Err(IommuError::HardwareError);
+                    return Err(self.cq_submit_error());
                 }
             };
             let rc = comp.await;
             if rc == 0 {
                 return Ok(iova);
             }
-            return Err(IommuError::HardwareError);
+            return Err(Self::cq_completion_error(rc));
         }
         self.direct_map_device_async(
             domain_id,
@@ -370,7 +387,7 @@ impl AmdIommuDriver {
             iova,
             size: mapping.size,
         };
-        let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
+        let comp = cq.submit(cmd).map_err(|_| self.cq_submit_error())?;
         let rc = comp.wait_blocking();
         if rc == 0 {
             return Ok(());
@@ -380,7 +397,7 @@ impl AmdIommuDriver {
             rc
         );
         domain.poison();
-        Err(IommuError::HardwareError)
+        Err(Self::cq_completion_error(rc))
     }
 
     pub(crate) fn unmap_for_device(
@@ -474,7 +491,7 @@ impl AmdIommuDriver {
         let comp = cq
             .submit_async(cmd)
             .await
-            .map_err(|_| IommuError::HardwareError)?;
+            .map_err(|_| self.cq_submit_error())?;
         let rc = comp.await;
         if rc == 0 {
             return Ok(());
@@ -484,7 +501,7 @@ impl AmdIommuDriver {
             rc
         );
         domain.poison();
-        Err(IommuError::HardwareError)
+        Err(Self::cq_completion_error(rc))
     }
 
     pub(crate) async fn unmap_for_device_async(

@@ -309,8 +309,12 @@ impl TerminalBuffer {
         self.current_attr = attr;
     }
 
-    pub fn cols(&self) -> usize { self.cols }
-    pub fn rows(&self) -> usize { self.rows }
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
 
     pub fn clear_line(&mut self, mode: ClearMode) {
         let y = self.cursor_y;
@@ -369,7 +373,9 @@ impl TerminalBuffer {
         let view_start_row = total_rows.saturating_sub(self.rows + self.scroll_offset);
         let target_abs_row = view_start_row + y;
         if target_abs_row < history_len {
-            self.scrollback.get(target_abs_row).and_then(|line| line.get(x).copied())
+            self.scrollback
+                .get(target_abs_row)
+                .and_then(|line| line.get(x).copied())
         } else {
             let screen_y = target_abs_row - history_len;
             if screen_y < self.rows {
@@ -484,7 +490,9 @@ impl AnsiParser {
             ParserState::Osc => {
                 if self.osc_escape_pending {
                     self.osc_escape_pending = false;
-                    if ch == '\\' { self.state = ParserState::Normal; }
+                    if ch == '\\' {
+                        self.state = ParserState::Normal;
+                    }
                     return None;
                 }
                 if ch == '\x07' {
@@ -506,14 +514,22 @@ impl AnsiParser {
                 None
             }
             ';' => {
-                self.params.push(if self.current_param_has_digits { self.current_param } else { 0 });
+                self.params.push(if self.current_param_has_digits {
+                    self.current_param
+                } else {
+                    0
+                });
                 self.current_param = 0;
                 self.current_param_has_digits = false;
                 self.csi_trailing_separator = true;
                 None
             }
             '?' | '<' | '=' | '>' => {
-                if self.params.is_empty() && !self.current_param_has_digits && self.intermediate.is_empty() && self.private_marker.is_none() {
+                if self.params.is_empty()
+                    && !self.current_param_has_digits
+                    && self.intermediate.is_empty()
+                    && self.private_marker.is_none()
+                {
                     self.private_marker = Some(ch as u8);
                     None
                 } else {
@@ -581,7 +597,11 @@ impl AnsiParser {
             's' => Some(AnsiAction::SaveCursor),
             'u' => Some(AnsiAction::RestoreCursor),
             'n' => {
-                if get(0, 0) == 6 { Some(AnsiAction::ReportCursor) } else { None }
+                if get(0, 0) == 6 {
+                    Some(AnsiAction::ReportCursor)
+                } else {
+                    None
+                }
             }
             'h' | 'l' => {
                 if self.private_marker == Some(b'?') && get(0, 0) == 25 {

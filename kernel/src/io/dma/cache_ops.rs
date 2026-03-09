@@ -522,28 +522,14 @@ impl CoherentDmaBuffer {
     pub fn into_dma_slice(self) -> crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned> {
         let (phys, device_addr, ptr, size, releaser) = self.into_raw_parts();
         unsafe {
-            crate::io::dma::TypedDmaSlice::from_raw_parts(
-                phys,
-                device_addr,
-                ptr,
-                size,
-                releaser,
-            )
+            crate::io::dma::TypedDmaSlice::from_raw_parts(phys, device_addr, ptr, size, releaser)
         }
     }
 
     /// Decompose into raw parts.
     ///
     /// WARNING: This leaks the buffer; the caller must ensure proper deallocation.
-    pub fn into_raw_parts(
-        self,
-    ) -> (
-        u64,
-        u64,
-        *mut u8,
-        usize,
-        Option<fn(*mut u8, usize, u64)>,
-    ) {
+    pub fn into_raw_parts(self) -> (u64, u64, *mut u8, usize, Option<fn(*mut u8, usize, u64)>) {
         let phys = self.phys_addr.as_u64();
         let device_addr = self.device_addr();
         let ptr = self.ptr.as_ptr();

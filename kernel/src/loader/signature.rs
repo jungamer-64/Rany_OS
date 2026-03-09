@@ -714,7 +714,11 @@ pub fn verify_cell(elf_data: &[u8]) -> Result<bool, LoadError> {
 
 /// 検証統計を取得
 pub fn get_verifier_stats() -> Option<VerifierStats> {
-    GLOBAL_VERIFIER.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|v| v.stats().clone())
+    GLOBAL_VERIFIER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|v| v.stats().clone())
 }
 
 #[cfg(test)]

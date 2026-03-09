@@ -424,9 +424,10 @@ impl TimeService for TimeManagement {
 
     fn stats(&self) -> TimerServiceStats {
         let (enq, drop) = self.pending_wakers.stats();
-        let active = self.timers.try_lock().map_or(0, |res| {
-            res.unwrap_or_else(|e| e.into_inner()).len()
-        });
+        let active = self
+            .timers
+            .try_lock()
+            .map_or(0, |res| res.unwrap_or_else(|e| e.into_inner()).len());
 
         TimerServiceStats {
             active_timers: active,

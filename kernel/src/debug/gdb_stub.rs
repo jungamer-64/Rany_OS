@@ -351,7 +351,12 @@ impl GdbServer {
         // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let _ = self.poll_once();
-            if self.target.lock().unwrap_or_else(|e| e.into_inner()).resume_requested {
+            if self
+                .target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .resume_requested
+            {
                 break;
             }
             core::hint::spin_loop();
@@ -784,11 +789,17 @@ mod tests {
 
     impl GdbTransport for DummyTransport {
         fn try_read_byte(&self) -> Option<u8> {
-            self.rx.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+            self.rx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop_front()
         }
 
         fn write_bytes(&self, bytes: &[u8]) {
-            self.tx.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(bytes);
+            self.tx
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend_from_slice(bytes);
         }
     }
 

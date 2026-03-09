@@ -20,7 +20,10 @@ fn install_virtio_console_device(index: u8, device_arc: Arc<VirtioConsoleDevice>
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
     } else {
-        VIRTIO_CONSOLE_DEVICES.write().unwrap_or_else(|e| e.into_inner()).insert(index, device_arc);
+        VIRTIO_CONSOLE_DEVICES
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(index, device_arc);
     }
 }
 
@@ -32,7 +35,11 @@ pub fn get_virtio_console_device_at_index(index: u8) -> Option<Arc<VirtioConsole
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     } else {
-        VIRTIO_CONSOLE_DEVICES.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned()
+        VIRTIO_CONSOLE_DEVICES
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&index)
+            .cloned()
     }
 }
 

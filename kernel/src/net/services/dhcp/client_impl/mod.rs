@@ -467,8 +467,8 @@ impl DhcpClient {
             return Err("Packet too small");
         }
 
-        let header = crate::util::get_ref::<DhcpHeader>(data, 0)
-            .ok_or("Dhcp header slice out of bounds")?;
+        let header =
+            crate::util::get_ref::<DhcpHeader>(data, 0).ok_or("Dhcp header slice out of bounds")?;
 
         if header.xid() != self.xid.load(Ordering::SeqCst) {
             return Err("Transaction ID mismatch");

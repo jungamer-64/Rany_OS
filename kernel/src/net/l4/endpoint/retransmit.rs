@@ -273,7 +273,9 @@ fn cancel_retransmit_timer(local: &EndpointAddr, remote: &EndpointAddr) {
 /// 再送キュー取得または作成
 pub fn get_or_create_retransmit_queue(local: EndpointAddr, remote: EndpointAddr) -> bool {
     let idx = retransmit_shard_index(&local, &remote);
-    let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
+    let mut queues = RETRANSMIT_SHARDS[idx]
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     if !queues.contains_key(&(local, remote)) {
         queues.insert((local, remote), RetransmitQueue::new());
         true
@@ -286,7 +288,9 @@ pub fn get_or_create_retransmit_queue(local: EndpointAddr, remote: EndpointAddr)
 pub fn retransmit_queue_push(local: EndpointAddr, remote: EndpointAddr, seq: u32, data: Vec<u8>) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
-    let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
+    let mut queues = RETRANSMIT_SHARDS[idx]
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         let was_empty = queue.is_empty();
         queue.push(seq, data, current_tick);
@@ -301,7 +305,9 @@ pub fn retransmit_queue_push(local: EndpointAddr, remote: EndpointAddr, seq: u32
 pub fn retransmit_queue_ack(local: EndpointAddr, remote: EndpointAddr, ack_num: u32) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
-    let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
+    let mut queues = RETRANSMIT_SHARDS[idx]
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         queue.ack_received(ack_num, current_tick);
         if queue.is_empty() {
@@ -320,7 +326,9 @@ pub fn retransmit_queue_process_sack(
     blocks: &[(u32, u32)],
 ) {
     let idx = retransmit_shard_index(&local, &remote);
-    let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
+    let mut queues = RETRANSMIT_SHARDS[idx]
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         for seg in queue.unacked.iter_mut() {
             let seg_end = seg.seq.wrapping_add(seg.data.len() as u32);
@@ -339,7 +347,10 @@ pub fn retransmit_queue_process_sack(
 /// 再送キュー削除
 pub fn retransmit_queue_remove(local: EndpointAddr, remote: EndpointAddr) {
     let idx = retransmit_shard_index(&local, &remote);
-    RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner()).remove(&(local, remote));
+    RETRANSMIT_SHARDS[idx]
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(local, remote));
     cancel_retransmit_timer(&local, &remote);
 }
 
@@ -367,7 +378,9 @@ pub fn check_retransmit_timeouts() {
 
     for (local, remote) in expired {
         let idx = retransmit_shard_index(&local, &remote);
-        let mut queues = RETRANSMIT_SHARDS[idx].write().unwrap_or_else(|e| e.into_inner());
+        let mut queues = RETRANSMIT_SHARDS[idx]
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
 
         if let Some(queue) = queues.get_mut(&(local, remote)) {
             if queue.check_timeout(current_tick).is_some() {
@@ -471,7 +484,9 @@ pub mod tests {
         retransmit_queue_push(local, remote, 1003, alloc::vec![4, 5, 6]);
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
         let idx = retransmit_shard_index(&local, &remote);
-        let qs = RETRANSMIT_SHARDS[idx].read().unwrap_or_else(|e| e.into_inner());
+        let qs = RETRANSMIT_SHARDS[idx]
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         let q = qs.get(&(local, remote)).unwrap();
         assert_eq!(q.unacked.len(), 2);
         assert!(q.unacked.front().unwrap().is_sacked);
@@ -517,12 +532,18 @@ pub mod qemu_tests {
 
     pub fn retransmit_queue_push_and_ack_smoke() -> bool {
         let mut queue = RetransmitQueue::new();
-        if !queue.is_empty() { return false; }
+        if !queue.is_empty() {
+            return false;
+        }
         queue.push(1000, alloc::vec![1, 2, 3], 100);
         queue.push(1003, alloc::vec![4, 5, 6], 110);
-        if queue.is_empty() { return false; }
+        if queue.is_empty() {
+            return false;
+        }
         queue.ack_received(1003, 150);
-        if queue.is_empty() { return false; }
+        if queue.is_empty() {
+            return false;
+        }
         queue.ack_received(1006, 160);
         queue.is_empty()
     }
@@ -530,7 +551,9 @@ pub mod qemu_tests {
     pub fn retransmit_queue_timeout_smoke() -> bool {
         let mut queue = RetransmitQueue::new();
         queue.push(1000, alloc::vec![1, 2, 3], 0);
-        if queue.check_timeout(500).is_some() { return false; }
+        if queue.check_timeout(500).is_some() {
+            return false;
+        }
         queue.check_timeout(1500).is_some()
     }
 
@@ -538,9 +561,15 @@ pub mod qemu_tests {
         let mut queue = RetransmitQueue::new();
         let original_data = alloc::vec![1, 2, 3, 4, 5];
         queue.push(1000, original_data.clone(), 0);
-        let Some(retransmitted) = queue.retransmit(1500) else { return false; };
-        if retransmitted != original_data { return false; }
-        let Some(seg) = queue.check_timeout(1500 + queue.get_rto()) else { return false; };
+        let Some(retransmitted) = queue.retransmit(1500) else {
+            return false;
+        };
+        if retransmitted != original_data {
+            return false;
+        }
+        let Some(seg) = queue.check_timeout(1500 + queue.get_rto()) else {
+            return false;
+        };
         seg.retransmit_count == 1 && seg.is_retransmit
     }
 
@@ -554,8 +583,12 @@ pub mod qemu_tests {
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
         let ok = {
             let idx = retransmit_shard_index(&local, &remote);
-            let qs = RETRANSMIT_SHARDS[idx].read().unwrap_or_else(|e| e.into_inner());
-            let Some(q) = qs.get(&(local, remote)) else { return false; };
+            let qs = RETRANSMIT_SHARDS[idx]
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            let Some(q) = qs.get(&(local, remote)) else {
+                return false;
+            };
             q.unacked.len() == 2 && q.unacked.front().map(|x| x.is_sacked) == Some(true)
         };
         retransmit_queue_remove(local, remote);

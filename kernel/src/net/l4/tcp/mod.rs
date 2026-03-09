@@ -356,12 +356,12 @@ impl TcpOptionsState {
 
             // RFC 2018: Merge or add to scoreboard.
             // A new block might overlap or bridge multiple existing blocks.
-            // We collect all blocks that intersect with [left, right], 
+            // We collect all blocks that intersect with [left, right],
             // merge them into one, and remove the originals.
             let mut merged_left = left;
             let mut merged_right = right;
             let mut i = 0;
-            
+
             // LOOP_PROOF: mode=condition; reason=i is incremented and bounds-checked by sack_scoreboard.len().;
             while i < self.sack_scoreboard.len() {
                 let (l, r) = self.sack_scoreboard[i];
@@ -381,14 +381,14 @@ impl TcpOptionsState {
                     i += 1;
                 }
             }
-            
+
             // Security: Limit scoreboard size to prevent memory exhaustion (DoS)
             // RFC 2018 recommends keeping the most recent SACK information.
             // Since we merged everything, we only add one entry.
             if self.sack_scoreboard.len() < 64 {
                 self.sack_scoreboard.push((merged_left, merged_right));
             } else {
-                // Scoreboard full - evict the oldest or just don't add? 
+                // Scoreboard full - evict the oldest or just don't add?
                 // For simplicity we just don't add, but in a real stack we might rotate.
             }
         }
@@ -570,6 +570,6 @@ struct UnackedSegment {
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub mod tests;
-#[cfg(any(test, feature = "qemu-test-export"))]
 pub mod security_tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;

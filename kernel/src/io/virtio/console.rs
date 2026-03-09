@@ -36,7 +36,9 @@ use crate::io::virtio::VirtioDeviceStatus;
 mod global_init;
 pub use global_init::*;
 
-pub use virtio_driver::console::{ConsoleError, VirtioConsoleConfig, features, device::VirtioConsoleDevice as CoreConsoleDevice};
+pub use virtio_driver::console::{
+    ConsoleError, VirtioConsoleConfig, device::VirtioConsoleDevice as CoreConsoleDevice, features,
+};
 
 // ============================================================================
 // VirtIO Console Device
@@ -111,14 +113,17 @@ impl VirtioConsoleDevice {
     /// Initialize the device following the VirtIO initialization sequence.
     pub fn init(&mut self) -> Result<(), ConsoleError> {
         // Step 1-6: Perform common VirtIO initialization using shared core
-        self.core.init(self.transport.as_ref()).map_err(|_| ConsoleError::NotReady)?;
+        self.core
+            .init(self.transport.as_ref())
+            .map_err(|_| ConsoleError::NotReady)?;
 
         // Step 7: Setup queues (RX = queue 0, TX = queue 1)
         self.setup_queue(0)?;
         self.setup_queue(1)?;
 
         // Step 8: Driver OK
-        self.transport.add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
+        self.transport
+            .add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
 
         self.ready.store(true, Ordering::Release);
 
@@ -127,7 +132,6 @@ impl VirtioConsoleDevice {
 
         Ok(())
     }
-
 
     /// Setup a virtqueue (same pattern as blk.rs)
     fn setup_queue(&mut self, queue_idx: u16) -> Result<(), ConsoleError> {

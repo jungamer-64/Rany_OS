@@ -201,8 +201,12 @@ impl SendQueue {
         // チェックサムオフロードおよび TSO 設定
         let mut cs_flags = 0u16;
         if self.csum_offload {
-            if options.l3_cs { cs_flags |= 0x01; }
-            if options.l4_cs { cs_flags |= 0x02; }
+            if options.l3_cs {
+                cs_flags |= 0x01;
+            }
+            if options.l4_cs {
+                cs_flags |= 0x02;
+            }
         }
         write_be16_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
 
@@ -283,8 +287,12 @@ impl SendQueue {
 
         let mut cs_flags = 0u16;
         if self.csum_offload {
-            if options.l3_cs { cs_flags |= 0x01; }
-            if options.l4_cs { cs_flags |= 0x02; }
+            if options.l3_cs {
+                cs_flags |= 0x01;
+            }
+            if options.l4_cs {
+                cs_flags |= 0x02;
+            }
         }
         write_be16_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
         // MPWQE では inline header は通常使用しない（各パケットが独立した L2 ヘッダを持つため）
@@ -305,12 +313,15 @@ impl SendQueue {
                 in_use: true,
             });
         }
-        
+
         // 最初の WQEBB にもマーカーを置く（has_space チェック用）
         let bb0_idx = buf_idx * 4;
         if self.tx_buffers[bb0_idx].is_none() {
             self.tx_buffers[bb0_idx] = Some(TxBufferInfo {
-                virt_addr: 0, device_addr: 0, size: 0, in_use: true,
+                virt_addr: 0,
+                device_addr: 0,
+                size: 0,
+                in_use: true,
             });
         }
 
@@ -340,12 +351,13 @@ impl SendQueue {
     pub fn complete_tx(&mut self, wqe_counter: u16) -> alloc::vec::Vec<TxBufferInfo> {
         let buf_idx = (wqe_counter as u32 % self.sq_depth) as usize;
         let mut completed = alloc::vec::Vec::new();
-        
+
         // WQE に含まれる全 WQEBB (最大4つ) をチェックして解放
         for i in 0..4 {
             let bb_idx = buf_idx * 4 + i;
             if let Some(info) = self.tx_buffers[bb_idx].take() {
-                if info.size > 0 { // マーカー（size=0）は含めない
+                if info.size > 0 {
+                    // マーカー（size=0）は含めない
                     completed.push(info);
                 }
             }
@@ -492,7 +504,12 @@ impl ReceiveQueue {
     }
 
     /// 受信完了を処理して受信バッファ情報を返す
-    pub fn complete_rx(&mut self, wqe_counter: u16, l3_ok: bool, l4_ok: bool) -> Option<RxBufferInfo> {
+    pub fn complete_rx(
+        &mut self,
+        wqe_counter: u16,
+        l3_ok: bool,
+        l4_ok: bool,
+    ) -> Option<RxBufferInfo> {
         let idx = (wqe_counter as u32 % self.rq_depth) as usize;
         if self.rx_buffers[idx].in_use {
             let mut info = self.rx_buffers[idx];

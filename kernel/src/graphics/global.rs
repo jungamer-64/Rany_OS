@@ -299,7 +299,11 @@ where
 
 /// フレームバッファが初期化されているか確認
 pub fn framebuffer() -> Option<()> {
-    if FRAMEBUFFER.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+    if FRAMEBUFFER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
+    {
         Some(())
     } else {
         None

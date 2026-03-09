@@ -36,7 +36,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 mod global_init;
 pub use global_init::*;
 
-pub use virtio_driver::input::{InputError, VirtioInputEvent, config_select, device::VirtioInputDevice as CoreInputDevice};
+pub use virtio_driver::input::{
+    InputError, VirtioInputEvent, config_select, device::VirtioInputDevice as CoreInputDevice,
+};
 
 // ============================================================================
 // VirtIO Common Definitions (local copies, same as blk.rs)
@@ -113,13 +115,16 @@ impl VirtioInputDevice {
 
     /// Initialize the device
     pub fn init(&mut self) -> Result<(), InputError> {
-        self.core.init(self.transport.as_ref()).map_err(|_| InputError::NotReady)?;
+        self.core
+            .init(self.transport.as_ref())
+            .map_err(|_| InputError::NotReady)?;
 
         // Queue 0 = eventq, Queue 1 = statusq
         self.setup_queue(0)?;
         self.setup_queue(1)?;
 
-        self.transport.add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
+        self.transport
+            .add_status(crate::io::virtio::status::VIRTIO_STATUS_DRIVER_OK);
 
         self.post_event_buffers()?;
 
@@ -180,7 +185,7 @@ impl VirtioInputDevice {
         match queue_idx {
             0 => self.event_queue = Some(arc_queue),
             1 => self.status_queue = Some(arc_queue),
-            _ => {} 
+            _ => {}
         }
 
         Ok(())
@@ -190,10 +195,7 @@ impl VirtioInputDevice {
     fn post_event_buffers(&self) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
         let mut queue_guard = event_queue.lock().unwrap_or_else(|e| e.into_inner());
-        let mut buffers = self
-            .event_buffers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut buffers = self.event_buffers.lock().unwrap_or_else(|e| e.into_inner());
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
 
@@ -236,10 +238,7 @@ impl VirtioInputDevice {
     fn repost_event_buffer(&self, desc_idx: u16) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
         let mut queue_guard = event_queue.lock().unwrap_or_else(|e| e.into_inner());
-        let mut buffers = self
-            .event_buffers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut buffers = self.event_buffers.lock().unwrap_or_else(|e| e.into_inner());
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
 
@@ -272,7 +271,10 @@ impl VirtioInputDevice {
     }
 
     pub fn query_config(&self, select: u8, subsel: u8) -> Option<Vec<u8>> {
-        Some(self.core.query_config(self.transport.as_ref(), select, subsel))
+        Some(
+            self.core
+                .query_config(self.transport.as_ref(), select, subsel),
+        )
     }
 
     pub fn device_name(&self) -> Option<Vec<u8>> {
@@ -280,10 +282,7 @@ impl VirtioInputDevice {
     }
 
     fn extract_input_event(&self, desc_id: u16, len: u32) -> Option<VirtioInputEvent> {
-        let buffers = self
-            .event_buffers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let buffers = self.event_buffers.lock().unwrap_or_else(|e| e.into_inner());
         let dma_buf = buffers.get(&desc_id)?;
         let event_size = core::mem::size_of::<VirtioInputEvent>();
         if (len as usize) < event_size {
@@ -322,10 +321,7 @@ impl VirtioInputDevice {
             }
 
             {
-                let mut buffers = self
-                    .event_buffers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
+                let mut buffers = self.event_buffers.lock().unwrap_or_else(|e| e.into_inner());
                 buffers.remove(&desc_id);
             }
             let event_queue = match self.event_queue.as_ref() {
@@ -351,10 +347,7 @@ impl VirtioInputDevice {
     }
 
     pub fn set_event_handler(&self, handler: fn(VirtioInputEvent)) {
-        *self
-            .event_handler
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(handler);
+        *self.event_handler.lock().unwrap_or_else(|e| e.into_inner()) = Some(handler);
     }
 
     pub fn is_ready(&self) -> bool {
@@ -381,7 +374,10 @@ pub(crate) fn install_virtio_input_device(index: u8, device_arc: Arc<VirtioInput
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
     } else {
-        VIRTIO_INPUT_DEVICES.write().unwrap_or_else(|e| e.into_inner()).insert(index, device_arc);
+        VIRTIO_INPUT_DEVICES
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(index, device_arc);
     }
 }
 
@@ -392,7 +388,11 @@ pub fn get_virtio_input_device_at_index(index: u8) -> Option<Arc<VirtioInputDevi
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     } else {
-        VIRTIO_INPUT_DEVICES.read().unwrap_or_else(|e| e.into_inner()).get(&index).cloned()
+        VIRTIO_INPUT_DEVICES
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&index)
+            .cloned()
     }
 }
 

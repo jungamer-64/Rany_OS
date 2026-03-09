@@ -65,7 +65,12 @@ pub fn build_destroy_flow_table_input(in_mbox: &mut CmdMailbox, table_id: u32) {
         8,
         crate::flow::FlowTableType::NicRx as u32,
     );
-    set_bits_u32(&mut in_mbox.data, FG_TABLE_ID_BIT, 24, table_id & 0x00ff_ffff);
+    set_bits_u32(
+        &mut in_mbox.data,
+        FG_TABLE_ID_BIT,
+        24,
+        table_id & 0x00ff_ffff,
+    );
 }
 
 /// CREATE_FLOW_GROUP コマンド入力の構築
@@ -83,8 +88,18 @@ pub fn build_create_flow_group_input(
         8,
         crate::flow::FlowTableType::NicRx as u32,
     );
-    set_bits_u32(&mut in_mbox.data, FG_GROUP_TYPE_BIT, 4, FLOW_GROUP_TYPE_TCAM_SUBTABLE);
-    set_bits_u32(&mut in_mbox.data, FG_TABLE_ID_BIT, 24, table_id & 0x00ff_ffff);
+    set_bits_u32(
+        &mut in_mbox.data,
+        FG_GROUP_TYPE_BIT,
+        4,
+        FLOW_GROUP_TYPE_TCAM_SUBTABLE,
+    );
+    set_bits_u32(
+        &mut in_mbox.data,
+        FG_TABLE_ID_BIT,
+        24,
+        table_id & 0x00ff_ffff,
+    );
     set_bits_u32(&mut in_mbox.data, FG_START_FLOW_INDEX_BIT, 32, start_index);
     set_bits_u32(&mut in_mbox.data, FG_END_FLOW_INDEX_BIT, 32, end_index);
     set_bits_u32(&mut in_mbox.data, FG_MATCH_DEFINER_ID_BIT, 16, 0);
@@ -136,7 +151,12 @@ pub fn build_destroy_flow_group_input(in_mbox: &mut CmdMailbox, table_id: u32, g
         8,
         crate::flow::FlowTableType::NicRx as u32,
     );
-    set_bits_u32(&mut in_mbox.data, FG_TABLE_ID_BIT, 24, table_id & 0x00ff_ffff);
+    set_bits_u32(
+        &mut in_mbox.data,
+        FG_TABLE_ID_BIT,
+        24,
+        table_id & 0x00ff_ffff,
+    );
     set_bits_u32(&mut in_mbox.data, 192, 32, group_id);
 }
 
@@ -157,7 +177,12 @@ pub fn build_set_flow_table_entry_input(
         8,
         crate::flow::FlowTableType::NicRx as u32,
     );
-    set_bits_u32(&mut in_mbox.data, FTE_TABLE_ID_BIT, 24, table_id & 0x00ff_ffff);
+    set_bits_u32(
+        &mut in_mbox.data,
+        FTE_TABLE_ID_BIT,
+        24,
+        table_id & 0x00ff_ffff,
+    );
     set_bits_u32(&mut in_mbox.data, FTE_FLOW_INDEX_BIT, 32, flow_index);
     set_bits_u32(
         &mut in_mbox.data,
@@ -173,7 +198,12 @@ pub fn build_set_flow_table_entry_input(
     );
 
     // default: no forwarding destinations (e.g., drop)
-    set_bits_u32(&mut in_mbox.data, FTE_FLOW_CONTEXT_DEST_LIST_SIZE_BIT, 24, 0);
+    set_bits_u32(
+        &mut in_mbox.data,
+        FTE_FLOW_CONTEXT_DEST_LIST_SIZE_BIT,
+        24,
+        0,
+    );
     if let Some(tirn) = destination_tirn {
         set_bits_u32(
             &mut in_mbox.data,
@@ -243,7 +273,12 @@ pub fn build_delete_flow_table_entry_input(
         8,
         crate::flow::FlowTableType::NicRx as u32,
     );
-    set_bits_u32(&mut in_mbox.data, FTE_TABLE_ID_BIT, 24, table_id & 0x00ff_ffff);
+    set_bits_u32(
+        &mut in_mbox.data,
+        FTE_TABLE_ID_BIT,
+        24,
+        table_id & 0x00ff_ffff,
+    );
     set_bits_u32(&mut in_mbox.data, FTE_FLOW_INDEX_BIT, 32, flow_index);
 }
 
@@ -303,8 +338,14 @@ mod tests {
         assert_eq!(get_bits_u32(&in_mbox.data, FG_TABLE_ID_BIT, 24), 0x12345);
         assert_eq!(get_bits_u32(&in_mbox.data, FG_START_FLOW_INDEX_BIT, 32), 0);
         assert_eq!(get_bits_u32(&in_mbox.data, FG_END_FLOW_INDEX_BIT, 32), 63);
-        assert_eq!(get_bits_u32(&in_mbox.data, FG_MATCH_CRITERIA_ENABLE_BIT, 8), 1);
-        assert_eq!(&in_mbox.data[FG_MATCH_CRITERIA_BASE..FG_MATCH_CRITERIA_BASE + 6], &[0xff; 6]);
+        assert_eq!(
+            get_bits_u32(&in_mbox.data, FG_MATCH_CRITERIA_ENABLE_BIT, 8),
+            1
+        );
+        assert_eq!(
+            &in_mbox.data[FG_MATCH_CRITERIA_BASE..FG_MATCH_CRITERIA_BASE + 6],
+            &[0xff; 6]
+        );
     }
 
     #[test]
@@ -325,16 +366,19 @@ mod tests {
         assert_eq!(get_bits_u32(&in_mbox.data, FTE_TABLE_TYPE_BIT, 8), 0);
         assert_eq!(get_bits_u32(&in_mbox.data, FTE_TABLE_ID_BIT, 24), 0x23456);
         assert_eq!(get_bits_u32(&in_mbox.data, FTE_FLOW_INDEX_BIT, 32), 0x11);
-        assert_eq!(get_bits_u32(&in_mbox.data, FTE_FLOW_CONTEXT_GROUP_ID_BIT, 32), 0x22);
+        assert_eq!(
+            get_bits_u32(&in_mbox.data, FTE_FLOW_CONTEXT_GROUP_ID_BIT, 32),
+            0x22
+        );
         assert_eq!(
             get_bits_u32(&in_mbox.data, FTE_FLOW_CONTEXT_DEST_LIST_SIZE_BIT, 24),
             1
         );
-        assert_eq!(get_bits_u32(&in_mbox.data[FTE_DEST_BASE..], 0, 8), DEST_TYPE_TIR);
         assert_eq!(
-            get_bits_u32(&in_mbox.data[FTE_DEST_BASE..], 8, 24),
-            0x34567
+            get_bits_u32(&in_mbox.data[FTE_DEST_BASE..], 0, 8),
+            DEST_TYPE_TIR
         );
+        assert_eq!(get_bits_u32(&in_mbox.data[FTE_DEST_BASE..], 8, 24), 0x34567);
         assert_eq!(
             &in_mbox.data[FTE_MATCH_VALUE_BASE..FTE_MATCH_VALUE_BASE + 6],
             &[1, 2, 3, 4, 5, 6]

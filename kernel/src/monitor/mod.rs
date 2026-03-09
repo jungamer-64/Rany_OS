@@ -612,7 +612,10 @@ impl HealthMonitor {
 
     /// 現在のメトリクスを取得
     pub fn metrics(&self) -> HealthMetrics {
-        self.metrics.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.metrics
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// メトリクスをPrometheus形式でエクスポート

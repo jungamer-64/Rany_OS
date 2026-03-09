@@ -51,9 +51,10 @@ fn generate_random_port(table: &NatTable) -> u16 {
     const RANGE: u32 = PORT_END - PORT_START + 1;
 
     for _ in 0..100 {
-        random_bytes.copy_from_slice(&crate::net::security::tls::crypto::random::generate_random()[0..2]);
+        random_bytes
+            .copy_from_slice(&crate::net::security::tls::crypto::random::generate_random()[0..2]);
         let port = (PORT_START + (u16::from_be_bytes(random_bytes) as u32 % RANGE)) as u16;
-        
+
         // Check if port is already used in any entry
         let mut used = false;
         for entry in table.inbound.values() {
@@ -115,9 +116,12 @@ pub fn nat_translate_out(
 ) -> Option<(Ipv4Address, u16)> {
     let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
     let now = get_current_tick();
-    
+
     // Check existing mapping
-    if let Some(entry) = table.outbound.get_mut(&(proto, src_ip, src_port, dst_ip, dst_port)) {
+    if let Some(entry) = table
+        .outbound
+        .get_mut(&(proto, src_ip, src_port, dst_ip, dst_port))
+    {
         entry.last_used = now;
         return Some((entry.external_ip, entry.external_port));
     }
@@ -127,7 +131,7 @@ pub fn nat_translate_out(
         drop(table);
         nat_maybe_gc(0); // Force GC
         table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
-        
+
         if table.outbound.len() >= MAX_NAT_ENTRIES {
             log::warn!("[NAT] Table full, dropping connection from {}", src_ip);
             return None;
@@ -136,11 +140,13 @@ pub fn nat_translate_out(
 
     // Get actual external IP of the interface
     let ext_ip = if let Ok(mgr_guard) = manager::NETWORK_MANAGER.lock() {
-        mgr_guard.as_ref().and_then(|mgr| {
-            mgr.get_interface(if_id).and_then(|iface| {
-                iface.config.map(|cfg| cfg.ipv4.address)
+        mgr_guard
+            .as_ref()
+            .and_then(|mgr| {
+                mgr.get_interface(if_id)
+                    .and_then(|iface| iface.config.map(|cfg| cfg.ipv4.address))
             })
-        }).unwrap_or(Ipv4Address::new([192, 168, 1, 100]))
+            .unwrap_or(Ipv4Address::new([192, 168, 1, 100]))
     } else {
         Ipv4Address::new([192, 168, 1, 100])
     };
@@ -159,8 +165,12 @@ pub fn nat_translate_out(
         if_id,
     };
 
-    table.outbound.insert((proto, src_ip, src_port, dst_ip, dst_port), entry);
-    table.inbound.insert((proto, dst_ip, dst_port, ext_port), entry);
+    table
+        .outbound
+        .insert((proto, src_ip, src_port, dst_ip, dst_port), entry);
+    table
+        .inbound
+        .insert((proto, dst_ip, dst_port, ext_port), entry);
 
     Some((ext_ip, ext_port))
 }
@@ -173,36 +183,59 @@ pub fn nat_maybe_gc(rx_count: u64) {
 
     let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
     let now = get_current_tick();
-    
+
     let mut to_remove_out = Vec::new();
     let mut to_remove_in = Vec::new();
 
     for (key, entry) in table.outbound.iter() {
         if now.saturating_sub(entry.last_used) > NAT_ENTRY_TIMEOUT {
             to_remove_out.push(*key);
-            to_remove_in.push((entry.protocol, entry.remote_ip, entry.remote_port, entry.external_port));
+            to_remove_in.push((
+                entry.protocol,
+                entry.remote_ip,
+                entry.remote_port,
+                entry.external_port,
+            ));
         }
     }
 
     if !to_remove_out.is_empty() {
         log::debug!("[NAT] GC: removing {} expired entries", to_remove_out.len());
-        for key in to_remove_out { table.outbound.remove(&key); }
-        for key in to_remove_in { table.inbound.remove(&key); }
+        for key in to_remove_out {
+            table.outbound.remove(&key);
+        }
+        for key in to_remove_in {
+            table.inbound.remove(&key);
+        }
     }
 }
 
-pub fn nat_translate_in_icmp(_src_ip: Ipv4Address, _dst_ip: &mut Ipv4Address, _payload: &mut [u8]) -> Option<Ipv4Address> {
+pub fn nat_translate_in_icmp(
+    _src_ip: Ipv4Address,
+    _dst_ip: &mut Ipv4Address,
+    _payload: &mut [u8],
+) -> Option<Ipv4Address> {
     // ICMP translation is complex as it requires parsing the quoted IP header.
     // For now, return None.
     None
 }
 
-pub fn nat_translate_out_icmp(_src_ip: Ipv4Address, _dst_ip: Ipv4Address, _payload: &[u8], _if_id: NetIfId) -> Option<(Ipv4Address, u16)> {
+pub fn nat_translate_out_icmp(
+    _src_ip: Ipv4Address,
+    _dst_ip: Ipv4Address,
+    _payload: &[u8],
+    _if_id: NetIfId,
+) -> Option<(Ipv4Address, u16)> {
     None
 }
 
 /// Recompute transport checksum after NAT translation.
-pub fn recompute_ipv4_transport_checksum(payload: &mut [u8], src: Ipv4Address, dst: Ipv4Address, proto: IpProtocol) {
+pub fn recompute_ipv4_transport_checksum(
+    payload: &mut [u8],
+    src: Ipv4Address,
+    dst: Ipv4Address,
+    proto: IpProtocol,
+) {
     use crate::net::datapath::checksum_offload;
 
     let src_bytes = src.octets();
@@ -214,12 +247,15 @@ pub fn recompute_ipv4_transport_checksum(payload: &mut [u8], src: Ipv4Address, d
                 // Clear old checksum
                 payload[16] = 0;
                 payload[17] = 0;
-                
+
                 // Recalculate checksum: pseudo-header sum + payload sum
                 let partial = checksum_offload::pseudo_header_partial_sum(
-                    &src_bytes, &dst_bytes, 6, payload.len() as u16
+                    &src_bytes,
+                    &dst_bytes,
+                    6,
+                    payload.len() as u16,
                 );
-                
+
                 let mut sum = partial as u32;
                 let mut i = 0;
                 while i + 1 < payload.len() {
@@ -233,7 +269,7 @@ pub fn recompute_ipv4_transport_checksum(payload: &mut [u8], src: Ipv4Address, d
                 while sum >> 16 != 0 {
                     sum = (sum & 0xFFFF) + (sum >> 16);
                 }
-                
+
                 let cksum = !(sum as u16);
                 let bytes = cksum.to_be_bytes();
                 payload[16] = bytes[0];
@@ -246,11 +282,14 @@ pub fn recompute_ipv4_transport_checksum(payload: &mut [u8], src: Ipv4Address, d
                 if old_cksum != 0 {
                     payload[6] = 0;
                     payload[7] = 0;
-                    
+
                     let partial = checksum_offload::pseudo_header_partial_sum(
-                        &src_bytes, &dst_bytes, 17, payload.len() as u16
+                        &src_bytes,
+                        &dst_bytes,
+                        17,
+                        payload.len() as u16,
                     );
-                    
+
                     let mut sum = partial as u32;
                     let mut i = 0;
                     while i + 1 < payload.len() {
@@ -264,9 +303,11 @@ pub fn recompute_ipv4_transport_checksum(payload: &mut [u8], src: Ipv4Address, d
                     while sum >> 16 != 0 {
                         sum = (sum & 0xFFFF) + (sum >> 16);
                     }
-                    
+
                     let mut cksum = !(sum as u16);
-                    if cksum == 0 { cksum = 0xFFFF; }
+                    if cksum == 0 {
+                        cksum = 0xFFFF;
+                    }
                     let bytes = cksum.to_be_bytes();
                     payload[6] = bytes[0];
                     payload[7] = bytes[1];

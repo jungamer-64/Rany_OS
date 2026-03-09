@@ -411,7 +411,8 @@ unsafe impl<const N: usize> Sync for RingBuffer<N> {}
 unsafe impl<const N: usize> Send for RingBuffer<N> {}
 
 /// 非同期ログバッファ（送信）
-static LOG_BUFFER: IrqPoisonLock<RingBuffer<LOG_BUFFER_CAPACITY>> = IrqPoisonLock::new(RingBuffer::new());
+static LOG_BUFFER: IrqPoisonLock<RingBuffer<LOG_BUFFER_CAPACITY>> =
+    IrqPoisonLock::new(RingBuffer::new());
 
 /// アプリケーションがヒープ利用可能になった後に非同期ログを有効化するフラグ
 static ASYNC_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -445,7 +446,8 @@ static PER_CORE_LOG_BUFFERS: [IrqPoisonLock<RingBuffer<PER_CORE_BUFFER_CAPACITY>
     [PER_CORE_INIT; PER_CPU_COUNT];
 
 /// 非同期入力バッファ（受信）
-static INPUT_BUFFER: IrqPoisonLock<RingBuffer<INPUT_BUFFER_CAPACITY>> = IrqPoisonLock::new(RingBuffer::new());
+static INPUT_BUFFER: IrqPoisonLock<RingBuffer<INPUT_BUFFER_CAPACITY>> =
+    IrqPoisonLock::new(RingBuffer::new());
 
 // ... (Unit tests for RingBuffer remain largely unchanged except for lock calls)
 
@@ -512,7 +514,10 @@ fn read_tsc_serialized() -> u64 {
 
 /// グローバルログバッファからデータを読み出す
 pub fn peek_global_log(dst: &mut [u8]) -> usize {
-    LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).peek_bulk(dst)
+    LOG_BUFFER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .peek_bulk(dst)
 }
 
 /// グローバルログバッファ内のデータ長を取得

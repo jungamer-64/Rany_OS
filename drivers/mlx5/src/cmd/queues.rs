@@ -114,12 +114,12 @@ pub fn build_modify_cq_moderation_input(
     *in_mbox = CmdMailbox::zeroed();
     // CQN [23:0]
     in_mbox.write_be32(0x04, cqn & 0x00FF_FFFF);
-    
+
     let ctx_base = 0x10;
     // byte 0x10 (dword 4): [31:16]=cq_period, [15:0]=cq_max_count
     in_mbox.write_be16(ctx_base, period_usec);
     in_mbox.write_be16(ctx_base + 0x02, count);
-    
+
     // field_select: bit 0 = cq_period, bit 1 = cq_max_count
     in_mbox.write_be32(0x08, 0x0000_0003);
 }
@@ -366,14 +366,7 @@ mod tests {
     #[test]
     fn create_eq_sets_linux_ifc_required_fields() {
         let mut in_mbox = CmdMailbox::zeroed();
-        build_create_eq_input(
-            &mut in_mbox,
-            8,
-            0x1000,
-            0x123,
-            0x4,
-            eq_event_mask::STANDARD,
-        );
+        build_create_eq_input(&mut in_mbox, 8, 0x1000, 0x123, 0x4, eq_event_mask::STANDARD);
 
         let ctx = &in_mbox.data[0x10..];
         assert_eq!(get_bits_u32(ctx, 20, 4), 0);
@@ -383,8 +376,7 @@ mod tests {
         assert_eq!(get_bits_u32(ctx, 180, 12), 0x4);
         assert_eq!(get_bits_u32(ctx, 195, 5), 0);
         assert_eq!(
-            &in_mbox.data
-                [CREATE_EQ_EVENT_MASK_OFFSET..CREATE_EQ_EVENT_MASK_OFFSET + 8],
+            &in_mbox.data[CREATE_EQ_EVENT_MASK_OFFSET..CREATE_EQ_EVENT_MASK_OFFSET + 8],
             &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2e, 0x01]
         );
     }
@@ -472,7 +464,10 @@ mod tests {
 
         assert_eq!(in_mbox.read_be32(0x08), 0x0001_2345);
         assert_eq!(in_mbox.read_be64(0x10), 0x0);
-        assert_eq!(get_bits_u32(&in_mbox.data[0x20..], 8, 4), crate::defs::WqState::Ready as u32);
+        assert_eq!(
+            get_bits_u32(&in_mbox.data[0x20..], 8, 4),
+            crate::defs::WqState::Ready as u32
+        );
     }
 
     #[test]
@@ -487,6 +482,9 @@ mod tests {
 
         assert_eq!(in_mbox.read_be32(0x08), 0x0002_3456);
         assert_eq!(in_mbox.read_be64(0x10), 0x0);
-        assert_eq!(get_bits_u32(&in_mbox.data[0x20..], 8, 4), crate::defs::WqState::Ready as u32);
+        assert_eq!(
+            get_bits_u32(&in_mbox.data[0x20..], 8, 4),
+            crate::defs::WqState::Ready as u32
+        );
     }
 }

@@ -13,9 +13,9 @@ use alloc::string::String;
 #[cfg(all(test, feature = "std"))]
 use std::string::String;
 
+use crate::sync::PoisonLock;
 #[cfg(any(not(test), not(feature = "std")))]
 use alloc::vec::Vec;
-use crate::sync::PoisonLock;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(all(test, feature = "std"))]
@@ -349,7 +349,12 @@ impl AuditLog {
 
     /// Get all records
     pub fn get_records(&self) -> Vec<AuditRecord> {
-        self.records.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
+        self.records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Get records by type
@@ -387,7 +392,10 @@ impl AuditLog {
 
     /// Clear the log
     pub fn clear(&self) {
-        self.records.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// Enable/disable logging

@@ -5,21 +5,22 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
-use core::sync::atomic::AtomicU16;
-use crate::io::virtio::transport::VirtioTransport;
-use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
 use crate::io::dma::CoherentDmaBuffer;
 use crate::io::iommu::api::{unmap_dma, unmap_for_device};
 use crate::io::iommu::runtime::registry::get_device_dma_mask;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::transport::VirtioTransport;
+use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
 use crate::sync::IrqPoisonLock;
 use crate::sync::PoisonLock;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+use core::sync::atomic::AtomicU16;
 // Import PacketRef for zero-copy
 use crate::net::datapath::mempool::PacketRef;
 pub use virtio_driver::net::{
-    NetDmaDirection, NetDmaPurpose, NetRuntime, VirtioNetConfig, VirtioNetError, VirtioNetHeader, VirtioNetStats,
+    NetDmaDirection, NetDmaPurpose, NetRuntime, VirtioNetConfig, VirtioNetError, VirtioNetHeader,
+    VirtioNetStats,
 };
 
 pub mod device;
@@ -45,7 +46,6 @@ fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
     let limit = (mask as u128) + 1;
     (addr as u128) <= (mask as u128) && (end as u128) <= limit
 }
-
 
 fn check_device_dma_mask(
     device: Option<IommuDeviceId>,
@@ -135,13 +135,11 @@ impl NetVirtQueue {
             avail_ring as *mut virtio_driver::defs::VringAvailHeader,
             used_ring as *mut virtio_driver::defs::VringUsedHeader,
             features,
-        ).expect("[VIRTIO-NET] failed to init core virtqueue");
+        )
+        .expect("[VIRTIO-NET] failed to init core virtqueue");
 
-        let net_vq_core = virtio_driver::net::NetVirtQueue::new(
-            vq_inner,
-            tx_header_dma_base,
-            tx_headers,
-        );
+        let net_vq_core =
+            virtio_driver::net::NetVirtQueue::new(vq_inner, tx_header_dma_base, tx_headers);
 
         Self {
             inner: IrqPoisonLock::new(net_vq_core),
@@ -167,9 +165,7 @@ impl NetVirtQueue {
         data: &[u8],
     ) -> Result<u16, VirtioNetError> {
         let inner = self.inner.lock().map_err(|_| VirtioNetError::DeviceError)?;
-        unsafe {
-            inner.add_tx_buffer(header, data.as_ptr() as u64, data.len())
-        }
+        unsafe { inner.add_tx_buffer(header, data.as_ptr() as u64, data.len()) }
     }
 
     /// ゼロコピー送信バッファを追加
@@ -180,9 +176,7 @@ impl NetVirtQueue {
         header: VirtioNetHeader,
     ) -> Result<u16, VirtioNetError> {
         let inner = self.inner.lock().map_err(|_| VirtioNetError::DeviceError)?;
-        unsafe {
-            inner.add_tx_buffer(&header, phys_addr, data_len)
-        }
+        unsafe { inner.add_tx_buffer(&header, phys_addr, data_len) }
     }
 
     pub fn add_tx_buffer_zero_copy(
@@ -196,9 +190,7 @@ impl NetVirtQueue {
     /// 受信バッファを追加
     pub fn add_rx_buffer(&self, buffer: &mut [u8]) -> Result<u16, VirtioNetError> {
         let inner = self.inner.lock().map_err(|_| VirtioNetError::DeviceError)?;
-        unsafe {
-            inner.add_rx_buffer(buffer.as_ptr() as u64, buffer.len())
-        }
+        unsafe { inner.add_rx_buffer(buffer.as_ptr() as u64, buffer.len()) }
     }
 
     /// ゼロコピー受信バッファを追加
@@ -208,9 +200,7 @@ impl NetVirtQueue {
         buffer_len: usize,
     ) -> Result<u16, VirtioNetError> {
         let inner = self.inner.lock().map_err(|_| VirtioNetError::DeviceError)?;
-        unsafe {
-            inner.add_rx_buffer(phys_addr, buffer_len)
-        }
+        unsafe { inner.add_rx_buffer(phys_addr, buffer_len) }
     }
 
     /// 完了したバッファを処理

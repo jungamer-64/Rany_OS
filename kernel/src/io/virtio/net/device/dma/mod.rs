@@ -96,7 +96,9 @@ pub(crate) fn prepare_dma_mapping_tx(
         // If the buffer is page-aligned and fits in a page, we can direct-map it
         // instead of using a bounce buffer (zero-copy support).
         if (phys_addr_val & page_mask) == 0 && total_len <= crate::mm::types::PAGE_SIZE_4K {
-            let device_id = device.iommu_device_id().ok_or(VirtioNetError::DeviceError)?;
+            let device_id = device
+                .iommu_device_id()
+                .ok_or(VirtioNetError::DeviceError)?;
             unsafe {
                 let iova = crate::io::iommu::api::map_for_device_with_perms(
                     &device_id,
@@ -104,8 +106,9 @@ pub(crate) fn prepare_dma_mapping_tx(
                     crate::mm::types::PAGE_SIZE_4K as u64,
                     true,  // Read
                     false, // Write (TX is read-only)
-                ).map_err(|_| VirtioNetError::DeviceError)?;
-                
+                )
+                .map_err(|_| VirtioNetError::DeviceError)?;
+
                 result.dma_addr = iova;
                 result.mapped_iova = Some(iova);
                 result.mapped_len = crate::mm::types::PAGE_SIZE_4K;
@@ -173,7 +176,9 @@ pub(crate) fn prepare_dma_mapping_rx(
         let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
         // RX Zero-copy support: direct map if page-aligned
         if (phys_addr_val & page_mask) == 0 && data_len <= crate::mm::types::PAGE_SIZE_4K {
-            let device_id = device.iommu_device_id().ok_or(VirtioNetError::DeviceError)?;
+            let device_id = device
+                .iommu_device_id()
+                .ok_or(VirtioNetError::DeviceError)?;
             unsafe {
                 let iova = crate::io::iommu::api::map_for_device_with_perms(
                     &device_id,
@@ -181,8 +186,9 @@ pub(crate) fn prepare_dma_mapping_rx(
                     crate::mm::types::PAGE_SIZE_4K as u64,
                     true, // Read (for headers)
                     true, // Write (for payload)
-                ).map_err(|_| VirtioNetError::DeviceError)?;
-                
+                )
+                .map_err(|_| VirtioNetError::DeviceError)?;
+
                 result.dma_addr = iova;
                 result.mapped_iova = Some(iova);
                 result.mapped_len = crate::mm::types::PAGE_SIZE_4K;

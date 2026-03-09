@@ -60,6 +60,9 @@ async fn command_queue_worker() {
 
         if processed == 0 {
             cq.wait_for_work().await;
+            if cq.is_poisoned() {
+                break;
+            }
         }
     }
 }

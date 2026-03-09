@@ -70,8 +70,8 @@ impl ConnectionOooQueue {
         let fragment_end = seq.wrapping_add(fragment_len);
 
         // Security: Check for overlapping segments in the OOO queue.
-        // RFC 5722 (for IPv6) and general security best practices recommend 
-        // discarding overlapping fragments to prevent IDS evasion and state 
+        // RFC 5722 (for IPv6) and general security best practices recommend
+        // discarding overlapping fragments to prevent IDS evasion and state
         // inconsistency. We apply this policy here to the OOO queue.
         for (s, p) in &self.segments {
             let existing_seq = *s;
@@ -107,7 +107,11 @@ impl ConnectionOooQueue {
         }
 
         // 挿入位置を探す
-        let pos = self.segments.iter().position(|(s, _)| seq_before(seq, *s)).unwrap_or(self.segments.len());
+        let pos = self
+            .segments
+            .iter()
+            .position(|(s, _)| seq_before(seq, *s))
+            .unwrap_or(self.segments.len());
         self.segments.insert(pos, (seq, data));
         GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
     }
@@ -116,20 +120,20 @@ impl ConnectionOooQueue {
     fn prune_outdated(&mut self, rcv_nxt: u32) {
         let mut to_reinsert = Vec::new();
         let mut i = 0;
-        
+
         // LOOP_PROOF: mode=condition; reason=i is incremented and checked against segments.len().;
         while i < self.segments.len() {
             let (seq, packet) = &self.segments[i];
             if seq_before(*seq, rcv_nxt) {
                 let (seq, mut packet) = self.segments.remove(i);
                 let seg_end = seq.wrapping_add(packet.len() as u32);
-                
+
                 if seq_before(rcv_nxt, seg_end) {
                     // 部分的な重複: rcv_nxtより前の部分をカットして再挿入候補にする
                     let overlap = rcv_nxt.wrapping_sub(seq) as usize;
                     packet.advance(overlap);
                     to_reinsert.push((rcv_nxt, packet));
-                    // Note: GLOBAL_OOO_COUNT remains the same because this segment is 
+                    // Note: GLOBAL_OOO_COUNT remains the same because this segment is
                     // essentially replaced by a trimmed version.
                 } else {
                     // 完全に受信済み、または重複部分のみだった
@@ -144,13 +148,17 @@ impl ConnectionOooQueue {
         for (seq, packet) in to_reinsert {
             // Re-inserting at the beginning (since seq == rcv_nxt and others are >= rcv_nxt)
             if self.segments.iter().any(|(s, _)| *s == seq) {
-                // If it already exists (e.g. from a concurrent process or overlap), 
+                // If it already exists (e.g. from a concurrent process or overlap),
                 // just drop the trimmed version.
                 GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                 continue;
             }
-            
-            let pos = self.segments.iter().position(|(s, _)| seq_before(seq, *s)).unwrap_or(self.segments.len());
+
+            let pos = self
+                .segments
+                .iter()
+                .position(|(s, _)| seq_before(seq, *s))
+                .unwrap_or(self.segments.len());
             self.segments.insert(pos, (seq, packet));
             // No fetch_add(1) here because it was already counted before removal
         }

@@ -854,7 +854,9 @@ impl DhcpV6Client {
                 // RFC 1035 Section 4.1.4: Compression pointer (11xxxxxx)
                 // DHCP オプションでは通常使用されないが、脆弱性回避のため検出時は処理を中断する。
                 if (first & 0xC0) == 0xC0 {
-                    log::warn!("[NET] DHCPv6: DNS compression pointer detected in domain search list - unsupported");
+                    log::warn!(
+                        "[NET] DHCPv6: DNS compression pointer detected in domain search list - unsupported"
+                    );
                     return;
                 }
 

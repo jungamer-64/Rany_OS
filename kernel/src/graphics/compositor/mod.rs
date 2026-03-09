@@ -65,7 +65,11 @@ pub fn with_compositor<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&Compositor) -> R,
 {
-    COMPOSITOR.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(f)
+    COMPOSITOR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(f)
 }
 
 /// コンポジタにミュータブルアクセス
@@ -73,7 +77,11 @@ pub fn with_compositor_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Compositor) -> R,
 {
-    COMPOSITOR.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(f)
+    COMPOSITOR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .map(f)
 }
 
 /// ウィンドウを作成

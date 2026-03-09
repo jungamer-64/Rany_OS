@@ -6,8 +6,8 @@ use core::ptr::NonNull;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::resource::net::PacketRef;
 
-pub mod features;
 pub mod device;
+pub mod features;
 pub mod inflight;
 
 pub use inflight::InflightTracker;
@@ -69,7 +69,13 @@ pub trait NetRuntime: Send + Sync {
     fn unmap_dma(&self, iova: u64, size: u64);
 
     /// Called when a packet has been received.
-    fn receive_packet(&self, queue_index: u16, packet: PacketRef, header_len: usize, payload_len: usize);
+    fn receive_packet(
+        &self,
+        queue_index: u16,
+        packet: PacketRef,
+        header_len: usize,
+        payload_len: usize,
+    );
 
     /// Called when a packet transmission is complete.
     fn transmit_complete(&self, queue_index: u16, packet: PacketRef);
@@ -153,11 +159,7 @@ impl NetVirtQueue {
     }
 
     /// Add an RX buffer to the queue.
-    pub unsafe fn add_rx_buffer(
-        &self,
-        phys_addr: u64,
-        len: usize,
-    ) -> Result<u16, VirtioNetError> {
+    pub unsafe fn add_rx_buffer(&self, phys_addr: u64, len: usize) -> Result<u16, VirtioNetError> {
         let desc_idx = self.vq.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
 
         unsafe {

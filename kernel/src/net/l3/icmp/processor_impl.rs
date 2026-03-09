@@ -8,7 +8,7 @@ impl IcmpProcessor {
             stats: IcmpStats::default(),
             per_ip_rate_limits: alloc::collections::BTreeMap::new(),
             global_last_time: 0,
-            global_tokens: 100, // Egress (sending) tokens
+            global_tokens: 100,  // Egress (sending) tokens
             ingress_tokens: 200, // Ingress (receiving) tokens
         }
     }

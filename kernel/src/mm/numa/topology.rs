@@ -17,10 +17,10 @@
 //! 3. **フォールバック**: 指定ノードにメモリがない場合は他のノードから割り当て
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use alloc::alloc::Layout;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use crate::sync::PoisonLock;
 
 use crate::mm::types::NumaNodeId;
 use crate::task::work_stealing_advanced::NumaTopology as SchedulerNumaTopology;

@@ -21,9 +21,9 @@ use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use core::task::{Context, Poll};
 use kernel_api::resource::net::PacketRef;
 use kernel_api::service::netdev::{
-    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetLogLevel, NetPortKind,
-    NetPortRuntime, NetPortStats, NetRxMeta, NetTxMeta, NETDEV_FLAG_ADMIN_UP,
-    NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY,
+    MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
+    NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
+    NetLogLevel, NetPortKind, NetPortRuntime, NetPortStats, NetRxMeta, NetTxMeta,
 };
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
@@ -609,13 +609,17 @@ pub fn bind_port_interface(key: NetDeviceKey, if_id: NetIfId) -> Result<(), &'st
     let mut guard = DEVICE_MANAGER.write().unwrap_or_else(|e| e.into_inner());
     guard.key_map.insert(key, if_id);
     guard.handles.insert(if_id, handle.clone());
-    if let Some(previous) = guard.handles.iter().find_map(|(current_if, current_handle)| {
-        if *current_if != if_id && current_handle.binding().key == key {
-            Some(*current_if)
-        } else {
-            None
-        }
-    }) {
+    if let Some(previous) = guard
+        .handles
+        .iter()
+        .find_map(|(current_if, current_handle)| {
+            if *current_if != if_id && current_handle.binding().key == key {
+                Some(*current_if)
+            } else {
+                None
+            }
+        })
+    {
         guard.handles.remove(&previous);
     }
     Ok(())
@@ -671,7 +675,10 @@ pub fn list_ports() -> Vec<Arc<NetDeviceHandle>> {
 }
 
 pub fn list_port_infos() -> Vec<NetDeviceInfo> {
-    list_ports().into_iter().map(|handle| handle.info()).collect()
+    list_ports()
+        .into_iter()
+        .map(|handle| handle.info())
+        .collect()
 }
 
 pub fn port_info(key: NetDeviceKey) -> Option<NetDeviceInfo> {
@@ -698,11 +705,17 @@ pub fn list_port_keys(kind: Option<NetPortKind>) -> Vec<NetDeviceKey> {
 }
 
 pub fn primary_if() -> Option<NetIfId> {
-    DEVICE_MANAGER.read().unwrap_or_else(|e| e.into_inner()).primary
+    DEVICE_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .primary
 }
 
 pub fn set_primary_interface(if_id: NetIfId) {
-    DEVICE_MANAGER.write().unwrap_or_else(|e| e.into_inner()).primary = Some(if_id);
+    DEVICE_MANAGER
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .primary = Some(if_id);
 }
 
 pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMeta) -> bool {
@@ -896,12 +909,9 @@ mod tests {
         let driver = Arc::new(FakeDriver::new());
         driver.set_stats(11, 7, true);
 
-        let if_id = register_port_with_default_config(
-            NetDeviceKey::Virtio(90),
-            driver.clone(),
-            false,
-        )
-        .expect("register port");
+        let if_id =
+            register_port_with_default_config(NetDeviceKey::Virtio(90), driver.clone(), false)
+                .expect("register port");
 
         let info = port_info(NetDeviceKey::Virtio(90)).expect("port info");
         let stats = port_stats(NetDeviceKey::Virtio(90)).expect("port stats");
@@ -922,25 +932,19 @@ mod tests {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
 
-        let if_a = register_port_with_default_config(
-            NetDeviceKey::Virtio(91),
-            driver_a,
-            false,
-        )
-        .expect("register first port");
-        let if_b = register_port_with_default_config(
-            NetDeviceKey::Virtio(92),
-            driver_b,
-            true,
-        )
-        .expect("register second port");
+        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(91), driver_a, false)
+            .expect("register first port");
+        let if_b = register_port_with_default_config(NetDeviceKey::Virtio(92), driver_b, true)
+            .expect("register second port");
 
         assert_eq!(primary_if(), Some(if_b));
-        assert!(port_info(NetDeviceKey::Virtio(92))
-            .expect("primary info")
-            .flags
-            & NETDEV_FLAG_PRIMARY
-            != 0);
+        assert!(
+            port_info(NetDeviceKey::Virtio(92))
+                .expect("primary info")
+                .flags
+                & NETDEV_FLAG_PRIMARY
+                != 0
+        );
 
         assert!(unregister_port(if_b));
         assert_eq!(primary_if(), Some(if_a));

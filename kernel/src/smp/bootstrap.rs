@@ -267,8 +267,9 @@ impl ApBootstrap {
     /// Setup trampoline code
     pub unsafe fn setup_trampoline(&self) -> Result<(), &'static str> {
         static TRAMPOLINE_CODE: [u8; 32] = [
-            0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xF4, 0xEB, 0xFD, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xF4, 0xEB, 0xFD, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
         ];
 
         let trampoline_ptr = TRAMPOLINE_BASE as *mut u8;
@@ -390,7 +391,11 @@ pub extern "C" fn ap_entry(ap_index: u32) {
     let apic_id = crate::io::apic::local_apic().id() as u32;
     crate::io::nvme::per_core::register_apic_mapping(apic_id, ap_index);
 
-    if let Some(bootstrap) = AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    if let Some(bootstrap) = AP_BOOTSTRAP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
         if let Some(info) = bootstrap.get_ap_info(ap_index as usize) {
             info.started.store(true, Ordering::Release);
             info.set_state(ApState::Initializing);
@@ -399,7 +404,11 @@ pub extern "C" fn ap_entry(ap_index: u32) {
 
     fence(Ordering::SeqCst);
 
-    if let Some(bootstrap) = AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    if let Some(bootstrap) = AP_BOOTSTRAP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
         if let Some(info) = bootstrap.get_ap_info(ap_index as usize) {
             info.set_state(ApState::Online);
         }
@@ -414,14 +423,22 @@ pub extern "C" fn ap_entry(ap_index: u32) {
 
 /// Send IPI to specific CPU
 pub fn send_ipi(target_apic_id: u32, vector: u8) {
-    if let Some(bootstrap) = AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    if let Some(bootstrap) = AP_BOOTSTRAP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
         bootstrap.lapic.send_ipi(target_apic_id, vector);
     }
 }
 
 /// Broadcast IPI to all CPUs (excluding self)
 pub fn broadcast_ipi(vector: u8) {
-    if let Some(bootstrap) = AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    if let Some(bootstrap) = AP_BOOTSTRAP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
         bootstrap.lapic.broadcast_ipi(vector);
     }
 }

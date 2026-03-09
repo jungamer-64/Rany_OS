@@ -100,24 +100,25 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
     }
 
     if elf_data.get(4).copied() != Some(2) {
-        return Err(LoopProofError::InvalidElf("unsupported ELF class (expected 64-bit)"));
+        return Err(LoopProofError::InvalidElf(
+            "unsupported ELF class (expected 64-bit)",
+        ));
     }
 
     if elf_data.get(5).copied() != Some(1) {
-        return Err(LoopProofError::InvalidElf("unsupported ELF endianness (expected little-endian)"));
+        return Err(LoopProofError::InvalidElf(
+            "unsupported ELF endianness (expected little-endian)",
+        ));
     }
 
     let section_table_offset =
         read_u64(elf_data, 0x28).ok_or(LoopProofError::InvalidElf("missing e_shoff"))? as usize;
     let section_entry_size =
-        read_u16(elf_data, 0x3A).ok_or(LoopProofError::InvalidElf("missing e_shentsize"))?
-            as usize;
+        read_u16(elf_data, 0x3A).ok_or(LoopProofError::InvalidElf("missing e_shentsize"))? as usize;
     let section_count =
-        read_u16(elf_data, 0x3C).ok_or(LoopProofError::InvalidElf("missing e_shnum"))?
-            as usize;
+        read_u16(elf_data, 0x3C).ok_or(LoopProofError::InvalidElf("missing e_shnum"))? as usize;
     let shstr_index =
-        read_u16(elf_data, 0x3E).ok_or(LoopProofError::InvalidElf("missing e_shstrndx"))?
-            as usize;
+        read_u16(elf_data, 0x3E).ok_or(LoopProofError::InvalidElf("missing e_shstrndx"))? as usize;
 
     if section_count == 0 {
         return Err(LoopProofError::InvalidElf("ELF has no section headers"));
@@ -138,7 +139,9 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
         .checked_add(section_table_len)
         .ok_or(LoopProofError::InvalidElf("section table end overflow"))?;
     if section_table_end > elf_data.len() {
-        return Err(LoopProofError::InvalidElf("section table outside ELF bounds"));
+        return Err(LoopProofError::InvalidElf(
+            "section table outside ELF bounds",
+        ));
     }
 
     let shstr_header = read_section_header(
@@ -147,7 +150,9 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
         section_entry_size,
         shstr_index,
     )
-    .ok_or(LoopProofError::InvalidElf("failed to parse shstrtab header"))?;
+    .ok_or(LoopProofError::InvalidElf(
+        "failed to parse shstrtab header",
+    ))?;
 
     let shstr_start = shstr_header.data_offset as usize;
     let shstr_size = shstr_header.data_size as usize;
@@ -160,13 +165,9 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
     let shstr = &elf_data[shstr_start..shstr_end];
 
     for index in 0..section_count {
-        let section_header = read_section_header(
-            elf_data,
-            section_table_offset,
-            section_entry_size,
-            index,
-        )
-        .ok_or(LoopProofError::InvalidElf("failed to parse section header"))?;
+        let section_header =
+            read_section_header(elf_data, section_table_offset, section_entry_size, index)
+                .ok_or(LoopProofError::InvalidElf("failed to parse section header"))?;
 
         let name_offset = section_header.name_offset as usize;
         if name_offset >= shstr.len() {
@@ -187,9 +188,12 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
 
         let section_start = section_header.data_offset as usize;
         let section_size = section_header.data_size as usize;
-        let section_end = section_start
-            .checked_add(section_size)
-            .ok_or(LoopProofError::InvalidElf("loop proof section end overflow"))?;
+        let section_end =
+            section_start
+                .checked_add(section_size)
+                .ok_or(LoopProofError::InvalidElf(
+                    "loop proof section end overflow",
+                ))?;
         if section_end > elf_data.len() {
             return Err(LoopProofError::InvalidElf(
                 "loop proof section outside ELF bounds",

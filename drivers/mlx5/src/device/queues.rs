@@ -241,7 +241,8 @@ impl Mlx5Device {
         if tisn == 0 && self.tis_list.iter().all(|t| t.tisn != 0) {
             // VF fallback: when CREATE_TIS is unavailable, try creating SQ
             // without an explicit TIS list and let firmware use its default.
-            let mut layout = crate::structs::queues::SqContextLayout::new(&mut in_mbox.data[0x20..]);
+            let mut layout =
+                crate::structs::queues::SqContextLayout::new(&mut in_mbox.data[0x20..]);
             layout.set_tis_lst_sz(0);
             layout.set_tis_num_0(0);
         }

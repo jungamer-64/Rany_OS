@@ -285,7 +285,10 @@ impl TypedSlabCache {
         // OR wrapper allowing new_on_node.
         // Let's stick to simple Arc<PoisonLock> wrap for now, bypassing registry for NUMA explicit calls
         // until Registry is upgraded.
-        let inner = Arc::new(PoisonLock::new(SlabCache::new_on_node(object_size, numa_node)));
+        let inner = Arc::new(PoisonLock::new(SlabCache::new_on_node(
+            object_size,
+            numa_node,
+        )));
         Self {
             inner,
             ctor: Some(ctor),
@@ -301,7 +304,11 @@ impl TypedSlabCache {
     ///
     /// 初回割り当てではコンストラクタが呼ばれ、再利用時はスキップ
     pub fn allocate(&mut self) -> Option<NonNull<u8>> {
-        let ptr = self.inner.lock().unwrap_or_else(|e| e.into_inner()).allocate()?;
+        let ptr = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .allocate()?;
 
         // オブジェクトのインデックスを計算（簡易実装: アドレス下位ビットから）
         let obj_index = self.ptr_to_index(ptr);
@@ -344,14 +351,22 @@ impl TypedSlabCache {
         }
 
         // 内部キャッシュに返却（初期化フラグは維持）
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).deallocate(ptr);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .deallocate(ptr);
     }
 
     /// ポインタからオブジェクトインデックスを計算（簡易実装）
     pub(super) fn ptr_to_index(&self, ptr: NonNull<u8>) -> usize {
         // アドレス下位12ビット（ページ内オフセット）をオブジェクトサイズで割る
         let offset = (ptr.as_ptr() as usize) & 0xFFF;
-        offset / self.inner.lock().unwrap_or_else(|e| e.into_inner()).object_size
+        offset
+            / self
+                .inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .object_size
     }
 
     /// 統計情報を取得

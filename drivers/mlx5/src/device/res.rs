@@ -84,7 +84,8 @@ impl Mlx5Device {
         ];
         let mut last_err = Err(Mlx5Error::NotSupported);
 
-        for (_attempt_name, td, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in attempts {
+        for (_attempt_name, td, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in attempts
+        {
             crate::cmd::res::build_create_tis_input_with_options(
                 in_mbox,
                 params,
@@ -95,11 +96,13 @@ impl Mlx5Device {
                 in_mbox.write_be16(0x06, op_mod);
             }
             if td != params.td {
-                let mut layout = crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
+                let mut layout =
+                    crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
                 layout.set_transport_domain(td);
             }
             if lag_port != 0 || strict_lag {
-                let mut layout = crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
+                let mut layout =
+                    crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
                 layout.set_lag_tx_port_affinity(lag_port);
                 layout.set_strict_lag_tx_port_affinity(strict_lag);
             }
@@ -389,7 +392,11 @@ impl Mlx5Device {
         let group_id = self.create_flow_group(table_id, 0, 63, &criteria)?;
 
         // 自分のMACアドレスを登録
-        let my_mac = self.ports.get(0).map(|p| p.mac_address().0).unwrap_or([0; 6]);
+        let my_mac = self
+            .ports
+            .get(0)
+            .map(|p| p.mac_address().0)
+            .unwrap_or([0; 6]);
         if my_mac != [0; 6] {
             self.add_mac_filter(table_id, group_id, 0, my_mac, tirn)?;
         }

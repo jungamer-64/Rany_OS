@@ -91,7 +91,9 @@ pub fn enter_deferred_rx_mode() {
 pub fn drain_deferred_rx_packets() {
     RX_DEFERRED_MODE.store(false, Ordering::Release);
     let packets: Vec<DeferredRxPacket> = {
-        let mut guard = DEFERRED_RX_PACKETS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = DEFERRED_RX_PACKETS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         core::mem::take(&mut *guard)
     };
     for p in packets.into_iter() {
@@ -131,7 +133,9 @@ fn is_local_ipv4(addr: Ipv4Address) -> bool {
 }
 
 fn ensure_stack_glue_if_state(if_id: NetIfId, virtio_index: Option<u8>) {
-    let mut stats = STACK_GLUE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
+    let mut stats = STACK_GLUE_IF_STATS
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     let entry = stats.entry(if_id).or_insert(StackGlueInterfaceStats {
         if_id,
         tx_packets: 0,
@@ -146,7 +150,9 @@ fn ensure_stack_glue_if_state(if_id: NetIfId, virtio_index: Option<u8>) {
 }
 
 fn record_stack_glue_if_tx(if_id: NetIfId) {
-    let mut stats = STACK_GLUE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
+    let mut stats = STACK_GLUE_IF_STATS
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     let entry = stats.entry(if_id).or_insert(StackGlueInterfaceStats {
         if_id,
         tx_packets: 0,
@@ -159,7 +165,9 @@ fn record_stack_glue_if_tx(if_id: NetIfId) {
 }
 
 fn record_stack_glue_if_rx(if_id: NetIfId) {
-    let mut stats = STACK_GLUE_IF_STATS.write().unwrap_or_else(|e| e.into_inner());
+    let mut stats = STACK_GLUE_IF_STATS
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     let entry = stats.entry(if_id).or_insert(StackGlueInterfaceStats {
         if_id,
         tx_packets: 0,
@@ -180,7 +188,9 @@ fn primary_stack_glue_if() -> Option<NetIfId> {
 }
 
 fn set_primary_stack_glue_if(if_id: NetIfId, virtio_index: u8) {
-    let mut primary = PRIMARY_STACK_GLUE_IF.write().unwrap_or_else(|e| e.into_inner());
+    let mut primary = PRIMARY_STACK_GLUE_IF
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     if primary.is_none() || virtio_index == 0 {
         *primary = Some(if_id);
     }
@@ -300,7 +310,7 @@ pub fn process_received_packet_zero_copy_for_interface(
 
     // NAT Inbound (omitted for brevity, assume similar fixes applied)
     // Routing/Forwarding (omitted for brevity, assume similar fixes applied)
-    
+
     #[cfg(any(test, feature = "qemu-test-export"))]
     {
         // Example fix for FORWARD_EVENTS access
@@ -410,7 +420,11 @@ pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<NetIfId> {
 }
 
 pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
-    match stack::stack().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    match stack::stack()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
         Some(stack) => {
             let config = stack.config();
             Some(NetworkConfigSnapshot {

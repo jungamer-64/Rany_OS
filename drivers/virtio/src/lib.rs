@@ -17,9 +17,9 @@ pub mod blk;
 pub mod console;
 pub mod core;
 pub mod defs;
+pub mod gpu;
 pub mod input;
 pub mod net;
-pub mod gpu;
 pub mod transport;
 
 // Re-export core types
@@ -33,24 +33,10 @@ pub use transport::{
 
 // Re-export commonly used types from defs
 pub use defs::{
-    avail_flags,
-    common_features,
-    mmio_regs,
-    status,
-    used_flags,
-    vring_flags,
-    VirtioDeviceStatus,
-    VirtioDeviceType,
-    VirtioPciCap,
-    VirtioPciCapType,
-    VringAvailHeader,
-    VringDesc,
-    VringUsedElem,
-    VringUsedHeader,
-    VIRTIO_F_INDIRECT_DESC,
-    VIRTIO_MMIO_MAGIC,
-    VIRTQUEUE_DEFAULT_SIZE,
-    VIRTQUEUE_MAX_SIZE,
+    VIRTIO_F_INDIRECT_DESC, VIRTIO_MMIO_MAGIC, VIRTQUEUE_DEFAULT_SIZE, VIRTQUEUE_MAX_SIZE,
+    VirtioDeviceStatus, VirtioDeviceType, VirtioPciCap, VirtioPciCapType, VringAvailHeader,
+    VringDesc, VringUsedElem, VringUsedHeader, avail_flags, common_features, mmio_regs, status,
+    used_flags, vring_flags,
 };
 
-pub use crate::core::{VIRTIO_F_VERSION_1, VIRTIO_F_IOMMU_PLATFORM};
+pub use crate::core::{VIRTIO_F_IOMMU_PLATFORM, VIRTIO_F_VERSION_1};

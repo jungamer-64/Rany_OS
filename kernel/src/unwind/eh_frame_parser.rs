@@ -47,14 +47,33 @@ pub struct AugmentationData {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafeCfiInstruction {
-    DefCfa { register: DwarfRegister, offset: u64 },
-    DefCfaRegister { register: DwarfRegister },
-    DefCfaOffset { offset: u64 },
-    Offset { register: DwarfRegister, offset: i64 },
-    SameValue { register: DwarfRegister },
-    Undefined { register: DwarfRegister },
-    Register { register: DwarfRegister, source: DwarfRegister },
-    AdvanceLoc { delta: u64 },
+    DefCfa {
+        register: DwarfRegister,
+        offset: u64,
+    },
+    DefCfaRegister {
+        register: DwarfRegister,
+    },
+    DefCfaOffset {
+        offset: u64,
+    },
+    Offset {
+        register: DwarfRegister,
+        offset: i64,
+    },
+    SameValue {
+        register: DwarfRegister,
+    },
+    Undefined {
+        register: DwarfRegister,
+    },
+    Register {
+        register: DwarfRegister,
+        source: DwarfRegister,
+    },
+    AdvanceLoc {
+        delta: u64,
+    },
     RememberState,
     RestoreState,
     Nop,
@@ -86,13 +105,22 @@ impl<'a> SafeEhFrameParser<'a> {
             return Some(None);
         }
         let cie_offset = entry_start as u64 + 4 - cie_id as u64;
-        let fde_encoding = self.get_cached_cie(cie_offset).and_then(|c| c.augmentation.fde_encoding).unwrap_or(0x03);
+        let fde_encoding = self
+            .get_cached_cie(cie_offset)
+            .and_then(|c| c.augmentation.fde_encoding)
+            .unwrap_or(0x03);
         let initial_location = self.read_encoded_value(fde_encoding)?;
         let address_range = self.read_encoded_value(fde_encoding & 0x0F)?;
         if pc >= initial_location && pc < initial_location + address_range {
             let instructions_offset = self.reader.position();
             let instructions_len = entry_end.saturating_sub(instructions_offset);
-            return Some(Some(SafeFde { cie_offset, initial_location, address_range, instructions_offset, instructions_len }));
+            return Some(Some(SafeFde {
+                cie_offset,
+                initial_location,
+                address_range,
+                instructions_offset,
+                instructions_len,
+            }));
         }
         self.reader.set_position(entry_end);
         Some(None)
@@ -103,8 +131,14 @@ impl<'a> SafeEhFrameParser<'a> {
         while !self.reader.is_empty() {
             let entry_start = self.reader.position();
             let length = self.reader.read_u32().ok()? as u64;
-            if length == 0 { break; }
-            let length = if length == 0xFFFFFFFF { self.reader.read_u64().ok()? } else { length };
+            if length == 0 {
+                break;
+            }
+            let length = if length == 0xFFFFFFFF {
+                self.reader.read_u64().ok()?
+            } else {
+                length
+            };
             match self.process_eh_frame_entry(entry_start, length, pc) {
                 Some(Some(fde)) => return Some(fde),
                 Some(None) => continue,
@@ -117,27 +151,40 @@ impl<'a> SafeEhFrameParser<'a> {
     pub(super) fn parse_cie_content(&mut self, remaining_len: usize) -> Option<SafeCie> {
         let content_start = self.reader.position();
         let version = self.reader.read_u8().ok()?;
-        if version != 1 && version != 3 { return None; }
+        if version != 1 && version != 3 {
+            return None;
+        }
         let mut augmentation = AugmentationData::default();
         let aug_string = self.read_null_terminated_string()?;
         let code_alignment_factor = self.reader.read_uleb128().ok()?;
         let data_alignment_factor = self.reader.read_sleb128().ok()?;
-        let ra_reg = if version == 1 { self.reader.read_u8().ok()? as u64 } else { self.reader.read_uleb128().ok()? };
+        let ra_reg = if version == 1 {
+            self.reader.read_u8().ok()? as u64
+        } else {
+            self.reader.read_uleb128().ok()?
+        };
         let return_address_register = DwarfRegister::from_dwarf_number(ra_reg as u8)?;
         if aug_string.starts_with(b"z") {
             let aug_len = self.reader.read_uleb128().ok()? as usize;
             let aug_end = self.reader.position() + aug_len;
             for &ch in aug_string.iter().skip(1) {
                 match ch {
-                    b'L' => { augmentation.has_lsda = true; augmentation.lsda_encoding = Some(self.reader.read_u8().ok()?); }
+                    b'L' => {
+                        augmentation.has_lsda = true;
+                        augmentation.lsda_encoding = Some(self.reader.read_u8().ok()?);
+                    }
                     b'P' => {
                         augmentation.has_personality = true;
                         let encoding = self.reader.read_u8().ok()?;
                         augmentation.personality_encoding = Some(encoding);
                         augmentation.personality_address = Some(self.read_encoded_value(encoding)?);
                     }
-                    b'R' => { augmentation.fde_encoding = Some(self.reader.read_u8().ok()?); }
-                    b'S' => { augmentation.is_signal_frame = true; }
+                    b'R' => {
+                        augmentation.fde_encoding = Some(self.reader.read_u8().ok()?);
+                    }
+                    b'S' => {
+                        augmentation.is_signal_frame = true;
+                    }
                     _ => {}
                 }
             }
@@ -145,7 +192,15 @@ impl<'a> SafeEhFrameParser<'a> {
         }
         let initial_instructions_offset = self.reader.position();
         let initial_instructions_len = content_start + remaining_len - initial_instructions_offset;
-        Some(SafeCie { version, augmentation, code_alignment_factor, data_alignment_factor, return_address_register, initial_instructions_offset, initial_instructions_len })
+        Some(SafeCie {
+            version,
+            augmentation,
+            code_alignment_factor,
+            data_alignment_factor,
+            return_address_register,
+            initial_instructions_offset,
+            initial_instructions_len,
+        })
     }
 
     pub(super) fn cache_cie(&mut self, offset: u64, cie: SafeCie) {
@@ -158,7 +213,9 @@ impl<'a> SafeEhFrameParser<'a> {
 
     pub(super) fn get_cached_cie(&self, offset: u64) -> Option<&SafeCie> {
         for i in 0..self.cie_cache_len {
-            if self.cie_cache_offsets[i] == offset { return self.cie_cache_entries[i].as_ref(); }
+            if self.cie_cache_offsets[i] == offset {
+                return self.cie_cache_entries[i].as_ref();
+            }
         }
         None
     }
@@ -166,7 +223,11 @@ impl<'a> SafeEhFrameParser<'a> {
     pub(super) fn read_null_terminated_string(&mut self) -> Option<&'a [u8]> {
         let start = self.reader.position();
         // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop { if self.reader.read_u8().ok()? == 0 { break; } }
+        loop {
+            if self.reader.read_u8().ok()? == 0 {
+                break;
+            }
+        }
         let end = self.reader.position() - 1;
         Some(&self.reader.data()[start..end])
     }
@@ -193,7 +254,11 @@ impl<'a> SafeEhFrameParser<'a> {
 
     pub(super) fn read_encoded_value(&mut self, encoding: u8) -> Option<u64> {
         let format = encoding & 0x0F;
-        if format <= 0x04 { self.read_unsigned_format(format) } else { self.read_signed_format(format) }
+        if format <= 0x04 {
+            self.read_unsigned_format(format)
+        } else {
+            self.read_signed_format(format)
+        }
     }
 
     pub fn parse_instruction(&mut self, data_align: i64) -> Option<SafeCfiInstruction> {
@@ -216,7 +281,11 @@ impl<'a> SafeEhFrameParser<'a> {
         }
     }
 
-    pub(super) fn parse_extended_instruction(&mut self, opcode: u8, data_align: i64) -> Option<SafeCfiInstruction> {
+    pub(super) fn parse_extended_instruction(
+        &mut self,
+        opcode: u8,
+        data_align: i64,
+    ) -> Option<SafeCfiInstruction> {
         match opcode {
             0x00 => Some(SafeCfiInstruction::Nop),
             0x02..=0x04 => self.parse_advance_loc_extended(opcode),
@@ -238,7 +307,11 @@ impl<'a> SafeEhFrameParser<'a> {
         Some(SafeCfiInstruction::AdvanceLoc { delta })
     }
 
-    pub(super) fn parse_register_rule_instruction(&mut self, opcode: u8, data_align: i64) -> Option<SafeCfiInstruction> {
+    pub(super) fn parse_register_rule_instruction(
+        &mut self,
+        opcode: u8,
+        data_align: i64,
+    ) -> Option<SafeCfiInstruction> {
         let reg = self.reader.read_uleb128().ok()? as u8;
         let register = DwarfRegister::from_dwarf_number(reg)?;
         match opcode {
@@ -293,7 +366,12 @@ impl SafeCfiInterpreter {
     pub fn new(code_alignment_factor: u64, _data_alignment_factor: i64) -> Self {
         Self {
             context: registers::UnwindContext::new(),
-            state_stack: [registers::UnwindContext::new(), registers::UnwindContext::new(), registers::UnwindContext::new(), registers::UnwindContext::new()],
+            state_stack: [
+                registers::UnwindContext::new(),
+                registers::UnwindContext::new(),
+                registers::UnwindContext::new(),
+                registers::UnwindContext::new(),
+            ],
             state_stack_valid: [false; 4],
             state_stack_len: 0,
             location: 0,
@@ -303,22 +381,74 @@ impl SafeCfiInterpreter {
 
     pub fn execute(&mut self, instruction: SafeCfiInstruction) {
         match instruction {
-            SafeCfiInstruction::DefCfa { register, offset } => { self.context.set_cfa(registers::CfaRule::RegisterOffset { register, offset: offset as i64 }); }
-            SafeCfiInstruction::DefCfaRegister { register } => { if let registers::CfaRule::RegisterOffset { offset, .. } = self.context.cfa() { self.context.set_cfa(registers::CfaRule::RegisterOffset { register, offset: *offset }); } }
-            SafeCfiInstruction::DefCfaOffset { offset } => { if let registers::CfaRule::RegisterOffset { register, .. } = self.context.cfa() { self.context.set_cfa(registers::CfaRule::RegisterOffset { register: *register, offset: offset as i64 }); } }
-            SafeCfiInstruction::Offset { register, offset } => { self.context.set_register_rule(register, registers::RegisterRule::Offset(offset)); }
-            SafeCfiInstruction::SameValue { register } => { self.context.set_register_rule(register, registers::RegisterRule::SameValue); }
-            SafeCfiInstruction::Undefined { register } => { self.context.set_register_rule(register, registers::RegisterRule::Undefined); }
-            SafeCfiInstruction::Register { register, source } => { self.context.set_register_rule(register, registers::RegisterRule::Register(source)); }
-            SafeCfiInstruction::AdvanceLoc { delta } => { self.location += delta * self.code_alignment_factor; }
-            SafeCfiInstruction::RememberState => { if self.state_stack_len < self.state_stack.len() { self.state_stack[self.state_stack_len].copy_from(&self.context); self.state_stack_valid[self.state_stack_len] = true; self.state_stack_len += 1; } }
-            SafeCfiInstruction::RestoreState => { if self.state_stack_len > 0 { self.state_stack_len -= 1; if self.state_stack_valid[self.state_stack_len] { self.context.copy_from(&self.state_stack[self.state_stack_len]); self.state_stack_valid[self.state_stack_len] = false; } } }
+            SafeCfiInstruction::DefCfa { register, offset } => {
+                self.context.set_cfa(registers::CfaRule::RegisterOffset {
+                    register,
+                    offset: offset as i64,
+                });
+            }
+            SafeCfiInstruction::DefCfaRegister { register } => {
+                if let registers::CfaRule::RegisterOffset { offset, .. } = self.context.cfa() {
+                    self.context.set_cfa(registers::CfaRule::RegisterOffset {
+                        register,
+                        offset: *offset,
+                    });
+                }
+            }
+            SafeCfiInstruction::DefCfaOffset { offset } => {
+                if let registers::CfaRule::RegisterOffset { register, .. } = self.context.cfa() {
+                    self.context.set_cfa(registers::CfaRule::RegisterOffset {
+                        register: *register,
+                        offset: offset as i64,
+                    });
+                }
+            }
+            SafeCfiInstruction::Offset { register, offset } => {
+                self.context
+                    .set_register_rule(register, registers::RegisterRule::Offset(offset));
+            }
+            SafeCfiInstruction::SameValue { register } => {
+                self.context
+                    .set_register_rule(register, registers::RegisterRule::SameValue);
+            }
+            SafeCfiInstruction::Undefined { register } => {
+                self.context
+                    .set_register_rule(register, registers::RegisterRule::Undefined);
+            }
+            SafeCfiInstruction::Register { register, source } => {
+                self.context
+                    .set_register_rule(register, registers::RegisterRule::Register(source));
+            }
+            SafeCfiInstruction::AdvanceLoc { delta } => {
+                self.location += delta * self.code_alignment_factor;
+            }
+            SafeCfiInstruction::RememberState => {
+                if self.state_stack_len < self.state_stack.len() {
+                    self.state_stack[self.state_stack_len].copy_from(&self.context);
+                    self.state_stack_valid[self.state_stack_len] = true;
+                    self.state_stack_len += 1;
+                }
+            }
+            SafeCfiInstruction::RestoreState => {
+                if self.state_stack_len > 0 {
+                    self.state_stack_len -= 1;
+                    if self.state_stack_valid[self.state_stack_len] {
+                        self.context
+                            .copy_from(&self.state_stack[self.state_stack_len]);
+                        self.state_stack_valid[self.state_stack_len] = false;
+                    }
+                }
+            }
             SafeCfiInstruction::Nop => {}
         }
     }
 
-    pub fn location(&self) -> u64 { self.location }
-    pub fn context(&self) -> &registers::UnwindContext { &self.context }
+    pub fn location(&self) -> u64 {
+        self.location
+    }
+    pub fn context(&self) -> &registers::UnwindContext {
+        &self.context
+    }
 }
 
 use crate::sync::PoisonLock;
@@ -341,8 +471,22 @@ pub struct PanicPayload {
 }
 
 impl PanicPayload {
-    pub fn empty() -> Self { Self { message: String::new(), file: None, line: None, column: None } }
-    pub fn from_message(message: String) -> Self { Self { message, file: None, line: None, column: None } }
+    pub fn empty() -> Self {
+        Self {
+            message: String::new(),
+            file: None,
+            line: None,
+            column: None,
+        }
+    }
+    pub fn from_message(message: String) -> Self {
+        Self {
+            message,
+            file: None,
+            line: None,
+            column: None,
+        }
+    }
 }
 
 impl core::fmt::Display for PanicPayload {
@@ -350,7 +494,9 @@ impl core::fmt::Display for PanicPayload {
         write!(f, "{}", self.message)?;
         if let (Some(file), Some(line)) = (&self.file, self.line) {
             write!(f, " at {}:{}", file, line)?;
-            if let Some(col) = self.column { write!(f, ":{}", col)?; }
+            if let Some(col) = self.column {
+                write!(f, ":{}", col)?;
+            }
         }
         Ok(())
     }
@@ -359,7 +505,9 @@ impl core::fmt::Display for PanicPayload {
 pub type CatchResult<T> = Result<T, PanicPayload>;
 
 #[inline]
-pub fn is_panic_catch_active() -> bool { PANIC_CATCH_ACTIVE.load(Ordering::SeqCst) }
+pub fn is_panic_catch_active() -> bool {
+    PANIC_CATCH_ACTIVE.load(Ordering::SeqCst)
+}
 
 pub fn record_caught_panic(
     message: &str,
@@ -379,7 +527,9 @@ pub fn record_caught_panic(
 }
 
 pub(crate) fn take_caught_panic() -> Option<PanicPayload> {
-    if !PANIC_CAUGHT.swap(false, Ordering::SeqCst) { return None; }
+    if !PANIC_CAUGHT.swap(false, Ordering::SeqCst) {
+        return None;
+    }
     let len = PANIC_MESSAGE_LEN.load(Ordering::Acquire);
     let message = if let Ok(guard) = PANIC_MESSAGE_BUFFER.try_lock() {
         let bytes = &guard[..len];

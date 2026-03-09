@@ -455,15 +455,39 @@ impl NetworkEventHandler {
                             // ── ファイアウォール Ingress チェック (IPv6) ──
                             if payload.len() >= 40 {
                                 let src_ip = [
-                                    payload[8], payload[9], payload[10], payload[11], payload[12],
-                                    payload[13], payload[14], payload[15], payload[16], payload[17],
-                                    payload[18], payload[19], payload[20], payload[21], payload[22],
+                                    payload[8],
+                                    payload[9],
+                                    payload[10],
+                                    payload[11],
+                                    payload[12],
+                                    payload[13],
+                                    payload[14],
+                                    payload[15],
+                                    payload[16],
+                                    payload[17],
+                                    payload[18],
+                                    payload[19],
+                                    payload[20],
+                                    payload[21],
+                                    payload[22],
                                     payload[23],
                                 ];
                                 let dst_ip = [
-                                    payload[24], payload[25], payload[26], payload[27], payload[28],
-                                    payload[29], payload[30], payload[31], payload[32], payload[33],
-                                    payload[34], payload[35], payload[36], payload[37], payload[38],
+                                    payload[24],
+                                    payload[25],
+                                    payload[26],
+                                    payload[27],
+                                    payload[28],
+                                    payload[29],
+                                    payload[30],
+                                    payload[31],
+                                    payload[32],
+                                    payload[33],
+                                    payload[34],
+                                    payload[35],
+                                    payload[36],
+                                    payload[37],
+                                    payload[38],
                                     payload[39],
                                 ];
                                 let next_header = payload[6];
@@ -477,24 +501,21 @@ impl NetworkEventHandler {
                                     || u8::from(protocol) == 17)
                                     && transport_data.len() >= 4
                                 {
-                                    let sp = u16::from_be_bytes([
-                                        transport_data[0],
-                                        transport_data[1],
-                                    ]);
-                                    let dp = u16::from_be_bytes([
-                                        transport_data[2],
-                                        transport_data[3],
-                                    ]);
+                                    let sp =
+                                        u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                                    let dp =
+                                        u16::from_be_bytes([transport_data[2], transport_data[3]]);
                                     (sp, dp)
                                 } else {
                                     (0, 0)
                                 };
 
-                                let tcp_flags = if u8::from(protocol) == 6 && transport_data.len() >= 14 {
-                                    transport_data[13]
-                                } else {
-                                    0
-                                };
+                                let tcp_flags =
+                                    if u8::from(protocol) == 6 && transport_data.len() >= 14 {
+                                        transport_data[13]
+                                    } else {
+                                        0
+                                    };
 
                                 // Security Fix: Use full IPv6 addresses for firewall check
                                 if !crate::net::security::firewall::check_ingress(
@@ -1564,7 +1585,11 @@ impl NetworkEventHandler {
                     _ => 0,
                 };
                 if data.len() < ihl + min_l4_len {
-                    log::warn!("[FIREWALL] Dropping tiny fragment (RFC 3128): proto={}, len={}", protocol, data.len());
+                    log::warn!(
+                        "[FIREWALL] Dropping tiny fragment (RFC 3128): proto={}, len={}",
+                        protocol,
+                        data.len()
+                    );
                     stack.stats.record_dropped();
                     return EventHandleResult::Success;
                 }

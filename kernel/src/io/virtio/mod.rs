@@ -62,17 +62,16 @@ pub use virtio_driver::transport::{
 pub use net::{
     NetVirtQueue, VIRTIO_NET_IOCTL_RX, VIRTIO_NET_IOCTL_TX, VirtioNetConfig, VirtioNetDevice,
     VirtioNetHeader, VirtioNetOps, VirtioNetStats, features as net_features, for_each_virtio_net,
-    get_poll_handler, init_virtio_net, init_virtio_net_at_index,
-    init_virtio_net_for_device, init_virtio_net_for_device_at_index,
-    init_virtio_net_with_transport, init_virtio_net_with_transport_at_index,
-    register_virtio_net_with_io_scheduler, with_virtio_net, with_virtio_net_at_index,
-    virtio_net_driver_adapter,
+    get_poll_handler, init_virtio_net, init_virtio_net_at_index, init_virtio_net_for_device,
+    init_virtio_net_for_device_at_index, init_virtio_net_with_transport,
+    init_virtio_net_with_transport_at_index, register_virtio_net_with_io_scheduler,
+    virtio_net_driver_adapter, with_virtio_net, with_virtio_net_at_index,
 };
 pub use virtqueue::{VringAvail, VringDesc, VringUsed};
 
 // Re-exports for VirtIO-Blk
 pub use blk::{
-    AsyncBlockDevice, VirtioBlkConfig, BlockError, VirtioBlkDevice, features as blk_features,
+    AsyncBlockDevice, BlockError, VirtioBlkConfig, VirtioBlkDevice, features as blk_features,
     handle_virtio_blk_interrupt, init_virtio_blk, init_virtio_blk_for_device,
     init_virtio_blk_with_transport,
 };

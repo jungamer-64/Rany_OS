@@ -539,12 +539,18 @@ pub fn check_path_policy(
 
 /// Add a rule to global policy
 pub fn add_rule(rule: PolicyRule) {
-    POLICY.write().unwrap_or_else(|e| e.into_inner()).add_rule(rule);
+    POLICY
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .add_rule(rule);
 }
 
 /// Remove a rule from global policy
 pub fn remove_rule(rule_id: u64) -> bool {
-    POLICY.write().unwrap_or_else(|e| e.into_inner()).remove_rule(rule_id)
+    POLICY
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove_rule(rule_id)
 }
 
 /// Initialize policy engine with default rules

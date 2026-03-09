@@ -168,7 +168,9 @@ impl PerCpuBatchProcessor {
     pub fn enqueue(&self, packet: PacketRef) -> Option<PacketBatch> {
         let cpu_id = current_cpu_id() % self.cpu_count;
 
-        let mut queue = self.queues[cpu_id].lock().unwrap_or_else(|e| e.into_inner());
+        let mut queue = self.queues[cpu_id]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         if queue.is_full() {
             // 満杯 → まずフラッシュしてパケットを空ける

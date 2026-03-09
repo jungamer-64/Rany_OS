@@ -226,7 +226,10 @@ mod tests {
         let mut out_mbox = CmdMailbox::zeroed();
         out_mbox.write_be32(0x0C, 0x1122_3344); // resd_lkey
         out_mbox.write_be32(0x10, 0x5566_7788); // null_mkey (must be ignored)
-        assert_eq!(parse_query_special_contexts_resd_lkey(&out_mbox), 0x1122_3344);
+        assert_eq!(
+            parse_query_special_contexts_resd_lkey(&out_mbox),
+            0x1122_3344
+        );
     }
 
     #[test]

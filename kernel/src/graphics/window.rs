@@ -27,8 +27,12 @@ pub struct WindowId(pub u32);
 impl WindowId {
     pub const INVALID: Self = Self(u32::MAX);
     pub const ROOT: Self = Self(0);
-    pub const fn new(id: u32) -> Self { Self(id) }
-    pub fn is_valid(self) -> bool { self != Self::INVALID }
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+    pub fn is_valid(self) -> bool {
+        self != Self::INVALID
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -40,7 +44,9 @@ impl ZOrder {
     pub const ABOVE_NORMAL: Self = Self(100);
     pub const TOPMOST: Self = Self(1000);
     pub const SYSTEM: Self = Self(10000);
-    pub const fn new(order: i32) -> Self { Self(order) }
+    pub const fn new(order: i32) -> Self {
+        Self(order)
+    }
 }
 
 // ============================================================================
@@ -76,18 +82,50 @@ impl Default for WindowStyle {
 
 impl WindowStyle {
     pub fn borderless() -> Self {
-        Self { border: false, title_bar: false, close_button: false, minimize_button: false, maximize_button: false, resizable: false, topmost: false, tool_window: false }
+        Self {
+            border: false,
+            title_bar: false,
+            close_button: false,
+            minimize_button: false,
+            maximize_button: false,
+            resizable: false,
+            topmost: false,
+            tool_window: false,
+        }
     }
     pub fn dialog() -> Self {
-        Self { border: true, title_bar: true, close_button: true, minimize_button: false, maximize_button: false, resizable: false, topmost: false, tool_window: false }
+        Self {
+            border: true,
+            title_bar: true,
+            close_button: true,
+            minimize_button: false,
+            maximize_button: false,
+            resizable: false,
+            topmost: false,
+            tool_window: false,
+        }
     }
     pub fn popup() -> Self {
-        Self { border: true, title_bar: false, close_button: false, minimize_button: false, maximize_button: false, resizable: false, topmost: true, tool_window: true }
+        Self {
+            border: true,
+            title_bar: false,
+            close_button: false,
+            minimize_button: false,
+            maximize_button: false,
+            resizable: false,
+            topmost: true,
+            tool_window: true,
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WindowState { Normal, Minimized, Maximized, Hidden }
+pub enum WindowState {
+    Normal,
+    Minimized,
+    Maximized,
+    Hidden,
+}
 
 // ============================================================================
 // Window Events
@@ -164,7 +202,11 @@ impl Window {
             client_rect,
             style,
             state: WindowState::Normal,
-            z_order: if style.topmost { ZOrder::TOPMOST } else { ZOrder::NORMAL },
+            z_order: if style.topmost {
+                ZOrder::TOPMOST
+            } else {
+                ZOrder::NORMAL
+            },
             background: Color::WHITE,
             content,
             dirty: true,
@@ -191,23 +233,51 @@ impl Window {
         Rect::new(x, y, width, height)
     }
 
-    pub fn id(&self) -> WindowId { self.id }
-    pub fn title(&self) -> &str { &self.title }
-    pub fn set_title(&mut self, title: String) { self.title = title; self.dirty = true; }
-    pub fn rect(&self) -> Rect { self.rect }
-    pub fn client_rect(&self) -> Rect { self.client_rect }
-    pub fn state(&self) -> WindowState { self.state }
+    pub fn id(&self) -> WindowId {
+        self.id
+    }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+        self.dirty = true;
+    }
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+    pub fn client_rect(&self) -> Rect {
+        self.client_rect
+    }
+    pub fn state(&self) -> WindowState {
+        self.state
+    }
     pub fn set_state(&mut self, state: WindowState) {
         self.state = state;
         self.visible = state != WindowState::Hidden && state != WindowState::Minimized;
     }
-    pub fn is_visible(&self) -> bool { self.visible }
-    pub fn set_visible(&mut self, visible: bool) { self.visible = visible; }
-    pub fn content(&self) -> &Image { &self.content }
-    pub fn content_mut(&mut self) -> &mut Image { self.dirty = true; &mut self.content }
-    pub fn is_dirty(&self) -> bool { self.dirty }
-    pub fn mark_clean(&mut self) { self.dirty = false; }
-    pub fn invalidate(&mut self) { self.dirty = true; }
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+    pub fn content(&self) -> &Image {
+        &self.content
+    }
+    pub fn content_mut(&mut self) -> &mut Image {
+        self.dirty = true;
+        &mut self.content
+    }
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
+    }
+    pub fn invalidate(&mut self) {
+        self.dirty = true;
+    }
     pub fn move_to(&mut self, x: i32, y: i32) {
         self.rect.x = x;
         self.rect.y = y;
@@ -218,16 +288,37 @@ impl Window {
         self.rect.width = width;
         self.rect.height = height;
         self.client_rect = Self::calculate_client_rect(&self.rect, &self.style);
-        self.content = Image::filled(self.client_rect.width, self.client_rect.height, self.background);
+        self.content = Image::filled(
+            self.client_rect.width,
+            self.client_rect.height,
+            self.background,
+        );
         self.dirty = true;
-        self.events.push(WindowEvent::Resize { width: self.client_rect.width, height: self.client_rect.height });
+        self.events.push(WindowEvent::Resize {
+            width: self.client_rect.width,
+            height: self.client_rect.height,
+        });
     }
-    pub fn push_event(&mut self, event: WindowEvent) { self.events.push(event); }
-    pub fn pop_event(&mut self) -> Option<WindowEvent> { if self.events.is_empty() { None } else { Some(self.events.remove(0)) } }
-    pub fn contains(&self, x: i32, y: i32) -> bool { self.rect.contains(Point::new(x, y)) }
-    pub fn client_contains(&self, x: i32, y: i32) -> bool { self.client_rect.contains(Point::new(x, y)) }
+    pub fn push_event(&mut self, event: WindowEvent) {
+        self.events.push(event);
+    }
+    pub fn pop_event(&mut self) -> Option<WindowEvent> {
+        if self.events.is_empty() {
+            None
+        } else {
+            Some(self.events.remove(0))
+        }
+    }
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        self.rect.contains(Point::new(x, y))
+    }
+    pub fn client_contains(&self, x: i32, y: i32) -> bool {
+        self.client_rect.contains(Point::new(x, y))
+    }
     pub fn title_bar_contains(&self, x: i32, y: i32) -> bool {
-        if !self.style.title_bar { return false; }
+        if !self.style.title_bar {
+            return false;
+        }
         let title_bar_rect = Rect::new(
             self.rect.x + Self::BORDER_WIDTH as i32,
             self.rect.y + Self::BORDER_WIDTH as i32,
@@ -236,7 +327,9 @@ impl Window {
         );
         title_bar_rect.contains(Point::new(x, y))
     }
-    pub fn screen_to_client(&self, x: i32, y: i32) -> (i32, i32) { (x - self.client_rect.x, y - self.client_rect.y) }
+    pub fn screen_to_client(&self, x: i32, y: i32) -> (i32, i32) {
+        (x - self.client_rect.x, y - self.client_rect.y)
+    }
 }
 
 // ============================================================================
@@ -268,7 +361,15 @@ impl WindowManager {
         }
     }
 
-    pub fn create_window(&mut self, title: &str, x: i32, y: i32, width: u32, height: u32, style: WindowStyle) -> WindowId {
+    pub fn create_window(
+        &mut self,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        style: WindowStyle,
+    ) -> WindowId {
         let id = WindowId::new(self.next_id.fetch_add(1, Ordering::SeqCst));
         let rect = Rect::new(x, y, width, height);
         let window = Window::new(id, String::from(title), rect, style);
@@ -281,23 +382,37 @@ impl WindowManager {
     pub fn destroy_window(&mut self, id: WindowId) {
         self.windows.remove(&id);
         self.z_order_list.retain(|&wid| wid != id);
-        if self.focused == Some(id) { self.focused = self.z_order_list.last().copied(); }
+        if self.focused == Some(id) {
+            self.focused = self.z_order_list.last().copied();
+        }
     }
 
-    pub fn get_window(&self, id: WindowId) -> Option<&Window> { self.windows.get(&id) }
-    pub fn get_window_mut(&mut self, id: WindowId) -> Option<&mut Window> { self.windows.get_mut(&id) }
-    pub fn focused_window(&self) -> Option<WindowId> { self.focused }
+    pub fn get_window(&self, id: WindowId) -> Option<&Window> {
+        self.windows.get(&id)
+    }
+    pub fn get_window_mut(&mut self, id: WindowId) -> Option<&mut Window> {
+        self.windows.get_mut(&id)
+    }
+    pub fn focused_window(&self) -> Option<WindowId> {
+        self.focused
+    }
 
     pub fn set_focus(&mut self, id: WindowId) {
-        if !self.windows.contains_key(&id) { return; }
+        if !self.windows.contains_key(&id) {
+            return;
+        }
         if let Some(old_focused) = self.focused {
             if old_focused != id {
-                if let Some(window) = self.windows.get_mut(&old_focused) { window.push_event(WindowEvent::FocusLost); }
+                if let Some(window) = self.windows.get_mut(&old_focused) {
+                    window.push_event(WindowEvent::FocusLost);
+                }
             }
         }
         self.focused = Some(id);
         self.bring_to_front(id);
-        if let Some(window) = self.windows.get_mut(&id) { window.push_event(WindowEvent::FocusGained); }
+        if let Some(window) = self.windows.get_mut(&id) {
+            window.push_event(WindowEvent::FocusGained);
+        }
     }
 
     pub fn bring_to_front(&mut self, id: WindowId) {
@@ -308,28 +423,48 @@ impl WindowManager {
     pub fn window_at(&self, x: i32, y: i32) -> Option<WindowId> {
         for &id in self.z_order_list.iter().rev() {
             if let Some(window) = self.windows.get(&id) {
-                if window.is_visible() && window.contains(x, y) { return Some(id); }
+                if window.is_visible() && window.contains(x, y) {
+                    return Some(id);
+                }
             }
         }
         None
     }
 
     pub fn handle_key_down(&mut self, key: KeyCode, modifiers: Modifiers) {
-        if let Some(id) = self.focused { if let Some(window) = self.windows.get_mut(&id) { window.push_event(WindowEvent::KeyDown { key, modifiers }); } }
+        if let Some(id) = self.focused {
+            if let Some(window) = self.windows.get_mut(&id) {
+                window.push_event(WindowEvent::KeyDown { key, modifiers });
+            }
+        }
     }
 
     pub fn handle_key_up(&mut self, key: KeyCode, modifiers: Modifiers) {
-        if let Some(id) = self.focused { if let Some(window) = self.windows.get_mut(&id) { window.push_event(WindowEvent::KeyUp { key, modifiers }); } }
+        if let Some(id) = self.focused {
+            if let Some(window) = self.windows.get_mut(&id) {
+                window.push_event(WindowEvent::KeyUp { key, modifiers });
+            }
+        }
     }
 
-    pub fn set_wallpaper(&mut self, wallpaper: Image) { self.wallpaper = Some(wallpaper.resize_bilinear(self.screen_width, self.screen_height)); }
-    pub fn set_desktop_color(&mut self, color: Color) { self.desktop_color = color; }
+    pub fn set_wallpaper(&mut self, wallpaper: Image) {
+        self.wallpaper = Some(wallpaper.resize_bilinear(self.screen_width, self.screen_height));
+    }
+    pub fn set_desktop_color(&mut self, color: Color) {
+        self.desktop_color = color;
+    }
 
     pub fn compose(&self, fb: &mut Framebuffer) {
-        if let Some(ref wallpaper) = self.wallpaper { fb.draw_image(wallpaper, 0, 0); } else { fb.clear(self.desktop_color); }
+        if let Some(ref wallpaper) = self.wallpaper {
+            fb.draw_image(wallpaper, 0, 0);
+        } else {
+            fb.clear(self.desktop_color);
+        }
         for &id in &self.z_order_list {
             if let Some(window) = self.windows.get(&id) {
-                if window.is_visible() { self.draw_window(fb, window); }
+                if window.is_visible() {
+                    self.draw_window(fb, window);
+                }
             }
         }
     }
@@ -337,18 +472,33 @@ impl WindowManager {
     fn draw_window(&self, fb: &mut Framebuffer, window: &Window) {
         let rect = window.rect();
         let is_focused = self.focused == Some(window.id());
-        let title_bar_color = if is_focused { Color::new(0, 120, 215) } else { Color::new(128, 128, 128) };
+        let title_bar_color = if is_focused {
+            Color::new(0, 120, 215)
+        } else {
+            Color::new(128, 128, 128)
+        };
         let border_color = Color::DARK_GRAY;
-        if window.style.border { fb.draw_rect(rect, border_color); }
+        if window.style.border {
+            fb.draw_rect(rect, border_color);
+        }
         if window.style.title_bar {
-            let title_bar_rect = Rect::new(rect.x + Window::BORDER_WIDTH as i32, rect.y + Window::BORDER_WIDTH as i32, rect.width - Window::BORDER_WIDTH * 2, Window::TITLE_BAR_HEIGHT);
+            let title_bar_rect = Rect::new(
+                rect.x + Window::BORDER_WIDTH as i32,
+                rect.y + Window::BORDER_WIDTH as i32,
+                rect.width - Window::BORDER_WIDTH * 2,
+                Window::TITLE_BAR_HEIGHT,
+            );
             fb.fill_rect(title_bar_rect, title_bar_color);
         }
         let client = window.client_rect();
         fb.draw_image(window.content(), client.x, client.y);
     }
 
-    pub fn clear_dirty(&mut self) { for window in self.windows.values_mut() { window.mark_clean(); } }
+    pub fn clear_dirty(&mut self) {
+        for window in self.windows.values_mut() {
+            window.mark_clean();
+        }
+    }
 }
 
 // ============================================================================
@@ -358,26 +508,46 @@ impl WindowManager {
 static WINDOW_MANAGER: PoisonLock<Option<WindowManager>> = PoisonLock::new(None);
 
 pub fn init(screen_width: u32, screen_height: u32) {
-    *WINDOW_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) = Some(WindowManager::new(screen_width, screen_height));
+    *WINDOW_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some(WindowManager::new(screen_width, screen_height));
 }
 
 pub fn with_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&WindowManager) -> R,
 {
-    WINDOW_MANAGER.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(f)
+    WINDOW_MANAGER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(f)
 }
 
 pub fn with_manager_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut WindowManager) -> R,
 {
-    WINDOW_MANAGER.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(f)
+    WINDOW_MANAGER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .map(f)
 }
 
-pub fn create_window(title: &str, x: i32, y: i32, width: u32, height: u32, style: WindowStyle) -> Option<WindowId> {
+pub fn create_window(
+    title: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    style: WindowStyle,
+) -> Option<WindowId> {
     with_manager_mut(|wm| wm.create_window(title, x, y, width, height, style))
 }
 
-pub fn destroy_window(id: WindowId) { with_manager_mut(|wm| wm.destroy_window(id)); }
-pub fn compose(fb: &mut Framebuffer) { with_manager(|wm| wm.compose(fb)); }
+pub fn destroy_window(id: WindowId) {
+    with_manager_mut(|wm| wm.destroy_window(id));
+}
+pub fn compose(fb: &mut Framebuffer) {
+    with_manager(|wm| wm.compose(fb));
+}

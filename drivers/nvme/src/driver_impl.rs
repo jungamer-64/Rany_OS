@@ -41,16 +41,26 @@ fn abi_probe(ctx: &mut DriverContext) -> i32 {
     unsafe {
         DRIVER = Some(NvmePollingDriver::new(ctx.device_address, 1, None));
         if let Some(ref mut driver) = DRIVER {
-            if driver.init().is_err() { return -1; }
+            if driver.init().is_err() {
+                return -1;
+            }
         }
     }
     0
 }
 
-fn abi_remove(_ctx: &mut DriverContext) -> i32 { 0 }
-fn abi_start(_ctx: &mut DriverContext) -> i32 { 0 }
-fn abi_stop(_ctx: &mut DriverContext) -> i32 { 0 }
-fn driver_name() -> &'static str { "nvme" }
+fn abi_remove(_ctx: &mut DriverContext) -> i32 {
+    0
+}
+fn abi_start(_ctx: &mut DriverContext) -> i32 {
+    0
+}
+fn abi_stop(_ctx: &mut DriverContext) -> i32 {
+    0
+}
+fn driver_name() -> &'static str {
+    "nvme"
+}
 
 kernel_api::export_driver!(
     probe: abi_probe,

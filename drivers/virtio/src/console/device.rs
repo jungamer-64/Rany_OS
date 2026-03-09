@@ -2,10 +2,10 @@
 // drivers/virtio/src/console/device.rs - Shared VirtIO Console Device Logic
 // ============================================================================
 
-use crate::transport::VirtioTransport;
-use crate::transport::TransportError;
-use crate::defs::status;
 use crate::console::features;
+use crate::defs::status;
+use crate::transport::TransportError;
+use crate::transport::VirtioTransport;
 
 use crate::console::*;
 
@@ -51,13 +51,12 @@ impl VirtioConsoleDevice {
     pub fn negotiate_features(&mut self, transport: &dyn VirtioTransport) -> u64 {
         let device_features = transport.get_device_features();
 
-        let accepted_features = device_features & (
-            crate::core::VIRTIO_F_VERSION_1 |
-            crate::defs::VIRTIO_F_INDIRECT_DESC |
-            features::VIRTIO_CONSOLE_F_SIZE |
-            features::VIRTIO_CONSOLE_F_MULTIPORT |
-            features::VIRTIO_CONSOLE_F_EMERG_WRITE
-        );
+        let accepted_features = device_features
+            & (crate::core::VIRTIO_F_VERSION_1
+                | crate::defs::VIRTIO_F_INDIRECT_DESC
+                | features::VIRTIO_CONSOLE_F_SIZE
+                | features::VIRTIO_CONSOLE_F_MULTIPORT
+                | features::VIRTIO_CONSOLE_F_EMERG_WRITE);
 
         transport.set_driver_features(accepted_features);
         self.features = accepted_features;

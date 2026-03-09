@@ -386,11 +386,7 @@ impl Mlx5Device {
             crate::defs::WqState::Ready as u8,
             crate::defs::WqState::Error as u8,
         );
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::ModifySq,
-            0x110,
-            0x10,
-        )?;
+        self.execute_uid_sensitive_cmd(CmdOpcode::ModifySq, 0x110, 0x10)?;
         Ok(())
     }
 
@@ -405,11 +401,7 @@ impl Mlx5Device {
             crate::defs::WqState::Ready as u8,
             crate::defs::WqState::Error as u8,
         );
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::ModifyRq,
-            0x110,
-            0x10,
-        )?;
+        self.execute_uid_sensitive_cmd(CmdOpcode::ModifyRq, 0x110, 0x10)?;
         Ok(())
     }
 }

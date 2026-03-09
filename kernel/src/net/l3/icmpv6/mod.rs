@@ -298,7 +298,7 @@ impl Icmpv6Processor {
             echo_enabled,
             stats: Icmpv6Stats::default(),
             last_token_time: AtomicU64::new(0),
-            tx_tokens: AtomicU32::new(20), // Initial burst capacity
+            tx_tokens: AtomicU32::new(20),  // Initial burst capacity
             rx_tokens: AtomicU32::new(100), // Ingress limit is more generous
         }
     }
@@ -312,11 +312,13 @@ impl Icmpv6Processor {
         if new_tokens > 0 {
             // Egress: 20 pkts/sec, max 50
             let old_tx = self.tx_tokens.load(Ordering::Relaxed);
-            self.tx_tokens.store((old_tx + new_tokens).min(50), Ordering::Relaxed);
+            self.tx_tokens
+                .store((old_tx + new_tokens).min(50), Ordering::Relaxed);
 
             // Ingress: 100 pkts/sec, max 200
             let old_rx = self.rx_tokens.load(Ordering::Relaxed);
-            self.rx_tokens.store((old_rx + (new_tokens * 5)).min(200), Ordering::Relaxed);
+            self.rx_tokens
+                .store((old_rx + (new_tokens * 5)).min(200), Ordering::Relaxed);
 
             self.last_token_time.store(current_time, Ordering::Relaxed);
         }

@@ -106,7 +106,10 @@ impl CapabilityManager {
         // Test hook: optionally force a grant failure for a specific cap
         #[cfg(test)]
         {
-            let mut f = self.fail_next_grant_for.lock().unwrap_or_else(|e| e.into_inner());
+            let mut f = self
+                .fail_next_grant_for
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if let Some(fcap) = *f {
                 if fcap == cap {
                     *f = None;
@@ -133,7 +136,10 @@ impl CapabilityManager {
             revoked: false,
             revoked_at: None,
         };
-        self.grants.lock().unwrap_or_else(|e| e.into_inner()).push(token.clone());
+        self.grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(token.clone());
 
         // Audit
         crate::security::audit::log_event(
@@ -279,7 +285,10 @@ impl CapabilityManager {
     /// Test helper: force the next grant of `cap` to fail once
     #[cfg(test)]
     pub fn force_fail_next_grant_for(&self, cap: Capability) {
-        let mut f = self.fail_next_grant_for.lock().unwrap_or_else(|e| e.into_inner());
+        let mut f = self
+            .fail_next_grant_for
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *f = Some(cap);
     }
 

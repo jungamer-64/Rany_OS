@@ -34,8 +34,8 @@ use crate::task::{TimeoutResult, with_timeout};
 
 use kernel_api::resource::net::PacketRef;
 use kernel_api::service::netdev::{
-    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
-    NetPortStats, NetTxMeta, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP,
+    MacAddress, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NetDeviceInfo, NetDevicePort,
+    NetDriverEvent, NetPortKind, NetPortRuntime, NetPortStats, NetTxMeta,
 };
 use mlx5_driver::Mlx5Device;
 
@@ -197,11 +197,16 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
     fn info(&self) -> NetDeviceInfo {
         NetDeviceInfo {
             port_id: NetDeviceKey::Mlx5(0).port_id(),
-            if_id: MLX5_IF_ID.lock().ok().and_then(|guard| guard.map(|if_id| if_id.0)),
+            if_id: MLX5_IF_ID
+                .lock()
+                .ok()
+                .and_then(|guard| guard.map(|if_id| if_id.0)),
             kind: NetPortKind::Mlx5,
             driver_name: "mlx5",
-            queue_pairs: with_mlx5_device(|device| core::cmp::max(device.num_rqs(), device.num_sqs()))
-                .unwrap_or(1) as u16,
+            queue_pairs: with_mlx5_device(|device| {
+                core::cmp::max(device.num_rqs(), device.num_sqs())
+            })
+            .unwrap_or(1) as u16,
             mtu: crate::net::runtime::stack::MTU as u32,
             mac: MacAddress(*mlx5_mac_address().as_bytes()),
             flags: if mlx5_health_check() {
@@ -242,9 +247,9 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
 
     fn handle_event(&self, _if_id: u16, event: NetDriverEvent) -> Result<(), &'static str> {
         match event {
-            NetDriverEvent::Interrupt
-            | NetDriverEvent::Poll
-            | NetDriverEvent::QueueWake { .. } => Ok(()),
+            NetDriverEvent::Interrupt | NetDriverEvent::Poll | NetDriverEvent::QueueWake { .. } => {
+                Ok(())
+            }
         }
     }
 

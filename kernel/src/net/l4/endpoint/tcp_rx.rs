@@ -24,7 +24,7 @@ use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment};
-use super::tcb::{tcb_table, tcp_flags, TcpConnectionState, TcpControlBlockEntry};
+use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
 use super::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
 };
@@ -405,7 +405,7 @@ pub fn process_tcp_segment_v6(
         // TCB が見つからない場合:
         // 1. 新規接続要求 (SYN)
         // 2. SYN Cookie の検証 (ACK)
-        
+
         let is_syn = (flags & tcp_flags::SYN) != 0;
         let is_ack = (flags & tcp_flags::ACK) != 0;
         let is_rst = (flags & tcp_flags::RST) != 0;
@@ -425,11 +425,17 @@ pub fn process_tcp_segment_v6(
         } else if is_ack && !is_rst {
             // SYN Cookie の検証を試みる
             let client_isn = seq_num.wrapping_sub(1);
-            if let Some(mss_idx) = tcb_table().verify_syncookie(local, remote, ack_num, client_isn) {
-                log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote);
-                
+            if let Some(mss_idx) = tcb_table().verify_syncookie(local, remote, ack_num, client_isn)
+            {
+                log::info!(
+                    "[TCP] SYN Cookie verified for {}, creating connection",
+                    remote
+                );
+
                 // 対応する LISTEN ソケットを探す
-                if let Some(socket) = crate::net::l4::endpoint::manager::find_listening_socket(local) {
+                if let Some(socket) =
+                    crate::net::l4::endpoint::manager::find_listening_socket(local)
+                {
                     let mss = match mss_idx {
                         2 => 1460,
                         1 => 536,
@@ -442,10 +448,13 @@ pub fn process_tcp_segment_v6(
                     tcb.rcv_nxt = seq_num;
                     tcb.state = TcpConnectionState::Established;
                     tcb.mss = mss;
-                    
+
                     // TCB を挿入
                     if let Err(e) = tcb_table().insert(tcb.clone()) {
-                        log::warn!("[TCP] Failed to insert TCB after SYN Cookie verification: {}", e);
+                        log::warn!(
+                            "[TCP] Failed to insert TCB after SYN Cookie verification: {}",
+                            e
+                        );
                         return;
                     }
 
@@ -461,7 +470,15 @@ pub fn process_tcp_segment_v6(
                         0
                     };
                     if payload_len > 0 {
-                        process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
+                        process_tcp_with_tcb(
+                            tcb,
+                            flags,
+                            seq_num,
+                            ack_num,
+                            urgent_ptr,
+                            segment,
+                            data_offset,
+                        );
                     }
                 }
             }
@@ -590,7 +607,7 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
         // TCB が見つからない場合:
         // 1. 新規接続要求 (SYN)
         // 2. SYN Cookie の検証 (ACK)
-        
+
         let is_syn = (flags & tcp_flags::SYN) != 0;
         let is_ack = (flags & tcp_flags::ACK) != 0;
         let is_rst = (flags & tcp_flags::RST) != 0;
@@ -610,11 +627,17 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
         } else if is_ack && !is_rst {
             // SYN Cookie の検証を試みる
             let client_isn = seq_num.wrapping_sub(1);
-            if let Some(mss_idx) = tcb_table().verify_syncookie(local, remote, ack_num, client_isn) {
-                log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote);
-                
+            if let Some(mss_idx) = tcb_table().verify_syncookie(local, remote, ack_num, client_isn)
+            {
+                log::info!(
+                    "[TCP] SYN Cookie verified for {}, creating connection",
+                    remote
+                );
+
                 // 対応する LISTEN ソケットを探す
-                if let Some(socket) = crate::net::l4::endpoint::manager::find_listening_socket(local) {
+                if let Some(socket) =
+                    crate::net::l4::endpoint::manager::find_listening_socket(local)
+                {
                     let mss = match mss_idx {
                         2 => 1460,
                         1 => 536,
@@ -627,10 +650,13 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
                     tcb.rcv_nxt = seq_num;
                     tcb.state = TcpConnectionState::Established;
                     tcb.mss = mss;
-                    
+
                     // TCB を挿入
                     if let Err(e) = tcb_table().insert(tcb.clone()) {
-                        log::warn!("[TCP] Failed to insert TCB after SYN Cookie verification: {}", e);
+                        log::warn!(
+                            "[TCP] Failed to insert TCB after SYN Cookie verification: {}",
+                            e
+                        );
                         return;
                     }
 
@@ -646,7 +672,15 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
                         0
                     };
                     if payload_len > 0 {
-                        process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
+                        process_tcp_with_tcb(
+                            tcb,
+                            flags,
+                            seq_num,
+                            ack_num,
+                            urgent_ptr,
+                            segment,
+                            data_offset,
+                        );
                     }
                 }
             }
@@ -1108,7 +1142,7 @@ fn handle_data_received_with_delayed_ack(
         if payload_len > 0 {
             let pushed = socket.push_data(data);
             new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32);
-            
+
             // RFC 1122: If some data could not be accepted, we MUST NOT advance
             // rcv_nxt past the accepted data.
             if (pushed as u32) < payload_len {
@@ -1510,7 +1544,11 @@ fn handle_syn_ack_received(
 
 /// Helper to get a socket by its file descriptor.
 fn get_socket_by_fd(fd: EndpointFd) -> Option<Endpoint> {
-    ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(fd))
+    ENDPOINT_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(fd))
 }
 
 /// Helper to notify a socket that it is connected.

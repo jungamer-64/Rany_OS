@@ -1,16 +1,16 @@
 use super::*;
-use crate::sync::lockfree::MpmcRingBuffer;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
-use kernel_api::dma::{CpuOwned, DmaSlice};
-use x86_64::PhysAddr;
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes, iommu_align_len};
 use crate::io::iommu::api::{is_iommu_enabled, is_iommu_required, unmap_dma, unmap_for_device};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::defs::{VirtioDeviceType, status};
 use crate::io::virtio::transport::{TransportType, VirtioTransport};
+use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
+use crate::sync::lockfree::MpmcRingBuffer;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use kernel_api::dma::{CpuOwned, DmaSlice};
+use x86_64::PhysAddr;
 
 mod dma;
 pub use dma::*;
@@ -169,7 +169,9 @@ impl VirtioNetDevice {
 
         Self::validate_iommu_device_requirement(is_iommu_enabled(), self.iommu_device_id)?;
 
-        self.core.init(self.transport.as_ref()).map_err(|_| VirtioNetError::DeviceError)?;
+        self.core
+            .init(self.transport.as_ref())
+            .map_err(|_| VirtioNetError::DeviceError)?;
 
         if let Err(e) = self.setup_queues() {
             log::error!("[VIRTIO-NET] Failed to setup queues: {:?}", e);
@@ -178,7 +180,8 @@ impl VirtioNetDevice {
             return Err(e);
         }
 
-        self.mut_transport().add_status(status::VIRTIO_STATUS_DRIVER_OK);
+        self.mut_transport()
+            .add_status(status::VIRTIO_STATUS_DRIVER_OK);
 
         for rxq in &self.rx_queues {
             rxq.notify(self.transport.as_ref());
@@ -204,7 +207,7 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
     ) -> Result<DmaSlice<CpuOwned>, VirtioNetError> {
         let buffer = CoherentDmaBuffer::new(size, DmaMemoryAttributes::MMIO)
             .ok_or(VirtioNetError::DeviceError)?;
-        
+
         let (phys, iova, virt, len, _releaser) = buffer.into_raw_parts();
         Ok(unsafe { DmaSlice::from_raw_parts(phys, iova, virt, len, None) })
     }
@@ -234,7 +237,8 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         unsafe {
             let iova = crate::io::iommu::api::map_for_device_with_perms(
                 &device_id, phys, size, read, write,
-            ).map_err(|_| VirtioNetError::DeviceError)?;
+            )
+            .map_err(|_| VirtioNetError::DeviceError)?;
 
             Ok((iova, Some(iova)))
         }
@@ -244,7 +248,13 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         unmap_iommu_addr(self.iommu_device_id, iova, len as usize);
     }
 
-    fn receive_packet(&self, _queue_index: u16, packet: PacketRef, header_len: usize, payload_len: usize) {
+    fn receive_packet(
+        &self,
+        _queue_index: u16,
+        packet: PacketRef,
+        header_len: usize,
+        payload_len: usize,
+    ) {
         if let Some(runtime) = registry::virtio_net_runtime(self.virtio_index) {
             let _ = runtime.submit_rx(
                 packet,
@@ -259,9 +269,18 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
             .net_if_id()
             .or_else(|| crate::net::runtime::bridge::lookup_if_by_virtio_index(self.virtio_index))
         {
-            crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(if_id, packet, header_len, payload_len);
+            crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
+                if_id,
+                packet,
+                header_len,
+                payload_len,
+            );
         } else {
-            crate::net::runtime::bridge::process_received_packet_zero_copy(packet, header_len, payload_len);
+            crate::net::runtime::bridge::process_received_packet_zero_copy(
+                packet,
+                header_len,
+                payload_len,
+            );
         }
     }
 
@@ -274,9 +293,10 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
 
     fn schedule_wake(&self, queue_index: u16) {
         if let Some(runtime) = registry::virtio_net_runtime(self.virtio_index) {
-            let _ = runtime.schedule_event(kernel_api::service::netdev::NetDriverEvent::QueueWake {
-                queue_index,
-            });
+            let _ =
+                runtime.schedule_event(kernel_api::service::netdev::NetDriverEvent::QueueWake {
+                    queue_index,
+                });
         } else {
             let _ = crate::net::runtime::device::enqueue_event(
                 crate::net::runtime::device::NetDeviceKey::Virtio(self.virtio_index),
@@ -406,7 +426,9 @@ impl VirtioNetDevice {
         &mut self,
         queue_index: u16,
     ) -> Result<NetVirtQueue, VirtioNetError> {
-        let (queue_size, layout) = self.core.prepare_queue(self.transport.as_ref(), queue_index)
+        let (queue_size, layout) = self
+            .core
+            .prepare_queue(self.transport.as_ref(), queue_index)
             .map_err(|_| VirtioNetError::DeviceError)?;
 
         let (buffer, _dma_len) = self.allocate_queue_dma(layout.total_size)?;
@@ -420,7 +442,8 @@ impl VirtioNetDevice {
         let notify_addr = self.mut_transport().get_notify_addr(queue_index);
         let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
-        let (dma_base, iommu_map) = self.setup_iommu_dma_mapping(&buffer, layout.total_size, phys_base)?;
+        let (dma_base, iommu_map) =
+            self.setup_iommu_dma_mapping(&buffer, layout.total_size, phys_base)?;
 
         let (tx_headers, tx_header_dma_base) = if (queue_index % 2) == 1 {
             let header_ptr = unsafe { ptr.add(layout.header_offset) as *mut VirtioNetHeader };
@@ -435,15 +458,25 @@ impl VirtioNetDevice {
 
         // Core trackers
         if (queue_index % 2) == 0 {
-            self.core.rx_trackers.push(virtio_driver::net::InflightTracker::new(queue_size));
+            self.core
+                .rx_trackers
+                .push(virtio_driver::net::InflightTracker::new(queue_size));
         } else {
-            self.core.tx_trackers.push(virtio_driver::net::InflightTracker::new(queue_size));
+            self.core
+                .tx_trackers
+                .push(virtio_driver::net::InflightTracker::new(queue_size));
         }
 
         let desc_addr = dma_base;
         let avail_addr = dma_base + layout.desc_size as u64;
         let used_addr = dma_base + layout.used_offset as u64;
-        self.core.commit_queue(self.transport.as_ref(), queue_index, desc_addr, avail_addr, used_addr);
+        self.core.commit_queue(
+            self.transport.as_ref(),
+            queue_index,
+            desc_addr,
+            avail_addr,
+            used_addr,
+        );
 
         let queue = unsafe {
             NetVirtQueue::new(
@@ -483,9 +516,9 @@ impl VirtioNetDevice {
 
         if is_iommu_enabled() {
             let aligned_len = iommu_align_len(total_size).ok_or(VirtioNetError::DeviceError)?;
-            let device_id = self.iommu_device_id.ok_or_else(|| {
-                VirtioNetError::DeviceError
-            })?;
+            let device_id = self
+                .iommu_device_id
+                .ok_or_else(|| VirtioNetError::DeviceError)?;
             let buffer = CoherentDmaBuffer::new_for_device(
                 aligned_len,
                 DmaMemoryAttributes::MMIO,
@@ -542,8 +575,7 @@ impl VirtioNetDevice {
 }
 
 impl Drop for VirtioNetDevice {
-    fn drop(&mut self) {
-    }
+    fn drop(&mut self) {}
 }
 
 #[cfg(test)]

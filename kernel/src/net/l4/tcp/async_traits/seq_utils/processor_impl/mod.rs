@@ -1454,7 +1454,9 @@ impl TcpProcessor {
             if !Self::notify_backlog(tcb, tcb_arc) {
                 // Backlog full: close and send RST
                 let local = tcb.local_addr();
-                let remote = tcb.remote_addr().unwrap_or(EndpointAddr::new([0, 0, 0, 0], 0));
+                let remote = tcb
+                    .remote_addr()
+                    .unwrap_or(EndpointAddr::new([0, 0, 0, 0], 0));
                 tcb.close_and_wake();
                 self.connections.remove(&(local, remote));
                 return TcpProcessResult::SendPacket {

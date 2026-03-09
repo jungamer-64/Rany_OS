@@ -23,10 +23,10 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::sync::PoisonRwLock;
 
 use super::cow::{CowResult, cow_map_zero_page, zero_page_phys};
 use super::fault_handler::PageSetup;
@@ -303,7 +303,8 @@ impl DemandPagingManager {
     }
 }
 
-static DEMAND_MANAGER: PoisonRwLock<DemandPagingManager> = PoisonRwLock::new(DemandPagingManager::new());
+static DEMAND_MANAGER: PoisonRwLock<DemandPagingManager> =
+    PoisonRwLock::new(DemandPagingManager::new());
 
 // ============================================================================
 // Statistics
@@ -629,7 +630,10 @@ pub fn register_anonymous(task_id: u64, start: VirtAddr, size: u64, prot: ProtFl
     let end = VirtAddr::new(start.as_u64() + size);
     let region = VmRegion::new_anonymous(start, end, prot);
 
-    DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner()).register_region(task_id, region);
+    DEMAND_MANAGER
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .register_region(task_id, region);
 }
 
 /// ファイルマッピング領域を登録
@@ -651,17 +655,26 @@ pub fn register_file_mapping(
     };
     let region = VmRegion::new_file(start, end, prot, shared, file_info);
 
-    DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner()).register_region(task_id, region);
+    DEMAND_MANAGER
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .register_region(task_id, region);
 }
 
 /// 領域を削除
 pub fn unregister_region(task_id: u64, start: VirtAddr) -> Option<VmRegion> {
-    DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner()).remove_region(task_id, start)
+    DEMAND_MANAGER
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove_region(task_id, start)
 }
 
 /// タスクの全領域を削除
 pub fn cleanup_task(task_id: u64) -> Vec<VmRegion> {
-    DEMAND_MANAGER.write().unwrap_or_else(|e| e.into_inner()).remove_all_regions(task_id)
+    DEMAND_MANAGER
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove_all_regions(task_id)
 }
 
 // ============================================================================

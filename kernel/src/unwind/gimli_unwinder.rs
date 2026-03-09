@@ -598,12 +598,18 @@ impl DropGuardRegistry {
 
 /// Drop guardを登録するマクロ用の関数
 pub fn register_drop_guard(guard: DropGuard) {
-    DROP_GUARD_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).register(guard);
+    DROP_GUARD_REGISTRY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .register(guard);
 }
 
 /// Drop guardの登録を解除する関数
 pub fn unregister_drop_guard(stack_addr: u64) {
-    DROP_GUARD_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).unregister(stack_addr);
+    DROP_GUARD_REGISTRY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .unregister(stack_addr);
 }
 
 // ============================================================================
@@ -654,10 +660,16 @@ impl DomainLockRegistry {
 
 /// ドメインがロックを取得したことを記録
 pub fn register_domain_lock(info: DomainLockInfo) {
-    DOMAIN_LOCK_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).register(info);
+    DOMAIN_LOCK_REGISTRY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .register(info);
 }
 
 /// ドメインがロックを解放したことを記録
 pub fn unregister_domain_lock(lock_addr: usize) {
-    DOMAIN_LOCK_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()).unregister(lock_addr);
+    DOMAIN_LOCK_REGISTRY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .unregister(lock_addr);
 }

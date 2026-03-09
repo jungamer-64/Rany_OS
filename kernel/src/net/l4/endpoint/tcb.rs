@@ -296,7 +296,8 @@ const TCB_SHARD_COUNT: usize = 16;
 const TCB_SHARD_MASK: usize = TCB_SHARD_COUNT - 1;
 
 pub struct TcbTable {
-    shards: [PoisonRwLock<BTreeMap<(EndpointAddr, EndpointAddr), TcpControlBlockEntry>>; TCB_SHARD_COUNT],
+    shards: [PoisonRwLock<BTreeMap<(EndpointAddr, EndpointAddr), TcpControlBlockEntry>>;
+        TCB_SHARD_COUNT],
     seq_counter: AtomicU32,
     pub current_tick: AtomicU64,
     total_count: AtomicUsize,
@@ -317,8 +318,9 @@ fn shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
 
 impl TcbTable {
     pub const fn new() -> Self {
-        const EMPTY_SHARD: PoisonRwLock<BTreeMap<(EndpointAddr, EndpointAddr), TcpControlBlockEntry>> =
-            PoisonRwLock::new(BTreeMap::new());
+        const EMPTY_SHARD: PoisonRwLock<
+            BTreeMap<(EndpointAddr, EndpointAddr), TcpControlBlockEntry>,
+        > = PoisonRwLock::new(BTreeMap::new());
         Self {
             shards: [EMPTY_SHARD; TCB_SHARD_COUNT],
             seq_counter: AtomicU32::new(0),
@@ -584,12 +586,13 @@ impl TcbTable {
         let (timeout, max_per_shard) = if count > (MAX_SYN_RECEIVED_ENTRIES * 3 / 4) {
             (AGGRESSIVE_TIMEOUT_TICKS, 32) // 高負荷時
         } else {
-            (SYN_RECV_TIMEOUT_TICKS, 8)    // 低・中負荷時
+            (SYN_RECV_TIMEOUT_TICKS, 8) // 低・中負荷時
         };
 
         for shard in &self.shards {
             let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
-            let mut to_remove: alloc::vec::Vec<(EndpointAddr, EndpointAddr)> = alloc::vec::Vec::with_capacity(max_per_shard);
+            let mut to_remove: alloc::vec::Vec<(EndpointAddr, EndpointAddr)> =
+                alloc::vec::Vec::with_capacity(max_per_shard);
             for (key, entry) in entries.iter() {
                 if entry.state == TcpConnectionState::SynReceived
                     && current_tick.saturating_sub(entry.last_send_tick) > timeout
@@ -644,7 +647,11 @@ impl TcbTable {
 
     pub fn get(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlockEntry> {
         let idx = shard_index(&local, &remote);
-        self.shards[idx].read().unwrap_or_else(|e| e.into_inner()).get(&(local, remote)).cloned()
+        self.shards[idx]
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(local, remote))
+            .cloned()
     }
 
     pub fn update<F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> bool
@@ -722,7 +729,11 @@ impl TcbTable {
         remote: EndpointAddr,
     ) -> Option<TcpControlBlockEntry> {
         let idx = shard_index(&local, &remote);
-        self.shards[idx].read().unwrap_or_else(|e| e.into_inner()).get(&(local, remote)).cloned()
+        self.shards[idx]
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(local, remote))
+            .cloned()
     }
 
     pub fn lookup_mut<R, F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> Option<R>
@@ -853,7 +864,9 @@ pub mod qemu_tests {
     use super::*;
     pub fn tcp_connection_state_smoke() -> bool {
         let state = TcpConnectionState::Closed;
-        if !matches!(state, TcpConnectionState::Closed) { return false; }
+        if !matches!(state, TcpConnectionState::Closed) {
+            return false;
+        }
         let state = TcpConnectionState::Established;
         matches!(state, TcpConnectionState::Established)
     }
@@ -862,12 +875,16 @@ pub mod qemu_tests {
         let local = EndpointAddr::new([192, 168, 1, 1], 12345);
         let remote = EndpointAddr::new([192, 168, 1, 2], 80);
         let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
-        if tcb.state != TcpConnectionState::Closed { return false; }
+        if tcb.state != TcpConnectionState::Closed {
+            return false;
+        }
         tcb.initialize_seq(1000);
         tcb.snd_nxt == 1000 && tcb.snd_una == 1000
     }
     pub fn tcp_flags_smoke() -> bool {
-        if tcp_flags::FIN != 0x01 || tcp_flags::SYN != 0x02 { return false; }
+        if tcp_flags::FIN != 0x01 || tcp_flags::SYN != 0x02 {
+            return false;
+        }
         let syn_ack = tcp_flags::SYN | tcp_flags::ACK;
         syn_ack == 0x12
     }

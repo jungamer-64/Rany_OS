@@ -240,7 +240,9 @@ impl HugePageAllocator {
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
 
         {
-            let mut pool = self.pools[numa_node].lock().unwrap_or_else(|e| e.into_inner());
+            let mut pool = self.pools[numa_node]
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let frame_opt = match size {
                 HugePageSize::Size2MB => pool.try_get_2mb(),
                 HugePageSize::Size1GB => pool.try_get_1gb(),
@@ -268,7 +270,9 @@ impl HugePageAllocator {
         }
 
         {
-            let mut pool = self.pools[numa_node].lock().unwrap_or_else(|e| e.into_inner());
+            let mut pool = self.pools[numa_node]
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             pool.alloc_failed += 1;
         }
 
@@ -314,7 +318,9 @@ impl HugePageAllocator {
             return;
         }
 
-        let mut pool = self.pools[numa_node].lock().unwrap_or_else(|e| e.into_inner());
+        let mut pool = self.pools[numa_node]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         match entry.size {
             HugePageSize::Size2MB => pool.put_2mb(entry.frame),
             HugePageSize::Size1GB => pool.put_1gb(entry.frame),
@@ -329,7 +335,9 @@ impl HugePageAllocator {
         let mut filled = 0;
         for _ in 0..count {
             if let Some(frame) = self.try_allocate_from_buddy(size, numa_node) {
-                let mut pool = self.pools[numa_node].lock().unwrap_or_else(|e| e.into_inner());
+                let mut pool = self.pools[numa_node]
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 match size {
                     HugePageSize::Size2MB => pool.put_2mb(frame),
                     HugePageSize::Size1GB => pool.put_1gb(frame),
@@ -347,7 +355,9 @@ impl HugePageAllocator {
             return None;
         }
 
-        let pool = self.pools[numa_node].lock().unwrap_or_else(|e| e.into_inner());
+        let pool = self.pools[numa_node]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         Some(HugePagePoolStats {
             free_2mb: pool.free_2mb.len(),
             free_1gb: pool.free_1gb.len(),

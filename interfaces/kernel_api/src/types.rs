@@ -254,7 +254,10 @@ impl PacketRef {
     ///
     /// # Safety
     /// `storage` must contain the backing expected by `vtable`.
-    pub unsafe fn from_opaque_parts(storage: PacketRefStorage, vtable: &'static PacketRefVTable) -> Self {
+    pub unsafe fn from_opaque_parts(
+        storage: PacketRefStorage,
+        vtable: &'static PacketRefVTable,
+    ) -> Self {
         Self {
             storage,
             vtable,
@@ -740,7 +743,12 @@ mod packet_ref_tests {
 
     unsafe fn heap_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
         let state = unsafe { heap_state_mut(storage) };
-        state.backing.data.as_ptr().cast_mut().wrapping_add(state.offset)
+        state
+            .backing
+            .data
+            .as_ptr()
+            .cast_mut()
+            .wrapping_add(state.offset)
     }
 
     unsafe fn heap_len(storage: &PacketRefStorage) -> usize {
@@ -767,7 +775,10 @@ mod packet_ref_tests {
 
     unsafe fn heap_advance(storage: &mut PacketRefStorage, size: usize) {
         let state = unsafe { heap_state_mut(storage) };
-        state.offset = state.offset.saturating_add(size).min(state.backing.data.len());
+        state.offset = state
+            .offset
+            .saturating_add(size)
+            .min(state.backing.data.len());
         state.len = state.len.saturating_sub(size);
     }
 
@@ -888,17 +899,12 @@ mod packet_ref_tests {
         let mut data = Box::new([0u8; 64]);
         data[..6].copy_from_slice(b"kernel");
         let state = HeapPacketState {
-            backing: Arc::new(SharedHeapBuffer {
-                data,
-                addr: 0x1000,
-            }),
+            backing: Arc::new(SharedHeapBuffer { data, addr: 0x1000 }),
             offset: 0,
             len: 6,
         };
 
-        unsafe {
-            PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &HEAP_VTABLE)
-        }
+        unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &HEAP_VTABLE) }
     }
 
     fn make_dma_packet() -> PacketRef {

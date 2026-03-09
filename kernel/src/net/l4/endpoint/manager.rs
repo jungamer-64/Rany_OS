@@ -42,7 +42,7 @@ impl EndpointManager {
         // RFC 6056: Use a random starting point for port selection to prevent prediction attacks.
         let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         let random_start = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
-        
+
         let range_size = (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1) as u16;
         let start_port = EPHEMERAL_PORT_START + (random_start % range_size);
 
@@ -56,7 +56,8 @@ impl EndpointManager {
             if !ports_guard.contains_key(&port) {
                 // Update the counter for the next sequential-ish attempt (if we still want it)
                 // but since we randomized the start above, the counter is less critical.
-                self.next_ephemeral_port.store(port.wrapping_add(1) as u32, Ordering::Relaxed);
+                self.next_ephemeral_port
+                    .store(port.wrapping_add(1) as u32, Ordering::Relaxed);
                 return Some(port);
             }
         }
@@ -71,7 +72,8 @@ impl EndpointManager {
     }
 
     pub fn unregister(&self, fd: EndpointFd) -> Option<Endpoint> {
-        let removed = self.endpoints
+        let removed = self
+            .endpoints
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&fd);
@@ -137,7 +139,10 @@ impl EndpointManager {
     }
 
     pub fn endpoint_count(&self) -> usize {
-        self.endpoints.read().unwrap_or_else(|e| e.into_inner()).len()
+        self.endpoints
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     pub fn for_each<F>(&self, mut f: F)

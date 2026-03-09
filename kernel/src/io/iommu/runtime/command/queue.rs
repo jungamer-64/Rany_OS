@@ -130,7 +130,10 @@ fn take_completed_result(slot: &CompletionSlot) -> Option<i32> {
 }
 
 #[inline]
-fn take_completed_result_and_notify(slot: &CompletionSlot, queue_ptr: *const CommandQueue) -> Option<i32> {
+fn take_completed_result_and_notify(
+    slot: &CompletionSlot,
+    queue_ptr: *const CommandQueue,
+) -> Option<i32> {
     let result = take_completed_result(slot)?;
     let queue = unsafe { &*queue_ptr };
     queue.notify_slot_available();
@@ -436,6 +439,14 @@ impl CommandQueue {
         }
     }
 
+    #[inline]
+    fn ensure_receiver_available(&self) -> Result<(), ()> {
+        if self.is_poisoned() {
+            return Err(());
+        }
+        self.with_receiver(|_| ())
+    }
+
     /// Allocate a free slot index or return None if none available now
     fn alloc_slot(&self) -> Option<usize> {
         if self.is_poisoned() {
@@ -531,6 +542,7 @@ impl CommandQueue {
 
     /// Non-blocking submit: returns a `CommandCompletion` which implements `Future`
     pub fn submit(&self, kind: IommuCommandKind) -> Result<CommandCompletion, ()> {
+        self.ensure_receiver_available()?;
         let slot_idx = match self.alloc_slot() {
             Some(i) => i,
             None => {
@@ -538,11 +550,20 @@ impl CommandQueue {
             }
         };
 
+        if self.ensure_receiver_available().is_err() {
+            self.release_unsubmitted_slot(slot_idx);
+            return Err(());
+        }
+
         let cmd = IommuCommand { kind, slot_idx };
 
         // Wait for sender to accept (bounded). Try with small backoff
         let mut backoff = Backoff::new();
         for _attempt in 0..MAX_SUBMIT_RETRIES {
+            if self.is_poisoned() {
+                self.release_unsubmitted_slot(slot_idx);
+                return Err(());
+            }
             match self.sender.send(cmd.clone()) {
                 Ok(_) => {
                     self.recv_waiter.wake();
@@ -553,6 +574,10 @@ impl CommandQueue {
                     });
                 }
                 Err(_) => {
+                    if self.ensure_receiver_available().is_err() {
+                        self.release_unsubmitted_slot(slot_idx);
+                        return Err(());
+                    }
                     self.send_backpressure_count.fetch_add(1, Ordering::Relaxed);
                     backoff.spin();
                 }
@@ -569,6 +594,9 @@ impl CommandQueue {
 
     /// Synchronous submit (blocking shim) preserved for compatibility
     pub fn submit_sync(&self, kind: IommuCommandKind) -> Result<(), ()> {
+        if self.is_poisoned() {
+            return Err(());
+        }
         let comp = self.submit(kind)?;
         let rc = comp.wait_blocking();
         if rc == RESULT_OK { Ok(()) } else { Err(()) }
@@ -583,27 +611,44 @@ impl CommandQueue {
     where
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
     {
+        self.ensure_receiver_available()?;
         // Allocate a slot first
         let mut backoff = Backoff::new();
         let mut slot_idx = None;
         for _attempt in 0..MAX_SUBMIT_RETRIES {
+            if self.is_poisoned() {
+                return Err(());
+            }
             slot_idx = self.alloc_slot();
             if slot_idx.is_some() {
                 break;
             }
             // If we can't allocate a slot, the queue might be full. Process to free slots.
             let _ = self.process_up_to(&mut handler, 1);
+            if self.ensure_receiver_available().is_err() {
+                return Err(());
+            }
             backoff.snooze();
         }
         let Some(slot_idx) = slot_idx else {
             return Err(());
         };
+
+        if self.ensure_receiver_available().is_err() {
+            self.release_unsubmitted_slot(slot_idx);
+            return Err(());
+        }
+
         let cmd = IommuCommand { kind, slot_idx };
 
         // Wait for sender to accept (bounded). Try with small backoff and drain queue
         backoff.reset();
         let mut submitted = false;
         for _attempt in 0..MAX_SUBMIT_RETRIES {
+            if self.is_poisoned() {
+                self.release_unsubmitted_slot(slot_idx);
+                return Err(());
+            }
             match self.sender.send(cmd.clone()) {
                 Ok(_) => {
                     self.recv_waiter.wake();
@@ -611,6 +656,10 @@ impl CommandQueue {
                     break;
                 }
                 Err(_) => {
+                    if self.ensure_receiver_available().is_err() {
+                        self.release_unsubmitted_slot(slot_idx);
+                        return Err(());
+                    }
                     self.send_backpressure_count.fetch_add(1, Ordering::Relaxed);
                     // Queue full, drain it to make progress
                     let processed = self.process_up_to(&mut handler, 1);
@@ -640,14 +689,30 @@ impl CommandQueue {
     /// Await until work arrives on the queue.
     pub async fn wait_for_work(&self) {
         poll_fn(|cx| {
-            if !self.receiver.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+            if self.is_poisoned() {
                 return Poll::Ready(());
+            }
+            match self.with_receiver(|rx| rx.is_empty()) {
+                Ok(false) => return Poll::Ready(()),
+                Ok(true) => {}
+                Err(()) => return Poll::Ready(()),
             }
             self.recv_waiter.register(cx.waker());
-            if !self.receiver.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+            if self.is_poisoned() {
+                self.recv_waiter.clear();
                 return Poll::Ready(());
             }
-            Poll::Pending
+            match self.with_receiver(|rx| rx.is_empty()) {
+                Ok(false) => {
+                    self.recv_waiter.clear();
+                    Poll::Ready(())
+                }
+                Ok(true) => Poll::Pending,
+                Err(()) => {
+                    self.recv_waiter.clear();
+                    Poll::Ready(())
+                }
+            }
         })
         .await;
     }
@@ -662,18 +727,28 @@ impl CommandQueue {
 
         // LOOP_PROOF: mode=event; reason=Processing loop exits when receiver is empty or fuel gate stops and each recv handles one command.;
         loop {
+            if self.is_poisoned() {
+                break;
+            }
             // If fuel is active and there is no work, break early
             #[cfg(all(test, not(target_os = "none")))]
             if crate::task::fuel::Fuel::is_active() {
-                if self.receiver.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
-                    break;
+                match self.with_receiver(|rx| rx.is_empty()) {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(()) => break,
                 }
                 if !crate::task::fuel::Fuel::consume(1) {
                     break;
                 }
             }
 
-            if let Some(cmd) = self.receiver.lock().unwrap_or_else(|e| e.into_inner()).recv() {
+            let cmd = match self.with_receiver(|rx| rx.recv()) {
+                Ok(cmd) => cmd,
+                Err(()) => break,
+            };
+
+            if let Some(cmd) = cmd {
                 // Receiving an item freed up channel capacity; notify potential senders
                 self.notify_send_available();
 
@@ -719,22 +794,31 @@ impl CommandQueue {
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
     {
         let mut processed = 0usize;
-        let rx = self.receiver.lock().unwrap_or_else(|e| e.into_inner());
 
         // LOOP_PROOF: mode=condition; reason=Loop is explicitly bounded by max and also exits early when receiver is empty or fuel is exhausted.;
         while processed < max {
+            if self.is_poisoned() {
+                break;
+            }
             // If fuel is active and there is no work, break early.
             #[cfg(all(test, not(target_os = "none")))]
             if crate::task::fuel::Fuel::is_active() {
-                if rx.is_empty() {
-                    break;
+                match self.with_receiver(|rx| rx.is_empty()) {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(()) => break,
                 }
                 if !crate::task::fuel::Fuel::consume(1) {
                     break;
                 }
             }
 
-            if let Some(cmd) = rx.recv() {
+            let cmd = match self.with_receiver(|rx| rx.recv()) {
+                Ok(cmd) => cmd,
+                Err(()) => break,
+            };
+
+            if let Some(cmd) = cmd {
                 // Receiving an item freed up channel capacity; notify potential senders
                 self.notify_send_available();
                 // If the slot was canceled while queued, short-circuit
@@ -814,12 +898,23 @@ impl core::future::Future for SubmitFuture {
         let this = self.get_mut();
         let q = unsafe { &*this.queue_ptr };
 
+        if q.ensure_receiver_available().is_err() {
+            q.release_future_slot(this.slot_idx.take());
+            this.kind = None;
+            return Poll::Ready(Err(()));
+        }
+
         // Try to acquire a slot if we don't have one
         if this.slot_idx.is_none() {
             if let Some(idx) = q.try_alloc_slot() {
                 this.slot_idx = Some(idx);
             } else {
                 q.slot_waiter.register(cx.waker());
+                if q.is_poisoned() {
+                    q.slot_waiter.clear();
+                    this.kind = None;
+                    return Poll::Ready(Err(()));
+                }
                 if let Some(idx) = q.try_alloc_slot() {
                     q.slot_waiter.clear();
                     this.slot_idx = Some(idx);
@@ -848,9 +943,21 @@ impl core::future::Future for SubmitFuture {
                 Poll::Ready(Ok(comp))
             }
             Err(_) => {
+                if q.ensure_receiver_available().is_err() {
+                    q.send_waiter.clear();
+                    q.release_future_slot(this.slot_idx.take());
+                    this.kind = None;
+                    return Poll::Ready(Err(()));
+                }
                 // Count backpressure events for diagnostics
                 q.send_backpressure_count.fetch_add(1, Ordering::Relaxed);
                 q.send_waiter.register(cx.waker());
+                if q.is_poisoned() {
+                    q.send_waiter.clear();
+                    q.release_future_slot(this.slot_idx.take());
+                    this.kind = None;
+                    return Poll::Ready(Err(()));
+                }
                 if q.sender.send(cmd).is_ok() {
                     q.recv_waiter.wake();
                     q.send_waiter.clear();
@@ -866,6 +973,16 @@ impl core::future::Future for SubmitFuture {
                 }
             }
         }
+    }
+}
+
+impl Drop for SubmitFuture {
+    fn drop(&mut self) {
+        if self.kind.is_none() {
+            return;
+        }
+        let q = unsafe { &*self.queue_ptr };
+        q.release_future_slot(self.slot_idx.take());
     }
 }
 
@@ -995,6 +1112,16 @@ mod tests {
     extern crate alloc;
     use alloc::boxed::Box;
     use alloc::vec::Vec;
+
+    #[cfg(feature = "std")]
+    fn poison_receiver_lock(q: &CommandQueue) {
+        crate::sync::set_panicking(true);
+        {
+            let _guard = q.receiver.lock().unwrap();
+        }
+        crate::sync::set_panicking(false);
+        assert!(q.receiver.is_poisoned());
+    }
 
     #[cfg(feature = "std")]
     #[test_case]
@@ -1165,7 +1292,7 @@ mod tests {
             assert!(q.slots[idx].try_acquire());
         }
 
-        for domain in 0..DEFAULT_QUEUE_SIZE {
+        for domain in 0..bounded_channel_capacity() {
             q.sender
                 .send(IommuCommand {
                     kind: IommuCommandKind::InvalidateIotlbDomain {
@@ -1181,6 +1308,53 @@ mod tests {
                 .is_err()
         );
         assert!(q.try_alloc_slot().is_some());
+    }
+
+    #[cfg(feature = "std")]
+    #[test_case]
+    fn test_submit_detects_receiver_poison() {
+        let q = Box::leak(Box::new(CommandQueue::new()));
+        poison_receiver_lock(q);
+
+        assert!(
+            q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 0xbeef })
+                .is_err()
+        );
+        assert!(q.is_poisoned());
+    }
+
+    #[cfg(feature = "std")]
+    #[test_case]
+    fn test_submit_async_detects_receiver_poison() {
+        let q = Box::leak(Box::new(CommandQueue::new()));
+        poison_receiver_lock(q);
+
+        let rc = crate::task::block_on(async {
+            q.submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 0xcafe })
+                .await
+        });
+
+        assert!(rc.is_err());
+        assert!(q.is_poisoned());
+    }
+
+    #[cfg(feature = "std")]
+    #[test_case]
+    fn test_wait_for_work_returns_when_queue_poisoned() {
+        let q = Box::leak(Box::new(CommandQueue::new()));
+        let worker_q: &'static CommandQueue = &*q;
+
+        let worker = std::thread::spawn(move || {
+            crate::task::block_on(async {
+                worker_q.wait_for_work().await;
+            });
+        });
+
+        std::thread::yield_now();
+        q.poison();
+
+        worker.join().expect("wait_for_work join failed");
+        assert!(q.is_poisoned());
     }
 
     #[cfg(feature = "std")]

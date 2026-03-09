@@ -182,7 +182,10 @@ where
         return Err(err);
     }
 
-    Ok(sriov_status_from_state(Some(state), port_runtime_initialized))
+    Ok(sriov_status_from_state(
+        Some(state),
+        port_runtime_initialized,
+    ))
 }
 
 fn disable_vfs_with_runtime_state<C, F>(
@@ -214,7 +217,10 @@ where
         }
         (Some(vport_err), None) => Err(vport_err),
         (None, Some(pci_err)) => Err(map_pcie_error(pci_err)),
-        (None, None) => Ok(sriov_status_from_state(Some(state), port_runtime_initialized)),
+        (None, None) => Ok(sriov_status_from_state(
+            Some(state),
+            port_runtime_initialized,
+        )),
     }
 }
 
@@ -966,9 +972,9 @@ impl AsyncDriver for Mlx5AsyncDriver {
             }
             clear_mlx5_sriov_state();
 
-            if let Some(if_id) =
-                crate::net::runtime::device::lookup_if_by_key(crate::net::runtime::device::NetDeviceKey::Mlx5(0))
-            {
+            if let Some(if_id) = crate::net::runtime::device::lookup_if_by_key(
+                crate::net::runtime::device::NetDeviceKey::Mlx5(0),
+            ) {
                 let _ = crate::net::runtime::device::unregister_port(if_id);
             } else {
                 crate::net::runtime::bridge::mlx5_bridge::reset_mlx5_port_runtime();

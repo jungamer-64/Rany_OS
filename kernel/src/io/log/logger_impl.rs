@@ -257,20 +257,32 @@ pub fn get_dropped_log_bytes() -> usize {
 }
 
 pub fn read_char() -> Option<u8> {
-    INPUT_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).pop_one()
+    INPUT_BUFFER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pop_one()
 }
 
 pub fn has_char() -> bool {
-    !INPUT_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    !INPUT_BUFFER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_empty()
 }
 
 #[cfg(feature = "bench")]
 pub fn bench_clear_buffers() {
     LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).clear();
     for i in 0..PER_CPU_COUNT {
-        PER_CORE_LOG_BUFFERS[i].lock().unwrap_or_else(|e| e.into_inner()).clear();
+        PER_CORE_LOG_BUFFERS[i]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
-    INPUT_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    INPUT_BUFFER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     DROPPED_LOG_BYTES.store(0, Ordering::Relaxed);
 }
 
@@ -279,17 +291,26 @@ pub fn bench_push_per_core(core: usize, data: &[u8]) -> usize {
     if core >= PER_CPU_COUNT {
         return 0;
     }
-    PER_CORE_LOG_BUFFERS[core].lock().unwrap_or_else(|e| e.into_inner()).push_bytes(data)
+    PER_CORE_LOG_BUFFERS[core]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push_bytes(data)
 }
 
 #[cfg(feature = "bench")]
 pub fn bench_push_global(data: &[u8]) -> usize {
-    LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).push_bytes(data)
+    LOG_BUFFER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push_bytes(data)
 }
 
 #[cfg(feature = "bench")]
 pub fn bench_pop_global_buf(dst: &mut [u8]) -> usize {
-    LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).pop_bulk(dst)
+    LOG_BUFFER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pop_bulk(dst)
 }
 
 #[cfg(feature = "bench")]
@@ -297,7 +318,10 @@ pub fn bench_pop_per_core_buf(core: usize, dst: &mut [u8]) -> usize {
     if core >= PER_CPU_COUNT {
         return 0;
     }
-    PER_CORE_LOG_BUFFERS[core].lock().unwrap_or_else(|e| e.into_inner()).pop_bulk(dst)
+    PER_CORE_LOG_BUFFERS[core]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pop_bulk(dst)
 }
 
 #[cfg(feature = "bench")]
@@ -305,7 +329,10 @@ pub fn bench_total_pending_bytes() -> usize {
     let mut total = 0usize;
     total += LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).len();
     for i in 0..PER_CPU_COUNT {
-        total += PER_CORE_LOG_BUFFERS[i].lock().unwrap_or_else(|e| e.into_inner()).len();
+        total += PER_CORE_LOG_BUFFERS[i]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
     }
     total
 }

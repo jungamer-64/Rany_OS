@@ -35,7 +35,7 @@ impl NetworkStack {
         if !crate::net::security::firewall::check_egress_v4(
             self.config.ipv4.address.octets(),
             Ipv4Address::new([224, 0, 0, 2]).octets(), // all-routers
-            2, // IGMP
+            2,                                         // IGMP
             0,
             0,
             0,

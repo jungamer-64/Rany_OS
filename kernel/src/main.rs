@@ -1,16 +1,10 @@
 #![feature(custom_test_frameworks)]
 #![cfg_attr(
-    all(
-        not(any(test, feature = "std", feature = "bench")),
-        target_os = "none"
-    ),
+    all(not(any(test, feature = "std", feature = "bench")), target_os = "none"),
     no_std
 )]
 #![cfg_attr(
-    all(
-        not(any(test, feature = "std", feature = "bench")),
-        target_os = "none"
-    ),
+    all(not(any(test, feature = "std", feature = "bench")), target_os = "none"),
     no_main
 )]
 #![feature(abi_x86_interrupt)]
@@ -50,10 +44,7 @@ pub static __tls_end: u8 = 0;
 
 // Explicit _start entry point for the linker
 // This references kmain to prevent the linker from stripping it
-#[cfg(all(
-    not(any(test, feature = "std", feature = "bench")),
-    target_os = "none"
-))]
+#[cfg(all(not(any(test, feature = "std", feature = "bench")), target_os = "none"))]
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub unsafe extern "C" fn _start() -> ! {

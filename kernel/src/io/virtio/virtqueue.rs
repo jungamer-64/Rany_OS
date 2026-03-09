@@ -1,12 +1,12 @@
 use crate::io::dma::CoherentDmaBuffer;
 use crate::io::iommu::types::DmaAddr;
 
+use virtio_driver::core::VirtQueue as InnerVirtQueue;
 pub use virtio_driver::defs::{
     VIRTIO_F_INDIRECT_DESC, VIRTQUEUE_MAX_SIZE, VRING_AVAIL_ALIGN, VRING_DESC_ALIGN,
     VRING_USED_ALIGN, VringAvailHeader as VringAvail, VringDesc, VringUsedElem,
     VringUsedHeader as VringUsed, vring_flags,
 };
-use virtio_driver::core::VirtQueue as InnerVirtQueue;
 
 /// Virtqueue implementation (Kernel Wrapper)
 #[derive(Debug)]
@@ -44,24 +44,36 @@ impl VirtQueue {
             avail_ring as *mut virtio_driver::defs::VringAvailHeader,
             used_ring as *mut virtio_driver::defs::VringUsedHeader,
             features,
-        ).expect("Failed to initialize VirtQueue inner");
+        )
+        .expect("Failed to initialize VirtQueue inner");
 
-        Self {
-            inner,
-            dma_buffer,
-        }
+        Self { inner, dma_buffer }
     }
 
-    pub fn index(&self) -> u16 { self.inner.queue_index() }
-    pub fn size(&self) -> u16 { self.inner.queue_size() }
-    pub fn features(&self) -> u64 { self.inner.features() }
+    pub fn index(&self) -> u16 {
+        self.inner.queue_index()
+    }
+    pub fn size(&self) -> u16 {
+        self.inner.queue_size()
+    }
+    pub fn features(&self) -> u64 {
+        self.inner.features()
+    }
 
-    pub fn alloc_desc(&self) -> Option<u16> { self.inner.alloc_desc() }
-    pub fn free_desc(&self, idx: u16) { self.inner.free_desc(idx) }
-    pub fn free_desc_chain(&self, head: u16) { self.inner.free_desc_chain(head) }
-    
+    pub fn alloc_desc(&self) -> Option<u16> {
+        self.inner.alloc_desc()
+    }
+    pub fn free_desc(&self, idx: u16) {
+        self.inner.free_desc(idx)
+    }
+    pub fn free_desc_chain(&self, head: u16) {
+        self.inner.free_desc_chain(head)
+    }
+
     pub unsafe fn submit(&mut self, head: u16) -> u16 {
-        unsafe { self.inner.submit_avail(head); }
+        unsafe {
+            self.inner.submit_avail(head);
+        }
         self.inner.queue_index()
     }
 
@@ -78,7 +90,9 @@ impl VirtQueue {
     }
 
     pub fn poll_completions<F>(&mut self, mut on_complete: F) -> usize
-    where F: FnMut(u16, u32) {
+    where
+        F: FnMut(u16, u32),
+    {
         let mut count = 0;
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some((id, len)) = self.inner.poll_complete() {

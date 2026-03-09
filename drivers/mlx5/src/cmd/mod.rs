@@ -356,8 +356,7 @@ impl CmdQueueTransport {
         if len <= MLX5_CMD_INLINE_SIZE {
             0
         } else {
-            (len - MLX5_CMD_INLINE_SIZE + MLX5_CMD_DATA_BLOCK_SIZE - 1)
-                / MLX5_CMD_DATA_BLOCK_SIZE
+            (len - MLX5_CMD_INLINE_SIZE + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE
         }
     }
 
@@ -408,9 +407,8 @@ impl CmdQueueTransport {
         block.sig = 0;
 
         let block_bytes = core::slice::from_raw_parts(block_ptr as *const u8, CMD_BLOCK_SIZE);
-        block.ctrl_sig = !Self::xor8(
-            &block_bytes[MLX5_CMD_DATA_BLOCK_SIZE..MLX5_CMD_DATA_BLOCK_SIZE + 62],
-        );
+        block.ctrl_sig =
+            !Self::xor8(&block_bytes[MLX5_CMD_DATA_BLOCK_SIZE..MLX5_CMD_DATA_BLOCK_SIZE + 62]);
         block.sig = !Self::xor8(&block_bytes[..CMD_BLOCK_SIZE - 1]);
     }
 
@@ -458,7 +456,12 @@ impl CmdQueueTransport {
         Ok(in_inline)
     }
 
-    unsafe fn prepare_out_block(&self, token: u8, out_len: usize, out_mbox_phys: u64) -> Mlx5Result<()> {
+    unsafe fn prepare_out_block(
+        &self,
+        token: u8,
+        out_len: usize,
+        out_mbox_phys: u64,
+    ) -> Mlx5Result<()> {
         Self::validate_mailbox_len("output", out_len)?;
         if out_len <= MLX5_CMD_INLINE_SIZE {
             return Ok(());
@@ -622,7 +625,8 @@ impl CommandTransport for CmdQueueTransport {
         let delivery_status_raw = entry.delivery_status_raw();
         let delivery_status = entry.delivery_status();
         if delivery_status != CmdDeliveryStatus::Ok {
-            let syndrome = u32::from_be_bytes([out_inline[4], out_inline[5], out_inline[6], out_inline[7]]);
+            let syndrome =
+                u32::from_be_bytes([out_inline[4], out_inline[5], out_inline[6], out_inline[7]]);
             crate::boot_trace_cmd(opcode, "status_err", self.uid);
             log::error!(
                 target: "mlx5",
@@ -659,7 +663,8 @@ impl CommandTransport for CmdQueueTransport {
 
         let fw_status = out_inline[0];
         if fw_status != 0 {
-            let syndrome = u32::from_be_bytes([out_inline[4], out_inline[5], out_inline[6], out_inline[7]]);
+            let syndrome =
+                u32::from_be_bytes([out_inline[4], out_inline[5], out_inline[6], out_inline[7]]);
             crate::boot_trace_cmd(opcode, "status_err", self.uid);
             log::error!(
                 target: "mlx5",
@@ -710,7 +715,10 @@ mod tests {
 
         let mut flow_table_uid = CmdMailbox::zeroed();
         transport.write_transport_header(CmdOpcode::CreateFlowTable, &mut flow_table_uid);
-        assert_eq!(flow_table_uid.read_be16(0x00), CmdOpcode::CreateFlowTable as u16);
+        assert_eq!(
+            flow_table_uid.read_be16(0x00),
+            CmdOpcode::CreateFlowTable as u16
+        );
         assert_eq!(flow_table_uid.read_be16(0x02), 0x1234);
 
         let mut reserved_uid = CmdMailbox::zeroed();
@@ -722,13 +730,19 @@ mod tests {
         let mut flow_no_uid = CmdMailbox::zeroed();
         flow_no_uid.write_be16(0x02, 0xbeef);
         transport.write_transport_header(CmdOpcode::CreateFlowGroup, &mut flow_no_uid);
-        assert_eq!(flow_no_uid.read_be16(0x00), CmdOpcode::CreateFlowGroup as u16);
+        assert_eq!(
+            flow_no_uid.read_be16(0x00),
+            CmdOpcode::CreateFlowGroup as u16
+        );
         assert_eq!(flow_no_uid.read_be16(0x02), 0xbeef);
 
         let mut rebuilt_uid = CmdMailbox::zeroed();
         rebuilt_uid.write_be16(0x02, 0xabcd);
         transport.write_transport_header(CmdOpcode::QueryVhcaState, &mut rebuilt_uid);
-        assert_eq!(rebuilt_uid.read_be16(0x00), CmdOpcode::QueryVhcaState as u16);
+        assert_eq!(
+            rebuilt_uid.read_be16(0x00),
+            CmdOpcode::QueryVhcaState as u16
+        );
         assert_eq!(rebuilt_uid.read_be16(0x02), 0xabcd);
     }
 
@@ -744,8 +758,7 @@ mod tests {
         let mut expected_inline = [0u8; MLX5_CMD_INLINE_SIZE];
         expected_inline.copy_from_slice(&in_backing[..MLX5_CMD_INLINE_SIZE]);
         let mut expected_payload = [0u8; MLX5_CMD_DATA_BLOCK_SIZE];
-        expected_payload[..payload_len]
-            .copy_from_slice(&in_backing[MLX5_CMD_INLINE_SIZE..in_len]);
+        expected_payload[..payload_len].copy_from_slice(&in_backing[MLX5_CMD_INLINE_SIZE..in_len]);
 
         let transport = CmdQueueTransport {
             cmdq_phys: 0,
@@ -761,8 +774,11 @@ mod tests {
             in_snapshot_len: 0,
         };
 
-        let in_inline =
-            unsafe { transport.prepare_in_block(0x5a, in_len, 0x2000).expect("prepare_in_block") };
+        let in_inline = unsafe {
+            transport
+                .prepare_in_block(0x5a, in_len, 0x2000)
+                .expect("prepare_in_block")
+        };
         assert_eq!(in_inline, expected_inline);
 
         let block = unsafe { &*CmdQueueTransport::block_ptr(transport.in_mbox_virt, 0) };
@@ -795,7 +811,8 @@ mod tests {
         };
 
         unsafe {
-            CommandTransport::snapshot_input(&mut transport, in_len as u32).expect("snapshot_input");
+            CommandTransport::snapshot_input(&mut transport, in_len as u32)
+                .expect("snapshot_input");
             let _ = transport
                 .prepare_in_block(0x33, in_len, 0x2000)
                 .expect("prepare_in_block");

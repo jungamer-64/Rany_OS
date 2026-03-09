@@ -16,7 +16,7 @@
 use crate::sync::IrqPoisonLock;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use super::atomic_utils::{AtomicU16, AtomicU8};
+use super::atomic_utils::{AtomicU8, AtomicU16};
 use super::types::{FixedVec, PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K};
 
 // ============================================================================
@@ -436,7 +436,11 @@ impl AdaptiveBatchStats {
         let drains = self.low_load_drains.load(Ordering::Relaxed)
             + self.high_load_drains.load(Ordering::Relaxed)
             + self.urgent_drains.load(Ordering::Relaxed);
-        if drains == 0 { 0.0 } else { total as f64 / drains as f64 }
+        if drains == 0 {
+            0.0
+        } else {
+            total as f64 / drains as f64
+        }
     }
 }
 
@@ -446,47 +450,72 @@ impl<const N: usize> RemoteFreeRing<N> {
     pub fn adaptive_drain(&self, out: &mut [RemoteFreeEntry]) -> usize {
         let current_len = self.len();
         let capacity = self.capacity();
-        if current_len == 0 || out.is_empty() { return 0; }
+        if current_len == 0 || out.is_empty() {
+            return 0;
+        }
         let fill_percent = (current_len * 100) / capacity;
         let config = &ADAPTIVE_BATCH_CONFIG;
         let batch_size = if fill_percent >= config.urgent_threshold_percent {
-            ADAPTIVE_BATCH_STATS.urgent_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .urgent_drains
+                .fetch_add(1, Ordering::Relaxed);
             out.len().min(current_len)
         } else if fill_percent >= config.load_threshold_percent {
             let range = config.urgent_threshold_percent - config.load_threshold_percent;
             let progress = fill_percent - config.load_threshold_percent;
-            let scaled = config.min_batch + ((config.max_batch - config.min_batch) * progress) / range.max(1);
-            ADAPTIVE_BATCH_STATS.high_load_drains.fetch_add(1, Ordering::Relaxed);
+            let scaled = config.min_batch
+                + ((config.max_batch - config.min_batch) * progress) / range.max(1);
+            ADAPTIVE_BATCH_STATS
+                .high_load_drains
+                .fetch_add(1, Ordering::Relaxed);
             out.len().min(scaled).min(current_len)
         } else {
-            ADAPTIVE_BATCH_STATS.low_load_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .low_load_drains
+                .fetch_add(1, Ordering::Relaxed);
             out.len().min(config.min_batch).min(current_len)
         };
         let drained = self.drain(&mut out[..batch_size]);
-        ADAPTIVE_BATCH_STATS.total_drained.fetch_add(drained as u64, Ordering::Relaxed);
+        ADAPTIVE_BATCH_STATS
+            .total_drained
+            .fetch_add(drained as u64, Ordering::Relaxed);
         drained
     }
 
-    fn compute_adaptive_batch_size(&self, current_len: usize, capacity: usize, max_out: usize) -> usize {
+    fn compute_adaptive_batch_size(
+        &self,
+        current_len: usize,
+        capacity: usize,
+        max_out: usize,
+    ) -> usize {
         let fill_percent = (current_len * 100) / capacity;
         let config = &ADAPTIVE_BATCH_CONFIG;
         if fill_percent >= config.urgent_threshold_percent {
-            ADAPTIVE_BATCH_STATS.urgent_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .urgent_drains
+                .fetch_add(1, Ordering::Relaxed);
             max_out.min(current_len)
         } else if fill_percent >= config.load_threshold_percent {
             let range = config.urgent_threshold_percent - config.load_threshold_percent;
             let progress = fill_percent - config.load_threshold_percent;
-            let scaled = config.min_batch + ((config.max_batch - config.min_batch) * progress) / range.max(1);
-            ADAPTIVE_BATCH_STATS.high_load_drains.fetch_add(1, Ordering::Relaxed);
+            let scaled = config.min_batch
+                + ((config.max_batch - config.min_batch) * progress) / range.max(1);
+            ADAPTIVE_BATCH_STATS
+                .high_load_drains
+                .fetch_add(1, Ordering::Relaxed);
             max_out.min(scaled).min(current_len)
         } else {
-            ADAPTIVE_BATCH_STATS.low_load_drains.fetch_add(1, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .low_load_drains
+                .fetch_add(1, Ordering::Relaxed);
             max_out.min(config.min_batch).min(current_len)
         }
     }
 
     fn merge_sorted_entries(entries: &mut [RemoteFreeEntry]) -> usize {
-        if entries.len() <= 1 { return entries.len(); }
+        if entries.len() <= 1 {
+            return entries.len();
+        }
         let mut write_idx = 0;
         let mut read_idx = 1;
         while read_idx < entries.len() {
@@ -494,16 +523,24 @@ impl<const N: usize> RemoteFreeRing<N> {
             let next = &entries[read_idx];
             if current.size_class == next.size_class {
                 let page_size = current.page_size();
-                let current_end = current.addr.saturating_add(page_size * (current.count as u64));
+                let current_end = current
+                    .addr
+                    .saturating_add(page_size * (current.count as u64));
                 if current_end == next.addr {
                     let new_count = current.count.saturating_add(next.count);
-                    entries[write_idx] = RemoteFreeEntry { addr: current.addr, count: new_count, size_class: current.size_class };
+                    entries[write_idx] = RemoteFreeEntry {
+                        addr: current.addr,
+                        count: new_count,
+                        size_class: current.size_class,
+                    };
                     read_idx += 1;
                     continue;
                 }
             }
             write_idx += 1;
-            if write_idx != read_idx { entries[write_idx] = entries[read_idx]; }
+            if write_idx != read_idx {
+                entries[write_idx] = entries[read_idx];
+            }
             read_idx += 1;
         }
         write_idx + 1
@@ -512,30 +549,40 @@ impl<const N: usize> RemoteFreeRing<N> {
     pub fn adaptive_drain_and_merge(&self, out: &mut [RemoteFreeEntry]) -> usize {
         let current_len = self.len();
         let capacity = self.capacity();
-        if current_len == 0 || out.is_empty() { return 0; }
+        if current_len == 0 || out.is_empty() {
+            return 0;
+        }
         let batch_size = self.compute_adaptive_batch_size(current_len, capacity, out.len());
         let drained = self.drain(&mut out[..batch_size]);
         if drained <= 1 {
-            ADAPTIVE_BATCH_STATS.total_drained.fetch_add(drained as u64, Ordering::Relaxed);
+            ADAPTIVE_BATCH_STATS
+                .total_drained
+                .fetch_add(drained as u64, Ordering::Relaxed);
             return drained;
         }
         let entries = &mut out[..drained];
         for i in 1..entries.len() {
             let mut j = i;
-            while j > 0 && Self::entry_cmp(&entries[j - 1], &entries[j]) == core::cmp::Ordering::Greater {
+            while j > 0
+                && Self::entry_cmp(&entries[j - 1], &entries[j]) == core::cmp::Ordering::Greater
+            {
                 entries.swap(j - 1, j);
                 j -= 1;
             }
         }
         let merged_count = Self::merge_sorted_entries(entries);
-        ADAPTIVE_BATCH_STATS.total_drained.fetch_add(merged_count as u64, Ordering::Relaxed);
+        ADAPTIVE_BATCH_STATS
+            .total_drained
+            .fetch_add(merged_count as u64, Ordering::Relaxed);
         merged_count
     }
 
     #[inline]
     pub fn fill_percent(&self) -> usize {
         let len = self.len();
-        if N == 0 { return 0; }
+        if N == 0 {
+            return 0;
+        }
         (len * 100) / N
     }
 

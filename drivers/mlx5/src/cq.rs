@@ -119,8 +119,14 @@ impl Cqe {
     /// ハードウェアタイムスタンプを取得 (64-bit)
     pub fn timestamp(&self) -> u64 {
         u64::from_be_bytes([
-            self.data[0x10], self.data[0x11], self.data[0x12], self.data[0x13],
-            self.data[0x14], self.data[0x15], self.data[0x16], self.data[0x17],
+            self.data[0x10],
+            self.data[0x11],
+            self.data[0x12],
+            self.data[0x13],
+            self.data[0x14],
+            self.data[0x15],
+            self.data[0x16],
+            self.data[0x17],
         ])
     }
 }
@@ -249,7 +255,11 @@ impl CompletionQueue {
                         qpn: cqe.qpn(),
                         l3_ok: cqe.l3_ok(),
                         l4_ok: cqe.l4_ok(),
-                        vlan_tag: if cqe.vlan_present() { Some(cqe.vlan_tag()) } else { None },
+                        vlan_tag: if cqe.vlan_present() {
+                            Some(cqe.vlan_tag())
+                        } else {
+                            None
+                        },
                         timestamp: cqe.timestamp(),
                     };
                     results.push(info);

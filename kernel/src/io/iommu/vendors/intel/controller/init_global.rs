@@ -50,6 +50,9 @@ async fn command_queue_worker(controller: Arc<IommuController>) {
         );
         if processed == 0 {
             cq.wait_for_work().await;
+            if cq.is_poisoned() {
+                break;
+            }
         }
     }
 }

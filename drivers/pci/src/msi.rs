@@ -519,16 +519,23 @@ impl InterruptAllocator {
     }
 }
 
-static INTERRUPT_ALLOCATOR: PoisonLock<InterruptAllocator> = PoisonLock::new(InterruptAllocator::new());
+static INTERRUPT_ALLOCATOR: PoisonLock<InterruptAllocator> =
+    PoisonLock::new(InterruptAllocator::new());
 
 /// Allocate an interrupt vector for a device
 pub fn allocate_vector(bdf: BdfAddress) -> Option<u8> {
-    INTERRUPT_ALLOCATOR.lock().unwrap_or_else(|e| e.into_inner()).allocate(bdf)
+    INTERRUPT_ALLOCATOR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .allocate(bdf)
 }
 
 /// Allocate multiple contiguous interrupt vectors
 pub fn allocate_vectors(bdf: BdfAddress, count: u8) -> Option<u8> {
-    INTERRUPT_ALLOCATOR.lock().unwrap_or_else(|e| e.into_inner()).allocate_range(bdf, count)
+    INTERRUPT_ALLOCATOR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .allocate_range(bdf, count)
 }
 
 // ============================================================================

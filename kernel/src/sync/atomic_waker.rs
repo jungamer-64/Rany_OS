@@ -313,7 +313,10 @@ impl WakerQueue {
     }
 
     pub fn clear(&self) {
-        self.wakers.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.wakers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         self.wake_requested.store(false, Ordering::Release);
     }
 }

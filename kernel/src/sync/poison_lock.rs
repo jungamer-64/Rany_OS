@@ -126,10 +126,7 @@ impl<T> PoisonRwLock<T> {
         LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
         LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
 
-        let p_guard = PoisonRwLockReadGuard {
-            lock: self,
-            guard,
-        };
+        let p_guard = PoisonRwLockReadGuard { lock: self, guard };
 
         if self.poisoned.load(Ordering::Acquire) {
             Err(PoisonError::new(p_guard))
@@ -155,10 +152,7 @@ impl<T> PoisonRwLock<T> {
         LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
         LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
 
-        let p_guard = PoisonRwLockWriteGuard {
-            lock: self,
-            guard,
-        };
+        let p_guard = PoisonRwLockWriteGuard { lock: self, guard };
 
         if self.poisoned.load(Ordering::Acquire) {
             Err(PoisonError::new(p_guard))
@@ -170,10 +164,7 @@ impl<T> PoisonRwLock<T> {
     /// 読み取りロックを試行
     pub fn try_read(&self) -> Option<LockResult<PoisonRwLockReadGuard<'_, T>>> {
         self.inner.try_read().map(|guard| {
-            let p_guard = PoisonRwLockReadGuard {
-                lock: self,
-                guard,
-            };
+            let p_guard = PoisonRwLockReadGuard { lock: self, guard };
             if self.poisoned.load(Ordering::Acquire) {
                 Err(PoisonError::new(p_guard))
             } else {
@@ -185,10 +176,7 @@ impl<T> PoisonRwLock<T> {
     /// 書き込みロックを試行
     pub fn try_write(&self) -> Option<LockResult<PoisonRwLockWriteGuard<'_, T>>> {
         self.inner.try_write().map(|guard| {
-            let p_guard = PoisonRwLockWriteGuard {
-                lock: self,
-                guard,
-            };
+            let p_guard = PoisonRwLockWriteGuard { lock: self, guard };
             if self.poisoned.load(Ordering::Acquire) {
                 Err(PoisonError::new(p_guard))
             } else {
@@ -206,7 +194,6 @@ impl<T> PoisonRwLock<T> {
     pub fn clear_poison(&self) {
         self.poisoned.store(false, Ordering::Release);
     }
-
 }
 
 /// PoisonRwLockの読み取りガード

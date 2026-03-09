@@ -198,7 +198,12 @@ impl AhciOps {
         if let Some(handler) = &self.handler {
             handler.add_pending(req_id, PortNumber(self.port), slot);
             Ok(())
-        } else if let Some(h) = AHCI_POLL_HANDLERS.read().unwrap_or_else(|e| e.into_inner()).get(&self.port).cloned() {
+        } else if let Some(h) = AHCI_POLL_HANDLERS
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&self.port)
+            .cloned()
+        {
             h.add_pending(req_id, PortNumber(self.port), slot);
             Ok(())
         } else {
@@ -294,7 +299,10 @@ pub fn register_ahci_with(
 }
 
 /// AHCI を IoScheduler に登録（後方互換wrapper）
-pub fn register_ahci_with_io_scheduler(controller: Arc<PoisonLock<AhciController>>, port_number: u8) {
+pub fn register_ahci_with_io_scheduler(
+    controller: Arc<PoisonLock<AhciController>>,
+    port_number: u8,
+) {
     register_ahci_with(
         &io_scheduler(),
         &hybrid_coordinator(),

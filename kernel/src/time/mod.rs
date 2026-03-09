@@ -171,11 +171,11 @@ mod pit {
     pub const COMMAND: u16 = 0x43;
     pub const SPEAKER_PORT: u16 = 0x61;
     pub const BASE_FREQUENCY: u64 = 1193182;
-    pub const MODE_SQUARE_WAVE: u8 = 0x36; 
-    pub const MODE_ONE_SHOT: u8 = 0x30; 
-    pub const MODE_RATE_GEN: u8 = 0x34; 
-    pub const READBACK: u8 = 0xE2; 
-    pub const CH2_MODE_ONE_SHOT: u8 = 0xB0; 
+    pub const MODE_SQUARE_WAVE: u8 = 0x36;
+    pub const MODE_ONE_SHOT: u8 = 0x30;
+    pub const MODE_RATE_GEN: u8 = 0x34;
+    pub const READBACK: u8 = 0xE2;
+    pub const CH2_MODE_ONE_SHOT: u8 = 0xB0;
 }
 
 /// RTC (Real-Time Clock) 定数
@@ -189,7 +189,7 @@ mod rtc {
     pub const DAY_OF_MONTH: u8 = 0x07;
     pub const MONTH: u8 = 0x08;
     pub const YEAR: u8 = 0x09;
-    pub const CENTURY: u8 = 0x32; 
+    pub const CENTURY: u8 = 0x32;
     pub const STATUS_A: u8 = 0x0A;
     pub const STATUS_B: u8 = 0x0B;
     pub const STATUS_C: u8 = 0x0C;
@@ -301,10 +301,10 @@ impl Rtc {
             hour_val
         } else {
             match (hour_val, pm) {
-                (12, false) => 0,    
-                (12, true) => 12,    
-                (h, false) => h,     
-                (h, true) => h + 12, 
+                (12, false) => 0,
+                (12, true) => 12,
+                (h, false) => h,
+                (h, true) => h + 12,
             }
         }
     }
@@ -428,8 +428,10 @@ impl SystemClock {
         self.tsc_epoch_nanos.store(epoch_ns, Ordering::Release);
         self.tsc_epoch_tsc.store(epoch_tsc, Ordering::Release);
         self.tsc_freq_hz.store(info.frequency, Ordering::Release);
-        self.tsc_mult.store(info.tsc_to_nanos_mult, Ordering::Release);
-        self.tsc_shift.store(info.tsc_to_nanos_shift, Ordering::Release);
+        self.tsc_mult
+            .store(info.tsc_to_nanos_mult, Ordering::Release);
+        self.tsc_shift
+            .store(info.tsc_to_nanos_shift, Ordering::Release);
         if info.invariant {
             self.tsc_available.store(true, Ordering::Release);
         }

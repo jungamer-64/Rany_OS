@@ -48,9 +48,8 @@ use vfs::block::{
 use crate::io::virtio::VirtioDeviceStatus;
 
 pub use virtio_driver::blk::{
-    BlockError, VirtioBlkConfig, VirtioBlkReqHeader, features,
-    VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_FLUSH,
-    VIRTIO_BLK_S_OK, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_UNSUPP,
+    BlockError, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP, VIRTIO_BLK_T_FLUSH,
+    VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT, VirtioBlkConfig, VirtioBlkReqHeader, features,
 };
 
 // ============================================================================
@@ -147,8 +146,6 @@ impl BlkRequestDma {
 // VirtIO Block Device
 // ============================================================================
 
-
-
 use crate::sync::IrqPoisonLock;
 
 use virtio_driver::blk::device::VirtioBlkDevice as CoreBlkDevice;
@@ -174,5 +171,3 @@ pub struct VirtioBlkDevice {
 
 unsafe impl Send for VirtioBlkDevice {}
 unsafe impl Sync for VirtioBlkDevice {}
-
-

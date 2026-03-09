@@ -50,10 +50,16 @@ struct FileHandleEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChannelRole { Sender, Receiver }
+enum ChannelRole {
+    Sender,
+    Receiver,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ChannelEntry { channel_id: u64, role: ChannelRole }
+struct ChannelEntry {
+    channel_id: u64,
+    role: ChannelRole,
+}
 
 struct ChannelRegistry {
     channels: PoisonLock<BTreeMap<u64, ChannelEntry>>,
@@ -69,14 +75,22 @@ impl ChannelRegistry {
             next_channel_id: AtomicU64::new(1),
         }
     }
-    fn allocate_channel_id(&self) -> u64 { self.next_channel_id.fetch_add(1, Ordering::Relaxed) }
+    fn allocate_channel_id(&self) -> u64 {
+        self.next_channel_id.fetch_add(1, Ordering::Relaxed)
+    }
     fn register(&self, entry: ChannelEntry) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.channels.lock().unwrap_or_else(|e| e.into_inner()).insert(id, entry);
+        self.channels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, entry);
         id
     }
     fn unregister(&self, id: u64) -> Option<ChannelEntry> {
-        self.channels.lock().unwrap_or_else(|e| e.into_inner()).remove(&id)
+        self.channels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id)
     }
 }
 
@@ -94,11 +108,17 @@ impl FileHandleRegistry {
     }
     fn register(&self, entry: FileHandleEntry) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.handles.lock().unwrap_or_else(|e| e.into_inner()).insert(id, entry);
+        self.handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, entry);
         id
     }
     fn unregister(&self, id: u64) -> Option<FileHandleEntry> {
-        self.handles.lock().unwrap_or_else(|e| e.into_inner()).remove(&id)
+        self.handles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id)
     }
 }
 
@@ -128,13 +148,30 @@ impl DmaRegistry {
         phys: u64,
         owner: u64,
     ) {
-        self.buffers.lock().unwrap_or_else(|e| e.into_inner()).insert(key, DmaEntry { buffer, phys, owner });
+        self.buffers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                key,
+                DmaEntry {
+                    buffer,
+                    phys,
+                    owner,
+                },
+            );
     }
     fn unregister(&self, virt_ptr: usize) -> Option<DmaEntry> {
-        self.buffers.lock().unwrap_or_else(|e| e.into_inner()).remove(&virt_ptr)
+        self.buffers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&virt_ptr)
     }
     fn get_owner(&self, virt_ptr: usize) -> Option<u64> {
-        self.buffers.lock().unwrap_or_else(|e| e.into_inner()).get(&virt_ptr).map(|e| e.owner)
+        self.buffers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&virt_ptr)
+            .map(|e| e.owner)
     }
 }
 
@@ -149,15 +186,24 @@ impl PhysOwnershipRegistry {
         }
     }
     fn register(&self, phys: u64, size: usize, owner: u64) {
-        self.ranges.lock().unwrap_or_else(|e| e.into_inner()).insert(phys, (size, owner));
+        self.ranges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(phys, (size, owner));
     }
     fn unregister(&self, phys: u64) {
-        self.ranges.lock().unwrap_or_else(|e| e.into_inner()).remove(&phys);
+        self.ranges
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&phys);
     }
     fn is_owned_by(&self, phys: u64, size: usize, domain_id: u64) -> bool {
         let ranges = self.ranges.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((&start, &(r_size, r_owner))) = ranges.range(..=phys).next_back() {
-            if r_owner == domain_id && phys >= start && (phys + size as u64) <= (start + r_size as u64) {
+            if r_owner == domain_id
+                && phys >= start
+                && (phys + size as u64) <= (start + r_size as u64)
+            {
                 return true;
             }
         }
@@ -204,11 +250,17 @@ impl NvmeDmaContextRegistry {
     }
     fn register(&self, entry: NvmeDmaContextEntry) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.contexts.lock().unwrap_or_else(|e| e.into_inner()).insert(id, entry);
+        self.contexts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, entry);
         id
     }
     fn unregister(&self, id: u64) -> Option<NvmeDmaContextEntry> {
-        self.contexts.lock().unwrap_or_else(|e| e.into_inner()).remove(&id)
+        self.contexts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id)
     }
 }
 
@@ -228,11 +280,17 @@ impl IommuMappingRegistry {
     }
     fn register(&self, mapping: IommuMapping) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.mappings.lock().unwrap_or_else(|e| e.into_inner()).insert(id, mapping);
+        self.mappings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, mapping);
         id
     }
     fn unregister(&self, id: u64) -> Option<IommuMapping> {
-        self.mappings.lock().unwrap_or_else(|e| e.into_inner()).remove(&id)
+        self.mappings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id)
     }
 }
 
@@ -244,14 +302,28 @@ fn map_for_iommu(
     size: usize,
 ) -> Result<(u64, Option<IommuMapping>), KapiError> {
     if !crate::io::iommu::api::is_iommu_enabled() {
-        if crate::io::iommu::api::is_iommu_required() { return Err(KapiError::IoError); }
-        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() { return Err(KapiError::IoError); }
+        if crate::io::iommu::api::is_iommu_required() {
+            return Err(KapiError::IoError);
+        }
+        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
+            return Err(KapiError::IoError);
+        }
         return Ok((phys_addr, None));
     }
     let dev = device.ok_or(KapiError::IoError)?;
     let map_len = crate::io::nvme::dma::align_up_page(size);
-    let iova = unsafe { crate::io::iommu::api::map_for_device(&dev, PhysAddr::new(phys_addr), map_len as u64) }.map_err(|_| KapiError::IoError)?;
-    Ok((iova, Some(IommuMapping { device: dev, iova, size: map_len as u64 })))
+    let iova = unsafe {
+        crate::io::iommu::api::map_for_device(&dev, PhysAddr::new(phys_addr), map_len as u64)
+    }
+    .map_err(|_| KapiError::IoError)?;
+    Ok((
+        iova,
+        Some(IommuMapping {
+            device: dev,
+            iova,
+            size: map_len as u64,
+        }),
+    ))
 }
 
 struct NvmeOpenEntry {
@@ -285,7 +357,17 @@ impl NvmeDirectRegistry {
         token: Option<u64>,
     ) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.opens.lock().unwrap_or_else(|e| e.into_inner()).insert(id, NvmeOpenEntry { device_id, start_block, block_count, block_size, owner, token });
+        self.opens.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            id,
+            NvmeOpenEntry {
+                device_id,
+                start_block,
+                block_count,
+                block_size,
+                owner,
+                token,
+            },
+        );
         id
     }
     fn unregister_if_owner_or_admin(&self, id: u64, caller: u64) -> Option<NvmeOpenEntry> {
@@ -293,7 +375,9 @@ impl NvmeDirectRegistry {
         let has_admin = mgr.has_capability(caller, crate::security::capability::CAP_SYS_ADMIN);
         let mut opens = self.opens.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = opens.get(&id) {
-            if entry.owner == caller || has_admin { return opens.remove(&id); }
+            if entry.owner == caller || has_admin {
+                return opens.remove(&id);
+            }
         }
         None
     }
@@ -304,5 +388,7 @@ static NVME_DIRECT_REGISTRY: NvmeDirectRegistry = NvmeDirectRegistry::new();
 pub struct ExoKernel;
 
 impl ExoKernel {
-    pub const fn new() -> Self { ExoKernel }
+    pub const fn new() -> Self {
+        ExoKernel
+    }
 }
