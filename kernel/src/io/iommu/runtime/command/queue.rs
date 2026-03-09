@@ -18,7 +18,7 @@ use crate::sync::lockfree::BoundedSender;
 use crate::sync::lockfree::DEFAULT_QUEUE_SIZE;
 use core::future::poll_fn;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 
 use alloc::alloc::Layout;
@@ -101,9 +101,16 @@ const RESULT_OK: i32 = 0;
 const RESULT_HW_ERR: i32 = -1;
 const RESULT_CANCELLED: i32 = -2;
 const RESULT_TIMEOUT: i32 = -3;
+pub(crate) const RESULT_POISONED: i32 = -4;
 const MAX_COMPLETION_SPINS: usize = DEFAULT_QUEUE_SIZE * 256;
 const MAX_SUBMIT_RETRIES: usize = DEFAULT_QUEUE_SIZE * 4;
 const WAIT_WARN_INTERVAL: usize = DEFAULT_QUEUE_SIZE * 16;
+const SLOT_STATE_POISONING: u8 = 3;
+
+#[inline]
+const fn bounded_channel_capacity() -> usize {
+    DEFAULT_QUEUE_SIZE - 1
+}
 
 #[inline]
 fn reset_slot_to_free(slot: &CompletionSlot) {
@@ -158,6 +165,22 @@ impl CompletionSlot {
         self.result.store(code, Ordering::Release);
         self.state.store(2, Ordering::Release);
         self.waker.wake();
+    }
+
+    #[inline]
+    fn complete_poisoned(&self) -> bool {
+        if self
+            .state
+            .compare_exchange(1, SLOT_STATE_POISONING, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return false;
+        }
+
+        self.result.store(RESULT_POISONED, Ordering::Release);
+        self.state.store(2, Ordering::Release);
+        self.waker.wake();
+        true
     }
 
     #[inline]
@@ -286,6 +309,7 @@ pub struct CommandQueue {
     receiver: PoisonLock<BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>>,
     slots: &'static [CompletionSlot],
     next_alloc: AtomicUsize,
+    poisoned: AtomicBool,
     /// Optional NUMA node hint used for allocating the slots array
     numa_node: Option<usize>,
     /// Waker for tasks waiting for a free slot
@@ -306,6 +330,7 @@ impl core::fmt::Debug for CommandQueue {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CommandQueue")
             .field("next_alloc", &self.next_alloc.load(Ordering::Relaxed))
+            .field("poisoned", &self.is_poisoned())
             .field("numa_node", &self.numa_node)
             .field(
                 "processed_count",
@@ -360,6 +385,7 @@ impl CommandQueue {
             receiver: PoisonLock::new(r),
             slots,
             next_alloc: AtomicUsize::new(0),
+            poisoned: AtomicBool::new(false),
             numa_node,
             slot_waiter: AtomicWaker::new(),
             send_waiter: AtomicWaker::new(),
@@ -377,8 +403,44 @@ impl CommandQueue {
         Self::new_with_numa(None)
     }
 
+    #[inline]
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Acquire)
+    }
+
+    fn poison(&self) {
+        if self.poisoned.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        for slot in self.slots.iter() {
+            let _ = slot.complete_poisoned();
+        }
+
+        self.slot_waiter.wake();
+        self.send_waiter.wake();
+        self.recv_waiter.wake();
+    }
+
+    fn with_receiver<R>(
+        &self,
+        f: impl FnOnce(&BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>) -> R,
+    ) -> Result<R, ()> {
+        match self.receiver.lock() {
+            Ok(guard) => Ok(f(&guard)),
+            Err(poisoned) => {
+                drop(poisoned.into_inner());
+                self.poison();
+                Err(())
+            }
+        }
+    }
+
     /// Allocate a free slot index or return None if none available now
     fn alloc_slot(&self) -> Option<usize> {
+        if self.is_poisoned() {
+            return None;
+        }
         let n = self.slots.len();
         // First pass: preferentially reclaim completed slots (state == 2)
         let start = self.next_alloc.fetch_add(1, Ordering::Relaxed) % n;
@@ -412,6 +474,9 @@ impl CommandQueue {
 
     /// Non-blocking attempt to allocate a slot; useful for async submit futures
     fn try_alloc_slot(&self) -> Option<usize> {
+        if self.is_poisoned() {
+            return None;
+        }
         let n = self.slots.len();
         let start = self.next_alloc.fetch_add(1, Ordering::Relaxed) % n;
         // First pass: try to reclaim any completed slots (2 -> 1)
@@ -453,6 +518,15 @@ impl CommandQueue {
     fn release_unsubmitted_slot(&self, slot_idx: usize) {
         reset_slot_to_free(&self.slots[slot_idx]);
         self.notify_slot_available();
+    }
+
+    #[inline]
+    fn release_future_slot(&self, slot_idx: Option<usize>) {
+        if let Some(idx) = slot_idx {
+            if self.slots[idx].state.load(Ordering::Acquire) == 1 {
+                self.release_unsubmitted_slot(idx);
+            }
+        }
     }
 
     /// Non-blocking submit: returns a `CommandCompletion` which implements `Future`
