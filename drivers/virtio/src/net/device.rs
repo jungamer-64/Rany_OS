@@ -56,6 +56,7 @@ impl VirtioNetDevice {
         let device_features = transport.get_device_features();
         let accepted_features = device_features
             & (crate::core::VIRTIO_F_VERSION_1
+                | VIRTIO_F_ACCESS_PLATFORM
                 | VIRTIO_NET_F_MAC
                 | VIRTIO_NET_F_STATUS
                 | VIRTIO_NET_F_CSUM
