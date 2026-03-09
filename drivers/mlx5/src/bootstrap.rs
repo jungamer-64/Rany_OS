@@ -14,7 +14,7 @@ use crate::regs::{cmd_entry, cqe, eqe, wqe};
 use crate::resources::MkeyParams;
 
 const CMD_LOG_SIZE: u8 = 2;
-const FW_BOOT_PAGE_COUNT: usize = 4;
+const FW_BOOT_PAGE_COUNT: usize = 16;
 const MLX5_EQ_SPARE_EQE: u32 = 0x80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

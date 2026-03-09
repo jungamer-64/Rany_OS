@@ -64,6 +64,7 @@ pub struct Mlx5Device {
     // Memory/Pages
     pub(crate) fw_function_id: u16,
     pub(crate) page_manager: PageManager,
+    pub(crate) bootstrap_fw_page_cursor: usize,
 
     // Resources
     pub(crate) uar_page: u32,
@@ -159,6 +160,7 @@ impl Mlx5Device {
             cmd_out_mbox_device: 0,
             fw_function_id: 0,
             page_manager: PageManager::new(),
+            bootstrap_fw_page_cursor: 0,
             uar_page: 0,
             uar_base: 0,
             pd: 0,
@@ -225,15 +227,12 @@ impl Mlx5Device {
         self.is_ecpf
     }
 
-    /// より堅牢な VF 判定 (PCI ケーパビリティ情報を考慮)
-    /// PF であれば SR-IOV 拡張ケーパビリティを持つはずなので、それがない場合は VF とみなす候補になる。
-    pub fn is_vf_robust(&self, has_sriov_cap: bool) -> bool {
-        if self.is_vf() {
-            return true;
-        }
-        // Mellanox デバイスで、かつ SR-IOV ケーパビリティがない場合は VF である可能性が高い
-        // (ただし、SR-IOV 非対応の PF や、古いカード、ブリッジ等は除外が必要)
-        !has_sriov_cap && self.variant != ConnectXVariant::Unknown(0) && !self.is_ecpf
+    /// VF 判定 (device-id 優先)
+    ///
+    /// SR-IOV capability の可視性は仮想化経路で欠落することがあるため、
+    /// PF を VF と誤判定しないよう device-id ベース判定を優先する。
+    pub fn is_vf_robust(&self, _has_sriov_cap: bool) -> bool {
+        self.is_vf()
     }
 
     pub fn hca_caps(&self) -> Option<&HcaCaps> {

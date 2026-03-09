@@ -529,8 +529,11 @@ impl Mlx5AsyncDriver {
     ) -> KapiResult<Mlx5DmaResources> {
         let profile = plan.queue_profile();
 
-        let mut fw_pages = Vec::with_capacity(plan.fw_boot_page_count());
-        for _ in 0..plan.fw_boot_page_count() {
+        // PF passthrough occasionally requests more bootstrap pages than older plans.
+        // Keep a conservative floor so early QUERY_PAGES(op=1) can be satisfied.
+        let fw_boot_pages = plan.fw_boot_page_count().max(16);
+        let mut fw_pages = Vec::with_capacity(fw_boot_pages);
+        for _ in 0..fw_boot_pages {
             fw_pages.push(Self::alloc_dma_for_device(
                 plan.fw_page_size(),
                 packed_device_id,
@@ -810,7 +813,26 @@ impl Mlx5AsyncDriver {
             .unwrap_or(false);
 
         let mut device = Mlx5Device::new(bar0_base, bar0_size, pci_dev.device_id.0);
-        let is_vf = device.is_vf_robust(has_sriov_cap);
+        let robust_is_vf = device.is_vf_robust(has_sriov_cap);
+        let device_id_is_vf = ConnectXVariant::is_vf_device_id(pci_dev.device_id.0);
+        if robust_is_vf != device_id_is_vf {
+            log::warn!(
+                target: "mlx5",
+                "VF detect mismatch (device_id={:#x} has_sriov_cap={} robust_is_vf={}): forcing device-id based mode={}",
+                pci_dev.device_id.0,
+                has_sriov_cap,
+                robust_is_vf,
+                device_id_is_vf
+            );
+        }
+        let is_vf = device_id_is_vf;
+        log::info!(
+            target: "mlx5",
+            "mlx5 bootstrap mode: device_id={:#x} has_sriov_cap={} is_vf={}",
+            pci_dev.device_id.0,
+            has_sriov_cap,
+            is_vf
+        );
 
         let config = Mlx5BootstrapConfig {
             queue_profile: Mlx5QueueProfile::default(),
@@ -834,6 +856,12 @@ impl Mlx5AsyncDriver {
 
         let dma_resources = self.allocate_dma_resources(packed_device_id, &plan)?;
         let allocated = dma_resources.to_allocated_resources();
+        log::info!(
+            target: "mlx5",
+            "Allocated bootstrap fw pages: {} (plan requested {})",
+            allocated.fw_pages.len(),
+            plan.fw_boot_page_count()
+        );
         crate::io::log::early_print("[MLX5_PROBE] DMA allocated\n");
 
         log::info!(

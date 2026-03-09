@@ -267,27 +267,48 @@ impl Mlx5Device {
         }
 
         let requested_pages = requested_pages as usize;
-        let provided_pages = requested_pages.min(fw_page_addrs.len());
-        if provided_pages < requested_pages {
+        let start = self.bootstrap_fw_page_cursor.min(fw_page_addrs.len());
+        let available = fw_page_addrs.len().saturating_sub(start);
+        if available == 0 {
             log::warn!(
                 target: "mlx5",
-                "FW requested {} {} pages for function {:#x}, only {} bootstrap pages available",
+                "FW requested {} {} pages for function {:#x}, but bootstrap page pool is exhausted (cursor={} total={})",
                 requested_pages,
                 phase,
                 func_id,
-                provided_pages
+                self.bootstrap_fw_page_cursor,
+                fw_page_addrs.len()
+            );
+            return Ok(());
+        }
+
+        let provided_pages = requested_pages.min(available);
+        if provided_pages < requested_pages {
+            log::warn!(
+                target: "mlx5",
+                "FW requested {} {} pages for function {:#x}, only {} bootstrap pages available (cursor={} total={})",
+                requested_pages,
+                phase,
+                func_id,
+                provided_pages,
+                self.bootstrap_fw_page_cursor,
+                fw_page_addrs.len()
             );
         } else {
             log::info!(
                 target: "mlx5",
-                "Providing {} {} pages for function {:#x}",
+                "Providing {} {} pages for function {:#x} (page window {}..{})",
                 provided_pages,
                 phase,
-                func_id
+                func_id,
+                start,
+                start + provided_pages
             );
         }
 
-        self.provide_pages(func_id, &fw_page_addrs[..provided_pages])
+        let selected = &fw_page_addrs[start..start + provided_pages];
+        self.bootstrap_fw_page_cursor = start + provided_pages;
+        self.provide_pages(func_id, selected)
     }
 
     pub unsafe fn bootstrap(
@@ -296,6 +317,7 @@ impl Mlx5Device {
         resources: &Mlx5AllocatedResources,
     ) -> Mlx5Result<()> {
         self.is_vf = config.is_vf;
+        self.bootstrap_fw_page_cursor = 0;
         self.pci_bus = config.pci_identity.bus;
         self.pci_device = config.pci_identity.device;
         self.pci_function = config.pci_identity.function;
