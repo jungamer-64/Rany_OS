@@ -239,6 +239,7 @@ pub struct VirtioNetHeader {
 impl VirtioNetHeader {
     pub const SIZE: usize = core::mem::size_of::<Self>();
     pub const F_NEEDS_CSUM: u8 = 1;
+    pub const F_DATA_VALID: u8 = 2;
     pub const GSO_TCPV4: u8 = 1;
 
     pub fn new_tx() -> Self {

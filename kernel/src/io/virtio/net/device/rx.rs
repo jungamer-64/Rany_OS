@@ -61,6 +61,10 @@ impl VirtioNetDevice {
                     if let Some((io_id, requested_bytes)) = handler.take_pending_rx(desc_idx) {
                         // Reclaim descriptor
                         inner.free_desc_chain(desc_idx);
+
+                        // Fix: Also remove from tracker to avoid leaking PacketRef
+                        let tracker = &self.core.rx_trackers[q_idx_pair];
+                        let _inflight = tracker.take(desc_idx);
                         
                         let payload_len = (len as usize).saturating_sub(VirtioNetHeader::SIZE);
                         let payload_cap = requested_bytes.saturating_sub(VirtioNetHeader::SIZE);
@@ -97,7 +101,7 @@ impl VirtioNetDevice {
         rx_queue: &NetVirtQueue,
         _desc_idx: u16,
         len: u32,
-        inflight: virtio_driver::net::RxInflight,
+        mut inflight: virtio_driver::net::RxInflight,
     ) {
         // Unmap IOMMU mapping if it was active
         if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
@@ -107,6 +111,20 @@ impl VirtioNetDevice {
 
         let header_size = core::mem::size_of::<VirtioNetHeader>();
         let payload_len = (len as usize).saturating_sub(header_size);
+
+        // Security: Set temporary length to read VirtIO header and verify checksum offload.
+        inflight.packet.set_len(len as usize);
+        let data = inflight.packet.data();
+        if data.len() >= header_size {
+            // SAFETY: VirtioNetHeader is a packed POD struct.
+            let header = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const VirtioNetHeader) };
+            if (header.flags & VirtioNetHeader::F_DATA_VALID) != 0 {
+                let meta = inflight.packet.meta_mut();
+                meta.set_l4_csum_verified();
+                meta.set_ip_csum_verified();
+            }
+        }
+
         trace::push_event(
             NetLayer::Driver,
             NetEventKind::Rx,

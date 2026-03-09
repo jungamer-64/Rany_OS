@@ -615,11 +615,9 @@ pub fn process_received_packet_zero_copy_for_interface(
 
 fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketRef) {
     // 解析ロジック...
-    if RX_CSUM_HW_VERIFIED.load(Ordering::Relaxed) {
-        let meta = packet.meta_mut();
-        meta.set_ip_csum_verified();
-        meta.set_l4_csum_verified();
-    }
+    // 以前はここで一律に csum_verified をセットしていましたが、
+    // 現在はドライバ（VirtioNetDevice::complete_rx_packetref 等）が
+    // パケット毎のフラグを確認してセットするため、ここでは何もしません。
 }
 
 // ============================================================================
