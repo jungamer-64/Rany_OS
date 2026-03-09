@@ -113,6 +113,18 @@ impl NetworkStack {
             return;
         }
 
+        // ── ファイアウォール Egress チェック ──
+        if !crate::net::security::firewall::check_egress(
+            self.config.ipv4.address.octets(),
+            dst_ip.octets(),
+            1, // ICMP
+            0,
+            0,
+        ) {
+            self.stats.record_dropped();
+            return;
+        }
+
         let config = self.config.clone();
 
         // Resolve next-hop gateway (considering redirects)
@@ -268,6 +280,18 @@ impl NetworkStack {
             return;
         }
 
+        // ── ファイアウォール Egress チェック ──
+        if !crate::net::security::firewall::check_egress(
+            self.config.ipv4.address.octets(),
+            dst_ip.octets(),
+            1, // ICMP
+            0,
+            0,
+        ) {
+            self.stats.record_dropped();
+            return;
+        }
+
         let config = self.config.clone();
 
         // Resolve next-hop gateway (considering redirects)
@@ -334,6 +358,18 @@ impl NetworkStack {
     ) {
         // Rate limiting for replies to prevent being part of an amplification attack.
         if !self.icmp.check_rate_limit(dst_ip, current_time) {
+            return;
+        }
+
+        // ── ファイアウォール Egress チェック ──
+        if !crate::net::security::firewall::check_egress(
+            self.config.ipv4.address.octets(),
+            dst_ip.octets(),
+            1, // ICMP
+            0,
+            0,
+        ) {
+            self.stats.record_dropped();
             return;
         }
 
@@ -412,6 +448,18 @@ impl NetworkStack {
             return false;
         }
 
+        // ── ファイアウォール Egress チェック ──
+        if !crate::net::security::firewall::check_egress(
+            self.config.ipv4.address.octets(),
+            dst_ip.octets(),
+            1, // ICMP
+            0,
+            0,
+        ) {
+            self.stats.record_dropped();
+            return false;
+        }
+
         let config = self.config.clone();
 
         // Resolve next-hop gateway (considering redirects)
@@ -473,6 +521,18 @@ impl NetworkStack {
 
         // Rate limiting
         if !self.icmp.check_rate_limit(dst_ip, current_time) {
+            return false;
+        }
+
+        // ── ファイアウォール Egress チェック ──
+        if !crate::net::security::firewall::check_egress(
+            self.config.ipv4.address.octets(),
+            dst_ip.octets(),
+            1, // ICMP
+            0,
+            0,
+        ) {
+            self.stats.record_dropped();
             return false;
         }
 

@@ -452,6 +452,61 @@ impl NetworkEventHandler {
                     }
                     crate::net::l2::ethernet::ProcessResult::Ipv6(payload, src_mac) => {
                         if stack.ipv6.is_some() {
+                            // ── ファイアウォール Ingress チェック (IPv6) ──
+                            if payload.len() >= 40 {
+                                let src_ip = [
+                                    payload[8], payload[9], payload[10], payload[11], payload[12],
+                                    payload[13], payload[14], payload[15], payload[16], payload[17],
+                                    payload[18], payload[19], payload[20], payload[21], payload[22],
+                                    payload[23],
+                                ];
+                                let dst_ip = [
+                                    payload[24], payload[25], payload[26], payload[27], payload[28],
+                                    payload[29], payload[30], payload[31], payload[32], payload[33],
+                                    payload[34], payload[35], payload[36], payload[37], payload[38],
+                                    payload[39],
+                                ];
+                                let next_header = payload[6];
+                                let (protocol, transport_data) =
+                                    crate::net::l3::ipv6::skip_extension_headers(
+                                        crate::net::l3::ipv4::IpProtocol::from(next_header),
+                                        &payload[40..],
+                                    );
+
+                                let (src_port, dst_port) = if (u8::from(protocol) == 6
+                                    || u8::from(protocol) == 17)
+                                    && transport_data.len() >= 4
+                                {
+                                    let sp = u16::from_be_bytes([
+                                        transport_data[0],
+                                        transport_data[1],
+                                    ]);
+                                    let dp = u16::from_be_bytes([
+                                        transport_data[2],
+                                        transport_data[3],
+                                    ]);
+                                    (sp, dp)
+                                } else {
+                                    (0, 0)
+                                };
+
+                                // Note: 現状の FirewallEngine は IPv4 ([u8; 4]) のみ対応しているため、
+                                // IPv6 の場合は上位 4 バイト（またはハッシュ）で代用するか、
+                                // エンジン側を IPv6 対応に拡張する必要がある。
+                                // ここでは暫定的に IPv6 パケットもチェック対象とする。
+                                // (本来は FirewallEngine::evaluate_v6 を呼び出すべき)
+                                if !crate::net::security::firewall::check_ingress(
+                                    [src_ip[12], src_ip[13], src_ip[14], src_ip[15]], // 暫定: 下位4バイト
+                                    [dst_ip[12], dst_ip[13], dst_ip[14], dst_ip[15]], // 暫定: 下位4バイト
+                                    u8::from(protocol),
+                                    src_port,
+                                    dst_port,
+                                ) {
+                                    stack.stats.record_dropped();
+                                    return EventHandleResult::Success;
+                                }
+                            }
+
                             stack.process_ipv6_data(payload, current_time, src_mac, false);
                             stack.stats.record_rx(pkt_len);
                         } else {
@@ -479,8 +534,35 @@ impl NetworkEventHandler {
                         let src_ip = packet.source();
                         let dst_ip = packet.destination();
                         let payload = packet.payload();
+                        let protocol = packet.protocol();
 
-                        match packet.protocol() {
+                        // ── ファイアウォール Reassembled パケットチェック (IPv4) ──
+                        // 再組立て後のパケットに対して再度ファイアウォールを適用する。
+                        // これにより、フラグメント化によるポートベースルールの回避を防止する。
+                        let (src_port, dst_port) = match protocol {
+                            crate::net::l3::ipv4::IpProtocol::Tcp
+                            | crate::net::l3::ipv4::IpProtocol::Udp
+                                if payload.len() >= 4 =>
+                            {
+                                let sp = u16::from_be_bytes([payload[0], payload[1]]);
+                                let dp = u16::from_be_bytes([payload[2], payload[3]]);
+                                (sp, dp)
+                            }
+                            _ => (0, 0),
+                        };
+
+                        if !crate::net::security::firewall::check_ingress(
+                            src_ip.octets(),
+                            dst_ip.octets(),
+                            protocol.into(),
+                            src_port,
+                            dst_port,
+                        ) {
+                            stack.stats.record_dropped();
+                            return EventHandleResult::Success;
+                        }
+
+                        match protocol {
                             crate::net::l3::ipv4::IpProtocol::Tcp => {
                                 super::tcp_rx::process_tcp_segment(
                                     src_ip.octets(),
@@ -518,17 +600,38 @@ impl NetworkEventHandler {
                     if let Some(packet) = crate::net::l3::ipv6::Ipv6Packet::parse(&data) {
                         let src = packet.source();
                         let dst = packet.destination();
-                        let payload = packet.payload();
+                        let (protocol, payload) = packet.skip_extension_headers();
 
-                        // Note: For IPv6, we'd ideally have process_tcp_data_v6 in endpoint too.
-                        // For now, delegate back to stack for IPv6 as it's less fragmented (pun intended)
-                        // but this is where we'd unify IPv6 as well.
-                        use crate::net::l3::ipv4::IpProtocol;
-                        match packet.next_header() {
-                            IpProtocol::Tcp => {
+                        // ── ファイアウォール Reassembled パケットチェック (IPv6) ──
+                        let (src_port, dst_port) = match protocol {
+                            crate::net::l3::ipv4::IpProtocol::Tcp
+                            | crate::net::l3::ipv4::IpProtocol::Udp
+                                if payload.len() >= 4 =>
+                            {
+                                let sp = u16::from_be_bytes([payload[0], payload[1]]);
+                                let dp = u16::from_be_bytes([payload[2], payload[3]]);
+                                (sp, dp)
+                            }
+                            _ => (0, 0),
+                        };
+
+                        // 暫定: IPv4 フィルタを使用してチェック（エンジン側が IPv6 非対応のため）
+                        if !crate::net::security::firewall::check_ingress(
+                            [src.octets()[12], src.octets()[13], src.octets()[14], src.octets()[15]],
+                            [dst.octets()[12], dst.octets()[13], dst.octets()[14], dst.octets()[15]],
+                            protocol.into(),
+                            src_port,
+                            dst_port,
+                        ) {
+                            stack.stats.record_dropped();
+                            return EventHandleResult::Success;
+                        }
+
+                        match protocol {
+                            crate::net::l3::ipv4::IpProtocol::Tcp => {
                                 super::tcp_rx::process_tcp_segment_v6(src, dst, payload);
                             }
-                            IpProtocol::Udp => {
+                            crate::net::l3::ipv4::IpProtocol::Udp => {
                                 stack.process_udp_data_v6(
                                     payload,
                                     src,
@@ -537,7 +640,7 @@ impl NetworkEventHandler {
                                     &data,
                                 );
                             }
-                            IpProtocol::Icmpv6 => {
+                            crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
                                 stack.process_icmpv6_data(
                                     payload,
                                     src,
@@ -1435,7 +1538,15 @@ impl NetworkEventHandler {
             let src_ip: [u8; 4] = [data[12], data[13], data[14], data[15]];
             let dst_ip: [u8; 4] = [data[16], data[17], data[18], data[19]];
             let ihl = ((data[0] & 0x0F) as usize) * 4;
-            let (src_port, dst_port) = extract_ports(data, ihl, protocol);
+
+            // Security Fix: フラグメントのチェック。
+            // 2番目以降のフラグメント (Offset > 0) は L4 ヘッダを含まないため、ポート抽出をスキップする。
+            let fragment_offset = (u16::from_be_bytes([data[6], data[7]]) & 0x1FFF) * 8;
+            let (src_port, dst_port) = if fragment_offset == 0 {
+                extract_ports(data, ihl, protocol)
+            } else {
+                (0, 0)
+            };
 
             if !crate::net::security::firewall::check_ingress(
                 src_ip, dst_ip, protocol, src_port, dst_port,

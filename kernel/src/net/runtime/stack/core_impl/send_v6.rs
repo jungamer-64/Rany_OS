@@ -263,6 +263,19 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
+        // ── ファイアウォール Egress チェック (IPv6) ──
+        // 暫定: IPv4 フィルタを使用してチェック（エンジン側が IPv6 非対応のため）
+        if !crate::net::security::firewall::check_egress(
+            [src_ip.octets()[12], src_ip.octets()[13], src_ip.octets()[14], src_ip.octets()[15]],
+            [dst.octets()[12], dst.octets()[13], dst.octets()[14], dst.octets()[15]],
+            17, // UDP
+            src_port,
+            dst_port,
+        ) {
+            self.stats.record_dropped();
+            return false;
+        }
+
         let config = self.config;
         let current_time = self.current_time.load(Ordering::Relaxed);
 
@@ -413,6 +426,22 @@ impl NetworkStack {
         dst: Ipv6Address,
         tcp_segment: &[u8],
     ) -> bool {
+        // ── ファイアウォール Egress チェック (IPv6) ──
+        if tcp_segment.len() >= 4 {
+            let src_port = u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]);
+            let dst_port = u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]);
+            if !crate::net::security::firewall::check_egress(
+                [src_ip.octets()[12], src_ip.octets()[13], src_ip.octets()[14], src_ip.octets()[15]],
+                [dst.octets()[12], dst.octets()[13], dst.octets()[14], dst.octets()[15]],
+                6, // TCP
+                src_port,
+                dst_port,
+            ) {
+                self.stats.record_dropped();
+                return false;
+            }
+        }
+
         let config = self.config;
         let current_time = self.current_time.load(Ordering::Relaxed);
 
@@ -509,6 +538,18 @@ impl NetworkStack {
 
     /// Send an IGMP Membership Report
     pub(crate) fn send_igmp_report(&mut self, group_addr: Ipv4Address, _current_time: u64) {
+        // ── ファイアウォール Egress チェック ──
+        if !crate::net::security::firewall::check_egress(
+            self.config.ipv4.address.octets(),
+            group_addr.octets(),
+            2, // IGMP
+            0,
+            0,
+        ) {
+            self.stats.record_dropped();
+            return;
+        }
+
         let mut buffer = [0u8; MAX_PACKET_SIZE];
         let config = self.config.clone();
 

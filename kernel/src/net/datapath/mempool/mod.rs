@@ -260,8 +260,9 @@ impl Mempool {
     pub fn alloc(&'static self) -> Option<PacketRef> {
         let buffer = self.free_list.lock().unwrap_or_else(|e| e.into_inner()).pop()?;
         unsafe {
-            let prev_len = buffer.as_ref().meta.len.load(Ordering::Acquire);
-            if prev_len > 0 { core::ptr::write_bytes(buffer.as_ref().data.as_ptr() as *mut u8, 0, prev_len.min(DEFAULT_BUFFER_SIZE)); }
+            // Security: Clear the entire buffer to prevent information leaks from previous packets.
+            // Previously we only cleared up to prev_len, which failed if an offset was used.
+            core::ptr::write_bytes(buffer.as_ref().data.as_ptr() as *mut u8, 0, DEFAULT_BUFFER_SIZE);
             buffer.as_ref().meta.len.store(0, Ordering::Release);
             buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
         }
@@ -310,8 +311,8 @@ impl PerCoreMempoolCache {
 
     #[inline]
     unsafe fn init_buffer_for_alloc(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> PacketRef {
-        let prev_len = buffer.as_ref().meta.len.load(Ordering::Acquire);
-        if prev_len > 0 { core::ptr::write_bytes(buffer.as_ref().data.as_ptr() as *mut u8, 0, prev_len.min(DEFAULT_BUFFER_SIZE)); }
+        // Security: Clear the entire buffer to prevent information leaks from previous packets.
+        core::ptr::write_bytes(buffer.as_ref().data.as_ptr() as *mut u8, 0, DEFAULT_BUFFER_SIZE);
         buffer.as_ref().meta.len.store(0, Ordering::Release);
         buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
         new_pooled_packet_ref(buffer, pool)

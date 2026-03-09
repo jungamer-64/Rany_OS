@@ -31,6 +31,18 @@ fn tcp_is_native_v6_pair(local: TcpEndpointAddr, remote: TcpEndpointAddr) -> boo
 impl NetworkStack {
     /// Send an IGMP Leave Group message
     pub(super) fn send_igmp_leave(&mut self, group_addr: Ipv4Address, _current_time: u64) {
+        // ── ファイアウォール Egress チェック ──
+        if !crate::net::security::firewall::check_egress(
+            self.config.ipv4.address.octets(),
+            Ipv4Address::new([224, 0, 0, 2]).octets(), // all-routers
+            2, // IGMP
+            0,
+            0,
+        ) {
+            self.stats.record_dropped();
+            return;
+        }
+
         let mut buffer = [0u8; MAX_PACKET_SIZE];
         let config = self.config.clone();
 
