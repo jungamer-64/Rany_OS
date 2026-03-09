@@ -6,7 +6,7 @@
 //! 優先度順にソートされたルールリストを線形走査し、最初にマッチしたルールの
 //! アクションを返す。マッチしなかった場合はデフォルトポリシーを適用する。
 
-use super::rules::{FirewallAction, FirewallDirection, FirewallRule, RuleId};
+use super::rules::{FirewallAction, FirewallDirection, FirewallRule, IpAddress, RuleId};
 use super::stats::FirewallStats;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -187,8 +187,8 @@ impl FirewallEngine {
     pub fn evaluate(
         &self,
         direction: FirewallDirection,
-        src_ip: [u8; 4],
-        dst_ip: [u8; 4],
+        src_ip: IpAddress,
+        dst_ip: IpAddress,
         protocol: u8,
         src_port: u16,
         dst_port: u16,
@@ -204,19 +204,26 @@ impl FirewallEngine {
 
         // ルールを優先度順に走査
         for rule in &self.rules {
-            if rule.matches(direction, src_ip, dst_ip, protocol, src_port, dst_port) {
+            if rule.matches(
+                direction,
+                src_ip,
+                dst_ip,
+                protocol,
+                src_port,
+                dst_port,
+            ) {
                 if rule.action.is_log() {
                     log::info!(
-                        "[FIREWALL] {} {} {}:{} -> {}:{} proto={} rule=#{}",
+                        "[FIREWALL] {} {} {} :{} -> {} :{} proto={} rule=#{}",
                         if rule.action.is_allow() {
                             "ALLOW"
                         } else {
                             "DENY"
                         },
                         direction,
-                        format_ip(src_ip),
+                        src_ip,
                         src_port,
-                        format_ip(dst_ip),
+                        dst_ip,
                         dst_port,
                         protocol,
                         rule.id,
@@ -256,8 +263,8 @@ impl FirewallEngine {
     pub fn evaluate_mut(
         &mut self,
         direction: FirewallDirection,
-        src_ip: [u8; 4],
-        dst_ip: [u8; 4],
+        src_ip: IpAddress,
+        dst_ip: IpAddress,
         protocol: u8,
         src_port: u16,
         dst_port: u16,
@@ -269,21 +276,28 @@ impl FirewallEngine {
         self.stats_inner.evaluated += 1;
 
         for rule in &self.rules {
-            if rule.matches(direction, src_ip, dst_ip, protocol, src_port, dst_port) {
+            if rule.matches(
+                direction,
+                src_ip,
+                dst_ip,
+                protocol,
+                src_port,
+                dst_port,
+            ) {
                 self.stats_inner.matched += 1;
 
                 if rule.action.is_log() {
                     log::info!(
-                        "[FIREWALL] {} {} {}:{} -> {}:{} proto={} rule=#{}",
+                        "[FIREWALL] {} {} {} :{} -> {} :{} proto={} rule=#{}",
                         if rule.action.is_allow() {
                             "ALLOW"
                         } else {
                             "DENY"
                         },
                         direction,
-                        format_ip(src_ip),
+                        src_ip,
                         src_port,
-                        format_ip(dst_ip),
+                        dst_ip,
                         dst_port,
                         protocol,
                         rule.id,
@@ -324,9 +338,4 @@ impl FirewallEngine {
             FirewallVerdict::Deny
         }
     }
-}
-
-/// IPv4 アドレスを表示用文字列にフォーマット
-fn format_ip(ip: [u8; 4]) -> alloc::string::String {
-    alloc::format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
 }

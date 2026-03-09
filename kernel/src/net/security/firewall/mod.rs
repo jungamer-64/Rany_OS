@@ -29,7 +29,7 @@ mod tests;
 
 pub use engine::{FirewallEngine, FirewallVerdict};
 pub use rules::{
-    FirewallAction, FirewallDirection, FirewallProtocol, FirewallRule, IpMatch, PortMatch, RuleId,
+    FirewallAction, FirewallDirection, FirewallProtocol, FirewallRule, IpAddress, IpMatch, PortMatch, RuleId,
 };
 pub use stats::FirewallStats;
 
@@ -49,8 +49,8 @@ static FIREWALL: PoisonLock<FirewallEngine> = PoisonLock::new(FirewallEngine::ne
 /// Ingress パケットをファイアウォールルールに照合する
 ///
 /// ## 引数
-/// - `src_ip`: 送信元 IPv4 アドレス（4バイト）
-/// - `dst_ip`: 宛先 IPv4 アドレス（4バイト）
+/// - `src_ip`: 送信元 IP アドレス
+/// - `dst_ip`: 宛先 IP アドレス
 /// - `protocol`: IP プロトコル番号（6=TCP, 17=UDP, 1=ICMP）
 /// - `src_port`: 送信元ポート（ICMP の場合は 0）
 /// - `dst_port`: 宛先ポート（ICMP の場合は 0）
@@ -59,12 +59,14 @@ static FIREWALL: PoisonLock<FirewallEngine> = PoisonLock::new(FirewallEngine::ne
 /// - `true`: パケットを許可
 /// - `false`: パケットを拒否（ドロップ）
 pub fn check_ingress(
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
+    src_ip: impl Into<IpAddress>,
+    dst_ip: impl Into<IpAddress>,
     protocol: u8,
     src_port: u16,
     dst_port: u16,
 ) -> bool {
+    let src_ip = src_ip.into();
+    let dst_ip = dst_ip.into();
     match FIREWALL.lock() {
         Ok(mut fw) => {
             fw.evaluate_mut(
@@ -77,23 +79,25 @@ pub fn check_ingress(
             ) == FirewallVerdict::Allow
         }
         Err(_) => {
-            // PoisonLock がポイズンされた場合はフェイルオープン（許可）
-            // セキュリティポリシー上はフェイルクローズが望ましいが、
-            // カーネルの可用性を優先する
-            log::warn!("[FIREWALL] lock poisoned — fail-open");
-            true
+            // Security Fix: PoisonLock がポイズンされた場合はフェイルクローズ（拒否）
+            // ポイズン状態 = 以前の評価中にパニックが発生したことを意味し、
+            // エンジンの状態が不整合である可能性があるため、安全側に倒す。
+            log::error!("[FIREWALL] lock poisoned — fail-closed (SECURITY)");
+            false
         }
     }
 }
 
 /// Egress パケットをファイアウォールルールに照合する
 pub fn check_egress(
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
+    src_ip: impl Into<IpAddress>,
+    dst_ip: impl Into<IpAddress>,
     protocol: u8,
     src_port: u16,
     dst_port: u16,
 ) -> bool {
+    let src_ip = src_ip.into();
+    let dst_ip = dst_ip.into();
     match FIREWALL.lock() {
         Ok(mut fw) => {
             fw.evaluate_mut(
@@ -106,10 +110,44 @@ pub fn check_egress(
             ) == FirewallVerdict::Allow
         }
         Err(_) => {
-            log::warn!("[FIREWALL] lock poisoned — fail-open");
-            true
+            log::error!("[FIREWALL] lock poisoned — fail-closed (SECURITY)");
+            false
         }
     }
+}
+
+/// IPv4 用の下位互換 API
+pub fn check_ingress_v4(
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    protocol: u8,
+    src_port: u16,
+    dst_port: u16,
+) -> bool {
+    check_ingress(
+        IpAddress::V4(src_ip),
+        IpAddress::V4(dst_ip),
+        protocol,
+        src_port,
+        dst_port,
+    )
+}
+
+/// IPv4 用の下位互換 API
+pub fn check_egress_v4(
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    protocol: u8,
+    src_port: u16,
+    dst_port: u16,
+) -> bool {
+    check_egress(
+        IpAddress::V4(src_ip),
+        IpAddress::V4(dst_ip),
+        protocol,
+        src_port,
+        dst_port,
+    )
 }
 
 /// ファイアウォールルールを追加する

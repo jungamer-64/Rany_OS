@@ -30,7 +30,7 @@ impl NetworkStack {
         ttl: u8,
     ) -> bool {
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_v4(
             src_ip.octets(),
             dst_ip.octets(),
             17,

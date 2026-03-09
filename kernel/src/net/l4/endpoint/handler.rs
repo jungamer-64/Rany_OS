@@ -490,14 +490,10 @@ impl NetworkEventHandler {
                                     (0, 0)
                                 };
 
-                                // Note: 現状の FirewallEngine は IPv4 ([u8; 4]) のみ対応しているため、
-                                // IPv6 の場合は上位 4 バイト（またはハッシュ）で代用するか、
-                                // エンジン側を IPv6 対応に拡張する必要がある。
-                                // ここでは暫定的に IPv6 パケットもチェック対象とする。
-                                // (本来は FirewallEngine::evaluate_v6 を呼び出すべき)
+                                // Security Fix: Use full IPv6 addresses for firewall check
                                 if !crate::net::security::firewall::check_ingress(
-                                    [src_ip[12], src_ip[13], src_ip[14], src_ip[15]], // 暫定: 下位4バイト
-                                    [dst_ip[12], dst_ip[13], dst_ip[14], dst_ip[15]], // 暫定: 下位4バイト
+                                    crate::net::security::firewall::IpAddress::V6(src_ip),
+                                    crate::net::security::firewall::IpAddress::V6(dst_ip),
                                     u8::from(protocol),
                                     src_port,
                                     dst_port,
@@ -551,7 +547,7 @@ impl NetworkEventHandler {
                             _ => (0, 0),
                         };
 
-                        if !crate::net::security::firewall::check_ingress(
+                        if !crate::net::security::firewall::check_ingress_v4(
                             src_ip.octets(),
                             dst_ip.octets(),
                             protocol.into(),
@@ -615,10 +611,10 @@ impl NetworkEventHandler {
                             _ => (0, 0),
                         };
 
-                        // 暫定: IPv4 フィルタを使用してチェック（エンジン側が IPv6 非対応のため）
+                        // Security Fix: Use full IPv6 addresses for firewall check
                         if !crate::net::security::firewall::check_ingress(
-                            [src.octets()[12], src.octets()[13], src.octets()[14], src.octets()[15]],
-                            [dst.octets()[12], dst.octets()[13], dst.octets()[14], dst.octets()[15]],
+                            crate::net::security::firewall::IpAddress::V6(src.octets()),
+                            crate::net::security::firewall::IpAddress::V6(dst.octets()),
                             protocol.into(),
                             src_port,
                             dst_port,
@@ -1548,7 +1544,7 @@ impl NetworkEventHandler {
                 (0, 0)
             };
 
-            if !crate::net::security::firewall::check_ingress(
+            if !crate::net::security::firewall::check_ingress_v4(
                 src_ip, dst_ip, protocol, src_port, dst_port,
             ) {
                 stack.stats.record_dropped();

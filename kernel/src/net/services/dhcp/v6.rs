@@ -756,6 +756,9 @@ impl DhcpV6Client {
                     // Contains one or more IPv6 addresses (16 bytes each)
                     let count = len / 16;
                     for i in 0..count {
+                        if dns_servers.len() >= 8 {
+                            break;
+                        }
                         let start = off + i * 16;
                         if start + 16 <= off + len {
                             let mut addr_bytes = [0u8; 16];
@@ -813,27 +816,63 @@ impl DhcpV6Client {
     }
 
     /// DNS エンコードされたドメインサーチリストをパースする (RFC 1035 Section 4.1.4 形式)
+    /// Security: 圧縮ポインタの検出、ラベル長・合計長のバリデーション、無限ループ防止を追加。
     fn parse_domain_search_list(data: &[u8], out: &mut Vec<alloc::string::String>) {
         let mut off = 0usize;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while off < data.len() {
+        let mut name_count = 0;
+
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and name_count limit.;
+        while off < data.len() && name_count < 10 {
             let mut labels: Vec<&[u8]> = Vec::new();
+            let mut total_len = 0usize;
+            let mut label_count = 0;
+
             // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
-                if off >= data.len() {
+                if off >= data.len() || label_count >= 64 {
                     break;
                 }
-                let label_len = data[off] as usize;
-                off += 1;
-                if label_len == 0 {
+
+                let first = data[off];
+                if first == 0 {
+                    off += 1;
                     break; // end of domain name
                 }
-                if off + label_len > data.len() {
-                    return; // malformed
+
+                // RFC 1035 Section 4.1.4: Compression pointer (11xxxxxx)
+                // DHCP オプションでは通常使用されないが、脆弱性回避のため検出時は処理を中断する。
+                if (first & 0xC0) == 0xC0 {
+                    log::warn!("[NET] DHCPv6: DNS compression pointer detected in domain search list - unsupported");
+                    return;
                 }
+
+                // 予約済みビット (01xxxxxx, 10xxxxxx) のチェック
+                if (first & 0xC0) != 0 {
+                    log::warn!("[NET] DHCPv6: Invalid label type bits 0x{:02x}", first);
+                    return;
+                }
+
+                let label_len = first as usize;
+                off += 1;
+
+                // RFC 1035: Labels are max 63 bytes
+                if label_len > 63 || off + label_len > data.len() {
+                    log::warn!("[NET] DHCPv6: Malformed label length {}", label_len);
+                    return;
+                }
+
                 labels.push(&data[off..off + label_len]);
                 off += label_len;
+                total_len += label_len + 1; // +1 for the dot/length byte
+                label_count += 1;
+
+                // RFC 1035: Total name length is max 255 bytes
+                if total_len > 255 {
+                    log::warn!("[NET] DHCPv6: Domain name too long (> 255)");
+                    return;
+                }
             }
+
             if !labels.is_empty() {
                 let domain: alloc::string::String = labels
                     .iter()
@@ -841,6 +880,7 @@ impl DhcpV6Client {
                     .collect::<Vec<_>>()
                     .join(".");
                 out.push(domain);
+                name_count += 1;
             }
         }
     }

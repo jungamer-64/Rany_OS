@@ -75,8 +75,20 @@ static MLX5_WAKE_COUNTS: AtomicU64 = AtomicU64::new(0);
 /// DMAマッピングエラー
 static MLX5_DMA_ERRORS: AtomicU64 = AtomicU64::new(0);
 
+/// RX 連続アイドルポーリング回数
+static MLX5_RX_IDLE_POLLS: AtomicU64 = AtomicU64::new(0);
+
+/// RX CQE の詳細ログ出力予算（起動直後の切り分け用）
+static MLX5_RX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
+/// RX アイドル時スナップショット出力回数の上限
+static MLX5_RX_DEBUG_SNAPSHOT_BUDGET: AtomicU64 = AtomicU64::new(16);
+
 /// RX CQ ポーリングバッチサイズ
 const MLX5_RX_POLL_BATCH: u32 = 64;
+/// RX が進まないときの診断ダンプ間隔（idle poll 回数）
+const MLX5_RX_DEBUG_IDLE_INTERVAL: u64 = 16_384;
+/// RX 問題切り分けのため、割り込み待ちを使わず常時ポーリングする
+const MLX5_FORCE_POLL_ONLY: bool = false;
 
 struct Mlx5TransmitRequest {
     data: Vec<u8>,
@@ -233,6 +245,9 @@ impl crate::net::runtime::bridge::shared::NetBridgePort for Mlx5Runtime {
             }
         }
 
+        MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
+        MLX5_RX_CQE_LOG_BUDGET.store(32, Ordering::Release);
+        MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(16, Ordering::Release);
         prefill_rx_buffers();
 
         if !MLX5_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
@@ -373,6 +388,87 @@ pub fn mlx5_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
 // Receive Path
 // ============================================================================
 
+unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
+    let _ = with_mlx5_device(|device| {
+        log::warn!(
+            target: "mlx5::bridge",
+            "RX debug snapshot: idle_polls={} rx_pkts={} tx_pkts={} rx_err={} tx_err={} rqs={} sqs={}",
+            idle_polls,
+            MLX5_RX_PACKETS.load(Ordering::Relaxed),
+            MLX5_TX_PACKETS.load(Ordering::Relaxed),
+            MLX5_RX_ERRORS.load(Ordering::Relaxed),
+            MLX5_TX_ERRORS.load(Ordering::Relaxed),
+            device.num_rqs(),
+            device.num_sqs(),
+        );
+
+        for rq_index in 0..device.num_rqs() {
+            let rq = unsafe { device.debug_rx_queue_state(rq_index) };
+            let cq_index = device.rx_cq_index_for_rq(rq_index);
+            let cq = cq_index.and_then(|idx| unsafe { device.debug_cq_state(idx) });
+
+            match (rq, cq_index, cq) {
+                (Some(rq_state), Some(cq_idx), Some(cq_state)) => {
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "RX debug rq={} rqn={} prod={} avail={}/{} db={:#x} last_wqe:bc={} lkey={:#x} addr={:#x} | cq={} cqn={} ci={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x}",
+                        rq_index,
+                        rq_state.rqn,
+                        rq_state.producer_counter,
+                        rq_state.available_slots,
+                        rq_state.rq_depth,
+                        rq_state.doorbell_host,
+                        rq_state.last_wqe_byte_count,
+                        rq_state.last_wqe_lkey,
+                        rq_state.last_wqe_device_addr,
+                        cq_idx,
+                        cq_state.cqn,
+                        cq_state.consumer_counter,
+                        cq_state.head_index,
+                        cq_state.expected_owner,
+                        cq_state.observed_owner,
+                        cq_state.observed_opcode,
+                        cq_state.observed_wqe_counter,
+                        cq_state.observed_byte_count,
+                        cq_state.doorbell_host,
+                    );
+                }
+                _ => {
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "RX debug rq={} state unavailable (rq/cq not ready)",
+                        rq_index
+                    );
+                }
+            }
+        }
+
+        if let Err(err) = unsafe { device.update_port_stats(0) } {
+            log::warn!(
+                target: "mlx5::bridge",
+                "RX debug update_port_stats failed: {:?}",
+                err
+            );
+        }
+
+        if let Some(port) = device.port(0) {
+            let s = port.stats();
+            log::warn!(
+                target: "mlx5::bridge",
+                "RX debug port0 stats: rx_pkts={} rx_bytes={} rx_err={} rx_drop={} tx_pkts={} tx_bytes={} tx_err={} tx_drop={}",
+                s.rx_packets,
+                s.rx_bytes,
+                s.rx_errors,
+                s.rx_dropped,
+                s.tx_packets,
+                s.tx_bytes,
+                s.tx_errors,
+                s.tx_dropped
+            );
+        }
+    });
+}
+
 /// mlx5 RX CQ をポーリングして受信パケットをスタックに配送する
 ///
 /// # Safety
@@ -399,6 +495,36 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
 
             let cqes = device.poll_cq(rx_cq_index, MLX5_RX_POLL_BATCH);
             total_processed += cqes.len() as u32;
+
+            let remaining_budget = MLX5_RX_CQE_LOG_BUDGET.load(Ordering::Relaxed);
+            if !cqes.is_empty() && remaining_budget > 0 {
+                let to_log = core::cmp::min(cqes.len() as u64, remaining_budget) as usize;
+                log::info!(
+                    target: "mlx5::bridge",
+                    "RX CQ activity: rq={} cq={} completions={} (logging {} entries, budget_left={})",
+                    rq_index,
+                    rx_cq_index,
+                    cqes.len(),
+                    to_log,
+                    remaining_budget
+                );
+                for cqe in cqes.iter().take(to_log) {
+                    log::info!(
+                        target: "mlx5::bridge",
+                        "RX CQE: rq={} cq={} op={:?} wqe_counter={} byte_count={} qpn={:#x} l3_ok={} l4_ok={} vlan={:?}",
+                        rq_index,
+                        rx_cq_index,
+                        cqe.opcode,
+                        cqe.wqe_counter,
+                        cqe.byte_count,
+                        cqe.qpn,
+                        cqe.l3_ok,
+                        cqe.l4_ok,
+                        cqe.vlan_tag
+                    );
+                }
+                MLX5_RX_CQE_LOG_BUDGET.fetch_sub(to_log as u64, Ordering::Relaxed);
+            }
 
             for cqe in &cqes {
                 let wqe_counter = cqe.wqe_counter;
@@ -499,6 +625,12 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
 /// 低負荷時は割り込み駆動（yield）に切り替える。
 pub async fn mlx5_poll_task() {
     log::info!(target: "mlx5::bridge", "mlx5 poll task started");
+    if MLX5_FORCE_POLL_ONLY {
+        log::warn!(
+            target: "mlx5::bridge",
+            "mlx5 RX diagnostics: forcing poll-only mode (interrupt wait disabled)"
+        );
+    }
 
     let mut msix_vector = None;
 
@@ -520,14 +652,29 @@ pub async fn mlx5_poll_task() {
         // 適応的ポーリング: 処理があった場合は即座に再ポーリング、
         // 無い場合は割り込み待ち
         if processed == 0 {
-            if let Some(vec) = msix_vector {
-                // 割り込み待ち (Interrupt-Waker Bridge)
-                wait_for_interrupt(InterruptSource::Irq(vec as u8)).await;
-                MLX5_WAKE_COUNTS.fetch_add(1, Ordering::Relaxed);
-            } else {
-                // MSI-X未設定時は従来通り yield
-                crate::task::yield_now().await;
+            let idle_polls = MLX5_RX_IDLE_POLLS.fetch_add(1, Ordering::Relaxed) + 1;
+            if idle_polls % MLX5_RX_DEBUG_IDLE_INTERVAL == 0 {
+                let snapshot_budget = MLX5_RX_DEBUG_SNAPSHOT_BUDGET.load(Ordering::Relaxed);
+                if snapshot_budget > 0 {
+                    MLX5_RX_DEBUG_SNAPSHOT_BUDGET.fetch_sub(1, Ordering::Relaxed);
+                    unsafe { log_mlx5_rx_debug_snapshot(idle_polls) };
+                }
             }
+
+            if MLX5_FORCE_POLL_ONLY {
+                crate::task::yield_now().await;
+            } else {
+                if let Some(vec) = msix_vector {
+                    // 割り込み待ち (Interrupt-Waker Bridge)
+                    wait_for_interrupt(InterruptSource::Irq(vec as u8)).await;
+                    MLX5_WAKE_COUNTS.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    // MSI-X未設定時は従来通り yield
+                    crate::task::yield_now().await;
+                }
+            }
+        } else {
+            MLX5_RX_IDLE_POLLS.store(0, Ordering::Relaxed);
         }
         // processed > 0 → 即座に次のポーリングサイクルへ（ビジーポーリング）
     }
@@ -647,6 +794,23 @@ fn prefill_rx_buffers() {
                 }
             }
             total_filled += filled;
+
+            // RQ投入直後の状態を記録（WQE/DBRの初期診断用）
+            if let Some(state) = unsafe { device.debug_rx_queue_state(rq_idx) } {
+                log::info!(
+                    target: "mlx5::bridge",
+                    "RQ prefill: rq={} rqn={} filled={} prod={} db_host={:#x} last_wqe={:#x} byte_count={} lkey={:#x} addr={:#x}",
+                    rq_idx,
+                    state.rqn,
+                    filled,
+                    state.producer_counter,
+                    state.doorbell_host,
+                    state.last_wqe_addr,
+                    state.last_wqe_byte_count,
+                    state.last_wqe_lkey,
+                    state.last_wqe_device_addr
+                );
+            }
         }
 
         log::info!(
@@ -713,6 +877,9 @@ pub fn get_mlx5_port_stats(port_index: usize) -> Option<mlx5_driver::port::PortS
 pub fn cleanup_mlx5_bridge() {
     MLX5_BRIDGE_INITIALIZED.store(false, Ordering::Release);
     MLX5_TX_QUEUE_HAS_EVENTS.store(false, Ordering::Release);
+    MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
+    MLX5_RX_CQE_LOG_BUDGET.store(0, Ordering::Release);
+    MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(0, Ordering::Release);
 
     // RX バッファの解放
     if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {

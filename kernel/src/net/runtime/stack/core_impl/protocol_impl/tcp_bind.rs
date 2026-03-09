@@ -100,7 +100,7 @@ impl NetworkStack {
         if tcp_segment.len() >= 4 {
             let src_port = u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]);
             let dst_port = u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]);
-            if !crate::net::security::firewall::check_egress(
+            if !crate::net::security::firewall::check_egress_v4(
                 src_ip.octets(),
                 dst_ip.octets(),
                 6,

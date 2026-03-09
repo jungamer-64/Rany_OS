@@ -115,37 +115,123 @@ impl core::fmt::Display for FirewallProtocol {
     }
 }
 
+/// IP アドレス（IPv4 または IPv6）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpAddress {
+    /// IPv4 アドレス
+    V4([u8; 4]),
+    /// IPv6 アドレス
+    V6([u8; 16]),
+}
+
+impl IpAddress {
+    /// IPv4 アドレスとして取得（V4 の場合のみ）
+    pub fn as_v4(&self) -> Option<[u8; 4]> {
+        match self {
+            IpAddress::V4(ip) => Some(*ip),
+            _ => None,
+        }
+    }
+
+    /// IPv6 アドレスとして取得（V6 の場合のみ）
+    pub fn as_v6(&self) -> Option<[u8; 16]> {
+        match self {
+            IpAddress::V6(ip) => Some(*ip),
+            _ => None,
+        }
+    }
+}
+
+impl From<[u8; 4]> for IpAddress {
+    fn from(value: [u8; 4]) -> Self {
+        IpAddress::V4(value)
+    }
+}
+
+impl From<[u8; 16]> for IpAddress {
+    fn from(value: [u8; 16]) -> Self {
+        IpAddress::V6(value)
+    }
+}
+
+impl core::fmt::Display for IpAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            IpAddress::V4(ip) => write!(f, "{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
+            IpAddress::V6(ip) => {
+                for i in 0..8 {
+                    write!(f, "{:02x}{:02x}", ip[i * 2], ip[i * 2 + 1])?;
+                    if i < 7 {
+                        write!(f, ":")?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// IP アドレスマッチ条件
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpMatch {
     /// 全アドレスに一致
     Any,
-    /// 単一アドレスに完全一致
+    /// IPv4 単一アドレスに完全一致
     Exact([u8; 4]),
-    /// CIDR サブネットマッチ（アドレス + プレフィックス長）
-    ///
-    /// 例: `IpMatch::Cidr([192, 168, 1, 0], 24)` は 192.168.1.0/24 全体に一致
+    /// IPv4 CIDR サブネットマッチ
     Cidr([u8; 4], u8),
+    /// IPv6 単一アドレスに完全一致
+    ExactV6([u8; 16]),
+    /// IPv6 CIDR サブネットマッチ
+    CidrV6([u8; 16], u8),
 }
 
 impl IpMatch {
-    /// 指定された IPv4 アドレスがこの条件に一致するかどうか
-    pub fn matches(&self, addr: [u8; 4]) -> bool {
-        match self {
-            IpMatch::Any => true,
-            IpMatch::Exact(expected) => addr == *expected,
-            IpMatch::Cidr(network, prefix_len) => {
+    /// 指定された IP アドレスがこの条件に一致するかどうか
+    pub fn matches(&self, addr: IpAddress) -> bool {
+        match (self, addr) {
+            (IpMatch::Any, _) => true,
+            (IpMatch::Exact(expected), IpAddress::V4(actual)) => actual == *expected,
+            (IpMatch::Cidr(network, prefix_len), IpAddress::V4(actual)) => {
                 if *prefix_len == 0 {
                     return true;
                 }
                 if *prefix_len >= 32 {
-                    return addr == *network;
+                    return actual == *network;
                 }
                 let mask = u32::MAX << (32 - prefix_len);
                 let net = u32::from_be_bytes(*network) & mask;
-                let tgt = u32::from_be_bytes(addr) & mask;
+                let tgt = u32::from_be_bytes(actual) & mask;
                 net == tgt
             }
+            (IpMatch::ExactV6(expected), IpAddress::V6(actual)) => actual == *expected,
+            (IpMatch::CidrV6(network, prefix_len), IpAddress::V6(actual)) => {
+                if *prefix_len == 0 {
+                    return true;
+                }
+                if *prefix_len >= 128 {
+                    return actual == *network;
+                }
+
+                // IPv6 mask evaluation (byte by byte)
+                let full_bytes = (*prefix_len / 8) as usize;
+                let remaining_bits = *prefix_len % 8;
+
+                for i in 0..full_bytes {
+                    if actual[i] != network[i] {
+                        return false;
+                    }
+                }
+
+                if remaining_bits > 0 {
+                    let mask = 0xFFu8 << (8 - remaining_bits);
+                    if (actual[full_bytes] & mask) != (network[full_bytes] & mask) {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => false, // IPv4 rule vs IPv6 packet or vice versa
         }
     }
 }
@@ -157,6 +243,14 @@ impl core::fmt::Display for IpMatch {
             IpMatch::Exact(ip) => write!(f, "{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
             IpMatch::Cidr(ip, prefix) => {
                 write!(f, "{}.{}.{}.{}/{}", ip[0], ip[1], ip[2], ip[3], prefix)
+            }
+            IpMatch::ExactV6(ip) => {
+                let addr = IpAddress::V6(*ip);
+                write!(f, "{}", addr)
+            }
+            IpMatch::CidrV6(ip, prefix) => {
+                let addr = IpAddress::V6(*ip);
+                write!(f, "{}/{}", addr, prefix)
             }
         }
     }
@@ -232,8 +326,8 @@ impl FirewallRule {
     pub fn matches(
         &self,
         direction: FirewallDirection,
-        src_ip: [u8; 4],
-        dst_ip: [u8; 4],
+        src_ip: IpAddress,
+        dst_ip: IpAddress,
         protocol: u8,
         src_port: u16,
         dst_port: u16,

@@ -264,10 +264,10 @@ impl NetworkStack {
         ttl: u8,
     ) -> bool {
         // ── ファイアウォール Egress チェック (IPv6) ──
-        // 暫定: IPv4 フィルタを使用してチェック（エンジン側が IPv6 非対応のため）
+        // Security Fix: Use full IPv6 addresses for firewall check
         if !crate::net::security::firewall::check_egress(
-            [src_ip.octets()[12], src_ip.octets()[13], src_ip.octets()[14], src_ip.octets()[15]],
-            [dst.octets()[12], dst.octets()[13], dst.octets()[14], dst.octets()[15]],
+            crate::net::security::firewall::IpAddress::V6(src_ip.octets()),
+            crate::net::security::firewall::IpAddress::V6(dst.octets()),
             17, // UDP
             src_port,
             dst_port,
@@ -430,9 +430,10 @@ impl NetworkStack {
         if tcp_segment.len() >= 4 {
             let src_port = u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]);
             let dst_port = u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]);
+            // Security Fix: Use full IPv6 addresses for firewall check
             if !crate::net::security::firewall::check_egress(
-                [src_ip.octets()[12], src_ip.octets()[13], src_ip.octets()[14], src_ip.octets()[15]],
-                [dst.octets()[12], dst.octets()[13], dst.octets()[14], dst.octets()[15]],
+                crate::net::security::firewall::IpAddress::V6(src_ip.octets()),
+                crate::net::security::firewall::IpAddress::V6(dst.octets()),
                 6, // TCP
                 src_port,
                 dst_port,
@@ -539,7 +540,7 @@ impl NetworkStack {
     /// Send an IGMP Membership Report
     pub(crate) fn send_igmp_report(&mut self, group_addr: Ipv4Address, _current_time: u64) {
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_v4(
             self.config.ipv4.address.octets(),
             group_addr.octets(),
             2, // IGMP
