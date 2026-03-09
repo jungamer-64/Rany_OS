@@ -6,8 +6,6 @@
 //! 送信コールバック設定と受信パケット処理を統合します。
 
 use crate::net::api::config::NetworkConfigSnapshot;
-use crate::net::api::config::NetworkStatsSnapshot;
-use crate::net::api::connections::ArpCacheEntry;
 use crate::net::datapath::optimization::{BatchConfig, BatchProcessor};
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::{Ipv4Address, Ipv4Config};
@@ -15,6 +13,7 @@ use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
 };
+use crate::net::runtime::device;
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
 
@@ -27,13 +26,11 @@ use crate::io::io_scheduler::{
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::drivers::virtio::{
-    VIRTIO_NET_IOCTL_TX, VirtioNetDevice, bind_virtio_net_interface, with_virtio_net,
-    with_virtio_net_at_index,
+    VIRTIO_NET_IOCTL_TX, VirtioNetDevice, with_virtio_net, with_virtio_net_at_index,
 };
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -268,7 +265,7 @@ fn record_bridge_if_rx(if_id: NetIfId) {
 }
 
 fn primary_bridge_if() -> Option<NetIfId> {
-    *PRIMARY_BRIDGE_IF.read().unwrap_or_else(|e| e.into_inner())
+    device::primary_if().or_else(|| *PRIMARY_BRIDGE_IF.read().unwrap_or_else(|e| e.into_inner()))
 }
 
 fn set_primary_bridge_if_for_virtio(if_id: NetIfId, virtio_index: u8) {
@@ -276,6 +273,7 @@ fn set_primary_bridge_if_for_virtio(if_id: NetIfId, virtio_index: u8) {
     if primary.is_none() || virtio_index == 0 {
         *primary = Some(if_id);
     }
+    device::set_primary_interface(if_id);
 }
 
 struct VirtioNetRuntime {
@@ -337,8 +335,31 @@ impl shared::NetBridgePort for VirtioNetRuntime {
 // Transmit Bridge
 // ============================================================================
 
-fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
-    shared::transmit(if_id, data)
+pub fn transmit_from_stack(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    let resolved_if = if_id.or_else(primary_bridge_if);
+    let sent = device::transmit(if_id, data);
+
+    if sent {
+        if let Some(if_id) = resolved_if {
+            record_bridge_if_tx(if_id);
+        }
+        TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+        counters::global().record_tx(data.len());
+        trace::push_event(NetLayer::Driver, NetEventKind::Tx, "device queued tx");
+        true
+    } else {
+        counters::global().record_error();
+        trace::push_event(
+            NetLayer::Driver,
+            NetEventKind::Error,
+            "device tx enqueue failed",
+        );
+        false
+    }
+}
+
+pub fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    transmit_from_stack(if_id, data)
 }
 
 async fn submit_tx_via_io_scheduler(device_index: u8, data: &[u8]) -> Result<usize, &'static str> {
@@ -504,23 +525,7 @@ fn transmit_packet_for_interface_zero_copy(
 }
 
 pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
-    match transmit_packet_for_interface_zero_copy(if_id, data) {
-        Ok(()) => {
-            TX_PACKETS.fetch_add(1, Ordering::Relaxed);
-            counters::global().record_tx(data.len());
-            trace::push_event(
-                NetLayer::Driver,
-                NetEventKind::Tx,
-                "interface transmit (zero-copy)",
-            );
-            record_bridge_if_tx(if_id);
-            true
-        }
-        Err(_e) => {
-            counters::global().record_error();
-            false
-        }
-    }
+    transmit_from_stack(Some(if_id), data)
 }
 
 // ============================================================================
@@ -646,19 +651,13 @@ pub fn init_bridge() -> Result<(), &'static str> {
         icmpv6_redirect_enabled: false,
     };
 
-    shared::ensure_stack_initialized(config)?;
-
-    match manager::register_virtio_port(0, Some(config)) {
-        Ok(if_id) => {
-            ensure_bridge_if_state(if_id, Some(0));
-            set_primary_bridge_if_for_virtio(if_id, 0);
-            shared::install_port(if_id, Arc::new(VirtioNetRuntime::new(0, if_id, mac)), true)?;
-        }
-        Err(_) => {}
-    }
+    let if_id = device::register_device(crate::drivers::virtio::virtio_net_driver_adapter(0), config, true)?;
+    ensure_bridge_if_state(if_id, Some(0));
+    set_primary_bridge_if_for_virtio(if_id, 0);
 
     crate::drivers::virtio::register_virtio_net_with_io_scheduler(0);
     RX_CSUM_HW_VERIFIED.store(true, Ordering::Release);
+    BRIDGE_INITIALIZED.store(true, Ordering::Release);
     Ok(())
 }
 
@@ -672,7 +671,7 @@ pub fn set_rx_csum_hw_verified(verified: bool) {
 }
 
 pub fn is_initialized() -> bool {
-    BRIDGE_INITIALIZED.load(Ordering::Acquire)
+    BRIDGE_INITIALIZED.load(Ordering::Acquire) || device::is_initialized()
 }
 
 pub fn check_batch_timeout(current_tsc: u64, tsc_freq: u64) {

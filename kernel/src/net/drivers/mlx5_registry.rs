@@ -957,7 +957,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
             clear_mlx5_sriov_state();
 
             if let Some(if_id) = crate::net::runtime::bridge::mlx5_bridge::mlx5_if_id() {
-                crate::net::runtime::bridge::shared::remove_port(if_id);
+                let _ = crate::net::runtime::device::unregister_device(if_id);
             } else {
                 crate::net::runtime::bridge::mlx5_bridge::cleanup_mlx5_bridge();
             }

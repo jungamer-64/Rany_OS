@@ -245,15 +245,10 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
     }
 
     fn schedule_wake(&self, queue_index: u16) {
-        if (queue_index % 2) == 0 {
-            if let Some(q) = self.rx_queues.get((queue_index / 2) as usize) {
-                q.pending_wakers.wake_all();
-            }
-        } else {
-            if let Some(q) = self.tx_queues.get((queue_index / 2) as usize) {
-                q.pending_wakers.wake_all();
-            }
-        }
+        let _ = crate::net::runtime::device::enqueue_event(
+            crate::net::runtime::device::NetDeviceKey::Virtio(self.virtio_index),
+            crate::net::runtime::device::NetDeviceEvent::QueueWake { queue_index },
+        );
     }
 
     fn log(&self, _level: log::Level, msg: core::fmt::Arguments) {

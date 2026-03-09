@@ -147,12 +147,12 @@ fn net_devices_snapshot() -> alloc::vec::Vec<NetDeviceInfo> {
     interfaces
         .into_iter()
         .map(|interface| {
-            let port = crate::net::runtime::bridge::shared::lookup_port(interface.if_id);
-            let (mac, has_port, healthy) = match port {
-                Some(port) => (
-                    KapiMacAddress(*port.mac_address().as_bytes()),
+            let device = crate::net::runtime::device::lookup_device(interface.if_id);
+            let (mac, has_port, healthy) = match device {
+                Some(handle) => (
+                    KapiMacAddress(*handle.driver().mac_address().as_bytes()),
                     true,
-                    port.health(),
+                    handle.driver().health(),
                 ),
                 None => (KapiMacAddress([0; 6]), false, false),
             };

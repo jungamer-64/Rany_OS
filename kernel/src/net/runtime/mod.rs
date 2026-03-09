@@ -4,6 +4,7 @@
 //! マネージャー、タイムアウト管理。
 
 pub mod bridge;
+pub mod device;
 pub mod manager;
 pub mod stack;
 pub mod timeouts;

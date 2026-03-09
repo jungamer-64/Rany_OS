@@ -276,6 +276,19 @@ impl KernelServices for ExoKernel {
     }
 
     fn net_create_raw_endpoint(&self) -> Result<RawEndpointHandle, KapiError> {
+        // Security: Check for CAP_NET_RAW capability (Design Doc 8.2)
+        let caller = context::current_subject().domain.as_u64();
+        if !crate::security::capability::manager().has_capability(
+            caller,
+            crate::security::capability::CAP_NET_RAW,
+        ) {
+            log::warn!(
+                "[KAPI][SECURITY] Domain {} tried to create a raw endpoint without CAP_NET_RAW",
+                caller
+            );
+            return Err(KapiError::PermissionDenied);
+        }
+
         use crate::net::l4::endpoint::create_raw_endpoint;
 
         let owned = create_raw_endpoint();
@@ -308,6 +321,19 @@ impl KernelServices for ExoKernel {
         &self,
         endpoint: RawEndpointHandle,
     ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
+        // Security: Check for CAP_NET_RAW capability
+        let caller = context::current_subject().domain.as_u64();
+        if !crate::security::capability::manager().has_capability(
+            caller,
+            crate::security::capability::CAP_NET_RAW,
+        ) {
+            log::warn!(
+                "[KAPI][SECURITY] Domain {} tried to recv raw without CAP_NET_RAW",
+                caller
+            );
+            return Box::pin(async { Err(KapiError::PermissionDenied) });
+        }
+
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
@@ -342,6 +368,19 @@ impl KernelServices for ExoKernel {
         endpoint: RawEndpointHandle,
         packet: Packet,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+        // Security: Check for CAP_NET_RAW capability
+        let caller = context::current_subject().domain.as_u64();
+        if !crate::security::capability::manager().has_capability(
+            caller,
+            crate::security::capability::CAP_NET_RAW,
+        ) {
+            log::warn!(
+                "[KAPI][SECURITY] Domain {} tried to send raw without CAP_NET_RAW",
+                caller
+            );
+            return Box::pin(async { Err(KapiError::PermissionDenied) });
+        }
+
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
 
