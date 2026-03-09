@@ -306,8 +306,21 @@ impl Mlx5Device {
         // この実装の RX WQE 生成は MEMORY_RQ_INLINE(mem_rq_type=0) を前提にしている。
         // まず 0 を試し、VF で拒否される個体のみ 1 へフォールバックする。
         let mem_rq_type_attempts: &[u8] = if self.is_vf() { &[0, 1] } else { &[0] };
+        let mut selected_profile = "default";
         let mut inline_rq_rejected = false;
-        for &mem_rq_type in mem_rq_type_attempts {
+        let inline_profiles: &[(&str, bool, u8, u8, u8)] = if self.is_vf() {
+            &[
+                ("cyclic+align+flush", true, 1, 1, 4),
+                ("cyclic+align+noflush", false, 1, 1, 4),
+                ("cyclic+nopad+flush", true, 1, 0, 4),
+                ("linked+nopad+flush", true, 0, 0, 4),
+                ("linked+nopad+noflush", false, 0, 0, 4),
+                ("cyclic+align+stride64", true, 1, 1, 6),
+            ]
+        } else {
+            &[("cyclic+align+flush", true, 1, 1, 4)]
+        };
+        'mem_type: for &mem_rq_type in mem_rq_type_attempts {
             let mut rmpn_for_attempt = None;
             if mem_rq_type == 1 {
                 match self.create_rmp_hw(rq_buf_pa, db_pa, log_rq_size) {
@@ -323,35 +336,52 @@ impl Mlx5Device {
                     }
                 }
             }
-            build_create_rq_input_with_mem_type(
-                in_mbox,
-                log_rq_size,
-                rq_buf_pa,
-                db_pa,
-                cqn,
-                self.pd,
-                self.uar_page,
-                scatter_fcs,
-                vlan_strip,
-                mem_rq_type,
-                rmpn_for_attempt,
-            );
-            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10) {
-                Ok(()) => {
-                    selected_mem_rq_type = mem_rq_type;
-                    selected_rmpn = rmpn_for_attempt;
-                    last_err = Ok(());
-                    break;
-                }
-                Err(err) => {
-                    if let Some(rmpn) = rmpn_for_attempt {
-                        let _ = self.destroy_rmp_hw(rmpn);
+
+            let profiles: &[(&str, bool, u8, u8, u8)] = if mem_rq_type == 0 {
+                inline_profiles
+            } else {
+                &[("rmp+cyclic+align+flush", true, 1, 1, 4)]
+            };
+
+            for &(profile_name, flush_in_error_en, wq_type, end_padding_mode, log_wq_stride) in profiles
+            {
+                build_create_rq_input_with_options(
+                    in_mbox,
+                    log_rq_size,
+                    rq_buf_pa,
+                    db_pa,
+                    cqn,
+                    self.pd,
+                    self.uar_page,
+                    scatter_fcs,
+                    vlan_strip,
+                    mem_rq_type,
+                    rmpn_for_attempt,
+                    flush_in_error_en,
+                    wq_type,
+                    end_padding_mode,
+                    log_wq_stride,
+                );
+
+                match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10) {
+                    Ok(()) => {
+                        selected_mem_rq_type = mem_rq_type;
+                        selected_rmpn = rmpn_for_attempt;
+                        selected_profile = profile_name;
+                        last_err = Ok(());
+                        break 'mem_type;
                     }
-                    if mem_rq_type == 0 {
-                        inline_rq_rejected = true;
+                    Err(err) => {
+                        if mem_rq_type == 0 {
+                            inline_rq_rejected = true;
+                        }
+                        last_err = Err(err);
                     }
-                    last_err = Err(err);
                 }
+            }
+
+            if let Some(rmpn) = rmpn_for_attempt {
+                let _ = self.destroy_rmp_hw(rmpn);
             }
         }
         last_err?;
@@ -361,6 +391,15 @@ impl Mlx5Device {
         if let Some(rmpn) = selected_rmpn {
             self.rmp_list.push(rmpn);
         }
+        log::info!(
+            target: "mlx5",
+            "CREATE_RQ accepted: mem_rq_type={} profile={} rmpn={}",
+            selected_mem_rq_type,
+            selected_profile,
+            selected_rmpn
+                .map(|v| alloc::format!("{:#x}", v))
+                .unwrap_or_else(|| "none".into())
+        );
         if selected_mem_rq_type != 0 {
             log::warn!(
                 target: "mlx5",
@@ -407,23 +446,55 @@ impl Mlx5Device {
     ) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        build_create_rmp_input(
-            in_mbox,
-            log_rmp_size,
-            rmp_buf_pa,
-            db_pa,
-            self.pd,
-            self.uar_page,
-        );
-
         let rmp_bytes = (1usize << (log_rmp_size as usize)) * crate::defs::WQEBB_SIZE;
         let rmp_pages = (rmp_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rmp_in_len = (0x110 + rmp_pages * 8) as u32;
-        self.execute_uid_sensitive_cmd(CmdOpcode::CreateRmp, rmp_in_len, 0x10)?;
+        let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let rmpn = parse_create_rmp_output(out_mbox);
-        Ok(rmpn)
+        // VF firmware revisions differ on acceptable RMPC fields.
+        // Probe a minimal compatibility set to find an accepted tuple.
+        let attempts = [
+            ("rdy+basic+cyclic+align", 1u8, true, 1u8, 1u8),
+            ("rdy+basic+cyclic+nopad", 1u8, true, 1u8, 0u8),
+            ("rdy+basic+linked+align", 1u8, true, 0u8, 1u8),
+            ("rdy+basic+linked+nopad", 1u8, true, 0u8, 0u8),
+            ("rdy+nobasic+cyclic+align", 1u8, false, 1u8, 1u8),
+            ("rdy+nobasic+linked+nopad", 1u8, false, 0u8, 0u8),
+        ];
+        for (name, state, basic_cyclic, wq_type, end_padding_mode) in attempts {
+            build_create_rmp_input_with_options(
+                in_mbox,
+                log_rmp_size,
+                rmp_buf_pa,
+                db_pa,
+                self.pd,
+                self.uar_page,
+                state,
+                basic_cyclic,
+                wq_type,
+                end_padding_mode,
+            );
+            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRmp, rmp_in_len, 0x10) {
+                Ok(()) => {
+                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    let rmpn = parse_create_rmp_output(out_mbox);
+                    log::info!(
+                        target: "mlx5",
+                        "CREATE_RMP accepted with {} (state={} basic={} wq_type={} end_pad={})",
+                        name,
+                        state,
+                        basic_cyclic,
+                        wq_type,
+                        end_padding_mode
+                    );
+                    return Ok(rmpn);
+                }
+                Err(err) => {
+                    last_err = Err(err);
+                }
+            }
+        }
+        last_err
     }
 
     /// RQTを作成

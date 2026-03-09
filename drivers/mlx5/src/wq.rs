@@ -16,6 +16,7 @@
 
 use crate::defs::{WQEBB_SIZE, WqeOpcode};
 use crate::regs::wqe;
+use core::sync::atomic::{Ordering, fence};
 
 /// Work Queue Entry Buffer Block (WQEBB) — 16バイト
 #[repr(C, align(16))]
@@ -336,15 +337,20 @@ impl SendQueue {
     /// # Safety
     /// - uar_base が有効であること
     unsafe fn ring_doorbell(&self, wqe_ptr: *const u8) {
-        // Basic SQ doorbell calculation – spec says to write the WQE address shifted
-        // right by 8 bits. We're not using this driver in current debug sessions,
-        // so a minimal implementation suffices.
-        let addr = wqe_ptr as usize;
-        let db_val: u32 = (addr >> 8) as u32;
-        crate::mmio_write_be32(
-            self.uar_base as usize + crate::regs::uar::SQ_DOORBELL,
-            db_val,
-        );
+        // 1) Update SQ producer DB record.
+        let db_ptr = self.doorbell_virt as *mut u32;
+        core::ptr::write_volatile(db_ptr, (self.producer_counter as u32).to_be());
+
+        // 2) Ensure descriptor + dbrec writes are visible before ringing UAR.
+        fence(Ordering::Release);
+
+        // 3) Ring BlueFlame with WQE control dword0..1 payload (8 bytes).
+        // Use 32-bit pair writes for better VFIO/UAR compatibility.
+        let ctrl_dw0 = core::ptr::read_unaligned(wqe_ptr as *const u32);
+        let ctrl_dw1 = core::ptr::read_unaligned(wqe_ptr.add(4) as *const u32);
+        let bf_addr = self.uar_base as usize + crate::regs::uar::BLUEFLAME;
+        hal::mmio::mmio_write_u32(bf_addr, ctrl_dw0);
+        hal::mmio::mmio_write_u32(bf_addr + 4, ctrl_dw1);
     }
 
     /// 送信完了を処理（CQEのWQEカウンタに基づくバッファ解放）
@@ -364,6 +370,45 @@ impl SendQueue {
         }
         completed
     }
+
+    /// SQ の状態をデバッグ用に取得
+    ///
+    /// # Safety
+    /// - SQ バッファと doorbell_virt が有効であること
+    pub unsafe fn debug_state(&self) -> TxQueueDebugState {
+        let last_wqe_counter = self.producer_counter.wrapping_sub(1);
+        let last_idx = (last_wqe_counter as u32 % self.sq_depth) as usize;
+        let last_wqe_ptr = (self.buf_virt as usize + last_idx * 64) as *const u8;
+
+        let doorbell_be = core::ptr::read_volatile(self.doorbell_virt as *const u32);
+        let doorbell_host = u32::from_be(doorbell_be) & 0x0000_ffff;
+
+        TxQueueDebugState {
+            sqn: self.sqn,
+            producer_counter: self.producer_counter,
+            sq_depth: self.sq_depth,
+            doorbell_be,
+            doorbell_host,
+            last_wqe_counter,
+            last_wqe_addr: last_wqe_ptr as u64,
+            last_wqe_opmod_idx: read_be32_raw(last_wqe_ptr, wqe::ctrl::OPMOD_IDX_OPCODE),
+            last_wqe_qpn_ds: read_be32_raw(last_wqe_ptr, wqe::ctrl::QPN_DS),
+        }
+    }
+}
+
+/// Send Queue のデバッグスナップショット
+#[derive(Debug, Clone, Copy)]
+pub struct TxQueueDebugState {
+    pub sqn: u32,
+    pub producer_counter: u16,
+    pub sq_depth: u32,
+    pub doorbell_be: u32,
+    pub doorbell_host: u32,
+    pub last_wqe_counter: u16,
+    pub last_wqe_addr: u64,
+    pub last_wqe_opmod_idx: u32,
+    pub last_wqe_qpn_ds: u32,
 }
 
 // ============================================================================

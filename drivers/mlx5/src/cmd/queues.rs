@@ -232,10 +232,47 @@ pub fn build_create_rq_input_with_mem_type(
     mem_rq_type: u8,
     rmpn: Option<u32>,
 ) {
+    build_create_rq_input_with_options(
+        in_mbox,
+        log_rq_size,
+        rq_buf_pa,
+        db_pa,
+        cqn,
+        pd,
+        uar_page,
+        scatter_fcs,
+        vlan_strip,
+        mem_rq_type,
+        rmpn,
+        true, // flush_in_error_en
+        1,    // wq_type=cyclic
+        1,    // end_padding_mode=ALIGN
+        4,    // log_wq_stride=16B data segment
+    );
+}
+
+/// CREATE_RQ コマンド入力の構築（互換性探索用オプション付き）
+pub fn build_create_rq_input_with_options(
+    in_mbox: &mut CmdMailbox,
+    log_rq_size: u8,
+    rq_buf_pa: u64,
+    db_pa: u64,
+    cqn: u32,
+    pd: u32,
+    uar_page: u32,
+    scatter_fcs: bool,
+    vlan_strip: bool,
+    mem_rq_type: u8,
+    rmpn: Option<u32>,
+    flush_in_error_en: bool,
+    wq_type: u8,
+    end_padding_mode: u8,
+    log_wq_stride: u8,
+) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = RqContextLayout::new(&mut in_mbox.data[0x20..]);
     layout.set_mem_rq_type(mem_rq_type & 0x0f);
-    layout.set_flush_in_error_en(true);
+    layout.set_flush_in_error_en(flush_in_error_en);
     layout.set_scatter_fcs(scatter_fcs);
     layout.set_vlan_strip(vlan_strip);
     layout.set_cqn(cqn);
@@ -247,13 +284,12 @@ pub fn build_create_rq_input_with_mem_type(
 
     {
         let mut wq = layout.wq();
-        wq.set_wq_type(1); // cyclic
-        // Match Linux mlx5e default for cyclic RQ.
-        wq.set_end_padding_mode(1); // MLX5_WQ_END_PAD_MODE_ALIGN
+        wq.set_wq_type(wq_type & 0x0f);
+        wq.set_end_padding_mode(end_padding_mode & 0x03);
         wq.set_pd(pd);
         wq.set_uar_page(uar_page);
         wq.set_dbr_addr(db_pa);
-        wq.set_log_wq_stride(4); // 16B data segment
+        wq.set_log_wq_stride(log_wq_stride & 0x0f);
         wq.set_log_wq_pg_sz(0); // 4KB
         wq.set_log_wq_sz(log_rq_size);
     }
@@ -277,16 +313,42 @@ pub fn build_create_rmp_input(
     pd: u32,
     uar_page: u32,
 ) {
+    build_create_rmp_input_with_options(
+        in_mbox,
+        log_rmp_size,
+        rmp_buf_pa,
+        db_pa,
+        pd,
+        uar_page,
+        1,   // RDY
+        true,
+        1,   // cyclic
+        1,   // ALIGN
+    );
+}
+
+/// CREATE_RMP コマンド入力の構築（互換性探索用オプション付き）
+pub fn build_create_rmp_input_with_options(
+    in_mbox: &mut CmdMailbox,
+    log_rmp_size: u8,
+    rmp_buf_pa: u64,
+    db_pa: u64,
+    pd: u32,
+    uar_page: u32,
+    state: u8,
+    basic_cyclic_rcv_wqe: bool,
+    wq_type: u8,
+    end_padding_mode: u8,
+) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = RmpContextLayout::new(&mut in_mbox.data[0x20..]);
-    // RMPC has only RDY(1)/ERR(3); there is no RESET state.
-    layout.set_state(1); // RDY
-    layout.set_basic_cyclic_rcv_wqe(true);
+    layout.set_state(state);
+    layout.set_basic_cyclic_rcv_wqe(basic_cyclic_rcv_wqe);
 
     {
         let mut wq = layout.wq();
-        wq.set_wq_type(1); // cyclic
-        wq.set_end_padding_mode(1); // MLX5_WQ_END_PAD_MODE_ALIGN
+        wq.set_wq_type(wq_type);
+        wq.set_end_padding_mode(end_padding_mode & 0x3);
         wq.set_pd(pd);
         wq.set_uar_page(uar_page);
         wq.set_dbr_addr(db_pa);

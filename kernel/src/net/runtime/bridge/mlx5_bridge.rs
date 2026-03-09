@@ -437,6 +437,46 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
             }
         }
 
+        for sq_index in 0..device.num_sqs() {
+            let sq = unsafe { device.debug_tx_queue_state(sq_index) };
+            let cq_index = device.tx_cq_index_for_sq(sq_index);
+            let cq = cq_index.and_then(|idx| unsafe { device.debug_cq_state(idx) });
+
+            match (sq, cq_index, cq) {
+                (Some(sq_state), Some(cq_idx), Some(cq_state)) => {
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "TX debug sq={} sqn={} prod={}/{} db={:#x} last_wqe:opmod_idx={:#x} qpn_ds={:#x} addr={:#x} | cq={} cqn={} ci={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x}",
+                        sq_index,
+                        sq_state.sqn,
+                        sq_state.producer_counter,
+                        sq_state.sq_depth,
+                        sq_state.doorbell_host,
+                        sq_state.last_wqe_opmod_idx,
+                        sq_state.last_wqe_qpn_ds,
+                        sq_state.last_wqe_addr,
+                        cq_idx,
+                        cq_state.cqn,
+                        cq_state.consumer_counter,
+                        cq_state.head_index,
+                        cq_state.expected_owner,
+                        cq_state.observed_owner,
+                        cq_state.observed_opcode,
+                        cq_state.observed_wqe_counter,
+                        cq_state.observed_byte_count,
+                        cq_state.doorbell_host,
+                    );
+                }
+                _ => {
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "TX debug sq={} state unavailable (sq/cq not ready)",
+                        sq_index
+                    );
+                }
+            }
+        }
+
         if let Err(err) = unsafe { device.update_port_stats(0) } {
             log::warn!(
                 target: "mlx5::bridge",

@@ -903,6 +903,11 @@ impl Mlx5Device {
         // Finalize
         if let Err(err) = self.setup_rx_flow_table_advanced(tirn) {
             if self.is_vf() {
+                log::warn!(
+                    target: "mlx5",
+                    "VF RX flow-table setup failed; relying on PF default steering: {:?}",
+                    err
+                );
                 let _ = err;
                 crate::boot_trace("[MLX5_STAGE] rx_flow_table_vf_failed\n");
             }

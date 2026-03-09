@@ -240,6 +240,17 @@ impl Mlx5Device {
         self.rqs.get(rq_index).map(|rq| rq.debug_state())
     }
 
+    /// TX Queue のデバッグ状態を取得
+    ///
+    /// # Safety
+    /// - SQ メモリとドアベル領域が有効であること
+    pub unsafe fn debug_tx_queue_state(
+        &self,
+        sq_index: usize,
+    ) -> Option<crate::wq::TxQueueDebugState> {
+        self.sqs.get(sq_index).map(|sq| sq.debug_state())
+    }
+
     /// Completion Queue のデバッグ状態を取得
     ///
     /// # Safety
