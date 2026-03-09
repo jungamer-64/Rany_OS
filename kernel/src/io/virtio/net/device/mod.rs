@@ -5,6 +5,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
 use kernel_api::dma::{CpuOwned, DmaSlice};
+use x86_64::PhysAddr;
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes, iommu_align_len};
 use crate::io::iommu::api::{is_iommu_enabled, is_iommu_required, unmap_dma, unmap_for_device};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
@@ -222,7 +223,9 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         }
 
         let device_id = self.iommu_device_id.ok_or(VirtioNetError::DeviceError)?;
-        let phys = packet.phys_addr();
+        let phys_addr = packet.phys_addr();
+        // convert to x86_64 PhysAddr for the IOMMU API
+        let phys = PhysAddr::new(phys_addr.as_u64());
         let size = packet.capacity() as u64;
 
         let read = direction != virtio_driver::net::NetDmaDirection::FromDevice;

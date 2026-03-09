@@ -5,6 +5,10 @@ use crate::net::obs::{
     trace::{self, NetEventKind, NetLayer},
 };
 
+// IOMMU helpers require an x86_64 PhysAddr type
+use x86_64::PhysAddr;
+
+
 const MAX_TX_COMPLETIONS_PER_PASS: usize = 256;
 
 impl VirtioNetDevice {
@@ -173,16 +177,19 @@ impl VirtioNetDevice {
         if let Some(tx_queue) = self.tx_queues.first() {
             let q_idx = 0;
             let data_len = packet.len();
+            let cap = packet.capacity() as u64;
             let phys_addr = packet.phys_addr();
+            // convert to kernel/x86_64 PhysAddr for the IOMMU API
+            let phys = PhysAddr::new(phys_addr.as_u64());
             
             let (device_addr, iova) = if is_iommu_enabled() {
                 let device_id = self.iommu_device_id.ok_or(VirtioNetError::DeviceError)?;
                 // Use a larger size (capacity) for mapping to be safe, although we only send len.
                 // VT-d mapping must be 4K-aligned, and PacketBuffer is 4K.
-                let size = packet.capacity() as u64;
+                let size = cap;
                 unsafe {
                     let iova = crate::io::iommu::api::map_for_device_with_perms(
-                        &device_id, phys_addr, size, true, false, // TX: read-only from device perspective
+                        &device_id, phys, size, true, false, // TX: read-only from device perspective
                     ).map_err(|_| VirtioNetError::DeviceError)?;
                     (iova, Some(iova))
                 }
@@ -197,7 +204,7 @@ impl VirtioNetDevice {
                         packet,
                         bounce_buffer: None,
                         iommu_iova: iova,
-                        iommu_map_len: packet.capacity() as u64,
+                        iommu_map_len: cap,
                     });
                     tx_queue.notify(self.transport.as_ref());
                     self.process_tx_completions();
