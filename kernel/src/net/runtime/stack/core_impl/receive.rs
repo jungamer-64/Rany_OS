@@ -173,6 +173,38 @@ impl NetworkStack {
             let src = packet.source();
             let dst = packet.destination();
             let payload = packet.payload();
+            let protocol = packet.protocol();
+
+            // ── ファイアウォール Reassembled パケットチェック ──
+            // 再組立て後のパケットに対して再度ファイアウォールを適用する。
+            // これにより、フラグメント化によるポートベースルールの回避を防止する。
+            let (src_port, dst_port) = match protocol {
+                IpProtocol::Tcp | IpProtocol::Udp if payload.len() >= 4 => {
+                    let sp = u16::from_be_bytes([payload[0], payload[1]]);
+                    let dp = u16::from_be_bytes([payload[2], payload[3]]);
+                    (sp, dp)
+                }
+                _ => (0, 0),
+            };
+
+            if !crate::net::security::firewall::check_ingress(
+                src.octets(),
+                dst.octets(),
+                protocol.into(),
+                src_port,
+                dst_port,
+            ) {
+                log::warn!(
+                    "[FIREWALL] Reassembled packet BLOCKED: {}:{} -> {}:{} proto={}",
+                    src,
+                    src_port,
+                    dst,
+                    dst_port,
+                    u8::from(protocol)
+                );
+                self.stats.record_dropped();
+                return;
+            }
 
             // Security: Only process multicast/broadcast packets if intended (RFC 1122)
             if (dst.is_multicast() && !self.is_multicast_allowed(dst))

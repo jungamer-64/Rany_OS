@@ -114,7 +114,6 @@ impl TcpControlBlock {
             let skip = diff as usize;
             if skip >= packet.len() {
                 // If it's just a FIN that we already have or is old, return false.
-                // But wait, if it's a FIN at rcv_nxt, it should have been processed as in-order.
                 return false; // Entirely old
             }
             // Trim the packet using PacketRef's built-in advance mechanism
@@ -127,10 +126,28 @@ impl TcpControlBlock {
             self.rx.ooo_fin_seq = Some(seg_end);
         }
 
+        // 2. Check for overlaps with existing OOO segments
+        // If this segment is entirely covered by an existing one, discard it.
+        // If this segment covers existing ones, we'll replace/trim them.
+        
+        // Check if there's a segment starting at or before 'seq' that covers us
+        if let Some((&existing_seq, existing_pkt)) = self.rx.ooo_queue.range(..=seq).next_back() {
+            let existing_end = existing_seq.wrapping_add(existing_pkt.len() as u32);
+            let seg_end = seq.wrapping_add(packet.len() as u32);
+            if !seq_after(seg_end, existing_end) {
+                return false; // Entirely covered by existing segment
+            }
+            
+            if existing_seq == seq {
+                // Same start, but new one is longer. Replace existing.
+                self.rx.ooo_queue.remove(&seq);
+                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+
         // Limit per-connection OOO segments
         const MAX_PER_CONN_OOO: usize = 16;
         if self.rx.ooo_queue.len() >= MAX_PER_CONN_OOO {
-            // ... (eviction logic)
             let mut furthest_seq: Option<u32> = None;
             for &s in self.rx.ooo_queue.keys() {
                 if furthest_seq.is_none()
@@ -154,18 +171,6 @@ impl TcpControlBlock {
             }
         }
 
-        // 2. Check for overlaps with existing OOO segments
-        // If we already have a segment starting at the same position,
-        // keep the longer one.
-        if let Some(existing) = self.rx.ooo_queue.get(&seq) {
-            if existing.len() >= packet.len() {
-                return false; // Existing is better
-            }
-            // New one is longer, replace it
-            self.rx.ooo_queue.remove(&seq);
-            GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
-        }
-
         // Security: Check global OOO limit
         if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
             return false;
@@ -180,6 +185,7 @@ impl TcpControlBlock {
     /// Returns true if a FIN was encountered during drainage.
     pub fn drain_ooo_segments(&mut self) -> bool {
         // First, prune segments that are now entirely before rcv_nxt
+        // or trim segments that partially overlap.
         self.prune_ooo_segments();
 
         let mut drained_count = 0;
@@ -215,6 +221,10 @@ impl TcpControlBlock {
         if drained_count > 0 {
             self.seq.rcv_nxt = current_rcv_nxt;
             self.wake_read_waiter();
+            
+            // After updating rcv_nxt, we might have more segments that now overlap!
+            // Prune/trim again to ensure consistency.
+            self.prune_ooo_segments();
         }
 
         // Also check if we have a zero-length FIN at the current rcv_nxt
@@ -229,9 +239,11 @@ impl TcpControlBlock {
         fin_encountered
     }
 
-    /// Remove outdated OOO segments (before rcv_nxt)
+    /// Remove outdated OOO segments (before rcv_nxt) or trim partial overlaps.
     pub fn prune_ooo_segments(&mut self) {
         let rcv_nxt = self.seq.rcv_nxt;
+        
+        // Find segments that start before rcv_nxt
         let outdated: Vec<u32> = self
             .rx
             .ooo_queue
@@ -241,8 +253,37 @@ impl TcpControlBlock {
             .collect();
 
         for seq in outdated {
-            if self.rx.ooo_queue.remove(&seq).is_some() {
-                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+            if let Some(mut packet) = self.rx.ooo_queue.remove(&seq) {
+                let end = seq.wrapping_add(packet.len() as u32);
+                let diff = rcv_nxt.wrapping_sub(seq) as i32;
+                
+                if diff > 0 && (end.wrapping_sub(rcv_nxt) as i32) > 0 {
+                    // Partial overlap: trim and re-insert at rcv_nxt
+                    let skip = diff as usize;
+                    packet.advance(skip);
+                    
+                    // If rcv_nxt already has a segment, keep the longer one
+                    let mut keep_new = true;
+                    if let Some(existing) = self.rx.ooo_queue.get(&rcv_nxt) {
+                        if existing.len() >= packet.len() {
+                            keep_new = false;
+                        } else {
+                            // Replace existing
+                            self.rx.ooo_queue.remove(&rcv_nxt);
+                            GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                        }
+                    }
+                    
+                    if keep_new {
+                        self.rx.ooo_queue.insert(rcv_nxt, packet);
+                        // GLOBAL_OOO_COUNT remains balanced because we removed at 'seq' and inserted at 'rcv_nxt'
+                    } else {
+                        GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                    }
+                } else {
+                    // Entirely before rcv_nxt
+                    GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                }
             }
         }
     }

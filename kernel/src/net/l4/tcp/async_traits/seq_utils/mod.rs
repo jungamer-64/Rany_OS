@@ -715,8 +715,11 @@ pub(crate) fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_heade
     let seq_num = u32::from_be_bytes([tcp_data[4], tcp_data[5], tcp_data[6], tcp_data[7]]);
     let ack_num = u32::from_be_bytes([tcp_data[8], tcp_data[9], tcp_data[10], tcp_data[11]]);
     let data_offset_flags = u16::from_be_bytes([tcp_data[12], tcp_data[13]]);
-    // low byte contains all eight control bits
-    let flags = (data_offset_flags as u8) as u16;
+    
+    // Security: Properly extract all 9 bits of TCP flags (bits 0-8), including NS.
+    // data_offset_flags [offset: 4, reserved: 3, ns: 1, flags: 8]
+    let flags = data_offset_flags & 0x01FF;
+    let _header_len = ((data_offset_flags >> 12) as usize) * 4;
 
     // ソケットアドレスを構築
     let src_addr = EndpointAddr::new(ip_header.src_addr, src_port);

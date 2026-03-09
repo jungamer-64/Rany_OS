@@ -66,8 +66,8 @@ pub fn check_ingress(
     dst_port: u16,
 ) -> bool {
     match FIREWALL.lock() {
-        Ok(fw) => {
-            fw.evaluate(
+        Ok(mut fw) => {
+            fw.evaluate_mut(
                 FirewallDirection::Ingress,
                 src_ip,
                 dst_ip,
@@ -95,8 +95,8 @@ pub fn check_egress(
     dst_port: u16,
 ) -> bool {
     match FIREWALL.lock() {
-        Ok(fw) => {
-            fw.evaluate(
+        Ok(mut fw) => {
+            fw.evaluate_mut(
                 FirewallDirection::Egress,
                 src_ip,
                 dst_ip,

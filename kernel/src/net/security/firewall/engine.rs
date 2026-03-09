@@ -235,7 +235,14 @@ impl FirewallEngine {
         let default = match direction {
             FirewallDirection::Ingress => &self.default_ingress,
             FirewallDirection::Egress => &self.default_egress,
-            FirewallDirection::Both => &self.default_ingress,
+            FirewallDirection::Both => {
+                // 両方向の場合は Ingress / Egress 双方が Allow なら Allow
+                if self.default_ingress.is_allow() && self.default_egress.is_allow() {
+                    &self.default_ingress
+                } else {
+                    &FirewallAction::Deny
+                }
+            }
         };
 
         if default.is_allow() {
@@ -299,7 +306,14 @@ impl FirewallEngine {
         let default = match direction {
             FirewallDirection::Ingress => &self.default_ingress,
             FirewallDirection::Egress => &self.default_egress,
-            FirewallDirection::Both => &self.default_ingress,
+            FirewallDirection::Both => {
+                // 両方向の場合は Ingress / Egress 双方が Allow なら Allow
+                if self.default_ingress.is_allow() && self.default_egress.is_allow() {
+                    &self.default_ingress
+                } else {
+                    &FirewallAction::Deny
+                }
+            }
         };
 
         if default.is_allow() {

@@ -145,8 +145,10 @@ fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
     }
 
     // Process length block
-    let aad_bits = (aad.len() as u64) * 8;
-    let ct_bits = (ciphertext.len() as u64) * 8;
+    // Security: use saturating or checked math to avoid overflow in length block (RFC 5116)
+    // NIST SP 800-38D: length of AAD and Ciphertext in bits.
+    let aad_bits = (aad.len() as u64).saturating_mul(8);
+    let ct_bits = (ciphertext.len() as u64).saturating_mul(8);
     let mut len_block = [0u8; 16];
     len_block[0..8].copy_from_slice(&aad_bits.to_be_bytes());
     len_block[8..16].copy_from_slice(&ct_bits.to_be_bytes());
