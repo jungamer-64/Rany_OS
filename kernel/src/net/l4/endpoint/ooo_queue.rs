@@ -66,15 +66,31 @@ impl ConnectionOooQueue {
             self.fin_seq = Some(seg_end);
         }
 
-        // すでに重複しているかチェック
-        if self.segments.iter().any(|(s, _)| *s == seq) {
-            return;
+        let fragment_len = data.len() as u32;
+        let fragment_end = seq.wrapping_add(fragment_len);
+
+        // Security: Check for overlapping segments in the OOO queue.
+        // RFC 5722 (for IPv6) and general security best practices recommend 
+        // discarding overlapping fragments to prevent IDS evasion and state 
+        // inconsistency. We apply this policy here to the OOO queue.
+        for (s, p) in &self.segments {
+            let existing_seq = *s;
+            let existing_end = existing_seq.wrapping_add(p.len() as u32);
+
+            // Check if [seq, fragment_end) overlaps with [existing_seq, existing_end)
+            let overlap = !seq_before(existing_end, seq) && !seq_before(fragment_end, existing_seq);
+            if overlap {
+                log::warn!(
+                    "[NET-TCP] Overlapping OOO segment detected at seq {}, dropping entire OOO queue for connection",
+                    seq
+                );
+                self.clear(); // Drop everything to be safe
+                return;
+            }
         }
 
         if self.segments.len() >= MAX_OOO_SEGMENTS {
             // キュー満杯: 最も遠いセグメントを破棄
-            // Vecはソート済みなので最後が最も遠い（はず、だがwrapping空間では注意が必要）
-            // ここでは seq_before を使ってソートを維持する。
             if let Some(&(last_seq, _)) = self.segments.last() {
                 if seq_before(seq, last_seq) {
                     self.segments.pop();
@@ -107,13 +123,16 @@ impl ConnectionOooQueue {
             if seq_before(*seq, rcv_nxt) {
                 let (seq, mut packet) = self.segments.remove(i);
                 let seg_end = seq.wrapping_add(packet.len() as u32);
+                
                 if seq_before(rcv_nxt, seg_end) {
-                    // 部分的な重複
+                    // 部分的な重複: rcv_nxtより前の部分をカットして再挿入候補にする
                     let overlap = rcv_nxt.wrapping_sub(seq) as usize;
                     packet.advance(overlap);
                     to_reinsert.push((rcv_nxt, packet));
+                    // Note: GLOBAL_OOO_COUNT remains the same because this segment is 
+                    // essentially replaced by a trimmed version.
                 } else {
-                    // 完全に受信済み
+                    // 完全に受信済み、または重複部分のみだった
                     GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                 }
                 // Don't increment i, next element shifted here
@@ -125,19 +144,15 @@ impl ConnectionOooQueue {
         for (seq, packet) in to_reinsert {
             // Re-inserting at the beginning (since seq == rcv_nxt and others are >= rcv_nxt)
             if self.segments.iter().any(|(s, _)| *s == seq) {
-                // Overwrite
-                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed); // We removed it but will re-insert, wait
-                // Actually the remove(i) above already decremented it? No, only if not reinserting.
-                // Let's be careful with the count.
+                // If it already exists (e.g. from a concurrent process or overlap), 
+                // just drop the trimmed version.
+                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                continue;
             }
             
-            // To be safe, just use insert() logic
             let pos = self.segments.iter().position(|(s, _)| seq_before(seq, *s)).unwrap_or(self.segments.len());
             self.segments.insert(pos, (seq, packet));
-            // We don't increment GLOBAL_OOO_COUNT because it was already accounted for 
-            // before the remove or it was a replacement.
-            // Actually prune_outdated is tricky with GLOBAL_OOO_COUNT.
-            // Let's just adjust it at the end.
+            // No fetch_add(1) here because it was already counted before removal
         }
     }
 

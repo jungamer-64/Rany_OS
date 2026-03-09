@@ -1054,17 +1054,14 @@ impl ZeroCopyWriter {
     pub fn enqueue_via_virtio(
         packet: crate::net::datapath::mempool::PacketRef,
     ) -> Result<(), &'static str> {
-        // Check device presence first to avoid moving packet into a closure that
-        // might not be executed (which would drop the PacketRef unexpectedly).
-        if crate::drivers::virtio::with_virtio_net(|_| ()).is_none() {
-            return Err("NotInitialized");
-        }
-
-        match crate::drivers::virtio::with_virtio_net(|dev| dev.enqueue_send_zero_copy(packet)) {
-            Some(Ok(())) => Ok(()),
-            Some(Err(crate::drivers::virtio::net::VirtioNetError::QueueFull)) => Err("QueueFull"),
-            Some(Err(_)) => Err("DeviceError"),
-            None => Err("NotInitialized"),
+        if crate::net::runtime::device::transmit_packet(
+            None,
+            packet,
+            kernel_api::service::netdev::NetTxMeta::default(),
+        ) {
+            Ok(())
+        } else {
+            Err("NotInitialized")
         }
     }
 }

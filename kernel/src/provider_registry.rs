@@ -482,7 +482,10 @@ mod tests {
     use alloc::vec;
     use core::task::Waker;
     use kernel_api::service::audio::{AudioDeviceInfo, AudioServices};
-    use kernel_api::service::netdev::{MacAddress, NetDeviceInfo, NetDeviceServices};
+    use kernel_api::service::netdev::{
+        MacAddress, NetDeviceInfo, NetDeviceServices, NetPortKind, NETDEV_FLAG_BOUND_PORT,
+        NETDEV_FLAG_PRIMARY,
+    };
     use kernel_api::service::platform::{
         BdfAddress, ClassCode, DeviceId, IoApicInfo, LocalApicInfo, PciDeviceInfo, VendorId,
     };
@@ -642,10 +645,14 @@ mod tests {
     impl NetDeviceServices for FakeNetdev {
         fn devices(&self) -> Vec<NetDeviceInfo> {
             vec![NetDeviceInfo {
-                device_id: 7,
+                port_id: 7,
+                if_id: Some(3),
+                kind: NetPortKind::Virtio,
+                driver_name: "fake-net",
+                queue_pairs: 1,
                 mtu: 1500,
                 mac: MacAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x07]),
-                flags: 3,
+                flags: NETDEV_FLAG_BOUND_PORT | NETDEV_FLAG_PRIMARY,
             }]
         }
     }

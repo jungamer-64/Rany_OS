@@ -68,6 +68,10 @@ mod service_input_impl;
 #[path = "netdev.rs"]
 mod service_netdev_impl;
 
+pub mod netdev {
+    pub use crate::service_netdev_impl::*;
+}
+
 #[path = "platform.rs"]
 mod service_platform_impl;
 

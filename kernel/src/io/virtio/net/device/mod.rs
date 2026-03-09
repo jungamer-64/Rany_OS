@@ -217,23 +217,23 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
     }
 
     fn receive_packet(&self, _queue_index: u16, packet: PacketRef, header_len: usize, payload_len: usize) {
-        // Pass PacketRef to bridge for zero-copy processing
-        if let Some(if_id) = self
+        if let Some(runtime) = registry::virtio_net_runtime(self.virtio_index) {
+            let _ = runtime.submit_rx(
+                packet,
+                kernel_api::service::netdev::NetRxMeta {
+                    queue_index: _queue_index,
+                    header_len: header_len as u16,
+                    payload_len: payload_len as u16,
+                    flags: 0,
+                },
+            );
+        } else if let Some(if_id) = self
             .net_if_id()
             .or_else(|| crate::net::runtime::bridge::lookup_if_by_virtio_index(self.virtio_index))
         {
-            crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
-                if_id,
-                packet,
-                header_len,
-                payload_len,
-            );
+            crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(if_id, packet, header_len, payload_len);
         } else {
-            crate::net::runtime::bridge::process_received_packet_zero_copy(
-                packet,
-                header_len,
-                payload_len,
-            );
+            crate::net::runtime::bridge::process_received_packet_zero_copy(packet, header_len, payload_len);
         }
     }
 
@@ -245,10 +245,16 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
     }
 
     fn schedule_wake(&self, queue_index: u16) {
-        let _ = crate::net::runtime::device::enqueue_event(
-            crate::net::runtime::device::NetDeviceKey::Virtio(self.virtio_index),
-            crate::net::runtime::device::NetDeviceEvent::QueueWake { queue_index },
-        );
+        if let Some(runtime) = registry::virtio_net_runtime(self.virtio_index) {
+            let _ = runtime.schedule_event(kernel_api::service::netdev::NetDriverEvent::QueueWake {
+                queue_index,
+            });
+        } else {
+            let _ = crate::net::runtime::device::enqueue_event(
+                crate::net::runtime::device::NetDeviceKey::Virtio(self.virtio_index),
+                kernel_api::service::netdev::NetDriverEvent::QueueWake { queue_index },
+            );
+        }
     }
 
     fn log(&self, _level: log::Level, msg: core::fmt::Arguments) {

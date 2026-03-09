@@ -19,16 +19,12 @@ use kernel_api::service::gui::{
     PixelFormat as KapiPixelFormat,
 };
 use kernel_api::service::input::{InputDeviceInfo, InputDeviceKind, InputServices};
-use kernel_api::service::netdev::{MacAddress as KapiMacAddress, NetDeviceInfo, NetDeviceServices};
+use kernel_api::service::netdev::{NetDeviceInfo, NetDeviceServices};
 use kernel_api::service::serial::{SerialPortInfo, SerialServices};
 use kernel_api::service::storage::{StorageDeviceInfo, StorageServices, StorageTransport};
 
 const STORAGE_FLAG_ACTIVE: u32 = 1 << 0;
 const STORAGE_FLAG_READ_ONLY: u32 = 1 << 1;
-
-const NETDEV_FLAG_ADMIN_UP: u32 = 1 << 0;
-const NETDEV_FLAG_BOUND_PORT: u32 = 1 << 1;
-const NETDEV_FLAG_HEALTHY: u32 = 1 << 2;
 
 const AUDIO_FLAG_INITIALIZED: u32 = 1 << 0;
 const AUDIO_FLAG_BEEP: u32 = 1 << 1;
@@ -140,42 +136,7 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
 }
 
 fn net_devices_snapshot() -> alloc::vec::Vec<NetDeviceInfo> {
-    let Ok(interfaces) = crate::net::runtime::manager::list_interfaces() else {
-        return alloc::vec::Vec::new();
-    };
-
-    interfaces
-        .into_iter()
-        .map(|interface| {
-            let device = crate::net::runtime::device::lookup_device(interface.if_id);
-            let (mac, has_port, healthy) = match device {
-                Some(handle) => (
-                    KapiMacAddress(*handle.driver().mac_address().as_bytes()),
-                    true,
-                    handle.driver().health(),
-                ),
-                None => (KapiMacAddress([0; 6]), false, false),
-            };
-
-            let mut flags = 0;
-            if interface.admin_up {
-                flags |= NETDEV_FLAG_ADMIN_UP;
-            }
-            if has_port {
-                flags |= NETDEV_FLAG_BOUND_PORT;
-            }
-            if healthy {
-                flags |= NETDEV_FLAG_HEALTHY;
-            }
-
-            NetDeviceInfo {
-                device_id: interface.if_id.0 as u64,
-                mtu: crate::net::runtime::stack::MTU as u32,
-                mac,
-                flags,
-            }
-        })
-        .collect()
+    crate::net::runtime::device::list_port_infos()
 }
 
 fn audio_devices_snapshot() -> alloc::vec::Vec<AudioDeviceInfo> {

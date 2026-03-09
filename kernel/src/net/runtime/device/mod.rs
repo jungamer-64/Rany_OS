@@ -1,11 +1,10 @@
-//! Shared network device runtime.
+//! Shared network port runtime.
 //!
-//! This layer owns device registration, interface binding, TX queuing, and
-//! executor-side delivery of deferred device events.
+//! This layer owns port registration, interface binding, TX queuing, ISR-safe
+//! event delivery, and the runtime object exposed to driver adapters.
 
 extern crate alloc;
 
-use crate::net::l2::ethernet::MacAddress;
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
 use crate::sync::atomic_waker::AtomicWaker;
@@ -13,11 +12,16 @@ use crate::sync::lockfree::MpmcRingBuffer;
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use core::task::{Context, Poll};
+use kernel_api::resource::net::PacketRef;
+use kernel_api::service::netdev::{
+    self as kapi_netdev, MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetLogLevel,
+    NetPortKind, NetPortRuntime, NetPortStats, NetRxMeta, NetTxMeta, NETDEV_FLAG_ADMIN_UP,
+    NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY,
+};
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
 const NET_DEVICE_EVENT_QUEUE_CAPACITY: usize = 256;
@@ -28,39 +32,34 @@ pub enum NetDeviceKey {
     Mlx5(u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetDeviceKind {
-    Virtio,
-    Mlx5,
-}
+impl NetDeviceKey {
+    pub const fn port_id(self) -> u64 {
+        match self {
+            Self::Virtio(index) => 0x_0001_0000 | index as u64,
+            Self::Mlx5(index) => 0x_0002_0000 | index as u64,
+        }
+    }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetDeviceEvent {
-    Interrupt,
-    QueueWake { queue_index: u16 },
-    Poll,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NetDeviceStats {
-    pub tx_packets: u64,
-    pub rx_packets: u64,
-    pub tx_errors: u64,
-    pub rx_errors: u64,
-    pub initialized: bool,
+    pub const fn kind(self) -> NetPortKind {
+        match self {
+            Self::Virtio(_) => NetPortKind::Virtio,
+            Self::Mlx5(_) => NetPortKind::Mlx5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetDeviceBinding {
     pub key: NetDeviceKey,
     pub if_id: NetIfId,
-    pub kind: NetDeviceKind,
+    pub kind: NetPortKind,
     pub virtio_index: Option<u8>,
 }
 
 #[derive(Debug)]
 struct TxRequest {
-    data: Vec<u8>,
+    packet: PacketRef,
+    meta: NetTxMeta,
 }
 
 pub struct NetTxQueue {
@@ -76,8 +75,8 @@ impl NetTxQueue {
         }
     }
 
-    pub fn push(&self, data: &[u8]) -> bool {
-        match self.queue.push(TxRequest { data: data.to_vec() }) {
+    pub fn push(&self, packet: PacketRef, meta: NetTxMeta) -> bool {
+        match self.queue.push(TxRequest { packet, meta }) {
             Ok(()) => {
                 self.waker.wake();
                 true
@@ -86,8 +85,8 @@ impl NetTxQueue {
         }
     }
 
-    pub fn pop(&self) -> Option<Vec<u8>> {
-        self.queue.pop().map(|req| req.data)
+    pub fn pop(&self) -> Option<TxRequest> {
+        self.queue.pop()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -103,12 +102,12 @@ impl NetTxQueue {
     }
 }
 
-pub struct NetRxEventSink {
-    queue: MpmcRingBuffer<NetDeviceEvent, NET_DEVICE_EVENT_QUEUE_CAPACITY>,
+pub struct NetEventSink {
+    queue: MpmcRingBuffer<NetDriverEvent, NET_DEVICE_EVENT_QUEUE_CAPACITY>,
     waker: AtomicWaker,
 }
 
-impl NetRxEventSink {
+impl NetEventSink {
     pub fn new() -> Self {
         Self {
             queue: MpmcRingBuffer::new(),
@@ -116,7 +115,7 @@ impl NetRxEventSink {
         }
     }
 
-    pub fn push(&self, event: NetDeviceEvent) -> bool {
+    pub fn push(&self, event: NetDriverEvent) -> bool {
         match self.queue.push(event) {
             Ok(()) => {
                 self.waker.wake();
@@ -126,7 +125,7 @@ impl NetRxEventSink {
         }
     }
 
-    pub fn push_from_isr(&self, event: NetDeviceEvent) -> bool {
+    pub fn push_from_isr(&self, event: NetDriverEvent) -> bool {
         match self.queue.push(event) {
             Ok(()) => {
                 self.waker.wake_from_isr();
@@ -136,7 +135,7 @@ impl NetRxEventSink {
         }
     }
 
-    pub fn pop(&self) -> Option<NetDeviceEvent> {
+    pub fn pop(&self) -> Option<NetDriverEvent> {
         self.queue.pop()
     }
 
@@ -148,8 +147,8 @@ impl NetRxEventSink {
         self.waker.wake();
     }
 
-    pub fn wait(&self) -> NetRxEventWaitFuture<'_> {
-        NetRxEventWaitFuture { sink: self }
+    pub fn wait(&self) -> NetEventWaitFuture<'_> {
+        NetEventWaitFuture { sink: self }
     }
 }
 
@@ -173,11 +172,11 @@ impl Future for NetTxQueueWaitFuture<'_> {
     }
 }
 
-pub struct NetRxEventWaitFuture<'a> {
-    sink: &'a NetRxEventSink,
+pub struct NetEventWaitFuture<'a> {
+    sink: &'a NetEventSink,
 }
 
-impl Future for NetRxEventWaitFuture<'_> {
+impl Future for NetEventWaitFuture<'_> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -193,42 +192,90 @@ impl Future for NetRxEventWaitFuture<'_> {
     }
 }
 
-pub trait NetDeviceDriver: Send + Sync {
-    fn key(&self) -> NetDeviceKey;
-    fn kind(&self) -> NetDeviceKind;
-    fn port_name(&self) -> &'static str;
-    fn mac_address(&self) -> MacAddress;
-    fn mtu(&self) -> u32 {
-        stack::MTU as u32
+struct PortRuntimeHandle {
+    key: NetDeviceKey,
+    if_id: AtomicU16,
+}
+
+impl PortRuntimeHandle {
+    fn new(key: NetDeviceKey, if_id: NetIfId) -> Self {
+        Self {
+            key,
+            if_id: AtomicU16::new(if_id.0),
+        }
     }
-    fn health(&self) -> bool;
-    fn start(&self, if_id: NetIfId, event_sink: Arc<NetRxEventSink>) -> Result<(), &'static str>;
-    fn bind_interface(&self, _if_id: NetIfId) -> Result<(), &'static str> {
+
+    fn current_if_id(&self) -> NetIfId {
+        NetIfId(self.if_id.load(Ordering::Acquire))
+    }
+
+    fn set_if_id(&self, if_id: NetIfId) {
+        self.if_id.store(if_id.0, Ordering::Release);
+    }
+}
+
+impl NetPortRuntime for PortRuntimeHandle {
+    fn alloc_packet(&self) -> Option<PacketRef> {
+        crate::net::datapath::mempool::alloc_packet()
+    }
+
+    fn submit_rx(&self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
+        crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
+            self.current_if_id(),
+            packet,
+            meta.header_len as usize,
+            meta.payload_len as usize,
+        );
         Ok(())
     }
-    fn submit_tx(&self, data: &[u8]) -> Result<(), &'static str>;
-    fn on_event(&self, if_id: NetIfId, event: NetDeviceEvent) -> Result<(), &'static str>;
-    fn stats(&self) -> NetDeviceStats;
-    fn stop(&self);
+
+    fn schedule_event(&self, event: NetDriverEvent) -> Result<(), &'static str> {
+        if enqueue_event(self.key, event) {
+            Ok(())
+        } else {
+            Err("port event queue full")
+        }
+    }
+
+    fn update_link(&self, up: bool) -> Result<(), &'static str> {
+        let result = if up {
+            manager::set_interface_up(self.current_if_id())
+        } else {
+            manager::set_interface_down(self.current_if_id())
+        };
+        result.map_err(|_| "failed to update interface link state")
+    }
+
+    fn log(&self, level: NetLogLevel, message: &str) {
+        match level {
+            NetLogLevel::Error => log::error!(target: "net::device", "{}", message),
+            NetLogLevel::Warn => log::warn!(target: "net::device", "{}", message),
+            NetLogLevel::Info => log::info!(target: "net::device", "{}", message),
+            NetLogLevel::Debug => log::debug!(target: "net::device", "{}", message),
+            NetLogLevel::Trace => log::trace!(target: "net::device", "{}", message),
+        }
+    }
 }
 
 pub struct NetDeviceHandle {
-    driver: Arc<dyn NetDeviceDriver>,
+    driver: Arc<dyn NetDevicePort>,
     binding: PoisonLock<NetDeviceBinding>,
+    runtime: Arc<PortRuntimeHandle>,
     tx_queue: Arc<NetTxQueue>,
-    event_sink: Arc<NetRxEventSink>,
+    event_sink: Arc<NetEventSink>,
     active: AtomicBool,
     tx_worker_started: AtomicBool,
     event_worker_started: AtomicBool,
 }
 
 impl NetDeviceHandle {
-    fn new(driver: Arc<dyn NetDeviceDriver>, binding: NetDeviceBinding) -> Arc<Self> {
+    fn new(driver: Arc<dyn NetDevicePort>, binding: NetDeviceBinding) -> Arc<Self> {
         Arc::new(Self {
             driver,
+            runtime: Arc::new(PortRuntimeHandle::new(binding.key, binding.if_id)),
             binding: PoisonLock::new(binding),
             tx_queue: Arc::new(NetTxQueue::new()),
-            event_sink: Arc::new(NetRxEventSink::new()),
+            event_sink: Arc::new(NetEventSink::new()),
             active: AtomicBool::new(true),
             tx_worker_started: AtomicBool::new(false),
             event_worker_started: AtomicBool::new(false),
@@ -242,19 +289,46 @@ impl NetDeviceHandle {
         }
     }
 
-    pub fn driver(&self) -> &Arc<dyn NetDeviceDriver> {
+    pub fn driver(&self) -> &Arc<dyn NetDevicePort> {
         &self.driver
     }
 
-    pub fn enqueue_tx(&self, data: &[u8]) -> bool {
-        self.tx_queue.push(data)
+    pub fn info(&self) -> NetDeviceInfo {
+        let binding = self.binding();
+        let mut info = self.driver.info();
+        let stats = self.driver.stats();
+        info.port_id = binding.key.port_id();
+        info.if_id = Some(binding.if_id.0);
+        info.kind = binding.kind;
+        info.flags |= NETDEV_FLAG_BOUND_PORT;
+        if stats.initialized {
+            info.flags |= NETDEV_FLAG_LINK_UP;
+        }
+        if stats.initialized || stats.rx_packets > 0 || stats.tx_packets > 0 {
+            info.flags |= NETDEV_FLAG_HEALTHY;
+        }
+        if primary_if() == Some(binding.if_id) {
+            info.flags |= NETDEV_FLAG_PRIMARY;
+        }
+        if let Ok(Some(interface)) = manager::get_interface(binding.if_id) {
+            if interface.admin_up {
+                info.flags |= NETDEV_FLAG_ADMIN_UP;
+            } else {
+                info.flags &= !NETDEV_FLAG_ADMIN_UP;
+            }
+        }
+        info
     }
 
-    pub fn enqueue_event(&self, event: NetDeviceEvent) -> bool {
+    pub fn enqueue_tx(&self, packet: PacketRef, meta: NetTxMeta) -> bool {
+        self.tx_queue.push(packet, meta)
+    }
+
+    pub fn enqueue_event(&self, event: NetDriverEvent) -> bool {
         self.event_sink.push(event)
     }
 
-    pub fn enqueue_event_from_isr(&self, event: NetDeviceEvent) -> bool {
+    pub fn enqueue_event_from_isr(&self, event: NetDriverEvent) -> bool {
         self.event_sink.push_from_isr(event)
     }
 
@@ -268,7 +342,8 @@ impl NetDeviceHandle {
     }
 
     fn rebind(&self, binding: NetDeviceBinding) -> Result<(), &'static str> {
-        self.driver.bind_interface(binding.if_id)?;
+        self.driver.bind(binding.if_id.0)?;
+        self.runtime.set_if_id(binding.if_id);
         match self.binding.lock() {
             Ok(mut guard) => {
                 *guard = binding;
@@ -300,12 +375,12 @@ async fn tx_worker(handle: Arc<NetDeviceHandle>) {
             pending = handle.tx_queue.pop();
         }
 
-        while let Some(data) = pending {
+        while let Some(request) = pending {
             if !handle.active.load(Ordering::Acquire) {
                 return;
             }
 
-            if let Err(err) = handle.driver.submit_tx(&data) {
+            if let Err(err) = handle.driver.submit_tx(request.packet, request.meta) {
                 log::warn!(
                     target: "net::device",
                     "device {:?} TX submission failed: {}",
@@ -335,8 +410,12 @@ async fn event_worker(handle: Arc<NetDeviceHandle>) {
                 return;
             }
 
-            let if_id = handle.binding().if_id;
-            if let Err(err) = handle.driver.on_event(if_id, event) {
+            let if_id = handle.binding().if_id.0;
+            let result = match event {
+                NetDriverEvent::Poll => handle.driver.poll(if_id),
+                _ => handle.driver.handle_event(if_id, event),
+            };
+            if let Err(err) = result {
                 log::warn!(
                     target: "net::device",
                     "device {:?} event {:?} failed: {}",
@@ -437,34 +516,34 @@ fn interface_for_key(
 }
 
 pub fn register_device(
-    driver: Arc<dyn NetDeviceDriver>,
+    key: NetDeviceKey,
+    driver: Arc<dyn NetDevicePort>,
     config: NetworkConfig,
     make_primary: bool,
 ) -> Result<NetIfId, &'static str> {
     ensure_stack_initialized(config)?;
 
-    if let Some(existing) = lookup_if_by_key(driver.key()) {
+    if let Some(existing) = lookup_if_by_key(key) {
         if make_primary {
             set_primary_interface(existing);
         }
         return Ok(existing);
     }
 
-    let key = driver.key();
-    let kind = driver.kind();
-    let if_id = interface_for_key(key, config, driver.port_name())?;
+    let base = driver.info();
+    let if_id = interface_for_key(key, config, base.driver_name)?;
     let binding = NetDeviceBinding {
         key,
         if_id,
-        kind,
+        kind: key.kind(),
         virtio_index: match key {
             NetDeviceKey::Virtio(index) => Some(index),
             NetDeviceKey::Mlx5(_) => None,
         },
     };
     let handle = NetDeviceHandle::new(driver.clone(), binding);
-    driver.bind_interface(if_id)?;
-    driver.start(if_id, handle.event_sink.clone())?;
+    driver.bind(if_id.0)?;
+    driver.start(handle.runtime.clone())?;
     handle.start_workers();
 
     {
@@ -500,17 +579,13 @@ pub fn bind_device_interface(key: NetDeviceKey, if_id: NetIfId) -> Result<(), &'
     let mut guard = DEVICE_MANAGER.write().unwrap_or_else(|e| e.into_inner());
     guard.key_map.insert(key, if_id);
     guard.handles.insert(if_id, handle.clone());
-    if let Some(previous) = guard
-        .handles
-        .iter()
-        .find_map(|(current_if, current_handle)| {
-            if *current_if != if_id && current_handle.binding().key == key {
-                Some(*current_if)
-            } else {
-                None
-            }
-        })
-    {
+    if let Some(previous) = guard.handles.iter().find_map(|(current_if, current_handle)| {
+        if *current_if != if_id && current_handle.binding().key == key {
+            Some(*current_if)
+        } else {
+            None
+        }
+    }) {
         guard.handles.remove(&previous);
     }
     Ok(())
@@ -538,11 +613,21 @@ pub fn unregister_device(if_id: NetIfId) -> bool {
 }
 
 pub fn lookup_if_by_key(key: NetDeviceKey) -> Option<NetIfId> {
-    DEVICE_MANAGER.read().unwrap_or_else(|e| e.into_inner()).key_map.get(&key).copied()
+    DEVICE_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .key_map
+        .get(&key)
+        .copied()
 }
 
 pub fn lookup_device(if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
-    DEVICE_MANAGER.read().unwrap_or_else(|e| e.into_inner()).handles.get(&if_id).cloned()
+    DEVICE_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .handles
+        .get(&if_id)
+        .cloned()
 }
 
 pub fn list_devices() -> Vec<Arc<NetDeviceHandle>> {
@@ -555,6 +640,10 @@ pub fn list_devices() -> Vec<Arc<NetDeviceHandle>> {
         .collect()
 }
 
+pub fn list_port_infos() -> Vec<NetDeviceInfo> {
+    list_devices().into_iter().map(|handle| handle.info()).collect()
+}
+
 pub fn primary_if() -> Option<NetIfId> {
     DEVICE_MANAGER.read().unwrap_or_else(|e| e.into_inner()).primary
 }
@@ -563,15 +652,30 @@ pub fn set_primary_interface(if_id: NetIfId) {
     DEVICE_MANAGER.write().unwrap_or_else(|e| e.into_inner()).primary = Some(if_id);
 }
 
-pub fn transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMeta) -> bool {
     let resolved_if = if_id.or_else(primary_if);
     let Some(handle) = resolved_if.and_then(lookup_device) else {
         return false;
     };
-    handle.enqueue_tx(data)
+    handle.enqueue_tx(packet, meta)
 }
 
-pub fn enqueue_event(key: NetDeviceKey, event: NetDeviceEvent) -> bool {
+pub fn transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    let mut packet = match crate::net::datapath::mempool::alloc_packet() {
+        Some(packet) => packet,
+        None => return false,
+    };
+
+    if data.len() > packet.capacity() {
+        return false;
+    }
+
+    packet.set_len(data.len());
+    packet.data_mut()[..data.len()].copy_from_slice(data);
+    transmit_packet(if_id, packet, NetTxMeta::default())
+}
+
+pub fn enqueue_event(key: NetDeviceKey, event: NetDriverEvent) -> bool {
     let Some(if_id) = lookup_if_by_key(key) else {
         return false;
     };
@@ -581,7 +685,7 @@ pub fn enqueue_event(key: NetDeviceKey, event: NetDeviceEvent) -> bool {
     handle.enqueue_event(event)
 }
 
-pub fn enqueue_event_from_isr(key: NetDeviceKey, event: NetDeviceEvent) -> bool {
+pub fn enqueue_event_from_isr(key: NetDeviceKey, event: NetDriverEvent) -> bool {
     let Some(if_id) = lookup_if_by_key(key) else {
         return false;
     };
@@ -613,55 +717,44 @@ mod tests {
         }
     }
 
-    impl NetDeviceDriver for FakeDriver {
-        fn key(&self) -> NetDeviceKey {
-            NetDeviceKey::Virtio(9)
+    impl NetDevicePort for FakeDriver {
+        fn info(&self) -> NetDeviceInfo {
+            NetDeviceInfo {
+                port_id: NetDeviceKey::Virtio(9).port_id(),
+                if_id: None,
+                kind: NetPortKind::Virtio,
+                driver_name: "fake",
+                queue_pairs: 1,
+                mtu: stack::MTU as u32,
+                mac: MacAddress::from_octets(0, 1, 2, 3, 4, 5),
+                flags: NETDEV_FLAG_HEALTHY,
+            }
         }
 
-        fn kind(&self) -> NetDeviceKind {
-            NetDeviceKind::Virtio
-        }
-
-        fn port_name(&self) -> &'static str {
-            "fake"
-        }
-
-        fn mac_address(&self) -> MacAddress {
-            MacAddress::from_octets(0, 1, 2, 3, 4, 5)
-        }
-
-        fn health(&self) -> bool {
-            true
-        }
-
-        fn start(
-            &self,
-            if_id: NetIfId,
-            _event_sink: Arc<NetRxEventSink>,
-        ) -> Result<(), &'static str> {
-            self.last_if_id.store(if_id.0, Ordering::Release);
+        fn start(&self, _runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
             Ok(())
         }
 
-        fn bind_interface(&self, if_id: NetIfId) -> Result<(), &'static str> {
+        fn bind(&self, if_id: u16) -> Result<(), &'static str> {
             self.bind_calls.fetch_add(1, Ordering::Relaxed);
-            self.last_if_id.store(if_id.0, Ordering::Release);
+            self.last_if_id.store(if_id, Ordering::Release);
             Ok(())
         }
 
-        fn submit_tx(&self, _data: &[u8]) -> Result<(), &'static str> {
+        fn submit_tx(&self, _packet: PacketRef, _meta: NetTxMeta) -> Result<(), &'static str> {
             Ok(())
         }
 
-        fn on_event(&self, _if_id: NetIfId, event: NetDeviceEvent) -> Result<(), &'static str> {
-            if let NetDeviceEvent::QueueWake { queue_index } = event {
+        fn handle_event(&self, if_id: u16, event: NetDriverEvent) -> Result<(), &'static str> {
+            self.last_if_id.store(if_id, Ordering::Release);
+            if let NetDriverEvent::QueueWake { queue_index } = event {
                 self.last_event_queue.store(queue_index, Ordering::Release);
             }
             Ok(())
         }
 
-        fn stats(&self) -> NetDeviceStats {
-            NetDeviceStats::default()
+        fn stats(&self) -> NetPortStats {
+            NetPortStats::default()
         }
 
         fn stop(&self) {}
@@ -669,19 +762,21 @@ mod tests {
 
     #[test_case]
     fn tx_queue_roundtrip_smoke() {
+        let _ = crate::net::datapath::mempool::init_net_mempool(16);
         let queue = NetTxQueue::new();
-        assert!(queue.push(b"hello"));
-        assert_eq!(queue.pop().as_deref(), Some(&b"hello"[..]));
+        let packet = crate::net::datapath::mempool::alloc_packet().expect("packet");
+        assert!(queue.push(packet, NetTxMeta::default()));
+        assert!(queue.pop().is_some());
         assert!(queue.pop().is_none());
     }
 
     #[test_case]
-    fn rx_event_sink_from_isr_roundtrip_smoke() {
-        let sink = NetRxEventSink::new();
-        assert!(sink.push_from_isr(NetDeviceEvent::QueueWake { queue_index: 7 }));
+    fn event_sink_from_isr_roundtrip_smoke() {
+        let sink = NetEventSink::new();
+        assert!(sink.push_from_isr(NetDriverEvent::QueueWake { queue_index: 7 }));
         assert_eq!(
             sink.pop(),
-            Some(NetDeviceEvent::QueueWake { queue_index: 7 })
+            Some(NetDriverEvent::QueueWake { queue_index: 7 })
         );
         assert!(sink.pop().is_none());
     }
@@ -694,7 +789,7 @@ mod tests {
             NetDeviceBinding {
                 key: NetDeviceKey::Virtio(9),
                 if_id: NetIfId(1),
-                kind: NetDeviceKind::Virtio,
+                kind: NetPortKind::Virtio,
                 virtio_index: Some(9),
             },
         );
@@ -703,7 +798,7 @@ mod tests {
             .rebind(NetDeviceBinding {
                 key: NetDeviceKey::Virtio(9),
                 if_id: NetIfId(22),
-                kind: NetDeviceKind::Virtio,
+                kind: NetPortKind::Virtio,
                 virtio_index: Some(9),
             })
             .expect("rebind");

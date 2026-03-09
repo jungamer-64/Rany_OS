@@ -1,16 +1,17 @@
 use super::{VirtioNetDevice, VirtioNetError};
-use crate::net::l2::ethernet::MacAddress;
-use crate::net::runtime::device::{
-    NetDeviceDriver, NetDeviceEvent, NetDeviceKey, NetDeviceKind, NetDeviceStats, NetRxEventSink,
-};
 use crate::io::virtio::transport::VirtioMmioTransport;
 use crate::io::virtio::transport::VirtioTransport;
+use crate::net::runtime::device::NetDeviceKey;
 use crate::sync::{PoisonLock, PoisonRwLock};
-use crate::task::{InterruptSource, spawn, wait_for_interrupt};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use kernel_api::resource::net::PacketRef;
+use kernel_api::service::netdev::{
+    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
+    NetPortStats, NetTxMeta, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP,
+};
 
 // ============================================================================
 // Global Device Instance
@@ -26,6 +27,23 @@ pub(crate) static VIRTIO_NET_DEVICES: PoisonRwLock<
 /// ISR-safe access to transport layer for interrupt acknowledgement.
 pub(crate) static VIRTIO_NET_TRANSPORTS: PoisonRwLock<BTreeMap<u8, Arc<dyn VirtioTransport>>> =
     PoisonRwLock::new(BTreeMap::new());
+pub(crate) static VIRTIO_NET_RUNTIMES: PoisonRwLock<BTreeMap<u8, Arc<dyn NetPortRuntime>>> =
+    PoisonRwLock::new(BTreeMap::new());
+
+pub(crate) fn virtio_net_runtime(index: u8) -> Option<Arc<dyn NetPortRuntime>> {
+    VIRTIO_NET_RUNTIMES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&index)
+        .cloned()
+}
+
+fn install_virtio_net_runtime(index: u8, runtime: Arc<dyn NetPortRuntime>) {
+    VIRTIO_NET_RUNTIMES
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(index, runtime);
+}
 
 fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
     let transport = device.transport.clone();
@@ -42,36 +60,6 @@ fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
     VIRTIO_NET_TRANSPORTS.write().unwrap_or_else(|e| e.into_inner()).insert(index, transport);
 }
 
-/// VirtIO-Net の割り込み後処理を行うワーカータスクを起動する
-fn spawn_virtio_net_worker(index: u8) {
-    spawn(virtio_net_worker_task(index));
-}
-
-/// VirtIO-Net の割り込み後処理ループ
-async fn virtio_net_worker_task(index: u8) {
-    log::info!("[VIRTIO-NET] Worker task for index {} started", index);
-    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-    loop {
-        wait_for_interrupt(InterruptSource::VirtioNet(index)).await;
-
-        crate::net::runtime::bridge::enter_deferred_rx_mode();
-        let result = with_virtio_net_device_at_index(index, |device| {
-            device.handle_interrupt();
-            device.refill_rx_queues();
-        });
-        crate::net::runtime::bridge::drain_deferred_rx_packets();
-        crate::net::runtime::bridge::flush_batch();
-
-        if result.is_none() {
-            log::warn!(
-                "[VIRTIO-NET] Worker task index {} exiting (device removed)",
-                index
-            );
-            break;
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct VirtioNetDriverAdapter {
     index: u8,
@@ -83,17 +71,8 @@ impl VirtioNetDriverAdapter {
     }
 }
 
-fn submit_zero_copy_tx(index: u8, data: &[u8]) -> Result<(), &'static str> {
-    if data.is_empty() {
-        return Err("zero-length payload");
-    }
-
+fn submit_zero_copy_tx(index: u8, packet: PacketRef, _meta: NetTxMeta) -> Result<(), &'static str> {
     with_virtio_net_device_at_index(index, |device| {
-        let mut packet =
-            crate::net::datapath::mempool::alloc_packet().ok_or("PacketRef alloc failed")?;
-        let len = data.len().min(packet.capacity());
-        packet.set_len(len);
-        packet.data_mut()[..len].copy_from_slice(&data[..len]);
         device.enqueue_send_zero_copy(packet).map_err(|err| match err {
             crate::drivers::virtio::net::VirtioNetError::QueueFull => "TX queue full",
             _ => "enqueue_send_zero_copy failed",
@@ -118,68 +97,64 @@ fn process_device_events(index: u8) -> Result<(), &'static str> {
     }
 }
 
-impl NetDeviceDriver for VirtioNetDriverAdapter {
-    fn key(&self) -> NetDeviceKey {
-        NetDeviceKey::Virtio(self.index)
-    }
-
-    fn kind(&self) -> NetDeviceKind {
-        NetDeviceKind::Virtio
-    }
-
-    fn port_name(&self) -> &'static str {
-        "virtio-net"
-    }
-
-    fn mac_address(&self) -> MacAddress {
+impl NetDevicePort for VirtioNetDriverAdapter {
+    fn info(&self) -> NetDeviceInfo {
         with_virtio_net_device_at_index(self.index, |device| {
             let mac = device.mac_address();
-            MacAddress::from_octets(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5])
+            NetDeviceInfo {
+                port_id: NetDeviceKey::Virtio(self.index).port_id(),
+                if_id: device.net_if_id().map(|if_id| if_id.0),
+                kind: NetPortKind::Virtio,
+                driver_name: "virtio-net",
+                queue_pairs: device.core.get_pair_count() as u16,
+                mtu: crate::net::runtime::stack::MTU as u32,
+                mac: MacAddress::from_octets(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]),
+                flags: NETDEV_FLAG_HEALTHY | NETDEV_FLAG_LINK_UP,
+            }
         })
-        .unwrap_or_else(|| MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01))
+        .unwrap_or(NetDeviceInfo {
+            port_id: NetDeviceKey::Virtio(self.index).port_id(),
+            if_id: None,
+            kind: NetPortKind::Virtio,
+            driver_name: "virtio-net",
+            queue_pairs: 1,
+            mtu: crate::net::runtime::stack::MTU as u32,
+            mac: MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01),
+            flags: 0,
+        })
     }
 
-    fn health(&self) -> bool {
-        has_virtio_net_device(self.index)
+    fn start(&self, runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
+        install_virtio_net_runtime(self.index, runtime);
+        Ok(())
     }
 
-    fn start(
-        &self,
-        if_id: crate::net::runtime::manager::NetIfId,
-        _event_sink: Arc<NetRxEventSink>,
-    ) -> Result<(), &'static str> {
-        self.bind_interface(if_id)
-    }
-
-    fn bind_interface(
-        &self,
-        if_id: crate::net::runtime::manager::NetIfId,
-    ) -> Result<(), &'static str> {
-        if bind_virtio_net_interface(self.index, if_id) {
+    fn bind(&self, if_id: u16) -> Result<(), &'static str> {
+        if bind_virtio_net_interface(self.index, crate::net::runtime::manager::NetIfId(if_id)) {
             Ok(())
         } else {
             Err("VirtIO-Net device not initialized for binding")
         }
     }
 
-    fn submit_tx(&self, data: &[u8]) -> Result<(), &'static str> {
-        submit_zero_copy_tx(self.index, data)
+    fn submit_tx(&self, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str> {
+        submit_zero_copy_tx(self.index, packet, meta)
     }
 
-    fn on_event(
-        &self,
-        _if_id: crate::net::runtime::manager::NetIfId,
-        event: NetDeviceEvent,
-    ) -> Result<(), &'static str> {
+    fn poll(&self, _if_id: u16) -> Result<(), &'static str> {
+        process_device_events(self.index)
+    }
+
+    fn handle_event(&self, _if_id: u16, event: NetDriverEvent) -> Result<(), &'static str> {
         match event {
-            NetDeviceEvent::Interrupt | NetDeviceEvent::QueueWake { .. } | NetDeviceEvent::Poll => {
-                process_device_events(self.index)
-            }
+            NetDriverEvent::Interrupt
+            | NetDriverEvent::QueueWake { .. }
+            | NetDriverEvent::Poll => process_device_events(self.index),
         }
     }
 
-    fn stats(&self) -> NetDeviceStats {
-        with_virtio_net_device_at_index(self.index, |device| NetDeviceStats {
+    fn stats(&self) -> NetPortStats {
+        with_virtio_net_device_at_index(self.index, |device| NetPortStats {
             tx_packets: device.tx_packets.load(core::sync::atomic::Ordering::Relaxed) as u64,
             rx_packets: device.rx_packets.load(core::sync::atomic::Ordering::Relaxed) as u64,
             tx_errors: 0,
@@ -189,10 +164,15 @@ impl NetDeviceDriver for VirtioNetDriverAdapter {
         .unwrap_or_default()
     }
 
-    fn stop(&self) {}
+    fn stop(&self) {
+        VIRTIO_NET_RUNTIMES
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.index);
+    }
 }
 
-pub fn virtio_net_driver_adapter(index: u8) -> Arc<dyn NetDeviceDriver> {
+pub fn virtio_net_driver_adapter(index: u8) -> Arc<dyn NetDevicePort> {
     Arc::new(VirtioNetDriverAdapter::new(index))
 }
 
@@ -363,11 +343,7 @@ pub fn handle_virtio_net_interrupt_for_index(index: u8) {
 
             let _ = crate::net::runtime::device::enqueue_event_from_isr(
                 NetDeviceKey::Virtio(index),
-                NetDeviceEvent::Interrupt,
-            );
-
-            crate::task::interrupt_waker::wake_from_interrupt(
-                crate::task::interrupt_waker::InterruptSource::VirtioNet(index),
+                NetDriverEvent::Interrupt,
             );
         }
     }

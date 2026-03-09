@@ -192,7 +192,7 @@ pub(crate) fn init_network_infra() {
     crate::net::l4::endpoint::retransmit::init_timer_wheel();
     info!(target: "init", "OOO queues and retransmit timer wheel initialized");
 
-    let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
+    let virtio_net_present = crate::drivers::virtio::virtio_net_driver_adapter(0).info().flags != 0;
     info!(target: "init", "Global VirtIO-Net device present: {} (driver init deferred to async)", virtio_net_present);
 }
 

@@ -30,18 +30,18 @@ use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
 };
-use crate::net::runtime::device::{
-    self, NetDeviceDriver, NetDeviceEvent, NetDeviceKey, NetDeviceKind, NetDeviceStats,
-    NetRxEventSink,
-};
+use crate::net::runtime::device::{self, NetDeviceKey};
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonLock;
 use crate::task::interrupt_waker::{InterruptSource, wait_for_interrupt};
 use crate::task::{TimeoutResult, with_timeout};
 
+use kernel_api::resource::net::PacketRef;
+use kernel_api::service::netdev::{
+    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
+    NetPortStats, NetTxMeta, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP,
+};
 use mlx5_driver::Mlx5Device;
-
-use crate::net::datapath::mempool::PacketRef;
 
 // ============================================================================
 // Bridge State
@@ -55,6 +55,7 @@ static MLX5_DEVICE: PoisonLock<Option<Mlx5Device>> = PoisonLock::new(None);
 
 /// mlx5 ブリッジの論理インターフェースID
 static MLX5_IF_ID: PoisonLock<Option<NetIfId>> = PoisonLock::new(None);
+static MLX5_PORT_RUNTIME: PoisonLock<Option<Arc<dyn NetPortRuntime>>> = PoisonLock::new(None);
 
 /// RX バッファトラッキング（ゼロコピー用、キューごと）
 static MLX5_RX_BUFS: PoisonLock<Vec<Vec<Option<PacketRef>>>> = PoisonLock::new(Vec::new());
@@ -100,11 +101,10 @@ const MLX5_FORCE_POLL_ONLY: bool = false;
 const MLX5_INTERRUPT_WAIT_TIMEOUT_MS: u64 = 5;
 
 struct Mlx5TransmitRequest {
-    data: Vec<u8>,
+    packet: PacketRef,
     vlan_tag: Option<u16>,
 }
 
-struct Mlx5Runtime;
 #[derive(Debug, Clone, Copy)]
 struct Mlx5NetDriverAdapter;
 
@@ -114,11 +114,7 @@ static MLX5_TX_QUEUE_HAS_EVENTS: AtomicBool = AtomicBool::new(false);
 static MLX5_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static MLX5_TX_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
-fn initialize_mlx5_runtime(if_id: NetIfId) -> Result<(), &'static str> {
-    if let Ok(mut guard) = MLX5_IF_ID.lock() {
-        *guard = Some(if_id);
-    }
-
+fn initialize_mlx5_runtime() -> Result<(), &'static str> {
     if MLX5_BRIDGE_INITIALIZED.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
@@ -207,11 +203,21 @@ fn mlx5_mac_address() -> crate::net::l2::ethernet::MacAddress {
 }
 
 fn enqueue_mlx5_tx(data: &[u8]) -> bool {
+    let mut packet = match crate::net::datapath::mempool::alloc_packet() {
+        Some(packet) => packet,
+        None => return false,
+    };
+    if data.len() > packet.capacity() {
+        return false;
+    }
+    packet.set_len(data.len());
+    packet.data_mut()[..data.len()].copy_from_slice(data);
+
     let Ok(mut queue) = MLX5_TX_QUEUE.lock() else {
         return false;
     };
     queue.push_back(Mlx5TransmitRequest {
-        data: data.to_vec(),
+        packet,
         vlan_tag: None,
     });
     MLX5_TX_QUEUE_HAS_EVENTS.store(true, Ordering::Release);
@@ -258,141 +264,64 @@ impl Future for Mlx5TxEventWaitFuture {
     }
 }
 
-impl crate::net::runtime::bridge::shared::NetBridgePort for Mlx5Runtime {
-    fn port_name(&self) -> &'static str {
-        "mlx5"
+impl NetDevicePort for Mlx5NetDriverAdapter {
+    fn info(&self) -> NetDeviceInfo {
+        NetDeviceInfo {
+            port_id: NetDeviceKey::Mlx5(0).port_id(),
+            if_id: MLX5_IF_ID.lock().ok().and_then(|guard| guard.map(|if_id| if_id.0)),
+            kind: NetPortKind::Mlx5,
+            driver_name: "mlx5",
+            queue_pairs: with_mlx5_device(|device| core::cmp::max(device.num_rqs(), device.num_sqs()))
+                .unwrap_or(1) as u16,
+            mtu: crate::net::runtime::stack::MTU as u32,
+            mac: MacAddress(*mlx5_mac_address().as_bytes()),
+            flags: if mlx5_health_check() {
+                NETDEV_FLAG_HEALTHY | NETDEV_FLAG_LINK_UP
+            } else {
+                0
+            },
+        }
     }
 
-    fn mac_address(&self) -> crate::net::l2::ethernet::MacAddress {
-        mlx5_mac_address()
+    fn start(&self, runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
+        if let Ok(mut guard) = MLX5_PORT_RUNTIME.lock() {
+            *guard = Some(runtime);
+        }
+        initialize_mlx5_runtime()
     }
 
-    fn start(
-        &self,
-        dispatch: crate::net::runtime::bridge::shared::RxDispatchHandle,
-    ) -> Result<(), &'static str> {
+    fn bind(&self, if_id: u16) -> Result<(), &'static str> {
         if let Ok(mut guard) = MLX5_IF_ID.lock() {
-            *guard = Some(dispatch.if_id());
-        }
-
-        if MLX5_BRIDGE_INITIALIZED.swap(true, Ordering::AcqRel) {
-            return Ok(());
-        }
-
-        let num_rqs = with_mlx5_device(|dev| dev.num_rqs()).unwrap_or(1);
-        if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
-            if bufs.is_empty() {
-                bufs.resize_with(num_rqs, || {
-                    let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
-                    v.resize_with(mlx5_driver::defs::MLX5_WQ_DEPTH as usize, || None);
-                    v
-                });
-            }
-        }
-
-        let num_sqs = with_mlx5_device(|dev| dev.num_sqs()).unwrap_or(0);
-        if let Ok(mut bufs) = MLX5_TX_BUFS.lock() {
-            if bufs.is_empty() && num_sqs > 0 {
-                bufs.resize_with(num_sqs, || {
-                    let mut v = Vec::with_capacity((mlx5_driver::defs::MLX5_WQ_DEPTH * 4) as usize);
-                    v.resize_with((mlx5_driver::defs::MLX5_WQ_DEPTH * 4) as usize, || None);
-                    v
-                });
-            }
-        }
-
-        MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
-        MLX5_RX_CQE_LOG_BUDGET.store(32, Ordering::Release);
-        MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(16, Ordering::Release);
-        MLX5_WAKE_COUNTS.store(0, Ordering::Release);
-        MLX5_WAKE_TIMEOUTS.store(0, Ordering::Release);
-        prefill_rx_buffers();
-
-        if !MLX5_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
-            crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_poll_task()));
-        }
-        if !MLX5_TX_TASK_STARTED.swap(true, Ordering::AcqRel) {
-            crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_tx_worker_task()));
-        }
-
-        Ok(())
-    }
-
-    fn enqueue_tx(&self, data: &[u8]) -> bool {
-        enqueue_mlx5_tx(data)
-    }
-
-    fn stats(&self) -> crate::net::runtime::bridge::shared::BridgePortStats {
-        let stats = get_mlx5_bridge_stats();
-        crate::net::runtime::bridge::shared::BridgePortStats {
-            tx_packets: stats.tx_packets,
-            rx_packets: stats.rx_packets,
-            tx_errors: stats.tx_errors,
-            rx_errors: stats.rx_errors,
-            initialized: stats.initialized,
-        }
-    }
-
-    fn health(&self) -> bool {
-        mlx5_health_check()
-    }
-
-    fn stop(&self) {
-        cleanup_mlx5_bridge();
-    }
-}
-
-impl NetDeviceDriver for Mlx5NetDriverAdapter {
-    fn key(&self) -> NetDeviceKey {
-        NetDeviceKey::Mlx5(0)
-    }
-
-    fn kind(&self) -> NetDeviceKind {
-        NetDeviceKind::Mlx5
-    }
-
-    fn port_name(&self) -> &'static str {
-        "mlx5"
-    }
-
-    fn mac_address(&self) -> crate::net::l2::ethernet::MacAddress {
-        mlx5_mac_address()
-    }
-
-    fn health(&self) -> bool {
-        mlx5_health_check()
-    }
-
-    fn start(&self, if_id: NetIfId, _event_sink: Arc<NetRxEventSink>) -> Result<(), &'static str> {
-        initialize_mlx5_runtime(if_id)
-    }
-
-    fn bind_interface(&self, if_id: NetIfId) -> Result<(), &'static str> {
-        if let Ok(mut guard) = MLX5_IF_ID.lock() {
-            *guard = Some(if_id);
+            *guard = Some(NetIfId(if_id));
             Ok(())
         } else {
             Err("mlx5 interface binding poisoned")
         }
     }
 
-    fn submit_tx(&self, data: &[u8]) -> Result<(), &'static str> {
-        if submit_mlx5_tx(data, None) {
+    fn submit_tx(&self, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str> {
+        if submit_mlx5_tx_packet(packet, meta.vlan_tag) {
             Ok(())
         } else {
             Err("mlx5 TX submission failed")
         }
     }
 
-    fn on_event(&self, _if_id: NetIfId, event: NetDeviceEvent) -> Result<(), &'static str> {
+    fn poll(&self, _if_id: u16) -> Result<(), &'static str> {
+        Ok(())
+    }
+
+    fn handle_event(&self, _if_id: u16, event: NetDriverEvent) -> Result<(), &'static str> {
         match event {
-            NetDeviceEvent::Interrupt | NetDeviceEvent::Poll | NetDeviceEvent::QueueWake { .. } => Ok(()),
+            NetDriverEvent::Interrupt
+            | NetDriverEvent::Poll
+            | NetDriverEvent::QueueWake { .. } => Ok(()),
         }
     }
 
-    fn stats(&self) -> NetDeviceStats {
+    fn stats(&self) -> NetPortStats {
         let stats = get_mlx5_bridge_stats();
-        NetDeviceStats {
+        NetPortStats {
             tx_packets: stats.tx_packets,
             rx_packets: stats.rx_packets,
             tx_errors: stats.tx_errors,
@@ -402,6 +331,9 @@ impl NetDeviceDriver for Mlx5NetDriverAdapter {
     }
 
     fn stop(&self) {
+        if let Ok(mut guard) = MLX5_PORT_RUNTIME.lock() {
+            *guard = None;
+        }
         cleanup_mlx5_bridge();
     }
 }
@@ -416,11 +348,35 @@ pub fn deactivate_mlx5_vfs(num_vfs: u16) -> Result<(), mlx5_driver::Mlx5Error> {
         .unwrap_or(Err(mlx5_driver::Mlx5Error::DeviceNotFound))
 }
 
+fn dispatch_mlx5_rx_packet(packet: PacketRef, payload_len: usize) {
+    if let Ok(guard) = MLX5_PORT_RUNTIME.lock() {
+        if let Some(runtime) = guard.as_ref() {
+            let _ = runtime.submit_rx(
+                packet,
+                kernel_api::service::netdev::NetRxMeta {
+                    queue_index: 0,
+                    header_len: 0,
+                    payload_len: payload_len as u16,
+                    flags: 0,
+                },
+            );
+            return;
+        }
+    }
+
+    let if_id = MLX5_IF_ID.lock().ok().and_then(|guard| *guard);
+    if let Some(if_id) = if_id {
+        super::process_received_packet_zero_copy_for_interface(if_id, packet, 0, payload_len);
+    } else {
+        super::process_received_packet_zero_copy(packet, 0, payload_len);
+    }
+}
+
 // ============================================================================
 // Transmit Path
 // ============================================================================
 
-fn submit_mlx5_tx(data: &[u8], vlan_tag: Option<u16>) -> bool {
+fn submit_mlx5_tx_packet(pkt: PacketRef, vlan_tag: Option<u16>) -> bool {
     let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
         Ok(guard) => guard,
         Err(_) => return false,
@@ -430,20 +386,7 @@ fn submit_mlx5_tx(data: &[u8], vlan_tag: Option<u16>) -> bool {
         if !device.is_active() {
             return false;
         }
-
-        // 送信バッファを mempool から割り当て（安全な DMA バッファの確保）
-        let mut pkt = match crate::net::datapath::mempool::alloc_packet() {
-            Some(p) => p,
-            None => {
-                log::trace!(target: "mlx5::bridge", "TX packet alloc failed");
-                return false;
-            }
-        };
-
-        // データをコピー
-        let copy_len = core::cmp::min(data.len(), pkt.capacity());
-        pkt.set_len(copy_len);
-        pkt.data_mut()[..copy_len].copy_from_slice(&data[..copy_len]);
+        let mut pkt = pkt;
 
         let data_virt = pkt.as_ptr() as u64;
         let data_device = pkt.device_address(); // IOMMU-safe
@@ -485,7 +428,7 @@ fn submit_mlx5_tx(data: &[u8], vlan_tag: Option<u16>) -> bool {
                 }
 
                 MLX5_TX_PACKETS.fetch_add(1, Ordering::Relaxed);
-                counters::global().record_tx(data.len());
+                counters::global().record_tx(data_len as usize);
                 trace::push_event(NetLayer::Driver, NetEventKind::Tx, "mlx5 tx");
                 true
             }
@@ -499,6 +442,19 @@ fn submit_mlx5_tx(data: &[u8], vlan_tag: Option<u16>) -> bool {
     });
 
     result.unwrap_or(false)
+}
+
+fn submit_mlx5_tx(data: &[u8], vlan_tag: Option<u16>) -> bool {
+    let mut pkt = match crate::net::datapath::mempool::alloc_packet() {
+        Some(pkt) => pkt,
+        None => return false,
+    };
+    if data.len() > pkt.capacity() {
+        return false;
+    }
+    pkt.set_len(data.len());
+    pkt.data_mut()[..data.len()].copy_from_slice(data);
+    submit_mlx5_tx_packet(pkt, vlan_tag)
 }
 
 /// mlx5 送信コールバック（互換ラッパ）
@@ -674,17 +630,7 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                         meta.vlan_tag = cqe.vlan_tag;
                         meta.timestamp = cqe.timestamp;
 
-                        let if_id = MLX5_IF_ID.lock().ok().and_then(|guard| *guard);
-                        if let Some(if_id) = if_id {
-                            super::process_received_packet_zero_copy_for_interface(
-                                if_id,
-                                pkt,
-                                0,
-                                byte_count,
-                            );
-                        } else {
-                            super::process_received_packet_zero_copy(pkt, 0, byte_count);
-                        }
+                        dispatch_mlx5_rx_packet(pkt, byte_count);
 
                         // Replenish
                         if let Some(new_pkt) = crate::net::datapath::mempool::alloc_packet() {
@@ -882,6 +828,7 @@ pub fn init_mlx5_bridge() -> Result<(), &'static str> {
     };
 
     let if_id = device::register_device(
+        NetDeviceKey::Mlx5(0),
         Arc::new(Mlx5NetDriverAdapter),
         config,
         device::primary_if().is_none(),

@@ -681,14 +681,14 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    pub fn push_backlog_connection_and_wake(&self, tcb_arc: &Arc<PoisonLock<TcpControlBlock>>) {
+    pub fn push_backlog_connection_and_wake(&self, tcb_arc: &Arc<PoisonLock<TcpControlBlock>>) -> bool {
         if let Some(backlog_lock) = &self.waiters.backlog {
             if let Ok(mut backlog) = backlog_lock.lock() {
                 // Security: Limit backlog size to prevent SYN flood memory exhaustion
                 const TCP_BACKLOG_LIMIT: usize = 128;
                 if backlog.len() >= TCP_BACKLOG_LIMIT {
                     log::warn!("[NET] TCP Backlog full - dropping new connection");
-                    return;
+                    return false;
                 }
 
                 backlog.push_back(TcpStream {
@@ -697,8 +697,10 @@ impl TcpControlBlock {
                 if let Some(accept_waker) = &self.waiters.accept_waker {
                     accept_waker.wake();
                 }
+                return true;
             }
         }
+        false
     }
 
     #[inline]

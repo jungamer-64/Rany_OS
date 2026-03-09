@@ -374,8 +374,24 @@ impl TcpProcessor {
                 self.connections
                     .insert((local_addr, remote_addr), tcb_arc.clone());
 
-                if let Ok(tcb_guard) = tcb_arc.lock() {
-                    Self::notify_backlog(&tcb_guard, &tcb_arc);
+                let accepted = if let Ok(tcb_guard) = tcb_arc.lock() {
+                    Self::notify_backlog(&tcb_guard, &tcb_arc)
+                } else {
+                    false
+                };
+
+                if !accepted {
+                    self.connections.remove(&(local_addr, remote_addr));
+                    return TcpProcessResult::SendPacket {
+                        local: local_addr,
+                        remote: remote_addr,
+                        seq: ack_num,
+                        ack: 0,
+                        flags: TcpHeader::FLAG_RST,
+                        window: 0,
+                        payload: Vec::new(),
+                        options: Vec::new(),
+                    };
                 }
 
                 // Process this ACK segment in the new TCB
@@ -545,8 +561,24 @@ impl TcpProcessor {
                 self.connections
                     .insert((local_addr, remote_addr), tcb_arc.clone());
 
-                if let Ok(tcb_guard) = tcb_arc.lock() {
-                    Self::notify_backlog(&tcb_guard, &tcb_arc);
+                let accepted = if let Ok(tcb_guard) = tcb_arc.lock() {
+                    Self::notify_backlog(&tcb_guard, &tcb_arc)
+                } else {
+                    false
+                };
+
+                if !accepted {
+                    self.connections.remove(&(local_addr, remote_addr));
+                    return TcpProcessResult::SendPacket {
+                        local: local_addr,
+                        remote: remote_addr,
+                        seq: ack_num,
+                        ack: 0,
+                        flags: TcpHeader::FLAG_RST,
+                        window: 0,
+                        payload: Vec::new(),
+                        options: Vec::new(),
+                    };
                 }
 
                 // Process this ACK segment in the new TCB
@@ -1419,7 +1451,23 @@ impl TcpProcessor {
             self.semi_open_count = self.semi_open_count.saturating_sub(1);
 
             // Push to backlog and wake accept waker
-            Self::notify_backlog(tcb, tcb_arc);
+            if !Self::notify_backlog(tcb, tcb_arc) {
+                // Backlog full: close and send RST
+                let local = tcb.local_addr();
+                let remote = tcb.remote_addr().unwrap_or(EndpointAddr::new([0, 0, 0, 0], 0));
+                tcb.close_and_wake();
+                self.connections.remove(&(local, remote));
+                return TcpProcessResult::SendPacket {
+                    local,
+                    remote,
+                    seq: ack_num,
+                    ack: 0,
+                    flags: TcpHeader::FLAG_RST,
+                    window: 0,
+                    payload: Vec::new(),
+                    options: Vec::new(),
+                };
+            }
 
             tcb.wake_connect_waiter();
 
@@ -1470,8 +1518,8 @@ impl TcpProcessor {
     pub(super) fn notify_backlog(
         tcb: &TcpControlBlock,
         tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
-    ) {
-        tcb.push_backlog_connection_and_wake(tcb_arc);
+    ) -> bool {
+        tcb.push_backlog_connection_and_wake(tcb_arc)
     }
 
     /// Handle segment in ESTABLISHED state
