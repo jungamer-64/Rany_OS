@@ -259,7 +259,6 @@ impl<'a> ElfLoader<'a> {
                         }
                     } else {
                         // 定義済みシンボル = エクスポート（ゼロコピー）
-                        let export_key = (name, sym.st_value);
                         // avoid duplicate exports of same name/value
                         if !exports.iter().any(|&(n, v)| n == name && v == sym.st_value) {
                             exports.push((name, sym.st_value));
