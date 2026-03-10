@@ -983,9 +983,9 @@ impl DhcpV6Client {
     /// 非同期イベントキュー経由で送信（ロック競合回避）:
     /// `get_link_local()` で短時間ロックのみ取得し、送信は `send_v6_async()` を使用する。
     pub fn check_timeout(&self, current_tick: u64, _tick_rate: u64) -> Result<(), &'static str> {
-        // All-DHCP-Servers multicast address (ff02::2)
+        // All_DHCP_Relay_Agents_and_Servers multicast address (ff02::1:2)
         let all_dhcp_servers = crate::net::l3::ipv6::Ipv6Address::new([
-            0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+            0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x00, 0x02, 0, 0x02,
         ]);
 
         match self.state.lock() {
@@ -1243,6 +1243,21 @@ pub fn init_v6(mac_address: crate::net::l2::ethernet::MacAddress) {
     match DHCPV6_CLIENT.lock() {
         Ok(mut g) => *g = Some(client),
         Err(_) => log::error!("[NET] DHCPv6 Global lock poisoned (init) - initialization skipped"),
+    }
+}
+
+pub(crate) fn update_client_v6_mac(mac_address: crate::net::l2::ethernet::MacAddress) {
+    match DHCPV6_CLIENT.lock() {
+        Ok(mut guard) => {
+            if let Some(client) = guard.as_mut() {
+                client.mac = mac_address;
+                client.duid = DhcpV6Client::make_duid_ll(&mac_address);
+                if let Ok(mut cache) = client.cached_link_local.lock() {
+                    *cache = None;
+                }
+            }
+        }
+        Err(_) => log::error!("[NET] DHCPv6 Global lock poisoned (update_client_v6_mac)"),
     }
 }
 

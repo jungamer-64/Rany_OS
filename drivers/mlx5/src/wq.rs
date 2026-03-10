@@ -414,6 +414,8 @@ impl SendQueue {
 
         let doorbell_be = core::ptr::read_volatile((self.doorbell_virt as *const u32).add(1));
         let doorbell_host = u32::from_be(doorbell_be) & 0x0000_ffff;
+        let mut last_wqe_bytes = [0u8; 64];
+        core::ptr::copy_nonoverlapping(last_wqe_ptr, last_wqe_bytes.as_mut_ptr(), 64);
 
         TxQueueDebugState {
             sqn: self.sqn,
@@ -423,12 +425,14 @@ impl SendQueue {
             doorbell_host,
             last_wqe_counter,
             last_wqe_addr: last_wqe_ptr as u64,
+            last_wqe_inline_hdr_sz: last_inline_hdr_sz as u16,
             last_wqe_opmod_idx: read_be32_raw(last_wqe_ptr, wqe::ctrl::OPMOD_IDX_OPCODE),
             last_wqe_qpn_ds: read_be32_raw(last_wqe_ptr, wqe::ctrl::QPN_DS),
             last_wqe_byte_count: read_be32_raw(last_data_seg_ptr, wqe::data::BYTE_COUNT),
             last_wqe_lkey: read_be32_raw(last_data_seg_ptr, wqe::data::LKEY),
             last_wqe_device_addr: read_be64_raw(last_data_seg_ptr, wqe::data::ADDR),
             last_bf_offset: self.last_bf_offset,
+            last_wqe_bytes,
         }
     }
 }
@@ -443,12 +447,14 @@ pub struct TxQueueDebugState {
     pub doorbell_host: u32,
     pub last_wqe_counter: u16,
     pub last_wqe_addr: u64,
+    pub last_wqe_inline_hdr_sz: u16,
     pub last_wqe_opmod_idx: u32,
     pub last_wqe_qpn_ds: u32,
     pub last_wqe_byte_count: u32,
     pub last_wqe_lkey: u32,
     pub last_wqe_device_addr: u64,
     pub last_bf_offset: u16,
+    pub last_wqe_bytes: [u8; 64],
 }
 
 // ============================================================================

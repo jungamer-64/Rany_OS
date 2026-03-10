@@ -80,16 +80,23 @@ pub fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u
 /// この関数は一度だけ呼ばれるブートストラップ処理であり、
 /// 同期ロック取得は許容される。
 pub fn init_dhcp_runtime() -> Result<(), String> {
-    let mac = match stack::stack().lock() {
+    let (mac, ipv6_enabled) = match stack::stack().lock() {
         Ok(guard) => match guard.as_ref() {
-            Some(stack_guard) => stack_guard.config().mac,
+            Some(stack_guard) => {
+                let config = stack_guard.config();
+                (config.mac, config.ipv6.is_some())
+            }
             None => return Err(String::from("Network stack is not initialized")),
         },
         Err(_) => return Err(String::from("Network stack lock poisoned")),
     };
 
     dhcp::init(mac);
-    dhcp::init_v6(mac);
+    if ipv6_enabled {
+        dhcp::init_v6(mac);
+    } else {
+        log::info!("[NET] DHCPv6 runtime disabled: IPv6 is not configured");
+    }
 
     let (hostname, ip, dns_servers) = match stack::stack().lock() {
         Ok(guard) => match guard.as_ref() {
@@ -150,25 +157,27 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         }
     }));
 
-    // Spawn DHCPv6 client task
-    crate::task::Executor::spawn_global(crate::task::Task::new(async move {
-        let client_ref: Option<&'static dhcp::DhcpV6Client> = {
-            let guard = match dhcp::DHCPV6_CLIENT.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            guard.as_ref().map(|c| {
-                // SAFETY: DHCPV6_CLIENT はカーネル静的変数で init_v6() 後は
-                // Some のまま変更されず、カーネル寿命と同等に存続する。
-                unsafe { &*(c as *const dhcp::DhcpV6Client) }
-            })
-        }; // guard ドロップ → ロック解放
-        if let Some(client6) = client_ref {
-            if let Err(e) = client6.run().await {
-                log::error!("[NET] DHCPv6 client task failed: {}", e);
+    if ipv6_enabled {
+        // Spawn DHCPv6 client task only when IPv6 is configured for the active stack.
+        crate::task::Executor::spawn_global(crate::task::Task::new(async move {
+            let client_ref: Option<&'static dhcp::DhcpV6Client> = {
+                let guard = match dhcp::DHCPV6_CLIENT.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                guard.as_ref().map(|c| {
+                    // SAFETY: DHCPV6_CLIENT はカーネル静的変数で init_v6() 後は
+                    // Some のまま変更されず、カーネル寿命と同等に存続する。
+                    unsafe { &*(c as *const dhcp::DhcpV6Client) }
+                })
+            }; // guard ドロップ → ロック解放
+            if let Some(client6) = client_ref {
+                if let Err(e) = client6.run().await {
+                    log::error!("[NET] DHCPv6 client task failed: {}", e);
+                }
             }
-        }
-    }));
+        }));
+    }
 
     // Spawn mDNS service task
     crate::task::Executor::spawn_global(crate::task::Task::new(async move {

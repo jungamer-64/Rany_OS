@@ -18,8 +18,8 @@
 
 extern crate alloc;
 use alloc::format;
-use alloc::sync::Arc;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use core::fmt::Write as _;
@@ -89,6 +89,8 @@ static MLX5_RX_IDLE_POLLS: AtomicU64 = AtomicU64::new(0);
 static MLX5_RX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
 /// TX CQE の詳細ログ出力予算（送信経路切り分け用）
 static MLX5_TX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
+/// 短い Ethernet frame を TX 前にパディングした回数のログ予算
+static MLX5_TX_PAD_LOG_BUDGET: AtomicU64 = AtomicU64::new(16);
 /// RX アイドル時スナップショット出力回数の上限
 static MLX5_RX_DEBUG_SNAPSHOT_BUDGET: AtomicU64 = AtomicU64::new(16);
 /// 受信フレーム先頭のプレビュー出力回数
@@ -146,6 +148,7 @@ fn initialize_mlx5_runtime() -> Result<(), &'static str> {
     MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
     MLX5_RX_CQE_LOG_BUDGET.store(32, Ordering::Release);
     MLX5_TX_CQE_LOG_BUDGET.store(32, Ordering::Release);
+    MLX5_TX_PAD_LOG_BUDGET.store(16, Ordering::Release);
     MLX5_RX_FRAME_LOG_BUDGET.store(8, Ordering::Release);
     MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(16, Ordering::Release);
     MLX5_WAKE_COUNTS.store(0, Ordering::Release);
@@ -323,6 +326,49 @@ fn format_head_bytes(data: &[u8], max_len: usize) -> String {
     out
 }
 
+fn pad_mlx5_tx_packet_if_needed(mut pkt: PacketRef) -> Option<PacketRef> {
+    const MIN_ETH_FRAME_LEN: usize = 60;
+
+    if pkt.len() >= MIN_ETH_FRAME_LEN {
+        return Some(pkt);
+    }
+
+    let original_len = pkt.len();
+    if pkt.capacity() >= MIN_ETH_FRAME_LEN {
+        pkt.set_len(MIN_ETH_FRAME_LEN);
+        pkt.data_mut()[original_len..MIN_ETH_FRAME_LEN].fill(0);
+        if MLX5_TX_PAD_LOG_BUDGET.fetch_sub(1, Ordering::Relaxed) > 0 {
+            log::info!(
+                target: "mlx5::bridge",
+                "Padding short TX frame in-place from {} to {} bytes",
+                original_len,
+                MIN_ETH_FRAME_LEN
+            );
+        }
+        return Some(pkt);
+    }
+
+    let meta = *pkt.meta();
+    let mut padded = crate::net::datapath::mempool::alloc_packet_for_active_dma_device()?;
+    if padded.capacity() < MIN_ETH_FRAME_LEN {
+        return None;
+    }
+
+    padded.set_len(MIN_ETH_FRAME_LEN);
+    padded.data_mut()[..original_len].copy_from_slice(pkt.data());
+    padded.data_mut()[original_len..MIN_ETH_FRAME_LEN].fill(0);
+    padded.set_meta(meta);
+    if MLX5_TX_PAD_LOG_BUDGET.fetch_sub(1, Ordering::Relaxed) > 0 {
+        log::info!(
+            target: "mlx5::bridge",
+            "Padding short TX frame via DMA bounce buffer from {} to {} bytes",
+            original_len,
+            MIN_ETH_FRAME_LEN
+        );
+    }
+    Some(padded)
+}
+
 // ============================================================================
 // Transmit Path
 // ============================================================================
@@ -337,16 +383,40 @@ fn submit_mlx5_tx_packet(pkt: PacketRef, vlan_tag: Option<u16>) -> bool {
         if !device.is_active() {
             return false;
         }
-        let pkt = pkt;
+        let pkt = match pad_mlx5_tx_packet_if_needed(pkt) {
+            Some(pkt) => pkt,
+            None => {
+                log::warn!(
+                    target: "mlx5::bridge",
+                    "Failed to provision padded DMA-safe packet for short mlx5 TX frame"
+                );
+                return false;
+            }
+        };
 
         let data_virt = pkt.as_ptr() as u64;
         let data_device = pkt.device_address(); // IOMMU-safe
         let data_len = pkt.len() as u32;
 
-        // Keep PF bring-up on the simplest SEND WQE profile first.
-        // ConnectX accepts min_wqe_inline_mode=0 here, so avoid inline header
-        // formatting until the non-inline TX path is confirmed working.
-        let inline_hdr_len = 0;
+        // Respect the NIC/vport inline policy. CX4-Lx PF on this path reports
+        // min_wqe_inline_mode=L2, which requires the first 18 bytes to be
+        // carried inline even for ordinary SEND WQEs.
+        let min_inline_mode = device
+            .port(0)
+            .map(|port| port.min_wqe_inline_mode())
+            .unwrap_or(0);
+        let inline_hdr_len = match min_inline_mode {
+            0 => 0,
+            1 => core::cmp::min(pkt.len(), 18),
+            unsupported => {
+                log::warn!(
+                    target: "mlx5::bridge",
+                    "Unsupported mlx5 TX min_wqe_inline_mode={} for simple SEND path",
+                    unsupported
+                );
+                return false;
+            }
+        };
         let inline_hdr = &pkt.data()[..inline_hdr_len];
 
         // CPU ID に基づいて SQ を選択（マルチコア分散）
@@ -474,19 +544,21 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
                 (Some(sq_state), Some(cq_idx), Some(cq_state)) => {
                     log::warn!(
                         target: "mlx5::bridge",
-                        "TX debug sq={} sqn={} prod={}/{} db={:#x} bf={:#x} last_wqe:opmod_idx={:#x} qpn_ds={:#x} bc={} lkey={:#x} data_addr={:#x} addr={:#x} | cq={} cqn={} ci={} arm_sn={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x} arm_db={:#x}",
+                        "TX debug sq={} sqn={} prod={}/{} db={:#x} bf={:#x} last_wqe:inl={} opmod_idx={:#x} qpn_ds={:#x} bc={} lkey={:#x} data_addr={:#x} addr={:#x} head=[{}] | cq={} cqn={} ci={} arm_sn={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x} arm_db={:#x}",
                         sq_index,
                         sq_state.sqn,
                         sq_state.producer_counter,
                         sq_state.sq_depth,
                         sq_state.doorbell_host,
                         sq_state.last_bf_offset,
+                        sq_state.last_wqe_inline_hdr_sz,
                         sq_state.last_wqe_opmod_idx,
                         sq_state.last_wqe_qpn_ds,
                         sq_state.last_wqe_byte_count,
                         sq_state.last_wqe_lkey,
                         sq_state.last_wqe_device_addr,
                         sq_state.last_wqe_addr,
+                        format_head_bytes(&sq_state.last_wqe_bytes, 48),
                         cq_idx,
                         cq_state.cqn,
                         cq_state.consumer_counter,
@@ -755,6 +827,36 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                         cqe.vendor_error_syndrome,
                         cqe.error_wqe_opcode
                     );
+                }
+                if matches!(
+                    cqe.opcode,
+                    mlx5_driver::defs::CqeOpcode::ReqErr | mlx5_driver::defs::CqeOpcode::RespErr
+                ) {
+                    if let Some(sq_state) = unsafe { device.debug_tx_queue_state(sq_index) } {
+                        let tracked_idx =
+                            (cqe.wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize
+                                * 4;
+                        let pkt_head = tx_bufs_guard
+                            .get(sq_index)
+                            .and_then(|queue| queue.get(tracked_idx))
+                            .and_then(|slot| slot.as_ref())
+                            .map(|pkt| format_head_bytes(pkt.data(), 48))
+                            .unwrap_or_else(|| String::from("--"));
+                        log::warn!(
+                            target: "mlx5::bridge",
+                            "TX error context: sq={} wqe_counter={} inl={} opmod_idx={:#x} qpn_ds={:#x} bc={} lkey={:#x} data_addr={:#x} wqe=[{}] pkt_head=[{}]",
+                            sq_index,
+                            cqe.wqe_counter,
+                            sq_state.last_wqe_inline_hdr_sz,
+                            sq_state.last_wqe_opmod_idx,
+                            sq_state.last_wqe_qpn_ds,
+                            sq_state.last_wqe_byte_count,
+                            sq_state.last_wqe_lkey,
+                            sq_state.last_wqe_device_addr,
+                            format_head_bytes(&sq_state.last_wqe_bytes, 64),
+                            pkt_head
+                        );
+                    }
                 }
                 let infos = device.process_tx_completions(sq_index, cqe.wqe_counter);
                 for _info in infos {

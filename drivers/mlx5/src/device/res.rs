@@ -16,6 +16,11 @@ use crate::resources::{MkeyInfo, MkeyParams, TirInfo, TirParams, TisInfo, TisPar
 impl Mlx5Device {
     /// ローカルTISの存在確認
     pub unsafe fn query_tis_exists(&mut self, tisn: u32) -> Mlx5Result<()> {
+        self.query_tis(tisn).map(|_| ())
+    }
+
+    /// ローカル TIS コンテキストを取得
+    pub unsafe fn query_tis(&mut self, tisn: u32) -> Mlx5Result<crate::cmd::res::QueryTisInfo> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_query_tis_input(in_mbox, tisn, 0, false);
@@ -26,24 +31,75 @@ impl Mlx5Device {
             self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
-        Ok(())
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        Ok(parse_query_tis_output(out_mbox))
     }
 
     /// PF passthrough 向けの既存TISを探索
     pub unsafe fn find_existing_tis(&mut self, max_scan: u32) -> Mlx5Result<u32> {
+        self.find_existing_tis_matching(max_scan, self.td, 0)
+    }
+
+    /// PF passthrough 向けの既存 TIS を優先条件付きで探索
+    pub unsafe fn find_existing_tis_matching(
+        &mut self,
+        max_scan: u32,
+        preferred_td: u32,
+        preferred_prio: u8,
+    ) -> Mlx5Result<u32> {
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
+        let mut first_any = None;
         for tisn in 0..max_scan {
-            match self.query_tis_exists(tisn) {
-                Ok(()) => {
+            match self.query_tis(tisn) {
+                Ok(info) => {
+                    let matched = !info.tls_en
+                        && info.transport_domain == preferred_td
+                        && info.prio == preferred_prio
+                        && info.underlay_qpn == 0;
+                    if first_any.is_none() {
+                        first_any = Some((tisn, info));
+                    }
+                    if matched {
+                        log::info!(
+                            target: "mlx5",
+                            "Found matching existing TIS via QUERY_TIS: tisn={:#x} td={} prio={} pd={} lag_port={} strict_lag={}",
+                            tisn,
+                            info.transport_domain,
+                            info.prio,
+                            info.pd,
+                            info.lag_tx_port_affinity,
+                            info.strict_lag_tx_port_affinity
+                        );
+                        return Ok(tisn);
+                    }
                     log::info!(
                         target: "mlx5",
-                        "Found existing TIS via QUERY_TIS: tisn={:#x}",
-                        tisn
+                        "Found reusable existing TIS candidate via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={} lag_port={} strict_lag={}",
+                        tisn,
+                        info.transport_domain,
+                        info.prio,
+                        info.pd,
+                        info.underlay_qpn,
+                        info.tls_en,
+                        info.lag_tx_port_affinity,
+                        info.strict_lag_tx_port_affinity
                     );
-                    return Ok(tisn);
                 }
                 Err(err) => last_err = Err(err),
             }
+        }
+        if let Some((tisn, info)) = first_any {
+            log::warn!(
+                target: "mlx5",
+                "Falling back to first existing TIS candidate: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={}",
+                tisn,
+                info.transport_domain,
+                info.prio,
+                info.pd,
+                info.underlay_qpn,
+                info.tls_en
+            );
+            return Ok(tisn);
         }
         last_err
     }
@@ -192,8 +248,24 @@ impl Mlx5Device {
                 params.port & 0x0f,
                 false,
             ),
-            ("td-only+underlay-1", params.td, false, 0x1u32, 0u16, 0u8, false),
-            ("td+pd+underlay-1", params.td, true, 0x1u32, 0u16, 0u8, false),
+            (
+                "td-only+underlay-1",
+                params.td,
+                false,
+                0x1u32,
+                0u16,
+                0u8,
+                false,
+            ),
+            (
+                "td+pd+underlay-1",
+                params.td,
+                true,
+                0x1u32,
+                0u16,
+                0u8,
+                false,
+            ),
             (
                 "td-only+underlay-ffff",
                 params.td,
@@ -217,8 +289,7 @@ impl Mlx5Device {
         ];
         let mut last_err = Err(Mlx5Error::NotSupported);
 
-        for (attempt_name, td, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in attempts
-        {
+        for (attempt_name, td, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in attempts {
             crate::cmd::res::build_create_tis_input_with_options(
                 in_mbox,
                 params,
@@ -282,8 +353,7 @@ impl Mlx5Device {
                             ) {
                                 Ok(()) => {
                                     cmd.set_uid(prev_uid);
-                                    let out_mbox =
-                                        &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
                                     let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
                                     let info = TisInfo {
                                         tisn,

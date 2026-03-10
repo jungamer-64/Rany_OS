@@ -452,6 +452,26 @@ impl NetDeviceManager {
 static DEVICE_MANAGER: PoisonRwLock<NetDeviceManager> = PoisonRwLock::new(NetDeviceManager::new());
 static STACK_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+fn apply_runtime_network_config(config: &NetworkConfig) {
+    if let Ok(mut guard) = stack::stack().lock() {
+        if let Some(stack) = guard.as_mut() {
+            stack.set_config(config.clone());
+        }
+    }
+
+    crate::net::services::dhcp::update_runtime_mac(config.mac);
+}
+
+fn sync_runtime_config_for_interface(if_id: NetIfId) {
+    let config = match manager::get_interface(if_id) {
+        Ok(Some(iface)) => iface.config,
+        _ => None,
+    };
+    if let Some(config) = config {
+        apply_runtime_network_config(&config);
+    }
+}
+
 pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static str> {
     if STACK_INITIALIZED.load(Ordering::Acquire) {
         return Ok(());
@@ -525,11 +545,16 @@ fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
         info.mac
     };
     let mac = StackMacAddress::new(*mac_bytes.as_bytes());
+    let ipv6 = if info.kind == NetPortKind::Mlx5 {
+        None
+    } else {
+        Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes()))
+    };
 
     NetworkConfig {
         mac,
         ipv4: Ipv4Config::default(),
-        ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
+        ipv6,
         icmp_echo_enabled: true,
         icmp_redirect_enabled: false,
         icmpv6_redirect_enabled: false,
@@ -542,7 +567,7 @@ pub fn register_port(
     config: NetworkConfig,
     make_primary: bool,
 ) -> Result<NetIfId, &'static str> {
-    ensure_stack_initialized(config)?;
+    ensure_stack_initialized(config.clone())?;
 
     if let Some(existing) = lookup_if_by_key(key) {
         if make_primary {
@@ -552,7 +577,7 @@ pub fn register_port(
     }
 
     let base = driver.info();
-    let if_id = interface_for_key(key, config, base.driver_name)?;
+    let if_id = interface_for_key(key, config.clone(), base.driver_name)?;
     let binding = NetDeviceBinding {
         key,
         if_id,
@@ -567,13 +592,19 @@ pub fn register_port(
     driver.start(handle.runtime.clone())?;
     handle.start_workers();
 
+    let mut selected_as_primary = false;
     {
         let mut guard = DEVICE_MANAGER.write().unwrap_or_else(|e| e.into_inner());
         guard.key_map.insert(key, if_id);
         guard.handles.insert(if_id, handle);
         if guard.primary.is_none() || make_primary {
             guard.primary = Some(if_id);
+            selected_as_primary = true;
         }
+    }
+
+    if selected_as_primary {
+        apply_runtime_network_config(&config);
     }
 
     Ok(if_id)
@@ -716,6 +747,7 @@ pub fn set_primary_interface(if_id: NetIfId) {
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .primary = Some(if_id);
+    sync_runtime_config_for_interface(if_id);
 }
 
 pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMeta) -> bool {

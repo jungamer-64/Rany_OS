@@ -16,6 +16,7 @@ const CREATE_EQ_EVENT_MASK_LEN: usize = 0x20;
 pub struct QuerySqInfo {
     pub state: u8,
     pub flush_in_error_en: bool,
+    pub min_wqe_inline_mode: u8,
     pub cqn: u32,
     pub tis_lst_sz: u16,
     pub tis_num_0: u32,
@@ -170,12 +171,14 @@ pub fn build_create_sq_input(
     pd: u32,
     uar_page: u32,
     tisn: u32,
+    min_inline_mode: u8,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = SqContextLayout::new(&mut in_mbox.data[0x20..]);
 
     layout.set_state(crate::defs::WqState::Reset as u8);
     layout.set_flush_in_error_en(true);
+    layout.set_min_wqe_inline_mode(min_inline_mode & 0x7);
     layout.set_cqn(cqn);
     layout.set_tis_lst_sz(1);
     layout.set_tis_num_0(tisn);
@@ -221,6 +224,7 @@ pub fn parse_query_sq_output(out_mbox: &CmdMailbox) -> QuerySqInfo {
     QuerySqInfo {
         state: get_bits_u32(sqc, 8, 4) as u8,
         flush_in_error_en: get_bits_u32(sqc, 3, 1) != 0,
+        min_wqe_inline_mode: get_bits_u32(sqc, 5, 3) as u8,
         cqn: get_bits_u32(sqc, 72, 24),
         tis_lst_sz: get_bits_u32(sqc, 256, 16) as u16,
         tis_num_0: get_bits_u32(sqc, 360, 24),
@@ -597,9 +601,20 @@ mod tests {
     #[test]
     fn create_sq_uses_64b_wqe_stride() {
         let mut in_mbox = CmdMailbox::zeroed();
-        build_create_sq_input(&mut in_mbox, 8, 0x1000, 0x2000, 0x123, 0x456, 0x789, 0xabc);
+        build_create_sq_input(
+            &mut in_mbox,
+            8,
+            0x1000,
+            0x2000,
+            0x123,
+            0x456,
+            0x789,
+            0xabc,
+            1,
+        );
 
         assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 268, 4), 6);
+        assert_eq!(get_bits_u32(&in_mbox.data[0x20..], 5, 3), 1);
     }
 
     #[test]

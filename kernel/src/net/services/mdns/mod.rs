@@ -173,6 +173,13 @@ impl MdnsService {
             .await
             .ok_or("Failed to bind mDNS socket")?;
 
+        if self.local_ip.is_any() {
+            log::info!("[NET] mDNS: deferring multicast join until IPv4 address is assigned");
+        }
+        while self.local_ip.is_any() {
+            crate::task::timer::sleep_ms(100).await;
+        }
+
         // Security (RFC 6762 Section 11): mDNS packets MUST have IP TTL 255.
         socket.set_ttl(255);
         // mDNSマルチキャストグループに参加（非同期・イベントキュー経由）

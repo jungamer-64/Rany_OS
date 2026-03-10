@@ -609,6 +609,7 @@ impl Mlx5Device {
         );
         if let Some(port) = self.ports.get_mut(port_index) {
             port.set_mtu(mtu).map_err(|_| Mlx5Error::InvalidResponse)?;
+            port.set_min_wqe_inline_mode(min_inline_mode);
         }
         Ok(mtu)
     }

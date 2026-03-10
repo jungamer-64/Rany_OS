@@ -239,6 +239,11 @@ impl Mlx5Device {
         let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
         let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let sq_in_len = (0x110 + sq_pages * 8) as u32;
+        let min_inline_mode = self
+            .ports
+            .first()
+            .map(|port| port.min_wqe_inline_mode())
+            .unwrap_or(0);
         let fallback_tis0 = tisn == 0 && self.tis_list.iter().all(|t| t.tisn != 0);
         let attempts: &[(&str, bool)] = if fallback_tis0 {
             if self.is_vf() {
@@ -260,6 +265,7 @@ impl Mlx5Device {
                 self.pd,
                 self.uar_page,
                 tisn,
+                min_inline_mode,
             );
             if *implicit_tis {
                 let mut layout =
@@ -269,14 +275,14 @@ impl Mlx5Device {
             }
             match self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10) {
                 Ok(()) => {
-                    if fallback_tis0 {
-                        log::info!(
-                            target: "mlx5",
-                            "CREATE_SQ accepted with {} fallback (tisn={})",
-                            mode,
-                            tisn
-                        );
-                    }
+                    log::info!(
+                        target: "mlx5",
+                        "CREATE_SQ accepted: mode={} implicit_tis={} tisn={} min_inline_mode={}",
+                        mode,
+                        implicit_tis,
+                        tisn,
+                        min_inline_mode
+                    );
                     break;
                 }
                 Err(err) => {
@@ -350,10 +356,11 @@ impl Mlx5Device {
             Ok(ctx) => {
                 log::info!(
                     target: "mlx5",
-                    "QUERY_SQ: sqn={:#x} state={} flush={} cqn={:#x} tis_lst_sz={} tis_num_0={:#x} wq_type={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
+                    "QUERY_SQ: sqn={:#x} state={} flush={} min_inline={} cqn={:#x} tis_lst_sz={} tis_num_0={:#x} wq_type={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
                     sqn,
                     ctx.state,
                     ctx.flush_in_error_en,
+                    ctx.min_wqe_inline_mode,
                     ctx.cqn,
                     ctx.tis_lst_sz,
                     ctx.tis_num_0,

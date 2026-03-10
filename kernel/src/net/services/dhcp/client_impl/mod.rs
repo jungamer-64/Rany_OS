@@ -755,6 +755,17 @@ pub fn init(mac_address: MacAddress) {
     }
 }
 
+pub(crate) fn update_client_mac(mac_address: MacAddress) {
+    match DHCP_CLIENT.lock() {
+        Ok(mut guard) => {
+            if let Some(client) = guard.as_mut() {
+                client.mac_address = mac_address;
+            }
+        }
+        Err(_) => log::error!("[NET] DHCP Global lock poisoned (update_client_mac)"),
+    }
+}
+
 /// DHCPクライアントを取得
 pub fn client() -> Option<&'static PoisonLock<Option<DhcpClient>>> {
     Some(&DHCP_CLIENT)

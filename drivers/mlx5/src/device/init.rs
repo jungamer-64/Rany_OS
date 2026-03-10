@@ -904,12 +904,16 @@ impl Mlx5Device {
             }) {
                 Ok(tisn) => tisn,
                 Err(err) => {
-                    match self.find_existing_tis(64) {
+                    log::warn!(
+                        target: "mlx5",
+                        "CREATE_TIS failed on PF ({:?}); scanning existing TIS objects for reuse",
+                        err
+                    );
+                    match self.find_existing_tis_matching(4096, self.td, 0) {
                         Ok(tisn) => {
                             log::warn!(
                                 target: "mlx5",
-                                "CREATE_TIS failed on PF ({:?}); reusing existing TIS {:#x}",
-                                err,
+                                "Reusing existing PF TIS {:#x} after CREATE_TIS failure",
                                 tisn
                             );
                             tisn

@@ -27,6 +27,11 @@ pub(crate) use self::v6::tests as qemu_v6_tests;
 pub use v6::*;
 pub const DHCP_CLIENT_PORT: u16 = 68;
 
+pub fn update_runtime_mac(mac_address: MacAddress) {
+    client_impl::update_client_mac(mac_address);
+    v6::update_client_v6_mac(mac_address);
+}
+
 /// DHCPサーバーポート
 pub const DHCP_SERVER_PORT: u16 = 67;
 

@@ -27,6 +27,17 @@ pub struct QueryMkeyInfo {
     pub mkey_7_0: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryTisInfo {
+    pub strict_lag_tx_port_affinity: bool,
+    pub tls_en: bool,
+    pub lag_tx_port_affinity: u8,
+    pub prio: u8,
+    pub transport_domain: u32,
+    pub underlay_qpn: u32,
+    pub pd: u32,
+}
+
 /// ALLOC_UAR コマンド入力の構築
 pub fn build_alloc_uar_input(in_mbox: &mut CmdMailbox) {
     *in_mbox = CmdMailbox::zeroed();
@@ -191,6 +202,20 @@ pub fn build_query_tis_input(in_mbox: &mut CmdMailbox, tisn: u32, vport: u16, ot
     let _ = other_vport;
     // query_tis_in.tisn lives at byte 0x09 (24 bits) after op_mod.
     in_mbox.write_be32(0x08, tisn & 0x00FF_FFFF);
+}
+
+/// QUERY_TIS 出力から TIS コンテキストを解析
+pub fn parse_query_tis_output(out_mbox: &CmdMailbox) -> QueryTisInfo {
+    let ctx = &out_mbox.data[0x10..];
+    QueryTisInfo {
+        strict_lag_tx_port_affinity: get_bits_u32(ctx, 0, 1) != 0,
+        tls_en: get_bits_u32(ctx, 1, 1) != 0,
+        lag_tx_port_affinity: get_bits_u32(ctx, 4, 4) as u8,
+        prio: get_bits_u32(ctx, 12, 4) as u8,
+        transport_domain: get_bits_u32(ctx, 296, 24),
+        underlay_qpn: get_bits_u32(ctx, 328, 24),
+        pd: get_bits_u32(ctx, 360, 24),
+    }
 }
 
 /// DESTROY_TIS コマンド入力の構築
@@ -379,6 +404,28 @@ mod tests {
         let mut in_mbox = CmdMailbox::zeroed();
         build_query_tis_input(&mut in_mbox, 0x345678, 0, false);
         assert_eq!(in_mbox.read_be32(0x08), 0x0034_5678);
+    }
+
+    #[test]
+    fn query_tis_output_uses_linux_ifc_context_offset() {
+        let mut out_mbox = CmdMailbox::zeroed();
+        let ctx = &mut out_mbox.data[0x10..];
+        crate::structs::set_bits_u32(ctx, 0, 1, 1);
+        crate::structs::set_bits_u32(ctx, 1, 1, 1);
+        crate::structs::set_bits_u32(ctx, 4, 4, 0x5);
+        crate::structs::set_bits_u32(ctx, 12, 4, 0x3);
+        crate::structs::set_bits_u32(ctx, 296, 24, 0x123456);
+        crate::structs::set_bits_u32(ctx, 328, 24, 0x654321);
+        crate::structs::set_bits_u32(ctx, 360, 24, 0xabcdef);
+
+        let info = parse_query_tis_output(&out_mbox);
+        assert!(info.strict_lag_tx_port_affinity);
+        assert!(info.tls_en);
+        assert_eq!(info.lag_tx_port_affinity, 0x5);
+        assert_eq!(info.prio, 0x3);
+        assert_eq!(info.transport_domain, 0x123456);
+        assert_eq!(info.underlay_qpn, 0x654321);
+        assert_eq!(info.pd, 0xabcdef);
     }
 
     #[test]

@@ -851,7 +851,8 @@ mod tests {
         let mut inline = [0u8; MLX5_CMD_INLINE_SIZE];
         inline.copy_from_slice(&expected[..MLX5_CMD_INLINE_SIZE]);
 
-        let block = unsafe { &mut *CmdQueueTransport::block_ptr(out_backing.as_mut_ptr() as u64, 0) };
+        let block =
+            unsafe { &mut *CmdQueueTransport::block_ptr(out_backing.as_mut_ptr() as u64, 0) };
         block.data[..payload_len].copy_from_slice(&expected[MLX5_CMD_INLINE_SIZE..out_len]);
 
         let transport = CmdQueueTransport {

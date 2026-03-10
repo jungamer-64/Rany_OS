@@ -138,6 +138,8 @@ pub struct Mlx5Port {
     link_speed: LinkSpeed,
     /// MTU
     mtu: u32,
+    /// vport が要求する最小 WQE inline モード
+    min_wqe_inline_mode: u8,
     /// 統計情報
     stats: PortStats,
 }
@@ -152,6 +154,7 @@ impl Mlx5Port {
             admin_state: PortAdminState::Down,
             link_speed: LinkSpeed::Unknown,
             mtu: MLX5_DEFAULT_MTU,
+            min_wqe_inline_mode: 0,
             stats: PortStats::default(),
         }
     }
@@ -206,6 +209,11 @@ impl Mlx5Port {
         self.mtu
     }
 
+    /// 最小 WQE inline モードを取得
+    pub fn min_wqe_inline_mode(&self) -> u8 {
+        self.min_wqe_inline_mode
+    }
+
     /// MTUを設定
     pub fn set_mtu(&mut self, mtu: u32) -> Result<(), &'static str> {
         if mtu > MLX5_MAX_MTU {
@@ -216,6 +224,11 @@ impl Mlx5Port {
         }
         self.mtu = mtu;
         Ok(())
+    }
+
+    /// 最小 WQE inline モードを設定
+    pub fn set_min_wqe_inline_mode(&mut self, mode: u8) {
+        self.min_wqe_inline_mode = mode;
     }
 
     /// リンク速度を取得
