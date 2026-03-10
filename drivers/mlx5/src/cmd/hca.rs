@@ -228,6 +228,11 @@ pub fn parse_query_nic_vport_context_mtu(out_mbox: &CmdMailbox) -> u16 {
     QueryNicVportContextOutputLayout::new(&out_mbox.data[..]).mtu()
 }
 
+/// QUERY_NIC_VPORT_CONTEXT 出力から最小インラインモードを取得
+pub fn parse_query_nic_vport_context_min_inline_mode(out_mbox: &CmdMailbox) -> u8 {
+    QueryNicVportContextOutputLayout::new(&out_mbox.data[..]).min_wqe_inline_mode()
+}
+
 /// QUERY_NIC_VPORT_CONTEXT 出力からアドレスリストサイズを取得
 pub fn parse_query_nic_vport_context_allowed_list_size(out_mbox: &CmdMailbox) -> usize {
     QueryNicVportContextOutputLayout::new(&out_mbox.data[..]).allowed_list_size() as usize

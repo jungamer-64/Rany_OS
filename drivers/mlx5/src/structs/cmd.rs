@@ -264,6 +264,10 @@ impl<'a> QueryNicVportContextOutputLayout<'a> {
         Self { data }
     }
 
+    pub fn min_wqe_inline_mode(&self) -> u8 {
+        get_bits_u32(self.data, 133, 3) as u8
+    }
+
     pub fn mtu(&self) -> u16 {
         get_bits_u32(self.data, 432, 16) as u16
     }

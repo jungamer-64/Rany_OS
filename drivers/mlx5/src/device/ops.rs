@@ -600,6 +600,13 @@ impl Mlx5Device {
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let mtu = parse_query_nic_vport_context_mtu(out_mbox) as u32;
+        let min_inline_mode = parse_query_nic_vport_context_min_inline_mode(out_mbox);
+        log::info!(
+            target: "mlx5",
+            "NIC vport context: mtu={} min_wqe_inline_mode={}",
+            mtu,
+            min_inline_mode
+        );
         if let Some(port) = self.ports.get_mut(port_index) {
             port.set_mtu(mtu).map_err(|_| Mlx5Error::InvalidResponse)?;
         }

@@ -251,6 +251,11 @@ impl TcpSegmentBuilder {
         // オプションをパディング
         self.pad_options();
 
+        // RFC 793: Maximum TCP header length is 60 bytes (20 bytes fixed + 40 bytes options)
+        if self.options.len() > 40 {
+            self.options.truncate(40);
+        }
+
         let options_len = self.options.len();
         let header_len = 20 + options_len;
         let data_offset = (header_len / 4) as u8; // 4バイト単位

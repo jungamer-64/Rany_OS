@@ -87,6 +87,8 @@ static MLX5_RX_IDLE_POLLS: AtomicU64 = AtomicU64::new(0);
 
 /// RX CQE の詳細ログ出力予算（起動直後の切り分け用）
 static MLX5_RX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
+/// TX CQE の詳細ログ出力予算（送信経路切り分け用）
+static MLX5_TX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
 /// RX アイドル時スナップショット出力回数の上限
 static MLX5_RX_DEBUG_SNAPSHOT_BUDGET: AtomicU64 = AtomicU64::new(16);
 /// 受信フレーム先頭のプレビュー出力回数
@@ -143,6 +145,7 @@ fn initialize_mlx5_runtime() -> Result<(), &'static str> {
 
     MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
     MLX5_RX_CQE_LOG_BUDGET.store(32, Ordering::Release);
+    MLX5_TX_CQE_LOG_BUDGET.store(32, Ordering::Release);
     MLX5_RX_FRAME_LOG_BUDGET.store(8, Ordering::Release);
     MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(16, Ordering::Release);
     MLX5_WAKE_COUNTS.store(0, Ordering::Release);
@@ -732,6 +735,25 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
 
             let tx_cqes = device.poll_cq(tx_cq_index, MLX5_RX_POLL_BATCH);
             for cqe in &tx_cqes {
+                if MLX5_TX_CQE_LOG_BUDGET
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_sub(1))
+                    .is_ok()
+                {
+                    log::info!(
+                        target: "mlx5::bridge",
+                        "TX CQE: sq={} cq={} op={:?} wqe_counter={} byte_count={} raw_byte_count={} qpn={:#x} syndrome={:?} vendor={:?} src_wqe_op={:?}",
+                        sq_index,
+                        tx_cq_index,
+                        cqe.opcode,
+                        cqe.wqe_counter,
+                        cqe.byte_count,
+                        cqe.raw_byte_count,
+                        cqe.qpn,
+                        cqe.error_syndrome,
+                        cqe.vendor_error_syndrome,
+                        cqe.error_wqe_opcode
+                    );
+                }
                 let infos = device.process_tx_completions(sq_index, cqe.wqe_counter);
                 for _info in infos {
                     let idx = (cqe.wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;

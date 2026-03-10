@@ -233,6 +233,9 @@ impl Mlx5Device {
     ) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let sq_db_ptr = db_virt as *mut u32;
+        core::ptr::write_volatile(sq_db_ptr, 0u32.to_be());
+        core::ptr::write_volatile(sq_db_ptr.add(1), 0u32.to_be());
         let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
         let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let sq_in_len = (0x110 + sq_pages * 8) as u32;

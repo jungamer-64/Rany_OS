@@ -1761,7 +1761,7 @@ fn process_tcp_new_connection(
         .syn()
         .ack_flag()
         .window(65535)
-        .syn_options(1460, ws_opt, sack_opt, ts_opt);
+        .syn_options(1460, ws_opt, sack_opt, None);
 
     // TSopt付きSYN-ACK (RFC 7323 Section 3.2)
     if let Some((peer_ts_val, _)) = peer_ts {

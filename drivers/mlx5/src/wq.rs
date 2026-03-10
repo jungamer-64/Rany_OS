@@ -362,7 +362,8 @@ impl SendQueue {
         write_u8_raw(wqe_ptr as *mut u8, wqe::ctrl::FM_CE_SE, fm_ce_se);
         fence(Ordering::Release);
 
-        let db_ptr = self.doorbell_virt as *mut u32;
+        // Send queues use the SND_DBR slot (word 1) in the WQ doorbell record.
+        let db_ptr = (self.doorbell_virt as *mut u32).add(1);
         core::ptr::write_volatile(db_ptr, (self.producer_counter as u32).to_be());
         compiler_fence(Ordering::Release);
         hal::mmio::sfence();
@@ -411,7 +412,7 @@ impl SendQueue {
         };
         let last_data_seg_ptr = last_wqe_ptr.add(32 + last_inline_ds * 16);
 
-        let doorbell_be = core::ptr::read_volatile(self.doorbell_virt as *const u32);
+        let doorbell_be = core::ptr::read_volatile((self.doorbell_virt as *const u32).add(1));
         let doorbell_host = u32::from_be(doorbell_be) & 0x0000_ffff;
 
         TxQueueDebugState {
