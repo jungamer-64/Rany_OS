@@ -48,6 +48,7 @@ fn str_eq(a: &str, b: &str) -> bool {
 
 pub fn run_network_runtime_suite(case_filter: Option<&str>) -> NetworkRuntimeSuiteSummary {
     info!(target: "init", "[kernel-test][net] start");
+    crate::io::iommu::api::reset_map_unmap_counts();
 
     let mut summary = NetworkRuntimeSuiteSummary::new();
     let mut selected_any = false;
@@ -75,6 +76,21 @@ pub fn run_network_runtime_suite(case_filter: Option<&str>) -> NetworkRuntimeSui
         info!(
             target: "init",
             "[kernel-test][net] case {not_found_id} fail (no matching case)"
+        );
+    }
+
+    if selected_any && crate::io::iommu::api::get_global_map_count() != 0 {
+        summary.failed += 1;
+        info!(
+            target: "init",
+            "[kernel-test][net] case net.no_global_dma_fallback fail"
+        );
+    }
+    if selected_any && crate::io::iommu::api::get_identity_fallback_count() != 0 {
+        summary.failed += 1;
+        info!(
+            target: "init",
+            "[kernel-test][net] case net.no_identity_dma_fallback fail"
         );
     }
 

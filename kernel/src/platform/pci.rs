@@ -55,7 +55,7 @@ fn convert_bar_to_native(bar: Bar) -> crate::io::pci::Bar {
     }
 }
 
-fn convert_device(dev: crate::io::pci::PciDeviceInfo) -> PciDeviceInfo {
+pub fn from_native_device(dev: crate::io::pci::PciDeviceInfo) -> PciDeviceInfo {
     PciDeviceInfo {
         segment: dev.segment,
         bdf: BdfAddress::new(dev.bdf.bus(), dev.bdf.device(), dev.bdf.function()),
@@ -133,21 +133,21 @@ impl PciServices for BuiltinPciProvider {
     fn scan_all_devices(&self) -> Vec<PciDeviceInfo> {
         crate::io::pci::scan_all_devices()
             .into_iter()
-            .map(convert_device)
+            .map(from_native_device)
             .collect()
     }
 
     fn find_by_class(&self, class: u8, subclass: u8) -> Vec<PciDeviceInfo> {
         crate::io::pci::find_by_class(class, subclass)
             .into_iter()
-            .map(convert_device)
+            .map(from_native_device)
             .collect()
     }
 
     fn find_virtio_devices(&self) -> Vec<PciDeviceInfo> {
         crate::io::pci::find_virtio_devices()
             .into_iter()
-            .map(convert_device)
+            .map(from_native_device)
             .collect()
     }
 

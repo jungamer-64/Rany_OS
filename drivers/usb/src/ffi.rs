@@ -9,34 +9,70 @@
 use kernel_api::abi::driver::{
     DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
 };
+use kernel_api::driver::Driver;
 use kernel_api::driver::DriverType;
+
+use crate::driver_impl::UsbDriverWrapper;
+
+static mut USB_DRIVER: Option<UsbDriverWrapper> = None;
+
+unsafe fn with_usb_driver<R>(f: impl FnOnce(&mut UsbDriverWrapper) -> R) -> Option<R> {
+    let slot = core::ptr::addr_of_mut!(USB_DRIVER);
+    unsafe { (*slot).as_mut().map(f) }
+}
 
 // ============================================================================
 // Driver Lifecycle Functions
 // ============================================================================
 
 /// Probe function for USB xHCI controller.
-extern "C" fn usb_probe(_ctx: *mut DriverContext) -> i32 {
-    // TODO: Initialize xHCI controller using ctx.device_address (BAR0)
-    // For now, return success
-    0
+extern "C" fn usb_probe(ctx: *mut DriverContext) -> i32 {
+    if ctx.is_null() {
+        return -1;
+    }
+
+    let ctx = unsafe { &mut *ctx };
+    unsafe {
+        core::ptr::write(
+            core::ptr::addr_of_mut!(USB_DRIVER),
+            Some(UsbDriverWrapper::new(
+                ctx.device_address,
+                ctx.pci_location(),
+            )),
+        );
+        match with_usb_driver(|driver| driver.probe()) {
+            Some(Ok(())) => 0,
+            _ => -1,
+        }
+    }
 }
 
 /// Start function for USB driver.
 extern "C" fn usb_start(_ctx: *mut DriverContext) -> i32 {
-    // TODO: Start controller, enable ports
-    0
+    unsafe {
+        match with_usb_driver(|driver| driver.start()) {
+            Some(Ok(())) => 0,
+            _ => -1,
+        }
+    }
 }
 
 /// Stop function for USB driver.
 extern "C" fn usb_stop(_ctx: *mut DriverContext) -> i32 {
-    // TODO: Stop controller, disable ports
-    0
+    unsafe {
+        match with_usb_driver(|driver| driver.stop()) {
+            Some(Ok(())) => 0,
+            _ => -1,
+        }
+    }
 }
 
 /// Remove/cleanup function for USB driver.
 extern "C" fn usb_remove(_ctx: *mut DriverContext) -> i32 {
-    // TODO: Clean up resources
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(USB_DRIVER);
+        let _ = core::ptr::replace(slot, None);
+    }
     0
 }
 

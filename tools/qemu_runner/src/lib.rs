@@ -863,6 +863,14 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
             .arg("virtio-blk-pci,drive=storage0");
     }
 
+    if config.profile == "driver_domain" {
+        qemu_cmd
+            .arg("-device")
+            .arg("intel-hda")
+            .arg("-device")
+            .arg("hda-duplex");
+    }
+
     if profile_needs_iommu(&config.profile) {
         qemu_cmd
             .arg("-device")

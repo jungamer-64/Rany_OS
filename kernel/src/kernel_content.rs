@@ -554,6 +554,29 @@ fn init_single_nvme_controller(
         }
     };
 
+    let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(
+        bar0_virt,
+        dev.interrupt_line as u32,
+        dev.vendor_id.0,
+        dev.device_id.0,
+        ((dev.class_code.class as u32) << 16)
+            | ((dev.class_code.subclass as u32) << 8)
+            | dev.class_code.prog_if as u32,
+        dev.packed_locator(),
+    );
+    standalone_ctx.device_address_secondary = 0;
+    match crate::loader::staged_pci::try_start_for_device(dev, standalone_ctx) {
+        crate::loader::staged_pci::StagedPciBindOutcome::Started { .. }
+        | crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {
+            info!(target: "init", "NVMe controller initialized via staged standalone driver");
+            return;
+        }
+        crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
+            warn!(target: "init", "{}; falling back to built-in NVMe path", reason);
+        }
+        crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
+    }
+
     let num_cores = crate::smp::cpu_count();
     let packed_device_id = dev.packed_locator();
     match crate::drivers::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
@@ -641,6 +664,29 @@ fn init_single_ahci_controller(dev: &kernel_api::service::platform::PciDeviceInf
         dev.bdf.device(),
         dev.bdf.function(),
     );
+
+    let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(
+        base_virt,
+        dev.interrupt_line as u32,
+        dev.vendor_id.0,
+        dev.device_id.0,
+        ((dev.class_code.class as u32) << 16)
+            | ((dev.class_code.subclass as u32) << 8)
+            | dev.class_code.prog_if as u32,
+        dev.packed_locator(),
+    );
+    standalone_ctx.device_address_secondary = 0;
+    match crate::loader::staged_pci::try_start_for_device(dev, standalone_ctx) {
+        crate::loader::staged_pci::StagedPciBindOutcome::Started { .. }
+        | crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {
+            info!(target: "init", "AHCI controller initialized via staged standalone driver");
+            return;
+        }
+        crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
+            warn!(target: "init", "{}; falling back to built-in AHCI path", reason);
+        }
+        crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
+    }
 
     match crate::drivers::ahci::init_from_pci(base_virt, iommu_device) {
         Ok(controller) => {

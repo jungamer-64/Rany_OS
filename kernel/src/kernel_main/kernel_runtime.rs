@@ -83,7 +83,51 @@ async fn network_bootstrap_task() {
     }
 
     // ConnectX ファミリ (mlx5) ドライバのPCI検出・登録
-    {
+    let staged_mlx5_started = {
+        let mut started = false;
+        for &(_vendor_id, device_id) in mlx5_driver::SUPPORTED_DEVICE_IDS {
+            let pci_devices =
+                crate::io::pci::find_by_id(mlx5_driver::MELLANOX_VENDOR_ID, device_id);
+            let Some(native_dev) = pci_devices.first().cloned() else {
+                continue;
+            };
+            let dev = crate::platform::pci::from_native_device(native_dev);
+            let Some(bar0) = dev.bars[0] else {
+                continue;
+            };
+
+            let mut ctx = kernel_api::abi::driver::DriverContext::for_pci(
+                bar0.base(),
+                dev.interrupt_line as u32,
+                dev.vendor_id.0,
+                dev.device_id.0,
+                ((dev.class_code.class as u32) << 16)
+                    | ((dev.class_code.subclass as u32) << 8)
+                    | dev.class_code.prog_if as u32,
+                dev.packed_locator(),
+            );
+            ctx.device_address_secondary = 0;
+
+            match crate::loader::staged_pci::try_start_for_device(&dev, ctx) {
+                crate::loader::staged_pci::StagedPciBindOutcome::Started { .. }
+                | crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {
+                    info!(
+                        target: "net_boot",
+                        "ConnectX (mlx5) initialized via staged standalone driver"
+                    );
+                    started = true;
+                    break;
+                }
+                crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
+                    warn!(target: "net_boot", "{}; falling back to built-in mlx5 path", reason);
+                    break;
+                }
+                crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
+            }
+        }
+        started
+    };
+    if !staged_mlx5_started {
         use crate::net::drivers::mlx5_registry::Mlx5ConnectXDriver;
         use alloc::boxed::Box;
         use driver_registry::register_driver;

@@ -110,6 +110,33 @@ impl SystemIntegration {
                 let num_cores = crate::smp::cpu_count();
                 let packed_device_id = dev.packed_locator();
 
+                let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(
+                    bar0_virt,
+                    dev.interrupt_line as u32,
+                    dev.vendor_id.0,
+                    dev.device_id.0,
+                    ((dev.class_code.class as u32) << 16)
+                        | ((dev.class_code.subclass as u32) << 8)
+                        | dev.class_code.prog_if as u32,
+                    packed_device_id,
+                );
+                standalone_ctx.device_address_secondary = 0;
+                match crate::loader::staged_pci::try_start_for_device(&dev, standalone_ctx) {
+                    crate::loader::staged_pci::StagedPciBindOutcome::Started { .. }
+                    | crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {
+                        self.log("    NVMe controller initialized via staged standalone driver");
+                        nvme_controller_id = nvme_controller_id.wrapping_add(1);
+                        continue;
+                    }
+                    crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
+                        self.log(&alloc::format!(
+                            "    {} ; falling back to built-in NVMe path",
+                            reason
+                        ));
+                    }
+                    crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
+                }
+
                 match crate::drivers::nvme::init_nvme_polling(
                     bar0_virt,
                     num_cores,
@@ -160,6 +187,32 @@ impl SystemIntegration {
                 let bar0_phys = bar0.base();
                 let bar0_virt =
                     crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+
+                let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(
+                    bar0_virt,
+                    dev.interrupt_line as u32,
+                    dev.vendor_id.0,
+                    dev.device_id.0,
+                    ((dev.class_code.class as u32) << 16)
+                        | ((dev.class_code.subclass as u32) << 8)
+                        | dev.class_code.prog_if as u32,
+                    dev.packed_locator(),
+                );
+                standalone_ctx.device_address_secondary = 0;
+                match crate::loader::staged_pci::try_start_for_device(&dev, standalone_ctx) {
+                    crate::loader::staged_pci::StagedPciBindOutcome::Started { .. }
+                    | crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {
+                        self.log("    HDA driver initialized via staged standalone driver");
+                        continue;
+                    }
+                    crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
+                        self.log(&alloc::format!(
+                            "    {} ; falling back to built-in HDA path",
+                            reason
+                        ));
+                    }
+                    crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
+                }
 
                 use crate::driver_registry::{driver_registry, register_driver};
                 use crate::drivers::audio::hda::HdaDriver;

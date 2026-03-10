@@ -352,15 +352,27 @@ impl RuntimeCaseError {
 #[cfg(feature = "qemu-test-export")]
 struct RuntimeContext {
     driver_domain_id: DriverDomainId,
+    staged_pci_domain_id: DriverDomainId,
     v1_cell: Vec<u8>,
     v2_cell: Vec<u8>,
     too_new_pack: Vec<u8>,
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ObservedDriverContext {
+    probe_count: u32,
+    start_count: u32,
+    reserved: [u32; 2],
+    ctx: kernel_api::abi::driver::DriverContext,
+}
+
+#[cfg(feature = "qemu-test-export")]
 pub fn run_driver_domain_runtime_suite() -> DriverDomainRuntimeSuiteSummary {
     let mut summary = DriverDomainRuntimeSuiteSummary::new();
     runtime_log_line("[driver-cell-runtime] start");
+    crate::io::iommu::api::reset_map_unmap_counts();
     let old_aslr = crate::loader::elf::is_aslr_enabled();
     crate::loader::elf::set_aslr_enabled(false);
 
@@ -388,6 +400,16 @@ pub fn run_driver_domain_runtime_suite() -> DriverDomainRuntimeSuiteSummary {
 
     let old_grace = crate::loader::live_update::set_rollback_grace_period_for_test(1_000);
 
+    run_case(
+        &mut summary,
+        "staged_pci_probe_receives_real_driver_context",
+        case_staged_pci_probe_receives_real_driver_context(&ctx),
+    );
+    run_case(
+        &mut summary,
+        "no_dma_fallbacks_recorded",
+        case_no_dma_fallbacks_recorded(),
+    );
     run_case(
         &mut summary,
         "loader_rejects_too_new_kernel_api",
@@ -418,20 +440,30 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
     runtime_log_line("[driver-cell-runtime] preflight: begin");
     let manager = driver_domain_manager();
     let running_cells = manager.cells_by_state(DriverDomainState::Running);
-    let driver_domain_id = match running_cells.as_slice() {
-        [id] => *id,
-        [] => {
-            return Err(RuntimeCaseError::failed(
-                "no Running DriverDomain found (expected driver_cell_probe from initramfs)",
-            ));
+    let mut driver_domain_id = None;
+    let mut staged_pci_domain_id = None;
+    for id in running_cells {
+        let name = manager
+            .with_cell(id, |cell| cell.name.clone())
+            .map_err(|e| {
+                RuntimeCaseError::failed(format!("failed to inspect DriverDomain: {}", e))
+            })?;
+        if crate::loader::str_eq(name.as_str(), "driver_cell_probe") {
+            driver_domain_id = Some(id);
+        } else if name.starts_with("driver_cell_probe_pci@") {
+            staged_pci_domain_id = Some(id);
         }
-        many => {
-            return Err(RuntimeCaseError::failed(format!(
-                "multiple Running DriverCells found (expected exactly 1, got {})",
-                many.len()
-            )));
-        }
-    };
+    }
+    let driver_domain_id = driver_domain_id.ok_or_else(|| {
+        RuntimeCaseError::failed(
+            "no Running DriverDomain named driver_cell_probe found (expected generic initramfs fixture)",
+        )
+    })?;
+    let staged_pci_domain_id = staged_pci_domain_id.ok_or_else(|| {
+        RuntimeCaseError::failed(
+            "no staged PCI probe DriverDomain found (expected driver_cell_probe_pci@...)",
+        )
+    })?;
     runtime_log_line("[driver-cell-runtime] preflight: selected running DriverDomain");
 
     let (state, hot_swap_state, loader_cell_id) = manager
@@ -477,10 +509,125 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
 
     Ok(RuntimeContext {
         driver_domain_id,
+        staged_pci_domain_id,
         v1_cell,
         v2_cell,
         too_new_pack,
     })
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_staged_pci_probe_receives_real_driver_context(
+    ctx: &RuntimeContext,
+) -> Result<(), RuntimeCaseError> {
+    let expected_dev = crate::platform::pci::find_by_class(0x04, 0x03)
+        .into_iter()
+        .next()
+        .ok_or_else(|| RuntimeCaseError::failed("intel-hda test device not found"))?;
+    let bar0 =
+        expected_dev.bars[0].ok_or_else(|| RuntimeCaseError::failed("intel-hda BAR0 missing"))?;
+    let expected_mmio =
+        crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0.base())).as_u64();
+    let expected_ctx = kernel_api::abi::driver::DriverContext::for_pci(
+        expected_mmio,
+        expected_dev.interrupt_line as u32,
+        expected_dev.vendor_id.0,
+        expected_dev.device_id.0,
+        ((expected_dev.class_code.class as u32) << 16)
+            | ((expected_dev.class_code.subclass as u32) << 8)
+            | expected_dev.class_code.prog_if as u32,
+        expected_dev.packed_locator(),
+    );
+
+    let (cell_id, stored_ctx) = driver_domain_manager()
+        .with_cell(ctx.staged_pci_domain_id, |cell| {
+            (
+                cell.cell_id.ok_or(DriverDomainError::LoadFailed(
+                    "staged PCI probe cell_id missing".into(),
+                ))?,
+                cell.abi_driver_context,
+            )
+        })
+        .map_err(|e| {
+            RuntimeCaseError::failed(format!("failed to inspect staged DriverDomain: {}", e))
+        })?
+        .map_err(|e| RuntimeCaseError::failed(format!("staged DriverDomain invalid: {}", e)))?;
+
+    if stored_ctx.device_address != expected_ctx.device_address
+        || stored_ctx.irq != expected_ctx.irq
+        || stored_ctx.vendor_id != expected_ctx.vendor_id
+        || stored_ctx.device_id != expected_ctx.device_id
+        || stored_ctx.class_code != expected_ctx.class_code
+        || stored_ctx.pci_location() != expected_ctx.pci_location()
+    {
+        return Err(RuntimeCaseError::failed(format!(
+            "staged DriverDomain context mismatch: stored={:?} expected={:?}",
+            stored_ctx, expected_ctx
+        )));
+    }
+
+    let observed = read_observed_context(cell_id)?;
+    if observed.probe_count == 0 || observed.start_count == 0 {
+        return Err(RuntimeCaseError::failed(format!(
+            "staged probe fixture counters invalid: probe_count={} start_count={}",
+            observed.probe_count, observed.start_count
+        )));
+    }
+    if observed.ctx.device_address != expected_ctx.device_address
+        || observed.ctx.irq != expected_ctx.irq
+        || observed.ctx.vendor_id != expected_ctx.vendor_id
+        || observed.ctx.device_id != expected_ctx.device_id
+        || observed.ctx.class_code != expected_ctx.class_code
+        || observed.ctx.pci_location() != expected_ctx.pci_location()
+    {
+        return Err(RuntimeCaseError::failed(format!(
+            "observed driver context mismatch: observed={:?} expected={:?}",
+            observed.ctx, expected_ctx
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn read_observed_context(
+    cell_id: crate::loader::CellId,
+) -> Result<ObservedDriverContext, RuntimeCaseError> {
+    let observed_addr = crate::loader::with_registry(|r| {
+        r.get(cell_id).and_then(|cell| {
+            cell.exports
+                .iter()
+                .find(|(name, _)| {
+                    crate::loader::str_eq(
+                        name.as_str(),
+                        "__exorust_driver_cell_probe_observed_context",
+                    )
+                })
+                .map(|(_, addr)| *addr)
+        })
+    })
+    .ok_or_else(|| {
+        RuntimeCaseError::failed(
+            "driver_cell_probe observed context export missing from staged cell",
+        )
+    })?;
+
+    Ok(unsafe { core::ptr::read(observed_addr as *const ObservedDriverContext) })
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_no_dma_fallbacks_recorded() -> Result<(), RuntimeCaseError> {
+    if crate::io::iommu::api::get_global_map_count() != 0 {
+        return Err(RuntimeCaseError::failed(
+            "driver_domain profile recorded global DMA mapping fallback usage",
+        ));
+    }
+    if crate::io::iommu::api::get_identity_fallback_count() != 0 {
+        return Err(RuntimeCaseError::failed(
+            "driver_domain profile recorded identity DMA fallback usage",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "qemu-test-export")]

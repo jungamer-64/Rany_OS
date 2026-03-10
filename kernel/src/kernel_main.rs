@@ -927,6 +927,29 @@ pub(crate) fn init_usb_controllers() {
         device_info.enable_bus_master();
         device_info.enable_memory_space();
 
+        let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(
+            base_virt,
+            device_info.interrupt_line as u32,
+            device_info.vendor_id.0,
+            device_info.device_id.0,
+            ((device_info.class_code.class as u32) << 16)
+                | ((device_info.class_code.subclass as u32) << 8)
+                | device_info.class_code.prog_if as u32,
+            device_info.packed_locator(),
+        );
+        standalone_ctx.device_address_secondary = 0;
+        match crate::loader::staged_pci::try_start_for_device(device_info, standalone_ctx) {
+            crate::loader::staged_pci::StagedPciBindOutcome::Started { .. }
+            | crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {
+                info!(target: "init", "USB xHCI controller initialized via staged standalone driver");
+                continue;
+            }
+            crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
+                warn!(target: "init", "{}; falling back to built-in xHCI path", reason);
+            }
+            crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
+        }
+
         let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(
             base_virt,
             device_info.packed_locator(),

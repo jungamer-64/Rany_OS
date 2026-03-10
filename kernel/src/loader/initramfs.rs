@@ -21,6 +21,7 @@
 use crate::driver_domain;
 use crate::driver_domain::RestartPolicy;
 use crate::driver_domain::lifecycle::DriverDomainConfig;
+use crate::loader::staged_pci::StageArtifactResult;
 use alloc::string::String;
 use alloc::vec::Vec;
 use boot_proto::InitramfsModule;
@@ -211,6 +212,7 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
 
     let mut archive = TarArchive::new(data);
     let mut loaded = 0;
+    let mut staged = 0;
 
     for entry in archive.files() {
         #[cfg(feature = "qemu-test-export")]
@@ -235,6 +237,27 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
 
             // Extract driver name without path and extension
             let driver_name = extract_driver_name(&entry.name);
+
+            match crate::loader::staged_pci::stage_initramfs_driver_artifact(
+                &driver_name,
+                entry.data,
+                true,
+            ) {
+                StageArtifactResult::Staged => {
+                    info!(
+                        target: "initramfs",
+                        "Staged PCI driver pack '{}' for later PCI binding",
+                        driver_name
+                    );
+                    staged += 1;
+                    continue;
+                }
+                StageArtifactResult::Rejected(reason) => {
+                    warn!(target: "initramfs", "Rejected '{}': {}", driver_name, reason);
+                    continue;
+                }
+                StageArtifactResult::NotStaged => {}
+            }
 
             let config = DriverDomainConfig::new(driver_name.clone())
                 .with_restart_policy(RestartPolicy::on_panic(3, 100))
@@ -272,8 +295,9 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
 
     info!(
         target: "initramfs",
-        "Loaded {} driver(s) from initramfs",
-        loaded
+        "Loaded {} driver(s) and staged {} PCI driver pack(s) from initramfs",
+        loaded,
+        staged
     );
     loaded
 }

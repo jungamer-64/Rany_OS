@@ -35,6 +35,7 @@ members = [
     "drivers/example_abi",
     "drivers/mlx5",
     "tools/driver_cell_probe",
+    "tools/driver_pack_builder",
     # Apps
     "apps",
     "libs/boot_proto",

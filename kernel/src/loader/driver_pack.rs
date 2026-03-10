@@ -66,6 +66,20 @@ pub struct DriverManifestV1 {
     pub _reserved2: [u64; 4],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverPackPciSelector {
+    ExactDevice {
+        vendor_id: u16,
+        device_id: u16,
+    },
+    ClassCode {
+        vendor_id: Option<u16>,
+        class: u8,
+        subclass: u8,
+        prog_if: u8,
+    },
+}
+
 impl DriverManifestV1 {
     pub fn name_str(&self) -> &str {
         let len = core::cmp::min(self.name_len as usize, self.name.len());
@@ -76,6 +90,50 @@ impl DriverManifestV1 {
 
     pub fn contains_unsafe(&self) -> bool {
         (self.flags & manifest_flags::CONTAINS_UNSAFE) != 0
+    }
+
+    pub const fn has_pci_selector(&self) -> bool {
+        self.pci_vendor_id != 0
+            || self.pci_device_id != 0
+            || self.pci_class != 0
+            || self.pci_subclass != 0
+            || self.pci_prog_if != 0
+    }
+
+    pub fn pci_selector(&self) -> Result<Option<DriverPackPciSelector>, &'static str> {
+        let has_vendor = self.pci_vendor_id != 0;
+        let has_device = self.pci_device_id != 0;
+        let has_class = self.pci_class != 0;
+        let has_subclass = self.pci_subclass != 0;
+        let has_prog_if = self.pci_prog_if != 0;
+
+        if !(has_vendor || has_device || has_class || has_subclass || has_prog_if) {
+            return Ok(None);
+        }
+
+        if has_vendor && has_device && !(has_class || has_subclass || has_prog_if) {
+            return Ok(Some(DriverPackPciSelector::ExactDevice {
+                vendor_id: self.pci_vendor_id,
+                device_id: self.pci_device_id,
+            }));
+        }
+
+        if has_device {
+            return Err("PCI device selector requires vendor_id + device_id only");
+        }
+
+        if has_class && has_subclass {
+            return Ok(Some(DriverPackPciSelector::ClassCode {
+                vendor_id: has_vendor.then_some(self.pci_vendor_id),
+                class: self.pci_class,
+                subclass: self.pci_subclass,
+                prog_if: self.pci_prog_if,
+            }));
+        }
+
+        Err(
+            "PCI class selector requires class + subclass (vendor_id optional; prog_if may be 0x00)",
+        )
     }
 }
 
@@ -256,11 +314,12 @@ pub(crate) fn build_unsigned_driver_pack(
     elf: &[u8],
     kernel_api_min_version: u32,
 ) -> Vec<u8> {
-    build_unsigned_driver_pack_with_versions(
+    build_unsigned_driver_pack_with_manifest(
         name,
         elf,
         DRIVER_ABI_VERSION as u32,
         kernel_api_min_version,
+        None,
     )
 }
 
@@ -270,6 +329,23 @@ pub(crate) fn build_unsigned_driver_pack_with_versions(
     elf: &[u8],
     driver_abi_version: u32,
     kernel_api_min_version: u32,
+) -> Vec<u8> {
+    build_unsigned_driver_pack_with_manifest(
+        name,
+        elf,
+        driver_abi_version,
+        kernel_api_min_version,
+        None,
+    )
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) fn build_unsigned_driver_pack_with_manifest(
+    name: &str,
+    elf: &[u8],
+    driver_abi_version: u32,
+    kernel_api_min_version: u32,
+    pci_selector: Option<DriverPackPciSelector>,
 ) -> Vec<u8> {
     use core::mem::size_of;
 
@@ -302,6 +378,20 @@ pub(crate) fn build_unsigned_driver_pack_with_versions(
         signature_size: 0,
     };
 
+    let (pci_vendor_id, pci_device_id, pci_class, pci_subclass, pci_prog_if) = match pci_selector {
+        Some(DriverPackPciSelector::ExactDevice {
+            vendor_id,
+            device_id,
+        }) => (vendor_id, device_id, 0, 0, 0),
+        Some(DriverPackPciSelector::ClassCode {
+            vendor_id,
+            class,
+            subclass,
+            prog_if,
+        }) => (vendor_id.unwrap_or(0), 0, class, subclass, prog_if),
+        None => (0, 0, 0, 0, 0),
+    };
+
     let manifest = DriverManifestV1 {
         abi_version: DRIVER_MANIFEST_VERSION,
         abi_size: manifest_size,
@@ -313,11 +403,11 @@ pub(crate) fn build_unsigned_driver_pack_with_versions(
         driver_abi_version,
         kernel_api_min_version,
         required_caps: 0,
-        pci_vendor_id: 0,
-        pci_device_id: 0,
-        pci_class: 0,
-        pci_subclass: 0,
-        pci_prog_if: 0,
+        pci_vendor_id,
+        pci_device_id,
+        pci_class,
+        pci_subclass,
+        pci_prog_if,
         _reserved1: 0,
         _reserved2: [0; 4],
     };
@@ -331,3 +421,122 @@ pub(crate) fn build_unsigned_driver_pack_with_versions(
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 use kernel_api::abi::driver::DRIVER_ABI_VERSION;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn manifest_accepts_exact_vendor_device_selector() {
+        let manifest = DriverManifestV1 {
+            abi_version: DRIVER_MANIFEST_VERSION,
+            abi_size: core::mem::size_of::<DriverManifestV1>() as u32,
+            flags: 0,
+            name_len: 0,
+            _reserved0: 0,
+            name: [0; 32],
+            driver_version: 0,
+            driver_abi_version: DRIVER_ABI_VERSION as u32,
+            kernel_api_min_version: 0,
+            required_caps: 0,
+            pci_vendor_id: 0x8086,
+            pci_device_id: 0x1234,
+            pci_class: 0,
+            pci_subclass: 0,
+            pci_prog_if: 0,
+            _reserved1: 0,
+            _reserved2: [0; 4],
+        };
+
+        assert_eq!(
+            manifest.pci_selector(),
+            Ok(Some(DriverPackPciSelector::ExactDevice {
+                vendor_id: 0x8086,
+                device_id: 0x1234,
+            }))
+        );
+    }
+
+    #[test_case]
+    fn manifest_accepts_vendor_qualified_class_selector() {
+        let manifest = DriverManifestV1 {
+            abi_version: DRIVER_MANIFEST_VERSION,
+            abi_size: core::mem::size_of::<DriverManifestV1>() as u32,
+            flags: 0,
+            name_len: 0,
+            _reserved0: 0,
+            name: [0; 32],
+            driver_version: 0,
+            driver_abi_version: DRIVER_ABI_VERSION as u32,
+            kernel_api_min_version: 0,
+            required_caps: 0,
+            pci_vendor_id: 0x8086,
+            pci_device_id: 0,
+            pci_class: 0x04,
+            pci_subclass: 0x03,
+            pci_prog_if: 0x00,
+            _reserved1: 0,
+            _reserved2: [0; 4],
+        };
+
+        assert_eq!(
+            manifest.pci_selector(),
+            Ok(Some(DriverPackPciSelector::ClassCode {
+                vendor_id: Some(0x8086),
+                class: 0x04,
+                subclass: 0x03,
+                prog_if: 0x00,
+            }))
+        );
+    }
+
+    #[test_case]
+    fn manifest_rejects_partial_class_selector() {
+        let manifest = DriverManifestV1 {
+            abi_version: DRIVER_MANIFEST_VERSION,
+            abi_size: core::mem::size_of::<DriverManifestV1>() as u32,
+            flags: 0,
+            name_len: 0,
+            _reserved0: 0,
+            name: [0; 32],
+            driver_version: 0,
+            driver_abi_version: DRIVER_ABI_VERSION as u32,
+            kernel_api_min_version: 0,
+            required_caps: 0,
+            pci_vendor_id: 0,
+            pci_device_id: 0,
+            pci_class: 0x04,
+            pci_subclass: 0,
+            pci_prog_if: 0,
+            _reserved1: 0,
+            _reserved2: [0; 4],
+        };
+
+        assert!(manifest.pci_selector().is_err());
+    }
+
+    #[test_case]
+    fn manifest_rejects_vendor_only_selector() {
+        let manifest = DriverManifestV1 {
+            abi_version: DRIVER_MANIFEST_VERSION,
+            abi_size: core::mem::size_of::<DriverManifestV1>() as u32,
+            flags: 0,
+            name_len: 0,
+            _reserved0: 0,
+            name: [0; 32],
+            driver_version: 0,
+            driver_abi_version: DRIVER_ABI_VERSION as u32,
+            kernel_api_min_version: 0,
+            required_caps: 0,
+            pci_vendor_id: 0x8086,
+            pci_device_id: 0,
+            pci_class: 0,
+            pci_subclass: 0,
+            pci_prog_if: 0,
+            _reserved1: 0,
+            _reserved2: [0; 4],
+        };
+
+        assert!(manifest.pci_selector().is_err());
+    }
+}

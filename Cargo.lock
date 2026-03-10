@@ -297,6 +297,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "driver_pack_builder"
+version = "0.1.0"
+
+[[package]]
 name = "ed25519-compact"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

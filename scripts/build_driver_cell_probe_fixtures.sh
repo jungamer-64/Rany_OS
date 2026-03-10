@@ -47,6 +47,7 @@ BUILD_PROFILE_DIR="$ROOT_DIR/target/$CELL_TARGET_DIR_NAME/$PROFILE"
 DEPLOY_DIR="$ROOT_DIR/target/x86_64-exorust/$PROFILE/cells"
 INITRAMFS_PATH="$ROOT_DIR/target/initramfs.tar"
 CELL_PROBE_MANIFEST="$ROOT_DIR/tools/driver_cell_probe/Cargo.toml"
+DRIVER_PACK_BUILDER_MANIFEST="$ROOT_DIR/tools/driver_pack_builder/Cargo.toml"
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -65,6 +66,11 @@ fi
 
 if [[ ! -f "$CELL_PROBE_MANIFEST" ]]; then
     echo "missing driver_cell_probe manifest: $CELL_PROBE_MANIFEST" >&2
+    exit 1
+fi
+
+if [[ ! -f "$DRIVER_PACK_BUILDER_MANIFEST" ]]; then
+    echo "missing driver_pack_builder manifest: $DRIVER_PACK_BUILDER_MANIFEST" >&2
     exit 1
 fi
 
@@ -127,17 +133,31 @@ build_variant() {
 build_variant "variant_v1" "driver_cell_probe_v1.cell"
 build_variant "variant_v2" "driver_cell_probe_v2.cell"
 
+echo "[driver_cell_probe_fixtures] building staged PCI probe pack"
+(cd "$ROOT_DIR" && cargo run --quiet --manifest-path "$DRIVER_PACK_BUILDER_MANIFEST" -- \
+    --name driver_cell_probe_pci \
+    --input "$DEPLOY_DIR/driver_cell_probe_v1.cell" \
+    --output "$DEPLOY_DIR/driver_cell_probe_pci.cell" \
+    --driver-abi-version 2 \
+    --kernel-api-min-version 3 \
+    --pci-class 0x04 \
+    --pci-subclass 0x03 \
+    --pci-prog-if 0x00)
+echo "[driver_cell_probe_fixtures] wrote $DEPLOY_DIR/driver_cell_probe_pci.cell"
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$tmp_dir/drivers"
 mkdir -p "$tmp_dir/cells"
 cp "$DEPLOY_DIR/driver_cell_probe_v1.cell" "$tmp_dir/drivers/driver_cell_probe.cell"
+cp "$DEPLOY_DIR/driver_cell_probe_pci.cell" "$tmp_dir/drivers/driver_cell_probe_pci.cell"
 cp "$DEPLOY_DIR/driver_cell_probe_v1.cell" "$tmp_dir/cells/driver_cell_probe_v1.cell"
 cp "$DEPLOY_DIR/driver_cell_probe_v2.cell" "$tmp_dir/cells/driver_cell_probe_v2.cell"
 rm -f "$INITRAMFS_PATH"
 (cd "$tmp_dir" && tar -cf "$INITRAMFS_PATH" \
     drivers/driver_cell_probe.cell \
+    drivers/driver_cell_probe_pci.cell \
     cells/driver_cell_probe_v1.cell \
     cells/driver_cell_probe_v2.cell)
 

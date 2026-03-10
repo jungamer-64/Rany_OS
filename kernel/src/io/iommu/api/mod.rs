@@ -34,7 +34,8 @@ pub use crate::io::iommu::runtime::registry::{
     register_device_dma_width,
 };
 pub use crate::io::iommu::runtime::stats::{
-    get_map_count, get_unmap_count, reset_map_unmap_counts,
+    get_global_map_count, get_identity_fallback_count, get_map_count, get_unmap_count,
+    reset_map_unmap_counts,
 };
 
 /// Diagnostics
@@ -47,6 +48,14 @@ pub fn dump_iommu_diagnostics() {
     log::info!(
         "Global unmap count: {}",
         crate::io::iommu::runtime::stats::get_unmap_count()
+    );
+    log::info!(
+        "Global DMA map count: {}",
+        crate::io::iommu::runtime::stats::get_global_map_count()
+    );
+    log::info!(
+        "Identity fallback count: {}",
+        crate::io::iommu::runtime::stats::get_identity_fallback_count()
     );
 
     if let Some(driver) = crate::io::iommu::runtime::registry::get_iommu_driver() {

@@ -13,7 +13,7 @@ use crate::io::iommu::runtime::registry::{
     get_iommu_driver, is_iommu_enabled, validate_dma_mask_pre_allocation,
 };
 use crate::io::iommu::runtime::security::is_global_dma_mapping_allowed;
-use crate::io::iommu::runtime::stats::{inc_map_count, inc_unmap_count};
+use crate::io::iommu::runtime::stats::{inc_global_map_count, inc_map_count, inc_unmap_count};
 use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::ipc::RRef;
 
@@ -83,6 +83,7 @@ pub(crate) unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, 
     let res = unsafe { driver.map_for_dma(phys_addr, size) };
     if res.is_ok() {
         inc_map_count();
+        inc_global_map_count();
     }
     res
 }
@@ -100,6 +101,7 @@ pub(crate) unsafe fn map_for_dma_with_perms(
     let res = unsafe { driver.map_for_dma_with_perms(phys_addr, size, read, write) };
     if res.is_ok() {
         inc_map_count();
+        inc_global_map_count();
     }
     res
 }

@@ -543,6 +543,7 @@ impl<T> DmaHandle<T> {
         }
 
         log::warn!("[IOMMU][SECURITY] map_simple identity mapping - bypassing protection!");
+        crate::io::iommu::runtime::stats::inc_identity_fallback_count();
 
         use x86_64::VirtAddr;
 

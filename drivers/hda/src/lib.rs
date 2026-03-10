@@ -10,6 +10,7 @@ extern crate alloc;
 kernel_api::register_cell_runtime!();
 
 pub mod codec;
+pub mod ffi;
 pub mod hda;
 pub mod mixer;
 pub mod regs;

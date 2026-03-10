@@ -370,6 +370,7 @@ impl GlobalDmaAllocator {
                 return Err(DmaError::IommuRequired);
             }
             log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
+            crate::io::iommu::runtime::stats::inc_identity_fallback_count();
             Ok((phys_addr.as_u64(), false))
         }
     }

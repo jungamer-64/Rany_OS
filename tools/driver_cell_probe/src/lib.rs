@@ -5,6 +5,24 @@ kernel_api::register_cell_runtime!();
 
 use kernel_api::abi::driver::DriverContext;
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ObservedDriverContext {
+    pub probe_count: u32,
+    pub start_count: u32,
+    pub reserved: [u32; 2],
+    pub ctx: DriverContext,
+}
+
+#[unsafe(no_mangle)]
+pub static mut __exorust_driver_cell_probe_observed_context: ObservedDriverContext =
+    ObservedDriverContext {
+        probe_count: 0,
+        start_count: 0,
+        reserved: [0; 2],
+        ctx: DriverContext::new(),
+    };
+
 fn variant_label() -> &'static str {
     #[cfg(feature = "variant_v2")]
     {
@@ -40,6 +58,13 @@ fn log_variant(prefix: &str) {
 }
 
 fn probe(_ctx: &mut DriverContext) -> i32 {
+    unsafe {
+        __exorust_driver_cell_probe_observed_context.probe_count =
+            __exorust_driver_cell_probe_observed_context
+                .probe_count
+                .saturating_add(1);
+        __exorust_driver_cell_probe_observed_context.ctx = *_ctx;
+    }
     log_variant("driver_cell_probe probe");
     0
 }
@@ -49,6 +74,13 @@ fn remove(_ctx: &mut DriverContext) -> i32 {
 }
 
 fn start(_ctx: &mut DriverContext) -> i32 {
+    unsafe {
+        __exorust_driver_cell_probe_observed_context.start_count =
+            __exorust_driver_cell_probe_observed_context
+                .start_count
+                .saturating_add(1);
+        __exorust_driver_cell_probe_observed_context.ctx = *_ctx;
+    }
     log_variant("driver_cell_probe start");
     0
 }

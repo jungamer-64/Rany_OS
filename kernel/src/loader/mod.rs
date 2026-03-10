@@ -13,6 +13,7 @@ pub mod initramfs; // Initramfs TAR アーカイブからのセルロード
 pub mod live_update; // 新: ライブアップデート・Epoch-based Reclamation (設計書 3.5)
 pub mod loop_proof;
 pub mod signature;
+pub mod staged_pci;
 pub mod type_id;
 
 mod cell_lookup;

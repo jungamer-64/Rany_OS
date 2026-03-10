@@ -271,6 +271,7 @@ impl<T> DmaHandle<[T]> {
             return None;
         }
 
+        crate::io::iommu::runtime::stats::inc_identity_fallback_count();
         Some((phys, phys, size, MappingKind::Identity))
     }
 

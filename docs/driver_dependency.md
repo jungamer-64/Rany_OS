@@ -21,10 +21,16 @@ Drivers are intended to be built separately from the kernel core and must not de
 - Obtain `pci_locator` from `kernel_api::abi::driver::DriverContext::pci_location()` or from PCI enumeration using `PackedPciLocation::new(segment, bus, device, function)`.
 - If additional kernel capabilities are required, add them to `interfaces/kernel_api` and implement them inside the kernel service implementation.
 - For standalone cells, enable the crate's `standalone` feature so `kernel_api::register_cell_runtime!()` can bind allocator/panic/logging to the kernel ABI table.
+- Package standalone PCI cells with `tools/driver_pack_builder`; manifest selectors are limited to exact `vendor_id + device_id` or `class + subclass + prog_if` with optional `vendor_id`.
+- `prog_if = 0x00` remains a valid exact class match. Wildcard-on-zero applies only to omitted selector fields such as `vendor_id` in class-matching packs.
+- Initramfs behavior is now split:
+  - `drivers/*.cell` without a PCI selector autostart immediately.
+  - driver packs with a PCI selector are staged and matched during PCI enumeration with a real `DriverContext::for_pci(...)`.
 
 ## CI enforcement
 
 - The repository provides `scripts/check-driver-deps.ps1` which scans driver Cargo.toml files and enforces the rule.
+- `scripts/check-kernel-api-surface.sh` also rejects legacy `alloc_dma(...)`, driver-side hardware programming via `physical_address()`, and ad-hoc PCI locator bit packing in `drivers/`.
 - Include this check in CI pipelines to prevent regressions.
 
 ## Example
