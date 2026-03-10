@@ -138,6 +138,7 @@ pub fn build_create_sq_input(
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = SqContextLayout::new(&mut in_mbox.data[0x20..]);
 
+    layout.set_state(crate::defs::WqState::Reset as u8);
     layout.set_flush_in_error_en(true);
     layout.set_cqn(cqn);
     layout.set_tis_lst_sz(1);
@@ -271,6 +272,7 @@ pub fn build_create_rq_input_with_options(
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = RqContextLayout::new(&mut in_mbox.data[0x20..]);
+    layout.set_state(crate::defs::WqState::Reset as u8);
     layout.set_mem_rq_type(mem_rq_type & 0x0f);
     layout.set_flush_in_error_en(flush_in_error_en);
     layout.set_scatter_fcs(scatter_fcs);
@@ -287,7 +289,7 @@ pub fn build_create_rq_input_with_options(
         wq.set_wq_type(wq_type & 0x0f);
         wq.set_end_padding_mode(end_padding_mode & 0x03);
         wq.set_pd(pd);
-        wq.set_uar_page(uar_page);
+        let _ = uar_page;
         wq.set_dbr_addr(db_pa);
         wq.set_log_wq_stride(log_wq_stride & 0x0f);
         wq.set_log_wq_pg_sz(0); // 4KB
@@ -320,7 +322,7 @@ pub fn build_create_rmp_input(
         db_pa,
         pd,
         uar_page,
-        1,   // RDY
+        0,   // RST
         true,
         1,   // cyclic
         1,   // ALIGN
@@ -350,7 +352,7 @@ pub fn build_create_rmp_input_with_options(
         wq.set_wq_type(wq_type);
         wq.set_end_padding_mode(end_padding_mode & 0x3);
         wq.set_pd(pd);
-        wq.set_uar_page(uar_page);
+        let _ = uar_page;
         wq.set_dbr_addr(db_pa);
         wq.set_log_wq_stride(4); // 16B data segment
         wq.set_log_wq_pg_sz(0); // 4KB

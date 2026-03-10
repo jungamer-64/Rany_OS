@@ -319,6 +319,7 @@ impl<T> Drop for TypedDmaGuard<T> {
 pub struct SliceDmaGuard {
     ptr: NonNull<u8>,
     phys_addr: PhysAddr,
+    device_addr: u64,
     size: usize,
     layout: Layout,
     completed: bool,
@@ -346,6 +347,7 @@ impl SliceDmaGuard {
         TypedDmaSlice {
             ptr: self.ptr,
             phys_addr: self.phys_addr,
+            device_addr: self.device_addr,
             size: self.size,
             layout: self.layout,
             _state: PhantomData,
@@ -386,6 +388,7 @@ unsafe impl Send for SliceDmaGuard {}
 pub struct TypedDmaSlice<State: DmaState> {
     ptr: NonNull<u8>,
     phys_addr: PhysAddr,
+    device_addr: u64,
     size: usize,
     layout: Layout,
     _state: PhantomData<State>,
@@ -419,6 +422,7 @@ impl TypedDmaSlice<CpuOwned> {
         Some(Self {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
             phys_addr,
+            device_addr: phys_addr.as_u64(),
             size,
             layout,
             _state: PhantomData,
@@ -431,7 +435,7 @@ impl TypedDmaSlice<CpuOwned> {
     /// 呼び出し側は `ptr/size` が有効で、重複所有されていないことを保証すること。
     pub unsafe fn from_raw_parts(
         phys: u64,
-        _device_addr: u64,
+        device_addr: u64,
         ptr: *mut u8,
         size: usize,
         _releaser: Option<fn(*mut u8, usize, u64)>,
@@ -440,6 +444,7 @@ impl TypedDmaSlice<CpuOwned> {
         Self {
             ptr: NonNull::new(ptr).expect("from_raw_parts: null pointer"),
             phys_addr: PhysAddr::new(phys),
+            device_addr,
             size,
             layout,
             _state: PhantomData,
@@ -465,6 +470,7 @@ impl TypedDmaSlice<CpuOwned> {
         let guard = SliceDmaGuard {
             ptr: self.ptr,
             phys_addr: self.phys_addr,
+            device_addr: self.device_addr,
             size: self.size,
             layout: self.layout,
             completed: false,
@@ -473,6 +479,7 @@ impl TypedDmaSlice<CpuOwned> {
         let dev = TypedDmaSlice {
             ptr: self.ptr,
             phys_addr: self.phys_addr,
+            device_addr: self.device_addr,
             size: self.size,
             layout: self.layout, // Drop が no-op なので持っててOK
             _state: PhantomData,
@@ -490,6 +497,11 @@ impl<State: DmaState> TypedDmaSlice<State> {
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> PhysAddr {
         self.phys_addr
+    }
+
+    /// デバイスに渡すアドレスを取得
+    pub fn device_address(&self) -> u64 {
+        self.device_addr
     }
 
     /// サイズを取得

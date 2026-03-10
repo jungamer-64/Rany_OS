@@ -110,6 +110,10 @@ fn initialize_mlx5_runtime() -> Result<(), &'static str> {
         return Ok(());
     }
 
+    if let Some(device_id) = with_mlx5_device(|dev| dev.dma_device_id()) {
+        crate::net::datapath::mempool::set_packet_dma_device(Some(device_id));
+    }
+
     let num_rqs = with_mlx5_device(|dev| dev.num_rqs()).unwrap_or(1);
     if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
         if bufs.is_empty() {
@@ -335,8 +339,8 @@ fn submit_mlx5_tx_packet(pkt: PacketRef, vlan_tag: Option<u16>) -> bool {
         // Safety: デバイスアドレスが正しく取得されていること
         let mut tx_options = mlx5_driver::wq::TxOptions::default();
         tx_options.vlan_tag = vlan_tag.unwrap_or(0);
-        tx_options.l3_cs = true;
-        tx_options.l4_cs = true;
+        tx_options.l3_cs = false;
+        tx_options.l4_cs = false;
 
         match unsafe {
             device.transmit(
@@ -405,7 +409,7 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
                 (Some(rq_state), Some(cq_idx), Some(cq_state)) => {
                     log::warn!(
                         target: "mlx5::bridge",
-                        "RX debug rq={} rqn={} prod={} avail={}/{} db={:#x} last_wqe:bc={} lkey={:#x} addr={:#x} | cq={} cqn={} ci={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x}",
+                        "RX debug rq={} rqn={} prod={} avail={}/{} db={:#x} last_wqe:bc={} lkey={:#x} addr={:#x} | cq={} cqn={} ci={} arm_sn={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x} arm_db={:#x}",
                         rq_index,
                         rq_state.rqn,
                         rq_state.producer_counter,
@@ -418,6 +422,7 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
                         cq_idx,
                         cq_state.cqn,
                         cq_state.consumer_counter,
+                        cq_state.arm_sn,
                         cq_state.head_index,
                         cq_state.expected_owner,
                         cq_state.observed_owner,
@@ -425,6 +430,7 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
                         cq_state.observed_wqe_counter,
                         cq_state.observed_byte_count,
                         cq_state.doorbell_host,
+                        cq_state.arm_db_host,
                     );
                 }
                 _ => {
@@ -446,18 +452,23 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
                 (Some(sq_state), Some(cq_idx), Some(cq_state)) => {
                     log::warn!(
                         target: "mlx5::bridge",
-                        "TX debug sq={} sqn={} prod={}/{} db={:#x} last_wqe:opmod_idx={:#x} qpn_ds={:#x} addr={:#x} | cq={} cqn={} ci={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x}",
+                        "TX debug sq={} sqn={} prod={}/{} db={:#x} bf={:#x} last_wqe:opmod_idx={:#x} qpn_ds={:#x} bc={} lkey={:#x} data_addr={:#x} addr={:#x} | cq={} cqn={} ci={} arm_sn={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x} arm_db={:#x}",
                         sq_index,
                         sq_state.sqn,
                         sq_state.producer_counter,
                         sq_state.sq_depth,
                         sq_state.doorbell_host,
+                        sq_state.last_bf_offset,
                         sq_state.last_wqe_opmod_idx,
                         sq_state.last_wqe_qpn_ds,
+                        sq_state.last_wqe_byte_count,
+                        sq_state.last_wqe_lkey,
+                        sq_state.last_wqe_device_addr,
                         sq_state.last_wqe_addr,
                         cq_idx,
                         cq_state.cqn,
                         cq_state.consumer_counter,
+                        cq_state.arm_sn,
                         cq_state.head_index,
                         cq_state.expected_owner,
                         cq_state.observed_owner,
@@ -465,6 +476,7 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
                         cq_state.observed_wqe_counter,
                         cq_state.observed_byte_count,
                         cq_state.doorbell_host,
+                        cq_state.arm_db_host,
                     );
                 }
                 _ => {
@@ -809,6 +821,7 @@ pub fn get_mlx5_port_stats(port_index: usize) -> Option<mlx5_driver::port::PortS
 
 pub(crate) fn reset_mlx5_port_runtime() {
     MLX5_PORT_RUNTIME_INITIALIZED.store(false, Ordering::Release);
+    crate::net::datapath::mempool::set_packet_dma_device(None);
     MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
     MLX5_RX_CQE_LOG_BUDGET.store(0, Ordering::Release);
     MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(0, Ordering::Release);

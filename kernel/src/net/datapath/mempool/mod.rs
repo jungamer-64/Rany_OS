@@ -9,9 +9,12 @@
 use crate::ipc::rref::RRef;
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
+use core::fmt;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice as KapiDmaSlice};
 pub use kernel_api::resource::net::{PacketMeta, PacketRef, PacketType};
+use kernel_api::service::kernel::instance as kernel_instance;
 use kernel_api::resource::net::{PacketRefStorage, PacketRefVTable};
 use x86_64::PhysAddr;
 
@@ -98,28 +101,73 @@ impl PacketBuffer {
     }
 }
 
-use crate::io::dma::{CpuOwned, TypedDmaSlice};
+use crate::io::dma::{CpuOwned as KernelCpuOwned, TypedDmaSlice};
 use alloc::sync::Arc;
 
-#[derive(Debug)]
+const NO_PACKET_DMA_DEVICE: u64 = u64::MAX;
+const DMA_PACKET_BUFFER_SIZE: usize = DMA_PAGE_SIZE;
+
+static PACKET_DMA_DEVICE_ID: AtomicU64 = AtomicU64::new(NO_PACKET_DMA_DEVICE);
+
+enum DmaBufferOwner {
+    Kernel(Arc<PoisonLock<TypedDmaSlice<KernelCpuOwned>>>),
+    Kapi(Arc<PoisonLock<KapiDmaSlice<KapiCpuOwned>>>),
+}
+
 struct DmaBuffer {
     pub(super) ptr: NonNull<u8>,
     pub(super) phys_addr: PhysAddr,
+    pub(super) device_addr: u64,
     pub(super) size: usize,
-    owner: Arc<PoisonLock<TypedDmaSlice<CpuOwned>>>,
+    owner: DmaBufferOwner,
+}
+
+impl fmt::Debug for DmaBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DmaBuffer")
+            .field("ptr", &self.ptr)
+            .field("phys_addr", &self.phys_addr)
+            .field("device_addr", &self.device_addr)
+            .field("size", &self.size)
+            .finish()
+    }
 }
 
 impl DmaBuffer {
-    fn from_typed(slice: TypedDmaSlice<CpuOwned>) -> Self {
+    fn from_typed(slice: TypedDmaSlice<KernelCpuOwned>) -> Self {
         let size = slice.len();
         let phys = slice.phys_addr();
+        let device_addr = slice.device_address();
         let ptr = slice.as_slice().as_ptr() as *mut u8;
-        let owner = Arc::new(PoisonLock::new(slice));
         Self {
             ptr: NonNull::new(ptr).expect("TypedDmaSlice returned null pointer"),
             phys_addr: phys,
+            device_addr,
             size,
-            owner,
+            owner: DmaBufferOwner::Kernel(Arc::new(PoisonLock::new(slice))),
+        }
+    }
+
+    fn from_kapi(slice: KapiDmaSlice<KapiCpuOwned>) -> Self {
+        let size = slice.size();
+        let phys_addr = PhysAddr::new(slice.physical_address());
+        let device_addr = slice.device_address();
+        let ptr = slice.as_ptr();
+        Self {
+            ptr: NonNull::new(ptr).expect("DmaSlice returned null pointer"),
+            phys_addr,
+            device_addr,
+            size,
+            owner: DmaBufferOwner::Kapi(Arc::new(PoisonLock::new(slice))),
+        }
+    }
+}
+
+impl Clone for DmaBufferOwner {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Kernel(owner) => Self::Kernel(owner.clone()),
+            Self::Kapi(owner) => Self::Kapi(owner.clone()),
         }
     }
 }
@@ -241,7 +289,8 @@ unsafe fn dma_phys_addr(storage: &PacketRefStorage) -> u64 {
     state.buf.phys_addr.as_u64() + state.offset as u64
 }
 unsafe fn dma_device_address(storage: &PacketRefStorage) -> u64 {
-    dma_phys_addr(storage)
+    let state = dma_state_ref(storage);
+    state.buf.device_addr + state.offset as u64
 }
 unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) {
     let state = dma_state_mut(storage);
@@ -348,13 +397,38 @@ fn new_pooled_packet_ref(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) 
     }
 }
 
-pub fn packet_ref_from_dma_slice(slice: TypedDmaSlice<CpuOwned>) -> PacketRef {
+pub fn packet_ref_from_dma_slice(slice: TypedDmaSlice<KernelCpuOwned>) -> PacketRef {
     let state = DmaPacketState {
         buf: Arc::new(DmaBuffer::from_typed(slice)),
         offset: 0,
         len: 0,
     };
     unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_PACKET_VTABLE) }
+}
+
+fn packet_ref_from_kapi_dma_slice(slice: KapiDmaSlice<KapiCpuOwned>) -> PacketRef {
+    let state = DmaPacketState {
+        buf: Arc::new(DmaBuffer::from_kapi(slice)),
+        offset: 0,
+        len: 0,
+    };
+    unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_PACKET_VTABLE) }
+}
+
+pub(crate) fn set_packet_dma_device(device_id: Option<u64>) {
+    PACKET_DMA_DEVICE_ID.store(device_id.unwrap_or(NO_PACKET_DMA_DEVICE), Ordering::Release);
+}
+
+pub(crate) fn alloc_packet_for_active_dma_device() -> Option<PacketRef> {
+    let device_id = PACKET_DMA_DEVICE_ID.load(Ordering::Acquire);
+    if device_id == NO_PACKET_DMA_DEVICE {
+        return None;
+    }
+
+    kernel_instance()
+        .alloc_dma_for_device(DMA_PACKET_BUFFER_SIZE, device_id)
+        .ok()
+        .map(packet_ref_from_kapi_dma_slice)
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]

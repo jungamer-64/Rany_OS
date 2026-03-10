@@ -88,6 +88,10 @@ pub struct SendQueue {
     pub mkey: u32,
     /// チェックサムオフロード対応
     pub csum_offload: bool,
+    /// BlueFlame は同じレジスタ内の 2 バッファを交互に使う
+    bf_next_slot: u8,
+    /// 直近の BlueFlame バッファオフセット
+    last_bf_offset: u16,
 }
 
 /// DMAセグメント（Scatter/Gather用）
@@ -134,6 +138,8 @@ impl SendQueue {
             tx_buffers,
             mkey,
             csum_offload,
+            bf_next_slot: 0,
+            last_bf_offset: 0,
         }
     }
 
@@ -190,7 +196,7 @@ impl SendQueue {
 
         // Ethernet Segment (16 bytes)
         let eth_ptr = ctrl_ptr.add(16);
-        let inline_sz = inline_hdr.len().min(18) as u16;
+        let inline_sz = 0u16;
         // bits 9:0 = inline_sz, bits 31:16 = vlan_tag, bits 15:13 = vlan_cmd (0x1=insert)
         let mut eth_dw0 = inline_sz as u32;
         if options.vlan_tag != 0 {
@@ -214,12 +220,10 @@ impl SendQueue {
         // TSO MSS
         write_be16_raw(eth_ptr, wqe::eth::MSS, options.mss);
 
-        // Copy inline header (Ethernet header)
-        if !inline_hdr.is_empty() {
-            let hdr_dst = eth_ptr.add(wqe::eth::INLINE_HDR_START);
-            let copy_len = inline_hdr.len().min(18);
-            core::ptr::copy_nonoverlapping(inline_hdr.as_ptr(), hdr_dst, copy_len);
-        }
+        // Current TX path carries the full frame through the DMA data segment.
+        // Do not inline L2 headers here: the minimal 3-DS WQE layout would
+        // otherwise overlap the first data segment and corrupt the WQE.
+        let _ = inline_hdr;
 
         // Data Segments (16 bytes each) starting at offset 32
         for (i, seg) in segments.iter().enumerate() {
@@ -336,7 +340,7 @@ impl SendQueue {
     ///
     /// # Safety
     /// - uar_base が有効であること
-    unsafe fn ring_doorbell(&self, wqe_ptr: *const u8) {
+    unsafe fn ring_doorbell(&mut self, wqe_ptr: *const u8) {
         // 1) Update SQ producer DB record.
         let db_ptr = self.doorbell_virt as *mut u32;
         core::ptr::write_volatile(db_ptr, (self.producer_counter as u32).to_be());
@@ -344,13 +348,15 @@ impl SendQueue {
         // 2) Ensure descriptor + dbrec writes are visible before ringing UAR.
         fence(Ordering::Release);
 
-        // 3) Ring BlueFlame with WQE control dword0..1 payload (8 bytes).
-        // Use 32-bit pair writes for better VFIO/UAR compatibility.
-        let ctrl_dw0 = core::ptr::read_unaligned(wqe_ptr as *const u32);
-        let ctrl_dw1 = core::ptr::read_unaligned(wqe_ptr.add(4) as *const u32);
-        let bf_addr = self.uar_base as usize + crate::regs::uar::BLUEFLAME;
-        hal::mmio::mmio_write_u32(bf_addr, ctrl_dw0);
-        hal::mmio::mmio_write_u32(bf_addr + 4, ctrl_dw1);
+        // 3) Ring BlueFlame with the first 8 bytes of the WQE using a raw
+        // 64-bit MMIO store. Alternate between the two 64-byte BF buffers.
+        let bf_addr = self.uar_base as usize
+            + crate::regs::uar::BLUEFLAME
+            + if self.bf_next_slot == 0 { 0 } else { 0x40 };
+        let ctrl_qword = core::ptr::read_unaligned(wqe_ptr as *const u64);
+        hal::mmio::mmio_write_u64(bf_addr, ctrl_qword);
+        self.last_bf_offset = if self.bf_next_slot == 0 { 0 } else { 0x40 };
+        self.bf_next_slot ^= 1;
     }
 
     /// 送信完了を処理（CQEのWQEカウンタに基づくバッファ解放）
@@ -379,6 +385,7 @@ impl SendQueue {
         let last_wqe_counter = self.producer_counter.wrapping_sub(1);
         let last_idx = (last_wqe_counter as u32 % self.sq_depth) as usize;
         let last_wqe_ptr = (self.buf_virt as usize + last_idx * 64) as *const u8;
+        let last_data_seg_ptr = last_wqe_ptr.add(32);
 
         let doorbell_be = core::ptr::read_volatile(self.doorbell_virt as *const u32);
         let doorbell_host = u32::from_be(doorbell_be) & 0x0000_ffff;
@@ -393,6 +400,10 @@ impl SendQueue {
             last_wqe_addr: last_wqe_ptr as u64,
             last_wqe_opmod_idx: read_be32_raw(last_wqe_ptr, wqe::ctrl::OPMOD_IDX_OPCODE),
             last_wqe_qpn_ds: read_be32_raw(last_wqe_ptr, wqe::ctrl::QPN_DS),
+            last_wqe_byte_count: read_be32_raw(last_data_seg_ptr, wqe::data::BYTE_COUNT),
+            last_wqe_lkey: read_be32_raw(last_data_seg_ptr, wqe::data::LKEY),
+            last_wqe_device_addr: read_be64_raw(last_data_seg_ptr, wqe::data::ADDR),
+            last_bf_offset: self.last_bf_offset,
         }
     }
 }
@@ -409,6 +420,10 @@ pub struct TxQueueDebugState {
     pub last_wqe_addr: u64,
     pub last_wqe_opmod_idx: u32,
     pub last_wqe_qpn_ds: u32,
+    pub last_wqe_byte_count: u32,
+    pub last_wqe_lkey: u32,
+    pub last_wqe_device_addr: u64,
+    pub last_bf_offset: u16,
 }
 
 // ============================================================================
@@ -541,6 +556,7 @@ impl ReceiveQueue {
         self.producer_counter = self.producer_counter.wrapping_add(1);
 
         // ドアベル更新
+        fence(Ordering::Release);
         let db_val: u32 = self.producer_counter as u32 & 0x0000_FFFF;
         let db_ptr = self.doorbell_virt as *mut u32;
         core::ptr::write_volatile(db_ptr, db_val.to_be());

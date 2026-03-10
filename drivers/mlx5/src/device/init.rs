@@ -794,6 +794,27 @@ impl Mlx5Device {
             return Err(Mlx5Error::CommandFailed(0xff));
         }
 
+        if !self.is_vf() {
+            match self.query_reserved_lkey() {
+                Ok(lkey) => {
+                    log::info!(
+                        target: "mlx5",
+                        "[5/8] PF reserved lkey={:#x} available; keeping created mkey {:#x} for data path",
+                        lkey,
+                        self.mkey
+                    );
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "[5/8] Reserved lkey query failed on PF; continuing with created mkey {:#x}: {:?}",
+                        self.mkey,
+                        err
+                    );
+                }
+            }
+        }
+
         let _ = self.refresh_port_runtime_state(0);
 
         // Phase 4: Queues
@@ -992,6 +1013,19 @@ impl Mlx5Device {
                 );
                 let _ = err;
                 crate::boot_trace("[MLX5_STAGE] rx_flow_table_vf_failed\n");
+            }
+        }
+        if !self.is_vf() {
+            match self.set_promiscuous_mode(true) {
+                Ok(()) => log::info!(
+                    target: "mlx5",
+                    "Enabled PF promiscuous RX steering for bring-up"
+                ),
+                Err(err) => log::warn!(
+                    target: "mlx5",
+                    "Failed to enable PF promiscuous RX steering: {:?}",
+                    err
+                ),
             }
         }
         crate::boot_trace("[MLX5_STAGE] flow_table_done\n");

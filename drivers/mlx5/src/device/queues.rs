@@ -117,6 +117,10 @@ impl Mlx5Device {
             let offset = (i as usize * crate::regs::cqe::SIZE) + crate::regs::cqe::OP_OWN;
             core::ptr::write_volatile(cq_ptr.add(offset), 0x01);
         }
+        let cq_db_ptr = db_virt as *mut u32;
+        core::ptr::write_volatile(cq_db_ptr, 0u32.to_be());
+        // Linux initializes arm_db with MLX5_CQ_INIT_CMD_SN = cpu_to_be32(2 << 28).
+        core::ptr::write_volatile(cq_db_ptr.add(1), (2u32 << 28).to_be());
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         // Keep CQE compression disabled in the generic CREATE_CQ path.
@@ -228,28 +232,66 @@ impl Mlx5Device {
     ) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        build_create_sq_input(
-            in_mbox,
-            log_sq_size,
-            sq_buf_pa,
-            db_pa,
-            cqn,
-            self.pd,
-            self.uar_page,
-            tisn,
-        );
-        if tisn == 0 && self.tis_list.iter().all(|t| t.tisn != 0) {
-            // VF fallback: when CREATE_TIS is unavailable, try creating SQ
-            // without an explicit TIS list and let firmware use its default.
-            let mut layout =
-                crate::structs::queues::SqContextLayout::new(&mut in_mbox.data[0x20..]);
-            layout.set_tis_lst_sz(0);
-            layout.set_tis_num_0(0);
-        }
         let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
         let sq_pages = (sq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let sq_in_len = (0x110 + sq_pages * 8) as u32;
-        self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10)?;
+        let fallback_tis0 = tisn == 0 && self.tis_list.iter().all(|t| t.tisn != 0);
+        let attempts: &[(&str, bool)] = if fallback_tis0 {
+            if self.is_vf() {
+                &[("implicit-tis0", true)]
+            } else {
+                &[("explicit-tis0", false), ("implicit-tis0", true)]
+            }
+        } else {
+            &[("normal", false)]
+        };
+        let mut last_err = Err(Mlx5Error::NotSupported);
+        for (idx, (mode, implicit_tis)) in attempts.iter().enumerate() {
+            build_create_sq_input(
+                in_mbox,
+                log_sq_size,
+                sq_buf_pa,
+                db_pa,
+                cqn,
+                self.pd,
+                self.uar_page,
+                tisn,
+            );
+            if *implicit_tis {
+                let mut layout =
+                    crate::structs::queues::SqContextLayout::new(&mut in_mbox.data[0x20..]);
+                layout.set_tis_lst_sz(0);
+                layout.set_tis_num_0(0);
+            }
+            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10) {
+                Ok(()) => {
+                    if fallback_tis0 {
+                        log::info!(
+                            target: "mlx5",
+                            "CREATE_SQ accepted with {} fallback (tisn={})",
+                            mode,
+                            tisn
+                        );
+                    }
+                    break;
+                }
+                Err(err) => {
+                    if fallback_tis0 {
+                        log::warn!(
+                            target: "mlx5",
+                            "CREATE_SQ failed with {} fallback (tisn={}): {:?}",
+                            mode,
+                            tisn,
+                            err
+                        );
+                    }
+                    last_err = Err(err);
+                    if idx + 1 == attempts.len() {
+                        return last_err;
+                    }
+                }
+            }
+        }
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let sqn = parse_create_sq_output(out_mbox);
         if let Err(err) = self.transition_sq_to_ready(sqn) {
@@ -477,12 +519,13 @@ impl Mlx5Device {
         // VF firmware revisions differ on acceptable RMPC fields.
         // Probe a minimal compatibility set to find an accepted tuple.
         let attempts = [
+            ("rst+basic+cyclic+align", 0u8, true, 1u8, 1u8),
+            ("rst+basic+cyclic+nopad", 0u8, true, 1u8, 0u8),
+            ("rst+basic+linked+align", 0u8, true, 0u8, 1u8),
+            ("rst+basic+linked+nopad", 0u8, true, 0u8, 0u8),
+            ("rst+nobasic+cyclic+align", 0u8, false, 1u8, 1u8),
+            ("rst+nobasic+linked+nopad", 0u8, false, 0u8, 0u8),
             ("rdy+basic+cyclic+align", 1u8, true, 1u8, 1u8),
-            ("rdy+basic+cyclic+nopad", 1u8, true, 1u8, 0u8),
-            ("rdy+basic+linked+align", 1u8, true, 0u8, 1u8),
-            ("rdy+basic+linked+nopad", 1u8, true, 0u8, 0u8),
-            ("rdy+nobasic+cyclic+align", 1u8, false, 1u8, 1u8),
-            ("rdy+nobasic+linked+nopad", 1u8, false, 0u8, 0u8),
         ];
         for (name, state, basic_cyclic, wq_type, end_padding_mode) in attempts {
             build_create_rmp_input_with_options(
@@ -501,6 +544,7 @@ impl Mlx5Device {
                 Ok(()) => {
                     let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
                     let rmpn = parse_create_rmp_output(out_mbox);
+                    self.transition_rmp_to_ready(rmpn)?;
                     log::info!(
                         target: "mlx5",
                         "CREATE_RMP accepted with {} (state={} basic={} wq_type={} end_pad={})",

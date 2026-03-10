@@ -8,6 +8,7 @@
 
 use crate::defs::CqeOpcode;
 use crate::regs::{cqe as cqe_regs, uar};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Completion Queue Entry (CQE) — 64バイト
 #[repr(C, align(64))]
@@ -151,6 +152,8 @@ pub struct CompletionQueue {
     consumer_counter: u32,
     /// 紐づくEQ番号
     pub eq_number: u32,
+    /// CQ ARM シーケンス番号
+    arm_sn: AtomicU32,
 }
 
 impl CompletionQueue {
@@ -174,6 +177,7 @@ impl CompletionQueue {
             cq_depth: 1 << log_cq_size,
             consumer_counter: 0,
             eq_number,
+            arm_sn: AtomicU32::new(0),
         }
     }
 
@@ -219,11 +223,20 @@ impl CompletionQueue {
     /// # Safety
     /// - uar_base が有効であること
     pub unsafe fn arm(&self) {
-        // ARM CQ ドアベル: CQ番号とコンシューマカウンタを書き込み
-        let arm_val: u64 =
-            ((self.cqn as u64) << 32) | ((self.consumer_counter as u64) & 0x00FF_FFFF);
-        let arm_ptr = (self.uar_base as usize + uar::CQ_ARM_DOORBELL) as *mut u64;
-        core::ptr::write_volatile(arm_ptr, arm_val.to_be());
+        // Linux/PRM format:
+        // doorbell[0] = be32(sn << 28 | cmd | ci), doorbell[1] = be32(cqn)
+        // written as a single raw 64-bit MMIO store to MLX5_CQ_DOORBELL.
+        let sn = self.arm_sn.fetch_add(1, Ordering::Relaxed) & 0x3;
+        let ci = self.consumer_counter & 0x00FF_FFFF;
+        let arm_db = (sn << 28) | ci;
+        let arm_db_ptr = (self.doorbell_virt as *mut u32).add(1);
+        core::ptr::write_volatile(arm_db_ptr, arm_db.to_be());
+        core::sync::atomic::fence(Ordering::Release);
+        let mut raw = [0u8; 8];
+        raw[..4].copy_from_slice(&arm_db.to_be_bytes());
+        raw[4..].copy_from_slice(&self.cqn.to_be_bytes());
+        let arm_val = u64::from_ne_bytes(raw);
+        hal::mmio::mmio_write_u64(self.uar_base as usize + uar::CQ_DOORBELL, arm_val);
     }
 
     /// CQ内の全保留完了を処理してCQEのリストを返す
@@ -289,12 +302,15 @@ impl CompletionQueue {
 
         let doorbell_be = core::ptr::read_volatile(self.doorbell_virt as *const u32);
         let doorbell_host = u32::from_be(doorbell_be) & 0x00ff_ffff;
+        let arm_db_be = core::ptr::read_volatile((self.doorbell_virt as *const u32).add(1));
+        let arm_db_host = u32::from_be(arm_db_be);
 
         CqDebugState {
             cqn: self.cqn,
             consumer_counter: self.consumer_counter,
             cq_depth: self.cq_depth,
             log_cq_size: self.log_cq_size,
+            arm_sn: self.arm_sn.load(Ordering::Relaxed),
             head_index: idx,
             expected_owner,
             observed_owner: cqe_ref.owner_bit(),
@@ -303,6 +319,8 @@ impl CompletionQueue {
             observed_byte_count: cqe_ref.byte_count(),
             doorbell_be,
             doorbell_host,
+            arm_db_be,
+            arm_db_host,
         }
     }
 }
@@ -335,6 +353,7 @@ pub struct CqDebugState {
     pub consumer_counter: u32,
     pub cq_depth: u32,
     pub log_cq_size: u8,
+    pub arm_sn: u32,
     pub head_index: u32,
     pub expected_owner: u8,
     pub observed_owner: u8,
@@ -343,4 +362,6 @@ pub struct CqDebugState {
     pub observed_byte_count: u32,
     pub doorbell_be: u32,
     pub doorbell_host: u32,
+    pub arm_db_be: u32,
+    pub arm_db_host: u32,
 }

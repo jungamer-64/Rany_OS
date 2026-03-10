@@ -188,6 +188,10 @@ pub fn net_mempool() -> Option<&'static Mempool> {
 
 /// パケットバッファを割り当て
 pub fn alloc_packet() -> Option<PacketRef> {
+    if let Some(packet) = super::alloc_packet_for_active_dma_device() {
+        return Some(packet);
+    }
+
     NET_MEMPOOL.get()?.alloc()
 }
 
