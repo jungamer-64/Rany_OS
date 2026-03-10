@@ -19,8 +19,8 @@ use crate::sync::{PoisonLock, PoisonRwLock};
 use kernel_api::abi::driver::{
     AbiAudioControllerRegistration, AbiAudioDeviceInfo, AbiBlockCommandKind, AbiBlockDeviceInfo,
     AbiBlockDeviceRegistration, AbiBlockTransport, AbiError as AbiErrorCode, AbiIoCompletion,
-    AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo, AbiNetPortRegistration,
-    AbiNetPortRuntimeV1, AbiNetPortStats, AbiNetPortKind, AbiNetRxMeta, AbiNetTxMeta,
+    AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo, AbiNetPortKind,
+    AbiNetPortRegistration, AbiNetPortRuntimeV1, AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta,
     AbiNvmeNamespaceInfo, AbiNvmeNamespaceRegistration,
 };
 use kernel_api::service::audio::AudioDeviceInfo;
@@ -653,8 +653,7 @@ impl NetdevBridgeRegistry {
         };
 
         let name = leak_driver_name(&registration.info);
-        let adapter: Arc<dyn NetDevicePort> =
-            Arc::new(NetdevPortAdapter::new(*registration, name));
+        let adapter: Arc<dyn NetDevicePort> = Arc::new(NetdevPortAdapter::new(*registration, name));
         let if_id = net_device_runtime::register_port_with_default_config(key, adapter, true)
             .map_err(|_| AbiErrorCode::IoError)?;
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
@@ -973,7 +972,10 @@ mod tests {
 
         registry.cleanup_owner(owner_a);
         assert!(registry.storage_devices().is_empty());
-        assert_eq!(registry.unregister(owner_a, first), Err(AbiErrorCode::DeviceNotFound));
+        assert_eq!(
+            registry.unregister(owner_a, first),
+            Err(AbiErrorCode::DeviceNotFound)
+        );
     }
 
     #[test]
@@ -1004,11 +1006,13 @@ mod tests {
             Err(AbiErrorCode::PermissionDenied)
         );
         registry.cleanup_owner(owner_a);
-        assert!(registry
-            .entries
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty());
+        assert!(
+            registry
+                .entries
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        );
     }
 
     #[test]

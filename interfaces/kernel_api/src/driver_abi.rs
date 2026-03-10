@@ -706,12 +706,7 @@ pub struct AbiNetPortRuntimeV1 {
     ) -> i32,
     pub schedule_event: extern "C" fn(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32,
     pub update_link: extern "C" fn(runtime_cookie: u64, up: bool) -> i32,
-    pub log: extern "C" fn(
-        runtime_cookie: u64,
-        level: u32,
-        msg_ptr: *const u8,
-        msg_len: usize,
-    ),
+    pub log: extern "C" fn(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize),
     pub reserved: [u64; 4],
 }
 
@@ -744,8 +739,7 @@ pub struct AbiNetPortRegistration {
     pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntimeV1) -> i32,
     pub bind: extern "C" fn(opaque: u64, if_id: u16) -> i32,
     pub submit_tx_bytes:
-        extern "C" fn(opaque: u64, data_ptr: *const u8, data_len: usize, meta: AbiNetTxMeta)
-            -> i32,
+        extern "C" fn(opaque: u64, data_ptr: *const u8, data_len: usize, meta: AbiNetTxMeta) -> i32,
     pub poll: extern "C" fn(opaque: u64, if_id: u16) -> i32,
     pub handle_event: extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
     pub stats: extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,

@@ -56,18 +56,15 @@ impl KernelServices for ExoKernel {
         future: Pin<Box<dyn Future<Output = ()> + Send>>,
     ) -> Result<TaskHandle, KapiError> {
         let domain_id = context::current_subject().domain.as_u64();
-        // Use Task::new_boxed to avoid double-boxing (optimization)
-        let task = Task::new_boxed(future, Priority::Normal, Some(domain_id));
-        let task_id = task.metadata.id.as_u64();
-
-        // Submit to ExecutorManager for load-balanced scheduling
-        executor_manager().spawn(task);
+        let task_id =
+            task::spawn_detached_in_domain(future, crate::domain_system::DomainId::new(domain_id))
+                .as_u64();
 
         Ok(TaskHandle::new(task_id))
     }
 
     fn current_tick(&self) -> u64 {
-        timer::current_tick()
+        task::current_tick()
     }
 
     fn current_task_id(&self) -> u64 {
@@ -162,7 +159,10 @@ impl KernelServices for ExoKernel {
             .map_err(|_| KapiError::PermissionDenied)
     }
 
-    fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> Result<u64, KapiError> {
+    fn register_netdev_port(
+        &self,
+        registration: &AbiNetPortRegistration,
+    ) -> Result<u64, KapiError> {
         crate::runtime_bridge::register_netdev_port(registration)
             .map_err(|_| KapiError::PermissionDenied)
     }
@@ -659,7 +659,9 @@ impl KernelServices for ExoKernel {
         let nsid = if device_id == 0 { 1 } else { device_id as u32 };
         crate::runtime_bridge::standalone_nvme_namespace_info(nsid)
             .map(|info| info.block_size as u64)
-            .or_else(|| crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid) as u64))
+            .or_else(|| {
+                crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid) as u64)
+            })
     }
 
     fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize> {

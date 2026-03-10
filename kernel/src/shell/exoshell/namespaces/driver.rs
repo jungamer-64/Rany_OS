@@ -6,31 +6,77 @@
 //!
 //! Provides shell commands for driver management:
 //! - `driver.list()` - List registered drivers
-//! - `driver.load(path)` - Load driver from ELF file
-//! - `driver.unload(id)` - Unload a driver
+//! - `driver.load(path)` - Compatibility alias for DriverDomain-based load
+//! - `driver.unload(id)` - Compatibility alias for DriverDomain-based unload
 //! - `driver.status(id)` - Get driver status
 //!
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::driver_registry;
-use crate::loader;
+use crate::driver_domain;
+use crate::driver_domain::{DriverDomainId, hot_swap, lifecycle};
+use crate::driver_registry::{self, DriverHandle};
 use crate::security::capability::CAP_SYS_MODULE;
 use crate::shell::exoshell::types::ExoValue;
-use alloc::boxed::Box;
 
 /// ドライバ名前空間
 pub struct DriverNamespace;
 
 impl DriverNamespace {
+    fn register_dynamic_namespaces(driver_name: &str, handles: &[DriverHandle]) -> Vec<String> {
+        use super::dynamic_driver::DynamicDriverNamespace;
+        use super::registry;
+
+        let mut registered = Vec::new();
+        for (index, handle) in handles.iter().enumerate() {
+            let namespace_name = if index == 0 {
+                String::from(driver_name)
+            } else {
+                format!("{}_{}", driver_name, index + 1)
+            };
+            registry::register_namespace(Arc::new(DynamicDriverNamespace::new(
+                namespace_name.clone(),
+                *handle,
+            )));
+            registered.push(namespace_name);
+        }
+        registered
+    }
+
+    fn resolve_driver_domain_id(id: i64) -> Result<DriverDomainId, String> {
+        if id < 0 {
+            return Err(String::from("Driver/DriverDomain id must be non-negative"));
+        }
+
+        let manager = driver_domain::driver_domain_manager();
+        let handle = DriverHandle::from_index(id as usize);
+        if driver_registry::driver_registry().state(handle).is_some() {
+            return manager.find_by_driver_handle(handle).ok_or_else(|| {
+                format!(
+                    "Driver {} is not managed by a DriverDomain; use cell.* for canonical lifecycle operations",
+                    id
+                )
+            });
+        }
+
+        let driver_domain_id = DriverDomainId::new(id as u64);
+        manager
+            .with_cell(driver_domain_id, |_| ())
+            .map(|_| driver_domain_id)
+            .map_err(|_| format!("Driver/DriverDomain {} not found", id))
+    }
+
     /// 登録済みドライバの一覧
     pub fn list() -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
         let drivers = registry.list();
+        let manager = driver_domain::driver_domain_manager();
 
         let mut list = Vec::new();
         for (handle, name, dtype, state) in drivers {
@@ -45,6 +91,12 @@ impl DriverNamespace {
                 String::from("state"),
                 ExoValue::String(Cow::Owned(format!("{:?}", state))),
             );
+            if let Some(driver_domain_id) = manager.find_by_driver_handle(handle) {
+                map.insert(
+                    String::from("driver_domain_id"),
+                    ExoValue::Int(driver_domain_id.as_u64() as i64),
+                );
+            }
             list.push(ExoValue::Map(map));
         }
 
@@ -82,6 +134,14 @@ impl DriverNamespace {
                 if let Some(name) = registry.name(handle) {
                     map.insert(String::from("name"), ExoValue::String(Cow::Owned(name)));
                 }
+                if let Some(driver_domain_id) =
+                    driver_domain::driver_domain_manager().find_by_driver_handle(handle)
+                {
+                    map.insert(
+                        String::from("driver_domain_id"),
+                        ExoValue::Int(driver_domain_id.as_u64() as i64),
+                    );
+                }
                 ExoValue::Map(map)
             }
             None => ExoValue::Error(format!("Driver {} not found", id)),
@@ -107,7 +167,7 @@ impl DriverNamespace {
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
 
-        let elf_data = match shell.read_file(path) {
+        let elf_data = match shell.read_file_zero_copy(path) {
             Ok(data) => data,
             Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
         };
@@ -120,26 +180,31 @@ impl DriverNamespace {
             .trim_end_matches(".elf")
             .trim_end_matches(".driver");
 
-        // ローダーでドライバをロード
-        match loader::load_driver_artifact(driver_name, &elf_data, true) {
-            Ok(handle) => {
-                // 動的名前空間を自動登録
-                use super::dynamic_driver::DynamicDriverNamespace;
-                use super::registry;
-                use alloc::sync::Arc;
-
-                let dynamic_ns = Arc::new(DynamicDriverNamespace::new(
-                    String::from(driver_name),
-                    handle,
-                ));
-                registry::register_namespace(dynamic_ns);
+        // Canonical phase-3 path: artifact -> DriverDomain lifecycle -> DriverRegistry
+        match lifecycle::create_and_start_default(driver_name, &elf_data, true) {
+            Ok((driver_domain_id, handles)) => {
+                let handle_list = handles
+                    .iter()
+                    .map(|handle| ExoValue::Int(handle.index() as i64))
+                    .collect::<Vec<_>>();
+                let namespace_list = Self::register_dynamic_namespaces(driver_name, &handles)
+                    .into_iter()
+                    .map(ExoValue::from)
+                    .collect::<Vec<_>>();
+                let primary_handle = handles
+                    .first()
+                    .map(|handle| ExoValue::Int(handle.index() as i64))
+                    .unwrap_or(ExoValue::Nil);
 
                 let mut map = BTreeMap::new();
                 map.insert(String::from("success"), ExoValue::Bool(true));
+                map.insert(String::from("driver_id"), primary_handle);
                 map.insert(
-                    String::from("driver_id"),
-                    ExoValue::Int(handle.index() as i64),
+                    String::from("driver_domain_id"),
+                    ExoValue::Int(driver_domain_id.as_u64() as i64),
                 );
+                map.insert(String::from("driver_handles"), ExoValue::Array(handle_list));
+                map.insert(String::from("namespaces"), ExoValue::Array(namespace_list));
                 map.insert(
                     String::from("name"),
                     ExoValue::String(Cow::Owned(driver_name.into())),
@@ -147,15 +212,14 @@ impl DriverNamespace {
                 map.insert(
                     String::from("message"),
                     ExoValue::String(Cow::Owned(format!(
-                        "Driver '{}' loaded successfully with ID {}. Namespace '{}' registered.",
+                        "driver.load routed '{}' through DriverDomain lifecycle (id={})",
                         driver_name,
-                        handle.index(),
-                        driver_name
+                        driver_domain_id.as_u64()
                     ))),
                 );
                 ExoValue::Map(map)
             }
-            Err(e) => ExoValue::Error(format!("Failed to load driver: {}", e)),
+            Err(e) => ExoValue::Error(format!("Failed to load DriverDomain: {}", e)),
         }
     }
 
@@ -166,27 +230,34 @@ impl DriverNamespace {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_MODULE required"));
         }
 
-        let handle = driver_registry::DriverHandle::from_index(id as usize);
+        let driver_domain_id = match Self::resolve_driver_domain_id(id) {
+            Ok(id) => id,
+            Err(message) => return ExoValue::Error(message),
+        };
 
-        // まずドライバが存在するか確認
-        let registry = driver_registry::driver_registry();
-        if registry.state(handle).is_none() {
-            return ExoValue::Error(format!("Driver {} not found", id));
-        }
-
-        // ドライバをアンロード
-        match loader::unload_driver(handle) {
+        match lifecycle::unload(driver_domain_id) {
             Ok(()) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("success"), ExoValue::Bool(true));
                 map.insert(String::from("driver_id"), ExoValue::Int(id));
                 map.insert(
+                    String::from("driver_domain_id"),
+                    ExoValue::Int(driver_domain_id.as_u64() as i64),
+                );
+                map.insert(
                     String::from("message"),
-                    ExoValue::String(Cow::Owned(format!("Driver {} unloaded successfully", id))),
+                    ExoValue::String(Cow::Owned(format!(
+                        "DriverDomain {} unloaded successfully",
+                        driver_domain_id.as_u64()
+                    ))),
                 );
                 ExoValue::Map(map)
             }
-            Err(e) => ExoValue::Error(format!("Failed to unload driver {}: {}", id, e)),
+            Err(e) => ExoValue::Error(format!(
+                "Failed to unload DriverDomain {}: {}",
+                driver_domain_id.as_u64(),
+                e
+            )),
         }
     }
 
@@ -205,17 +276,9 @@ impl DriverNamespace {
             return ExoValue::Error(String::from("Path is required"));
         }
 
-        let handle = driver_registry::DriverHandle::from_index(id as usize);
-
-        // Find owning cell
-        let cell_id = match loader::find_cell_by_driver(handle) {
-            Some(id) => id,
-            None => {
-                return ExoValue::Error(format!(
-                    "Driver {} not found or not associated with a cell",
-                    id
-                ));
-            }
+        let driver_domain_id = match Self::resolve_driver_domain_id(id) {
+            Ok(id) => id,
+            Err(message) => return ExoValue::Error(message),
         };
 
         // Read ELF
@@ -224,31 +287,42 @@ impl DriverNamespace {
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
 
-        let elf_data = match shell.read_file(path) {
+        let elf_data = match shell.read_file_zero_copy(path) {
             Ok(data) => data,
             Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
         };
 
-        // Perform Update
-        match loader::live_update_manager().perform_update(cell_id.as_u64(), &elf_data) {
-            Ok(new_cell_id) => {
+        match hot_swap::hot_swap(driver_domain_id, &elf_data) {
+            Ok(result) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("success"), ExoValue::Bool(true));
                 map.insert(String::from("old_driver_id"), ExoValue::Int(id));
                 map.insert(
+                    String::from("driver_domain_id"),
+                    ExoValue::Int(driver_domain_id.as_u64() as i64),
+                );
+                map.insert(
+                    String::from("old_cell_id"),
+                    ExoValue::Int(result.old_cell_id.as_u64() as i64),
+                );
+                map.insert(
                     String::from("new_cell_id"),
-                    ExoValue::Int(new_cell_id as i64),
+                    ExoValue::Int(result.new_cell_id.as_u64() as i64),
+                );
+                map.insert(
+                    String::from("needs_rollback"),
+                    ExoValue::Bool(result.needs_rollback),
                 );
                 map.insert(
                     String::from("message"),
                     ExoValue::String(Cow::Owned(format!(
-                        "Driver {} updated successfully. New Cell ID: {}",
-                        id, new_cell_id
+                        "DriverDomain {} entered validation window after hot-swap",
+                        driver_domain_id.as_u64()
                     ))),
                 );
                 ExoValue::Map(map)
             }
-            Err(e) => ExoValue::Error(format!("Live update failed: {}", e)),
+            Err(e) => ExoValue::Error(format!("DriverDomain hot-swap failed: {}", e)),
         }
     }
 }

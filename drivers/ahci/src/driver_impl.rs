@@ -6,13 +6,13 @@ use exorust_sync::PoisonLock;
 
 use kernel_api::KapiResult;
 use kernel_api::abi::driver::{
-    AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport, AbiError,
-    AbiIoCompletion, PackedPciLocation,
+    AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport, AbiError, AbiIoCompletion,
+    PackedPciLocation,
 };
 use kernel_api::driver::{Driver, DriverType};
 
 use super::controller::{AhciController, init_from_pci};
-use super::types::{Lba, PortNumber, PX_CI, PX_TFD, SECTOR_SIZE, SectorCount, SlotNumber};
+use super::types::{Lba, PX_CI, PX_TFD, PortNumber, SECTOR_SIZE, SectorCount, SlotNumber};
 
 const STORAGE_KIND_AHCI: u64 = 3;
 
@@ -131,7 +131,9 @@ extern "C" fn ahci_block_poll(
     for (request_id, ok, bytes, slot) in completed.into_iter().take(capacity) {
         let finish_bytes = AhciDriverWrapper::with_controller(|controller| {
             let controller = controller.lock().unwrap_or_else(|e| e.into_inner());
-            controller.with_port(PortNumber::new(port), |ahci_port| ahci_port.finish_transfer(slot))
+            controller.with_port(PortNumber::new(port), |ahci_port| {
+                ahci_port.finish_transfer(slot)
+            })
         })
         .flatten()
         .unwrap_or(Ok(bytes))
@@ -186,7 +188,9 @@ impl Driver for AhciDriverWrapper {
                     .as_ref()
                     .and_then(|controller| {
                         let controller = controller.lock().unwrap_or_else(|e| e.into_inner());
-                        controller.with_port(PortNumber::new(port), |_| ()).map(|_| ())
+                        controller
+                            .with_port(PortNumber::new(port), |_| ())
+                            .map(|_| ())
                     })
                     .is_some();
                 if !has_port {
@@ -210,8 +214,8 @@ impl Driver for AhciDriverWrapper {
                     ahci_block_poll,
                     ahci_block_is_ready,
                 );
-                let handle = kernel_api::service::kernel::instance()
-                    .register_block_device(&registration)?;
+                let handle =
+                    kernel_api::service::kernel::instance().register_block_device(&registration)?;
                 self.block_handles.push(handle);
             }
         }

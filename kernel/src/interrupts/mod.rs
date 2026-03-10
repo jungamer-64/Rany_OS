@@ -477,10 +477,9 @@ define_interrupt!(
         // 3. プリエンプションカウンタを更新（軽量な操作のみ）
         crate::task::preemption::decrement_time_slice();
 
-        // 4. Wakerを起床させる（軽量）
-        crate::task::interrupt_waker::wake_timer_task();
-
-        // 4.5. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+        // 4. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+        // Timer-related async wakeups are bridged only from poll_timer_events()
+        // so the ISR path remains limited to deferred event publication.
         crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
 
         // IRQが届かない環境向けのcompletionフォールバック:
@@ -515,7 +514,8 @@ pub fn poll_timer_events() {
     if TIMER_EVENT_PENDING.swap(false, Ordering::Acquire) {
         let tick = TIMER_TICKS.load(Ordering::Relaxed);
 
-        // タイマーベースのスリープを処理
+        // タイマーベースのスリープと timer-specific interrupt wakers are
+        // both bridged here so wakeups stay outside ISR context.
         crate::task::timer::handle_timer_interrupt();
 
         // プリエンプションシステムにタイマーティックを通知

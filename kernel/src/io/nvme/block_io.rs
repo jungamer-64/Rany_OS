@@ -14,8 +14,10 @@
 //! 4. `poll_completion_by_cid()` でスピンポーリング待機
 //! 5. 論理長ぶんだけデータコピーし、DMA/IOMMU/PRP リソースを解放
 
+use crate::io::io_scheduler::{
+    DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoResult, io_scheduler,
+};
 use crate::io::nvme::dma::{NvmeDmaError, NvmeDmaRegion};
-use crate::io::io_scheduler::{DmaBufHandle, DeviceId as IoDeviceId, IoCommand, IoResult, io_scheduler};
 use nvme_ns::NsError;
 use nvme_ns::fs::BlockIo;
 

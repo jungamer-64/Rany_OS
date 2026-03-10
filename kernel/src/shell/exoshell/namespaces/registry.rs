@@ -5,8 +5,9 @@
 //! # 動的名前空間レジストリ
 //!
 //! ドライバやセルがロードされた際に、新しい名前空間を動的に登録するための
-//! グローバルレジストリ。これにより `driver.load("gpu.elf")` 後に即座に
-//! `gpu.info()` コマンドが利用可能になる。
+//! グローバルレジストリ。これにより `cell.load("gpu.elf")` または互換
+//! エイリアスの `driver.load("gpu.elf")` 後に即座に `gpu.info()` コマンドが
+//! 利用可能になる。
 
 use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;

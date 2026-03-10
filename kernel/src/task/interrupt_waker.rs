@@ -362,15 +362,6 @@ pub fn wake_from_interrupt(source: InterruptSource) {
     INTERRUPT_WAKER_REGISTRY.wake(source);
 }
 
-/// タイマータスクを起床（タイマーISRから呼ばれる便利関数）
-///
-/// 【設計書 4.2】2段階Wake方式: ISR安全
-/// ISR内では軽量な処理のみ実行（イベントキューへのpush）
-#[inline]
-pub fn wake_timer_task() {
-    wake_from_interrupt(InterruptSource::Timer);
-}
-
 /// 保留中の割り込みイベントを処理（Executorから呼び出す）
 ///
 /// 【設計書 4.2】2段階Wake方式: 非ISRコンテキストで呼び出す
@@ -433,9 +424,9 @@ impl core::future::Future for InterruptFuture {
 // ============================================================================
 
 /// タイマー割り込みハンドラのブリッジ
-/// interrupts/mod.rs のタイマーハンドラから呼ばれる
+/// interrupts/mod.rs の `poll_timer_events()` から呼ばれる。
+/// Timer-specific wakeups are intentionally deferred until non-ISR context.
 pub fn handle_timer_interrupt_waker() {
-    // タイマー関連のWakerを起動
     wake_from_interrupt(InterruptSource::Timer);
 
     // NOTE: handle_timer_interrupt() は poll_timer_events() で既に呼ばれているため

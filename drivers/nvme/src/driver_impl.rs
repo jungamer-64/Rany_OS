@@ -135,9 +135,14 @@ extern "C" fn nvme_block_submit(
                     .submit_read(core_id, state.driver.nsid, lba, blocks as u16, prp1, prp2)
             },
             x if x == AbiBlockCommandKind::Write as u32 => unsafe {
-                state
-                    .driver
-                    .submit_write(core_id, state.driver.nsid, lba, blocks as u16, prp1, prp2)
+                state.driver.submit_write(
+                    core_id,
+                    state.driver.nsid,
+                    lba,
+                    blocks as u16,
+                    prp1,
+                    prp2,
+                )
             },
             x if x == AbiBlockCommandKind::Flush as u32 => unsafe {
                 state.driver.submit_flush(core_id, state.driver.nsid)
@@ -147,15 +152,19 @@ extern "C" fn nvme_block_submit(
 
         match result {
             Ok(cid) => {
-                state.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(
-                    request_id,
-                    PendingRequest {
-                        core_id,
-                        cid,
-                        bytes,
-                        prp_list,
-                    },
-                );
+                state
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(
+                        request_id,
+                        PendingRequest {
+                            core_id,
+                            cid,
+                            bytes,
+                            prp_list,
+                        },
+                    );
                 AbiError::Success as i32
             }
             Err(_) => AbiError::IoError as i32,
@@ -278,7 +287,11 @@ fn unregister_runtime_bridges() {
         if let Some(handle) = state.block_handle.take() {
             let _ = kernel.unregister_block_device(handle);
         }
-        state.pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        state
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     });
 }
 
@@ -304,7 +317,10 @@ fn abi_probe(ctx: &mut DriverContext) -> i32 {
 
 fn abi_remove(_ctx: &mut DriverContext) -> i32 {
     unregister_runtime_bridges();
-    let _ = NVME_ABI_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let _ = NVME_ABI_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
     0
 }
 

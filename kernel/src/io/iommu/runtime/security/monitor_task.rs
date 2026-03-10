@@ -161,6 +161,6 @@ static SECURITY_MONITOR_TASK: Once<()> = Once::new();
 /// Spawn the default IOMMU security monitor task (idempotent).
 pub fn spawn_security_monitor_task() {
     SECURITY_MONITOR_TASK.call_once(|| {
-        crate::task::per_core_executor::spawn(security_monitor_task());
+        let _ = crate::task::spawn_detached(security_monitor_task());
     });
 }

@@ -430,7 +430,9 @@ impl FirewallRule {
             self.dst_port,
             self.protocol,
         );
-        if matches!(self.protocol, FirewallProtocol::Icmp) && !matches!(self.icmp_match, IcmpMatch::Any) {
+        if matches!(self.protocol, FirewallProtocol::Icmp)
+            && !matches!(self.icmp_match, IcmpMatch::Any)
+        {
             s.push_str(&format!(" icmp={}", self.icmp_match));
         }
         s

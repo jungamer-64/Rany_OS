@@ -415,6 +415,45 @@ fn log_stack_free_space(label: &str) {
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeRegistrationStep {
+    PlatformProviders,
+    TimeProvider,
+    KernelServices,
+}
+
+fn for_each_runtime_registration_step(mut visit: impl FnMut(RuntimeRegistrationStep)) {
+    visit(RuntimeRegistrationStep::PlatformProviders);
+    visit(RuntimeRegistrationStep::TimeProvider);
+    visit(RuntimeRegistrationStep::KernelServices);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn runtime_registration_step_order_is_canonical() {
+        let mut seen = [RuntimeRegistrationStep::PlatformProviders; 3];
+        let mut idx = 0usize;
+
+        for_each_runtime_registration_step(|step| {
+            seen[idx] = step;
+            idx += 1;
+        });
+
+        assert_eq!(idx, seen.len());
+        assert_eq!(
+            seen,
+            [
+                RuntimeRegistrationStep::PlatformProviders,
+                RuntimeRegistrationStep::TimeProvider,
+                RuntimeRegistrationStep::KernelServices,
+            ]
+        );
+    }
+}
+
 fn register_spl_kernel_services() {
     // We are hitting mysterious stack corruption after this function returns,
     // so emit fine-grained diagnostics around every step.
@@ -434,22 +473,29 @@ fn register_spl_kernel_services() {
     log_stack_free_space("after log after call");
 }
 
-fn register_builtin_kernel_providers() {
-    log_stack_free_space("entering register_builtin_kernel_providers");
-    info!(target: "init", "Registering builtin platform providers...");
-    crate::platform::register_builtin_services();
-    info!(target: "init", "Builtin platform providers registered");
-    log_stack_free_space("after builtin platform providers");
-
-    info!(target: "init", "Registering builtin kernel service providers...");
-    crate::service_impl::register_builtin_service_providers();
-    info!(target: "init", "Builtin kernel service providers registered");
-    log_stack_free_space("after builtin kernel service providers");
-
-    info!(target: "init", "Registering builtin time provider...");
-    crate::drivers::time::register_builtin_service();
-    info!(target: "init", "Builtin time provider registered");
-    info!(target: "init", "Kernel providers registered");
+fn register_runtime_service_boundary() {
+    for_each_runtime_registration_step(|step| match step {
+        RuntimeRegistrationStep::PlatformProviders => {
+            log_stack_free_space("runtime registration: platform providers");
+            info!(target: "init", "Registering builtin platform providers...");
+            crate::platform::register_builtin_services();
+            info!(target: "init", "Builtin platform providers registered");
+        }
+        RuntimeRegistrationStep::TimeProvider => {
+            info!(target: "init", "Registering builtin time provider...");
+            crate::drivers::time::register_builtin_service();
+            info!(target: "init", "Builtin time provider registered");
+        }
+        RuntimeRegistrationStep::KernelServices => {
+            log_stack_free_space("runtime registration: kernel services");
+            info!(target: "init", "Registering builtin kernel service providers...");
+            crate::service_impl::register_builtin_service_providers();
+            info!(target: "init", "Builtin kernel service providers registered");
+            info!(target: "init", "Publishing kernel services...");
+            register_spl_kernel_services();
+            info!(target: "init", "Kernel services published");
+        }
+    });
 }
 
 fn enable_async_logging_for_boot() {
@@ -510,8 +556,7 @@ fn phase_platform_and_security_base(context: &mut KernelBootContext) {
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
 
-    register_spl_kernel_services();
-    register_builtin_kernel_providers();
+    register_runtime_service_boundary();
     enable_async_logging_for_boot();
     context.graphics_console_ready = init_graphics_console(context);
 }
@@ -824,10 +869,10 @@ fn resolve_shell_mode(context: &mut KernelBootContext) {
 }
 
 fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
-    // 4. Per-Core Executorの初期化（設計書 4.3）
-    info!(target: "init", "Initializing per-core executors");
-    task::init_executors(1); // シングルコアで開始
-    info!(target: "init", "Per-core executors initialized");
+    info!(
+        target: "init",
+        "Phase-2 runtime uses the primary Executor path; per-core executors remain experimental"
+    );
 
     // 4.6. I/Oスケジューラの初期化
     io::io_scheduler::init_io_scheduler();

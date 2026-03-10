@@ -85,9 +85,11 @@ async fn network_bootstrap_task() {
     // ConnectX ファミリ (mlx5) ドライバのPCI検出・登録
     let staged_mlx5_started = {
         let mut started = false;
-        for &(_vendor_id, device_id) in mlx5_driver::SUPPORTED_DEVICE_IDS {
-            let pci_devices =
-                crate::io::pci::find_by_id(mlx5_driver::MELLANOX_VENDOR_ID, device_id);
+        for &(_vendor_id, device_id) in crate::net::drivers::mlx5_registry::SUPPORTED_DEVICE_IDS {
+            let pci_devices = crate::io::pci::find_by_id(
+                crate::net::drivers::mlx5_registry::MELLANOX_VENDOR_ID,
+                device_id,
+            );
             let Some(native_dev) = pci_devices.first().cloned() else {
                 continue;
             };

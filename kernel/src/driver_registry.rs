@@ -30,11 +30,10 @@ use alloc::vec::Vec;
 use core::fmt;
 use kernel_api::abi::driver::{
     AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiDmaSlice, AbiDriverType,
-    AbiError as AbiErrorCode, AbiMmioHandle, AbiNetPortRegistration,
-    AbiNvmeNamespaceRegistration, DRIVER_EXPORTS_ABI_VERSION,
-    DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
-    DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
-    KERNEL_API_ABI_VERSION, KernelApiV2, PackedPciLocation,
+    AbiError as AbiErrorCode, AbiMmioHandle, AbiNetPortRegistration, AbiNvmeNamespaceRegistration,
+    DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
+    DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
+    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV2, PackedPciLocation,
 };
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::error::{KapiError, KapiResult};
@@ -47,7 +46,11 @@ fn cleanup_runtime_bridges_for_driver_handle(handle: DriverHandle) {
     crate::runtime_bridge::cleanup_for_driver_handle(handle);
 }
 
-#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "qemu-test-export")))]
+#[cfg(all(
+    test,
+    not(feature = "full_mm_tests"),
+    not(feature = "qemu-test-export")
+))]
 fn cleanup_runtime_bridges_for_driver_handle(_handle: DriverHandle) {}
 
 // ============================================================================

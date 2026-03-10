@@ -69,7 +69,7 @@ async fn command_queue_worker() {
 
 #[cfg(not(test))]
 pub(super) fn spawn_command_queue_worker() {
-    crate::task::per_core_executor::spawn(command_queue_worker());
+    let _ = crate::task::spawn_detached(command_queue_worker());
 }
 
 // ---------------------------------------------------------------------------

@@ -434,15 +434,15 @@ fn reported_mac(device: &Mlx5Device) -> [u8; 6] {
         .port(0)
         .map(|port| port.mac_bytes())
         .unwrap_or_else(fallback_mac);
-    if mac == [0; 6] {
-        fallback_mac()
-    } else {
-        mac
-    }
+    if mac == [0; 6] { fallback_mac() } else { mac }
 }
 
 fn port_flags(device: &Mlx5Device) -> u32 {
-    if device.port(0).map(|port| port.is_link_up()).unwrap_or(false) {
+    if device
+        .port(0)
+        .map(|port| port.is_link_up())
+        .unwrap_or(false)
+    {
         NETDEV_FLAG_HEALTHY | NETDEV_FLAG_LINK_UP
     } else {
         NETDEV_FLAG_HEALTHY
@@ -487,7 +487,11 @@ fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), kernel_api::err
             let device_addr = dma.device_address();
             let virt_addr = dma.as_ptr() as u64;
             let size = dma.size() as u32;
-            match unsafe { state.device.post_receive(rq_index, device_addr, virt_addr, size) } {
+            match unsafe {
+                state
+                    .device
+                    .post_receive(rq_index, device_addr, virt_addr, size)
+            } {
                 Ok(_) => state.rx_slots[rq_index][slot] = Some(dma),
                 Err(err) => {
                     log::warn!(
@@ -518,9 +522,10 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
 
         let cqes = unsafe { state.device.poll_cq(rx_cq_index, MLX5_POLL_BATCH) };
         for cqe in cqes {
-            let _ = state
-                .device
-                .process_rx_completion(rq_index, cqe.wqe_counter, cqe.l3_ok, cqe.l4_ok);
+            let _ =
+                state
+                    .device
+                    .process_rx_completion(rq_index, cqe.wqe_counter, cqe.l3_ok, cqe.l4_ok);
             let slot = (cqe.wqe_counter as usize) % (MLX5_WQ_DEPTH as usize);
 
             let Some(buffer) = state.rx_slots[rq_index][slot].as_mut() else {
@@ -574,7 +579,9 @@ fn poll_tx_locked(state: &mut Mlx5StandaloneState) {
         let cqes = unsafe { state.device.poll_cq(tx_cq_index, MLX5_POLL_BATCH) };
         for cqe in cqes {
             let slot = (cqe.wqe_counter as usize) % (MLX5_WQ_DEPTH as usize);
-            let _ = state.device.process_tx_completions(sq_index, cqe.wqe_counter);
+            let _ = state
+                .device
+                .process_tx_completions(sq_index, cqe.wqe_counter);
             let _ = state.tx_slots[sq_index][slot].take();
             if matches!(cqe.opcode, CqeOpcode::ReqErr | CqeOpcode::RespErr) {
                 state.tx_errors = state.tx_errors.saturating_add(1);
@@ -588,7 +595,11 @@ fn poll_device_locked(state: &mut Mlx5StandaloneState) {
     poll_rx_locked(state);
     poll_tx_locked(state);
 
-    let link_up = state.device.port(0).map(|port| port.is_link_up()).unwrap_or(false);
+    let link_up = state
+        .device
+        .port(0)
+        .map(|port| port.is_link_up())
+        .unwrap_or(false);
     if link_up != state.last_link_up {
         if let Some(runtime) = state.runtime {
             let _ = (runtime.update_link)(runtime.runtime_cookie, link_up);
@@ -755,7 +766,11 @@ extern "C" fn mlx5_netdev_poll(_opaque: u64, _if_id: u16) -> i32 {
     AbiError::Success as i32
 }
 
-extern "C" fn mlx5_netdev_handle_event(_opaque: u64, _if_id: u16, _event: AbiNetDriverEvent) -> i32 {
+extern "C" fn mlx5_netdev_handle_event(
+    _opaque: u64,
+    _if_id: u16,
+    _event: AbiNetDriverEvent,
+) -> i32 {
     mlx5_netdev_poll(0, 0)
 }
 
@@ -911,7 +926,10 @@ impl AsyncDriver for Mlx5AsyncDriver {
             let mut rx_slots = Vec::with_capacity(device.num_rqs());
             rx_slots.resize_with(device.num_rqs(), init_slot_ring::<DmaSlice<CpuOwned>>);
 
-            let last_link_up = device.port(0).map(|port| port.is_link_up()).unwrap_or(false);
+            let last_link_up = device
+                .port(0)
+                .map(|port| port.is_link_up())
+                .unwrap_or(false);
             let mut state = Mlx5StandaloneState {
                 device,
                 dma,
@@ -948,7 +966,8 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 netdev_registration(state)
             };
 
-            let handle = kernel_api::service::kernel::instance().register_netdev_port(&registration)?;
+            let handle =
+                kernel_api::service::kernel::instance().register_netdev_port(&registration)?;
             let mut guard = MLX5_STANDALONE_STATE.lock();
             let Some(state) = guard.as_mut() else {
                 let _ = kernel_api::service::kernel::instance().unregister_netdev_port(handle);

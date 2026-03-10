@@ -22,10 +22,10 @@
 //! **kmain_innerで使用される唯一のExecutorループ。**
 //!
 //! ## `per_core_executor` (Per-Core Executor)
-//! コアごとに独立したExecutorインスタンスを持つ、スケーラブルなアーキテクチャ。
+//! コアごとに独立したExecutorインスタンスを持つ、スケーラブルな実験アーキテクチャ。
 //! `ExecutorManager` が全コアのExecutorを管理し、`spawn()` APIで自動コア選択。
 //! `PoisonLock<VecDeque<T>>` ベースのWorkStealingQueue内包。
-//! SMPブートストラップ後に `init_executors()` で初期化。
+//! **通常ブートのフェーズ2ランタイムでは使用せず、フェーズ4以降の拡張用に維持する。**
 //!
 //! ## `work_stealing` (Global Injector Queue)
 //! グローバルなタスク注入キュー。`inject_global()` / `steal_from_global()` 。
@@ -225,4 +225,24 @@ pub fn create_waker(task_id: TaskId) -> Waker {
     let task_waker = Arc::new(TaskWaker { task_id });
     let raw_waker = RawWaker::new(Arc::into_raw(task_waker) as *const (), &WAKER_VTABLE);
     unsafe { Waker::from_raw(raw_waker) }
+}
+
+/// Spawn a detached task onto the primary phase-2 executor path.
+///
+/// This is the canonical runtime spawn helper for normal boot and background
+/// workers. Experimental per-core executors are intentionally excluded here.
+pub fn spawn_detached(future: impl Future<Output = ()> + Send + 'static) -> TaskId {
+    spawn_detached_in_domain(future, crate::domain_system::current_domain())
+}
+
+/// Spawn a detached task while explicitly preserving the owning domain.
+pub fn spawn_detached_in_domain(
+    future: impl Future<Output = ()> + Send + 'static,
+    domain_id: crate::domain_system::DomainId,
+) -> TaskId {
+    let mut task = Task::new(future);
+    task.domain_id = domain_id;
+    let task_id = task.id;
+    Executor::spawn_global(task);
+    task_id
 }

@@ -30,9 +30,8 @@ use kernel_api::service::kernel::KernelServices;
 
 use crate::io::dma;
 use crate::sync::PoisonLock;
+use crate::task;
 use crate::task::context;
-use crate::task::per_core_executor::{Priority, Task, executor_manager};
-use crate::task::timer;
 
 type DmaBuffer = DmaSlice<KapiCpuOwned>;
 

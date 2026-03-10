@@ -60,7 +60,7 @@ async fn command_queue_worker(controller: Arc<IommuController>) {
 #[cfg(not(test))]
 fn spawn_command_queue_worker(controller: Arc<IommuController>) {
     let future = command_queue_worker(controller);
-    crate::task::per_core_executor::spawn(future);
+    let _ = crate::task::spawn_detached(future);
 }
 
 /// Initialize IOMMU using ACPI DMAR table at `dmar_addr`

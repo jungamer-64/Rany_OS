@@ -17,7 +17,8 @@ pub mod staged_pci;
 pub mod type_id;
 
 mod cell_lookup;
-pub use cell_lookup::*;
+#[allow(unused_imports)]
+pub(crate) use cell_lookup::*;
 #[allow(unused_imports)]
 pub use elf::{CellInfo, ElfLoader, LoadedCell, LoadedInfo, Loader};
 #[allow(unused_imports)]
@@ -537,7 +538,10 @@ fn load_cell_with_flags(
 }
 
 /// Load a driver artifact and register it as an ABI driver with the DriverRegistry.
-pub fn load_driver(
+///
+/// This is an internal primitive; normal standalone driver-cell activation
+/// should flow through `driver_domain::lifecycle`.
+pub(crate) fn load_driver(
     name: &str,
     elf_data: &[u8],
     allow_unsafe: bool,
@@ -547,7 +551,7 @@ pub fn load_driver(
 
 /// Load a driver artifact and register it as an ABI driver with a pre-populated
 /// driver context.
-pub fn load_driver_with_context(
+pub(crate) fn load_driver_with_context(
     name: &str,
     elf_data: &[u8],
     allow_unsafe: bool,
@@ -558,7 +562,7 @@ pub fn load_driver_with_context(
 }
 
 /// Load a driver pack (manifest + ELF + signature).
-pub fn load_driver_pack(
+pub(crate) fn load_driver_pack(
     name: &str,
     pack_data: &[u8],
     allow_unsafe: bool,
@@ -568,7 +572,7 @@ pub fn load_driver_pack(
 
 /// Load a driver pack (manifest + ELF + signature) with a pre-populated driver
 /// context.
-pub fn load_driver_pack_with_context(
+pub(crate) fn load_driver_pack_with_context(
     name: &str,
     pack_data: &[u8],
     allow_unsafe: bool,
@@ -610,7 +614,7 @@ pub fn load_driver_pack_with_context(
 }
 
 /// Load a driver artifact: raw ELF or driver pack.
-pub fn load_driver_artifact(
+pub(crate) fn load_driver_artifact(
     name: &str,
     data: &[u8],
     allow_unsafe: bool,
@@ -620,7 +624,7 @@ pub fn load_driver_artifact(
 
 /// Load a driver artifact: raw ELF or driver pack, preserving the supplied
 /// driver context for probe/start callbacks.
-pub fn load_driver_artifact_with_context(
+pub(crate) fn load_driver_artifact_with_context(
     name: &str,
     data: &[u8],
     allow_unsafe: bool,
@@ -809,7 +813,7 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
 }
 
 /// Unload a registered driver by handle.
-pub fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
+pub(crate) fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
     match crate::driver_registry::unregister_driver(handle) {
         Ok(()) => {}
         Err(_) => {
@@ -849,6 +853,10 @@ mod tests {
     use super::*;
 
     const TEST_ELF_BYTES: &[u8] = b"\x7fELFdriver-pack-test";
+
+    fn registry_snapshot() -> (usize, usize) {
+        with_registry(|r| (r.all_cells().count(), r.symbol_table.len()))
+    }
 
     fn write_u16(buf: &mut [u8], offset: usize, value: u16) {
         buf[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
@@ -932,6 +940,7 @@ mod tests {
             TEST_ELF_BYTES,
             kernel_api::abi::driver::KERNEL_API_ABI_VERSION + 1,
         );
+        let before = registry_snapshot();
 
         match load_driver_pack("test_driver", &pack, true) {
             Err(LoadError::AbiIncompatible(message)) => {
@@ -939,6 +948,8 @@ mod tests {
             }
             other => panic!("expected Kernel API ABI version rejection, got {:?}", other),
         }
+
+        assert_eq!(registry_snapshot(), before);
     }
 
     #[test_case]
@@ -948,6 +959,7 @@ mod tests {
             TEST_ELF_BYTES,
             kernel_api::abi::driver::KERNEL_API_ABI_VERSION + 1,
         );
+        let before = registry_snapshot();
 
         match load_driver_artifact("test_driver", &pack, true) {
             Err(LoadError::AbiIncompatible(message)) => {
@@ -955,6 +967,8 @@ mod tests {
             }
             other => panic!("expected Kernel API ABI version rejection, got {:?}", other),
         }
+
+        assert_eq!(registry_snapshot(), before);
     }
 
     #[test_case]
@@ -985,8 +999,20 @@ mod tests {
     #[test_case]
     fn load_cell_with_flags_rejects_missing_loop_proof_section() {
         let elf = build_test_elf(None);
+        let before = registry_snapshot();
         let err = load_cell_with_flags("test-cell", &elf, true, false, false, 0)
             .expect_err("cell load path must reject missing loop proof");
         assert!(matches!(err, LoadError::LoopProofMissing));
+        assert_eq!(registry_snapshot(), before);
+    }
+
+    #[test_case]
+    fn load_cell_rejects_missing_signature_without_mutating_registry() {
+        let elf = build_test_elf(Some((".exorust_sig", b"bad-signature")));
+        let before = registry_snapshot();
+        let err = load_cell("unsigned-cell", &elf, true)
+            .expect_err("malformed signature section must be rejected before registration");
+        assert!(matches!(err, LoadError::InvalidSignature));
+        assert_eq!(registry_snapshot(), before);
     }
 }

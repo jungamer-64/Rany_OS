@@ -11,15 +11,15 @@ use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DeviceId, Driver, DriverFuture, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 use kernel_api::service::kernel::instance as kernel;
+pub use mlx5_driver::{MELLANOX_VENDOR_ID, SUPPORTED_DEVICE_IDS};
 
 type DmaBuffer = DmaSlice<CpuOwned>;
 
 use crate::io::pci::{PcieBdf, PcieError, SriovCapability, SriovController, pcie_ext_config};
 use crate::sync::{PoisonLock, PoisonLockGuard};
 use mlx5_driver::{
-    ConnectXVariant, MELLANOX_VENDOR_ID, Mlx5AllocatedResources, Mlx5BootstrapConfig,
-    Mlx5BootstrapPlan, Mlx5Device, Mlx5DmaRegion, Mlx5Error, Mlx5PciIdentity, Mlx5QueueDmaRegion,
-    Mlx5QueueProfile, SUPPORTED_DEVICE_IDS,
+    ConnectXVariant, Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5Device,
+    Mlx5DmaRegion, Mlx5Error, Mlx5PciIdentity, Mlx5QueueDmaRegion, Mlx5QueueProfile,
 };
 const KAPI_EINVAL: i32 = -22;
 

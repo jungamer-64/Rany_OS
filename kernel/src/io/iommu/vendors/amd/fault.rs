@@ -233,7 +233,7 @@ pub async fn fault_handler_task() {
 }
 
 pub fn spawn_fault_handler_task() {
-    crate::task::per_core_executor::spawn(fault_handler_task());
+    let _ = crate::task::spawn_detached(fault_handler_task());
 }
 
 // ---------------------------------------------------------------------------

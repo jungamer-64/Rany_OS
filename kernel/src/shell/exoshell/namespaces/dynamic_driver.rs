@@ -9,6 +9,8 @@
 //!
 //! ## 例
 //! ```text
+//! cell.load("/drivers/gpu.elf")
+//! # もしくは互換エイリアス:
 //! driver.load("/drivers/gpu.elf")
 //! # -> gpu 名前空間が自動登録
 //! gpu.info()

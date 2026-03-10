@@ -1364,6 +1364,19 @@ pub mod ipc {
     feature = "bench"
 ))]
 pub mod task {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+    pub struct TaskId(u64);
+
+    impl TaskId {
+        pub const fn from_raw(id: u64) -> Self {
+            Self(id)
+        }
+
+        pub const fn as_u64(self) -> u64 {
+            self.0
+        }
+    }
+
     pub mod timer {
         /// Return current tick in milliseconds (test stub)
         pub fn current_tick() -> u64 {
@@ -1387,6 +1400,27 @@ pub mod task {
     }
 
     pub async fn sleep_ms(_ms: u64) {}
+
+    pub fn current_tick() -> u64 {
+        timer::current_tick()
+    }
+
+    pub fn spawn_detached<F>(_future: F) -> TaskId
+    where
+        F: core::future::Future<Output = ()> + 'static,
+    {
+        TaskId::from_raw(0)
+    }
+
+    pub fn spawn_detached_in_domain<F>(
+        _future: F,
+        _domain: crate::domain_system::DomainId,
+    ) -> TaskId
+    where
+        F: core::future::Future<Output = ()> + 'static,
+    {
+        TaskId::from_raw(0)
+    }
 
     /// Synchronous helper to drive a Future to completion in tests
     pub fn block_on<F: core::future::Future>(future: F) -> F::Output {
@@ -2075,8 +2109,6 @@ pub mod unwind;
 pub mod crypto;
 #[cfg(any(not(test), test, feature = "bench", feature = "full_mm_tests"))]
 pub mod driver_registry;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-pub mod runtime_bridge;
 #[cfg(any(
     all(
         test,
@@ -2086,6 +2118,8 @@ pub mod runtime_bridge;
     feature = "bench"
 ))]
 pub mod loader;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod runtime_bridge;
 #[cfg(any(
     all(
         test,

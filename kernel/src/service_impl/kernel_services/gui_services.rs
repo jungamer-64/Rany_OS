@@ -75,7 +75,10 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
     let mut devices: alloc::vec::Vec<StorageDeviceInfo> = alloc::vec::Vec::new();
 
     for device in crate::runtime_bridge::standalone_storage_devices() {
-        if !devices.iter().any(|existing| existing.device_id == device.device_id) {
+        if !devices
+            .iter()
+            .any(|existing| existing.device_id == device.device_id)
+        {
             devices.push(device);
         }
     }
@@ -102,7 +105,10 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
             flags: STORAGE_FLAG_ACTIVE,
         })
     }) {
-        if !devices.iter().any(|existing| existing.device_id == info.device_id) {
+        if !devices
+            .iter()
+            .any(|existing| existing.device_id == info.device_id)
+        {
             devices.push(info);
         }
     }
@@ -125,7 +131,10 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
             transport: StorageTransport::VirtioBlock,
             flags,
         };
-        if !devices.iter().any(|existing| existing.device_id == info.device_id) {
+        if !devices
+            .iter()
+            .any(|existing| existing.device_id == info.device_id)
+        {
             devices.push(info);
         }
     }
@@ -140,7 +149,10 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
                 transport: StorageTransport::Ahci,
                 flags: STORAGE_FLAG_ACTIVE,
             };
-            if !devices.iter().any(|existing| existing.device_id == info.device_id) {
+            if !devices
+                .iter()
+                .any(|existing| existing.device_id == info.device_id)
+            {
                 devices.push(info);
             }
         }
@@ -184,7 +196,10 @@ fn audio_devices_snapshot() -> alloc::vec::Vec<AudioDeviceInfo> {
     .unwrap_or_default();
 
     for device in builtin {
-        if !devices.iter().any(|existing| existing.device_id == device.device_id) {
+        if !devices
+            .iter()
+            .any(|existing| existing.device_id == device.device_id)
+        {
             devices.push(device);
         }
     }

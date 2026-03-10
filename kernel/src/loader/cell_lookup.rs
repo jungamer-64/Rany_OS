@@ -1,7 +1,7 @@
 use super::*;
 
 /// Find the CellId that owns the given driver handle
-pub fn find_cell_by_driver(handle: DriverHandle) -> Option<CellId> {
+pub(crate) fn find_cell_by_driver(handle: DriverHandle) -> Option<CellId> {
     with_registry(|r| {
         for entry in r.cells.values() {
             if entry.registered_drivers.contains(&handle) {
@@ -13,7 +13,7 @@ pub fn find_cell_by_driver(handle: DriverHandle) -> Option<CellId> {
 }
 
 /// カーネルセルを初期化（起動時に呼ばれる）
-pub fn init_kernel_cell() {
+pub(crate) fn init_kernel_cell() {
     crate::io::log::early_print("[LDBG] init_kernel_cell: enter\n");
     crate::io::log::early_print("[LDBG] init_kernel_cell: before init_kernel_interfaces\n");
     super::type_id::init_kernel_interfaces();

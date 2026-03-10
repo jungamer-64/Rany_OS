@@ -49,7 +49,7 @@ pub async fn expiry_daemon_task() {
 /// Start the expiry daemon (idempotent)
 pub fn spawn_expiry_daemon_task() {
     CAP_EXPIRY_TASK.call_once(|| {
-        crate::task::per_core_executor::spawn(expiry_daemon_task());
+        let _ = crate::task::spawn_detached(expiry_daemon_task());
     });
 }
 
@@ -72,7 +72,7 @@ pub async fn reclamation_daemon_task() {
 /// Start the reclamation daemon (idempotent)
 pub fn spawn_reclamation_daemon_task() {
     CAP_RECLAIM_TASK.call_once(|| {
-        crate::task::per_core_executor::spawn(reclamation_daemon_task());
+        let _ = crate::task::spawn_detached(reclamation_daemon_task());
     });
 }
 

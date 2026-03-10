@@ -7,7 +7,7 @@ use super::*;
 /// ロード結果の情報
 ///
 /// ELFバイナリをメモリにロードした後の結果情報を保持する構造体。
-/// `registry.rs`との互換性のために使用される。
+/// `loader/mod.rs` のセルレジストリ統合面から利用される。
 ///
 /// # Example
 ///
@@ -63,7 +63,7 @@ pub trait Loader {
 impl Loader for ElfLoader<'_> {
     /// ELFデータをパースしてメモリにロードする静的メソッド
     ///
-    /// registry.rs との互換性のためのシンプルなAPI
+    /// loader の統合セルレジストリ向けのシンプルなAPI
     fn load(elf_data: &[u8]) -> Result<LoadedInfo, LoadError> {
         // 1. ELFをパース
         let loader = ElfLoader::new(elf_data)?;

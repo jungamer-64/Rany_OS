@@ -166,24 +166,16 @@ build-loader:
 	@printf '   -> \033[32m%s\033[0m\n' "ExoLoader built."
 
 # カーネルをビルド
-# The kernel binary is gated behind the `kernel_bin` feature.  Always
-# include it so that `make run` and other top-level targets produce an
-# executable; users may still request additional features via FEATURES.
 build-kernel:
 	@printf '\033[36m%s\033[0m\n' "Building Kernel ($(PROFILE))..."
-	@# ensure kernel_bin is always present in feature list
+	@# features may be supplied via FEATURES environment variable
 	@kf="$(FEATURES)"; \
-	if [ -z "$$kf" ]; then \
-		kf=kernel_bin; \
-	else \
-		kf=$$kf,kernel_bin; \
-	fi; \
 	printf '   -> \033[32mEnabled features: %s\033[0m\n' "$$kf"; \
 	$(CARGO) build -p $(KERNEL_CRATE) --target $(TARGET_KERNEL).json \
 		$(CARGO_PROFILE_FLAG) \
 		-Z json-target-spec \
 		$(CARGO_BUILD_STD) \
-		--features "$$kf" \
+		$(if "$$kf",--features "$$kf",) \
 		$(CARGO_QUIET)
 	@printf '   -> \033[32m%s\033[0m\n' "Kernel compiled."
 
@@ -1358,7 +1350,7 @@ help:
 	@echo ""
 	@echo "Build targets:"
 	@echo "  make build         - Full pipeline: deps → signer → keys → loader → kernel → sign"
-	@echo "  make build-kernel  - Build kernel only (always includes binary via kernel_bin feature)"
+	@echo "  make build-kernel  - Build kernel only"
 	@echo "  make build-loader  - Build ExoLoader (UEFI) only"
 	@echo "  make build-signer  - Build signer tool only"
 	@echo "  make sign          - Sign the kernel binary"

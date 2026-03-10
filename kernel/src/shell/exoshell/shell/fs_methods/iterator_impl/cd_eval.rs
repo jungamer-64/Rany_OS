@@ -180,8 +180,9 @@ impl ExoShell {
     driver.list()         - List registered drivers
     driver.stats()        - Driver statistics
     driver.status(id)     - Get driver status by ID
-    driver.load(path)     - Load driver from ELF file
-    driver.unload(id)     - Unload driver by ID
+    driver.load(path)     - Compatibility alias for cell.load(path)
+    driver.unload(id)     - Compatibility alias for unloading the owning DriverDomain
+    driver.update(id, path) - Compatibility alias for DriverDomain hot-swap
 
   cell.* - DriverDomain / Live Update
     cell.list()                  - List DriverDomains (structured)

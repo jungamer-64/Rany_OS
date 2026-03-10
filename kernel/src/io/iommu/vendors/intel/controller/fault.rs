@@ -492,8 +492,7 @@ pub async fn fault_handler_task() {
 /// Call this during kernel initialization after the scheduler is ready.
 /// The task will run in the background, draining ISR-queued faults.
 pub fn spawn_fault_handler_task() {
-    // Use kernel's per-core executor spawn mechanism
-    crate::task::per_core_executor::spawn(fault_handler_task());
+    let _ = crate::task::spawn_detached(fault_handler_task());
     log::info!("[IOMMU] Fault handler task spawned");
 }
 
