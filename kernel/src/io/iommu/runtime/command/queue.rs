@@ -506,7 +506,7 @@ impl CommandQueue {
             }
         }
         // Second pass: try to acquire a fresh slot (0 -> 1)
-        for i in 0..n {
+        for _i in 0..n {
             let idx = self.next_alloc.fetch_add(1, Ordering::Relaxed) % n;
             if self.slots[idx].try_acquire() {
                 return Some(idx);

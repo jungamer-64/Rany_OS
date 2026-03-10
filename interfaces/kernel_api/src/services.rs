@@ -10,13 +10,13 @@
 extern crate alloc;
 
 use crate::KapiResult;
-use crate::abi::driver::KernelApiV2;
+use crate::abi::driver::{KernelApiV2, PackedPciLocation};
 use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::ChannelHandle;
 use crate::resource::fs::{FileHandle, OpenMode};
 use crate::resource::net::{Packet, RawEndpointHandle, TcpEndpoint};
 use crate::resource::storage::{
-    DirectBlockHandle, NvmeDmaHandle, NvmeIoHandle, NvmeIoResult, NvmeIoType, NvmeRwRequest,
+    DirectBlockHandle, NvmeIoHandle, NvmeIoResult, NvmeIoType, NvmeRwRequest,
 };
 use crate::resource::task::TaskHandle;
 use crate::service::{
@@ -65,25 +65,23 @@ pub trait KernelServices: Send + Sync {
     // Memory Management
     // ========================================================================
 
-    /// Allocate DMA-capable memory
+    /// Allocate DMA-capable memory for a specific device (IOMMU-aware)
     ///
-    /// Returns a CPU-owned DMA slice.
-    /// of the allocated region.
+    /// The locator encodes PCI segment, bus, device, and function.
+    /// Implementation should use this to create IOMMU mappings if the device is protected.
+    ///
+    /// ```compile_fail
+    /// let _ = kernel_api::service::kernel::instance().alloc_dma(4096);
+    /// ```
     ///
     /// # Errors
     /// - `KapiError::OutOfMemory` if allocation fails
-    fn alloc_dma(&self, size: usize) -> KapiResult<DmaSlice<CpuOwned>>;
-
-    /// Allocate DMA-capable memory for a specific device (IOMMU-aware)
-    ///
-    /// The `device_id` is a packed PCI BDF (Bus, Device, Function) and segment.
-    /// Implementation should use this to create IOMMU mappings if the device is protected.
-    ///
-    /// # Default Behavior
-    /// Delegates to `alloc_dma` for backward compatibility.
-    fn alloc_dma_for_device(&self, size: usize, _device_id: u64) -> KapiResult<DmaSlice<CpuOwned>> {
-        self.alloc_dma(size)
-    }
+    /// - `KapiError::NotSupported` if `device_id` is null or device-scoped DMA is unavailable
+    fn alloc_dma_for_device(
+        &self,
+        size: usize,
+        device_id: PackedPciLocation,
+    ) -> KapiResult<DmaSlice<CpuOwned>>;
 
     // ========================================================================
     // I/O Operations
@@ -254,55 +252,6 @@ pub trait KernelServices: Send + Sync {
     /// I/O command for the specified device. Used for optimizing scatter-gather
     /// operations. Returns `None` if the device doesn't support SGLs or is not available.
     fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize>;
-
-    // ========================================================================
-    // NVMe DMA Context Management (Option B-2: Full Abstraction)
-    // ========================================================================
-
-    /// Prepare DMA context for NVMe read operation
-    ///
-    /// Allocates a DMA buffer, creates IOMMU mappings, and builds PRP list.
-    /// Returns an opaque handle containing IOVA addresses for command building.
-    ///
-    /// The caller uses `handle.data_iova()` as PRP1 and `handle.prp2()` as PRP2.
-    ///
-    /// # Errors
-    /// - `KapiError::OutOfMemory` if DMA allocation fails
-    /// - `KapiError::IoError` if IOMMU mapping fails
-    fn nvme_prepare_dma_read(&self, device_id: u64, len: usize) -> KapiResult<NvmeDmaHandle>;
-
-    /// Prepare DMA context for NVMe write operation
-    ///
-    /// Allocates a DMA buffer, copies data into it, creates IOMMU mappings,
-    /// and builds PRP list.
-    fn nvme_prepare_dma_write(&self, device_id: u64, data: &[u8]) -> KapiResult<NvmeDmaHandle>;
-
-    /// Complete DMA context after read I/O finished
-    ///
-    /// Returns the data read from the device. Releases all DMA resources.
-    fn nvme_complete_dma_read(&self, handle: NvmeDmaHandle) -> KapiResult<alloc::vec::Vec<u8>>;
-
-    /// Complete DMA context after write I/O finished
-    ///
-    /// Releases all DMA resources. Returns `Ok(())` on success.
-    fn nvme_complete_dma_write(&self, handle: NvmeDmaHandle) -> KapiResult<()>;
-
-    /// Get IOMMU device ID for NVMe controller
-    ///
-    /// Returns the IOMMU device ID used for DMA mappings. This abstracts
-    /// the `io::nvme::iommu_device()` call.
-    fn nvme_iommu_device_id(&self, device_id: u64) -> Option<u64>;
-
-    /// Map physical address for NVMe DMA access
-    ///
-    /// Creates an IOMMU mapping for the given physical address.
-    /// Returns (iova, mapping_id) where iova is the device-visible address
-    /// and mapping_id is used for later unmap.
-    fn nvme_iommu_map(&self, device_id: u64, phys_addr: u64, size: usize)
-    -> KapiResult<(u64, u64)>;
-
-    /// Unmap a previous IOMMU mapping
-    fn nvme_iommu_unmap(&self, mapping_id: u64) -> KapiResult<()>;
 
     /// Submit an NVMe read/write I/O request
     ///
@@ -521,19 +470,12 @@ mod standalone {
         }
     }
 
-    fn alloc_dma(size: usize) -> KapiResult<DmaSlice<CpuOwned>> {
+    fn alloc_dma_for_device(
+        size: usize,
+        device_id: PackedPciLocation,
+    ) -> KapiResult<DmaSlice<CpuOwned>> {
         let mut raw = AbiDmaSlice::default();
-        let status = (super::abi().alloc_dma_raw)(size, 1, &mut raw);
-        if AbiError::from_raw(status).is_success() {
-            Ok(alloc_from_raw(raw))
-        } else {
-            Err(map_abi_error(status))
-        }
-    }
-
-    fn alloc_dma_for_device(size: usize, device_id: u64) -> KapiResult<DmaSlice<CpuOwned>> {
-        let mut raw = AbiDmaSlice::default();
-        let status = (super::abi().alloc_dma_for_device_raw)(size, device_id, 1, &mut raw);
+        let status = (super::abi().alloc_dma_for_device_raw)(size, device_id.raw(), 1, &mut raw);
         if AbiError::from_raw(status).is_success() {
             Ok(alloc_from_raw(raw))
         } else {
@@ -560,14 +502,10 @@ mod standalone {
             0
         }
 
-        fn alloc_dma(&self, size: usize) -> KapiResult<DmaSlice<CpuOwned>> {
-            alloc_dma(size)
-        }
-
         fn alloc_dma_for_device(
             &self,
             size: usize,
-            device_id: u64,
+            device_id: PackedPciLocation,
         ) -> KapiResult<DmaSlice<CpuOwned>> {
             alloc_dma_for_device(size, device_id)
         }
@@ -730,46 +668,6 @@ mod standalone {
         fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize> {
             let _ = device_id;
             None
-        }
-
-        fn nvme_prepare_dma_read(&self, device_id: u64, len: usize) -> KapiResult<NvmeDmaHandle> {
-            let _ = (device_id, len);
-            Err(KapiError::NotSupported)
-        }
-
-        fn nvme_prepare_dma_write(&self, device_id: u64, data: &[u8]) -> KapiResult<NvmeDmaHandle> {
-            let _ = (device_id, data);
-            Err(KapiError::NotSupported)
-        }
-
-        fn nvme_complete_dma_read(&self, handle: NvmeDmaHandle) -> KapiResult<alloc::vec::Vec<u8>> {
-            let _ = handle;
-            Err(KapiError::NotSupported)
-        }
-
-        fn nvme_complete_dma_write(&self, handle: NvmeDmaHandle) -> KapiResult<()> {
-            let _ = handle;
-            Err(KapiError::NotSupported)
-        }
-
-        fn nvme_iommu_device_id(&self, device_id: u64) -> Option<u64> {
-            let _ = device_id;
-            None
-        }
-
-        fn nvme_iommu_map(
-            &self,
-            device_id: u64,
-            phys_addr: u64,
-            size: usize,
-        ) -> KapiResult<(u64, u64)> {
-            let _ = (device_id, phys_addr, size);
-            Err(KapiError::NotSupported)
-        }
-
-        fn nvme_iommu_unmap(&self, mapping_id: u64) -> KapiResult<()> {
-            let _ = mapping_id;
-            Err(KapiError::NotSupported)
         }
 
         fn nvme_submit_rw(

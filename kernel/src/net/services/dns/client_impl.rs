@@ -606,7 +606,7 @@ impl DnsClient {
         }
 
         // 追加セクションを解析 (解析は行うがキャッシュには慎重に扱う)
-        let additional_records = self.parse_answer_section(data, &mut offset, arcount)?;
+        let _additional_records = self.parse_answer_section(data, &mut offset, arcount)?;
 
         // ====================================================================
         // Security Fix: Cache Filtering (DNS Cache Poisoning Prevention)

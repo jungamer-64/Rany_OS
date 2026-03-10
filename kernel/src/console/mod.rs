@@ -10,7 +10,6 @@
 #![allow(clippy::derivable_impls)]
 #![allow(dead_code)]
 
-use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec;

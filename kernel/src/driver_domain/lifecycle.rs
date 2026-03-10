@@ -27,6 +27,7 @@ use crate::domain_system::DomainId;
 use crate::driver_registry::DriverHandle;
 use crate::loader::CellId;
 use crate::security::CapabilitySet;
+use kernel_api::abi::driver::DriverContext as AbiDriverContext;
 
 use super::fault::RestartPolicy;
 use super::{
@@ -58,6 +59,8 @@ pub struct DriverDomainConfig {
     pub io_bandwidth_limit: u64,
     /// NUMAノード（任意）
     pub numa_node: Option<usize>,
+    /// ABIドライバに渡すデバイスコンテキスト
+    pub abi_driver_context: AbiDriverContext,
 }
 
 impl DriverDomainConfig {
@@ -73,6 +76,7 @@ impl DriverDomainConfig {
             memory_limit_bytes: 64 * 1024 * 1024,
             io_bandwidth_limit: 0,
             numa_node: None,
+            abi_driver_context: AbiDriverContext::new(),
         }
     }
 
@@ -115,6 +119,12 @@ impl DriverDomainConfig {
     /// NUMAノードを設定
     pub fn with_numa_node(mut self, node: usize) -> Self {
         self.numa_node = Some(node);
+        self
+    }
+
+    /// ABIドライバに渡すコンテキストを設定
+    pub fn with_abi_driver_context(mut self, ctx: AbiDriverContext) -> Self {
+        self.abi_driver_context = ctx;
         self
     }
 }
@@ -254,15 +264,18 @@ pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError>
     let manager = driver_domain_manager();
 
     // 状態チェック
-    let cell_id = manager.with_cell(id, |cell| {
+    let (cell_id, abi_driver_context) = manager.with_cell(id, |cell| {
         if cell.state != DriverDomainState::Loaded && cell.state != DriverDomainState::Stopped {
             return Err(DriverDomainError::InvalidStateTransition {
                 from: cell.state,
                 to: DriverDomainState::Starting,
             });
         }
-        cell.cell_id
-            .ok_or(DriverDomainError::LoadFailed("Cell not loaded".into()))
+        Ok((
+            cell.cell_id
+                .ok_or(DriverDomainError::LoadFailed("Cell not loaded".into()))?,
+            cell.abi_driver_context,
+        ))
     })??;
 
     // Starting状態に遷移
@@ -272,18 +285,19 @@ pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError>
 
     // ドライバをCellから登録
     crate::io::log::early_print("[DCELL] start: register_driver_from_cell begin\n");
-    let handle = match crate::loader::register_driver_from_cell(cell_id) {
-        Ok(h) => h,
-        Err(e) => {
-            let msg = format!("{}", e);
-            manager
-                .with_cell_mut(id, |cell| {
-                    cell.transition_to(DriverDomainState::Faulted);
-                })
-                .ok();
-            return Err(DriverDomainError::DriverInitFailed(msg));
-        }
-    };
+    let handle =
+        match crate::loader::register_driver_from_cell_with_context(cell_id, abi_driver_context) {
+            Ok(h) => h,
+            Err(e) => {
+                let msg = format!("{}", e);
+                manager
+                    .with_cell_mut(id, |cell| {
+                        cell.transition_to(DriverDomainState::Faulted);
+                    })
+                    .ok();
+                return Err(DriverDomainError::DriverInitFailed(msg));
+            }
+        };
     crate::io::log::early_print("[DCELL] start: register_driver_from_cell done\n");
 
     // ドライバをprobe + start

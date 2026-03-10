@@ -110,7 +110,7 @@ where
 
 /// ドメイン境界でFutureをラップ
 /// 設計書 8.2: プロキシパターン - パニックを捕捉してエラーに変換
-async fn domain_wrapper<F>(domain_id: DomainId, future: F)
+async fn domain_wrapper<F>(_domain_id: DomainId, future: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {

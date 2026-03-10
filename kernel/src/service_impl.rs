@@ -23,8 +23,7 @@ use kernel_api::ipc::ChannelHandle;
 use kernel_api::resource::fs::{FileHandle, OpenMode};
 use kernel_api::resource::net::{Packet, RawEndpointHandle, TcpEndpoint};
 use kernel_api::resource::storage::{
-    DirectBlockHandle, NvmeDmaHandle, NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType,
-    NvmeRwRequest,
+    DirectBlockHandle, NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,
 };
 use kernel_api::resource::task::TaskHandle;
 use kernel_api::service::kernel::KernelServices;

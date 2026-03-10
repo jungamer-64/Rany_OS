@@ -554,66 +554,6 @@ impl RawEndpointHandle {
 }
 
 // ============================================================================
-// NVMe DMA Handle (Option B-2: Full DMA Abstraction)
-// ============================================================================
-
-/// Opaque handle to a prepared NVMe DMA context
-///
-/// Represents a DMA buffer ready for NVMe I/O, with all IOMMU mappings
-/// and PRP/SGL lists prepared internally by the kernel. The caller only
-/// receives the IOVA addresses needed for command building.
-///
-/// Must be completed via `KernelServices::nvme_complete_dma_*` after I/O
-/// finishes to reclaim resources and retrieve data.
-#[derive(Debug)]
-pub struct NvmeDmaHandle {
-    id: u64,
-    /// Data buffer IOVA (PRP1 in NVMe command)
-    data_iova: u64,
-    /// PRP2 or SGL address
-    prp2_or_sgl: u64,
-    /// Logical size of the transfer
-    len: usize,
-}
-
-impl NvmeDmaHandle {
-    /// Create a new handle (kernel-only)
-    pub const fn new(id: u64, data_iova: u64, prp2_or_sgl: u64, len: usize) -> Self {
-        Self {
-            id,
-            data_iova,
-            prp2_or_sgl,
-            len,
-        }
-    }
-
-    /// Internal context ID
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    /// IOVA of data buffer (use as PRP1)
-    pub fn data_iova(&self) -> u64 {
-        self.data_iova
-    }
-
-    /// PRP2 value (second page IOVA or PRP list IOVA)
-    pub fn prp2(&self) -> u64 {
-        self.prp2_or_sgl
-    }
-
-    /// Logical transfer size
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Check if the transfer is empty
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
-// ============================================================================
 // NVMe I/O Request Types (io_scheduler abstraction)
 // ============================================================================
 

@@ -927,7 +927,10 @@ pub(crate) fn init_usb_controllers() {
         device_info.enable_bus_master();
         device_info.enable_memory_space();
 
-        let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_virt)));
+        let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(
+            base_virt,
+            device_info.packed_locator(),
+        )));
         if let Err(e) = driver_registry::driver_registry()
             .probe_and_start(usb_handle.expect("Failed to register USB driver"))
         {

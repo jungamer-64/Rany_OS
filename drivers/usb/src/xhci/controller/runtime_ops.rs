@@ -77,7 +77,7 @@ impl XhciController {
         // デバイスコンテキストをDMAバッファで作成
         let ctx_size = core::mem::size_of::<DeviceContext>();
         let dma_buf = kernel_api::service::kernel::instance()
-            .alloc_dma(ctx_size)
+            .alloc_dma_for_device(ctx_size, self.pci_locator)
             .map_err(|_| UsbError::Other("Failed to allocate DMA for DeviceContext".into()))?;
         let ctx_ptr = dma_buf.as_ptr() as *mut DeviceContext;
         let ctx_device_addr = dma_buf.device_address();
@@ -115,7 +115,7 @@ impl XhciController {
             return Err(UsbError::InvalidDevice);
         }
 
-        let ring = Box::new(TrbRing::new(TRANSFER_RING_SIZE));
+        let ring = Box::new(TrbRing::new(TRANSFER_RING_SIZE, self.pci_locator));
         let ring_addr = ring.device_address();
 
         let mut transfer_rings = self.transfer_rings.lock();
@@ -158,7 +158,7 @@ impl XhciController {
         // InputContextをDMAバッファにコピー
         let input_ctx_size = core::mem::size_of::<InputContext>();
         let input_dma_buf = kernel_api::service::kernel::instance()
-            .alloc_dma(input_ctx_size)
+            .alloc_dma_for_device(input_ctx_size, self.pci_locator)
             .map_err(|_| UsbError::Other("Failed to allocate DMA for InputContext".into()))?;
         let input_dma_ptr = input_dma_buf.as_ptr() as *mut InputContext;
         unsafe {
@@ -245,7 +245,7 @@ impl XhciController {
         // InputContextをDMAバッファにコピー
         let input_ctx_size = core::mem::size_of::<InputContext>();
         let input_dma_buf = kernel_api::service::kernel::instance()
-            .alloc_dma(input_ctx_size)
+            .alloc_dma_for_device(input_ctx_size, self.pci_locator)
             .map_err(|_| UsbError::Other("Failed to allocate DMA for InputContext".into()))?;
         let input_dma_ptr = input_dma_buf.as_ptr() as *mut InputContext;
         unsafe {

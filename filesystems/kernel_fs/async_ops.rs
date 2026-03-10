@@ -26,6 +26,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
+use x86_64::PhysAddr;
 
 use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice};
 
@@ -108,15 +109,14 @@ impl LocalSglDescriptor {
 }
 
 pub(crate) struct NvmeIommuMapping {
-    /// Kernel-assigned mapping ID for unmap via kernel_api
-    mapping_id: u64,
+    device_id: crate::io::iommu::types::DeviceId,
     iova: u64,
+    size: u64,
 }
 
 impl NvmeIommuMapping {
     fn unmap(self) {
-        // Use kernel_api abstraction for IOMMU unmap
-        let _ = kernel_api::service::kernel::instance().nvme_iommu_unmap(self.mapping_id);
+        let _ = crate::io::iommu::api::unmap_for_device(&self.device_id, self.iova, self.size);
     }
 }
 
@@ -348,18 +348,25 @@ fn align_up(value: usize, align: usize) -> usize {
 }
 
 fn map_nvme_iommu(phys_addr: u64, size: usize) -> FsResult<(u64, Option<NvmeIommuMapping>)> {
-    // Use kernel_api abstraction for IOMMU mapping
-    match kernel_api::service::kernel::instance().nvme_iommu_map(0, phys_addr, size) {
-        Ok((iova, mapping_id)) => {
-            if mapping_id == 0 {
-                // Identity mapping (no IOMMU or passthrough)
-                Ok((iova, None))
-            } else {
-                Ok((iova, Some(NvmeIommuMapping { mapping_id, iova })))
-            }
-        }
-        Err(_) => Err(FsError::IoError),
+    let device_id = crate::io::nvme::iommu_device().ok_or(FsError::IoError)?;
+    let iova = unsafe {
+        crate::io::iommu::api::map_for_device_with_perms(
+            &device_id,
+            PhysAddr::new(phys_addr),
+            size as u64,
+            true,
+            true,
+        )
     }
+    .map_err(|_| FsError::IoError)?;
+    Ok((
+        iova,
+        Some(NvmeIommuMapping {
+            device_id,
+            iova,
+            size: size as u64,
+        }),
+    ))
 }
 
 /// PRPリストページのDMAバッファを割り当てる

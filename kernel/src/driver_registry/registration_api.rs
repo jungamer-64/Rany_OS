@@ -4,8 +4,20 @@ use super::*;
 pub fn register_exports_driver(
     exports: *const DriverExportsV1,
 ) -> Result<DriverHandle, DriverError> {
+    register_exports_driver_with_context(exports, AbiDriverContext::new())
+}
+
+pub fn register_exports_driver_with_context(
+    exports: *const DriverExportsV1,
+    ctx: AbiDriverContext,
+) -> Result<DriverHandle, DriverError> {
     let prepared = prepare_driver_exports(exports, true)?;
-    let res = register_abi_driver_with_fini(prepared.entry, prepared.fini, prepared.providers);
+    let res = register_abi_driver_with_fini_and_context(
+        prepared.entry,
+        prepared.fini,
+        prepared.providers,
+        ctx,
+    );
     if res.is_err() {
         if let Some(fini) = prepared.fini {
             let _ = fini();
@@ -19,19 +31,40 @@ pub(crate) fn register_abi_driver_with_fini(
     exports_fini: Option<extern "C" fn() -> i32>,
     provider_descriptors: Vec<ProviderDescriptorV1>,
 ) -> Result<DriverHandle, DriverError> {
-    let abi_driver = build_abi_driver(entry, exports_fini, provider_descriptors)?;
+    register_abi_driver_with_fini_and_context(
+        entry,
+        exports_fini,
+        provider_descriptors,
+        AbiDriverContext::new(),
+    )
+}
+
+pub(crate) fn register_abi_driver_with_fini_and_context(
+    entry: AbiEntryFn,
+    exports_fini: Option<extern "C" fn() -> i32>,
+    provider_descriptors: Vec<ProviderDescriptorV1>,
+    ctx: AbiDriverContext,
+) -> Result<DriverHandle, DriverError> {
+    let abi_driver = build_abi_driver(entry, exports_fini, provider_descriptors, ctx)?;
     DRIVER_REGISTRY.register(abi_driver)
 }
 
 /// Register a driver implemented as an ABI vtable
 pub fn register_abi_driver(entry: AbiEntryFn) -> Result<DriverHandle, DriverError> {
+    register_abi_driver_with_context(entry, AbiDriverContext::new())
+}
+
+pub fn register_abi_driver_with_context(
+    entry: AbiEntryFn,
+    ctx: AbiDriverContext,
+) -> Result<DriverHandle, DriverError> {
     let vtable_ptr = entry();
     if vtable_ptr.is_null() {
         return Err(DriverError::InvalidState);
     }
 
     let providers = super::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
-    register_abi_driver_with_fini(entry, None, providers)
+    register_abi_driver_with_fini_and_context(entry, None, providers, ctx)
 }
 
 /// Unregister a driver by handle
@@ -52,7 +85,12 @@ pub(crate) fn update_abi_driver_with_fini(
 
     let provider_descriptors =
         super::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
-    let abi_driver = build_abi_driver(entry, exports_fini, provider_descriptors)?;
+    let abi_driver = build_abi_driver(
+        entry,
+        exports_fini,
+        provider_descriptors,
+        AbiDriverContext::new(),
+    )?;
     DRIVER_REGISTRY.replace_driver(handle, abi_driver)
 }
 

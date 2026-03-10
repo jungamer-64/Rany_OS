@@ -19,6 +19,7 @@ const MLX5_EQ_SPARE_EQE: u32 = 0x80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Mlx5PciIdentity {
+    pub segment: u16,
     pub bus: u8,
     pub device: u8,
     pub function: u8,

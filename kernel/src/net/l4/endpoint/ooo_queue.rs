@@ -123,7 +123,7 @@ impl ConnectionOooQueue {
 
         // LOOP_PROOF: mode=condition; reason=i is incremented and checked against segments.len().;
         while i < self.segments.len() {
-            let (seq, packet) = &self.segments[i];
+            let (seq, _packet) = &self.segments[i];
             if seq_before(*seq, rcv_nxt) {
                 let (seq, mut packet) = self.segments.remove(i);
                 let seg_end = seq.wrapping_add(packet.len() as u32);

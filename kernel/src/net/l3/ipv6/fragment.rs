@@ -581,7 +581,7 @@ impl Ipv6FragmentReassembler {
             Err(e) => {
                 // RFC 8200: Discard datagram on overlap/error
                 self.stats.dropped_invalid += 1;
-                let first_header = buffer.first_frag_header;
+                let _first_header = buffer.first_frag_header;
                 self.buffers.remove(&key);
                 (Err(e), expired)
             }

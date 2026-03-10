@@ -12,6 +12,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
+use kernel_api::abi::driver::PackedPciLocation;
 use spin::Mutex;
 
 use super::trb::{ErstEntry, Trb, TrbRing, TrbType};
@@ -67,6 +68,8 @@ pub struct XhciRingManager {
     max_slots: u8,
     /// 最大エンドポイント数（スロットあたり）
     max_endpoints: u8,
+    /// DMA 割り当てに使う PCI locator
+    pci_locator: PackedPciLocation,
 }
 
 /// 管理対象リング
@@ -87,9 +90,9 @@ pub struct ManagedRing {
 
 impl ManagedRing {
     /// 新しい管理対象リングを作成
-    pub fn new(size: usize, ring_type: RingType) -> Self {
+    pub fn new(size: usize, ring_type: RingType, pci_locator: PackedPciLocation) -> Self {
         Self {
-            ring: TrbRing::new(size),
+            ring: TrbRing::new(size, pci_locator),
             ring_type,
             enqueue_index: 0,
             dequeue_index: 0,
@@ -198,12 +201,12 @@ impl ManagedRing {
 
 impl XhciRingManager {
     /// 新しいリングマネージャを作成
-    pub fn new(max_slots: u8, max_endpoints: u8) -> Self {
+    pub fn new(max_slots: u8, max_endpoints: u8, pci_locator: PackedPciLocation) -> Self {
         // コマンドリングを作成
-        let command_ring = ManagedRing::new(COMMAND_RING_SIZE, RingType::Command);
+        let command_ring = ManagedRing::new(COMMAND_RING_SIZE, RingType::Command, pci_locator);
 
         // イベントリングを作成
-        let event_ring = ManagedRing::new(EVENT_RING_SIZE, RingType::Event);
+        let event_ring = ManagedRing::new(EVENT_RING_SIZE, RingType::Event, pci_locator);
 
         // ERSTを作成
         let mut erst = vec![ErstEntry::default(); 1].into_boxed_slice();
@@ -222,6 +225,7 @@ impl XhciRingManager {
             transfer_rings: Mutex::new(transfer_rings),
             max_slots,
             max_endpoints,
+            pci_locator,
         }
     }
 
@@ -296,7 +300,11 @@ impl XhciRingManager {
         }
 
         // 新しい転送リングを作成
-        let ring = Box::new(ManagedRing::new(TRANSFER_RING_SIZE, RingType::Transfer));
+        let ring = Box::new(ManagedRing::new(
+            TRANSFER_RING_SIZE,
+            RingType::Transfer,
+            self.pci_locator,
+        ));
         let addr = ring.device_address();
         rings[slot_index][ep_index] = Some(ring);
 

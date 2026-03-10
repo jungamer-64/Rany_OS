@@ -5,6 +5,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::driver::{Driver, DriverType};
 use kernel_api::{KapiError, KapiResult};
 
@@ -13,14 +14,16 @@ use crate::xhci::{XhciController, init_from_pci};
 /// USB driver wrapper implementing the Driver trait
 pub struct UsbDriverWrapper {
     base_addr: u64,
+    pci_locator: PackedPciLocation,
     controller: Option<Arc<XhciController>>,
 }
 
 impl UsbDriverWrapper {
     /// Create a new USB driver wrapper
-    pub fn new(base_addr: u64) -> Self {
+    pub fn new(base_addr: u64, pci_locator: PackedPciLocation) -> Self {
         Self {
             base_addr,
+            pci_locator,
             controller: None,
         }
     }
@@ -43,7 +46,8 @@ impl Driver for UsbDriverWrapper {
     }
 
     fn probe(&mut self) -> KapiResult<()> {
-        let controller = init_from_pci(self.base_addr).map_err(|_| KapiError::Internal(-1))?;
+        let controller =
+            init_from_pci(self.base_addr, self.pci_locator).map_err(|_| KapiError::Internal(-1))?;
 
         self.controller = Some(controller);
         Ok(())

@@ -1,6 +1,6 @@
 use crate::polling_driver::NvmePollingDriver;
 use kernel_api::KapiResult;
-use kernel_api::abi::driver::DriverContext;
+use kernel_api::abi::driver::{DriverContext, PackedPciLocation};
 use kernel_api::driver::{Driver, DriverType};
 
 use exorust_sync::PoisonLock;
@@ -10,9 +10,9 @@ pub struct NvmeDriverWrapper {
 }
 
 impl NvmeDriverWrapper {
-    pub fn new(bar0: u64, cores: u32) -> Self {
+    pub fn new(bar0: u64, cores: u32, pci_locator: PackedPciLocation) -> Self {
         Self {
-            inner: PoisonLock::new(NvmePollingDriver::new(bar0, cores, None)),
+            inner: PoisonLock::new(NvmePollingDriver::new(bar0, cores, pci_locator)),
         }
     }
 }
@@ -39,7 +39,11 @@ impl Driver for NvmeDriverWrapper {
 fn abi_probe(ctx: &mut DriverContext) -> i32 {
     static mut DRIVER: Option<NvmePollingDriver> = None;
     unsafe {
-        DRIVER = Some(NvmePollingDriver::new(ctx.device_address, 1, None));
+        DRIVER = Some(NvmePollingDriver::new(
+            ctx.device_address,
+            1,
+            ctx.pci_location(),
+        ));
         if let Some(ref mut driver) = DRIVER {
             if driver.init().is_err() {
                 return -1;

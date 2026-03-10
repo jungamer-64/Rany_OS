@@ -108,12 +108,7 @@ impl SystemIntegration {
                 let bar0_virt =
                     crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
                 let num_cores = crate::smp::cpu_count();
-                let packed_device_id = Some(
-                    ((dev.segment as u64) << 32)
-                        | ((dev.bdf.bus() as u64) << 16)
-                        | ((dev.bdf.device() as u64) << 8)
-                        | (dev.bdf.function() as u64),
-                );
+                let packed_device_id = dev.packed_locator();
 
                 match crate::drivers::nvme::init_nvme_polling(
                     bar0_virt,
@@ -170,7 +165,11 @@ impl SystemIntegration {
                 use crate::drivers::audio::hda::HdaDriver;
                 use alloc::boxed::Box;
 
-                let drv = Box::new(HdaDriver::new(bar0_virt, dev.interrupt_line));
+                let drv = Box::new(HdaDriver::new(
+                    bar0_virt,
+                    dev.interrupt_line,
+                    dev.packed_locator(),
+                ));
                 match register_driver(drv) {
                     Ok(handle) => {
                         if let Err(e) = driver_registry().probe_and_start(handle) {

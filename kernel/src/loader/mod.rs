@@ -32,12 +32,16 @@ pub use signature::{
     revoke_cell_hash, revoke_key, verify_cell,
 };
 
-use crate::driver_registry::{DriverHandle, register_abi_driver, register_exports_driver};
+use crate::driver_registry::{
+    DriverHandle, register_abi_driver_with_context, register_exports_driver_with_context,
+};
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use kernel_api::abi::driver::{DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverExportsV1};
+use kernel_api::abi::driver::{
+    DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL, DriverContext as AbiDriverContext, DriverExportsV1,
+};
 
 #[inline]
 pub(crate) fn str_eq(lhs: &str, rhs: &str) -> bool {
@@ -537,8 +541,19 @@ pub fn load_driver(
     elf_data: &[u8],
     allow_unsafe: bool,
 ) -> Result<DriverHandle, LoadError> {
+    load_driver_with_context(name, elf_data, allow_unsafe, AbiDriverContext::new())
+}
+
+/// Load a driver artifact and register it as an ABI driver with a pre-populated
+/// driver context.
+pub fn load_driver_with_context(
+    name: &str,
+    elf_data: &[u8],
+    allow_unsafe: bool,
+    ctx: AbiDriverContext,
+) -> Result<DriverHandle, LoadError> {
     let cell_id = load_cell(name, elf_data, allow_unsafe)?;
-    register_driver_from_cell(cell_id)
+    register_driver_from_cell_with_context(cell_id, ctx)
 }
 
 /// Load a driver pack (manifest + ELF + signature).
@@ -546,6 +561,17 @@ pub fn load_driver_pack(
     name: &str,
     pack_data: &[u8],
     allow_unsafe: bool,
+) -> Result<DriverHandle, LoadError> {
+    load_driver_pack_with_context(name, pack_data, allow_unsafe, AbiDriverContext::new())
+}
+
+/// Load a driver pack (manifest + ELF + signature) with a pre-populated driver
+/// context.
+pub fn load_driver_pack_with_context(
+    name: &str,
+    pack_data: &[u8],
+    allow_unsafe: bool,
+    ctx: AbiDriverContext,
 ) -> Result<DriverHandle, LoadError> {
     let pack = driver_pack::parse_driver_pack(pack_data)?;
     let signature_verified = driver_pack::verify_driver_pack(&pack)?;
@@ -579,7 +605,7 @@ pub fn load_driver_pack(
         pack.manifest.required_caps,
     )?;
 
-    register_driver_from_cell(cell_id)
+    register_driver_from_cell_with_context(cell_id, ctx)
 }
 
 /// Load a driver artifact: raw ELF or driver pack.
@@ -588,10 +614,21 @@ pub fn load_driver_artifact(
     data: &[u8],
     allow_unsafe: bool,
 ) -> Result<DriverHandle, LoadError> {
+    load_driver_artifact_with_context(name, data, allow_unsafe, AbiDriverContext::new())
+}
+
+/// Load a driver artifact: raw ELF or driver pack, preserving the supplied
+/// driver context for probe/start callbacks.
+pub fn load_driver_artifact_with_context(
+    name: &str,
+    data: &[u8],
+    allow_unsafe: bool,
+    ctx: AbiDriverContext,
+) -> Result<DriverHandle, LoadError> {
     if driver_pack::is_driver_pack(data) {
-        load_driver_pack(name, data, allow_unsafe)
+        load_driver_pack_with_context(name, data, allow_unsafe, ctx)
     } else {
-        load_driver(name, data, allow_unsafe)
+        load_driver_with_context(name, data, allow_unsafe, ctx)
     }
 }
 
@@ -610,6 +647,13 @@ fn record_driver_handle(cell_id: CellId, handle: DriverHandle) {
 }
 
 pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError> {
+    register_driver_from_cell_with_context(cell_id, AbiDriverContext::new())
+}
+
+pub(crate) fn register_driver_from_cell_with_context(
+    cell_id: CellId,
+    ctx: AbiDriverContext,
+) -> Result<DriverHandle, LoadError> {
     crate::io::log::early_print("[LDR] regdrv: begin\n");
     let exports_addr = with_registry(|r| {
         let cell = r.get(cell_id)?;
@@ -622,7 +666,7 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
     if let Some(addr) = exports_addr {
         crate::io::log::early_print("[LDR] regdrv: exports path\n");
         let exports_ptr = addr as *const DriverExportsV1;
-        match register_exports_driver(exports_ptr) {
+        match register_exports_driver_with_context(exports_ptr, ctx) {
             Ok(handle) => {
                 crate::io::log::early_print("[LDR] regdrv: exports registered\n");
                 record_driver_handle(cell_id, handle);
@@ -663,7 +707,7 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
     let entry_fn: kernel_api::abi::driver::DriverEntryFn =
         unsafe { core::mem::transmute(entry_addr) };
 
-    match register_abi_driver(entry_fn) {
+    match register_abi_driver_with_context(entry_fn, ctx) {
         Ok(handle) => {
             crate::io::log::early_print("[LDR] regdrv: abi registered\n");
             record_driver_handle(cell_id, handle);

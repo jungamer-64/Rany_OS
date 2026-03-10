@@ -1,32 +1,13 @@
 use super::*;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::nvme::dma::{NvmeDmaError, NvmeDmaRegion};
+use kernel_api::abi::driver::PackedPciLocation;
 
-/// Pack IommuDeviceId into u64 for API boundary
-fn pack_device_id(d: IommuDeviceId) -> u64 {
-    ((d.segment as u64) << 32)
-        | ((d.bus as u64) << 16)
-        | ((d.device as u64) << 8)
-        | (d.function as u64)
-}
-
-/// Unpack u64 into IommuDeviceId
-fn unpack_device_id(id: u64) -> IommuDeviceId {
+fn unpack_device_id(locator: PackedPciLocation) -> IommuDeviceId {
     IommuDeviceId {
-        segment: (id >> 32) as u16,
-        bus: (id >> 16) as u8,
-        device: (id >> 8) as u8,
-        function: id as u8,
-    }
-}
-
-fn map_nvme_dma_error(err: NvmeDmaError) -> KapiError {
-    match err {
-        NvmeDmaError::OutOfMemory => KapiError::OutOfMemory,
-        NvmeDmaError::InvalidLen
-        | NvmeDmaError::IommuDeviceMissing
-        | NvmeDmaError::IommuIdentityBlocked
-        | NvmeDmaError::IommuMappingFailed => KapiError::IoError,
+        segment: locator.segment(),
+        bus: locator.bus(),
+        device: locator.device(),
+        function: locator.function(),
     }
 }
 
@@ -94,36 +75,16 @@ impl KernelServices for ExoKernel {
     // Memory Management
     // ========================================================================
 
-    fn alloc_dma(&self, size: usize) -> Result<DmaBuffer, KapiError> {
-        let caller = context::current_subject().domain.as_u64();
-        // Use CoherentDmaBuffer for proper DMA allocation with correct physical address
-        match dma::CoherentDmaBuffer::new(size, dma::DmaMemoryAttributes::MMIO) {
-            Some(buffer) => {
-                let phys = buffer.phys_addr().as_u64();
-                let dev_addr = buffer.device_addr();
-                let virt_ptr = unsafe { buffer.as_slice().as_ptr() } as usize;
-
-                // SECURITY: Track physical address ownership
-                PHYS_OWNERSHIP_REGISTRY.register(phys, size, caller);
-
-                // Box up the buffer and register by virtual address so it can be freed later
-                let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
-                DMA_REGISTRY.register_with_key(virt_ptr, boxed, phys, caller);
-                Ok(unsafe {
-                    DmaBuffer::from_raw_parts(
-                        phys,
-                        dev_addr,
-                        virt_ptr as *mut u8,
-                        size,
-                        Some(release_dma_buffer),
-                    )
-                })
-            }
-            None => Err(KapiError::OutOfMemory),
+    fn alloc_dma_for_device(
+        &self,
+        size: usize,
+        device_id: PackedPciLocation,
+    ) -> Result<DmaBuffer, KapiError> {
+        if device_id.is_null() {
+            log::warn!("[KAPI] alloc_dma_for_device rejected null PCI locator");
+            return Err(KapiError::NotSupported);
         }
-    }
 
-    fn alloc_dma_for_device(&self, size: usize, device_id: u64) -> Result<DmaBuffer, KapiError> {
         let caller = context::current_subject().domain.as_u64();
         let dev_id = unpack_device_id(device_id);
         match dma::CoherentDmaBuffer::new_for_device(size, dma::DmaMemoryAttributes::MMIO, &dev_id)
@@ -650,158 +611,6 @@ impl KernelServices for ExoKernel {
             driver.sgl_max_entries()
         })
         .flatten()
-    }
-
-    fn nvme_prepare_dma_read(&self, _device_id: u64, len: usize) -> KapiResult<NvmeDmaHandle> {
-        if len == 0 {
-            return Err(KapiError::IoError);
-        }
-
-        let caller = context::current_subject().domain.as_u64();
-        let dma = NvmeDmaRegion::for_read(len, crate::io::nvme::iommu_device())
-            .map_err(map_nvme_dma_error)?;
-        let prp1 = dma.prp1();
-        let prp2 = dma.prp2();
-        let logical_len = dma.logical_len();
-        let data_phys = dma.phys_addr().as_u64();
-        let alloc_len = dma.alloc_len();
-
-        // SECURITY: Track physical address ownership
-        PHYS_OWNERSHIP_REGISTRY.register(data_phys, alloc_len, caller);
-
-        let entry = NvmeDmaContextEntry { dma, owner: caller };
-
-        let id = NVME_DMA_CONTEXT_REGISTRY.register(entry);
-        Ok(NvmeDmaHandle::new(id, prp1, prp2, logical_len))
-    }
-
-    fn nvme_prepare_dma_write(&self, _device_id: u64, data: &[u8]) -> KapiResult<NvmeDmaHandle> {
-        if data.is_empty() {
-            return Err(KapiError::IoError);
-        }
-
-        let caller = context::current_subject().domain.as_u64();
-        let dma = NvmeDmaRegion::for_write(data.len(), data, crate::io::nvme::iommu_device())
-            .map_err(map_nvme_dma_error)?;
-        let prp1 = dma.prp1();
-        let prp2 = dma.prp2();
-        let logical_len = dma.logical_len();
-        let data_phys = dma.phys_addr().as_u64();
-        let alloc_len = dma.alloc_len();
-
-        // SECURITY: Track physical address ownership
-        PHYS_OWNERSHIP_REGISTRY.register(data_phys, alloc_len, caller);
-
-        let entry = NvmeDmaContextEntry { dma, owner: caller };
-
-        let id = NVME_DMA_CONTEXT_REGISTRY.register(entry);
-        Ok(NvmeDmaHandle::new(id, prp1, prp2, logical_len))
-    }
-
-    fn nvme_complete_dma_read(&self, handle: NvmeDmaHandle) -> KapiResult<alloc::vec::Vec<u8>> {
-        let entry = NVME_DMA_CONTEXT_REGISTRY
-            .unregister(handle.id())
-            .ok_or(KapiError::InvalidHandle)?;
-
-        // SECURITY: Verify owner
-        let caller = context::current_subject().domain.as_u64();
-        if entry.owner != caller {
-            log::error!(
-                "[KAPI][SECURITY] nvme_complete_dma_read: Domain {} tried to complete DMA owned by Domain {}",
-                caller,
-                entry.owner
-            );
-            // Re-register to avoid losing it? No, better fail.
-            return Err(KapiError::PermissionDenied);
-        }
-
-        // Unregister physical ownership
-        PHYS_OWNERSHIP_REGISTRY.unregister(entry.dma.phys_addr().as_u64());
-
-        // Copy data from DMA buffer
-        let logical_len = entry.dma.logical_len();
-        let mut result = alloc::vec![0u8; logical_len];
-        entry.dma.copy_into(&mut result);
-        Ok(result)
-    }
-
-    fn nvme_complete_dma_write(&self, handle: NvmeDmaHandle) -> KapiResult<()> {
-        let entry = NVME_DMA_CONTEXT_REGISTRY
-            .unregister(handle.id())
-            .ok_or(KapiError::InvalidHandle)?;
-
-        // SECURITY: Verify owner
-        let caller = context::current_subject().domain.as_u64();
-        if entry.owner != caller {
-            log::error!(
-                "[KAPI][SECURITY] nvme_complete_dma_write: Domain {} tried to complete DMA owned by Domain {}",
-                caller,
-                entry.owner
-            );
-            return Err(KapiError::PermissionDenied);
-        }
-
-        // Unregister physical ownership
-        PHYS_OWNERSHIP_REGISTRY.unregister(entry.dma.phys_addr().as_u64());
-
-        drop(entry.dma);
-        Ok(())
-    }
-
-    fn nvme_iommu_device_id(&self, _device_id: u64) -> Option<u64> {
-        crate::io::nvme::iommu_device().map(|d| {
-            // Pack IommuDeviceId into u64 for API boundary
-            // DeviceId has public fields: segment, bus, device, function
-            ((d.segment as u64) << 32)
-                | ((d.bus as u64) << 16)
-                | ((d.device as u64) << 8)
-                | (d.function as u64)
-        })
-    }
-
-    fn nvme_iommu_map(
-        &self,
-        _device_id: u64,
-        phys_addr: u64,
-        size: usize,
-    ) -> KapiResult<(u64, u64)> {
-        let caller = context::current_subject().domain.as_u64();
-
-        // SECURITY: Verify that the caller actually owns the physical range being mapped.
-        // This prevents a malicious driver from mapping kernel memory or other drivers' memory.
-        if !PHYS_OWNERSHIP_REGISTRY.is_owned_by(phys_addr, size, caller) {
-            log::error!(
-                "[KAPI][SECURITY] nvme_iommu_map: Domain {} tried to map unowned physical range {:#x}-{:#x}",
-                caller,
-                phys_addr,
-                phys_addr + size as u64
-            );
-            return Err(KapiError::PermissionDenied);
-        }
-
-        let device = crate::io::nvme::iommu_device();
-        let (iova, mapping) = map_for_iommu(device, phys_addr, size)?;
-
-        // If we have a mapping, register it and return the ID
-        if let Some(m) = mapping {
-            let id = IOMMU_MAPPING_REGISTRY.register(m);
-            Ok((iova, id))
-        } else {
-            // No IOMMU - identity mapping
-            Ok((iova, 0))
-        }
-    }
-
-    fn nvme_iommu_unmap(&self, mapping_id: u64) -> KapiResult<()> {
-        if mapping_id == 0 {
-            // Identity mapping, nothing to unmap
-            return Ok(());
-        }
-
-        if let Some(mapping) = IOMMU_MAPPING_REGISTRY.unregister(mapping_id) {
-            mapping.unmap();
-        }
-        Ok(())
     }
 
     fn nvme_submit_rw(

@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+use crate::abi::driver::PackedPciLocation;
 use crate::{KapiResult, service::kernel};
 use alloc::vec::Vec;
 use core::fmt;
@@ -223,6 +224,15 @@ pub struct PciDeviceInfo {
 }
 
 impl PciDeviceInfo {
+    pub const fn packed_locator(&self) -> PackedPciLocation {
+        PackedPciLocation::new(
+            self.segment,
+            self.bdf.bus(),
+            self.bdf.device(),
+            self.bdf.function(),
+        )
+    }
+
     pub fn is_multifunction(&self) -> bool {
         (self.header_type & 0x80) != 0
     }

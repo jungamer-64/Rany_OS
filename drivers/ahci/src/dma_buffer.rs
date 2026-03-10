@@ -4,6 +4,7 @@
 
 // use x86_64::PhysAddr; // Not used from x86_64 but we use u64 from api
 // use core::slice;
+use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::service::kernel::instance as kernel;
 use x86_64::PhysAddr; // For type conversions if needed
@@ -16,18 +17,14 @@ type DmaBuffer = DmaSlice<CpuOwned>;
 pub struct AhciDmaReadBuffer {
     buffer: DmaBuffer,
     sector_count: usize,
-    device_id: Option<u64>,
+    device_id: PackedPciLocation,
 }
 
 impl AhciDmaReadBuffer {
     /// Create buffer for specified number of sectors
-    pub fn new(sector_count: usize, device_id: Option<u64>) -> Option<Self> {
+    pub fn new(sector_count: usize, device_id: PackedPciLocation) -> Option<Self> {
         let size = sector_count * SECTOR_SIZE;
-        let buffer = if let Some(id) = device_id {
-            kernel().alloc_dma_for_device(size, id).ok()?
-        } else {
-            kernel().alloc_dma(size).ok()?
-        };
+        let buffer = kernel().alloc_dma_for_device(size, device_id).ok()?;
 
         Some(Self {
             buffer,
@@ -66,20 +63,16 @@ impl AhciDmaReadBuffer {
 pub struct AhciDmaWriteBuffer {
     buffer: DmaBuffer,
     sector_count: usize,
-    device_id: Option<u64>,
+    device_id: PackedPciLocation,
 }
 
 impl AhciDmaWriteBuffer {
     /// Create buffer with initial data
-    pub fn with_data(data: &[u8], device_id: Option<u64>) -> Option<Self> {
+    pub fn with_data(data: &[u8], device_id: PackedPciLocation) -> Option<Self> {
         let sector_count = (data.len() + SECTOR_SIZE - 1) / SECTOR_SIZE;
         let size = sector_count * SECTOR_SIZE;
 
-        let mut buffer = if let Some(id) = device_id {
-            kernel().alloc_dma_for_device(size, id).ok()?
-        } else {
-            kernel().alloc_dma(size).ok()?
-        };
+        let mut buffer = kernel().alloc_dma_for_device(size, device_id).ok()?;
 
         buffer.as_slice_mut()[..data.len()].copy_from_slice(data);
 
@@ -105,17 +98,13 @@ impl AhciDmaWriteBuffer {
 /// Helper for IDENTIFY command buffer
 pub struct AhciIdentifyBuffer {
     buffer: DmaBuffer,
-    device_id: Option<u64>,
+    device_id: PackedPciLocation,
 }
 
 impl AhciIdentifyBuffer {
     /// Create 512-byte buffer
-    pub fn new(device_id: Option<u64>) -> Option<Self> {
-        let buffer = if let Some(id) = device_id {
-            kernel().alloc_dma_for_device(512, id).ok()?
-        } else {
-            kernel().alloc_dma(512).ok()?
-        };
+    pub fn new(device_id: PackedPciLocation) -> Option<Self> {
+        let buffer = kernel().alloc_dma_for_device(512, device_id).ok()?;
         Some(Self { buffer, device_id })
     }
 
@@ -133,11 +122,5 @@ impl AhciIdentifyBuffer {
             }
         }
         words
-    }
-}
-
-impl Default for AhciIdentifyBuffer {
-    fn default() -> Self {
-        Self::new(None).expect("Failed to allocate AHCI identify buffer")
     }
 }

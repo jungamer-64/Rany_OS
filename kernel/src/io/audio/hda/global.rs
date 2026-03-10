@@ -94,7 +94,7 @@ pub fn init() -> HdaResult<()> {
     log::info!("[HDA] MMIO base: 0x{:016x}\n", mmio_base);
 
     // Create and initialize controller
-    let mut controller = HdaController::new(mmio_base);
+    let mut controller = HdaController::new(mmio_base, pci_device.packed_locator());
     controller.init()?;
 
     *HDA_DRIVER.lock().unwrap_or_else(|e| e.into_inner()) = Some(controller);

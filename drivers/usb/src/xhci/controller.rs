@@ -16,6 +16,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Waker;
+use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use spin::Mutex;
 
@@ -80,6 +81,8 @@ impl DmaDeviceContext {
 pub struct XhciController {
     /// ベースアドレス
     base_addr: u64,
+    /// DMA 割り当てに使う PCI locator
+    pub(crate) pci_locator: PackedPciLocation,
     /// Capability Registers オフセット
     cap_offset: u64,
     /// Operational Registers オフセット
@@ -170,7 +173,7 @@ pub(crate) struct TransferCompletionResult {
 
 impl XhciController {
     /// 新しいxHCIコントローラを作成
-    pub fn new(base_addr: u64) -> UsbResult<Self> {
+    pub fn new(base_addr: u64, pci_locator: PackedPciLocation) -> UsbResult<Self> {
         // Capability Registers を読み取り
         let caplength = hal::mmio::mmio_read_u8((base_addr + CAPLENGTH as u64) as usize);
         let hciversion = hal::mmio::mmio_read_u16((base_addr + HCIVERSION as u64) as usize);
@@ -190,37 +193,40 @@ impl XhciController {
         let db_offset = base_addr + (dboff & !0x03) as u64;
 
         // コマンドリングを作成
-        let command_ring = TrbRing::new(COMMAND_RING_SIZE);
+        let command_ring = TrbRing::new(COMMAND_RING_SIZE, pci_locator);
 
         // イベントリングを作成
-        let event_ring = TrbRing::new(EVENT_RING_SIZE);
+        let event_ring = TrbRing::new(EVENT_RING_SIZE, pci_locator);
 
         // ERSTをDMAバッファで作成
         let erst_byte_size = core::mem::size_of::<ErstEntry>();
-        let (erst_ptr, erst_device_addr, erst_buf) =
-            match kernel_api::service::kernel::instance().alloc_dma(erst_byte_size) {
-                Ok(dma_buf) => {
-                    let ptr = dma_buf.as_ptr() as *mut ErstEntry;
-                    let dev_addr = dma_buf.device_address();
-                    unsafe {
-                        let entry = &mut *ptr;
-                        entry.ring_segment_base = event_ring.device_address();
-                        entry.ring_segment_size = EVENT_RING_SIZE as u16;
-                        entry.reserved = [0u8; 6];
-                    }
-                    (ptr, dev_addr, Some(dma_buf))
+        let (erst_ptr, erst_device_addr, erst_buf) = match kernel_api::service::kernel::instance()
+            .alloc_dma_for_device(erst_byte_size, pci_locator)
+        {
+            Ok(dma_buf) => {
+                let ptr = dma_buf.as_ptr() as *mut ErstEntry;
+                let dev_addr = dma_buf.device_address();
+                unsafe {
+                    let entry = &mut *ptr;
+                    entry.ring_segment_base = event_ring.device_address();
+                    entry.ring_segment_size = EVENT_RING_SIZE as u16;
+                    entry.reserved = [0u8; 6];
                 }
-                Err(_) => {
-                    log::error!("[XHCI] Failed to allocate DMA for ERST");
-                    return Err(UsbError::Other("Failed to allocate DMA for ERST".into()));
-                }
-            };
+                (ptr, dev_addr, Some(dma_buf))
+            }
+            Err(_) => {
+                log::error!("[XHCI] Failed to allocate DMA for ERST");
+                return Err(UsbError::Other("Failed to allocate DMA for ERST".into()));
+            }
+        };
 
         // DCBAAをDMAバッファで作成
         let dcbaa_entries = max_slots as usize + 1;
         let dcbaa_byte_size = dcbaa_entries * core::mem::size_of::<u64>();
         let (dcbaa_ptr, dcbaa_device_addr, dcbaa_buf) =
-            match kernel_api::service::kernel::instance().alloc_dma(dcbaa_byte_size) {
+            match kernel_api::service::kernel::instance()
+                .alloc_dma_for_device(dcbaa_byte_size, pci_locator)
+            {
                 Ok(dma_buf) => {
                     let ptr = dma_buf.as_ptr() as *mut u64;
                     let dev_addr = dma_buf.device_address();
@@ -244,6 +250,7 @@ impl XhciController {
 
         let controller = Self {
             base_addr,
+            pci_locator,
             cap_offset: base_addr,
             op_offset,
             rt_offset,

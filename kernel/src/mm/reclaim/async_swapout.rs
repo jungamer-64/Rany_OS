@@ -3,12 +3,10 @@
 // 設計書 5.2: Tier2/Tier3 統合, 設計書 10.4: 非同期I/Oとスワップアウト
 #![allow(dead_code)]
 
-use crate::mm::phys::buddy_allocator;
 use crate::mm::types::FrameIndex;
 use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
-use x86_64::structures::paging::{PageSize, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
 // ... (skipping imports and types assumed present in the module)
 

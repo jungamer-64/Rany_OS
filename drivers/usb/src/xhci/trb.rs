@@ -12,6 +12,7 @@
 
 #![allow(dead_code)]
 
+use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 
 type DmaBuffer = DmaSlice<CpuOwned>;
@@ -491,9 +492,9 @@ impl TrbRing {
     /// # Security Note
     /// ヒープ割り当てによるフォールバックは、IOMMU環境下で物理アドレスを
     /// 取得できないため、セキュリティ上の理由から削除されました。
-    pub fn new(size: usize) -> Self {
+    pub fn new(size: usize, pci_locator: PackedPciLocation) -> Self {
         let byte_size = size * core::mem::size_of::<Trb>();
-        match kernel_api::service::kernel::instance().alloc_dma(byte_size) {
+        match kernel_api::service::kernel::instance().alloc_dma_for_device(byte_size, pci_locator) {
             Ok(dma_buf) => {
                 let device_addr = dma_buf.device_address();
                 let virt_ptr = dma_buf.as_ptr() as *mut Trb;

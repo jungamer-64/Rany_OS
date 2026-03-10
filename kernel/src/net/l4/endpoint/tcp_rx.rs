@@ -1749,7 +1749,7 @@ fn process_tcp_new_connection(
     // SYN-ACK送信 (TCPオプション付き)
     // MSS=1460 (標準的なイーサネットMTU 1500 - IPヘッダ20 - TCPヘッダ20)
     let ws_opt = if ws_enabled { Some(7) } else { None };
-    let ts_opt = if ts_enabled {
+    let _ts_opt = if ts_enabled {
         Some(generate_tcp_timestamp())
     } else {
         None

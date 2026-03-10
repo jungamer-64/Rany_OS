@@ -31,8 +31,6 @@ use core::task::Waker;
 // VirtIO Common Definitions
 // ============================================================================
 
-use crate::io::virtio::VirtioDeviceStatus;
-
 mod global_init;
 pub use global_init::*;
 

@@ -5,8 +5,6 @@
 //! Shared types and constants for VirtIO GPU devices.
 //! Based on VirtIO Specification 5.7.
 
-use core::sync::atomic::{AtomicU32, Ordering};
-
 // =============================================================================
 // Constants and Features
 // =============================================================================

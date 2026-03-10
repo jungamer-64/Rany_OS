@@ -45,8 +45,6 @@ use vfs::block::{
 // VirtIO Common Definitions
 // ============================================================================
 
-use crate::io::virtio::VirtioDeviceStatus;
-
 pub use virtio_driver::blk::{
     BlockError, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP, VIRTIO_BLK_T_FLUSH,
     VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT, VirtioBlkConfig, VirtioBlkReqHeader, features,

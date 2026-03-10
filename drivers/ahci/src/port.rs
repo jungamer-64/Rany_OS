@@ -8,6 +8,7 @@ extern crate alloc;
 use core::ptr;
 use core::slice;
 use core::sync::atomic::AtomicU32;
+use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::service::kernel::instance as kernel;
 
@@ -37,27 +38,19 @@ pub struct AhciPort {
     /// Command Tables
     command_tables: [Option<DmaBuffer>; 32],
     active_commands: AtomicU32,
-    device_id: Option<u64>,
+    device_id: PackedPciLocation,
 }
 
 impl AhciPort {
     /// Create a new port
-    pub fn new(base: u64, port: PortNumber, device_id: Option<u64>) -> Option<Self> {
+    pub fn new(base: u64, port: PortNumber, device_id: PackedPciLocation) -> Option<Self> {
         let port_base = base + PORT_BASE as u64 + (port.as_u8() as u64 * PORT_SIZE as u64);
 
         // Allocate DMA memory for Command List (32 headers * 32 bytes = 1024 bytes)
-        let command_list = if let Some(id) = device_id {
-            kernel().alloc_dma_for_device(1024, id).ok()?
-        } else {
-            kernel().alloc_dma(1024).ok()?
-        };
+        let command_list = kernel().alloc_dma_for_device(1024, device_id).ok()?;
 
         // Allocate DMA memory for Received FIS (256 bytes)
-        let received_fis = if let Some(id) = device_id {
-            kernel().alloc_dma_for_device(256, id).ok()?
-        } else {
-            kernel().alloc_dma(256).ok()?
-        };
+        let received_fis = kernel().alloc_dma_for_device(256, device_id).ok()?;
 
         Some(Self {
             port,
@@ -453,15 +446,9 @@ impl AhciPort {
 
     fn get_or_alloc_command_table(&mut self, slot: SlotNumber) -> AhciResult<&mut CommandTable> {
         if self.command_tables[slot.as_usize()].is_none() {
-            let buffer = if let Some(id) = self.device_id {
-                kernel()
-                    .alloc_dma_for_device(core::mem::size_of::<CommandTable>(), id)
-                    .ok()
-            } else {
-                kernel()
-                    .alloc_dma(core::mem::size_of::<CommandTable>())
-                    .ok()
-            };
+            let buffer = kernel()
+                .alloc_dma_for_device(core::mem::size_of::<CommandTable>(), self.device_id)
+                .ok();
             self.command_tables[slot.as_usize()] = buffer;
         }
 

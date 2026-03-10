@@ -366,13 +366,15 @@ impl Mlx5Device {
     ) -> Mlx5Result<()> {
         self.is_vf = config.is_vf;
         self.bootstrap_fw_page_cursor = 0;
+        self.pci_segment = config.pci_identity.segment;
         self.pci_bus = config.pci_identity.bus;
         self.pci_device = config.pci_identity.device;
         self.pci_function = config.pci_identity.function;
 
         let plan = Mlx5BootstrapPlan::new(config);
         plan.validate_resources(resources)?;
-        self.set_pci_bdf(
+        self.set_pci_location(
+            config.pci_identity.segment,
             config.pci_identity.bus,
             config.pci_identity.device,
             config.pci_identity.function,

@@ -54,7 +54,7 @@
 #[path = "driver_abi/export_macro.rs"]
 mod export_macro;
 use core::sync::atomic::AtomicBool;
-pub const DRIVER_ABI_VERSION: u64 = 1;
+pub const DRIVER_ABI_VERSION: u64 = 2;
 
 // Include the generated type hash
 include!(concat!(env!("OUT_DIR"), "/abi_hash.rs"));
@@ -66,7 +66,7 @@ pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
 pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v2";
 /// ABI version for the KernelApiV2 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 2;
+pub const KERNEL_API_ABI_VERSION: u32 = 3;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 1;
 
@@ -165,6 +165,70 @@ pub enum AbiDriverType {
     Platform = 8,
 }
 
+/// ABI-stable PCI device locator packed into a single `u64`.
+///
+/// Layout:
+/// - bits 63..32: PCI segment
+/// - bits 23..16: bus
+/// - bits 15..8: device
+/// - bits 7..0: function
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PackedPciLocation(pub u64);
+
+impl PackedPciLocation {
+    pub const NULL: Self = Self(0);
+
+    pub const fn new(segment: u16, bus: u8, device: u8, function: u8) -> Self {
+        Self(
+            ((segment as u64) << 32)
+                | ((bus as u64) << 16)
+                | ((device as u64) << 8)
+                | (function as u64),
+        )
+    }
+
+    pub const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+
+    pub const fn is_null(self) -> bool {
+        self.0 == 0
+    }
+
+    pub const fn segment(self) -> u16 {
+        (self.0 >> 32) as u16
+    }
+
+    pub const fn bus(self) -> u8 {
+        (self.0 >> 16) as u8
+    }
+
+    pub const fn device(self) -> u8 {
+        (self.0 >> 8) as u8
+    }
+
+    pub const fn function(self) -> u8 {
+        self.0 as u8
+    }
+}
+
+impl From<u64> for PackedPciLocation {
+    fn from(value: u64) -> Self {
+        Self::from_raw(value)
+    }
+}
+
+impl From<PackedPciLocation> for u64 {
+    fn from(value: PackedPciLocation) -> Self {
+        value.raw()
+    }
+}
+
 // ============================================================================
 // Driver Context
 // ============================================================================
@@ -180,6 +244,8 @@ pub struct DriverContext {
     pub device_address: u64,
     /// Secondary device address (BAR1, etc.) or 0 if unused
     pub device_address_secondary: u64,
+    /// Packed PCI segment:bus:device.function for device-scoped DMA
+    pub pci_locator: u64,
     /// Interrupt number (IRQ)
     pub irq: u32,
     /// Driver-specific flags
@@ -193,7 +259,7 @@ pub struct DriverContext {
     /// Driver-specific data pointer (used to store Box<Driver> raw pointer)
     pub driver_data: u64,
     /// Reserved for future use
-    pub reserved: [u64; 3],
+    pub reserved: [u64; 2],
 }
 
 impl DriverContext {
@@ -202,13 +268,14 @@ impl DriverContext {
         Self {
             device_address: 0,
             device_address_secondary: 0,
+            pci_locator: PackedPciLocation::NULL.raw(),
             irq: 0,
             flags: 0,
             vendor_id: 0,
             device_id: 0,
             class_code: 0,
             driver_data: 0,
-            reserved: [0; 3],
+            reserved: [0; 2],
         }
     }
 
@@ -219,18 +286,24 @@ impl DriverContext {
         vendor_id: u16,
         device_id: u16,
         class_code: u32,
+        pci_locator: PackedPciLocation,
     ) -> Self {
         Self {
             device_address: bar0,
             device_address_secondary: 0,
+            pci_locator: pci_locator.raw(),
             irq,
             flags: 0,
             vendor_id,
             device_id,
             class_code,
             driver_data: 0,
-            reserved: [0; 3],
+            reserved: [0; 2],
         }
+    }
+
+    pub const fn pci_location(&self) -> PackedPciLocation {
+        PackedPciLocation::from_raw(self.pci_locator)
     }
 }
 
@@ -447,7 +520,6 @@ pub struct KernelApiV2 {
 
     pub log: extern "C" fn(level: u32, msg_ptr: *const u8, msg_len: usize),
 
-    pub alloc_dma_raw: extern "C" fn(size: usize, align: usize, out: *mut AbiDmaSlice) -> i32,
     pub alloc_dma_for_device_raw:
         extern "C" fn(size: usize, device_id: u64, align: usize, out: *mut AbiDmaSlice) -> i32,
     pub release_dma_raw: extern "C" fn(virt_addr: u64, size: usize, phys_addr: u64) -> i32,

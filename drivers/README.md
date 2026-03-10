@@ -23,7 +23,8 @@ hal = { path = "../hal" }
 
 If your driver needs to allocate DMA memory:
 
-- Use `kernel_api::service::kernel::instance().alloc_dma(size)` and let the returned DMA slice reclaim itself on Drop.
+- Use `kernel_api::service::kernel::instance().alloc_dma_for_device(size, pci_locator)` and let the returned `kernel_api::dma::DmaSlice<kernel_api::dma::CpuOwned>` reclaim itself on Drop.
+- Pass a real `kernel_api::abi::driver::PackedPciLocation` from `DriverContext::pci_location()` or your PCI enumeration path. Public driver code must not rely on identity/global DMA fallback.
 
 If your driver needs to run as a standalone cell:
 

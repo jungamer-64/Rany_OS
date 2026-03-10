@@ -38,4 +38,37 @@ for pattern in "${patterns[@]}"; do
   fi
 done
 
+driver_dma_patterns=(
+  'kernel_api::service::kernel::instance\(\)\.alloc_dma\('
+  '\bkernel\.alloc_dma\('
+)
+
+driver_locator_patterns=(
+  '\([[:space:]]*.*segment.*as[[:space:]]+u64\)[[:space:]]*<<[[:space:]]*32'
+  '\([[:space:]]*.*bus.*as[[:space:]]+u64\)[[:space:]]*<<[[:space:]]*16'
+  '\([[:space:]]*.*device.*as[[:space:]]+u64\)[[:space:]]*<<[[:space:]]*8'
+)
+
+driver_dma_audit_patterns=(
+  '\.physical_address\('
+)
+
+for pattern in "${driver_dma_patterns[@]}"; do
+  if rg -n -g '!target' -- "$pattern" drivers; then
+    status=1
+  fi
+done
+
+for pattern in "${driver_locator_patterns[@]}"; do
+  if rg -n -g '!target' -- "$pattern" drivers; then
+    status=1
+  fi
+done
+
+for pattern in "${driver_dma_audit_patterns[@]}"; do
+  if rg -n -g '!target' -- "$pattern" drivers; then
+    status=1
+  fi
+done
+
 exit "$status"

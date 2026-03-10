@@ -7,6 +7,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use exorust_sync::PoisonLock;
+use kernel_api::abi::driver::PackedPciLocation;
 
 use super::port::AhciPort;
 use super::types::{
@@ -21,11 +22,11 @@ pub struct AhciController {
     ports: Vec<Arc<PoisonLock<AhciPort>>>,
     version: u32,
     command_slots: u8,
-    device_id: Option<u64>,
+    device_id: PackedPciLocation,
 }
 
 impl AhciController {
-    pub fn new(base: u64, device_id: Option<u64>) -> AhciResult<Self> {
+    pub fn new(base: u64, device_id: PackedPciLocation) -> AhciResult<Self> {
         let cap = hal::mmio::mmio_read_u32((base + GHC_CAP as u64) as usize);
         let pi = hal::mmio::mmio_read_u32((base + GHC_PI as u64) as usize);
         let vs = hal::mmio::mmio_read_u32((base + GHC_VS as u64) as usize);
@@ -141,8 +142,11 @@ impl AhciController {
     }
 }
 
-pub fn init_from_pci(base_addr: u64) -> AhciResult<Arc<PoisonLock<AhciController>>> {
-    let mut controller = AhciController::new(base_addr, None)?;
+pub fn init_from_pci(
+    base_addr: u64,
+    device_id: PackedPciLocation,
+) -> AhciResult<Arc<PoisonLock<AhciController>>> {
+    let mut controller = AhciController::new(base_addr, device_id)?;
     controller.init()?;
     Ok(Arc::new(PoisonLock::new(controller)))
 }

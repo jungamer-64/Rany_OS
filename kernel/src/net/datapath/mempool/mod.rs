@@ -426,7 +426,10 @@ pub(crate) fn alloc_packet_for_active_dma_device() -> Option<PacketRef> {
     }
 
     kernel_instance()
-        .alloc_dma_for_device(DMA_PACKET_BUFFER_SIZE, device_id)
+        .alloc_dma_for_device(
+            DMA_PACKET_BUFFER_SIZE,
+            kernel_api::abi::driver::PackedPciLocation::from_raw(device_id),
+        )
         .ok()
         .map(packet_ref_from_kapi_dma_slice)
 }

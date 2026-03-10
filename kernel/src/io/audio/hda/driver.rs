@@ -6,6 +6,7 @@
 
 use core::sync::atomic::Ordering;
 
+use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
@@ -15,15 +16,17 @@ use crate::io::audio::hda::{HdaController, global};
 pub struct HdaDriver {
     irq: u8,
     mmio_base: u64,
+    pci_locator: PackedPciLocation,
     initialized: bool,
 }
 
 impl HdaDriver {
     /// Create a new HDA Driver instance
-    pub fn new(mmio_base: u64, irq: u8) -> Self {
+    pub fn new(mmio_base: u64, irq: u8, pci_locator: PackedPciLocation) -> Self {
         Self {
             irq,
             mmio_base,
+            pci_locator,
             initialized: false,
         }
     }
@@ -46,7 +49,7 @@ impl Driver for HdaDriver {
         log::info!(target: "hda", "Probing Intel HD Audio...");
 
         // Create and initialize controller
-        let mut controller = HdaController::new(self.mmio_base);
+        let mut controller = HdaController::new(self.mmio_base, self.pci_locator);
         match controller.init() {
             Ok(_) => {
                 // Register global instance

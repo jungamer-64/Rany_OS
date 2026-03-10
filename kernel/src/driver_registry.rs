@@ -32,7 +32,7 @@ use kernel_api::abi::driver::{
     AbiDmaSlice, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle,
     DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
     DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
-    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV2,
+    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV2, PackedPciLocation,
 };
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::error::{KapiError, KapiResult};
@@ -523,28 +523,6 @@ extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
     crate::io::log::early_print("[KAPI] log done\n");
 }
 
-extern "C" fn kapi_alloc_dma_raw(size: usize, _align: usize, out: *mut AbiDmaSlice) -> i32 {
-    if out.is_null() {
-        return AbiErrorCode::InvalidParam as i32;
-    }
-
-    match kernel_api::service::kernel::instance().alloc_dma(size) {
-        Ok(buffer) => {
-            unsafe {
-                *out = AbiDmaSlice {
-                    phys_addr: buffer.physical_address(),
-                    device_addr: buffer.device_address(),
-                    virt_addr: buffer.as_ptr() as usize as u64,
-                    size: buffer.size(),
-                };
-            }
-            core::mem::forget(buffer);
-            AbiErrorCode::Success as i32
-        }
-        Err(_) => AbiErrorCode::OutOfMemory as i32,
-    }
-}
-
 extern "C" fn kapi_alloc_dma_for_device_raw(
     size: usize,
     device_id: u64,
@@ -555,7 +533,9 @@ extern "C" fn kapi_alloc_dma_for_device_raw(
         return AbiErrorCode::InvalidParam as i32;
     }
 
-    match kernel_api::service::kernel::instance().alloc_dma_for_device(size, device_id) {
+    match kernel_api::service::kernel::instance()
+        .alloc_dma_for_device(size, PackedPciLocation::from_raw(device_id))
+    {
         Ok(buffer) => {
             unsafe {
                 *out = AbiDmaSlice {
@@ -682,7 +662,6 @@ pub static __exorust_kernel_api_v2: KernelApiV2 = KernelApiV2 {
     abi_version: KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV2>() as u32,
     log: kapi_log,
-    alloc_dma_raw: kapi_alloc_dma_raw,
     alloc_dma_for_device_raw: kapi_alloc_dma_for_device_raw,
     release_dma_raw: kapi_release_dma_raw,
     map_mmio: kapi_map_mmio,
@@ -778,6 +757,7 @@ fn build_abi_driver(
     entry: AbiEntryFn,
     exports_fini: Option<extern "C" fn() -> i32>,
     provider_descriptors: Vec<ProviderDescriptorV1>,
+    ctx: AbiDriverContext,
 ) -> Result<Box<dyn Driver>, DriverError> {
     // Call the entry to get vtable pointer
     crate::io::log::early_print("[DRIVER] build_abi_driver: entry()\n");
@@ -825,7 +805,7 @@ fn build_abi_driver(
     let abi_driver = Box::new(AbiDriver {
         vtable: vtable_ptr,
         name,
-        ctx: AbiDriverContext::new(),
+        ctx,
         exports_fini,
         provider_descriptors,
     });

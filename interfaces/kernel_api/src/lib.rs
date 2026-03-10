@@ -196,7 +196,9 @@ macro_rules! declare_rany_type_id_section {
 
 #[cfg(test)]
 mod tests {
-    use crate::abi::driver::{AbiError, DriverContext, pack_version, unpack_version};
+    use crate::abi::driver::{
+        AbiError, DriverContext, PackedPciLocation, pack_version, unpack_version,
+    };
 
     #[test]
     fn version_pack_unpack_smoke() {
@@ -216,9 +218,42 @@ mod tests {
         let ctx = DriverContext::new();
         assert_eq!(ctx.device_address, 0);
         assert_eq!(ctx.device_address_secondary, 0);
+        assert_eq!(ctx.pci_locator, 0);
         assert_eq!(ctx.irq, 0);
         assert_eq!(ctx.flags, 0);
         assert_eq!(ctx.driver_data, 0);
-        assert_eq!(ctx.reserved, [0; 3]);
+        assert_eq!(ctx.reserved, [0; 2]);
+    }
+
+    #[test]
+    fn packed_pci_location_round_trip() {
+        let locator = PackedPciLocation::new(0x1234, 0x56, 0x1A, 0x07);
+        assert_eq!(locator.segment(), 0x1234);
+        assert_eq!(locator.bus(), 0x56);
+        assert_eq!(locator.device(), 0x1A);
+        assert_eq!(locator.function(), 0x07);
+        assert_eq!(PackedPciLocation::from_raw(locator.raw()), locator);
+    }
+
+    #[test]
+    fn packed_pci_location_null_accessors_are_zero() {
+        let locator = PackedPciLocation::NULL;
+        assert!(locator.is_null());
+        assert_eq!(locator.segment(), 0);
+        assert_eq!(locator.bus(), 0);
+        assert_eq!(locator.device(), 0);
+        assert_eq!(locator.function(), 0);
+    }
+
+    #[test]
+    fn driver_context_for_pci_preserves_locator() {
+        let locator = PackedPciLocation::new(0x002a, 0x11, 0x03, 0x01);
+        let ctx = DriverContext::for_pci(0xfeed_0000, 17, 0x8086, 0x1234, 0x0108_02, locator);
+        assert_eq!(ctx.device_address, 0xfeed_0000);
+        assert_eq!(ctx.irq, 17);
+        assert_eq!(ctx.vendor_id, 0x8086);
+        assert_eq!(ctx.device_id, 0x1234);
+        assert_eq!(ctx.class_code, 0x0108_02);
+        assert_eq!(ctx.pci_location(), locator);
     }
 }

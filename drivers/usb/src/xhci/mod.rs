@@ -28,6 +28,8 @@
 
 #![allow(dead_code)]
 
+use kernel_api::abi::driver::PackedPciLocation;
+
 pub mod command;
 pub mod context;
 pub mod controller;
@@ -163,8 +165,11 @@ pub const PORTSC_CHANGE_MASK: u32 =
 // ============================================================================
 
 /// PCIデバイスからxHCIを初期化
-pub fn init_from_pci(base_addr: u64) -> UsbResult<Arc<XhciController>> {
-    let mut controller = XhciController::new(base_addr)?;
+pub fn init_from_pci(
+    base_addr: u64,
+    pci_locator: PackedPciLocation,
+) -> UsbResult<Arc<XhciController>> {
+    let mut controller = XhciController::new(base_addr, pci_locator)?;
     controller.init()?;
 
     let controller = Arc::new(controller);

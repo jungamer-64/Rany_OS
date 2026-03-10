@@ -6,7 +6,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use kernel_api::abi::driver::DriverContext;
+use kernel_api::abi::driver::{DriverContext, PackedPciLocation};
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DeviceId, Driver, DriverFuture, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
@@ -511,16 +511,13 @@ impl Mlx5AsyncDriver {
         }
     }
 
-    fn pack_iommu_device_id(device: crate::io::iommu::types::DeviceId) -> u64 {
-        ((device.segment as u64) << 32)
-            | ((device.bus as u64) << 16)
-            | ((device.device as u64) << 8)
-            | (device.function as u64)
+    fn pack_iommu_device_id(device: crate::io::iommu::types::DeviceId) -> PackedPciLocation {
+        PackedPciLocation::new(device.segment, device.bus, device.device, device.function)
     }
 
     fn alloc_dma_for_device(
         size: usize,
-        packed_device_id: u64,
+        packed_device_id: PackedPciLocation,
         label: &'static str,
     ) -> KapiResult<DmaSlot> {
         kernel()
@@ -540,7 +537,7 @@ impl Mlx5AsyncDriver {
 
     fn allocate_dma_resources(
         &self,
-        packed_device_id: u64,
+        packed_device_id: PackedPciLocation,
         plan: &Mlx5BootstrapPlan,
         _is_vf: bool,
     ) -> KapiResult<Mlx5DmaResources> {
@@ -864,6 +861,7 @@ impl Mlx5AsyncDriver {
             queue_profile: Mlx5QueueProfile::default(),
             mkey_params: mlx5_driver::resources::MkeyParams::default(),
             pci_identity: Mlx5PciIdentity {
+                segment: pci_dev.segment,
                 bus: pci_dev.bdf.bus(),
                 device: pci_dev.bdf.device(),
                 function: pci_dev.bdf.function(),

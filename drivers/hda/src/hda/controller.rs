@@ -15,6 +15,7 @@
 use alloc::vec::Vec;
 // Volatile memory reads/writes centralized via mmio helpers
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use kernel_api::abi::driver::PackedPciLocation;
 
 use crate::regs::*;
 use crate::types::{CodecInfo, HdaError, HdaResult, make_corb_entry};
@@ -27,6 +28,8 @@ use crate::types::{CodecInfo, HdaError, HdaResult, make_corb_entry};
 pub struct HdaController {
     /// Memory-mapped register base address
     pub(crate) mmio_base: u64,
+    /// DMA 割り当てに使う PCI locator
+    pub(crate) pci_locator: PackedPciLocation,
     /// CORB buffer (virtual address for CPU access)
     pub(crate) corb_addr: u64,
     /// CORB buffer device address (IOVA or physical, for hardware register writes)
@@ -92,9 +95,10 @@ unsafe impl Sync for HdaController {}
 
 impl HdaController {
     /// Create a new HDA controller instance
-    pub fn new(mmio_base: u64) -> Self {
+    pub fn new(mmio_base: u64, pci_locator: PackedPciLocation) -> Self {
         Self {
             mmio_base,
+            pci_locator,
             corb_addr: 0,
             corb_device_addr: 0,
             corb_size: 0,
@@ -308,9 +312,9 @@ impl HdaController {
     /// Returns `(virt_addr, device_addr)` tuple where:
     /// - `virt_addr` is the CPU-accessible virtual address
     /// - `device_addr` is the hardware-visible address (IOVA or physical)
-    pub fn alloc_dma_buffer(size: usize) -> HdaResult<(u64, u64)> {
+    pub fn alloc_dma_buffer(size: usize, pci_locator: PackedPciLocation) -> HdaResult<(u64, u64)> {
         // Use kernel API for proper DMA allocation with IOMMU support
-        match kernel_api::service::kernel::instance().alloc_dma(size) {
+        match kernel_api::service::kernel::instance().alloc_dma_for_device(size, pci_locator) {
             Ok(buf) => {
                 let virt = buf.as_ptr() as u64;
                 let dev = buf.device_address();
@@ -350,7 +354,7 @@ impl HdaController {
 
         // Allocate CORB buffer
         let buffer_size = size_entries * CORB_ENTRY_SIZE;
-        let (virt, dev) = Self::alloc_dma_buffer(buffer_size)?;
+        let (virt, dev) = Self::alloc_dma_buffer(buffer_size, self.pci_locator)?;
         self.corb_addr = virt;
         self.corb_device_addr = dev;
 
@@ -427,7 +431,7 @@ impl HdaController {
 
         // Allocate RIRB buffer
         let buffer_size = size_entries * RIRB_ENTRY_SIZE;
-        let (virt, dev) = Self::alloc_dma_buffer(buffer_size)?;
+        let (virt, dev) = Self::alloc_dma_buffer(buffer_size, self.pci_locator)?;
         self.rirb_addr = virt;
         self.rirb_device_addr = dev;
 

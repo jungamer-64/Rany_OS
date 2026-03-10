@@ -12,7 +12,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 #[cfg(test)]
 use kernel_api::abi::driver::AbiDmaSlice;
-use kernel_api::abi::driver::{AbiMmioHandle, DriverContext, KernelApiV2};
+use kernel_api::abi::driver::{AbiMmioHandle, DriverContext, KernelApiV2, PackedPciLocation};
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
 
@@ -35,15 +35,6 @@ fn kernel_api() -> &'static KernelApiV2 {
 
 #[cfg(test)]
 extern "C" fn test_kernel_log(_level: u32, _msg_ptr: *const u8, _msg_len: usize) {}
-
-#[cfg(test)]
-extern "C" fn test_kernel_alloc_dma_raw(
-    _size: usize,
-    _align: usize,
-    _out: *mut AbiDmaSlice,
-) -> i32 {
-    -1
-}
 
 #[cfg(test)]
 extern "C" fn test_kernel_alloc_dma_for_device_raw(
@@ -94,7 +85,6 @@ pub static __exorust_kernel_api_v2: KernelApiV2 = KernelApiV2 {
     abi_version: kernel_api::abi::driver::KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV2>() as u32,
     log: test_kernel_log,
-    alloc_dma_raw: test_kernel_alloc_dma_raw,
     alloc_dma_for_device_raw: test_kernel_alloc_dma_for_device_raw,
     release_dma_raw: test_kernel_release_dma_raw,
     map_mmio: test_kernel_map_mmio,
@@ -125,11 +115,14 @@ struct DmaSlot {
 unsafe impl Sync for DmaSlot {}
 
 impl DmaSlot {
-    fn alloc(size: usize, label: &'static str) -> Result<Self, i32> {
+    fn alloc(
+        size: usize,
+        pci_locator: PackedPciLocation,
+        label: &'static str,
+    ) -> Result<Self, i32> {
         loop {
-            match kernel_api::service::kernel::instance().alloc_dma(size) {
+            match kernel_api::service::kernel::instance().alloc_dma_for_device(size, pci_locator) {
                 Ok(buf) => {
-                    let phys_addr = buf.physical_address();
                     let device_addr = buf.device_address();
                     let virt_addr = buf.as_ptr() as u64;
                     let size = buf.size();
@@ -143,8 +136,8 @@ impl DmaSlot {
 
                     log::info!(
                         target: "mlx5",
-                        "DMA allocated for {}: device={:#x} phys={:#x} size={:#x}",
-                        label, device_addr, phys_addr, size
+                        "DMA allocated for {}: device={:#x} size={:#x}",
+                        label, device_addr, size
                     );
                     return Ok(Self {
                         buffer: Some(buf),
@@ -203,12 +196,12 @@ impl Mlx5DmaResources {
         slots.iter().map(DmaSlot::device_address).collect()
     }
 
-    fn allocate(plan: &Mlx5BootstrapPlan) -> Result<Self, i32> {
+    fn allocate(plan: &Mlx5BootstrapPlan, pci_locator: PackedPciLocation) -> Result<Self, i32> {
         let profile = plan.queue_profile();
 
         let mut fw_pages = Vec::with_capacity(plan.fw_boot_page_count());
         for _ in 0..plan.fw_boot_page_count() {
-            fw_pages.push(DmaSlot::alloc(plan.fw_page_size(), "fw_page")?);
+            fw_pages.push(DmaSlot::alloc(plan.fw_page_size(), pci_locator, "fw_page")?);
         }
 
         let mut eqs = Vec::with_capacity(profile.eq_count);
@@ -222,25 +215,33 @@ impl Mlx5DmaResources {
         let mut rq_dbs = Vec::with_capacity(profile.rx_queue_count);
 
         for _ in 0..profile.eq_count {
-            eqs.push(DmaSlot::alloc(plan.eq_size(), "eq")?);
+            eqs.push(DmaSlot::alloc(plan.eq_size(), pci_locator, "eq")?);
         }
         for _ in 0..profile.tx_queue_count {
-            tx_cqs.push(DmaSlot::alloc(plan.cq_size(), "tx_cq")?);
-            tx_cq_dbs.push(DmaSlot::alloc(plan.db_record_size(), "tx_cq_db")?);
-            sqs.push(DmaSlot::alloc(plan.sq_size(), "sq")?);
-            sq_dbs.push(DmaSlot::alloc(plan.db_record_size(), "sq_db")?);
+            tx_cqs.push(DmaSlot::alloc(plan.cq_size(), pci_locator, "tx_cq")?);
+            tx_cq_dbs.push(DmaSlot::alloc(
+                plan.db_record_size(),
+                pci_locator,
+                "tx_cq_db",
+            )?);
+            sqs.push(DmaSlot::alloc(plan.sq_size(), pci_locator, "sq")?);
+            sq_dbs.push(DmaSlot::alloc(plan.db_record_size(), pci_locator, "sq_db")?);
         }
         for _ in 0..profile.rx_queue_count {
-            rx_cqs.push(DmaSlot::alloc(plan.cq_size(), "rx_cq")?);
-            rx_cq_dbs.push(DmaSlot::alloc(plan.db_record_size(), "rx_cq_db")?);
-            rqs.push(DmaSlot::alloc(plan.rq_size(), "rq")?);
-            rq_dbs.push(DmaSlot::alloc(plan.db_record_size(), "rq_db")?);
+            rx_cqs.push(DmaSlot::alloc(plan.cq_size(), pci_locator, "rx_cq")?);
+            rx_cq_dbs.push(DmaSlot::alloc(
+                plan.db_record_size(),
+                pci_locator,
+                "rx_cq_db",
+            )?);
+            rqs.push(DmaSlot::alloc(plan.rq_size(), pci_locator, "rq")?);
+            rq_dbs.push(DmaSlot::alloc(plan.db_record_size(), pci_locator, "rq_db")?);
         }
 
         Ok(Self {
-            cmdq: DmaSlot::alloc(plan.command_queue_size(), "cmdq")?,
-            cmd_in_mbox: DmaSlot::alloc(plan.command_mailbox_size(), "cmd_in_mbox")?,
-            cmd_out_mbox: DmaSlot::alloc(plan.command_mailbox_size(), "cmd_out_mbox")?,
+            cmdq: DmaSlot::alloc(plan.command_queue_size(), pci_locator, "cmdq")?,
+            cmd_in_mbox: DmaSlot::alloc(plan.command_mailbox_size(), pci_locator, "cmd_in_mbox")?,
+            cmd_out_mbox: DmaSlot::alloc(plan.command_mailbox_size(), pci_locator, "cmd_out_mbox")?,
             fw_pages,
             eqs,
             tx_cqs,
@@ -372,11 +373,17 @@ impl AsyncDriver for Mlx5AsyncDriver {
     ) -> DriverFuture<'_, kernel_api::error::KapiResult<()>> {
         let bar0_phys = ctx.device_address;
         let device_id = ctx.device_id;
+        let pci_locator = ctx.pci_location();
         Box::pin(async move {
             let config = Mlx5BootstrapConfig {
                 queue_profile: Mlx5QueueProfile::default(),
                 mkey_params: crate::resources::MkeyParams::default(),
-                pci_identity: Mlx5PciIdentity::default(),
+                pci_identity: Mlx5PciIdentity {
+                    segment: pci_locator.segment(),
+                    bus: pci_locator.bus(),
+                    device: pci_locator.device(),
+                    function: pci_locator.function(),
+                },
                 is_vf: crate::defs::ConnectXVariant::is_vf_device_id(device_id),
             };
             let plan = Mlx5BootstrapPlan::new(&config);
@@ -396,7 +403,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 log::info!(target: "mlx5", "PCI device {:#x} recognized as Virtual Function (VF)", device_id);
             }
 
-            let dma = match Mlx5DmaResources::allocate(&plan) {
+            let dma = match Mlx5DmaResources::allocate(&plan, pci_locator) {
                 Ok(dma) => dma,
                 Err(_) => {
                     (kernel_api().unmap_mmio)(&mmio);

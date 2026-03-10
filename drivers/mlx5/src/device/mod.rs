@@ -18,6 +18,7 @@ use crate::resources::{MkeyInfo, TirInfo, TisInfo};
 use crate::wq::{ReceiveQueue, SendQueue};
 use alloc::vec;
 use alloc::vec::Vec;
+use kernel_api::abi::driver::PackedPciLocation;
 
 pub mod caps;
 pub mod init;
@@ -80,6 +81,7 @@ pub struct Mlx5Device {
     pub(crate) is_vf: bool,
     pub(crate) is_ecpf: bool,
 
+    pub(crate) pci_segment: u16,
     pub(crate) pci_bus: u8,
     pub(crate) pci_device: u8,
     pub(crate) pci_function: u8,
@@ -125,6 +127,7 @@ impl Mlx5Device {
             ^ self.cmd_in_mbox_device.rotate_left(7)
             ^ self.cmd_out_mbox_device.rotate_left(23)
             ^ ((self.device_id as u64) << 32)
+            ^ ((self.pci_segment as u64) << 40)
             ^ ((self.pci_bus as u64) << 24)
             ^ ((self.pci_device as u64) << 16)
             ^ ((self.pci_function as u64) << 8);
@@ -173,6 +176,7 @@ impl Mlx5Device {
             resources_allocated: false,
             is_vf: ConnectXVariant::is_vf_device_id(device_id),
             is_ecpf: false,
+            pci_segment: 0,
             pci_bus: 0,
             pci_device: 0,
             pci_function: 0,
@@ -217,12 +221,17 @@ impl Mlx5Device {
         self.is_vf
     }
 
-    pub(crate) fn packed_device_id(&self) -> u64 {
-        ((self.pci_bus as u64) << 16) | ((self.pci_device as u64) << 8) | (self.pci_function as u64)
+    pub(crate) fn packed_device_id(&self) -> PackedPciLocation {
+        PackedPciLocation::new(
+            self.pci_segment,
+            self.pci_bus,
+            self.pci_device,
+            self.pci_function,
+        )
     }
 
     pub fn dma_device_id(&self) -> u64 {
-        self.packed_device_id()
+        self.packed_device_id().raw()
     }
 
     /// Physical Function かどうか判定
@@ -275,7 +284,8 @@ impl Mlx5Device {
         self.eqs.get(eq_index).map(|eq| eq.msix_vector)
     }
 
-    pub fn set_pci_bdf(&mut self, bus: u8, device: u8, function: u8) {
+    pub fn set_pci_location(&mut self, segment: u16, bus: u8, device: u8, function: u8) {
+        self.pci_segment = segment;
         self.pci_bus = bus;
         self.pci_device = device;
         self.pci_function = function;

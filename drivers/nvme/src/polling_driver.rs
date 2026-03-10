@@ -19,6 +19,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use hal::mmio;
+use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 
 type DmaBuffer = DmaSlice<CpuOwned>;
@@ -99,9 +100,8 @@ pub struct NvmePollingDriver {
     cmb_info: Option<CmbInfo>,
     /// CMBを使用するかどうか
     use_cmb: bool,
-    /// IOMMU対応デバイスID（packed u64: segment|bus|device|function）
-    /// 設定時は `alloc_dma_for_device()` でIOMMUマッピング付きDMAバッファを割り当てる
-    device_id: Option<u64>,
+    /// IOMMU 対応 PCI locator
+    device_id: PackedPciLocation,
     /// Admin SQバッファ（動的割り当て）
     admin_sq_buffer: Option<DmaBuffer>,
     /// Admin CQバッファ（動的割り当て）
@@ -117,7 +117,7 @@ impl NvmePollingDriver {
     ///
     /// `device_id` にはIOMMU対応のパック済みデバイスIDを指定する。
     /// IOMMU有効環境ではDMAバッファがデバイス固有ドメインにマッピングされる。
-    pub fn new(bar0: u64, num_cores: u32, device_id: Option<u64>) -> Self {
+    pub fn new(bar0: u64, num_cores: u32, device_id: PackedPciLocation) -> Self {
         let mut io_queues = Vec::new();
         let mut io_sq_buffers = Vec::new();
         let mut io_cq_buffers = Vec::new();
@@ -331,13 +331,11 @@ impl NvmePollingDriver {
         alloc_err: &'static str,
     ) -> Result<DmaBuffer, &'static str> {
         let kernel = kernel_api::service::kernel::instance();
-        let buffer = match self.device_id {
-            Some(dev_id) => kernel.alloc_dma_for_device(size, dev_id),
-            None => kernel.alloc_dma(size),
-        }
-        .map_err(|_| alloc_err)?;
-        // Ensure both physical and device addresses are aligned
-        if (buffer.physical_address() & 0xFFF != 0) || (buffer.device_address() & 0xFFF != 0) {
+        let buffer = kernel
+            .alloc_dma_for_device(size, self.device_id)
+            .map_err(|_| alloc_err)?;
+        // The hardware consumes the device-visible IOVA, so enforce alignment there.
+        if buffer.device_address() & 0xFFF != 0 {
             return Err("DMA buffer not 4KB aligned");
         }
         Ok(buffer)
@@ -458,11 +456,9 @@ impl NvmePollingDriver {
             .ok_or("Admin queue not initialized")?;
 
         let kernel = kernel_api::service::kernel::instance();
-        let identify_buffer = match self.device_id {
-            Some(dev_id) => kernel.alloc_dma_for_device(4096, dev_id),
-            None => kernel.alloc_dma(4096),
-        }
-        .map_err(|_| "Failed to allocate Identify DMA buffer")?;
+        let identify_buffer = kernel
+            .alloc_dma_for_device(4096, self.device_id)
+            .map_err(|_| "Failed to allocate Identify DMA buffer")?;
         let buffer_phys = identify_buffer.device_address();
 
         let mut cmd = NvmeCommand::default();
@@ -510,11 +506,9 @@ impl NvmePollingDriver {
             .ok_or("Admin queue not initialized")?;
 
         let kernel = kernel_api::service::kernel::instance();
-        let identify_buffer = match self.device_id {
-            Some(dev_id) => kernel.alloc_dma_for_device(4096, dev_id),
-            None => kernel.alloc_dma(4096),
-        }
-        .map_err(|_| "Failed to allocate Identify Namespace DMA buffer")?;
+        let identify_buffer = kernel
+            .alloc_dma_for_device(4096, self.device_id)
+            .map_err(|_| "Failed to allocate Identify Namespace DMA buffer")?;
         let buffer_phys = identify_buffer.device_address();
 
         let cid = admin_queue.sq().tail();

@@ -2,14 +2,20 @@ use super::*;
 use crate::loader::{unload_cell, with_registry_mut};
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, Ordering};
-use kernel_api::abi::driver::{AbiDriverType, DRIVER_ABI_VERSION, DriverContext, DriverVTable};
+use kernel_api::abi::driver::{
+    AbiDriverType, DRIVER_ABI_VERSION, DriverContext, DriverVTable, PackedPciLocation,
+};
 use kernel_api::provider::{ProviderDescriptorV1, ProviderKind};
 
 static PROBE_CALLED: AtomicBool = AtomicBool::new(false);
 static REMOVE_CALLED: AtomicBool = AtomicBool::new(false);
+static LAST_PROBE_CONTEXT: spin::Mutex<Option<DriverContext>> = spin::Mutex::new(None);
 
-extern "C" fn probe(_ctx: *mut DriverContext) -> i32 {
+extern "C" fn probe(ctx: *mut DriverContext) -> i32 {
     PROBE_CALLED.store(true, Ordering::SeqCst);
+    if !ctx.is_null() {
+        *LAST_PROBE_CONTEXT.lock() = Some(unsafe { *ctx });
+    }
     0
 }
 
@@ -69,8 +75,26 @@ static VTABLE: DriverVTable = DriverVTable::new(
 )
 .with_provider_descriptors_export(Some(providers_fn));
 
+static OLD_ABI_VTABLE: DriverVTable = DriverVTable::new(
+    DRIVER_ABI_VERSION - 1,
+    probe,
+    start,
+    stop,
+    remove,
+    name_fn,
+    name_len_fn,
+    type_fn,
+    version_fn,
+    None,
+    None,
+);
+
 extern "C" fn entry_fn() -> *const DriverVTable {
     &VTABLE
+}
+
+extern "C" fn old_abi_entry_fn() -> *const DriverVTable {
+    &OLD_ABI_VTABLE
 }
 
 #[test_case]
@@ -117,6 +141,40 @@ fn test_register_abi_driver_and_block_unload() {
     assert!(REMOVE_CALLED.load(Ordering::SeqCst));
     let res2 = unload_cell(cell_id);
     assert!(res2.is_ok());
+}
+
+#[test_case]
+fn test_register_abi_driver_with_context_passes_pci_locator() {
+    PROBE_CALLED.store(false, Ordering::SeqCst);
+    *LAST_PROBE_CONTEXT.lock() = None;
+
+    let locator = PackedPciLocation::new(0x1234, 0x56, 0x1a, 0x07);
+    let ctx = DriverContext::for_pci(0xfeed_0000, 11, 0x8086, 0x1234, 0x0108_02, locator);
+
+    let handle = register_abi_driver_with_context(entry_fn, ctx).expect("register failed");
+    DRIVER_REGISTRY.probe(handle).expect("probe failed");
+
+    let captured = LAST_PROBE_CONTEXT
+        .lock()
+        .take()
+        .expect("probe context missing");
+    assert!(PROBE_CALLED.load(Ordering::SeqCst));
+    assert_eq!(captured.device_address, 0xfeed_0000);
+    assert_eq!(captured.irq, 11);
+    assert_eq!(captured.vendor_id, 0x8086);
+    assert_eq!(captured.device_id, 0x1234);
+    assert_eq!(captured.class_code, 0x0108_02);
+    assert_eq!(captured.pci_location(), locator);
+
+    DRIVER_REGISTRY
+        .unregister(handle)
+        .expect("unregister after probe failed");
+}
+
+#[test_case]
+fn test_register_abi_driver_rejects_old_abi_version() {
+    let res = register_abi_driver(old_abi_entry_fn);
+    assert!(res.is_err());
 }
 
 #[test_case]

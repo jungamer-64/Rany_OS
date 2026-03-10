@@ -145,8 +145,8 @@ impl VirtioGpu {
         }
 
         let queue_size = max_size.min(VIRTQUEUE_MAX_SIZE);
-        let notify_addr = self.transport.get_notify_addr(queue_idx);
-        let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
+        let _notify_addr = self.transport.get_notify_addr(queue_idx);
+        let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
         let avail_size = 6 + 2 * queue_size as usize;

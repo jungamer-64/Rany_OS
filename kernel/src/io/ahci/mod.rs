@@ -90,14 +90,14 @@ pub use port::AhciPort;
 
 pub fn init_from_pci(
     base_virt: u64,
-    device_id: Option<crate::io::iommu::types::DeviceId>,
+    device_id: crate::io::iommu::types::DeviceId,
 ) -> AhciResult<Arc<PoisonLock<AhciController>>> {
-    let packed_id = device_id.map(|d| {
-        ((d.segment as u64) << 32)
-            | ((d.bus as u64) << 16)
-            | ((d.device as u64) << 8)
-            | (d.function as u64)
-    });
+    let packed_id = kernel_api::abi::driver::PackedPciLocation::new(
+        device_id.segment,
+        device_id.bus,
+        device_id.device,
+        device_id.function,
+    );
     let controller = AhciController::new(base_virt, packed_id)?;
     let arc = Arc::new(PoisonLock::new(controller));
     Ok(arc)

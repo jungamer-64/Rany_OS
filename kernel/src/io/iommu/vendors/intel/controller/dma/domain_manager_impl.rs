@@ -349,7 +349,11 @@ impl DomainManager for IommuController {
                 }
                 Ok(0)
             }
-            IommuCommandKind::UnmapRegion { domain, iova, size } => {
+            IommuCommandKind::UnmapRegion {
+                domain,
+                iova,
+                size: _,
+            } => {
                 let domain_arc = self.domain(*domain).ok_or(())?;
                 let pts_before = domain_arc
                     .pending_pt_release

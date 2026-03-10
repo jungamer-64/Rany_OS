@@ -86,6 +86,7 @@ use crate::driver_registry::DriverHandle;
 use crate::loader::CellId;
 use crate::security::CapabilitySet;
 use crate::sync::PoisonLock;
+use kernel_api::abi::driver::DriverContext as AbiDriverContext;
 
 pub use fault::{FaultRecord, RestartPolicy};
 pub use hot_swap::HotSwapState;
@@ -269,6 +270,8 @@ pub struct DriverDomain {
     // === NUMAアフィニティ ===
     /// NUMAノード（任意）
     pub numa_node: Option<usize>,
+    /// ABIドライバに渡すデバイスコンテキスト
+    pub abi_driver_context: AbiDriverContext,
 
     /// 作成時刻（TSCティック）
     pub created_at: u64,
@@ -299,6 +302,7 @@ impl DriverDomain {
             last_health_failure: None,
             stats: DriverDomainStats::new(),
             numa_node: None,
+            abi_driver_context: AbiDriverContext::new(),
             created_at: crate::task::timer::current_tick(),
         }
     }
@@ -314,6 +318,7 @@ impl DriverDomain {
         cell.memory_limit_bytes = config.memory_limit_bytes;
         cell.io_bandwidth_limit = config.io_bandwidth_limit;
         cell.numa_node = config.numa_node;
+        cell.abi_driver_context = config.abi_driver_context;
         cell
     }
 
@@ -393,6 +398,7 @@ impl core::fmt::Debug for DriverDomain {
             .field("driver_handles", &self.driver_handles.len())
             .field("priority", &self.priority)
             .field("faults", &self.consecutive_faults)
+            .field("pci_locator", &self.abi_driver_context.pci_locator)
             .finish()
     }
 }
@@ -708,4 +714,23 @@ pub fn driver_domain_manager() -> &'static DriverDomainManager {
 /// DriverCellサブシステムを初期化
 pub fn init() {
     log::info!("[DriverDomain] Subsystem initialized\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kernel_api::abi::driver::{DriverContext as AbiDriverContext, PackedPciLocation};
+
+    #[test_case]
+    fn from_config_preserves_abi_driver_context() {
+        let locator = PackedPciLocation::new(0x1234, 0x56, 0x07, 0x01);
+        let ctx = AbiDriverContext::for_pci(0xfeed_0000, 9, 0x8086, 0x100e, 0x0200_00, locator);
+        let config = DriverDomainConfig::new("test-driver").with_abi_driver_context(ctx);
+
+        let domain = DriverDomain::from_config(DriverDomainId::new(1), &config);
+
+        assert_eq!(domain.abi_driver_context.device_address, 0xfeed_0000);
+        assert_eq!(domain.abi_driver_context.irq, 9);
+        assert_eq!(domain.abi_driver_context.pci_location(), locator);
+    }
 }

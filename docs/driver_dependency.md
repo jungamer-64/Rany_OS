@@ -11,13 +11,14 @@ Drivers are intended to be built separately from the kernel core and must not de
 - Drivers MUST NOT add `kernel` as a dependency in Cargo.toml
 - Drivers SHOULD depend on `kernel_api` for kernel-provided services and types
 - Drivers may depend on `hal` for hardware access wrappers (MMIO, port I/O, etc.)
-- Drivers SHOULD only use the kernel API for functionalities such as memory allocation and DMA.
+- Drivers SHOULD only use the kernel API for functionalities such as memory allocation and device-scoped DMA.
 - Drivers that expose a `standalone` feature SHOULD treat it as a complete cell build contract: exported ABI entry symbol plus `kernel_api/cell_runtime`.
 - Kernel code SHOULD access device-facing modules via `crate::drivers::*`, while `crate::io::*` is reserved for kernel-owned I/O infrastructure such as DMA/IOMMU, interrupt routing, and polling.
 
 ## What to do when needing kernel capabilities
 
-- Request access via `kernel_api::service::kernel::instance()`, which provides `KernelServices` trait methods such as `alloc_dma()`. DMA buffers are reclaimed automatically on Drop.
+- Request access via `kernel_api::service::kernel::instance()`, which provides `KernelServices` trait methods such as `alloc_dma_for_device(size, pci_locator)`. DMA buffers are reclaimed automatically on Drop.
+- Obtain `pci_locator` from `kernel_api::abi::driver::DriverContext::pci_location()` or from PCI enumeration using `PackedPciLocation::new(segment, bus, device, function)`.
 - If additional kernel capabilities are required, add them to `interfaces/kernel_api` and implement them inside the kernel service implementation.
 - For standalone cells, enable the crate's `standalone` feature so `kernel_api::register_cell_runtime!()` can bind allocator/panic/logging to the kernel ABI table.
 

@@ -73,7 +73,7 @@ impl AmdIommuDriver {
     /// マップと無効化を実行する
     fn execute_map_and_invalidate(
         &self,
-        device: DeviceId,
+        _device: DeviceId,
         domain_id: u16,
         iova: u64,
         phys: u64,
