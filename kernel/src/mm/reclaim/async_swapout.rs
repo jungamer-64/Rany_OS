@@ -7,6 +7,13 @@ use crate::mm::types::FrameIndex;
 use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use x86_64::PhysAddr;
+use x86_64::structures::paging::{PhysFrame, Size1GiB, Size2MiB, Size4KiB};
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+mod worker;
 
 // ... (skipping imports and types assumed present in the module)
 
@@ -304,7 +311,7 @@ static RESERVED_FILE_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static TOKEN_COUNT: AtomicUsize = AtomicUsize::new(0);
 static ZSWAP_FAIL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static ASYNC_DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-static HUGE_2M_SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
+static GLOBAL_HUGE_2M_SKIPPED: AtomicUsize = AtomicUsize::new(0);
 static WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 pub fn buffer_pool_get_1g() -> Vec<u8> {
@@ -369,6 +376,118 @@ pub fn buffer_pool_1g_clear() {
 
 // ... (rest of helper functions unchanged)
 
+pub type Buffer4K = Vec<u8>;
+
+#[derive(Debug, Clone)]
+pub struct SwapHandle {
+    #[cfg(all(test, feature = "std"))]
+    done: alloc::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl SwapHandle {
+    #[cfg(all(test, feature = "std"))]
+    pub fn wait(&self) {
+        let (lock, cvar) = &*self.done;
+        let mut done = lock.lock().unwrap();
+        while !*done {
+            done = cvar.wait(done).unwrap();
+        }
+    }
+
+    #[cfg(not(all(test, feature = "std")))]
+    pub fn wait(&self) {}
+}
+
+#[derive(Debug, Clone)]
+pub struct SwapEntry {
+    frame: FrameIndex,
+    kind: SwapKind,
+    #[cfg(all(test, feature = "std"))]
+    completion: alloc::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+fn atomic_saturating_decrement(counter: &AtomicUsize) {
+    let mut current = counter.load(AtomicOrdering::Acquire);
+    loop {
+        if current == 0 {
+            return;
+        }
+        match counter.compare_exchange(
+            current,
+            current - 1,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        ) {
+            Ok(_) => return,
+            Err(next) => current = next,
+        }
+    }
+}
+
+fn release_frame_and_untrack(frame: FrameIndex) {
+    let order = crate::mm::meta::page_flags::get_order(frame) as usize;
+    let head = frame.align_down(order);
+    let pages = 1u64 << order.min(63);
+
+    crate::mm::meta::memcg::memcg_untrack_and_uncharge(head, pages);
+    let _ = crate::mm::meta::frame_backing::untrack_frame_backing(head);
+
+    // SAFETY: `head` is a buddy-allocator frame head obtained from page metadata,
+    // and the page order selects the matching deallocation routine.
+    unsafe {
+        let phys = PhysAddr::new(head.to_phys_addr());
+        if order >= crate::mm::types::HUGE_PAGE_ORDER_1GB {
+            crate::mm::phys::buddy_allocator::buddy_dealloc_frame_1g(
+                PhysFrame::<Size1GiB>::from_start_address_unchecked(phys),
+            );
+        } else if order >= crate::mm::types::HUGE_PAGE_ORDER_2MB {
+            crate::mm::phys::buddy_allocator::buddy_dealloc_frame_2m(
+                PhysFrame::<Size2MiB>::from_start_address_unchecked(phys),
+            );
+        } else {
+            crate::mm::phys::buddy_allocator::buddy_dealloc_frame(
+                PhysFrame::<Size4KiB>::from_start_address_unchecked(phys),
+            );
+        }
+    }
+}
+
+fn try_zswap_store_and_dealloc_any(frame: FrameIndex, reuse_buf: &mut Buffer4K) -> bool {
+    let order = crate::mm::meta::page_flags::get_order(frame) as usize;
+    let size = if order >= crate::mm::types::HUGE_PAGE_ORDER_1GB {
+        GLOBAL_HUGE_2M_SKIPPED.fetch_add(1, AtomicOrdering::AcqRel);
+        return false;
+    } else if order >= crate::mm::types::HUGE_PAGE_ORDER_2MB {
+        crate::mm::types::PAGE_SIZE_2M
+    } else {
+        crate::mm::types::PAGE_SIZE_4K
+    };
+
+    if reuse_buf.len() != size {
+        reuse_buf.resize(size, 0);
+    }
+
+    let virt = crate::mm::virt::mapping::phys_to_virt(PhysAddr::new(frame.to_phys_addr()));
+    // SAFETY: the caller owns the frame while it is swap-pending, and the higher-half
+    // direct map provides a valid contiguous mapping for the selected page size.
+    unsafe {
+        let src = core::slice::from_raw_parts(virt.as_ptr::<u8>(), size);
+        reuse_buf[..size].copy_from_slice(src);
+    }
+
+    match crate::mm::reclaim::zswap::zswap_store_auto(&reuse_buf[..size]) {
+        Ok(_) => {
+            release_frame_and_untrack(frame);
+            ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
+            true
+        }
+        Err(_) => {
+            ZSWAP_FAIL_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
+            false
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum SwapKind {
     Anon,
@@ -382,38 +501,122 @@ pub enum SwapError {
     NotSupported,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct SwapEnqueueHandle;
+pub type SwapEnqueueHandle = SwapHandle;
 
 pub fn try_enqueue_swapout(
-    _frame: FrameIndex,
-    _kind: SwapKind,
+    frame: FrameIndex,
+    kind: SwapKind,
 ) -> Result<SwapEnqueueHandle, SwapError> {
-    Err(SwapError::NotSupported)
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::try_enqueue_swapout(frame, kind)
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        let _ = (frame, kind);
+        Err(SwapError::NotSupported)
+    }
 }
 
 pub fn queued_counts() -> (usize, usize) {
-    (0, 0)
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::queued_counts()
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        (0, 0)
+    }
 }
 
 pub fn token_count() -> usize {
-    TOKEN_COUNT.load(AtomicOrdering::Relaxed)
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::token_count()
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        TOKEN_COUNT.load(AtomicOrdering::Relaxed)
+    }
 }
 
 pub fn token_bucket_capacity() -> usize {
-    TOKEN_BUCKET_CAPACITY.load(AtomicOrdering::Relaxed)
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::token_bucket_capacity()
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        TOKEN_BUCKET_CAPACITY.load(AtomicOrdering::Relaxed)
+    }
 }
 
 pub fn token_refill_per_batch() -> usize {
-    TOKEN_REFILL_PER_BATCH.load(AtomicOrdering::Relaxed)
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::token_refill_per_batch()
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        TOKEN_REFILL_PER_BATCH.load(AtomicOrdering::Relaxed)
+    }
 }
 
 pub fn reserved_file_slots() -> usize {
-    RESERVED_FILE_SLOTS.load(AtomicOrdering::Relaxed)
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::reserved_file_slots()
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        RESERVED_FILE_SLOTS.load(AtomicOrdering::Relaxed)
+    }
 }
 
 pub fn is_worker_running() -> bool {
-    WORKER_RUNNING.load(AtomicOrdering::Relaxed)
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::is_worker_running()
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        WORKER_RUNNING.load(AtomicOrdering::Relaxed)
+    }
 }
 
 pub fn stats_zswap_fail_count() -> usize {
@@ -425,17 +628,139 @@ pub fn stats_async_dealloc_count() -> usize {
 }
 
 pub fn stats_huge_2m_skip_count() -> usize {
-    HUGE_2M_SKIP_COUNT.load(AtomicOrdering::Relaxed)
+    GLOBAL_HUGE_2M_SKIPPED.load(AtomicOrdering::Relaxed)
 }
 
 pub fn set_token_bucket_capacity(v: usize) {
-    TOKEN_BUCKET_CAPACITY.store(v, AtomicOrdering::Relaxed);
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::set_token_bucket_capacity(v);
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        TOKEN_BUCKET_CAPACITY.store(v, AtomicOrdering::Relaxed);
+    }
 }
 
 pub fn set_token_refill_per_batch(v: usize) {
-    TOKEN_REFILL_PER_BATCH.store(v, AtomicOrdering::Relaxed);
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::set_token_refill_per_batch(v);
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        TOKEN_REFILL_PER_BATCH.store(v, AtomicOrdering::Relaxed);
+    }
 }
 
 pub fn set_reserved_file_slots(v: usize) {
-    RESERVED_FILE_SLOTS.store(v, AtomicOrdering::Relaxed);
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::set_reserved_file_slots(v);
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        RESERVED_FILE_SLOTS.store(v, AtomicOrdering::Relaxed);
+    }
+}
+
+pub fn set_token_count(v: usize) {
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::set_token_count(v);
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        TOKEN_COUNT.store(v, AtomicOrdering::Relaxed);
+    }
+}
+
+pub fn add_tokens(v: usize) {
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::add_tokens(v);
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        let current = TOKEN_COUNT.load(AtomicOrdering::Acquire);
+        let cap = TOKEN_BUCKET_CAPACITY.load(AtomicOrdering::Acquire);
+        TOKEN_COUNT.store(current.saturating_add(v).min(cap), AtomicOrdering::Release);
+    }
+}
+
+pub fn start_worker() {
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::start_worker();
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        WORKER_RUNNING.store(true, AtomicOrdering::Relaxed);
+    }
+}
+
+pub fn stop_worker() {
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    {
+        worker::stop_worker();
+    }
+
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
+    {
+        WORKER_RUNNING.store(false, AtomicOrdering::Relaxed);
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_set_enqueue_override(value: Option<SwapError>) {
+    worker::qemu_test_set_enqueue_override(value);
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_clear_enqueue_override() {
+    worker::qemu_test_clear_enqueue_override();
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_drain_until_idle(max_rounds: usize) -> bool {
+    worker::qemu_test_drain_until_idle(max_rounds)
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_reset_worker_runtime_state() {
+    worker::qemu_test_reset_worker_runtime_state();
 }

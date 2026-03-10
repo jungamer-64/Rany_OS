@@ -11,6 +11,7 @@ const SELECTED_DRIVER_COUNT: usize = (cfg!(feature = "driver-ahci") as usize)
     + (cfg!(feature = "driver-nvme") as usize)
     + (cfg!(feature = "driver-mlx5") as usize);
 
+#[cfg(target_os = "none")]
 const _: [(); 1] = [(); SELECTED_DRIVER_COUNT];
 
 #[cfg(feature = "driver-ahci")]
@@ -36,6 +37,18 @@ fn selected_driver_vtable() -> *const DriverVTable {
 #[cfg(feature = "driver-mlx5")]
 fn selected_driver_vtable() -> *const DriverVTable {
     mlx5_driver::standalone_driver_vtable()
+}
+
+#[cfg(all(
+    not(target_os = "none"),
+    not(feature = "driver-ahci"),
+    not(feature = "driver-usb"),
+    not(feature = "driver-hda"),
+    not(feature = "driver-nvme"),
+    not(feature = "driver-mlx5"),
+))]
+fn selected_driver_vtable() -> *const DriverVTable {
+    core::ptr::null()
 }
 
 #[unsafe(export_name = "_exorust_driver_entry")]

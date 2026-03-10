@@ -63,6 +63,7 @@ mod system_info;
 // Phase 5: Extended Features & System Integration
 // gpu は io/ 配下に移動済み (io::gpu)
 mod profiler;
+mod runtime_bridge;
 mod thermal;
 mod watchdog;
 

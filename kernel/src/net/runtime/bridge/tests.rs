@@ -1,36 +1,40 @@
 use super::*;
 use crate::net::datapath::mempool;
-use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};
-use crate::net::l4::tcp::{
-    EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpControlBlock,
-};
+use crate::net::l2::ethernet::MacAddress;
+use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, Ipv4Config, Ipv4PacketMut};
+use crate::net::l4::tcp::{EndpointAddr as TcpEndpointAddr, TcpControlBlock};
 use crate::net::runtime::manager;
-use crate::net::runtime::stack;
+use crate::net::runtime::stack::{self, NetworkConfig};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 struct BridgeStateGuard {
     prev_if_stats: BTreeMap<NetIfId, StackGlueInterfaceStats>,
     prev_primary_if: Option<NetIfId>,
-    prev_nat_table: BTreeMap<u16, NatEntry>,
-    prev_nat_next_port: u16,
+    prev_nat_entries: Vec<NatEntry>,
     prev_forward_events: Vec<(NetIfId, Ipv4Address)>,
     prev_manager: Option<crate::net::runtime::manager::NetworkManager>,
 }
 
 impl BridgeStateGuard {
     fn new() -> Self {
-        let prev_if_stats = core::mem::take(&mut *STACK_GLUE_IF_STATS.write());
+        let prev_if_stats = core::mem::take(
+            &mut *STACK_GLUE_IF_STATS
+                .write()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
         let prev_primary_if = {
-            let mut g = PRIMARY_STACK_GLUE_IF.write();
+            let mut g = PRIMARY_STACK_GLUE_IF
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
             let v = *g;
             *g = None;
             v
         };
-        let prev_nat_table = core::mem::take(&mut *NAT_TABLE.write());
-        let prev_nat_next_port =
-            NAT_NEXT_PORT.swap(NAT_EPHEMERAL_START, core::sync::atomic::Ordering::Relaxed);
-        let prev_forward_events = core::mem::take(&mut *FORWARD_EVENTS.write());
+        let prev_nat_entries = nat_test_snapshot();
+        nat_test_clear();
+        let prev_forward_events =
+            core::mem::take(&mut *FORWARD_EVENTS.write().unwrap_or_else(|e| e.into_inner()));
         let prev_manager = {
             let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
                 .lock_for_init("[TEST][NET BRIDGE] manager snapshot");
@@ -39,8 +43,7 @@ impl BridgeStateGuard {
         Self {
             prev_if_stats,
             prev_primary_if,
-            prev_nat_table,
-            prev_nat_next_port,
+            prev_nat_entries,
             prev_forward_events,
             prev_manager,
         }
@@ -49,14 +52,15 @@ impl BridgeStateGuard {
 
 impl Drop for BridgeStateGuard {
     fn drop(&mut self) {
-        *STACK_GLUE_IF_STATS.write() = core::mem::take(&mut self.prev_if_stats);
-        *PRIMARY_STACK_GLUE_IF.write() = self.prev_primary_if.take();
-        *NAT_TABLE.write() = core::mem::take(&mut self.prev_nat_table);
-        NAT_NEXT_PORT.store(
-            self.prev_nat_next_port,
-            core::sync::atomic::Ordering::Relaxed,
-        );
-        *FORWARD_EVENTS.write() = core::mem::take(&mut self.prev_forward_events);
+        *STACK_GLUE_IF_STATS
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = core::mem::take(&mut self.prev_if_stats);
+        *PRIMARY_STACK_GLUE_IF
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = self.prev_primary_if.take();
+        nat_test_restore(&self.prev_nat_entries);
+        *FORWARD_EVENTS.write().unwrap_or_else(|e| e.into_inner()) =
+            core::mem::take(&mut self.prev_forward_events);
         let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
             .lock_for_init("[TEST][NET BRIDGE] manager restore");
         *guard = self.prev_manager.take();
@@ -177,6 +181,7 @@ fn qemu_routing_nat_heapless_smoke() -> bool {
         },
         ipv6: None,
         icmp_echo_enabled: true,
+        ..NetworkConfig::default()
     };
     let cfg2 = NetworkConfig {
         mac: MacAddress::from_octets(0, 1, 2, 3, 4, 6),
@@ -188,6 +193,7 @@ fn qemu_routing_nat_heapless_smoke() -> bool {
         },
         ipv6: None,
         icmp_echo_enabled: true,
+        ..NetworkConfig::default()
     };
     if manager::set_interface_config(if1, cfg1).is_err()
         || manager::set_interface_config(if2, cfg2).is_err()
@@ -368,6 +374,7 @@ pub fn test_routing_and_nat() {
         },
         ipv6: None,
         icmp_echo_enabled: true,
+        ..NetworkConfig::default()
     };
     let cfg2 = NetworkConfig {
         mac: MacAddress::from_octets(0, 1, 2, 3, 4, 6),
@@ -379,6 +386,7 @@ pub fn test_routing_and_nat() {
         },
         ipv6: None,
         icmp_echo_enabled: true,
+        ..NetworkConfig::default()
     };
     let _ = manager::set_interface_config(if1, cfg1);
     let _ = manager::set_interface_config(if2, cfg2);
@@ -432,7 +440,10 @@ pub fn test_routing_and_nat() {
     // clear forward events
     #[cfg(any(test, feature = "qemu-test-export"))]
     {
-        FORWARD_EVENTS.write().clear();
+        FORWARD_EVENTS
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     process_received_packet_zero_copy_for_interface(if1, packet, header_size, 14 + 28);
@@ -440,15 +451,15 @@ pub fn test_routing_and_nat() {
     // verify forwarded to if2 and NAT table contains entry
     #[cfg(any(test, feature = "qemu-test-export"))]
     {
-        let ev = FORWARD_EVENTS.read();
+        let ev = FORWARD_EVENTS.read().unwrap_or_else(|e| e.into_inner());
         assert!(
             ev.iter()
                 .any(|(id, dst)| *id == if2 && *dst == Ipv4Address::new([10, 0, 1, 5]))
         );
         // check NAT entry exists for internal port 1234
-        let table = NAT_TABLE.read();
-        assert!(table.values().any(|e| e.protocol == IpProtocol::Udp
-            && e.internal_addr == Ipv4Address::new([10, 0, 0, 2])
+        let entries = nat_test_entries();
+        assert!(entries.iter().any(|e| e.protocol == IpProtocol::Udp
+            && e.internal_ip == Ipv4Address::new([10, 0, 0, 2])
             && e.internal_port == 1234));
     }
 }
@@ -470,6 +481,7 @@ pub fn test_nat_inbound_roundtrip_is_protocol_scoped() {
         },
         ipv6: None,
         icmp_echo_enabled: true,
+        ..NetworkConfig::default()
     };
     let _ = manager::set_interface_config(wan_if, wan_cfg);
     let _ = manager::set_interface_config(
@@ -484,6 +496,7 @@ pub fn test_nat_inbound_roundtrip_is_protocol_scoped() {
             },
             ipv6: None,
             icmp_echo_enabled: true,
+            ..NetworkConfig::default()
         },
     );
 
@@ -503,7 +516,7 @@ pub fn test_nat_inbound_roundtrip_is_protocol_scoped() {
     .expect("NAT allocation failed");
 
     assert_eq!(ext_ip, Ipv4Address::new([10, 0, 1, 1]));
-    assert!(ext_port >= NAT_EPHEMERAL_START);
+    assert!(ext_port >= nat_test_ephemeral_port_start());
 
     let mut dst_ip = ext_ip;
     let mut dst_port = ext_port;
@@ -579,6 +592,7 @@ pub fn test_nat_gc_expires_idle_entries() {
             },
             ipv6: None,
             icmp_echo_enabled: true,
+            ..NetworkConfig::default()
         },
     );
 
@@ -603,18 +617,23 @@ pub fn test_nat_gc_expires_idle_entries() {
     )
     .expect("NAT allocation failed");
 
-    {
-        let mut table = NAT_TABLE.write();
-        table.get_mut(&stale_port).unwrap().last_seen = 100;
-        table.get_mut(&fresh_port).unwrap().last_seen = 900;
-    }
+    assert!(nat_test_force_last_used(stale_port, 100));
+    assert!(nat_test_force_last_used(fresh_port, 900));
 
-    let removed = nat_prune_expired(1_000);
-    assert_eq!(removed, 1);
+    nat_maybe_gc(0);
 
-    let table = NAT_TABLE.read();
-    assert!(!table.contains_key(&stale_port));
-    assert!(table.contains_key(&fresh_port));
+    let entries = nat_test_entries();
+    assert_eq!(nat_test_entry_count(), 1);
+    assert!(
+        !entries
+            .iter()
+            .any(|entry| entry.external_port == stale_port)
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.external_port == fresh_port)
+    );
 }
 
 #[cfg_attr(test, test_case)]
@@ -635,6 +654,7 @@ pub fn test_nat_icmp_echo() {
             },
             ipv6: None,
             icmp_echo_enabled: true,
+            ..NetworkConfig::default()
         },
     );
 
@@ -681,6 +701,7 @@ pub fn test_nat_icmp_error() {
             },
             ipv6: None,
             icmp_echo_enabled: true,
+            ..NetworkConfig::default()
         },
     );
 
@@ -873,9 +894,12 @@ pub fn test_per_interface_bridge_stats_are_separated() {
 pub fn test_register_virtio_port_is_idempotent_and_records_mapping() {
     let _guard = BridgeStateGuard::new();
 
-    let if0 = register_virtio_port(0, None).expect("register vnet0");
-    let if0_again = register_virtio_port(0, None).expect("register vnet0 again");
-    let if1 = register_virtio_port(1, None).expect("register vnet1");
+    let if0 = manager::register_virtio_port(0, None).expect("register vnet0");
+    let if0_again = manager::register_virtio_port(0, None).expect("register vnet0 again");
+    let if1 = manager::register_virtio_port(1, None).expect("register vnet1");
+
+    register_stack_glue_interface(if0, Some(0));
+    register_stack_glue_interface(if1, Some(1));
 
     assert_eq!(if0, if0_again);
     assert_ne!(if0, if1);
@@ -893,13 +917,16 @@ pub fn test_register_virtio_port_is_idempotent_and_records_mapping() {
 pub fn test_register_virtio_port_prefers_vnet0_as_primary() {
     let _guard = BridgeStateGuard::new();
 
-    let if1 = register_virtio_port(1, None).expect("register vnet1");
+    let if1 = manager::register_virtio_port(1, None).expect("register vnet1");
+    register_stack_glue_interface(if1, Some(1));
     assert_eq!(primary_stack_glue_if(), Some(if1));
 
-    let if0 = register_virtio_port(0, None).expect("register vnet0");
+    let if0 = manager::register_virtio_port(0, None).expect("register vnet0");
+    register_stack_glue_interface(if0, Some(0));
     assert_eq!(primary_stack_glue_if(), Some(if0));
 
-    let _if2 = register_virtio_port(2, None).expect("register vnet2");
+    let if2 = manager::register_virtio_port(2, None).expect("register vnet2");
+    register_stack_glue_interface(if2, Some(2));
     assert_eq!(primary_stack_glue_if(), Some(if0));
 }
 

@@ -1,9 +1,44 @@
-use super::*;
+use super::{
+    GLOBAL_HUGE_2M_SKIPPED, SwapEntry, SwapError, SwapHandle, SwapKind,
+    atomic_saturating_decrement, buffer_pool_get_4k, buffer_pool_put_4k, release_frame_and_untrack,
+    try_zswap_store_and_dealloc_any,
+};
+use crate::mm::types::FrameIndex;
+use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod enqueue;
 pub use enqueue::*;
 mod kernel_worker;
 use kernel_worker::*;
+
+const ENQUEUE_OVERRIDE_NONE: usize = 0;
+const ENQUEUE_OVERRIDE_ALREADY_PENDING: usize = 1;
+const ENQUEUE_OVERRIDE_QUEUE_FULL: usize = 2;
+const ENQUEUE_OVERRIDE_NOT_SUPPORTED: usize = 3;
+
+#[cfg(test)]
+static TEST_ENQUEUE_OVERRIDE: AtomicUsize = AtomicUsize::new(ENQUEUE_OVERRIDE_NONE);
+#[cfg(feature = "qemu-test-export")]
+static QEMU_TEST_ENQUEUE_OVERRIDE: AtomicUsize = AtomicUsize::new(ENQUEUE_OVERRIDE_NONE);
+
+fn encode_test_enqueue_override(value: Option<SwapError>) -> usize {
+    match value {
+        None => ENQUEUE_OVERRIDE_NONE,
+        Some(SwapError::AlreadyPending) => ENQUEUE_OVERRIDE_ALREADY_PENDING,
+        Some(SwapError::QueueFull) => ENQUEUE_OVERRIDE_QUEUE_FULL,
+        Some(SwapError::NotSupported) => ENQUEUE_OVERRIDE_NOT_SUPPORTED,
+    }
+}
+
+fn decode_test_enqueue_override(value: usize) -> Option<SwapError> {
+    match value {
+        ENQUEUE_OVERRIDE_NONE => None,
+        ENQUEUE_OVERRIDE_ALREADY_PENDING => Some(SwapError::AlreadyPending),
+        ENQUEUE_OVERRIDE_QUEUE_FULL => Some(SwapError::QueueFull),
+        ENQUEUE_OVERRIDE_NOT_SUPPORTED => Some(SwapError::NotSupported),
+        _ => None,
+    }
+}
 #[cfg(all(test, feature = "std"))]
 mod test_impl {
     use super::*;

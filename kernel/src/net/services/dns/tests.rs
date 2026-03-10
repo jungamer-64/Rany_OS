@@ -175,7 +175,9 @@ pub fn test_parse_aaaa_record() {
         pending.insert(0x1234, 0);
     }
 
-    let records = client.parse_response(&data, 1000).unwrap();
+    let records = client
+        .parse_response(&data, 1000, "example.com", DnsQueryType::AAAA)
+        .unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].name, "example.com");
     assert_eq!(records[0].rtype, DnsQueryType::AAAA);

@@ -1,5 +1,5 @@
 use super::*;
-use crate::net::l4::endpoint::types::{EndpointAddr, Ipv4Addr};
+use crate::net::l4::tcp::{EndpointAddr, Ipv4Addr};
 
 #[cfg_attr(test, test_case)]
 pub fn test_sack_scoreboard_wrapping_bug() {

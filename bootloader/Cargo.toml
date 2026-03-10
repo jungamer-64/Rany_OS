@@ -35,3 +35,9 @@ insecure_boot = []
 # 使用例: cargo build --no-default-features --features minimal
 minimal = []
 qemu-test-export = []
+
+[[bin]]
+name = "exoloader"
+path = "src/main.rs"
+test = false
+bench = false

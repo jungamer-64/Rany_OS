@@ -189,7 +189,7 @@ impl DriverNamespace {
                     .collect::<Vec<_>>();
                 let namespace_list = Self::register_dynamic_namespaces(driver_name, &handles)
                     .into_iter()
-                    .map(ExoValue::from)
+                    .map(|namespace| ExoValue::String(Cow::Owned(namespace)))
                     .collect::<Vec<_>>();
                 let primary_handle = handles
                     .first()

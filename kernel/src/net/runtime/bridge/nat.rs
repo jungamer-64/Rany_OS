@@ -9,6 +9,7 @@ const MAX_NAT_ENTRIES: usize = 1024;
 
 /// NAT entry timeout (5 minutes in ticks, assuming 1000 ticks/sec)
 const NAT_ENTRY_TIMEOUT: u64 = 5 * 60 * 1000;
+const NAT_EPHEMERAL_PORT_START: u16 = 49152;
 
 /// NAT entry for tracking a connection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +38,30 @@ static NAT_TABLE: PoisonRwLock<NatTable> = PoisonRwLock::new(NatTable {
     outbound: BTreeMap::new(),
 });
 
+fn inbound_key(entry: &NatEntry) -> (IpProtocol, Ipv4Address, u16, u16) {
+    (
+        entry.protocol,
+        entry.remote_ip,
+        entry.remote_port,
+        entry.external_port,
+    )
+}
+
+fn outbound_key(entry: &NatEntry) -> (IpProtocol, Ipv4Address, u16, Ipv4Address, u16) {
+    (
+        entry.protocol,
+        entry.internal_ip,
+        entry.internal_port,
+        entry.remote_ip,
+        entry.remote_port,
+    )
+}
+
+fn insert_nat_entry(table: &mut NatTable, entry: NatEntry) {
+    table.outbound.insert(outbound_key(&entry), entry);
+    table.inbound.insert(inbound_key(&entry), entry);
+}
+
 /// Get current system tick for GC
 fn get_current_tick() -> u64 {
     crate::task::timer::current_tick()
@@ -46,7 +71,7 @@ fn get_current_tick() -> u64 {
 fn generate_random_port(table: &NatTable) -> u16 {
     let mut random_bytes = [0u8; 2];
     // Ephemeral port range 49152-65535
-    const PORT_START: u32 = 49152;
+    const PORT_START: u32 = NAT_EPHEMERAL_PORT_START as u32;
     const PORT_END: u32 = 65535;
     const RANGE: u32 = PORT_END - PORT_START + 1;
 
@@ -68,7 +93,7 @@ fn generate_random_port(table: &NatTable) -> u16 {
         }
     }
     // Fallback if randomization fails (rare)
-    49152
+    NAT_EPHEMERAL_PORT_START
 }
 
 pub fn nat_translate_in(
@@ -165,12 +190,7 @@ pub fn nat_translate_out(
         if_id,
     };
 
-    table
-        .outbound
-        .insert((proto, src_ip, src_port, dst_ip, dst_port), entry);
-    table
-        .inbound
-        .insert((proto, dst_ip, dst_port, ext_port), entry);
+    insert_nat_entry(&mut table, entry);
 
     Some((ext_ip, ext_port))
 }
@@ -227,6 +247,71 @@ pub fn nat_translate_out_icmp(
     _if_id: NetIfId,
 ) -> Option<(Ipv4Address, u16)> {
     None
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(super) fn nat_test_snapshot() -> Vec<NatEntry> {
+    NAT_TABLE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .outbound
+        .values()
+        .copied()
+        .collect()
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(super) fn nat_test_restore(entries: &[NatEntry]) {
+    let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+    table.inbound.clear();
+    table.outbound.clear();
+    for entry in entries {
+        insert_nat_entry(&mut table, *entry);
+    }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(super) fn nat_test_clear() {
+    let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+    table.inbound.clear();
+    table.outbound.clear();
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(super) fn nat_test_entries() -> Vec<NatEntry> {
+    nat_test_snapshot()
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(super) fn nat_test_entry_count() -> usize {
+    NAT_TABLE
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .outbound
+        .len()
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(super) fn nat_test_force_last_used(external_port: u16, last_used: u64) -> bool {
+    let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+    let mut updated = false;
+    for entry in table.outbound.values_mut() {
+        if entry.external_port == external_port {
+            entry.last_used = last_used;
+            updated = true;
+        }
+    }
+    for entry in table.inbound.values_mut() {
+        if entry.external_port == external_port {
+            entry.last_used = last_used;
+        }
+    }
+    updated
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(super) fn nat_test_ephemeral_port_start() -> u16 {
+    NAT_EPHEMERAL_PORT_START
 }
 
 /// Recompute transport checksum after NAT translation.

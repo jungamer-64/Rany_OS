@@ -184,7 +184,8 @@ fn network_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
 fn driver_domain_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
     #[cfg(feature = "qemu-test-export")]
     {
-        let summary = crate::driver_domain::qemu_tests::run_driver_domain_runtime_suite(case_filter);
+        let summary =
+            crate::driver_domain::qemu_tests::run_driver_domain_runtime_suite(case_filter);
         if summary.failed > 0 {
             return RuntimeTestResult::fail("driver_domain runtime failures");
         }
