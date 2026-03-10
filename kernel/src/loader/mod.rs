@@ -423,23 +423,29 @@ fn validate_cell_requirements(
             return Err(LoadError::AbiIncompatible(alloc::format!("{}", e)));
         }
         crate::io::log::early_print("[LDBG] validate deps ok\n");
+        crate::io::log::early_print("[LDBG] type_id log begin\n");
         log::info!(
             "[Loader] Type ID verified for '{}' ({})\n",
             name,
             deps.cell_version
         );
+        crate::io::log::early_print("[LDBG] type_id log end\n");
     }
 
+    crate::io::log::early_print("[LDBG] loop proof begin\n");
     match loop_proof::verify_loop_proof_metadata(elf_data) {
         Ok(meta) => {
+            crate::io::log::early_print("[LDBG] loop proof ok\n");
             log::info!(
                 "[Loader] Loop proof verified for '{}' (version={}, flags={})\n",
                 name,
                 meta.version,
                 meta.policy_flags
             );
+            crate::io::log::early_print("[LDBG] loop proof ok logged\n");
         }
         Err(loop_proof::LoopProofError::MissingSection) => {
+            crate::io::log::early_print("[LDBG] loop proof missing\n");
             log::warn!(
                 "[Loader] Missing loop proof metadata for '{}': {}\n",
                 name,
@@ -448,6 +454,7 @@ fn validate_cell_requirements(
             return Err(LoadError::LoopProofMissing);
         }
         Err(e) => {
+            crate::io::log::early_print("[LDBG] loop proof invalid\n");
             log::warn!(
                 "[Loader] Invalid loop proof metadata for '{}': {}\n",
                 name,
@@ -456,6 +463,7 @@ fn validate_cell_requirements(
             return Err(LoadError::LoopProofInvalid(alloc::format!("{}", e)));
         }
     }
+    crate::io::log::early_print("[LDBG] loop proof end\n");
     Ok(())
 }
 

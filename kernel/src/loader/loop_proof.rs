@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+use crate::loader::elf::{Elf64Header, Elf64SectionHeader};
 use core::str;
 
 pub const LOOP_PROOF_SECTION_NAME: &str = ".rany_loop_proof";
@@ -47,50 +48,23 @@ impl core::fmt::Display for LoopProofError {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SectionHeader {
-    name_offset: u32,
-    data_offset: u64,
-    data_size: u64,
-}
-
 #[inline]
-fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
-    let bytes = data.get(offset..offset + 2)?;
-    Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+fn bytes_equal(lhs: &[u8], rhs: &[u8]) -> bool {
+    if lhs.len() != rhs.len() {
+        return false;
+    }
+    let mut i = 0usize;
+    while i < lhs.len() {
+        if lhs[i] != rhs[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
-#[inline]
-fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
-    let bytes = data.get(offset..offset + 4)?;
-    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-#[inline]
-fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
-    let bytes = data.get(offset..offset + 8)?;
-    Some(u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ]))
-}
-
-fn read_section_header(
-    elf_data: &[u8],
-    section_table_offset: usize,
-    section_entry_size: usize,
-    index: usize,
-) -> Option<SectionHeader> {
-    let base = section_table_offset.checked_add(index.checked_mul(section_entry_size)?)?;
-    let _ = elf_data.get(base..base + section_entry_size)?;
-
-    Some(SectionHeader {
-        name_offset: read_u32(elf_data, base)?,
-        data_offset: read_u64(elf_data, base + 0x18)?,
-        data_size: read_u64(elf_data, base + 0x20)?,
-    })
-}
-
-fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
+fn validate_elf_sections(elf_data: &[u8]) -> Result<(usize, usize, usize, usize), LoopProofError> {
+    crate::io::log::early_print("[LP] validate_elf_sections begin\n");
     if elf_data.len() < 64 {
         return Err(LoopProofError::InvalidElf("ELF header too small"));
     }
@@ -111,14 +85,16 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
         ));
     }
 
-    let section_table_offset =
-        read_u64(elf_data, 0x28).ok_or(LoopProofError::InvalidElf("missing e_shoff"))? as usize;
-    let section_entry_size =
-        read_u16(elf_data, 0x3A).ok_or(LoopProofError::InvalidElf("missing e_shentsize"))? as usize;
-    let section_count =
-        read_u16(elf_data, 0x3C).ok_or(LoopProofError::InvalidElf("missing e_shnum"))? as usize;
-    let shstr_index =
-        read_u16(elf_data, 0x3E).ok_or(LoopProofError::InvalidElf("missing e_shstrndx"))? as usize;
+    let header =
+        crate::util::get_ref::<Elf64Header>(elf_data, 0).ok_or(LoopProofError::InvalidElf(
+            "failed to read ELF header",
+        ))?;
+    crate::io::log::early_print("[LP] header read ok\n");
+
+    let section_table_offset = header.e_shoff as usize;
+    let section_entry_size = header.e_shentsize as usize;
+    let section_count = header.e_shnum as usize;
+    let shstr_index = header.e_shstrndx as usize;
 
     if section_count == 0 {
         return Err(LoopProofError::InvalidElf("ELF has no section headers"));
@@ -144,50 +120,105 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
         ));
     }
 
-    let shstr_header = read_section_header(
-        elf_data,
-        section_table_offset,
-        section_entry_size,
-        shstr_index,
-    )
-    .ok_or(LoopProofError::InvalidElf(
-        "failed to parse shstrtab header",
-    ))?;
+    crate::io::log::early_print("[LP] validate_elf_sections end\n");
+    Ok((section_table_offset, section_entry_size, section_count, shstr_index))
+}
 
-    let shstr_start = shstr_header.data_offset as usize;
-    let shstr_size = shstr_header.data_size as usize;
+fn get_shstrtab_range(
+    elf_data: &[u8],
+    section_table_offset: usize,
+    section_entry_size: usize,
+    shstr_index: usize,
+) -> Result<(usize, usize), LoopProofError> {
+    crate::io::log::early_print("[LP] get_shstrtab_range begin\n");
+    let shstr_header_offset = section_table_offset
+        .checked_add(
+            shstr_index
+                .checked_mul(section_entry_size)
+                .ok_or(LoopProofError::InvalidElf("shstrtab header offset overflow"))?,
+        )
+        .ok_or(LoopProofError::InvalidElf("shstrtab header offset overflow"))?;
+    crate::io::log::early_print("[LP] shstr header offset ok\n");
+    let shstr_header = crate::util::get_ref::<Elf64SectionHeader>(elf_data, shstr_header_offset)
+        .ok_or(LoopProofError::InvalidElf("failed to parse shstrtab header"))?;
+    crate::io::log::early_print("[LP] shstr header read ok\n");
+
+    let shstr_start = shstr_header.sh_offset as usize;
+    let shstr_size = shstr_header.sh_size as usize;
     let shstr_end = shstr_start
         .checked_add(shstr_size)
         .ok_or(LoopProofError::InvalidElf("shstrtab end overflow"))?;
     if shstr_end > elf_data.len() {
         return Err(LoopProofError::InvalidElf("shstrtab outside ELF bounds"));
     }
-    let shstr = &elf_data[shstr_start..shstr_end];
+
+    crate::io::log::early_print("[LP] get_shstrtab_range end\n");
+    Ok((shstr_start, shstr_size))
+}
+
+fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
+    crate::io::log::early_print("[LP] find_loop_proof_section begin\n");
+    let (section_table_offset, section_entry_size, section_count, shstr_index) =
+        validate_elf_sections(elf_data)?;
+    crate::io::log::early_print("[LP] validate ok\n");
+    let (shstr_start, shstr_size) = get_shstrtab_range(
+        elf_data,
+        section_table_offset,
+        section_entry_size,
+        shstr_index,
+    )?;
+    crate::io::log::early_print("[LP] shstr ok\n");
+    let shstr_end = shstr_start + shstr_size;
 
     for index in 0..section_count {
+        crate::io::log::early_print("[LP] section ");
+        crate::io::log::early_print_dec(index as u64);
+        crate::io::log::early_print("\n");
+        let section_header_offset = section_table_offset
+            .checked_add(
+                index
+                    .checked_mul(section_entry_size)
+                    .ok_or(LoopProofError::InvalidElf("section header offset overflow"))?,
+            )
+            .ok_or(LoopProofError::InvalidElf("section header offset overflow"))?;
         let section_header =
-            read_section_header(elf_data, section_table_offset, section_entry_size, index)
+            crate::util::get_ref::<Elf64SectionHeader>(elf_data, section_header_offset)
                 .ok_or(LoopProofError::InvalidElf("failed to parse section header"))?;
+        crate::io::log::early_print("[LP] section header ok\n");
 
-        let name_offset = section_header.name_offset as usize;
-        if name_offset >= shstr.len() {
+        let name_offset = section_header.sh_name as usize;
+        if name_offset >= shstr_size {
             continue;
         }
 
-        let name_tail = &shstr[name_offset..];
-        let name_len = name_tail
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or(LoopProofError::InvalidElf("unterminated section name"))?;
-        let name = str::from_utf8(&name_tail[..name_len])
+        let name_start = shstr_start + name_offset;
+        let mut name_end = name_start;
+        while name_end < shstr_end && elf_data[name_end] != 0 {
+            name_end += 1;
+        }
+        if name_end == shstr_end {
+            return Err(LoopProofError::InvalidElf("unterminated section name"));
+        }
+
+        let name_bytes = &elf_data[name_start..name_end];
+        let name = str::from_utf8(name_bytes)
             .map_err(|_| LoopProofError::InvalidElf("section name is not UTF-8"))?;
+        crate::io::log::early_print("[LP] name=");
+        crate::io::log::early_print(name);
+        crate::io::log::early_print("\n");
 
-        if name != LOOP_PROOF_SECTION_NAME {
+        if !bytes_equal(name_bytes, LOOP_PROOF_SECTION_NAME.as_bytes()) {
             continue;
         }
 
-        let section_start = section_header.data_offset as usize;
-        let section_size = section_header.data_size as usize;
+        let section_start = section_header.sh_offset as usize;
+        let section_size = section_header.sh_size as usize;
+        crate::io::log::early_print("[LP] found loop proof section\n");
+        crate::io::log::early_print("[LP] section_start=");
+        crate::io::log::early_print_hex(section_start as u64);
+        crate::io::log::early_print(" size=");
+        crate::io::log::early_print_dec(section_size as u64);
+        crate::io::log::early_print("\n");
         let section_end =
             section_start
                 .checked_add(section_size)
@@ -200,6 +231,7 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
             ));
         }
 
+        crate::io::log::early_print("[LP] section slice ok\n");
         return Ok(&elf_data[section_start..section_end]);
     }
 
@@ -212,6 +244,7 @@ pub fn verify_loop_proof_metadata(elf_data: &[u8]) -> Result<LoopProofMetadata, 
 }
 
 fn parse_loop_proof_section(section_data: &[u8]) -> Result<LoopProofMetadata, LoopProofError> {
+    crate::io::log::early_print("[LP] parse_loop_proof_section begin\n");
     if section_data.len() < LOOP_PROOF_SECTION_MIN_SIZE {
         return Err(LoopProofError::InvalidSize(section_data.len()));
     }
@@ -225,6 +258,7 @@ fn parse_loop_proof_section(section_data: &[u8]) -> Result<LoopProofMetadata, Lo
     if magic != LOOP_PROOF_MAGIC {
         return Err(LoopProofError::InvalidMagic(magic));
     }
+    crate::io::log::early_print("[LP] magic ok\n");
 
     let version = u32::from_le_bytes([
         section_data[4],
@@ -235,6 +269,7 @@ fn parse_loop_proof_section(section_data: &[u8]) -> Result<LoopProofMetadata, Lo
     if version != LOOP_PROOF_VERSION {
         return Err(LoopProofError::UnsupportedVersion(version));
     }
+    crate::io::log::early_print("[LP] version ok\n");
 
     let policy_flags = u32::from_le_bytes([
         section_data[8],
