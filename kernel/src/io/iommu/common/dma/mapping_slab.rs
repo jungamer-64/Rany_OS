@@ -49,13 +49,13 @@ use crate::io::iommu::types::DmaMapping;
 #[cfg(test)]
 pub const SLAB_CAPACITY: usize = 256;
 #[cfg(not(test))]
-pub const SLAB_CAPACITY: usize = 768;
+pub const SLAB_CAPACITY: usize = 8192;
 
 /// Number of hash buckets (must be power of 2 for hash masking, ~2x capacity for good load factor).
 #[cfg(test)]
 const HASH_BUCKETS: usize = 512;
 #[cfg(not(test))]
-const HASH_BUCKETS: usize = 1024;
+const HASH_BUCKETS: usize = 16384;
 
 /// Invalid slot index sentinel.
 const INVALID_INDEX: u16 = u16::MAX;

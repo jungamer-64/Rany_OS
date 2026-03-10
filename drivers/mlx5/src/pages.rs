@@ -18,6 +18,7 @@ extern crate alloc;
 use crate::cmd::CmdMailbox;
 use crate::defs::MLX5_CMD_MBOX_SIZE;
 use alloc::vec::Vec;
+use kernel_api::dma::{CpuOwned, DmaSlice};
 
 /// ページ管理操作タイプ
 #[repr(u8)]
@@ -46,15 +47,28 @@ pub struct PageAllocation {
 pub struct PageManager {
     /// 提供済みページの一覧
     allocated_pages: Vec<PageAllocation>,
+    /// ドライバが追加確保した FW ページの所有権
+    owned_pages: Vec<OwnedPageBuffer>,
     /// 合計提供ページ数
     total_given: u32,
 }
+
+struct OwnedPageBuffer {
+    dma_addr: u64,
+    _buffer: DmaSlice<CpuOwned>,
+}
+
+// SAFETY: OwnedPageBuffer keeps exclusive ownership of the DMA buffer inside the
+// mlx5 driver's internal state. Safe APIs never hand out shared references to
+// the underlying memory, so sharing the holder across threads is acceptable.
+unsafe impl Sync for OwnedPageBuffer {}
 
 impl PageManager {
     /// 新しいページマネージャを作成
     pub fn new() -> Self {
         Self {
             allocated_pages: Vec::new(),
+            owned_pages: Vec::new(),
             total_given: 0,
         }
     }
@@ -77,6 +91,22 @@ impl PageManager {
         self.total_given = self.allocated_pages.len() as u32;
     }
 
+    /// ドライバが追加確保した DMA ページを記録し、所有権を保持する。
+    pub fn record_owned_dma_page(&mut self, buffer: DmaSlice<CpuOwned>, function_id: u16) -> u64 {
+        let dma_addr = buffer.device_address();
+        let virt_addr = buffer.as_ptr() as u64;
+        self.record_allocation(PageAllocation {
+            phys_addr: dma_addr,
+            virt_addr,
+            function_id,
+        });
+        self.owned_pages.push(OwnedPageBuffer {
+            dma_addr,
+            _buffer: buffer,
+        });
+        dma_addr
+    }
+
     /// 指定関数IDに関連するページを回収用にリストアップ
     pub fn pages_for_function(&self, function_id: u16) -> Vec<u64> {
         self.allocated_pages
@@ -90,6 +120,8 @@ impl PageManager {
     pub fn remove_pages(&mut self, phys_addrs: &[u64]) {
         self.allocated_pages
             .retain(|p| !phys_addrs.contains(&p.phys_addr));
+        self.owned_pages
+            .retain(|page| !phys_addrs.contains(&page.dma_addr));
         self.total_given = self.allocated_pages.len() as u32;
     }
 

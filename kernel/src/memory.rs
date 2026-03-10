@@ -726,7 +726,10 @@ pub static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
 pub use crate::ALLOCATOR;
 
 /// ヒープのサイズ
-pub const HEAP_SIZE: usize = 128 * 1024 * 1024; // 128 MiB
+///
+/// PF passthrough with VT-d now builds substantially larger IOMMU metadata and
+/// firmware-page working sets than the original VirtIO-only boot path.
+pub const HEAP_SIZE: usize = 256 * 1024 * 1024; // 256 MiB
 
 /// Exchange Heap のサイズ
 /// NOTE: ネットワーク Mempool (1024 × 4KB = 4MiB) + RRef IPC + その他のため

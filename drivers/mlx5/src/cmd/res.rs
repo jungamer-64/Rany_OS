@@ -59,16 +59,30 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = MkeyContextLayout::new(&mut in_mbox.data[0x10..]);
 
-    layout.set_access_flags(params.access_flags);
-    layout.set_translations_octword_size(1);
+    let local_write =
+        (params.access_flags & crate::resources::MkeyAccessFlags::LocalWrite as u8) != 0;
+    let remote_read =
+        (params.access_flags & crate::resources::MkeyAccessFlags::RemoteRead as u8) != 0;
+    let remote_write =
+        (params.access_flags & crate::resources::MkeyAccessFlags::RemoteWrite as u8) != 0;
+
+    // Match the Linux netdev direct-memory-key path: PA access mode, local
+    // reads always enabled, QPN wildcarded, and length64 for full-space keys.
+    layout.set_lr(true);
+    layout.set_lw(local_write);
+    layout.set_rr(remote_read);
+    layout.set_rw(remote_write);
+    layout.set_access_mode_1_0(0);
+    layout.set_qpn(0x00ff_ffff);
     layout.set_pd(params.pd);
-    layout.set_start_addr(params.start_addr);
-    layout.set_len(params.length);
-    layout.set_log_page_size(12); // 4KB
     layout.set_mkey_7_0(0x42);
 
-    // PAS[0] at context + 0x40.
-    in_mbox.write_be64(0x10 + 0x40, params.start_addr);
+    if params.start_addr == 0 && params.length == u64::MAX {
+        layout.set_length64(true);
+    } else {
+        layout.set_start_addr(params.start_addr);
+        layout.set_len(params.length);
+    }
 }
 
 /// CREATE_MKEY 出力からMKEY値を解析

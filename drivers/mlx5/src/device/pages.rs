@@ -30,22 +30,24 @@ impl Mlx5Device {
                 });
         }
 
-        build_manage_pages_input(
-            in_mbox,
-            crate::pages::ManagePagesOp::GivePages as u8,
-            function_id,
-            pas.len() as u32,
-            pas,
-        );
+        for chunk in pas.chunks(crate::pages::MAX_PAS_PER_MBOX) {
+            build_manage_pages_input(
+                in_mbox,
+                crate::pages::ManagePagesOp::GivePages as u8,
+                function_id,
+                chunk.len() as u32,
+                chunk,
+            );
 
-        let in_len = (0x10 + (pas.len().min(crate::pages::MAX_PAS_PER_MBOX)) * 8) as u32;
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::ManagePages,
-            self.cmd_in_mbox_device,
-            in_len,
-            self.cmd_out_mbox_device,
-            16,
-        )?;
+            let in_len = (0x10 + chunk.len() * 8) as u32;
+            self.execute_cmd_with_uid_candidates(
+                CmdOpcode::ManagePages,
+                self.cmd_in_mbox_device,
+                in_len,
+                self.cmd_out_mbox_device,
+                16,
+            )?;
+        }
 
         self.state = crate::device::DeviceState::PagesProvided;
         log::info!(target: "mlx5", "Pages provided successfully");
@@ -61,21 +63,12 @@ impl Mlx5Device {
 
         if num_pages > 0 {
             let mut page_pas = Vec::with_capacity(num_pages as usize);
+            let device_id = self.packed_device_id();
             for _ in 0..num_pages {
                 let buf = kernel_api::service::kernel::instance()
-                    .alloc_dma(4096)
+                    .alloc_dma_for_device(crate::defs::MLX5_PAGE_SIZE, device_id)
                     .map_err(|_| Mlx5Error::DmaAllocFailed)?;
-
-                let pa = buf.device_address();
-                let va = buf.as_ptr() as u64;
-
-                self.page_manager
-                    .record_allocation(crate::pages::PageAllocation {
-                        phys_addr: pa,
-                        virt_addr: va,
-                        function_id: func_id,
-                    });
-                page_pas.push(pa);
+                page_pas.push(self.page_manager.record_owned_dma_page(buf, func_id));
             }
 
             self.give_pages_internal(func_id, &page_pas)?;
@@ -90,22 +83,24 @@ impl Mlx5Device {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
 
-        build_manage_pages_input(
-            in_mbox,
-            crate::pages::ManagePagesOp::GivePages as u8,
-            function_id,
-            pas.len() as u32,
-            pas,
-        );
+        for chunk in pas.chunks(crate::pages::MAX_PAS_PER_MBOX) {
+            build_manage_pages_input(
+                in_mbox,
+                crate::pages::ManagePagesOp::GivePages as u8,
+                function_id,
+                chunk.len() as u32,
+                chunk,
+            );
 
-        let in_len = (0x10 + pas.len() * 8) as u32;
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::ManagePages,
-            self.cmd_in_mbox_device,
-            in_len,
-            self.cmd_out_mbox_device,
-            16,
-        )?;
+            let in_len = (0x10 + chunk.len() * 8) as u32;
+            self.execute_cmd_with_uid_candidates(
+                CmdOpcode::ManagePages,
+                self.cmd_in_mbox_device,
+                in_len,
+                self.cmd_out_mbox_device,
+                16,
+            )?;
+        }
         Ok(())
     }
 

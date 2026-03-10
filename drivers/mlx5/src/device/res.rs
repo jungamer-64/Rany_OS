@@ -3,10 +3,10 @@
 // ============================================================================
 
 extern crate alloc;
-use crate::cmd::CmdMailbox;
-use crate::cmd::CommandTransport; // needed to bring execute() method into scope
 use crate::cmd::hca::*; // basic HCA commands (SET_DRIVER_VERSION etc)
 use crate::cmd::res::*; // resource command builders/parsers
+use crate::cmd::CmdMailbox;
+use crate::cmd::CommandTransport; // needed to bring execute() method into scope
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE};
 use crate::device::Mlx5Device;
 use crate::error::{Mlx5Error, Mlx5Result};
@@ -35,6 +35,14 @@ impl Mlx5Device {
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::res::build_create_mkey_input(in_mbox, params);
+        log::info!(
+            target: "mlx5",
+            "CREATE_MKEY in(pre): pd={} start={:#x} len={:#x} access={:#x}",
+            params.pd,
+            params.start_addr,
+            params.length,
+            params.access_flags
+        );
 
         self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateMkey,

@@ -319,7 +319,11 @@ impl IommuInvalidator for NoopInvalidator {
 /// ```
 ///
 /// This reduces tree pressure for the most common DMA buffer sizes.
-const DOMAIN_SHARD_COUNT: usize = 64;
+// The current mlx5 PF bring-up allocates several thousand firmware pages in a
+// narrow IOVA window, which concentrates mappings into a single shard anyway.
+// Reducing sharding keeps per-domain slab memory practical while allowing a
+// larger mapping capacity for that hot shard.
+const DOMAIN_SHARD_COUNT: usize = 1;
 const PML4_ENTRIES_PER_SHARD: usize = PT_ENTRIES / DOMAIN_SHARD_COUNT;
 const MIN_PT_LEVELS: u8 = 2;
 const MAX_PT_LEVELS: u8 = 5;

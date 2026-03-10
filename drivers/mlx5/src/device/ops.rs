@@ -638,9 +638,19 @@ impl Mlx5Device {
         let _ = self.query_port_mac(port_index)?;
         let _ = self.query_port_state(port_index)?;
         let _ = self.query_port_mtu(port_index)?;
-        let vnic_env = self.query_vnic_env(0, false)?;
+        let vnic_env = match self.query_vnic_env(0, false) {
+            Ok(env) => Some(env),
+            Err(err) => {
+                log::warn!(
+                    target: "mlx5",
+                    "QUERY_VNIC_ENV unavailable during port refresh; keeping drop counters unchanged: {:?}",
+                    err
+                );
+                None
+            }
+        };
 
-        if let Some(port) = self.ports.get_mut(port_index) {
+        if let (Some(port), Some(vnic_env)) = (self.ports.get_mut(port_index), vnic_env) {
             let stats = port.stats_mut();
             stats.rx_dropped = vnic_env.receive_discard_vport_down;
             stats.tx_dropped = vnic_env.transmit_discard_vport_down;
@@ -657,7 +667,17 @@ impl Mlx5Device {
             .ok_or(Mlx5Error::InvalidParameter)?;
 
         let counters = self.query_vport_counters(port_num, false)?;
-        let vnic_env = self.query_vnic_env(0, false)?;
+        let vnic_env = match self.query_vnic_env(0, false) {
+            Ok(env) => Some(env),
+            Err(err) => {
+                log::warn!(
+                    target: "mlx5",
+                    "QUERY_VNIC_ENV unavailable during stats update; using counter-only stats: {:?}",
+                    err
+                );
+                None
+            }
+        };
 
         if let Some(port) = self.ports.get_mut(port_index) {
             let stats = port.stats_mut();
@@ -675,8 +695,10 @@ impl Mlx5Device {
                 + counters.tx_broadcast_bytes;
             stats.rx_errors = counters.rx_error_packets;
             stats.tx_errors = counters.tx_error_packets;
-            stats.rx_dropped = vnic_env.receive_discard_vport_down;
-            stats.tx_dropped = vnic_env.transmit_discard_vport_down;
+            if let Some(vnic_env) = vnic_env {
+                stats.rx_dropped = vnic_env.receive_discard_vport_down;
+                stats.tx_dropped = vnic_env.transmit_discard_vport_down;
+            }
         }
 
         Ok(())

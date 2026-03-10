@@ -249,10 +249,60 @@ impl Mlx5Device {
         phase: &str,
         func_id: u16,
         requested_pages: i32,
-        fw_page_addrs: &[u64],
+        fw_page_addrs: &mut Vec<u64>,
     ) -> Mlx5Result<()> {
         if requested_pages <= 0 {
             return Ok(());
+        }
+
+        let requested_pages = requested_pages as usize;
+        let start = self.bootstrap_fw_page_cursor.min(fw_page_addrs.len());
+        let target_total = start.saturating_add(requested_pages);
+
+        if !self.is_vf() && fw_page_addrs.len() < target_total {
+            let additional_needed = target_total - fw_page_addrs.len();
+            let device_id = self.packed_device_id();
+            let mut added_pages = 0usize;
+
+            log::info!(
+                target: "mlx5",
+                "Expanding FW page pool for {} phase: need {} additional pages for function {:#x}",
+                phase,
+                additional_needed,
+                func_id
+            );
+
+            for _ in 0..additional_needed {
+                match kernel_api::service::kernel::instance()
+                    .alloc_dma_for_device(crate::defs::MLX5_PAGE_SIZE, device_id)
+                {
+                    Ok(buf) => {
+                        let dma_addr = self.page_manager.record_owned_dma_page(buf, func_id);
+                        fw_page_addrs.push(dma_addr);
+                        added_pages += 1;
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            target: "mlx5",
+                            "Failed to allocate additional FW page for {} phase after {} pages: {:?}",
+                            phase,
+                            added_pages,
+                            err
+                        );
+                        break;
+                    }
+                }
+            }
+
+            if added_pages != 0 {
+                log::info!(
+                    target: "mlx5",
+                    "Expanded FW page pool by {} pages for {} phase (total pages={})",
+                    added_pages,
+                    phase,
+                    fw_page_addrs.len()
+                );
+            }
         }
 
         if fw_page_addrs.is_empty() {
@@ -266,8 +316,6 @@ impl Mlx5Device {
             return Ok(());
         }
 
-        let requested_pages = requested_pages as usize;
-        let start = self.bootstrap_fw_page_cursor.min(fw_page_addrs.len());
         let available = fw_page_addrs.len().saturating_sub(start);
         if available == 0 {
             log::warn!(
@@ -330,7 +378,7 @@ impl Mlx5Device {
             config.pci_identity.function,
         );
 
-        let fw_page_addrs = resources.fw_page_device_addrs();
+        let mut fw_page_addrs = resources.fw_page_device_addrs();
         let eq_bufs = resources.eq_bufs();
         let tx_cq_bufs = resources.tx_cq_bufs();
         let rx_cq_bufs = resources.rx_cq_bufs();
@@ -345,7 +393,7 @@ impl Mlx5Device {
             resources.cmd_in_mbox.device_addr,
             resources.cmd_out_mbox.virt_addr,
             resources.cmd_out_mbox.device_addr,
-            &fw_page_addrs,
+            &mut fw_page_addrs,
             &config.mkey_params,
             &eq_bufs,
             &tx_cq_bufs,
@@ -369,7 +417,7 @@ impl Mlx5Device {
         cmd_in_mbox_device: u64,
         cmd_out_mbox_virt: u64,
         cmd_out_mbox_device: u64,
-        fw_page_addrs: &[u64],
+        fw_page_addrs: &mut Vec<u64>,
         mkey_params: &crate::resources::MkeyParams,
         eq_buf: (u64, u64),
         tx_cq_buf: (u64, u64, u64, u64),
@@ -412,7 +460,7 @@ impl Mlx5Device {
         cmd_in_mbox_device: u64,
         cmd_out_mbox_virt: u64,
         cmd_out_mbox_device: u64,
-        fw_page_addrs: &[u64],
+        fw_page_addrs: &mut Vec<u64>,
         mkey_params: &crate::resources::MkeyParams,
         eq_bufs: &[(u64, u64)],
         tx_cq_bufs: &[(u64, u64, u64, u64)],
@@ -797,12 +845,23 @@ impl Mlx5Device {
             tx_using_fallback_tis0 = true;
             0
         } else {
-            self.create_tis(&crate::resources::TisParams {
+            match self.create_tis(&crate::resources::TisParams {
                 pd: self.pd,
                 td: self.td,
                 port: 1,
                 prio: 0,
-            })?
+            }) {
+                Ok(tisn) => tisn,
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "CREATE_TIS failed on PF ({:?}); trying TX fallback with implicit TIS=0",
+                        err
+                    );
+                    tx_using_fallback_tis0 = true;
+                    0
+                }
+            }
         };
         crate::boot_trace("[MLX5_STAGE] create_tis_done\n");
 
@@ -849,12 +908,12 @@ impl Mlx5Device {
         if !tx_path_enabled {
             log::warn!(
                 target: "mlx5",
-                "mlx5 VF fallback active: TX path disabled (no usable TIS/SQ), continuing RX setup"
+                "mlx5 TX fallback active: TX path disabled (no usable TIS/SQ), continuing RX setup"
             );
         } else if tx_using_fallback_tis0 {
             log::warn!(
                 target: "mlx5",
-                "mlx5 VF fallback active: TX path running with implicit TIS=0"
+                "mlx5 TX fallback active: TX path running with implicit TIS=0"
             );
         }
 
@@ -923,6 +982,7 @@ impl Mlx5Device {
         crate::boot_trace("[MLX5_STAGE] create_tir_done\n");
 
         // Finalize
+        crate::boot_trace("[MLX5_STAGE] flow_table_enter\n");
         if let Err(err) = self.setup_rx_flow_table_advanced(tirn) {
             if self.is_vf() {
                 log::warn!(
@@ -934,6 +994,7 @@ impl Mlx5Device {
                 crate::boot_trace("[MLX5_STAGE] rx_flow_table_vf_failed\n");
             }
         }
+        crate::boot_trace("[MLX5_STAGE] flow_table_done\n");
         if self.is_vf() {
             crate::boot_trace("[MLX5_STAGE] try_port_admin_up_vf\n");
             if let Err(err) = self.set_port_admin_up(0) {
@@ -944,21 +1005,23 @@ impl Mlx5Device {
                 );
             }
         } else {
+            crate::boot_trace("[MLX5_STAGE] try_port_admin_up_pf\n");
             let _ = self.set_port_admin_up(0);
+            crate::boot_trace("[MLX5_STAGE] port_admin_up_pf_done\n");
         }
         if let Some(port) = self.ports.get_mut(0) {
             port.admin_up();
         }
 
-        // Give PF firmware a moment to reflect the port state change before
-        // reporting active. On VF bring-up in some environments the timer tick
-        // may not advance yet here, so skip this delay path.
+        // Avoid tick-based busy waits here. During early PF bring-up this path
+        // can run before the scheduler tick is reliably advancing, which turns
+        // a 50ms delay into an indefinite stall.
         if !self.is_vf() {
-            let start_ms = kernel_api::service::kernel::instance().current_tick();
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while kernel_api::service::kernel::instance().current_tick() - start_ms < 50 {
+            crate::boot_trace("[MLX5_STAGE] post_admin_delay_enter\n");
+            for _ in 0..200_000 {
                 core::hint::spin_loop();
             }
+            crate::boot_trace("[MLX5_STAGE] post_admin_delay_done\n");
         }
 
         self.resources_allocated = true;

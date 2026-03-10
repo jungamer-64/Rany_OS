@@ -189,8 +189,8 @@ pub fn list_domains() -> Vec<DomainMemoryInfo> {
 #[cfg(all(test, any(feature = "full_mm_tests", feature = "qemu-test-export")))]
 mod tests {
     use super::*;
-    use crate::domain::quota::DomainPriority;
     use crate::domain::quota::quota_manager;
+    use crate::domain::quota::DomainPriority;
     use crate::domain_system::{
         create_domain, get_domain_snapshot, set_domain_priority, set_domain_resource_limits,
         terminate_domain,

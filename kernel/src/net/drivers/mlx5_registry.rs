@@ -342,6 +342,18 @@ impl DmaSlot {
         Mlx5DmaRegion::new(self.virt_addr, self.device_addr, self.size)
     }
 
+    fn subregion(&self, offset: usize, size: usize) -> Self {
+        debug_assert!(offset <= self.size);
+        debug_assert!(size <= self.size.saturating_sub(offset));
+        Self {
+            phys_addr: self.phys_addr + offset as u64,
+            device_addr: self.device_addr + offset as u64,
+            virt_addr: self.virt_addr + offset as u64,
+            size,
+            releaser: None,
+        }
+    }
+
     fn into_dma_buffer(self) -> DmaBuffer {
         unsafe {
             DmaBuffer::from_raw_parts(
@@ -356,7 +368,7 @@ impl DmaSlot {
 }
 
 fn release_dma_slot(slot: &mut DmaSlot) {
-    if slot.size == 0 {
+    if slot.size == 0 || slot.releaser.is_none() {
         return;
     }
 
@@ -373,6 +385,7 @@ struct Mlx5DmaResources {
     cmdq: DmaSlot,
     cmd_in_mbox: DmaSlot,
     cmd_out_mbox: DmaSlot,
+    fw_page_chunks: Vec<DmaSlot>,
     fw_pages: Vec<DmaSlot>,
     eqs: Vec<DmaSlot>,
     tx_cqs: Vec<DmaSlot>,
@@ -437,6 +450,9 @@ impl Drop for Mlx5DmaResources {
     fn drop(&mut self) {
         for page in self.fw_pages.iter_mut() {
             release_dma_slot(page);
+        }
+        for chunk in self.fw_page_chunks.iter_mut() {
+            release_dma_slot(chunk);
         }
 
         for q in self.rq_dbs.iter_mut() {
@@ -526,19 +542,28 @@ impl Mlx5AsyncDriver {
         &self,
         packed_device_id: u64,
         plan: &Mlx5BootstrapPlan,
+        _is_vf: bool,
     ) -> KapiResult<Mlx5DmaResources> {
+        const FW_PAGES_PER_CHUNK: usize = 1;
+
         let profile = plan.queue_profile();
 
-        // PF passthrough occasionally requests more bootstrap pages than older plans.
-        // Keep a conservative floor so early QUERY_PAGES(op=1) can be satisfied.
+        // Keep the bootstrap pool small and let the driver grow it on demand
+        // once QUERY_PAGES reports the actual PF requirement.
         let fw_boot_pages = plan.fw_boot_page_count().max(16);
+        let fw_page_size = plan.fw_page_size();
+        let mut fw_page_chunks = Vec::with_capacity(fw_boot_pages.div_ceil(FW_PAGES_PER_CHUNK));
         let mut fw_pages = Vec::with_capacity(fw_boot_pages);
-        for _ in 0..fw_boot_pages {
-            fw_pages.push(Self::alloc_dma_for_device(
-                plan.fw_page_size(),
-                packed_device_id,
-                "fw_page",
-            )?);
+        let mut remaining_fw_pages = fw_boot_pages;
+        while remaining_fw_pages > 0 {
+            let pages_in_chunk = remaining_fw_pages.min(FW_PAGES_PER_CHUNK);
+            let chunk_size = fw_page_size * pages_in_chunk;
+            let chunk = Self::alloc_dma_for_device(chunk_size, packed_device_id, "fw_page_chunk")?;
+            for page_idx in 0..pages_in_chunk {
+                fw_pages.push(chunk.subregion(page_idx * fw_page_size, fw_page_size));
+            }
+            fw_page_chunks.push(chunk);
+            remaining_fw_pages -= pages_in_chunk;
         }
 
         let mut eqs = Vec::with_capacity(profile.eq_count);
@@ -617,6 +642,7 @@ impl Mlx5AsyncDriver {
                 packed_device_id,
                 "cmd_out_mbox",
             )?,
+            fw_page_chunks,
             fw_pages,
             eqs,
             tx_cqs,
@@ -854,7 +880,7 @@ impl Mlx5AsyncDriver {
         );
         let packed_device_id = Self::pack_iommu_device_id(iommu_device_id);
 
-        let dma_resources = self.allocate_dma_resources(packed_device_id, &plan)?;
+        let dma_resources = self.allocate_dma_resources(packed_device_id, &plan, is_vf)?;
         let allocated = dma_resources.to_allocated_resources();
         log::info!(
             target: "mlx5",

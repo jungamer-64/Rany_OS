@@ -217,6 +217,10 @@ impl Mlx5Device {
         self.is_vf
     }
 
+    pub(crate) fn packed_device_id(&self) -> u64 {
+        ((self.pci_bus as u64) << 16) | ((self.pci_device as u64) << 8) | (self.pci_function as u64)
+    }
+
     /// Physical Function かどうか判定
     pub fn is_pf(&self) -> bool {
         !self.is_vf && !self.is_ecpf

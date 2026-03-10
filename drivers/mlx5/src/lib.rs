@@ -113,6 +113,10 @@ fn boot_opcode_name(opcode: defs::CmdOpcode) -> Option<&'static str> {
         defs::CmdOpcode::ModifyRmp => Some("modify_rmp"),
         defs::CmdOpcode::CreateRqt => Some("create_rqt"),
         defs::CmdOpcode::CreateTir => Some("create_tir"),
+        defs::CmdOpcode::CreateFlowTable => Some("create_flow_table"),
+        defs::CmdOpcode::CreateFlowGroup => Some("create_flow_group"),
+        defs::CmdOpcode::SetFlowTableEntry => Some("set_flow_table_entry"),
+        defs::CmdOpcode::ModifyVportState => Some("modify_vport_state"),
         _ => None,
     }
 }

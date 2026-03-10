@@ -303,23 +303,21 @@ impl Mlx5Device {
         let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
         let mut selected_mem_rq_type = 0u8;
         let mut selected_rmpn: Option<u32> = None;
-        // この実装の RX WQE 生成は MEMORY_RQ_INLINE(mem_rq_type=0) を前提にしている。
-        // まず 0 を試し、VF で拒否される個体のみ 1 へフォールバックする。
-        let mem_rq_type_attempts: &[u8] = if self.is_vf() { &[0, 1] } else { &[0] };
+        // Prefer inline RQ first because the current RX runtime is built
+        // around inline memory RQ WQEs. On PF we still widen the probe set
+        // when the strict default profile is rejected, because some FW
+        // variants accept only a narrower context tuple.
+        let mem_rq_type_attempts: &[u8] = &[0, 1];
         let mut selected_profile = "default";
         let mut inline_rq_rejected = false;
-        let inline_profiles: &[(&str, bool, u8, u8, u8)] = if self.is_vf() {
-            &[
-                ("cyclic+align+flush", true, 1, 1, 4),
-                ("cyclic+align+noflush", false, 1, 1, 4),
-                ("cyclic+nopad+flush", true, 1, 0, 4),
-                ("linked+nopad+flush", true, 0, 0, 4),
-                ("linked+nopad+noflush", false, 0, 0, 4),
-                ("cyclic+align+stride64", true, 1, 1, 6),
-            ]
-        } else {
-            &[("cyclic+align+flush", true, 1, 1, 4)]
-        };
+        let inline_profiles: &[(&str, bool, u8, u8, u8)] = &[
+            ("cyclic+align+flush", true, 1, 1, 4),
+            ("cyclic+align+noflush", false, 1, 1, 4),
+            ("cyclic+nopad+flush", true, 1, 0, 4),
+            ("linked+nopad+flush", true, 0, 0, 4),
+            ("linked+nopad+noflush", false, 0, 0, 4),
+            ("cyclic+align+stride64", true, 1, 1, 6),
+        ];
         'mem_type: for &mem_rq_type in mem_rq_type_attempts {
             let mut rmpn_for_attempt = None;
             if mem_rq_type == 1 {
@@ -343,8 +341,23 @@ impl Mlx5Device {
                 &[("rmp+cyclic+align+flush", true, 1, 1, 4)]
             };
 
-            for &(profile_name, flush_in_error_en, wq_type, end_padding_mode, log_wq_stride) in profiles
+            for &(profile_name, flush_in_error_en, wq_type, end_padding_mode, log_wq_stride) in
+                profiles
             {
+                log::info!(
+                    target: "mlx5",
+                    "CREATE_RQ try: mem_rq_type={} profile={} cqn={:#x} pd={} uar_page={} log_rq_size={} stride={} wq_type={} end_pad={} flush={}",
+                    mem_rq_type,
+                    profile_name,
+                    cqn,
+                    self.pd,
+                    self.uar_page,
+                    log_rq_size,
+                    log_wq_stride,
+                    wq_type,
+                    end_padding_mode,
+                    flush_in_error_en
+                );
                 build_create_rq_input_with_options(
                     in_mbox,
                     log_rq_size,
@@ -375,6 +388,16 @@ impl Mlx5Device {
                         if mem_rq_type == 0 {
                             inline_rq_rejected = true;
                         }
+                        log::warn!(
+                            target: "mlx5",
+                            "CREATE_RQ attempt failed: mem_rq_type={} profile={} rmpn={} err={:?}",
+                            mem_rq_type,
+                            profile_name,
+                            rmpn_for_attempt
+                                .map(|v| alloc::format!("{:#x}", v))
+                                .unwrap_or_else(|| "none".into()),
+                            err
+                        );
                         last_err = Err(err);
                     }
                 }
@@ -403,7 +426,7 @@ impl Mlx5Device {
         if selected_mem_rq_type != 0 {
             log::warn!(
                 target: "mlx5",
-                "CREATE_RQ fell back to mem_rq_type={} on VF (inline mode rejected={}): RX runtime may require RMP-specific handling",
+                "CREATE_RQ fell back to mem_rq_type={} (inline mode rejected={}): RX runtime may require RMP-specific handling",
                 selected_mem_rq_type,
                 inline_rq_rejected
             );
