@@ -108,6 +108,7 @@ fn boot_opcode_name(opcode: defs::CmdOpcode) -> Option<&'static str> {
         defs::CmdOpcode::CreateCq => Some("create_cq"),
         defs::CmdOpcode::CreateTis => Some("create_tis"),
         defs::CmdOpcode::CreateSq => Some("create_sq"),
+        defs::CmdOpcode::ModifySq => Some("modify_sq"),
         defs::CmdOpcode::QuerySq => Some("query_sq"),
         defs::CmdOpcode::CreateRq => Some("create_rq"),
         defs::CmdOpcode::QueryRq => Some("query_rq"),

@@ -16,7 +16,7 @@
 
 use crate::defs::{WQEBB_SIZE, WqeOpcode};
 use crate::regs::wqe;
-use core::sync::atomic::{Ordering, fence};
+use core::sync::atomic::{Ordering, compiler_fence, fence};
 
 const MLX5_WQE_CTRL_CQ_UPDATE: u8 = 2 << 2;
 const MLX5_ETH_WQE_L3_CSUM: u8 = 1 << 6;
@@ -180,6 +180,17 @@ impl SendQueue {
             return None;
         }
 
+        let inline_len = inline_hdr.len().min(u16::MAX as usize);
+        let inline_ds = if inline_len > 2 {
+            (inline_len - 2).div_ceil(16)
+        } else {
+            0
+        };
+        let ds_count = 2 + inline_ds as u32 + segments.len() as u32;
+        if ds_count > 4 {
+            return None;
+        }
+
         let wqe_idx = self.producer_counter;
         let buf_idx = (wqe_idx as u32 % self.sq_depth) as usize;
 
@@ -191,7 +202,6 @@ impl SendQueue {
         let ctrl_ptr = wqe_ptr;
         let opmod_idx = ((wqe_idx as u32) << 8) | (WqeOpcode::EthSend as u32);
         write_be32_raw(ctrl_ptr, wqe::ctrl::OPMOD_IDX_OPCODE, opmod_idx);
-        let ds_count = 2 + segments.len() as u32;
         let qpn_ds = ((self.sqn & 0x00FF_FFFF) << 8) | ds_count;
         write_be32_raw(ctrl_ptr, wqe::ctrl::QPN_DS, qpn_ds);
         write_u8_raw(ctrl_ptr, wqe::ctrl::FM_CE_SE, MLX5_WQE_CTRL_CQ_UPDATE);
@@ -215,14 +225,24 @@ impl SendQueue {
         // TSO MSS
         write_be16_raw(eth_ptr, wqe::eth::MSS, options.mss);
 
-        // Current TX path carries the full frame through the DMA data segment.
-        // Do not inline L2 headers here: the minimal 3-DS WQE layout would
-        // otherwise overlap the first data segment and corrupt the WQE.
-        let _ = inline_hdr;
+        if inline_len > 0 {
+            write_be16_raw(
+                eth_ptr,
+                wqe::eth::TRAILER_OR_INLINE_HDR_SZ,
+                inline_len as u16,
+            );
+            core::ptr::copy_nonoverlapping(
+                inline_hdr.as_ptr(),
+                eth_ptr.add(wqe::eth::INLINE_HDR_START),
+                inline_len,
+            );
+        }
 
-        // Data Segments (16 bytes each) starting at offset 32
+        let data_seg_base = 32 + inline_ds * 16;
+
+        // Data Segments (16 bytes each) after the optional inline header spill area
         for (i, seg) in segments.iter().enumerate() {
-            let data_seg_ptr = ctrl_ptr.add(32 + i * 16);
+            let data_seg_ptr = ctrl_ptr.add(data_seg_base + i * 16);
             // Byte count
             write_be32_raw(data_seg_ptr, wqe::data::BYTE_COUNT, seg.len);
             // L-Key (Memory Key)
@@ -333,12 +353,19 @@ impl SendQueue {
     /// # Safety
     /// - uar_base が有効であること
     unsafe fn ring_doorbell(&mut self, wqe_ptr: *const u8) {
-        // 1) Update SQ producer DB record.
+        // Match Linux mlx5e_notify_hw ordering:
+        //  1. make WQE visible
+        //  2. publish producer counter in DB record
+        //  3. issue a write barrier before the MMIO doorbell
+        let fm_ce_se =
+            core::ptr::read_volatile(wqe_ptr.add(wqe::ctrl::FM_CE_SE)) | MLX5_WQE_CTRL_CQ_UPDATE;
+        write_u8_raw(wqe_ptr as *mut u8, wqe::ctrl::FM_CE_SE, fm_ce_se);
+        fence(Ordering::Release);
+
         let db_ptr = self.doorbell_virt as *mut u32;
         core::ptr::write_volatile(db_ptr, (self.producer_counter as u32).to_be());
-
-        // 2) Ensure descriptor + dbrec writes are visible before ringing UAR.
-        fence(Ordering::Release);
+        compiler_fence(Ordering::Release);
+        hal::mmio::sfence();
 
         // Linux rings the SQ via the selected BF register base without
         // per-packet slot toggling. Use the first BF slot until bfreg
@@ -375,7 +402,14 @@ impl SendQueue {
         let last_wqe_counter = self.producer_counter.wrapping_sub(1);
         let last_idx = (last_wqe_counter as u32 % self.sq_depth) as usize;
         let last_wqe_ptr = (self.buf_virt as usize + last_idx * 64) as *const u8;
-        let last_data_seg_ptr = last_wqe_ptr.add(32);
+        let last_inline_hdr_sz =
+            read_be16_raw(last_wqe_ptr.add(16), wqe::eth::TRAILER_OR_INLINE_HDR_SZ) as usize;
+        let last_inline_ds = if last_inline_hdr_sz > 2 {
+            (last_inline_hdr_sz - 2).div_ceil(16)
+        } else {
+            0
+        };
+        let last_data_seg_ptr = last_wqe_ptr.add(32 + last_inline_ds * 16);
 
         let doorbell_be = core::ptr::read_volatile(self.doorbell_virt as *const u32);
         let doorbell_host = u32::from_be(doorbell_be) & 0x0000_ffff;
@@ -670,6 +704,14 @@ unsafe fn read_be32_raw(base: *const u8, offset: usize) -> u32 {
     let b2 = core::ptr::read_volatile(ptr.add(2));
     let b3 = core::ptr::read_volatile(ptr.add(3));
     u32::from_be_bytes([b0, b1, b2, b3])
+}
+
+/// ビッグエンディアンu16をrawポインタから読み込む
+unsafe fn read_be16_raw(base: *const u8, offset: usize) -> u16 {
+    let ptr = base.add(offset);
+    let b0 = core::ptr::read_volatile(ptr);
+    let b1 = core::ptr::read_volatile(ptr.add(1));
+    u16::from_be_bytes([b0, b1])
 }
 
 /// ビッグエンディアンu64をrawポインタから読み込む

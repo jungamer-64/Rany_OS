@@ -870,6 +870,32 @@ impl Mlx5Device {
             tx_using_fallback_tis0 = true;
             0
         } else {
+            crate::boot_trace("[MLX5_STAGE] pre_tis_port_admin_up_pf\n");
+            match self.set_port_admin_up(0) {
+                Ok(()) => match self.query_port_state(0) {
+                    Ok(state) => {
+                        log::info!(
+                            target: "mlx5",
+                            "PF port link state before CREATE_TIS: {:?}",
+                            state
+                        );
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            target: "mlx5",
+                            "Failed to query PF port state before CREATE_TIS: {:?}",
+                            err
+                        );
+                    }
+                },
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "PF pre-TIS admin-up failed; continuing TIS probe anyway: {:?}",
+                        err
+                    );
+                }
+            }
             match self.create_tis(&crate::resources::TisParams {
                 pd: self.pd,
                 td: self.td,

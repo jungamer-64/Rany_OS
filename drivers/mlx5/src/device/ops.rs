@@ -164,10 +164,16 @@ impl Mlx5Device {
             .get_mut(sq_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
 
+        let inline_len = core::cmp::min(inline_hdr.len(), data_len as usize) as u32;
+        let payload_len = data_len.saturating_sub(inline_len);
+        if payload_len == 0 {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+
         let segments = [crate::wq::DmaSegment {
-            device_addr: data_phys,
-            virt_addr: data_virt,
-            len: data_len,
+            device_addr: data_phys + inline_len as u64,
+            virt_addr: data_virt + inline_len as u64,
+            len: payload_len,
         }];
 
         sq.post_send(&segments, inline_hdr, options)
