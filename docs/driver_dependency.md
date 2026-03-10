@@ -22,6 +22,7 @@ Drivers are intended to be built separately from the kernel core and must not de
 - If additional kernel capabilities are required, add them to `interfaces/kernel_api` and implement them inside the kernel service implementation.
 - For standalone cells, enable the crate's `standalone` feature so `kernel_api::register_cell_runtime!()` can bind allocator/panic/logging to the kernel ABI table.
 - Package standalone PCI cells with `tools/driver_pack_builder`; manifest selectors are limited to exact `vendor_id + device_id` or `class + subclass + prog_if` with optional `vendor_id`.
+- The repository now includes `scripts/build_standalone_driver_packs.sh` for the shared wrapper-based PCI driver cells (`AHCI/NVMe/xHCI/HDA/MLX5`). It writes raw cells and packaged driver packs to `target/x86_64-exorust/<profile>/standalone_drivers/` and a deployable tarball to `target/standalone_driver_initramfs.tar`.
 - `prog_if = 0x00` remains a valid exact class match. Wildcard-on-zero applies only to omitted selector fields such as `vendor_id` in class-matching packs.
 - Initramfs behavior is now split:
   - `drivers/*.cell` without a PCI selector autostart immediately.

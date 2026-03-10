@@ -152,7 +152,6 @@ pub use polling::{AdaptivePollingState, PollingMode};
 pub use port::Mlx5Port;
 pub use resources::{MkeyInfo, TirInfo, TisInfo};
 
-#[cfg(feature = "export_driver_entry")]
 kernel_api::export_async_driver!(
     type: crate::ffi::Mlx5AsyncDriver,
     constructor: crate::ffi::Mlx5AsyncDriver::new(),

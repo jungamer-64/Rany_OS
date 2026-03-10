@@ -111,8 +111,8 @@ extern "C" fn usb_request_capabilities(caps: *mut DriverCapabilities) {
 // Driver Entry Point
 // ============================================================================
 
-/// Inner implementation returning pointer to the VTABLE.
-fn usb_driver_vtable() -> *const DriverVTable {
+/// Public vtable helper used by standalone wrapper cells.
+pub fn standalone_driver_vtable() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
         usb_probe,
@@ -134,7 +134,7 @@ fn usb_driver_vtable() -> *const DriverVTable {
 #[cfg(feature = "export_driver_entry")]
 #[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
-    usb_driver_vtable()
+    standalone_driver_vtable()
 }
 
 // When compiled as part of the kernel (not exporting the canonical symbol),
@@ -144,5 +144,5 @@ pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
 #[allow(non_snake_case)]
 #[allow(clippy::missing_safety_doc)]
 pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
-    usb_driver_vtable()
+    standalone_driver_vtable()
 }

@@ -36,6 +36,7 @@ members = [
     "drivers/mlx5",
     "tools/driver_cell_probe",
     "tools/driver_pack_builder",
+    "tools/standalone_driver_wrapper",
     # Apps
     "apps",
     "libs/boot_proto",

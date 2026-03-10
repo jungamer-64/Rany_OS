@@ -16,8 +16,8 @@ macro_rules! export_async_driver {
             constructor = $constructor,
             name = $name,
             driver_type = $dtype,
-            version = $version,
-            providers = $crate::export_async_driver!(@providers $( $providers )?)
+            providers = $crate::export_async_driver!(@providers $( $providers )?),
+            version = $version
             $(, irq = $irq)?
         );
     };
@@ -33,9 +33,7 @@ macro_rules! export_async_driver {
         irq = $irq:path
     ) => {
         $crate::declare_rany_type_id_section!();
-        #[cfg(feature = "export_driver_entry")]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
+        pub fn standalone_driver_vtable() -> *const $crate::abi::driver::DriverVTable {
             $crate::export_async_driver!(@common_adapters
                 type = $driver_type,
                 constructor = $constructor,
@@ -73,6 +71,17 @@ macro_rules! export_async_driver {
             ).with_provider_descriptors_export(Some(providers_adapter));
             &VTABLE
         }
+
+        #[cfg(all(feature = "export_driver_entry", not(test)))]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
+            standalone_driver_vtable()
+        }
+
+        #[cfg(test)]
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
+            standalone_driver_vtable()
+        }
     };
 
     // Impl without IRQ
@@ -85,9 +94,7 @@ macro_rules! export_async_driver {
         version = $version:expr
     ) => {
         $crate::declare_rany_type_id_section!();
-        #[cfg(feature = "export_driver_entry")]
-        #[unsafe(no_mangle)]
-        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
+        pub fn standalone_driver_vtable() -> *const $crate::abi::driver::DriverVTable {
             $crate::export_async_driver!(@common_adapters
                 type = $driver_type,
                 constructor = $constructor,
@@ -111,6 +118,17 @@ macro_rules! export_async_driver {
                 None,
             ).with_provider_descriptors_export(Some(providers_adapter));
             &VTABLE
+        }
+
+        #[cfg(all(feature = "export_driver_entry", not(test)))]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
+            standalone_driver_vtable()
+        }
+
+        #[cfg(test)]
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::abi::driver::DriverVTable {
+            standalone_driver_vtable()
         }
     };
 

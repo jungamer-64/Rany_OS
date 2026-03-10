@@ -111,8 +111,8 @@ extern "C" fn ahci_request_capabilities(caps: *mut DriverCapabilities) {
 // Driver Entry Point
 // ============================================================================
 
-/// Inner implementation returning pointer to the VTABLE.
-fn ahci_driver_vtable() -> *const DriverVTable {
+/// Public vtable helper used by standalone wrapper cells.
+pub fn standalone_driver_vtable() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
         ahci_probe,
@@ -137,7 +137,7 @@ fn ahci_driver_vtable() -> *const DriverVTable {
 #[cfg(feature = "export_driver_entry")]
 #[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
-    ahci_driver_vtable()
+    standalone_driver_vtable()
 }
 
 // When not exporting the canonical symbol, emit a crate-unique name so
@@ -147,5 +147,5 @@ pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
 #[cfg(not(feature = "export_driver_entry"))]
 #[allow(non_snake_case)]
 pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
-    ahci_driver_vtable()
+    standalone_driver_vtable()
 }

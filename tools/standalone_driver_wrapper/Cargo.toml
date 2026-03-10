@@ -1,0 +1,32 @@
+[package]
+name = "standalone_driver_wrapper"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+kernel_api = { path = "../../interfaces/kernel_api" }
+ahci_driver = { path = "../../drivers/ahci", optional = true }
+usb_driver = { path = "../../drivers/usb", optional = true }
+hda_driver = { path = "../../drivers/hda", optional = true }
+nvme_driver = { path = "../../drivers/nvme", optional = true }
+mlx5_driver = { path = "../../drivers/mlx5", optional = true }
+
+[features]
+default = []
+standalone = ["kernel_api/cell_runtime"]
+driver-ahci = ["dep:ahci_driver"]
+driver-usb = ["dep:usb_driver"]
+driver-hda = ["dep:hda_driver"]
+driver-nvme = ["dep:nvme_driver"]
+driver-mlx5 = ["dep:mlx5_driver"]

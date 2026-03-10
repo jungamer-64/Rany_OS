@@ -72,7 +72,8 @@ extern "C" fn hda_request_capabilities(caps: *mut DriverCapabilities) {
     }
 }
 
-fn hda_driver_vtable() -> *const DriverVTable {
+/// Public vtable helper used by standalone wrapper cells.
+pub fn standalone_driver_vtable() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
         hda_probe,
@@ -93,11 +94,11 @@ fn hda_driver_vtable() -> *const DriverVTable {
 #[cfg(feature = "export_driver_entry")]
 #[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
-    hda_driver_vtable()
+    standalone_driver_vtable()
 }
 
 #[cfg(not(feature = "export_driver_entry"))]
 #[allow(non_snake_case)]
 pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
-    hda_driver_vtable()
+    standalone_driver_vtable()
 }

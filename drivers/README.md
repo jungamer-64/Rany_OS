@@ -31,11 +31,13 @@ If your driver needs to run as a standalone cell:
 - Gate `kernel_api::register_cell_runtime!();` behind `#[cfg(feature = "standalone")]` at crate root.
 - Wire `standalone = ["export_driver_entry", "kernel_api/cell_runtime"]` in `Cargo.toml`.
 - Build the cell image as a `cdylib`, then package it with `tools/driver_pack_builder`.
+- For the shared wrapper flow used by `AHCI/NVMe/xHCI/HDA/MLX5`, use `scripts/build_standalone_driver_packs.sh --profile debug|release`. It emits raw wrapper cells plus staged PCI driver packs under `target/x86_64-exorust/<profile>/standalone_drivers/`.
 - PCI driver packs may use only two manifest selector shapes:
   - exact device match: `vendor_id + device_id`
   - class match: `class + subclass + prog_if`, with optional `vendor_id`
 - `prog_if = 0x00` is still a valid exact class selector. Only omitted `vendor_id` is treated as wildcard.
 - Non-PCI `.cell` payloads and driver packs without a PCI selector still autostart from initramfs; PCI packs with a selector are staged and bound during PCI enumeration.
+- The shared wrapper script also produces `target/standalone_driver_initramfs.tar` so staged PCI packs can be deployed without overwriting the default initramfs fixture set.
 
 This directory has a verification script that checks for unauthorized kernel dependencies as part of CI: `scripts/check-driver-deps.ps1`.
 

@@ -85,6 +85,7 @@ pub use crate::global::{
 };
 
 // Polling driver exports
+pub use driver_impl::standalone_driver_vtable;
 pub use polling_driver::{NvmeDriverStats, NvmePollingDriver};
 
 #[cfg(test)]

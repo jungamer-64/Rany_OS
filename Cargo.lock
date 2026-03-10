@@ -987,6 +987,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "standalone_driver_wrapper"
+version = "0.1.0"
+dependencies = [
+ "ahci_driver",
+ "hda_driver",
+ "kernel_api",
+ "mlx5_driver",
+ "nvme_driver",
+ "usb_driver",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
