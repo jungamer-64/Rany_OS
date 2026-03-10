@@ -5,6 +5,27 @@
 use crate::cmd::CmdMailbox;
 use crate::resources::{MkeyParams, TirParams, TirReceiveType, TisParams};
 use crate::structs::cmd::{MkeyContextLayout, TirContextLayout, TisContextLayout};
+use crate::structs::{get_bits_u32, get_bits_u64};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryMkeyInfo {
+    pub free: bool,
+    pub umr_en: bool,
+    pub remote_atomic: bool,
+    pub remote_write: bool,
+    pub remote_read: bool,
+    pub local_write: bool,
+    pub local_read: bool,
+    pub access_mode: u8,
+    pub qpn: u32,
+    pub pd: u32,
+    pub start_addr: u64,
+    pub len: u64,
+    pub length64: bool,
+    pub translations_octword_size: u32,
+    pub log_page_size: u8,
+    pub mkey_7_0: u8,
+}
 
 /// ALLOC_UAR コマンド入力の構築
 pub fn build_alloc_uar_input(in_mbox: &mut CmdMailbox) {
@@ -57,37 +78,72 @@ pub fn build_dealloc_td_input(in_mbox: &mut CmdMailbox, td: u32) {
 /// CREATE_MKEY コマンド入力の構築
 pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
     *in_mbox = CmdMailbox::zeroed();
-    let mut layout = MkeyContextLayout::new(&mut in_mbox.data[0x10..]);
+    {
+        let mut layout = MkeyContextLayout::new(&mut in_mbox.data[0x10..]);
 
-    let local_write =
-        (params.access_flags & crate::resources::MkeyAccessFlags::LocalWrite as u8) != 0;
-    let remote_read =
-        (params.access_flags & crate::resources::MkeyAccessFlags::RemoteRead as u8) != 0;
-    let remote_write =
-        (params.access_flags & crate::resources::MkeyAccessFlags::RemoteWrite as u8) != 0;
+        let local_write =
+            (params.access_flags & crate::resources::MkeyAccessFlags::LocalWrite as u8) != 0;
+        let remote_read =
+            (params.access_flags & crate::resources::MkeyAccessFlags::RemoteRead as u8) != 0;
+        let remote_write =
+            (params.access_flags & crate::resources::MkeyAccessFlags::RemoteWrite as u8) != 0;
 
-    // Match the Linux netdev direct-memory-key path: PA access mode, local
-    // reads always enabled, QPN wildcarded, and length64 for full-space keys.
-    layout.set_lr(true);
-    layout.set_lw(local_write);
-    layout.set_rr(remote_read);
-    layout.set_rw(remote_write);
-    layout.set_access_mode_1_0(0);
-    layout.set_qpn(0x00ff_ffff);
-    layout.set_pd(params.pd);
-    layout.set_mkey_7_0(0x42);
+        // Match the Linux netdev direct-memory-key path: PA access mode, local
+        // reads always enabled, QPN wildcarded, and length64 for full-space keys.
+        layout.set_lr(true);
+        layout.set_lw(local_write);
+        layout.set_rr(remote_read);
+        layout.set_rw(remote_write);
+        layout.set_access_mode_1_0(0);
+        layout.set_qpn(0x00ff_ffff);
+        layout.set_pd(params.pd);
+        layout.set_log_page_size(params.log_page_size as u32);
+        layout.set_mkey_7_0(0x42);
 
-    if params.start_addr == 0 && params.length == u64::MAX {
-        layout.set_length64(true);
-    } else {
-        layout.set_start_addr(params.start_addr);
-        layout.set_len(params.length);
+        if params.start_addr == 0 && params.length == u64::MAX {
+            layout.set_length64(true);
+        } else {
+            layout.set_start_addr(params.start_addr);
+            layout.set_len(params.length);
+        }
     }
 }
 
 /// CREATE_MKEY 出力からMKEY値を解析
 pub fn parse_create_mkey_output(out_mbox: &CmdMailbox) -> u32 {
     out_mbox.read_be24(0x09)
+}
+
+/// QUERY_MKEY コマンド入力の構築
+pub fn build_query_mkey_input(in_mbox: &mut CmdMailbox, mkey_index: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, mkey_index & 0x00FF_FFFF);
+}
+
+/// QUERY_MKEY 出力から MKEY コンテキストを解析
+pub fn parse_query_mkey_output(out_mbox: &CmdMailbox) -> QueryMkeyInfo {
+    let mkc = &out_mbox.data[0x10..];
+    let access_mode_low = get_bits_u32(mkc, 22, 2) as u8;
+    let access_mode_high = get_bits_u32(mkc, 3, 3) as u8;
+
+    QueryMkeyInfo {
+        free: get_bits_u32(mkc, 1, 1) != 0,
+        umr_en: get_bits_u32(mkc, 16, 1) != 0,
+        remote_atomic: get_bits_u32(mkc, 17, 1) != 0,
+        remote_write: get_bits_u32(mkc, 18, 1) != 0,
+        remote_read: get_bits_u32(mkc, 19, 1) != 0,
+        local_write: get_bits_u32(mkc, 20, 1) != 0,
+        local_read: get_bits_u32(mkc, 21, 1) != 0,
+        access_mode: (access_mode_high << 2) | access_mode_low,
+        qpn: get_bits_u32(mkc, 32, 24),
+        pd: get_bits_u32(mkc, 104, 24),
+        start_addr: get_bits_u64(mkc, 128),
+        len: get_bits_u64(mkc, 192),
+        length64: get_bits_u32(mkc, 96, 1) != 0,
+        translations_octword_size: get_bits_u32(mkc, 416, 32),
+        log_page_size: get_bits_u32(mkc, 474, 6) as u8,
+        mkey_7_0: get_bits_u32(mkc, 56, 8) as u8,
+    }
 }
 
 /// DESTROY_MKEY コマンド入力の構築
@@ -233,6 +289,34 @@ mod tests {
         out_mbox.data[0x0A] = 0x56;
         out_mbox.data[0x0B] = 0x78;
         assert_eq!(parse_create_mkey_output(&out_mbox), 0x0034_5678);
+    }
+
+    #[test]
+    fn create_mkey_sets_linux_ifc_permission_bits() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let params = MkeyParams {
+            start_addr: 0,
+            length: u64::MAX,
+            access_flags: crate::resources::MkeyAccessFlags::LocalRead as u8
+                | crate::resources::MkeyAccessFlags::LocalWrite as u8
+                | crate::resources::MkeyAccessFlags::RemoteRead as u8
+                | crate::resources::MkeyAccessFlags::RemoteWrite as u8,
+            pd: 0x12345,
+            log_page_size: 0,
+        };
+
+        build_create_mkey_input(&mut in_mbox, &params);
+
+        let mkc = &in_mbox.data[0x10..];
+        assert_eq!(get_bits_u32(mkc, 18, 1), 1);
+        assert_eq!(get_bits_u32(mkc, 19, 1), 1);
+        assert_eq!(get_bits_u32(mkc, 20, 1), 1);
+        assert_eq!(get_bits_u32(mkc, 21, 1), 1);
+        assert_eq!(get_bits_u32(mkc, 22, 2), 0);
+        assert_eq!(get_bits_u32(mkc, 32, 24), 0x00ff_ffff);
+        assert_eq!(get_bits_u32(mkc, 104, 24), 0x12345);
+        assert_eq!(get_bits_u32(mkc, 96, 1), 1);
+        assert_eq!(get_bits_u32(mkc, 56, 8), 0x42);
     }
 
     #[test]

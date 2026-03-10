@@ -17,9 +17,12 @@
 //! - Async-First: ポーリングタスクは Future ベース
 
 extern crate alloc;
+use alloc::format;
 use alloc::sync::Arc;
+use alloc::string::String;
 use alloc::vec::Vec;
 
+use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::net::obs::{
@@ -86,6 +89,8 @@ static MLX5_RX_IDLE_POLLS: AtomicU64 = AtomicU64::new(0);
 static MLX5_RX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
 /// RX アイドル時スナップショット出力回数の上限
 static MLX5_RX_DEBUG_SNAPSHOT_BUDGET: AtomicU64 = AtomicU64::new(16);
+/// 受信フレーム先頭のプレビュー出力回数
+static MLX5_RX_FRAME_LOG_BUDGET: AtomicU64 = AtomicU64::new(8);
 
 /// RX CQ ポーリングバッチサイズ
 const MLX5_RX_POLL_BATCH: u32 = 64;
@@ -138,6 +143,7 @@ fn initialize_mlx5_runtime() -> Result<(), &'static str> {
 
     MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
     MLX5_RX_CQE_LOG_BUDGET.store(32, Ordering::Release);
+    MLX5_RX_FRAME_LOG_BUDGET.store(8, Ordering::Release);
     MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(16, Ordering::Release);
     MLX5_WAKE_COUNTS.store(0, Ordering::Release);
     MLX5_WAKE_TIMEOUTS.store(0, Ordering::Release);
@@ -301,6 +307,17 @@ fn dispatch_mlx5_rx_packet(packet: PacketRef, payload_len: usize) {
     } else {
         super::process_received_packet_zero_copy(packet, 0, payload_len);
     }
+}
+
+fn format_head_bytes(data: &[u8], max_len: usize) -> String {
+    let mut out = String::new();
+    for (idx, byte) in data.iter().take(max_len).enumerate() {
+        if idx != 0 {
+            let _ = out.write_str(" ");
+        }
+        let _ = write!(out, "{:02x}", byte);
+    }
+    out
 }
 
 // ============================================================================
@@ -555,19 +572,39 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                     remaining_budget
                 );
                 for cqe in cqes.iter().take(to_log) {
-                    log::info!(
-                        target: "mlx5::bridge",
-                        "RX CQE: rq={} cq={} op={:?} wqe_counter={} byte_count={} qpn={:#x} l3_ok={} l4_ok={} vlan={:?}",
-                        rq_index,
-                        rx_cq_index,
-                        cqe.opcode,
-                        cqe.wqe_counter,
-                        cqe.byte_count,
-                        cqe.qpn,
-                        cqe.l3_ok,
-                        cqe.l4_ok,
-                        cqe.vlan_tag
-                    );
+                    match cqe.opcode {
+                        mlx5_driver::defs::CqeOpcode::ReqErr
+                        | mlx5_driver::defs::CqeOpcode::RespErr => {
+                            log::info!(
+                                target: "mlx5::bridge",
+                                "RX CQE: rq={} cq={} op={:?} wqe_counter={} raw_byte_count={} qpn={:#x} syndrome={:#x} vendor={:#x} src_wqe_op={:#x}",
+                                rq_index,
+                                rx_cq_index,
+                                cqe.opcode,
+                                cqe.wqe_counter,
+                                cqe.raw_byte_count,
+                                cqe.qpn,
+                                cqe.error_syndrome.unwrap_or(0),
+                                cqe.vendor_error_syndrome.unwrap_or(0),
+                                cqe.error_wqe_opcode.unwrap_or(0)
+                            );
+                        }
+                        _ => {
+                            log::info!(
+                                target: "mlx5::bridge",
+                                "RX CQE: rq={} cq={} op={:?} wqe_counter={} byte_count={} qpn={:#x} l3_ok={} l4_ok={} vlan={:?}",
+                                rq_index,
+                                rx_cq_index,
+                                cqe.opcode,
+                                cqe.wqe_counter,
+                                cqe.byte_count,
+                                cqe.qpn,
+                                cqe.l3_ok,
+                                cqe.l4_ok,
+                                cqe.vlan_tag
+                            );
+                        }
+                    }
                 }
                 MLX5_RX_CQE_LOG_BUDGET.fetch_sub(to_log as u64, Ordering::Relaxed);
             }
@@ -575,6 +612,33 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
             for cqe in &cqes {
                 let wqe_counter = cqe.wqe_counter;
                 let byte_count = cqe.byte_count as usize;
+                let idx = (wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
+
+                if matches!(
+                    cqe.opcode,
+                    mlx5_driver::defs::CqeOpcode::ReqErr | mlx5_driver::defs::CqeOpcode::RespErr
+                ) {
+                    MLX5_RX_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    if let Some(rx_info) =
+                        device.process_rx_completion(rq_index, wqe_counter, false, false)
+                    {
+                        if let Some(pkt) = rx_bufs_guard[rq_index][idx].take() {
+                            let buf_virt = pkt.as_ptr() as u64;
+                            let buf_device = pkt.device_address();
+                            let buf_size = pkt.capacity() as u32;
+                            rx_bufs_guard[rq_index][idx] = Some(pkt);
+                            let _ = device.post_receive(rq_index, buf_device, buf_virt, buf_size);
+                        } else {
+                            let _ = device.post_receive(
+                                rq_index,
+                                rx_info.device_addr,
+                                rx_info.virt_addr,
+                                rx_info.size,
+                            );
+                        }
+                    }
+                    continue;
+                }
 
                 if let Some(rx_info) =
                     device.process_rx_completion(rq_index, wqe_counter, cqe.l3_ok, cqe.l4_ok)
@@ -583,9 +647,47 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                     counters::global().record_rx(byte_count);
                     trace::push_event(NetLayer::Driver, NetEventKind::Rx, "mlx5 rx");
 
-                    let idx = (wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
                     if let Some(mut pkt) = rx_bufs_guard[rq_index][idx].take() {
                         pkt.set_len(byte_count);
+                        if MLX5_RX_FRAME_LOG_BUDGET.load(Ordering::Relaxed) > 0 {
+                            let frame = pkt.data();
+                            let dst = if frame.len() >= 6 {
+                                format!(
+                                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                                    frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]
+                                )
+                            } else {
+                                String::from("--")
+                            };
+                            let src = if frame.len() >= 12 {
+                                format!(
+                                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                                    frame[6], frame[7], frame[8], frame[9], frame[10], frame[11]
+                                )
+                            } else {
+                                String::from("--")
+                            };
+                            let ether_type = if frame.len() >= 14 {
+                                u16::from_be_bytes([frame[12], frame[13]])
+                            } else {
+                                0
+                            };
+                            let head = format_head_bytes(frame, 32);
+                            log::info!(
+                                target: "mlx5::bridge",
+                                "RX frame: rq={} idx={} len={} op={:?} wqe_counter={} ethertype={:#06x} dst={} src={} head=[{}]",
+                                rq_index,
+                                idx,
+                                byte_count,
+                                cqe.opcode,
+                                wqe_counter,
+                                ether_type,
+                                dst,
+                                src,
+                                head
+                            );
+                            MLX5_RX_FRAME_LOG_BUDGET.fetch_sub(1, Ordering::Relaxed);
+                        }
                         let meta = pkt.meta_mut();
                         if cqe.l3_ok {
                             meta.set_ip_csum_verified();

@@ -18,6 +18,10 @@ use crate::defs::{WQEBB_SIZE, WqeOpcode};
 use crate::regs::wqe;
 use core::sync::atomic::{Ordering, fence};
 
+const MLX5_WQE_CTRL_CQ_UPDATE: u8 = 2 << 2;
+const MLX5_ETH_WQE_L3_CSUM: u8 = 1 << 6;
+const MLX5_ETH_WQE_L4_CSUM: u8 = 1 << 7;
+
 /// Work Queue Entry Buffer Block (WQEBB) — 16バイト
 #[repr(C, align(16))]
 #[derive(Clone, Copy)]
@@ -88,8 +92,6 @@ pub struct SendQueue {
     pub mkey: u32,
     /// チェックサムオフロード対応
     pub csum_offload: bool,
-    /// BlueFlame は同じレジスタ内の 2 バッファを交互に使う
-    bf_next_slot: u8,
     /// 直近の BlueFlame バッファオフセット
     last_bf_offset: u16,
 }
@@ -138,7 +140,6 @@ impl SendQueue {
             tx_buffers,
             mkey,
             csum_offload,
-            bf_next_slot: 0,
             last_bf_offset: 0,
         }
     }
@@ -184,38 +185,32 @@ impl SendQueue {
 
         let wqe_offset = buf_idx * 64;
         let wqe_ptr = (self.buf_virt as usize + wqe_offset) as *mut u8;
+        core::ptr::write_bytes(wqe_ptr, 0, 64);
 
         // Control Segment (16 bytes)
         let ctrl_ptr = wqe_ptr;
-        let opmod_idx = ((WqeOpcode::EthSend as u32) << 24) | (wqe_idx as u32 & 0x00FF_FFFF);
+        let opmod_idx = ((wqe_idx as u32) << 8) | (WqeOpcode::EthSend as u32);
         write_be32_raw(ctrl_ptr, wqe::ctrl::OPMOD_IDX_OPCODE, opmod_idx);
         let ds_count = 2 + segments.len() as u32;
         let qpn_ds = ((self.sqn & 0x00FF_FFFF) << 8) | ds_count;
         write_be32_raw(ctrl_ptr, wqe::ctrl::QPN_DS, qpn_ds);
-        write_be32_raw(ctrl_ptr, wqe::ctrl::FM_CE_SE, 0x08); // CE=1
+        write_u8_raw(ctrl_ptr, wqe::ctrl::FM_CE_SE, MLX5_WQE_CTRL_CQ_UPDATE);
 
         // Ethernet Segment (16 bytes)
         let eth_ptr = ctrl_ptr.add(16);
-        let inline_sz = 0u16;
-        // bits 9:0 = inline_sz, bits 31:16 = vlan_tag, bits 15:13 = vlan_cmd (0x1=insert)
-        let mut eth_dw0 = inline_sz as u32;
-        if options.vlan_tag != 0 {
-            eth_dw0 |= (options.vlan_tag as u32) << 16;
-            eth_dw0 |= 0x1 << 13; // Insert VLAN
-        }
-        write_be32_raw(eth_ptr, 0, eth_dw0);
+        let _ = options.vlan_tag;
 
         // チェックサムオフロードおよび TSO 設定
-        let mut cs_flags = 0u16;
+        let mut cs_flags = 0u8;
         if self.csum_offload {
             if options.l3_cs {
-                cs_flags |= 0x01;
+                cs_flags |= MLX5_ETH_WQE_L3_CSUM;
             }
             if options.l4_cs {
-                cs_flags |= 0x02;
+                cs_flags |= MLX5_ETH_WQE_L4_CSUM;
             }
         }
-        write_be16_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
+        write_u8_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
 
         // TSO MSS
         write_be16_raw(eth_ptr, wqe::eth::MSS, options.mss);
@@ -271,35 +266,32 @@ impl SendQueue {
         let buf_idx = (wqe_idx as u32 % self.sq_depth) as usize;
         let wqe_offset = buf_idx * 64;
         let wqe_ptr = (self.buf_virt as usize + wqe_offset) as *mut u8;
+        core::ptr::write_bytes(wqe_ptr, 0, 64);
 
         // Control Segment
         let ctrl_ptr = wqe_ptr;
-        let opmod_idx = ((WqeOpcode::EnhancedMpwqe as u32) << 24) | (wqe_idx as u32 & 0x00FF_FFFF);
+        let opmod_idx = ((wqe_idx as u32) << 8) | (WqeOpcode::EnhancedMpwqe as u32);
         write_be32_raw(ctrl_ptr, wqe::ctrl::OPMOD_IDX_OPCODE, opmod_idx);
         let ds_count = 2 + packets.len() as u32;
         let qpn_ds = ((self.sqn & 0x00FF_FFFF) << 8) | ds_count;
         write_be32_raw(ctrl_ptr, wqe::ctrl::QPN_DS, qpn_ds);
-        write_be32_raw(ctrl_ptr, wqe::ctrl::FM_CE_SE, 0x08); // CE=1
+        write_u8_raw(ctrl_ptr, wqe::ctrl::FM_CE_SE, MLX5_WQE_CTRL_CQ_UPDATE);
 
         // Ethernet Segment (MPWQEではパケット間の共通設定を保持)
         let eth_ptr = ctrl_ptr.add(16);
-        let mut eth_dw0 = 0u32;
-        if options.vlan_tag != 0 {
-            eth_dw0 |= (options.vlan_tag as u32) << 16;
-            eth_dw0 |= 0x1 << 13; // Insert VLAN
-        }
-        write_be32_raw(eth_ptr, 0, eth_dw0);
+        let _ = options.vlan_tag;
 
-        let mut cs_flags = 0u16;
+        let mut cs_flags = 0u8;
         if self.csum_offload {
             if options.l3_cs {
-                cs_flags |= 0x01;
+                cs_flags |= MLX5_ETH_WQE_L3_CSUM;
             }
             if options.l4_cs {
-                cs_flags |= 0x02;
+                cs_flags |= MLX5_ETH_WQE_L4_CSUM;
             }
         }
-        write_be16_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
+        write_u8_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
+        write_be16_raw(eth_ptr, wqe::eth::MSS, options.mss);
         // MPWQE では inline header は通常使用しない（各パケットが独立した L2 ヘッダを持つため）
 
         // Data Segments
@@ -348,15 +340,13 @@ impl SendQueue {
         // 2) Ensure descriptor + dbrec writes are visible before ringing UAR.
         fence(Ordering::Release);
 
-        // 3) Ring BlueFlame with the first 8 bytes of the WQE using a raw
-        // 64-bit MMIO store. Alternate between the two 64-byte BF buffers.
-        let bf_addr = self.uar_base as usize
-            + crate::regs::uar::BLUEFLAME
-            + if self.bf_next_slot == 0 { 0 } else { 0x40 };
+        // Linux rings the SQ via the selected BF register base without
+        // per-packet slot toggling. Use the first BF slot until bfreg
+        // allocation is modeled explicitly.
+        let bf_addr = self.uar_base as usize + crate::regs::uar::BLUEFLAME;
         let ctrl_qword = core::ptr::read_unaligned(wqe_ptr as *const u64);
         hal::mmio::mmio_write_u64(bf_addr, ctrl_qword);
-        self.last_bf_offset = if self.bf_next_slot == 0 { 0 } else { 0x40 };
-        self.bf_next_slot ^= 1;
+        self.last_bf_offset = 0;
     }
 
     /// 送信完了を処理（CQEのWQEカウンタに基づくバッファ解放）
@@ -649,6 +639,11 @@ pub struct RxQueueDebugState {
 unsafe fn write_be32_raw(base: *mut u8, offset: usize, value: u32) {
     let bytes = value.to_be_bytes();
     core::ptr::copy_nonoverlapping(bytes.as_ptr(), base.add(offset), 4);
+}
+
+/// 8-bit値をrawポインタに書き込む
+unsafe fn write_u8_raw(base: *mut u8, offset: usize, value: u8) {
+    core::ptr::write(base.add(offset), value);
 }
 
 /// ビッグエンディアンu16をrawポインタに書き込む

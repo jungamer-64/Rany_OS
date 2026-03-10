@@ -40,14 +40,23 @@ impl Cqe {
         self.owner_bit() == expected
     }
 
-    /// 受信バイトカウント
-    pub fn byte_count(&self) -> u32 {
+    /// CQE上の byte_cnt dword をそのまま読む
+    pub fn raw_byte_count(&self) -> u32 {
         u32::from_be_bytes([
             self.data[cqe_regs::BYTE_COUNT],
             self.data[cqe_regs::BYTE_COUNT + 1],
             self.data[cqe_regs::BYTE_COUNT + 2],
             self.data[cqe_regs::BYTE_COUNT + 3],
         ])
+    }
+
+    /// 受信バイトカウント
+    pub fn byte_count(&self) -> u32 {
+        if self.is_error() {
+            0
+        } else {
+            self.raw_byte_count()
+        }
     }
 
     /// WQEカウンタ（SQ/RQインデックス）
@@ -72,7 +81,14 @@ impl Cqe {
     /// CQEが有効な（非ゼロ）完了を含むか
     pub fn is_valid_completion(&self) -> bool {
         let op = self.opcode();
-        matches!(op, CqeOpcode::ReqOk | CqeOpcode::RespOk)
+        matches!(
+            op,
+            CqeOpcode::ReqOk
+                | CqeOpcode::RespWriteImm
+                | CqeOpcode::RespOk
+                | CqeOpcode::RespSendImm
+                | CqeOpcode::RespSendInv
+        )
     }
 
     /// エラーかチェック
@@ -83,30 +99,17 @@ impl Cqe {
 
     /// チェックサムステータス (L3 OK)
     pub fn l3_ok(&self) -> bool {
-        let flags = u32::from_be_bytes([
-            self.data[cqe_regs::CHECKSUM],
-            self.data[cqe_regs::CHECKSUM + 1],
-            self.data[cqe_regs::CHECKSUM + 2],
-            self.data[cqe_regs::CHECKSUM + 3],
-        ]);
-        (flags & cqe_regs::L3_OK) != 0
+        false
     }
 
     /// チェックサムステータス (L4 OK)
     pub fn l4_ok(&self) -> bool {
-        let flags = u32::from_be_bytes([
-            self.data[cqe_regs::CHECKSUM],
-            self.data[cqe_regs::CHECKSUM + 1],
-            self.data[cqe_regs::CHECKSUM + 2],
-            self.data[cqe_regs::CHECKSUM + 3],
-        ]);
-        (flags & cqe_regs::L4_OK) != 0
+        false
     }
 
     /// VLANタグが存在するか確認
     pub fn vlan_present(&self) -> bool {
-        // bit 15 of word at 0x18 (byte 0x1a in big-endian)
-        (self.data[cqe_regs::VLAN_INFO + 2] & 0x80) != 0
+        (self.data[cqe_regs::L4_L3_HDR_TYPE] & 0x01) != 0
     }
 
     /// VLANタグ（TCI: Tag Control Information）を取得
@@ -119,16 +122,35 @@ impl Cqe {
 
     /// ハードウェアタイムスタンプを取得 (64-bit)
     pub fn timestamp(&self) -> u64 {
-        u64::from_be_bytes([
-            self.data[0x10],
-            self.data[0x11],
-            self.data[0x12],
-            self.data[0x13],
-            self.data[0x14],
-            self.data[0x15],
-            self.data[0x16],
-            self.data[0x17],
-        ])
+        let hi = u32::from_be_bytes([
+            self.data[cqe_regs::TIMESTAMP_H],
+            self.data[cqe_regs::TIMESTAMP_H + 1],
+            self.data[cqe_regs::TIMESTAMP_H + 2],
+            self.data[cqe_regs::TIMESTAMP_H + 3],
+        ]) as u64;
+        let lo = u32::from_be_bytes([
+            self.data[cqe_regs::TIMESTAMP_L],
+            self.data[cqe_regs::TIMESTAMP_L + 1],
+            self.data[cqe_regs::TIMESTAMP_L + 2],
+            self.data[cqe_regs::TIMESTAMP_L + 3],
+        ]) as u64;
+        (hi << 32) | lo
+    }
+
+    /// エラーCQEの vendor error syndrome
+    pub fn error_vendor_syndrome(&self) -> Option<u8> {
+        self.is_error()
+            .then_some(self.data[cqe_regs::ERR_VENDOR_SYNDROME])
+    }
+
+    /// エラーCQEの syndrome
+    pub fn error_syndrome(&self) -> Option<u8> {
+        self.is_error().then_some(self.data[cqe_regs::ERR_SYNDROME])
+    }
+
+    /// エラーCQEに含まれる source WQE opcode
+    pub fn error_wqe_opcode(&self) -> Option<u8> {
+        self.is_error().then_some(self.data[cqe_regs::QPN])
     }
 }
 
@@ -264,6 +286,7 @@ impl CompletionQueue {
                     let info = CqeInfo {
                         wqe_counter: cqe.wqe_counter(),
                         byte_count: cqe.byte_count(),
+                        raw_byte_count: cqe.raw_byte_count(),
                         opcode: cqe.opcode(),
                         qpn: cqe.qpn(),
                         l3_ok: cqe.l3_ok(),
@@ -274,6 +297,9 @@ impl CompletionQueue {
                             None
                         },
                         timestamp: cqe.timestamp(),
+                        error_syndrome: cqe.error_syndrome(),
+                        vendor_error_syndrome: cqe.error_vendor_syndrome(),
+                        error_wqe_opcode: cqe.error_wqe_opcode(),
                     };
                     results.push(info);
                     self.advance_consumer();
@@ -316,7 +342,7 @@ impl CompletionQueue {
             observed_owner: cqe_ref.owner_bit(),
             observed_opcode: cqe_ref.opcode(),
             observed_wqe_counter: cqe_ref.wqe_counter(),
-            observed_byte_count: cqe_ref.byte_count(),
+            observed_byte_count: cqe_ref.raw_byte_count(),
             doorbell_be,
             doorbell_host,
             arm_db_be,
@@ -332,6 +358,8 @@ pub struct CqeInfo {
     pub wqe_counter: u16,
     /// 受信/送信バイト数
     pub byte_count: u32,
+    /// CQE上の byte_cnt dword 生値
+    pub raw_byte_count: u32,
     /// 完了オペコード
     pub opcode: CqeOpcode,
     /// QP番号
@@ -344,6 +372,12 @@ pub struct CqeInfo {
     pub vlan_tag: Option<u16>,
     /// ハードウェアタイムスタンプ
     pub timestamp: u64,
+    /// エラーCQEの syndrome
+    pub error_syndrome: Option<u8>,
+    /// エラーCQEの vendor syndrome
+    pub vendor_error_syndrome: Option<u8>,
+    /// エラーCQEに含まれる source WQE opcode
+    pub error_wqe_opcode: Option<u8>,
 }
 
 /// Completion Queue のデバッグスナップショット

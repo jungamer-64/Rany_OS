@@ -763,8 +763,12 @@ impl Mlx5Device {
 
         if !mkey_ok {
             // PF では通常 CREATE_MKEY、VF でも reserved lkey が得られない場合は試行。
-            let mut pd_candidates = vec![0, 1];
-            if self.pd != 0 && self.pd != 1 {
+            let mut pd_candidates = if self.is_vf() {
+                vec![0, 1]
+            } else {
+                vec![self.pd, 0, 1]
+            };
+            if !pd_candidates.contains(&self.pd) {
                 pd_candidates.push(self.pd);
             }
 
@@ -1041,6 +1045,18 @@ impl Mlx5Device {
         } else {
             crate::boot_trace("[MLX5_STAGE] try_port_admin_up_pf\n");
             let _ = self.set_port_admin_up(0);
+            match self.query_port_state(0) {
+                Ok(state) => {
+                    log::info!(target: "mlx5", "PF port link state after admin-up: {:?}", state);
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "Failed to query PF port link state after admin-up: {:?}",
+                        err
+                    );
+                }
+            }
             crate::boot_trace("[MLX5_STAGE] port_admin_up_pf_done\n");
         }
         if let Some(port) = self.ports.get_mut(0) {

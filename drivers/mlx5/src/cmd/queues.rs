@@ -7,9 +7,45 @@ use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_PAGE_SIZE};
 use crate::structs::queues::{
     CqContextLayout, EqContextLayout, RmpContextLayout, RqContextLayout, SqContextLayout,
 };
+use crate::structs::{get_bits_u32, get_bits_u64};
 
 const CREATE_EQ_EVENT_MASK_OFFSET: usize = 0x58;
 const CREATE_EQ_EVENT_MASK_LEN: usize = 0x20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuerySqInfo {
+    pub state: u8,
+    pub flush_in_error_en: bool,
+    pub cqn: u32,
+    pub tis_lst_sz: u16,
+    pub tis_num_0: u32,
+    pub wq_type: u8,
+    pub pd: u32,
+    pub uar_page: u32,
+    pub dbr_addr: u64,
+    pub log_wq_stride: u8,
+    pub log_wq_pg_sz: u8,
+    pub log_wq_sz: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryRqInfo {
+    pub state: u8,
+    pub mem_rq_type: u8,
+    pub flush_in_error_en: bool,
+    pub scatter_fcs: bool,
+    pub vlan_strip: bool,
+    pub cqn: u32,
+    pub rmpn: u32,
+    pub wq_type: u8,
+    pub end_padding_mode: u8,
+    pub pd: u32,
+    pub uar_page: u32,
+    pub dbr_addr: u64,
+    pub log_wq_stride: u8,
+    pub log_wq_pg_sz: u8,
+    pub log_wq_sz: u8,
+}
 
 fn encode_eq_event_mask(event_mask: u64, field: &mut [u8]) {
     field.fill(0);
@@ -168,6 +204,33 @@ pub fn build_create_sq_input(
 /// CREATE_SQ 出力からSQ番号を解析
 pub fn parse_create_sq_output(out_mbox: &CmdMailbox) -> u32 {
     out_mbox.read_be24(0x09)
+}
+
+/// QUERY_SQ コマンド入力の構築
+pub fn build_query_sq_input(in_mbox: &mut CmdMailbox, sqn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, sqn & 0x00FF_FFFF);
+}
+
+/// QUERY_SQ 出力から SQ コンテキストを解析
+pub fn parse_query_sq_output(out_mbox: &CmdMailbox) -> QuerySqInfo {
+    let sqc = &out_mbox.data[0x20..];
+    let wq = &sqc[0x30..];
+
+    QuerySqInfo {
+        state: get_bits_u32(sqc, 8, 4) as u8,
+        flush_in_error_en: get_bits_u32(sqc, 3, 1) != 0,
+        cqn: get_bits_u32(sqc, 72, 24),
+        tis_lst_sz: get_bits_u32(sqc, 256, 16) as u16,
+        tis_num_0: get_bits_u32(sqc, 360, 24),
+        wq_type: get_bits_u32(wq, 0, 4) as u8,
+        pd: get_bits_u32(wq, 72, 24),
+        uar_page: get_bits_u32(wq, 104, 24),
+        dbr_addr: get_bits_u64(wq, 128),
+        log_wq_stride: get_bits_u32(wq, 268, 4) as u8,
+        log_wq_pg_sz: get_bits_u32(wq, 275, 5) as u8,
+        log_wq_sz: get_bits_u32(wq, 283, 5) as u8,
+    }
 }
 
 /// DESTROY_SQ コマンド入力の構築
@@ -397,6 +460,36 @@ pub fn build_modify_rmp_input(
 /// CREATE_RQ 出力からRQ番号を解析
 pub fn parse_create_rq_output(out_mbox: &CmdMailbox) -> u32 {
     out_mbox.read_be24(0x09)
+}
+
+/// QUERY_RQ コマンド入力の構築
+pub fn build_query_rq_input(in_mbox: &mut CmdMailbox, rqn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, rqn & 0x00FF_FFFF);
+}
+
+/// QUERY_RQ 出力から RQ コンテキストを解析
+pub fn parse_query_rq_output(out_mbox: &CmdMailbox) -> QueryRqInfo {
+    let rqc = &out_mbox.data[0x20..];
+    let wq = &rqc[0x30..];
+
+    QueryRqInfo {
+        state: get_bits_u32(rqc, 8, 4) as u8,
+        mem_rq_type: get_bits_u32(rqc, 4, 4) as u8,
+        flush_in_error_en: get_bits_u32(rqc, 13, 1) != 0,
+        scatter_fcs: get_bits_u32(rqc, 2, 1) != 0,
+        vlan_strip: get_bits_u32(rqc, 3, 1) == 0,
+        cqn: get_bits_u32(rqc, 72, 24),
+        rmpn: get_bits_u32(rqc, 136, 24),
+        wq_type: get_bits_u32(wq, 0, 4) as u8,
+        end_padding_mode: get_bits_u32(wq, 5, 2) as u8,
+        pd: get_bits_u32(wq, 72, 24),
+        uar_page: get_bits_u32(wq, 104, 24),
+        dbr_addr: get_bits_u64(wq, 128),
+        log_wq_stride: get_bits_u32(wq, 268, 4) as u8,
+        log_wq_pg_sz: get_bits_u32(wq, 275, 5) as u8,
+        log_wq_sz: get_bits_u32(wq, 283, 5) as u8,
+    }
 }
 
 /// DESTROY_RQ コマンド入力の構築

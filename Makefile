@@ -26,14 +26,19 @@ IOMMU           ?= 1
 IOMMU_AW_BITS   ?= 39
 NUMA            ?= 1
 NETWORK         ?= bridge
+# When set to a nonzero value, `run` will avoid any host-side network
+# configuration changes.  The VM will behave as if NETWORK=none.  This is
+# the default to prevent accidental editing of the host.  Override with
+# NO_HOST_NET=0 if you explicitly want the old behavior.
+NO_HOST_NET     ?= 1
 BRIDGE          ?= br0
 NIC             ?=
 NET_STATE_DIR   ?= target/net_state
 VFIO_NET_BDF    ?=
 VFIO_ACK        ?= 0
 VFIO_NO_MMAP    ?= auto
-RUN_SMART       ?= 1
-RUN_PREFLIGHT   ?= 1
+RUN_SMART       ?= 0
+RUN_PREFLIGHT   ?= 0
 RUN_FORCE_IMAGE ?= 1
 MONITOR         ?= 0
 GDB             ?= 0
@@ -296,6 +301,18 @@ define RUN_PREFLIGHT_VFIO_RUN
 		if [ "$$_net_mode" = "1" ]; then _net_mode="bridge"; fi; \
 		if [ "$$_net_mode" = "0" ]; then _net_mode="none"; fi; \
 		if [ "$$_net_mode" = "vfio" ]; then _net_mode="pcie"; fi; \
+			if [ -n "$(NO_HOST_NET)" ] && [ "$(NO_HOST_NET)" != "0" ]; then \
+				case "$$_net_mode" in \
+					bridge) \
+						printf '   -> \033[33m[NET] Host network modifications disabled (NO_HOST_NET=%s); using user/NAT instead of bridge\033[0m\n' "$(NO_HOST_NET)"; \
+						_net_mode="user"; \
+						;; \
+					macvtap) \
+						printf '   -> \033[33m[NET] Host network modifications disabled (NO_HOST_NET=%s); disabling macvtap\033[0m\n' "$(NO_HOST_NET)"; \
+						_net_mode="none"; \
+						;; \
+				esac; \
+			fi; \
 		if [ "$$_net_mode" != "pcie" ]; then \
 			printf '   -> \033[32mPASS\033[0m [PREFLIGHT][VFIO] skipped (NETWORK=%s)\033[0m\n' "$$_net_mode"; \
 		else \
@@ -610,7 +627,19 @@ define LAUNCH_QEMU
 	if [ "$$_net_mode" = "1" ]; then _net_mode="bridge"; fi; \
 	if [ "$$_net_mode" = "0" ]; then _net_mode="none"; fi; \
 	if [ "$$_net_mode" = "vfio" ]; then _net_mode="pcie"; fi; \
-	if [ "$$_net_mode" != "none" ]; then \
+		if [ -n "$(NO_HOST_NET)" ] && [ "$(NO_HOST_NET)" != "0" ]; then \
+			case "$$_net_mode" in \
+				bridge) \
+					printf '   -> \033[33m[NET] Host network modifications disabled (NO_HOST_NET=%s); using user/NAT instead of bridge\033[0m\n' "$(NO_HOST_NET)"; \
+					_net_mode="user"; \
+					;; \
+				macvtap) \
+					printf '   -> \033[33m[NET] Host network modifications disabled (NO_HOST_NET=%s); disabling macvtap\033[0m\n' "$(NO_HOST_NET)"; \
+					_net_mode="none"; \
+					;; \
+			esac; \
+		fi; \
+		if [ "$$_net_mode" != "none" ]; then \
 		_attach_virtio_net=0; \
 		netdev_args=""; \
 case "$$_net_mode" in \
@@ -1352,7 +1381,7 @@ help:
 	@echo "  IOMMU_AW_BITS=N        intel-iommu aw-bits (default: 39)"
 	@echo "  NUMA=0|1               NUMA topology (default: 1)"
 	@echo "  NETWORK=bridge|user|macvtap|pcie|vfio|none  Network mode (default: bridge)"
-	@echo "                                     bridge  = tap/bridge (auto-setup with NIC=)"
+	@echo "                                     bridge  = attach to existing bridge/tap (no host edits)"
 	@echo "                                     user    = QEMU user NAT (slirp, no root)"
 	@echo "                                     macvtap = macvtap passthrough"
 	@echo "                                     pcie/vfio = PCIe passthrough (pre-configured VFIO only)"
@@ -1363,6 +1392,7 @@ help:
 	@echo "  VFIO_ACK=0|1           Safety ack required by vfio-prepare (set 1)"
 	@echo "  VFIO_NO_MMAP=auto|0|1  VFIO safe mode for low aw-bits (default: auto)"
 	@echo "  RUN_SMART=0|1          Smart image rebuild for run/debug (default: 1)"
+	@echo "  NO_HOST_NET=0|1        Avoid any host-side network configuration (default: 1)"
 	@echo "  RUN_PREFLIGHT=0|1      Enable preflight fail-fast for run/debug (default: 1)"
 	@echo "  RUN_FORCE_IMAGE=0|1    Force image rebuild before run/debug (default: 0)"
 	@echo "  NVME=SIZE              NVMe device size (default: 1G, empty=disabled)"

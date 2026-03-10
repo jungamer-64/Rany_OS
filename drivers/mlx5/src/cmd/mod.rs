@@ -258,7 +258,11 @@ impl CmdQueueTransport {
                 | CmdOpcode::QueryVnicEnv
                 | CmdOpcode::QueryVhcaState
                 | CmdOpcode::ModifyVhcaState
+                | CmdOpcode::QueryMkey
                 | CmdOpcode::QuerySpecialContexts
+                | CmdOpcode::QuerySq
+                | CmdOpcode::QueryRq
+                | CmdOpcode::QueryTis
                 | CmdOpcode::SetDriverVersion
                 | CmdOpcode::DestroyFlowTable
                 | CmdOpcode::CreateFlowGroup

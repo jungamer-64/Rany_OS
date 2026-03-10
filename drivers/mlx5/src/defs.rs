@@ -294,6 +294,8 @@ pub enum CmdOpcode {
     ModifySq = 0x0905,
     /// SQ破棄
     DestroySq = 0x0906,
+    /// SQクエリ
+    QuerySq = 0x0907,
 
     /// RQ作成
     CreateRq = 0x0908,
@@ -301,6 +303,8 @@ pub enum CmdOpcode {
     ModifyRq = 0x0909,
     /// RQ破棄
     DestroyRq = 0x090A,
+    /// RQクエリ
+    QueryRq = 0x090B,
     /// RMP (Receive Memory Pool) 作成
     CreateRmp = 0x090C,
     /// RMP状態変更
@@ -336,10 +340,12 @@ pub enum CmdOpcode {
 
     /// MKEYアロケーション
     CreateMkey = 0x0200,
+    /// MKEYクエリ
+    QueryMkey = 0x0201,
+    /// MKEY破棄
+    DestroyMkey = 0x0202,
     /// 特殊コンテキスト（reserved lkey 等）クエリ
     QuerySpecialContexts = 0x0203,
-    /// MKEY破棄
-    DestroyMkey = 0x0201,
 
     /// アクセスレジスタ
     AccessRegister = 0x0805,
@@ -605,14 +611,22 @@ pub const CQE_SIZE: usize = 64;
 pub enum CqeOpcode {
     /// 要求完了（成功）
     ReqOk = 0x00,
-    /// 受信完了
-    RespOk = 0x01,
+    /// 応答完了（Write with Immediate）
+    RespWriteImm = 0x01,
+    /// 受信完了（Send）
+    RespOk = 0x02,
+    /// 受信完了（Send with Immediate）
+    RespSendImm = 0x03,
+    /// 受信完了（Send with Invalidate）
+    RespSendInv = 0x04,
+    /// CQ リサイズ完了
+    ResizeCq = 0x05,
+    /// シグネチャエラー
+    SigErr = 0x0C,
     /// 要求エラー
     ReqErr = 0x0D,
     /// 受信エラー
     RespErr = 0x0E,
-    /// 圧縮された CQE
-    Compressed = 0x03,
     /// 無効
     Invalid = 0x0F,
 }
@@ -621,10 +635,14 @@ impl CqeOpcode {
     pub fn from_u8(val: u8) -> Self {
         match val & 0x0F {
             0x00 => Self::ReqOk,
-            0x01 => Self::RespOk,
+            0x01 => Self::RespWriteImm,
+            0x02 => Self::RespOk,
+            0x03 => Self::RespSendImm,
+            0x04 => Self::RespSendInv,
+            0x05 => Self::ResizeCq,
+            0x0C => Self::SigErr,
             0x0D => Self::ReqErr,
             0x0E => Self::RespErr,
-            0x03 => Self::Compressed,
             _ => Self::Invalid,
         }
     }

@@ -14,38 +14,41 @@ impl<'a> MkeyContextLayout<'a> {
         Self { data }
     }
 
-    // Legacy access_flags byte helper.  Prefer the dedicated lr/lw/rr/rw
-    // setters below for modern mkc construction.
+    // Legacy access_flags helper using the resource flag definitions
+    // (bit0=LR, bit1=LW, bit2=RR, bit3=RW).
     pub fn set_access_flags(&mut self, val: u8) {
-        set_bits_u32(self.data, 0, 8, val as u32);
+        self.set_lr((val & 0x01) != 0);
+        self.set_lw((val & 0x02) != 0);
+        self.set_rr((val & 0x04) != 0);
+        self.set_rw((val & 0x08) != 0);
     }
-    // rw: bit 13
+    // rw: bit 18
     pub fn set_rw(&mut self, val: bool) {
-        set_bits_u32(self.data, 13, 1, if val { 1 } else { 0 });
+        set_bits_u32(self.data, 18, 1, if val { 1 } else { 0 });
     }
-    // rr: bit 14
+    // rr: bit 19
     pub fn set_rr(&mut self, val: bool) {
-        set_bits_u32(self.data, 14, 1, if val { 1 } else { 0 });
+        set_bits_u32(self.data, 19, 1, if val { 1 } else { 0 });
     }
-    // lw: bit 15
+    // lw: bit 20
     pub fn set_lw(&mut self, val: bool) {
-        set_bits_u32(self.data, 15, 1, if val { 1 } else { 0 });
+        set_bits_u32(self.data, 20, 1, if val { 1 } else { 0 });
     }
-    // lr: bit 16
+    // lr: bit 21
     pub fn set_lr(&mut self, val: bool) {
-        set_bits_u32(self.data, 16, 1, if val { 1 } else { 0 });
+        set_bits_u32(self.data, 21, 1, if val { 1 } else { 0 });
     }
-    // access_mode_1_0: bits 17-18
+    // access_mode_1_0: bits 22-23
     pub fn set_access_mode_1_0(&mut self, val: u8) {
-        set_bits_u32(self.data, 17, 2, val as u32);
+        set_bits_u32(self.data, 22, 2, val as u32);
     }
     // qpn: bits 32-55
     pub fn set_qpn(&mut self, val: u32) {
         set_bits_u32(self.data, 32, 24, val);
     }
-    // translations_octword_size: bits 352-383
+    // translations_octword_size: bits 416-447
     pub fn set_translations_octword_size(&mut self, val: u32) {
-        set_bits_u32(self.data, 352, 32, val);
+        set_bits_u32(self.data, 416, 32, val);
     }
     // PD: bits 104-127
     pub fn set_pd(&mut self, val: u32) {
@@ -63,9 +66,9 @@ impl<'a> MkeyContextLayout<'a> {
     pub fn set_length64(&mut self, val: bool) {
         set_bits_u32(self.data, 96, 1, if val { 1 } else { 0 });
     }
-    // log_page_size: bits 378-383
+    // log_page_size: bits 474-479
     pub fn set_log_page_size(&mut self, val: u32) {
-        set_bits_u32(self.data, 378, 6, val);
+        set_bits_u32(self.data, 474, 6, val);
     }
     // mkey_7_0: bits 56-63
     pub fn set_mkey_7_0(&mut self, val: u8) {

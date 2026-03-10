@@ -54,6 +54,41 @@ impl Mlx5Device {
         let mkey_index = crate::cmd::res::parse_create_mkey_output(out_mbox);
         let full_mkey = (mkey_index << 8) | 0x42;
 
+        match self.query_mkey(mkey_index) {
+            Ok(ctx) => {
+                log::info!(
+                    target: "mlx5",
+                    "QUERY_MKEY: index={:#x} key={:#x} access_mode={} free={} umr_en={} a={} lr={} lw={} rr={} rw={} qpn={:#x} pd={} start={:#x} len={:#x} length64={} xlt_octwords={} log_page_size={} mkey_7_0={:#x}",
+                    mkey_index,
+                    full_mkey,
+                    ctx.access_mode,
+                    ctx.free,
+                    ctx.umr_en,
+                    ctx.remote_atomic,
+                    ctx.local_read,
+                    ctx.local_write,
+                    ctx.remote_read,
+                    ctx.remote_write,
+                    ctx.qpn,
+                    ctx.pd,
+                    ctx.start_addr,
+                    ctx.len,
+                    ctx.length64,
+                    ctx.translations_octword_size,
+                    ctx.log_page_size,
+                    ctx.mkey_7_0
+                );
+            }
+            Err(err) => {
+                log::warn!(
+                    target: "mlx5",
+                    "QUERY_MKEY failed for index={:#x}: {:?}",
+                    mkey_index,
+                    err
+                );
+            }
+        }
+
         let info = MkeyInfo {
             mkey_index,
             mkey: full_mkey,
@@ -64,6 +99,24 @@ impl Mlx5Device {
         self.mkey = full_mkey;
         self.mkey_info = Some(info);
         Ok(full_mkey)
+    }
+
+    /// MKEY コンテキストをクエリ
+    pub unsafe fn query_mkey(
+        &mut self,
+        mkey_index: u32,
+    ) -> Mlx5Result<crate::cmd::res::QueryMkeyInfo> {
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_query_mkey_input(in_mbox, mkey_index);
+        self.execute_cmd_with_uid_candidates(
+            CmdOpcode::QueryMkey,
+            self.cmd_in_mbox_device,
+            0x10,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        Ok(parse_query_mkey_output(out_mbox))
     }
 
     /// TIS (Transport Interface Send) を作成
@@ -92,7 +145,7 @@ impl Mlx5Device {
         ];
         let mut last_err = Err(Mlx5Error::NotSupported);
 
-        for (_attempt_name, td, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in attempts
+        for (attempt_name, td, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in attempts
         {
             crate::cmd::res::build_create_tis_input_with_options(
                 in_mbox,
@@ -114,6 +167,20 @@ impl Mlx5Device {
                 layout.set_lag_tx_port_affinity(lag_port);
                 layout.set_strict_lag_tx_port_affinity(strict_lag);
             }
+            log::info!(
+                target: "mlx5",
+                "CREATE_TIS try {}: td={} pd={} include_pd={} port={} prio={} underlay_qpn={:#x} op_mod={} lag_port={} strict_lag={}",
+                attempt_name,
+                td,
+                params.pd,
+                include_pd,
+                params.port,
+                params.prio,
+                underlay_qpn,
+                op_mod,
+                lag_port,
+                strict_lag
+            );
 
             match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0xC0, 0x10) {
                 Ok(()) => {
@@ -128,7 +195,58 @@ impl Mlx5Device {
                     return Ok(tisn);
                 }
                 Err(err) => {
+                    if !self.is_vf() {
+                        let extra_uid = self.default_sw_vhca_id();
+                        let prev_uid = self.cmd.as_ref().map(|cmd| cmd.uid()).unwrap_or(0);
+                        if extra_uid != 0 && extra_uid != 0xffff && extra_uid != prev_uid {
+                            let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+                            cmd.set_uid(extra_uid);
+                            match cmd.execute(
+                                CmdOpcode::CreateTis,
+                                self.cmd_in_mbox_device,
+                                0xC0,
+                                self.cmd_out_mbox_device,
+                                0x10,
+                            ) {
+                                Ok(()) => {
+                                    cmd.set_uid(prev_uid);
+                                    let out_mbox =
+                                        &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                                    let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
+                                    let info = TisInfo {
+                                        tisn,
+                                        port: params.port,
+                                    };
+                                    self.tis_list.push(info);
+                                    log::info!(
+                                        target: "mlx5",
+                                        "CREATE_TIS accepted with PF RID-derived UID {:#x} on attempt {}",
+                                        extra_uid,
+                                        attempt_name
+                                    );
+                                    crate::boot_trace("[MLX5_TIS] create ok\n");
+                                    return Ok(tisn);
+                                }
+                                Err(extra_err) => {
+                                    cmd.set_uid(prev_uid);
+                                    log::warn!(
+                                        target: "mlx5",
+                                        "CREATE_TIS attempt {} also failed with PF RID-derived UID {:#x}: {:?}",
+                                        attempt_name,
+                                        extra_uid,
+                                        extra_err
+                                    );
+                                }
+                            }
+                        }
+                    }
                     crate::boot_trace("[MLX5_TIS] create fail\n");
+                    log::warn!(
+                        target: "mlx5",
+                        "CREATE_TIS attempt {} failed: {:?}",
+                        attempt_name,
+                        err
+                    );
                     last_err = Err(err);
                 }
             }
@@ -245,6 +363,7 @@ impl Mlx5Device {
                 Ok(()) => {
                     let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
                     self.pd = parse_alloc_pd_output(out_mbox);
+                    log::info!(target: "mlx5", "ALLOC_PD assigned pd={}", self.pd);
                     cmd.set_uid(prev_uid);
                     return Ok(self.pd);
                 }
@@ -262,6 +381,7 @@ impl Mlx5Device {
         cmd.set_uid(prev_uid);
         if let Some(pd) = fallback_pd {
             self.pd = pd;
+            log::warn!(target: "mlx5", "ALLOC_PD fell back to pd={}", self.pd);
             return Ok(self.pd);
         }
         last_err
@@ -291,6 +411,7 @@ impl Mlx5Device {
                 Ok(()) => {
                     let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
                     self.td = parse_alloc_td_output(out_mbox);
+                    log::info!(target: "mlx5", "ALLOC_TD assigned td={}", self.td);
                     cmd.set_uid(prev_uid);
                     return Ok(self.td);
                 }
@@ -308,6 +429,7 @@ impl Mlx5Device {
         cmd.set_uid(prev_uid);
         if let Some(td) = fallback_td {
             self.td = td;
+            log::warn!(target: "mlx5", "ALLOC_TD fell back to td={}", self.td);
             return Ok(self.td);
         }
         last_err

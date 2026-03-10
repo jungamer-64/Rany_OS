@@ -177,33 +177,29 @@ pub mod cqe {
     /// 受信バイトカウント
     pub const BYTE_COUNT: usize = 0x2C;
 
-    /// WQEカウンタ（SQ/RQインデックス）
-    pub const WQE_COUNTER: usize = 0x30;
+    /// ハードウェアタイムスタンプ上位32ビット
+    pub const TIMESTAMP_H: usize = 0x30;
 
-    /// QP番号 (SQ/RQ識別子)
+    /// ハードウェアタイムスタンプ下位32ビット
+    pub const TIMESTAMP_L: usize = 0x34;
+
+    /// WQEカウンタ（SQ/RQインデックス）
+    pub const WQE_COUNTER: usize = 0x3C;
+
+    /// QP番号 (sop_drop_qpn / s_wqe_opcode_qpn の下位24ビット)
     pub const QPN: usize = 0x38;
 
     /// VLANタグ情報
-    pub const VLAN_INFO: usize = 0x18;
+    pub const VLAN_INFO: usize = 0x1E;
 
-    /// RXハッシュ情報
-    pub const RX_HASH: usize = 0x14;
+    /// エラーCQEの vendor error syndrome
+    pub const ERR_VENDOR_SYNDROME: usize = 0x36;
 
-    /// チェックサムステータスビット
-    pub const CHECKSUM: usize = 0x10;
+    /// エラーCQEの syndrome
+    pub const ERR_SYNDROME: usize = 0x37;
 
-    // byte 0x10 (dword 4) flags:
-    // bit 31-24: [31] l3_ok, [30] l4_ok, [29] ip_frag, [28] l3_type, [27:26] l4_type
-    pub const L3_OK: u32 = 1 << 31;
-    pub const L4_OK: u32 = 1 << 30;
-    pub const IP_FRAG: u32 = 1 << 29;
-    pub const L3_TYPE_IPV4: u32 = 0 << 28;
-    pub const L3_TYPE_IPV6: u32 = 1 << 28;
-    pub const L4_TYPE_TCP: u32 = 1 << 26;
-    pub const L4_TYPE_UDP: u32 = 2 << 26;
-
-    /// LRO (Large Receive Offload) セグメントサイズ
-    pub const LRO_SEG_SIZE: usize = 0x24;
+    /// l4_l3_hdr_type byte
+    pub const L4_L3_HDR_TYPE: usize = 0x1D;
 }
 
 /// Work Queue Entry (WQE) レイアウト
@@ -214,22 +210,28 @@ pub mod wqe {
         pub const OPMOD_IDX_OPCODE: usize = 0x00;
         /// QP番号とDS (Descriptor Stride) カウント
         pub const QPN_DS: usize = 0x04;
-        /// シグネチャとフラグ
+        /// シグネチャ
         pub const SIGNATURE: usize = 0x08;
-        /// FM CE SE フラグ
-        pub const FM_CE_SE: usize = 0x0C;
+        /// FM / CE / SE フラグ (1 byte)
+        pub const FM_CE_SE: usize = 0x0B;
+        /// general_id / imm / tis_tir_num union
+        pub const GENERAL_ID: usize = 0x0C;
     }
 
     /// WQE Ethernet Segment (16 bytes) — 送信用
     pub mod eth {
-        /// インラインヘッダサイズ（LSB 10ビット）
-        pub const INLINE_HDR_SZ: usize = 0x00;
-        /// CS flags (チェックサムオフロード)
-        pub const CS_FLAGS: usize = 0x02;
+        /// checksum flags (1 byte)
+        pub const CS_FLAGS: usize = 0x04;
+        /// software parser flags (1 byte)
+        pub const SWP_FLAGS: usize = 0x05;
         /// MSS（TCP Segmentation Offload）
-        pub const MSS: usize = 0x04;
-        /// インラインヘッダ開始（最初の2バイト = EtherType部分）
-        pub const INLINE_HDR_START: usize = 0x08;
+        pub const MSS: usize = 0x06;
+        /// flow table metadata / trailer / inline header size
+        pub const FLOW_TABLE_METADATA: usize = 0x08;
+        /// trailer / inline header size field
+        pub const TRAILER_OR_INLINE_HDR_SZ: usize = 0x0C;
+        /// inline header payload start
+        pub const INLINE_HDR_START: usize = 0x0E;
     }
 
     /// WQE Data Segment (16 bytes)

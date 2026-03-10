@@ -5,6 +5,7 @@
 extern crate alloc;
 // unused import Vec removed
 use crate::cmd::CmdMailbox;
+use crate::cmd::CommandTransport;
 use crate::cmd::queues::*; // bring in helper builders/parsers
 use crate::cq::CompletionQueue;
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE, WqState};
@@ -276,6 +277,46 @@ impl Mlx5Device {
                     break;
                 }
                 Err(err) => {
+                    if !self.is_vf() {
+                        let extra_uid = self.default_sw_vhca_id();
+                        let prev_uid = self.cmd.as_ref().map(|cmd| cmd.uid()).unwrap_or(0);
+                        if extra_uid != 0 && extra_uid != 0xffff && extra_uid != prev_uid {
+                            let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+                            cmd.set_uid(extra_uid);
+                            match cmd.execute(
+                                CmdOpcode::CreateSq,
+                                self.cmd_in_mbox_device,
+                                sq_in_len,
+                                self.cmd_out_mbox_device,
+                                0x10,
+                            ) {
+                                Ok(()) => {
+                                    cmd.set_uid(prev_uid);
+                                    log::info!(
+                                        target: "mlx5",
+                                        "CREATE_SQ accepted with PF RID-derived UID {:#x} (mode={}, tisn={})",
+                                        extra_uid,
+                                        mode,
+                                        tisn
+                                    );
+                                    break;
+                                }
+                                Err(extra_err) => {
+                                    cmd.set_uid(prev_uid);
+                                    if fallback_tis0 {
+                                        log::warn!(
+                                            target: "mlx5",
+                                            "CREATE_SQ also failed with PF RID-derived UID {:#x} (mode={}, tisn={}): {:?}",
+                                            extra_uid,
+                                            mode,
+                                            tisn,
+                                            extra_err
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if fallback_tis0 {
                         log::warn!(
                             target: "mlx5",
@@ -300,6 +341,30 @@ impl Mlx5Device {
                 crate::boot_trace("[MLX5_SQ] modify_sq failed on VF; continue\n");
             } else {
                 return Err(err);
+            }
+        }
+        match self.query_sq_hw(sqn) {
+            Ok(ctx) => {
+                log::info!(
+                    target: "mlx5",
+                    "QUERY_SQ: sqn={:#x} state={} flush={} cqn={:#x} tis_lst_sz={} tis_num_0={:#x} wq_type={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
+                    sqn,
+                    ctx.state,
+                    ctx.flush_in_error_en,
+                    ctx.cqn,
+                    ctx.tis_lst_sz,
+                    ctx.tis_num_0,
+                    ctx.wq_type,
+                    ctx.pd,
+                    ctx.uar_page,
+                    ctx.dbr_addr,
+                    ctx.log_wq_stride,
+                    ctx.log_wq_pg_sz,
+                    ctx.log_wq_sz
+                );
+            }
+            Err(err) => {
+                log::warn!(target: "mlx5", "QUERY_SQ failed for sqn={:#x}: {:?}", sqn, err);
             }
         }
         let csum_offload = self.hca_caps.as_ref().map(|c| c.csum_cap).unwrap_or(false);
@@ -481,6 +546,33 @@ impl Mlx5Device {
                 return Err(err);
             }
         }
+        match self.query_rq_hw(rqn) {
+            Ok(ctx) => {
+                log::info!(
+                    target: "mlx5",
+                    "QUERY_RQ: rqn={:#x} state={} mem_rq_type={} flush={} scatter_fcs={} vlan_strip={} cqn={:#x} rmpn={:#x} wq_type={} end_pad={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
+                    rqn,
+                    ctx.state,
+                    ctx.mem_rq_type,
+                    ctx.flush_in_error_en,
+                    ctx.scatter_fcs,
+                    ctx.vlan_strip,
+                    ctx.cqn,
+                    ctx.rmpn,
+                    ctx.wq_type,
+                    ctx.end_padding_mode,
+                    ctx.pd,
+                    ctx.uar_page,
+                    ctx.dbr_addr,
+                    ctx.log_wq_stride,
+                    ctx.log_wq_pg_sz,
+                    ctx.log_wq_sz
+                );
+            }
+            Err(err) => {
+                log::warn!(target: "mlx5", "QUERY_RQ failed for rqn={:#x}: {:?}", rqn, err);
+            }
+        }
         let csum_offload = self.hca_caps.as_ref().map(|c| c.csum_cap).unwrap_or(false);
         crate::boot_trace("[MLX5_RQ] build rq object\n");
         let rq = ReceiveQueue::new(
@@ -584,6 +676,36 @@ impl Mlx5Device {
             log_rqt_size,
         });
         Ok(rqtn)
+    }
+
+    unsafe fn query_sq_hw(&mut self, sqn: u32) -> Mlx5Result<QuerySqInfo> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_query_sq_input(in_mbox, sqn);
+        self.execute_cmd_with_uid_candidates(
+            CmdOpcode::QuerySq,
+            self.cmd_in_mbox_device,
+            0x10,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        Ok(parse_query_sq_output(out_mbox))
+    }
+
+    unsafe fn query_rq_hw(&mut self, rqn: u32) -> Mlx5Result<QueryRqInfo> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_query_rq_input(in_mbox, rqn);
+        self.execute_cmd_with_uid_candidates(
+            CmdOpcode::QueryRq,
+            self.cmd_in_mbox_device,
+            0x10,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        Ok(parse_query_rq_output(out_mbox))
     }
 
     unsafe fn transition_sq_to_ready(&mut self, sqn: u32) -> Mlx5Result<()> {
