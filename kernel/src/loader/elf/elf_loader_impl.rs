@@ -1,5 +1,5 @@
 use super::*;
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 
 mod relocation;
 impl<'a> ElfLoader<'a> {
@@ -146,8 +146,6 @@ impl<'a> ElfLoader<'a> {
         exports: &mut Vec<(&'a str, u64)>,
         imports: &mut Vec<&'a str>,
     ) -> Result<(), LoadError> {
-        let mut seen_exports: BTreeSet<(&'a str, u64)> = BTreeSet::new();
-        let mut seen_imports: BTreeSet<&'a str> = BTreeSet::new();
         let mut processed_symtab = false;
 
         // まず .symtab を優先して処理する。存在する場合は .dynsym をスキップし、
@@ -169,13 +167,12 @@ impl<'a> ElfLoader<'a> {
                     &sh,
                     exports,
                     imports,
-                    &mut seen_exports,
-                    &mut seen_imports,
                 )?;
             }
         }
 
         if processed_symtab {
+            // nothing to deduplicate here anymore; symbols are unique on the fly
             return Ok(());
         }
 
@@ -194,8 +191,6 @@ impl<'a> ElfLoader<'a> {
                     &sh,
                     exports,
                     imports,
-                    &mut seen_exports,
-                    &mut seen_imports,
                 )?;
             }
         }
@@ -209,23 +204,36 @@ impl<'a> ElfLoader<'a> {
         sh: &Elf64SectionHeader,
         exports: &mut Vec<(&'a str, u64)>,
         imports: &mut Vec<&'a str>,
-        seen_exports: &mut BTreeSet<(&'a str, u64)>,
-        seen_imports: &mut BTreeSet<&'a str>,
     ) -> Result<(), LoadError> {
         crate::io::log::early_print("[LDBG] symtab enter\n");
-        let sym_count = sh.sh_size as usize / mem::size_of::<Elf64Symbol>();
+        let raw_count = sh.sh_size as usize / mem::size_of::<Elf64Symbol>();
+        // Clamp to a reasonable maximum to avoid integer overflow or DoS loops.
+        let sym_count = core::cmp::min(raw_count, MAX_SYMBOLS);
         let strtab = self.get_string_table(sh.sh_link as usize)?;
 
-        // ある程度の容量を予約して再割り当てを減らす
-        let reserve_amount = core::cmp::min(sym_count, MAX_SYMBOLS);
+        // ある程度の容量を予約して再割り当てを減らす。
+        // fallible reserve avoids heap-alloc panic; convert failures into errors.
+        let reserve_amount = sym_count;
         crate::io::log::early_print("[LDBG] symtab reserve e\n");
-        exports.reserve(reserve_amount);
+        if exports.try_reserve(reserve_amount).is_err() {
+            return Err(LoadError::OutOfMemory);
+        }
         crate::io::log::early_print("[LDBG] symtab reserve i\n");
-        imports.reserve(reserve_amount);
+        if imports.try_reserve(reserve_amount).is_err() {
+            return Err(LoadError::OutOfMemory);
+        }
         crate::io::log::early_print("[LDBG] symtab loop\n");
 
         for j in 0..sym_count {
-            let sym_offset = sh.sh_offset as usize + j * mem::size_of::<Elf64Symbol>();
+            // debug tracing: iteration number
+
+            // compute offset with checked arithmetic to avoid overflow
+            let sym_offset = match (sh.sh_offset as usize)
+                .checked_add(j.checked_mul(mem::size_of::<Elf64Symbol>()).unwrap_or(0))
+            {
+                Some(off) => off,
+                None => return Err(LoadError::InvalidFormat("symtab offset overflow".into())),
+            };
 
             // 【設計書 2.2】安全なラッパーを使用、エラーはスキップ
             let sym: Elf64Symbol = match crate::util::read_struct(self.data, sym_offset) {
@@ -233,22 +241,29 @@ impl<'a> ElfLoader<'a> {
                 None => continue,
             };
 
+
             // グローバルシンボルのみ処理
             if sym.binding() == STB_GLOBAL && sym.st_name != 0 {
                 if let Some(name) = self.get_string(strtab, sym.st_name as usize) {
                     if name.is_empty() {
                         continue;
                     }
+                    // debug resolved name
+                    {
+                    }
                     if sym.st_shndx == 0 {
                         // 未定義シンボル = インポート（ゼロコピー）
-                        if seen_imports.insert(name) {
+                        // avoid duplicates (linear scan, no allocations)
+                        if !imports.iter().any(|&e| e == name) {
                             imports.push(name);
                         }
                     } else {
                         // 定義済みシンボル = エクスポート（ゼロコピー）
                         let export_key = (name, sym.st_value);
-                        if seen_exports.insert(export_key) {
+                        // avoid duplicate exports of same name/value
+                        if !exports.iter().any(|&(n, v)| n == name && v == sym.st_value) {
                             exports.push((name, sym.st_value));
+                            crate::io::log::early_print("[LDBG] export pushed into vector\n");
                         }
                     }
                 }
@@ -461,6 +476,7 @@ impl<'a> ElfLoader<'a> {
         }
         Ok(())
     }
+
 
     /// メモリを割り当て
     ///
@@ -785,5 +801,70 @@ impl<'a> ElfLoader<'a> {
 
         Ok(crate::util::read_struct(self.data, sh_offset)
             .ok_or_else(|| LoadError::InvalidFormat("Failed to read section header".into()))?)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// tests for ELF loader internals (outside of the impl block)
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod loader_tests {
+    use super::*;
+
+    /// Construct a loader with minimal header and empty data for testing.
+    fn dummy_loader() -> ElfLoader<'static> {
+        ElfLoader {
+            data: &[],
+            header: Elf64Header {
+                e_ident: [0; 16],
+                e_type: 0,
+                e_machine: 0,
+                e_version: 0,
+                e_entry: 0,
+                e_phoff: 0,
+                e_shoff: 0,
+                e_flags: 0,
+                e_ehsize: 0,
+                e_phentsize: 0,
+                e_phnum: 0,
+                e_shentsize: mem::size_of::<Elf64SectionHeader>() as u16,
+                e_shnum: 0,
+                e_shstrndx: 0,
+            },
+        }
+    }
+
+    #[test_case]
+    fn symtab_overflow_does_not_panic() {
+        let loader = dummy_loader();
+
+        let mut exports = Vec::new();
+        let mut imports = Vec::new();
+
+        let huge_count = MAX_SYMBOLS + 100;
+        let fake_size = (huge_count as u64)
+            .saturating_mul(mem::size_of::<Elf64Symbol>() as u64);
+        let sh = Elf64SectionHeader {
+            sh_name: 0,
+            sh_type: SHT_SYMTAB,
+            sh_flags: 0,
+            sh_addr: 0,
+            sh_offset: 0,
+            sh_size: fake_size,
+            sh_link: 0,
+            sh_info: 0,
+            sh_addralign: 0,
+            sh_entsize: mem::size_of::<Elf64Symbol>() as u64,
+        };
+
+        let res = loader.process_symbol_table(
+            &sh,
+            &mut exports,
+            &mut imports,
+        );
+        assert!(res.is_ok() || matches!(res, Err(LoadError::OutOfMemory)));
+        assert!(exports.is_empty());
+        assert!(imports.is_empty());
     }
 }
