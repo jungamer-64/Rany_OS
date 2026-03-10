@@ -232,7 +232,7 @@ impl<T> Drop for PoisonRwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
         if is_panicking() {
             self.lock.poisoned.store(true, Ordering::Release);
-            log::info!("[PoisonRwLock] Lock poisoned due to panic");
+            emit_panic_poison_log_once("PoisonRwLock");
         }
     }
 }
@@ -503,25 +503,7 @@ impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
             // ドメインがMutexを保持したままパニックすると、
             // そのMutexは「poisoned」状態としてマークされる
             self.lock.poisoned.store(true, Ordering::Release);
-            // テスト環境ではシリアルへのI/Oは特権命令になり得るため、出力を抑止
-            #[cfg(not(test))]
-            {
-                log::info!("[PoisonLock] Lock poisoned due to panic");
-
-                // Debug: capture a lightweight backtrace at the point of panic to help
-                // locate the originating code that caused the poisoning. This uses the
-                // frame-pointer-based capture which does not perform heap allocations.
-                #[cfg(debug_assertions)]
-                {
-                    crate::io::log::early_print("[PoisonLock] Capturing backtrace...\n");
-                    let bt = crate::unwind::Backtrace::capture();
-                    for entry in bt.iter() {
-                        crate::io::log::early_print("[PoisonLock][BT] IP=");
-                        crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
-                        crate::io::log::early_print("\n");
-                    }
-                }
-            }
+            emit_panic_poison_log_once("PoisonLock");
         }
 
         // スピンロックを解放
@@ -547,6 +529,8 @@ impl<T: fmt::Display + ?Sized> fmt::Display for PoisonLockGuard<'_, T> {
 
 /// 現在パニック中のCPUコアのビットマスク（最大32コア対応）
 static PANICKING_CORES: AtomicU32 = AtomicU32::new(0);
+/// Panic中のPoisonログをCPUごとに一度だけに制限する。
+static PANIC_POISON_LOGGED_CORES: AtomicU32 = AtomicU32::new(0);
 
 /// 現在のCPUコアがパニック中かどうかをチェック
 fn is_panicking() -> bool {
@@ -562,6 +546,39 @@ fn is_panicking() -> bool {
 pub fn is_panicking_for_debug() -> bool {
     is_panicking()
 }
+
+#[cfg(not(test))]
+fn emit_panic_poison_log_once(lock_kind: &str) {
+    let core_id = get_current_core_id();
+    if core_id < 32 {
+        let bit = 1u32 << core_id;
+        if (PANIC_POISON_LOGGED_CORES.fetch_or(bit, Ordering::AcqRel) & bit) != 0 {
+            return;
+        }
+    }
+
+    crate::io::log::early_print("[");
+    crate::io::log::early_print(lock_kind);
+    crate::io::log::early_print("] Lock poisoned due to panic\n");
+
+    #[cfg(debug_assertions)]
+    {
+        crate::io::log::early_print("[");
+        crate::io::log::early_print(lock_kind);
+        crate::io::log::early_print("] Capturing backtrace...\n");
+        let bt = crate::unwind::Backtrace::capture();
+        for entry in bt.iter() {
+            crate::io::log::early_print("[");
+            crate::io::log::early_print(lock_kind);
+            crate::io::log::early_print("][BT] IP=");
+            crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+            crate::io::log::early_print("\n");
+        }
+    }
+}
+
+#[cfg(test)]
+fn emit_panic_poison_log_once(_lock_kind: &str) {}
 
 // ============================================================================
 // Lock acquisition metrics (軽量計測用)
@@ -614,6 +631,7 @@ pub fn set_panicking(panicking: bool) {
         PANICKING_CORES.fetch_or(bit, Ordering::Release);
     } else {
         PANICKING_CORES.fetch_and(!bit, Ordering::Release);
+        PANIC_POISON_LOGGED_CORES.fetch_and(!bit, Ordering::Release);
     }
 }
 
@@ -791,7 +809,7 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
         // パニック検出と毒入れ
         if is_panicking() {
             self.lock.poisoned.store(true, Ordering::Release);
-            log::info!("[IrqPoisonLock] Lock poisoned due to panic");
+            emit_panic_poison_log_once("IrqPoisonLock");
         }
 
         // スピンロックを解放

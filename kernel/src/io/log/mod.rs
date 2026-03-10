@@ -595,16 +595,53 @@ pub fn early_print_char(c: u8) {
     KernelLogger::write_char_raw(c);
 }
 
+#[inline]
+fn ascii_bytes_to_str(bytes: &[u8]) -> &str {
+    // SAFETY: callers only pass ASCII digit/prefix buffers.
+    unsafe { core::str::from_utf8_unchecked(bytes) }
+}
+
 /// 10進数出力
 pub fn early_print_dec(n: u64) {
-    use alloc::format;
-    early_print(&format!("{}", n));
+    let _guard = SERIAL_LOCK.try_lock();
+    let mut value = n;
+    let mut buf = [0u8; 20];
+    let mut start = buf.len();
+
+    if value == 0 {
+        start -= 1;
+        buf[start] = b'0';
+    } else {
+        while value > 0 {
+            start -= 1;
+            buf[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+        }
+    }
+
+    KernelLogger::write_raw(ascii_bytes_to_str(&buf[start..]));
 }
 
 /// 16進数出力
 pub fn early_print_hex(n: u64) {
-    use alloc::format;
-    early_print(&format!("0x{:016x}", n));
+    let _guard = SERIAL_LOCK.try_lock();
+    let mut buf = [0u8; 18];
+    buf[0] = b'0';
+    buf[1] = b'x';
+
+    let mut shift = 60u32;
+    let mut idx = 2usize;
+    while idx < buf.len() {
+        let digit = ((n >> shift) & 0xF) as u8;
+        buf[idx] = match digit {
+            0..=9 => b'0' + digit,
+            _ => b'a' + (digit - 10),
+        };
+        idx += 1;
+        shift = shift.saturating_sub(4);
+    }
+
+    KernelLogger::write_raw(ascii_bytes_to_str(&buf));
 }
 
 /// 改行直前の空白を除去する
