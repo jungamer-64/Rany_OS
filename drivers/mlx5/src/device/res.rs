@@ -14,6 +14,40 @@ use crate::flow::{FlowGroup, FlowTable, FlowTableConfig, FlowTableEntry};
 use crate::resources::{MkeyInfo, MkeyParams, TirInfo, TirParams, TisInfo, TisParams};
 
 impl Mlx5Device {
+    /// ローカルTISの存在確認
+    pub unsafe fn query_tis_exists(&mut self, tisn: u32) -> Mlx5Result<()> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_query_tis_input(in_mbox, tisn, 0, false);
+        self.execute_cmd_with_uid_candidates(
+            CmdOpcode::QueryTis,
+            self.cmd_in_mbox_device,
+            0x10,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+        Ok(())
+    }
+
+    /// PF passthrough 向けの既存TISを探索
+    pub unsafe fn find_existing_tis(&mut self, max_scan: u32) -> Mlx5Result<u32> {
+        let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
+        for tisn in 0..max_scan {
+            match self.query_tis_exists(tisn) {
+                Ok(()) => {
+                    log::info!(
+                        target: "mlx5",
+                        "Found existing TIS via QUERY_TIS: tisn={:#x}",
+                        tisn
+                    );
+                    return Ok(tisn);
+                }
+                Err(err) => last_err = Err(err),
+            }
+        }
+        last_err
+    }
+
     /// QUERY_SPECIAL_CONTEXTS から reserved lkey を取得
     pub unsafe fn query_reserved_lkey(&mut self) -> Mlx5Result<u32> {
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -52,7 +86,7 @@ impl Mlx5Device {
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let mkey_index = crate::cmd::res::parse_create_mkey_output(out_mbox);
-        let full_mkey = (mkey_index << 8) | 0x42;
+        let full_mkey = mkey_index << 8;
 
         match self.query_mkey(mkey_index) {
             Ok(ctx) => {

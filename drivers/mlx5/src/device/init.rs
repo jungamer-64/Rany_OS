@@ -904,13 +904,27 @@ impl Mlx5Device {
             }) {
                 Ok(tisn) => tisn,
                 Err(err) => {
-                    log::warn!(
-                        target: "mlx5",
-                        "CREATE_TIS failed on PF ({:?}); trying TX fallback with implicit TIS=0",
-                        err
-                    );
-                    tx_using_fallback_tis0 = true;
-                    0
+                    match self.find_existing_tis(64) {
+                        Ok(tisn) => {
+                            log::warn!(
+                                target: "mlx5",
+                                "CREATE_TIS failed on PF ({:?}); reusing existing TIS {:#x}",
+                                err,
+                                tisn
+                            );
+                            tisn
+                        }
+                        Err(scan_err) => {
+                            log::warn!(
+                                target: "mlx5",
+                                "CREATE_TIS failed on PF ({:?}) and no reusable TIS found ({:?}); trying TX fallback with implicit TIS=0",
+                                err,
+                                scan_err
+                            );
+                            tx_using_fallback_tis0 = true;
+                            0
+                        }
+                    }
                 }
             }
         };

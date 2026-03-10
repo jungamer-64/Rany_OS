@@ -485,6 +485,38 @@ impl CmdQueueTransport {
         Ok(())
     }
 
+    unsafe fn reconstruct_output_mailbox(
+        &self,
+        out_inline: &[u8; MLX5_CMD_INLINE_SIZE],
+        out_len: usize,
+    ) {
+        if out_len > MLX5_CMD_INLINE_SIZE {
+            let total_payload = out_len - MLX5_CMD_INLINE_SIZE;
+            let num_blocks = Self::chained_block_count(out_len);
+            for i in 0..num_blocks {
+                let block = &*Self::block_ptr(self.out_mbox_virt, i);
+                let offset = i * MLX5_CMD_DATA_BLOCK_SIZE;
+                let payload_len = (total_payload - offset).min(MLX5_CMD_DATA_BLOCK_SIZE);
+                let mut payload = [0u8; MLX5_CMD_DATA_BLOCK_SIZE];
+                payload[..payload_len].copy_from_slice(&block.data[..payload_len]);
+                core::ptr::copy_nonoverlapping(
+                    payload.as_ptr(),
+                    (self.out_mbox_virt as *mut u8).add(MLX5_CMD_INLINE_SIZE + offset),
+                    payload_len,
+                );
+            }
+        }
+
+        // `out_mbox_virt` doubles as both the protected-block backing store and
+        // the logical mailbox buffer. Copy the inline header last so we do not
+        // clobber block 0's payload before it is reconstructed.
+        core::ptr::copy_nonoverlapping(
+            out_inline.as_ptr(),
+            self.out_mbox_virt as *mut u8,
+            MLX5_CMD_INLINE_SIZE,
+        );
+    }
+
     pub fn setup_cmdq_in_bar0(&mut self) {
         let h = (self.cmdq_phys >> 32) as u32;
         if (self.cmdq_phys & 0x0fff) != 0 {
@@ -643,27 +675,7 @@ impl CommandTransport for CmdQueueTransport {
             return Err(Mlx5Error::CommandFailed(delivery_status_raw));
         }
 
-        core::ptr::copy_nonoverlapping(
-            out_inline.as_ptr(),
-            self.out_mbox_virt as *mut u8,
-            MLX5_CMD_INLINE_SIZE,
-        );
-        if out_len as usize > MLX5_CMD_INLINE_SIZE {
-            let total_payload = out_len as usize - MLX5_CMD_INLINE_SIZE;
-            let num_blocks = Self::chained_block_count(out_len as usize);
-            for i in 0..num_blocks {
-                let block = &*Self::block_ptr(self.out_mbox_virt, i);
-                let offset = i * MLX5_CMD_DATA_BLOCK_SIZE;
-                let payload_len = (total_payload - offset).min(MLX5_CMD_DATA_BLOCK_SIZE);
-                let mut payload = [0u8; MLX5_CMD_DATA_BLOCK_SIZE];
-                payload[..payload_len].copy_from_slice(&block.data[..payload_len]);
-                core::ptr::copy_nonoverlapping(
-                    payload.as_ptr(),
-                    (self.out_mbox_virt as *mut u8).add(MLX5_CMD_INLINE_SIZE + offset),
-                    payload_len,
-                );
-            }
-        }
+        self.reconstruct_output_mailbox(&out_inline, out_len as usize);
 
         let fw_status = out_inline[0];
         if fw_status != 0 {
@@ -824,5 +836,40 @@ mod tests {
         }
 
         assert_eq!(&in_backing[..in_len], &expected[..in_len]);
+    }
+
+    #[test]
+    fn reconstruct_output_mailbox_preserves_first_block_payload_when_backing_overlaps() {
+        let out_len = 0x118usize;
+        let payload_len = out_len - MLX5_CMD_INLINE_SIZE;
+        let mut out_backing = [0u8; MLX5_CMD_MBOX_BACKING_SIZE];
+        let mut expected = [0u8; MLX5_CMD_MBOX_SIZE];
+        for (i, byte) in expected[..out_len].iter_mut().enumerate() {
+            *byte = (i as u8).wrapping_mul(7).wrapping_add(9);
+        }
+
+        let mut inline = [0u8; MLX5_CMD_INLINE_SIZE];
+        inline.copy_from_slice(&expected[..MLX5_CMD_INLINE_SIZE]);
+
+        let block = unsafe { &mut *CmdQueueTransport::block_ptr(out_backing.as_mut_ptr() as u64, 0) };
+        block.data[..payload_len].copy_from_slice(&expected[MLX5_CMD_INLINE_SIZE..out_len]);
+
+        let transport = CmdQueueTransport {
+            cmdq_phys: 0,
+            cmdq_virt: 0,
+            log_cmdq_size: 5,
+            log_cmd_stride: 6,
+            bar0_base: 0,
+            in_mbox_virt: 0,
+            out_mbox_virt: out_backing.as_mut_ptr() as u64,
+            next_token: 1,
+            uid: 0,
+            in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
+            in_snapshot_len: 0,
+        };
+
+        unsafe { transport.reconstruct_output_mailbox(&inline, out_len) };
+
+        assert_eq!(&out_backing[..out_len], &expected[..out_len]);
     }
 }

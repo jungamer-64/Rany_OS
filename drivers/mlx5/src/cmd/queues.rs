@@ -209,7 +209,8 @@ pub fn parse_create_sq_output(out_mbox: &CmdMailbox) -> u32 {
 /// QUERY_SQ コマンド入力の構築
 pub fn build_query_sq_input(in_mbox: &mut CmdMailbox, sqn: u32) {
     *in_mbox = CmdMailbox::zeroed();
-    in_mbox.write_be32(0x04, sqn & 0x00FF_FFFF);
+    // query_sq_in.sqn lives at byte 0x09 (24 bits) after op_mod.
+    in_mbox.write_be32(0x08, sqn & 0x00FF_FFFF);
 }
 
 /// QUERY_SQ 出力から SQ コンテキストを解析
@@ -465,7 +466,8 @@ pub fn parse_create_rq_output(out_mbox: &CmdMailbox) -> u32 {
 /// QUERY_RQ コマンド入力の構築
 pub fn build_query_rq_input(in_mbox: &mut CmdMailbox, rqn: u32) {
     *in_mbox = CmdMailbox::zeroed();
-    in_mbox.write_be32(0x04, rqn & 0x00FF_FFFF);
+    // query_rq_in.rqn lives at byte 0x09 (24 bits) after op_mod.
+    in_mbox.write_be32(0x08, rqn & 0x00FF_FFFF);
 }
 
 /// QUERY_RQ 出力から RQ コンテキストを解析
@@ -576,6 +578,20 @@ mod tests {
         out_mbox.data[0x0A] = 0xCD;
         out_mbox.data[0x0B] = 0x12;
         assert_eq!(parse_create_cq_output(&out_mbox), 0x00ab_cd12);
+    }
+
+    #[test]
+    fn query_sq_input_uses_linux_ifc_object_offset() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_query_sq_input(&mut in_mbox, 0x123456);
+        assert_eq!(in_mbox.read_be32(0x08), 0x0012_3456);
+    }
+
+    #[test]
+    fn query_rq_input_uses_linux_ifc_object_offset() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_query_rq_input(&mut in_mbox, 0x234567);
+        assert_eq!(in_mbox.read_be32(0x08), 0x0023_4567);
     }
 
     #[test]

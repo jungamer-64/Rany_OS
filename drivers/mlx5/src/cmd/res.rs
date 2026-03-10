@@ -98,7 +98,8 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
         layout.set_qpn(0x00ff_ffff);
         layout.set_pd(params.pd);
         layout.set_log_page_size(params.log_page_size as u32);
-        layout.set_mkey_7_0(0x42);
+        // Linux mlx5e direct mkey path leaves mkey_7_0 at 0.
+        layout.set_mkey_7_0(0);
 
         if params.start_addr == 0 && params.length == u64::MAX {
             layout.set_length64(true);
@@ -117,7 +118,8 @@ pub fn parse_create_mkey_output(out_mbox: &CmdMailbox) -> u32 {
 /// QUERY_MKEY コマンド入力の構築
 pub fn build_query_mkey_input(in_mbox: &mut CmdMailbox, mkey_index: u32) {
     *in_mbox = CmdMailbox::zeroed();
-    in_mbox.write_be32(0x04, mkey_index & 0x00FF_FFFF);
+    // query_mkey_in.mkey_index lives at byte 0x09 (24 bits) after op_mod.
+    in_mbox.write_be32(0x08, mkey_index & 0x00FF_FFFF);
 }
 
 /// QUERY_MKEY 出力から MKEY コンテキストを解析
@@ -185,11 +187,10 @@ pub fn parse_create_tis_output(out_mbox: &CmdMailbox) -> u32 {
 /// QUERY_TIS コマンド入力の構築
 pub fn build_query_tis_input(in_mbox: &mut CmdMailbox, tisn: u32, vport: u16, other_vport: bool) {
     *in_mbox = CmdMailbox::zeroed();
-    in_mbox.write_be32(0x04, tisn & 0x00FF_FFFF);
-    if other_vport {
-        in_mbox.data[0x08] |= 0x80;
-    }
-    in_mbox.write_be16(0x0A, vport);
+    let _ = vport;
+    let _ = other_vport;
+    // query_tis_in.tisn lives at byte 0x09 (24 bits) after op_mod.
+    in_mbox.write_be32(0x08, tisn & 0x00FF_FFFF);
 }
 
 /// DESTROY_TIS コマンド入力の構築
@@ -316,7 +317,7 @@ mod tests {
         assert_eq!(get_bits_u32(mkc, 32, 24), 0x00ff_ffff);
         assert_eq!(get_bits_u32(mkc, 104, 24), 0x12345);
         assert_eq!(get_bits_u32(mkc, 96, 1), 1);
-        assert_eq!(get_bits_u32(mkc, 56, 8), 0x42);
+        assert_eq!(get_bits_u32(mkc, 56, 8), 0);
     }
 
     #[test]
@@ -328,6 +329,13 @@ mod tests {
             parse_query_special_contexts_resd_lkey(&out_mbox),
             0x1122_3344
         );
+    }
+
+    #[test]
+    fn query_mkey_input_uses_linux_ifc_object_offset() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_query_mkey_input(&mut in_mbox, 0x234567);
+        assert_eq!(in_mbox.read_be32(0x08), 0x0023_4567);
     }
 
     #[test]
@@ -364,6 +372,13 @@ mod tests {
         assert_eq!(get_bits_u32(ctx, 296, 24), 0x123);
         assert_eq!(get_bits_u32(ctx, 328, 24), 0x0a_bcde);
         assert_eq!(get_bits_u32(ctx, 360, 24), 0x456);
+    }
+
+    #[test]
+    fn query_tis_input_uses_linux_ifc_object_offset() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_query_tis_input(&mut in_mbox, 0x345678, 0, false);
+        assert_eq!(in_mbox.read_be32(0x08), 0x0034_5678);
     }
 
     #[test]

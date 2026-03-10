@@ -343,8 +343,10 @@ fn submit_mlx5_tx_packet(pkt: PacketRef, vlan_tag: Option<u16>) -> bool {
         let data_device = pkt.device_address(); // IOMMU-safe
         let data_len = pkt.len() as u32;
 
-        // Ethernet ヘッダ（先頭14バイト）をインラインヘッダとして設定
-        let inline_hdr_len = core::cmp::min(data_len as usize, 18);
+        // Keep PF bring-up on the simplest SEND WQE profile first.
+        // ConnectX accepts min_wqe_inline_mode=0 here, so avoid inline header
+        // formatting until the non-inline TX path is confirmed working.
+        let inline_hdr_len = 0;
         let inline_hdr = &pkt.data()[..inline_hdr_len];
 
         // CPU ID に基づいて SQ を選択（マルチコア分散）
