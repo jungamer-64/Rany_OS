@@ -73,6 +73,12 @@ impl DhcpV6Client {
     pub const MAX_RETRIES: u32 = 4;
     pub const RETRANS_INTERVAL_SECS: u64 = 4;
 
+    #[inline]
+    fn all_dhcp_servers_multicast() -> Ipv6Address {
+        // RFC 8415: All_DHCP_Relay_Agents_and_Servers = ff02::1:2
+        Ipv6Address::new([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2])
+    }
+
     /// スタック設定からリンクローカルIPv6アドレスを取得（キャッシュ付き）
     ///
     /// 初回アクセス時にキャッシュし、以降はロックフリーで高速に返す。
@@ -604,9 +610,7 @@ impl DhcpV6Client {
                 Ok(len) => {
                     if let Some(src) = self.get_link_local() {
                         // Send to server address if known, otherwise multicast
-                        let all_dhcp_servers = Ipv6Address::new([
-                            0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
-                        ]);
+                        let all_dhcp_servers = Self::all_dhcp_servers_multicast();
                         let dst = match self.server_addr.lock() {
                             Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
                             Err(_) => all_dhcp_servers,
@@ -983,10 +987,7 @@ impl DhcpV6Client {
     /// 非同期イベントキュー経由で送信（ロック競合回避）:
     /// `get_link_local()` で短時間ロックのみ取得し、送信は `send_v6_async()` を使用する。
     pub fn check_timeout(&self, current_tick: u64, _tick_rate: u64) -> Result<(), &'static str> {
-        // All_DHCP_Relay_Agents_and_Servers multicast address (ff02::1:2)
-        let all_dhcp_servers = crate::net::l3::ipv6::Ipv6Address::new([
-            0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x00, 0x02, 0, 0x02,
-        ]);
+        let all_dhcp_servers = Self::all_dhcp_servers_multicast();
 
         match self.state.lock() {
             Ok(mut s) => match *s {
