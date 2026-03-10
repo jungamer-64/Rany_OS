@@ -82,11 +82,14 @@ impl TestRunner {
 
     /// Register a test case
     pub fn register(&self, name: &'static str, category: &'static str, func: fn() -> TestResult) {
-        self.tests.lock().unwrap_or_else(|e| e.into_inner()).push(TestCase {
-            name,
-            category,
-            func,
-        });
+        self.tests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(TestCase {
+                name,
+                category,
+                func,
+            });
     }
 
     /// Set stop on failure mode

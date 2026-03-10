@@ -1,5 +1,5 @@
 //! 電力管理とC-state制御
-//! 
+//!
 //! ポーリングモードとアイドル時の省電力戦略を実装します。
 //! 設計書セクション9.4「電力管理（C-states）」参照。
 
@@ -24,14 +24,14 @@ pub struct IdleHint {
 }
 
 /// 負荷に応じたC-state選択
-/// 
+///
 /// 予想されるアイドル時間に基づいて、最適なCPU電力状態を選択します。
 /// 短いアイドル時間では復帰コストの低い状態を、長いアイドル時間では
 /// 電力消費を抑える深いスリープ状態を選択します。
 pub fn select_cstate(idle_hint: IdleHint) -> PowerState {
     match idle_hint.expected_idle_duration {
-        d if d < Duration::from_micros(10) => PowerState::Active,  // スピンウェイト
-        d if d < Duration::from_micros(100) => PowerState::Halt,   // HLT
+        d if d < Duration::from_micros(10) => PowerState::Active, // スピンウェイト
+        d if d < Duration::from_micros(100) => PowerState::Halt,  // HLT
         d if d < Duration::from_millis(1) => PowerState::LightSleep,
         _ => PowerState::DeepSleep,
     }
@@ -59,7 +59,7 @@ const HIGH_THRESHOLD: u64 = 100_000;
 const LOW_THRESHOLD: u64 = 10_000;
 
 /// 適応的I/Oモード選択
-/// 
+///
 /// ネットワークの負荷（パケットレート）に応じて、最適なI/Oモードを選択します。
 /// - 高負荷時: ポーリングモード（割り込みオーバーヘッド削減）
 /// - 低負荷時: 割り込みモード（CPU使用率とレイテンシの最適化）

@@ -10,16 +10,16 @@ pub struct BacktraceFrame {
 }
 
 /// パニック時のバックトレース出力
-/// 
+///
 /// `gimli` クレートを使用したDWARFアンワインドにより、
 /// パニック時に詳細なバックトレースを出力する
 pub fn print_backtrace() {
     let mut frames = Vec::new();
-    
+
     // gimliを使用してスタックをアンワインド
     let mut ctx = UnwindContext::new();
     let mut cursor = UnwindCursor::new(&ctx);
-    
+
     while let Ok(true) = cursor.step() {
         if let Some(name) = cursor.function_name() {
             frames.push(BacktraceFrame {
@@ -29,14 +29,16 @@ pub fn print_backtrace() {
             });
         }
     }
-    
+
     // フォーマット出力
     for (i, frame) in frames.iter().enumerate() {
-        log::error!("  {:>2}: {} at {}:{}", 
-            i, 
-            frame.function, 
-            frame.file.as_deref().unwrap_or("<unknown>"), 
-            frame.line.unwrap_or(0));
+        log::error!(
+            "  {:>2}: {} at {}:{}",
+            i,
+            frame.function,
+            frame.file.as_deref().unwrap_or("<unknown>"),
+            frame.line.unwrap_or(0)
+        );
     }
 }
 
@@ -51,19 +53,33 @@ pub fn print_backtrace() {
 // 以下はプレースホルダー
 struct UnwindContext;
 impl UnwindContext {
-    fn new() -> Self { Self }
+    fn new() -> Self {
+        Self
+    }
 }
 
 struct UnwindCursor<'a>(&'a UnwindContext);
 impl<'a> UnwindCursor<'a> {
-    fn new(_ctx: &'a UnwindContext) -> Self { Self(_ctx) }
-    fn step(&mut self) -> Result<bool, ()> { Ok(false) }
-    fn function_name(&self) -> Option<&str> { None }
-    fn source_file(&self) -> Option<String> { None }
-    fn source_line(&self) -> Option<u32> { None }
+    fn new(_ctx: &'a UnwindContext) -> Self {
+        Self(_ctx)
+    }
+    fn step(&mut self) -> Result<bool, ()> {
+        Ok(false)
+    }
+    fn function_name(&self) -> Option<&str> {
+        None
+    }
+    fn source_file(&self) -> Option<String> {
+        None
+    }
+    fn source_line(&self) -> Option<u32> {
+        None
+    }
 }
 
-fn demangle(name: &str) -> String { name.to_string() }
+fn demangle(name: &str) -> String {
+    name.to_string()
+}
 
 mod log {
     pub fn error(_fmt: std::fmt::Arguments) {}

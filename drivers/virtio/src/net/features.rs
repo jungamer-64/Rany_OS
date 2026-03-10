@@ -30,7 +30,7 @@ pub const VIRTIO_NET_F_HOST_ECN: u64 = 1 << 13;
 pub const VIRTIO_NET_F_HOST_UFO: u64 = 1 << 14;
 pub const VIRTIO_NET_F_MRG_RXBUF: u64 = 1 << 15;
 pub const VIRTIO_NET_F_MQ: u64 = 1 << 22;
- 
- /// Device can utilize an IOMMU-like platform translation.
- /// Also known as VIRTIO_F_IOMMU_PLATFORM in older specifications.
- pub const VIRTIO_F_ACCESS_PLATFORM: u64 = 1 << 33;
+
+/// Device can utilize an IOMMU-like platform translation.
+/// Also known as VIRTIO_F_IOMMU_PLATFORM in older specifications.
+pub const VIRTIO_F_ACCESS_PLATFORM: u64 = 1 << 33;

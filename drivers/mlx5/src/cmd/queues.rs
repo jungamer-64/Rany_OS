@@ -322,10 +322,10 @@ pub fn build_create_rmp_input(
         db_pa,
         pd,
         uar_page,
-        0,   // RST
+        0, // RST
         true,
-        1,   // cyclic
-        1,   // ALIGN
+        1, // cyclic
+        1, // ALIGN
     );
 }
 

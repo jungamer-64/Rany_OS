@@ -38,7 +38,10 @@ async fn network_bootstrap_task() {
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
     crate::io::log::early_print("[NET_BOOT] checking virtio presence\n");
-    let virtio_net_present = crate::drivers::virtio::virtio_net_driver_adapter(0).info().flags != 0;
+    let virtio_net_present = crate::drivers::virtio::virtio_net_driver_adapter(0)
+        .info()
+        .flags
+        != 0;
     crate::io::log::early_print("[NET_BOOT] virtio presence checked\n");
     if virtio_net_present {
         let virtio_port_registered = crate::net::runtime::device::port_info(
@@ -118,10 +121,9 @@ async fn network_bootstrap_task() {
         crate::net::runtime::device::NetDeviceKey::Virtio(0),
     )
     .is_some();
-    let mlx5_port_ready = crate::net::runtime::device::port_info(
-        crate::net::runtime::device::NetDeviceKey::Mlx5(0),
-    )
-    .is_some();
+    let mlx5_port_ready =
+        crate::net::runtime::device::port_info(crate::net::runtime::device::NetDeviceKey::Mlx5(0))
+            .is_some();
     let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
     if port_count == 0 {
         info!(

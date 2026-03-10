@@ -218,11 +218,11 @@ impl PerCpuSchedulerStorage {
 
         self.schedulers[cpu_id].call_once(|| {
             let mut scheduler = PerCpuScheduler::new(cpu_id);
-            
+
             // アイドルタスクを作成
             let idle_tcb = Box::leak(Box::new(TaskControlBlock::idle(cpu_id)));
             scheduler.set_idle_task(idle_tcb);
-            
+
             IrqMutex::new(scheduler)
         });
     }
@@ -286,7 +286,6 @@ pub fn spawn_task(entry_point: fn(u64) -> !, arg: u64, priority: u8) -> Option<T
 
 /// タイマーティック処理 (lock-free)
 pub fn timer_tick(cpu_id: usize) {
-pub fn timer_tick(cpu_id: usize) {
     if let Some(sched_mutex) = SCHEDULERS.get(cpu_id) {
         sched_mutex.lock().tick();
     }
@@ -312,23 +311,30 @@ pub fn schedule(cpu_id: usize) {
         if !scheduler.need_reschedule.swap(false, Ordering::AcqRel) {
             drop(scheduler);
             // 割り込み許可を忘れずに
-            unsafe { crate::sync::irq_mutex::enable_interrupts(); }
+            unsafe {
+                crate::sync::irq_mutex::enable_interrupts();
+            }
             return;
         }
 
         // 3. スイッチ完了処理 (prev task state clearance)
         if let Some(prev) = scheduler.prev_switched_out.take() {
-             // prevタスクは現在スタック保存が完了している
-             // is_runningフラグを下して、マイグレーション等を許可する
-             unsafe { (*prev.0).is_running.store(false, Ordering::Release); }
+            // prevタスクは現在スタック保存が完了している
+            // is_runningフラグを下して、マイグレーション等を許可する
+            unsafe {
+                (*prev.0).is_running.store(false, Ordering::Release);
+            }
         }
 
         let current_ptr = match scheduler.current {
             Some(c) => c.0,
-            None => { // Should not happen if initialized
-                 drop(scheduler);
-                 unsafe { crate::sync::irq_mutex::enable_interrupts(); }
-                 return;
+            None => {
+                // Should not happen if initialized
+                drop(scheduler);
+                unsafe {
+                    crate::sync::irq_mutex::enable_interrupts();
+                }
+                return;
             }
         };
 
@@ -337,7 +343,9 @@ pub fn schedule(cpu_id: usize) {
 
         if current_ptr == next_ptr {
             drop(scheduler);
-            unsafe { crate::sync::irq_mutex::enable_interrupts(); }
+            unsafe {
+                crate::sync::irq_mutex::enable_interrupts();
+            }
             return;
         }
 
@@ -349,16 +357,16 @@ pub fn schedule(cpu_id: usize) {
                 (*current_ptr).state = TaskState::Ready;
                 scheduler.enqueue(current_ptr);
             }
-            
+
             (*next_ptr).state = TaskState::Running;
             // set_current_task also updates global PER_CPU array?
             // Yes, inside schedule_switch usually? No context.rs does it.
             // Here we just update local scheduler state.
             scheduler.current = Some(TcbPtr(next_ptr));
-            
+
             // 重要: prevを記録して、次回のschedule時にフラグを下ろす
             scheduler.prev_switched_out = Some(TcbPtr(current_ptr));
-            
+
             // 5. ロック解放
             // Note: 割り込みはまだ禁止されている (manual disable)
             drop(scheduler);
@@ -367,12 +375,14 @@ pub fn schedule(cpu_id: usize) {
             // currentはQueueに入っているが、is_running=trueなので
             // 他コアのStealerは奪えない (Should be checked in stealing logic)
             schedule_switch(cpu_id, current_ptr, next_ptr);
-            
+
             // 7. 復帰後、割り込み許可
             crate::sync::irq_mutex::enable_interrupts();
         }
     } else {
-        unsafe { crate::sync::irq_mutex::enable_interrupts(); }
+        unsafe {
+            crate::sync::irq_mutex::enable_interrupts();
+        }
     }
 }
 
@@ -387,8 +397,6 @@ pub fn request_reschedule(cpu_id: usize) {
 pub fn yield_current(cpu_id: usize) {
     request_reschedule(cpu_id);
     // SAFETY: yield は任意のタイミングで安全
-pub fn yield_current(cpu_id: usize) {
-    request_reschedule(cpu_id);
     schedule(cpu_id);
 }
 
@@ -399,7 +407,6 @@ pub fn context_switch_count() -> u64 {
 
 /// スケジューラにタスクを追加（指定CPU）
 pub fn enqueue_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
-pub fn enqueue_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
     if let Some(sched_mutex) = SCHEDULERS.get(cpu_id) {
         sched_mutex.lock().enqueue(tcb);
     }
@@ -407,9 +414,7 @@ pub fn enqueue_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
 
 /// タスクをアンブロック（指定CPU）
 pub fn unblock_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
-pub fn unblock_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
     if let Some(sched_mutex) = SCHEDULERS.get(cpu_id) {
         sched_mutex.lock().unblock(tcb);
     }
 }
-

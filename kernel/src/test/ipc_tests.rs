@@ -67,8 +67,10 @@ pub fn test_domain_isolation() -> TestResult {
     use crate::domain_system;
 
     // Create two domains
-    let domain1 = domain_system::create_domain(String::from("test_domain_1")).expect("create_domain failed");
-    let domain2 = domain_system::create_domain(String::from("test_domain_2")).expect("create_domain failed");
+    let domain1 =
+        domain_system::create_domain(String::from("test_domain_1")).expect("create_domain failed");
+    let domain2 =
+        domain_system::create_domain(String::from("test_domain_2")).expect("create_domain failed");
 
     // Verify domains have different IDs
     if domain1 == domain2 {
@@ -173,8 +175,8 @@ pub fn test_exchange_heap() -> TestResult {
 
 /// Test domain lifecycle
 pub fn test_domain_lifecycle() -> TestResult {
-    use crate::domain_system::{DomainState, create_domain, set_domain_state, with_domain};
     use crate::domain::lifecycle::terminate_domain;
+    use crate::domain_system::{DomainState, create_domain, set_domain_state, with_domain};
 
     // ドメインを作成
     let domain_id = match create_domain("test_lifecycle".into()) {

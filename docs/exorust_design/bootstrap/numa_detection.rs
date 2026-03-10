@@ -43,22 +43,27 @@ pub struct BootstrapNumaInfo {
 }
 
 /// 早期のNUMAトポロジ検出
-/// 
+///
 /// 動的アロケータなしでACPI SRATを解析し、NUMAトポロジを取得
 pub fn detect_numa_topology_early(rsdp_addr: u64) -> BootstrapNumaInfo {
     // 16KB静的バッファ
     static mut ACPI_BUFFER: [u8; 16384] = [0; 16384];
-    
+
     // SRATテーブルをバッファにコピー
     let srat = unsafe { read_srat_to_buffer(&mut ACPI_BUFFER, rsdp_addr) };
-    
+
     // NUMAノード情報を抽出（最大8ノード、静的配列）
     let mut nodes = [NumaNode::empty(); 8];
     let mut node_count = 0;
-    
+
     for entry in srat.entries() {
         match entry {
-            SratEntry::Memory { base, length, proximity_domain, .. } => {
+            SratEntry::Memory {
+                base,
+                length,
+                proximity_domain,
+                ..
+            } => {
                 let node_idx = proximity_domain as usize;
                 if node_idx < 8 {
                     nodes[node_idx].add_memory_range(base, length);
@@ -67,7 +72,11 @@ pub fn detect_numa_topology_early(rsdp_addr: u64) -> BootstrapNumaInfo {
                     }
                 }
             }
-            SratEntry::Processor { apic_id, proximity_domain, .. } => {
+            SratEntry::Processor {
+                apic_id,
+                proximity_domain,
+                ..
+            } => {
                 let node_idx = proximity_domain as usize;
                 if node_idx < 8 {
                     nodes[node_idx].add_cpu(apic_id);
@@ -78,8 +87,11 @@ pub fn detect_numa_topology_early(rsdp_addr: u64) -> BootstrapNumaInfo {
             }
         }
     }
-    
-    BootstrapNumaInfo { nodes, count: node_count }
+
+    BootstrapNumaInfo {
+        nodes,
+        count: node_count,
+    }
 }
 
 // 以下はプレースホルダー
@@ -91,8 +103,15 @@ impl Srat {
 }
 
 enum SratEntry {
-    Memory { base: u64, length: u64, proximity_domain: u32 },
-    Processor { apic_id: u32, proximity_domain: u32 },
+    Memory {
+        base: u64,
+        length: u64,
+        proximity_domain: u32,
+    },
+    Processor {
+        apic_id: u32,
+        proximity_domain: u32,
+    },
 }
 
 unsafe fn read_srat_to_buffer(_buffer: &mut [u8], _rsdp_addr: u64) -> Srat {

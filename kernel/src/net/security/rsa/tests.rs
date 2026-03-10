@@ -64,8 +64,8 @@ fn test_biguint_sub() {
 /// 乗算テスト
 #[test_case]
 fn test_biguint_mul() {
-    let a = BigUint::from_be_bytes(&[0xFF]);     // 255
-    let b = BigUint::from_be_bytes(&[0xFF]);     // 255
+    let a = BigUint::from_be_bytes(&[0xFF]); // 255
+    let b = BigUint::from_be_bytes(&[0xFF]); // 255
     let c = a.mul(&b);
     // 255 * 255 = 65025 = 0xFE01
     assert_eq!(c.to_be_bytes(), vec![0xFE, 0x01]);
@@ -74,8 +74,8 @@ fn test_biguint_mul() {
 /// 除算・剰余テスト
 #[test_case]
 fn test_biguint_div_rem() {
-    let a = BigUint::from_be_bytes(&[0x64]);     // 100
-    let b = BigUint::from_be_bytes(&[0x07]);     // 7
+    let a = BigUint::from_be_bytes(&[0x64]); // 100
+    let b = BigUint::from_be_bytes(&[0x07]); // 7
     let (q, r) = a.div_rem(&b);
     // 100 / 7 = 14 余 2
     assert_eq!(q.to_be_bytes(), vec![14]);
@@ -102,9 +102,9 @@ fn test_biguint_mul_div_roundtrip() {
 /// 比較テスト
 #[test_case]
 fn test_biguint_comparison() {
-    let a = BigUint::from_be_bytes(&[0x01, 0x00]);  // 256
-    let b = BigUint::from_be_bytes(&[0xFF]);         // 255
-    let c = BigUint::from_be_bytes(&[0x01, 0x00]);   // 256
+    let a = BigUint::from_be_bytes(&[0x01, 0x00]); // 256
+    let b = BigUint::from_be_bytes(&[0xFF]); // 255
+    let c = BigUint::from_be_bytes(&[0x01, 0x00]); // 256
 
     assert!(a > b);
     assert!(b < a);
@@ -298,8 +298,7 @@ fn test_pkcs1_verify_short_padding() {
     let t_start = 3 + ps_len;
     em[t_start..t_start + DIGEST_INFO_SHA256_PREFIX.len()]
         .copy_from_slice(&DIGEST_INFO_SHA256_PREFIX);
-    em[t_start + DIGEST_INFO_SHA256_PREFIX.len()..t_start + t_len]
-        .copy_from_slice(&digest);
+    em[t_start + DIGEST_INFO_SHA256_PREFIX.len()..t_start + t_len].copy_from_slice(&digest);
 
     let n_bytes = vec![0xFFu8; k];
 

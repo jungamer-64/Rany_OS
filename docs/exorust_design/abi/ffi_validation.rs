@@ -6,7 +6,7 @@
 ///
 /// `#[repr(C)]` 属性が付与された型は、C ABIに従った安定したレイアウトを持つ
 #[repr(C)]
-#[derive(AbiStable)]  // カスタムderiveマクロ
+#[derive(AbiStable)] // カスタムderiveマクロ
 pub struct FfiPacket {
     pub header: u32,
     pub length: u32,

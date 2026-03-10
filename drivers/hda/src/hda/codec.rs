@@ -189,14 +189,14 @@ fn configure_dac_node(
 }
 
 /// Pin ノードを設定する: 電源投入 + 出力有効化 + EAPD + アンプアンミュート
-fn configure_pin_node(
-    controller: &HdaController,
-    codec_addr: u8,
-    pin_node: u16,
-) -> HdaResult<()> {
+fn configure_pin_node(controller: &HdaController, codec_addr: u8, pin_node: u16) -> HdaResult<()> {
     controller.send_command(codec_addr, pin_node, VERB_SET_POWER | POWER_D0 as u32)?;
     HdaController::delay_us(1000);
-    controller.send_command(codec_addr, pin_node, VERB_SET_PIN_CTL | PIN_CTL_OUT_EN as u32)?;
+    controller.send_command(
+        codec_addr,
+        pin_node,
+        VERB_SET_PIN_CTL | PIN_CTL_OUT_EN as u32,
+    )?;
     controller.send_command(codec_addr, pin_node, VERB_SET_EAPD | EAPD_EAPD as u32)?;
     let amp_val = AMP_SET_OUTPUT | AMP_SET_LEFT | AMP_SET_RIGHT | 0x7F;
     controller.send_command(codec_addr, pin_node, VERB_SET_AMP_GAIN | amp_val as u32)?;
@@ -229,7 +229,9 @@ pub fn configure_codec_output(
 
     log::info!(
         "[HDA] Configuring DAC {} -> Pin {} for stream {}\n",
-        dac_node, pin_node, stream_num
+        dac_node,
+        pin_node,
+        stream_num
     );
 
     configure_dac_node(controller, codec_addr, dac_node, stream_num)?;

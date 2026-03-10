@@ -2,10 +2,10 @@
 // drivers/virtio/src/core/tracked.rs - Tracked VirtQueue
 // ============================================================================
 
+use super::virtqueue::VirtQueue;
+use crate::transport::VirtioTransport;
 use alloc::collections::VecDeque;
 use spin::Mutex;
-use crate::transport::VirtioTransport;
-use super::virtqueue::VirtQueue;
 
 /// A VirtQueue that tracks buffer ownership during in-flight operations.
 pub struct TrackedVirtQueue<T> {
@@ -27,10 +27,12 @@ impl<T> TrackedVirtQueue<T> {
         }
     }
 
-    pub fn inner(&self) -> &VirtQueue { &self.inner }
+    pub fn inner(&self) -> &VirtQueue {
+        &self.inner
+    }
 
     /// Add a buffer and track its ownership.
-    /// 
+    ///
     /// # Safety
     /// Same safety requirements as `VirtQueue`.
     pub unsafe fn add_buffer_tracked(
@@ -41,11 +43,15 @@ impl<T> TrackedVirtQueue<T> {
         buffer: T,
     ) -> Result<u16, &'static str> {
         let idx = self.inner.alloc_desc().ok_or("No free descriptors")?;
-        
+
         let desc = unsafe { self.inner.get_desc_mut(idx) };
         desc.addr = addr;
         desc.len = len;
-        desc.flags = if writable { crate::defs::vring_flags::VRING_DESC_F_WRITE } else { 0 };
+        desc.flags = if writable {
+            crate::defs::vring_flags::VRING_DESC_F_WRITE
+        } else {
+            0
+        };
         desc.next = 0;
 
         {
@@ -53,17 +59,21 @@ impl<T> TrackedVirtQueue<T> {
             pending[idx as usize] = Some(buffer);
         }
 
-        unsafe { self.inner.submit_avail(idx); }
+        unsafe {
+            self.inner.submit_avail(idx);
+        }
         Ok(idx)
     }
 
     /// Poll for a completed request and recover the tracked buffer.
     pub fn poll_complete_tracked(&self) -> Option<(u16, T, u32)> {
         let (idx, len) = self.inner.poll_complete()?;
-        
+
         let buffer = {
             let mut pending = self.pending.lock();
-            pending[idx as usize].take().expect("Tracked buffer missing for completed index")
+            pending[idx as usize]
+                .take()
+                .expect("Tracked buffer missing for completed index")
         };
 
         self.inner.free_desc(idx);

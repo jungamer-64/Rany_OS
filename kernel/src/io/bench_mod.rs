@@ -2,7 +2,7 @@
 // benches can exercise the desired paths without compiling the entire
 // I/O subsystem which pulls in many heavy dependencies and platform code.
 
-#[path = "log.rs"]
+#[path = "log/mod.rs"]
 pub mod log;
 
 // Note: IOVA bitmap benchmarks require full mm module dependencies.

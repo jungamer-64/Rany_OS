@@ -332,7 +332,10 @@ pub fn stats() -> EpochStats {
 
     EpochStats {
         current_epoch: current_epoch(),
-        deferred_queue_size: DEFERRED_QUEUE.lock().unwrap_or_else(|e| e.into_inner()).len(),
+        deferred_queue_size: DEFERRED_QUEUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len(),
         active_cores,
     }
 }

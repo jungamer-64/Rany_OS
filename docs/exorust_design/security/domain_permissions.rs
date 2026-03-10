@@ -46,18 +46,18 @@ impl Domain {
     /// このドメインのPKRU権限を計算
     pub fn compute_pkru_permissions(&self) -> PkruValue {
         let mut pkru = PkruValue::DENY_ALL;
-        
+
         // 自身の信頼レベルのメモリにはアクセス可能
         pkru = pkru.allow_read_write(self.permissions.trust_level);
-        
+
         // 許可された機密性クラスへのアクセスを追加
         for class in self.permissions.accessible_classes.iter() {
             pkru = pkru.allow_read(ProtectionKeyClass::from(class));
         }
-        
+
         // Frameworkは常に読み取り可能（システムコール相当）
         pkru = pkru.allow_read(ProtectionKeyClass::Framework);
-        
+
         pkru
     }
 }

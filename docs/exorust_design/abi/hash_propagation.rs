@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 pub fn propagate_hash_changes(changed_cell: CellId, graph: &DependencyGraph) -> Vec<CellId> {
     let mut affected = Vec::new();
     let mut queue = VecDeque::from([changed_cell]);
-    
+
     while let Some(cell) = queue.pop_front() {
         for dependent in graph.dependents_of(cell) {
             if dependent.uses_types_from(cell) {

@@ -10,7 +10,7 @@ pub mod ansi {
     pub const RESET: &str = "\x1b[0m";
     pub const BOLD: &str = "\x1b[1m";
     pub const DIM: &str = "\x1b[2m";
-    
+
     pub const RED: &str = "\x1b[31m";
     pub const GREEN: &str = "\x1b[32m";
     pub const YELLOW: &str = "\x1b[33m";
@@ -18,11 +18,11 @@ pub mod ansi {
     pub const MAGENTA: &str = "\x1b[35m";
     pub const CYAN: &str = "\x1b[36m";
     pub const WHITE: &str = "\x1b[37m";
-    
+
     pub const BG_RED: &str = "\x1b[41m";
     pub const BG_GREEN: &str = "\x1b[42m";
     pub const BG_BLUE: &str = "\x1b[44m";
-    
+
     pub const CLEAR_SCREEN: &str = "\x1b[2J";
     pub const HOME: &str = "\x1b[H";
     pub const CLEAR_LINE: &str = "\x1b[2K";
@@ -58,18 +58,18 @@ impl ProgressBar {
             empty_char: '░',
         }
     }
-    
+
     pub fn with_chars(mut self, filled: char, empty: char) -> Self {
         self.filled_char = filled;
         self.empty_char = empty;
         self
     }
-    
+
     /// Render progress bar as string
     pub fn render(&self, percent: u8) -> String {
         let filled = (percent as usize * self.width) / 100;
         let mut bar = String::with_capacity(self.width + 2);
-        
+
         bar.push('[');
         for i in 0..self.width {
             if i < filled {
@@ -79,10 +79,10 @@ impl ProgressBar {
             }
         }
         bar.push(']');
-        
+
         bar
     }
-    
+
     /// Render with percentage label
     pub fn render_with_label(&self, percent: u8) -> String {
         alloc::format!("{} {:>3}%", self.render(percent), percent)
@@ -100,10 +100,11 @@ impl Sparkline {
             chars: ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'],
         }
     }
-    
+
     /// Render values as sparkline
     pub fn render(&self, values: &[u8]) -> String {
-        values.iter()
+        values
+            .iter()
             .map(|&v| {
                 let idx = (v as usize * 7) / 100;
                 self.chars[idx.min(7)]
@@ -118,7 +119,7 @@ pub fn format_bytes(bytes: u64) -> String {
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
     const TB: u64 = GB * 1024;
-    
+
     if bytes >= TB {
         alloc::format!("{:.2} TB", bytes as f64 / TB as f64)
     } else if bytes >= GB {
@@ -136,12 +137,12 @@ pub fn format_bytes(bytes: u64) -> String {
 pub fn format_duration(ticks: u64) -> String {
     // Assuming ~1000 ticks per second (depends on timer config)
     const TICKS_PER_SEC: u64 = 1000;
-    
+
     let seconds = ticks / TICKS_PER_SEC;
     let minutes = seconds / 60;
     let hours = minutes / 60;
     let days = hours / 24;
-    
+
     if days > 0 {
         alloc::format!("{}d {}h {}m", days, hours % 24, minutes % 60)
     } else if hours > 0 {
@@ -164,40 +165,40 @@ impl Table {
     pub fn new(headers: Vec<&str>) -> Self {
         let headers: Vec<String> = headers.into_iter().map(String::from).collect();
         let column_widths = headers.iter().map(|h| h.len()).collect();
-        
+
         Table {
             headers,
             rows: Vec::new(),
             column_widths,
         }
     }
-    
+
     pub fn add_row(&mut self, row: Vec<&str>) {
         let row: Vec<String> = row.into_iter().map(String::from).collect();
-        
+
         // Update column widths
         for (i, cell) in row.iter().enumerate() {
             if i < self.column_widths.len() {
                 self.column_widths[i] = self.column_widths[i].max(cell.len());
             }
         }
-        
+
         self.rows.push(row);
     }
-    
+
     /// Render table as string
     pub fn render(&self) -> String {
         let mut output = String::new();
-        
+
         // Calculate total width
-        let total_width: usize = self.column_widths.iter().sum::<usize>() 
-            + (self.column_widths.len() * 3) + 1;
-        
+        let total_width: usize =
+            self.column_widths.iter().sum::<usize>() + (self.column_widths.len() * 3) + 1;
+
         // Top border
         output.push_str(&format!("{}", box_chars::TOP_LEFT));
         output.push_str(&format!("{}", box_chars::HORIZONTAL).repeat(total_width - 2));
         output.push_str(&format!("{}\n", box_chars::TOP_RIGHT));
-        
+
         // Headers
         output.push_str(&format!("{} ", box_chars::VERTICAL));
         for (i, header) in self.headers.iter().enumerate() {
@@ -206,12 +207,12 @@ impl Table {
             output.push_str(&format!("{} ", box_chars::VERTICAL));
         }
         output.push('\n');
-        
+
         // Header separator
         output.push_str(&format!("{}", box_chars::T_LEFT));
         output.push_str(&format!("{}", box_chars::HORIZONTAL).repeat(total_width - 2));
         output.push_str(&format!("{}\n", box_chars::T_RIGHT));
-        
+
         // Rows
         for row in &self.rows {
             output.push_str(&format!("{} ", box_chars::VERTICAL));
@@ -222,12 +223,12 @@ impl Table {
             }
             output.push('\n');
         }
-        
+
         // Bottom border
         output.push_str(&format!("{}", box_chars::BOTTOM_LEFT));
         output.push_str(&format!("{}", box_chars::HORIZONTAL).repeat(total_width - 2));
         output.push_str(&format!("{}\n", box_chars::BOTTOM_RIGHT));
-        
+
         output
     }
 }
@@ -250,13 +251,21 @@ impl StatusIndicator {
             StatusIndicator::Unknown => "?",
         }
     }
-    
+
     pub fn colored(&self) -> String {
         match self {
-            StatusIndicator::Ok => alloc::format!("{}{}{}",ansi::GREEN, self.symbol(), ansi::RESET),
-            StatusIndicator::Warning => alloc::format!("{}{}{}", ansi::YELLOW, self.symbol(), ansi::RESET),
-            StatusIndicator::Error => alloc::format!("{}{}{}", ansi::RED, self.symbol(), ansi::RESET),
-            StatusIndicator::Unknown => alloc::format!("{}{}{}", ansi::DIM, self.symbol(), ansi::RESET),
+            StatusIndicator::Ok => {
+                alloc::format!("{}{}{}", ansi::GREEN, self.symbol(), ansi::RESET)
+            }
+            StatusIndicator::Warning => {
+                alloc::format!("{}{}{}", ansi::YELLOW, self.symbol(), ansi::RESET)
+            }
+            StatusIndicator::Error => {
+                alloc::format!("{}{}{}", ansi::RED, self.symbol(), ansi::RESET)
+            }
+            StatusIndicator::Unknown => {
+                alloc::format!("{}{}{}", ansi::DIM, self.symbol(), ansi::RESET)
+            }
         }
     }
 }

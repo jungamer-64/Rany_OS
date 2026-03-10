@@ -8,9 +8,9 @@
 /// コンパイラプラグインを適用できないため、
 /// FFI境界で燃料チェックポイントを自動挿入する
 pub fn wrapped_external_function(args: Args) -> Result<Ret, FuelExhausted> {
-    fuel_checkpoint()?;  // 呼び出し前にチェック
+    fuel_checkpoint()?; // 呼び出し前にチェック
     let result = external_function(args);
-    fuel_checkpoint()?;  // 戻り後にチェック
+    fuel_checkpoint()?; // 戻り後にチェック
     Ok(result)
 }
 

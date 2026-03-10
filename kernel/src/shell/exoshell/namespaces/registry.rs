@@ -46,7 +46,10 @@ pub fn unregister_namespace(name: &str) -> Option<Arc<dyn ShellNamespace>> {
 
 /// 登録されている全ての名前空間を取得
 pub fn get_all_namespaces() -> BTreeMap<String, Arc<dyn ShellNamespace>> {
-    GLOBAL_REGISTRY.read().unwrap_or_else(|e| e.into_inner()).clone()
+    GLOBAL_REGISTRY
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// 特定の名前空間を取得

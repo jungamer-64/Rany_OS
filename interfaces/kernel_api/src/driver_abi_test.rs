@@ -1,4 +1,3 @@
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11,16 +10,29 @@ mod tests {
     struct TestAsyncDriver;
 
     impl AsyncDriver for TestAsyncDriver {
-        fn probe(&mut self, _ctx: &mut DriverContext) -> Pin<Box<dyn Future<Output = Result<(), crate::error::KapiError>> + Send + '_>> {
+        fn probe(
+            &mut self,
+            _ctx: &mut DriverContext,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::KapiError>> + Send + '_>>
+        {
             Box::pin(async { Ok(()) })
         }
-        fn start(&mut self) -> Pin<Box<dyn Future<Output = Result<(), crate::error::KapiError>> + Send + '_>> {
+        fn start(
+            &mut self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::KapiError>> + Send + '_>>
+        {
             Box::pin(async { Ok(()) })
         }
-        fn stop(&mut self) -> Pin<Box<dyn Future<Output = Result<(), crate::error::KapiError>> + Send + '_>> {
+        fn stop(
+            &mut self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::KapiError>> + Send + '_>>
+        {
             Box::pin(async { Ok(()) })
         }
-        fn remove(&mut self) -> Pin<Box<dyn Future<Output = Result<(), crate::error::KapiError>> + Send + '_>> {
+        fn remove(
+            &mut self,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::error::KapiError>> + Send + '_>>
+        {
             Box::pin(async { Ok(()) })
         }
     }
@@ -45,17 +57,17 @@ mod tests {
         // But `export_async_driver!` creates a function `_exorust_driver_entry`.
         // If I put it here, `cargo test` will compile it.
         // If I have another test doing similar, linker error.
-        
+
         // Let's NOT use the macro directly in the test function scope as `export_async_driver!` creates global items.
         // Global items inside a function? No, `export_async_driver!` emits top-level items.
         // Top-level items inside `mod tests`? Yes.
         // But `_exorust_driver_entry` is no_mangle.
-        
+
         // Strategy: Verify manually or create a separate test file?
         // Or just trust the `cargo check` passed earlier?
         // `cargo check` PASSED. That means the macro syntax is likely correct.
         // The runtime behavior (atomic logic) was what I wanted to test.
-        
+
         // Given I verified build of `rany_kernel` which USES `kernel_api`, verifying `kernel_api`'s macro *usage* requires using it.
         // But `kernel_api` itself doesn't USE the macro, it DEFINES it.
         // So I need a consumer.

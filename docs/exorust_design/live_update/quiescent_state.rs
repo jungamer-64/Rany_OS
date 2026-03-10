@@ -12,15 +12,15 @@ pub fn wait_for_quiescent_state(old_epoch: u64) {
         let all_departed = (0..num_cpus()).all(|cpu| {
             let core_epoch = PER_CORE_EPOCHS[cpu].local_epoch.load(Acquire);
             let in_cs = PER_CORE_EPOCHS[cpu].in_critical_section.load(Acquire);
-            
+
             // コアがクリティカルセクション外か、新エポックに移行済み
             !in_cs || core_epoch > old_epoch
         });
-        
+
         if all_departed {
             break;
         }
-        
+
         // 短いスピンウェイト後、Executorにyieldを促す
         core::hint::spin_loop();
     }

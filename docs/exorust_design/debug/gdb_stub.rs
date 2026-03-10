@@ -5,10 +5,10 @@
 use alloc::collections::BTreeMap;
 
 /// GDBプロトコルハンドラ
-/// 
+///
 /// QEMUモニタに依存しない、カーネル独自のGDBリモートデバッグ機能
 pub struct GdbStub {
-    transport: SerialTransport,  // シリアルまたはネットワーク
+    transport: SerialTransport, // シリアルまたはネットワーク
     breakpoints: BTreeMap<u64, Breakpoint>,
 }
 
@@ -54,21 +54,11 @@ impl GdbStub {
     /// GDBコマンドの処理
     pub fn handle_command(&mut self, cmd: &GdbCommand) -> GdbResponse {
         match cmd {
-            GdbCommand::ReadRegisters => {
-                self.read_all_registers()
-            }
-            GdbCommand::ReadMemory { addr, len } => {
-                self.read_memory(*addr, *len)
-            }
-            GdbCommand::SetBreakpoint { addr } => {
-                self.set_breakpoint(*addr)
-            }
-            GdbCommand::Continue => {
-                self.resume_execution()
-            }
-            GdbCommand::Step => {
-                self.single_step()
-            }
+            GdbCommand::ReadRegisters => self.read_all_registers(),
+            GdbCommand::ReadMemory { addr, len } => self.read_memory(*addr, *len),
+            GdbCommand::SetBreakpoint { addr } => self.set_breakpoint(*addr),
+            GdbCommand::Continue => self.resume_execution(),
+            GdbCommand::Step => self.single_step(),
             _ => GdbResponse::Ok,
         }
     }
@@ -85,11 +75,14 @@ impl GdbStub {
 
     fn set_breakpoint(&mut self, addr: u64) -> GdbResponse {
         // ブレークポイント設定
-        self.breakpoints.insert(addr, Breakpoint {
-            address: addr,
-            original_byte: 0,
-            enabled: true,
-        });
+        self.breakpoints.insert(
+            addr,
+            Breakpoint {
+                address: addr,
+                original_byte: 0,
+                enabled: true,
+            },
+        );
         GdbResponse::Ok
     }
 
@@ -105,5 +98,5 @@ impl GdbStub {
 }
 
 extern crate alloc;
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;

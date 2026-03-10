@@ -15,7 +15,11 @@ fn test_x25519_key_exchange_symmetry() {
     let bob_secret = bob.shared_secret(&alice_pk).expect("Bob DH");
 
     assert_eq!(alice_secret, bob_secret, "ECDH shared secrets must match");
-    assert_eq!(alice_secret.len(), 32, "X25519 shared secret must be 32 bytes");
+    assert_eq!(
+        alice_secret.len(),
+        32,
+        "X25519 shared secret must be 32 bytes"
+    );
 }
 
 /// X25519 公開鍵の長さテスト
@@ -36,7 +40,10 @@ fn test_x25519_group() {
 #[test_case]
 fn test_ecdh_group_from_named_group() {
     assert_eq!(EcdhGroup::from_named_group(0x001D), Some(EcdhGroup::X25519));
-    assert_eq!(EcdhGroup::from_named_group(0x0017), Some(EcdhGroup::Secp256r1));
+    assert_eq!(
+        EcdhGroup::from_named_group(0x0017),
+        Some(EcdhGroup::Secp256r1)
+    );
     assert_eq!(EcdhGroup::from_named_group(0x001E), None); // X448 — 未サポート
 }
 
@@ -64,19 +71,19 @@ fn test_x25519_rfc7748_vector() {
     // u-coordinate: e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c
     // expected output: c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552
     let scalar_bytes: [u8; 32] = [
-        0xa5, 0x46, 0xe3, 0x6b, 0xf0, 0x52, 0x7c, 0x9d, 0x3b, 0x16, 0x15, 0x4b, 0x82, 0x46,
-        0x5e, 0xdd, 0x62, 0x14, 0x4c, 0x0a, 0xc1, 0xfc, 0x5a, 0x18, 0x50, 0x6a, 0x22, 0x44,
-        0xba, 0x44, 0x9a, 0xc4,
+        0xa5, 0x46, 0xe3, 0x6b, 0xf0, 0x52, 0x7c, 0x9d, 0x3b, 0x16, 0x15, 0x4b, 0x82, 0x46, 0x5e,
+        0xdd, 0x62, 0x14, 0x4c, 0x0a, 0xc1, 0xfc, 0x5a, 0x18, 0x50, 0x6a, 0x22, 0x44, 0xba, 0x44,
+        0x9a, 0xc4,
     ];
     let u_bytes: [u8; 32] = [
-        0xe6, 0xdb, 0x68, 0x67, 0x58, 0x30, 0x30, 0xdb, 0x35, 0x94, 0xc1, 0xa4, 0x24, 0xb1,
-        0x5f, 0x7c, 0x72, 0x66, 0x24, 0xec, 0x26, 0xb3, 0x35, 0x3b, 0x10, 0xa9, 0x03, 0xa6,
-        0xd0, 0xab, 0x1c, 0x4c,
+        0xe6, 0xdb, 0x68, 0x67, 0x58, 0x30, 0x30, 0xdb, 0x35, 0x94, 0xc1, 0xa4, 0x24, 0xb1, 0x5f,
+        0x7c, 0x72, 0x66, 0x24, 0xec, 0x26, 0xb3, 0x35, 0x3b, 0x10, 0xa9, 0x03, 0xa6, 0xd0, 0xab,
+        0x1c, 0x4c,
     ];
     let expected: [u8; 32] = [
-        0xc3, 0xda, 0x55, 0x37, 0x9d, 0xe9, 0xc6, 0x90, 0x8e, 0x94, 0xea, 0x4d, 0xf2, 0x8d,
-        0x08, 0x4f, 0x32, 0xec, 0xcf, 0x03, 0x49, 0x1c, 0x71, 0xf7, 0x54, 0xb4, 0x07, 0x55,
-        0x77, 0xa2, 0x85, 0x52,
+        0xc3, 0xda, 0x55, 0x37, 0x9d, 0xe9, 0xc6, 0x90, 0x8e, 0x94, 0xea, 0x4d, 0xf2, 0x8d, 0x08,
+        0x4f, 0x32, 0xec, 0xcf, 0x03, 0x49, 0x1c, 0x71, 0xf7, 0x54, 0xb4, 0x07, 0x55, 0x77, 0xa2,
+        0x85, 0x52,
     ];
 
     let sk = X25519SecretKey::new(scalar_bytes);
@@ -87,7 +94,10 @@ fn test_x25519_rfc7748_vector() {
     let result = pk.dh(&sk);
     assert!(result.is_ok(), "DH computation should succeed");
     let output: &[u8; 32] = &result.unwrap();
-    assert_eq!(output, &expected, "RFC 7748 Section 6.1 test vector mismatch");
+    assert_eq!(
+        output, &expected,
+        "RFC 7748 Section 6.1 test vector mismatch"
+    );
 }
 
 // ========================================================================
@@ -108,15 +118,26 @@ fn test_p256_key_exchange_symmetry() {
     let alice_secret = alice.shared_secret(&bob_pk).expect("Alice DH");
     let bob_secret = bob.shared_secret(&alice_pk).expect("Bob DH");
 
-    assert_eq!(alice_secret, bob_secret, "P-256 ECDH shared secrets must match");
-    assert_eq!(alice_secret.len(), 32, "P-256 shared secret must be 32 bytes");
+    assert_eq!(
+        alice_secret, bob_secret,
+        "P-256 ECDH shared secrets must match"
+    );
+    assert_eq!(
+        alice_secret.len(),
+        32,
+        "P-256 shared secret must be 32 bytes"
+    );
 }
 
 /// P-256 公開鍵の長さテスト（65バイト: 04 || x || y）
 #[test_case]
 fn test_p256_public_key_length() {
     let kp = EcdhKeyPair::generate(EcdhGroup::Secp256r1).expect("keygen");
-    assert_eq!(kp.public_key_bytes().len(), 65, "P-256 public key must be 65 bytes");
+    assert_eq!(
+        kp.public_key_bytes().len(),
+        65,
+        "P-256 public key must be 65 bytes"
+    );
 }
 
 /// P-256 公開鍵が曲線上の有効な点であることを確認
@@ -130,8 +151,14 @@ fn test_p256_public_key_on_curve() {
 
     // 曲線上の点であることを確認
     let point = p256::parse_uncompressed_point(&pk_bytes);
-    assert!(point.is_some(), "P-256 public key must be a valid curve point");
-    assert!(point.unwrap().is_on_curve(), "P-256 public key must be on curve");
+    assert!(
+        point.is_some(),
+        "P-256 public key must be a valid curve point"
+    );
+    assert!(
+        point.unwrap().is_on_curve(),
+        "P-256 public key must be on curve"
+    );
 }
 
 /// P-256 グループ識別テスト
@@ -147,22 +174,34 @@ fn test_p256_reject_invalid_peer_key() {
     let kp = EcdhKeyPair::generate(EcdhGroup::Secp256r1).expect("keygen");
 
     // 短すぎる鍵
-    assert!(kp.shared_secret(&[0u8; 16]).is_err(), "should reject short key");
+    assert!(
+        kp.shared_secret(&[0u8; 16]).is_err(),
+        "should reject short key"
+    );
 
     // 長すぎる鍵
-    assert!(kp.shared_secret(&[0u8; 128]).is_err(), "should reject long key");
+    assert!(
+        kp.shared_secret(&[0u8; 128]).is_err(),
+        "should reject long key"
+    );
 
     // 不正なプレフィックス
     let mut bad_prefix = [0u8; 65];
     bad_prefix[0] = 0x05;
-    assert!(kp.shared_secret(&bad_prefix).is_err(), "should reject bad prefix");
+    assert!(
+        kp.shared_secret(&bad_prefix).is_err(),
+        "should reject bad prefix"
+    );
 
     // 曲線上にない点
     let mut off_curve = [0u8; 65];
     off_curve[0] = 0x04;
     off_curve[1] = 0x01;
     off_curve[33] = 0x01;
-    assert!(kp.shared_secret(&off_curve).is_err(), "should reject off-curve point");
+    assert!(
+        kp.shared_secret(&off_curve).is_err(),
+        "should reject off-curve point"
+    );
 }
 
 /// P-256 ベースポイントが曲線上にあることを確認
@@ -254,7 +293,10 @@ fn test_p256_identity() {
 #[test_case]
 fn test_p256_scalar_validity() {
     // ゼロスカラーは無効
-    assert!(!p256::scalar_is_valid(&[0u8; 32]), "zero scalar must be invalid");
+    assert!(
+        !p256::scalar_is_valid(&[0u8; 32]),
+        "zero scalar must be invalid"
+    );
 
     // 1は有効
     let mut one = [0u8; 32];

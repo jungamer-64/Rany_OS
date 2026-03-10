@@ -34,7 +34,7 @@ impl FuelCounter {
             Ok(())
         }
     }
-    
+
     /// 次のスケジューリング時に燃料を補充
     pub fn refill(&self) {
         self.remaining.store(self.refill_amount, Relaxed);

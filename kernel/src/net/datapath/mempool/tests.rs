@@ -19,7 +19,6 @@ fn test_mempool_poisoned_alloc_fails() {
     assert!(pool.alloc_failed.load(Ordering::Relaxed) > 0);
 }
 
-
 #[test_case]
 fn test_mempool_stats() {
     let pool = Box::leak(Box::new(Mempool::new(1)));

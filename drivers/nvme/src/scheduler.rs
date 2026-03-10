@@ -50,17 +50,27 @@ impl NvmePollHandler {
 
     /// I/OリクエストIDとNVMeコマンドIDを紐付け
     pub fn register_request(&self, io_id: IoRequestId, cid: u16) {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(io_id, cid);
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(io_id, cid);
     }
 
     /// I/OリクエストIDからNVMeコマンドIDを取得
     pub fn get_cid(&self, io_id: &IoRequestId) -> Option<u16> {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).get(io_id).copied()
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(io_id)
+            .copied()
     }
 
     /// 完了したリクエストを削除
     pub fn remove_request(&self, io_id: &IoRequestId) -> Option<u16> {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(io_id)
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(io_id)
     }
 }
 
@@ -90,7 +100,10 @@ impl PollHandler for NvmePollHandler {
 
         // 完了したリクエストを削除
         for (io_id, _) in &results {
-            self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(io_id);
+            self.pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(io_id);
         }
 
         results

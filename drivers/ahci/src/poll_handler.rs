@@ -12,11 +12,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use exorust_sync::PoisonLock;
 
 use crate::io::io_scheduler::{
-    hybrid_coordinator, DeviceId, IoError, IoRequestId, IoResult, PollHandler,
+    DeviceId, IoError, IoRequestId, IoResult, PollHandler, hybrid_coordinator,
 };
 
 use super::controller::AhciController;
-use super::types::{PortNumber, SlotNumber, PX_CI, PX_TFD};
+use super::types::{PX_CI, PX_TFD, PortNumber, SlotNumber};
 
 /// AHCI PollHandler 実装
 pub struct AhciPollHandler {
@@ -45,7 +45,10 @@ impl AhciPollHandler {
 
     /// リクエストを追加
     pub fn add_pending(&self, id: IoRequestId, port: PortNumber, slot: SlotNumber) {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, (port, slot));
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, (port, slot));
     }
 
     /// コマンド完了をチェック
@@ -101,7 +104,10 @@ impl PollHandler for AhciPollHandler {
 }
 
 /// AHCI を IoScheduler に登録
-pub fn register_ahci_with_io_scheduler(controller: Arc<PoisonLock<AhciController>>, port_number: u8) {
+pub fn register_ahci_with_io_scheduler(
+    controller: Arc<PoisonLock<AhciController>>,
+    port_number: u8,
+) {
     let handler = AhciPollHandler::new(controller);
     let handler: Box<dyn PollHandler + Send + Sync> = Box::new(handler);
 

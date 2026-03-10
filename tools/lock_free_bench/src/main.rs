@@ -1,7 +1,7 @@
 use spin::Mutex;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Instant;
 
@@ -167,7 +167,7 @@ impl HeapRegistry {
 
     pub fn unregister(&self, address: usize, owner: DomainId) -> Result<(), RegistryError> {
         let primary = self.get_shard_index(address);
-        // Lock just purely to read size; optimizing this away is possible but 
+        // Lock just purely to read size; optimizing this away is possible but
         // sticking to original logic for fidelity.
         let primary_guard = self.shards[primary].lock();
         let object = primary_guard
@@ -191,7 +191,10 @@ impl HeapRegistry {
             guards.push(self.shards[*idx].lock());
         }
 
-        let primary_pos = idxs.iter().position(|&i| i == primary).ok_or(RegistryError::NotFound)?;
+        let primary_pos = idxs
+            .iter()
+            .position(|&i| i == primary)
+            .ok_or(RegistryError::NotFound)?;
 
         if !guards[primary_pos].objects.contains_key(&address) {
             return Err(RegistryError::NotFound);
@@ -221,7 +224,7 @@ impl HeapRegistry {
         if let Some(object) = shard.objects.get(&address) {
             return object.owner == accessor;
         }
-        
+
         // Approximate check:
         for (_, object) in shard.objects.range(..=address).rev().take(1) {
             if address < object.address + object.size {
@@ -264,7 +267,7 @@ fn main() {
 
     for (shard_count, num_threads, ops_per_thread) in configs {
         let registry = Arc::new(HeapRegistry::new(shard_count));
-        
+
         let addresses_per_shard = 128;
         let mut pool = Vec::new();
         for s in 0..shard_count {
@@ -275,27 +278,27 @@ fn main() {
             }
         }
         let pool = Arc::new(pool);
-        
+
         let start = Instant::now();
         let mut handles = Vec::new();
 
         for t in 0..num_threads {
             let reg = Arc::clone(&registry);
             let pool = Arc::clone(&pool);
-            
+
             handles.push(thread::spawn(move || {
                 let owner = (t as u64) + 1;
                 let mut rng = t as usize; // simple seed
-                
+
                 for _ in 0..ops_per_thread {
                     rng = rng.wrapping_add(1923); // fake random step
                     let idx = rng % pool.len();
                     let addr = pool[idx];
-                    
+
                     // Randomly register/unregister or check access
                     if (rng % 3) == 0 {
                         if let Ok(_) = reg.register(addr, 64, owner, 0) {
-                             let _ = reg.unregister(addr, owner);
+                            let _ = reg.unregister(addr, owner);
                         }
                     } else {
                         let _ = reg.check_access(addr, owner);
@@ -312,6 +315,13 @@ fn main() {
         let total_ops = (num_threads as u64) * (ops_per_thread as u64);
         let ops_sec = (total_ops as f64) / elapsed.as_secs_f64();
 
-        println!("{},{},{},{},{:.2}", shard_count, num_threads, total_ops, elapsed.as_millis(), ops_sec);
+        println!(
+            "{},{},{},{},{:.2}",
+            shard_count,
+            num_threads,
+            total_ops,
+            elapsed.as_millis(),
+            ops_sec
+        );
     }
 }

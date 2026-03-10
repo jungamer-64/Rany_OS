@@ -2,7 +2,7 @@
 //!
 //! 設計書セクション 3.4.3 参照
 
-use core::mem::{size_of, align_of};
+use core::mem::{align_of, size_of};
 
 /// ジェネリック型のハッシュ計算
 ///
@@ -10,19 +10,19 @@ use core::mem::{size_of, align_of};
 /// 具体型ごとにハッシュを計算する
 pub fn compute_generic_hash<T: TypeHash>(base: &GenericType) -> u128 {
     let mut hasher = Sha256::new();
-    
+
     // 基底型の識別子
     hasher.update(base.name.as_bytes());
-    
+
     // 型パラメータのcanonical識別子
     for param in &base.type_params {
         hasher.update(&param.canonical_hash());
     }
-    
+
     // レイアウト情報（サイズ、アライメント）
     hasher.update(&size_of::<T>().to_le_bytes());
     hasher.update(&align_of::<T>().to_le_bytes());
-    
+
     // 下位128bitを返す
     u128::from_le_bytes(hasher.finalize()[..16].try_into().unwrap())
 }
@@ -57,11 +57,11 @@ impl Sha256 {
     pub fn new() -> Self {
         Self { data: Vec::new() }
     }
-    
+
     pub fn update(&mut self, data: &[u8]) {
         self.data.extend_from_slice(data);
     }
-    
+
     pub fn finalize(self) -> [u8; 32] {
         [0; 32] // プレースホルダー
     }

@@ -8,7 +8,10 @@ fn main() {
     if out_path.exists() {
         match out_path.metadata() {
             Ok(meta) => {
-                println!("assets/fonts/vga_8x16.bin already exists ({} bytes).", meta.len());
+                println!(
+                    "assets/fonts/vga_8x16.bin already exists ({} bytes).",
+                    meta.len()
+                );
             }
             Err(e) => {
                 eprintln!("Failed to stat {}: {}", out_path.display(), e);

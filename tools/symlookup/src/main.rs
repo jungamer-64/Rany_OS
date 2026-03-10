@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use object::{Object, ObjectSymbol};
 use std::path::PathBuf;
 
@@ -45,7 +45,10 @@ fn main() -> Result<()> {
     let obj = object::File::parse(&*data)?;
 
     if let Some((dist, name)) = find_nearest_symbol(&obj, addr) {
-        println!("Closest symbol: {} + {:#x} (distance {:#x})", name, dist, dist);
+        println!(
+            "Closest symbol: {} + {:#x} (distance {:#x})",
+            name, dist, dist
+        );
     } else {
         bail!("No symbol found in binary")
     }

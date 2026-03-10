@@ -141,7 +141,11 @@ pub fn with_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut DomainManager) -> R,
 {
-    DOMAIN_MANAGER.lock().unwrap_or_else(|e| e.into_inner()).as_mut().map(f)
+    DOMAIN_MANAGER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+        .map(f)
 }
 
 /// Start an application
@@ -163,7 +167,6 @@ pub fn domain_count() -> usize {
         .map(|m| m.count())
         .unwrap_or(0)
 }
-
 
 // ============================================================================
 // Backward Compatibility

@@ -335,7 +335,9 @@ pub fn wave7_memcg_concurrent_swapout_canonical_smoke() -> bool {
             }
             Err(SwapError::QueueFull) => {
                 if !drain_until_idle(DEFAULT_DRAIN_ROUNDS / 2) {
-                    crate::io::log::early_print("[qemu-suite] mm_wave7_memcg: drain after queue full failed\n");
+                    crate::io::log::early_print(
+                        "[qemu-suite] mm_wave7_memcg: drain after queue full failed\n",
+                    );
                     ok = false;
                 }
             }
@@ -351,7 +353,6 @@ pub fn wave7_memcg_concurrent_swapout_canonical_smoke() -> bool {
             ok = false;
         }
     }
-
 
     if file_attempts == 0 || anon_attempts == 0 {
         crate::io::log::early_print("[qemu-suite] mm_wave7_memcg: mixed workload not exercised\n");
@@ -417,7 +418,8 @@ pub fn wave7_async_swapout_concurrent_dedup_canonical_smoke() -> bool {
 
     ok &= drain_until_idle(DEFAULT_DRAIN_ROUNDS);
     ok &= queued_counts().0 == 0;
-    ok &= !crate::mm::page_flags::test_flag(frame, crate::mm::page_flags::PageMetaFlags::SwapPending);
+    ok &=
+        !crate::mm::page_flags::test_flag(frame, crate::mm::page_flags::PageMetaFlags::SwapPending);
 
     cleanup_frame(frame);
     ok &= crate::mm::memcg::memcg_get_page_info(frame).is_none();
@@ -493,7 +495,6 @@ pub fn wave7_async_swapout_stress_concurrency_canonical_smoke() -> bool {
             ok &= drain_until_idle(DEFAULT_DRAIN_ROUNDS / 2);
         }
     }
-
 
     ok &= successful_enqueues >= 10;
     ok &= drain_until_idle(DEFAULT_DRAIN_ROUNDS);
@@ -574,7 +575,6 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
             ok &= drain_until_idle(DEFAULT_DRAIN_ROUNDS / 2);
         }
     }
-
 
     ok &= successful_enqueues >= 16;
     ok &= drain_until_idle(DEFAULT_DRAIN_ROUNDS);

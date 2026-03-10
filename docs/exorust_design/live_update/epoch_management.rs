@@ -2,7 +2,7 @@
 //!
 //! 設計書セクション 3.5.3 参照
 
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// グローバルエポックカウンタ
 pub static GLOBAL_EPOCH: AtomicU64 = AtomicU64::new(0);

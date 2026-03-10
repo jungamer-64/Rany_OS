@@ -1,7 +1,7 @@
-use criterion::{black_box, Criterion};
+use criterion::{Criterion, black_box};
 use std::env;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Instant;
 
@@ -25,7 +25,8 @@ fn bench_submit_sync_single_thread(c: &mut Criterion) {
 
     c.bench_function("cq_submit_sync_single_thread", |b| {
         b.iter(|| {
-            q.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 }).unwrap();
+            q.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 })
+                .unwrap();
         })
     });
 
@@ -59,7 +60,9 @@ fn bench_submit_sync_4_producers(c: &mut Criterion) {
                 let q_clone = q.clone();
                 handles.push(thread::spawn(move || {
                     for _ in 0..per_thread {
-                        q_clone.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 }).unwrap();
+                        q_clone
+                            .submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 })
+                            .unwrap();
                     }
                 }));
             }
@@ -93,7 +96,10 @@ fn bench_submit_async_single_thread(c: &mut Criterion) {
     c.bench_function("cq_submit_async_single_thread", |b| {
         b.iter(|| {
             let rc = rany_os::task::block_on(async {
-                let comp = q.submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 1 }).await.expect("submit_async");
+                let comp = q
+                    .submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
+                    .await
+                    .expect("submit_async");
                 comp.await
             });
             black_box(rc);
@@ -106,7 +112,9 @@ fn bench_submit_async_single_thread(c: &mut Criterion) {
 
 /// Scaling bench: run submit_sync with multiple producer threads (1/2/4/8/... up to available CPUs)
 fn bench_submit_sync_scaling(c: &mut Criterion) {
-    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     let mut counts = vec![1usize, 2, 4, 8];
     counts.retain(|&n| n <= cpus);
     if !counts.contains(&cpus) {
@@ -125,7 +133,9 @@ fn bench_submit_sync_scaling(c: &mut Criterion) {
             // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while r2.load(Ordering::Relaxed) {
                 let n = q_worker.process_up_to(|_k| Ok(0), 256);
-                if n == 0 { thread::yield_now(); }
+                if n == 0 {
+                    thread::yield_now();
+                }
             }
         });
 
@@ -138,11 +148,15 @@ fn bench_submit_sync_scaling(c: &mut Criterion) {
                     let q_clone = q.clone();
                     handles.push(thread::spawn(move || {
                         for _ in 0..per_thread {
-                            q_clone.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 }).unwrap();
+                            q_clone
+                                .submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 })
+                                .unwrap();
                         }
                     }));
                 }
-                for h in handles { h.join().unwrap(); }
+                for h in handles {
+                    h.join().unwrap();
+                }
                 start.elapsed()
             })
         });
@@ -166,13 +180,16 @@ fn bench_submit_sync_numa(c: &mut Criterion) {
             // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while r2.load(Ordering::Relaxed) {
                 let n = q_worker.process_up_to(|_k| Ok(0), 256);
-                if n == 0 { thread::yield_now(); }
+                if n == 0 {
+                    thread::yield_now();
+                }
             }
         });
 
         c.bench_function(&name, |b| {
             b.iter(|| {
-                q.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 }).unwrap();
+                q.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 })
+                    .unwrap();
             })
         });
 
@@ -190,21 +207,29 @@ fn run_harness(args: &Vec<String>) {
 
     for arg in args.iter() {
         if let Some(s) = arg.strip_prefix("--runs=") {
-            if let Ok(n) = s.parse::<usize>() { runs = n; }
+            if let Ok(n) = s.parse::<usize>() {
+                runs = n;
+            }
         } else if let Some(s) = arg.strip_prefix("--iters=") {
-            if let Ok(n) = s.parse::<usize>() { iters = n; }
+            if let Ok(n) = s.parse::<usize>() {
+                iters = n;
+            }
         } else if let Some(s) = arg.strip_prefix("--threads=") {
             // Parse like "1,2,4" or "1-8"
             let mut out = Vec::new();
             if s.contains(',') {
                 for tok in s.split(',') {
-                    if let Ok(n) = tok.parse::<usize>() { out.push(n); }
+                    if let Ok(n) = tok.parse::<usize>() {
+                        out.push(n);
+                    }
                 }
             } else if s.contains('-') {
                 let parts: Vec<&str> = s.split('-').collect();
                 if parts.len() == 2 {
                     if let (Ok(a), Ok(b)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>()) {
-                        for n in a..=b { out.push(n); }
+                        for n in a..=b {
+                            out.push(n);
+                        }
                     }
                 }
             } else if let Ok(n) = s.parse::<usize>() {
@@ -218,8 +243,14 @@ fn run_harness(args: &Vec<String>) {
         }
     }
 
-    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let default_counts = vec![1usize, 2, 4, 8].into_iter().filter(|&n| n <= cpus).chain(std::iter::once(cpus)).collect::<Vec<_>>();
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let default_counts = vec![1usize, 2, 4, 8]
+        .into_iter()
+        .filter(|&n| n <= cpus)
+        .chain(std::iter::once(cpus))
+        .collect::<Vec<_>>();
     let thread_counts = threads.unwrap_or(default_counts);
 
     // CSV header
@@ -240,7 +271,9 @@ fn run_harness(args: &Vec<String>) {
                         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                         while r2.load(Ordering::Relaxed) {
                             let n = q_worker.process_up_to(|_k| Ok(0), 256);
-                            if n == 0 { thread::yield_now(); }
+                            if n == 0 {
+                                thread::yield_now();
+                            }
                         }
                     });
                     let per_thread = (iters + thr - 1) / thr;
@@ -250,11 +283,17 @@ fn run_harness(args: &Vec<String>) {
                         let q_clone = q.clone();
                         handles.push(thread::spawn(move || {
                             for _ in 0..per_thread {
-                                q_clone.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 }).unwrap();
+                                q_clone
+                                    .submit_sync(IommuCommandKind::InvalidateIotlbDomain {
+                                        domain: 0,
+                                    })
+                                    .unwrap();
                             }
                         }));
                     }
-                    for h in handles { h.join().unwrap(); }
+                    for h in handles {
+                        h.join().unwrap();
+                    }
                     let dur = start.elapsed().as_nanos();
                     durations.push(dur);
                     println!("{},{},{},{}", scenario, thr, r, dur);
@@ -266,7 +305,10 @@ fn run_harness(args: &Vec<String>) {
                 let median = durations[durations.len() / 2];
                 let sum: u128 = durations.iter().copied().sum();
                 let mean = sum / (durations.len() as u128);
-                println!("SUMMARY,{},{},runs={},median_ns={},mean_ns={}", scenario, thr, runs, median, mean);
+                println!(
+                    "SUMMARY,{},{},runs={},median_ns={},mean_ns={}",
+                    scenario, thr, runs, median, mean
+                );
             }
         } else {
             let scenario = format!("sync_{}producers", thr);
@@ -280,7 +322,9 @@ fn run_harness(args: &Vec<String>) {
                     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while r2.load(Ordering::Relaxed) {
                         let n = q_worker.process_up_to(|_k| Ok(0), 256);
-                        if n == 0 { thread::yield_now(); }
+                        if n == 0 {
+                            thread::yield_now();
+                        }
                     }
                 });
                 let per_thread = (iters + thr - 1) / thr;
@@ -290,11 +334,15 @@ fn run_harness(args: &Vec<String>) {
                     let q_clone = q.clone();
                     handles.push(thread::spawn(move || {
                         for _ in 0..per_thread {
-                            q_clone.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 }).unwrap();
+                            q_clone
+                                .submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: 0 })
+                                .unwrap();
                         }
                     }));
                 }
-                for h in handles { h.join().unwrap(); }
+                for h in handles {
+                    h.join().unwrap();
+                }
                 let dur = start.elapsed().as_nanos();
                 durations.push(dur);
                 println!("{},{},{},{}", scenario, thr, r, dur);
@@ -305,7 +353,10 @@ fn run_harness(args: &Vec<String>) {
             let median = durations[durations.len() / 2];
             let sum: u128 = durations.iter().copied().sum();
             let mean = sum / (durations.len() as u128);
-            println!("SUMMARY,{},{},runs={},median_ns={},mean_ns={}", scenario, thr, runs, median, mean);
+            println!(
+                "SUMMARY,{},{},runs={},median_ns={},mean_ns={}",
+                scenario, thr, runs, median, mean
+            );
         }
     }
 }
@@ -326,7 +377,9 @@ fn main() {
         bench_submit_async_single_thread(&mut c);
         c.final_summary();
     } else {
-        println!("Running quick CQ benches (use `cargo run --release --manifest-path tools/iommu_bench/Cargo.toml --criterion` for full Criterion run)");
+        println!(
+            "Running quick CQ benches (use `cargo run --release --manifest-path tools/iommu_bench/Cargo.toml --criterion` for full Criterion run)"
+        );
         let mut c = Criterion::default();
         bench_submit_sync_single_thread(&mut c);
         bench_submit_sync_4_producers(&mut c);

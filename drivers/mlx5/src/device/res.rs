@@ -3,10 +3,10 @@
 // ============================================================================
 
 extern crate alloc;
-use crate::cmd::hca::*; // basic HCA commands (SET_DRIVER_VERSION etc)
-use crate::cmd::res::*; // resource command builders/parsers
 use crate::cmd::CmdMailbox;
 use crate::cmd::CommandTransport; // needed to bring execute() method into scope
+use crate::cmd::hca::*; // basic HCA commands (SET_DRIVER_VERSION etc)
+use crate::cmd::res::*; // resource command builders/parsers
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE};
 use crate::device::Mlx5Device;
 use crate::error::{Mlx5Error, Mlx5Result};

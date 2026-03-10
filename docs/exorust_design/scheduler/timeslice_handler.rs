@@ -38,7 +38,7 @@ impl Task {
 pub fn handle_timeslice_exceeded(task: &Task) {
     // 警告カウンタをインクリメント
     task.warning_count.fetch_add(1, Relaxed);
-    
+
     if task.warning_count.load(Relaxed) > MAX_WARNINGS {
         // 繰り返し違反：タスクを強制終了
         task.force_terminate("Repeated timeslice violations");

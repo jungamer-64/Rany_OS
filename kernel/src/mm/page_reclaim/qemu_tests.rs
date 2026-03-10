@@ -28,7 +28,11 @@ pub fn wave7_pressure_level_smoke() -> bool {
 
 pub fn wave7_mglru_list_add_smoke() -> bool {
     let lru = MglruList::new();
-    lru.add_page(MglruEntry::new(FrameIndex::new(100), PageType::Anonymous, 0));
+    lru.add_page(MglruEntry::new(
+        FrameIndex::new(100),
+        PageType::Anonymous,
+        0,
+    ));
     lru.stats().gen_sizes[0] == 1
 }
 

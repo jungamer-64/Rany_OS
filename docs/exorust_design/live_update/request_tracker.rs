@@ -2,7 +2,10 @@
 //!
 //! 設計書セクション 3.5.3 参照
 
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering::{Acquire, Release}};
+use core::sync::atomic::{
+    AtomicBool, AtomicU64,
+    Ordering::{Acquire, Release},
+};
 
 /// ドメインへのアクティブリクエスト数を追跡
 pub struct RequestTracker {

@@ -26,11 +26,16 @@ pub struct DwarfInfo {
 
 impl DwarfInfo {
     pub fn find_function(&self, _ip: u64) -> Symbol {
-        Symbol { name: String::new() }
+        Symbol {
+            name: String::new(),
+        }
     }
-    
+
     pub fn find_source_location(&self, _ip: u64) -> SourceLocation {
-        SourceLocation { file: None, line: None }
+        SourceLocation {
+            file: None,
+            line: None,
+        }
     }
 }
 
@@ -44,7 +49,7 @@ pub struct SourceLocation {
 }
 
 /// シンボリックプロファイラ
-/// 
+///
 /// PMU（Performance Monitoring Unit）カウンタとDWARFデバッグ情報を
 /// 組み合わせた関数レベルのホットスポット分析
 pub struct Profiler {
@@ -70,7 +75,7 @@ impl Profiler {
         // DWARFからシンボル情報を解決
         let symbol = self.dwarf.find_function(sample.instruction_pointer);
         let source_loc = self.dwarf.find_source_location(sample.instruction_pointer);
-        
+
         SymbolizedSample {
             function: symbol.name,
             file: source_loc.file,
@@ -78,7 +83,7 @@ impl Profiler {
             metrics: sample.clone(),
         }
     }
-    
+
     /// フレームグラフ生成
     pub fn generate_flamegraph(&self) -> FlameGraph {
         // フレームグラフ生成ロジック
@@ -91,7 +96,9 @@ pub struct FlameGraph {
 }
 
 impl FlameGraph {
-    fn new() -> Self { Self {} }
+    fn new() -> Self {
+        Self {}
+    }
 }
 
 // 機能:

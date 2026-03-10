@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 
 use super::controller::HdaController;
 use super::regs::*;
-use super::types::{BdlEntry, HdaError, HdaResult, CodecInfo, WidgetCaps, NodeType};
+use super::types::{BdlEntry, CodecInfo, HdaError, HdaResult, NodeType, WidgetCaps};
 
 // ============================================================================
 // Audio Output Stream Management
@@ -320,7 +320,12 @@ impl HdaController {
     }
 
     /// Generate a stereo square wave into a buffer slice
-    fn generate_stereo_square_wave(buffer_slice: &mut [i16], samples: usize, frequency: u32, sample_rate: u32) {
+    fn generate_stereo_square_wave(
+        buffer_slice: &mut [i16],
+        samples: usize,
+        frequency: u32,
+        sample_rate: u32,
+    ) {
         let mono_buffer: Vec<i16> = (0..samples)
             .map(|i| {
                 let samples_per_period = sample_rate / frequency;
@@ -403,6 +408,14 @@ impl HdaController {
         Self::generate_stereo_square_wave(buffer_slice, samples, frequency, SAMPLE_RATE);
 
         // Configure and play
-        self.configure_and_play_stream(codec_addr, audio_buffer_addr, buffer_size as u32, duration_ms, SAMPLE_RATE, BITS, CHANNELS)
+        self.configure_and_play_stream(
+            codec_addr,
+            audio_buffer_addr,
+            buffer_size as u32,
+            duration_ms,
+            SAMPLE_RATE,
+            BITS,
+            CHANNELS,
+        )
     }
 }

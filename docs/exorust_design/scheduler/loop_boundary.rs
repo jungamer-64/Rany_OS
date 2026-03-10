@@ -8,7 +8,8 @@
 // 証明可能なループ（燃料チェック省略）
 // 境界が明確なため、終了が保証される
 fn provable_loop_example(array: &[u8]) {
-    for i in 0..array.len() {  // 境界が明確
+    for i in 0..array.len() {
+        // 境界が明確
         process(array[i]);
     }
 }
@@ -16,8 +17,9 @@ fn provable_loop_example(array: &[u8]) {
 // 証明不可能なループ（燃料チェック挿入）
 // 終了条件が不明なため、燃料チェックが必要
 fn unprovable_loop_example() -> Result<(), FuelExhausted> {
-    while condition() {  // 終了条件が不明
-        fuel_check()?;   // コンパイラが自動挿入
+    while condition() {
+        // 終了条件が不明
+        fuel_check()?; // コンパイラが自動挿入
         do_work();
     }
     Ok(())
@@ -34,7 +36,11 @@ fn unprovable_loop_example() -> Result<(), FuelExhausted> {
 
 // 以下はプレースホルダー
 fn process(_: u8) {}
-fn condition() -> bool { false }
+fn condition() -> bool {
+    false
+}
 fn do_work() {}
-fn fuel_check() -> Result<(), FuelExhausted> { Ok(()) }
+fn fuel_check() -> Result<(), FuelExhausted> {
+    Ok(())
+}
 struct FuelExhausted;

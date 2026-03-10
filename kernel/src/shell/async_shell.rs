@@ -15,9 +15,9 @@
 use alloc::format;
 
 use super::exoshell::ExoShell;
-use super::exoshell::frontend::serial::SerialFrontend;
-use super::exoshell::frontend::ShellFrontend;
 use super::exoshell::ExoValue;
+use super::exoshell::frontend::ShellFrontend;
+use super::exoshell::frontend::serial::SerialFrontend;
 
 /// ANSI escape codes for colors
 mod ansi {
@@ -67,7 +67,7 @@ pub async fn run_async_shell() {
     let mut exoshell = ExoShell::new();
     // Yield after heavy ExoShell allocation
     crate::task::yield_now().await;
-    
+
     let mut frontend = SerialFrontend::new();
 
     // Print initial prompt
@@ -83,7 +83,7 @@ pub async fn run_async_shell() {
                     frontend.print_message("\nGoodbye!");
                     break;
                 }
-                
+
                 // execute() uses print_result for normal output too
                 frontend.print_result(&Ok(result));
             }
@@ -92,7 +92,7 @@ pub async fn run_async_shell() {
                 break;
             }
         }
-        
+
         frontend.print_prompt(exoshell.cwd.as_str());
     }
 
