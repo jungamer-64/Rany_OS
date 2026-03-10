@@ -15,6 +15,7 @@
 //! 5. 論理長ぶんだけデータコピーし、DMA/IOMMU/PRP リソースを解放
 
 use crate::io::nvme::dma::{NvmeDmaError, NvmeDmaRegion};
+use crate::io::io_scheduler::{DmaBufHandle, DeviceId as IoDeviceId, IoCommand, IoResult, io_scheduler};
 use nvme_ns::NsError;
 use nvme_ns::fs::BlockIo;
 
@@ -50,15 +51,20 @@ impl NvmeBlockIoAdapter {
     ///
     /// NVMe グローバルドライバが初期化済みであること。
     pub fn from_driver() -> Result<Self, &'static str> {
-        let (nsid, block_size, total_blocks) = crate::io::nvme::with_driver(|d| {
-            let nsid = d.nsid;
-            (
-                nsid,
-                d.namespace_block_size(nsid),
-                d.namespace_total_blocks(),
-            )
-        })
-        .ok_or("NVMe driver not initialized")?;
+        let (nsid, block_size, total_blocks) =
+            if let Some(info) = crate::runtime_bridge::standalone_nvme_namespace_info(1) {
+                (info.namespace_id, info.block_size, info.total_blocks)
+            } else {
+                crate::io::nvme::with_driver(|d| {
+                    let nsid = d.nsid;
+                    (
+                        nsid,
+                        d.namespace_block_size(nsid),
+                        d.namespace_total_blocks(),
+                    )
+                })
+                .ok_or("NVMe driver not initialized")?
+            };
 
         if block_size == 0 || total_blocks == 0 {
             return Err("NVMe namespace not configured");
@@ -107,26 +113,41 @@ impl NvmeBlockIoAdapter {
         }
         .map_err(Self::map_dma_error)?;
 
-        let core_id = Self::core_id();
-
-        // コマンド発行
-        let cid = crate::io::nvme::with_driver(|d| {
-            if is_write {
-                unsafe { d.submit_write(core_id, self.nsid, lba, 0, dma.prp1(), dma.prp2()) }
-            } else {
-                unsafe { d.submit_read(core_id, self.nsid, lba, 0, dma.prp1(), dma.prp2()) }
+        let device = IoDeviceId::Nvme {
+            controller: 0,
+            namespace: self.nsid,
+        };
+        let command = if is_write {
+            IoCommand::BlockWrite {
+                lba,
+                blocks: 1,
+                bytes: bs,
+                buf: DmaBufHandle {
+                    iova: dma.prp1(),
+                    len: dma.alloc_len(),
+                },
             }
-        })
-        .ok_or(NsError::IoError)?
-        .map_err(|_| NsError::IoError)?;
+        } else {
+            IoCommand::BlockRead {
+                lba,
+                blocks: 1,
+                bytes: bs,
+                buf: DmaBufHandle {
+                    iova: dma.prp1(),
+                    len: dma.alloc_len(),
+                },
+            }
+        };
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
+            device,
+            command,
+            crate::io::io_scheduler::IoPriority::High,
+        );
+        let request_id = future.request_id();
 
-        // 完了をポーリング
         for _ in 0..MAX_POLL_ITERATIONS {
-            if let Some(cqe) =
-                crate::io::nvme::with_driver(|d| unsafe { d.poll_completion_by_cid(core_id, cid) })
-                    .flatten()
-            {
-                if !cqe.is_success() {
+            if let Some(result) = io_scheduler().take_result(request_id) {
+                if !matches!(result, IoResult::Success(_)) {
                     return Err(NsError::IoError);
                 }
                 if !is_write {
@@ -169,18 +190,19 @@ impl BlockIo for NvmeBlockIoAdapter {
     }
 
     fn flush(&self) -> Result<(), NsError> {
-        let core_id = Self::core_id();
-
-        let cid = crate::io::nvme::with_driver(|d| unsafe { d.submit_flush(core_id, self.nsid) })
-            .ok_or(NsError::IoError)?
-            .map_err(|_| NsError::IoError)?;
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
+            IoDeviceId::Nvme {
+                controller: 0,
+                namespace: self.nsid,
+            },
+            IoCommand::Flush,
+            crate::io::io_scheduler::IoPriority::High,
+        );
+        let request_id = future.request_id();
 
         for _ in 0..MAX_POLL_ITERATIONS {
-            if let Some(cqe) =
-                crate::io::nvme::with_driver(|d| unsafe { d.poll_completion_by_cid(core_id, cid) })
-                    .flatten()
-            {
-                if cqe.is_success() {
+            if let Some(result) = io_scheduler().take_result(request_id) {
+                if matches!(result, IoResult::Success(_)) {
                     return Ok(());
                 }
                 return Err(NsError::IoError);

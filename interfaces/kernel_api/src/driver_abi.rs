@@ -66,7 +66,7 @@ pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
 pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v2";
 /// ABI version for the KernelApiV2 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 3;
+pub const KERNEL_API_ABI_VERSION: u32 = 4;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 1;
 
@@ -507,6 +507,329 @@ pub struct AbiMmioHandle {
     pub size: usize,
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbiBlockTransport {
+    Nvme = 1,
+    Ahci = 2,
+    Other = 255,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbiBlockCommandKind {
+    Read = 1,
+    Write = 2,
+    Flush = 3,
+    Discard = 4,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiIoCompletion {
+    pub request_id: u64,
+    pub status: i32,
+    pub bytes: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiBlockDeviceInfo {
+    pub device_id: u64,
+    pub namespace_id: u32,
+    pub block_size: u32,
+    pub max_transfer_blocks: u32,
+    pub transport: u32,
+    pub flags: u32,
+    pub controller_id: u32,
+    pub port_id: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AbiBlockDeviceRegistration {
+    pub abi_size: u32,
+    pub info: AbiBlockDeviceInfo,
+    pub opaque: u64,
+    pub submit: extern "C" fn(
+        opaque: u64,
+        request_id: u64,
+        command: u32,
+        lba: u64,
+        blocks: u32,
+        bytes: usize,
+        iova: u64,
+    ) -> i32,
+    pub poll: extern "C" fn(
+        opaque: u64,
+        out: *mut AbiIoCompletion,
+        capacity: usize,
+        written: *mut usize,
+    ) -> i32,
+    pub is_ready: extern "C" fn(opaque: u64) -> bool,
+    pub reserved: [u64; 6],
+}
+
+impl AbiBlockDeviceRegistration {
+    pub const fn new(
+        info: AbiBlockDeviceInfo,
+        opaque: u64,
+        submit: extern "C" fn(u64, u64, u32, u64, u32, usize, u64) -> i32,
+        poll: extern "C" fn(u64, *mut AbiIoCompletion, usize, *mut usize) -> i32,
+        is_ready: extern "C" fn(u64) -> bool,
+    ) -> Self {
+        Self {
+            abi_size: core::mem::size_of::<Self>() as u32,
+            info,
+            opaque,
+            submit,
+            poll,
+            is_ready,
+            reserved: [0; 6],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiNvmeNamespaceInfo {
+    pub device_id: u64,
+    pub namespace_id: u32,
+    pub block_size: u32,
+    pub max_transfer_blocks: u32,
+    pub max_sgl_entries: u32,
+    pub total_blocks: u64,
+    pub controller_id: u32,
+    pub flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AbiNvmeNamespaceRegistration {
+    pub abi_size: u32,
+    pub info: AbiNvmeNamespaceInfo,
+    pub reserved: [u64; 6],
+}
+
+impl AbiNvmeNamespaceRegistration {
+    pub const fn new(info: AbiNvmeNamespaceInfo) -> Self {
+        Self {
+            abi_size: core::mem::size_of::<Self>() as u32,
+            info,
+            reserved: [0; 6],
+        }
+    }
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbiNetPortKind {
+    Unknown = 0,
+    Virtio = 1,
+    Mlx5 = 2,
+    Other = 255,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbiNetDriverEventKind {
+    Interrupt = 1,
+    QueueWake = 2,
+    Poll = 3,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiNetRxMeta {
+    pub queue_index: u16,
+    pub header_len: u16,
+    pub payload_len: u16,
+    pub flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiNetTxMeta {
+    pub queue_index: u16,
+    pub has_queue_index: bool,
+    pub has_vlan_tag: bool,
+    pub _padding0: u8,
+    pub flags: u32,
+    pub vlan_tag: u16,
+    pub _padding1: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiNetDriverEvent {
+    pub kind: u32,
+    pub queue_index: u16,
+    pub _padding: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiNetPortStats {
+    pub tx_packets: u64,
+    pub rx_packets: u64,
+    pub tx_errors: u64,
+    pub rx_errors: u64,
+    pub initialized: bool,
+    pub _padding: [u8; 7],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiNetPortInfo {
+    pub port_id: u64,
+    pub kind: u32,
+    pub queue_pairs: u16,
+    pub port_index: u16,
+    pub mtu: u32,
+    pub flags: u32,
+    pub mac: [u8; 6],
+    pub _padding0: [u8; 2],
+    pub name_ptr: *const u8,
+    pub name_len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AbiNetPortRuntimeV1 {
+    pub abi_size: u32,
+    pub runtime_cookie: u64,
+    pub submit_rx_bytes: extern "C" fn(
+        runtime_cookie: u64,
+        data_ptr: *const u8,
+        data_len: usize,
+        meta: AbiNetRxMeta,
+    ) -> i32,
+    pub schedule_event: extern "C" fn(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32,
+    pub update_link: extern "C" fn(runtime_cookie: u64, up: bool) -> i32,
+    pub log: extern "C" fn(
+        runtime_cookie: u64,
+        level: u32,
+        msg_ptr: *const u8,
+        msg_len: usize,
+    ),
+    pub reserved: [u64; 4],
+}
+
+impl AbiNetPortRuntimeV1 {
+    pub const fn new(
+        runtime_cookie: u64,
+        submit_rx_bytes: extern "C" fn(u64, *const u8, usize, AbiNetRxMeta) -> i32,
+        schedule_event: extern "C" fn(u64, AbiNetDriverEvent) -> i32,
+        update_link: extern "C" fn(u64, bool) -> i32,
+        log: extern "C" fn(u64, u32, *const u8, usize),
+    ) -> Self {
+        Self {
+            abi_size: core::mem::size_of::<Self>() as u32,
+            runtime_cookie,
+            submit_rx_bytes,
+            schedule_event,
+            update_link,
+            log,
+            reserved: [0; 4],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AbiNetPortRegistration {
+    pub abi_size: u32,
+    pub info: AbiNetPortInfo,
+    pub opaque: u64,
+    pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntimeV1) -> i32,
+    pub bind: extern "C" fn(opaque: u64, if_id: u16) -> i32,
+    pub submit_tx_bytes:
+        extern "C" fn(opaque: u64, data_ptr: *const u8, data_len: usize, meta: AbiNetTxMeta)
+            -> i32,
+    pub poll: extern "C" fn(opaque: u64, if_id: u16) -> i32,
+    pub handle_event: extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
+    pub stats: extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,
+    pub stop: extern "C" fn(opaque: u64),
+    pub reserved: [u64; 4],
+}
+
+impl AbiNetPortRegistration {
+    pub const fn new(
+        info: AbiNetPortInfo,
+        opaque: u64,
+        start: extern "C" fn(u64, *const AbiNetPortRuntimeV1) -> i32,
+        bind: extern "C" fn(u64, u16) -> i32,
+        submit_tx_bytes: extern "C" fn(u64, *const u8, usize, AbiNetTxMeta) -> i32,
+        poll: extern "C" fn(u64, u16) -> i32,
+        handle_event: extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
+        stats: extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
+        stop: extern "C" fn(u64),
+    ) -> Self {
+        Self {
+            abi_size: core::mem::size_of::<Self>() as u32,
+            info,
+            opaque,
+            start,
+            bind,
+            submit_tx_bytes,
+            poll,
+            handle_event,
+            stats,
+            stop,
+            reserved: [0; 4],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiAudioDeviceInfo {
+    pub device_id: u64,
+    pub output_channels: u16,
+    pub input_channels: u16,
+    pub _padding0: u16,
+    pub sample_rate_hz: u32,
+    pub flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AbiAudioControllerRegistration {
+    pub abi_size: u32,
+    pub opaque: u64,
+    pub irq: u32,
+    pub is_initialized: extern "C" fn(opaque: u64) -> bool,
+    pub device_count: extern "C" fn(opaque: u64) -> u32,
+    pub device_info: extern "C" fn(opaque: u64, index: u32, out: *mut AbiAudioDeviceInfo) -> i32,
+    pub enable_irq: extern "C" fn(opaque: u64) -> i32,
+    pub disable_irq: extern "C" fn(opaque: u64) -> i32,
+    pub reserved: [u64; 4],
+}
+
+impl AbiAudioControllerRegistration {
+    pub const fn new(
+        opaque: u64,
+        irq: u32,
+        is_initialized: extern "C" fn(u64) -> bool,
+        device_count: extern "C" fn(u64) -> u32,
+        device_info: extern "C" fn(u64, u32, *mut AbiAudioDeviceInfo) -> i32,
+        enable_irq: extern "C" fn(u64) -> i32,
+        disable_irq: extern "C" fn(u64) -> i32,
+    ) -> Self {
+        Self {
+            abi_size: core::mem::size_of::<Self>() as u32,
+            opaque,
+            irq,
+            is_initialized,
+            device_count,
+            device_info,
+            enable_irq,
+            disable_irq,
+            reserved: [0; 4],
+        }
+    }
+}
+
 /// Kernel API function table for drivers.
 ///
 /// Drivers must validate `abi_version` and `abi_size` before using optional
@@ -540,7 +863,27 @@ pub struct KernelApiV2 {
     /// Optional panic abort hook for standalone cell runtime.
     pub panic_abort: Option<extern "C" fn(msg_ptr: *const u8, msg_len: usize) -> !>,
 
-    pub reserved: [u64; 8],
+    pub register_block_device:
+        extern "C" fn(registration: *const AbiBlockDeviceRegistration, out_handle: *mut u64) -> i32,
+    pub unregister_block_device: extern "C" fn(handle: u64) -> i32,
+
+    pub register_nvme_namespace: extern "C" fn(
+        registration: *const AbiNvmeNamespaceRegistration,
+        out_handle: *mut u64,
+    ) -> i32,
+    pub unregister_nvme_namespace: extern "C" fn(handle: u64) -> i32,
+
+    pub register_netdev_port:
+        extern "C" fn(registration: *const AbiNetPortRegistration, out_handle: *mut u64) -> i32,
+    pub unregister_netdev_port: extern "C" fn(handle: u64) -> i32,
+
+    pub register_audio_controller: extern "C" fn(
+        registration: *const AbiAudioControllerRegistration,
+        out_handle: *mut u64,
+    ) -> i32,
+    pub unregister_audio_controller: extern "C" fn(handle: u64) -> i32,
+
+    pub reserved: [u64; 2],
 }
 
 /// Driver export header for `DRIVER_EXPORTS`.

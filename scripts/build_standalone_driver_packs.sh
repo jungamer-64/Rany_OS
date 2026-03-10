@@ -127,7 +127,7 @@ build_driver_pack() {
         --input "$DEPLOY_DIR/$input" \
         --output "$DEPLOY_DIR/$output" \
         --driver-abi-version 2 \
-        --kernel-api-min-version 3 \
+        --kernel-api-min-version 4 \
         "$@")
     echo "[standalone_driver_packs] wrote $DEPLOY_DIR/$output"
 }

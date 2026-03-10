@@ -506,6 +506,9 @@ impl NetworkEventHandler {
                                     let dp =
                                         u16::from_be_bytes([transport_data[2], transport_data[3]]);
                                     (sp, dp)
+                                } else if u8::from(protocol) == 58 && transport_data.len() >= 2 {
+                                    // ICMPv6: src_port = type, dst_port = code
+                                    (transport_data[0] as u16, transport_data[1] as u16)
                                 } else {
                                     (0, 0)
                                 };
@@ -575,6 +578,12 @@ impl NetworkEventHandler {
                                 let dp = u16::from_be_bytes([payload[2], payload[3]]);
                                 (sp, dp, 0)
                             }
+                            crate::net::l3::ipv4::IpProtocol::Icmp if payload.len() >= 2 => {
+                                (payload[0] as u16, payload[1] as u16, 0)
+                            }
+                            crate::net::l3::ipv4::IpProtocol::Icmpv6 if payload.len() >= 2 => {
+                                (payload[0] as u16, payload[1] as u16, 0)
+                            }
                             _ => (0, 0, 0),
                         };
 
@@ -642,6 +651,12 @@ impl NetworkEventHandler {
                                 let sp = u16::from_be_bytes([payload[0], payload[1]]);
                                 let dp = u16::from_be_bytes([payload[2], payload[3]]);
                                 (sp, dp, 0)
+                            }
+                            crate::net::l3::ipv4::IpProtocol::Icmp if payload.len() >= 2 => {
+                                (payload[0] as u16, payload[1] as u16, 0)
+                            }
+                            crate::net::l3::ipv4::IpProtocol::Icmpv6 if payload.len() >= 2 => {
+                                (payload[0] as u16, payload[1] as u16, 0)
                             }
                             _ => (0, 0, 0),
                         };
@@ -2751,6 +2766,9 @@ fn extract_ports(ipv4_data: &[u8], ihl: usize, protocol: u8) -> (u16, u16) {
         let src_port = u16::from_be_bytes([ipv4_data[ihl], ipv4_data[ihl + 1]]);
         let dst_port = u16::from_be_bytes([ipv4_data[ihl + 2], ipv4_data[ihl + 3]]);
         (src_port, dst_port)
+    } else if protocol == 1 && ipv4_data.len() >= ihl + 2 {
+        // ICMP: src_port = type, dst_port = code
+        (ipv4_data[ihl] as u16, ipv4_data[ihl + 1] as u16)
     } else {
         (0, 0)
     }

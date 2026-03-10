@@ -288,6 +288,38 @@ impl core::fmt::Display for PortMatch {
     }
 }
 
+/// ICMP マッチ条件
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IcmpMatch {
+    /// 全ての ICMP パケットに一致
+    Any,
+    /// 特定のタイプに一致
+    Type(u8),
+    /// 特定のタイプとコードに一致
+    TypeCode(u8, u8),
+}
+
+impl IcmpMatch {
+    /// 指定されたタイプとコードがこの条件に一致するかどうか
+    pub fn matches(&self, icmp_type: u8, icmp_code: u8) -> bool {
+        match self {
+            IcmpMatch::Any => true,
+            IcmpMatch::Type(t) => icmp_type == *t,
+            IcmpMatch::TypeCode(t, c) => icmp_type == *t && icmp_code == *c,
+        }
+    }
+}
+
+impl core::fmt::Display for IcmpMatch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            IcmpMatch::Any => write!(f, "*"),
+            IcmpMatch::Type(t) => write!(f, "type:{}", t),
+            IcmpMatch::TypeCode(t, c) => write!(f, "type:{},code:{}", t, c),
+        }
+    }
+}
+
 /// ファイアウォールルール
 ///
 /// 5タプル（送信元IP、宛先IP、プロトコル、送信元ポート、宛先ポート）と
@@ -314,6 +346,8 @@ pub struct FirewallRule {
     pub src_port: PortMatch,
     /// 宛先ポート
     pub dst_port: PortMatch,
+    /// ICMP マッチ条件
+    pub icmp_match: IcmpMatch,
     /// TCP フラグマッチ（全ビット一致、0 の場合は無視）
     pub tcp_flags_mask: u8,
     pub tcp_flags_value: u8,
@@ -344,19 +378,39 @@ impl FirewallRule {
 
         let ip_match = self.src_ip.matches(src_ip)
             && self.dst_ip.matches(dst_ip)
-            && self.protocol.matches(protocol)
-            && self.src_port.matches(src_port)
-            && self.dst_port.matches(dst_port);
+            && self.protocol.matches(protocol);
 
         if !ip_match {
             return false;
         }
 
-        // TCP フラグチェック (TCP の場合のみ適用)
-        if protocol == 6 && self.tcp_flags_mask != 0 {
-            if (tcp_flags & self.tcp_flags_mask) != self.tcp_flags_value {
-                return false;
+        // プロトコル固有のチェック
+        match protocol {
+            6 => {
+                // TCP
+                if !self.src_port.matches(src_port) || !self.dst_port.matches(dst_port) {
+                    return false;
+                }
+                if self.tcp_flags_mask != 0 {
+                    if (tcp_flags & self.tcp_flags_mask) != self.tcp_flags_value {
+                        return false;
+                    }
+                }
             }
+            17 => {
+                // UDP
+                if !self.src_port.matches(src_port) || !self.dst_port.matches(dst_port) {
+                    return false;
+                }
+            }
+            1 => {
+                // ICMP
+                // src_port, dst_port に ICMP type/code が入っていると想定
+                if !self.icmp_match.matches(src_port as u8, dst_port as u8) {
+                    return false;
+                }
+            }
+            _ => {}
         }
 
         true
@@ -364,7 +418,7 @@ impl FirewallRule {
 
     /// ルールのサマリーを文字列で取得
     pub fn summary(&self) -> String {
-        format!(
+        let mut s = format!(
             "#{} [{}] {} {} src={}/{} dst={}/{} proto={}",
             self.id,
             self.priority,
@@ -375,7 +429,11 @@ impl FirewallRule {
             self.dst_ip,
             self.dst_port,
             self.protocol,
-        )
+        );
+        if matches!(self.protocol, FirewallProtocol::Icmp) && !matches!(self.icmp_match, IcmpMatch::Any) {
+            s.push_str(&format!(" icmp={}", self.icmp_match));
+        }
+        s
     }
 }
 
@@ -404,6 +462,7 @@ pub struct FirewallRuleBuilder {
     protocol: FirewallProtocol,
     src_port: PortMatch,
     dst_port: PortMatch,
+    icmp_match: IcmpMatch,
     tcp_flags_mask: u8,
     tcp_flags_value: u8,
 }
@@ -420,6 +479,7 @@ impl FirewallRuleBuilder {
             protocol: FirewallProtocol::Any,
             src_port: PortMatch::Any,
             dst_port: PortMatch::Any,
+            icmp_match: IcmpMatch::Any,
             tcp_flags_mask: 0,
             tcp_flags_value: 0,
         }
@@ -502,6 +562,18 @@ impl FirewallRuleBuilder {
         self.protocol(FirewallProtocol::Icmp)
     }
 
+    /// ICMP タイプを設定
+    pub fn icmp_type(mut self, t: u8) -> Self {
+        self.icmp_match = IcmpMatch::Type(t);
+        self.icmp()
+    }
+
+    /// ICMP タイプとコードを設定
+    pub fn icmp_type_code(mut self, t: u8, c: u8) -> Self {
+        self.icmp_match = IcmpMatch::TypeCode(t, c);
+        self.icmp()
+    }
+
     /// 送信元ポートを設定
     pub fn src_port(mut self, port: PortMatch) -> Self {
         self.src_port = port;
@@ -534,6 +606,7 @@ impl FirewallRuleBuilder {
             protocol: self.protocol,
             src_port: self.src_port,
             dst_port: self.dst_port,
+            icmp_match: self.icmp_match,
             tcp_flags_mask: self.tcp_flags_mask,
             tcp_flags_value: self.tcp_flags_value,
         }

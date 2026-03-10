@@ -10,7 +10,10 @@
 extern crate alloc;
 
 use crate::KapiResult;
-use crate::abi::driver::{KernelApiV2, PackedPciLocation};
+use crate::abi::driver::{
+    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistration,
+    AbiNvmeNamespaceRegistration, KernelApiV2, PackedPciLocation,
+};
 use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::ChannelHandle;
 use crate::resource::fs::{FileHandle, OpenMode};
@@ -99,6 +102,40 @@ pub trait KernelServices: Send + Sync {
 
     /// Debug log output
     fn log(&self, message: &str);
+
+    // ========================================================================
+    // Runtime-Owned Device Registration
+    // ========================================================================
+
+    /// Register a block device bridge owned by the current driver domain.
+    fn register_block_device(&self, registration: &AbiBlockDeviceRegistration) -> KapiResult<u64>;
+
+    /// Unregister a previously registered block device bridge.
+    fn unregister_block_device(&self, handle: u64) -> KapiResult<()>;
+
+    /// Register NVMe namespace metadata for the current driver domain.
+    fn register_nvme_namespace(
+        &self,
+        registration: &AbiNvmeNamespaceRegistration,
+    ) -> KapiResult<u64>;
+
+    /// Unregister a previously registered NVMe namespace bridge.
+    fn unregister_nvme_namespace(&self, handle: u64) -> KapiResult<()>;
+
+    /// Register a network port bridge owned by the current driver domain.
+    fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> KapiResult<u64>;
+
+    /// Unregister a previously registered network port bridge.
+    fn unregister_netdev_port(&self, handle: u64) -> KapiResult<()>;
+
+    /// Register an audio controller bridge owned by the current driver domain.
+    fn register_audio_controller(
+        &self,
+        registration: &AbiAudioControllerRegistration,
+    ) -> KapiResult<u64>;
+
+    /// Unregister a previously registered audio controller bridge.
+    fn unregister_audio_controller(&self, handle: u64) -> KapiResult<()>;
 
     // ========================================================================
     // Network
@@ -521,6 +558,91 @@ mod standalone {
         fn log(&self, message: &str) {
             if !message.is_empty() {
                 (super::abi().log)(0, message.as_ptr(), message.len());
+            }
+        }
+
+        fn register_block_device(
+            &self,
+            registration: &AbiBlockDeviceRegistration,
+        ) -> KapiResult<u64> {
+            let mut handle = 0u64;
+            let status = (super::abi().register_block_device)(registration, &mut handle);
+            if AbiError::from_raw(status).is_success() {
+                Ok(handle)
+            } else {
+                Err(map_abi_error(status))
+            }
+        }
+
+        fn unregister_block_device(&self, handle: u64) -> KapiResult<()> {
+            let status = (super::abi().unregister_block_device)(handle);
+            if AbiError::from_raw(status).is_success() {
+                Ok(())
+            } else {
+                Err(map_abi_error(status))
+            }
+        }
+
+        fn register_nvme_namespace(
+            &self,
+            registration: &AbiNvmeNamespaceRegistration,
+        ) -> KapiResult<u64> {
+            let mut handle = 0u64;
+            let status = (super::abi().register_nvme_namespace)(registration, &mut handle);
+            if AbiError::from_raw(status).is_success() {
+                Ok(handle)
+            } else {
+                Err(map_abi_error(status))
+            }
+        }
+
+        fn unregister_nvme_namespace(&self, handle: u64) -> KapiResult<()> {
+            let status = (super::abi().unregister_nvme_namespace)(handle);
+            if AbiError::from_raw(status).is_success() {
+                Ok(())
+            } else {
+                Err(map_abi_error(status))
+            }
+        }
+
+        fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> KapiResult<u64> {
+            let mut handle = 0u64;
+            let status = (super::abi().register_netdev_port)(registration, &mut handle);
+            if AbiError::from_raw(status).is_success() {
+                Ok(handle)
+            } else {
+                Err(map_abi_error(status))
+            }
+        }
+
+        fn unregister_netdev_port(&self, handle: u64) -> KapiResult<()> {
+            let status = (super::abi().unregister_netdev_port)(handle);
+            if AbiError::from_raw(status).is_success() {
+                Ok(())
+            } else {
+                Err(map_abi_error(status))
+            }
+        }
+
+        fn register_audio_controller(
+            &self,
+            registration: &AbiAudioControllerRegistration,
+        ) -> KapiResult<u64> {
+            let mut handle = 0u64;
+            let status = (super::abi().register_audio_controller)(registration, &mut handle);
+            if AbiError::from_raw(status).is_success() {
+                Ok(handle)
+            } else {
+                Err(map_abi_error(status))
+            }
+        }
+
+        fn unregister_audio_controller(&self, handle: u64) -> KapiResult<()> {
+            let status = (super::abi().unregister_audio_controller)(handle);
+            if AbiError::from_raw(status).is_success() {
+                Ok(())
+            } else {
+                Err(map_abi_error(status))
             }
         }
 

@@ -642,6 +642,14 @@ impl PollingExecutor {
             .push(handler);
     }
 
+    pub fn unregister_handler(&self, device: DeviceId) -> bool {
+        self.poll_handlers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&device)
+            .is_some()
+    }
+
     /// ポーリングを開始
     pub fn start(&self) {
         self.active.store(true, Ordering::Release);

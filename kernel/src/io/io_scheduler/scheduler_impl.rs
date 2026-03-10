@@ -43,6 +43,18 @@ impl IoScheduler {
             .insert(device, ops);
     }
 
+    pub fn unregister_device(&self, device: DeviceId) -> bool {
+        self.mode_controllers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&device);
+        self.device_ops
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&device)
+            .is_some()
+    }
+
     /// デバイス操作ハンドラを取得
     pub fn get_device_ops(&self, device: DeviceId) -> Option<Arc<dyn DeviceOps>> {
         self.device_ops

@@ -117,7 +117,7 @@ fn validate_pci_selector(
 fn parse_args() -> Config {
     let mut cfg = Config {
         driver_abi_version: 2,
-        kernel_api_min_version: 3,
+        kernel_api_min_version: 4,
         ..Config::default()
     };
     let mut args = env::args().skip(1);

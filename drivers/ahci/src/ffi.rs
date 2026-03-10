@@ -16,7 +16,7 @@ use crate::driver_impl::AhciDriverWrapper;
 
 static mut AHCI_DRIVER: Option<AhciDriverWrapper> = None;
 
-unsafe fn with_ahci_driver<R>(f: impl FnOnce(&mut AhciDriverWrapper) -> R) -> Option<R> {
+pub(crate) unsafe fn with_ahci_driver<R>(f: impl FnOnce(&mut AhciDriverWrapper) -> R) -> Option<R> {
     let slot = core::ptr::addr_of_mut!(AHCI_DRIVER);
     unsafe { (*slot).as_mut().map(f) }
 }

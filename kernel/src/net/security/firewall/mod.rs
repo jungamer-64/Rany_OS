@@ -217,17 +217,9 @@ pub fn setup_default_firewall() {
                     .build(),
             );
 
-            // 2. 確立済みの TCP 接続を許可 (ACK フラグがセットされているもの)
-            let _ = fw.add_rule(
-                FirewallRule::builder()
-                    .name("Allow Established TCP")
-                    .ingress()
-                    .tcp()
-                    .tcp_flags(0x10, 0x10) // ACK=1
-                    .allow()
-                    .priority(20)
-                    .build(),
-            );
+            // 2. [REMOVED] 確立済みの TCP 接続を許可 (ACK フラグがセットされているもの)
+            // SECURITY: ステートレスファイアウォールで全ての ACK パケットを許可するのは危険なため削除。
+            // 必要であれば特定の宛先ポートに対して個別に許可ルールを追加すべき。
 
             // 3. DHCP を許可 (UDP 67, 68)
             let _ = fw.add_rule(
@@ -253,14 +245,25 @@ pub fn setup_default_firewall() {
                     .build(),
             );
 
-            // 5. ICMP エコー応答（Ping）を許可
+            // 5. ICMP エコー応答（Ping Reply）を許可
             let _ = fw.add_rule(
                 FirewallRule::builder()
                     .name("Allow ICMP Echo Reply")
                     .ingress()
-                    .icmp()
+                    .icmp_type(0) // Type 0: Echo Reply
                     .allow()
                     .priority(50)
+                    .build(),
+            );
+
+            // 5.1 ICMP 宛先到達不能（MTU探索等に必要）を許可
+            let _ = fw.add_rule(
+                FirewallRule::builder()
+                    .name("Allow ICMP Dest Unreachable")
+                    .ingress()
+                    .icmp_type(3) // Type 3: Destination Unreachable
+                    .allow()
+                    .priority(51)
                     .build(),
             );
 

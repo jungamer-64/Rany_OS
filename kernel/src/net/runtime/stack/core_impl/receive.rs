@@ -190,6 +190,10 @@ impl NetworkStack {
                     let dp = u16::from_be_bytes([payload[2], payload[3]]);
                     (sp, dp, 0)
                 }
+                IpProtocol::Icmp if payload.len() >= 2 => {
+                    // ICMP type in src_port, code in dst_port
+                    (payload[0] as u16, payload[1] as u16, 0)
+                }
                 _ => (0, 0, 0),
             };
 

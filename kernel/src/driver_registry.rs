@@ -29,16 +29,26 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 use kernel_api::abi::driver::{
-    AbiDmaSlice, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle,
-    DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
-    DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
-    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV2, PackedPciLocation,
+    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiDmaSlice, AbiDriverType,
+    AbiError as AbiErrorCode, AbiMmioHandle, AbiNetPortRegistration,
+    AbiNvmeNamespaceRegistration, DRIVER_EXPORTS_ABI_VERSION,
+    DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
+    DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
+    KERNEL_API_ABI_VERSION, KernelApiV2, PackedPciLocation,
 };
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::error::{KapiError, KapiResult};
 use kernel_api::provider::ProviderDescriptorV1;
 mod registration_api;
 pub use registration_api::*;
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+fn cleanup_runtime_bridges_for_driver_handle(handle: DriverHandle) {
+    crate::runtime_bridge::cleanup_for_driver_handle(handle);
+}
+
+#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "qemu-test-export")))]
+fn cleanup_runtime_bridges_for_driver_handle(_handle: DriverHandle) {}
 
 // ============================================================================
 // Driver Registry
@@ -187,6 +197,7 @@ impl DriverRegistry {
         };
 
         if result.is_ok() {
+            cleanup_runtime_bridges_for_driver_handle(handle);
             crate::provider_registry::provider_registry().unregister_driver(handle);
         }
 
@@ -384,6 +395,7 @@ impl DriverRegistry {
         let old_name = alloc::string::String::from(entry.driver.name());
         let old_ty = entry.driver.driver_type();
 
+        cleanup_runtime_bridges_for_driver_handle(handle);
         crate::provider_registry::provider_registry().unregister_driver(handle);
 
         // Try to remove driver resources first
@@ -420,6 +432,7 @@ impl DriverRegistry {
             handle.index()
         );
 
+        cleanup_runtime_bridges_for_driver_handle(handle);
         crate::provider_registry::provider_registry().unregister_driver(handle);
 
         // We assume the new driver is in Registered state initially?
@@ -615,6 +628,116 @@ extern "C" fn kapi_irq_unbind(_irq: u32) -> i32 {
     AbiErrorCode::NotSupported as i32
 }
 
+fn map_kapi_error_to_abi(err: KapiError) -> i32 {
+    match err {
+        KapiError::OutOfMemory => AbiErrorCode::OutOfMemory as i32,
+        KapiError::PermissionDenied => AbiErrorCode::PermissionDenied as i32,
+        KapiError::NotSupported => AbiErrorCode::NotSupported as i32,
+        KapiError::Timeout => AbiErrorCode::Timeout as i32,
+        KapiError::NotFound => AbiErrorCode::DeviceNotFound as i32,
+        KapiError::AlreadyExists => AbiErrorCode::AlreadyInitialized as i32,
+        KapiError::ResourceExhausted => AbiErrorCode::DeviceBusy as i32,
+        KapiError::InvalidHandle => AbiErrorCode::InvalidParam as i32,
+        _ => AbiErrorCode::IoError as i32,
+    }
+}
+
+extern "C" fn kapi_register_block_device(
+    registration: *const AbiBlockDeviceRegistration,
+    out_handle: *mut u64,
+) -> i32 {
+    if registration.is_null() || out_handle.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+    let registration = unsafe { &*registration };
+    match kernel_api::service::kernel::instance().register_block_device(registration) {
+        Ok(handle) => {
+            unsafe { *out_handle = handle };
+            AbiErrorCode::Success as i32
+        }
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_unregister_block_device(handle: u64) -> i32 {
+    match kernel_api::service::kernel::instance().unregister_block_device(handle) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_register_nvme_namespace(
+    registration: *const AbiNvmeNamespaceRegistration,
+    out_handle: *mut u64,
+) -> i32 {
+    if registration.is_null() || out_handle.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+    let registration = unsafe { &*registration };
+    match kernel_api::service::kernel::instance().register_nvme_namespace(registration) {
+        Ok(handle) => {
+            unsafe { *out_handle = handle };
+            AbiErrorCode::Success as i32
+        }
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_unregister_nvme_namespace(handle: u64) -> i32 {
+    match kernel_api::service::kernel::instance().unregister_nvme_namespace(handle) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_register_netdev_port(
+    registration: *const AbiNetPortRegistration,
+    out_handle: *mut u64,
+) -> i32 {
+    if registration.is_null() || out_handle.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+    let registration = unsafe { &*registration };
+    match kernel_api::service::kernel::instance().register_netdev_port(registration) {
+        Ok(handle) => {
+            unsafe { *out_handle = handle };
+            AbiErrorCode::Success as i32
+        }
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_unregister_netdev_port(handle: u64) -> i32 {
+    match kernel_api::service::kernel::instance().unregister_netdev_port(handle) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_register_audio_controller(
+    registration: *const AbiAudioControllerRegistration,
+    out_handle: *mut u64,
+) -> i32 {
+    if registration.is_null() || out_handle.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+    let registration = unsafe { &*registration };
+    match kernel_api::service::kernel::instance().register_audio_controller(registration) {
+        Ok(handle) => {
+            unsafe { *out_handle = handle };
+            AbiErrorCode::Success as i32
+        }
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_unregister_audio_controller(handle: u64) -> i32 {
+    match kernel_api::service::kernel::instance().unregister_audio_controller(handle) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
 extern "C" fn kapi_heap_alloc(size: usize) -> *mut u8 {
     use core::alloc::Layout;
 
@@ -673,7 +796,15 @@ pub static __exorust_kernel_api_v2: KernelApiV2 = KernelApiV2 {
     heap_alloc: Some(kapi_heap_alloc),
     heap_dealloc: Some(kapi_heap_dealloc),
     panic_abort: Some(kapi_panic_abort),
-    reserved: [0; 8],
+    register_block_device: kapi_register_block_device,
+    unregister_block_device: kapi_unregister_block_device,
+    register_nvme_namespace: kapi_register_nvme_namespace,
+    unregister_nvme_namespace: kapi_unregister_nvme_namespace,
+    register_netdev_port: kapi_register_netdev_port,
+    unregister_netdev_port: kapi_unregister_netdev_port,
+    register_audio_controller: kapi_register_audio_controller,
+    unregister_audio_controller: kapi_unregister_audio_controller,
+    reserved: [0; 2],
 };
 
 pub(crate) fn kernel_api_v2() -> &'static KernelApiV2 {

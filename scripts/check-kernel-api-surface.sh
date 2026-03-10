@@ -71,4 +71,33 @@ for pattern in "${driver_dma_audit_patterns[@]}"; do
   fi
 done
 
+initramfs_path="target/initramfs.tar"
+required_initramfs_entries=(
+  'drivers/driver_cell_probe.cell'
+  'drivers/driver_cell_probe_pci.cell'
+  'drivers/ahci_driver.cell'
+  'drivers/nvme_driver.cell'
+  'drivers/usb_xhci_driver.cell'
+  'drivers/hda_driver.cell'
+  'cells/driver_cell_probe_v1.cell'
+  'cells/driver_cell_probe_v2.cell'
+)
+
+if [[ ! -f "$initramfs_path" ]]; then
+  echo "missing merged runtime initramfs: $initramfs_path" >&2
+  status=1
+else
+  for entry in "${required_initramfs_entries[@]}"; do
+    if ! tar -tf "$initramfs_path" | grep -Fxq "$entry"; then
+      echo "missing initramfs entry: $entry" >&2
+      status=1
+    fi
+  done
+
+  if ! tar -tf "$initramfs_path" | grep -Eq '^drivers/mlx5_driver_[0-9a-f]+\.cell$'; then
+    echo "missing initramfs mlx5 standalone driver pack" >&2
+    status=1
+  fi
+fi
+
 exit "$status"

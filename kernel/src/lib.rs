@@ -2075,6 +2075,8 @@ pub mod unwind;
 pub mod crypto;
 #[cfg(any(not(test), test, feature = "bench", feature = "full_mm_tests"))]
 pub mod driver_registry;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod runtime_bridge;
 #[cfg(any(
     all(
         test,

@@ -72,7 +72,13 @@ fn current_framebuffer_info() -> Option<KapiFramebufferInfo> {
 }
 
 fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
-    let mut devices = alloc::vec::Vec::new();
+    let mut devices: alloc::vec::Vec<StorageDeviceInfo> = alloc::vec::Vec::new();
+
+    for device in crate::runtime_bridge::standalone_storage_devices() {
+        if !devices.iter().any(|existing| existing.device_id == device.device_id) {
+            devices.push(device);
+        }
+    }
 
     if let Some(Some(info)) = crate::io::nvme::with_driver(|driver| {
         if !driver.is_active() {
@@ -96,7 +102,9 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
             flags: STORAGE_FLAG_ACTIVE,
         })
     }) {
-        devices.push(info);
+        if !devices.iter().any(|existing| existing.device_id == info.device_id) {
+            devices.push(info);
+        }
     }
 
     if let Some(device) = crate::drivers::virtio::blk::get_virtio_blk_device() {
@@ -109,26 +117,32 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
             flags |= STORAGE_FLAG_READ_ONLY;
         }
 
-        devices.push(StorageDeviceInfo {
+        let info = StorageDeviceInfo {
             device_id: provider_device_id(STORAGE_KIND_VIRTIO_BLK, 0),
             namespace_id: 0,
             block_size: config.block_size,
             max_transfer_blocks: 0,
             transport: StorageTransport::VirtioBlock,
             flags,
-        });
+        };
+        if !devices.iter().any(|existing| existing.device_id == info.device_id) {
+            devices.push(info);
+        }
     }
 
     for device in crate::io::io_scheduler::io_scheduler().registered_devices() {
         if let crate::io::io_scheduler::DeviceId::Ahci { port } = device {
-            devices.push(StorageDeviceInfo {
+            let info = StorageDeviceInfo {
                 device_id: provider_device_id(STORAGE_KIND_AHCI, port as u64),
                 namespace_id: 0,
                 block_size: crate::io::ahci::SECTOR_SIZE as u32,
                 max_transfer_blocks: 0,
                 transport: StorageTransport::Ahci,
                 flags: STORAGE_FLAG_ACTIVE,
-            });
+            };
+            if !devices.iter().any(|existing| existing.device_id == info.device_id) {
+                devices.push(info);
+            }
         }
     }
 
@@ -140,7 +154,8 @@ fn net_devices_snapshot() -> alloc::vec::Vec<NetDeviceInfo> {
 }
 
 fn audio_devices_snapshot() -> alloc::vec::Vec<AudioDeviceInfo> {
-    crate::io::audio::with_driver(|controller| {
+    let mut devices = crate::runtime_bridge::standalone_audio_devices();
+    let builtin = crate::io::audio::with_driver(|controller| {
         if !controller.is_initialized() {
             return alloc::vec::Vec::new();
         }
@@ -166,7 +181,15 @@ fn audio_devices_snapshot() -> alloc::vec::Vec<AudioDeviceInfo> {
             })
             .collect()
     })
-    .unwrap_or_default()
+    .unwrap_or_default();
+
+    for device in builtin {
+        if !devices.iter().any(|existing| existing.device_id == device.device_id) {
+            devices.push(device);
+        }
+    }
+
+    devices
 }
 
 impl GuiServices for ExoKernel {

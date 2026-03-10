@@ -1,6 +1,9 @@
 use super::*;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use kernel_api::abi::driver::PackedPciLocation;
+use kernel_api::abi::driver::{
+    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistration,
+    AbiNvmeNamespaceRegistration, PackedPciLocation,
+};
 
 fn unpack_device_id(locator: PackedPciLocation) -> IommuDeviceId {
     IommuDeviceId {
@@ -131,6 +134,55 @@ impl KernelServices for ExoKernel {
 
     fn log(&self, message: &str) {
         log::info!("{}", message);
+    }
+
+    fn register_block_device(
+        &self,
+        registration: &AbiBlockDeviceRegistration,
+    ) -> Result<u64, KapiError> {
+        crate::runtime_bridge::register_block_device(registration)
+            .map_err(|_| KapiError::PermissionDenied)
+    }
+
+    fn unregister_block_device(&self, handle: u64) -> Result<(), KapiError> {
+        crate::runtime_bridge::unregister_block_device(handle)
+            .map_err(|_| KapiError::PermissionDenied)
+    }
+
+    fn register_nvme_namespace(
+        &self,
+        registration: &AbiNvmeNamespaceRegistration,
+    ) -> Result<u64, KapiError> {
+        crate::runtime_bridge::register_nvme_namespace(registration)
+            .map_err(|_| KapiError::PermissionDenied)
+    }
+
+    fn unregister_nvme_namespace(&self, handle: u64) -> Result<(), KapiError> {
+        crate::runtime_bridge::unregister_nvme_namespace(handle)
+            .map_err(|_| KapiError::PermissionDenied)
+    }
+
+    fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> Result<u64, KapiError> {
+        crate::runtime_bridge::register_netdev_port(registration)
+            .map_err(|_| KapiError::PermissionDenied)
+    }
+
+    fn unregister_netdev_port(&self, handle: u64) -> Result<(), KapiError> {
+        crate::runtime_bridge::unregister_netdev_port(handle)
+            .map_err(|_| KapiError::PermissionDenied)
+    }
+
+    fn register_audio_controller(
+        &self,
+        registration: &AbiAudioControllerRegistration,
+    ) -> Result<u64, KapiError> {
+        crate::runtime_bridge::register_audio_controller(registration)
+            .map_err(|_| KapiError::PermissionDenied)
+    }
+
+    fn unregister_audio_controller(&self, handle: u64) -> Result<(), KapiError> {
+        crate::runtime_bridge::unregister_audio_controller(handle)
+            .map_err(|_| KapiError::PermissionDenied)
     }
 
     // ========================================================================
@@ -469,8 +521,10 @@ impl KernelServices for ExoKernel {
         }
 
         let nsid = if device_id == 0 { 1 } else { device_id as u32 };
-        let block_size =
-            crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid)).unwrap_or(512);
+        let block_size = crate::runtime_bridge::standalone_nvme_namespace_info(nsid)
+            .map(|info| info.block_size)
+            .or_else(|| crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid)))
+            .unwrap_or(512);
 
         let caller = context::current_subject().domain.as_u64();
 
@@ -603,14 +657,21 @@ impl KernelServices for ExoKernel {
 
     fn nvme_block_size(&self, device_id: u64) -> Option<u64> {
         let nsid = if device_id == 0 { 1 } else { device_id as u32 };
-        crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid) as u64)
+        crate::runtime_bridge::standalone_nvme_namespace_info(nsid)
+            .map(|info| info.block_size as u64)
+            .or_else(|| crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid) as u64))
     }
 
-    fn nvme_sgl_max_entries(&self, _device_id: u64) -> Option<usize> {
-        crate::io::nvme::global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-            driver.sgl_max_entries()
-        })
-        .flatten()
+    fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize> {
+        let nsid = if device_id == 0 { 1 } else { device_id as u32 };
+        crate::runtime_bridge::standalone_nvme_namespace_info(nsid)
+            .map(|info| info.max_sgl_entries as usize)
+            .or_else(|| {
+                crate::io::nvme::global::with_driver(
+                    |driver: &crate::io::nvme::NvmePollingDriver| driver.sgl_max_entries(),
+                )
+                .flatten()
+            })
     }
 
     fn nvme_submit_rw(
