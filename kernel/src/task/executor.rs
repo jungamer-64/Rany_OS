@@ -348,6 +348,35 @@ impl Executor {
         EXECUTOR_STATS.tasks_spawned.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub(crate) fn drive_once_for_test(&mut self) {
+        // Keep this in sync with the non-idle portion of `run()` so qemu-test
+        // runtime suites exercise the same phase-2 executor path.
+        crate::interrupts::poll_timer_events();
+        crate::io::hid::keyboard::process_pending_wakes();
+        crate::task::timer::process_pending_timer_wakers();
+        crate::task::interrupt_waker::process_interrupt_events();
+        crate::io::io_scheduler::process_deferred_completions();
+        crate::sync::process_deferred_wakes();
+        crate::sync::process_deferred_waker_queue_wakes();
+        crate::io::io_scheduler::hybrid_coordinator().tick(|| {
+            crate::task::interrupt_waker::process_interrupt_events();
+        });
+        crate::io::iommu::api::process_pending_command_queues();
+        self.process_suspended_tasks();
+        crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
+        self.run_ready_tasks();
+        self.process_wake_queue();
+        self.fetch_from_global();
+        if self.local_queue.is_empty() && self.local_cache.is_empty() {
+            self.try_steal();
+        }
+        crate::loader::live_update::enter_quiescent_state();
+        crate::loader::live_update::poll_pending_updates();
+        crate::driver_domain::hot_swap::poll_validation_windows();
+        crate::io::log::kick_serial_tx();
+    }
+
     /// メインループ
     pub fn run(&mut self) -> ! {
         // LOOP_PROOF: mode=event; reason=Executor loop is intentional for kernel lifetime and each pass handles finite work slices.;

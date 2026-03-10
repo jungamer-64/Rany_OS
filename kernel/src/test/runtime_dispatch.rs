@@ -110,8 +110,24 @@ impl RuntimeRunSummary {
     }
 }
 
-fn boot_smoke_cmdline_dispatch(_case_filter: Option<&str>) -> RuntimeTestResult {
-    RuntimeTestResult::pass()
+fn boot_smoke_cmdline_dispatch(case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        let summary = crate::qemu_tests::run_boot_runtime_suite(case_filter);
+        if summary.failed > 0 {
+            return RuntimeTestResult::fail("boot runtime failures");
+        }
+        if summary.blocked > 0 {
+            return RuntimeTestResult::blocked("boot runtime blocked");
+        }
+        return RuntimeTestResult::pass();
+    }
+
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        let _ = case_filter;
+        RuntimeTestResult::blocked("boot runtime requires qemu-test-export")
+    }
 }
 
 fn nightly_smoke_cmdline_dispatch(_case_filter: Option<&str>) -> RuntimeTestResult {
@@ -165,10 +181,10 @@ fn network_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
     }
 }
 
-fn driver_domain_runtime_suite(_case_filter: Option<&str>) -> RuntimeTestResult {
+fn driver_domain_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
     #[cfg(feature = "qemu-test-export")]
     {
-        let summary = crate::driver_domain::qemu_tests::run_driver_domain_runtime_suite();
+        let summary = crate::driver_domain::qemu_tests::run_driver_domain_runtime_suite(case_filter);
         if summary.failed > 0 {
             return RuntimeTestResult::fail("driver_domain runtime failures");
         }
@@ -180,8 +196,15 @@ fn driver_domain_runtime_suite(_case_filter: Option<&str>) -> RuntimeTestResult 
 
     #[cfg(not(feature = "qemu-test-export"))]
     {
+        let _ = case_filter;
         RuntimeTestResult::blocked("driver_domain runtime requires qemu-test-export")
     }
+}
+
+fn case_accepts_nested_filter(profile: &str, case_id: &str) -> bool {
+    (str_eq(profile, "boot-smoke") && str_eq(case_id, "boot.smoke_cmdline_dispatch"))
+        || (str_eq(profile, "network") && str_eq(case_id, "network.runtime_suite"))
+        || (str_eq(profile, "driver_domain") && str_eq(case_id, "driver_domain.runtime_suite"))
 }
 
 static CASES: &[RuntimeTestCase] = &[
@@ -302,8 +325,7 @@ pub fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
             continue;
         }
 
-        let pass_filter_to_inner =
-            str_eq(profile, "network") && str_eq(case.id, "network.runtime_suite");
+        let pass_filter_to_inner = case_accepts_nested_filter(profile, case.id);
 
         if let Some(filter) = case_filter {
             if !pass_filter_to_inner && !str_eq(case.id, filter) {

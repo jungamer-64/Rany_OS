@@ -8,6 +8,8 @@ use core::sync::atomic::Ordering;
 
 mod wave8_net_tests;
 pub use wave8_net_tests::*;
+mod boot_runtime_suite;
+pub use boot_runtime_suite::*;
 mod storage_fs_tests;
 pub use storage_fs_tests::*;
 mod network_runtime_suite;

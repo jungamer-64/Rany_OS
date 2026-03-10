@@ -369,12 +369,50 @@ struct ObservedDriverContext {
 }
 
 #[cfg(feature = "qemu-test-export")]
-pub fn run_driver_domain_runtime_suite() -> DriverDomainRuntimeSuiteSummary {
+fn case_matches_filter(case_filter: Option<&str>, name: &str) -> bool {
+    case_filter.is_none_or(|filter| crate::loader::str_eq(filter, name))
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn run_driver_domain_runtime_suite(
+    case_filter: Option<&str>,
+) -> DriverDomainRuntimeSuiteSummary {
     let mut summary = DriverDomainRuntimeSuiteSummary::new();
     runtime_log_line("[driver-cell-runtime] start");
     crate::io::iommu::api::reset_map_unmap_counts();
     let old_aslr = crate::loader::elf::is_aslr_enabled();
     crate::loader::elf::set_aslr_enabled(false);
+
+    let mut selected_any = false;
+    for name in [
+        "staged_pci_probe_receives_real_driver_context",
+        "no_dma_fallbacks_recorded",
+        "loader_rejects_too_new_kernel_api",
+        "update_validating",
+        "manual_rollback",
+        "manual_commit",
+        "auto_commit",
+        "auto_rollback_panic",
+        "idle_restart_panic",
+        "unload",
+    ] {
+        if case_matches_filter(case_filter, name) {
+            selected_any = true;
+            break;
+        }
+    }
+
+    if !selected_any {
+        summary.failed = 1;
+        log_case(
+            case_filter.unwrap_or("driver_domain.case_selection"),
+            "fail",
+            "no matching runtime case",
+        );
+        log_summary(&summary);
+        crate::loader::elf::set_aslr_enabled(old_aslr);
+        return summary;
+    }
 
     let mut ctx = match preflight() {
         Ok(ctx) => {
@@ -400,34 +438,64 @@ pub fn run_driver_domain_runtime_suite() -> DriverDomainRuntimeSuiteSummary {
 
     let old_grace = crate::loader::live_update::set_rollback_grace_period_for_test(1_000);
 
-    run_case(
-        &mut summary,
-        "staged_pci_probe_receives_real_driver_context",
-        case_staged_pci_probe_receives_real_driver_context(&ctx),
-    );
-    run_case(
-        &mut summary,
-        "no_dma_fallbacks_recorded",
-        case_no_dma_fallbacks_recorded(),
-    );
-    run_case(
-        &mut summary,
-        "loader_rejects_too_new_kernel_api",
-        case_loader_rejects_too_new_kernel_api(&ctx),
-    );
-    run_case(
-        &mut summary,
-        "update_validating",
-        case_update_to_validating(&mut ctx),
-    );
-    run_case(
-        &mut summary,
-        "manual_rollback",
-        case_manual_rollback(&mut ctx),
-    );
-    run_case(&mut summary, "manual_commit", case_manual_commit(&mut ctx));
-    // Keep full-boot runtime coverage deterministic under qemu_no_if=1 by
-    // restricting the suite to the stable hot-swap validation cases.
+    if case_matches_filter(case_filter, "staged_pci_probe_receives_real_driver_context") {
+        run_case(
+            &mut summary,
+            "staged_pci_probe_receives_real_driver_context",
+            case_staged_pci_probe_receives_real_driver_context(&ctx),
+        );
+    }
+    if case_matches_filter(case_filter, "no_dma_fallbacks_recorded") {
+        run_case(
+            &mut summary,
+            "no_dma_fallbacks_recorded",
+            case_no_dma_fallbacks_recorded(),
+        );
+    }
+    if case_matches_filter(case_filter, "loader_rejects_too_new_kernel_api") {
+        run_case(
+            &mut summary,
+            "loader_rejects_too_new_kernel_api",
+            case_loader_rejects_too_new_kernel_api(&ctx),
+        );
+    }
+    if case_matches_filter(case_filter, "update_validating") {
+        run_case(
+            &mut summary,
+            "update_validating",
+            case_update_to_validating(&mut ctx),
+        );
+    }
+    if case_matches_filter(case_filter, "manual_rollback") {
+        run_case(
+            &mut summary,
+            "manual_rollback",
+            case_manual_rollback(&mut ctx),
+        );
+    }
+    if case_matches_filter(case_filter, "manual_commit") {
+        run_case(&mut summary, "manual_commit", case_manual_commit(&mut ctx));
+    }
+    if case_matches_filter(case_filter, "auto_commit") {
+        run_case(&mut summary, "auto_commit", case_auto_commit(&mut ctx));
+    }
+    if case_matches_filter(case_filter, "auto_rollback_panic") {
+        run_case(
+            &mut summary,
+            "auto_rollback_panic",
+            case_auto_rollback_panic(&mut ctx),
+        );
+    }
+    if case_matches_filter(case_filter, "idle_restart_panic") {
+        run_case(
+            &mut summary,
+            "idle_restart_panic",
+            case_idle_restart_panic(&mut ctx),
+        );
+    }
+    if case_matches_filter(case_filter, "unload") {
+        run_case(&mut summary, "unload", case_unload(&mut ctx));
+    }
 
     crate::loader::live_update::set_rollback_grace_period_for_test(old_grace);
     crate::loader::elf::set_aslr_enabled(old_aslr);
@@ -539,19 +607,15 @@ fn case_staged_pci_probe_receives_real_driver_context(
         expected_dev.packed_locator(),
     );
 
-    let (cell_id, stored_ctx) = driver_domain_manager()
+    let (maybe_cell_id, stored_ctx) = driver_domain_manager()
         .with_cell(ctx.staged_pci_domain_id, |cell| {
-            (
-                cell.cell_id.ok_or(DriverDomainError::LoadFailed(
-                    "staged PCI probe cell_id missing".into(),
-                ))?,
-                cell.abi_driver_context,
-            )
+            (cell.cell_id, cell.abi_driver_context)
         })
         .map_err(|e| {
             RuntimeCaseError::failed(format!("failed to inspect staged DriverDomain: {}", e))
-        })?
-        .map_err(|e| RuntimeCaseError::failed(format!("staged DriverDomain invalid: {}", e)))?;
+        })?;
+    let cell_id = maybe_cell_id
+        .ok_or_else(|| RuntimeCaseError::failed("staged PCI probe cell_id missing"))?;
 
     if stored_ctx.device_address != expected_ctx.device_address
         || stored_ctx.irq != expected_ctx.irq

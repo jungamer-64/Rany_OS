@@ -258,8 +258,10 @@ fn kernel_cmdline(config: &RunConfig) -> String {
     let mut parts = vec![
         format!("run_integration={}", config.profile),
         String::from("shell=off"),
-        String::from("qemu_no_if=1"),
     ];
+    if config.profile != "boot-smoke" {
+        parts.push(String::from("qemu_no_if=1"));
+    }
     if config.profile == "step9-heavy" {
         parts.push(String::from("kgdb=on"));
         parts.push(String::from("kgdb_transport=both"));
@@ -893,4 +895,28 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
         qemu_stderr_path,
         child,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boot_smoke_cmdline_keeps_interrupts_enabled() {
+        let cfg = RunConfig::for_profile("boot-smoke");
+        let cmdline = kernel_cmdline(&cfg);
+
+        assert!(cmdline.contains("run_integration=boot-smoke"));
+        assert!(cmdline.contains("shell=off"));
+        assert!(!cmdline.contains("qemu_no_if=1"));
+    }
+
+    #[test]
+    fn driver_domain_cmdline_keeps_qemu_no_if() {
+        let cfg = RunConfig::for_profile("driver_domain");
+        let cmdline = kernel_cmdline(&cfg);
+
+        assert!(cmdline.contains("run_integration=driver_domain"));
+        assert!(cmdline.contains("qemu_no_if=1"));
+    }
 }
