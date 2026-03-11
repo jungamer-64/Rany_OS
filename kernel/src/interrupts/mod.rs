@@ -504,9 +504,6 @@ define_interrupt!(
 static TIMER_EVENT_PENDING: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-/// Debug helpers: log first occurrence of certain interrupts
-static KEYBOARD_LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
 /// タイマーイベントをポーリング（非ISRコンテキストから呼び出し）
 ///
 /// 設計書 4.2: 重い処理は非ISRコンテキストで実行
@@ -563,9 +560,6 @@ pub fn poll_timer_events() {
 // Interrupt-Wakerブリッジとの連携
 define_interrupt!(
     fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-        if !KEYBOARD_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-            crate::io::log::early_print("[INT] keyboard interrupt received\n");
-        }
         // Feed scancodes into the async KeyboardStream driver used by ConsoleFrontend.
         crate::drivers::hid::keyboard::keyboard_interrupt_handler();
 

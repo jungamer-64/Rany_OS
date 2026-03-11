@@ -329,6 +329,9 @@ impl Mlx5Device {
         start: usize,
         dwords: usize,
     ) {
+        if !cfg!(feature = "debug_mlx5_cmd") {
+            return;
+        }
         let aligned_start = start & !0x3;
         let max_bytes = crate::defs::MLX5_CMD_MBOX_SIZE.saturating_sub(aligned_start);
         let count = dwords.min(max_bytes / 4).min(128);

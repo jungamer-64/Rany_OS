@@ -419,8 +419,7 @@ pub(crate) fn set_packet_dma_device(device_id: Option<u64>) {
     PACKET_DMA_DEVICE_ID.store(device_id.unwrap_or(NO_PACKET_DMA_DEVICE), Ordering::Release);
 }
 
-pub(crate) fn alloc_packet_for_active_dma_device() -> Option<PacketRef> {
-    let device_id = PACKET_DMA_DEVICE_ID.load(Ordering::Acquire);
+pub(crate) fn alloc_packet_for_dma_device(device_id: u64) -> Option<PacketRef> {
     if device_id == NO_PACKET_DMA_DEVICE {
         return None;
     }
@@ -432,6 +431,11 @@ pub(crate) fn alloc_packet_for_active_dma_device() -> Option<PacketRef> {
         )
         .ok()
         .map(packet_ref_from_kapi_dma_slice)
+}
+
+pub(crate) fn alloc_packet_for_active_dma_device() -> Option<PacketRef> {
+    let device_id = PACKET_DMA_DEVICE_ID.load(Ordering::Acquire);
+    alloc_packet_for_dma_device(device_id)
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]

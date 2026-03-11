@@ -92,10 +92,12 @@ fn lock_mlx5_sriov_state(context: &str) -> Mlx5SriovStateGuard {
 }
 
 fn current_port_runtime_initialized() -> bool {
-    crate::net::runtime::device::list_port_keys(Some(kernel_api::service::netdev::NetPortKind::Mlx5))
-        .into_iter()
-        .next()
-        .is_some()
+    crate::net::runtime::device::list_port_keys(Some(
+        kernel_api::service::netdev::NetPortKind::Mlx5,
+    ))
+    .into_iter()
+    .next()
+    .is_some()
 }
 
 fn map_pcie_error(err: PcieError) -> KapiError {
@@ -551,8 +553,10 @@ impl Mlx5AsyncDriver {
     }
 
     fn discover_pci_devices() -> Vec<(ConnectXVariant, crate::io::pci::PciDeviceInfo)> {
-        let mut devices =
-            alloc::collections::BTreeMap::<(u16, u8, u8, u8), (ConnectXVariant, crate::io::pci::PciDeviceInfo)>::new();
+        let mut devices = alloc::collections::BTreeMap::<
+            (u16, u8, u8, u8),
+            (ConnectXVariant, crate::io::pci::PciDeviceInfo),
+        >::new();
         for &(_vendor_id, device_id) in SUPPORTED_DEVICE_IDS {
             let variant = ConnectXVariant::from_device_id(device_id);
             for pci_device in crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, device_id) {
@@ -711,7 +715,11 @@ impl Mlx5AsyncDriver {
     }
 
     /// PCI デバイスの完全な初期化を行う
-    fn probe_device(&mut self, index: u8, pci_dev: &crate::io::pci::PciDeviceInfo) -> KapiResult<()> {
+    fn probe_device(
+        &mut self,
+        index: u8,
+        pci_dev: &crate::io::pci::PciDeviceInfo,
+    ) -> KapiResult<()> {
         crate::io::log::early_print("[MLX5_PROBE] probe_device enter\n");
         let variant = ConnectXVariant::from_device_id(pci_dev.device_id.0);
         log::info!(
@@ -921,7 +929,8 @@ impl Mlx5AsyncDriver {
         if let Err(e) = register_result {
             log::error!(target: "mlx5", "Port runtime registration failed: {}", e);
 
-            if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device(index) {
+            if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device(index)
+            {
                 unsafe {
                     if let Err(teardown_err) = dev.teardown() {
                         log::warn!(target: "mlx5", "Teardown after registration failure failed: {:?}", teardown_err);

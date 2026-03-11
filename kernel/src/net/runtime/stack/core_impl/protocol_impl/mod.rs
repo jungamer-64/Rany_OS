@@ -125,7 +125,9 @@ impl NetworkStack {
         iface_config.ipv4.address = lease.ip_address;
         iface_config.ipv4.subnet_mask = lease.subnet_mask;
         iface_config.ipv4.gateway = if update_primary_runtime {
-            lease.gateway.unwrap_or(crate::net::l3::ipv4::Ipv4Address::ANY)
+            lease
+                .gateway
+                .unwrap_or(crate::net::l3::ipv4::Ipv4Address::ANY)
         } else {
             crate::net::l3::ipv4::Ipv4Address::ANY
         };

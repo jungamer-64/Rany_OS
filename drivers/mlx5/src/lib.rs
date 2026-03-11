@@ -54,13 +54,24 @@ pub mod resources;
 mod structs; // low‑level layout helpers used internally
 pub mod wq;
 
+#[inline]
+fn verbose_boot_trace_enabled() -> bool {
+    cfg!(feature = "debug_mlx5_cmd")
+}
+
 pub(crate) fn boot_trace(msg: &str) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     if let Some(serial) = kernel_api::service::serial::try_instance() {
         let _ = serial.write(0, msg.as_bytes());
     }
 }
 
 pub(crate) fn boot_trace_cmd(opcode: defs::CmdOpcode, stage: &str, uid: u16) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     if let Some(name) = boot_opcode_name(opcode) {
         if let Some(serial) = kernel_api::service::serial::try_instance() {
             let _ = serial.write(0, b"[MLX5_CMD] ");
@@ -77,6 +88,9 @@ pub(crate) fn boot_trace_cmd(opcode: defs::CmdOpcode, stage: &str, uid: u16) {
 }
 
 pub(crate) fn boot_trace_cmd_error(opcode: defs::CmdOpcode, uid: u16, status: u8, syndrome: u32) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     if let Some(name) = boot_opcode_name(opcode) {
         if let Some(serial) = kernel_api::service::serial::try_instance() {
             let _ = serial.write(0, b"[MLX5_CMD] ");
@@ -106,6 +120,9 @@ pub(crate) fn boot_trace_sq_state(
     wq_type: u8,
     effective_tisn: u32,
 ) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     if let Some(serial) = kernel_api::service::serial::try_instance() {
         let _ = serial.write(0, b"[MLX5_SQ] sqn=0x");
         let mut sqn_hex = [0u8; 8];
@@ -136,6 +153,9 @@ pub(crate) fn boot_trace_sq_state(
 }
 
 pub(crate) fn boot_trace_tis_choice(label: &str, tisn: u32) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     if let Some(serial) = kernel_api::service::serial::try_instance() {
         let _ = serial.write(0, b"[MLX5_TIS] ");
         let _ = serial.write(0, label.as_bytes());
@@ -160,6 +180,9 @@ pub(crate) fn boot_trace_tis_attempt(
     lag_port: u8,
     strict_lag: bool,
 ) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     if let Some(serial) = kernel_api::service::serial::try_instance() {
         let _ = serial.write(0, b"[MLX5_TIS] ");
         let _ = serial.write(0, label.as_bytes());
@@ -207,6 +230,9 @@ pub(crate) fn boot_trace_tis_attempt_result(
     status: u8,
     syndrome: u32,
 ) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     if let Some(serial) = kernel_api::service::serial::try_instance() {
         let _ = serial.write(0, b"[MLX5_TIS] ");
         let _ = serial.write(0, label.as_bytes());
@@ -225,6 +251,9 @@ pub(crate) fn boot_trace_tis_attempt_result(
 }
 
 pub(crate) fn boot_trace_tis_query(label: &str, tisn: u32, info: &crate::cmd::res::QueryTisInfo) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     if let Some(serial) = kernel_api::service::serial::try_instance() {
         let _ = serial.write(0, b"[MLX5_TIS] ");
         let _ = serial.write(0, label.as_bytes());
@@ -274,6 +303,9 @@ pub(crate) fn boot_trace_tis_compare(
     adopted_tisn: u32,
     adopted: &crate::cmd::res::QueryTisInfo,
 ) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     if let Some(serial) = kernel_api::service::serial::try_instance() {
         let _ = serial.write(0, b"[MLX5_TIS] ");
         let _ = serial.write(0, label.as_bytes());
@@ -340,6 +372,9 @@ pub(crate) fn boot_trace_mailbox_range(
     start: usize,
     dwords: usize,
 ) {
+    if !verbose_boot_trace_enabled() {
+        return;
+    }
     let aligned_start = start & !0x3;
     let max_bytes = crate::defs::MLX5_CMD_MBOX_SIZE.saturating_sub(aligned_start);
     let count = dwords.min(max_bytes / 4).min(128);

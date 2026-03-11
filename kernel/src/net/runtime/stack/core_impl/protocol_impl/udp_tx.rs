@@ -7,6 +7,75 @@
 use super::*;
 
 impl NetworkStack {
+    pub(crate) fn send_udp_raw_with_config_and_if_ttl(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        config: &NetworkConfig,
+        src_ip: Ipv4Address,
+        src_port: u16,
+        dst_ip: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
+        if !crate::net::security::firewall::check_egress_v4(
+            src_ip.octets(),
+            dst_ip.octets(),
+            17,
+            src_port,
+            dst_port,
+            0,
+        ) {
+            self.stats.record_dropped();
+            return false;
+        }
+
+        let current_time = self.current_time();
+        let dst_mac = match self.resolve_mac(dst_ip, config, current_time) {
+            Some(mac) => mac,
+            None => return false,
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            let eth_payload = frame.payload_mut();
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                ip_packet
+                    .init_header()
+                    .set_source(src_ip)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Udp)
+                    .set_identification(self.ipv4.next_id(dst_ip))
+                    .set_ttl(ttl);
+
+                let ip_payload = ip_packet.payload_mut();
+                if let Some(udp_len) = crate::net::l4::udp::UdpProcessor::build_packet(
+                    ip_payload, src_ip, src_port, dst_ip, dst_port, data,
+                ) {
+                    ip_packet.finalize(udp_len);
+
+                    let ip_len = ip_packet.total_len();
+                    frame.set_payload_len(ip_len);
+
+                    if let Some(tx_fn) = self.transmit_fn {
+                        if tx_fn(if_id, frame.as_bytes()) {
+                            self.stats.record_tx(frame.as_bytes().len());
+                            return true;
+                        }
+                        self.stats.record_tx_error();
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
     /// Send a UDP packet (raw helper)
     pub fn send_udp_raw(
         &mut self,
@@ -29,69 +98,10 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress_v4(
-            src_ip.octets(),
-            dst_ip.octets(),
-            17,
-            src_port,
-            dst_port,
-            0,
-        ) {
-            self.stats.record_dropped();
-            return false;
-        }
-
         let config = self.config.clone();
-        let current_time = self.current_time();
-
-        // Resolve MAC address
-        let dst_mac = self.resolve_mac(dst_ip, &config, current_time);
-        let dst_mac = match dst_mac {
-            Some(mac) => mac,
-            None => {
-                return false;
-            }
-        };
-
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-
-        // Build Ethernet frame
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv4);
-
-            let eth_payload = frame.payload_mut();
-
-            // Build IP packet
-            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                ip_packet
-                    .init_header()
-                    .set_source(src_ip)
-                    .set_destination(dst_ip)
-                    .set_protocol(IpProtocol::Udp)
-                    .set_identification(self.ipv4.next_id(dst_ip))
-                    .set_ttl(ttl);
-
-                let ip_payload = ip_packet.payload_mut();
-
-                // Build UDP packet
-                if let Some(udp_len) = crate::net::l4::udp::UdpProcessor::build_packet(
-                    ip_payload, src_ip, src_port, dst_ip, dst_port, data,
-                ) {
-                    ip_packet.finalize(udp_len);
-
-                    let ip_len = ip_packet.total_len();
-                    frame.set_payload_len(ip_len);
-
-                    return self.transmit(frame.as_bytes());
-                }
-            }
-        }
-
-        false
+        self.send_udp_raw_with_config_and_if_ttl(
+            None, &config, src_ip, src_port, dst_ip, dst_port, data, ttl,
+        )
     }
 
     /// Resolve IP to MAC address

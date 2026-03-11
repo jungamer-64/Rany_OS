@@ -142,19 +142,21 @@ impl Mlx5Device {
         let cq_in_len = (0x110 + cq_pages * 8) as u32;
 
         let cqc = &in_mbox.data[0x10..];
-        log::info!(
-            target: "mlx5",
-            "CREATE_CQ in(pre): st={} cqe_comp={} page_offset={} log_cq_size={} uar_page={} c_eqn={:#x} log_page_size={} dbr_addr={:#x} pas0={:#x}",
-            crate::structs::get_bits_u32(cqc, 20, 4),
-            crate::structs::get_bits_u32(cqc, 17, 1),
-            crate::structs::get_bits_u32(cqc, 84, 6),
-            crate::structs::get_bits_u32(cqc, 99, 5),
-            crate::structs::get_bits_u32(cqc, 104, 24),
-            crate::structs::get_bits_u32(cqc, 160, 32),
-            crate::structs::get_bits_u32(cqc, 195, 5),
-            in_mbox.read_be64(0x48),
-            in_mbox.read_be64(0x110),
-        );
+        if cfg!(feature = "debug_mlx5_cmd") {
+            log::info!(
+                target: "mlx5",
+                "CREATE_CQ in(pre): st={} cqe_comp={} page_offset={} log_cq_size={} uar_page={} c_eqn={:#x} log_page_size={} dbr_addr={:#x} pas0={:#x}",
+                crate::structs::get_bits_u32(cqc, 20, 4),
+                crate::structs::get_bits_u32(cqc, 17, 1),
+                crate::structs::get_bits_u32(cqc, 84, 6),
+                crate::structs::get_bits_u32(cqc, 99, 5),
+                crate::structs::get_bits_u32(cqc, 104, 24),
+                crate::structs::get_bits_u32(cqc, 160, 32),
+                crate::structs::get_bits_u32(cqc, 195, 5),
+                in_mbox.read_be64(0x48),
+                in_mbox.read_be64(0x110),
+            );
+        }
         if let Err(err) = self.execute_uid_sensitive_cmd(CmdOpcode::CreateCq, cq_in_len, 0x10) {
             log::info!(
                 target: "mlx5",
@@ -293,14 +295,16 @@ impl Mlx5Device {
                 .copy_from_slice(&in_mbox.data[..sq_in_len as usize]);
             match self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10) {
                 Ok(()) => {
-                    log::info!(
-                        target: "mlx5",
-                        "CREATE_SQ accepted: mode={} implicit_tis={} tisn={} min_inline_mode={}",
-                        mode,
-                        implicit_tis,
-                        tisn,
-                        min_inline_mode
-                    );
+                    if cfg!(feature = "debug_mlx5_cmd") {
+                        log::info!(
+                            target: "mlx5",
+                            "CREATE_SQ accepted: mode={} implicit_tis={} tisn={} min_inline_mode={}",
+                            mode,
+                            implicit_tis,
+                            tisn,
+                            min_inline_mode
+                        );
+                    }
                     Self::debug_dump_mailbox_range("CREATE_SQ ctx(pre)", &pre_exec, 0x20, 64);
                     Self::debug_dump_mailbox_range(
                         "CREATE_SQ pas(pre)",
@@ -364,24 +368,26 @@ impl Mlx5Device {
                     ctx.wq_type,
                     effective_tisn,
                 );
-                log::info!(
-                    target: "mlx5",
-                    "QUERY_SQ: sqn={:#x} state={} flush={} min_inline={} cqn={:#x} tis_lst_sz={} tis_num_0={:#x} wq_type={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
-                    sqn,
-                    ctx.state,
-                    ctx.flush_in_error_en,
-                    ctx.min_wqe_inline_mode,
-                    ctx.cqn,
-                    ctx.tis_lst_sz,
-                    ctx.tis_num_0,
-                    ctx.wq_type,
-                    ctx.pd,
-                    ctx.uar_page,
-                    ctx.dbr_addr,
-                    ctx.log_wq_stride,
-                    ctx.log_wq_pg_sz,
-                    ctx.log_wq_sz
-                );
+                if cfg!(feature = "debug_mlx5_cmd") {
+                    log::info!(
+                        target: "mlx5",
+                        "QUERY_SQ: sqn={:#x} state={} flush={} min_inline={} cqn={:#x} tis_lst_sz={} tis_num_0={:#x} wq_type={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
+                        sqn,
+                        ctx.state,
+                        ctx.flush_in_error_en,
+                        ctx.min_wqe_inline_mode,
+                        ctx.cqn,
+                        ctx.tis_lst_sz,
+                        ctx.tis_num_0,
+                        ctx.wq_type,
+                        ctx.pd,
+                        ctx.uar_page,
+                        ctx.dbr_addr,
+                        ctx.log_wq_stride,
+                        ctx.log_wq_pg_sz,
+                        ctx.log_wq_sz
+                    );
+                }
             }
             Err(err) => {
                 log::warn!(target: "mlx5", "QUERY_SQ failed for sqn={:#x}: {:?}", sqn, err);
@@ -541,15 +547,17 @@ impl Mlx5Device {
         if let Some(rmpn) = selected_rmpn {
             self.rmp_list.push(rmpn);
         }
-        log::info!(
-            target: "mlx5",
-            "CREATE_RQ accepted: mem_rq_type={} profile={} rmpn={}",
-            selected_mem_rq_type,
-            selected_profile,
-            selected_rmpn
-                .map(|v| alloc::format!("{:#x}", v))
-                .unwrap_or_else(|| "none".into())
-        );
+        if cfg!(feature = "debug_mlx5_cmd") {
+            log::info!(
+                target: "mlx5",
+                "CREATE_RQ accepted: mem_rq_type={} profile={} rmpn={}",
+                selected_mem_rq_type,
+                selected_profile,
+                selected_rmpn
+                    .map(|v| alloc::format!("{:#x}", v))
+                    .unwrap_or_else(|| "none".into())
+            );
+        }
         if selected_mem_rq_type != 0 {
             log::warn!(
                 target: "mlx5",

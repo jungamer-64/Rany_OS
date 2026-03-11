@@ -41,6 +41,9 @@ fn read_page_dword(page: &[u8; HCA_CAP_PAGE_LEN], index: usize) -> u32 {
 }
 
 fn log_hca_cap_page(label: &str, page: &[u8; HCA_CAP_PAGE_LEN]) {
+    if !cfg!(feature = "debug_mlx5_cmd") {
+        return;
+    }
     let view = crate::structs::caps::HcaCapLayout::new(page);
     log::info!(
         target: "mlx5",

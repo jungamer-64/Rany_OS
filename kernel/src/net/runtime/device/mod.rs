@@ -215,11 +215,20 @@ impl PortRuntimeHandle {
     fn set_if_id(&self, if_id: NetIfId) {
         self.if_id.store(if_id.0, Ordering::Release);
     }
+
+    fn alloc_packet_for_current_interface(&self) -> Option<PacketRef> {
+        match self.key {
+            NetDeviceKey::Mlx5(index) => {
+                crate::net::runtime::bridge::mlx5_bridge::alloc_packet_for_index(index)
+            }
+            _ => crate::net::datapath::mempool::alloc_packet(),
+        }
+    }
 }
 
 impl NetPortRuntime for PortRuntimeHandle {
     fn alloc_packet(&self) -> Option<PacketRef> {
-        crate::net::datapath::mempool::alloc_packet()
+        self.alloc_packet_for_current_interface()
     }
 
     fn submit_rx(&self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
@@ -769,7 +778,10 @@ pub fn claim_bound_primary_interface(if_id: NetIfId) -> bool {
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        set_primary_interface(if_id);
+        DEVICE_MANAGER
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .primary = Some(if_id);
         true
     } else {
         false
@@ -785,7 +797,12 @@ pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMet
 }
 
 pub fn transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
-    let mut packet = match crate::net::datapath::mempool::alloc_packet() {
+    let resolved_if = if_id.or_else(primary_if);
+    let Some(handle) = resolved_if.and_then(lookup_port) else {
+        return false;
+    };
+
+    let mut packet = match handle.runtime.alloc_packet() {
         Some(packet) => packet,
         None => return false,
     };
@@ -796,7 +813,7 @@ pub fn transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
 
     packet.set_len(data.len());
     packet.data_mut()[..data.len()].copy_from_slice(data);
-    transmit_packet(if_id, packet, NetTxMeta::default())
+    handle.enqueue_tx(packet, NetTxMeta::default())
 }
 
 pub fn enqueue_event(key: NetDeviceKey, event: NetDriverEvent) -> bool {

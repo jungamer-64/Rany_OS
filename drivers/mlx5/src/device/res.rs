@@ -134,18 +134,20 @@ impl Mlx5Device {
                             );
                             return Ok(tisn);
                         }
-                        log::info!(
-                            target: "mlx5",
-                            "Found reusable existing TIS candidate via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={} lag_port={} strict_lag={}",
-                            tisn,
-                            info.transport_domain,
-                            info.prio,
-                            info.pd,
-                            info.underlay_qpn,
-                            info.tls_en,
-                            info.lag_tx_port_affinity,
-                            info.strict_lag_tx_port_affinity
-                        );
+                        if cfg!(feature = "debug_mlx5_cmd") {
+                            log::info!(
+                                target: "mlx5",
+                                "Found reusable existing TIS candidate via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={} lag_port={} strict_lag={}",
+                                tisn,
+                                info.transport_domain,
+                                info.prio,
+                                info.pd,
+                                info.underlay_qpn,
+                                info.tls_en,
+                                info.lag_tx_port_affinity,
+                                info.strict_lag_tx_port_affinity
+                            );
+                        }
                     }
                     Err(err) => last_err = Err(err),
                 }
@@ -242,6 +244,9 @@ impl Mlx5Device {
     }
 
     pub unsafe fn trace_tis_prefix_namespace(&mut self, tisn: u32, probe_count: u32) {
+        if !cfg!(feature = "debug_mlx5_cmd") {
+            return;
+        }
         let prefix_base = tisn & 0x00f0_0000;
         let mut hits = 0u32;
         for offset in 0..probe_count {
@@ -309,16 +314,18 @@ impl Mlx5Device {
             relaxed_ordering_write,
             relaxed_ordering_read,
         );
-        log::info!(
-            target: "mlx5",
-            "CREATE_MKEY in(pre): pd={} start={:#x} len={:#x} access={:#x} ro_write={} ro_read={}",
-            params.pd,
-            params.start_addr,
-            params.length,
-            params.access_flags,
-            relaxed_ordering_write,
-            relaxed_ordering_read
-        );
+        if cfg!(feature = "debug_mlx5_cmd") {
+            log::info!(
+                target: "mlx5",
+                "CREATE_MKEY in(pre): pd={} start={:#x} len={:#x} access={:#x} ro_write={} ro_read={}",
+                params.pd,
+                params.start_addr,
+                params.length,
+                params.access_flags,
+                relaxed_ordering_write,
+                relaxed_ordering_read
+            );
+        }
 
         self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateMkey,
@@ -332,28 +339,30 @@ impl Mlx5Device {
 
         match self.query_mkey(mkey_index) {
             Ok(ctx) => {
-                log::info!(
-                    target: "mlx5",
-                    "QUERY_MKEY: index={:#x} key={:#x} access_mode={} free={} umr_en={} a={} lr={} lw={} rr={} rw={} qpn={:#x} pd={} start={:#x} len={:#x} length64={} xlt_octwords={} log_page_size={} mkey_7_0={:#x}",
-                    mkey_index,
-                    full_mkey,
-                    ctx.access_mode,
-                    ctx.free,
-                    ctx.umr_en,
-                    ctx.remote_atomic,
-                    ctx.local_read,
-                    ctx.local_write,
-                    ctx.remote_read,
-                    ctx.remote_write,
-                    ctx.qpn,
-                    ctx.pd,
-                    ctx.start_addr,
-                    ctx.len,
-                    ctx.length64,
-                    ctx.translations_octword_size,
-                    ctx.log_page_size,
-                    ctx.mkey_7_0
-                );
+                if cfg!(feature = "debug_mlx5_cmd") {
+                    log::info!(
+                        target: "mlx5",
+                        "QUERY_MKEY: index={:#x} key={:#x} access_mode={} free={} umr_en={} a={} lr={} lw={} rr={} rw={} qpn={:#x} pd={} start={:#x} len={:#x} length64={} xlt_octwords={} log_page_size={} mkey_7_0={:#x}",
+                        mkey_index,
+                        full_mkey,
+                        ctx.access_mode,
+                        ctx.free,
+                        ctx.umr_en,
+                        ctx.remote_atomic,
+                        ctx.local_read,
+                        ctx.local_write,
+                        ctx.remote_read,
+                        ctx.remote_write,
+                        ctx.qpn,
+                        ctx.pd,
+                        ctx.start_addr,
+                        ctx.len,
+                        ctx.length64,
+                        ctx.translations_octword_size,
+                        ctx.log_page_size,
+                        ctx.mkey_7_0
+                    );
+                }
             }
             Err(err) => {
                 log::warn!(

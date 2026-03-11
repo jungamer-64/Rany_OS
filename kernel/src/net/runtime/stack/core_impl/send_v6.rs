@@ -368,21 +368,34 @@ impl NetworkStack {
     /// signature from higher layers.
     pub fn send_udp_raw_on(
         &mut self,
-        _if_id: super::NetIfId,
+        if_id: super::NetIfId,
         src_port: u16,
         dst: Ipv4Address,
         dst_port: u16,
         data: &[u8],
     ) -> bool {
-        // FUTURE: consult per-interface configuration before sending
-        self.send_udp_raw(src_port, dst, dst_port, data)
+        let config = crate::net::runtime::manager::get_interface(if_id)
+            .ok()
+            .flatten()
+            .and_then(|iface| iface.config)
+            .unwrap_or_else(|| self.config());
+        self.send_udp_raw_with_config_and_if_ttl(
+            Some(if_id),
+            &config,
+            config.ipv4.address,
+            src_port,
+            dst,
+            dst_port,
+            data,
+            64,
+        )
     }
 
     /// UDP transmit helper with explicit source IPv4 and TTL.
     /// Interface selection is currently ignored (transitional multi-NIC shim).
     pub fn send_udp_raw_on_with_src_ttl(
         &mut self,
-        _if_id: super::NetIfId,
+        if_id: super::NetIfId,
         src_ip: Ipv4Address,
         src_port: u16,
         dst: Ipv4Address,
@@ -390,7 +403,21 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        self.send_udp_raw_with_src_ttl(src_ip, src_port, dst, dst_port, data, ttl)
+        let config = crate::net::runtime::manager::get_interface(if_id)
+            .ok()
+            .flatten()
+            .and_then(|iface| iface.config)
+            .unwrap_or_else(|| self.config());
+        self.send_udp_raw_with_config_and_if_ttl(
+            Some(if_id),
+            &config,
+            src_ip,
+            src_port,
+            dst,
+            dst_port,
+            data,
+            ttl,
+        )
     }
 
     /// Transmit an IPv6 UDP datagram on a specific interface (ignored for now)

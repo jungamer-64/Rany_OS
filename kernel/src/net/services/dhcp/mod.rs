@@ -155,7 +155,11 @@ async fn dhcp_v4_drive_task(runtime: Arc<DhcpInterfaceRuntime>) {
 
     while runtime.active.load(Ordering::Acquire) {
         let now = crate::task::timer::current_tick();
-        if let Err(err) = runtime.v4.drive_on_interface(runtime.if_id, now, 1000).await {
+        if let Err(err) = runtime
+            .v4
+            .drive_on_interface(runtime.if_id, now, 1000)
+            .await
+        {
             log::warn!(
                 "[NET] DHCPv4 interface drive failed: if{} err={}",
                 runtime.if_id.0,

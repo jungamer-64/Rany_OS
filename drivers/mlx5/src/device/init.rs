@@ -88,7 +88,7 @@ impl Mlx5Device {
                 );
                 log::info!(
                     target: "mlx5",
-                    "Adopted external TIS after CREATE_TIS failure: tisn={:#x} requested(td={} pd={} prio={} port={} include_pd={}) adopted(td={} pd={} prio={} underlay_qpn={:#x} lag_port={} strict_lag={} tls={})",
+                    "Adopted external TIS: tisn={:#x} requested(td={} pd={} prio={} port={} include_pd={}) adopted(td={} pd={} prio={} underlay_qpn={:#x} lag_port={} strict_lag={} tls={})",
                     tisn,
                     requested.td,
                     requested.pd,
@@ -1129,7 +1129,7 @@ impl Mlx5Device {
             if self.pf_prefers_existing_tis_profile() {
                 crate::boot_trace("[MLX5_STAGE] create_tis_prefers_reuse_profile\n");
                 if let Some(caps) = self.hca_caps() {
-                    log::warn!(
+                    log::info!(
                         target: "mlx5",
                         "PF caps indicate a default-only TIS profile; preferring external TIS reuse before CREATE_TIS (log_max_tis={} log_max_tis_per_sq={} log_max_td={} max_sq={})",
                         caps.log_max_tis,

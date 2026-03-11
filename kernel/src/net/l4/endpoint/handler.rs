@@ -1238,13 +1238,14 @@ impl NetworkEventHandler {
                 if let Some(if_id) = target_if {
                     if selected_primary {
                         crate::net::services::dhcp::mark_primary_interface(if_id);
-                        log::info!(
-                            "[NET] DHCP primary elected: if{} ip={}",
-                            if_id.0,
-                            lease.ip_address
-                        );
                     }
                     stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, selected_primary);
+                    log::info!(
+                        "[NET] DHCP lease bound: if{} primary={} ip={}",
+                        if_id.0,
+                        selected_primary,
+                        lease.ip_address
+                    );
                 } else {
                     stack.apply_dhcp_v4_lease(&lease);
                 }
