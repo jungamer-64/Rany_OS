@@ -113,15 +113,7 @@ pub fn send_udp_scoped_async(
     ttl: u8,
 ) -> bool {
     if let Some(if_id) = scope.as_if_id() {
-        return send_udp_on_async_with_src(
-            if_id,
-            Ipv4Address::ANY,
-            src_port,
-            dst_ip,
-            dst_port,
-            data,
-            ttl,
-        );
+        return send_udp_on_async_with_ttl(if_id, src_port, dst_ip, dst_port, data, ttl);
     }
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
@@ -409,34 +401,12 @@ pub fn unbind_tcp_listener(local: TcpEndpointAddr) {
 /// 非同期パスに統一し、ロック競合を排除。ブートストラップ時のみIRQ無効化 +
 /// 同期ドレインで処理する。
 pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
-    // イベントキュー経由でbindリクエストを送信（非同期パスと統一）
-    let result_slot = alloc::sync::Arc::new(PoisonLock::new(None));
-    let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
-    crate::net::l4::endpoint::event::send_event_ignore(
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindListener {
-            local: addr,
-            result_slot: result_slot.clone(),
-            waker: waker.clone(),
-        },
-    );
-    // ブートストラップ互換: イベントキューを同期ドレインして処理
-    // asyncエグゼキュータ未起動時はイベントがキューに滞留するため、
-    // sync_process_network_events()で即時処理する
-    crate::net::runtime::bridge::sync_process_network_events();
-
-    // 結果スロットから結果を取得
-    match result_slot.lock() {
-        Ok(mut slot) => match slot.take() {
-            Some(result) => result,
-            None => {
-                log::warn!("[NET] bind_tcp sync: result not yet available after drain");
-                Err(TcpError::InvalidState)
-            }
-        },
-        Err(_) => {
-            log::error!("[NET] bind_tcp sync: result_slot poisoned");
-            Err(TcpError::InvalidState)
-        }
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => guard
+            .as_mut()
+            .ok_or(TcpError::InvalidState)?
+            .bind_tcp(addr),
+        Err(_) => Err(TcpError::InvalidState),
     }
 }
 
@@ -1492,7 +1462,7 @@ pub fn send_udp_on_async(
     dst_port: u16,
     data: &[u8],
 ) -> bool {
-    send_udp_on_async_with_src(if_id, Ipv4Address::ANY, src_port, dst_ip, dst_port, data, 64)
+    send_udp_on_async_with_ttl(if_id, src_port, dst_ip, dst_port, data, 64)
 }
 
 /// インターフェース指定UDP送信（非同期版・イベントキュー経由、明示 TTL）

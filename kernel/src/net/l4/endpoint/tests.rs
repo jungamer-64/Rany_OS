@@ -13,6 +13,7 @@ pub mod tests {
         AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
     };
     use crate::net::runtime::manager::NetIfId;
+    use crate::net::types::InterfaceScope;
     use alloc::vec::Vec;
 
     #[cfg_attr(test, test_case)]
@@ -171,6 +172,7 @@ pub mod tests {
                     .unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
+                new_inner.scope = InterfaceScope::Pinned(conn.if_id);
                 new_inner.ensure_tcp().nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を引き継ぐ
                 let _ = new_inner.transition_to(EndpointState::Connected);
             }
@@ -351,6 +353,40 @@ pub mod tests {
             tcb.unwrap().state,
             crate::net::l4::endpoint::tcb::TcpConnectionState::SynSent
         );
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_next_incoming_pins_scope_to_ingress_interface() {
+        let listen_endpoint = Endpoint::new(EndpointType::Tcp);
+        {
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(EndpointAddr::new([0, 0, 0, 0], 8088));
+            let _ = inner.transition_to(EndpointState::Bound);
+            let _ = inner.transition_to(EndpointState::Listening);
+        }
+
+        let accepted_fd = EndpointFd::from_raw(900);
+        let local = EndpointAddr::new([192, 168, 10, 1], 8088);
+        let remote = EndpointAddr::new([10, 0, 0, 9], 54009);
+        let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
+        let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(4), tcb);
+
+        {
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            inner.ensure_tcp().accept_queue.push_back(conn);
+        }
+
+        let (accepted, _, if_id) = listen_endpoint.next_incoming().expect("accept");
+        assert_eq!(if_id, NetIfId(4));
+        let inner = accepted.inner().lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(inner.scope, InterfaceScope::Pinned(NetIfId(4)));
+        assert_eq!(inner.last_ingress_if_id, Some(NetIfId(4)));
     }
 
     #[cfg_attr(test, test_case)]

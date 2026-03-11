@@ -1,4 +1,39 @@
 use super::*;
+use crate::net::runtime::manager;
+use crate::sync::PoisonLock;
+
+static TEST_LAST_TX_IF: PoisonLock<Option<NetIfId>> = PoisonLock::new(None);
+
+fn record_test_tx_if(if_id: Option<NetIfId>, _data: &[u8]) -> bool {
+    let mut guard = TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = if_id;
+    true
+}
+
+struct ManagerStateGuard {
+    prev_manager: Option<crate::net::runtime::manager::NetworkManager>,
+}
+
+impl ManagerStateGuard {
+    fn new() -> Self {
+        let prev_manager = {
+            let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
+                .lock_for_init("[TEST][STACK] manager snapshot");
+            core::mem::take(&mut *guard)
+        };
+        *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Self { prev_manager }
+    }
+}
+
+impl Drop for ManagerStateGuard {
+    fn drop(&mut self) {
+        let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
+            .lock_for_init("[TEST][STACK] manager restore");
+        *guard = self.prev_manager.take();
+        *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
 
 #[cfg_attr(test, test_case)]
 pub fn test_network_stack_creation() {
@@ -217,6 +252,94 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     // verify dhcp_state snapshot reflects the decline
     let snap = crate::net::api::dhcp::dhcp_state();
     assert_eq!(snap.v4_last_declined, Some(test_ip));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_send_udp_raw_uses_route_selected_interface() {
+    let _guard = ManagerStateGuard::new();
+    manager::init_network_manager();
+    init_default();
+
+    let if0 = manager::register_interface("if0").expect("register if0");
+    let if1 = manager::register_interface("if1").expect("register if1");
+    let cfg0 = NetworkConfig {
+        mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 1),
+        ipv4: Ipv4Config {
+            address: Ipv4Address::new([10, 0, 0, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Ipv4Address::ANY,
+            dns: None,
+        },
+        ..NetworkConfig::default()
+    };
+    let cfg1 = NetworkConfig {
+        mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 2),
+        ipv4: Ipv4Config {
+            address: Ipv4Address::new([10, 0, 1, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Ipv4Address::ANY,
+            dns: None,
+        },
+        ..NetworkConfig::default()
+    };
+    manager::set_interface_config(if0, cfg0).expect("cfg if0");
+    manager::set_interface_config(if1, cfg1).expect("cfg if1");
+
+    if let Ok(mut guard) = stack().lock() {
+        let stack = guard.as_mut().expect("stack");
+        stack.set_transmit_fn(record_test_tx_if);
+        stack.register_interface_state(if0, cfg0);
+        stack.register_interface_state(if1, cfg1);
+        stack
+            .interfaces
+            .get_mut(&if1)
+            .expect("if1 state")
+            .arp
+            .cache()
+            .insert(
+                Ipv4Address::new([10, 0, 1, 55]),
+                MacAddress::from_octets(0x52, 0x54, 0, 0x12, 0x34, 0x56),
+                stack.current_time(),
+            );
+        assert!(stack.send_udp_raw(1234, Ipv4Address::new([10, 0, 1, 55]), 8080, b"hi"));
+    } else {
+        panic!("stack lock");
+    }
+
+    let last_if = *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(last_if, Some(if1));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_send_udp_raw_without_route_does_not_fallback() {
+    let _guard = ManagerStateGuard::new();
+    manager::init_network_manager();
+    init_default();
+
+    let if0 = manager::register_interface("if0").expect("register if0");
+    let cfg0 = NetworkConfig {
+        mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 3),
+        ipv4: Ipv4Config {
+            address: Ipv4Address::new([10, 0, 0, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Ipv4Address::ANY,
+            dns: None,
+        },
+        ..NetworkConfig::default()
+    };
+    manager::set_interface_config(if0, cfg0).expect("cfg if0");
+
+    if let Ok(mut guard) = stack().lock() {
+        let stack = guard.as_mut().expect("stack");
+        stack.set_transmit_fn(record_test_tx_if);
+        stack.register_interface_state(if0, cfg0);
+        assert!(!stack.send_udp_raw(1234, Ipv4Address::new([203, 0, 113, 10]), 8080, b"hi"));
+    } else {
+        panic!("stack lock");
+    }
+
+    let last_if = *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(last_if, None);
 }
 
 #[cfg_attr(test, test_case)]

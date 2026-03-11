@@ -15,6 +15,25 @@ fn unpack_device_id(locator: PackedPciLocation) -> IommuDeviceId {
     }
 }
 
+fn stack_scope(
+    scope: kernel_api::resource::net::InterfaceScope,
+) -> crate::net::types::InterfaceScope {
+    match scope {
+        kernel_api::resource::net::InterfaceScope::Any => crate::net::types::InterfaceScope::Any,
+        kernel_api::resource::net::InterfaceScope::Pinned(if_id) => {
+            crate::net::types::InterfaceScope::Pinned(crate::net::runtime::manager::NetIfId(if_id))
+        }
+    }
+}
+
+fn apply_endpoint_scope(
+    endpoint: &crate::net::l4::endpoint::endpoint_core::Endpoint,
+    scope: kernel_api::resource::net::InterfaceScope,
+) {
+    let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+    inner.scope = stack_scope(scope);
+}
+
 // SAFETY: ExoKernel is stateless and accesses thread-safe globals
 mod gui_services;
 pub use self::gui_services::*;
@@ -216,6 +235,9 @@ impl KernelServices for ExoKernel {
         use crate::net::l4::endpoint::create_tcp_endpoint;
 
         let owned = create_tcp_endpoint();
+        if let Some(endpoint) = owned.endpoint() {
+            apply_endpoint_scope(endpoint, scope);
+        }
         let fd = owned.fd();
 
         // Detach from OwnedEndpoint so it remains registered in EndpointManager
@@ -283,7 +305,7 @@ impl KernelServices for ExoKernel {
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
-            let _resolved_scope = match scope {
+            let resolved_scope = match scope {
                 kernel_api::resource::net::InterfaceScope::Any => endpoint.default_scope(),
                 other => other,
             };
@@ -294,6 +316,7 @@ impl KernelServices for ExoKernel {
                 let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
+                        apply_endpoint_scope(&socket, resolved_scope);
                         // Clone/convert packet data for socket send
                         let data = packet.data().to_vec();
                         let fut = crate::net::l4::endpoint::futures::SendFuture::new(
@@ -335,6 +358,9 @@ impl KernelServices for ExoKernel {
         use crate::net::l4::endpoint::create_raw_endpoint;
 
         let owned = create_raw_endpoint();
+        if let Some(endpoint) = owned.endpoint() {
+            apply_endpoint_scope(endpoint, scope);
+        }
         let fd = owned.fd();
 
         // Detach so it remains registered
@@ -425,7 +451,7 @@ impl KernelServices for ExoKernel {
 
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
-            let _resolved_scope = match scope {
+            let resolved_scope = match scope {
                 kernel_api::resource::net::InterfaceScope::Any => endpoint.default_scope(),
                 other => other,
             };
@@ -436,6 +462,7 @@ impl KernelServices for ExoKernel {
                 let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(mgr) = guard.as_ref() {
                     if let Some(socket) = mgr.get(fd) {
+                        apply_endpoint_scope(&socket, resolved_scope);
                         let data = packet.data().to_vec();
                         let fut = crate::net::l4::endpoint::futures::SendFuture::new(
                             socket.clone(),

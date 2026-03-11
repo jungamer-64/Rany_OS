@@ -1046,7 +1046,7 @@ impl NetworkStack {
         // Need to resolve destination MAC
         let config = self.config.clone();
         let current_time = self.current_time();
-        let dst_mac = match self.resolve_mac(target, &config, current_time) {
+        let dst_mac = match self.resolve_mac(None, target, &config, current_time) {
             Some(mac) => mac,
             None => {
                 log::info!(

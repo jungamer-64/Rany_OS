@@ -10,6 +10,144 @@ mod receive;
 /// Send path — IPv6 / ICMPv6 / NDP / IGMP outgoing packet construction.
 mod send_v6;
 impl NetworkStack {
+    pub(crate) fn interface_config_or_runtime(&self, if_id: NetIfId) -> Option<NetworkConfig> {
+        self.interface_config(if_id).or_else(|| {
+            crate::net::runtime::manager::get_interface(if_id)
+                .ok()
+                .flatten()
+                .and_then(|iface| iface.config)
+        })
+    }
+
+    fn legacy_single_interface_runtime(&self) -> Option<(Option<NetIfId>, NetworkConfig)> {
+        if self.interfaces.is_empty() {
+            Some((None, self.config()))
+        } else {
+            None
+        }
+    }
+
+    fn select_ipv4_source(
+        &self,
+        config: NetworkConfig,
+        explicit_src: Option<Ipv4Address>,
+    ) -> Result<Ipv4Address, crate::net::types::NetworkError> {
+        match explicit_src {
+            Some(src_ip) if !src_ip.is_any() => {
+                if config.ipv4.address == src_ip {
+                    Ok(src_ip)
+                } else {
+                    Err(crate::net::types::NetworkError::InvalidAddress)
+                }
+            }
+            Some(src_ip) => Ok(src_ip),
+            None => {
+                if config.ipv4.address.is_any() {
+                    Err(crate::net::types::NetworkError::NetworkUnreachable)
+                } else {
+                    Ok(config.ipv4.address)
+                }
+            }
+        }
+    }
+
+    fn select_ipv6_source(
+        &self,
+        config: NetworkConfig,
+        explicit_src: Option<Ipv6Address>,
+        dst_ip: Ipv6Address,
+    ) -> Result<Ipv6Address, crate::net::types::NetworkError> {
+        let Some(ipv6_cfg) = config.ipv6 else {
+            return Err(crate::net::types::NetworkError::NetworkUnreachable);
+        };
+
+        match explicit_src {
+            Some(src_ip) if !src_ip.is_unspecified() => {
+                if ipv6_cfg.global == Some(src_ip) || ipv6_cfg.link_local == src_ip {
+                    Ok(src_ip)
+                } else {
+                    Err(crate::net::types::NetworkError::InvalidAddress)
+                }
+            }
+            _ => {
+                let candidate = if dst_ip.is_link_local() {
+                    ipv6_cfg.link_local
+                } else {
+                    ipv6_cfg.global.unwrap_or(ipv6_cfg.link_local)
+                };
+                if candidate.is_unspecified() {
+                    Err(crate::net::types::NetworkError::NetworkUnreachable)
+                } else {
+                    Ok(candidate)
+                }
+            }
+        }
+    }
+
+    pub(crate) fn resolve_ipv4_egress(
+        &self,
+        scope: crate::net::types::InterfaceScope,
+        preferred_if: Option<NetIfId>,
+        explicit_src: Option<Ipv4Address>,
+        dst_ip: Ipv4Address,
+    ) -> Result<(Option<NetIfId>, NetworkConfig, Ipv4Address), crate::net::types::NetworkError> {
+        let resolved = scope
+            .as_if_id()
+            .or(preferred_if)
+            .map(|if_id| {
+                self.interface_config_or_runtime(if_id)
+                    .map(|cfg| (Some(if_id), cfg))
+                    .ok_or(crate::net::types::NetworkError::NetworkUnreachable)
+            })
+            .transpose()?
+            .or_else(|| {
+                crate::net::runtime::manager::lookup_ipv4_route(dst_ip)
+                    .ok()
+                    .flatten()
+                    .and_then(|route| {
+                        self.interface_config_or_runtime(route.if_id)
+                            .map(|cfg| (Some(route.if_id), cfg))
+                    })
+            })
+            .or_else(|| self.legacy_single_interface_runtime())
+            .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
+
+        let src_ip = self.select_ipv4_source(resolved.1, explicit_src)?;
+        Ok((resolved.0, resolved.1, src_ip))
+    }
+
+    pub(crate) fn resolve_ipv6_egress(
+        &self,
+        scope: crate::net::types::InterfaceScope,
+        preferred_if: Option<NetIfId>,
+        explicit_src: Option<Ipv6Address>,
+        dst_ip: Ipv6Address,
+    ) -> Result<(Option<NetIfId>, NetworkConfig, Ipv6Address), crate::net::types::NetworkError> {
+        let resolved = scope
+            .as_if_id()
+            .or(preferred_if)
+            .map(|if_id| {
+                self.interface_config_or_runtime(if_id)
+                    .map(|cfg| (Some(if_id), cfg))
+                    .ok_or(crate::net::types::NetworkError::NetworkUnreachable)
+            })
+            .transpose()?
+            .or_else(|| {
+                crate::net::runtime::manager::lookup_ipv6_route(dst_ip)
+                    .ok()
+                    .flatten()
+                    .and_then(|route| {
+                        self.interface_config_or_runtime(route.if_id)
+                            .map(|cfg| (Some(route.if_id), cfg))
+                    })
+            })
+            .or_else(|| self.legacy_single_interface_runtime())
+            .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
+
+        let src_ip = self.select_ipv6_source(resolved.1, explicit_src, dst_ip)?;
+        Ok((resolved.0, resolved.1, src_ip))
+    }
+
     /// Create a new network stack with configuration
     ///
     /// # パフォーマンス注意
@@ -119,6 +257,30 @@ impl NetworkStack {
         self.interfaces.get(&if_id).map(|state| &state.stats)
     }
 
+    pub fn transmit_on(&self, if_id: Option<NetIfId>, data: &[u8]) -> bool {
+        if let Some(f) = self.transmit_fn {
+            if f(if_id, data) {
+                self.stats.record_tx(data.len());
+                if let Some(if_id) = if_id {
+                    if let Some(stats) = self.interface_stats(if_id) {
+                        stats.record_tx(data.len());
+                    }
+                }
+                return true;
+            }
+
+            self.stats.record_tx_error();
+            if let Some(if_id) = if_id {
+                if let Some(stats) = self.interface_stats(if_id) {
+                    stats.record_tx_error();
+                }
+            }
+            return false;
+        }
+
+        false
+    }
+
     /// Update current time (call periodically)
     pub fn update_time(&self, ticks: u64) {
         self.current_time.store(ticks, Ordering::Release);
@@ -145,17 +307,7 @@ impl NetworkStack {
             if let Some((local, remote, seq, total_len)) =
                 Self::build_tcp_packet_from_result(&res, &mut buffer)
             {
-                let sent = if local.is_ipv6() && remote.is_ipv6() {
-                    let src_v6 = Ipv6Address::new(local.as_ipv6());
-                    let dst_v6 = Ipv6Address::new(remote.as_ipv6());
-                    self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
-                } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-                    let src_ip_out = Ipv4Address::new(lv4);
-                    let dst_ip_out = Ipv4Address::new(rv4);
-                    self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
-                } else {
-                    false
-                };
+                let sent = self.send_tcp_packet_for_flow(local, remote, &buffer[..total_len]);
 
                 if sent {
                     self.tcp

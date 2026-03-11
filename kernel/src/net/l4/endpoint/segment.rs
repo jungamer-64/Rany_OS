@@ -353,15 +353,17 @@ impl TcpSegmentBuilder {
 /// `network_event_task` が一括処理するため、async コンテキストからの
 /// 呼び出しでデッドロックを回避する。
 pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<u8>) -> bool {
-    let ingress_if = super::tcb::tcb_table()
+    let (scope, ingress_if) = super::tcb::tcb_table()
         .get(local, remote)
-        .and_then(|tcb| tcb.ingress_if_id);
+        .map(|tcb| (tcb.scope, tcb.ingress_if_id))
+        .unwrap_or((crate::net::types::InterfaceScope::Any, None));
+    let scoped_if = scope.as_if_id().or(ingress_if);
     if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
         let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
         let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
 
         // 非同期イベントキュー経由で送信（ロック競合回避）
-        let ok = match ingress_if {
+        let ok = match scoped_if {
             Some(if_id) => {
                 crate::net::runtime::stack::send_tcp_on_async(if_id, src_ip, dst_ip, &segment)
             }
@@ -383,7 +385,7 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
     if endpoint_is_native_v6_pair(local, remote) {
         let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
         let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-        let ok = match ingress_if {
+        let ok = match scoped_if {
             Some(if_id) => {
                 crate::net::runtime::stack::send_tcp_v6_on_async(if_id, src_v6, dst_v6, &segment)
             }

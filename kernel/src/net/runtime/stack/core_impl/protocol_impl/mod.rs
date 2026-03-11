@@ -287,9 +287,7 @@ impl NetworkStack {
                     remote_v4,
                 );
 
-                let src_ip_out = Ipv4Address::new(local_v4);
-                let dst_ip_out = Ipv4Address::new(remote_v4);
-                let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                let sent = self.send_tcp_packet_for_flow(local, remote, &buffer[..total_len]);
                 let now = self.current_time();
                 if sent {
                     self.tcp
@@ -448,10 +446,7 @@ impl NetworkStack {
                         remote_v4,
                     );
 
-                    let src_ip_out = Ipv4Address::new(local_v4);
-                    let dst_ip_out = Ipv4Address::new(remote_v4);
-
-                    let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                    let sent = self.send_tcp_packet_for_flow(local, remote, &buffer[..total_len]);
                     let now = self.current_time();
                     if sent {
                         self.tcp
@@ -507,11 +502,9 @@ impl NetworkStack {
                 }
 
                 // IPv6 TCP checksum
-                let src_v6 = Ipv6Address::new(local.as_ipv6());
-                let dst_v6 = Ipv6Address::new(remote.as_ipv6());
                 let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(
-                    &src_v6,
-                    &dst_v6,
+                    &Ipv6Address::new(local.as_ipv6()),
+                    &Ipv6Address::new(remote.as_ipv6()),
                     crate::net::l3::ipv4::IpProtocol::Tcp,
                     total_len as u32,
                 );
@@ -520,7 +513,7 @@ impl NetworkStack {
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
 
                 // Send over IPv6
-                let sent = self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len]);
+                let sent = self.send_tcp_packet_for_flow(local, remote, &buffer[..total_len]);
                 let now = self.current_time();
                 if sent {
                     self.tcp
@@ -648,11 +641,7 @@ impl NetworkStack {
 
                 // Send via IP
                 // Convert TcpIpv4Addr -> Ipv4Address
-                let src_ip_out = Ipv4Address::new(local_v4);
-                let dst_ip_out = Ipv4Address::new(remote_v4);
-
-                // Send segment via IP
-                let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                let sent = self.send_tcp_packet_for_flow(local, remote, &buffer[..total_len]);
                 let now = self.current_time();
                 if sent {
                     // Record that the segment was sent so that retransmission queues
@@ -675,17 +664,44 @@ impl NetworkStack {
     ) -> Result<TcpStream, TcpError> {
         // Resolve local source address when unspecified.
         if local_addr.is_ipv4() {
-            if local_addr.as_ipv4() == Some([0, 0, 0, 0]) {
-                local_addr =
-                    TcpEndpointAddr::new(self.config.ipv4.address.octets(), local_addr.port());
+            let explicit_src = local_addr
+                .as_ipv4()
+                .map(Ipv4Address::new)
+                .filter(|ip| !ip.is_any());
+            if let Some(remote_v4) = remote_addr.as_ipv4() {
+                let (_, _, resolved_src) = self
+                    .resolve_ipv4_egress(
+                        crate::net::types::InterfaceScope::Any,
+                        None,
+                        explicit_src,
+                        Ipv4Address::new(remote_v4),
+                    )
+                    .map_err(|_| TcpError::InvalidState)?;
+                local_addr = TcpEndpointAddr::new(resolved_src.octets(), local_addr.port());
             }
+        } else if tcp_is_native_v6_pair(local_addr, remote_addr) {
+            let explicit_src = {
+                let src = Ipv6Address::new(local_addr.as_ipv6());
+                if src.is_unspecified() { None } else { Some(src) }
+            };
+            let (_, _, resolved_src) = self
+                .resolve_ipv6_egress(
+                    crate::net::types::InterfaceScope::Any,
+                    None,
+                    explicit_src,
+                    Ipv6Address::new(remote_addr.as_ipv6()),
+                )
+                .map_err(|_| TcpError::InvalidState)?;
+            local_addr = TcpEndpointAddr::new_v6(resolved_src.octets(), local_addr.port());
         } else if local_addr.as_ipv6() == [0u8; 16] {
-            if let Some(ipv6_cfg) = self.config.ipv6 {
-                let src_v6 = ipv6_cfg.global.unwrap_or(ipv6_cfg.link_local);
-                if !src_v6.is_unspecified() {
-                    local_addr = TcpEndpointAddr::new_v6(src_v6.octets(), local_addr.port());
-                }
-            }
+            return Err(TcpError::InvalidState);
+        }
+
+        if local_addr.is_ipv4() && remote_addr.as_ipv4().is_none() {
+            return Err(TcpError::InvalidState);
+        }
+        if local_addr.is_ipv6() && !tcp_is_native_v6_pair(local_addr, remote_addr) {
+            return Err(TcpError::InvalidState);
         }
 
         // Allocate ephemeral port if not specified
@@ -741,11 +757,7 @@ impl NetworkStack {
                     local_v4,
                     remote_v4,
                 );
-                self.send_tcp(
-                    Ipv4Address::new(local_v4),
-                    Ipv4Address::new(remote_v4),
-                    &buffer[..total_len],
-                )
+                self.send_tcp_packet_for_flow(local_addr, remote_addr, &buffer[..total_len])
             } else if tcp_is_native_v6_pair(local_addr, remote_addr) {
                 let src_v6 = Ipv6Address::new(local_addr.as_ipv6());
                 let dst_v6 = Ipv6Address::new(remote_addr.as_ipv6());
@@ -758,7 +770,7 @@ impl NetworkStack {
                 let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
                 let final_checksum = checksum; // TCP checksums can be 0
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
-                self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
+                self.send_tcp_packet_for_flow(local_addr, remote_addr, &buffer[..total_len])
             } else {
                 false
             };

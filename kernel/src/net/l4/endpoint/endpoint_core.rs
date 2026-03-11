@@ -131,7 +131,11 @@ impl Endpoint {
 
             // ローカルアドレスが未設定ならエフェメラルポートを割り当て
             local_addr = inner.local_addr.unwrap_or_else(|| {
-                EndpointAddr::new([0, 0, 0, 0], 0) // 後でマネージャが割り当て
+                if addr.is_ipv6() {
+                    EndpointAddr::new_v6([0; 16], 0)
+                } else {
+                    EndpointAddr::new([0, 0, 0, 0], 0)
+                }
             });
 
             inner.remote_addr = Some(addr);
@@ -205,6 +209,7 @@ impl Endpoint {
                 let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
+                new_inner.scope = crate::net::types::InterfaceScope::Pinned(conn.if_id);
                 new_inner.last_ingress_if_id = Some(conn.if_id);
                 new_inner.ensure_tcp().nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を引き継ぐ
                 new_inner.priority = inner.priority; // 優先度を引き継ぐ

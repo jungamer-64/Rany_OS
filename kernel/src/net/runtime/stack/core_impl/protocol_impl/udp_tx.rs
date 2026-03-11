@@ -7,6 +7,45 @@
 use super::*;
 
 impl NetworkStack {
+    pub(crate) fn resolve_ipv4_next_hop_on(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        dst_ip: Ipv4Address,
+        config: &NetworkConfig,
+        current_time: u64,
+    ) -> Option<Ipv4Address> {
+        if dst_ip.is_loopback() {
+            return None;
+        }
+
+        if config.ipv4.is_local(&dst_ip) {
+            return Some(dst_ip);
+        }
+
+        if let Some(if_id) = if_id {
+            if let Some(state) = self.interfaces.get_mut(&if_id) {
+                state.redirect_cache.set_time(current_time);
+                if let Some(redirected_gateway) = state.redirect_cache.get(dst_ip) {
+                    return Some(redirected_gateway);
+                }
+            }
+
+            if let Ok(Some(route)) = crate::net::runtime::manager::lookup_ipv4_route(dst_ip) {
+                if route.if_id == if_id {
+                    return Some(route.gateway.unwrap_or(dst_ip));
+                }
+            }
+
+            if !config.ipv4.gateway.is_any() {
+                return Some(config.ipv4.gateway);
+            }
+
+            return None;
+        }
+
+        Some(self.resolve_ipv4_next_hop(dst_ip, current_time))
+    }
+
     pub(crate) fn send_udp_raw_with_config_and_if_ttl(
         &mut self,
         if_id: Option<super::NetIfId>,
@@ -31,7 +70,7 @@ impl NetworkStack {
         }
 
         let current_time = self.current_time();
-        let dst_mac = match self.resolve_mac(dst_ip, config, current_time) {
+        let dst_mac = match self.resolve_mac(if_id, dst_ip, config, current_time) {
             Some(mac) => mac,
             None => return false,
         };
@@ -62,12 +101,8 @@ impl NetworkStack {
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
 
-                    if let Some(tx_fn) = self.transmit_fn {
-                        if tx_fn(if_id, frame.as_bytes()) {
-                            self.stats.record_tx(frame.as_bytes().len());
-                            return true;
-                        }
-                        self.stats.record_tx_error();
+                    if self.transmit_on(if_id, frame.as_bytes()) {
+                        return true;
                     }
                 }
             }
@@ -84,8 +119,37 @@ impl NetworkStack {
         dst_port: u16,
         data: &[u8],
     ) -> bool {
-        let src_ip = self.config.ipv4.address;
-        self.send_udp_raw_with_src_ttl(src_ip, src_port, dst_ip, dst_port, data, 64)
+        self.send_udp_raw_auto_ttl(src_port, dst_ip, dst_port, data, 64)
+    }
+
+    pub fn send_udp_raw_auto_ttl(
+        &mut self,
+        src_port: u16,
+        dst_ip: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
+        let Ok((if_id, config, src_ip)) = self.resolve_ipv4_egress(
+            crate::net::types::InterfaceScope::Any,
+            None,
+            None,
+            dst_ip,
+        ) else {
+            self.stats.record_dropped();
+            return false;
+        };
+
+        self.send_udp_raw_with_config_and_if_ttl(
+            if_id,
+            &config,
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+            data,
+            ttl,
+        )
     }
 
     /// Send a UDP packet with explicit IPv4 source address and TTL.
@@ -98,17 +162,34 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        let config = self.config.clone();
+        let Ok((if_id, config, resolved_src)) = self.resolve_ipv4_egress(
+            crate::net::types::InterfaceScope::Any,
+            None,
+            Some(src_ip),
+            dst_ip,
+        ) else {
+            self.stats.record_dropped();
+            return false;
+        };
+
         self.send_udp_raw_with_config_and_if_ttl(
-            None, &config, src_ip, src_port, dst_ip, dst_port, data, ttl,
+            if_id,
+            &config,
+            resolved_src,
+            src_port,
+            dst_ip,
+            dst_port,
+            data,
+            ttl,
         )
     }
 
     /// Resolve IP to MAC address
     pub(crate) fn resolve_mac(
         &mut self,
+        if_id: Option<super::NetIfId>,
         dst_ip: Ipv4Address,
-        _config: &NetworkConfig,
+        config: &NetworkConfig,
         current_time: u64,
     ) -> Option<MacAddress> {
         // RFC 1122: Loopback address MUST NOT be sent to a physical interface.
@@ -127,13 +208,24 @@ impl NetworkStack {
         }
 
         // Determine next hop, considering ICMP Redirect cache
-        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+        let next_hop = self.resolve_ipv4_next_hop_on(if_id, dst_ip, config, current_time)?;
 
         // Look up in ARP cache
+        if let Some(if_id) = if_id {
+            if let Some(state) = self.interfaces.get_mut(&if_id) {
+                return match state.arp.resolve(next_hop, current_time) {
+                    Some(mac) => Some(mac),
+                    None => {
+                        self.send_arp_request_on(if_id, next_hop);
+                        None
+                    }
+                };
+            }
+        }
+
         match self.arp.resolve(next_hop, current_time) {
             Some(mac) => Some(mac),
             None => {
-                // Need ARP resolution
                 self.send_arp_request(next_hop);
                 None
             }
@@ -216,29 +308,39 @@ impl NetworkStack {
                     port: d_port,
                 },
             ) => {
-                let config = self.config.clone();
                 let current_time = self.current_time();
-
-                // Use configured IP if source is ANY
-                let src_ip = if s_ip.is_any() {
-                    config.ipv4.address
-                } else {
-                    s_ip
-                };
+                let explicit_src = if s_ip.is_any() { None } else { Some(s_ip) };
+                let (if_id, config, src_ip) = self.resolve_ipv4_egress(
+                    crate::net::types::InterfaceScope::Any,
+                    None,
+                    explicit_src,
+                    d_ip,
+                )?;
 
                 // Resolve MAC address
                 let dst_mac = self
-                    .resolve_mac(d_ip, &config, current_time)
+                    .resolve_mac(if_id, d_ip, &config, current_time)
                     .ok_or(crate::net::types::NetworkError::ArpResolutionPending)?;
 
                 // Try zero-copy first
-                if let Some(result) = self
-                    .try_send_udp_zero_copy(&config, src_ip, s_port, d_ip, dst_mac, d_port, data)
-                {
-                    return result;
+                if if_id.is_none() {
+                    if let Some(result) = self
+                        .try_send_udp_zero_copy(&config, src_ip, s_port, d_ip, dst_mac, d_port, data)
+                    {
+                        return result;
+                    }
                 }
 
-                if self.send_udp_raw_with_src_ttl(src_ip, s_port, d_ip, d_port, data, 64) {
+                if self.send_udp_raw_with_config_and_if_ttl(
+                    if_id,
+                    &config,
+                    src_ip,
+                    s_port,
+                    d_ip,
+                    d_port,
+                    data,
+                    64,
+                ) {
                     Ok(())
                 } else {
                     Err(crate::net::types::NetworkError::TransmitFailed)

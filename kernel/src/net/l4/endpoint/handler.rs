@@ -61,6 +61,15 @@ fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
         .unwrap_or_default()
 }
 
+#[inline]
+fn endpoint_error_from_network(error: crate::net::types::NetworkError) -> EndpointError {
+    match error {
+        crate::net::types::NetworkError::InvalidAddress => EndpointError::InvalidArgument,
+        crate::net::types::NetworkError::NetworkUnreachable => EndpointError::NetworkUnreachable,
+        _ => EndpointError::Internal,
+    }
+}
+
 fn apply_tcp_checksum_for_addrs(
     segment: &mut [u8],
     local: EndpointAddr,
@@ -736,6 +745,9 @@ impl NetworkEventHandler {
                     EventHandleResult::Success
                 }
             }
+            NetworkEvent::Connect { fd, local, remote } => {
+                self.handle_connect_with_stack(fd, local, remote, stack)
+            }
             NetworkEvent::SendTo { fd, data, remote } => {
                 self.handle_send_to_with_stack(fd, remote, data, stack)
             }
@@ -748,21 +760,21 @@ impl NetworkEventHandler {
                 ttl,
             } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let resolved_src = match src_ip {
-                    Some(ip) => crate::net::l3::ipv4::Ipv4Address::new(ip),
-                    None => stack.config().ipv4.address,
+                let sent = match src_ip {
+                    Some(ip) => stack.send_udp_raw_with_src_ttl(
+                        crate::net::l3::ipv4::Ipv4Address::new(ip),
+                        src_port,
+                        dst,
+                        dst_port,
+                        &data,
+                        ttl,
+                    ),
+                    None => stack.send_udp_raw_auto_ttl(src_port, dst, dst_port, &data, ttl),
                 };
-                if stack.send_udp_raw_with_src_ttl(
-                    resolved_src,
-                    src_port,
-                    dst,
-                    dst_port,
-                    &data,
-                    ttl,
-                ) {
+                if sent {
                     EventHandleResult::Success
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
                 }
             }
             NetworkEvent::RawTcpSend {
@@ -1088,15 +1100,29 @@ impl NetworkEventHandler {
             } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let src_ip = src_ip
-                    .map(crate::net::l3::ipv4::Ipv4Address::new)
-                    .unwrap_or_else(|| stack.config().ipv4.address);
-                if stack.send_udp_raw_on_with_src_ttl(
-                    net_if, src_ip, src_port, dst, dst_port, &data, ttl,
-                ) {
+                let sent = match src_ip {
+                    Some(src_ip) => stack.send_udp_raw_on_with_src_ttl(
+                        net_if,
+                        crate::net::l3::ipv4::Ipv4Address::new(src_ip),
+                        src_port,
+                        dst,
+                        dst_port,
+                        &data,
+                        ttl,
+                    ),
+                    None => stack.send_udp_raw_on_auto_ttl(
+                        net_if,
+                        src_port,
+                        dst,
+                        dst_port,
+                        &data,
+                        ttl,
+                    ),
+                };
+                if sent {
                     EventHandleResult::Success
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
                 }
             }
             NetworkEvent::RawTcpSendOn {
@@ -1107,12 +1133,11 @@ impl NetworkEventHandler {
             } => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                // interface ignored in current implementation
-                let _ = if_id;
-                if stack.send_tcp(src, dst, &segment) {
+                let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                if stack.send_tcp_on(net_if, src, dst, &segment) {
                     EventHandleResult::Success
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
                 }
             }
             NetworkEvent::RawUdpV6SendOn {
@@ -1136,17 +1161,18 @@ impl NetworkEventHandler {
                 }
             }
             NetworkEvent::RawTcpV6SendOn {
-                if_id: _if_id,
+                if_id,
                 src_ip,
                 dst_ip,
                 segment,
             } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                if stack.send_tcp_v6_raw(src, dst, &segment) {
+                let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                if stack.send_tcp_v6_raw_on(net_if, src, dst, &segment) {
                     EventHandleResult::Success
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
                 }
             }
 
@@ -1925,7 +1951,7 @@ impl NetworkEventHandler {
         };
 
         let data_len = data.len() as u32;
-        let (seq, ack, window) = match tcb_table().lookup(local, remote) {
+        let (seq, ack, window, scope, ingress_if_id) = match tcb_table().lookup(local, remote) {
             Some(tcb) => {
                 if tcb.state != TcpConnectionState::Established {
                     return EventHandleResult::ProtocolError(EndpointError::NotConnected);
@@ -1933,7 +1959,13 @@ impl NetworkEventHandler {
                 if tcb.should_delay_send(data.len()) {
                     return EventHandleResult::Success;
                 }
-                (tcb.snd_nxt, tcb.rcv_nxt, tcb.rcv_wnd)
+                (
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    tcb.rcv_wnd,
+                    tcb.scope,
+                    tcb.ingress_if_id,
+                )
             }
             None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
         };
@@ -1950,13 +1982,26 @@ impl NetworkEventHandler {
             return EventHandleResult::ProtocolError(e);
         }
 
-        // スタックを使用して直接送信
         let sent = if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-            stack.send_tcp(Ipv4Address::new(lv4), Ipv4Address::new(rv4), &segment)
+            let src_ip = Ipv4Address::new(lv4);
+            let dst_ip = Ipv4Address::new(rv4);
+            match stack.resolve_ipv4_egress(scope, ingress_if_id, Some(src_ip), dst_ip) {
+                Ok((Some(if_id), _, _)) => stack.send_tcp_on(if_id, src_ip, dst_ip, &segment),
+                Ok((None, _, _)) => stack.send_tcp(src_ip, dst_ip, &segment),
+                Err(error) => {
+                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
+                }
+            }
         } else if local.is_ipv6() && remote.is_ipv6() {
             let lv6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
             let rv6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-            stack.send_tcp_v6_raw(lv6, rv6, &segment)
+            match stack.resolve_ipv6_egress(scope, ingress_if_id, Some(lv6), rv6) {
+                Ok((Some(if_id), _, _)) => stack.send_tcp_v6_raw_on(if_id, lv6, rv6, &segment),
+                Ok((None, _, _)) => stack.send_tcp_v6_raw(lv6, rv6, &segment),
+                Err(error) => {
+                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
+                }
+            }
         } else {
             false
         };
@@ -1991,21 +2036,89 @@ impl NetworkEventHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        let local_port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
+        let (local_addr, scope) = {
+            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let scope = match inner.scope {
+                crate::net::types::InterfaceScope::Pinned(if_id) => {
+                    crate::net::types::InterfaceScope::Pinned(if_id)
+                }
+                crate::net::types::InterfaceScope::Any => inner
+                    .last_ingress_if_id
+                    .map(crate::net::types::InterfaceScope::Pinned)
+                    .unwrap_or(crate::net::types::InterfaceScope::Any),
+            };
+            (inner.local_addr, scope)
+        };
+
+        let local_port = local_addr.map(|a| a.port()).unwrap_or(0);
         if local_port == 0 {
             return EventHandleResult::ProtocolError(EndpointError::NotConnected);
         }
 
-        let sent = if let (Some(dst_v4), Some(_src_v4)) = (
-            remote.as_ipv4(),
-            socket.local_addr().and_then(|a| a.as_ipv4()),
-        ) {
-            stack.send_udp_raw(local_port, Ipv4Address::new(dst_v4), remote.port(), &data)
-        } else if remote.is_ipv6() && socket.local_addr().map_or(false, |a| a.is_ipv6()) {
-            let src_v6 =
-                crate::net::l3::ipv6::Ipv6Address::new(socket.local_addr().unwrap().as_ipv6());
+        let sent = if let Some(dst_v4) = remote.as_ipv4() {
+            let dst_ip = Ipv4Address::new(dst_v4);
+            let explicit_src = local_addr
+                .and_then(|addr| addr.as_ipv4())
+                .map(Ipv4Address::new)
+                .filter(|ip| !ip.is_any());
+
+            match stack.resolve_ipv4_egress(scope, None, explicit_src, dst_ip) {
+                Ok((Some(if_id), _, _)) => {
+                    if let Some(src_ip) = explicit_src {
+                        stack.send_udp_raw_on_with_src_ttl(
+                            if_id,
+                            src_ip,
+                            local_port,
+                            dst_ip,
+                            remote.port(),
+                            &data,
+                            64,
+                        )
+                    } else {
+                        stack.send_udp_raw_on(if_id, local_port, dst_ip, remote.port(), &data)
+                    }
+                }
+                Ok((None, _, _)) => {
+                    if let Some(src_ip) = explicit_src {
+                        stack.send_udp_raw_with_src_ttl(
+                            src_ip,
+                            local_port,
+                            dst_ip,
+                            remote.port(),
+                            &data,
+                            64,
+                        )
+                    } else {
+                        stack.send_udp_raw(local_port, dst_ip, remote.port(), &data)
+                    }
+                }
+                Err(error) => {
+                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
+                }
+            }
+        } else if remote.is_ipv6() && local_addr.map_or(false, |a| a.is_ipv6()) {
+            let src_v6 = local_addr
+                .map(|addr| crate::net::l3::ipv6::Ipv6Address::new(addr.as_ipv6()))
+                .unwrap_or(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED);
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-            stack.send_udp_v6_raw(local_port, src_v6, dst_v6, remote.port(), &data)
+
+            match stack.resolve_ipv6_egress(scope, None, Some(src_v6), dst_v6) {
+                Ok((Some(if_id), _, _)) => stack.send_udp_v6_raw_on_with_ttl(
+                    if_id,
+                    local_port,
+                    src_v6,
+                    dst_v6,
+                    remote.port(),
+                    &data,
+                    64,
+                ),
+                Ok((None, _, _)) => {
+                    stack.send_udp_v6_raw_with_ttl(local_port, src_v6, dst_v6, remote.port(), &data, 64)
+                }
+                Err(error) => {
+                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
+                }
+            }
         } else {
             false
         };
@@ -2013,7 +2126,7 @@ impl NetworkEventHandler {
         if sent {
             EventHandleResult::Success
         } else {
-            EventHandleResult::Retry
+            EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
         }
     }
 
@@ -2229,6 +2342,131 @@ impl NetworkEventHandler {
 
     /// Connectイベント処理
     /// TCPハンドシェイクを開始（SYN送信）
+    fn handle_connect_with_stack(
+        &self,
+        fd: EndpointFd,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        stack: &mut crate::net::runtime::stack::NetworkStack,
+    ) -> EventHandleResult {
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+        let Some(ref mgr) = *manager else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let Some(socket) = mgr.get(fd) else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let local_port = if local.port() == 0 {
+            mgr.allocate_ephemeral_port(EndpointType::Tcp)
+                .unwrap_or(49152)
+        } else {
+            local.port()
+        };
+        let unresolved_local = local.with_port(local_port);
+
+        let (scope, preferred_if, congestion_algo, nodelay, priority) = {
+            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            (
+                inner.scope,
+                inner.last_ingress_if_id,
+                inner.tcp().and_then(|t| t.congestion_algorithm),
+                inner.tcp().map_or(false, |t| t.nodelay),
+                inner.priority,
+            )
+        };
+
+        let (local_addr, resolved_if) =
+            if let (Some(local_v4), Some(remote_v4)) = (unresolved_local.as_ipv4(), remote.as_ipv4())
+            {
+                let explicit_src = {
+                    let src = Ipv4Address::new(local_v4);
+                    if src.is_any() { None } else { Some(src) }
+                };
+                match stack.resolve_ipv4_egress(
+                    scope,
+                    preferred_if,
+                    explicit_src,
+                    Ipv4Address::new(remote_v4),
+                ) {
+                    Ok((resolved_if, _, src_ip)) => {
+                        (EndpointAddr::new(src_ip.octets(), local_port), resolved_if)
+                    }
+                    Err(error) => {
+                        return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
+                    }
+                }
+            } else if unresolved_local.is_ipv6() && remote.is_ipv6() {
+                let explicit_src = {
+                    let src = crate::net::l3::ipv6::Ipv6Address::new(unresolved_local.as_ipv6());
+                    if src.is_unspecified() { None } else { Some(src) }
+                };
+                let remote_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
+                match stack.resolve_ipv6_egress(scope, preferred_if, explicit_src, remote_v6) {
+                    Ok((resolved_if, _, src_ip)) => {
+                        (EndpointAddr::new_v6(src_ip.octets(), local_port), resolved_if)
+                    }
+                    Err(error) => {
+                        return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
+                    }
+                }
+            } else {
+                return EventHandleResult::ProtocolError(EndpointError::InvalidArgument);
+            };
+
+        {
+            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local_addr);
+        }
+
+        let isn = tcb_table().generate_isn(local_addr, remote);
+        let mut tcb = if let Some(algo) = congestion_algo {
+            TcpControlBlockEntry::with_algorithm(fd, local_addr, remote, algo)
+        } else {
+            TcpControlBlockEntry::new(fd, local_addr, remote)
+        };
+        tcb.initialize_seq(isn);
+        tcb.set_nodelay(nodelay);
+        tcb.set_priority(priority);
+        tcb.scope = scope;
+        tcb.ingress_if_id = resolved_if.or(preferred_if);
+        tcb.state = TcpConnectionState::SynSent;
+        let _ = tcb_table().insert(tcb);
+
+        let mut syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
+            .seq(isn)
+            .syn()
+            .window(65535)
+            .syn_options(
+                1460,
+                Some(7),
+                true,
+                Some(crate::net::l4::endpoint::tcp_rx::generate_tcp_timestamp()),
+            )
+            .build();
+
+        if let Err(e) = apply_tcp_checksum_for_addrs(&mut syn_segment, local_addr, remote) {
+            return EventHandleResult::ProtocolError(e);
+        }
+
+        if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
+            log::info!("TCP: Failed to send SYN packet: {:?}", e);
+            return EventHandleResult::ProtocolError(match e {
+                EndpointError::InvalidArgument => EndpointError::InvalidArgument,
+                EndpointError::NetworkUnreachable => EndpointError::NetworkUnreachable,
+                _ => EndpointError::Internal,
+            });
+        }
+
+        tcb_table().lookup_mut(local_addr, remote, |tcb| {
+            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+        });
+
+        log::info!("TCP: SYN sent {} -> {} (seq={})", local_addr, remote, isn);
+        EventHandleResult::Success
+    }
+
     fn handle_connect(
         &self,
         fd: EndpointFd,
@@ -2254,10 +2492,12 @@ impl NetworkEventHandler {
         let local_addr = local.with_port(local_port);
 
         // ソケットのローカルアドレスを更新し、設定を取得
-        let (congestion_algo, nodelay, priority) = {
+        let (scope, preferred_if, congestion_algo, nodelay, priority) = {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local_addr);
             (
+                inner.scope,
+                inner.last_ingress_if_id,
                 inner.tcp().and_then(|t| t.congestion_algorithm),
                 inner.tcp().map_or(false, |t| t.nodelay),
                 inner.priority,
@@ -2274,6 +2514,8 @@ impl NetworkEventHandler {
         tcb.initialize_seq(isn);
         tcb.set_nodelay(nodelay);
         tcb.set_priority(priority); // 設定を反映
+        tcb.scope = scope;
+        tcb.ingress_if_id = preferred_if;
         tcb.state = TcpConnectionState::SynSent;
         let _ = tcb_table().insert(tcb);
 

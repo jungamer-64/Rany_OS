@@ -122,6 +122,53 @@ impl NetworkStack {
         }
     }
 
+    /// Send an ARP request via a specific interface.
+    pub fn send_arp_request_on(&mut self, if_id: super::NetIfId, target_ip: Ipv4Address) {
+        let current_time = self.current_time();
+
+        // Early exit when we don't have the interface; fall back to the generic
+        // request path.
+        if self.interfaces.get(&if_id).is_none() {
+            self.send_arp_request(target_ip);
+            return;
+        }
+        
+        // We'll build the entire packet into a local buffer and remember its
+        // length; the buffer itself lives for the duration of the function so we
+        // can safely transmit it after dropping the mutable borrow of `state`.
+        let mut buffer = [0u8; 64];
+        let mut packet_len: Option<usize> = None;
+
+        {
+            let state = self.interfaces.get_mut(&if_id).unwrap();
+            if state.arp.cache().is_pending(target_ip, current_time) {
+                return;
+            }
+
+            if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+                frame
+                    .set_destination(MacAddress::BROADCAST)
+                    .set_source(state.config.mac)
+                    .set_ether_type(EtherType::Arp);
+
+                let payload = frame.payload_mut();
+                if let Some(len) = state.arp.build_request(payload, target_ip) {
+                    frame.set_payload_len(len);
+                    frame.pad_to_minimum();
+                    packet_len = Some(frame.as_bytes().len());
+                }
+            }
+        }
+
+        if let Some(len) = packet_len {
+            if self.transmit_on(Some(if_id), &buffer[..len]) {
+                if let Some(state) = self.interfaces.get_mut(&if_id) {
+                    state.arp.request_sent(target_ip, current_time);
+                }
+            }
+        }
+    }
+
     /// Send an ARP probe (RFC 5227 / RFC 2131 Section 2.2)
     ///
     /// Probes are sent with sender_ip = 0.0.0.0 to detect address conflicts

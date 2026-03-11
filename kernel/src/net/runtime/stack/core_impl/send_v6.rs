@@ -241,6 +241,149 @@ impl NetworkStack {
         }
     }
 
+    pub(crate) fn send_ipv6_icmpv6_raw_on(
+        &mut self,
+        if_id: super::NetIfId,
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        icmpv6_data: &[u8],
+    ) {
+        let config = self.interface_config_or_runtime(if_id).unwrap_or_else(|| self.config());
+        let dst_mac = MacAddress::new(dst.multicast_mac());
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv6);
+
+            let eth_payload = frame.payload_mut();
+
+            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
+                ip_packet.init_header();
+                ip_packet.set_source(src);
+                ip_packet.set_destination(dst);
+                ip_packet.set_next_header(IpProtocol::Icmpv6);
+                ip_packet.set_hop_limit(255);
+
+                let payload = ip_packet.payload_mut();
+                if icmpv6_data.len() <= payload.len() {
+                    payload[..icmpv6_data.len()].copy_from_slice(icmpv6_data);
+                    ip_packet.finalize(icmpv6_data.len());
+
+                    let total_len = IPV6_HEADER_SIZE + icmpv6_data.len();
+                    frame.set_payload_len(total_len);
+
+                    self.transmit_on(Some(if_id), frame.as_bytes());
+                }
+            }
+        }
+    }
+
+    fn send_udp_v6_raw_scoped_with_ttl(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        src_port: u16,
+        src_ip: Ipv6Address,
+        dst: Ipv6Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
+        let Ok((if_id, config, resolved_src)) =
+            self.resolve_ipv6_egress(scope, None, Some(src_ip), dst)
+        else {
+            self.stats.record_dropped();
+            return false;
+        };
+
+        if !crate::net::security::firewall::check_egress(
+            crate::net::security::firewall::IpAddress::V6(resolved_src.octets()),
+            crate::net::security::firewall::IpAddress::V6(dst.octets()),
+            17,
+            src_port,
+            dst_port,
+            0,
+        ) {
+            self.stats.record_dropped();
+            return false;
+        }
+
+        let current_time = self.current_time.load(Ordering::Relaxed);
+        let dst_mac = if dst.is_multicast() {
+            MacAddress::new(dst.multicast_mac())
+        } else {
+            match self.ndp {
+                Some(ref mut ndp) => match ndp.resolve(&dst) {
+                    Some(mac) => MacAddress::new(mac),
+                    None => {
+                        self.ndp_pending_queue.enqueue(resolved_src, dst, data, current_time);
+
+                        let ns_msg = ndp.start_resolution(&dst, current_time);
+                        let sn_mcast = dst.solicited_node();
+                        let our_ll = ndp.our_link_local;
+                        if let Some(if_id) = if_id {
+                            self.send_ipv6_icmpv6_raw_on(if_id, &our_ll, &sn_mcast, &ns_msg);
+                        } else {
+                            self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
+                        }
+                        return false;
+                    }
+                },
+                None => return false,
+            }
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv6);
+
+            let eth_payload = frame.payload_mut();
+            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
+                ip_packet.init_header();
+                ip_packet.set_source(&resolved_src);
+                ip_packet.set_destination(&dst);
+                ip_packet.set_next_header(IpProtocol::Udp);
+                ip_packet.set_hop_limit(ttl);
+
+                let payload_buf = ip_packet.payload_mut();
+                if payload_buf.len() < 8 + data.len() {
+                    return false;
+                }
+
+                payload_buf[0..2].copy_from_slice(&src_port.to_be_bytes());
+                payload_buf[2..4].copy_from_slice(&dst_port.to_be_bytes());
+                let udp_len = (8 + data.len()) as u16;
+                payload_buf[4..6].copy_from_slice(&udp_len.to_be_bytes());
+                payload_buf[6..8].copy_from_slice(&0u16.to_be_bytes());
+                payload_buf[8..8 + data.len()].copy_from_slice(data);
+
+                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(
+                    &resolved_src,
+                    &dst,
+                    IpProtocol::Udp,
+                    udp_len as u32,
+                );
+                let checksum =
+                    crate::net::l3::ipv4::data_checksum(&payload_buf[..udp_len as usize], pseudo);
+                let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+                payload_buf[6..8].copy_from_slice(&final_checksum.to_be_bytes());
+
+                ip_packet.finalize(udp_len as usize);
+                let total_len = IPV6_HEADER_SIZE + udp_len as usize;
+                frame.set_payload_len(total_len);
+
+                return self.transmit_on(if_id, frame.as_bytes());
+            }
+        }
+
+        false
+    }
+
     /// Send a UDP/IPv6 datagram (with NDP resolution)
     pub fn send_udp_v6_raw(
         &mut self,
@@ -263,103 +406,15 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        // ── ファイアウォール Egress チェック (IPv6) ──
-        // Security Fix: Use full IPv6 addresses for firewall check
-        if !crate::net::security::firewall::check_egress(
-            crate::net::security::firewall::IpAddress::V6(src_ip.octets()),
-            crate::net::security::firewall::IpAddress::V6(dst.octets()),
-            17, // UDP
+        self.send_udp_v6_raw_scoped_with_ttl(
+            crate::net::types::InterfaceScope::Any,
             src_port,
+            src_ip,
+            dst,
             dst_port,
-            0,
-        ) {
-            self.stats.record_dropped();
-            return false;
-        }
-
-        let config = self.config;
-        let current_time = self.current_time.load(Ordering::Relaxed);
-
-        // Resolve destination MAC address (multicast -> multicast MAC, otherwise via NDP)
-        let dst_mac = if dst.is_multicast() {
-            MacAddress::new(dst.multicast_mac())
-        } else {
-            match self.ndp {
-                Some(ref mut ndp) => match ndp.resolve(&dst) {
-                    Some(mac) => MacAddress::new(mac),
-                    None => {
-                        // Queue packet for later and trigger NDP resolution
-                        // We'll enqueue in ndp_pending_queue similar to ICMPv6 send path
-                        // Build minimal IPv6+UDP packet for queuing (reuse payload area)
-                        // For queuing, store as icmpv6_data-like structure: src/dst/payload
-                        // Use same pending queue as ICMPv6 (it stores raw icmpv6_data), so place UDP data there
-                        self.ndp_pending_queue
-                            .enqueue(src_ip, dst, data, current_time);
-
-                        // Start NDP resolution
-                        let ns_msg = ndp.start_resolution(&dst, current_time);
-                        let sn_mcast = dst.solicited_node();
-                        let our_ll = ndp.our_link_local;
-                        self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
-                        return false;
-                    }
-                },
-                None => return false,
-            }
-        };
-
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv6);
-
-            let eth_payload = frame.payload_mut();
-            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
-                ip_packet.init_header();
-                ip_packet.set_source(&src_ip);
-                ip_packet.set_destination(&dst);
-                ip_packet.set_next_header(IpProtocol::Udp);
-                ip_packet.set_hop_limit(ttl);
-
-                // Build UDP header + payload into IPv6 payload area
-                let payload_buf = ip_packet.payload_mut();
-                if payload_buf.len() < 8 + data.len() {
-                    return false;
-                }
-
-                // UDP header
-                payload_buf[0..2].copy_from_slice(&src_port.to_be_bytes());
-                payload_buf[2..4].copy_from_slice(&dst_port.to_be_bytes());
-                let udp_len = (8 + data.len()) as u16;
-                payload_buf[4..6].copy_from_slice(&udp_len.to_be_bytes());
-                payload_buf[6..8].copy_from_slice(&0u16.to_be_bytes()); // checksum=0 for calc
-
-                // payload
-                payload_buf[8..8 + data.len()].copy_from_slice(data);
-
-                // Compute UDP checksum (IPv6 pseudo-header)
-                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(
-                    &src_ip,
-                    &dst,
-                    IpProtocol::Udp,
-                    udp_len as u32,
-                );
-                let checksum =
-                    crate::net::l3::ipv4::data_checksum(&payload_buf[..udp_len as usize], pseudo);
-                let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
-                payload_buf[6..8].copy_from_slice(&final_checksum.to_be_bytes());
-
-                ip_packet.finalize(udp_len as usize);
-                let total_len = IPV6_HEADER_SIZE + udp_len as usize;
-                frame.set_payload_len(total_len);
-
-                return self.transmit(frame.as_bytes());
-            }
-        }
-
-        false
+            data,
+            ttl,
+        )
     }
 
     /// Transmit a UDP datagram on a given interface (portions of the stack still
@@ -374,20 +429,36 @@ impl NetworkStack {
         dst_port: u16,
         data: &[u8],
     ) -> bool {
-        let config = crate::net::runtime::manager::get_interface(if_id)
-            .ok()
-            .flatten()
-            .and_then(|iface| iface.config)
-            .unwrap_or_else(|| self.config());
+        self.send_udp_raw_on_auto_ttl(if_id, src_port, dst, dst_port, data, 64)
+    }
+
+    pub fn send_udp_raw_on_auto_ttl(
+        &mut self,
+        if_id: super::NetIfId,
+        src_port: u16,
+        dst: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
+        let Ok((resolved_if, config, src_ip)) = self.resolve_ipv4_egress(
+            crate::net::types::InterfaceScope::Pinned(if_id),
+            None,
+            None,
+            dst,
+        ) else {
+            self.stats.record_dropped();
+            return false;
+        };
         self.send_udp_raw_with_config_and_if_ttl(
-            Some(if_id),
+            resolved_if,
             &config,
-            config.ipv4.address,
+            src_ip,
             src_port,
             dst,
             dst_port,
             data,
-            64,
+            ttl,
         )
     }
 
@@ -403,15 +474,19 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        let config = crate::net::runtime::manager::get_interface(if_id)
-            .ok()
-            .flatten()
-            .and_then(|iface| iface.config)
-            .unwrap_or_else(|| self.config());
+        let Ok((resolved_if, config, resolved_src)) = self.resolve_ipv4_egress(
+            crate::net::types::InterfaceScope::Pinned(if_id),
+            None,
+            Some(src_ip),
+            dst,
+        ) else {
+            self.stats.record_dropped();
+            return false;
+        };
         self.send_udp_raw_with_config_and_if_ttl(
-            Some(if_id),
+            resolved_if,
             &config,
-            src_ip,
+            resolved_src,
             src_port,
             dst,
             dst_port,
@@ -423,20 +498,20 @@ impl NetworkStack {
     /// Transmit an IPv6 UDP datagram on a specific interface (ignored for now)
     pub fn send_udp_v6_raw_on(
         &mut self,
-        _if_id: super::NetIfId,
+        if_id: super::NetIfId,
         src_port: u16,
         src_ip: Ipv6Address,
         dst_ip: Ipv6Address,
         dst_port: u16,
         data: &[u8],
     ) -> bool {
-        self.send_udp_v6_raw_with_ttl(src_port, src_ip, dst_ip, dst_port, data, 64)
+        self.send_udp_v6_raw_on_with_ttl(if_id, src_port, src_ip, dst_ip, dst_port, data, 64)
     }
 
     /// Transmit an IPv6 UDP datagram on a specific interface with explicit TTL
     pub fn send_udp_v6_raw_on_with_ttl(
         &mut self,
-        _if_id: super::NetIfId,
+        if_id: super::NetIfId,
         src_port: u16,
         src_ip: Ipv6Address,
         dst_ip: Ipv6Address,
@@ -444,16 +519,30 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        self.send_udp_v6_raw_with_ttl(src_port, src_ip, dst_ip, dst_port, data, ttl)
+        self.send_udp_v6_raw_scoped_with_ttl(
+            crate::net::types::InterfaceScope::Pinned(if_id),
+            src_port,
+            src_ip,
+            dst_ip,
+            dst_port,
+            data,
+            ttl,
+        )
     }
 
-    /// Send a TCP segment over IPv6 (with NDP resolution)
-    pub fn send_tcp_v6_raw(
+    fn send_tcp_v6_raw_scoped(
         &mut self,
+        scope: crate::net::types::InterfaceScope,
         src_ip: Ipv6Address,
         dst: Ipv6Address,
         tcp_segment: &[u8],
     ) -> bool {
+        let Ok((if_id, config, resolved_src)) =
+            self.resolve_ipv6_egress(scope, None, Some(src_ip), dst)
+        else {
+            self.stats.record_dropped();
+            return false;
+        };
         // ── ファイアウォール Egress チェック (IPv6) ──
         if tcp_segment.len() >= 4 {
             let src_port = u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]);
@@ -465,7 +554,7 @@ impl NetworkStack {
             };
             // Security Fix: Use full IPv6 addresses for firewall check
             if !crate::net::security::firewall::check_egress(
-                crate::net::security::firewall::IpAddress::V6(src_ip.octets()),
+                crate::net::security::firewall::IpAddress::V6(resolved_src.octets()),
                 crate::net::security::firewall::IpAddress::V6(dst.octets()),
                 6, // TCP
                 src_port,
@@ -477,7 +566,6 @@ impl NetworkStack {
             }
         }
 
-        let config = self.config;
         let current_time = self.current_time.load(Ordering::Relaxed);
 
         // Resolve destination MAC (multicast -> multicast MAC, otherwise via NDP)
@@ -490,12 +578,16 @@ impl NetworkStack {
                     None => {
                         // Queue packet for later and trigger NDP resolution
                         self.ndp_pending_queue
-                            .enqueue(src_ip, dst, tcp_segment, current_time);
+                            .enqueue(resolved_src, dst, tcp_segment, current_time);
 
                         let ns_msg = ndp.start_resolution(&dst, current_time);
                         let sn_mcast = dst.solicited_node();
                         let our_ll = ndp.our_link_local;
-                        self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
+                        if let Some(if_id) = if_id {
+                            self.send_ipv6_icmpv6_raw_on(if_id, &our_ll, &sn_mcast, &ns_msg);
+                        } else {
+                            self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
+                        }
                         return false;
                     }
                 },
@@ -513,7 +605,7 @@ impl NetworkStack {
             let eth_payload = frame.payload_mut();
             if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
                 ip_packet.init_header();
-                ip_packet.set_source(&src_ip);
+                ip_packet.set_source(&resolved_src);
                 ip_packet.set_destination(&dst);
                 ip_packet.set_next_header(IpProtocol::Tcp);
                 ip_packet.set_hop_limit(64);
@@ -529,11 +621,36 @@ impl NetworkStack {
                 let total_len = IPV6_HEADER_SIZE + tcp_segment.len();
                 frame.set_payload_len(total_len);
 
-                return self.transmit(frame.as_bytes());
+                return self.transmit_on(if_id, frame.as_bytes());
             }
         }
 
         false
+    }
+
+    /// Send a TCP segment over IPv6 (with NDP resolution)
+    pub fn send_tcp_v6_raw(
+        &mut self,
+        src_ip: Ipv6Address,
+        dst: Ipv6Address,
+        tcp_segment: &[u8],
+    ) -> bool {
+        self.send_tcp_v6_raw_scoped(crate::net::types::InterfaceScope::Any, src_ip, dst, tcp_segment)
+    }
+
+    pub fn send_tcp_v6_raw_on(
+        &mut self,
+        if_id: super::NetIfId,
+        src_ip: Ipv6Address,
+        dst: Ipv6Address,
+        tcp_segment: &[u8],
+    ) -> bool {
+        self.send_tcp_v6_raw_scoped(
+            crate::net::types::InterfaceScope::Pinned(if_id),
+            src_ip,
+            dst,
+            tcp_segment,
+        )
     }
 
     /// Drain pending packets for a resolved neighbor

@@ -470,7 +470,13 @@ impl Future for OpenConnectionFuture {
                     }
                     local_addr = inner
                         .local_addr
-                        .unwrap_or_else(|| EndpointAddr::new([0, 0, 0, 0], 0));
+                        .unwrap_or_else(|| {
+                            if this.remote.is_ipv6() {
+                                EndpointAddr::new_v6([0; 16], 0)
+                            } else {
+                                EndpointAddr::new([0, 0, 0, 0], 0)
+                            }
+                        });
                     inner.remote_addr = Some(this.remote);
                     if let Err(e) = inner.transition_to(EndpointState::Connecting) {
                         return Poll::Ready(Err(e));

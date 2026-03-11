@@ -47,11 +47,12 @@ impl NetworkStack {
         dst_mac: MacAddress,
         src_mac: MacAddress,
     ) -> bool {
-        self.send_tcp_fallback_with_ttl(src_ip, dst_ip, tcp_segment, dst_mac, src_mac, 64)
+        self.send_tcp_fallback_with_ttl(None, src_ip, dst_ip, tcp_segment, dst_mac, src_mac, 64)
     }
 
     pub(super) fn send_tcp_fallback_with_ttl(
         &mut self,
+        if_id: Option<super::NetIfId>,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         tcp_segment: &[u8],
@@ -79,7 +80,7 @@ impl NetworkStack {
                     ip_packet.finalize(tcp_segment.len());
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
-                    return self.transmit(frame.as_bytes());
+                    return self.transmit_on(if_id, frame.as_bytes());
                 }
             }
         }
@@ -123,62 +124,63 @@ impl NetworkStack {
             }
         }
 
-        let config = self.config.clone();
+        let Ok((if_id, config, resolved_src)) = self.resolve_ipv4_egress(
+            crate::net::types::InterfaceScope::Any,
+            None,
+            Some(src_ip),
+            dst_ip,
+        ) else {
+            self.stats.record_dropped();
+            return false;
+        };
         let current_time = self.current_time();
 
         // Resolve MAC address
-        let dst_mac = self.resolve_mac(dst_ip, &config, current_time);
+        let dst_mac = self.resolve_mac(if_id, dst_ip, &config, current_time);
         let dst_mac = match dst_mac {
             Some(mac) => mac,
             None => return false, // ARP resolution pending
         };
 
         // Try zero-copy transmission first (allocate PacketRef and build packet directly into it)
-        if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
-            if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-                frame
-                    .set_destination(dst_mac)
-                    .set_source(config.mac)
-                    .set_ether_type(EtherType::Ipv4);
+        if if_id.is_none() {
+            if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
+                if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
+                    frame
+                        .set_destination(dst_mac)
+                        .set_source(config.mac)
+                        .set_ether_type(EtherType::Ipv4);
 
-                let eth_payload = frame.payload_mut();
+                    let eth_payload = frame.payload_mut();
 
-                // Build IP packet
-                if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                    ip_packet
-                        .init_header()
-                        .set_source(src_ip)
-                        .set_destination(dst_ip)
-                        .set_protocol(IpProtocol::Tcp)
-                        .set_ttl(ttl);
+                    if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                        ip_packet
+                            .init_header()
+                            .set_source(resolved_src)
+                            .set_destination(dst_ip)
+                            .set_protocol(IpProtocol::Tcp)
+                            .set_ttl(ttl);
 
-                    let ip_payload = ip_packet.payload_mut();
+                        let ip_payload = ip_packet.payload_mut();
 
-                    // Copy TCP segment into PacketRef
-                    if ip_payload.len() >= tcp_segment.len() {
-                        ip_payload[..tcp_segment.len()].copy_from_slice(tcp_segment);
-                        ip_packet.finalize(tcp_segment.len());
+                        if ip_payload.len() >= tcp_segment.len() {
+                            ip_payload[..tcp_segment.len()].copy_from_slice(tcp_segment);
+                            ip_packet.finalize(tcp_segment.len());
 
-                        let ip_len = ip_packet.total_len();
-                        frame.set_payload_len(ip_len);
+                            let ip_len = ip_packet.total_len();
+                            frame.set_payload_len(ip_len);
 
-                        // Set PacketRef length and attempt to enqueue zero-copy
-                        let total_len = frame.as_bytes().len();
-                        // Drop the mutable borrow on frame before moving packet
-                        drop(frame);
-                        packet.set_len(total_len);
+                            let total_len = frame.as_bytes().len();
+                            drop(frame);
+                            packet.set_len(total_len);
 
-                        match crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(
-                            packet,
-                        ) {
-                            Ok(()) => {
-                                // Zero-copy enqueue succeeded
-                                // Update stats
+                            if crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(
+                                packet,
+                            )
+                            .is_ok()
+                            {
                                 self.stats.record_tx(total_len);
                                 return true;
-                            }
-                            Err(_) => {
-                                // Enqueue failed (queue full or device error) - drop packet and fall back
                             }
                         }
                     }
@@ -186,7 +188,59 @@ impl NetworkStack {
             }
         }
 
-        self.send_tcp_fallback_with_ttl(src_ip, dst_ip, tcp_segment, dst_mac, config.mac, ttl)
+        self.send_tcp_fallback_with_ttl(
+            if_id,
+            resolved_src,
+            dst_ip,
+            tcp_segment,
+            dst_mac,
+            config.mac,
+            ttl,
+        )
+    }
+
+    pub fn send_tcp_on(
+        &mut self,
+        if_id: super::NetIfId,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+    ) -> bool {
+        self.send_tcp_on_with_ttl(if_id, src_ip, dst_ip, tcp_segment, 64)
+    }
+
+    pub fn send_tcp_on_with_ttl(
+        &mut self,
+        if_id: super::NetIfId,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+        ttl: u8,
+    ) -> bool {
+        let Ok((resolved_if, config, resolved_src)) = self.resolve_ipv4_egress(
+            crate::net::types::InterfaceScope::Pinned(if_id),
+            None,
+            Some(src_ip),
+            dst_ip,
+        ) else {
+            self.stats.record_dropped();
+            return false;
+        };
+        let current_time = self.current_time();
+        let dst_mac = match self.resolve_mac(resolved_if, dst_ip, &config, current_time) {
+            Some(mac) => mac,
+            None => return false,
+        };
+
+        self.send_tcp_fallback_with_ttl(
+            resolved_if,
+            resolved_src,
+            dst_ip,
+            tcp_segment,
+            dst_mac,
+            config.mac,
+            ttl,
+        )
     }
 
     /// Process retransmission timeouts and attempt to resend timed-out segments.
@@ -259,6 +313,39 @@ impl NetworkStack {
         }
     }
 
+    pub(crate) fn send_tcp_packet_for_flow(
+        &mut self,
+        local: TcpEndpointAddr,
+        remote: TcpEndpointAddr,
+        tcp_segment: &[u8],
+    ) -> bool {
+        let (scope, ingress_if_id) = crate::net::l4::endpoint::tcb_table()
+            .get(local, remote)
+            .map(|tcb| (tcb.scope, tcb.ingress_if_id))
+            .unwrap_or((crate::net::types::InterfaceScope::Any, None));
+        let scoped_if = scope.as_if_id().or(ingress_if_id);
+
+        if local.is_ipv6() && remote.is_ipv6() {
+            let src_v6 = Ipv6Address::new(local.as_ipv6());
+            let dst_v6 = Ipv6Address::new(remote.as_ipv6());
+            return match scoped_if {
+                Some(if_id) => self.send_tcp_v6_raw_on(if_id, src_v6, dst_v6, tcp_segment),
+                None => self.send_tcp_v6_raw(src_v6, dst_v6, tcp_segment),
+            };
+        }
+
+        if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
+            let src_ip = Ipv4Address::new(lv4);
+            let dst_ip = Ipv4Address::new(rv4);
+            return match scoped_if {
+                Some(if_id) => self.send_tcp_on(if_id, src_ip, dst_ip, tcp_segment),
+                None => self.send_tcp(src_ip, dst_ip, tcp_segment),
+            };
+        }
+
+        false
+    }
+
     pub fn process_tcp_retransmissions(&mut self, current_time: u64) {
         let results = self.tcp.check_retransmissions(current_time);
 
@@ -267,18 +354,7 @@ impl NetworkStack {
             if let Some((local, remote, seq, total_len)) =
                 Self::build_tcp_packet_from_result(&res, &mut buffer)
             {
-                let sent = if local.is_ipv6() && remote.is_ipv6() {
-                    let src_v6 = Ipv6Address::new(local.as_ipv6());
-                    let dst_v6 = Ipv6Address::new(remote.as_ipv6());
-                    self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
-                } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-                    let src_ip_out = Ipv4Address::new(lv4);
-                    let dst_ip_out = Ipv4Address::new(rv4);
-                    self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
-                } else {
-                    // Mixed family — ignore
-                    false
-                };
+                let sent = self.send_tcp_packet_for_flow(local, remote, &buffer[..total_len]);
 
                 let now = self.current_time();
                 if sent {
@@ -296,15 +372,7 @@ impl NetworkStack {
             if let Some((local, remote, _seq, total_len)) =
                 Self::build_tcp_packet_from_result(&res, &mut buffer)
             {
-                if local.is_ipv6() && remote.is_ipv6() {
-                    let src_v6 = Ipv6Address::new(local.as_ipv6());
-                    let dst_v6 = Ipv6Address::new(remote.as_ipv6());
-                    self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len]);
-                } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-                    let src_ip_out = Ipv4Address::new(lv4);
-                    let dst_ip_out = Ipv4Address::new(rv4);
-                    self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
-                }
+                self.send_tcp_packet_for_flow(local, remote, &buffer[..total_len]);
             }
         }
 
@@ -315,15 +383,7 @@ impl NetworkStack {
             if let Some((local, remote, _seq, total_len)) =
                 Self::build_tcp_packet_from_result(&res, &mut buffer)
             {
-                if local.is_ipv6() && remote.is_ipv6() {
-                    let src_v6 = Ipv6Address::new(local.as_ipv6());
-                    let dst_v6 = Ipv6Address::new(remote.as_ipv6());
-                    self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len]);
-                } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-                    let src_ip_out = Ipv4Address::new(lv4);
-                    let dst_ip_out = Ipv4Address::new(rv4);
-                    self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
-                }
+                self.send_tcp_packet_for_flow(local, remote, &buffer[..total_len]);
             }
         }
     }
@@ -425,17 +485,7 @@ impl NetworkStack {
 
     /// Transmit a raw Ethernet frame
     pub fn transmit(&self, data: &[u8]) -> bool {
-        if let Some(f) = self.transmit_fn {
-            if f(None, data) {
-                self.stats.record_tx(data.len());
-                return true;
-            } else {
-                self.stats.record_tx_error();
-                return false;
-            }
-        }
-
-        false
+        self.transmit_on(None, data)
     }
 
     /// List all UDP sockets (for debugging/statistics)
