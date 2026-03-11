@@ -310,76 +310,73 @@ fn build_supported_devices() -> Vec<DeviceId> {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct DmaSlot {
+struct DmaRegion {
     phys_addr: u64,
     device_addr: u64,
     virt_addr: u64,
     size: usize,
-    releaser: Option<unsafe fn(*mut u8, usize, u64)>,
 }
+
+struct DmaSlot {
+    region: DmaRegion,
+    owned: Option<DmaBuffer>,
+}
+
+// SAFETY: Shared reads only expose the copied `region` metadata. The owned DMA
+// buffer is kept private and is only consumed during teardown via `&mut self`,
+// so `DmaSlot` never shares mutable access to DMA memory across threads.
+unsafe impl Sync for DmaSlot {}
 
 impl DmaSlot {
     fn from_dma_buffer(buffer: DmaBuffer) -> Self {
-        let (phys_addr, device_addr, virt_addr, size, releaser) = buffer.into_raw_parts();
         Self {
-            phys_addr,
-            device_addr,
-            virt_addr: virt_addr as u64,
-            size,
-            releaser,
+            region: DmaRegion {
+                phys_addr: buffer.physical_address(),
+                device_addr: buffer.device_address(),
+                virt_addr: buffer.as_ptr() as u64,
+                size: buffer.size(),
+            },
+            owned: Some(buffer),
         }
     }
 
     fn as_ptr_u64(&self) -> u64 {
-        self.virt_addr
+        self.region.virt_addr
     }
 
     fn phys_address(&self) -> u64 {
-        self.phys_addr
+        self.region.phys_addr
     }
 
     fn device_address(&self) -> u64 {
-        self.device_addr
+        self.region.device_addr
     }
 
     fn as_region(&self) -> Mlx5DmaRegion {
-        Mlx5DmaRegion::new(self.virt_addr, self.device_addr, self.size)
+        Mlx5DmaRegion::new(
+            self.region.virt_addr,
+            self.region.device_addr,
+            self.region.size,
+        )
     }
 
     fn subregion(&self, offset: usize, size: usize) -> Self {
-        debug_assert!(offset <= self.size);
-        debug_assert!(size <= self.size.saturating_sub(offset));
+        debug_assert!(offset <= self.region.size);
+        debug_assert!(size <= self.region.size.saturating_sub(offset));
         Self {
-            phys_addr: self.phys_addr + offset as u64,
-            device_addr: self.device_addr + offset as u64,
-            virt_addr: self.virt_addr + offset as u64,
-            size,
-            releaser: None,
-        }
-    }
-
-    fn into_dma_buffer(self) -> DmaBuffer {
-        unsafe {
-            DmaBuffer::from_raw_parts(
-                self.phys_addr,
-                self.device_addr,
-                self.virt_addr as *mut u8,
-                self.size,
-                self.releaser,
-            )
+            region: DmaRegion {
+                phys_addr: self.region.phys_addr + offset as u64,
+                device_addr: self.region.device_addr + offset as u64,
+                virt_addr: self.region.virt_addr + offset as u64,
+                size,
+            },
+            owned: None,
         }
     }
 }
 
 fn release_dma_slot(slot: &mut DmaSlot) {
-    if slot.size == 0 || slot.releaser.is_none() {
-        return;
-    }
-
-    let owned = core::mem::take(slot);
-    if owned.size != 0 {
-        drop(owned.into_dma_buffer());
-    }
+    let _ = slot.owned.take();
 }
 
 /// mlx5 初期化中に確保する DMA リソース一式。
@@ -1230,8 +1227,33 @@ fn ensure_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::alloc::{Layout, alloc, dealloc};
     use alloc::rc::Rc;
     use core::cell::RefCell;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static DMA_RELEASE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe fn test_release_dma_buffer(ptr: *mut u8, size: usize, _phys_addr: u64) {
+        DMA_RELEASE_COUNT.fetch_add(1, Ordering::SeqCst);
+        let layout = Layout::from_size_align(size.max(1), 1).expect("valid test dma layout");
+        unsafe { dealloc(ptr, layout) };
+    }
+
+    fn test_dma_buffer(size: usize, phys_addr: u64, device_addr: u64) -> DmaBuffer {
+        let layout = Layout::from_size_align(size.max(1), 1).expect("valid test dma layout");
+        let ptr = unsafe { alloc(layout) };
+        assert!(!ptr.is_null());
+        unsafe {
+            DmaBuffer::from_raw_parts(
+                phys_addr,
+                device_addr,
+                ptr,
+                size,
+                Some(test_release_dma_buffer),
+            )
+        }
+    }
 
     struct FakeSriovController {
         capability: Option<SriovCapability>,
@@ -1389,5 +1411,26 @@ mod tests {
                 .unwrap_or_default(),
             0
         );
+    }
+
+    #[test_case]
+    fn dma_slot_subregion_keeps_owner_in_parent_buffer() {
+        DMA_RELEASE_COUNT.store(0, Ordering::SeqCst);
+
+        let mut chunk = DmaSlot::from_dma_buffer(test_dma_buffer(8192, 0x1000, 0x8000));
+        let mut page = chunk.subregion(4096, 4096);
+
+        assert_eq!(page.phys_address(), 0x2000);
+        assert_eq!(page.device_address(), 0x9000);
+        assert_eq!(page.as_ptr_u64(), chunk.as_ptr_u64() + 4096);
+
+        release_dma_slot(&mut page);
+        assert_eq!(DMA_RELEASE_COUNT.load(Ordering::SeqCst), 0);
+
+        release_dma_slot(&mut chunk);
+        assert_eq!(DMA_RELEASE_COUNT.load(Ordering::SeqCst), 1);
+
+        release_dma_slot(&mut chunk);
+        assert_eq!(DMA_RELEASE_COUNT.load(Ordering::SeqCst), 1);
     }
 }
