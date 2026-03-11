@@ -107,6 +107,20 @@ pub trait Driver: Send + Sync {
         Ok(())
     }
 
+    /// Optional non-ISR interrupt entrypoint.
+    ///
+    /// The framework invokes this from a relay task, never directly from ISR
+    /// context. `irq` is the vector number returned by the kernel MSI/MSI-X
+    /// allocator.
+    fn handle_irq(&mut self, _irq: u32) -> bool {
+        false
+    }
+
+    /// Indicates whether this driver exposes a relay-safe IRQ entrypoint.
+    fn has_irq_handler(&self) -> bool {
+        false
+    }
+
     /// ドライバがサポートするデバイス情報
     fn supported_devices(&self) -> &[DeviceId] {
         &[]

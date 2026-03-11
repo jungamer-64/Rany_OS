@@ -494,10 +494,42 @@ pub struct Mlx5AsyncDriver {
     initialized: bool,
     /// プローブしたデバイス種別（ログ表示用）
     variant: Option<ConnectXVariant>,
+    /// ドライバが所有する PCI ロケータ
+    pci_locator: Option<PackedPciLocation>,
     /// デバイス起動中に保持する DMA リソース
     dma_resources: Option<Mlx5DmaResources>,
     /// サポートデバイスリスト（動的構築）
     supported_devices: Vec<DeviceId>,
+}
+
+struct Mlx5MsixGuard {
+    locator: PackedPciLocation,
+    armed: bool,
+}
+
+impl Mlx5MsixGuard {
+    fn new(locator: PackedPciLocation) -> Self {
+        Self {
+            locator,
+            armed: false,
+        }
+    }
+
+    fn arm(&mut self) {
+        self.armed = true;
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Mlx5MsixGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = kernel().disable_msix(self.locator);
+        }
+    }
 }
 
 impl Mlx5AsyncDriver {
@@ -506,6 +538,7 @@ impl Mlx5AsyncDriver {
         Self {
             initialized: false,
             variant: None,
+            pci_locator: None,
             dma_resources: None,
             supported_devices: build_supported_devices(),
         }
@@ -712,95 +745,30 @@ impl Mlx5AsyncDriver {
         pci_dev.enable_bus_master();
         pci_dev.enable_memory_space();
 
-        if let Some(msix_offset) = pci_dev.msix_cap_offset {
-            log::info!(target: "mlx5", "MSI-X capability at offset {:#x}", msix_offset);
+        let pci_locator = PackedPciLocation::new(
+            pci_dev.segment,
+            pci_dev.bdf.bus(),
+            pci_dev.bdf.device(),
+            pci_dev.bdf.function(),
+        );
+        let mut msix_guard = Mlx5MsixGuard::new(pci_locator);
 
-            // 必要なベクタ数を見積もる (EQの数など)
+        if pci_dev.msix_cap_offset.is_some() {
             let requested_vectors = 1;
-
-            if let Ok(allocs) = crate::io::interrupt_manager::allocate_msix(
-                pci_dev.bdf.to_u16() as u32,
-                requested_vectors,
-                "mlx5_event_queue",
-                Some(0), // Target BSP
-            ) {
-                if !allocs.is_empty() {
-                    let msix_vectors = allocs;
-                    let base_vector = msix_vectors[0].vector;
-                    log::info!(target: "mlx5", "Allocated MSI-X base vector: {}", base_vector);
-
-                    let config = &msix_vectors[0].config;
-
-                    // MSI-X テーブルの情報取得とマッピング
-                    let table_info = crate::io::pci::pci_read(
-                        pci_dev.bdf.bus(),
-                        pci_dev.bdf.device(),
-                        pci_dev.bdf.function(),
-                        (msix_offset + 4) as u8,
+            match kernel().enable_msix(pci_locator, requested_vectors) {
+                Ok(msix_vectors) if !msix_vectors.is_empty() => {
+                    msix_guard.arm();
+                    log::info!(
+                        target: "mlx5",
+                        "Configured MSI-X vectors: {:?}",
+                        msix_vectors
+                            .iter()
+                            .map(|info| info.vector)
+                            .collect::<Vec<_>>()
                     );
-                    let table_bir = (table_info & 0x7) as usize;
-                    let table_offset = table_info & !0x7;
 
-                    if let Some(bar) = pci_dev.bars[table_bir] {
-                        if let Some(table_bar_base) =
-                            ensure_bar_mapped(bar.base(), bar.size() as u64)
-                        {
-                            let table_base_virt = table_bar_base + table_offset as u64;
-                            let entry_ptr = table_base_virt as *mut u32;
-
-                            // Entry 0 を設定 (device.init_full で msix_vector=0 を使用するため)
-                            unsafe {
-                                core::ptr::write_volatile(
-                                    entry_ptr.add(0),
-                                    config.msi_address() as u32,
-                                ); // Msg Addr Lo
-                                core::ptr::write_volatile(
-                                    entry_ptr.add(1),
-                                    (config.msi_address() >> 32) as u32,
-                                ); // Msg Addr Hi
-                                core::ptr::write_volatile(entry_ptr.add(2), config.msi_data()); // Msg Data
-                                core::ptr::write_volatile(entry_ptr.add(3), 0); // Vector Control (Unmask)
-                            }
-
-                            // MSI-X を有効化し、Function Mask を解除
-                            let dword = crate::io::pci::pci_read(
-                                pci_dev.bdf.bus(),
-                                pci_dev.bdf.device(),
-                                pci_dev.bdf.function(),
-                                msix_offset as u8,
-                            );
-                            let msg_ctrl = (dword >> 16) as u16;
-                            let new_msg_ctrl = (msg_ctrl | 0x8000) & !0x4000; // Enable=1, Function Mask=0
-                            crate::io::pci::pci_write(
-                                pci_dev.bdf.bus(),
-                                pci_dev.bdf.device(),
-                                pci_dev.bdf.function(),
-                                msix_offset as u8,
-                                (dword & 0x0000FFFF) | ((new_msg_ctrl as u32) << 16),
-                            );
-
-                            // レガシー INTx を無効化
-                            let cmd = crate::io::pci::pci_read(
-                                pci_dev.bdf.bus(),
-                                pci_dev.bdf.device(),
-                                pci_dev.bdf.function(),
-                                crate::io::pci::config_regs::COMMAND as u8,
-                            );
-                            crate::io::pci::pci_write(
-                                pci_dev.bdf.bus(),
-                                pci_dev.bdf.device(),
-                                pci_dev.bdf.function(),
-                                crate::io::pci::config_regs::COMMAND as u8,
-                                cmd | (crate::io::pci::command_bits::INTERRUPT_DISABLE as u32),
-                            );
-                        } else {
-                            log::warn!(target: "mlx5", "Failed to map MSI-X table BAR");
-                        }
-                    }
-
-                    // ハンドラを登録（Interrupt-Waker handoff）
-                    for alloc in &msix_vectors {
-                        let vec = alloc.vector;
+                    for info in &msix_vectors {
+                        let vec = info.vector as u8;
                         crate::io::interrupt_manager::register_handler(
                             vec,
                             alloc::boxed::Box::new(move || {
@@ -808,11 +776,17 @@ impl Mlx5AsyncDriver {
                             }),
                         );
                     }
-                } else {
-                    log::warn!(target: "mlx5", "MSI-X allocation returned empty, falling back to polling");
                 }
-            } else {
-                log::warn!(target: "mlx5", "Failed to allocate MSI-X vectors, falling back to polling");
+                Ok(_) => {
+                    log::warn!(target: "mlx5", "MSI-X helper returned no vectors, falling back to polling");
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "Failed to configure MSI-X via common helper: {:?}; falling back to polling",
+                        err
+                    );
+                }
             }
         } else {
             log::warn!(target: "mlx5", "MSI-X not available; using polling mode");
@@ -934,8 +908,10 @@ impl Mlx5AsyncDriver {
         }
 
         self.variant = Some(variant);
+        self.pci_locator = Some(pci_locator);
         self.dma_resources = Some(dma_resources);
         self.initialized = true;
+        msix_guard.disarm();
         set_mlx5_sriov_state(Some(detect_sriov_runtime_state(
             variant,
             PcieBdf::new(
@@ -1016,6 +992,12 @@ impl AsyncDriver for Mlx5AsyncDriver {
         Box::pin(async move {
             let variant_name = self.variant.map(|v| v.name()).unwrap_or("ConnectX");
             log::info!(target: "mlx5", "{} driver stopping...", variant_name);
+
+            if let Some(locator) = self.pci_locator.take() {
+                if let Err(err) = kernel().disable_msix(locator) {
+                    log::warn!(target: "mlx5", "Failed to disable MSI-X during stop: {:?}", err);
+                }
+            }
 
             if mlx5_sriov_status().active_vfs != 0 {
                 if let Err(err) = mlx5_disable_vfs() {

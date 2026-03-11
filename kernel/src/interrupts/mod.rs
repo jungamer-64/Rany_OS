@@ -629,6 +629,9 @@ define_interrupt!(
 
 #[inline]
 fn handle_msi_vector(vector: u8) {
+    crate::task::interrupt_waker::wake_from_interrupt(
+        crate::task::interrupt_waker::InterruptSource::Irq(vector),
+    );
     if !crate::io::interrupt_manager::try_dispatch_direct(vector) {
         crate::io::interrupt_manager::push_interrupt_event(vector);
     }

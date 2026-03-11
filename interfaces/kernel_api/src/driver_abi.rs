@@ -824,6 +824,14 @@ impl AbiAudioControllerRegistration {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiMsixVectorInfo {
+    pub vector: u32,
+    pub table_index: u16,
+    pub reserved: u16,
+}
+
 /// Kernel API function table for drivers.
 ///
 /// Drivers must validate `abi_version` and `abi_size` before using optional
@@ -878,6 +886,16 @@ pub struct KernelApiV2 {
     pub unregister_audio_controller: extern "C" fn(handle: u64) -> i32,
 
     pub reserved: [u64; 2],
+    pub enable_msix_raw: Option<
+        extern "C" fn(
+            device_id: u64,
+            requested_count: u16,
+            out_vectors: *mut AbiMsixVectorInfo,
+            capacity: usize,
+            written: *mut usize,
+        ) -> i32,
+    >,
+    pub disable_msix_raw: Option<extern "C" fn(device_id: u64) -> i32>,
 }
 
 /// Driver export header for `DRIVER_EXPORTS`.

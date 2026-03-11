@@ -1,7 +1,7 @@
 use super::*;
 use crate::loader::{unload_cell, with_registry_mut};
 use alloc::string::String;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use kernel_api::abi::driver::{
     AbiDriverType, DRIVER_ABI_VERSION, DriverContext, DriverVTable, PackedPciLocation,
 };
@@ -9,6 +9,8 @@ use kernel_api::provider::{ProviderDescriptorV1, ProviderKind};
 
 static PROBE_CALLED: AtomicBool = AtomicBool::new(false);
 static REMOVE_CALLED: AtomicBool = AtomicBool::new(false);
+static IRQ_HANDLER_CALLED: AtomicBool = AtomicBool::new(false);
+static LAST_IRQ: AtomicU32 = AtomicU32::new(0);
 static LAST_PROBE_CONTEXT: spin::Mutex<Option<DriverContext>> = spin::Mutex::new(None);
 
 extern "C" fn probe(ctx: *mut DriverContext) -> i32 {
@@ -28,6 +30,14 @@ extern "C" fn stop(_ctx: *mut DriverContext) -> i32 {
 extern "C" fn remove(_ctx: *mut DriverContext) -> i32 {
     REMOVE_CALLED.store(true, Ordering::SeqCst);
     0
+}
+
+extern "C" fn irq_handler(ctx: *mut DriverContext) -> bool {
+    IRQ_HANDLER_CALLED.store(true, Ordering::SeqCst);
+    if !ctx.is_null() {
+        LAST_IRQ.store(unsafe { (*ctx).irq }, Ordering::SeqCst);
+    }
+    true
 }
 
 static NAME_BYTES: &[u8] = b"test_abi_driver\0";
@@ -89,12 +99,30 @@ static OLD_ABI_VTABLE: DriverVTable = DriverVTable::new(
     None,
 );
 
+static IRQ_VTABLE: DriverVTable = DriverVTable::new(
+    DRIVER_ABI_VERSION,
+    probe,
+    start,
+    stop,
+    remove,
+    name_fn,
+    name_len_fn,
+    type_fn,
+    version_fn,
+    None,
+    Some(irq_handler),
+);
+
 extern "C" fn entry_fn() -> *const DriverVTable {
     &VTABLE
 }
 
 extern "C" fn old_abi_entry_fn() -> *const DriverVTable {
     &OLD_ABI_VTABLE
+}
+
+extern "C" fn irq_entry_fn() -> *const DriverVTable {
+    &IRQ_VTABLE
 }
 
 #[test_case]
@@ -219,6 +247,26 @@ fn test_driver_provider_descriptors_follow_lifecycle() {
             .is_empty()
     );
 
+    DRIVER_REGISTRY
+        .unregister(handle)
+        .expect("unregister failed");
+}
+
+#[test_case]
+fn test_dispatch_irq_updates_ctx_irq_for_abi_driver() {
+    IRQ_HANDLER_CALLED.store(false, Ordering::SeqCst);
+    LAST_IRQ.store(0, Ordering::SeqCst);
+
+    let handle = register_abi_driver(irq_entry_fn).expect("register failed");
+    DRIVER_REGISTRY.probe(handle).expect("probe failed");
+    DRIVER_REGISTRY.start(handle).expect("start failed");
+
+    assert!(DRIVER_REGISTRY.has_irq_handler(handle));
+    assert!(DRIVER_REGISTRY.dispatch_irq(handle, 0x88));
+    assert!(IRQ_HANDLER_CALLED.load(Ordering::SeqCst));
+    assert_eq!(LAST_IRQ.load(Ordering::SeqCst), 0x88);
+
+    DRIVER_REGISTRY.stop(handle).expect("stop failed");
     DRIVER_REGISTRY
         .unregister(handle)
         .expect("unregister failed");

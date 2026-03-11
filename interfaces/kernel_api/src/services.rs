@@ -16,6 +16,7 @@ use crate::abi::driver::{
 };
 use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::ChannelHandle;
+use crate::msix::MsixVectorInfo;
 use crate::resource::fs::{FileHandle, OpenMode};
 use crate::resource::net::{Packet, RawEndpointHandle, TcpEndpoint};
 use crate::resource::storage::{
@@ -85,6 +86,16 @@ pub trait KernelServices: Send + Sync {
         size: usize,
         device_id: PackedPciLocation,
     ) -> KapiResult<DmaSlice<CpuOwned>>;
+
+    /// Enable MSI-X for a PCI device and return the configured table slots.
+    fn enable_msix(
+        &self,
+        device_id: PackedPciLocation,
+        requested_count: u16,
+    ) -> KapiResult<alloc::vec::Vec<MsixVectorInfo>>;
+
+    /// Disable MSI-X for a PCI device owned by the caller.
+    fn disable_msix(&self, device_id: PackedPciLocation) -> KapiResult<()>;
 
     // ========================================================================
     // I/O Operations
@@ -461,7 +472,7 @@ pub fn abi() -> &'static KernelApiV2 {
 mod standalone {
     use super::*;
     use crate::KapiError;
-    use crate::abi::driver::{AbiDmaSlice, AbiError};
+    use crate::abi::driver::{AbiDmaSlice, AbiError, AbiMsixVectorInfo};
 
     static STANDALONE_KERNEL: StandaloneKernelServices = StandaloneKernelServices;
 
@@ -520,6 +531,78 @@ mod standalone {
         }
     }
 
+    fn enable_msix(
+        device_id: PackedPciLocation,
+        requested_count: u16,
+    ) -> KapiResult<alloc::vec::Vec<MsixVectorInfo>> {
+        type EnableMsixRaw = extern "C" fn(
+            device_id: u64,
+            requested_count: u16,
+            out_vectors: *mut AbiMsixVectorInfo,
+            capacity: usize,
+            written: *mut usize,
+        ) -> i32;
+
+        if requested_count == 0 {
+            return Err(KapiError::InvalidHandle);
+        }
+
+        let api = super::abi();
+        if (api.abi_size as usize)
+            < core::mem::offset_of!(KernelApiV2, enable_msix_raw)
+                + core::mem::size_of::<Option<EnableMsixRaw>>()
+        {
+            return Err(KapiError::NotSupported);
+        }
+        let Some(enable) = api.enable_msix_raw else {
+            return Err(KapiError::NotSupported);
+        };
+
+        let mut raw = alloc::vec![AbiMsixVectorInfo::default(); requested_count as usize];
+        let mut written = 0usize;
+        let status = enable(
+            device_id.raw(),
+            requested_count,
+            raw.as_mut_ptr(),
+            raw.len(),
+            &mut written,
+        );
+        if !AbiError::from_raw(status).is_success() {
+            return Err(map_abi_error(status));
+        }
+        if written != requested_count as usize {
+            return Err(KapiError::IoError);
+        }
+
+        Ok(raw
+            .into_iter()
+            .take(written)
+            .map(|entry| MsixVectorInfo::new(entry.vector, entry.table_index))
+            .collect())
+    }
+
+    fn disable_msix(device_id: PackedPciLocation) -> KapiResult<()> {
+        type DisableMsixRaw = extern "C" fn(device_id: u64) -> i32;
+
+        let api = super::abi();
+        if (api.abi_size as usize)
+            < core::mem::offset_of!(KernelApiV2, disable_msix_raw)
+                + core::mem::size_of::<Option<DisableMsixRaw>>()
+        {
+            return Err(KapiError::NotSupported);
+        }
+        let Some(disable) = api.disable_msix_raw else {
+            return Err(KapiError::NotSupported);
+        };
+
+        let status = disable(device_id.raw());
+        if AbiError::from_raw(status).is_success() {
+            Ok(())
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
     struct StandaloneKernelServices;
 
     impl KernelServices for StandaloneKernelServices {
@@ -545,6 +628,18 @@ mod standalone {
             device_id: PackedPciLocation,
         ) -> KapiResult<DmaSlice<CpuOwned>> {
             alloc_dma_for_device(size, device_id)
+        }
+
+        fn enable_msix(
+            &self,
+            device_id: PackedPciLocation,
+            requested_count: u16,
+        ) -> KapiResult<alloc::vec::Vec<MsixVectorInfo>> {
+            enable_msix(device_id, requested_count)
+        }
+
+        fn disable_msix(&self, device_id: PackedPciLocation) -> KapiResult<()> {
+            disable_msix(device_id)
         }
 
         fn port_read_u8(&self, port: u16) -> u8 {

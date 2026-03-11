@@ -170,6 +170,8 @@ pub static __exorust_kernel_api_v2: KernelApiV2 = KernelApiV2 {
     register_audio_controller: test_kernel_register_audio_controller,
     unregister_audio_controller: test_kernel_unregister_audio_controller,
     reserved: [0; 2],
+    enable_msix_raw: None,
+    disable_msix_raw: None,
 };
 
 // ============================================================================

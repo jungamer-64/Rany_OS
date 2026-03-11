@@ -25,15 +25,19 @@ extern crate alloc;
 
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
+use core::sync::atomic::AtomicBool;
 use kernel_api::abi::driver::{
     AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiDmaSlice, AbiDriverType,
-    AbiError as AbiErrorCode, AbiMmioHandle, AbiNetPortRegistration, AbiNvmeNamespaceRegistration,
-    DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
-    DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
-    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV2, PackedPciLocation,
+    AbiError as AbiErrorCode, AbiMmioHandle, AbiMsixVectorInfo, AbiNetPortRegistration,
+    AbiNvmeNamespaceRegistration, DRIVER_EXPORTS_ABI_VERSION,
+    DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
+    DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
+    KERNEL_API_ABI_VERSION, KernelApiV2, PackedPciLocation,
 };
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::error::{KapiError, KapiResult};
@@ -52,6 +56,199 @@ fn cleanup_runtime_bridges_for_driver_handle(handle: DriverHandle) {
     not(feature = "qemu-test-export")
 ))]
 fn cleanup_runtime_bridges_for_driver_handle(_handle: DriverHandle) {}
+
+#[derive(Clone)]
+struct IrqBinding {
+    owner: crate::domain_system::DomainId,
+    handle: DriverHandle,
+    stop: Arc<AtomicBool>,
+    cookie: u64,
+}
+
+static IRQ_BINDINGS: PoisonLock<BTreeMap<u8, IrqBinding>> = PoisonLock::new(BTreeMap::new());
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+fn resolve_single_driver_handle_for_domain(
+    domain: crate::domain_system::DomainId,
+) -> Result<DriverHandle, KapiError> {
+    let manager = crate::driver_domain::driver_domain_manager();
+    let Some(id) = manager.find_by_domain(domain) else {
+        return Err(KapiError::NotSupported);
+    };
+
+    let handles = manager
+        .with_cell(id, |cell| cell.driver_handles.clone())
+        .map_err(|_| KapiError::NotFound)?;
+    match handles.as_slice() {
+        [handle] => Ok(*handle),
+        _ => Err(KapiError::NotSupported),
+    }
+}
+
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+fn resolve_single_driver_handle_for_domain(
+    _domain: crate::domain_system::DomainId,
+) -> Result<DriverHandle, KapiError> {
+    Err(KapiError::NotSupported)
+}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+fn force_unbind_irq(vector: u8) -> Option<IrqBinding> {
+    let binding = IRQ_BINDINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&vector)?;
+    binding
+        .stop
+        .store(true, core::sync::atomic::Ordering::Release);
+    crate::task::interrupt_waker::wake_from_interrupt(
+        crate::task::interrupt_waker::InterruptSource::Irq(vector),
+    );
+    Some(binding)
+}
+
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+fn force_unbind_irq(vector: u8) -> Option<IrqBinding> {
+    IRQ_BINDINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&vector)
+}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
+    let vector = u8::try_from(irq).map_err(|_| KapiError::InvalidHandle)?;
+    let owner = crate::task::context::current_subject().domain;
+    let owner_info = crate::io::msix::owner_for_vector(vector).ok_or(KapiError::InvalidHandle)?;
+    if owner_info.owner != owner {
+        return Err(KapiError::PermissionDenied);
+    }
+
+    let handle = resolve_single_driver_handle_for_domain(owner)?;
+    if !driver_registry().has_irq_handler(handle) {
+        return Err(KapiError::NotSupported);
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let mut bindings = IRQ_BINDINGS.lock().unwrap_or_else(|e| e.into_inner());
+        if bindings.contains_key(&vector) {
+            return Err(KapiError::AlreadyExists);
+        }
+        bindings.insert(
+            vector,
+            IrqBinding {
+                owner,
+                handle,
+                stop: stop.clone(),
+                cookie,
+            },
+        );
+    }
+
+    crate::task::spawn_detached_in_domain(
+        async move {
+            let source = crate::task::interrupt_waker::InterruptSource::Irq(vector);
+            loop {
+                if stop.load(core::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+
+                crate::task::interrupt_waker::wait_for_interrupt(source).await;
+                if stop.load(core::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+
+                let _ = driver_registry().dispatch_irq(handle, vector as u32);
+            }
+
+            crate::task::interrupt_waker::interrupt_waker_registry().unregister(source);
+        },
+        owner,
+    );
+
+    Ok(())
+}
+
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+fn bind_irq_for_current_domain(_irq: u32, _cookie: u64) -> KapiResult<()> {
+    Err(KapiError::NotSupported)
+}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+fn unbind_irq_for_current_domain(irq: u32) -> KapiResult<()> {
+    let vector = u8::try_from(irq).map_err(|_| KapiError::InvalidHandle)?;
+    let owner = crate::task::context::current_subject().domain;
+    let binding = IRQ_BINDINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&vector)
+        .cloned();
+    match binding {
+        Some(binding) if binding.owner == owner => {
+            let _ = binding.cookie;
+        }
+        Some(_) => return Err(KapiError::PermissionDenied),
+        None => return Err(KapiError::NotFound),
+    }
+
+    if force_unbind_irq(vector).is_some() {
+        Ok(())
+    } else {
+        Err(KapiError::NotFound)
+    }
+}
+
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+fn unbind_irq_for_current_domain(_irq: u32) -> KapiResult<()> {
+    Err(KapiError::NotSupported)
+}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub(crate) fn unbind_irqs_for_owner(owner: crate::domain_system::DomainId, vectors: &[u8]) {
+    for &vector in vectors {
+        let should_unbind = IRQ_BINDINGS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&vector)
+            .map(|binding| binding.owner == owner)
+            .unwrap_or(false);
+        if should_unbind {
+            let _ = force_unbind_irq(vector);
+        }
+    }
+}
+
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+pub(crate) fn unbind_irqs_for_owner(_owner: crate::domain_system::DomainId, _vectors: &[u8]) {}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+fn cleanup_msix_for_driver_handle(handle: DriverHandle) {
+    let manager = crate::driver_domain::driver_domain_manager();
+    let Some(id) = manager.find_by_driver_handle(handle) else {
+        return;
+    };
+
+    let Ok((domain, locator)) = manager.with_cell(id, |cell| {
+        (cell.domain_id, cell.abi_driver_context.pci_location())
+    }) else {
+        return;
+    };
+    let Some(domain) = domain else {
+        return;
+    };
+    if locator.is_null() {
+        return;
+    }
+
+    if let Ok(vectors) = crate::io::msix::owned_vectors(domain, locator) {
+        unbind_irqs_for_owner(domain, &vectors);
+        let _ = crate::io::msix::disable_for_owner(domain, locator);
+    }
+}
+
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+fn cleanup_msix_for_driver_handle(_handle: DriverHandle) {}
 
 // ============================================================================
 // Driver Registry
@@ -200,6 +397,7 @@ impl DriverRegistry {
         };
 
         if result.is_ok() {
+            cleanup_msix_for_driver_handle(handle);
             cleanup_runtime_bridges_for_driver_handle(handle);
             crate::provider_registry::provider_registry().unregister_driver(handle);
         }
@@ -398,6 +596,7 @@ impl DriverRegistry {
         let old_name = alloc::string::String::from(entry.driver.name());
         let old_ty = entry.driver.driver_type();
 
+        cleanup_msix_for_driver_handle(handle);
         cleanup_runtime_bridges_for_driver_handle(handle);
         crate::provider_registry::provider_registry().unregister_driver(handle);
 
@@ -410,6 +609,37 @@ impl DriverRegistry {
 
         log::info!("[DRIVER] Unregistered driver: {}\n", old_name);
         Ok(())
+    }
+
+    pub(crate) fn has_irq_handler(&self, handle: DriverHandle) -> bool {
+        match self.drivers.lock() {
+            Ok(drivers) => drivers
+                .get(handle.0)
+                .map(|entry| entry.driver.has_irq_handler())
+                .unwrap_or(false),
+            Err(_) => {
+                log::error!("[DRIVER] Registry poisoned (has_irq_handler)");
+                false
+            }
+        }
+    }
+
+    pub(crate) fn dispatch_irq(&self, handle: DriverHandle, irq: u32) -> bool {
+        match self.drivers.lock() {
+            Ok(mut drivers) => {
+                let Some(entry) = drivers.get_mut(handle.0) else {
+                    return false;
+                };
+                if entry.state != DriverState::Running {
+                    return false;
+                }
+                entry.driver.handle_irq(irq)
+            }
+            Err(_) => {
+                log::error!("[DRIVER] Registry poisoned (dispatch_irq)");
+                false
+            }
+        }
     }
 
     /// Replace a driver implementation with a new one (Hot Swap)
@@ -435,6 +665,7 @@ impl DriverRegistry {
             handle.index()
         );
 
+        cleanup_msix_for_driver_handle(handle);
         cleanup_runtime_bridges_for_driver_handle(handle);
         crate::provider_registry::provider_registry().unregister_driver(handle);
 
@@ -623,12 +854,71 @@ extern "C" fn kapi_port_write_u8(port: u16, value: u8) {
     kernel_api::service::kernel::instance().port_write_u8(port, value);
 }
 
-extern "C" fn kapi_irq_bind(_irq: u32, _cookie: u64) -> i32 {
-    AbiErrorCode::NotSupported as i32
+extern "C" fn kapi_enable_msix_raw(
+    device_id: u64,
+    requested_count: u16,
+    out_vectors: *mut AbiMsixVectorInfo,
+    capacity: usize,
+    written: *mut usize,
+) -> i32 {
+    if written.is_null() || requested_count == 0 {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+    if capacity < requested_count as usize || out_vectors.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+
+    unsafe {
+        *written = 0;
+    }
+
+    match kernel_api::service::kernel::instance()
+        .enable_msix(PackedPciLocation::from_raw(device_id), requested_count)
+    {
+        Ok(vectors) => {
+            if vectors.len() != requested_count as usize {
+                return AbiErrorCode::IoError as i32;
+            }
+
+            for (idx, vector) in vectors.into_iter().enumerate() {
+                unsafe {
+                    *out_vectors.add(idx) = AbiMsixVectorInfo {
+                        vector: vector.vector,
+                        table_index: vector.table_index,
+                        reserved: 0,
+                    };
+                }
+            }
+            unsafe {
+                *written = requested_count as usize;
+            }
+            AbiErrorCode::Success as i32
+        }
+        Err(err) => map_kapi_error_to_abi(err),
+    }
 }
 
-extern "C" fn kapi_irq_unbind(_irq: u32) -> i32 {
-    AbiErrorCode::NotSupported as i32
+extern "C" fn kapi_disable_msix_raw(device_id: u64) -> i32 {
+    match kernel_api::service::kernel::instance()
+        .disable_msix(PackedPciLocation::from_raw(device_id))
+    {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_irq_bind(irq: u32, cookie: u64) -> i32 {
+    match bind_irq_for_current_domain(irq, cookie) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_irq_unbind(irq: u32) -> i32 {
+    match unbind_irq_for_current_domain(irq) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
 }
 
 fn map_kapi_error_to_abi(err: KapiError) -> i32 {
@@ -808,6 +1098,8 @@ pub static __exorust_kernel_api_v2: KernelApiV2 = KernelApiV2 {
     register_audio_controller: kapi_register_audio_controller,
     unregister_audio_controller: kapi_unregister_audio_controller,
     reserved: [0; 2],
+    enable_msix_raw: Some(kapi_enable_msix_raw),
+    disable_msix_raw: Some(kapi_disable_msix_raw),
 };
 
 pub(crate) fn kernel_api_v2() -> &'static KernelApiV2 {

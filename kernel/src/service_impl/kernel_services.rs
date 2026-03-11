@@ -4,6 +4,7 @@ use kernel_api::abi::driver::{
     AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistration,
     AbiNvmeNamespaceRegistration, PackedPciLocation,
 };
+use kernel_api::msix::MsixVectorInfo;
 
 fn unpack_device_id(locator: PackedPciLocation) -> IommuDeviceId {
     IommuDeviceId {
@@ -111,6 +112,25 @@ impl KernelServices for ExoKernel {
             }
             None => Err(KapiError::OutOfMemory),
         }
+    }
+
+    fn enable_msix(
+        &self,
+        device_id: PackedPciLocation,
+        requested_count: u16,
+    ) -> Result<alloc::vec::Vec<MsixVectorInfo>, KapiError> {
+        crate::io::msix::enable_for_owner(
+            context::current_subject().domain,
+            device_id,
+            requested_count,
+        )
+    }
+
+    fn disable_msix(&self, device_id: PackedPciLocation) -> Result<(), KapiError> {
+        let owner = context::current_subject().domain;
+        let vectors = crate::io::msix::owned_vectors(owner, device_id)?;
+        crate::driver_registry::unbind_irqs_for_owner(owner, &vectors);
+        crate::io::msix::disable_for_owner(owner, device_id)
     }
 
     // ========================================================================

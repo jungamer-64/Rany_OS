@@ -338,6 +338,14 @@ pub fn register_handler(vector: u8, handler: InterruptHandler) {
     }
 }
 
+/// 直接割り込みハンドラを解除する。
+pub fn unregister_handler(vector: u8) {
+    let mut handlers = direct_handlers().lock();
+    if (vector as usize) < handlers.len() {
+        handlers[vector as usize] = None;
+    }
+}
+
 /// 直接ハンドラをディスパッチ試行
 ///
 /// ISRから呼び出され、登録されたハンドラがあれば実行する。

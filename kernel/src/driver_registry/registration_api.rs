@@ -243,6 +243,19 @@ impl Driver for AbiDriver {
         &[]
     }
 
+    fn handle_irq(&mut self, irq: u32) -> bool {
+        let Some(handle_irq) = self.vtable().handle_irq else {
+            return false;
+        };
+
+        self.ctx.irq = irq;
+        handle_irq(&mut self.ctx as *mut _)
+    }
+
+    fn has_irq_handler(&self) -> bool {
+        self.vtable().handle_irq.is_some()
+    }
+
     fn provider_descriptors(&self) -> &[ProviderDescriptorV1] {
         &self.provider_descriptors
     }

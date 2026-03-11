@@ -85,10 +85,8 @@ fn validate_elf_sections(elf_data: &[u8]) -> Result<(usize, usize, usize, usize)
         ));
     }
 
-    let header =
-        crate::util::get_ref::<Elf64Header>(elf_data, 0).ok_or(LoopProofError::InvalidElf(
-            "failed to read ELF header",
-        ))?;
+    let header = crate::util::get_ref::<Elf64Header>(elf_data, 0)
+        .ok_or(LoopProofError::InvalidElf("failed to read ELF header"))?;
     crate::io::log::early_print("[LP] header read ok\n");
 
     let section_table_offset = header.e_shoff as usize;
@@ -121,7 +119,12 @@ fn validate_elf_sections(elf_data: &[u8]) -> Result<(usize, usize, usize, usize)
     }
 
     crate::io::log::early_print("[LP] validate_elf_sections end\n");
-    Ok((section_table_offset, section_entry_size, section_count, shstr_index))
+    Ok((
+        section_table_offset,
+        section_entry_size,
+        section_count,
+        shstr_index,
+    ))
 }
 
 fn get_shstrtab_range(
@@ -132,15 +135,17 @@ fn get_shstrtab_range(
 ) -> Result<(usize, usize), LoopProofError> {
     crate::io::log::early_print("[LP] get_shstrtab_range begin\n");
     let shstr_header_offset = section_table_offset
-        .checked_add(
-            shstr_index
-                .checked_mul(section_entry_size)
-                .ok_or(LoopProofError::InvalidElf("shstrtab header offset overflow"))?,
-        )
-        .ok_or(LoopProofError::InvalidElf("shstrtab header offset overflow"))?;
+        .checked_add(shstr_index.checked_mul(section_entry_size).ok_or(
+            LoopProofError::InvalidElf("shstrtab header offset overflow"),
+        )?)
+        .ok_or(LoopProofError::InvalidElf(
+            "shstrtab header offset overflow",
+        ))?;
     crate::io::log::early_print("[LP] shstr header offset ok\n");
     let shstr_header = crate::util::get_ref::<Elf64SectionHeader>(elf_data, shstr_header_offset)
-        .ok_or(LoopProofError::InvalidElf("failed to parse shstrtab header"))?;
+        .ok_or(LoopProofError::InvalidElf(
+            "failed to parse shstrtab header",
+        ))?;
     crate::io::log::early_print("[LP] shstr header read ok\n");
 
     let shstr_start = shstr_header.sh_offset as usize;

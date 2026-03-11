@@ -163,11 +163,7 @@ impl<'a> ElfLoader<'a> {
             // シンボルテーブルを処理
             if sh.sh_type == SHT_SYMTAB {
                 processed_symtab = true;
-                self.process_symbol_table(
-                    &sh,
-                    exports,
-                    imports,
-                )?;
+                self.process_symbol_table(&sh, exports, imports)?;
             }
         }
 
@@ -187,11 +183,7 @@ impl<'a> ElfLoader<'a> {
             };
 
             if sh.sh_type == SHT_DYNSYM {
-                self.process_symbol_table(
-                    &sh,
-                    exports,
-                    imports,
-                )?;
+                self.process_symbol_table(&sh, exports, imports)?;
             }
         }
 
@@ -241,7 +233,6 @@ impl<'a> ElfLoader<'a> {
                 None => continue,
             };
 
-
             // グローバルシンボルのみ処理
             if sym.binding() == STB_GLOBAL && sym.st_name != 0 {
                 if let Some(name) = self.get_string(strtab, sym.st_name as usize) {
@@ -249,8 +240,7 @@ impl<'a> ElfLoader<'a> {
                         continue;
                     }
                     // debug resolved name
-                    {
-                    }
+                    {}
                     if sym.st_shndx == 0 {
                         // 未定義シンボル = インポート（ゼロコピー）
                         // avoid duplicates (linear scan, no allocations)
@@ -475,7 +465,6 @@ impl<'a> ElfLoader<'a> {
         }
         Ok(())
     }
-
 
     /// メモリを割り当て
     ///
@@ -842,8 +831,7 @@ mod loader_tests {
         let mut imports = Vec::new();
 
         let huge_count = MAX_SYMBOLS + 100;
-        let fake_size = (huge_count as u64)
-            .saturating_mul(mem::size_of::<Elf64Symbol>() as u64);
+        let fake_size = (huge_count as u64).saturating_mul(mem::size_of::<Elf64Symbol>() as u64);
         let sh = Elf64SectionHeader {
             sh_name: 0,
             sh_type: SHT_SYMTAB,
@@ -857,11 +845,7 @@ mod loader_tests {
             sh_entsize: mem::size_of::<Elf64Symbol>() as u64,
         };
 
-        let res = loader.process_symbol_table(
-            &sh,
-            &mut exports,
-            &mut imports,
-        );
+        let res = loader.process_symbol_table(&sh, &mut exports, &mut imports);
         assert!(res.is_ok() || matches!(res, Err(LoadError::OutOfMemory)));
         assert!(exports.is_empty());
         assert!(imports.is_empty());

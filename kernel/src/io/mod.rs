@@ -29,6 +29,7 @@ pub mod interrupt_manager;
 pub mod io_scheduler;
 pub mod iommu;
 pub mod log;
+pub mod msix;
 pub mod nvme;
 pub mod pci;
 pub mod rtc;

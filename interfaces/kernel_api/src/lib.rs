@@ -37,6 +37,7 @@ pub mod driver;
 pub mod error;
 
 pub mod ipc;
+pub mod msix;
 pub mod provider;
 
 pub mod resource;

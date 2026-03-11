@@ -4,6 +4,24 @@ use kernel_api::service::platform::PciDeviceInfo;
 mod global_init;
 pub use self::global_init::*;
 mod virtio_gpu_init;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterruptCapabilityMode {
+    Msi { offset: u8 },
+    MsixOnly,
+    LegacyOnly,
+}
+
+fn interrupt_capability_mode(dev: &PciDeviceInfo) -> InterruptCapabilityMode {
+    if let Some(offset) = dev.msi_cap_offset {
+        InterruptCapabilityMode::Msi { offset }
+    } else if dev.msix_cap_offset.is_some() {
+        InterruptCapabilityMode::MsixOnly
+    } else {
+        InterruptCapabilityMode::LegacyOnly
+    }
+}
+
 // We do not publicly re-export the contents of `virtio_gpu_init`; the
 // methods are used internally by `SystemIntegration` only.
 impl SystemIntegration {
@@ -222,60 +240,72 @@ impl SystemIntegration {
                     })
                     .unwrap_or(false)
                 {
-                    if let Some(msi_offset) = pci_dev.msi_cap_offset {
-                        let bdf = pci_dev.bdf.to_u16() as u32;
-                        match crate::io::interrupt_manager::allocate_msi(
-                            bdf,
-                            dev_name.as_str(),
-                            Some(0),
-                        ) {
-                            Ok(allocation) => {
-                                let vector = allocation.vector();
-                                unsafe {
-                                    super::interrupt_routing::program_msi(
+                    match interrupt_capability_mode(pci_dev) {
+                        InterruptCapabilityMode::Msi { offset } => {
+                            let bdf = pci_dev.bdf.to_u16() as u32;
+                            match crate::io::interrupt_manager::allocate_msi(
+                                bdf,
+                                dev_name.as_str(),
+                                Some(0),
+                            ) {
+                                Ok(allocation) => {
+                                    let vector = allocation.vector();
+                                    unsafe {
+                                        super::interrupt_routing::program_msi(
+                                            pci_dev.bdf.bus(),
+                                            pci_dev.bdf.device(),
+                                            pci_dev.bdf.function(),
+                                            offset,
+                                            vector,
+                                        );
+                                    }
+                                    let _ = crate::platform::pci::disable_intx(pci_dev);
+                                    crate::io::interrupt_manager::register_handler(
+                                        vector,
+                                        alloc::boxed::Box::new(|| {
+                                            crate::interrupts::dispatch_shared_pci_handlers();
+                                        }),
+                                    );
+                                    self.interrupt_router.add_msi_route(*dev_id, vector);
+                                    self.log(&alloc::format!(
+                                        "    MSI enabled: {} {:02x}:{:02x}.{} -> vector {}",
+                                        dev_name,
                                         pci_dev.bdf.bus(),
                                         pci_dev.bdf.device(),
                                         pci_dev.bdf.function(),
-                                        msi_offset,
-                                        vector,
-                                    );
+                                        vector
+                                    ));
                                 }
-                                let _ = crate::platform::pci::disable_intx(pci_dev);
-                                crate::io::interrupt_manager::register_handler(
-                                    vector,
-                                    alloc::boxed::Box::new(|| {
-                                        crate::interrupts::dispatch_shared_pci_handlers();
-                                    }),
-                                );
-                                self.interrupt_router.add_msi_route(*dev_id, vector);
-                                self.log(&alloc::format!(
-                                    "    MSI enabled: {} {:02x}:{:02x}.{} -> vector {}",
-                                    dev_name,
-                                    pci_dev.bdf.bus(),
-                                    pci_dev.bdf.device(),
-                                    pci_dev.bdf.function(),
-                                    vector
-                                ));
-                            }
-                            Err(e) => {
-                                self.log(&alloc::format!(
-                                    "    MSI allocation failed for {} {:02x}:{:02x}.{}: {:?} (legacy IRQ fallback)",
-                                    dev_name,
-                                    pci_dev.bdf.bus(),
-                                    pci_dev.bdf.device(),
-                                    pci_dev.bdf.function(),
-                                    e
-                                ));
+                                Err(e) => {
+                                    self.log(&alloc::format!(
+                                        "    MSI allocation failed for {} {:02x}:{:02x}.{}: {:?} (legacy IRQ fallback)",
+                                        dev_name,
+                                        pci_dev.bdf.bus(),
+                                        pci_dev.bdf.device(),
+                                        pci_dev.bdf.function(),
+                                        e
+                                    ));
+                                }
                             }
                         }
-                    } else {
-                        self.log(&alloc::format!(
-                            "    Device {} {:02x}:{:02x}.{} has no MSI capability (legacy IRQ fallback)",
-                            dev_name,
-                            pci_dev.bdf.bus(),
-                            pci_dev.bdf.device(),
-                            pci_dev.bdf.function()
-                        ));
+                        InterruptCapabilityMode::MsixOnly => {
+                            self.log(&alloc::format!(
+                                "    Device {} {:02x}:{:02x}.{} is MSI-X-only; generic integration defers setup to the device driver",
+                                dev_name,
+                                pci_dev.bdf.bus(),
+                                pci_dev.bdf.device(),
+                                pci_dev.bdf.function()
+                            ));
+                        }
+                        InterruptCapabilityMode::LegacyOnly => {
+                            self.log(&alloc::format!(
+                                "    Device {} {:02x}:{:02x}.{} has no MSI/MSI-X capability (legacy IRQ fallback)",
+                                dev_name,
+                                pci_dev.bdf.bus(),
+                                pci_dev.bdf.device(),
+                                pci_dev.bdf.function()
+                            ));
+                        }
                     }
                     break;
                 }
@@ -726,5 +756,66 @@ impl SystemIntegration {
         } else {
             self.log("    VirtIO-balloon found but BAR0 is missing, skipping init");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kernel_api::service::platform::{BdfAddress, ClassCode, DeviceId, VendorId};
+
+    fn sample_pci_device() -> PciDeviceInfo {
+        PciDeviceInfo {
+            segment: 0,
+            bdf: BdfAddress::new(0, 2, 0),
+            vendor_id: VendorId(0x15B3),
+            device_id: DeviceId(0x1013),
+            revision_id: 0,
+            class_code: ClassCode::new(0x02, 0x00, 0x00),
+            header_type: 0,
+            subsystem_vendor_id: 0,
+            subsystem_id: 0,
+            interrupt_line: 0,
+            interrupt_pin: 1,
+            bars: [None; 6],
+            capabilities: Vec::new(),
+            msi_cap_offset: None,
+            msix_cap_offset: None,
+            pcie_cap_offset: None,
+            iommu_domain_id: None,
+        }
+    }
+
+    #[test]
+    fn prefers_msi_when_available() {
+        let mut dev = sample_pci_device();
+        dev.msi_cap_offset = Some(0x50);
+        dev.msix_cap_offset = Some(0x90);
+
+        assert_eq!(
+            interrupt_capability_mode(&dev),
+            InterruptCapabilityMode::Msi { offset: 0x50 }
+        );
+    }
+
+    #[test]
+    fn detects_msix_only_devices() {
+        let mut dev = sample_pci_device();
+        dev.msix_cap_offset = Some(0x90);
+
+        assert_eq!(
+            interrupt_capability_mode(&dev),
+            InterruptCapabilityMode::MsixOnly
+        );
+    }
+
+    #[test]
+    fn falls_back_to_legacy_only_when_no_message_signaled_interrupts_exist() {
+        let dev = sample_pci_device();
+
+        assert_eq!(
+            interrupt_capability_mode(&dev),
+            InterruptCapabilityMode::LegacyOnly
+        );
     }
 }
