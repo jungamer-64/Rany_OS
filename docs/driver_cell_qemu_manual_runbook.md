@@ -12,12 +12,15 @@ on QEMU using the `driver_cell_probe` fixture cells.
 ## Build Fixtures
 
 ```bash
-scripts/build_driver_cell_probe_fixtures.sh --profile debug
+scripts/build_runtime_boot_artifacts.sh --profile debug
 ```
 
 Generated artifacts:
 
-- `target/initramfs.tar` (contains `drivers/driver_cell_probe.cell` = v1)
+- `target/x86_64-exorust/debug/boot_artifacts/drivers/driver_cell_probe.cell`
+- `target/x86_64-exorust/debug/boot_artifacts/drivers/driver_cell_probe_pci.cell`
+- `target/x86_64-exorust/debug/boot_artifacts/cells/driver_cell_probe_v1.cell`
+- `target/x86_64-exorust/debug/boot_artifacts/cells/driver_cell_probe_v2.cell`
 - `target/x86_64-exorust/debug/cells/driver_cell_probe_v1.cell`
 - `target/x86_64-exorust/debug/cells/driver_cell_probe_v2.cell`
 
@@ -43,7 +46,7 @@ Notes:
 
 Confirm startup logs mention:
 
-- `Included initramfs.tar`
+- `Loading driver Cells from boot artifacts...`
 - `Deployed ... Cell(s) to /cells`
 - `Loaded driver cell 'driver_cell_probe' as dcell=...`
 

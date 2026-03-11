@@ -6,10 +6,10 @@
 // ============================================================================
 #![allow(dead_code)]
 
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
+pub mod boot_artifacts; // Boot artifact handoff からのセルロード
 pub mod driver_pack;
 pub mod elf;
-#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
-pub mod initramfs; // Initramfs TAR アーカイブからのセルロード
 pub mod live_update; // 新: ライブアップデート・Epoch-based Reclamation (設計書 3.5)
 pub mod loop_proof;
 pub mod signature;
@@ -449,7 +449,7 @@ fn load_driver_pack_cell(
 /// Load a driver artifact as a Cell without registering the driver yet.
 ///
 /// This preserves the DriverDomain lifecycle split between load and start while
-/// still accepting packaged driver artifacts staged from initramfs or PCI
+/// still accepting packaged driver artifacts staged from boot artifacts or PCI
 /// probing.
 pub(crate) fn load_driver_artifact_cell(
     name: &str,

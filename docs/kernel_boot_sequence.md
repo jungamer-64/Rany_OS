@@ -44,12 +44,12 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 ## Phase 5: Core Services / Drivers
 
 - 実装関数: `phase_core_services_and_drivers()`
-- domain/SAS/security/MPK、loader/live update/driver domain、initramfs cell load、HID/serial/NVMe/AHCI/USB、system integration、pre-executor network infra、memfs、durability/kgdb を初期化する。
+- domain/SAS/security/MPK、loader/live update/driver domain、boot artifact cell load、HID/serial/NVMe/AHCI/USB、system integration、pre-executor network infra、memfs、durability/kgdb を初期化する。
 - `integration::init()` は driver bring-up 後、network infra 前が正位置である。
 - `init_network_infra()` は同期の stack/endpoint/timer wheel 準備だけを担当し、VirtIO-Net 登録、DHCP、ping は post-executor に残す。
 - 依存:
   - IOMMU と PCI 初期化が完了していること
-  - driver domain 基盤は initramfs cell load より先であること
+- driver domain 基盤は boot artifact cell load より先であること
 
 ## Phase 6: Runtime Handoff
 

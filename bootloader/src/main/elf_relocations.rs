@@ -103,8 +103,9 @@ pub(crate) fn resolve_entry_physical_address(
 }
 
 // 以下の関数はサブモジュールに移動済み:
-// - file_io: load_kernel, open_boot_volume, open_uefi_file, read_uefi_file_contents, verify_kernel
+// - file_io: load_kernel, load_boot_artifacts, open_boot_volume, open_uefi_file,
+//            read_uefi_file_contents, verify_kernel
 // - boot_info_setup: populate_*, handle_boot_recovery, run_boot_self_tests, setup_gop_framebuffer,
-//                    copy_initramfs_to_boot_info, copy_cmdline_to_boot_info, build_memory_map_from_uefi
+//                    copy_boot_artifacts_to_boot_info, copy_cmdline_to_boot_info, build_memory_map_from_uefi
 // - hhdm: compute_max_physical_address, map_hhdm_and_identity, select_hhdm_page_size
 // - cr3_jump: switch_cr3_and_jump

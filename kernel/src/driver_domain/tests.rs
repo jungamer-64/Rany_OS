@@ -62,7 +62,7 @@ fn cached_runtime_fixture_cell(path: &str) -> Option<Vec<u8>> {
         _ => None,
     }
     .map(|(ptr, len)| {
-        // SAFETY: pointers/lengths are captured from initramfs bytes, which stay
+        // SAFETY: pointers/lengths are captured from boot artifact bytes, which stay
         // resident for the kernel lifetime in these QEMU test profiles.
         unsafe { core::slice::from_raw_parts(ptr as *const u8, len) }.to_vec()
     })
@@ -524,7 +524,7 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
     }
     let driver_domain_id = driver_domain_id.ok_or_else(|| {
         RuntimeCaseError::failed(
-            "no Running DriverDomain named driver_cell_probe found (expected generic initramfs fixture)",
+            "no Running DriverDomain named driver_cell_probe found (expected generic boot artifact fixture)",
         )
     })?;
     let staged_pci_domain_id = staged_pci_domain_id.ok_or_else(|| {
@@ -1111,7 +1111,7 @@ fn read_fixture_cell(path: &str) -> Result<Vec<u8>, RuntimeCaseError> {
             let key = path.strip_prefix('/').unwrap_or(path);
             if let Some(data) = cached_runtime_fixture_cell(key) {
                 runtime_log_line(&format!(
-                    "[driver-cell-runtime] fixture fallback from initramfs cache: {}",
+                    "[driver-cell-runtime] fixture fallback from boot artifact cache: {}",
                     path
                 ));
                 Ok(data)

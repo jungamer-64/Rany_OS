@@ -239,7 +239,7 @@ pub(crate) fn run_boot_self_tests(
 }
 
 // ============================================================
-// フレームバッファ・Initramfs・Cmdline
+// フレームバッファ・Boot Artifact・Cmdline
 // ============================================================
 
 /// GOP ピクセルフォーマットを boot_info に設定
@@ -300,34 +300,68 @@ pub(crate) fn setup_gop_framebuffer(boot_info: &mut boot_proto::ExoBootInfo) {
     configure_pixel_format(boot_info, mode.pixel_format(), stride);
 }
 
-/// initramfs データをページに割り当て、boot_info に設定
-pub(crate) fn copy_initramfs_to_boot_info(
+fn copy_bytes_to_loader_data(bytes: &[u8], hhdm_start: u64) -> u64 {
+    if bytes.is_empty() {
+        return 0;
+    }
+
+    let num_pages = bytes.len().div_ceil(4096);
+    let phys = page_table::UefiMapper::alloc_zeroed_pages(num_pages, MemoryType::LOADER_DATA)
+        .expect("Failed to alloc boot artifact bytes");
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), phys as *mut u8, bytes.len());
+    }
+    hhdm_start + phys
+}
+
+/// boot artifact データをページに割り当て、boot_info に設定
+pub(crate) fn copy_boot_artifacts_to_boot_info(
     boot_info: &mut boot_proto::ExoBootInfo,
-    initramfs_data: &Option<Vec<u8>>,
+    boot_artifacts: &[BootArtifactFile],
     hhdm_start: u64,
 ) {
-    if let Some(initramfs) = initramfs_data {
-        let num_pages = (initramfs.len() + 4095) / 4096;
-        let initramfs_phys =
-            page_table::UefiMapper::alloc_zeroed_pages(num_pages, MemoryType::LOADER_DATA)
-                .expect("Failed to alloc initramfs");
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                initramfs.as_ptr(),
-                initramfs_phys as *mut u8,
-                initramfs.len(),
-            );
-        }
-        boot_info.initramfs.ptr = hhdm_start + initramfs_phys;
-        boot_info.initramfs.size = initramfs.len() as u64;
-        info!(
-            "Initramfs mapped at HHDM 0x{:x}, size {}",
-            boot_info.initramfs.ptr, boot_info.initramfs.size
-        );
-    } else {
-        boot_info.initramfs.ptr = 0;
-        boot_info.initramfs.size = 0;
+    if boot_artifacts.is_empty() {
+        boot_info.boot_artifacts = boot_proto::BootArtifactTable::default();
+        return;
     }
+
+    let entry_size = core::mem::size_of::<boot_proto::BootArtifactEntry>();
+    let total_bytes = boot_artifacts
+        .len()
+        .checked_mul(entry_size)
+        .expect("boot artifact table overflow");
+    let entry_pages = total_bytes.div_ceil(4096);
+    let entries_phys =
+        page_table::UefiMapper::alloc_zeroed_pages(entry_pages, MemoryType::LOADER_DATA)
+            .expect("Failed to alloc boot artifact table");
+    let entries = unsafe {
+        core::slice::from_raw_parts_mut(
+            entries_phys as *mut boot_proto::BootArtifactEntry,
+            boot_artifacts.len(),
+        )
+    };
+
+    for (slot, artifact) in entries.iter_mut().zip(boot_artifacts.iter()) {
+        let path_ptr = copy_bytes_to_loader_data(artifact.path.as_bytes(), hhdm_start);
+        let data_ptr = copy_bytes_to_loader_data(&artifact.data, hhdm_start);
+        *slot = boot_proto::BootArtifactEntry {
+            kind: artifact.kind as u32,
+            flags: 0,
+            path_ptr,
+            path_len: artifact.path.len() as u64,
+            data_ptr,
+            data_len: artifact.data.len() as u64,
+        };
+    }
+
+    boot_info.boot_artifacts = boot_proto::BootArtifactTable {
+        entries_ptr: hhdm_start + entries_phys,
+        count: boot_artifacts.len() as u64,
+    };
+    info!(
+        "Boot artifacts mapped at HHDM 0x{:x}, count {}",
+        boot_info.boot_artifacts.entries_ptr, boot_info.boot_artifacts.count
+    );
 }
 
 /// カーネルコマンドラインをページに割り当て、boot_info に設定

@@ -32,13 +32,15 @@ If your driver needs to run as a standalone cell:
 - Wire `standalone = ["export_driver_entry", "kernel_api/cell_runtime"]` in `Cargo.toml`.
 - Build the cell image as a `cdylib`, then package it with `tools/driver_pack_builder`.
 - For the shared wrapper flow used by `AHCI/NVMe/xHCI/HDA/MLX5`, use `scripts/build_standalone_driver_packs.sh --profile debug|release`. It emits raw wrapper cells plus staged PCI driver packs under `target/x86_64-exorust/<profile>/standalone_drivers/`.
-- For the runtime profiles used by QEMU (`storage`, `driver_domain`, `network`, `iommu`), use `scripts/build_runtime_initramfs.sh --profile debug|release`. It merges the staged PCI driver packs with the driver-domain probe fixtures into `target/initramfs.tar`.
+- For the runtime profiles used by QEMU (`storage`, `driver_domain`, `network`, `iommu`), use `scripts/build_runtime_boot_artifacts.sh --profile debug|release`. It merges the staged PCI driver packs with the driver-domain probe fixtures into:
+  - `target/x86_64-exorust/<profile>/boot_artifacts/drivers/*.cell`
+  - `target/x86_64-exorust/<profile>/boot_artifacts/cells/*.cell`
 - PCI driver packs may use only two manifest selector shapes:
   - exact device match: `vendor_id + device_id`
   - class match: `class + subclass + prog_if`, with optional `vendor_id`
 - `prog_if = 0x00` is still a valid exact class selector. Only omitted `vendor_id` is treated as wildcard.
-- Non-PCI `.cell` payloads and driver packs without a PCI selector still autostart from initramfs; PCI packs with a selector are staged and bound during PCI enumeration.
-- `target/initramfs.tar` is now the default merged payload consumed by the runtime QEMU profiles. Built-in kernel drivers remain fallback-only when staged standalone binding returns `NoMatch` or fails.
+- Non-PCI `.cell` payloads and driver packs without a PCI selector still autostart from boot artifacts; PCI packs with a selector are staged and bound during PCI enumeration.
+- `target/x86_64-exorust/<profile>/boot_artifacts/drivers` is now the default runtime payload consumed by the QEMU profiles. Built-in kernel drivers remain fallback-only when staged standalone binding returns `NoMatch` or fails.
 
 This directory has a verification script that checks for unauthorized kernel dependencies as part of CI: `scripts/check-driver-deps.ps1`.
 

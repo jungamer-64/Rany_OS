@@ -68,9 +68,16 @@ pub(crate) fn reserve_boot_info_ranges(
 
     regions = subtract_if_valid(
         regions,
-        hhdm_ptr_to_phys(boot_info.initramfs.ptr),
-        boot_info.initramfs.size,
+        hhdm_ptr_to_phys(boot_info.boot_artifacts.entries_ptr),
+        boot_info
+            .boot_artifacts
+            .count
+            .saturating_mul(core::mem::size_of::<boot_proto::BootArtifactEntry>() as u64),
     );
+    for entry in boot_info.boot_artifacts.entries() {
+        regions = subtract_if_valid(regions, hhdm_ptr_to_phys(entry.path_ptr), entry.path_len);
+        regions = subtract_if_valid(regions, hhdm_ptr_to_phys(entry.data_ptr), entry.data_len);
+    }
 
     regions = subtract_if_valid(
         regions,

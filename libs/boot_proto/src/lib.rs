@@ -5,7 +5,7 @@
 
 use graphic_types::FramebufferInfo;
 
-pub const EXO_BOOT_INFO_VERSION: u64 = 3;
+pub const EXO_BOOT_INFO_VERSION: u64 = 4;
 
 /// Boot information passed from ExoLoader (UEFI) to the Kernel.
 ///
@@ -15,7 +15,7 @@ pub const EXO_BOOT_INFO_VERSION: u64 = 3;
 /// # ブートローダー → カーネル ハンドオフプロトコル
 ///
 /// 1. ブートローダーが `ExoBootInfo` を物理メモリに割り当て、全フィールドを設定する
-/// 2. ポインタ型フィールド (`cmdline_ptr`, `initramfs.ptr`, `memory_map.entries`)
+/// 2. ポインタ型フィールド (`cmdline_ptr`, `boot_artifacts.entries_ptr`, `memory_map.entries`)
 ///    は HHDM 仮想アドレス (`phys_mem_offset + phys_addr`) で格納する
 /// 3. ブートサービス終了後、CR3 を切り替え、`&ExoBootInfo` を RDI に渡してカーネルへジャンプ
 /// 4. カーネルは `version` フィールドを検証し、不一致時はパニックする
@@ -50,9 +50,10 @@ pub struct ExoBootInfo {
     /// Framebuffer information (resolution, base address, format).
     pub framebuffer: FramebufferInfo,
 
-    /// Initramfs module (optional, for driver Cells).
-    /// If ptr is null, no initramfs was loaded.
-    pub initramfs: InitramfsModule,
+    /// Boot artifacts discovered on the boot partition (optional).
+    /// Driver artifacts under `/drivers` are autostart/staging inputs, and
+    /// fixture cells under `/cells` remain data-only runtime artifacts.
+    pub boot_artifacts: BootArtifactTable,
 
     /// NUMA topology information (optional).
     /// Detected from ACPI SRAT table.
@@ -122,15 +123,99 @@ impl ExoBootInfo {
     }
 }
 
-/// Initramfs module information.
-/// Contains pointer and size to the initramfs TAR archive loaded by bootloader.
+/// Kind discriminator for a boot artifact handed off by the bootloader.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootArtifactKind {
+    /// Driver artifact under `/drivers`.
+    DriverArtifact = 1,
+    /// Fixture cell under `/cells`.
+    FixtureCell = 2,
+}
+
+impl BootArtifactKind {
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        match raw {
+            1 => Some(Self::DriverArtifact),
+            2 => Some(Self::FixtureCell),
+            _ => None,
+        }
+    }
+}
+
+/// Single boot artifact metadata + borrowed payload span.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct InitramfsModule {
-    /// Virtual address of initramfs data (null if not present).
-    pub ptr: u64,
-    /// Size of initramfs data in bytes.
-    pub size: u64,
+pub struct BootArtifactEntry {
+    /// Raw kind discriminator (`BootArtifactKind`).
+    pub kind: u32,
+    /// Reserved for future flags. Must be zero for now.
+    pub flags: u32,
+    /// HHDM virtual address of the UTF-8 artifact path bytes.
+    pub path_ptr: u64,
+    /// Length of the UTF-8 path bytes.
+    pub path_len: u64,
+    /// HHDM virtual address of the artifact payload bytes.
+    pub data_ptr: u64,
+    /// Length of the payload bytes.
+    pub data_len: u64,
+}
+
+impl BootArtifactEntry {
+    #[must_use]
+    pub const fn kind(&self) -> Option<BootArtifactKind> {
+        BootArtifactKind::from_raw(self.kind)
+    }
+
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        if self.path_ptr == 0 || self.path_len == 0 {
+            return None;
+        }
+        let len = usize::try_from(self.path_len).ok()?;
+        let bytes = unsafe { core::slice::from_raw_parts(self.path_ptr as *const u8, len) };
+        core::str::from_utf8(bytes).ok()
+    }
+
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
+        if self.data_ptr == 0 || self.data_len == 0 {
+            return &[];
+        }
+        let Some(len) = usize::try_from(self.data_len).ok() else {
+            return &[];
+        };
+        unsafe { core::slice::from_raw_parts(self.data_ptr as *const u8, len) }
+    }
+}
+
+/// Table of boot artifacts discovered by the bootloader.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BootArtifactTable {
+    /// HHDM virtual address of a `BootArtifactEntry[count]` array.
+    pub entries_ptr: u64,
+    /// Number of entries in the array.
+    pub count: u64,
+}
+
+impl BootArtifactTable {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.entries_ptr == 0 || self.count == 0
+    }
+
+    #[must_use]
+    pub fn entries(&self) -> &[BootArtifactEntry] {
+        if self.is_empty() {
+            return &[];
+        }
+        let Some(count) = usize::try_from(self.count).ok() else {
+            return &[];
+        };
+        unsafe { core::slice::from_raw_parts(self.entries_ptr as *const BootArtifactEntry, count) }
+    }
 }
 
 /// TLS Template Information derived from the ELF `PT_TLS` segment.
@@ -689,4 +774,67 @@ pub mod self_test_results {
     pub const FAIL: u8 = 2;
     /// Tests were skipped
     pub const SKIP: u8 = 3;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BootArtifactEntry, BootArtifactKind, BootArtifactTable};
+
+    #[test]
+    fn boot_artifact_entry_accessors_round_trip() {
+        let path = b"drivers/demo.cell";
+        let data = b"\x01\x02demo";
+        let entry = BootArtifactEntry {
+            kind: BootArtifactKind::DriverArtifact as u32,
+            flags: 0,
+            path_ptr: path.as_ptr() as u64,
+            path_len: path.len() as u64,
+            data_ptr: data.as_ptr() as u64,
+            data_len: data.len() as u64,
+        };
+
+        assert_eq!(entry.kind(), Some(BootArtifactKind::DriverArtifact));
+        assert_eq!(entry.path(), Some("drivers/demo.cell"));
+        assert_eq!(entry.data(), data);
+    }
+
+    #[test]
+    fn boot_artifact_entry_rejects_invalid_utf8_path() {
+        let path = [0xffu8, 0xfeu8];
+        let entry = BootArtifactEntry {
+            kind: BootArtifactKind::FixtureCell as u32,
+            flags: 0,
+            path_ptr: path.as_ptr() as u64,
+            path_len: path.len() as u64,
+            data_ptr: 0,
+            data_len: 0,
+        };
+
+        assert_eq!(entry.kind(), Some(BootArtifactKind::FixtureCell));
+        assert_eq!(entry.path(), None);
+        assert!(entry.data().is_empty());
+    }
+
+    #[test]
+    fn boot_artifact_table_entries_round_trip() {
+        let path = b"cells/fixture.cell";
+        let data = b"fixture";
+        let entries = [BootArtifactEntry {
+            kind: BootArtifactKind::FixtureCell as u32,
+            flags: 0,
+            path_ptr: path.as_ptr() as u64,
+            path_len: path.len() as u64,
+            data_ptr: data.as_ptr() as u64,
+            data_len: data.len() as u64,
+        }];
+        let table = BootArtifactTable {
+            entries_ptr: entries.as_ptr() as u64,
+            count: entries.len() as u64,
+        };
+
+        assert!(!table.is_empty());
+        assert_eq!(table.entries().len(), 1);
+        assert_eq!(table.entries()[0].path(), Some("cells/fixture.cell"));
+        assert_eq!(table.entries()[0].data(), data);
+    }
 }

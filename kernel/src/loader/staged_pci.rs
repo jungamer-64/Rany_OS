@@ -190,7 +190,7 @@ fn stage_driver_artifact_inner(
     StageArtifactResult::Staged
 }
 
-pub fn stage_initramfs_driver_artifact(
+pub fn stage_boot_artifact(
     artifact_name: &str,
     artifact: &[u8],
     allow_unsafe: bool,
@@ -198,7 +198,7 @@ pub fn stage_initramfs_driver_artifact(
     stage_driver_artifact_inner(artifact_name, Cow::Owned(artifact.to_vec()), allow_unsafe)
 }
 
-pub(crate) fn stage_initramfs_driver_artifact_static(
+pub(crate) fn stage_boot_artifact_static(
     artifact_name: &str,
     artifact: &'static [u8],
     allow_unsafe: bool,
@@ -333,7 +333,7 @@ mod tests {
         );
 
         assert_eq!(
-            stage_initramfs_driver_artifact("plain.cell", &pack, true),
+            stage_boot_artifact("plain.cell", &pack, true),
             StageArtifactResult::NotStaged
         );
     }
@@ -354,11 +354,11 @@ mod tests {
         );
 
         assert_eq!(
-            stage_initramfs_driver_artifact("dup-a.cell", &pack, true),
+            stage_boot_artifact("dup-a.cell", &pack, true),
             StageArtifactResult::Staged
         );
         assert!(matches!(
-            stage_initramfs_driver_artifact("dup-b.cell", &pack, true),
+            stage_boot_artifact("dup-b.cell", &pack, true),
             StageArtifactResult::Rejected(_)
         ));
     }
@@ -391,11 +391,11 @@ mod tests {
         );
 
         assert_eq!(
-            stage_initramfs_driver_artifact("class.cell", &class_pack, true),
+            stage_boot_artifact("class.cell", &class_pack, true),
             StageArtifactResult::Staged
         );
         assert_eq!(
-            stage_initramfs_driver_artifact("exact.cell", &exact_pack, true),
+            stage_boot_artifact("exact.cell", &exact_pack, true),
             StageArtifactResult::Staged
         );
 
@@ -434,11 +434,11 @@ mod tests {
         );
 
         assert_eq!(
-            stage_initramfs_driver_artifact("plain-class.cell", &plain_class_pack, true),
+            stage_boot_artifact("plain-class.cell", &plain_class_pack, true),
             StageArtifactResult::Staged
         );
         assert_eq!(
-            stage_initramfs_driver_artifact("vendor-class.cell", &vendor_class_pack, true),
+            stage_boot_artifact("vendor-class.cell", &vendor_class_pack, true),
             StageArtifactResult::Staged
         );
 
@@ -465,7 +465,7 @@ mod tests {
         );
 
         assert_eq!(
-            stage_initramfs_driver_artifact("shared-class.cell", &pack, true),
+            stage_boot_artifact("shared-class.cell", &pack, true),
             StageArtifactResult::Staged
         );
 

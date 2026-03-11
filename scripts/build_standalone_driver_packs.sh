@@ -9,7 +9,6 @@ Usage:
   scripts/build_standalone_driver_packs.sh [--profile debug|release]
 
 Outputs:
-  target/standalone_driver_initramfs.tar
   target/x86_64-exorust/<profile>/standalone_drivers/*.raw.cell
   target/x86_64-exorust/<profile>/standalone_drivers/*.cell
 EOF
@@ -45,7 +44,6 @@ CELL_TARGET_SPEC="$ROOT_DIR/x86_64-exorust-cell.json"
 CELL_TARGET_DIR_NAME="x86_64-exorust-cell"
 BUILD_PROFILE_DIR="$ROOT_DIR/target/$CELL_TARGET_DIR_NAME/$PROFILE"
 DEPLOY_DIR="$ROOT_DIR/target/x86_64-exorust/$PROFILE/standalone_drivers"
-INITRAMFS_PATH="$ROOT_DIR/target/standalone_driver_initramfs.tar"
 WRAPPER_MANIFEST="$ROOT_DIR/tools/standalone_driver_wrapper/Cargo.toml"
 DRIVER_PACK_BUILDER_MANIFEST="$ROOT_DIR/tools/driver_pack_builder/Cargo.toml"
 
@@ -57,7 +55,6 @@ require_cmd() {
 }
 
 require_cmd cargo
-require_cmd tar
 
 for required in "$CELL_TARGET_SPEC" "$WRAPPER_MANIFEST" "$DRIVER_PACK_BUILDER_MANIFEST"; do
     [[ -f "$required" ]] || {
@@ -201,17 +198,4 @@ for device_id in "${MLX5_DEVICE_IDS[@]}"; do
         --pci-device-id "$device_id"
 done
 
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
-mkdir -p "$tmp_dir/drivers"
-
-find "$DEPLOY_DIR" -maxdepth 1 -type f -name '*.cell' ! -name '*.raw.cell' -print0 | \
-    while IFS= read -r -d '' pack; do
-        cp "$pack" "$tmp_dir/drivers/$(basename "$pack")"
-    done
-
-rm -f "$INITRAMFS_PATH"
-(cd "$tmp_dir" && tar -cf "$INITRAMFS_PATH" drivers)
-
-echo "[standalone_driver_packs] wrote $INITRAMFS_PATH"
 echo "[standalone_driver_packs] generated packs in $DEPLOY_DIR"

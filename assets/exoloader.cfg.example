@@ -6,41 +6,36 @@
 #   default = <index>       ; Default entry index (0-based)
 #
 # Boot entries:
-#   [entry]                 ; Start of boot entry
-#   name = <display name>   ; Name shown in boot menu
+#   [display name]          ; Section name shown in boot menu
 #   kernel = <filename>     ; Kernel binary (signed ELF)
-#   initramfs = <filename>  ; Optional initramfs archive
 #   cmdline = <arguments>   ; Kernel command line arguments
 #                            ; shell=console|serial|both|off (default: console)
 #                            ; console=serial|both remains supported for compatibility
+#
+# Boot artifacts:
+#   The bootloader auto-discovers `/drivers/*.cell` and `/cells/*.cell`
+#   from the boot partition. `initramfs=` is deprecated and rejected.
 
 # Global configuration
 timeout = 5
 default = 0
 
 # Main RanyOS entry
-[entry]
-name = RanyOS (Default)
+[RanyOS (Default)]
 kernel = rany_os
-initramfs = initramfs.tar
 cmdline = loglevel=info shell=console
 
 # Debug mode entry
-[entry]
-name = RanyOS (Debug Mode)
+[RanyOS (Debug Mode)]
 kernel = rany_os
-initramfs = initramfs.tar
 cmdline = loglevel=debug shell=serial panic=immediate
 
-# Recovery entry (no initramfs)
-[entry]
-name = RanyOS (Recovery)
+# Recovery entry (artifact-free boot if `/drivers` and `/cells` are absent)
+[RanyOS (Recovery)]
 kernel = rany_os
 cmdline = loglevel=debug shell=serial recovery=1
 
 # Alternative kernel for testing
-#[entry]
-#name = RanyOS (Test Kernel)
+#[RanyOS (Test Kernel)]
 #kernel = rany_os_test
-#initramfs = initramfs.tar
 #cmdline = loglevel=debug shell=serial test_mode=1

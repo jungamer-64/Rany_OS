@@ -214,11 +214,22 @@ image: build
 		printf '%s\n' "$(CMDLINE)" > $(FAT_ROOT)/exoloader.cmdline; \
 		printf '   -> \033[32m%s\033[0m\n' "Injected exoloader.cmdline"; \
 	fi
-	@if [ -f target/initramfs.tar ]; then \
-		cp target/initramfs.tar $(FAT_ROOT)/initramfs.tar; \
-		printf '   -> \033[32m%s\033[0m\n' "Included initramfs.tar"; \
+	@if [ -d "$(BUILD_DIR)/boot_artifacts/drivers" ]; then \
+		mkdir -p $(FAT_ROOT)/drivers; \
+		cp -r $(BUILD_DIR)/boot_artifacts/drivers/* $(FAT_ROOT)/drivers/ 2>/dev/null || true; \
+		driver_count=$$(find $(FAT_ROOT)/drivers -type f 2>/dev/null | wc -l); \
+		if [ "$$driver_count" -gt 0 ]; then \
+			printf '   -> \033[32mDeployed %s driver artifact(s) to /drivers\033[0m\n' "$$driver_count"; \
+		fi; \
 	fi
-	@if [ -d "$(BUILD_DIR)/cells" ]; then \
+	@if [ -d "$(BUILD_DIR)/boot_artifacts/cells" ]; then \
+		mkdir -p $(FAT_ROOT)/cells; \
+		cp -r $(BUILD_DIR)/boot_artifacts/cells/* $(FAT_ROOT)/cells/ 2>/dev/null || true; \
+		cell_count=$$(find $(FAT_ROOT)/cells -type f 2>/dev/null | wc -l); \
+		if [ "$$cell_count" -gt 0 ]; then \
+			printf '   -> \033[32mDeployed %s Cell(s) to /cells\033[0m\n' "$$cell_count"; \
+		fi; \
+	elif [ -d "$(BUILD_DIR)/cells" ]; then \
 		mkdir -p $(FAT_ROOT)/cells; \
 		cp -r $(BUILD_DIR)/cells/* $(FAT_ROOT)/cells/ 2>/dev/null || true; \
 		cell_count=$$(find $(FAT_ROOT)/cells -type f 2>/dev/null | wc -l); \
@@ -497,12 +508,22 @@ define RUN_SMART_IMAGE
 		if [ "$$_need_image" -eq 0 ] && [ -f "$(LOADER_EFI)" ] && [ -f "$(FAT_ROOT)/EFI/BOOT/BOOTX64.EFI" ] && [ "$(LOADER_EFI)" -nt "$(FAT_ROOT)/EFI/BOOT/BOOTX64.EFI" ]; then \
 			mark_need "loader artifact newer than FAT copy"; \
 		fi; \
-		if [ "$$_need_image" -eq 0 ] && [ -f target/initramfs.tar ]; then \
-			if [ ! -f "$(FAT_ROOT)/initramfs.tar" ] || [ target/initramfs.tar -nt "$(FAT_ROOT)/initramfs.tar" ]; then \
-				mark_need "initramfs changed"; \
+		if [ "$$_need_image" -eq 0 ] && [ -d "$(BUILD_DIR)/boot_artifacts/drivers" ]; then \
+			if [ ! -d "$(FAT_ROOT)/drivers" ]; then \
+				mark_need "driver artifacts missing in FAT image"; \
+			else \
+				_new_driver=$$(find "$(BUILD_DIR)/boot_artifacts/drivers" -type f -newer "$(FAT_ROOT)/rany_os" 2>/dev/null | head -1); \
+				[ -n "$$_new_driver" ] && mark_need "driver artifacts changed"; \
 			fi; \
 		fi; \
-		if [ "$$_need_image" -eq 0 ] && [ -d "$(BUILD_DIR)/cells" ]; then \
+		if [ "$$_need_image" -eq 0 ] && [ -d "$(BUILD_DIR)/boot_artifacts/cells" ]; then \
+			if [ ! -d "$(FAT_ROOT)/cells" ]; then \
+				mark_need "cell payload missing in FAT image"; \
+			else \
+				_new_cell=$$(find "$(BUILD_DIR)/boot_artifacts/cells" -type f -newer "$(FAT_ROOT)/rany_os" 2>/dev/null | head -1); \
+				[ -n "$$_new_cell" ] && mark_need "cell payload changed"; \
+			fi; \
+		elif [ "$$_need_image" -eq 0 ] && [ -d "$(BUILD_DIR)/cells" ]; then \
 			if [ ! -d "$(FAT_ROOT)/cells" ]; then \
 				mark_need "cell payload missing in FAT image"; \
 			else \

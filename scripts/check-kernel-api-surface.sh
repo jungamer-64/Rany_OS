@@ -71,8 +71,8 @@ for pattern in "${driver_dma_audit_patterns[@]}"; do
   fi
 done
 
-initramfs_path="target/initramfs.tar"
-required_initramfs_entries=(
+boot_artifacts_root="target/x86_64-exorust/release/boot_artifacts"
+required_boot_artifact_entries=(
   'drivers/driver_cell_probe.cell'
   'drivers/driver_cell_probe_pci.cell'
   'drivers/ahci_driver.cell'
@@ -83,21 +83,40 @@ required_initramfs_entries=(
   'cells/driver_cell_probe_v2.cell'
 )
 
-if [[ ! -f "$initramfs_path" ]]; then
-  echo "missing merged runtime initramfs: $initramfs_path" >&2
+if [[ ! -d "$boot_artifacts_root" ]]; then
+  echo "missing runtime boot artifacts: $boot_artifacts_root" >&2
   status=1
 else
-  for entry in "${required_initramfs_entries[@]}"; do
-    if ! tar -tf "$initramfs_path" | grep -Fxq "$entry"; then
-      echo "missing initramfs entry: $entry" >&2
+  for entry in "${required_boot_artifact_entries[@]}"; do
+    if [[ ! -f "$boot_artifacts_root/$entry" ]]; then
+      echo "missing boot artifact entry: $entry" >&2
       status=1
     fi
   done
 
-  if ! tar -tf "$initramfs_path" | grep -Eq '^drivers/mlx5_driver_[0-9a-f]+\.cell$'; then
-    echo "missing initramfs mlx5 standalone driver pack" >&2
+  if ! find "$boot_artifacts_root/drivers" -maxdepth 1 -type f | grep -Eq '/mlx5_driver_[0-9a-f]+\.cell$'; then
+    echo "missing boot artifact mlx5 standalone driver pack" >&2
     status=1
   fi
 fi
+
+legacy_initramfs_refs=(
+  'initramfs\.tar'
+  'build_runtime_initramfs'
+  'standalone_driver_initramfs'
+)
+
+legacy_exclude=(
+  '-g' '!target'
+  '-g' '!scripts/check-kernel-api-surface.sh'
+  '-g' '!docs/archive/**'
+  '-g' '!libs/boot_config/src/lib.rs'
+)
+
+for pattern in "${legacy_initramfs_refs[@]}"; do
+  if rg -n "${legacy_exclude[@]}" -- "$pattern" .; then
+    status=1
+  fi
+done
 
 exit "$status"

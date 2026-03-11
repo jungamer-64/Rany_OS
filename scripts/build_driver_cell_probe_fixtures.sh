@@ -3,13 +3,12 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Build DriverCell probe fixture cells (v1/v2), deploy them to /cells staging, and generate target/initramfs.tar.
+Build DriverCell probe fixture cells (v1/v2) and deploy them to /cells staging.
 
 Usage:
   scripts/build_driver_cell_probe_fixtures.sh [--profile debug|release]
 
 Outputs:
-  target/initramfs.tar
   target/x86_64-exorust/<profile>/cells/driver_cell_probe_v1.cell
   target/x86_64-exorust/<profile>/cells/driver_cell_probe_v2.cell
 EOF
@@ -45,7 +44,6 @@ CELL_TARGET_SPEC="$ROOT_DIR/x86_64-exorust-cell.json"
 CELL_TARGET_DIR_NAME="x86_64-exorust-cell"
 BUILD_PROFILE_DIR="$ROOT_DIR/target/$CELL_TARGET_DIR_NAME/$PROFILE"
 DEPLOY_DIR="$ROOT_DIR/target/x86_64-exorust/$PROFILE/cells"
-INITRAMFS_PATH="$ROOT_DIR/target/initramfs.tar"
 CELL_PROBE_MANIFEST="$ROOT_DIR/tools/driver_cell_probe/Cargo.toml"
 DRIVER_PACK_BUILDER_MANIFEST="$ROOT_DIR/tools/driver_pack_builder/Cargo.toml"
 
@@ -57,7 +55,6 @@ require_cmd() {
 }
 
 require_cmd cargo
-require_cmd tar
 
 if [[ ! -f "$CELL_TARGET_SPEC" ]]; then
     echo "missing target spec: $CELL_TARGET_SPEC" >&2
@@ -144,25 +141,6 @@ echo "[driver_cell_probe_fixtures] building staged PCI probe pack"
     --pci-subclass 0x03 \
     --pci-prog-if 0x00)
 echo "[driver_cell_probe_fixtures] wrote $DEPLOY_DIR/driver_cell_probe_pci.cell"
-
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
-
-mkdir -p "$tmp_dir/drivers"
-mkdir -p "$tmp_dir/cells"
-cp "$DEPLOY_DIR/driver_cell_probe_v1.cell" "$tmp_dir/drivers/driver_cell_probe.cell"
-cp "$DEPLOY_DIR/driver_cell_probe_pci.cell" "$tmp_dir/drivers/driver_cell_probe_pci.cell"
-cp "$DEPLOY_DIR/driver_cell_probe_v1.cell" "$tmp_dir/cells/driver_cell_probe_v1.cell"
-cp "$DEPLOY_DIR/driver_cell_probe_v2.cell" "$tmp_dir/cells/driver_cell_probe_v2.cell"
-rm -f "$INITRAMFS_PATH"
-(cd "$tmp_dir" && tar -cf "$INITRAMFS_PATH" \
-    drivers/driver_cell_probe.cell \
-    drivers/driver_cell_probe_pci.cell \
-    cells/driver_cell_probe_v1.cell \
-    cells/driver_cell_probe_v2.cell)
-
-echo "[driver_cell_probe_fixtures] wrote $INITRAMFS_PATH"
 echo "[driver_cell_probe_fixtures] run.sh will auto-deploy:"
-echo "  - $INITRAMFS_PATH -> /initramfs.tar"
 echo "  - $DEPLOY_DIR/* -> /cells/*"
 echo "[driver_cell_probe_fixtures] build target spec: $CELL_TARGET_SPEC"

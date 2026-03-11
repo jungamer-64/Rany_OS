@@ -739,17 +739,18 @@ fn phase_core_services_and_drivers(context: &mut KernelBootContext) {
     crate::driver_domain::init();
     info!(target: "init", "Cell loader/live update/DriverDomain initialized");
 
-    // 2.9. Initramfs からドライバ Cells をロード
-    info!(target: "init", "Loading driver Cells from initramfs...");
-    let loaded_cells = loader::initramfs::load_cells_from_initramfs(&context.boot_info.initramfs);
+    // 2.9. Boot artifact handoff からドライバ Cells をロード
+    info!(target: "init", "Loading driver Cells from boot artifacts...");
+    let loaded_cells =
+        loader::boot_artifacts::load_cells_from_boot_artifacts(&context.boot_info.boot_artifacts);
     if loaded_cells > 0 {
         info!(
             target: "init",
-            "Loaded {} driver Cell(s) from initramfs",
+            "Loaded {} driver Cell(s) from boot artifacts",
             loaded_cells
         );
     } else {
-        debug!(target: "init", "No initramfs or no Cells found");
+        debug!(target: "init", "No boot artifacts or no Cells found");
     }
 
     init_hid_and_serial_drivers();
@@ -881,7 +882,7 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     // spawn is not required in the normal runtime path.
     debug!(target: "init", "Log aggregation will run on executor idle");
 
-    // 5. ローダー/ライブアップデートは initramfs より前に初期化済み
+    // 5. ローダー/ライブアップデートは boot artifact load より前に初期化済み
     debug!(
         target: "init",
         "Cell loader/live update already initialized (early path)"

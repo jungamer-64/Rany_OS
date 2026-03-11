@@ -75,7 +75,7 @@ mod test;
 mod application;
 mod benchmark;
 mod driver_registry;
-// initramfs は loader/initramfs.rs に移動済み。loader::initramfs として参照する。
+// boot artifact loader は loader/boot_artifacts.rs に配置される。
 mod integration; // 旧称: userspace → SPL単一特権レベルを反映
 mod service_impl; // KernelServices implementation // Driver lifecycle management
 

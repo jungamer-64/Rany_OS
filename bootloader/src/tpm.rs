@@ -6,17 +6,18 @@
 //!
 //! PCR Usage:
 //! - PCR[8]: Kernel image hash
-//! - PCR[9]: Initramfs hash (if present)
+//! - PCR[9]: Boot artifact aggregate hash (if present)
 //! - PCR[14]: Boot configuration (cmdline, etc.)
 
+use alloc::vec::Vec;
 use log::info;
 use uefi::boot;
 use uefi::prelude::*;
 
 /// PCR index for kernel measurement
 pub const PCR_KERNEL: u32 = 8;
-/// PCR index for initramfs measurement
-pub const PCR_INITRAMFS: u32 = 9;
+/// PCR index for boot artifact aggregate measurement
+pub const PCR_BOOT_ARTIFACTS: u32 = 9;
 /// PCR index for boot configuration
 pub const PCR_BOOT_CONFIG: u32 = 14;
 
@@ -28,10 +29,15 @@ pub enum TcgEventType {
     EfiAction = 0x80000007,
     /// Kernel image measurement
     KernelLoad = 0x80000010,
-    /// Initramfs measurement
-    InitramfsLoad = 0x80000011,
+    /// Boot artifact aggregate measurement
+    BootArtifactsLoad = 0x80000011,
     /// Command line measurement
     CommandLine = 0x80000012,
+}
+
+pub struct MeasuredBootArtifact<'a> {
+    pub path: &'a str,
+    pub data: &'a [u8],
 }
 
 /// Result of TPM measurement operations
@@ -41,8 +47,8 @@ pub struct TpmMeasurementResult {
     pub tpm_available: bool,
     /// Whether kernel was measured
     pub kernel_measured: bool,
-    /// Whether initramfs was measured
-    pub initramfs_measured: bool,
+    /// Whether boot artifacts were measured
+    pub boot_artifacts_measured: bool,
     /// Whether cmdline was measured
     pub cmdline_measured: bool,
 }
@@ -52,7 +58,7 @@ impl Default for TpmMeasurementResult {
         Self {
             tpm_available: false,
             kernel_measured: false,
-            initramfs_measured: false,
+            boot_artifacts_measured: false,
             cmdline_measured: false,
         }
     }
@@ -124,19 +130,19 @@ const PE_PCR_EVENT_FLAG: u64 = 0x1;
 
 /// Perform measured boot operations
 ///
-/// This function measures the kernel, initramfs (if present), and command line
+/// This function measures the kernel, boot artifacts (if present), and command line
 /// into their respective PCRs using the TCG2 protocol.
 ///
 /// # Arguments
 /// * `kernel_data` - Raw kernel binary (without signature)
-/// * `initramfs_data` - Optional initramfs data
+/// * `boot_artifacts` - Sorted boot artifacts discovered on the boot partition
 /// * `cmdline` - Optional command line
 ///
 /// # Returns
 /// TpmMeasurementResult indicating what was measured
 pub fn perform_measured_boot(
     kernel_data: &[u8],
-    initramfs_data: Option<&[u8]>,
+    boot_artifacts: &[MeasuredBootArtifact<'_>],
     cmdline: Option<&[u8]>,
 ) -> TpmMeasurementResult {
     let mut result = TpmMeasurementResult::default();
@@ -189,19 +195,22 @@ pub fn perform_measured_boot(
         );
     }
 
-    // Measure initramfs if present
-    if let Some(initramfs) = initramfs_data {
+    let artifact_measurement = encode_boot_artifact_measurement(boot_artifacts);
+    if !artifact_measurement.is_empty() {
         if extend_pcr(
             tcg2,
-            PCR_INITRAMFS,
-            initramfs,
-            TcgEventType::InitramfsLoad,
-            b"ExoLoader Initramfs",
+            PCR_BOOT_ARTIFACTS,
+            &artifact_measurement,
+            TcgEventType::BootArtifactsLoad,
+            b"ExoLoader Boot Artifacts",
         )
         .is_ok()
         {
-            result.initramfs_measured = true;
-            info!("TPM: Initramfs measured to PCR[{}]", PCR_INITRAMFS);
+            result.boot_artifacts_measured = true;
+            info!(
+                "TPM: Boot artifacts measured to PCR[{}]",
+                PCR_BOOT_ARTIFACTS
+            );
         }
     }
 
@@ -222,6 +231,17 @@ pub fn perform_measured_boot(
     }
 
     result
+}
+
+pub fn encode_boot_artifact_measurement(artifacts: &[MeasuredBootArtifact<'_>]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    for artifact in artifacts {
+        encoded.extend_from_slice(artifact.path.as_bytes());
+        encoded.push(0);
+        encoded.extend_from_slice(&(artifact.data.len() as u64).to_le_bytes());
+        encoded.extend_from_slice(artifact.data);
+    }
+    encoded
 }
 
 /// Locate the TCG2 protocol

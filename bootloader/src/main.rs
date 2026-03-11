@@ -79,7 +79,10 @@ fn main() -> Status {
     let image_handle = boot::image_handle();
 
     // 0.5. Load boot configuration and show menu (if multiple entries)
-    let boot_config = load_boot_config(image_handle);
+    let boot_config = match load_boot_config(image_handle) {
+        Ok(cfg) => cfg,
+        Err(status) => return status,
+    };
 
     #[cfg(feature = "ui")]
     let selected_entry = match select_boot_entry_ui(&boot_config) {
@@ -93,14 +96,17 @@ fn main() -> Status {
         .get(boot_config.default_entry)
         .or_else(|| boot_config.entries.first());
 
-    let (kernel_name, initramfs_name, entry_cmdline) = determine_boot_paths(selected_entry);
+    let (kernel_name, entry_cmdline) = determine_boot_paths(selected_entry);
 
-    // 1. Load signed kernel, initramfs, and command line
+    // 1. Load signed kernel, boot artifacts, and command line
     let signed_kernel_data = match load_signed_kernel_file(image_handle, kernel_name) {
         Ok(data) => data,
         Err(e) => return e,
     };
-    let initramfs_data = load_optional_initramfs_file(image_handle, initramfs_name);
+    let boot_artifacts = match load_boot_artifacts(image_handle) {
+        Ok(artifacts) => artifacts,
+        Err(status) => return status,
+    };
     let cmdline_data = load_and_merge_cmdline(image_handle, entry_cmdline);
 
     // ============================================================
@@ -138,15 +144,24 @@ fn main() -> Status {
     let dbx_check_passed = sb_info.dbx_present;
 
     // 1.3 TPM 2.0 Measured Boot
+    let measured_artifacts = boot_artifacts
+        .iter()
+        .map(|artifact| tpm::MeasuredBootArtifact {
+            path: artifact.path.as_str(),
+            data: artifact.data.as_slice(),
+        })
+        .collect::<Vec<_>>();
     let tpm_result = tpm::perform_measured_boot(
         kernel_elf_data,
-        initramfs_data.as_deref(),
+        &measured_artifacts,
         cmdline_data.as_deref(),
     );
     if tpm_result.tpm_available {
         info!(
-            "TPM Measured Boot: kernel={}, initramfs={}, cmdline={}",
-            tpm_result.kernel_measured, tpm_result.initramfs_measured, tpm_result.cmdline_measured
+            "TPM Measured Boot: kernel={}, boot_artifacts={}, cmdline={}",
+            tpm_result.kernel_measured,
+            tpm_result.boot_artifacts_measured,
+            tpm_result.cmdline_measured
         );
     }
 
@@ -242,8 +257,8 @@ fn main() -> Status {
     // GOP framebuffer setup
     setup_gop_framebuffer(boot_info);
 
-    // 6.5. Initialize initramfs and cmdline in boot_info
-    copy_initramfs_to_boot_info(boot_info, &initramfs_data, hhdm_start);
+    // 6.5. Initialize boot artifacts and cmdline in boot_info
+    copy_boot_artifacts_to_boot_info(boot_info, &boot_artifacts, hhdm_start);
     copy_cmdline_to_boot_info(boot_info, &cmdline_data, hhdm_start);
 
     // 6.7. Pre-allocate memory map buffer BEFORE exiting boot services
@@ -296,19 +311,26 @@ fn main() -> Status {
 // ============================================================
 
 /// Load and parse boot configuration from exoloader.cfg
-fn load_boot_config(image_handle: Handle) -> config::BootConfig {
+fn load_boot_config(image_handle: Handle) -> Result<config::BootConfig, Status> {
     match load_kernel(image_handle, "exoloader.cfg") {
         Ok(data) => {
             if let Ok(cfg_str) = core::str::from_utf8(&data) {
-                config::parse_config(cfg_str)
+                match config::parse_config(cfg_str) {
+                    Ok(cfg) => Ok(cfg),
+                    Err(config::BootConfigError::DeprecatedKey(key)) => {
+                        error!("Boot config contains removed key '{}'", key);
+                        boot::stall(Duration::from_micros(5_000_000));
+                        Err(Status::LOAD_ERROR)
+                    }
+                }
             } else {
                 info!("Boot config not valid UTF-8, using defaults");
-                config::default_config()
+                Ok(config::default_config())
             }
         }
         Err(_) => {
             info!("No exoloader.cfg found, using defaults");
-            config::default_config()
+            Ok(config::default_config())
         }
     }
 }
@@ -340,22 +362,18 @@ fn select_boot_entry_ui<'a>(
     }
 }
 
-/// Determine kernel path, initramfs path, and cmdline from selected boot entry
+/// Determine kernel path and cmdline from selected boot entry
 fn determine_boot_paths<'a>(
     selected_entry: Option<&'a config::BootEntry>,
-) -> (&'a str, Option<&'a str>, Option<&'a str>) {
+) -> (&'a str, Option<&'a str>) {
     match selected_entry {
         Some(entry) => {
             info!("Booting: {}", entry.name);
-            (
-                entry.kernel.as_str(),
-                entry.initramfs.as_deref(),
-                entry.cmdline.as_deref(),
-            )
+            (entry.kernel.as_str(), entry.cmdline.as_deref())
         }
         None => {
             info!("No boot entry found, using defaults");
-            ("rany_os", Some("initramfs.tar"), None)
+            ("rany_os", None)
         }
     }
 }
@@ -374,28 +392,6 @@ fn load_signed_kernel_file(image_handle: Handle, kernel_name: &str) -> Result<Ve
             boot::stall(Duration::from_micros(5_000_000));
             Err(e)
         }
-    }
-}
-
-/// Load optional initramfs file
-fn load_optional_initramfs_file(
-    image_handle: Handle,
-    initramfs_name: Option<&str>,
-) -> Option<Vec<u8>> {
-    if let Some(path) = initramfs_name {
-        match load_kernel(image_handle, path) {
-            Ok(data) => {
-                info!("Initramfs loaded: {} bytes", data.len());
-                Some(data)
-            }
-            Err(_) => {
-                info!("No {} found (optional)", path);
-                None
-            }
-        }
-    } else {
-        info!("No initramfs specified");
-        None
     }
 }
 

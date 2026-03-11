@@ -442,17 +442,25 @@ function Create-Disk-Image {
     # Copy artifacts
     Copy-Item $LOADER_EFI "$fatRoot/EFI/BOOT/BOOTX64.EFI"
     Copy-Item $KERNEL_SIGNED "$fatRoot/rany_os"
-    
-    # Optional initramfs
-    $initramfsPath = Join-Path $TARGET_DIR "initramfs.tar"
-    if (Test-Path $initramfsPath) {
-        Copy-Item $initramfsPath "$fatRoot/initramfs.tar"
-        Write-Done "Included initramfs.tar"
+
+    $bootArtifactsDir = Join-Path $KERNEL_TARGET_DIR "boot_artifacts"
+    $driversDir = Join-Path $bootArtifactsDir "drivers"
+    if (Test-Path $driversDir) {
+        $bootDriversDir = "$fatRoot/drivers"
+        New-Item -ItemType Directory -Force -Path $bootDriversDir | Out-Null
+        Copy-Item "$driversDir/*" $bootDriversDir -Recurse -ErrorAction SilentlyContinue
+        $driverCount = (Get-ChildItem $bootDriversDir -File -Recurse | Measure-Object).Count
+        if ($driverCount -gt 0) {
+            Write-Done "Deployed $driverCount driver artifact(s) to /drivers"
+        }
     }
-    
+
     # [ExoRust] Deploy Cells (Drivers/Apps)
     # Cells are isolated driver/app binaries loaded at runtime
-    $cellsDir = Join-Path $KERNEL_TARGET_DIR "cells"
+    $cellsDir = Join-Path $bootArtifactsDir "cells"
+    if (-not (Test-Path $cellsDir)) {
+        $cellsDir = Join-Path $KERNEL_TARGET_DIR "cells"
+    }
     if (Test-Path $cellsDir) {
         $bootCellsDir = "$fatRoot/cells"
         New-Item -ItemType Directory -Force -Path $bootCellsDir | Out-Null

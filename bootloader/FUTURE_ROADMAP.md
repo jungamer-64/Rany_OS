@@ -17,7 +17,7 @@
 | **Framebuffer 初期化** | ✅ | GOP経由、BGRA/RGBA対応 |
 | **ACPI RSDP検出** | ✅ | ACPI2/ACPI1テーブル検索 |
 | **Memory Map 引き渡し** | ✅ | ExoBootInfo経由 |
-| **Initramfs ローディング** | ✅ | initramfs.tar（オプション） |
+| **Boot Artifact ローディング** | ✅ | `/drivers/*.cell` と `/cells/*.cell` を自動検出 |
 | **2MB/4KB ページマッピング** | ✅ | 混合ページサイズ対応 |
 
 ---
@@ -155,21 +155,21 @@ pub struct ApBootInfo {
 
 - `tpm.rs` モジュール追加
 - UEFI TCG2プロトコル検出・利用
-- カーネル、initramfs、コマンドラインをそれぞれPCRに測定
+- カーネル、boot artifacts、コマンドラインをそれぞれPCRに測定
 - TPMが利用可能でない場合も正常にフォールバック
 
 ```rust
 // PCR割り当て
-pub const PCR_KERNEL: u32 = 8;      // カーネルイメージ
-pub const PCR_INITRAMFS: u32 = 9;   // initramfs
-pub const PCR_BOOT_CONFIG: u32 = 14; // コマンドライン等
+pub const PCR_KERNEL: u32 = 8;           // カーネルイメージ
+pub const PCR_BOOT_ARTIFACTS: u32 = 9;   // boot artifacts
+pub const PCR_BOOT_CONFIG: u32 = 14;     // コマンドライン等
 ```
 
 **実装タスク**:
 
 - [x] UEFI TCG2プロトコル対応
 - [x] PCR[8]にカーネルハッシュを拡張
-- [x] PCR[9]にinitramfsハッシュを拡張
+- [x] PCR[9]にboot artifact集約ハッシュを拡張
 - [x] PCR[14]にコマンドラインハッシュを拡張
 - [x] イベントログ生成
 
@@ -329,7 +329,6 @@ pub struct MemoryEncryptionInfo {
 pub struct BootEntry {
     pub name: String,
     pub kernel: String,
-    pub initramfs: Option<String>,
     pub cmdline: Option<String>,
 }
 
@@ -346,17 +345,13 @@ pub struct BootConfig {
 timeout = 5
 default = 0
 
-[entry]
-name = RanyOS (Default)
+[RanyOS (Default)]
 kernel = rany_os
-initramfs = initramfs.tar
-cmdline = loglevel=info console=serial
+cmdline = loglevel=info shell=console
 
-[entry]
-name = RanyOS (Debug Mode)
+[RanyOS (Debug Mode)]
 kernel = rany_os
-initramfs = initramfs.tar
-cmdline = loglevel=debug console=serial
+cmdline = loglevel=debug shell=serial
 ```
 
 **実装タスク**:

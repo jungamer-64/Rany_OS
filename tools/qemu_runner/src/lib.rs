@@ -280,7 +280,7 @@ fn profile_needs_storage_disk(profile: &str) -> bool {
     )
 }
 
-fn profile_needs_initramfs_assets(profile: &str) -> bool {
+fn profile_needs_boot_artifacts(profile: &str) -> bool {
     matches!(
         profile,
         "storage" | "driver_domain" | "network" | "iommu" | "pr-required" | "nightly-required"
@@ -306,17 +306,6 @@ fn profile_needs_iommu(profile: &str) -> bool {
             | "nightly-required"
             | "step9-heavy"
     )
-}
-
-fn copy_file_if_exists(src: &Path, dst: &Path, step: &'static str) -> Result<bool, BuildError> {
-    if !src.exists() {
-        return Ok(false);
-    }
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| BuildError::Io { step, source })?;
-    }
-    std::fs::copy(src, dst).map_err(|source| BuildError::Io { step, source })?;
-    Ok(true)
 }
 
 fn copy_cells_dir(src_dir: &Path, dst_dir: &Path) -> Result<usize, BuildError> {
@@ -352,33 +341,41 @@ fn copy_cells_dir(src_dir: &Path, dst_dir: &Path) -> Result<usize, BuildError> {
     Ok(copied)
 }
 
-fn ensure_runtime_initramfs_assets(root: &Path) -> Result<(), BuildError> {
-    let initramfs_path = root.join("target").join("initramfs.tar");
-    let cells_dir = root
+fn ensure_runtime_boot_artifact_assets(root: &Path) -> Result<(), BuildError> {
+    let boot_artifacts_dir = root
         .join("target")
         .join("x86_64-exorust")
         .join("release")
-        .join("cells");
+        .join("boot_artifacts");
+    let drivers_dir = boot_artifacts_dir.join("drivers");
+    let cells_dir = boot_artifacts_dir.join("cells");
     let cell_v1 = cells_dir.join("driver_cell_probe_v1.cell");
     let cell_v2 = cells_dir.join("driver_cell_probe_v2.cell");
-    let have_assets = initramfs_path.exists() && cell_v1.exists() && cell_v2.exists();
+    let driver_probe = drivers_dir.join("driver_cell_probe.cell");
+    let driver_probe_pci = drivers_dir.join("driver_cell_probe_pci.cell");
+    let have_assets =
+        driver_probe.exists() && driver_probe_pci.exists() && cell_v1.exists() && cell_v2.exists();
     if have_assets {
         return Ok(());
     }
 
     run_command(
         root,
-        "build runtime initramfs assets",
+        "build runtime boot artifact assets",
         "bash",
-        &["scripts/build_runtime_initramfs.sh", "--profile", "release"],
+        &[
+            "scripts/build_runtime_boot_artifacts.sh",
+            "--profile",
+            "release",
+        ],
     )?;
 
-    if initramfs_path.exists() && cell_v1.exists() && cell_v2.exists() {
+    if driver_probe.exists() && driver_probe_pci.exists() && cell_v1.exists() && cell_v2.exists() {
         Ok(())
     } else {
         Err(BuildError::ArtifactMissing {
-            step: "build runtime initramfs assets",
-            path: initramfs_path,
+            step: "build runtime boot artifact assets",
+            path: boot_artifacts_dir,
         })
     }
 }
@@ -585,50 +582,41 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
             path: kernel_elf_path.clone(),
         })?;
     let kernel_fat_root = kernel_out_dir.join("fat_root");
-    let needs_initramfs_assets = profile_needs_initramfs_assets(&config.profile);
+    let needs_boot_artifacts = profile_needs_boot_artifacts(&config.profile);
     let needs_driver_domain_cells = profile_needs_driver_domain_cells(&config.profile);
-    if needs_initramfs_assets {
-        ensure_runtime_initramfs_assets(&root)?;
+    if needs_boot_artifacts {
+        ensure_runtime_boot_artifact_assets(&root)?;
     }
-    let repo_root = workspace_root();
-    let initramfs_src = {
-        let primary = kernel_fat_root.join("initramfs.tar");
-        let fallback = repo_root.join("target").join("initramfs.tar");
-        if primary.exists() { primary } else { fallback }
-    };
-    let initramfs_dst = boot_root.join("initramfs.tar");
-    let copied_initramfs = if needs_initramfs_assets {
-        copy_file_if_exists(
-            &initramfs_src,
-            &initramfs_dst,
-            "copy initramfs.tar into fullboot image",
-        )?
-    } else {
-        false
-    };
-    if needs_initramfs_assets && !copied_initramfs {
-        return Err(BuildError::ArtifactMissing {
-            step: "copy initramfs.tar into fullboot image",
-            path: initramfs_src,
-        });
-    }
-
-    let cells_src = {
-        let primary = kernel_fat_root.join("cells");
-        let release_cells = root
+    let boot_artifacts_src = {
+        let primary = kernel_fat_root.join("boot_artifacts");
+        let release_boot_artifacts = root
             .join("target")
             .join("x86_64-exorust")
             .join("release")
-            .join("cells");
-        let debug_cells = kernel_out_dir.join("cells");
+            .join("boot_artifacts");
+        let debug_boot_artifacts = kernel_out_dir.join("boot_artifacts");
         if primary.exists() {
             primary
-        } else if release_cells.exists() {
-            release_cells
+        } else if release_boot_artifacts.exists() {
+            release_boot_artifacts
         } else {
-            debug_cells
+            debug_boot_artifacts
         }
     };
+    let drivers_src = boot_artifacts_src.join("drivers");
+    let copied_drivers = if needs_boot_artifacts {
+        copy_cells_dir(&drivers_src, &boot_root.join("drivers"))?
+    } else {
+        0
+    };
+    if needs_boot_artifacts && copied_drivers == 0 {
+        return Err(BuildError::ArtifactMissing {
+            step: "copy driver artifacts into fullboot image",
+            path: drivers_src,
+        });
+    }
+
+    let cells_src = boot_artifacts_src.join("cells");
     let copied_cells = if needs_driver_domain_cells {
         copy_cells_dir(&cells_src, &boot_root.join("cells"))?
     } else {
@@ -641,10 +629,7 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         });
     }
 
-    let mut config_text = String::from("timeout=0\ndefault=0\n\n[FullBoot]\nkernel=rany_os\n");
-    if copied_initramfs {
-        config_text.push_str("initramfs=initramfs.tar\n");
-    }
+    let config_text = String::from("timeout=0\ndefault=0\n\n[FullBoot]\nkernel=rany_os\n");
     std::fs::write(boot_root.join("exoloader.cfg"), config_text).map_err(|source| {
         BuildError::Io {
             step: "write exoloader.cfg",
