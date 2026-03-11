@@ -1,25 +1,30 @@
 // ============================================================================
-// kernel/src/net/api/config.rs - ネットワーク設定・統計の取得
+// kernel/src/net/api/config.rs - インターフェース別ネットワーク設定・統計
 // ============================================================================
-//! ネットワーク設定スナップショットと統計情報の取得。
-//!
-//! `NetworkStack` からIPアドレス、MAC、サブネットマスク、ゲートウェイ、
-//! パケットカウンタなどを安全に読み取る関数を提供する。
-//!
-//! ## 非同期API（推奨）
-//! `get_network_config_async()` / `get_network_stats_async()` は
-//! イベントキュー経由でスタックにアクセスし、同期ロックを回避する。
 
-use crate::net::runtime::stack;
-use crate::sync::PoisonLock;
-use crate::sync::atomic_waker::AtomicWaker;
-use alloc::sync::Arc;
+use crate::net::runtime::{
+    device,
+    manager::{self, NetIfId, NetworkInterfaceInfo},
+    stack,
+};
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::Ordering;
 use core::task::{Context, Poll};
 
-/// Network configuration snapshot for shell commands.
+/// Per-interface configuration snapshot for shell and bootstrap consumers.
+#[derive(Debug, Clone)]
+pub struct InterfaceConfigSnapshot {
+    pub if_id: u16,
+    pub name: alloc::string::String,
+    pub admin_up: bool,
+    pub virtio_index: Option<u8>,
+    pub ip: [u8; 4],
+    pub netmask: [u8; 4],
+    pub gateway: [u8; 4],
+    pub mac: [u8; 6],
+}
+
+/// Legacy single-interface snapshot retained for internal event payloads.
 #[derive(Debug, Clone)]
 pub struct NetworkConfigSnapshot {
     pub ip: [u8; 4],
@@ -28,7 +33,20 @@ pub struct NetworkConfigSnapshot {
     pub mac: [u8; 6],
 }
 
-/// Network statistics snapshot for shell commands.
+/// Per-interface runtime statistics snapshot.
+#[derive(Debug, Clone, Copy)]
+pub struct InterfaceStatsSnapshot {
+    pub if_id: u16,
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub rx_errors: u64,
+    pub tx_errors: u64,
+    pub rx_dropped: u64,
+}
+
+/// Legacy aggregate stats snapshot retained for internal event payloads.
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkStatsSnapshot {
     pub rx_packets: u64,
@@ -39,197 +57,197 @@ pub struct NetworkStatsSnapshot {
     pub rx_dropped: u64,
 }
 
-// Fallback stats used if stack access fails.
-static NETWORK_STATS: PoisonLock<NetworkStatsSnapshot> = PoisonLock::new(NetworkStatsSnapshot {
-    rx_packets: 0,
-    tx_packets: 0,
-    rx_bytes: 0,
-    tx_bytes: 0,
-    rx_errors: 0,
-    rx_dropped: 0,
-});
-
-/// ネットワーク設定取得（同期ロック・読み取り専用）
-///
-/// **ブートストラップ専用**: `stack().lock()` で同期ロックを取得するが、読み取りのみのため
-/// ロック保持時間は最小限。エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
-/// asyncコンテキストでは [`get_network_config_async()`] を使用すること。
-pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
-    match stack::stack().lock() {
-        Ok(guard) => guard.as_ref().map(|stack_guard| {
-            let cfg = stack_guard.config();
-            NetworkConfigSnapshot {
-                ip: *cfg.ipv4.address.as_bytes(),
-                netmask: *cfg.ipv4.subnet_mask.as_bytes(),
-                gateway: *cfg.ipv4.gateway.as_bytes(),
-                mac: *cfg.mac.as_bytes(),
-            }
-        }),
-        Err(_) => {
-            log::error!("[NET] Stack lock poisoned (get_network_config)");
-            None
-        }
-    }
+/// Lightweight interface summary used by shell and bootstrap flows.
+#[derive(Debug, Clone)]
+pub struct InterfaceSnapshot {
+    pub if_id: u16,
+    pub name: alloc::string::String,
+    pub admin_up: bool,
+    pub virtio_index: Option<u8>,
+    pub ip: Option<[u8; 4]>,
+    pub mac: Option<[u8; 6]>,
 }
 
-/// ネットワーク統計取得（同期ロック・読み取り専用）
-///
-/// **ブートストラップ専用**: エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
-/// asyncコンテキストでは [`get_network_stats_async()`] を使用すること。
-pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
-    match stack::stack().lock() {
-        Ok(guard) => {
-            if let Some(stack_guard) = guard.as_ref() {
-                let stats = stack_guard.stats();
-                return Some(NetworkStatsSnapshot {
-                    rx_packets: stats.rx_packets.load(Ordering::Relaxed),
-                    tx_packets: stats.tx_packets.load(Ordering::Relaxed),
-                    rx_bytes: stats.rx_bytes.load(Ordering::Relaxed),
-                    tx_bytes: stats.tx_bytes.load(Ordering::Relaxed),
-                    rx_errors: stats.rx_errors.load(Ordering::Relaxed),
-                    rx_dropped: stats.rx_dropped.load(Ordering::Relaxed),
-                });
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Stack lock poisoned (get_network_stats)");
-            return None;
-        }
-    }
+fn interface_config_snapshot(iface: NetworkInterfaceInfo) -> Option<InterfaceConfigSnapshot> {
+    let config = iface.config?;
+    Some(InterfaceConfigSnapshot {
+        if_id: iface.if_id.0,
+        name: iface.name,
+        admin_up: iface.admin_up,
+        virtio_index: iface.virtio_index,
+        ip: *config.ipv4.address.as_bytes(),
+        netmask: *config.ipv4.subnet_mask.as_bytes(),
+        gateway: *config.ipv4.gateway.as_bytes(),
+        mac: *config.mac.as_bytes(),
+    })
+}
 
-    let stats = match NETWORK_STATS.lock() {
-        Ok(guard) => *guard,
-        Err(_) => NetworkStatsSnapshot {
-            rx_packets: 0,
-            tx_packets: 0,
-            rx_bytes: 0,
-            tx_bytes: 0,
-            rx_errors: 0,
-            rx_dropped: 0,
-        },
+fn interface_stats_snapshot(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
+    let mut stack_snapshot = InterfaceStatsSnapshot {
+        if_id: if_id.0,
+        rx_packets: 0,
+        tx_packets: 0,
+        rx_bytes: 0,
+        tx_bytes: 0,
+        rx_errors: 0,
+        tx_errors: 0,
+        rx_dropped: 0,
     };
-    Some(stats)
-}
 
-// ============================================================================
-// 非同期API（推奨）
-// ============================================================================
-
-/// 非同期ネットワーク設定取得Future
-///
-/// イベントキュー経由でスタックにアクセスし、同期ロックを回避する。
-pub struct GetConfigFuture {
-    result_slot: Arc<PoisonLock<Option<Option<NetworkConfigSnapshot>>>>,
-    waker: Arc<AtomicWaker>,
-    sent: bool,
-}
-
-impl GetConfigFuture {
-    fn new() -> Self {
-        Self {
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
-            sent: false,
-        }
-    }
-}
-
-impl Future for GetConfigFuture {
-    type Output = Option<NetworkConfigSnapshot>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-
-        if !this.sent {
-            // イベントキュー経由でconfig取得を要求
-            crate::net::l4::endpoint::event::send_event_ignore(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetConfig {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
-                },
-            );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        // 結果をチェック
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(result) = slot.as_ref() {
-                return Poll::Ready(result.clone());
+    if let Ok(guard) = stack::stack().lock() {
+        if let Some(stack) = guard.as_ref() {
+            if let Some(stats) = stack.interface_stats(if_id) {
+                stack_snapshot.rx_packets =
+                    stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.tx_packets =
+                    stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.rx_bytes =
+                    stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.tx_bytes =
+                    stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.rx_errors =
+                    stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.rx_dropped =
+                    stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
             }
         }
+    }
 
-        this.waker.register(cx.waker());
-        Poll::Pending
+    if let Some(port) = device::lookup_port(if_id) {
+        let driver_stats = port.driver().stats();
+        stack_snapshot.rx_packets = stack_snapshot.rx_packets.max(driver_stats.rx_packets);
+        stack_snapshot.tx_packets = stack_snapshot.tx_packets.max(driver_stats.tx_packets);
+        stack_snapshot.rx_errors = stack_snapshot.rx_errors.max(driver_stats.rx_errors);
+        stack_snapshot.tx_errors = stack_snapshot.tx_errors.max(driver_stats.tx_errors);
+        return Some(stack_snapshot);
+    }
+
+    if stack_snapshot.rx_packets != 0
+        || stack_snapshot.tx_packets != 0
+        || stack_snapshot.rx_bytes != 0
+        || stack_snapshot.tx_bytes != 0
+        || stack_snapshot.rx_errors != 0
+        || stack_snapshot.tx_errors != 0
+        || stack_snapshot.rx_dropped != 0
+    {
+        return Some(stack_snapshot);
+    }
+
+    None
+}
+
+fn interface_summary_snapshot(iface: NetworkInterfaceInfo) -> InterfaceSnapshot {
+    let ip = iface.config.map(|config| *config.ipv4.address.as_bytes());
+    let mac = iface.config.map(|config| *config.mac.as_bytes());
+    InterfaceSnapshot {
+        if_id: iface.if_id.0,
+        name: iface.name,
+        admin_up: iface.admin_up,
+        virtio_index: iface.virtio_index,
+        ip,
+        mac,
     }
 }
 
-/// 非同期ネットワーク設定取得（推奨API）
-///
-/// イベントキュー経由でスタックにアクセスするため、
-/// 同期ロック取得を完全に回避する。
-///
-/// # 使用例
-/// ```ignore
-/// let config = get_network_config_async().await;
-/// ```
-pub fn get_network_config_async() -> GetConfigFuture {
-    GetConfigFuture::new()
+pub fn primary_interface_config_snapshot() -> Option<NetworkConfigSnapshot> {
+    let preferred_if = device::primary_if().or_else(|| {
+        manager::list_interfaces()
+            .ok()
+            .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+    })?;
+    get_interface_config(preferred_if).map(|cfg| NetworkConfigSnapshot {
+        ip: cfg.ip,
+        netmask: cfg.netmask,
+        gateway: cfg.gateway,
+        mac: cfg.mac,
+    })
 }
 
-/// 非同期ネットワーク統計取得Future
-pub struct GetStatsFuture {
-    result_slot: Arc<PoisonLock<Option<Option<NetworkStatsSnapshot>>>>,
-    waker: Arc<AtomicWaker>,
-    sent: bool,
+pub fn aggregate_network_stats_snapshot() -> Option<NetworkStatsSnapshot> {
+    let stats = list_interface_stats();
+    if stats.is_empty() {
+        return None;
+    }
+    Some(NetworkStatsSnapshot {
+        rx_packets: stats.iter().map(|s| s.rx_packets).sum(),
+        tx_packets: stats.iter().map(|s| s.tx_packets).sum(),
+        rx_bytes: stats.iter().map(|s| s.rx_bytes).sum(),
+        tx_bytes: stats.iter().map(|s| s.tx_bytes).sum(),
+        rx_errors: stats.iter().map(|s| s.rx_errors).sum(),
+        rx_dropped: stats.iter().map(|s| s.rx_dropped).sum(),
+    })
 }
 
-impl GetStatsFuture {
-    fn new() -> Self {
-        Self {
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
-            sent: false,
-        }
+pub fn get_interface_config(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
+    manager::get_interface(if_id)
+        .ok()
+        .flatten()
+        .and_then(interface_config_snapshot)
+}
+
+pub fn list_interface_configs() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
+    manager::list_interfaces()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(interface_config_snapshot)
+        .collect()
+}
+
+pub fn get_interface_stats(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
+    interface_stats_snapshot(if_id)
+}
+
+pub fn list_interface_stats() -> alloc::vec::Vec<InterfaceStatsSnapshot> {
+    manager::list_interfaces()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|iface| interface_stats_snapshot(iface.if_id))
+        .collect()
+}
+
+pub fn list_interfaces() -> alloc::vec::Vec<InterfaceSnapshot> {
+    manager::list_interfaces()
+        .unwrap_or_default()
+        .into_iter()
+        .map(interface_summary_snapshot)
+        .collect()
+}
+
+pub struct ReadyFuture<T> {
+    value: Option<T>,
+}
+
+impl<T> ReadyFuture<T> {
+    fn new(value: T) -> Self {
+        Self { value: Some(value) }
     }
 }
 
-impl Future for GetStatsFuture {
-    type Output = Option<NetworkStatsSnapshot>;
+impl<T: Unpin> Future for ReadyFuture<T> {
+    type Output = T;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-
-        if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetStats {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
-                },
-            );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(result) = slot.as_ref() {
-                return Poll::Ready(result.clone());
-            }
-        }
-
-        this.waker.register(cx.waker());
-        Poll::Pending
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        Poll::Ready(this.value.take().expect("ready future polled after completion"))
     }
 }
 
-/// 非同期ネットワーク統計取得（推奨API）
-///
-/// # 使用例
-/// ```ignore
-/// let stats = get_network_stats_async().await;
-/// ```
-pub fn get_network_stats_async() -> GetStatsFuture {
-    GetStatsFuture::new()
+pub fn get_interface_config_async(if_id: NetIfId) -> ReadyFuture<Option<InterfaceConfigSnapshot>> {
+    ReadyFuture::new(get_interface_config(if_id))
+}
+
+pub fn list_interface_configs_async() -> ReadyFuture<alloc::vec::Vec<InterfaceConfigSnapshot>> {
+    ReadyFuture::new(list_interface_configs())
+}
+
+pub fn get_interface_stats_async(if_id: NetIfId) -> ReadyFuture<Option<InterfaceStatsSnapshot>> {
+    ReadyFuture::new(get_interface_stats(if_id))
+}
+
+pub fn list_interface_stats_async() -> ReadyFuture<alloc::vec::Vec<InterfaceStatsSnapshot>> {
+    ReadyFuture::new(list_interface_stats())
+}
+
+pub fn list_interfaces_async() -> ReadyFuture<alloc::vec::Vec<InterfaceSnapshot>> {
+    ReadyFuture::new(list_interfaces())
 }

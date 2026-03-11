@@ -17,7 +17,7 @@
 //! ```text
 //! # ExoShell式
 //! fs.entries("/home").filter("type == Directory").take(5)
-//! net.config()
+//! net.interfaces()
 //! sys.info()
 //! ```
 

@@ -91,13 +91,18 @@ impl SystemIntegration {
         } else {
             self.log("  Net Config: none");
         }
-        if let Some(stats) = crate::net::api::config::get_network_stats() {
+        let stats = crate::net::api::config::list_interface_stats();
+        if !stats.is_empty() {
+            let rx_packets = stats.iter().map(|s| s.rx_packets).sum::<u64>();
+            let tx_packets = stats.iter().map(|s| s.tx_packets).sum::<u64>();
+            let rx_bytes = stats.iter().map(|s| s.rx_bytes).sum::<u64>();
+            let tx_bytes = stats.iter().map(|s| s.tx_bytes).sum::<u64>();
             self.log(&alloc::format!(
                 "  Net Stack stats: rx={} tx={} rx_bytes={} tx_bytes={}",
-                stats.rx_packets,
-                stats.tx_packets,
-                stats.rx_bytes,
-                stats.tx_bytes
+                rx_packets,
+                tx_packets,
+                rx_bytes,
+                tx_bytes
             ));
         } else {
             self.log("  Net Stack stats: none");

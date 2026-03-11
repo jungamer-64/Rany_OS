@@ -111,12 +111,13 @@ impl ExoShell {
     fs.pwd()              - Print working directory
 
   net.* - Network
-    net.config()          - Show network configuration
-    net.stats()           - Show TX/RX statistics
+    net.interfaces()      - List network interfaces
+    net.config(if_id)     - Show network configuration
+    net.stats(if_id)      - Show TX/RX statistics
     net.arp()             - Show ARP cache
     net.arp_insert(ip,mac)- Insert ARP entry manually
     net.ping("ip", count) - Send ICMP echo
-    net.dhcp_state()      - Show DHCPv4/DHCPv6 state
+    net.dhcp_state(if_id) - Show DHCPv4/DHCPv6 state
     net.dhcp_discover()   - Send DHCPDISCOVER and return any offer
     net.dhcp_renew()      - Renew DHCP lease
     net.dhcp_release()    - Send DHCPRELEASE and clear lease

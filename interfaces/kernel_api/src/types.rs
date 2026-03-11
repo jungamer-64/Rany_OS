@@ -32,6 +32,27 @@ impl TaskHandle {
     }
 }
 
+/// Interface selection used by network-related KAPI calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InterfaceScope {
+    #[default]
+    Any,
+    Pinned(u16),
+}
+
+impl InterfaceScope {
+    pub const fn pinned(if_id: u16) -> Self {
+        Self::Pinned(if_id)
+    }
+
+    pub const fn as_if_id(self) -> Option<u16> {
+        match self {
+            Self::Any => None,
+            Self::Pinned(if_id) => Some(if_id),
+        }
+    }
+}
+
 /// Network packet with ownership semantics
 pub struct Packet {
     data: Vec<u8>,
@@ -499,14 +520,16 @@ impl ChannelHandle {
 pub struct TcpEndpoint {
     id: u64,
     connected: bool,
+    default_scope: InterfaceScope,
 }
 
 impl TcpEndpoint {
     /// Create new TCP endpoint
-    pub fn new(id: u64) -> Self {
+    pub fn new(id: u64, default_scope: InterfaceScope) -> Self {
         Self {
             id,
             connected: false,
+            default_scope,
         }
     }
 
@@ -525,6 +548,14 @@ impl TcpEndpoint {
         self.id
     }
 
+    pub fn default_scope(&self) -> InterfaceScope {
+        self.default_scope
+    }
+
+    pub fn set_default_scope(&mut self, default_scope: InterfaceScope) {
+        self.default_scope = default_scope;
+    }
+
     /// Consume the endpoint and return its raw id
     pub fn into_raw(self) -> u64 {
         self.id
@@ -534,17 +565,22 @@ impl TcpEndpoint {
 /// Raw endpoint handle (for packet-oriented raw endpoints)
 pub struct RawEndpointHandle {
     id: u64,
+    default_scope: InterfaceScope,
 }
 
 impl RawEndpointHandle {
     /// Create new raw endpoint handle (kernel-only)
-    pub const fn new(id: u64) -> Self {
-        Self { id }
+    pub const fn new(id: u64, default_scope: InterfaceScope) -> Self {
+        Self { id, default_scope }
     }
 
     /// Get raw id
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    pub fn default_scope(&self) -> InterfaceScope {
+        self.default_scope
     }
 
     /// Consume and return raw id

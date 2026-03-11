@@ -12,6 +12,7 @@ use core::task::{Context, Poll};
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::tcb_table;
+use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack;
 use crate::net::services::dhcp;
 use crate::sync::PoisonLock;
@@ -38,6 +39,13 @@ pub struct DhcpRuntimeState {
 pub struct DhcpOfferInfo {
     pub server_ip: [u8; 4],
     pub offered_ip: [u8; 4],
+}
+
+/// DHCP snapshot tagged with the owning interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceDhcpState {
+    pub if_id: u16,
+    pub state: DhcpRuntimeState,
 }
 
 /// DHCPディスカバー（イベントキュー経由）
@@ -80,16 +88,19 @@ pub fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u
 /// この関数は一度だけ呼ばれるブートストラップ処理であり、
 /// 同期ロック取得は許容される。
 pub fn init_dhcp_runtime() -> Result<(), String> {
-    let (mac, ipv6_enabled) = match stack::stack().lock() {
-        Ok(guard) => match guard.as_ref() {
-            Some(stack_guard) => {
-                let config = stack_guard.config();
-                (config.mac, config.ipv6.is_some())
-            }
-            None => return Err(String::from("Network stack is not initialized")),
-        },
-        Err(_) => return Err(String::from("Network stack lock poisoned")),
-    };
+    let bootstrap_config = manager::list_interfaces()
+        .ok()
+        .unwrap_or_default()
+        .into_iter()
+        .find_map(|iface| iface.config)
+        .or_else(|| match stack::stack().lock() {
+            Ok(guard) => guard.as_ref().map(|stack_guard| stack_guard.config()),
+            Err(_) => None,
+        })
+        .ok_or_else(|| String::from("Network stack is not initialized"))?;
+
+    let mac = bootstrap_config.mac;
+    let ipv6_enabled = bootstrap_config.ipv6.is_some();
 
     dhcp::init(mac);
     if ipv6_enabled {
@@ -98,29 +109,13 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         log::info!("[NET] DHCPv6 runtime disabled: IPv6 is not configured");
     }
 
-    let (hostname, ip, dns_servers) = match stack::stack().lock() {
-        Ok(guard) => match guard.as_ref() {
-            Some(stack_guard) => {
-                let cfg = stack_guard.config();
-                let dns = if let Some(d) = cfg.ipv4.dns {
-                    vec![d]
-                } else {
-                    vec![]
-                };
-                (String::from("ranyos"), cfg.ipv4.address, dns)
-            }
-            None => (
-                String::from("ranyos"),
-                Ipv4Address::new([0, 0, 0, 0]),
-                vec![],
-            ),
-        },
-        Err(_) => (
-            String::from("ranyos"),
-            Ipv4Address::new([0, 0, 0, 0]),
-            vec![],
-        ),
+    let dns_servers = if let Some(d) = bootstrap_config.ipv4.dns {
+        vec![d]
+    } else {
+        vec![]
     };
+    let hostname = String::from("ranyos");
+    let ip = bootstrap_config.ipv4.address;
     crate::net::services::mdns::init(hostname, ip);
 
     // DNS 初期化
@@ -197,6 +192,80 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     }));
 
     Ok(())
+}
+
+fn snapshot_for_interface(if_id: NetIfId) -> DhcpRuntimeState {
+    let now = tcb_table().get_current_tick();
+    let tick_rate = 1000u64;
+    let mut out = DhcpRuntimeState {
+        v4_state: String::from("Init"),
+        v4_assigned_ip: None,
+        v4_lease_remaining: None,
+        v4_last_declined: None,
+        v4_last_released: None,
+        v6_state: String::from("Init"),
+        v6_assigned_ip: None,
+        v6_preferred_remaining: None,
+        v6_valid_remaining: None,
+    };
+
+    if let Some(client) = dhcp::interface_v4_client(if_id) {
+        out.v4_state = String::from(dhcp_v4_state_name(client.state()));
+        if let Some(lease) = client.lease() {
+            out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
+            out.v4_lease_remaining = Some(lease_remaining_secs(
+                lease.lease_time,
+                lease.obtained_at,
+                now,
+                tick_rate,
+            ));
+        }
+        out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
+        out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
+    }
+
+    if crate::net::runtime::device::primary_if() == Some(if_id) {
+        match dhcp::DHCPV6_CLIENT.lock() {
+            Ok(guard6) => {
+                if let Some(ref client6) = *guard6 {
+                    out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
+                    if let Some(lease6) = client6.lease() {
+                        out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
+                        out.v6_preferred_remaining = Some(lease_remaining_secs(
+                            lease6.preferred_lifetime,
+                            lease6.obtained_at,
+                            now,
+                            tick_rate,
+                        ));
+                        out.v6_valid_remaining = Some(lease_remaining_secs(
+                            lease6.valid_lifetime,
+                            lease6.obtained_at,
+                            now,
+                            tick_rate,
+                        ));
+                    }
+                }
+            }
+            Err(_) => out.v6_state = String::from("Poisoned"),
+        }
+    }
+
+    out
+}
+
+pub fn get_dhcp_state(if_id: NetIfId) -> DhcpRuntimeState {
+    snapshot_for_interface(if_id)
+}
+
+pub fn list_dhcp_states() -> alloc::vec::Vec<InterfaceDhcpState> {
+    manager::list_interfaces()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|iface| InterfaceDhcpState {
+            if_id: iface.if_id.0,
+            state: snapshot_for_interface(iface.if_id),
+        })
+        .collect()
 }
 
 /// DHCP状態取得（読み取り専用・短命ロック）
@@ -286,6 +355,64 @@ pub fn dhcp_state() -> DhcpRuntimeState {
 // ============================================================================
 // 非同期API（推奨）
 // ============================================================================
+
+pub struct GetDhcpStateFuture {
+    ready: Option<DhcpRuntimeState>,
+}
+
+impl GetDhcpStateFuture {
+    fn new(if_id: NetIfId) -> Self {
+        Self {
+            ready: Some(get_dhcp_state(if_id)),
+        }
+    }
+}
+
+impl Future for GetDhcpStateFuture {
+    type Output = DhcpRuntimeState;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        Poll::Ready(
+            this.ready
+                .take()
+                .expect("get_dhcp_state future polled after completion"),
+        )
+    }
+}
+
+pub fn get_dhcp_state_async(if_id: NetIfId) -> GetDhcpStateFuture {
+    GetDhcpStateFuture::new(if_id)
+}
+
+pub struct ListDhcpStatesFuture {
+    ready: Option<alloc::vec::Vec<InterfaceDhcpState>>,
+}
+
+impl ListDhcpStatesFuture {
+    fn new() -> Self {
+        Self {
+            ready: Some(list_dhcp_states()),
+        }
+    }
+}
+
+impl Future for ListDhcpStatesFuture {
+    type Output = alloc::vec::Vec<InterfaceDhcpState>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        Poll::Ready(
+            this.ready
+                .take()
+                .expect("list_dhcp_states future polled after completion"),
+        )
+    }
+}
+
+pub fn list_dhcp_states_async() -> ListDhcpStatesFuture {
+    ListDhcpStatesFuture::new()
+}
 
 /// 非同期DHCP状態取得Future
 pub struct DhcpStateFuture {

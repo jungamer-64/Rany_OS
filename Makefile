@@ -26,6 +26,7 @@ IOMMU           ?= 1
 IOMMU_AW_BITS   ?= 39
 NUMA            ?= 1
 NETWORK         ?= bridge
+NETS            ?=
 # When set to a nonzero value, `run` will avoid any host-side network
 # configuration changes.  The VM will behave as if NETWORK=none.  This is
 # the default to prevent accidental editing of the host.  Override with
@@ -619,7 +620,101 @@ define LAUNCH_QEMU
 			"$$cores_node0" "$$mem_node0" "$$(( $(SMP) - cores_node0 ))" "$$mem_node1"; \
 	fi; \
 	\
+	_nets="$(NETS)"; \
+	if [ -n "$$_nets" ]; then \
+		_net_mode="none"; \
+		_net_idx=0; \
+		_old_ifs="$$IFS"; \
+		IFS=','; set -- $$_nets; IFS="$$_old_ifs"; \
+		for _net_desc in "$$@"; do \
+			[ -n "$$_net_desc" ] || continue; \
+			_net_id="net$$_net_idx"; \
+			_netdev_args=""; \
+			_device_args=""; \
+			case "$$_net_desc" in \
+				user) \
+					_netdev_args="user,id=$$_net_id"; \
+					if [ "$$_net_idx" = "0" ]; then \
+						_netdev_args="$$_netdev_args,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"; \
+					fi; \
+					_device_args="virtio-net-pci,netdev=$$_net_id,mq=on,vectors=10"; \
+					if [ "$(IOMMU)" = "1" ]; then \
+						_device_args="$$_device_args,iommu_platform=on,disable-legacy=on"; \
+					fi; \
+					qemu_args="$$qemu_args -netdev $$_netdev_args -device $$_device_args"; \
+					printf '   -> \033[32m[NET] VirtIO-net user/NAT descriptor %s (%s)\033[0m\n' "$$_net_id" "$$_net_desc"; \
+					;; \
+				bridge:*) \
+					_bridge_spec="$${_net_desc#bridge:}"; \
+					_bridge="$${_bridge_spec%%:*}"; \
+					_nic=""; \
+					if [ "$$_bridge_spec" != "$$_bridge" ]; then _nic="$${_bridge_spec#*:}"; fi; \
+					if [ -n "$(NO_HOST_NET)" ] && [ "$(NO_HOST_NET)" != "0" ]; then \
+						printf '   -> \033[33m[NET] Host network modifications disabled; using user/NAT for descriptor %s\033[0m\n' "$$_net_desc"; \
+						_netdev_args="user,id=$$_net_id"; \
+						if [ "$$_net_idx" = "0" ]; then \
+							_netdev_args="$$_netdev_args,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"; \
+						fi; \
+					else \
+						if ! ip link show "$$_bridge" >/dev/null 2>&1; then \
+							if [ -n "$$_nic" ]; then \
+								sudo ip link add "$$_bridge" type bridge 2>/dev/null || true; \
+								sudo ip link set "$$_bridge" up 2>/dev/null || true; \
+								sudo ip link set "$$_nic" master "$$_bridge" 2>/dev/null || true; \
+							else \
+								printf '   -> \033[33m[NET] Bridge %s missing; falling back to user/NAT for descriptor %s\033[0m\n' "$$_bridge" "$$_net_desc"; \
+								_netdev_args="user,id=$$_net_id"; \
+								if [ "$$_net_idx" = "0" ]; then \
+									_netdev_args="$$_netdev_args,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"; \
+								fi; \
+							fi; \
+						fi; \
+						if [ -z "$$_netdev_args" ]; then \
+							_tap="tap$$_net_idx-$$$$"; \
+							sudo ip tuntap add "$$_tap" mode tap user $$(id -un) 2>/dev/null || true; \
+							sudo ip link set "$$_tap" master "$$_bridge" 2>/dev/null || true; \
+							sudo ip link set "$$_tap" up 2>/dev/null || true; \
+							_netdev_args="tap,id=$$_net_id,ifname=$$_tap,script=no,downscript=no"; \
+						fi; \
+					fi; \
+					_device_args="virtio-net-pci,netdev=$$_net_id,mq=on,vectors=10"; \
+					if [ "$(IOMMU)" = "1" ]; then \
+						_device_args="$$_device_args,iommu_platform=on,disable-legacy=on"; \
+					fi; \
+					qemu_args="$$qemu_args -netdev $$_netdev_args -device $$_device_args"; \
+					printf '   -> \033[32m[NET] VirtIO-net bridge descriptor %s (%s)\033[0m\n' "$$_net_id" "$$_net_desc"; \
+					;; \
+				macvtap:*) \
+					_macvtap_if="$${_net_desc#macvtap:}"; \
+					_macvtap_fd=$$((3 + _net_idx)); \
+					qemu_args="$$qemu_args $$_macvtap_fd<>/dev/tap$$(cat /sys/class/net/$$_macvtap_if/ifindex 2>/dev/null || echo 0)"; \
+					_netdev_args="tap,id=$$_net_id,fd=$$_macvtap_fd"; \
+					_device_args="virtio-net-pci,netdev=$$_net_id,mq=on,vectors=10"; \
+					if [ "$(IOMMU)" = "1" ]; then \
+						_device_args="$$_device_args,iommu_platform=on,disable-legacy=on"; \
+					fi; \
+					qemu_args="$$qemu_args -netdev $$_netdev_args -device $$_device_args"; \
+					printf '   -> \033[32m[NET] VirtIO-net macvtap descriptor %s (%s)\033[0m\n' "$$_net_id" "$$_net_desc"; \
+					;; \
+				pcie:*) \
+					_vfio_bdf="$${_net_desc#pcie:}"; \
+					if ! printf '%s' "$$_vfio_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
+						printf '   -> \033[31m[NET][VFIO] Invalid PCIe descriptor: %s\033[0m\n' "$$_net_desc"; \
+						exit 1; \
+					fi; \
+					qemu_args="$$qemu_args -device vfio-pci,host=$$_vfio_bdf"; \
+					printf '   -> \033[32m[NET][VFIO] PCIe descriptor attached (%s)\033[0m\n' "$$_vfio_bdf"; \
+					;; \
+				*) \
+					printf '   -> \033[31m[NET] Invalid NETS descriptor: %s\033[0m\n' "$$_net_desc"; \
+					exit 1; \
+					;; \
+			esac; \
+			_net_idx=$$((_net_idx + 1)); \
+		done; \
+	else \
 	_net_mode="$(NETWORK)"; \
+	fi; \
 	if [ "$$_net_mode" = "1" ]; then _net_mode="bridge"; fi; \
 	if [ "$$_net_mode" = "0" ]; then _net_mode="none"; fi; \
 	if [ "$$_net_mode" = "vfio" ]; then _net_mode="pcie"; fi; \
@@ -1430,6 +1525,7 @@ help:
 	@echo "  IOMMU_AW_BITS=N        intel-iommu aw-bits (default: 39)"
 	@echo "  NUMA=0|1               NUMA topology (default: 1)"
 	@echo "  NETWORK=bridge|user|macvtap|pcie|vfio|none  Network mode (default: bridge)"
+	@echo "  NETS=LIST               Comma-separated NIC descriptors (user, bridge:<bridge>[:<nic>], macvtap:<if>, pcie:<bdf>)"
 	@echo "                                     bridge  = attach to existing bridge/tap (no host edits)"
 	@echo "                                     user    = QEMU user NAT (slirp, no root)"
 	@echo "                                     macvtap = macvtap passthrough"

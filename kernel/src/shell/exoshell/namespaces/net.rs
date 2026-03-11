@@ -18,11 +18,31 @@ use alloc::boxed::Box;
 pub struct NetNamespace;
 
 impl NetNamespace {
+    fn parse_if_id_arg(args: &[ExoValue<'static>], method: &str) -> Result<crate::net::runtime::manager::NetIfId, ExoValue<'static>> {
+        match args.first() {
+            Some(ExoValue::Int(n)) if *n >= 0 => Ok(crate::net::runtime::manager::NetIfId(*n as u16)),
+            _ => Err(ExoValue::Error(format!("usage: net.{method}(if_id)"))),
+        }
+    }
+
     /// ネットワーク設定を取得（非同期版）
-    pub async fn config_async() -> ExoValue<'static> {
-        match crate::net::api::config::get_network_config_async().await {
+    pub async fn config_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let if_id = match Self::parse_if_id_arg(args, "config") {
+            Ok(if_id) => if_id,
+            Err(err) => return err,
+        };
+        match crate::net::api::config::get_interface_config_async(if_id).await {
             Some(cfg) => {
                 let mut map = BTreeMap::new();
+                map.insert(String::from("if_id"), ExoValue::Int(cfg.if_id as i64));
+                map.insert(String::from("name"), ExoValue::String(Cow::Owned(cfg.name)));
+                map.insert(String::from("admin_up"), ExoValue::Bool(cfg.admin_up));
+                if let Some(virtio_index) = cfg.virtio_index {
+                    map.insert(
+                        String::from("virtio_index"),
+                        ExoValue::Int(virtio_index as i64),
+                    );
+                }
                 map.insert(
                     String::from("ip"),
                     ExoValue::String(Cow::Owned(format!(
@@ -51,10 +71,15 @@ impl NetNamespace {
     }
 
     /// ネットワーク統計（非同期版）
-    pub async fn stats_async() -> ExoValue<'static> {
-        match crate::net::api::config::get_network_stats_async().await {
+    pub async fn stats_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let if_id = match Self::parse_if_id_arg(args, "stats") {
+            Ok(if_id) => if_id,
+            Err(err) => return err,
+        };
+        match crate::net::api::config::get_interface_stats_async(if_id).await {
             Some(stats) => {
                 let mut map = BTreeMap::new();
+                map.insert(String::from("if_id"), ExoValue::Int(stats.if_id as i64));
                 map.insert(
                     String::from("rx_packets"),
                     ExoValue::Int(stats.rx_packets as i64),
@@ -74,6 +99,10 @@ impl NetNamespace {
                 map.insert(
                     String::from("rx_errors"),
                     ExoValue::Int(stats.rx_errors as i64),
+                );
+                map.insert(
+                    String::from("tx_errors"),
+                    ExoValue::Int(stats.tx_errors as i64),
                 );
                 map.insert(
                     String::from("rx_dropped"),
@@ -167,8 +196,12 @@ impl NetNamespace {
     }
 
     /// DHCP state snapshot — 非同期版（推奨）
-    pub async fn dhcp_state_async() -> ExoValue<'static> {
-        let state = crate::net::api::dhcp::dhcp_state();
+    pub async fn dhcp_state_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let if_id = match Self::parse_if_id_arg(args, "dhcp_state") {
+            Ok(if_id) => if_id,
+            Err(err) => return err,
+        };
+        let state = crate::net::api::dhcp::get_dhcp_state_async(if_id).await;
         Self::format_dhcp_state(state)
     }
 
@@ -455,42 +488,47 @@ impl NetNamespace {
 
     /// ネットワークインターフェース一覧
     pub async fn interfaces_async() -> ExoValue<'static> {
-        match crate::net::runtime::manager::list_interfaces() {
-            Ok(ifaces) => {
-                let values: Vec<ExoValue> = ifaces
-                    .into_iter()
-                    .map(|iface| {
-                        let mut map = BTreeMap::new();
-                        map.insert(String::from("id"), ExoValue::Int(iface.if_id.0 as i64));
-                        map.insert(
-                            String::from("name"),
-                            ExoValue::String(Cow::Owned(iface.name)),
-                        );
-                        map.insert(String::from("admin_up"), ExoValue::Bool(iface.admin_up));
-                        if let Some(cfg) = &iface.config {
-                            let ip = cfg.ipv4.address;
-                            map.insert(
-                                String::from("ip"),
-                                ExoValue::String(Cow::Owned(format!("{}", ip))),
-                            );
-                            map.insert(
-                                String::from("netmask"),
-                                ExoValue::String(Cow::Owned(format!("{}", cfg.ipv4.subnet_mask))),
-                            );
-                            map.insert(
-                                String::from("gateway"),
-                                ExoValue::String(Cow::Owned(format!("{}", cfg.ipv4.gateway))),
-                            );
-                        } else {
-                            map.insert(String::from("ip"), ExoValue::Nil);
-                        }
-                        ExoValue::Map(map)
-                    })
-                    .collect();
-                ExoValue::Array(values)
-            }
-            Err(_) => ExoValue::Error(String::from("Failed to list network interfaces")),
-        }
+        let values: Vec<ExoValue> = crate::net::api::config::list_interfaces_async()
+            .await
+            .into_iter()
+            .map(|iface| {
+                let mut map = BTreeMap::new();
+                map.insert(String::from("if_id"), ExoValue::Int(iface.if_id as i64));
+                map.insert(
+                    String::from("name"),
+                    ExoValue::String(Cow::Owned(iface.name)),
+                );
+                map.insert(String::from("admin_up"), ExoValue::Bool(iface.admin_up));
+                if let Some(ip) = iface.ip {
+                    map.insert(
+                        String::from("ip"),
+                        ExoValue::String(Cow::Owned(format!(
+                            "{}.{}.{}.{}",
+                            ip[0], ip[1], ip[2], ip[3]
+                        ))),
+                    );
+                } else {
+                    map.insert(String::from("ip"), ExoValue::Nil);
+                }
+                if let Some(mac) = iface.mac {
+                    map.insert(
+                        String::from("mac"),
+                        ExoValue::String(Cow::Owned(format!(
+                            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                        ))),
+                    );
+                }
+                if let Some(virtio_index) = iface.virtio_index {
+                    map.insert(
+                        String::from("virtio_index"),
+                        ExoValue::Int(virtio_index as i64),
+                    );
+                }
+                ExoValue::Map(map)
+            })
+            .collect();
+        ExoValue::Array(values)
     }
 
     /// インターフェースを有効化（管理権限必要）
@@ -1125,11 +1163,11 @@ impl ShellNamespace for NetNamespace {
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
-                "config" => Self::config_async().await,
-                "stats" => Self::stats_async().await,
+                "config" => Self::config_async(_args).await,
+                "stats" => Self::stats_async(_args).await,
                 "arp" => Self::arp_cache_async().await,
                 "arp_insert" => Self::arp_insert_async(_args).await,
-                "dhcp_state" => Self::dhcp_state_async().await,
+                "dhcp_state" => Self::dhcp_state_async(_args).await,
                 "dhcp_renew" => Self::dhcp_renew_async().await,
                 "dhcp_discover" => Self::dhcp_discover_async().await,
                 "dhcp_release" => Self::dhcp_release_async().await,

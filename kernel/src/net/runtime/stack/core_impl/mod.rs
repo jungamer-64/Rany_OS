@@ -34,6 +34,8 @@ impl NetworkStack {
         };
 
         let mut stack = NetworkStack {
+            interfaces: BTreeMap::new(),
+            primary_interface: None,
             ethernet: EthernetProcessor::new(mac),
             ipv4: Ipv4Processor::new(config.ipv4.clone()),
             ipv6: ipv6_proc,
@@ -74,6 +76,47 @@ impl NetworkStack {
     /// Set transmit callback
     pub fn set_transmit_fn(&mut self, f: TransmitFn) {
         self.transmit_fn = Some(f);
+    }
+
+    /// Register or refresh per-interface state.
+    pub fn register_interface_state(&mut self, if_id: NetIfId, config: NetworkConfig) {
+        match self.interfaces.get_mut(&if_id) {
+            Some(state) => state.set_config(config),
+            None => {
+                self.interfaces.insert(if_id, InterfaceStackState::new(config));
+            }
+        }
+        if self.primary_interface.is_none() {
+            self.primary_interface = Some(if_id);
+        }
+    }
+
+    /// Remove per-interface state.
+    pub fn unregister_interface_state(&mut self, if_id: NetIfId) {
+        self.interfaces.remove(&if_id);
+        if self.primary_interface == Some(if_id) {
+            self.primary_interface = self.interfaces.keys().next().copied();
+        }
+    }
+
+    /// Select the preferred interface used by legacy internal helpers.
+    pub fn set_primary_interface_state(&mut self, if_id: Option<NetIfId>) {
+        self.primary_interface = if_id;
+    }
+
+    pub fn interface_config(&self, if_id: NetIfId) -> Option<NetworkConfig> {
+        self.interfaces.get(&if_id).map(|state| state.config)
+    }
+
+    pub fn list_interface_configs(&self) -> Vec<(NetIfId, NetworkConfig)> {
+        self.interfaces
+            .iter()
+            .map(|(if_id, state)| (*if_id, state.config))
+            .collect()
+    }
+
+    pub fn interface_stats(&self, if_id: NetIfId) -> Option<&NetworkStats> {
+        self.interfaces.get(&if_id).map(|state| &state.stats)
     }
 
     /// Update current time (call periodically)
@@ -243,6 +286,12 @@ impl NetworkStack {
         self.arp.set_local(config.mac, config.ipv4.address);
 
         self.config = config;
+
+        if let Some(primary_if_id) = self.primary_interface {
+            if let Some(state) = self.interfaces.get_mut(&primary_if_id) {
+                state.set_config(config);
+            }
+        }
 
         // RFC 2131 Section 4.4.1: Send Gratuitous ARP when IP address is assigned or changed.
         // This updates the ARP cache of other hosts on the network.

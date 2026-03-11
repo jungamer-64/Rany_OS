@@ -61,10 +61,10 @@ impl ExoShell {
         let args = self.evaluate_args(args).await;
 
         match name {
-            "config" => NetNamespace::config_async().await,
-            "stats" => NetNamespace::stats_async().await,
+            "config" => NetNamespace::config_async(&args).await,
+            "stats" => NetNamespace::stats_async(&args).await,
             "arp" => NetNamespace::arp_cache_async().await,
-            "dhcp_state" => NetNamespace::dhcp_state_async().await,
+            "dhcp_state" => NetNamespace::dhcp_state_async(&args).await,
             "dhcp_renew" => NetNamespace::dhcp_renew_async().await,
             "dhcp_discover" => NetNamespace::dhcp_discover_async().await,
             "dhcp_release" => NetNamespace::dhcp_release_async().await,

@@ -192,7 +192,7 @@ impl ExoShell {
             && input_bytes[15] == b')'
         {
             return Some(
-                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_state_async().await,
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_state_async(&[]).await,
             );
         }
         if input_bytes.len() == 16
@@ -342,7 +342,7 @@ impl ExoShell {
             && input_bytes[10] == b')'
         {
             return Some(
-                crate::shell::exoshell::namespaces::net::NetNamespace::stats_async().await,
+                crate::shell::exoshell::namespaces::net::NetNamespace::stats_async(&[]).await,
             );
         }
         if let Some((ip, count)) = Self::parse_ping_call(input_bytes) {

@@ -832,6 +832,14 @@ pub struct AbiMsixVectorInfo {
     pub reserved: u16,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiInterfaceScope {
+    pub kind: u32,
+    pub if_id: u16,
+    pub reserved: u16,
+}
+
 /// Kernel API function table for drivers.
 ///
 /// Drivers must validate `abi_version` and `abi_size` before using optional

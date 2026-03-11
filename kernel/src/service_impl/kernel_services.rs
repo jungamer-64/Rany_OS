@@ -209,7 +209,10 @@ impl KernelServices for ExoKernel {
     // Network (Connected to network stack)
     // ========================================================================
 
-    fn net_create_endpoint(&self) -> Result<TcpEndpoint, KapiError> {
+    fn net_create_endpoint(
+        &self,
+        scope: kernel_api::resource::net::InterfaceScope,
+    ) -> Result<TcpEndpoint, KapiError> {
         use crate::net::l4::endpoint::create_tcp_endpoint;
 
         let owned = create_tcp_endpoint();
@@ -219,7 +222,7 @@ impl KernelServices for ExoKernel {
         // and doesn't close on drop.
         let _ = owned.into_inner();
 
-        Ok(TcpEndpoint::new(fd.raw() as u64))
+        Ok(TcpEndpoint::new(fd.raw() as u64, scope))
     }
     fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> Result<(), KapiError> {
         use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
@@ -275,10 +278,15 @@ impl KernelServices for ExoKernel {
     fn net_send_packet(
         &self,
         endpoint: TcpEndpoint,
+        scope: kernel_api::resource::net::InterfaceScope,
         packet: Packet,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
+            let _resolved_scope = match scope {
+                kernel_api::resource::net::InterfaceScope::Any => endpoint.default_scope(),
+                other => other,
+            };
 
             let fd = EndpointFd::from_raw(endpoint.id() as u32);
 
@@ -308,7 +316,10 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_create_raw_endpoint(&self) -> Result<RawEndpointHandle, KapiError> {
+    fn net_create_raw_endpoint(
+        &self,
+        scope: kernel_api::resource::net::InterfaceScope,
+    ) -> Result<RawEndpointHandle, KapiError> {
         // Security: Check for CAP_NET_RAW capability (Design Doc 8.2)
         let caller = context::current_subject().domain.as_u64();
         if !crate::security::capability::manager()
@@ -329,7 +340,7 @@ impl KernelServices for ExoKernel {
         // Detach so it remains registered
         let _ = owned.into_inner();
 
-        Ok(RawEndpointHandle::new(fd.raw() as u64))
+        Ok(RawEndpointHandle::new(fd.raw() as u64, scope))
     }
 
     fn net_close_raw_endpoint(&self, endpoint: RawEndpointHandle) -> Result<(), KapiError> {
@@ -397,6 +408,7 @@ impl KernelServices for ExoKernel {
     fn net_send_raw(
         &self,
         endpoint: RawEndpointHandle,
+        scope: kernel_api::resource::net::InterfaceScope,
         packet: Packet,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         // Security: Check for CAP_NET_RAW capability
@@ -413,6 +425,10 @@ impl KernelServices for ExoKernel {
 
         Box::pin(async move {
             use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
+            let _resolved_scope = match scope {
+                kernel_api::resource::net::InterfaceScope::Any => endpoint.default_scope(),
+                other => other,
+            };
 
             let fd = EndpointFd::from_raw(endpoint.id() as u32);
 

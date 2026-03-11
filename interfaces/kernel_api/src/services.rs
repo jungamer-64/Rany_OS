@@ -18,7 +18,7 @@ use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::ChannelHandle;
 use crate::msix::MsixVectorInfo;
 use crate::resource::fs::{FileHandle, OpenMode};
-use crate::resource::net::{Packet, RawEndpointHandle, TcpEndpoint};
+use crate::resource::net::{InterfaceScope, Packet, RawEndpointHandle, TcpEndpoint};
 use crate::resource::storage::{
     DirectBlockHandle, NvmeIoHandle, NvmeIoResult, NvmeIoType, NvmeRwRequest,
 };
@@ -158,7 +158,7 @@ pub trait KernelServices: Send + Sync {
     ///
     /// # Errors
     /// - `KapiError::ResourceExhausted` if the kernel cannot allocate a socket
-    fn net_create_endpoint(&self) -> KapiResult<TcpEndpoint>;
+    fn net_create_endpoint(&self, scope: InterfaceScope) -> KapiResult<TcpEndpoint>;
 
     /// Close a TCP endpoint
     ///
@@ -183,10 +183,11 @@ pub trait KernelServices: Send + Sync {
     fn net_send_packet(
         &self,
         endpoint: TcpEndpoint,
+        scope: InterfaceScope,
         packet: Packet,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
     /// Create a raw (packet-oriented) endpoint
-    fn net_create_raw_endpoint(&self) -> KapiResult<RawEndpointHandle>;
+    fn net_create_raw_endpoint(&self, scope: InterfaceScope) -> KapiResult<RawEndpointHandle>;
 
     /// Close a raw endpoint
     fn net_close_raw_endpoint(&self, endpoint: RawEndpointHandle) -> KapiResult<()>;
@@ -201,6 +202,7 @@ pub trait KernelServices: Send + Sync {
     fn net_send_raw(
         &self,
         endpoint: RawEndpointHandle,
+        scope: InterfaceScope,
         packet: Packet,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
     // ========================================================================
@@ -741,7 +743,8 @@ mod standalone {
             }
         }
 
-        fn net_create_endpoint(&self) -> KapiResult<TcpEndpoint> {
+        fn net_create_endpoint(&self, scope: InterfaceScope) -> KapiResult<TcpEndpoint> {
+            let _ = scope;
             Err(KapiError::NotSupported)
         }
 
@@ -761,13 +764,15 @@ mod standalone {
         fn net_send_packet(
             &self,
             endpoint: TcpEndpoint,
+            scope: InterfaceScope,
             packet: Packet,
         ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
-            let _ = (endpoint, packet);
+            let _ = (endpoint, scope, packet);
             unsupported_future()
         }
 
-        fn net_create_raw_endpoint(&self) -> KapiResult<RawEndpointHandle> {
+        fn net_create_raw_endpoint(&self, scope: InterfaceScope) -> KapiResult<RawEndpointHandle> {
+            let _ = scope;
             Err(KapiError::NotSupported)
         }
 
@@ -787,9 +792,10 @@ mod standalone {
         fn net_send_raw(
             &self,
             endpoint: RawEndpointHandle,
+            scope: InterfaceScope,
             packet: Packet,
         ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
-            let _ = (endpoint, packet);
+            let _ = (endpoint, scope, packet);
             unsupported_future()
         }
 

@@ -732,21 +732,29 @@ fn interface_for_key(
     config: NetworkConfig,
     port_name: &'static str,
 ) -> Result<NetIfId, &'static str> {
-    match key {
+    let if_id = match key {
         NetDeviceKey::Virtio(index) => manager::register_virtio_port(index, Some(config))
-            .map_err(|_| "failed to register virtio interface"),
+            .map_err(|_| "failed to register virtio interface")?,
         NetDeviceKey::Mlx5(_) => {
             if let Some(existing) = lookup_if_by_key(key) {
                 let _ = manager::set_interface_config(existing, config);
-                Ok(existing)
+                existing
             } else {
                 let if_id = manager::register_interface(port_name)
                     .map_err(|_| "failed to register network interface")?;
                 let _ = manager::set_interface_config(if_id, config);
-                Ok(if_id)
+                if_id
             }
         }
+    };
+
+    if let Ok(mut guard) = stack::stack().lock() {
+        if let Some(stack) = guard.as_mut() {
+            stack.register_interface_state(if_id, config);
+        }
     }
+
+    Ok(if_id)
 }
 
 fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
@@ -816,6 +824,11 @@ pub fn register_port(
 
     if selected_as_primary {
         apply_runtime_network_config(&config);
+        if let Ok(mut guard) = stack::stack().lock() {
+            if let Some(stack) = guard.as_mut() {
+                stack.set_primary_interface_state(Some(if_id));
+            }
+        }
     }
 
     if let Err(err) = crate::net::services::dhcp::ensure_interface_runtime(if_id, config) {
@@ -890,6 +903,11 @@ pub fn unregister_port(if_id: NetIfId) -> bool {
         let _ = manager::set_interface_down(if_id);
         handle_interface_departure(if_id, FailoverReason::Unregister);
         crate::net::services::dhcp::unregister_interface_runtime(if_id);
+        if let Ok(mut guard) = stack::stack().lock() {
+            if let Some(stack) = guard.as_mut() {
+                stack.unregister_interface_state(if_id);
+            }
+        }
         handle.stop();
         true
     } else {
@@ -964,6 +982,11 @@ pub fn primary_if() -> Option<NetIfId> {
 
 pub fn set_primary_interface(if_id: NetIfId) {
     set_primary_slot(Some(if_id));
+    if let Ok(mut guard) = stack::stack().lock() {
+        if let Some(stack) = guard.as_mut() {
+            stack.set_primary_interface_state(Some(if_id));
+        }
+    }
     if let Err(err) = apply_primary_runtime_for_interface(if_id) {
         log::warn!(
             target: "net::device",
@@ -984,6 +1007,11 @@ pub fn claim_bound_primary_interface(if_id: NetIfId) -> bool {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .primary = Some(if_id);
+        if let Ok(mut guard) = stack::stack().lock() {
+            if let Some(stack) = guard.as_mut() {
+                stack.set_primary_interface_state(Some(if_id));
+            }
+        }
         true
     } else {
         false

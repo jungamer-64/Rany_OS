@@ -39,6 +39,8 @@
     Disable NUMA topology simulation.
 .PARAMETER Network
     Enable VirtIO network device with IOMMU support (hostfwd: tcp/udp 5555->80).
+.PARAMETER Networks
+    Ordered NIC descriptors: "user", "bridge:<bridge>[:<nic>]", "macvtap:<ifname>", "pcie:<bdf>".
 .PARAMETER Monitor
     Enable QEMU Monitor on telnet port 4444 for runtime inspection.
 .PARAMETER Tcg
@@ -87,6 +89,7 @@ param(
     [bool]$Numa = $true,   # ExoRust: NUMA enabled by default (2 nodes)
     [switch]$NoNuma,       # Explicitly disable NUMA
     [switch]$Network,
+    [string[]]$Networks = @(),
     [switch]$Monitor,
     [switch]$Tcg,          # Force TCG software emulation
     [switch]$VerboseOutput,
@@ -615,7 +618,60 @@ function Start-Qemu {
     # [ExoRust] VirtIO Network with IOMMU Support
     # Required for zero-copy network testing (Design Doc 6.2)
     # NOTE: iommu_platform only when IOMMU is *active* (not just requested)
-    if ($Network) {
+    if ($Networks.Count -gt 0) {
+        for ($i = 0; $i -lt $Networks.Count; $i++) {
+            $descriptor = $Networks[$i]
+            if ([string]::IsNullOrWhiteSpace($descriptor)) { continue }
+            $netId = "net$i"
+            if ($descriptor -eq "user") {
+                $netdevArgs = "user,id=$netId"
+                if ($i -eq 0) {
+                    $netdevArgs += ",hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"
+                }
+                $deviceArgs = "virtio-net-pci,netdev=$netId,mq=on,vectors=10"
+                if ($iommuActive) {
+                    $deviceArgs += ",iommu_platform=on,disable-legacy=on"
+                }
+                $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)
+                Write-Done "[NET] Added descriptor $descriptor as $netId"
+            }
+            elseif ($descriptor.StartsWith("bridge:")) {
+                $bridgeSpec = $descriptor.Substring(7)
+                $bridgeName = $bridgeSpec.Split(":", 2)[0]
+                $tapName = "tap$($PID)-$i"
+                $netdevArgs = "tap,id=$netId,ifname=$tapName,script=no,downscript=no"
+                $deviceArgs = "virtio-net-pci,netdev=$netId,mq=on,vectors=10"
+                if ($iommuActive) {
+                    $deviceArgs += ",iommu_platform=on,disable-legacy=on"
+                }
+                $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)
+                Write-Done "[NET] Added descriptor $descriptor as $netId (bridge=$bridgeName, host tap setup required)"
+            }
+            elseif ($descriptor.StartsWith("macvtap:")) {
+                $ifName = $descriptor.Substring(8)
+                $tapPath = "/sys/class/net/$ifName/ifindex"
+                $ifIndex = if (Test-Path $tapPath) { (Get-Content $tapPath -ErrorAction SilentlyContinue | Select-Object -First 1) } else { "0" }
+                $fd = 3 + $i
+                $qemuArgs += @("$fd<>/dev/tap$ifIndex")
+                $netdevArgs = "tap,id=$netId,fd=$fd"
+                $deviceArgs = "virtio-net-pci,netdev=$netId,mq=on,vectors=10"
+                if ($iommuActive) {
+                    $deviceArgs += ",iommu_platform=on,disable-legacy=on"
+                }
+                $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)
+                Write-Done "[NET] Added descriptor $descriptor as $netId"
+            }
+            elseif ($descriptor.StartsWith("pcie:")) {
+                $bdf = $descriptor.Substring(5)
+                $qemuArgs += @("-device", "vfio-pci,host=$bdf")
+                Write-Done "[NET][VFIO] Added PCIe descriptor $bdf"
+            }
+            else {
+                throw "Unsupported network descriptor: $descriptor"
+            }
+        }
+    }
+    elseif ($Network) {
         $netdevArgs = "user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5555-:80"
         $deviceArgs = "virtio-net-pci,netdev=net0,mq=on,vectors=10"
         if ($iommuActive) {

@@ -141,6 +141,7 @@ impl NetworkStack {
             self.set_config(iface_config);
         }
 
+        self.register_interface_state(if_id, iface_config);
         let _ = crate::net::runtime::manager::set_interface_config(if_id, iface_config);
     }
 
@@ -165,6 +166,7 @@ impl NetworkStack {
             self.set_config(iface_config);
         }
 
+        self.register_interface_state(if_id, iface_config);
         let _ = crate::net::runtime::manager::set_interface_config(if_id, iface_config);
     }
 

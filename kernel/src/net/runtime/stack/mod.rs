@@ -249,6 +249,10 @@ impl RedirectCache {
 
 /// Integrated network stack
 pub struct NetworkStack {
+    /// Per-interface L2/L3 state and snapshots.
+    pub interfaces: BTreeMap<NetIfId, InterfaceStackState>,
+    /// Preferred interface for legacy internal helpers.
+    pub primary_interface: Option<NetIfId>,
     /// Configuration
     pub config: NetworkConfig,
     /// Ethernet processor
@@ -289,6 +293,83 @@ pub struct NetworkStack {
     pub ipv6_fragment_reassembler: Ipv6FragmentReassembler,
     /// IPv6 Path MTU Discovery cache
     pub ipv6_pmtu_cache: Ipv6PmtuCache,
+}
+
+/// Per-interface stack state used by multi-interface APIs.
+pub struct InterfaceStackState {
+    pub config: NetworkConfig,
+    pub ethernet: EthernetProcessor,
+    pub ipv4: Ipv4Processor,
+    pub ipv6: Option<Ipv6Processor>,
+    pub arp: ArpProcessor,
+    pub icmp: IcmpProcessor,
+    pub icmpv6: Option<Icmpv6Processor>,
+    pub igmp: IgmpProcessor,
+    pub ndp: Option<NdpProcessor>,
+    pub stats: NetworkStats,
+    pub redirect_cache: RedirectCache,
+    pub ndp_pending_queue: NdpPendingQueue,
+    pub ipv6_fragment_reassembler: Ipv6FragmentReassembler,
+    pub ipv6_pmtu_cache: Ipv6PmtuCache,
+}
+
+impl InterfaceStackState {
+    pub fn new(config: NetworkConfig) -> Self {
+        let mac = config.mac;
+        let ip = config.ipv4.address;
+        let (ipv6_proc, icmpv6_proc, ndp_proc) = if let Some(ref ipv6_config) = config.ipv6 {
+            let mac_bytes = mac.as_bytes();
+            (
+                Some(Ipv6Processor::new(*ipv6_config)),
+                Some(Icmpv6Processor::new(config.icmp_echo_enabled)),
+                Some(NdpProcessor::new(ipv6_config.link_local, *mac_bytes)),
+            )
+        } else {
+            (None, None, None)
+        };
+
+        Self {
+            ethernet: EthernetProcessor::new(mac),
+            ipv4: Ipv4Processor::new(config.ipv4),
+            ipv6: ipv6_proc,
+            arp: ArpProcessor::new(mac, ip),
+            icmp: IcmpProcessor::new(ip),
+            icmpv6: icmpv6_proc,
+            igmp: IgmpProcessor::new(ip),
+            ndp: ndp_proc,
+            stats: NetworkStats::default(),
+            config,
+            redirect_cache: RedirectCache::new(),
+            ndp_pending_queue: NdpPendingQueue::new(),
+            ipv6_fragment_reassembler: Ipv6FragmentReassembler::new(
+                Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS,
+            ),
+            ipv6_pmtu_cache: Ipv6PmtuCache::new(Ipv6PmtuCache::DEFAULT_MAX_ENTRIES),
+        }
+    }
+
+    pub fn set_config(&mut self, config: NetworkConfig) {
+        self.ethernet.set_local_mac(config.mac);
+        self.ipv4.set_config(config.ipv4);
+        self.arp.set_local(config.mac, config.ipv4.address);
+        if let Some(ref ipv6_config) = config.ipv6 {
+            if self.ipv6.is_none() {
+                self.ipv6 = Some(Ipv6Processor::new(*ipv6_config));
+            } else if let Some(ref mut ipv6) = self.ipv6 {
+                *ipv6 = Ipv6Processor::new(*ipv6_config);
+            }
+            if self.icmpv6.is_none() {
+                self.icmpv6 = Some(Icmpv6Processor::new(config.icmp_echo_enabled));
+            }
+            let mac_bytes = config.mac.as_bytes();
+            self.ndp = Some(NdpProcessor::new(ipv6_config.link_local, *mac_bytes));
+        } else {
+            self.ipv6 = None;
+            self.icmpv6 = None;
+            self.ndp = None;
+        }
+        self.config = config;
+    }
 }
 
 /// NDP解決待ちパケットキュー

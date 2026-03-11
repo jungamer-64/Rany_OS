@@ -194,13 +194,16 @@ async fn network_bootstrap_task() {
         // 100ms × 100 = 最大10秒
         task::sleep_ms(100).await;
 
-        let state = crate::net::api::dhcp::dhcp_state_async().await;
-        if state.v4_state == "Bound" {
-            info!(
-                target: "net_boot",
-                "DHCP lease acquired: ip={:?}",
-                state.v4_assigned_ip
-            );
+        let states = crate::net::api::dhcp::list_dhcp_states_async().await;
+        if states.iter().any(|state| state.state.v4_state == "Bound") {
+            for state in states.into_iter().filter(|state| state.state.v4_state == "Bound") {
+                info!(
+                    target: "net_boot",
+                    "DHCP lease acquired: if{} ip={:?}",
+                    state.if_id,
+                    state.state.v4_assigned_ip
+                );
+            }
             dhcp_bound = true;
             break;
         }
@@ -211,19 +214,23 @@ async fn network_bootstrap_task() {
     }
 
     // 非同期ping: ゲートウェイへの接続性確認
-    let ping_target = if dhcp_bound {
-        // DHCP取得済みの場合、スタックからゲートウェイを読む（非同期版使用）
-        crate::net::api::config::get_network_config_async()
+    let ping_targets: alloc::vec::Vec<_> = if dhcp_bound {
+        crate::net::api::config::list_interface_configs_async()
             .await
-            .and_then(|cfg| {
-                let gw = cfg.gateway;
-                if gw != [0, 0, 0, 0] { Some(gw) } else { None }
+            .into_iter()
+            .filter_map(|cfg| {
+                if cfg.gateway != [0, 0, 0, 0] {
+                    Some((cfg.if_id, cfg.gateway))
+                } else {
+                    None
+                }
             })
+            .collect()
     } else {
-        None
+        alloc::vec::Vec::new()
     };
 
-    let Some(ping_target) = ping_target else {
+    if ping_targets.is_empty() {
         warn!(target: "net_boot", "No gateway available (DHCP not bound); skipping connectivity check");
         let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) =
             aggregate_port_runtime_stats();
@@ -239,10 +246,17 @@ async fn network_bootstrap_task() {
         return;
     };
 
-    info!(target: "net_boot", "Async connectivity check to {:?}", ping_target);
-    match crate::net::api::icmp::ping_async(ping_target, 1).await {
-        Ok(echo) => info!(target: "net_boot", "Async ping success rtt={} us", echo.rtt_us),
-        Err(e) => warn!(target: "net_boot", "Async ping failed: {:?}", e),
+    for (if_id, ping_target) in ping_targets {
+        info!(target: "net_boot", "Async connectivity check if{} -> {:?}", if_id, ping_target);
+        match crate::net::api::icmp::ping_async(ping_target, 1).await {
+            Ok(echo) => info!(
+                target: "net_boot",
+                "Async ping success if{} rtt={} us",
+                if_id,
+                echo.rtt_us
+            ),
+            Err(e) => warn!(target: "net_boot", "Async ping failed if{}: {:?}", if_id, e),
+        }
     }
 
     let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
@@ -453,9 +467,10 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
         info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
 
         // DHCP/スタックからゲートウェイを取得
-        let gw_opt = crate::net::api::config::get_network_config()
+        let gw_opt = crate::net::api::config::list_interface_configs()
+            .into_iter()
             .map(|cfg| cfg.gateway)
-            .filter(|gw| *gw != [0, 0, 0, 0]);
+            .find(|gw| *gw != [0, 0, 0, 0]);
         let Some(gw) = gw_opt else {
             warn!(target: "net_test", "No gateway configured yet; skipping ping test");
             return;

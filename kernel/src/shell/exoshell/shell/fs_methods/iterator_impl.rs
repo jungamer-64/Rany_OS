@@ -742,7 +742,7 @@ impl ExoShell {
                     ExoValue::Error(String::from("Usage: rm <path>"))
                 }
             }
-            "ifconfig" => NetNamespace::config_async().await,
+            "ifconfig" => NetNamespace::interfaces_async().await,
             "arp" => NetNamespace::arp_cache_async().await,
             "ping" => self.eval_ping(&parts).await,
             "netstat" => NetNamespace::netstat_async().await,
@@ -762,7 +762,7 @@ impl ExoShell {
             "net" => Self::dispatch_namespace_command(&parts, parts[0]).await,
             "uptime" => SysNamespace::time(),
             _ => ExoValue::Error(format!(
-                "Unknown: '{}'\nTry 'help' or use ExoShell syntax: fs.entries(), net.config(), etc.",
+                "Unknown: '{}'\nTry 'help' or use ExoShell syntax: fs.entries(), net.interfaces(), etc.",
                 cmd
             )),
         }
