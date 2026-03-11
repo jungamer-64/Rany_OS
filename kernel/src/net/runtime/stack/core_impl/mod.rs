@@ -148,6 +148,19 @@ impl NetworkStack {
         Ok((resolved.0, resolved.1, src_ip))
     }
 
+    pub(crate) fn resolve_ingress_if(&self, if_id: Option<NetIfId>) -> NetIfId {
+        if let Some(if_id) = if_id {
+            return if_id;
+        }
+        self.primary_interface
+            .or_else(|| {
+                crate::net::runtime::manager::list_interfaces()
+                    .ok()
+                    .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+            })
+            .unwrap_or_default()
+    }
+
     /// Create a new network stack with configuration
     ///
     /// # パフォーマンス注意

@@ -343,6 +343,47 @@ pub fn test_send_udp_raw_without_route_does_not_fallback() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_process_arp_replies_on_ingress_interface() {
+    let _guard = ManagerStateGuard::new();
+    manager::init_network_manager();
+    init_default();
+
+    let if0 = manager::register_interface("if0").expect("register if0");
+    let cfg0 = NetworkConfig {
+        mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 4),
+        ipv4: Ipv4Config {
+            address: Ipv4Address::new([10, 1, 0, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Ipv4Address::ANY,
+            dns: None,
+        },
+        ..NetworkConfig::default()
+    };
+    manager::set_interface_config(if0, cfg0).expect("cfg if0");
+
+    if let Ok(mut guard) = stack().lock() {
+        let stack = guard.as_mut().expect("stack");
+        stack.set_transmit_fn(record_test_tx_if);
+        stack.register_interface_state(if0, cfg0);
+
+        let sender_mac = MacAddress::from_octets(0x52, 0x54, 0, 0xaa, 0xbb, 0xcc);
+        let sender_ip = Ipv4Address::new([10, 1, 0, 55]);
+        let mut arp = [0u8; crate::net::l2::arp::ArpPacket::SIZE];
+        let packet = crate::util::get_mut_ref::<crate::net::l2::arp::ArpPacket>(&mut arp, 0)
+            .expect("arp packet");
+        packet.init_request(sender_mac, sender_ip, cfg0.ipv4.address);
+
+        let now = stack.current_time();
+        stack.process_arp(Some(if0), &arp, now, sender_mac);
+    } else {
+        panic!("stack lock");
+    }
+
+    let last_if = *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(last_if, Some(if0));
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_redirect_cache_basic() {
     let mut cache = RedirectCache::new();
     let dst = Ipv4Address::new([10, 0, 0, 100]);

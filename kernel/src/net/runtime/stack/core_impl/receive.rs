@@ -357,6 +357,7 @@ impl NetworkStack {
     /// Process IPv6 packet data
     pub fn process_ipv6_data(
         &mut self,
+        if_id: Option<super::NetIfId>,
         data: &[u8],
         current_time: u64,
         src_mac: MacAddress,
@@ -372,20 +373,24 @@ impl NetworkStack {
 
         match result {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
-                self.process_icmpv6_data(payload, src, dst, src_mac, hop_limit, current_time);
+                self.process_icmpv6_data(if_id, payload, src, dst, src_mac, hop_limit, current_time);
             }
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
-                // Security Fix: TCP through endpoint stack
-                crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6(src, dst, payload);
+                crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6_on(
+                    if_id,
+                    src,
+                    dst,
+                    payload,
+                );
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
-                self.process_udp_data_v6(payload, src, dst, hop_limit, data);
+                self.process_udp_data_v6(if_id, payload, src, dst, hop_limit, data);
             }
             Ipv6ProcessResult::Reassembled(reassembled_data) => {
                 // Security Fix: Offload reassembled IPv6 packets to the asynchronous endpoint stack
                 crate::net::l4::endpoint::event::send_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
-                        if_id: None,
+                        if_id,
                         data: reassembled_data,
                     },
                 );
@@ -480,6 +485,7 @@ impl NetworkStack {
     /// Process ICMPv6 data
     pub(crate) fn process_icmpv6_data(
         &mut self,
+        if_id: Option<super::NetIfId>,
         data: &[u8],
         src: Ipv6Address,
         dst: Ipv6Address,
@@ -509,22 +515,48 @@ impl NetworkStack {
                 // Choose source address: if the original request was to our global address,
                 // use that as source for the reply.
                 let mut reply_src = None;
-                if let Some(ref ipv6) = self.ipv6 {
-                    let config = ipv6.config();
-                    if let Some(global) = config.global {
-                        if dst == global {
-                            reply_src = Some(global);
+                if let Some(if_id) = if_id {
+                    if let Some(config) = self.interface_config_or_runtime(if_id).and_then(|cfg| cfg.ipv6)
+                    {
+                        if let Some(global) = config.global {
+                            if dst == global {
+                                reply_src = Some(global);
+                            }
+                        }
+                        if reply_src.is_none() {
+                            reply_src = Some(config.link_local);
                         }
                     }
-                    if reply_src.is_none() {
-                        reply_src = Some(config.link_local);
+                }
+                if reply_src.is_none() {
+                    if let Some(ref ipv6) = self.ipv6 {
+                        let config = ipv6.config();
+                        if let Some(global) = config.global {
+                            if dst == global {
+                                reply_src = Some(global);
+                            }
+                        }
+                        if reply_src.is_none() {
+                            reply_src = Some(config.link_local);
+                        }
                     }
                 }
 
                 if let Some(src_addr) = reply_src {
-                    self.send_icmpv6_echo_reply_with_src(
-                        src_addr, reply_dst, identifier, sequence, &echo_data,
-                    );
+                    if let Some(if_id) = if_id {
+                        self.send_icmpv6_echo_reply_with_src_on(
+                            if_id,
+                            src_addr,
+                            reply_dst,
+                            identifier,
+                            sequence,
+                            &echo_data,
+                        );
+                    } else {
+                        self.send_icmpv6_echo_reply_with_src(
+                            src_addr, reply_dst, identifier, sequence, &echo_data,
+                        );
+                    }
                 }
             }
             Icmpv6Result::EchoReplyReceived {
@@ -547,6 +579,7 @@ impl NetworkStack {
                 hop_limit,
             } => {
                 self.process_ndp_message(
+                    if_id,
                     msg_type,
                     &ndp_data,
                     ndp_src,
@@ -723,6 +756,7 @@ impl NetworkStack {
     /// Process NDP message
     pub(crate) fn process_ndp_message(
         &mut self,
+        if_id: Option<super::NetIfId>,
         msg_type: crate::net::l3::icmpv6::Icmpv6Type,
         data: &[u8],
         src: Ipv6Address,
@@ -757,7 +791,11 @@ impl NetworkStack {
                     let our_addr = ipv6.config().link_local;
                     let na_msg =
                         NdpProcessor::build_na(&our_addr, &na_dst, &target, &our_mac, solicited);
-                    self.send_ipv6_icmpv6(&our_addr, &na_dst, &na_msg);
+                    if let Some(if_id) = if_id {
+                        self.send_ipv6_icmpv6_on(if_id, &our_addr, &na_dst, &na_msg);
+                    } else {
+                        self.send_ipv6_icmpv6(&our_addr, &na_dst, &na_msg);
+                    }
                     log::info!("NDP: Sent NA for {} to {}", target, na_dst);
                 }
             }
@@ -770,7 +808,11 @@ impl NetworkStack {
                         &our_addr, &mcast_dst, &target, &our_mac,
                         false, // solicited = false for multicast defense
                     );
-                    self.send_ipv6_icmpv6(&our_addr, &mcast_dst, &na_msg);
+                    if let Some(if_id) = if_id {
+                        self.send_ipv6_icmpv6_on(if_id, &our_addr, &mcast_dst, &na_msg);
+                    } else {
+                        self.send_ipv6_icmpv6(&our_addr, &mcast_dst, &na_msg);
+                    }
                     log::info!(
                         "NDP: Sent Multicast NA for {} to defend address (DAD)",
                         target
@@ -778,9 +820,19 @@ impl NetworkStack {
                 }
             }
             NdpResult::SendNeighborSolicitation { src, dst, target } => {
-                let ns_msg =
-                    NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes());
-                self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
+                let src_mac = if let Some(if_id) = if_id {
+                    self.interface_config_or_runtime(if_id)
+                        .map(|cfg| *cfg.mac.as_bytes())
+                        .unwrap_or(*self.config.mac.as_bytes())
+                } else {
+                    *self.config.mac.as_bytes()
+                };
+                let ns_msg = NdpProcessor::build_ns(&src, &dst, &target, &src_mac);
+                if let Some(if_id) = if_id {
+                    self.send_ipv6_icmpv6_on(if_id, &src, &dst, &ns_msg);
+                } else {
+                    self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
+                }
                 log::info!("NDP: Sent NS from {} to {} for target {}", src, dst, target);
             }
             NdpResult::NeighborUpdated { ip, mac } => {
@@ -847,7 +899,16 @@ impl NetworkStack {
                                                     &target,
                                                     self.config.mac.as_bytes(),
                                                 );
-                                                self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
+                                                if let Some(if_id) = if_id {
+                                                    self.send_ipv6_icmpv6_on(
+                                                        if_id,
+                                                        &src,
+                                                        &dst,
+                                                        &ns_msg,
+                                                    );
+                                                } else {
+                                                    self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
+                                                }
                                                 log::info!(
                                                     "NDP: Sent DAD NS for target {}",
                                                     target

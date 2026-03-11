@@ -7,7 +7,45 @@ use super::*;
 
 impl NetworkStack {
     /// Process ARP packet
-    pub fn process_arp(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress) {
+    pub fn process_arp(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        data: &[u8],
+        current_time: u64,
+        src_mac: MacAddress,
+    ) {
+        if let Some(if_id) = if_id {
+            if self.interfaces.get(&if_id).is_some() {
+                let result = {
+                    let state = self.interfaces.get_mut(&if_id).unwrap();
+                    state.arp.process(data, current_time, src_mac)
+                };
+
+                match result {
+                    ArpResult::SendReply {
+                        target_mac,
+                        target_ip,
+                    } => {
+                        self.send_arp_reply_on(if_id, target_mac, target_ip);
+                    }
+                    ArpResult::CacheUpdated {
+                        resolved_ip,
+                        resolved_mac,
+                    } => {
+                        crate::net::l2::arp::notify_arp_resolved(
+                            *resolved_ip.as_bytes(),
+                            *resolved_mac.as_bytes(),
+                        );
+                    }
+                    ArpResult::SendGratuitous => {
+                        self.send_gratuitous_arp_on(if_id);
+                    }
+                    ArpResult::Ignored | ArpResult::Invalid => {}
+                }
+                return;
+            }
+        }
+
         let result = self.arp.process(data, current_time, src_mac);
 
         match result {
@@ -54,6 +92,30 @@ impl NetworkStack {
         }
     }
 
+    pub(crate) fn send_gratuitous_arp_on(&mut self, if_id: super::NetIfId) {
+        let Some(config) = self.interface_config_or_runtime(if_id) else {
+            self.send_gratuitous_arp();
+            return;
+        };
+        let mut buffer = [0u8; 64];
+
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(MacAddress::BROADCAST)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Arp);
+
+            let payload = frame.payload_mut();
+            if let Some(state) = self.interfaces.get(&if_id) {
+                if let Some(len) = state.arp.build_gratuitous(payload) {
+                    frame.set_payload_len(len);
+                    frame.pad_to_minimum();
+                    self.transmit_on(Some(if_id), frame.as_bytes());
+                }
+            }
+        }
+    }
+
     /// Send an ARP reply
     pub(crate) fn send_arp_reply(&mut self, target_mac: MacAddress, target_ip: Ipv4Address) {
         let mut buffer = [0u8; 64];
@@ -72,6 +134,35 @@ impl NetworkStack {
                 frame.pad_to_minimum();
 
                 self.transmit(frame.as_bytes());
+            }
+        }
+    }
+
+    pub(crate) fn send_arp_reply_on(
+        &mut self,
+        if_id: super::NetIfId,
+        target_mac: MacAddress,
+        target_ip: Ipv4Address,
+    ) {
+        let Some(config) = self.interface_config_or_runtime(if_id) else {
+            self.send_arp_reply(target_mac, target_ip);
+            return;
+        };
+        let mut buffer = [0u8; 64];
+
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(target_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Arp);
+
+            let payload = frame.payload_mut();
+            if let Some(state) = self.interfaces.get(&if_id) {
+                if let Some(len) = state.arp.build_reply(payload, target_mac, target_ip) {
+                    frame.set_payload_len(len);
+                    frame.pad_to_minimum();
+                    self.transmit_on(Some(if_id), frame.as_bytes());
+                }
             }
         }
     }

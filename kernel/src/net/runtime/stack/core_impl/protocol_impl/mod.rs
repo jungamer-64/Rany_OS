@@ -306,6 +306,7 @@ impl NetworkStack {
     /// 既存のUDPソケットにデータグラムを配送する。
     pub(crate) fn process_udp_data_v6(
         &mut self,
+        if_id: Option<crate::net::runtime::manager::NetIfId>,
         data: &[u8],
         src: crate::net::l3::ipv6::Ipv6Address,
         dst: crate::net::l3::ipv6::Ipv6Address,
@@ -314,15 +315,33 @@ impl NetworkStack {
     ) {
         use crate::net::l4::udp::UdpResult;
 
-        // Use UdpProcessor to handle the packet correctly (RFC 8200 compliant)
-        match self.udp.process_v6(data, src, dst, hop_limit) {
-            UdpResult::Delivered => {
-                self.stats.record_rx(data.len());
+        if data.len() >= 8 {
+            let src_port = u16::from_be_bytes([data[0], data[1]]);
+            let dst_port = u16::from_be_bytes([data[2], data[3]]);
+            let remote =
+                crate::net::l4::endpoint::types::EndpointAddr::new_v6(src.octets(), src_port);
+            let ingress_if_id = self.resolve_ingress_if(if_id);
+
+            if let Some(ref mgr) = *crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+            {
+                if let Some(socket) = mgr.find_by_port(
+                    crate::net::l4::endpoint::types::EndpointType::Udp,
+                    crate::net::l4::endpoint::manager::EndpointFamily::Ipv6,
+                    dst_port,
+                    Some(ingress_if_id),
+                ) {
+                    socket.push_packet(ingress_if_id, remote, data[8..].to_vec());
+                    return;
+                }
             }
+        }
+
+        match self.udp.process_v6(data, src, dst, hop_limit) {
+            UdpResult::Delivered => {}
             UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
-
-                // RFC 4443: Send ICMPv6 Port Unreachable (Type 1, Code 4)
                 self.send_icmpv6_error(src, 4, original_packet);
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {

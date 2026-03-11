@@ -479,7 +479,7 @@ impl NetworkEventHandler {
                         EventHandleResult::Success
                     }
                     crate::net::l2::ethernet::ProcessResult::Arp(payload, src_mac) => {
-                        stack.process_arp(payload, current_time, src_mac);
+                        stack.process_arp(if_id, payload, current_time, src_mac);
                         stack.stats.record_rx(pkt_len);
                         EventHandleResult::Success
                     }
@@ -567,7 +567,7 @@ impl NetworkEventHandler {
                                 }
                             }
 
-                            stack.process_ipv6_data(payload, current_time, src_mac, false);
+                            stack.process_ipv6_data(if_id, payload, current_time, src_mac, false);
                             stack.stats.record_rx(pkt_len);
                         } else {
                             stack.stats.record_dropped();
@@ -715,6 +715,7 @@ impl NetworkEventHandler {
                             }
                             crate::net::l3::ipv4::IpProtocol::Udp => {
                                 stack.process_udp_data_v6(
+                                    if_id,
                                     payload,
                                     src,
                                     dst,
@@ -724,6 +725,7 @@ impl NetworkEventHandler {
                             }
                             crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
                                 stack.process_icmpv6_data(
+                                    if_id,
                                     payload,
                                     src,
                                     dst,

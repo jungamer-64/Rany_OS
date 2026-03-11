@@ -33,6 +33,30 @@ impl NetworkStack {
         );
     }
 
+    pub(crate) fn send_icmpv6_echo_reply_with_src_on(
+        &mut self,
+        if_id: super::NetIfId,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        identifier: u16,
+        sequence: u16,
+        echo_data: &[u8],
+    ) {
+        let icmpv6_msg =
+            Icmpv6Builder::build_echo_reply(&src, &dst, identifier, sequence, echo_data);
+
+        self.send_ipv6_icmpv6_on(if_id, &src, &dst, &icmpv6_msg);
+
+        log::info!(
+            "ICMPv6: Echo Reply sent from {} to {} on {:?} id={} seq={}",
+            src,
+            dst,
+            if_id,
+            identifier,
+            sequence
+        );
+    }
+
     /// Send an ICMPv6 Packet Too Big error (RFC 4443 Section 3.2).
     ///
     /// Used for Path MTU Discovery to notify the sender that a packet exceeded the MTU.
@@ -190,6 +214,74 @@ impl NetworkStack {
                     frame.set_payload_len(total_len);
 
                     self.transmit(frame.as_bytes());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn send_ipv6_icmpv6_on(
+        &mut self,
+        if_id: super::NetIfId,
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        icmpv6_data: &[u8],
+    ) {
+        let Ok((resolved_if, config, resolved_src)) = self.resolve_ipv6_egress(
+            crate::net::types::InterfaceScope::Pinned(if_id),
+            None,
+            Some(*src),
+            *dst,
+        ) else {
+            self.stats.record_dropped();
+            return;
+        };
+        let current_time = self.current_time.load(Ordering::Relaxed);
+
+        let dst_mac = if dst.is_multicast() {
+            MacAddress::new(dst.multicast_mac())
+        } else {
+            match self.ndp {
+                Some(ref mut ndp) => match ndp.resolve(dst) {
+                    Some(mac) => MacAddress::new(mac),
+                    None => {
+                        self.ndp_pending_queue
+                            .enqueue(resolved_src, *dst, icmpv6_data, current_time);
+
+                        let ns_msg = ndp.start_resolution(dst, current_time);
+                        let sn_mcast = dst.solicited_node();
+                        let our_ll = ndp.our_link_local;
+                        self.send_ipv6_icmpv6_raw_on(if_id, &our_ll, &sn_mcast, &ns_msg);
+                        return;
+                    }
+                },
+                None => return,
+            }
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv6);
+
+            let eth_payload = frame.payload_mut();
+            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
+                ip_packet.init_header();
+                ip_packet.set_source(&resolved_src);
+                ip_packet.set_destination(dst);
+                ip_packet.set_next_header(IpProtocol::Icmpv6);
+                ip_packet.set_hop_limit(255);
+
+                let payload = ip_packet.payload_mut();
+                if icmpv6_data.len() <= payload.len() {
+                    payload[..icmpv6_data.len()].copy_from_slice(icmpv6_data);
+                    ip_packet.finalize(icmpv6_data.len());
+
+                    let total_len = IPV6_HEADER_SIZE + icmpv6_data.len();
+                    frame.set_payload_len(total_len);
+
+                    let _ = self.transmit_on(resolved_if, frame.as_bytes());
                 }
             }
         }
