@@ -213,9 +213,7 @@ impl ExoShell {
             && input_bytes[14] == b'('
             && input_bytes[15] == b')'
         {
-            return Some(
-                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_renew_async().await,
-            );
+            return Some(crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_renew().await);
         }
         if input_bytes.len() == 19
             && input_bytes[0] == b'n'
@@ -239,7 +237,7 @@ impl ExoShell {
             && input_bytes[18] == b')'
         {
             return Some(
-                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_discover_async().await,
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_discover().await,
             );
         }
         if input_bytes.len() == 18
@@ -263,7 +261,7 @@ impl ExoShell {
             && input_bytes[17] == b')'
         {
             return Some(
-                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_release_async().await,
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_release().await,
             );
         }
         if input_bytes.len() == 24
@@ -293,8 +291,7 @@ impl ExoShell {
             && input_bytes[23] == b')'
         {
             return Some(
-                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_declined_async()
-                    .await,
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_declined().await,
             );
         }
         if input_bytes.len() == 24
@@ -324,8 +321,7 @@ impl ExoShell {
             && input_bytes[23] == b')'
         {
             return Some(
-                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_released_async()
-                    .await,
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_last_released().await,
             );
         }
         if input_bytes.len() == 11

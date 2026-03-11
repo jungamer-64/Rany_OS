@@ -124,14 +124,14 @@ pub enum NetworkEvent {
         rtt_us: u64,
     },
     /// 非同期TCP bind（ロック競合回避）
-    AsyncTcpBind {
+    TcpBind {
         local: EndpointAddr,
         /// Waker通知のための共有チャネル
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期UDP bind（ロック競合回避）
-    AsyncUdpBind {
+    UdpBind {
         port: u16,
         scope: InterfaceScope,
         /// 結果通知用の共有スロット
@@ -146,53 +146,53 @@ pub enum NetworkEvent {
     /// ARP解決完了通知（ARPキャッシュ更新時に発火）
     ArpResolved { ip: [u8; 4], mac: [u8; 6] },
     /// 非同期TCP connect（イベントキュー経由・ロック競合回避）
-    AsyncTcpConnect {
+    TcpConnect {
         local: EndpointAddr,
         remote: EndpointAddr,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期マルチキャストグループ参加
-    AsyncMulticastJoin {
+    MulticastJoin {
         group: [u8; 4],
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期マルチキャストグループ離脱
-    AsyncMulticastLeave {
+    MulticastLeave {
         group: [u8; 4],
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期UDP unbind（イベントキュー経由・ロック競合回避）
-    AsyncUnbindUdp {
+    UnbindUdp {
         port: u16,
         scope: InterfaceScope,
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP unbind（イベントキュー経由・ロック競合回避）
-    AsyncUnbindTcp {
+    UnbindTcp {
         local: EndpointAddr,
         remote: EndpointAddr,
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCPリスナー unbind（イベントキュー経由・ロック競合回避）
-    AsyncUnbindTcpListener {
+    UnbindTcpListener {
         local: EndpointAddr,
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP bind with token（イベントキュー経由・ロック競合回避）
-    AsyncTcpBindWithToken {
+    TcpBindWithToken {
         local: EndpointAddr,
         token: Option<u64>,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期UDP bind with token（イベントキュー経由・ロック競合回避）
-    AsyncUdpBindWithToken {
+    UdpBindWithToken {
         port: u16,
         scope: InterfaceScope,
         token: Option<u64>,
@@ -200,13 +200,13 @@ pub enum NetworkEvent {
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期IPv6グローバルアドレス適用
-    AsyncApplyIpv6Address {
+    ApplyIpv6Address {
         addr: [u8; 16],
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期タイムアウト処理リクエスト
-    AsyncProcessTimeouts,
+    ProcessTimeouts,
     /// インターフェース指定UDP送信（非同期版）
     RawUdpSendOn {
         if_id: u16,
@@ -254,7 +254,7 @@ pub enum NetworkEvent {
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP connect（TcpStreamを返す完全非同期版）
-    AsyncTcpConnectStream {
+    TcpConnectStream {
         local: EndpointAddr,
         remote: EndpointAddr,
         result_slot: alloc::sync::Arc<
@@ -265,7 +265,7 @@ pub enum NetworkEvent {
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP bind（TcpListenerを返す完全非同期版）
-    AsyncTcpBindListener {
+    TcpBindListener {
         local: EndpointAddr,
         result_slot: alloc::sync::Arc<
             PoisonLock<
@@ -275,7 +275,7 @@ pub enum NetworkEvent {
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP bind with token（TcpListenerを返す完全非同期版）
-    AsyncTcpBindListenerWithToken {
+    TcpBindListenerWithToken {
         local: EndpointAddr,
         token: Option<u64>,
         result_slot: alloc::sync::Arc<
@@ -286,14 +286,14 @@ pub enum NetworkEvent {
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期UDP bind（UdpEndpointを返す完全非同期版）
-    AsyncUdpBindEndpoint {
+    UdpBindEndpoint {
         port: u16,
         scope: InterfaceScope,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::l4::udp::UdpEndpoint>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期UDP bind with token（UdpEndpointを返す完全非同期版）
-    AsyncUdpBindEndpointWithToken {
+    UdpBindEndpointWithToken {
         port: u16,
         scope: InterfaceScope,
         token: Option<u64>,
@@ -338,23 +338,23 @@ pub enum NetworkEvent {
     // Async utility events (bridge/API → event queue → handler)
     // ====================================================================
     /// 非同期ICMP Echo送信（send_real_icmp_echo の非同期版）
-    AsyncIcmpEcho {
+    IcmpEcho {
         target: [u8; 4],
         sequence: u16,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<u64, ()>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ARP Probe送信（DHCPからのARPプローブ要求）
-    AsyncArpProbe { target_ip: [u8; 4] },
+    ArpProbe { target_ip: [u8; 4] },
     /// 非同期ARPキャッシュ解決チェック（DHCP衝突検出用）
-    AsyncArpResolveCheck {
+    ArpResolveCheck {
         target_ip: [u8; 4],
         requester_mac: [u8; 6],
         result_slot: alloc::sync::Arc<PoisonLock<Option<Option<bool>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCPリース適用
-    AsyncDhcpApplyLease {
+    DhcpApplyLease {
         if_id: Option<u16>,
         ip: [u8; 4],
         subnet: [u8; 4],
@@ -363,7 +363,7 @@ pub enum NetworkEvent {
         hostname: Vec<u8>,
     },
     /// 非同期リンクローカルIPv6アドレス取得
-    AsyncGetLinkLocal {
+    GetLinkLocal {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Option<[u8; 16]>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
@@ -372,21 +372,21 @@ pub enum NetworkEvent {
     // Async config/diagnostics/firewall query events (API → event queue)
     // ====================================================================
     /// 非同期プライマリインターフェース設定取得
-    AsyncGetPrimaryInterfaceConfig {
+    GetPrimaryInterfaceConfig {
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Option<crate::net::api::config::NetworkConfigSnapshot>>>,
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期集約ネットワーク統計取得
-    AsyncGetAggregateNetworkStats {
+    GetAggregateNetworkStats {
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Option<crate::net::api::config::NetworkStatsSnapshot>>>,
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期インターフェース設定取得
-    AsyncGetInterfaceConfig {
+    GetInterfaceConfig {
         if_id: u16,
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Option<crate::net::api::config::InterfaceConfigSnapshot>>>,
@@ -394,14 +394,14 @@ pub enum NetworkEvent {
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期インターフェース設定一覧取得
-    AsyncListInterfaceConfigs {
+    ListInterfaceConfigs {
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Vec<crate::net::api::config::InterfaceConfigSnapshot>>>,
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期インターフェース統計取得
-    AsyncGetInterfaceStats {
+    GetInterfaceStats {
         if_id: u16,
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Option<crate::net::api::config::InterfaceStatsSnapshot>>>,
@@ -409,39 +409,39 @@ pub enum NetworkEvent {
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期インターフェース統計一覧取得
-    AsyncListInterfaceStats {
+    ListInterfaceStats {
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Vec<crate::net::api::config::InterfaceStatsSnapshot>>>,
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期インターフェース一覧取得
-    AsyncListInterfaces {
+    ListInterfaces {
         result_slot:
             alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::config::InterfaceSnapshot>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ネットワーク診断スナップショット取得
-    AsyncGetNetworkSnapshot {
+    GetNetworkSnapshot {
         result_slot: alloc::sync::Arc<PoisonLock<Option<crate::net::obs::NetSnapshot>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ネットワーク最新イベント取得
-    AsyncGetNetworkRecentEvents {
+    GetNetworkRecentEvents {
         limit: usize,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::obs::NetTraceEvent>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ARPキャッシュ取得
-    AsyncGetArpCache {
+    GetArpCache {
         result_slot:
             alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::connections::ArpCacheEntry>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ARPキャッシュ挿入
-    AsyncArpInsert { ip: [u8; 4], mac: [u8; 6] },
+    ArpInsert { ip: [u8; 4], mac: [u8; 6] },
     /// 非同期UDPエンドポイント一覧取得
-    AsyncGetUdpEndpoints {
+    GetUdpEndpoints {
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Vec<crate::net::api::connections::UdpEndpointInfo>>>,
         >,
@@ -452,94 +452,94 @@ pub enum NetworkEvent {
     // Async DHCP / TCP query events (complete async conversion)
     // ====================================================================
     /// 非同期DHCP状態取得
-    AsyncGetDhcpState {
+    GetDhcpState {
         if_id: Option<u16>,
         result_slot: alloc::sync::Arc<PoisonLock<Option<crate::net::api::dhcp::DhcpRuntimeState>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCP状態一覧取得
-    AsyncListDhcpStates {
+    ListDhcpStates {
         result_slot:
             alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::dhcp::InterfaceDhcpState>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCPリニュー
-    AsyncDhcpRenew {
+    DhcpRenew {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCPリリース
-    AsyncDhcpRelease {
+    DhcpRelease {
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCPディスカバー
-    AsyncDhcpDiscover {
+    DhcpDiscover {
         result_slot:
             alloc::sync::Arc<PoisonLock<Option<Option<crate::net::api::dhcp::DhcpOfferInfo>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCP最終拒否IP取得
-    AsyncDhcpLastDeclined {
+    DhcpLastDeclined {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCP最終解放IP取得
-    AsyncDhcpLastReleased {
+    DhcpLastReleased {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP接続一覧取得
-    AsyncGetTcpConnections {
+    GetTcpConnections {
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Vec<crate::net::api::connections::TcpConnectionInfo>>>,
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォール有効化
-    AsyncFirewallEnable {
+    FirewallEnable {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), &'static str>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォール無効化
-    AsyncFirewallDisable {
+    FirewallDisable {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), &'static str>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォール状態取得
-    AsyncFirewallStatus {
+    FirewallStatus {
         result_slot: alloc::sync::Arc<PoisonLock<Option<alloc::string::String>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォールルール一覧取得
-    AsyncFirewallListRules {
+    FirewallListRules {
         result_slot: alloc::sync::Arc<PoisonLock<Option<alloc::string::String>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォール統計取得
-    AsyncFirewallStats {
+    FirewallStats {
         result_slot: alloc::sync::Arc<PoisonLock<Option<alloc::string::String>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォールルール追加
-    AsyncFirewallAddRule {
+    FirewallAddRule {
         rule: crate::net::security::firewall::FirewallRule,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<u64, alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォールルール削除
-    AsyncFirewallRemoveRule {
+    FirewallRemoveRule {
         id: u64,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<bool, alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォールルール全削除
-    AsyncFirewallClearRules {
+    FirewallClearRules {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォールデフォルトポリシー設定
-    AsyncFirewallSetDefaultPolicy {
+    FirewallSetDefaultPolicy {
         direction: crate::net::security::firewall::FirewallDirection,
         action: crate::net::security::firewall::FirewallAction,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
@@ -869,7 +869,7 @@ impl Future for EventTaskReadyFuture {
 use super::types::EndpointError;
 
 #[inline]
-pub fn send_event(event: NetworkEvent) -> Result<(), EndpointError> {
+pub fn enqueue_event(event: NetworkEvent) -> Result<(), EndpointError> {
     if NETWORK_EVENT_QUEUE.send(event) {
         Ok(())
     } else {
@@ -879,7 +879,7 @@ pub fn send_event(event: NetworkEvent) -> Result<(), EndpointError> {
 
 /// イベント送信（エラー無視版 - 内部用）
 #[inline]
-pub fn send_event_ignore(event: NetworkEvent) {
+pub fn enqueue_event_ignore(event: NetworkEvent) {
     let _ = NETWORK_EVENT_QUEUE.send(event);
 }
 
@@ -937,16 +937,16 @@ impl Future for SendEventFuture {
     }
 }
 
-pub fn send_event_async(event: NetworkEvent) -> SendEventFuture {
+pub fn send_event(event: NetworkEvent) -> SendEventFuture {
     SendEventFuture::new(event)
 }
 
 /// カスタムFuture向けの遅延ディスパッチ状態
-pub struct AsyncEventDispatch {
+pub struct EventDispatch {
     enqueue: Option<SendEventFuture>,
 }
 
-impl AsyncEventDispatch {
+impl EventDispatch {
     pub const fn new() -> Self {
         Self { enqueue: None }
     }
@@ -956,7 +956,7 @@ impl AsyncEventDispatch {
         F: FnOnce() -> NetworkEvent,
     {
         if self.enqueue.is_none() {
-            self.enqueue = Some(send_event_async(event_fn()));
+            self.enqueue = Some(send_event(event_fn()));
         }
 
         let enqueue = self
@@ -973,7 +973,7 @@ impl AsyncEventDispatch {
     }
 }
 
-impl Default for AsyncEventDispatch {
+impl Default for EventDispatch {
     fn default() -> Self {
         Self::new()
     }
@@ -982,7 +982,7 @@ impl Default for AsyncEventDispatch {
 /// バッチイベント送信（複数パケットを1回のロック取得で送信）
 ///
 /// ロック取得を1回に削減し、高スループット受信パス向けの最適化。
-/// 各パケットを個別に `send_event_ignore` するより効率的。
+/// 各パケットを個別に `enqueue_event_ignore` するより効率的。
 #[inline]
 pub fn send_batch_event_on(if_id: Option<NetIfId>, packets: Vec<PacketRef>) {
     if packets.is_empty() {
@@ -1029,7 +1029,7 @@ mod tests {
 
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
-        let mut future = send_event_async(NetworkEvent::TxAvailable);
+        let mut future = send_event(NetworkEvent::TxAvailable);
 
         assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
 
@@ -1038,7 +1038,10 @@ mod tests {
             Pin::new(&mut future).poll(&mut cx),
             Poll::Ready(Ok(()))
         ));
-        assert!(matches!(event_queue().recv(), Some(NetworkEvent::TxAvailable)));
+        assert!(matches!(
+            event_queue().recv(),
+            Some(NetworkEvent::TxAvailable)
+        ));
 
         reset_event_system_for_tests();
     }
@@ -1049,15 +1052,18 @@ mod tests {
         mark_event_task_running();
 
         for _ in 0..NetworkEventQueue::CAPACITY {
-            assert!(send_event(NetworkEvent::TxAvailable).is_ok());
+            assert!(enqueue_event(NetworkEvent::TxAvailable).is_ok());
         }
 
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
-        let mut future = send_event_async(NetworkEvent::TxAvailable);
+        let mut future = send_event(NetworkEvent::TxAvailable);
 
         assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
-        assert!(matches!(event_queue().recv(), Some(NetworkEvent::TxAvailable)));
+        assert!(matches!(
+            event_queue().recv(),
+            Some(NetworkEvent::TxAvailable)
+        ));
         assert!(matches!(
             Pin::new(&mut future).poll(&mut cx),
             Poll::Ready(Ok(()))

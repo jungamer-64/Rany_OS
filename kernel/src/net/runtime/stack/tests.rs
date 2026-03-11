@@ -105,8 +105,7 @@ pub fn test_send_udp_event_task_zero_copy() {
 
     let dst = Ipv4Address::new([255, 255, 255, 255]); // Broadcast -> immediate MAC
     assert!(
-        crate::net::tests::run_with_network_event_task(send_udp(1234, dst, 80, &[1, 2, 3]))
-            .is_ok()
+        crate::net::tests::run_with_network_event_task(send_udp(1234, dst, 80, &[1, 2, 3])).is_ok()
     );
 }
 
@@ -135,7 +134,7 @@ pub fn test_send_icmp_event_dispatch_smoke() {
     }
 
     crate::net::tests::run_with_network_event_task(async {
-        assert!(crate::net::api::icmp::send_icmp_echo_async([8, 8, 8, 8], 1));
+        assert!(crate::net::api::icmp::enqueue_icmp_echo([8, 8, 8, 8], 1));
         crate::task::yield_now().await;
     });
 }
@@ -267,7 +266,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
 
     // 旧同期API (dhcp_discover, dhcp_request, dhcp_release, dhcp_renew,
     // dhcp_last_declined, dhcp_last_released) は削除済み。
-    // 非同期版 (dhcp_discover_async, dhcp_release_async, ...) は
+    // 非同期版 (dhcp_discover, dhcp_release, ...) は
     // async executor 上でのみテスト可能なため、ここでは dhcp_state のみ検証する。
 
     // simulate a conflict/decline via internal client API to verify state snapshot
@@ -283,8 +282,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     }
 
     // verify dhcp_state snapshot reflects the decline
-    let snap =
-        crate::net::tests::run_with_network_event_task(crate::net::api::dhcp::dhcp_state());
+    let snap = crate::net::tests::run_with_network_event_task(crate::net::api::dhcp::dhcp_state());
     assert_eq!(snap.v4_last_declined, Some(test_ip));
 }
 

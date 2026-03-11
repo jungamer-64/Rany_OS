@@ -62,9 +62,7 @@ pub fn test_sendfuture_wakes_on_send() {
 
     // Create SendFuture and poll once (should register waker and queue DataReady)
     let data = alloc::vec![1u8, 2u8, 3u8, 4u8];
-    let mut fut = sock
-        .send_async(data)
-        .expect("send_async should return future");
+    let mut fut = sock.send(data).expect("send should return future");
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
     match pinned.as_mut().poll(&mut cx) {
@@ -154,9 +152,7 @@ pub fn test_sendfuture_wakes_on_send_v6() {
 
     // Create SendFuture and poll once (should register waker and queue DataReady)
     let data = alloc::vec![9u8, 8u8, 7u8, 6u8];
-    let mut fut = sock
-        .send_async(data)
-        .expect("send_async should return future");
+    let mut fut = sock.send(data).expect("send should return future");
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
     match pinned.as_mut().poll(&mut cx) {
@@ -257,8 +253,8 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint() {
 
     // Create RecvPacketFuture and poll → should be Ready with the packet
     let mut fut = sock
-        .recv_packet_async()
-        .expect("recv_packet_async should return future");
+        .recv_packet()
+        .expect("recv_packet should return future");
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
     match pinned.as_mut().poll(&mut cx) {
@@ -341,8 +337,8 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint_v6() {
 
     // Create RecvPacketFuture and poll → should be Ready with the packet
     let mut fut = sock
-        .recv_packet_async()
-        .expect("recv_packet_async should return future");
+        .recv_packet()
+        .expect("recv_packet should return future");
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
     match pinned.as_mut().poll(&mut cx) {

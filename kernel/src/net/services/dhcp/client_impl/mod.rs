@@ -33,7 +33,7 @@ impl DhcpClient {
     /// 指定されたポートでUDPソケットをバインドし、DHCP状態機械を駆動します。
     pub async fn run(&self) -> Result<(), &'static str> {
         // DHCPクライアントポート(68)でバインド
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(DHCP_CLIENT_PORT)
+        let socket = crate::net::runtime::stack::bind_udp_endpoint(DHCP_CLIENT_PORT)
             .await
             .ok_or("Failed to bind DHCP socket")?;
 
@@ -55,13 +55,20 @@ impl DhcpClient {
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
                             let hostname_bytes = lease.hostname.clone().unwrap_or_default();
-                            crate::net::l4::endpoint::event::send_event_ignore(
-                                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpApplyLease {
+                            crate::net::l4::endpoint::event::enqueue_event_ignore(
+                                crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
                                     if_id: None,
                                     ip: *lease.ip_address.as_bytes(),
                                     subnet: *lease.subnet_mask.as_bytes(),
-                                    gateway: lease.gateway.map(|a| *a.as_bytes()).unwrap_or([0, 0, 0, 0]),
-                                    dns: lease.dns_servers.first().map(|a| *a.as_bytes()).unwrap_or([0, 0, 0, 0]),
+                                    gateway: lease
+                                        .gateway
+                                        .map(|a| *a.as_bytes())
+                                        .unwrap_or([0, 0, 0, 0]),
+                                    dns: lease
+                                        .dns_servers
+                                        .first()
+                                        .map(|a| *a.as_bytes())
+                                        .unwrap_or([0, 0, 0, 0]),
                                     hostname: hostname_bytes,
                                 },
                             );

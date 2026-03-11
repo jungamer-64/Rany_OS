@@ -53,7 +53,7 @@ impl NetworkStack {
                     sequence,
                     0,
                 );
-                crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoReply {
                         source: *src_ip.as_bytes(),
                         sequence,

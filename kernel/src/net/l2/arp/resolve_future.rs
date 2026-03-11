@@ -186,7 +186,7 @@ impl Future for ArpResolveFuture {
         // ARP要求をイベントキュー経由で送信（初回のみ、または再送）
         // ArpResolveRequestハンドラ内でキャッシュヒット時は即座にnotify_arp_resolved()が呼ばれる
         if !self.request_sent || self.poll_count % 10 == 0 {
-            crate::net::l4::endpoint::event::send_event_ignore(
+            crate::net::l4::endpoint::event::enqueue_event_ignore(
                 crate::net::l4::endpoint::event::NetworkEvent::ArpResolveRequest {
                     target_ip: ip_bytes,
                 },

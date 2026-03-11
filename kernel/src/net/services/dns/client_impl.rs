@@ -170,7 +170,7 @@ impl DnsClient {
             .ok_or("No DNS server configured")?;
 
         // Try UDP first
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(0)
+        let socket = crate::net::runtime::stack::bind_udp_endpoint(0)
             .await
             .ok_or("Failed to bind UDP")?;
         let mut buffer = [0u8; 512];

@@ -5,15 +5,15 @@
 
 extern crate alloc;
 
-// Removed: `send_icmp_echo()` — deprecated, use `send_icmp_echo_async()` or `ping_async()` instead.
+// Removed: `send_icmp_echo()` — deprecated, use `enqueue_icmp_echo()` or `ping()` instead.
 
 /// 非同期ICMP Echo送信（fire-and-forget）
 ///
 /// ICMP Echoリクエストをイベントキュー経由で送信する。
 /// エグゼキュータが起動しているasyncコンテキストから呼び出す。
-/// 応答を待機するには `ping_async()` または `IcmpEchoFuture` を使用すること。
-pub fn send_icmp_echo_async(target: [u8; 4], seq: u16) -> bool {
-    crate::net::l4::endpoint::event::send_event_ignore(
+/// 応答を待機するには `ping()` または `IcmpEchoFuture` を使用すること。
+pub fn enqueue_icmp_echo(target: [u8; 4], seq: u16) -> bool {
+    crate::net::l4::endpoint::event::enqueue_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoRequest {
             target,
             sequence: seq,
@@ -29,18 +29,18 @@ pub fn send_icmp_echo_async(target: [u8; 4], seq: u16) -> bool {
 ///
 /// # 使用例
 /// ```ignore
-/// let result = ping_async([8, 8, 8, 8], 1).await;
+/// let result = ping([8, 8, 8, 8], 1).await;
 /// match result {
 ///     Ok(echo) => log::info!("RTT: {} us", echo.rtt_us),
 ///     Err(e) => log::warn!("ping failed: {:?}", e),
 /// }
 /// ```
-pub fn ping_async(target: [u8; 4], seq: u16) -> crate::net::l4::endpoint::futures::IcmpEchoFuture {
+pub fn ping(target: [u8; 4], seq: u16) -> crate::net::l4::endpoint::futures::IcmpEchoFuture {
     crate::net::l4::endpoint::futures::IcmpEchoFuture::new(target, seq)
 }
 
 /// カスタムタイムアウト付き非同期ICMP Echo
-pub fn ping_async_with_timeout(
+pub fn ping_with_timeout(
     target: [u8; 4],
     seq: u16,
     timeout_us: u64,

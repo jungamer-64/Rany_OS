@@ -39,7 +39,7 @@ pub struct ArpCacheEntry {
 /// TCP接続一覧取得（読み取り専用・tcb_table参照）
 ///
 /// `tcb_table()` から接続スナップショットを取得する。ネットワークスタックロックは使用しない。
-pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
+pub fn get_tcp_connections_sync() -> Option<Vec<TcpConnectionInfo>> {
     let snapshots = tcb_table().list_connections();
     if snapshots.is_empty() {
         return None;
@@ -107,8 +107,8 @@ impl Future for GetArpCacheFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetArpCache {
+            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+                crate::net::l4::endpoint::event::NetworkEvent::GetArpCache {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
@@ -131,18 +131,18 @@ impl Future for GetArpCacheFuture {
 ///
 /// # 使用例
 /// ```ignore
-/// let entries = get_arp_cache_async().await;
+/// let entries = get_arp_cache().await;
 /// ```
-pub fn get_arp_cache_async() -> GetArpCacheFuture {
+pub fn get_arp_cache() -> GetArpCacheFuture {
     GetArpCacheFuture::new()
 }
 
 /// 非同期ARPキャッシュ挿入（推奨API）
 ///
 /// イベントキュー経由でスタックにARP挿入イベントを送出する。
-pub fn arp_cache_insert_async(ip: Ipv4Address, mac: MacAddress) {
-    crate::net::l4::endpoint::event::send_event_ignore(
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncArpInsert {
+pub fn enqueue_arp_cache_insert(ip: Ipv4Address, mac: MacAddress) {
+    crate::net::l4::endpoint::event::enqueue_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::ArpInsert {
             ip: *ip.as_bytes(),
             mac: *mac.as_bytes(),
         },
@@ -173,8 +173,8 @@ impl Future for GetUdpEndpointsFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetUdpEndpoints {
+            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+                crate::net::l4::endpoint::event::NetworkEvent::GetUdpEndpoints {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
@@ -191,7 +191,7 @@ impl Future for GetUdpEndpointsFuture {
 }
 
 /// 非同期UDPエンドポイント一覧取得（推奨API）
-pub fn get_udp_endpoints_async() -> GetUdpEndpointsFuture {
+pub fn get_udp_endpoints() -> GetUdpEndpointsFuture {
     GetUdpEndpointsFuture::new()
 }
 
@@ -219,8 +219,8 @@ impl Future for GetTcpConnectionsFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncGetTcpConnections {
+            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+                crate::net::l4::endpoint::event::NetworkEvent::GetTcpConnections {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
@@ -240,19 +240,100 @@ impl Future for GetTcpConnectionsFuture {
 ///
 /// # 使用例
 /// ```ignore
-/// let connections = get_tcp_connections_async().await;
+/// let connections = get_tcp_connections().await;
 /// ```
-pub fn get_tcp_connections_async() -> GetTcpConnectionsFuture {
+pub fn get_tcp_connections() -> GetTcpConnectionsFuture {
     GetTcpConnectionsFuture::new()
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn async_connection_queries_complete_with_event_task() {
-        let tcp = crate::net::tests::run_with_network_event_task(super::get_tcp_connections_async());
-        let udp = crate::net::tests::run_with_network_event_task(super::get_udp_endpoints_async());
-        let arp = crate::net::tests::run_with_network_event_task(super::get_arp_cache_async());
+    fn connection_queries_complete_with_event_task() {
+        let tcp = {
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+            let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+            let mut executor = crate::task::Executor::new();
+            let result_slot_clone = result_slot.clone();
+            let completed_clone = completed.clone();
+            executor.spawn(crate::task::Task::new(async move {
+                let output = super::get_tcp_connections().await;
+                let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(output);
+                completed_clone.store(true, core::sync::atomic::Ordering::Release);
+            }));
+            executor.spawn(crate::task::Task::new(async {
+                crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+            }));
+
+            let mut output = None;
+            for _ in 0..100_000 {
+                executor.drive_once_for_test();
+                if completed.load(core::sync::atomic::Ordering::Acquire) {
+                    output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    break;
+                }
+            }
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            output.expect("get_tcp_connections test timed out")
+        };
+        let udp = {
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+            let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+            let mut executor = crate::task::Executor::new();
+            let result_slot_clone = result_slot.clone();
+            let completed_clone = completed.clone();
+            executor.spawn(crate::task::Task::new(async move {
+                let output = super::get_udp_endpoints().await;
+                let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(output);
+                completed_clone.store(true, core::sync::atomic::Ordering::Release);
+            }));
+            executor.spawn(crate::task::Task::new(async {
+                crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+            }));
+
+            let mut output = None;
+            for _ in 0..100_000 {
+                executor.drive_once_for_test();
+                if completed.load(core::sync::atomic::Ordering::Acquire) {
+                    output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    break;
+                }
+            }
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            output.expect("get_udp_endpoints test timed out")
+        };
+        let arp = {
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+            let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+            let mut executor = crate::task::Executor::new();
+            let result_slot_clone = result_slot.clone();
+            let completed_clone = completed.clone();
+            executor.spawn(crate::task::Task::new(async move {
+                let output = super::get_arp_cache().await;
+                let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(output);
+                completed_clone.store(true, core::sync::atomic::Ordering::Release);
+            }));
+            executor.spawn(crate::task::Task::new(async {
+                crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+            }));
+
+            let mut output = None;
+            for _ in 0..100_000 {
+                executor.drive_once_for_test();
+                if completed.load(core::sync::atomic::Ordering::Acquire) {
+                    output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    break;
+                }
+            }
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            output.expect("get_arp_cache test timed out")
+        };
 
         assert!(tcp.is_empty());
         assert!(udp.is_empty());

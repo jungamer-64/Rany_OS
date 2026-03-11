@@ -11,6 +11,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use super::endpoint_core::{Endpoint, OwnedEndpoint};
+use super::event::EventDispatch;
 use super::types::{EndpointAddr, EndpointError, EndpointResult, EndpointState, EndpointType};
 
 use crate::net::datapath::mempool::PacketRef;
@@ -78,6 +79,8 @@ pub struct SendFuture {
     endpoint: Endpoint,
     data: Vec<u8>,
     offset: usize,
+    dispatch: EventDispatch,
+    pending_notify: bool,
 }
 
 impl SendFuture {
@@ -87,6 +90,8 @@ impl SendFuture {
             endpoint,
             data,
             offset: 0,
+            dispatch: EventDispatch::new(),
+            pending_notify: false,
         }
     }
 }
@@ -97,65 +102,60 @@ impl Future for SendFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        // Acquire inner to inspect/modify buffers
-        let mut inner = this
-            .endpoint
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        loop {
+            if this.pending_notify {
+                match this
+                    .dispatch
+                    .poll(cx, || super::event::NetworkEvent::DataReady {
+                        fd: this.endpoint.fd(),
+                        endpoint_type: this.endpoint.socket_type(),
+                    }) {
+                    Poll::Ready(Ok(())) => {
+                        this.pending_notify = false;
+                        if this.offset >= this.data.len() {
+                            return Poll::Ready(Ok(this.offset));
+                        }
+                    }
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
 
-        // 状態チェック
-        if !inner.state.can_send() {
-            return Poll::Ready(Err(EndpointError::NotConnected));
-        }
+            let mut inner = this
+                .endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
 
-        // 全データ送信済みなら完了
-        if this.offset >= this.data.len() {
-            return Poll::Ready(Ok(this.offset));
-        }
+            if !inner.state.can_send() {
+                return Poll::Ready(Err(EndpointError::NotConnected));
+            }
 
-        // バッファに空きがあれば書き込み
-        let available = inner
-            .send_buffer_limit
-            .saturating_sub(inner.send_buffer.len());
+            if this.offset >= this.data.len() {
+                return Poll::Ready(Ok(this.offset));
+            }
 
-        // Track whether we've written anything so we can notify the stack after dropping the lock
-        let mut wrote = 0usize;
-        if available > 0 {
+            let available = inner
+                .send_buffer_limit
+                .saturating_sub(inner.send_buffer.len());
+            if available == 0 {
+                inner.send_waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+
             let remaining = &this.data[this.offset..];
             let to_send = remaining.len().min(available);
             inner
                 .send_buffer
                 .extend(remaining[..to_send].iter().copied());
             this.offset += to_send;
-            wrote = to_send;
-
-            // If not finished, register our waker so we get notified when space is available
             if this.offset < this.data.len() {
                 inner.send_waker = Some(cx.waker().clone());
             }
-        } else {
-            // No space: register waker and return Pending
-            inner.send_waker = Some(cx.waker().clone());
+            drop(inner);
+
+            this.pending_notify = true;
         }
-
-        // Drop lock before notifying the event queue to avoid lock-ordering issues
-        drop(inner);
-
-        // If we wrote data, notify the network stack so it can attempt to send
-        if wrote > 0 {
-            let _ = super::event::send_event(super::event::NetworkEvent::DataReady {
-                fd: this.endpoint.fd(),
-                endpoint_type: this.endpoint.socket_type(),
-            });
-
-            // If we've written all the user's data, complete the future
-            if this.offset >= this.data.len() {
-                return Poll::Ready(Ok(this.offset));
-            }
-        }
-
-        Poll::Pending
     }
 }
 
@@ -164,6 +164,7 @@ pub struct SendToFuture {
     endpoint: Endpoint,
     data: Vec<u8>,
     addr: EndpointAddr,
+    dispatch: EventDispatch,
 }
 
 impl SendToFuture {
@@ -173,6 +174,7 @@ impl SendToFuture {
             endpoint,
             data,
             addr,
+            dispatch: EventDispatch::new(),
         }
     }
 }
@@ -183,15 +185,30 @@ impl Future for SendToFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        // UDPは現在バッファリングせず即座にイベントキューへ
-        match this.endpoint.send_to(&this.data, this.addr) {
-            Ok(len) => Poll::Ready(Ok(len)),
-            Err(EndpointError::ResourceExhausted) => {
-                // イベントキューが満杯: Wakerを登録し TxAvailable 発生時に再ポーリングされるようにする
-                this.endpoint.register_send_waker(cx.waker().clone());
-                Poll::Pending
+        {
+            let inner = this
+                .endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if this.endpoint.socket_type() != EndpointType::Udp {
+                return Poll::Ready(Err(EndpointError::InvalidArgument));
             }
-            Err(e) => Poll::Ready(Err(e)),
+            if !matches!(inner.state, EndpointState::Bound | EndpointState::Connected) {
+                return Poll::Ready(Err(EndpointError::NotConnected));
+            }
+        }
+
+        match this
+            .dispatch
+            .poll(cx, || super::event::NetworkEvent::SendTo {
+                fd: this.endpoint.fd(),
+                data: this.data.clone(),
+                remote: this.addr,
+            }) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(this.data.len())),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -212,7 +229,7 @@ impl Future for AcceptFuture {
     type Output = EndpointResult<(OwnedEndpoint, EndpointAddr, NetIfId)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.endpoint.next_incoming() {
+        match self.endpoint.next_incoming_sync() {
             Ok((ep, addr, if_id)) => {
                 Poll::Ready(Ok((OwnedEndpoint::from_endpoint(ep), addr, if_id)))
             }
@@ -253,7 +270,7 @@ impl Future for RecvFromFuture {
         let buf_len = this.buffer.len();
         let mut temp_buf = alloc::vec![0u8; buf_len];
 
-        match this.endpoint.recv_from(&mut temp_buf) {
+        match this.endpoint.recv_from_sync(&mut temp_buf) {
             Ok((len, addr, if_id)) => {
                 this.buffer.truncate(len);
                 this.buffer[..len].copy_from_slice(&temp_buf[..len]);
@@ -332,28 +349,28 @@ impl UdpPacketStream {
 
 impl OwnedEndpoint {
     /// 非同期受信
-    pub fn recv_async(&self, size: usize) -> Option<RecvFuture> {
+    pub fn recv(&self, size: usize) -> Option<RecvFuture> {
         self.endpoint().map(|s| RecvFuture::new(s.clone(), size))
     }
 
     /// 非同期送信
-    pub fn send_async(&self, data: Vec<u8>) -> Option<SendFuture> {
+    pub fn send(&self, data: Vec<u8>) -> Option<SendFuture> {
         self.endpoint().map(|s| SendFuture::new(s.clone(), data))
     }
 
     /// 非同期UDP送信
-    pub fn send_to_async(&self, data: Vec<u8>, addr: EndpointAddr) -> Option<SendToFuture> {
+    pub fn send_to(&self, data: Vec<u8>, addr: EndpointAddr) -> Option<SendToFuture> {
         self.endpoint()
             .map(|s| SendToFuture::new(s.clone(), data, addr))
     }
 
     /// 非同期接続受け入れ
-    pub fn accept_async(&self) -> Option<AcceptFuture> {
+    pub fn accept(&self) -> Option<AcceptFuture> {
         self.endpoint().map(|s| AcceptFuture::new(s.clone()))
     }
 
     /// 非同期UDP受信
-    pub fn recv_from_async(&self, size: usize) -> Option<RecvFromFuture> {
+    pub fn recv_from(&self, size: usize) -> Option<RecvFromFuture> {
         self.endpoint()
             .map(|s| RecvFromFuture::new(s.clone(), size))
     }
@@ -370,7 +387,7 @@ impl OwnedEndpoint {
     }
 
     /// 非同期ゼロコピー受信（TCP向け） - 成功すると `PacketRef` を返す
-    pub fn recv_packet_async(&self) -> Option<RecvPacketFuture> {
+    pub fn recv_packet(&self) -> Option<RecvPacketFuture> {
         self.endpoint().and_then(|s| {
             s.inner()
                 .lock()
@@ -423,7 +440,7 @@ impl OwnedEndpoint {
 
 /// 非同期接続開始Future
 ///
-/// `Endpoint::open_connection_async()` から返される。
+/// `Endpoint::open_connection()` から返される。
 /// イベントキュー経由で接続イベントを送出し、接続完了をWakerで通知する。
 pub struct OpenConnectionFuture {
     endpoint: Endpoint,
@@ -432,8 +449,13 @@ pub struct OpenConnectionFuture {
 }
 
 enum OpenConnectionPhase {
-    /// 初回poll: イベント送信
+    /// 初回poll: 状態遷移とイベント準備
     Init,
+    /// Connect イベントのキュー投入待ち
+    SendingConnect {
+        local_addr: EndpointAddr,
+        dispatch: EventDispatch,
+    },
     /// SYN送信済み: 接続完了待ち
     WaitingEstablished,
 }
@@ -455,69 +477,76 @@ impl Future for OpenConnectionFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        match this.phase {
-            OpenConnectionPhase::Init => {
-                // ローカルアドレスを取得（未設定は0で自動割当）
-                let local_addr;
-                {
-                    let mut inner = this
-                        .endpoint
-                        .inner()
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    if !inner.state.can_connect() {
-                        return Poll::Ready(Err(EndpointError::AlreadyConnected));
-                    }
-                    local_addr = inner.local_addr.unwrap_or_else(|| {
-                        if this.remote.is_ipv6() {
-                            EndpointAddr::new_v6([0; 16], 0)
-                        } else {
-                            EndpointAddr::new([0, 0, 0, 0], 0)
-                        }
-                    });
-                    inner.remote_addr = Some(this.remote);
-                    if let Err(e) = inner.transition_to(EndpointState::Connecting) {
-                        return Poll::Ready(Err(e));
-                    }
-                    // Wakerを登録
-                    inner.connect_waker = Some(cx.waker().clone());
-                }
-
-                // イベントキュー経由でConnect送信（ロック競合回避）
-                if let Err(e) = super::event::send_event(super::event::NetworkEvent::Connect {
-                    fd: this.endpoint.fd(),
-                    local: local_addr,
-                    remote: this.remote,
-                }) {
-                    return Poll::Ready(Err(e));
-                }
-
-                this.phase = OpenConnectionPhase::WaitingEstablished;
-                Poll::Pending
-            }
-            OpenConnectionPhase::WaitingEstablished => {
-                let inner = this
-                    .endpoint
-                    .inner()
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                match inner.state {
-                    EndpointState::Connected => Poll::Ready(Ok(())),
-                    EndpointState::Closed | EndpointState::Closing => {
-                        Poll::Ready(Err(EndpointError::ConnectionRefused))
-                    }
-                    EndpointState::Connecting => {
-                        // まだ接続中: Wakerを再登録
-                        drop(inner);
+        loop {
+            match &mut this.phase {
+                OpenConnectionPhase::Init => {
+                    let local_addr;
+                    {
                         let mut inner = this
                             .endpoint
                             .inner()
                             .lock()
                             .unwrap_or_else(|e| e.into_inner());
+                        if !inner.state.can_connect() {
+                            return Poll::Ready(Err(EndpointError::AlreadyConnected));
+                        }
+                        local_addr = inner.local_addr.unwrap_or_else(|| {
+                            if this.remote.is_ipv6() {
+                                EndpointAddr::new_v6([0; 16], 0)
+                            } else {
+                                EndpointAddr::new([0, 0, 0, 0], 0)
+                            }
+                        });
+                        inner.remote_addr = Some(this.remote);
+                        if let Err(err) = inner.transition_to(EndpointState::Connecting) {
+                            return Poll::Ready(Err(err));
+                        }
                         inner.connect_waker = Some(cx.waker().clone());
-                        Poll::Pending
                     }
-                    _ => Poll::Ready(Err(EndpointError::InvalidStateTransition)),
+
+                    this.phase = OpenConnectionPhase::SendingConnect {
+                        local_addr,
+                        dispatch: EventDispatch::new(),
+                    };
+                }
+                OpenConnectionPhase::SendingConnect {
+                    local_addr,
+                    dispatch,
+                } => match dispatch.poll(cx, || super::event::NetworkEvent::Connect {
+                    fd: this.endpoint.fd(),
+                    local: *local_addr,
+                    remote: this.remote,
+                }) {
+                    Poll::Ready(Ok(())) => {
+                        this.phase = OpenConnectionPhase::WaitingEstablished;
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => return Poll::Pending,
+                },
+                OpenConnectionPhase::WaitingEstablished => {
+                    let inner = this
+                        .endpoint
+                        .inner()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    match inner.state {
+                        EndpointState::Connected => return Poll::Ready(Ok(())),
+                        EndpointState::Closed | EndpointState::Closing => {
+                            return Poll::Ready(Err(EndpointError::ConnectionRefused));
+                        }
+                        EndpointState::Connecting => {
+                            drop(inner);
+                            let mut inner = this
+                                .endpoint
+                                .inner()
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            inner.connect_waker = Some(cx.waker().clone());
+                            return Poll::Pending;
+                        }
+                        _ => return Poll::Ready(Err(EndpointError::InvalidStateTransition)),
+                    }
                 }
             }
         }
@@ -530,7 +559,7 @@ impl Future for OpenConnectionFuture {
 
 /// 非同期リッスン開始Future
 ///
-/// `Endpoint::start_listening_async()` から返される。
+/// `Endpoint::start_listening()` から返される。
 /// イベントキュー経由でbind_tcpを実行し、Listenモードに遷移する。
 pub struct StartListeningFuture {
     endpoint: Endpoint,
@@ -544,6 +573,11 @@ enum StartListeningPhase {
     /// bind完了待ち
     WaitingBind {
         bind_future: crate::net::runtime::stack::TcpBindListenerFuture,
+    },
+    /// Listen イベントのキュー投入待ち
+    SendingListen {
+        local_addr: EndpointAddr,
+        dispatch: EventDispatch,
     },
 }
 
@@ -588,9 +622,8 @@ impl Future for StartListeningFuture {
                         };
                     }
 
-                    // 非同期bind_tcp_listener_asyncを開始
-                    let bind_future =
-                        crate::net::runtime::stack::bind_tcp_listener_async(local_addr);
+                    // 非同期bind_tcp_listenerを開始
+                    let bind_future = crate::net::runtime::stack::bind_tcp_listener(local_addr);
                     this.phase = StartListeningPhase::WaitingBind { bind_future };
                     // fallthrough to poll bind_future
                 }
@@ -611,15 +644,10 @@ impl Future for StartListeningFuture {
                             }
                             let local_addr = inner.local_addr.unwrap();
                             drop(inner);
-
-                            // Listenイベントを送信
-                            let _ = super::event::send_event(super::event::NetworkEvent::Listen {
-                                fd: this.endpoint.fd(),
-                                local: local_addr,
-                                backlog: this.backlog,
-                            });
-
-                            return Poll::Ready(Ok(()));
+                            this.phase = StartListeningPhase::SendingListen {
+                                local_addr,
+                                dispatch: EventDispatch::new(),
+                            };
                         }
                         Poll::Ready(Err(e)) => {
                             return Poll::Ready(Err(EndpointError::from_tcp_error(e)));
@@ -629,6 +657,18 @@ impl Future for StartListeningFuture {
                         }
                     }
                 }
+                StartListeningPhase::SendingListen {
+                    local_addr,
+                    dispatch,
+                } => match dispatch.poll(cx, || super::event::NetworkEvent::Listen {
+                    fd: this.endpoint.fd(),
+                    local: *local_addr,
+                    backlog: this.backlog,
+                }) {
+                    Poll::Ready(Ok(())) => return Poll::Ready(Ok(())),
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => return Poll::Pending,
+                },
             }
         }
     }
@@ -640,66 +680,68 @@ impl Future for StartListeningFuture {
 
 /// 非同期クローズFuture
 ///
-/// `Endpoint::close_async()` から返される。
+/// `Endpoint::close()` から返される。
 /// エンドポイントの状態をクリーンアップし、Closeイベントを送出する。
-pub struct CloseAsyncFuture {
+pub struct CloseFuture {
     endpoint: Endpoint,
-    done: bool,
+    cleaned_up: bool,
+    dispatch: EventDispatch,
 }
 
-impl CloseAsyncFuture {
+impl CloseFuture {
     /// 新規作成
     pub fn new(endpoint: Endpoint) -> Self {
         Self {
             endpoint,
-            done: false,
+            cleaned_up: false,
+            dispatch: EventDispatch::new(),
         }
     }
 }
 
-impl Future for CloseAsyncFuture {
+impl Future for CloseFuture {
     type Output = EndpointResult<()>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        if this.done {
-            return Poll::Ready(Ok(()));
+        if !this.cleaned_up {
+            {
+                let mut inner = this
+                    .endpoint
+                    .inner()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+
+                inner.clear_protocol();
+                inner.recv_buffer.clear();
+                inner.send_buffer.clear();
+
+                if let Some(waker) = inner.recv_waker.take() {
+                    waker.wake();
+                }
+                if let Some(waker) = inner.send_waker.take() {
+                    waker.wake();
+                }
+                if let Some(waker) = inner.connect_waker.take() {
+                    waker.wake();
+                }
+
+                let _ = inner.transition_to(EndpointState::Closed);
+            }
+
+            this.cleaned_up = true;
         }
 
-        // 内部状態クリーンアップ
-        {
-            let mut inner = this
-                .endpoint
-                .inner()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-
-            inner.clear_protocol();
-            inner.recv_buffer.clear();
-            inner.send_buffer.clear();
-
-            // 待機中のタスクを起こす
-            if let Some(waker) = inner.recv_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = inner.send_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = inner.connect_waker.take() {
-                waker.wake();
-            }
-
-            let _ = inner.transition_to(EndpointState::Closed);
+        match this
+            .dispatch
+            .poll(cx, || super::event::NetworkEvent::Close {
+                fd: this.endpoint.fd(),
+            }) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+            Poll::Pending => Poll::Pending,
         }
-
-        // イベントキュー経由でCloseを送出（ロック競合回避）
-        super::event::send_event_ignore(super::event::NetworkEvent::Close {
-            fd: this.endpoint.fd(),
-        });
-
-        this.done = true;
-        Poll::Ready(Ok(()))
     }
 }
 
@@ -850,8 +892,10 @@ pub fn cleanup_icmp_echo_waiters() {
 pub struct IcmpEchoFuture {
     target: [u8; 4],
     sequence: u16,
+    registered: bool,
     sent: bool,
     timeout_us: u64,
+    dispatch: EventDispatch,
 }
 
 impl IcmpEchoFuture {
@@ -860,8 +904,10 @@ impl IcmpEchoFuture {
         Self {
             target,
             sequence,
+            registered: false,
             sent: false,
             timeout_us: 5_000_000, // 5秒
+            dispatch: EventDispatch::new(),
         }
     }
 
@@ -870,8 +916,10 @@ impl IcmpEchoFuture {
         Self {
             target,
             sequence,
+            registered: false,
             sent: false,
             timeout_us,
+            dispatch: EventDispatch::new(),
         }
     }
 }
@@ -882,24 +930,28 @@ impl Future for IcmpEchoFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        // 初回poll: Echo Requestを送信してレジストリに登録
-        if !this.sent {
-            // レジストリに事前登録
+        if !this.registered {
             if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
                 registry.register(this.target, this.sequence, this.timeout_us);
             }
+            this.registered = true;
+        }
 
-            // イベントキュー経由でICMP Echo Requestを送信
-            crate::net::l4::endpoint::event::send_event_ignore(
+        if !this.sent {
+            match this.dispatch.poll(cx, || {
                 crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoRequest {
                     target: this.target,
                     sequence: this.sequence,
-                },
-            );
-            this.sent = true;
+                }
+            }) {
+                Poll::Ready(Ok(())) => {
+                    this.sent = true;
+                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            }
         }
 
-        // 結果をポーリング
         if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
             registry.set_waker(this.target, this.sequence, cx.waker().clone());
             registry.poll_result(this.target, this.sequence)
@@ -963,7 +1015,7 @@ pub mod qemu_tests {
         let mut cx = Context::from_waker(waker);
 
         let expected = alloc::vec![1u8, 2u8, 3u8, 4u8];
-        let Some(mut fut) = sock.send_async(expected.clone()) else {
+        let Some(mut fut) = sock.send(expected.clone()) else {
             return false;
         };
         let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
@@ -1036,7 +1088,7 @@ pub mod qemu_tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        let mut fut = match sock.recv_packet_async() {
+        let mut fut = match sock.recv_packet() {
             Some(f) => f,
             None => RecvPacketFuture::new(stream),
         };

@@ -251,7 +251,7 @@ async fn network_bootstrap_task() {
 
     for (if_id, ping_target) in ping_targets {
         info!(target: "net_boot", "Async connectivity check if{} -> {:?}", if_id, ping_target);
-        match crate::net::api::icmp::ping_async(ping_target, 1).await {
+        match crate::net::api::icmp::ping(ping_target, 1).await {
             Ok(echo) => info!(
                 target: "net_boot",
                 "Async ping success if{} rtt={} us",
@@ -321,7 +321,7 @@ pub(crate) fn spawn_core_runtime_tasks(executor: &mut task::Executor) {
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)
     executor.spawn(crate::task::Task::new(
-        crate::net::runtime::stack::async_timeout_task(),
+        crate::net::runtime::stack::timeout_task(),
     ));
 }
 
@@ -481,7 +481,7 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
         };
         info!(target: "net_test", "Sending ICMP echo to {}.{}.{}.{} seq=1", gw[0], gw[1], gw[2], gw[3]);
         // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
-        match crate::net::api::icmp::ping_async(gw, 1).await {
+        match crate::net::api::icmp::ping(gw, 1).await {
             Ok(echo) => info!(target: "net_test", "Ping success rtt={} us", echo.rtt_us),
             Err(e) => warn!(target: "net_test", "Ping failed: {:?}", e),
         }

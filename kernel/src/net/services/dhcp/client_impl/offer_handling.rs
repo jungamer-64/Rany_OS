@@ -11,10 +11,10 @@ fn send_dhcpv4_packet_on(
     ttl: u8,
 ) -> bool {
     match if_id {
-        Some(if_id) => crate::net::runtime::stack::send_udp_on_async_with_src(
+        Some(if_id) => crate::net::runtime::stack::enqueue_udp_send_on_with_src(
             if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
         ),
-        None => crate::net::runtime::stack::send_udp_async_with_src(
+        None => crate::net::runtime::stack::enqueue_udp_send_with_src(
             src_ip, src_port, dst_ip, dst_port, payload, ttl,
         ),
     }
@@ -31,8 +31,8 @@ impl DhcpClient {
         }
 
         // Best-effort: ARP probe をイベントキュー経由で送信（デッドロック回避）
-        crate::net::l4::endpoint::event::send_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::AsyncArpProbe {
+        crate::net::l4::endpoint::event::enqueue_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::ArpProbe {
                 target_ip: *lease.ip_address.as_bytes(),
             },
         );
@@ -565,8 +565,8 @@ impl DhcpClient {
         current_tick: u64,
     ) -> bool {
         // ARP probe をイベントキュー経由で送信（デッドロック回避）
-        crate::net::l4::endpoint::event::send_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::AsyncArpProbe {
+        crate::net::l4::endpoint::event::enqueue_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::ArpProbe {
                 target_ip: *offered_ip.as_bytes(),
             },
         );
@@ -581,8 +581,8 @@ impl DhcpClient {
         _current_tick: u64,
     ) -> bool {
         // ARP解決結果を非同期で取得（RFC 2131 Section 2.2 / RFC 5227）
-        // get_arp_cache_async() は現在のARPキャッシュスナップショットを返す
-        let entries = crate::net::api::connections::get_arp_cache_async().await;
+        // get_arp_cache() は現在のARPキャッシュスナップショットを返す
+        let entries = crate::net::api::connections::get_arp_cache().await;
         for entry in entries {
             // offered_ip に対する解決済みエントリが存在すれば、他者がそのIPを使用中と判断
             if entry.ip == offered_ip.octets() && entry.complete {
@@ -595,8 +595,8 @@ impl DhcpClient {
         }
 
         // また、将来的な競合を防ぐため、追加のプローブを定期的に送信
-        crate::net::l4::endpoint::event::send_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::AsyncArpProbe {
+        crate::net::l4::endpoint::event::enqueue_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::ArpProbe {
                 target_ip: *offered_ip.as_bytes(),
             },
         );

@@ -185,7 +185,7 @@ pub fn futures_sendfuture_wakes_on_send_smoke() -> bool {
         let _ = inner.transition_to(super::types::EndpointState::Connected);
     }
 
-    sock.send_async(alloc::vec![1u8, 2, 3, 4]).is_some()
+    sock.send(alloc::vec![1u8, 2, 3, 4]).is_some()
 }
 
 pub fn futures_recv_packet_zero_copy_via_owned_socket_smoke() -> bool {

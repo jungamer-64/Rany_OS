@@ -512,7 +512,7 @@ impl NetworkStack {
     }
 
     /// Apply a DHCPv6-obtained global IPv6 address to the stack
-    pub fn apply_ipv6_global_address(&mut self, addr: crate::net::l3::ipv6::Ipv6Address) {
+    pub fn enqueue_apply_ipv6_global_address(&mut self, addr: crate::net::l3::ipv6::Ipv6Address) {
         if let Some(ref mut ipv6_proc) = self.ipv6 {
             ipv6_proc.set_global_address(addr);
         }

@@ -104,7 +104,7 @@ pub(crate) fn send_tcp_packet(
             calculate_tcp_checksum(&mut segment, src_v4, dst_v4);
             let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
             let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
-            crate::net::runtime::stack::send_tcp_async(src_ip, dst_ip, &segment)
+            crate::net::runtime::stack::enqueue_tcp_send(src_ip, dst_ip, &segment)
         }
         _ => {
             let src_v6 = local.as_ipv6();
@@ -114,7 +114,7 @@ pub(crate) fn send_tcp_packet(
                 crate::net::l3::ipv6::Ipv6Address::new(src_v6),
                 crate::net::l3::ipv6::Ipv6Address::new(dst_v6),
             );
-            crate::net::runtime::stack::send_tcp_v6_async(
+            crate::net::runtime::stack::enqueue_tcp_v6_send(
                 crate::net::l3::ipv6::Ipv6Address::new(src_v6),
                 crate::net::l3::ipv6::Ipv6Address::new(dst_v6),
                 &segment,
@@ -370,7 +370,7 @@ pub(crate) fn send_tcp_packet_with_options(
             calculate_tcp_checksum(&mut segment, src_v4, dst_v4);
             let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
             let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
-            crate::net::runtime::stack::send_tcp_async(src_ip, dst_ip, &segment)
+            crate::net::runtime::stack::enqueue_tcp_send(src_ip, dst_ip, &segment)
         }
         _ => {
             let src_v6 = local.as_ipv6();
@@ -380,7 +380,7 @@ pub(crate) fn send_tcp_packet_with_options(
                 crate::net::l3::ipv6::Ipv6Address::new(src_v6),
                 crate::net::l3::ipv6::Ipv6Address::new(dst_v6),
             );
-            crate::net::runtime::stack::send_tcp_v6_async(
+            crate::net::runtime::stack::enqueue_tcp_v6_send(
                 crate::net::l3::ipv6::Ipv6Address::new(src_v6),
                 crate::net::l3::ipv6::Ipv6Address::new(dst_v6),
                 &segment,

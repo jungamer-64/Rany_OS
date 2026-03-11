@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::net::runtime::stack::{bind_udp_endpoint_async, bind_udp_endpoint_with_token_async};
+use crate::net::runtime::stack::{bind_udp_endpoint, bind_udp_endpoint_with_token};
 use crate::security::capability::{CAP_NET_ADMIN, CAP_NET_BIND, CAP_NET_RAW, manager};
 use crate::shell::exoshell::types::ExoValue;
 use alloc::boxed::Box;
@@ -121,7 +121,7 @@ impl NetNamespace {
 
     /// ARPキャッシュ（非同期版）
     pub async fn arp_cache_async() -> ExoValue<'static> {
-        let entries = crate::net::api::connections::get_arp_cache_async().await;
+        let entries = crate::net::api::connections::get_arp_cache().await;
         let values: Vec<ExoValue> = entries
             .into_iter()
             .map(|e| {
@@ -192,7 +192,7 @@ impl NetNamespace {
             }
             _ => return ExoValue::Error(String::from("mac must be string")),
         };
-        crate::net::api::connections::arp_cache_insert_async(ip, mac);
+        crate::net::api::connections::enqueue_arp_cache_insert(ip, mac);
         ExoValue::Bool(true)
     }
 
@@ -256,16 +256,16 @@ impl NetNamespace {
     }
 
     /// DHCP renew — 非同期版（推奨）
-    pub async fn dhcp_renew_async() -> ExoValue<'static> {
-        match crate::net::api::dhcp::dhcp_renew_async().await {
+    pub async fn dhcp_renew() -> ExoValue<'static> {
+        match crate::net::api::dhcp::dhcp_renew().await {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
         }
     }
 
     /// DHCP discover — 非同期版（推奨）
-    pub async fn dhcp_discover_async() -> ExoValue<'static> {
-        if let Some(info) = crate::net::api::dhcp::dhcp_discover_async().await {
+    pub async fn dhcp_discover() -> ExoValue<'static> {
+        if let Some(info) = crate::net::api::dhcp::dhcp_discover().await {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("server_ip"),
@@ -288,13 +288,13 @@ impl NetNamespace {
     }
 
     /// DHCP release — 非同期版（推奨）
-    pub async fn dhcp_release_async() -> ExoValue<'static> {
-        let released = crate::net::api::dhcp::dhcp_release_async().await;
+    pub async fn dhcp_release() -> ExoValue<'static> {
+        let released = crate::net::api::dhcp::dhcp_release().await;
         ExoValue::Bool(released)
     }
 
     /// DHCP last declined — 非同期版（推奨）
-    pub async fn dhcp_last_declined_async() -> ExoValue<'static> {
+    pub async fn dhcp_last_declined() -> ExoValue<'static> {
         use crate::net::services::dhcp;
         match dhcp::DHCP_CLIENT.lock() {
             Ok(guard) => {
@@ -314,7 +314,7 @@ impl NetNamespace {
     }
 
     /// DHCP last released — 非同期版（推奨）
-    pub async fn dhcp_last_released_async() -> ExoValue<'static> {
+    pub async fn dhcp_last_released() -> ExoValue<'static> {
         use crate::net::services::dhcp;
         match dhcp::DHCP_CLIENT.lock() {
             Ok(guard) => {
@@ -356,7 +356,7 @@ impl NetNamespace {
             crate::task::yield_now().await;
 
             // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
-            match crate::net::api::icmp::ping_async(ip, seq).await {
+            match crate::net::api::icmp::ping(ip, seq).await {
                 Ok(echo) => {
                     let mut map = BTreeMap::new();
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
@@ -394,7 +394,7 @@ impl NetNamespace {
 
     /// TCP接続一覧 (非同期版)
     pub async fn tcp_connections_async() -> ExoValue<'static> {
-        let connections = crate::net::api::connections::get_tcp_connections_async().await;
+        let connections = crate::net::api::connections::get_tcp_connections().await;
         let values: Vec<ExoValue> = connections
             .into_iter()
             .map(|c| {
@@ -416,7 +416,7 @@ impl NetNamespace {
 
     /// UDP エンドポイント一覧 (非同期版)
     pub async fn udp_endpoints_async() -> ExoValue<'static> {
-        let endpoints = crate::net::api::connections::get_udp_endpoints_async().await;
+        let endpoints = crate::net::api::connections::get_udp_endpoints().await;
         let values: Vec<ExoValue> = endpoints
             .into_iter()
             .map(|e| {
@@ -437,8 +437,8 @@ impl NetNamespace {
 
     /// netstat相当 — TCP接続 + UDPエンドポイント統合表示
     pub async fn netstat_async() -> ExoValue<'static> {
-        let tcp_connections = crate::net::api::connections::get_tcp_connections_async().await;
-        let udp_endpoints = crate::net::api::connections::get_udp_endpoints_async().await;
+        let tcp_connections = crate::net::api::connections::get_tcp_connections().await;
+        let udp_endpoints = crate::net::api::connections::get_udp_endpoints().await;
 
         let tcp_values: Vec<ExoValue> = tcp_connections
             .into_iter()
@@ -1141,7 +1141,7 @@ impl NetNamespace {
             if !grants.iter().any(|g| g.id == t) {
                 return ExoValue::Error(String::from("Permission denied: token not owned"));
             }
-            match bind_udp_endpoint_with_token_async(port, Some(t)).await {
+            match bind_udp_endpoint_with_token(port, Some(t)).await {
                 Some(_) => ExoValue::Bool(true),
                 None => ExoValue::Error(String::from("open failed")),
             }
@@ -1149,7 +1149,7 @@ impl NetNamespace {
             if !manager().has_capability(domain_id, CAP_NET_BIND) {
                 return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
             }
-            match bind_udp_endpoint_async(port).await {
+            match bind_udp_endpoint(port).await {
                 Some(_) => ExoValue::Bool(true),
                 None => ExoValue::Error(String::from("open failed")),
             }
@@ -1175,11 +1175,11 @@ impl ShellNamespace for NetNamespace {
                 "arp" => Self::arp_cache_async().await,
                 "arp_insert" => Self::arp_insert_async(_args).await,
                 "dhcp_state" => Self::dhcp_state_async(_args).await,
-                "dhcp_renew" => Self::dhcp_renew_async().await,
-                "dhcp_discover" => Self::dhcp_discover_async().await,
-                "dhcp_release" => Self::dhcp_release_async().await,
-                "dhcp_last_declined" => Self::dhcp_last_declined_async().await,
-                "dhcp_last_released" => Self::dhcp_last_released_async().await,
+                "dhcp_renew" => Self::dhcp_renew().await,
+                "dhcp_discover" => Self::dhcp_discover().await,
+                "dhcp_release" => Self::dhcp_release().await,
+                "dhcp_last_declined" => Self::dhcp_last_declined().await,
+                "dhcp_last_released" => Self::dhcp_last_released().await,
                 "open" => Self::handle_open_async(_args).await,
                 // TCP/UDP接続管理
                 "connections" | "netstat" => Self::netstat_async().await,

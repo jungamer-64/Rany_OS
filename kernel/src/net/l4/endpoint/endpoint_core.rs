@@ -14,7 +14,7 @@ use crate::sync::poison_lock::PoisonLock;
 
 use crate::net::l4::tcp::TcpStream;
 
-use super::event::{NetworkEvent, send_event, send_event_ignore};
+use super::event::{NetworkEvent, enqueue_event, enqueue_event_ignore};
 use super::inner::EndpointInner;
 use super::manager::ENDPOINT_MANAGER;
 use super::types::{
@@ -119,9 +119,9 @@ impl Endpoint {
     /// 【設計書】POSIXのconnect()ではなく、open_connection()を使用
     ///
     /// **ブートストラップ/テスト専用**: NETWORK_STACKロックは取得しないが、
-    /// asyncコンテキストでは [`open_connection_async()`] を推奨。
+    /// asyncコンテキストでは [`open_connection()`] を推奨。
     #[cfg(any(test, feature = "qemu-test-export"))]
-    pub fn open_connection(&self, addr: EndpointAddr) -> EndpointResult<()> {
+    pub fn open_connection_sync(&self, addr: EndpointAddr) -> EndpointResult<()> {
         let local_addr;
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -144,7 +144,7 @@ impl Endpoint {
         }
 
         // TCPスタックに接続イベントを送信（バックプレッシャー対応）
-        send_event(NetworkEvent::Connect {
+        enqueue_event(NetworkEvent::Connect {
             fd: self.fd,
             local: local_addr,
             remote: addr,
@@ -155,9 +155,9 @@ impl Endpoint {
     ///
     /// **ブートストラップ/テスト専用**: `bind_tcp()` 経由でNETWORK_STACKロックを取得するため、
     /// エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
-    /// asyncコンテキストでは [`start_listening_async()`] を使用すること。
+    /// asyncコンテキストでは [`start_listening()`] を使用すること。
     #[cfg(any(test, feature = "qemu-test-export"))]
-    pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
+    pub fn start_listening_sync(&self, backlog: u32) -> EndpointResult<()> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
         }
@@ -181,7 +181,7 @@ impl Endpoint {
         }
 
         // ネットワークスタックにリッスンイベントを送信（バックプレッシャー対応）
-        send_event(NetworkEvent::Listen {
+        enqueue_event(NetworkEvent::Listen {
             fd: self.fd,
             local: local_addr,
             backlog,
@@ -192,7 +192,7 @@ impl Endpoint {
     ///
     /// Acceptキューから接続を取得する。NETWORK_STACKロックは使用しない。
     /// 空の場合はTimeoutを返す。`AcceptFuture` が内部で使用する。
-    pub fn next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr, NetIfId)> {
+    pub fn next_incoming_sync(&self) -> EndpointResult<(Endpoint, EndpointAddr, NetIfId)> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
         }
@@ -282,7 +282,7 @@ impl Endpoint {
     ///
     /// 内部バッファに書き込み、DataReadyイベントを発火する。
     /// ネットワークスタックロックは使用しない。
-    pub fn send(&self, data: &[u8]) -> EndpointResult<usize> {
+    pub fn send_sync(&self, data: &[u8]) -> EndpointResult<usize> {
         let len = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -295,7 +295,7 @@ impl Endpoint {
 
         // 送信データがあることをネットワークスタックに通知（バックプレッシャー対応）
         if len > 0 {
-            send_event(NetworkEvent::DataReady {
+            enqueue_event(NetworkEvent::DataReady {
                 fd: self.fd,
                 endpoint_type: self.endpoint_type,
             })?;
@@ -307,7 +307,7 @@ impl Endpoint {
     /// データ受信（同期バッファ読み取り）
     ///
     /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
-    pub fn recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
+    pub fn recv_sync(&self, buf: &mut [u8]) -> EndpointResult<usize> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if !inner.state.can_receive() {
@@ -325,7 +325,7 @@ impl Endpoint {
     /// UDP送信（イベントキュー経由）
     ///
     /// SendToイベントを発火して送信を委任する。
-    pub fn send_to(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
+    pub fn send_to_sync(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
         if self.endpoint_type != EndpointType::Udp {
             return Err(EndpointError::InvalidArgument);
         }
@@ -339,7 +339,7 @@ impl Endpoint {
         }
 
         // UDPパケット送信イベント（バックプレッシャー対応）
-        send_event(NetworkEvent::SendTo {
+        enqueue_event(NetworkEvent::SendTo {
             fd: self.fd,
             data: data.to_vec(),
             remote: addr,
@@ -351,7 +351,7 @@ impl Endpoint {
     /// UDP受信（同期バッファ読み取り）
     ///
     /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
-    pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
+    pub fn recv_from_sync(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
         if self.endpoint_type != EndpointType::Udp {
             return Err(EndpointError::InvalidArgument);
         }
@@ -410,7 +410,7 @@ impl Endpoint {
     }
 
     /// クローズ
-    pub fn close(&self) -> EndpointResult<()> {
+    pub fn close_sync(&self) -> EndpointResult<()> {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -436,7 +436,7 @@ impl Endpoint {
         }
 
         // ネットワークスタックにクローズを通知（エラーは無視 - クローズは必ず進める）
-        send_event_ignore(NetworkEvent::Close { fd: self.fd });
+        enqueue_event_ignore(NetworkEvent::Close { fd: self.fd });
 
         Ok(())
     }
@@ -484,7 +484,7 @@ impl Endpoint {
         }
 
         // ネットワークスタックに通知（接続済みの場合、TCBに反映させる）
-        send_event(NetworkEvent::SetNoDelay {
+        enqueue_event(NetworkEvent::SetNoDelay {
             fd: self.fd,
             nodelay,
         })
@@ -498,7 +498,7 @@ impl Endpoint {
         }
 
         // ネットワークスタックに通知
-        send_event(NetworkEvent::SetPriority {
+        enqueue_event(NetworkEvent::SetPriority {
             fd: self.fd,
             priority: priority & 0x3F,
         })
@@ -517,12 +517,9 @@ impl Endpoint {
     /// # 使用例
     /// ```ignore
     /// let endpoint = create_tcp_endpoint();
-    /// endpoint.open_connection_async(addr).await?;
+    /// endpoint.open_connection(addr).await?;
     /// ```
-    pub fn open_connection_async(
-        &self,
-        addr: EndpointAddr,
-    ) -> super::futures::OpenConnectionFuture {
+    pub fn open_connection(&self, addr: EndpointAddr) -> super::futures::OpenConnectionFuture {
         super::futures::OpenConnectionFuture::new(self.clone(), addr)
     }
 
@@ -536,9 +533,9 @@ impl Endpoint {
     /// ```ignore
     /// let endpoint = create_tcp_endpoint();
     /// endpoint.set_local_addr(addr)?;
-    /// endpoint.start_listening_async(128).await?;
+    /// endpoint.start_listening(128).await?;
     /// ```
-    pub fn start_listening_async(&self, backlog: u32) -> super::futures::StartListeningFuture {
+    pub fn start_listening(&self, backlog: u32) -> super::futures::StartListeningFuture {
         super::futures::StartListeningFuture::new(self.clone(), backlog)
     }
 
@@ -549,10 +546,10 @@ impl Endpoint {
     ///
     /// # 使用例
     /// ```ignore
-    /// endpoint.close_async().await?;
+    /// endpoint.close().await?;
     /// ```
-    pub fn close_async(&self) -> super::futures::CloseAsyncFuture {
-        super::futures::CloseAsyncFuture::new(self.clone())
+    pub fn close(&self) -> super::futures::CloseFuture {
+        super::futures::CloseFuture::new(self.clone())
     }
 
     // =====================================================
@@ -566,9 +563,9 @@ impl Endpoint {
     ///
     /// # 使用例
     /// ```ignore
-    /// let n = endpoint.send_async(data).await?;
+    /// let n = endpoint.send(data).await?;
     /// ```
-    pub fn send_async(&self, data: Vec<u8>) -> super::futures::SendFuture {
+    pub fn send(&self, data: Vec<u8>) -> super::futures::SendFuture {
         super::futures::SendFuture::new(self.clone(), data)
     }
 
@@ -579,9 +576,9 @@ impl Endpoint {
     ///
     /// # 使用例
     /// ```ignore
-    /// let data = endpoint.recv_async(1024).await?;
+    /// let data = endpoint.recv(1024).await?;
     /// ```
-    pub fn recv_async(&self, size: usize) -> super::futures::RecvFuture {
+    pub fn recv(&self, size: usize) -> super::futures::RecvFuture {
         super::futures::RecvFuture::new(self.clone(), size)
     }
 
@@ -591,9 +588,9 @@ impl Endpoint {
     ///
     /// # 使用例
     /// ```ignore
-    /// let n = endpoint.send_to_async(data, addr).await?;
+    /// let n = endpoint.send_to(data, addr).await?;
     /// ```
-    pub fn send_to_async(&self, data: Vec<u8>, addr: EndpointAddr) -> super::futures::SendToFuture {
+    pub fn send_to(&self, data: Vec<u8>, addr: EndpointAddr) -> super::futures::SendToFuture {
         super::futures::SendToFuture::new(self.clone(), data, addr)
     }
 
@@ -604,9 +601,9 @@ impl Endpoint {
     ///
     /// # 使用例
     /// ```ignore
-    /// let (data, addr) = endpoint.recv_from_async(1500).await?;
+    /// let (data, addr) = endpoint.recv_from(1500).await?;
     /// ```
-    pub fn recv_from_async(&self, size: usize) -> super::futures::RecvFromFuture {
+    pub fn recv_from(&self, size: usize) -> super::futures::RecvFromFuture {
         super::futures::RecvFromFuture::new(self.clone(), size)
     }
 
@@ -617,9 +614,9 @@ impl Endpoint {
     ///
     /// # 使用例
     /// ```ignore
-    /// let (ep, addr) = endpoint.accept_async().await?;
+    /// let (ep, addr) = endpoint.accept().await?;
     /// ```
-    pub fn accept_async(&self) -> super::futures::AcceptFuture {
+    pub fn accept(&self) -> super::futures::AcceptFuture {
         super::futures::AcceptFuture::new(self.clone())
     }
 }
@@ -698,58 +695,58 @@ impl OwnedEndpoint {
     /// リッスンモードを開始（同期版）
     ///
     /// **ブートストラップ/テスト専用**: `bind_tcp()` 経由でNETWORK_STACKロックを取得する。
-    /// asyncコンテキストでは [`start_listening_async()`] を使用すること。
+    /// asyncコンテキストでは [`start_listening()`] を使用すること。
     #[cfg(any(test, feature = "qemu-test-export"))]
-    pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
+    pub fn start_listening_sync(&self, backlog: u32) -> EndpointResult<()> {
         self.endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .start_listening(backlog)
+            .start_listening_sync(backlog)
     }
 
     /// 次の接続を取得（同期版）
     ///
     /// NETWORK_STACKロックは使用しない。`AcceptFuture` が内部で使用する。
-    /// asyncコンテキストでは `accept_async()` を推奨。
-    pub fn next_incoming(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr, NetIfId)> {
+    /// asyncコンテキストでは `accept()` を推奨。
+    pub fn next_incoming_sync(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr, NetIfId)> {
         let (ep, addr, if_id) = self
             .endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .next_incoming()?;
+            .next_incoming_sync()?;
         Ok((OwnedEndpoint::from_endpoint(ep), addr, if_id))
     }
 
     /// 送信（同期）
-    pub fn send(&self, data: &[u8]) -> EndpointResult<usize> {
+    pub fn send_sync(&self, data: &[u8]) -> EndpointResult<usize> {
         self.endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .send(data)
+            .send_sync(data)
     }
 
     /// 受信（同期）
-    pub fn recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
+    pub fn recv_sync(&self, buf: &mut [u8]) -> EndpointResult<usize> {
         self.endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .recv(buf)
+            .recv_sync(buf)
     }
 
     /// UDP送信（同期）
-    pub fn send_to(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
+    pub fn send_to_sync(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
         self.endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .send_to(data, addr)
+            .send_to_sync(data, addr)
     }
 
     /// UDP受信（同期）
-    pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
+    pub fn recv_from_sync(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
         self.endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .recv_from(buf)
+            .recv_from_sync(buf)
     }
 
     /// TCP_NODELAY設定
@@ -775,30 +772,23 @@ impl OwnedEndpoint {
     /// 非同期接続開始（推奨API）
     ///
     /// NETWORK_STACKロックの同期取得を完全に回避する。
-    pub fn open_connection_async(
+    pub fn open_connection(
         &self,
         addr: EndpointAddr,
     ) -> Option<super::futures::OpenConnectionFuture> {
-        self.endpoint
-            .as_ref()
-            .map(|ep| ep.open_connection_async(addr))
+        self.endpoint.as_ref().map(|ep| ep.open_connection(addr))
     }
 
     /// 非同期リッスン開始（推奨API）
     ///
     /// NETWORK_STACKロックの同期取得を完全に回避する。
-    pub fn start_listening_async(
-        &self,
-        backlog: u32,
-    ) -> Option<super::futures::StartListeningFuture> {
-        self.endpoint
-            .as_ref()
-            .map(|ep| ep.start_listening_async(backlog))
+    pub fn start_listening(&self, backlog: u32) -> Option<super::futures::StartListeningFuture> {
+        self.endpoint.as_ref().map(|ep| ep.start_listening(backlog))
     }
 
     /// 非同期クローズ（推奨API）
-    pub fn close_async(&self) -> Option<super::futures::CloseAsyncFuture> {
-        self.endpoint.as_ref().map(|ep| ep.close_async())
+    pub fn close(&self) -> Option<super::futures::CloseFuture> {
+        self.endpoint.as_ref().map(|ep| ep.close())
     }
 }
 
@@ -806,7 +796,7 @@ impl Drop for OwnedEndpoint {
     fn drop(&mut self) {
         if let Some(ref ep) = self.endpoint {
             // エンドポイントクローズ
-            let _ = ep.close();
+            let _ = ep.close_sync();
 
             // EndpointManagerから登録解除
             if let Some(ref manager) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
@@ -851,7 +841,7 @@ pub fn create_raw_endpoint() -> OwnedEndpoint {
 }
 
 /// UDPエンドポイント作成とローカルアドレス設定（推奨API）
-pub fn create_udp_endpoint_bound(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
+pub fn create_udp_endpoint_bound_sync(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
     let ep = create_udp_endpoint();
     ep.set_local_addr(addr)?;
     Ok(ep)
@@ -869,20 +859,15 @@ pub fn create_udp_endpoint_bound(addr: EndpointAddr) -> EndpointResult<OwnedEndp
 ///
 /// # 使用例
 /// ```ignore
-/// let server = create_tcp_server_async(addr, 128).await?;
+/// let server = create_tcp_server(addr, 128).await?;
 /// loop {
-///     let result = server.accept_async().unwrap().await;
+///     let result = server.accept().unwrap().await;
 /// }
 /// ```
-pub async fn create_tcp_server_async(
-    addr: EndpointAddr,
-    backlog: u32,
-) -> EndpointResult<OwnedEndpoint> {
+pub async fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<OwnedEndpoint> {
     let ep = create_tcp_endpoint();
     ep.set_local_addr(addr)?;
-    let fut = ep
-        .start_listening_async(backlog)
-        .ok_or(EndpointError::NotFound)?;
+    let fut = ep.start_listening(backlog).ok_or(EndpointError::NotFound)?;
     fut.await?;
     Ok(ep)
 }
@@ -895,13 +880,11 @@ pub async fn create_tcp_server_async(
 ///
 /// # 使用例
 /// ```ignore
-/// let conn = open_tcp_connection_async(addr).await?;
+/// let conn = open_tcp_connection(addr).await?;
 /// ```
-pub async fn open_tcp_connection_async(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
+pub async fn open_tcp_connection(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
     let ep = create_tcp_endpoint();
-    let fut = ep
-        .open_connection_async(addr)
-        .ok_or(EndpointError::NotFound)?;
+    let fut = ep.open_connection(addr).ok_or(EndpointError::NotFound)?;
     fut.await?;
     Ok(ep)
 }
@@ -913,14 +896,14 @@ pub async fn open_tcp_connection_async(addr: EndpointAddr) -> EndpointResult<Own
 ///
 /// # 使用例
 /// ```ignore
-/// let udp = create_udp_endpoint_bound_async(addr).await?;
+/// let udp = create_udp_endpoint_bound(addr).await?;
 /// ```
-pub async fn create_udp_endpoint_bound_async(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
+pub async fn create_udp_endpoint_bound(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
     let ep = create_udp_endpoint();
     ep.set_local_addr(addr)?;
 
     // UDPソケットを非同期でbind（イベントキュー経由）
-    let udp_bind_future = crate::net::runtime::stack::bind_udp_endpoint_async(addr.port());
+    let udp_bind_future = crate::net::runtime::stack::bind_udp_endpoint(addr.port());
     if let Some(udp_ep) = udp_bind_future.await {
         if let Some(inner_ep) = ep.endpoint() {
             let mut inner = inner_ep.inner().lock().unwrap_or_else(|e| e.into_inner());

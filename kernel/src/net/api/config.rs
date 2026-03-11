@@ -304,68 +304,64 @@ fn list_interfaces_sync() -> alloc::vec::Vec<InterfaceSnapshot> {
 pub async fn primary_interface_config_snapshot() -> Option<NetworkConfigSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<Option<NetworkConfigSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetPrimaryInterfaceConfig {
+    let event = crate::net::l4::endpoint::event::NetworkEvent::GetPrimaryInterfaceConfig {
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
 pub async fn aggregate_network_stats_snapshot() -> Option<NetworkStatsSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<Option<NetworkStatsSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetAggregateNetworkStats {
+    let event = crate::net::l4::endpoint::event::NetworkEvent::GetAggregateNetworkStats {
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
 pub async fn get_interface_config(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<Option<InterfaceConfigSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetInterfaceConfig {
+    let event = crate::net::l4::endpoint::event::NetworkEvent::GetInterfaceConfig {
         if_id: if_id.0,
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
 pub async fn list_interface_configs() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<alloc::vec::Vec<InterfaceConfigSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncListInterfaceConfigs {
-        result_slot,
-        waker,
-    };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+    let event =
+        crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceConfigs { result_slot, waker };
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
 pub async fn get_interface_stats(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<Option<InterfaceStatsSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetInterfaceStats {
+    let event = crate::net::l4::endpoint::event::NetworkEvent::GetInterfaceStats {
         if_id: if_id.0,
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
 pub async fn list_interface_stats() -> alloc::vec::Vec<InterfaceStatsSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<alloc::vec::Vec<InterfaceStatsSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncListInterfaceStats {
-        result_slot,
-        waker,
-    };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+    let event =
+        crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceStats { result_slot, waker };
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
@@ -373,16 +369,43 @@ pub async fn list_interfaces() -> alloc::vec::Vec<InterfaceSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<alloc::vec::Vec<InterfaceSnapshot>>();
     let event =
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncListInterfaces { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+        crate::net::l4::endpoint::event::NetworkEvent::ListInterfaces { result_slot, waker };
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn async_list_interfaces_completes_with_event_task() {
-        let interfaces = crate::net::tests::run_with_network_event_task(super::list_interfaces());
+    fn list_interfaces_completes_with_event_task() {
+        let interfaces = {
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+            let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+            let mut executor = crate::task::Executor::new();
+            let result_slot_clone = result_slot.clone();
+            let completed_clone = completed.clone();
+            executor.spawn(crate::task::Task::new(async move {
+                let output = super::list_interfaces().await;
+                let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(output);
+                completed_clone.store(true, core::sync::atomic::Ordering::Release);
+            }));
+            executor.spawn(crate::task::Task::new(async {
+                crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+            }));
+
+            let mut output = None;
+            for _ in 0..100_000 {
+                executor.drive_once_for_test();
+                if completed.load(core::sync::atomic::Ordering::Acquire) {
+                    output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    break;
+                }
+            }
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            output.expect("list_interfaces test timed out")
+        };
         assert!(interfaces.is_empty());
     }
 }

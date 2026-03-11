@@ -188,7 +188,7 @@ impl NetworkEventHandler {
             // ============================================================
             // 非同期Futureイベント: スタック不可時はエラーで完了（デッドロック防止）
             // ============================================================
-            NetworkEvent::AsyncTcpBind {
+            NetworkEvent::TcpBind {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -197,7 +197,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUdpBind {
+            NetworkEvent::UdpBind {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -206,7 +206,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpConnect {
+            NetworkEvent::TcpConnect {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -215,7 +215,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpConnectStream {
+            NetworkEvent::TcpConnectStream {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -224,7 +224,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpBindListener {
+            NetworkEvent::TcpBindListener {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -233,7 +233,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpBindListenerWithToken {
+            NetworkEvent::TcpBindListenerWithToken {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -242,7 +242,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUdpBindEndpoint {
+            NetworkEvent::UdpBindEndpoint {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -251,7 +251,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUdpBindEndpointWithToken {
+            NetworkEvent::UdpBindEndpointWithToken {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -260,7 +260,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncMulticastJoin {
+            NetworkEvent::MulticastJoin {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -269,7 +269,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncMulticastLeave {
+            NetworkEvent::MulticastLeave {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -278,7 +278,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUnbindUdp {
+            NetworkEvent::UnbindUdp {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -287,7 +287,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUnbindTcp {
+            NetworkEvent::UnbindTcp {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -296,7 +296,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUnbindTcpListener {
+            NetworkEvent::UnbindTcpListener {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -305,7 +305,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpBindWithToken {
+            NetworkEvent::TcpBindWithToken {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -314,7 +314,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUdpBindWithToken {
+            NetworkEvent::UdpBindWithToken {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -323,7 +323,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncApplyIpv6Address {
+            NetworkEvent::ApplyIpv6Address {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -332,7 +332,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncIcmpEcho {
+            NetworkEvent::IcmpEcho {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -341,7 +341,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncArpResolveCheck {
+            NetworkEvent::ArpResolveCheck {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -350,20 +350,20 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncGetLinkLocal { result_slot, waker } => {
+            NetworkEvent::GetLinkLocal { result_slot, waker } => {
                 finish_command(result_slot, waker, None)
             }
-            NetworkEvent::AsyncGetPrimaryInterfaceConfig { result_slot, waker } => finish_command(
+            NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::config::primary_interface_config_snapshot_sync(),
             ),
-            NetworkEvent::AsyncGetAggregateNetworkStats { result_slot, waker } => finish_command(
+            NetworkEvent::GetAggregateNetworkStats { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::config::aggregate_network_stats_snapshot_sync(),
             ),
-            NetworkEvent::AsyncGetInterfaceConfig {
+            NetworkEvent::GetInterfaceConfig {
                 if_id,
                 result_slot,
                 waker,
@@ -372,12 +372,12 @@ impl NetworkEventHandler {
                 waker,
                 crate::net::api::config::get_interface_config_from_runtime(NetIfId(if_id)),
             ),
-            NetworkEvent::AsyncListInterfaceConfigs { result_slot, waker } => finish_command(
+            NetworkEvent::ListInterfaceConfigs { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::config::list_interface_configs_from_runtime(),
             ),
-            NetworkEvent::AsyncGetInterfaceStats {
+            NetworkEvent::GetInterfaceStats {
                 if_id,
                 result_slot,
                 waker,
@@ -386,20 +386,20 @@ impl NetworkEventHandler {
                 waker,
                 crate::net::api::config::get_interface_stats_without_stack(NetIfId(if_id)),
             ),
-            NetworkEvent::AsyncListInterfaceStats { result_slot, waker } => finish_command(
+            NetworkEvent::ListInterfaceStats { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::config::list_interface_stats_with_stack(None),
             ),
-            NetworkEvent::AsyncListInterfaces { result_slot, waker } => finish_command(
+            NetworkEvent::ListInterfaces { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::config::list_interfaces_from_runtime(),
             ),
-            NetworkEvent::AsyncGetNetworkSnapshot { result_slot, waker } => {
+            NetworkEvent::GetNetworkSnapshot { result_slot, waker } => {
                 finish_command(result_slot, waker, crate::net::obs::snapshot())
             }
-            NetworkEvent::AsyncGetNetworkRecentEvents {
+            NetworkEvent::GetNetworkRecentEvents {
                 limit,
                 result_slot,
                 waker,
@@ -412,32 +412,32 @@ impl NetworkEventHandler {
                     .take(limit)
                     .collect(),
             ),
-            NetworkEvent::AsyncFirewallEnable { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallEnable { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_enable_sync(),
             ),
-            NetworkEvent::AsyncFirewallDisable { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallDisable { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_disable_sync(),
             ),
-            NetworkEvent::AsyncFirewallStatus { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallStatus { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_status_sync(),
             ),
-            NetworkEvent::AsyncFirewallListRules { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallListRules { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_list_rules_sync(),
             ),
-            NetworkEvent::AsyncFirewallStats { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallStats { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_stats_sync(),
             ),
-            NetworkEvent::AsyncFirewallAddRule {
+            NetworkEvent::FirewallAddRule {
                 rule,
                 result_slot,
                 waker,
@@ -446,7 +446,7 @@ impl NetworkEventHandler {
                 waker,
                 crate::net::security::firewall::add_rule(rule).map_err(alloc::string::String::from),
             ),
-            NetworkEvent::AsyncFirewallRemoveRule {
+            NetworkEvent::FirewallRemoveRule {
                 id,
                 result_slot,
                 waker,
@@ -456,12 +456,12 @@ impl NetworkEventHandler {
                 crate::net::security::firewall::remove_rule(id)
                     .map_err(alloc::string::String::from),
             ),
-            NetworkEvent::AsyncFirewallClearRules { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallClearRules { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::security::firewall::clear_rules().map_err(alloc::string::String::from),
             ),
-            NetworkEvent::AsyncFirewallSetDefaultPolicy {
+            NetworkEvent::FirewallSetDefaultPolicy {
                 direction,
                 action,
                 result_slot,
@@ -472,21 +472,21 @@ impl NetworkEventHandler {
                 crate::net::security::firewall::set_default_policy(direction, action)
                     .map_err(alloc::string::String::from),
             ),
-            NetworkEvent::AsyncGetArpCache { result_slot, waker } => {
+            NetworkEvent::GetArpCache { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Vec::new());
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncGetUdpEndpoints { result_slot, waker } => {
+            NetworkEvent::GetUdpEndpoints { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Vec::new());
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncProcessTimeouts => {
+            NetworkEvent::ProcessTimeouts => {
                 // タイムアウト処理（スタック依存部分はスキップ）
                 // しかし、独立した TCB テーブルのメンテナンスは実行する
                 tcb_table().tick();
@@ -499,7 +499,7 @@ impl NetworkEventHandler {
             // ============================================================
             // DHCP/TCP 非同期クエリ: スタック不可時はデフォルト値で完了
             // ============================================================
-            NetworkEvent::AsyncGetDhcpState {
+            NetworkEvent::GetDhcpState {
                 if_id,
                 result_slot,
                 waker,
@@ -512,47 +512,47 @@ impl NetworkEventHandler {
                     crate::net::api::dhcp::dhcp_state_sync()
                 },
             ),
-            NetworkEvent::AsyncListDhcpStates { result_slot, waker } => finish_command(
+            NetworkEvent::ListDhcpStates { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::dhcp::list_dhcp_states_sync(),
             ),
-            NetworkEvent::AsyncDhcpRenew { result_slot, waker } => {
+            NetworkEvent::DhcpRenew { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Err(alloc::string::String::from("Stack unavailable")));
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpRelease { result_slot, waker } => {
+            NetworkEvent::DhcpRelease { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(false);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpDiscover { result_slot, waker } => {
+            NetworkEvent::DhcpDiscover { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(None);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpLastDeclined { result_slot, waker } => {
+            NetworkEvent::DhcpLastDeclined { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(None);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpLastReleased { result_slot, waker } => {
+            NetworkEvent::DhcpLastReleased { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(None);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncGetTcpConnections { result_slot, waker } => {
+            NetworkEvent::GetTcpConnections { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Vec::new());
                 }
@@ -1137,7 +1137,7 @@ impl NetworkEventHandler {
                 crate::net::l4::endpoint::futures::notify_icmp_echo_reply(source, sequence, rtt_us);
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpBind {
+            NetworkEvent::TcpBind {
                 local,
                 result_slot,
                 waker,
@@ -1153,7 +1153,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUdpBind {
+            NetworkEvent::UdpBind {
                 port,
                 scope,
                 result_slot,
@@ -1184,7 +1184,7 @@ impl NetworkEventHandler {
                 crate::net::l2::arp::notify_arp_resolved(ip, mac);
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpConnect {
+            NetworkEvent::TcpConnect {
                 local,
                 remote,
                 result_slot,
@@ -1201,7 +1201,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpConnectStream {
+            NetworkEvent::TcpConnectStream {
                 local,
                 remote,
                 result_slot,
@@ -1215,7 +1215,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncMulticastJoin {
+            NetworkEvent::MulticastJoin {
                 group,
                 result_slot,
                 waker,
@@ -1228,7 +1228,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncMulticastLeave {
+            NetworkEvent::MulticastLeave {
                 group,
                 result_slot,
                 waker,
@@ -1241,7 +1241,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUnbindUdp {
+            NetworkEvent::UnbindUdp {
                 port,
                 scope,
                 result_slot,
@@ -1254,7 +1254,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUnbindTcp {
+            NetworkEvent::UnbindTcp {
                 local,
                 remote,
                 result_slot,
@@ -1267,7 +1267,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUnbindTcpListener {
+            NetworkEvent::UnbindTcpListener {
                 local,
                 result_slot,
                 waker,
@@ -1279,7 +1279,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpBindWithToken {
+            NetworkEvent::TcpBindWithToken {
                 local,
                 token,
                 result_slot,
@@ -1295,7 +1295,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpBindListener {
+            NetworkEvent::TcpBindListener {
                 local,
                 result_slot,
                 waker,
@@ -1308,7 +1308,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncTcpBindListenerWithToken {
+            NetworkEvent::TcpBindListenerWithToken {
                 local,
                 token,
                 result_slot,
@@ -1322,7 +1322,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUdpBindWithToken {
+            NetworkEvent::UdpBindWithToken {
                 port,
                 scope,
                 token,
@@ -1338,7 +1338,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUdpBindEndpoint {
+            NetworkEvent::UdpBindEndpoint {
                 port,
                 scope,
                 result_slot,
@@ -1351,7 +1351,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncUdpBindEndpointWithToken {
+            NetworkEvent::UdpBindEndpointWithToken {
                 port,
                 scope,
                 token,
@@ -1365,20 +1365,20 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncApplyIpv6Address {
+            NetworkEvent::ApplyIpv6Address {
                 addr,
                 result_slot,
                 waker,
             } => {
                 let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(addr);
-                stack.apply_ipv6_global_address(ipv6);
+                stack.enqueue_apply_ipv6_global_address(ipv6);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(true);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncProcessTimeouts => {
+            NetworkEvent::ProcessTimeouts => {
                 stack.process_timeouts();
 
                 // --- RFC Compliance: Process TCP periodic tasks ---
@@ -1659,7 +1659,7 @@ impl NetworkEventHandler {
             // ================================================================
             // Async utility events (with stack)
             // ================================================================
-            NetworkEvent::AsyncIcmpEcho {
+            NetworkEvent::IcmpEcho {
                 target,
                 sequence,
                 result_slot,
@@ -1675,12 +1675,12 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncArpProbe { target_ip } => {
+            NetworkEvent::ArpProbe { target_ip } => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
                 stack.send_arp_probe(ip);
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncArpResolveCheck {
+            NetworkEvent::ArpResolveCheck {
                 target_ip,
                 requester_mac,
                 result_slot,
@@ -1698,7 +1698,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpApplyLease {
+            NetworkEvent::DhcpApplyLease {
                 if_id,
                 ip,
                 subnet,
@@ -1745,11 +1745,11 @@ impl NetworkEventHandler {
                 }
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncGetLinkLocal { result_slot, waker } => {
+            NetworkEvent::GetLinkLocal { result_slot, waker } => {
                 let result = stack.config().ipv6.map(|c| c.link_local.octets());
                 finish_command(result_slot, waker, result)
             }
-            NetworkEvent::AsyncGetPrimaryInterfaceConfig { result_slot, waker } => {
+            NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => {
                 let result = crate::net::api::config::primary_interface_id()
                     .and_then(|if_id| {
                         crate::net::api::config::get_interface_config_from_runtime(if_id)
@@ -1762,7 +1762,7 @@ impl NetworkEventHandler {
                     });
                 finish_command(result_slot, waker, result)
             }
-            NetworkEvent::AsyncGetAggregateNetworkStats { result_slot, waker } => {
+            NetworkEvent::GetAggregateNetworkStats { result_slot, waker } => {
                 let stats = crate::net::api::config::list_interface_stats_with_stack(Some(stack));
                 finish_command(
                     result_slot,
@@ -1770,7 +1770,7 @@ impl NetworkEventHandler {
                     crate::net::api::config::aggregate_network_stats_from_list(&stats),
                 )
             }
-            NetworkEvent::AsyncGetInterfaceConfig {
+            NetworkEvent::GetInterfaceConfig {
                 if_id,
                 result_slot,
                 waker,
@@ -1779,12 +1779,12 @@ impl NetworkEventHandler {
                 waker,
                 crate::net::api::config::get_interface_config_from_runtime(NetIfId(if_id)),
             ),
-            NetworkEvent::AsyncListInterfaceConfigs { result_slot, waker } => finish_command(
+            NetworkEvent::ListInterfaceConfigs { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::config::list_interface_configs_from_runtime(),
             ),
-            NetworkEvent::AsyncGetInterfaceStats {
+            NetworkEvent::GetInterfaceStats {
                 if_id,
                 result_slot,
                 waker,
@@ -1796,20 +1796,20 @@ impl NetworkEventHandler {
                     Some(stack),
                 ),
             ),
-            NetworkEvent::AsyncListInterfaceStats { result_slot, waker } => finish_command(
+            NetworkEvent::ListInterfaceStats { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::config::list_interface_stats_with_stack(Some(stack)),
             ),
-            NetworkEvent::AsyncListInterfaces { result_slot, waker } => finish_command(
+            NetworkEvent::ListInterfaces { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::config::list_interfaces_from_runtime(),
             ),
-            NetworkEvent::AsyncGetNetworkSnapshot { result_slot, waker } => {
+            NetworkEvent::GetNetworkSnapshot { result_slot, waker } => {
                 finish_command(result_slot, waker, crate::net::obs::snapshot())
             }
-            NetworkEvent::AsyncGetNetworkRecentEvents {
+            NetworkEvent::GetNetworkRecentEvents {
                 limit,
                 result_slot,
                 waker,
@@ -1822,32 +1822,32 @@ impl NetworkEventHandler {
                     .take(limit)
                     .collect(),
             ),
-            NetworkEvent::AsyncFirewallEnable { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallEnable { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_enable_sync(),
             ),
-            NetworkEvent::AsyncFirewallDisable { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallDisable { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_disable_sync(),
             ),
-            NetworkEvent::AsyncFirewallStatus { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallStatus { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_status_sync(),
             ),
-            NetworkEvent::AsyncFirewallListRules { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallListRules { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_list_rules_sync(),
             ),
-            NetworkEvent::AsyncFirewallStats { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallStats { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::firewall::firewall_stats_sync(),
             ),
-            NetworkEvent::AsyncFirewallAddRule {
+            NetworkEvent::FirewallAddRule {
                 rule,
                 result_slot,
                 waker,
@@ -1856,7 +1856,7 @@ impl NetworkEventHandler {
                 waker,
                 crate::net::security::firewall::add_rule(rule).map_err(alloc::string::String::from),
             ),
-            NetworkEvent::AsyncFirewallRemoveRule {
+            NetworkEvent::FirewallRemoveRule {
                 id,
                 result_slot,
                 waker,
@@ -1866,12 +1866,12 @@ impl NetworkEventHandler {
                 crate::net::security::firewall::remove_rule(id)
                     .map_err(alloc::string::String::from),
             ),
-            NetworkEvent::AsyncFirewallClearRules { result_slot, waker } => finish_command(
+            NetworkEvent::FirewallClearRules { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::security::firewall::clear_rules().map_err(alloc::string::String::from),
             ),
-            NetworkEvent::AsyncFirewallSetDefaultPolicy {
+            NetworkEvent::FirewallSetDefaultPolicy {
                 direction,
                 action,
                 result_slot,
@@ -1882,7 +1882,7 @@ impl NetworkEventHandler {
                 crate::net::security::firewall::set_default_policy(direction, action)
                     .map_err(alloc::string::String::from),
             ),
-            NetworkEvent::AsyncGetArpCache { result_slot, waker } => {
+            NetworkEvent::GetArpCache { result_slot, waker } => {
                 let entries: Vec<_> = stack
                     .arp_cache()
                     .iter()
@@ -1894,14 +1894,14 @@ impl NetworkEventHandler {
                     .collect();
                 finish_command(result_slot, waker, entries)
             }
-            NetworkEvent::AsyncArpInsert { ip, mac } => {
+            NetworkEvent::ArpInsert { ip, mac } => {
                 let now = crate::time::get_uptime_ms();
                 let ipv4 = crate::net::l3::ipv4::Ipv4Address::new(ip);
                 let mac_addr = MacAddress::new(mac);
                 stack.arp_cache_insert(ipv4, mac_addr, now);
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncGetUdpEndpoints { result_slot, waker } => {
+            NetworkEvent::GetUdpEndpoints { result_slot, waker } => {
                 let snapshots = stack.list_udp_endpoints();
                 let result: Vec<_> = snapshots
                     .into_iter()
@@ -1920,7 +1920,7 @@ impl NetworkEventHandler {
             // ============================================================
             // 非同期DHCP/TCP クエリ（スタックロック保持中に処理）
             // ============================================================
-            NetworkEvent::AsyncGetDhcpState {
+            NetworkEvent::GetDhcpState {
                 if_id,
                 result_slot,
                 waker,
@@ -1933,12 +1933,12 @@ impl NetworkEventHandler {
                     crate::net::api::dhcp::dhcp_state_sync()
                 },
             ),
-            NetworkEvent::AsyncListDhcpStates { result_slot, waker } => finish_command(
+            NetworkEvent::ListDhcpStates { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::dhcp::list_dhcp_states_sync(),
             ),
-            NetworkEvent::AsyncDhcpRenew { result_slot, waker } => {
+            NetworkEvent::DhcpRenew { result_slot, waker } => {
                 use crate::net::services::dhcp;
 
                 let now = tcb_table().get_current_tick();
@@ -1999,7 +1999,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpRelease { result_slot, waker } => {
+            NetworkEvent::DhcpRelease { result_slot, waker } => {
                 use crate::net::services::dhcp;
 
                 let mut released = false;
@@ -2027,7 +2027,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpDiscover { result_slot, waker } => {
+            NetworkEvent::DhcpDiscover { result_slot, waker } => {
                 use crate::net::services::dhcp;
 
                 let now = tcb_table().get_current_tick();
@@ -2059,7 +2059,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpLastDeclined { result_slot, waker } => {
+            NetworkEvent::DhcpLastDeclined { result_slot, waker } => {
                 use crate::net::services::dhcp;
 
                 let mut ip = None;
@@ -2077,7 +2077,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncDhcpLastReleased { result_slot, waker } => {
+            NetworkEvent::DhcpLastReleased { result_slot, waker } => {
                 use crate::net::services::dhcp;
 
                 let mut ip = None;
@@ -2095,7 +2095,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::AsyncGetTcpConnections { result_slot, waker } => {
+            NetworkEvent::GetTcpConnections { result_slot, waker } => {
                 let snapshots = tcb_table().list_connections();
                 let connections: Vec<_> = snapshots
                     .into_iter()
@@ -2148,7 +2148,7 @@ impl NetworkEventHandler {
         // スタックロックなしのコンテキストから呼ばれた場合:
         // イベントキュー経由で再エンキューし、network_event_taskが
         // スタックロック保持下で処理する（二重ロック取得を回避）
-        crate::net::l4::endpoint::event::send_event_ignore(NetworkEvent::IngressPacket {
+        crate::net::l4::endpoint::event::enqueue_event_ignore(NetworkEvent::IngressPacket {
             if_id,
             packet,
         });
@@ -2785,7 +2785,7 @@ impl NetworkEventHandler {
         if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
             mgr.for_each(|socket| {
                 if socket.send_buffer_len() > 0 {
-                    super::event::send_event_ignore(super::event::NetworkEvent::DataReady {
+                    super::event::enqueue_event_ignore(super::event::NetworkEvent::DataReady {
                         fd: socket.fd(),
                         endpoint_type: socket.socket_type(),
                     });
@@ -3305,7 +3305,7 @@ impl NetworkEventHandler {
         if let Some((_, dst_v4)) = endpoint_ipv4_pair(src, dst) {
             let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
             // 非同期イベントキュー経由で送信（ロック競合回避）
-            if crate::net::runtime::stack::send_udp_async(
+            if crate::net::runtime::stack::enqueue_udp_send(
                 src.port(),
                 dst_ip,
                 dst.port(),
@@ -3323,7 +3323,7 @@ impl NetworkEventHandler {
             let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(src.as_ipv6());
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(dst.as_ipv6());
             // 非同期イベントキュー経由で送信（ロック競合回避）
-            if crate::net::runtime::stack::send_udp_v6_async(
+            if crate::net::runtime::stack::enqueue_udp_v6_send(
                 src.port(),
                 src_v6,
                 dst_v6,
@@ -3342,7 +3342,7 @@ impl NetworkEventHandler {
 
     /// ICMP Echo Requestイベント処理（イベントキュー経由で非同期処理）
     ///
-    /// `AsyncIcmpEcho` イベントとしてイベントキューに再送出し、
+    /// `IcmpEcho` イベントとしてイベントキューに再送出し、
     /// スタックロック保持中のハンドラ（handle_event_with_stack）で処理させる。
     /// `send_real_icmp_echo` の同期ロック取得＋IRQ無効化を回避する。
     fn handle_icmp_echo_request(&self, target: [u8; 4], sequence: u16) -> EventHandleResult {

@@ -131,7 +131,7 @@ impl NtpClient {
         let remote = UdpAddr::new(server_ip, NTP_PORT);
 
         // 非同期UDPバインド: イベントキュー経由でNETWORK_STACKロックを回避
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(0)
+        let socket = crate::net::runtime::stack::bind_udp_endpoint(0)
             .await
             .ok_or(EndpointError::Internal)?;
 

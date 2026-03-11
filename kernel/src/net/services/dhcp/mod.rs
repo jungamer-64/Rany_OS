@@ -242,7 +242,7 @@ async fn dhcp_v4_drive_task(runtime: Arc<DhcpInterfaceRuntime>) {
 }
 
 async fn dhcp_v4_dispatcher_task() {
-    let socket = match crate::net::runtime::stack::bind_udp_endpoint_async(DHCP_CLIENT_PORT).await {
+    let socket = match crate::net::runtime::stack::bind_udp_endpoint(DHCP_CLIENT_PORT).await {
         Some(socket) => socket,
         None => {
             log::error!("[NET] DHCPv4 dispatcher failed to bind UDP port 68");
@@ -271,8 +271,8 @@ async fn dhcp_v4_dispatcher_task() {
                             lease.ip_address
                         );
                         let hostname_bytes = lease.hostname.clone().unwrap_or_default();
-                        crate::net::l4::endpoint::event::send_event_ignore(
-                            crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpApplyLease {
+                        crate::net::l4::endpoint::event::enqueue_event_ignore(
+                            crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
                                 if_id: Some(runtime.if_id.0),
                                 ip: *lease.ip_address.as_bytes(),
                                 subnet: *lease.subnet_mask.as_bytes(),

@@ -2286,7 +2286,7 @@ fn process_handle_result(result: EventHandleResult, event_clone: NetworkEvent) {
         }
         EventHandleResult::Retry => {
             // 再試行が必要な場合はイベントを再キュー（バックプレッシャー対応）
-            if let Err(_) = super::event::send_event(event_clone) {
+            if let Err(_) = super::event::enqueue_event(event_clone) {
                 log::warn!("Network: Event requeue failed due to full queue");
             }
         }

@@ -86,7 +86,7 @@ impl DhcpV6Client {
     ///
     /// ## 設計根拠
     /// - `handle_packet()` / `check_timeout()` は同期関数であり、イベントハンドラの
-    ///   スタックロック保持中に呼ばれるため、async版（AsyncGetLinkLocal）は使用不可
+    ///   スタックロック保持中に呼ばれるため、async版（GetLinkLocal）は使用不可
     ///   （再帰的ロック取得→デッドロック）
     /// - 短期間の読み取りロックで初回のみアクセスし、以降はキャッシュを参照する
     fn get_link_local(&self) -> Option<Ipv6Address> {
@@ -119,7 +119,7 @@ impl DhcpV6Client {
 
     /// 非同期イベントキュー経由でUDPv6パケットを送信（ロック競合回避）
     fn send_v6_async(&self, src: Ipv6Address, dst: Ipv6Address, data: &[u8]) -> bool {
-        crate::net::runtime::stack::send_udp_v6_async(
+        crate::net::runtime::stack::enqueue_udp_v6_send(
             DHCPV6_CLIENT_PORT,
             src,
             dst,
@@ -162,7 +162,7 @@ impl DhcpV6Client {
 
     /// DHCPv6 クライアントのメインループ（非同期）
     pub async fn run(&self) -> Result<(), &'static str> {
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(DHCPV6_CLIENT_PORT)
+        let socket = crate::net::runtime::stack::bind_udp_endpoint(DHCPV6_CLIENT_PORT)
             .await
             .ok_or("Failed to bind DHCPv6 socket")?;
 
@@ -963,8 +963,8 @@ impl DhcpV6Client {
                 }
 
                 // Apply IPv6 address to the running NetworkStack (fire-and-forget via event queue)
-                crate::net::l4::endpoint::event::send_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::AsyncApplyIpv6Address {
+                crate::net::l4::endpoint::event::enqueue_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::ApplyIpv6Address {
                         addr: lease.addr.octets(),
                         result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
                         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),

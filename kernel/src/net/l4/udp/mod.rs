@@ -409,8 +409,8 @@ impl Drop for UdpEndpoint {
                 Err(_) => (0, InterfaceScope::Any),
             };
             if port != 0 {
-                crate::net::l4::endpoint::event::send_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindUdp {
+                crate::net::l4::endpoint::event::enqueue_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::UnbindUdp {
                         port,
                         scope,
                         result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
@@ -596,7 +596,7 @@ impl UdpEndpoint {
         &self,
         group: Ipv4Address,
     ) -> crate::net::runtime::stack::MulticastJoinFuture {
-        crate::net::runtime::stack::join_multicast_async(group)
+        crate::net::runtime::stack::join_multicast(group)
     }
 
     /// Leave a multicast group (async, event-queue based)
@@ -606,7 +606,7 @@ impl UdpEndpoint {
         &self,
         group: Ipv4Address,
     ) -> crate::net::runtime::stack::MulticastLeaveFuture {
-        crate::net::runtime::stack::leave_multicast_async(group)
+        crate::net::runtime::stack::leave_multicast(group)
     }
 
     /// Get receive queue length
@@ -642,7 +642,7 @@ impl UdpEndpoint {
         // Send via async event queue to avoid synchronous NETWORK_STACK lock
         match dst {
             UdpAddr::V4 { ip, port } => {
-                if crate::net::runtime::stack::send_udp_scoped_async(
+                if crate::net::runtime::stack::enqueue_udp_send_scoped(
                     scope, local_port, ip, port, data, ttl,
                 ) {
                     Ok(data.len())
@@ -651,7 +651,7 @@ impl UdpEndpoint {
                 }
             }
             UdpAddr::V6 { ip, port } => {
-                if crate::net::runtime::stack::send_udp_v6_scoped_async(
+                if crate::net::runtime::stack::enqueue_udp_v6_send_scoped(
                     scope,
                     local_port,
                     Ipv6Address::UNSPECIFIED,
@@ -768,10 +768,10 @@ impl<'a> Future for UdpSendFuture<'a> {
         // イベントキュー経由で非同期送信を試行
         let scope = this.endpoint.default_send_scope();
         let sent = match this.dst {
-            UdpAddr::V4 { ip, port } => crate::net::runtime::stack::send_udp_scoped_async(
+            UdpAddr::V4 { ip, port } => crate::net::runtime::stack::enqueue_udp_send_scoped(
                 scope, local_port, ip, port, this.data, ttl,
             ),
-            UdpAddr::V6 { ip, port } => crate::net::runtime::stack::send_udp_v6_scoped_async(
+            UdpAddr::V6 { ip, port } => crate::net::runtime::stack::enqueue_udp_v6_send_scoped(
                 scope,
                 local_port,
                 Ipv6Address::UNSPECIFIED,
@@ -833,10 +833,10 @@ impl Future for UdpSendZeroCopyFuture {
                 Err(_) => InterfaceScope::Any,
             };
             let sent = match this.dst {
-                UdpAddr::V4 { ip, port } => crate::net::runtime::stack::send_udp_scoped_async(
+                UdpAddr::V4 { ip, port } => crate::net::runtime::stack::enqueue_udp_send_scoped(
                     scope, local_port, ip, port, data, ttl,
                 ),
-                UdpAddr::V6 { ip, port } => crate::net::runtime::stack::send_udp_v6_scoped_async(
+                UdpAddr::V6 { ip, port } => crate::net::runtime::stack::enqueue_udp_v6_send_scoped(
                     scope,
                     local_port,
                     Ipv6Address::UNSPECIFIED,

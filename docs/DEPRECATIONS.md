@@ -115,7 +115,7 @@ This document lists symbols that have been marked deprecated and recommended mig
     - 代表例:
       - `crate::net::get_network_config` -> `crate::net::api::shell::get_network_config`
       - `crate::net::get_network_stats` -> `crate::net::api::shell::get_network_stats`
-      - `crate::net::send_icmp_echo` -> `crate::net::api::shell::send_icmp_echo_async` (sync版は削除済み)
+      - `crate::net::send_icmp_echo` -> `crate::net::api::shell::enqueue_icmp_echo` (sync版は削除済み)
       - `crate::net::get_arp_cache` -> `crate::net::api::shell::get_arp_cache`
   - POSIX-style socket compatibility methods (e.g., `Socket::bind`, `Socket::connect`, `Socket::listen`, `Socket::accept`, `TcpStream::connect`, `TcpListener::bind`/`accept`) ❌ **removed**
     - Removal: These compatibility wrappers have been removed; migrate to the async-first APIs: `set_local_addr()`, `open_connection()`, `start_listening()`/`next_connection()`, and `dial()`/`TcpStream::dial()`.
@@ -138,7 +138,7 @@ This document lists symbols that have been marked deprecated and recommended mig
 
 - `kernel/src/net/api/icmp.rs`
   - `send_icmp_echo()` ❌ **removed** (was deprecated)
-    - Migration: Use `send_icmp_echo_async()` or `ping_async()` instead.
+    - Migration: Use `enqueue_icmp_echo()` or `ping()` instead.
 
 - `kernel/src/net/api/diagnostics.rs`
   - `dns_resolve()` ❌ **removed** (was deprecated)
@@ -188,13 +188,13 @@ This document lists symbols that have been marked deprecated and recommended mig
 以下の deprecated 項目を一括整理しました:
 
 ### 削除済み（呼び出し元なしのため完全削除）
-- `send_icmp_echo()` — `send_icmp_echo_async()` / `ping_async()` に移行
+- `send_icmp_echo()` — `enqueue_icmp_echo()` / `ping()` に移行
 - `dns_resolve()` — `crate::net::services::dns` に移行
 - `with_profiler()` — `crate::profiler::profiler().cpu` に移行
 - OOM killer の deprecated スタブ: `register_domain()`, `unregister_domain()`, `update_memory_usage()`, `register_simple()` — `crate::domain::quota::quota_manager()` に移行
 
 ### 呼び出し元を移行
-- テスト `test_send_icmp_fallback_zero_copy` の `send_icmp_echo()` → `send_icmp_echo_async()` に更新
+- テスト `test_send_icmp_fallback_zero_copy` の `send_icmp_echo()` → `enqueue_icmp_echo()` に更新
 
 ### 新規モジュール
 - `kernel/src/net/api/shell.rs` — テスト/シェルから参照される `api::shell` ファサードモジュールを作成（`config`, `icmp`, `dhcp`, `diagnostics` の公開関数を集約）

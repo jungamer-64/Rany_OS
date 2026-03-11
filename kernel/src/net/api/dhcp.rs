@@ -51,8 +51,8 @@ pub struct InterfaceDhcpState {
 ///
 // 旧同期API (dhcp_discover, dhcp_request, dhcp_release, dhcp_last_declined,
 // dhcp_last_released, dhcp_renew) は削除済み。
-// 非同期版 (dhcp_discover_async, dhcp_release_async, dhcp_renew_async,
-// dhcp_last_declined_async, dhcp_last_released_async) を使用すること。
+// 非同期版 (dhcp_discover, dhcp_release, dhcp_renew,
+// dhcp_last_declined, dhcp_last_released) を使用すること。
 
 pub fn dhcp_v4_state_name(state: dhcp::DhcpState) -> &'static str {
     match state {
@@ -349,7 +349,7 @@ pub(crate) fn dhcp_state_sync() -> DhcpRuntimeState {
     out
 }
 
-// 旧同期 dhcp_renew は削除済み（dhcp_renew_async を使用すること）
+// 旧同期 dhcp_renew は削除済み（dhcp_renew を使用すること）
 
 // ============================================================================
 // 非同期API（推奨）
@@ -440,12 +440,12 @@ impl Future for DhcpStateFuture {
 pub async fn get_dhcp_state(if_id: NetIfId) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetDhcpState {
+    let event = crate::net::l4::endpoint::event::NetworkEvent::GetDhcpState {
         if_id: Some(if_id.0),
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
@@ -453,20 +453,20 @@ pub async fn list_dhcp_states() -> alloc::vec::Vec<InterfaceDhcpState> {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<alloc::vec::Vec<InterfaceDhcpState>>();
     let event =
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncListDhcpStates { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+        crate::net::l4::endpoint::event::NetworkEvent::ListDhcpStates { result_slot, waker };
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
 pub async fn dhcp_state() -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetDhcpState {
+    let event = crate::net::l4::endpoint::event::NetworkEvent::GetDhcpState {
         if_id: None,
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event(event).await;
     command_future.await
 }
 
@@ -494,8 +494,8 @@ impl Future for DhcpRenewFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRenew {
+            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+                crate::net::l4::endpoint::event::NetworkEvent::DhcpRenew {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
@@ -517,9 +517,9 @@ impl Future for DhcpRenewFuture {
 ///
 /// # 使用例
 /// ```ignore
-/// let result = dhcp_renew_async().await;
+/// let result = dhcp_renew().await;
 /// ```
-pub fn dhcp_renew_async() -> DhcpRenewFuture {
+pub fn dhcp_renew() -> DhcpRenewFuture {
     DhcpRenewFuture::new()
 }
 
@@ -547,8 +547,8 @@ impl Future for DhcpReleaseFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRelease {
+            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+                crate::net::l4::endpoint::event::NetworkEvent::DhcpRelease {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
@@ -568,9 +568,9 @@ impl Future for DhcpReleaseFuture {
 ///
 /// # 使用例
 /// ```ignore
-/// let released = dhcp_release_async().await;
+/// let released = dhcp_release().await;
 /// ```
-pub fn dhcp_release_async() -> DhcpReleaseFuture {
+pub fn dhcp_release() -> DhcpReleaseFuture {
     DhcpReleaseFuture::new()
 }
 
@@ -598,8 +598,8 @@ impl Future for DhcpDiscoverFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpDiscover {
+            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+                crate::net::l4::endpoint::event::NetworkEvent::DhcpDiscover {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
@@ -619,9 +619,9 @@ impl Future for DhcpDiscoverFuture {
 ///
 /// # 使用例
 /// ```ignore
-/// let offer = dhcp_discover_async().await;
+/// let offer = dhcp_discover().await;
 /// ```
-pub fn dhcp_discover_async() -> DhcpDiscoverFuture {
+pub fn dhcp_discover() -> DhcpDiscoverFuture {
     DhcpDiscoverFuture::new()
 }
 
@@ -649,8 +649,8 @@ impl Future for DhcpLastDeclinedFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpLastDeclined {
+            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+                crate::net::l4::endpoint::event::NetworkEvent::DhcpLastDeclined {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
@@ -667,7 +667,7 @@ impl Future for DhcpLastDeclinedFuture {
 }
 
 /// 非同期DHCP最終拒否IP取得（推奨API）
-pub fn dhcp_last_declined_async() -> DhcpLastDeclinedFuture {
+pub fn dhcp_last_declined() -> DhcpLastDeclinedFuture {
     DhcpLastDeclinedFuture::new()
 }
 
@@ -695,8 +695,8 @@ impl Future for DhcpLastReleasedFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
-                crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpLastReleased {
+            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+                crate::net::l4::endpoint::event::NetworkEvent::DhcpLastReleased {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
@@ -713,15 +713,42 @@ impl Future for DhcpLastReleasedFuture {
 }
 
 /// 非同期DHCP最終解放IP取得（推奨API）
-pub fn dhcp_last_released_async() -> DhcpLastReleasedFuture {
+pub fn dhcp_last_released() -> DhcpLastReleasedFuture {
     DhcpLastReleasedFuture::new()
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn async_dhcp_state_completes_with_event_task() {
-        let state = crate::net::tests::run_with_network_event_task(super::dhcp_state());
+    fn dhcp_state_completes_with_event_task() {
+        let state = {
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+            let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+            let mut executor = crate::task::Executor::new();
+            let result_slot_clone = result_slot.clone();
+            let completed_clone = completed.clone();
+            executor.spawn(crate::task::Task::new(async move {
+                let output = super::dhcp_state().await;
+                let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+                *slot = Some(output);
+                completed_clone.store(true, core::sync::atomic::Ordering::Release);
+            }));
+            executor.spawn(crate::task::Task::new(async {
+                crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+            }));
+
+            let mut output = None;
+            for _ in 0..100_000 {
+                executor.drive_once_for_test();
+                if completed.load(core::sync::atomic::Ordering::Acquire) {
+                    output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    break;
+                }
+            }
+            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            output.expect("dhcp_state test timed out")
+        };
         assert!(!state.v4_state.is_empty());
     }
 }

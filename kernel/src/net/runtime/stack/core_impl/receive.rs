@@ -19,7 +19,7 @@ impl NetworkStack {
     pub fn receive_on(&mut self, if_id: Option<super::NetIfId>, packet: PacketRef) {
         // Offload ALL packet processing to the asynchronous endpoint stack.
         // This minimizes time spent in the interrupt/polling context.
-        crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::enqueue_event_ignore(
             crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { if_id, packet },
         );
     }
@@ -81,7 +81,7 @@ impl NetworkStack {
                 }
 
                 // Offload to asynchronous endpoint stack
-                crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
                         if_id: None,
                         packet: packet.clone(),
@@ -100,7 +100,7 @@ impl NetworkStack {
                 }
 
                 // Offload to asynchronous endpoint stack
-                crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
                         if_id: None,
                         packet: packet.clone(),
@@ -126,7 +126,7 @@ impl NetworkStack {
                     }
                 }
 
-                crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
                         if_id: None,
                         data: reassembled_data,
@@ -326,7 +326,7 @@ impl NetworkStack {
                     rtt_us,
                 );
                 // イベントキュー経由でも通知（ハンドラ層での処理用）
-                crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoReply {
                         source: *src_ip.as_bytes(),
                         sequence,
@@ -405,7 +405,7 @@ impl NetworkStack {
             }
             Ipv6ProcessResult::Reassembled(reassembled_data) => {
                 // Security Fix: Offload reassembled IPv6 packets to the asynchronous endpoint stack
-                crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
                         if_id,
                         data: reassembled_data,

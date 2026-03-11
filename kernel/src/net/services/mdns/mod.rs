@@ -169,7 +169,7 @@ impl MdnsService {
     /// mDNSサービスのメインループ（非同期）
     pub async fn run(&mut self) -> Result<(), &'static str> {
         // Create socket
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_async(MDNS_PORT)
+        let socket = crate::net::runtime::stack::bind_udp_endpoint(MDNS_PORT)
             .await
             .ok_or("Failed to bind mDNS socket")?;
 

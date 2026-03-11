@@ -75,7 +75,7 @@ impl TcpStream {
         let local_addr = EndpointAddr::new([0, 0, 0, 0], 0);
 
         // フェーズ1: イベントキュー経由でTCB作成とSYN送信を非同期リクエスト
-        let stream = crate::net::runtime::stack::connect_tcp_stream_async(local_addr, addr).await?;
+        let stream = crate::net::runtime::stack::connect_tcp_stream(local_addr, addr).await?;
 
         // フェーズ2: 接続完了を非同期で待つ（SYN-ACK応答待機）
         let tcb = stream.tcb.clone();
@@ -255,8 +255,8 @@ impl Drop for TcpStream {
             if let Ok(tcb) = self.tcb.lock() {
                 let local = tcb.local_addr();
                 if let Some(remote) = tcb.remote_addr() {
-                    crate::net::l4::endpoint::event::send_event_ignore(
-                        crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcp {
+                    crate::net::l4::endpoint::event::enqueue_event_ignore(
+                        crate::net::l4::endpoint::event::NetworkEvent::UnbindTcp {
                             local,
                             remote,
                             result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
@@ -515,14 +515,14 @@ impl TcpListener {
     /// 【設計書】POSIXのbind()と同様の動作
     /// イベントキュー経由で非同期にbindを実行し、ロック競合を回避する。
     pub async fn bind(addr: EndpointAddr) -> Result<Self, TcpError> {
-        crate::net::runtime::stack::bind_tcp_listener_async(addr).await
+        crate::net::runtime::stack::bind_tcp_listener(addr).await
     }
 
     /// 指定アドレスとトークンで新しいリスナーを作成
     ///
     /// イベントキュー経由で非同期にbindを実行する。
     pub async fn bind_with_token(addr: EndpointAddr, token: Option<u64>) -> Result<Self, TcpError> {
-        crate::net::runtime::stack::bind_tcp_listener_with_token_async(addr, token).await
+        crate::net::runtime::stack::bind_tcp_listener_with_token(addr, token).await
     }
 
     // Legacy constructor `TcpListener::new` removed; use `TcpListener::bind(addr)` instead.
@@ -557,8 +557,8 @@ impl Drop for TcpListener {
         // Automatically unbind the listener when the handle is dropped.
         // This prevents port leakage and DoS vulnerabilities.
         // イベントキュー経由で非同期unbindを送信（Drop内では同期ロックを回避）
-        crate::net::l4::endpoint::event::send_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcpListener {
+        crate::net::l4::endpoint::event::enqueue_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::UnbindTcpListener {
                 local: self.local_addr,
                 result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
                 waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
@@ -646,7 +646,7 @@ impl TcpStream {
     pub async fn dial_timeout(addr: EndpointAddr, timeout_us: u64) -> Result<Self, TcpError> {
         let local_addr = EndpointAddr::new([0, 0, 0, 0], 0);
         // 完全非同期版: イベントキュー経由でconnect
-        let stream = crate::net::runtime::stack::connect_tcp_stream_async(local_addr, addr).await?;
+        let stream = crate::net::runtime::stack::connect_tcp_stream(local_addr, addr).await?;
         let start = crate::time::precise_time_nanos() / 1000;
         let tcb = stream.tcb.clone();
         ConnectTimeoutFuture {

@@ -327,7 +327,7 @@ pub fn process_received_packet_zero_copy_for_interface(
     }
 
     compute_and_set_flow_hash(&mut packet);
-    crate::net::l4::endpoint::event::send_event_ignore(
+    crate::net::l4::endpoint::event::enqueue_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
             if_id: Some(if_id),
             packet,
