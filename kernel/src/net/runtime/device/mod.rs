@@ -250,12 +250,47 @@ impl NetPortRuntime for PortRuntimeHandle {
     }
 
     fn update_link(&self, up: bool) -> Result<(), &'static str> {
+        let if_id = self.current_if_id();
         let result = if up {
-            manager::set_interface_up(self.current_if_id())
+            manager::set_interface_up(if_id)
         } else {
-            manager::set_interface_down(self.current_if_id())
+            manager::set_interface_down(if_id)
         };
-        result.map_err(|_| "failed to update interface link state")
+        result.map_err(|_| "failed to update interface link state")?;
+
+        if up {
+            if let Ok(Some(iface)) = manager::get_interface(if_id) {
+                if let Some(config) = iface.config {
+                    let _ = crate::net::services::dhcp::ensure_interface_runtime(if_id, config);
+                }
+            }
+            let _ = crate::net::services::dhcp::restart_interface_runtime(if_id);
+            if primary_if() == Some(if_id) {
+                log::info!(
+                    target: "net::device",
+                    "[NET] link_up: key={:?} if{} role=primary",
+                    self.key,
+                    if_id.0
+                );
+            } else {
+                log::info!(
+                    target: "net::device",
+                    "[NET] secondary_rejoined: key={:?} if{}",
+                    self.key,
+                    if_id.0
+                );
+            }
+        } else {
+            log::warn!(
+                target: "net::device",
+                "[NET] link_down: key={:?} if{}",
+                self.key,
+                if_id.0
+            );
+            handle_interface_departure(if_id, FailoverReason::LinkDown);
+        }
+
+        Ok(())
     }
 
     fn log(&self, level: NetLogLevel, message: &str) {
@@ -462,6 +497,21 @@ static DEVICE_MANAGER: PoisonRwLock<NetDeviceManager> = PoisonRwLock::new(NetDev
 static STACK_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static DHCP_BOUND_PRIMARY_SELECTED: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailoverReason {
+    LinkDown,
+    Unregister,
+}
+
+impl FailoverReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::LinkDown => "link_down",
+            Self::Unregister => "unregister",
+        }
+    }
+}
+
 fn apply_runtime_network_config(config: &NetworkConfig) {
     if let Ok(mut guard) = stack::stack().lock() {
         if let Some(stack) = guard.as_mut() {
@@ -479,6 +529,157 @@ fn sync_runtime_config_for_interface(if_id: NetIfId) {
     };
     if let Some(config) = config {
         apply_runtime_network_config(&config);
+    }
+}
+
+fn clear_runtime_network_config() {
+    if let Ok(mut guard) = stack::stack().lock() {
+        if let Some(stack) = guard.as_mut() {
+            let mut config = stack.config();
+            config.ipv4 = Ipv4Config::default();
+            stack.set_config(config);
+            crate::net::services::dhcp::update_runtime_mac(config.mac);
+        }
+    }
+}
+
+fn config_supports_failover(config: &NetworkConfig) -> bool {
+    !config.ipv4.address.is_any()
+        || !config.ipv4.gateway.is_any()
+        || config.ipv4.dns.is_some()
+        || config
+            .ipv6
+            .is_some_and(|ipv6| ipv6.global.is_some() || ipv6.gateway.is_some())
+}
+
+fn interface_supports_failover(if_id: NetIfId) -> bool {
+    if crate::net::services::dhcp::has_bound_lease(if_id) {
+        return true;
+    }
+
+    manager::get_interface(if_id)
+        .ok()
+        .flatten()
+        .and_then(|iface| iface.config)
+        .is_some_and(|config| config_supports_failover(&config))
+}
+
+fn select_surviving_primary(excluding_if: NetIfId) -> Option<NetIfId> {
+    let candidates: Vec<NetIfId> = DEVICE_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .handles
+        .keys()
+        .copied()
+        .filter(|if_id| *if_id != excluding_if)
+        .collect();
+
+    candidates.into_iter().find(|if_id| {
+        manager::get_interface(*if_id)
+            .ok()
+            .flatten()
+            .is_some_and(|iface| iface.admin_up && interface_supports_failover(*if_id))
+    })
+}
+
+fn set_primary_slot(primary: Option<NetIfId>) {
+    DEVICE_MANAGER
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .primary = primary;
+}
+
+fn apply_primary_runtime_for_interface(if_id: NetIfId) -> Result<(), &'static str> {
+    if let Some(lease) = crate::net::services::dhcp::lease_for_interface(if_id) {
+        let mut guard = stack::stack()
+            .lock()
+            .map_err(|_| "network stack poisoned")?;
+        let stack = guard.as_mut().ok_or("network stack unavailable")?;
+        stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, true);
+        if let Ok(Some(iface)) = manager::get_interface(if_id) {
+            if let Some(config) = iface.config {
+                crate::net::services::dhcp::update_runtime_mac(config.mac);
+            }
+        }
+        return Ok(());
+    }
+
+    sync_runtime_config_for_interface(if_id);
+    Ok(())
+}
+
+fn clear_interface_runtime_for_failover(if_id: NetIfId, clear_primary_runtime: bool) {
+    if let Ok(mut guard) = stack::stack().lock() {
+        if let Some(stack) = guard.as_mut() {
+            stack.clear_dhcp_v4_lease_for_interface(if_id, clear_primary_runtime);
+            if clear_primary_runtime {
+                if let Ok(Some(iface)) = manager::get_interface(if_id) {
+                    if let Some(config) = iface.config {
+                        crate::net::services::dhcp::update_runtime_mac(config.mac);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    if clear_primary_runtime {
+        clear_runtime_network_config();
+    }
+}
+
+fn handle_interface_departure(if_id: NetIfId, reason: FailoverReason) {
+    let was_primary = primary_if() == Some(if_id);
+    let candidate = was_primary
+        .then(|| select_surviving_primary(if_id))
+        .flatten();
+
+    let release_sent = crate::net::services::dhcp::release_interface(if_id);
+    if release_sent {
+        log::info!(
+            target: "net::device",
+            "[NET] dhcp_release_best_effort: if{} reason={}",
+            if_id.0,
+            reason.as_str()
+        );
+    }
+
+    clear_interface_runtime_for_failover(if_id, was_primary && candidate.is_none());
+
+    if !was_primary {
+        return;
+    }
+
+    crate::net::services::dhcp::clear_primary_interface(if_id);
+
+    if let Some(new_if) = candidate {
+        set_primary_slot(Some(new_if));
+        DHCP_BOUND_PRIMARY_SELECTED.store(true, Ordering::Release);
+        crate::net::services::dhcp::mark_primary_interface(new_if);
+        if let Err(err) = apply_primary_runtime_for_interface(new_if) {
+            log::warn!(
+                target: "net::device",
+                "failed to synchronize promoted primary if{}: {}",
+                new_if.0,
+                err
+            );
+        }
+        log::info!(
+            target: "net::device",
+            "[NET] primary_failover: old=if{} new=if{} reason={}",
+            if_id.0,
+            new_if.0,
+            reason.as_str()
+        );
+    } else {
+        set_primary_slot(None);
+        DHCP_BOUND_PRIMARY_SELECTED.store(false, Ordering::Release);
+        log::warn!(
+            target: "net::device",
+            "[NET] primary_cleared: old=if{} reason={}",
+            if_id.0,
+            reason.as_str()
+        );
     }
 }
 
@@ -681,17 +882,13 @@ pub fn unregister_port(if_id: NetIfId) -> bool {
         let handle = guard.handles.remove(&if_id);
         if let Some(handle) = handle.as_ref() {
             guard.key_map.remove(&handle.binding().key);
-            if guard.primary == Some(if_id) {
-                guard.primary = guard.handles.keys().next().copied();
-            }
-            if guard.handles.is_empty() {
-                DHCP_BOUND_PRIMARY_SELECTED.store(false, Ordering::Release);
-            }
         }
         handle
     };
 
     if let Some(handle) = handle {
+        let _ = manager::set_interface_down(if_id);
+        handle_interface_departure(if_id, FailoverReason::Unregister);
         crate::net::services::dhcp::unregister_interface_runtime(if_id);
         handle.stop();
         true
@@ -766,11 +963,16 @@ pub fn primary_if() -> Option<NetIfId> {
 }
 
 pub fn set_primary_interface(if_id: NetIfId) {
-    DEVICE_MANAGER
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .primary = Some(if_id);
-    sync_runtime_config_for_interface(if_id);
+    set_primary_slot(Some(if_id));
+    if let Err(err) = apply_primary_runtime_for_interface(if_id) {
+        log::warn!(
+            target: "net::device",
+            "failed to synchronize primary if{}: {}",
+            if_id.0,
+            err
+        );
+        sync_runtime_config_for_interface(if_id);
+    }
 }
 
 pub fn claim_bound_primary_interface(if_id: NetIfId) -> bool {
@@ -839,6 +1041,7 @@ pub fn enqueue_event_from_isr(key: NetDeviceKey, event: NetDriverEvent) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::l3::ipv4::Ipv4Address;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
@@ -928,6 +1131,22 @@ mod tests {
 
         fn stop(&self) {
             self.stop_calls.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn sample_lease(host: u8) -> crate::net::services::dhcp::DhcpLease {
+        crate::net::services::dhcp::DhcpLease {
+            ip_address: Ipv4Address::new([10, 0, 0, host]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
+            dns_servers: alloc::vec![Ipv4Address::new([1, 1, 1, host])],
+            server_ip: Ipv4Address::new([10, 0, 0, 254]),
+            lease_time: 3600,
+            t1: 1800,
+            t2: 3150,
+            hostname: None,
+            domain_name: None,
+            obtained_at: 0,
         }
     }
 
@@ -1023,6 +1242,129 @@ mod tests {
 
         assert!(unregister_port(if_b));
         assert_eq!(primary_if(), Some(if_a));
+        assert!(unregister_port(if_a));
+    }
+
+    #[test_case]
+    fn primary_link_down_promotes_secondary_and_updates_runtime_config() {
+        let driver_a = Arc::new(FakeDriver::new());
+        let driver_b = Arc::new(FakeDriver::new());
+
+        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(93), driver_a, false)
+            .expect("register first port");
+        let if_b = register_port_with_default_config(NetDeviceKey::Virtio(94), driver_b, false)
+            .expect("register second port");
+
+        let lease_a = sample_lease(10);
+        let lease_b = sample_lease(20);
+        crate::net::services::dhcp::interface_v4_client(if_a)
+            .expect("dhcp client a")
+            .set_lease_for_test(lease_a.clone());
+        crate::net::services::dhcp::interface_v4_client(if_b)
+            .expect("dhcp client b")
+            .set_lease_for_test(lease_b.clone());
+
+        set_primary_interface(if_a);
+        if let Ok(mut guard) = stack::stack().lock() {
+            let stack = guard.as_mut().expect("stack");
+            stack.apply_dhcp_v4_lease_for_interface(&lease_b, if_b, false);
+        }
+
+        assert!(manager::set_interface_down(if_a).is_ok());
+        handle_interface_departure(if_a, FailoverReason::LinkDown);
+
+        assert_eq!(primary_if(), Some(if_b));
+        assert_eq!(
+            crate::net::services::dhcp::primary_interface_if_id(),
+            Some(if_b)
+        );
+
+        let cfg = stack::stack()
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|stack| stack.config()))
+            .expect("stack config");
+        assert_eq!(cfg.ipv4.address, lease_b.ip_address);
+        assert_eq!(cfg.ipv4.gateway, lease_b.gateway.expect("gateway"));
+        assert_eq!(cfg.ipv4.dns, lease_b.dns_servers.first().copied());
+
+        let old_cfg = manager::get_interface(if_a)
+            .expect("manager query")
+            .expect("interface a")
+            .config
+            .expect("config a");
+        assert!(old_cfg.ipv4.address.is_any());
+        assert!(old_cfg.ipv4.gateway.is_any());
+        assert!(old_cfg.ipv4.dns.is_none());
+
+        let route = manager::lookup_ipv4_route(Ipv4Address::new([8, 8, 8, 8]))
+            .expect("lookup route")
+            .expect("default route");
+        assert_eq!(route.if_id, if_b);
+
+        assert!(unregister_port(if_b));
+        assert!(unregister_port(if_a));
+    }
+
+    #[test_case]
+    fn unregister_primary_without_survivor_clears_primary_runtime() {
+        let driver = Arc::new(FakeDriver::new());
+        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(95), driver, false)
+            .expect("register port");
+
+        let lease_a = sample_lease(30);
+        crate::net::services::dhcp::interface_v4_client(if_a)
+            .expect("dhcp client a")
+            .set_lease_for_test(lease_a.clone());
+        set_primary_interface(if_a);
+
+        assert!(unregister_port(if_a));
+        assert_eq!(primary_if(), None);
+
+        let cfg = stack::stack()
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|stack| stack.config()))
+            .expect("stack config");
+        assert!(cfg.ipv4.address.is_any());
+        assert!(cfg.ipv4.gateway.is_any());
+        assert!(cfg.ipv4.dns.is_none());
+    }
+
+    #[test_case]
+    fn recovered_interface_does_not_reclaim_primary_after_failover() {
+        let driver_a = Arc::new(FakeDriver::new());
+        let driver_b = Arc::new(FakeDriver::new());
+
+        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(96), driver_a, false)
+            .expect("register first port");
+        let if_b = register_port_with_default_config(NetDeviceKey::Virtio(97), driver_b, false)
+            .expect("register second port");
+
+        let lease_a = sample_lease(40);
+        let lease_b = sample_lease(50);
+        crate::net::services::dhcp::interface_v4_client(if_a)
+            .expect("dhcp client a")
+            .set_lease_for_test(lease_a.clone());
+        crate::net::services::dhcp::interface_v4_client(if_b)
+            .expect("dhcp client b")
+            .set_lease_for_test(lease_b.clone());
+
+        set_primary_interface(if_a);
+        if let Ok(mut guard) = stack::stack().lock() {
+            let stack = guard.as_mut().expect("stack");
+            stack.apply_dhcp_v4_lease_for_interface(&lease_b, if_b, false);
+        }
+
+        assert!(manager::set_interface_down(if_a).is_ok());
+        handle_interface_departure(if_a, FailoverReason::LinkDown);
+        assert_eq!(primary_if(), Some(if_b));
+
+        assert!(manager::set_interface_up(if_a).is_ok());
+        assert!(!claim_bound_primary_interface(if_a));
+        assert_eq!(primary_if(), Some(if_b));
+
+        assert!(unregister_port(if_b));
         assert!(unregister_port(if_a));
     }
 }

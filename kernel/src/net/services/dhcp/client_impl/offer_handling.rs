@@ -308,8 +308,12 @@ impl DhcpClient {
 
     /// リースを解放
     pub fn release(&self) {
-        // Attempt to send RELEASE (best-effort)
-        let _ = self.send_release();
+        let _ = self.release_on(None);
+    }
+
+    /// リースを指定インターフェース上で解放
+    pub fn release_on(&self, if_id: Option<NetIfId>) -> bool {
+        let released = self.send_release_on(if_id);
 
         match self.state.lock() {
             Ok(mut g) => *g = DhcpState::Init,
@@ -325,6 +329,7 @@ impl DhcpClient {
         }
         // Reset probe timestamp
         self.offered_probe_at.store(0, Ordering::SeqCst);
+        released
     }
 
     /// Send a DHCPDISCOVER packet for the current state machine cycle.

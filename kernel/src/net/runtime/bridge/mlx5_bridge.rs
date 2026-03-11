@@ -51,6 +51,8 @@ struct Mlx5BridgeState {
     index: u8,
     port_runtime_initialized: AtomicBool,
     poll_task_started: AtomicBool,
+    link_state_initialized: AtomicBool,
+    last_link_up: AtomicBool,
     dma_device_id: AtomicU64,
     device: PoisonLock<Option<Mlx5Device>>,
     if_id: PoisonLock<Option<NetIfId>>,
@@ -80,6 +82,8 @@ impl Mlx5BridgeState {
             index,
             port_runtime_initialized: AtomicBool::new(false),
             poll_task_started: AtomicBool::new(false),
+            link_state_initialized: AtomicBool::new(false),
+            last_link_up: AtomicBool::new(false),
             dma_device_id: AtomicU64::new(u64::MAX),
             device: PoisonLock::new(None),
             if_id: PoisonLock::new(None),
@@ -127,6 +131,8 @@ const MLX5_RX_DEBUG_IDLE_INTERVAL: u64 = 512;
 const MLX5_FORCE_POLL_ONLY: bool = false;
 /// 割り込み待ちから再ポーリングに戻すタイムアウト（ms）
 const MLX5_INTERRUPT_WAIT_TIMEOUT_MS: u64 = 5;
+/// link state を command 経由で強制再確認する周期（ms）
+const MLX5_LINK_STATE_REFRESH_MS: u64 = 250;
 
 #[derive(Debug, Clone, Copy)]
 struct Mlx5NetDriverAdapter {
@@ -156,6 +162,99 @@ fn alloc_mlx5_packet(state: &Mlx5BridgeState) -> Option<PacketRef> {
         return None;
     }
     crate::net::datapath::mempool::alloc_packet_for_dma_device(device_id)
+}
+
+fn mlx5_link_up(index: u8, refresh_hw: bool) -> bool {
+    let state = mlx5_state(index);
+    with_mlx5_device(state.as_ref(), |device| {
+        if refresh_hw {
+            match unsafe { device.query_port_state(0) } {
+                Ok(link_state) => {
+                    return matches!(link_state, mlx5_driver::defs::PortLinkState::Up);
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "mlx5 query_port_state failed: idx={} err={:?}",
+                        index,
+                        err
+                    );
+                }
+            }
+        }
+
+        device
+            .port(0)
+            .map(|port| port.is_link_up())
+            .unwrap_or(false)
+    })
+    .unwrap_or(false)
+}
+
+fn pump_mlx5_events(state: &Arc<Mlx5BridgeState>) {
+    let _ = with_mlx5_device(state.as_ref(), |device| {
+        match unsafe { device.process_events() } {
+            Ok(_) => {}
+            Err(err) => {
+                log::warn!(
+                    target: "mlx5::bridge",
+                    "mlx5 process_events failed: idx={} err={:?}",
+                    state.index,
+                    err
+                );
+            }
+        }
+    });
+}
+
+fn refresh_mlx5_link_state(state: &Arc<Mlx5BridgeState>, refresh_hw: bool) {
+    let link_up = mlx5_link_up(state.index, refresh_hw);
+    let if_id = state.if_id.lock().ok().and_then(|guard| *guard);
+
+    if !state.link_state_initialized.swap(true, Ordering::AcqRel) {
+        state.last_link_up.store(link_up, Ordering::Release);
+        if !link_up {
+            if let Ok(guard) = state.port_runtime.lock() {
+                if let Some(runtime) = guard.as_ref() {
+                    let _ = runtime.update_link(false);
+                }
+            }
+            log::warn!(
+                target: "mlx5::bridge",
+                "mlx5 link_down: idx={} if_id={:?}",
+                state.index,
+                if_id.map(|id| id.0)
+            );
+        }
+        return;
+    }
+
+    let previous = state.last_link_up.swap(link_up, Ordering::AcqRel);
+    if previous == link_up {
+        return;
+    }
+
+    if let Ok(guard) = state.port_runtime.lock() {
+        if let Some(runtime) = guard.as_ref() {
+            let _ = runtime.update_link(link_up);
+        }
+    }
+
+    if link_up {
+        log::info!(
+            target: "mlx5::bridge",
+            "mlx5 link_up: idx={} if_id={:?}",
+            state.index,
+            if_id.map(|id| id.0)
+        );
+    } else {
+        log::warn!(
+            target: "mlx5::bridge",
+            "mlx5 link_down: idx={} if_id={:?}",
+            state.index,
+            if_id.map(|id| id.0)
+        );
+    }
 }
 
 pub fn mlx5_net_driver_adapter(index: u8) -> Arc<dyn NetDevicePort> {
@@ -255,11 +354,7 @@ pub fn register_mlx5_device(index: u8, device: Mlx5Device) {
 /// mlx5 デバイスをブリッジから取り出す（所有権移動）
 pub fn take_mlx5_device(index: u8) -> Option<Mlx5Device> {
     let state = mlx5_state(index);
-    let device = state
-        .device
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.take());
+    let device = state.device.lock().ok().and_then(|mut guard| guard.take());
     if device.is_some() {
         state.dma_device_id.store(u64::MAX, Ordering::Release);
     }
@@ -289,6 +384,7 @@ fn mlx5_mac_address(state: &Mlx5BridgeState) -> crate::net::l2::ethernet::MacAdd
 impl NetDevicePort for Mlx5NetDriverAdapter {
     fn info(&self) -> NetDeviceInfo {
         let state = mlx5_state(self.index);
+        let link_up = mlx5_link_up(self.index, true);
         NetDeviceInfo {
             port_id: NetDeviceKey::Mlx5(self.index).port_id(),
             if_id: state
@@ -305,7 +401,11 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
             mtu: crate::net::runtime::stack::MTU as u32,
             mac: MacAddress(*mlx5_mac_address(state.as_ref()).as_bytes()),
             flags: if mlx5_health_check(self.index) {
-                NETDEV_FLAG_HEALTHY | NETDEV_FLAG_LINK_UP
+                if link_up {
+                    NETDEV_FLAG_HEALTHY | NETDEV_FLAG_LINK_UP
+                } else {
+                    NETDEV_FLAG_HEALTHY
+                }
             } else {
                 0
             },
@@ -1351,6 +1451,7 @@ pub async fn mlx5_poll_task(index: u8) {
     }
 
     let mut msix_vector = None;
+    let mut last_link_refresh_tick = 0u64;
 
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
@@ -1363,6 +1464,15 @@ pub async fn mlx5_poll_task(index: u8) {
         if msix_vector.is_none() {
             msix_vector = with_mlx5_device(state.as_ref(), |dev| dev.eqn_msix_vector(0)).flatten();
         }
+
+        pump_mlx5_events(&state);
+        let now = crate::task::timer::current_tick();
+        let refresh_hw = last_link_refresh_tick == 0
+            || now.saturating_sub(last_link_refresh_tick) >= MLX5_LINK_STATE_REFRESH_MS;
+        if refresh_hw {
+            last_link_refresh_tick = now;
+        }
+        refresh_mlx5_link_state(&state, refresh_hw);
 
         // Safety: デバイスが初期化済みであること
         let processed = unsafe { mlx5_poll_rx(&state) };
@@ -1505,6 +1615,8 @@ pub(crate) fn reset_mlx5_port_runtime(index: u8) {
     state
         .port_runtime_initialized
         .store(false, Ordering::Release);
+    state.link_state_initialized.store(false, Ordering::Release);
+    state.last_link_up.store(false, Ordering::Release);
     state.dma_device_id.store(u64::MAX, Ordering::Release);
     state.rx_idle_polls.store(0, Ordering::Release);
     state.rx_cqe_log_budget.store(0, Ordering::Release);

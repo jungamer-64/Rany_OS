@@ -144,6 +144,30 @@ impl NetworkStack {
         let _ = crate::net::runtime::manager::set_interface_config(if_id, iface_config);
     }
 
+    pub fn clear_dhcp_v4_lease_for_interface(
+        &mut self,
+        if_id: crate::net::runtime::manager::NetIfId,
+        clear_primary_runtime: bool,
+    ) {
+        let base_config = crate::net::runtime::manager::get_interface(if_id)
+            .ok()
+            .flatten()
+            .and_then(|iface| iface.config)
+            .unwrap_or_else(|| self.config());
+
+        let mut iface_config = base_config;
+        iface_config.ipv4.address = crate::net::l3::ipv4::Ipv4Address::ANY;
+        iface_config.ipv4.subnet_mask = crate::net::l3::ipv4::Ipv4Config::default().subnet_mask;
+        iface_config.ipv4.gateway = crate::net::l3::ipv4::Ipv4Address::ANY;
+        iface_config.ipv4.dns = None;
+
+        if clear_primary_runtime {
+            self.set_config(iface_config);
+        }
+
+        let _ = crate::net::runtime::manager::set_interface_config(if_id, iface_config);
+    }
+
     /// Process UDP data (for reassembled packets)
     pub fn process_udp_data(
         &mut self,

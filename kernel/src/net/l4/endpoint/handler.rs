@@ -1236,14 +1236,16 @@ impl NetworkEventHandler {
                     .map(crate::net::runtime::device::claim_bound_primary_interface)
                     .unwrap_or(false);
                 if let Some(if_id) = target_if {
-                    if selected_primary {
+                    let is_primary = selected_primary
+                        || crate::net::runtime::device::primary_if() == Some(if_id);
+                    if is_primary {
                         crate::net::services::dhcp::mark_primary_interface(if_id);
                     }
-                    stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, selected_primary);
+                    stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, is_primary);
                     log::info!(
                         "[NET] DHCP lease bound: if{} primary={} ip={}",
                         if_id.0,
-                        selected_primary,
+                        is_primary,
                         lease.ip_address
                     );
                 } else {
