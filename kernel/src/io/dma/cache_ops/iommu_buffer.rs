@@ -512,6 +512,42 @@ pub fn global_dma_allocator() -> &'static dyn DmaAllocator {
     &GLOBAL_DMA_ALLOCATOR
 }
 
+/// Device-scoped IOMMU mapping returned by `DeviceDmaContext`.
+#[derive(Debug)]
+pub struct DeviceDmaMapping {
+    device_id: crate::io::iommu::types::DeviceId,
+    iova: u64,
+    mapped_len: u64,
+}
+
+impl DeviceDmaMapping {
+    pub fn device_addr(&self) -> u64 {
+        self.iova
+    }
+
+    pub fn mapped_len(&self) -> u64 {
+        self.mapped_len
+    }
+
+    pub fn into_parts(self) -> (crate::io::iommu::types::DeviceId, u64, u64) {
+        let parts = (self.device_id, self.iova, self.mapped_len);
+        core::mem::forget(self);
+        parts
+    }
+
+    pub fn unmap(self) -> Result<(), crate::io::iommu::types::IommuError> {
+        let (device_id, iova, mapped_len) = self.into_parts();
+        crate::io::iommu::api::unmap_for_device(&device_id, iova, mapped_len)
+    }
+}
+
+impl Drop for DeviceDmaMapping {
+    fn drop(&mut self) {
+        let _ =
+            crate::io::iommu::api::unmap_for_device(&self.device_id, self.iova, self.mapped_len);
+    }
+}
+
 // ============================================================================
 // Device-specific DMA Context
 // ============================================================================

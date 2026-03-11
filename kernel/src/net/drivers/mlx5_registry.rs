@@ -331,7 +331,7 @@ impl DmaSlot {
     fn from_dma_buffer(buffer: DmaBuffer) -> Self {
         Self {
             region: DmaRegion {
-                phys_addr: buffer.physical_address(),
+                phys_addr: buffer.device_address(),
                 device_addr: buffer.device_address(),
                 virt_addr: buffer.as_ptr() as u64,
                 size: buffer.size(),

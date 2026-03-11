@@ -600,7 +600,7 @@ impl DirectBlockHandle {
         let hook: CompletionHook = Box::new(move |_result| {
             let _ = (guard as SliceDmaGuard).complete(dev);
             if let Some(map) = prp_map {
-                map.unmap();
+                let _ = map.unmap();
             }
         });
         crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);

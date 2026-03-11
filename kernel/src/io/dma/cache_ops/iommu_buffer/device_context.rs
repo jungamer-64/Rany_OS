@@ -10,6 +10,17 @@ impl DeviceDmaContext {
         }
     }
 
+    /// 既にIOMMUへ登録済みのデバイスIDから軽量コンテキストを作成する。
+    ///
+    /// 既存のドメイン割り当ては維持し、新たな attach は行わない。
+    pub fn for_attached_device(device_id: crate::io::iommu::types::DeviceId) -> Self {
+        Self {
+            device_id: Some(device_id),
+            domain_id: None,
+            allocator: Arc::new(GlobalDmaAllocator::with_device(device_id)),
+        }
+    }
+
     /// デバイスIDを設定してIOMMU連携を有効化
     ///
     /// DMAアドレス幅を制限する場合は `with_device_dma_mask` / `with_device_dma_width`
@@ -67,6 +78,43 @@ impl DeviceDmaContext {
         direction: DmaDirection,
     ) -> Result<DmaAllocation, DmaError> {
         self.allocator.allocate_coherent(size, direction)
+    }
+
+    /// Map a physical range for a specific device through the IOMMU.
+    pub fn map_physical_range(
+        &self,
+        phys_addr: x86_64::PhysAddr,
+        size: usize,
+        direction: DmaDirection,
+    ) -> Result<DeviceDmaMapping, DmaError> {
+        let device_id = self.device_id.ok_or(DmaError::DeviceNotFound)?;
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            return Err(DmaError::IommuRequired);
+        }
+
+        let mapped_len = iommu_align_len(size).ok_or(DmaError::InvalidSize)?;
+        let (read, write) = match direction {
+            DmaDirection::ToDevice => (true, false),
+            DmaDirection::FromDevice => (false, true),
+            DmaDirection::Bidirectional => (true, true),
+        };
+
+        let iova = unsafe {
+            crate::io::iommu::api::map_for_device_with_perms(
+                &device_id,
+                phys_addr,
+                mapped_len as u64,
+                read,
+                write,
+            )
+        }
+        .map_err(|_| DmaError::IommuMappingFailed)?;
+
+        Ok(DeviceDmaMapping {
+            device_id,
+            iova,
+            mapped_len: mapped_len as u64,
+        })
     }
 
     /// RRef-backed DMA mapping (safe IOMMU API)

@@ -94,9 +94,8 @@ impl VirtioNetDevice {
                 Ok(desc_idx) => {
                     let tracker = &self.core.tx_trackers[q_idx];
                     let (phys, iova2, virt, len, rel) = buffer.into_raw_parts();
-                    let rel_unsafe: Option<unsafe fn(*mut u8, usize, u64)> = rel.map(|f| f as _);
                     let bounce = unsafe {
-                        DmaSlice::<CpuOwned>::from_raw_parts(phys, iova2, virt, len, rel_unsafe)
+                        DmaSlice::<CpuOwned>::from_internal_parts(phys, iova2, virt, len, rel)
                     };
                     let packet = match crate::net::datapath::mempool::alloc_packet() {
                         Some(p) => p,

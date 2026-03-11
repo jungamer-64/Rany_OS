@@ -32,41 +32,90 @@ pub trait DmaState: sealed::DmaState {}
 impl DmaState for CpuOwned {}
 impl DmaState for DeviceOwned {}
 
-type ReleaseFn = unsafe fn(*mut u8, usize, u64);
+type HandleReleaseFn = unsafe fn(u64);
+type KernelReleaseFn = fn(*mut u8, usize, u64);
 
 /// Public DMA slice wrapper used across driver and kernel interfaces.
 #[derive(Debug)]
 pub struct DmaSlice<State: DmaState> {
-    phys_addr: u64,
+    dma_handle_id: u64,
+    host_addr: u64,
     device_addr: u64,
     virt_addr: NonNull<u8>,
     size: usize,
-    releaser: Option<ReleaseFn>,
+    handle_releaser: Option<HandleReleaseFn>,
+    kernel_releaser: Option<KernelReleaseFn>,
     _state: PhantomData<State>,
 }
 
 unsafe impl<State: DmaState> Send for DmaSlice<State> {}
 
 impl DmaSlice<CpuOwned> {
-    /// Construct a DMA slice from kernel-managed raw parts.
+    /// Construct a DMA slice from ABI-managed raw parts.
+    ///
+    /// This constructor is intended for driver / cell-runtime import paths
+    /// where the kernel tracks ownership via an opaque DMA handle ID.
     ///
     /// # Safety
     /// The caller must ensure the pointer is valid for `size` bytes and that
     /// `releaser` matches the allocation represented by this buffer.
     pub unsafe fn from_raw_parts(
-        phys_addr: u64,
+        dma_handle_id: u64,
         device_addr: u64,
         virt_addr: *mut u8,
         size: usize,
-        releaser: Option<ReleaseFn>,
+        releaser: Option<HandleReleaseFn>,
+    ) -> Self {
+        unsafe { Self::from_kernel_parts(0, dma_handle_id, device_addr, virt_addr, size, releaser) }
+    }
+
+    /// Construct a DMA slice from kernel-managed raw parts.
+    ///
+    /// # Safety
+    /// The caller must ensure the pointer is valid for `size` bytes and that
+    /// `releaser` matches the allocation represented by this buffer.
+    pub unsafe fn from_kernel_parts(
+        host_addr: u64,
+        dma_handle_id: u64,
+        device_addr: u64,
+        virt_addr: *mut u8,
+        size: usize,
+        releaser: Option<HandleReleaseFn>,
     ) -> Self {
         let virt_addr = NonNull::new(virt_addr).expect("DMA slice pointer must be non-null");
         Self {
-            phys_addr,
+            dma_handle_id,
+            host_addr,
             device_addr,
             virt_addr,
             size,
-            releaser,
+            handle_releaser: releaser,
+            kernel_releaser: None,
+            _state: PhantomData,
+        }
+    }
+
+    /// Construct a DMA slice owned by in-kernel infrastructure.
+    ///
+    /// # Safety
+    /// The caller must ensure `virt_addr` and `kernel_releaser` describe the
+    /// same allocation and that the buffer remains valid for `size` bytes.
+    pub unsafe fn from_internal_parts(
+        host_addr: u64,
+        device_addr: u64,
+        virt_addr: *mut u8,
+        size: usize,
+        kernel_releaser: Option<KernelReleaseFn>,
+    ) -> Self {
+        let virt_addr = NonNull::new(virt_addr).expect("DMA slice pointer must be non-null");
+        Self {
+            dma_handle_id: 0,
+            host_addr,
+            device_addr,
+            virt_addr,
+            size,
+            handle_releaser: None,
+            kernel_releaser,
             _state: PhantomData,
         }
     }
@@ -87,19 +136,23 @@ impl DmaSlice<CpuOwned> {
 
         let guard = DmaGuard {
             ptr: self.virt_addr,
-            phys_addr: self.phys_addr,
+            dma_handle_id: self.dma_handle_id,
+            host_addr: self.host_addr,
             device_addr: self.device_addr,
             size: self.size,
-            releaser: self.releaser,
+            handle_releaser: self.handle_releaser,
+            kernel_releaser: self.kernel_releaser,
             completed: false,
         };
 
         let device_owned = DmaSlice {
-            phys_addr: self.phys_addr,
+            dma_handle_id: self.dma_handle_id,
+            host_addr: self.host_addr,
             device_addr: self.device_addr,
             virt_addr: self.virt_addr,
             size: self.size,
-            releaser: self.releaser,
+            handle_releaser: self.handle_releaser,
+            kernel_releaser: self.kernel_releaser,
             _state: PhantomData,
         };
 
@@ -108,21 +161,14 @@ impl DmaSlice<CpuOwned> {
     }
 
     /// Decompose the DMA slice into raw parts for kernel-side bookkeeping.
-    pub fn into_raw_parts(
-        self,
-    ) -> (
-        u64,
-        u64,
-        *mut u8,
-        usize,
-        Option<unsafe fn(*mut u8, usize, u64)>,
-    ) {
+    pub fn into_raw_parts(self) -> (u64, u64, u64, *mut u8, usize, Option<unsafe fn(u64)>) {
         let parts = (
-            self.phys_addr,
+            self.host_addr,
+            self.dma_handle_id,
             self.device_addr,
             self.virt_addr.as_ptr(),
             self.size,
-            self.releaser,
+            self.handle_releaser,
         );
         core::mem::forget(self);
         parts
@@ -134,8 +180,8 @@ impl DmaSlice<CpuOwned> {
 }
 
 impl<State: DmaState> DmaSlice<State> {
-    pub fn physical_address(&self) -> u64 {
-        self.phys_addr
+    pub fn dma_handle_id(&self) -> u64 {
+        self.dma_handle_id
     }
 
     pub fn device_address(&self) -> u64 {
@@ -154,8 +200,10 @@ impl<State: DmaState> DmaSlice<State> {
 impl<State: DmaState> Drop for DmaSlice<State> {
     fn drop(&mut self) {
         if <State as sealed::DmaState>::RECLAIM_ON_DROP {
-            if let Some(releaser) = self.releaser {
-                unsafe { releaser(self.virt_addr.as_ptr(), self.size, self.phys_addr) };
+            if let Some(releaser) = self.handle_releaser {
+                unsafe { releaser(self.dma_handle_id) };
+            } else if let Some(releaser) = self.kernel_releaser {
+                releaser(self.virt_addr.as_ptr(), self.size, self.host_addr);
             }
         }
     }
@@ -166,20 +214,18 @@ impl<State: DmaState> Drop for DmaSlice<State> {
 #[derive(Debug)]
 pub struct DmaGuard {
     ptr: NonNull<u8>,
-    phys_addr: u64,
+    dma_handle_id: u64,
+    host_addr: u64,
     device_addr: u64,
     size: usize,
-    releaser: Option<ReleaseFn>,
+    handle_releaser: Option<HandleReleaseFn>,
+    kernel_releaser: Option<KernelReleaseFn>,
     completed: bool,
 }
 
 unsafe impl Send for DmaGuard {}
 
 impl DmaGuard {
-    pub fn physical_address(&self) -> u64 {
-        self.phys_addr
-    }
-
     pub fn device_address(&self) -> u64 {
         self.device_addr
     }
@@ -196,11 +242,13 @@ impl DmaGuard {
         core::mem::drop(device_owned);
 
         DmaSlice {
-            phys_addr: self.phys_addr,
+            dma_handle_id: self.dma_handle_id,
+            host_addr: self.host_addr,
             device_addr: self.device_addr,
             virt_addr: self.ptr,
             size: self.size,
-            releaser: self.releaser,
+            handle_releaser: self.handle_releaser,
+            kernel_releaser: self.kernel_releaser,
             _state: PhantomData,
         }
     }
@@ -211,13 +259,14 @@ impl Drop for DmaGuard {
         if !self.completed {
             #[cfg(debug_assertions)]
             panic!(
-                "DmaGuard dropped without complete(); phys={:#x} size={}",
-                self.phys_addr, self.size
+                "DmaGuard dropped without complete(); dma_handle_id={} device={:#x} size={}",
+                self.dma_handle_id, self.device_addr, self.size
             );
             #[cfg(not(debug_assertions))]
             log::warn!(
-                "DmaGuard leaked without complete(); phys={:#x} size={}",
-                self.phys_addr,
+                "DmaGuard leaked without complete(); dma_handle_id={} device={:#x} size={}",
+                self.dma_handle_id,
+                self.device_addr,
                 self.size
             );
         }

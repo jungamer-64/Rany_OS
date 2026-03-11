@@ -21,7 +21,7 @@ use kernel_api::abi::driver::{
 use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
     AbiNetPortKind, AbiNetPortRegistration, AbiNetPortRuntimeV1, AbiNetPortStats, AbiNetRxMeta,
-    AbiNetTxMeta, DriverContext, KernelApiV2, PackedPciLocation,
+    AbiNetTxMeta, DriverContext, KernelApiV3, PackedPciLocation,
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
@@ -42,7 +42,7 @@ use crate::wq::TxOptions;
 // ============================================================================
 
 #[inline]
-fn kernel_api() -> &'static KernelApiV2 {
+fn kernel_api() -> &'static KernelApiV3 {
     kernel_api::service::kernel::abi()
 }
 
@@ -60,7 +60,7 @@ extern "C" fn test_kernel_alloc_dma_for_device_raw(
 }
 
 #[cfg(test)]
-extern "C" fn test_kernel_release_dma_raw(_virt_addr: u64, _size: usize, _phys_addr: u64) -> i32 {
+extern "C" fn test_kernel_release_dma_raw(_dma_handle_id: u64) -> i32 {
     0
 }
 
@@ -146,9 +146,9 @@ extern "C" fn test_kernel_unregister_audio_controller(_handle: u64) -> i32 {
 
 #[cfg(test)]
 #[unsafe(no_mangle)]
-pub static __exorust_kernel_api_v2: KernelApiV2 = KernelApiV2 {
+pub static __exorust_kernel_api_v3: KernelApiV3 = KernelApiV3 {
     abi_version: kernel_api::abi::driver::KERNEL_API_ABI_VERSION,
-    abi_size: core::mem::size_of::<KernelApiV2>() as u32,
+    abi_size: core::mem::size_of::<KernelApiV3>() as u32,
     log: test_kernel_log,
     alloc_dma_for_device_raw: test_kernel_alloc_dma_for_device_raw,
     release_dma_raw: test_kernel_release_dma_raw,

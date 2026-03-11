@@ -1,4 +1,7 @@
-use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
+use crate::io::dma::{
+    CpuOwned, DeviceDmaContext, DeviceDmaMapping, DeviceOwned, DmaDirection, SliceDmaGuard,
+    TypedDmaSlice,
+};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::vec::Vec;
 use x86_64::PhysAddr;
@@ -34,23 +37,10 @@ fn direct_prp2(base_addr: u64, alloc_len: usize) -> Option<u64> {
 }
 
 #[derive(Debug)]
-struct IommuMapping {
-    device: IommuDeviceId,
-    iova: u64,
-    size: u64,
-}
-
-impl Drop for IommuMapping {
-    fn drop(&mut self) {
-        let _ = crate::io::iommu::api::unmap_for_device(&self.device, self.iova, self.size);
-    }
-}
-
-#[derive(Debug)]
 struct PrpListPage {
     dev: Option<TypedDmaSlice<DeviceOwned>>,
     guard: Option<SliceDmaGuard>,
-    map: Option<IommuMapping>,
+    map: Option<DeviceDmaMapping>,
     iova: u64,
 }
 
@@ -78,29 +68,30 @@ fn map_for_iommu(
     device: Option<IommuDeviceId>,
     phys_addr: PhysAddr,
     size: usize,
-) -> Result<(u64, Option<IommuMapping>), NvmeDmaError> {
+) -> Result<(u64, Option<DeviceDmaMapping>), NvmeDmaError> {
     if !crate::io::iommu::api::is_iommu_enabled() {
-        if crate::io::iommu::api::is_iommu_required()
-            || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
+        #[cfg(test)]
         {
+            if !crate::io::iommu::api::is_iommu_required()
+                && crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
+            {
+                return Ok((phys_addr.as_u64(), None));
+            }
+        }
+        if crate::io::iommu::api::is_iommu_required() {
             return Err(NvmeDmaError::IommuIdentityBlocked);
         }
-        return Ok((phys_addr.as_u64(), None));
+        return Err(NvmeDmaError::IommuIdentityBlocked);
     }
 
     let dev = device.ok_or(NvmeDmaError::IommuDeviceMissing)?;
-    let map_len = align_up_page(size) as u64;
-    let iova = unsafe { crate::io::iommu::api::map_for_device(&dev, phys_addr, map_len) }
+    let ctx = DeviceDmaContext::for_attached_device(dev);
+    let mapping = ctx
+        .map_physical_range(phys_addr, size, DmaDirection::Bidirectional)
         .map_err(|_| NvmeDmaError::IommuMappingFailed)?;
+    let iova = mapping.device_addr();
 
-    Ok((
-        iova,
-        Some(IommuMapping {
-            device: dev,
-            iova,
-            size: map_len,
-        }),
-    ))
+    Ok((iova, Some(mapping)))
 }
 
 fn allocate_prp_list_buffers(
@@ -110,7 +101,7 @@ fn allocate_prp_list_buffers(
     (
         Vec<TypedDmaSlice<CpuOwned>>,
         Vec<u64>,
-        Vec<Option<IommuMapping>>,
+        Vec<Option<DeviceDmaMapping>>,
     ),
     NvmeDmaError,
 > {
@@ -212,7 +203,7 @@ fn build_prp_list(
 pub(crate) struct NvmeDmaRegion {
     data_dev: Option<TypedDmaSlice<DeviceOwned>>,
     data_guard: Option<SliceDmaGuard>,
-    data_map: Option<IommuMapping>,
+    data_map: Option<DeviceDmaMapping>,
     prp_list: Option<PrpListChain>,
     prp1: u64,
     prp2: u64,

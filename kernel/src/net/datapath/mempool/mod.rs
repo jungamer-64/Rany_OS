@@ -150,12 +150,13 @@ impl DmaBuffer {
 
     fn from_kapi(slice: KapiDmaSlice<KapiCpuOwned>) -> Self {
         let size = slice.size();
-        let phys_addr = PhysAddr::new(slice.physical_address());
         let device_addr = slice.device_address();
         let ptr = slice.as_ptr();
         Self {
             ptr: NonNull::new(ptr).expect("DmaSlice returned null pointer"),
-            phys_addr,
+            // Driver-domain DMA buffers intentionally expose only the
+            // hardware-visible address across the KAPI boundary.
+            phys_addr: PhysAddr::new(device_addr),
             device_addr,
             size,
             owner: DmaBufferOwner::Kapi(Arc::new(PoisonLock::new(slice))),

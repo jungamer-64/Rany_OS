@@ -344,6 +344,130 @@ impl RRefDmaBytes {
 // Coherent DMA Buffer (auto cache management)
 // ============================================================================
 
+/// Owned contiguous DMA allocation used as the canonical kernel-side region type.
+#[derive(Debug)]
+pub struct DmaRegion {
+    buffer: CoherentDmaBuffer,
+}
+
+impl DmaRegion {
+    pub fn new(size: usize, attributes: DmaMemoryAttributes) -> Option<Self> {
+        Some(Self {
+            buffer: CoherentDmaBuffer::new(size, attributes)?,
+        })
+    }
+
+    pub fn new_for_device(
+        size: usize,
+        attributes: DmaMemoryAttributes,
+        device: &crate::io::iommu::types::DeviceId,
+    ) -> Option<Self> {
+        Some(Self {
+            buffer: CoherentDmaBuffer::new_for_device(size, attributes, device)?,
+        })
+    }
+
+    pub fn size(&self) -> usize {
+        self.buffer.size()
+    }
+
+    pub fn host_addr(&self) -> u64 {
+        self.buffer.phys_addr().as_u64()
+    }
+
+    pub fn device_addr(&self) -> u64 {
+        self.buffer.device_addr()
+    }
+
+    pub fn full_slot(&self) -> DmaSlot {
+        DmaSlot {
+            host_addr: self.host_addr(),
+            device_addr: self.device_addr(),
+            virt_addr: self.buffer.ptr,
+            size: self.buffer.size(),
+        }
+    }
+
+    pub fn slot(&self, offset: usize, size: usize) -> Option<DmaSlot> {
+        if offset > self.buffer.size() || size > self.buffer.size().saturating_sub(offset) {
+            return None;
+        }
+
+        Some(DmaSlot {
+            host_addr: self.host_addr().checked_add(offset as u64)?,
+            device_addr: self.device_addr().checked_add(offset as u64)?,
+            virt_addr: NonNull::new(self.buffer.ptr.as_ptr().wrapping_add(offset))?,
+            size,
+        })
+    }
+
+    pub unsafe fn as_slice(&self) -> &[u8] {
+        unsafe { self.buffer.as_slice() }
+    }
+
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { self.buffer.as_mut_slice() }
+    }
+
+    pub fn into_inner(self) -> CoherentDmaBuffer {
+        self.buffer
+    }
+}
+
+impl From<CoherentDmaBuffer> for DmaRegion {
+    fn from(buffer: CoherentDmaBuffer) -> Self {
+        Self { buffer }
+    }
+}
+
+/// Non-owning subregion/view into a DMA allocation.
+#[derive(Clone, Copy, Debug)]
+pub struct DmaSlot {
+    host_addr: u64,
+    device_addr: u64,
+    virt_addr: NonNull<u8>,
+    size: usize,
+}
+
+impl DmaSlot {
+    pub fn host_addr(&self) -> u64 {
+        self.host_addr
+    }
+
+    pub fn device_addr(&self) -> u64 {
+        self.device_addr
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn as_ptr(&self) -> *mut u8 {
+        self.virt_addr.as_ptr()
+    }
+
+    pub unsafe fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.virt_addr.as_ptr(), self.size) }
+    }
+
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.virt_addr.as_ptr(), self.size) }
+    }
+
+    pub fn subslot(&self, offset: usize, size: usize) -> Option<Self> {
+        if offset > self.size || size > self.size.saturating_sub(offset) {
+            return None;
+        }
+
+        Some(Self {
+            host_addr: self.host_addr.checked_add(offset as u64)?,
+            device_addr: self.device_addr.checked_add(offset as u64)?,
+            virt_addr: NonNull::new(self.virt_addr.as_ptr().wrapping_add(offset))?,
+            size,
+        })
+    }
+}
+
 /// キャッシュ一貫性を自動管理するDMAバッファ
 ///
 /// IOMMU有効時は `new_for_device()` で作成すると自動的にIOMMUマッピングが行われ、

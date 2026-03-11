@@ -131,44 +131,42 @@ struct DmaEntry {
 
 struct DmaRegistry {
     buffers: PoisonLock<BTreeMap<usize, DmaEntry>>,
+    next_id: AtomicU64,
 }
 
 impl DmaRegistry {
     const fn new() -> Self {
         Self {
             buffers: PoisonLock::new(BTreeMap::new()),
+            next_id: AtomicU64::new(1),
         }
     }
-    fn register_with_key(
-        &self,
-        key: usize,
-        buffer: Box<dyn core::any::Any + Send>,
-        phys: u64,
-        owner: u64,
-    ) {
+    fn register(&self, buffer: Box<dyn core::any::Any + Send>, phys: u64, owner: u64) -> usize {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) as usize;
         self.buffers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(
-                key,
+                id,
                 DmaEntry {
                     buffer,
                     phys,
                     owner,
                 },
             );
+        id
     }
-    fn unregister(&self, virt_ptr: usize) -> Option<DmaEntry> {
+    fn unregister(&self, dma_handle_id: usize) -> Option<DmaEntry> {
         self.buffers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&virt_ptr)
+            .remove(&dma_handle_id)
     }
-    fn get_owner(&self, virt_ptr: usize) -> Option<u64> {
+    fn get_owner(&self, dma_handle_id: usize) -> Option<u64> {
         self.buffers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&virt_ptr)
+            .get(&dma_handle_id)
             .map(|e| e.owner)
     }
 }

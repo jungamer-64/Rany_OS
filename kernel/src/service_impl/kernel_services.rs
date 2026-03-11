@@ -40,29 +40,30 @@ pub use self::gui_services::*;
 unsafe impl Send for ExoKernel {}
 unsafe impl Sync for ExoKernel {}
 
-pub(crate) unsafe fn release_dma_buffer(virt_ptr: *mut u8, _size: usize, _phys_addr: u64) {
+pub(crate) unsafe fn release_dma_buffer(dma_handle_id: u64) {
     let caller = context::current_subject().domain.as_u64();
-    let virt_ptr = virt_ptr as usize;
+    let dma_handle_id = dma_handle_id as usize;
 
-    if let Some(owner) = DMA_REGISTRY.get_owner(virt_ptr) {
+    if let Some(owner) = DMA_REGISTRY.get_owner(dma_handle_id) {
         if owner != caller {
             log::error!(
-                "[KAPI][SECURITY] release_dma_buffer: Domain {} tried to drop buffer owned by Domain {}",
+                "[KAPI][SECURITY] release_dma_buffer: Domain {} tried to drop DMA handle {} owned by Domain {}",
                 caller,
+                dma_handle_id,
                 owner
             );
             return;
         }
     }
 
-    if let Some(entry) = DMA_REGISTRY.unregister(virt_ptr) {
+    if let Some(entry) = DMA_REGISTRY.unregister(dma_handle_id) {
         PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
         return;
     }
 
     log::info!(
-        "[KAPI] release_dma_buffer: unknown buffer: {:x}\n",
-        virt_ptr
+        "[KAPI] release_dma_buffer: unknown DMA handle: {}\n",
+        dma_handle_id
     );
 }
 
@@ -118,10 +119,11 @@ impl KernelServices for ExoKernel {
                 PHYS_OWNERSHIP_REGISTRY.register(phys, size, caller);
 
                 let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
-                DMA_REGISTRY.register_with_key(virt_ptr, boxed, phys, caller);
+                let dma_handle_id = DMA_REGISTRY.register(boxed, phys, caller) as u64;
                 Ok(unsafe {
-                    DmaBuffer::from_raw_parts(
+                    DmaBuffer::from_kernel_parts(
                         phys,
+                        dma_handle_id,
                         dev_addr,
                         virt_ptr as *mut u8,
                         size,

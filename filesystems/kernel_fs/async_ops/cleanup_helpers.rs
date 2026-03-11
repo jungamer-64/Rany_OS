@@ -6,7 +6,7 @@ mod read_future_impl;
 pub use self::read_future_impl::*;
 pub(crate) fn cleanup_nvme_maps(maps: &mut Vec<NvmeIommuMapping>) {
     for map in maps.drain(..) {
-        map.unmap();
+        let _ = map.unmap();
     }
 }
 

@@ -19,7 +19,7 @@
 //! vtable to call driver functions.
 //!
 //! Newer drivers can export a `DRIVER_EXPORTS` symbol that provides
-//! a versioned `DriverExportsV1` header and a `KernelApiV2` function table
+//! a versioned `DriverExportsV1` header and a `KernelApiV3` function table
 //! for initialization, while keeping `_exorust_driver_entry` as a fallback.
 //!
 //! ## ABI Stability Guidelines
@@ -64,9 +64,9 @@ pub const DRIVER_ENTRY_SYMBOL: &str = "_exorust_driver_entry";
 /// The symbol name for the driver exports table.
 pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
-pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v2";
-/// ABI version for the KernelApiV2 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 4;
+pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v3";
+/// ABI version for the KernelApiV3 table.
+pub const KERNEL_API_ABI_VERSION: u32 = 5;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 1;
 
@@ -492,7 +492,7 @@ pub type DriverEntryFn = extern "C" fn() -> *const DriverVTable;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AbiDmaSlice {
-    pub phys_addr: u64,
+    pub dma_handle_id: u64,
     /// Hardware-visible address (IOVA when IOMMU active, else phys_addr)
     pub device_addr: u64,
     pub virt_addr: u64,
@@ -847,7 +847,7 @@ pub struct AbiInterfaceScope {
 /// ignore optional tail entries introduced in later revisions.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct KernelApiV2 {
+pub struct KernelApiV3 {
     pub abi_version: u32,
     pub abi_size: u32,
 
@@ -855,7 +855,7 @@ pub struct KernelApiV2 {
 
     pub alloc_dma_for_device_raw:
         extern "C" fn(size: usize, device_id: u64, align: usize, out: *mut AbiDmaSlice) -> i32,
-    pub release_dma_raw: extern "C" fn(virt_addr: u64, size: usize, phys_addr: u64) -> i32,
+    pub release_dma_raw: extern "C" fn(dma_handle_id: u64) -> i32,
 
     pub map_mmio: extern "C" fn(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32,
     pub unmap_mmio: extern "C" fn(handle: *const AbiMmioHandle) -> i32,
@@ -916,7 +916,7 @@ pub struct DriverExportsV1 {
     pub name_len: usize,
 
     pub entry: DriverEntryFn,
-    pub init: Option<extern "C" fn(api: *const KernelApiV2) -> i32>,
+    pub init: Option<extern "C" fn(api: *const KernelApiV3) -> i32>,
     pub fini: Option<extern "C" fn() -> i32>,
     pub providers: Option<ProviderDescriptorsFn>,
 

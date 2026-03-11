@@ -208,8 +208,8 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         let buffer = CoherentDmaBuffer::new(size, DmaMemoryAttributes::MMIO)
             .ok_or(VirtioNetError::DeviceError)?;
 
-        let (phys, iova, virt, len, _releaser) = buffer.into_raw_parts();
-        Ok(unsafe { DmaSlice::from_raw_parts(phys, iova, virt, len, None) })
+        let (phys, iova, virt, len, releaser) = buffer.into_raw_parts();
+        Ok(unsafe { DmaSlice::from_internal_parts(phys, iova, virt, len, releaser) })
     }
 
     fn alloc_packet(&self) -> Option<PacketRef> {

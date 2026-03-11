@@ -12,7 +12,7 @@ extern crate alloc;
 use crate::KapiResult;
 use crate::abi::driver::{
     AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistration,
-    AbiNvmeNamespaceRegistration, KernelApiV2, PackedPciLocation,
+    AbiNvmeNamespaceRegistration, KernelApiV3, PackedPciLocation,
 };
 use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::ChannelHandle;
@@ -457,8 +457,8 @@ pub fn is_installed() -> bool {
 // ============================================================================
 
 unsafe extern "C" {
-    /// The global KernelApiV2 instance exported by the kernel.
-    static __exorust_kernel_api_v2: KernelApiV2;
+    /// The global KernelApiV3 instance exported by the kernel.
+    static __exorust_kernel_api_v3: KernelApiV3;
 }
 
 /// Get the stable ABI kernel API table
@@ -466,8 +466,8 @@ unsafe extern "C" {
 /// This is used by drivers and standalone cells to access kernel services
 /// through the ABI-stable interface.
 #[inline]
-pub fn abi() -> &'static KernelApiV2 {
-    unsafe { &__exorust_kernel_api_v2 }
+pub fn abi() -> &'static KernelApiV3 {
+    unsafe { &__exorust_kernel_api_v3 }
 }
 
 #[cfg(feature = "cell_runtime")]
@@ -503,15 +503,15 @@ mod standalone {
         Box::pin(async { Err(KapiError::NotSupported) })
     }
 
-    unsafe fn release_dma_from_abi(virt_addr: *mut u8, size: usize, phys_addr: u64) {
-        let status = (super::abi().release_dma_raw)(virt_addr as u64, size, phys_addr);
+    unsafe fn release_dma_from_abi(dma_handle_id: u64) {
+        let status = (super::abi().release_dma_raw)(dma_handle_id);
         debug_assert_eq!(status, AbiError::Success as i32);
     }
 
     fn alloc_from_raw(raw: AbiDmaSlice) -> DmaSlice<CpuOwned> {
         unsafe {
             DmaSlice::from_raw_parts(
-                raw.phys_addr,
+                raw.dma_handle_id,
                 raw.device_addr,
                 raw.virt_addr as usize as *mut u8,
                 raw.size,
@@ -551,7 +551,7 @@ mod standalone {
 
         let api = super::abi();
         if (api.abi_size as usize)
-            < core::mem::offset_of!(KernelApiV2, enable_msix_raw)
+            < core::mem::offset_of!(KernelApiV3, enable_msix_raw)
                 + core::mem::size_of::<Option<EnableMsixRaw>>()
         {
             return Err(KapiError::NotSupported);
@@ -588,7 +588,7 @@ mod standalone {
 
         let api = super::abi();
         if (api.abi_size as usize)
-            < core::mem::offset_of!(KernelApiV2, disable_msix_raw)
+            < core::mem::offset_of!(KernelApiV3, disable_msix_raw)
                 + core::mem::size_of::<Option<DisableMsixRaw>>()
         {
             return Err(KapiError::NotSupported);

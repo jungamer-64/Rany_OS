@@ -37,7 +37,8 @@ use super::fs_abstraction::{
 
 // NVme per-core API
 use crate::io::dma::{
-    CpuOwned, DeviceOwned, SgDmaGuard, SliceDmaGuard, TypedDmaSlice, TypedSgList,
+    CpuOwned, DeviceDmaContext, DeviceDmaMapping, DeviceOwned, DmaDirection, SgDmaGuard,
+    SliceDmaGuard, TypedDmaSlice, TypedSgList,
 };
 use crate::io::io_scheduler::{
     CompletionHook, DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority, IoResult,
@@ -108,17 +109,7 @@ impl LocalSglDescriptor {
     }
 }
 
-pub(crate) struct NvmeIommuMapping {
-    device_id: crate::io::iommu::types::DeviceId,
-    iova: u64,
-    size: u64,
-}
-
-impl NvmeIommuMapping {
-    fn unmap(self) {
-        let _ = crate::io::iommu::api::unmap_for_device(&self.device_id, self.iova, self.size);
-    }
-}
+pub(crate) type NvmeIommuMapping = DeviceDmaMapping;
 
 struct NvmePrpListPage {
     dev: TypedDmaSlice<DeviceOwned>,
@@ -140,7 +131,7 @@ impl NvmePrpListChain {
         for page in self.pages {
             let _ = page.guard.complete(page.dev);
             if let Some(map) = page.map {
-                map.unmap();
+                let _ = map.unmap();
             }
         }
     }
@@ -176,7 +167,7 @@ impl NvmeDmaContext {
             .expect("NvmeDmaContext missing data_guard");
         let data = data_guard.complete(data_dev);
         if let Some(map) = self.data_map.take() {
-            map.unmap();
+            let _ = map.unmap();
         }
         data
     }
@@ -201,7 +192,7 @@ impl NvmeExternalDmaContext {
             prp.complete();
         }
         if let Some(map) = self.data_map.take() {
-            map.unmap();
+            let _ = map.unmap();
         }
     }
 }
@@ -227,10 +218,10 @@ impl NvmeSglContext {
         self.inflight = false;
 
         if let Some(map) = self.list_map.take() {
-            map.unmap();
+            let _ = map.unmap();
         }
         for map in self.data_maps.drain(..) {
-            map.unmap();
+            let _ = map.unmap();
         }
 
         if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take()) {
@@ -260,11 +251,11 @@ impl Drop for NvmeSglContext {
         }
 
         if let Some(map) = self.list_map.take() {
-            map.unmap();
+            let _ = map.unmap();
         }
 
         for map in self.data_maps.drain(..) {
-            map.unmap();
+            let _ = map.unmap();
         }
 
         if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take()) {
@@ -294,7 +285,7 @@ impl Drop for NvmeDmaContext {
             let _ = data_guard.complete(data_dev);
         }
         if let Some(map) = self.data_map.take() {
-            map.unmap();
+            let _ = map.unmap();
         }
     }
 }
@@ -312,7 +303,7 @@ impl Drop for NvmeExternalDmaContext {
             prp.complete();
         }
         if let Some(map) = self.data_map.take() {
-            map.unmap();
+            let _ = map.unmap();
         }
     }
 }
@@ -349,24 +340,12 @@ fn align_up(value: usize, align: usize) -> usize {
 
 fn map_nvme_iommu(phys_addr: u64, size: usize) -> FsResult<(u64, Option<NvmeIommuMapping>)> {
     let device_id = crate::io::nvme::iommu_device().ok_or(FsError::IoError)?;
-    let iova = unsafe {
-        crate::io::iommu::api::map_for_device_with_perms(
-            &device_id,
-            PhysAddr::new(phys_addr),
-            size as u64,
-            true,
-            true,
-        )
-    }
-    .map_err(|_| FsError::IoError)?;
-    Ok((
-        iova,
-        Some(NvmeIommuMapping {
-            device_id,
-            iova,
-            size: size as u64,
-        }),
-    ))
+    let ctx = DeviceDmaContext::for_attached_device(device_id);
+    let mapping = ctx
+        .map_physical_range(PhysAddr::new(phys_addr), size, DmaDirection::Bidirectional)
+        .map_err(|_| FsError::IoError)?;
+    let iova = mapping.device_addr();
+    Ok((iova, Some(mapping)))
 }
 
 /// PRPリストページのDMAバッファを割り当てる
@@ -544,14 +523,14 @@ fn prepare_dma_from_kapi_buffer(
     buffer: &DmaBuffer,
 ) -> FsResult<(NvmeExternalDmaContext, u64, u64)> {
     let alloc_len = buffer.size();
-    let data_phys = buffer.physical_address();
-    // Use kernel_api abstractions - device param is now ignored
-    let (data_addr, data_map) = map_nvme_iommu(data_phys, alloc_len)?;
+    // KAPI DMA buffers are already device-scoped and expose the hardware-visible
+    // address directly, so this path does not remap them through raw IOMMU APIs.
+    let data_addr = buffer.device_address();
     let (prp2, prp_list) = build_prp_list(data_addr, alloc_len)?;
     Ok((
         NvmeExternalDmaContext {
             prp_list,
-            data_map,
+            data_map: None,
             completed: false,
             inflight: false,
         },
