@@ -401,6 +401,68 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
     )
 }
 
+fn validate_driver_pack_manifest(
+    manifest: &driver_pack::DriverManifestV1,
+) -> Result<(), LoadError> {
+    let driver_abi = manifest.driver_abi_version as u64;
+    if driver_abi != kernel_api::abi::driver::DRIVER_ABI_VERSION {
+        return Err(LoadError::AbiIncompatible(
+            "Driver ABI version mismatch".into(),
+        ));
+    }
+
+    if manifest.kernel_api_min_version > kernel_api::abi::driver::KERNEL_API_ABI_VERSION {
+        return Err(LoadError::AbiIncompatible(
+            "Kernel API ABI version too old".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn load_driver_pack_cell(
+    name: &str,
+    pack_data: &[u8],
+    allow_unsafe: bool,
+) -> Result<CellId, LoadError> {
+    let pack = driver_pack::parse_driver_pack(pack_data)?;
+    let signature_verified = driver_pack::verify_driver_pack(&pack)?;
+    validate_driver_pack_manifest(&pack.manifest)?;
+
+    let manifest_name = pack.manifest.name_str();
+    let driver_name = if manifest_name.is_empty() {
+        name
+    } else {
+        manifest_name
+    };
+
+    load_cell_with_flags(
+        driver_name,
+        pack.elf,
+        allow_unsafe,
+        pack.manifest.contains_unsafe(),
+        signature_verified,
+        pack.manifest.required_caps,
+    )
+}
+
+/// Load a driver artifact as a Cell without registering the driver yet.
+///
+/// This preserves the DriverDomain lifecycle split between load and start while
+/// still accepting packaged driver artifacts staged from initramfs or PCI
+/// probing.
+pub(crate) fn load_driver_artifact_cell(
+    name: &str,
+    data: &[u8],
+    allow_unsafe: bool,
+) -> Result<CellId, LoadError> {
+    if driver_pack::is_driver_pack(data) {
+        load_driver_pack_cell(name, data, allow_unsafe)
+    } else {
+        load_cell(name, data, allow_unsafe)
+    }
+}
+
 /// Validate unsafe flags and type ID dependencies
 fn validate_cell_requirements(
     name: &str,
@@ -586,38 +648,7 @@ pub(crate) fn load_driver_pack_with_context(
     allow_unsafe: bool,
     ctx: AbiDriverContext,
 ) -> Result<DriverHandle, LoadError> {
-    let pack = driver_pack::parse_driver_pack(pack_data)?;
-    let signature_verified = driver_pack::verify_driver_pack(&pack)?;
-
-    let driver_abi = pack.manifest.driver_abi_version as u64;
-    if driver_abi != kernel_api::abi::driver::DRIVER_ABI_VERSION {
-        return Err(LoadError::AbiIncompatible(
-            "Driver ABI version mismatch".into(),
-        ));
-    }
-
-    if pack.manifest.kernel_api_min_version > kernel_api::abi::driver::KERNEL_API_ABI_VERSION {
-        return Err(LoadError::AbiIncompatible(
-            "Kernel API ABI version too old".into(),
-        ));
-    }
-
-    let manifest_name = pack.manifest.name_str();
-    let driver_name = if manifest_name.is_empty() {
-        name
-    } else {
-        manifest_name
-    };
-
-    let cell_id = load_cell_with_flags(
-        driver_name,
-        pack.elf,
-        allow_unsafe,
-        pack.manifest.contains_unsafe(),
-        signature_verified,
-        pack.manifest.required_caps,
-    )?;
-
+    let cell_id = load_driver_pack_cell(name, pack_data, allow_unsafe)?;
     register_driver_from_cell_with_context(cell_id, ctx)
 }
 
@@ -970,6 +1001,25 @@ mod tests {
         let before = registry_snapshot();
 
         match load_driver_artifact("test_driver", &pack, true) {
+            Err(LoadError::AbiIncompatible(message)) => {
+                assert!(str_eq(message.as_str(), "Kernel API ABI version too old"));
+            }
+            other => panic!("expected Kernel API ABI version rejection, got {:?}", other),
+        }
+
+        assert_eq!(registry_snapshot(), before);
+    }
+
+    #[test_case]
+    fn artifact_cell_path_rejects_too_new_kernel_api_version() {
+        let pack = driver_pack::build_unsigned_driver_pack(
+            "test_driver",
+            TEST_ELF_BYTES,
+            kernel_api::abi::driver::KERNEL_API_ABI_VERSION + 1,
+        );
+        let before = registry_snapshot();
+
+        match load_driver_artifact_cell("test_driver", &pack, true) {
             Err(LoadError::AbiIncompatible(message)) => {
                 assert!(str_eq(message.as_str(), "Kernel API ABI version too old"));
             }

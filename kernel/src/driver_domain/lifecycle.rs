@@ -155,13 +155,16 @@ pub fn create(config: &DriverDomainConfig) -> Result<DriverDomainId, DriverDomai
     Ok(id)
 }
 
-/// DriverCellにELFバイナリをロード
+/// DriverCellにドライバartifact（raw ELF / driver pack）をロード
 ///
-/// 1. ELFをCellとしてロード（署名検証 + Type ID Check）
+/// 1. ドライバartifactをCellとしてロード（署名検証 + Type ID Check）
 /// 2. 対応するDomainを作成
 /// 3. リソースクォータを設定
 /// 4. NUMAアフィニティを設定
-pub fn load(id: DriverDomainId, elf_data: &[u8]) -> Result<(CellId, DomainId), DriverDomainError> {
+pub fn load(
+    id: DriverDomainId,
+    artifact_data: &[u8],
+) -> Result<(CellId, DomainId), DriverDomainError> {
     let manager = driver_domain_manager();
 
     // 状態チェック
@@ -180,8 +183,9 @@ pub fn load(id: DriverDomainId, elf_data: &[u8]) -> Result<(CellId, DomainId), D
         cell.transition_to(DriverDomainState::Loading);
     })?;
 
-    // 1. ELFをCellとしてロード
-    let cell_id = match crate::loader::load_cell(&name, elf_data, allow_unsafe) {
+    // 1. ドライバartifactをCellとしてロード
+    let cell_id = match crate::loader::load_driver_artifact_cell(&name, artifact_data, allow_unsafe)
+    {
         Ok(cid) => cid,
         Err(e) => {
             let msg = format!("{}", e);
@@ -465,13 +469,13 @@ pub fn unload(id: DriverDomainId) -> Result<(), DriverDomainError> {
 /// 完全にセットアップする。
 pub fn create_and_start(
     config: &DriverDomainConfig,
-    elf_data: &[u8],
+    artifact_data: &[u8],
 ) -> Result<(DriverDomainId, Vec<DriverHandle>), DriverDomainError> {
     // 1. 作成
     let id = create(config)?;
 
     // 2. ロード
-    if let Err(e) = load(id, elf_data) {
+    if let Err(e) = load(id, artifact_data) {
         // ロールバック
         let _ = driver_domain_manager().remove(id);
         return Err(e);
@@ -491,7 +495,7 @@ pub fn create_and_start(
 /// よく使うデフォルト設定で DriverDomain を作成して開始する簡易API
 pub fn create_and_start_default(
     name: &str,
-    elf_data: &[u8],
+    artifact_data: &[u8],
     allow_unsafe: bool,
 ) -> Result<(DriverDomainId, Vec<DriverHandle>), DriverDomainError> {
     let mut config = DriverDomainConfig::new(name)
@@ -500,7 +504,7 @@ pub fn create_and_start_default(
     if allow_unsafe {
         config = config.with_unsafe_allowed();
     }
-    create_and_start(&config, elf_data)
+    create_and_start(&config, artifact_data)
 }
 
 /// 全DriverCellを停止

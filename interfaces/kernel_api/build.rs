@@ -2,8 +2,6 @@
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
-
 fn main() {
     // Track the ABI backing implementation used by `abi::driver`.
     println!("cargo:rerun-if-changed=src/driver_abi.rs");
@@ -33,16 +31,13 @@ fn main() {
 fn calculate_abi_hash(content: &str) -> u64 {
     let mut hasher = Fnv1aHasher::new();
 
-    // 1. Mix in rustc version
-    // This ensures that if the compiler changes (potentially affecting layout), the hash changes.
-    let rustc_version = Command::new("rustc")
-        .arg("--version")
-        .output()
-        .expect("Failed to get rustc version")
-        .stdout;
-    hasher.write(&rustc_version);
-
-    // 2. Hash `#[repr(...)]` attributes only for ABI-critical declarations.
+    // Hash only source-level ABI declarations so the value stays stable across
+    // kernel and standalone cell builds. Mixing in the rustc version caused the
+    // same source tree to emit different DRIVER_TYPE_HASH values when cached
+    // artifacts were produced by different compiler revisions, which broke
+    // dynamic Cell loading even though the repr(C) layouts were unchanged.
+    //
+    // 1. Hash `#[repr(...)]` attributes only for ABI-critical declarations.
     // This avoids unrelated repr additions from changing DRIVER_TYPE_HASH.
     for line in repr_lines_for_decls(
         content,
@@ -61,7 +56,7 @@ fn calculate_abi_hash(content: &str) -> u64 {
         hasher.write(line.as_bytes());
     }
 
-    // 3. Extract and hash specific ABI types
+    // 2. Extract and hash specific ABI types
     extract_and_hash_decl(content, "pub struct DriverContext", &mut hasher);
     extract_and_hash_decl(content, "pub struct DriverVTable", &mut hasher);
     extract_and_hash_decl(content, "pub struct DriverCapabilities", &mut hasher);

@@ -1,3 +1,4 @@
+use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -22,7 +23,7 @@ use super::driver_pack::{self, DriverPackPciSelector};
 struct StagedPciDriverPack {
     manifest_name: String,
     artifact_name: String,
-    artifact: Vec<u8>,
+    artifact: Cow<'static, [u8]>,
     allow_unsafe: bool,
     selector: DriverPackPciSelector,
 }
@@ -134,16 +135,16 @@ pub fn is_device_bound(locator: PackedPciLocation) -> bool {
         .contains(&locator)
 }
 
-pub fn stage_initramfs_driver_artifact(
+fn stage_driver_artifact_inner(
     artifact_name: &str,
-    artifact: &[u8],
+    artifact: Cow<'static, [u8]>,
     allow_unsafe: bool,
 ) -> StageArtifactResult {
-    if !driver_pack::is_driver_pack(artifact) {
+    if !driver_pack::is_driver_pack(artifact.as_ref()) {
         return StageArtifactResult::NotStaged;
     }
 
-    let parsed = match driver_pack::parse_driver_pack(artifact) {
+    let parsed = match driver_pack::parse_driver_pack(artifact.as_ref()) {
         Ok(parsed) => parsed,
         Err(err) => {
             return StageArtifactResult::Rejected(alloc::format!(
@@ -182,11 +183,27 @@ pub fn stage_initramfs_driver_artifact(
             manifest_name.to_string()
         },
         artifact_name: artifact_name.to_string(),
-        artifact: artifact.to_vec(),
+        artifact,
         allow_unsafe,
         selector,
     });
     StageArtifactResult::Staged
+}
+
+pub fn stage_initramfs_driver_artifact(
+    artifact_name: &str,
+    artifact: &[u8],
+    allow_unsafe: bool,
+) -> StageArtifactResult {
+    stage_driver_artifact_inner(artifact_name, Cow::Owned(artifact.to_vec()), allow_unsafe)
+}
+
+pub(crate) fn stage_initramfs_driver_artifact_static(
+    artifact_name: &str,
+    artifact: &'static [u8],
+    allow_unsafe: bool,
+) -> StageArtifactResult {
+    stage_driver_artifact_inner(artifact_name, Cow::Borrowed(artifact), allow_unsafe)
 }
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
@@ -217,7 +234,7 @@ pub fn try_start_for_device(
         config = config.with_unsafe_allowed();
     }
 
-    match lifecycle::create_and_start(&config, &entry.artifact) {
+    match lifecycle::create_and_start(&config, entry.artifact.as_ref()) {
         Ok((domain_id, handles)) => {
             log::info!(
                 target: "staged_pci",

@@ -238,9 +238,14 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
             // Extract driver name without path and extension
             let driver_name = extract_driver_name(&entry.name);
 
-            match crate::loader::staged_pci::stage_initramfs_driver_artifact(
+            // SAFETY: initramfs bytes come from the bootloader-owned archive that
+            // remains mapped for the kernel lifetime, so staged PCI packs can hold
+            // borrowed slices without copying the entire artifact into heap memory.
+            let staged_artifact =
+                unsafe { core::slice::from_raw_parts(entry.data.as_ptr(), entry.data.len()) };
+            match crate::loader::staged_pci::stage_initramfs_driver_artifact_static(
                 &driver_name,
-                entry.data,
+                staged_artifact,
                 true,
             ) {
                 StageArtifactResult::Staged => {
