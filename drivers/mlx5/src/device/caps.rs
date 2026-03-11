@@ -3,7 +3,7 @@
 // ============================================================================
 
 use crate::cmd::CmdMailbox;
-use crate::defs::{CmdOpcode, HcaCaps};
+use crate::defs::{CmdOpcode, ConnectXVariant, HcaCaps};
 use crate::device::Mlx5Device;
 use crate::error::{Mlx5Error, Mlx5Result};
 
@@ -11,6 +11,17 @@ const HCA_CAP_CMD_LEN: u32 = 16 + 4096;
 const HCA_CAP_PAYLOAD_LEN: usize = 4096;
 const HCA_CAP_PAGE_LEN: usize = 256;
 const MLX5_ATOMIC_REQ_MODE_HOST_ENDIANNESS: u8 = 0x1;
+
+fn should_refine_to_vf(device_id: u16, is_ecpf: bool, caps: &HcaCaps, current_is_vf: bool) -> bool {
+    if is_ecpf || caps.vhca_id == 0 || current_is_vf {
+        return false;
+    }
+
+    // PF multi-function parts can expose a non-zero VHCA ID per function while
+    // still requiring PF mailbox semantics (UID 0). Keep the device-id based
+    // PF/VF classification authoritative unless the PCI ID is explicitly VF-only.
+    ConnectXVariant::is_vf_device_id(device_id)
+}
 
 fn checked_pow2(field: &str, shift: u32) -> u32 {
     1u32.checked_shl(shift).unwrap_or_else(|| {
@@ -240,11 +251,16 @@ impl Mlx5Device {
 
         // vhca_id が 0 以外であれば VF (または SF) と判定を補正する
         // ただし ECPF の場合は vhca_id が 0 以外でも PF 的な振る舞いをする場合があるため考慮が必要
-        if caps.vhca_id != 0 && !self.is_ecpf {
-            if !self.is_vf {
-                log::info!(target: "mlx5", "Device refined as VF based on vhca_id {:#x}", caps.vhca_id);
-                self.is_vf = true;
-            }
+        if should_refine_to_vf(self.device_id, self.is_ecpf, &caps, self.is_vf) {
+            log::info!(target: "mlx5", "Device refined as VF based on vhca_id {:#x}", caps.vhca_id);
+            self.is_vf = true;
+        } else if caps.vhca_id != 0 && !self.is_ecpf && !self.is_vf {
+            log::info!(
+                target: "mlx5",
+                "Keeping PF classification despite vhca_id {:#x} because device-id {:#x} is PF-class",
+                caps.vhca_id,
+                self.device_id
+            );
         } else if caps.vport_group_manager && self.is_vf {
             log::warn!(target: "mlx5", "Device was marked as VF but has vport_group_manager; treating as PF");
             self.is_vf = false;
