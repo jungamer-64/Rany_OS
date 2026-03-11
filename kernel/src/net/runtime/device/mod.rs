@@ -139,7 +139,7 @@ impl NetTxQueue {
         }
     }
 
-    pub fn pop(&self) -> Option<TxRequest> {
+    fn pop(&self) -> Option<TxRequest> {
         self.queue.pop()
     }
 

@@ -237,7 +237,11 @@ pub fn transmit_from_stack(
 }
 
 pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
-    transmit_from_stack(Some(if_id), data)
+    transmit_from_stack(
+        Some(if_id),
+        data,
+        kernel_api::service::netdev::NetTxMeta::default(),
+    )
 }
 
 // ============================================================================
@@ -431,7 +435,8 @@ pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
             .ok()
             .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
     });
-    preferred_if.and_then(crate::net::api::config::get_interface_config)
+    preferred_if
+        .and_then(crate::net::api::config::get_interface_config_from_runtime)
         .map(|cfg| NetworkConfigSnapshot {
             ip: cfg.ip,
             netmask: cfg.netmask,

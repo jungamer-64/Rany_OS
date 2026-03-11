@@ -935,5 +935,9 @@ pub fn test_transmit_from_stack_interface_argument() {
     // using a dummy interface id should simply delegate to the
     // per-interface send function, which currently fails (no mapping)
     let dummy = NetIfId(7);
-    assert!(!transmit_from_stack(Some(dummy), b"hello"));
+    assert!(!transmit_from_stack(
+        Some(dummy),
+        b"hello",
+        kernel_api::service::netdev::NetTxMeta::default(),
+    ));
 }

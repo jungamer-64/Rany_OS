@@ -10,7 +10,6 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::tcb_table;
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack;
