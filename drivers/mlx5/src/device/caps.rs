@@ -10,6 +10,7 @@ use crate::error::{Mlx5Error, Mlx5Result};
 const HCA_CAP_CMD_LEN: u32 = 16 + 4096;
 const HCA_CAP_PAYLOAD_LEN: usize = 4096;
 const HCA_CAP_PAGE_LEN: usize = 256;
+const MLX5_ATOMIC_REQ_MODE_HOST_ENDIANNESS: u8 = 0x1;
 
 fn checked_pow2(field: &str, shift: u32) -> u32 {
     1u32.checked_shl(shift).unwrap_or_else(|| {
@@ -70,6 +71,17 @@ fn log_hca_cap_page(label: &str, page: &[u8; HCA_CAP_PAGE_LEN]) {
         view.vhca_state(),
         view.num_vhca_ports(),
         view.sw_owner_id(),
+    );
+    log::info!(
+        target: "mlx5",
+        "[mlx5-diag] {} feature bits: eth_net_offloads={} roce={} atomic={} pg={} port_selection_cap={} roce_rw_supported={}",
+        label,
+        view.eth_net_offloads(),
+        view.roce(),
+        view.atomic(),
+        view.pg(),
+        view.port_selection_cap(),
+        view.roce_rw_supported(),
     );
     log::info!(
         target: "mlx5",
@@ -160,6 +172,11 @@ impl Mlx5Device {
         caps.csum_cap = cap_view.eth_net_offloads();
         caps.cqe_compression = cap_view.cqe_compression();
         caps.mkey_by_name = cap_view.mkey_by_name();
+        caps.roce = cap_view.roce();
+        caps.roce_rw_supported = cap_view.roce_rw_supported();
+        caps.atomic_cap = cap_view.atomic();
+        caps.pg_cap = cap_view.pg();
+        caps.port_selection_cap = cap_view.port_selection_cap();
         caps.sq_ts_format = cap_view.sq_ts_format() as u8;
         caps.rq_ts_format = cap_view.rq_ts_format() as u8;
         caps.vhca_id = cap_view.vhca_id() as u16;
@@ -169,6 +186,9 @@ impl Mlx5Device {
         caps.max_sge = max_view
             .max_sgl_for_optimized_performance()
             .min(u8::MAX as u32) as u8;
+        caps.relaxed_ordering_write = cap_view.relaxed_ordering_write();
+        caps.relaxed_ordering_read = cap_view.relaxed_ordering_read();
+        caps.relaxed_ordering_read_pci_enabled = cap_view.relaxed_ordering_read_pci_enabled();
 
         if caps.hca_cap_2 {
             match self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL_2, true) {
@@ -188,7 +208,7 @@ impl Mlx5Device {
 
         log::info!(
             target: "mlx5",
-            "HCA Caps: ports={}, max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_mkey={}, hw_vhca_id={:#x}, general_2={}, sw_owner_id={}, driver_version={}, sw_vhca_id_valid={}, mkey_by_name={}, sq_ts_format={}, rq_ts_format={}, log_max_tir={}, log_max_tis={}, log_max_tis_per_sq={}, log_max_td={}",
+            "HCA Caps: ports={}, max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_mkey={}, hw_vhca_id={:#x}, general_2={}, sw_owner_id={}, driver_version={}, sw_vhca_id_valid={}, mkey_by_name={}, roce={}, roce_rw_supported={}, ro_write={}, ro_read={}, ro_read_pci={}, atomic={}, pg={}, port_selection_cap={}, sq_ts_format={}, rq_ts_format={}, wqe_inline_mode={}, log_max_tir={}, log_max_tis={}, log_max_tis_per_sq={}, log_max_td={}",
             caps.num_ports,
             caps.max_cq,
             caps.max_sq,
@@ -201,8 +221,17 @@ impl Mlx5Device {
             caps.driver_version_cap,
             caps.sw_vhca_id_valid_cap,
             caps.mkey_by_name,
+            caps.roce,
+            caps.roce_rw_supported,
+            caps.relaxed_ordering_write,
+            caps.relaxed_ordering_read,
+            caps.relaxed_ordering_read_pci_enabled,
+            caps.atomic_cap,
+            caps.pg_cap,
+            caps.port_selection_cap,
             caps.sq_ts_format,
             caps.rq_ts_format,
+            caps.wqe_inline_mode,
             caps.log_max_tir,
             caps.log_max_tis,
             caps.log_max_tis_per_sq,
@@ -246,16 +275,26 @@ impl Mlx5Device {
         )?;
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        // byte 0x10 からペイロード。Linux ifcの ethernet_offloads_cap_bits を参照
-        // RSS, LRO, Checksum 等のフラグを取得可能
-        let rss_en = (out_mbox.data[0x10 + 0x01] & 0x01) != 0;
-        let lro_en = (out_mbox.data[0x10 + 0x01] & 0x02) != 0;
-        log::debug!(target: "mlx5", "Ethernet Caps: rss={}, lro={}", rss_en, lro_en);
+        let cap_view = crate::structs::caps::EthOffloadsCapLayout::new(&out_mbox.data[0x10..]);
+        let rss_en = cap_view.rss_ind_tbl_cap() != 0;
+        let lro_en = cap_view.lro_cap();
+        let csum_cap = cap_view.csum_cap();
+        let wqe_inline_mode = cap_view.wqe_inline_mode();
+        log::info!(
+            target: "mlx5",
+            "Ethernet Caps: csum={} rss={} lro={} wqe_inline_mode={} reg_umr_sq={}",
+            csum_cap,
+            rss_en,
+            lro_en,
+            wqe_inline_mode,
+            cap_view.reg_umr_sq(),
+        );
 
         if let Some(caps) = self.hca_caps.as_mut() {
             caps.rss_en = rss_en;
             caps.lro_en = lro_en;
-            caps.csum_cap = true; // Ethernetページがあれば基本csumは可能
+            caps.csum_cap = csum_cap;
+            caps.wqe_inline_mode = wqe_inline_mode;
         }
 
         Ok(())
@@ -301,6 +340,7 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Querying current HCA Capabilities for modification...");
         let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
         let general_max = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, true)?;
+        let general_view = crate::structs::caps::HcaCapLayout::new(&general);
         let general_max_view = crate::structs::caps::HcaCapLayout::new(&general_max);
         let mut caps_payload = [0u8; HCA_CAP_PAYLOAD_LEN];
         caps_payload[..HCA_CAP_PAGE_LEN].copy_from_slice(&general);
@@ -312,8 +352,17 @@ impl Mlx5Device {
             if cap_view.cmdif_checksum() != 0 {
                 cap_view.set_cmdif_checksum(0);
             }
+            if general_max_view.abs_native_port_num() {
+                cap_view.set_abs_native_port_num(true);
+            }
+            if general_max_view.release_all_pages() {
+                cap_view.set_release_all_pages(true);
+            }
             if general_max_view.mkey_by_name() {
                 cap_view.set_mkey_by_name(true);
+            }
+            if general_view.roce_rw_supported() && general_max_view.roce() {
+                cap_view.set_roce(general_view.roce());
             }
             if general_max_view.vhca_state() {
                 cap_view.set_vhca_state(true);
@@ -326,6 +375,206 @@ impl Mlx5Device {
 
         log::info!(target: "mlx5", "Setting modified HCA Capabilities...");
         self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, &caps_payload)
+    }
+
+    pub unsafe fn set_hca_cap_roce(&mut self) -> Mlx5Result<()> {
+        let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
+        let general_max = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, true)?;
+        let general_view = crate::structs::caps::HcaCapLayout::new(&general);
+        let general_max_view = crate::structs::caps::HcaCapLayout::new(&general_max);
+
+        if !general_view.roce() || !general_max_view.roce() {
+            return Ok(());
+        }
+
+        let roce_cur = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_ROCE, false)?;
+        let roce_max = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_ROCE, true)?;
+        let roce_cur_view = crate::structs::caps::RoceCapLayout::new(&roce_cur);
+        let roce_max_view = crate::structs::caps::RoceCapLayout::new(&roce_max);
+
+        if roce_cur_view.sw_r_roce_src_udp_port() || !roce_max_view.sw_r_roce_src_udp_port() {
+            return Ok(());
+        }
+
+        let mut caps_payload = [0u8; HCA_CAP_PAYLOAD_LEN];
+        caps_payload[..HCA_CAP_PAGE_LEN].copy_from_slice(&roce_cur);
+        {
+            let mut cap_view =
+                crate::structs::caps::RoceCapLayoutMut::new(&mut caps_payload[..HCA_CAP_PAGE_LEN]);
+            cap_view.set_sw_r_roce_src_udp_port(true);
+            if roce_max_view.qp_ooo_transmit_default() {
+                cap_view.set_qp_ooo_transmit_default(true);
+            }
+        }
+
+        log::info!(
+            target: "mlx5",
+            "Setting RoCE HCA Capabilities (sw_r_roce_src_udp_port=1 qp_ooo_transmit_default={})...",
+            roce_max_view.qp_ooo_transmit_default()
+        );
+        self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_ROCE, &caps_payload)
+    }
+
+    pub unsafe fn set_hca_cap_atomic(&mut self) -> Mlx5Result<()> {
+        let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
+        let general_view = crate::structs::caps::HcaCapLayout::new(&general);
+        if !general_view.atomic() {
+            return Ok(());
+        }
+
+        let atomic = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_ATOMIC, false)?;
+        let atomic_view = crate::structs::caps::AtomicCapLayout::new(&atomic);
+        if !atomic_view.supported_atomic_req_8b_endianness_mode_1()
+            || atomic_view.atomic_req_8b_endianness_mode() == MLX5_ATOMIC_REQ_MODE_HOST_ENDIANNESS
+        {
+            return Ok(());
+        }
+
+        let mut caps_payload = [0u8; HCA_CAP_PAYLOAD_LEN];
+        caps_payload[..HCA_CAP_PAGE_LEN].copy_from_slice(&atomic);
+        {
+            let mut cap_view = crate::structs::caps::AtomicCapLayoutMut::new(
+                &mut caps_payload[..HCA_CAP_PAGE_LEN],
+            );
+            cap_view.set_atomic_req_8b_endianness_mode(MLX5_ATOMIC_REQ_MODE_HOST_ENDIANNESS);
+        }
+
+        log::info!(
+            target: "mlx5",
+            "Setting ATOMIC HCA Capabilities (atomic_req_8B_endianness_mode=host)..."
+        );
+        self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_ATOMIC, &caps_payload)
+    }
+
+    pub unsafe fn set_hca_cap_odp(&mut self) -> Mlx5Result<()> {
+        let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
+        let general_view = crate::structs::caps::HcaCapLayout::new(&general);
+        if !general_view.pg() {
+            return Ok(());
+        }
+
+        let odp = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_ODP, false)?;
+        let odp_max = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_ODP, true)?;
+        let odp_max_view = crate::structs::caps::OdpCapLayout::new(&odp_max);
+        let mut caps_payload = [0u8; HCA_CAP_PAYLOAD_LEN];
+        caps_payload[..HCA_CAP_PAGE_LEN].copy_from_slice(&odp);
+
+        let mut do_set = false;
+        let mut mem_page_fault = false;
+        {
+            let mut cap_view =
+                crate::structs::caps::OdpCapLayoutMut::new(&mut caps_payload[..HCA_CAP_PAGE_LEN]);
+
+            if odp_max_view.mem_page_fault() && odp_max_view.memory_page_fault_page_prefetch() {
+                cap_view.set_mem_page_fault(true);
+                mem_page_fault = true;
+                do_set = true;
+            } else {
+                if odp_max_view.transport_ud_srq_receive() {
+                    cap_view.set_transport_ud_srq_receive(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_rc_srq_receive() {
+                    cap_view.set_transport_rc_srq_receive(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_xrc_srq_receive() {
+                    cap_view.set_transport_xrc_srq_receive(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_xrc_send() {
+                    cap_view.set_transport_xrc_send(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_xrc_receive() {
+                    cap_view.set_transport_xrc_receive(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_xrc_write() {
+                    cap_view.set_transport_xrc_write(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_xrc_read() {
+                    cap_view.set_transport_xrc_read(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_xrc_atomic() {
+                    cap_view.set_transport_xrc_atomic(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_dc_srq_receive() {
+                    cap_view.set_transport_dc_srq_receive(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_dc_send() {
+                    cap_view.set_transport_dc_send(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_dc_receive() {
+                    cap_view.set_transport_dc_receive(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_dc_write() {
+                    cap_view.set_transport_dc_write(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_dc_read() {
+                    cap_view.set_transport_dc_read(true);
+                    do_set = true;
+                }
+                if odp_max_view.transport_dc_atomic() {
+                    cap_view.set_transport_dc_atomic(true);
+                    do_set = true;
+                }
+            }
+        }
+
+        if !do_set {
+            return Ok(());
+        }
+
+        log::info!(
+            target: "mlx5",
+            "Setting ODP HCA Capabilities (scheme={})...",
+            if mem_page_fault { "memory" } else { "transport" }
+        );
+        self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_ODP, &caps_payload)
+    }
+
+    pub unsafe fn set_hca_cap_port_selection(&mut self) -> Mlx5Result<()> {
+        let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
+        let general_view = crate::structs::caps::HcaCapLayout::new(&general);
+        if !general_view.port_selection_cap() {
+            return Ok(());
+        }
+
+        let port_sel_cur =
+            self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_PORT_SELECTION, false)?;
+        let port_sel_max =
+            self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_PORT_SELECTION, true)?;
+        let port_sel_cur_view = crate::structs::caps::PortSelectionCapLayout::new(&port_sel_cur);
+        let port_sel_max_view = crate::structs::caps::PortSelectionCapLayout::new(&port_sel_max);
+
+        if port_sel_cur_view.port_select_flow_table_bypass()
+            || !port_sel_max_view.port_select_flow_table_bypass()
+        {
+            return Ok(());
+        }
+
+        let mut caps_payload = [0u8; HCA_CAP_PAYLOAD_LEN];
+        caps_payload[..HCA_CAP_PAGE_LEN].copy_from_slice(&port_sel_cur);
+        {
+            let mut cap_view = crate::structs::caps::PortSelectionCapLayoutMut::new(
+                &mut caps_payload[..HCA_CAP_PAGE_LEN],
+            );
+            cap_view.set_port_select_flow_table_bypass(true);
+        }
+
+        log::info!(
+            target: "mlx5",
+            "Setting PORT_SELECTION HCA Capabilities (flow_table_bypass=1)..."
+        );
+        self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_PORT_SELECTION, &caps_payload)
     }
 
     pub unsafe fn set_hca_cap_general_2(&mut self) -> Mlx5Result<()> {

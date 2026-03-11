@@ -42,6 +42,10 @@ impl<'a> MkeyContextLayout<'a> {
     pub fn set_access_mode_1_0(&mut self, val: u8) {
         set_bits_u32(self.data, 22, 2, val as u32);
     }
+    // relaxed_ordering_write: bit 13
+    pub fn set_relaxed_ordering_write(&mut self, val: bool) {
+        set_bits_u32(self.data, 13, 1, if val { 1 } else { 0 });
+    }
     // qpn: bits 32-55
     pub fn set_qpn(&mut self, val: u32) {
         set_bits_u32(self.data, 32, 24, val);
@@ -69,6 +73,10 @@ impl<'a> MkeyContextLayout<'a> {
     // log_page_size: bits 474-479
     pub fn set_log_page_size(&mut self, val: u32) {
         set_bits_u32(self.data, 474, 6, val);
+    }
+    // relaxed_ordering_read: bit 473
+    pub fn set_relaxed_ordering_read(&mut self, val: bool) {
+        set_bits_u32(self.data, 473, 1, if val { 1 } else { 0 });
     }
     // mkey_7_0: bits 56-63
     pub fn set_mkey_7_0(&mut self, val: u8) {

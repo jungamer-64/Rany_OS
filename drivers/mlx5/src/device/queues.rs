@@ -243,6 +243,10 @@ impl Mlx5Device {
             .first()
             .map(|port| port.min_wqe_inline_mode())
             .unwrap_or(0);
+        let sq_program_min_inline_mode = self
+            .hca_caps()
+            .map(|caps| caps.wqe_inline_mode == 1)
+            .unwrap_or(false);
         // Linux programs the SQ timestamp format from the SQ cap, preferring
         // real-time when supported and otherwise leaving free-running (0).
         let sq_ts_format = self
@@ -270,7 +274,11 @@ impl Mlx5Device {
                 self.pd,
                 self.uar_page,
                 tisn,
-                min_inline_mode,
+                if sq_program_min_inline_mode {
+                    min_inline_mode
+                } else {
+                    0
+                },
                 false,
                 sq_ts_format,
             );
@@ -280,6 +288,8 @@ impl Mlx5Device {
                 layout.set_tis_lst_sz(0);
                 layout.set_tis_num_0(0);
             }
+            let mut pre_exec = CmdMailbox::zeroed();
+            pre_exec.data[..sq_in_len as usize].copy_from_slice(&in_mbox.data[..sq_in_len as usize]);
             match self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10) {
                 Ok(()) => {
                     log::info!(
@@ -290,9 +300,26 @@ impl Mlx5Device {
                         tisn,
                         min_inline_mode
                     );
+                    Self::debug_dump_mailbox_range("CREATE_SQ ctx(pre)", &pre_exec, 0x20, 64);
+                    Self::debug_dump_mailbox_range(
+                        "CREATE_SQ pas(pre)",
+                        &pre_exec,
+                        0x110,
+                        sq_pages.saturating_mul(2),
+                    );
+                    crate::boot_trace_mailbox_range("sqc_pre", &pre_exec, 0x20, 64);
+                    crate::boot_trace_mailbox_range(
+                        "sq_pas_pre",
+                        &pre_exec,
+                        0x110,
+                        sq_pages.saturating_mul(2),
+                    );
                     break;
                 }
                 Err(err) => {
+                    if fallback_tis0 {
+                        crate::boot_trace_mailbox_range("sqc_pre_fail", &pre_exec, 0x20, 64);
+                    }
                     if fallback_tis0 {
                         log::warn!(
                             target: "mlx5",
@@ -322,6 +349,9 @@ impl Mlx5Device {
         let mut effective_tisn = tisn;
         match self.query_sq_hw(sqn) {
             Ok(ctx) => {
+                let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                Self::debug_dump_mailbox_range("QUERY_SQ sq_context", out_mbox, 0x20, 64);
+                crate::boot_trace_mailbox_range("sqc_out", out_mbox, 0x20, 64);
                 if ctx.tis_num_0 != 0 {
                     effective_tisn = ctx.tis_num_0;
                 }
@@ -366,7 +396,7 @@ impl Mlx5Device {
             log_sq_size,
             effective_tisn,
             cqn,
-            self.mkey,
+            self.tx_mkey,
             csum_offload,
         );
         let cq_index = self
@@ -688,20 +718,7 @@ impl Mlx5Device {
     ) -> Mlx5Result<u32> {
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
         let mut first_any = None;
-        let low_budget = max_scan / 2;
-        let high_budget_each = (max_scan.saturating_sub(low_budget)) / 3;
-        let scan_windows = [
-            (0x0000_0000u32, low_budget.max(1)),
-            (0x0040_0000u32, high_budget_each.max(1)),
-            (0x0080_0000u32, high_budget_each.max(1)),
-            (
-                0x00c0_0000u32,
-                max_scan
-                    .saturating_sub(low_budget)
-                    .saturating_sub(high_budget_each.saturating_mul(2))
-                    .max(1),
-            ),
-        ];
+        let scan_windows = Self::object_id_scan_windows(max_scan);
 
         for &(base, count) in &scan_windows {
             for offset in 0..count {

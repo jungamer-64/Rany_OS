@@ -49,7 +49,15 @@ impl Mlx5Device {
         }
         let tis_list = core::mem::take(&mut self.tis_list);
         for tis in tis_list {
-            let _ = self.destroy_tis_hw(tis.tisn);
+            if tis.destroy_on_teardown() {
+                let _ = self.destroy_tis_hw(tis.tisn);
+            } else {
+                log::info!(
+                    target: "mlx5",
+                    "Skipping destroy for external TIS {:#x} during teardown",
+                    tis.tisn
+                );
+            }
         }
         let rq_tables = core::mem::take(&mut self.rq_tables);
         for rqt in rq_tables {

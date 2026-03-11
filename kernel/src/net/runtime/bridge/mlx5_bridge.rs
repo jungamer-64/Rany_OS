@@ -91,6 +91,10 @@ static MLX5_RX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
 static MLX5_TX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
 /// 短い Ethernet frame を TX 前にパディングした回数のログ予算
 static MLX5_TX_PAD_LOG_BUDGET: AtomicU64 = AtomicU64::new(16);
+/// 固定 60B の診断 TX frame を流す回数
+static MLX5_TX_DIAG_FRAME_BUDGET: AtomicU64 = AtomicU64::new(1);
+/// runtime 初期化直後に固定 60B の診断 TX frame を流す回数
+static MLX5_STARTUP_TX_DIAG_FRAME_BUDGET: AtomicU64 = AtomicU64::new(1);
 /// RX アイドル時スナップショット出力回数の上限
 static MLX5_RX_DEBUG_SNAPSHOT_BUDGET: AtomicU64 = AtomicU64::new(16);
 /// 受信フレーム先頭のプレビュー出力回数
@@ -115,7 +119,9 @@ pub fn mlx5_net_driver_adapter() -> Arc<dyn NetDevicePort> {
 static MLX5_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 fn initialize_mlx5_runtime() -> Result<(), &'static str> {
+    crate::io::log::early_print("[MLX5_BRIDGE] initialize runtime enter\n");
     if MLX5_PORT_RUNTIME_INITIALIZED.swap(true, Ordering::AcqRel) {
+        crate::io::log::early_print("[MLX5_BRIDGE] initialize runtime already initialized\n");
         return Ok(());
     }
 
@@ -149,16 +155,25 @@ fn initialize_mlx5_runtime() -> Result<(), &'static str> {
     MLX5_RX_CQE_LOG_BUDGET.store(32, Ordering::Release);
     MLX5_TX_CQE_LOG_BUDGET.store(32, Ordering::Release);
     MLX5_TX_PAD_LOG_BUDGET.store(16, Ordering::Release);
+    MLX5_TX_DIAG_FRAME_BUDGET.store(1, Ordering::Release);
+    MLX5_STARTUP_TX_DIAG_FRAME_BUDGET.store(1, Ordering::Release);
     MLX5_RX_FRAME_LOG_BUDGET.store(8, Ordering::Release);
     MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(16, Ordering::Release);
     MLX5_WAKE_COUNTS.store(0, Ordering::Release);
     MLX5_WAKE_TIMEOUTS.store(0, Ordering::Release);
+    crate::io::log::early_print("[MLX5_BRIDGE] prefill rx enter\n");
     prefill_rx_buffers();
+    crate::io::log::early_print("[MLX5_BRIDGE] prefill rx done\n");
+    crate::io::log::early_print("[MLX5_BRIDGE] startup diag enter\n");
+    submit_startup_mlx5_diag_frame();
+    crate::io::log::early_print("[MLX5_BRIDGE] startup diag done\n");
 
     if !MLX5_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
+        crate::io::log::early_print("[MLX5_BRIDGE] spawn poll task\n");
         crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_poll_task()));
     }
 
+    crate::io::log::early_print("[MLX5_BRIDGE] initialize runtime done\n");
     Ok(())
 }
 
@@ -326,6 +341,108 @@ fn format_head_bytes(data: &[u8], max_len: usize) -> String {
     out
 }
 
+fn read_be16_slice(data: &[u8], offset: usize) -> u16 {
+    if offset + 2 > data.len() {
+        return 0;
+    }
+    u16::from_be_bytes([data[offset], data[offset + 1]])
+}
+
+fn read_be32_slice(data: &[u8], offset: usize) -> u32 {
+    if offset + 4 > data.len() {
+        return 0;
+    }
+    u32::from_be_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ])
+}
+
+fn read_be64_slice(data: &[u8], offset: usize) -> u64 {
+    if offset + 8 > data.len() {
+        return 0;
+    }
+    u64::from_be_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ])
+}
+
+fn format_mlx5_tx_wqe_layout(wqe: &[u8], inline_hdr_len: u16) -> String {
+    let opmod_idx = read_be32_slice(wqe, 0x00);
+    let qpn_ds = read_be32_slice(wqe, 0x04);
+    let fm_ce_se = wqe.get(0x0b).copied().unwrap_or(0);
+    let general_id = read_be32_slice(wqe, 0x0c);
+    let opcode = opmod_idx & 0xff;
+    let idx = (opmod_idx >> 8) & 0xffff;
+    let opmod = (opmod_idx >> 24) & 0xff;
+    let qpn = (qpn_ds >> 8) & 0x00ff_ffff;
+    let ds_count = qpn_ds & 0xff;
+
+    let cs_flags = wqe.get(0x14).copied().unwrap_or(0);
+    let swp_flags = wqe.get(0x15).copied().unwrap_or(0);
+    let mss = read_be16_slice(wqe, 0x16);
+    let flow_table_metadata = read_be32_slice(wqe, 0x18);
+    let inline_size = read_be16_slice(wqe, 0x1c);
+    let inline_ds = if inline_hdr_len > 2 {
+        (usize::from(inline_hdr_len) - 2).div_ceil(16)
+    } else {
+        0
+    };
+    let data_seg_base = 0x20 + inline_ds * 16;
+    let data_seg_count = ds_count.saturating_sub((2 + inline_ds) as u32);
+    let inline_preview_len = usize::from(inline_hdr_len)
+        .min(data_seg_base.saturating_sub(0x1e))
+        .min(wqe.len().saturating_sub(0x1e));
+    let inline_preview = if inline_preview_len == 0 {
+        String::from("--")
+    } else {
+        format_head_bytes(&wqe[0x1e..0x1e + inline_preview_len], inline_preview_len)
+    };
+
+    let mut layout = format!(
+        "ctrl{{opcode={:#04x} opmod={:#04x} idx={} qpn={:#x} ds={} fm_ce_se={:#04x} general_id={:#x}}} \
+eth{{cs={:#04x} swp={:#04x} mss={} ft_meta={:#x} inline_hdr_sz={} inline_field={}}} \
+inline[{}]",
+        opcode,
+        opmod,
+        idx,
+        qpn,
+        ds_count,
+        fm_ce_se,
+        general_id,
+        cs_flags,
+        swp_flags,
+        mss,
+        flow_table_metadata,
+        inline_hdr_len,
+        inline_size,
+        inline_preview
+    );
+
+    for seg_idx in 0..core::cmp::min(data_seg_count as usize, 2) {
+        let off = data_seg_base + seg_idx * 16;
+        let byte_count = read_be32_slice(wqe, off);
+        let lkey = read_be32_slice(wqe, off + 4);
+        let addr = read_be64_slice(wqe, off + 8);
+        let _ = write!(
+            layout,
+            " data{}{{off={:#x} bc={} lkey={:#x} addr={:#x}}}",
+            seg_idx, off, byte_count, lkey, addr
+        );
+    }
+
+    layout
+}
+
 fn pad_mlx5_tx_packet_if_needed(mut pkt: PacketRef) -> Option<PacketRef> {
     const MIN_ETH_FRAME_LEN: usize = 60;
 
@@ -369,6 +486,358 @@ fn pad_mlx5_tx_packet_if_needed(mut pkt: PacketRef) -> Option<PacketRef> {
     Some(padded)
 }
 
+fn poll_mlx5_tx_cqs(
+    device: &mut Mlx5Device,
+    tx_bufs_guard: &mut [Vec<Option<PacketRef>>],
+) -> usize {
+    let mut total_processed = 0usize;
+
+    for sq_index in 0..tx_bufs_guard.len() {
+        let Some(tx_cq_index) = device.tx_cq_index_for_sq(sq_index) else {
+            continue;
+        };
+
+        let tx_cqes = unsafe { device.poll_cq(tx_cq_index, MLX5_RX_POLL_BATCH) };
+        total_processed += tx_cqes.len();
+
+        for cqe in &tx_cqes {
+            if MLX5_TX_CQE_LOG_BUDGET
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_sub(1))
+                .is_ok()
+            {
+                log::info!(
+                    target: "mlx5::bridge",
+                    "TX CQE: sq={} cq={} op={:?} wqe_counter={} byte_count={} raw_byte_count={} qpn={:#x} syndrome={:?} vendor={:?} src_wqe_op={:?}",
+                    sq_index,
+                    tx_cq_index,
+                    cqe.opcode,
+                    cqe.wqe_counter,
+                    cqe.byte_count,
+                    cqe.raw_byte_count,
+                    cqe.qpn,
+                    cqe.error_syndrome,
+                    cqe.vendor_error_syndrome,
+                    cqe.error_wqe_opcode
+                );
+            }
+            if matches!(
+                cqe.opcode,
+                mlx5_driver::defs::CqeOpcode::ReqErr | mlx5_driver::defs::CqeOpcode::RespErr
+            ) {
+                if let Some(sq_state) = unsafe { device.debug_tx_queue_state(sq_index) } {
+                    let wqe_info = unsafe {
+                        device
+                            .debug_tx_wqe_state(sq_index, cqe.wqe_counter)
+                            .unwrap_or(mlx5_driver::wq::TxWqeDebugInfo {
+                                valid: false,
+                                wqe_counter: sq_state.last_wqe_counter,
+                                wqe_addr: sq_state.last_wqe_addr,
+                                inline_hdr_sz: sq_state.last_wqe_inline_hdr_sz,
+                                opmod_idx: sq_state.last_wqe_opmod_idx,
+                                qpn_ds: sq_state.last_wqe_qpn_ds,
+                                general_id: sq_state.last_wqe_general_id,
+                                byte_count: sq_state.last_wqe_byte_count,
+                                lkey: sq_state.last_wqe_lkey,
+                                device_addr: sq_state.last_wqe_device_addr,
+                                wqe_bytes: sq_state.last_wqe_bytes,
+                            })
+                    };
+                    let tracked_idx =
+                        (cqe.wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize * 4;
+                    let wqe_layout =
+                        format_mlx5_tx_wqe_layout(&wqe_info.wqe_bytes, wqe_info.inline_hdr_sz);
+                    let pkt_head = tx_bufs_guard
+                        .get(sq_index)
+                        .and_then(|queue| queue.get(tracked_idx))
+                        .and_then(|slot| slot.as_ref())
+                        .map(|pkt| format_head_bytes(pkt.data(), 48))
+                        .unwrap_or_else(|| String::from("--"));
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "TX error context: sq={} sqn={:#x} tisn={:#x} wqe_counter={} dbg_counter={} dbg_exact={} inl={} opmod_idx={:#x} qpn_ds={:#x} general_id={:#x} bc={} lkey={:#x} data_addr={:#x} layout=\"{}\" wqe=[{}] pkt_head=[{}]",
+                        sq_index,
+                        sq_state.sqn,
+                        sq_state.tisn,
+                        cqe.wqe_counter,
+                        wqe_info.wqe_counter,
+                        wqe_info.valid,
+                        wqe_info.inline_hdr_sz,
+                        wqe_info.opmod_idx,
+                        wqe_info.qpn_ds,
+                        wqe_info.general_id,
+                        wqe_info.byte_count,
+                        wqe_info.lkey,
+                        wqe_info.device_addr,
+                        wqe_layout,
+                        format_head_bytes(&wqe_info.wqe_bytes, 64),
+                        pkt_head
+                    );
+                }
+            }
+            let infos = device.process_tx_completions(sq_index, cqe.wqe_counter);
+            for _info in infos {
+                let idx = (cqe.wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
+                if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
+                    for i in 0..4 {
+                        let bb_idx = idx * 4 + i;
+                        if bb_idx < queue_bufs.len() {
+                            let _ = queue_bufs[bb_idx].take();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    total_processed
+}
+
+fn build_mlx5_diag_tx_frame(src: [u8; 6]) -> Option<PacketRef> {
+    const DIAG_FRAME_LEN: usize = 60;
+
+    let mut pkt = crate::net::datapath::mempool::alloc_packet_for_active_dma_device()?;
+    if pkt.capacity() < DIAG_FRAME_LEN {
+        return None;
+    }
+
+    pkt.set_len(DIAG_FRAME_LEN);
+    let data = pkt.data_mut();
+    data[..6].fill(0xff);
+    data[6..12].copy_from_slice(&src);
+    data[12] = 0x88;
+    data[13] = 0xb5;
+    data[14..18].copy_from_slice(b"MLX5");
+    for (idx, byte) in data[18..DIAG_FRAME_LEN].iter_mut().enumerate() {
+        *byte = 0xa0u8.wrapping_add(idx as u8);
+    }
+
+    Some(pkt)
+}
+
+fn submit_startup_mlx5_diag_frame() {
+    crate::io::log::early_print("[MLX5_BRIDGE] startup diag budget check\n");
+    if MLX5_STARTUP_TX_DIAG_FRAME_BUDGET
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_err()
+    {
+        crate::io::log::early_print("[MLX5_BRIDGE] startup diag skipped by budget\n");
+        return;
+    }
+
+    let submitted = {
+        crate::io::log::early_print("[MLX5_BRIDGE] startup diag txbuf lock enter\n");
+        let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                crate::io::log::early_print("[MLX5_BRIDGE] startup diag txbuf lock failed\n");
+                log::warn!(
+                    target: "mlx5::bridge",
+                    "Skipping startup mlx5 diagnostic TX frame: TX buffer tracking lock poisoned"
+                );
+                return;
+            }
+        };
+        crate::io::log::early_print("[MLX5_BRIDGE] startup diag txbuf lock done\n");
+
+        crate::io::log::early_print("[MLX5_BRIDGE] startup diag device lock enter\n");
+        with_mlx5_device(|device| {
+            crate::io::log::early_print("[MLX5_BRIDGE] startup diag device lock done\n");
+            if !device.is_active() {
+                log::warn!(
+                    target: "mlx5::bridge",
+                    "Skipping startup mlx5 diagnostic TX frame: mlx5 device is not active yet"
+                );
+                return false;
+            }
+
+            let mut src = device
+                .port(0)
+                .map(|port| port.mac_address().0)
+                .unwrap_or([0x02, 0x00, 0x5e, 0x00, 0x53, 0x01]);
+            if src == [0; 6] {
+                src = [0x02, 0x00, 0x5e, 0x00, 0x53, 0x01];
+            }
+
+            match build_mlx5_diag_tx_frame(src) {
+                Some(diag_pkt) => {
+                    crate::io::log::early_print("[MLX5_BRIDGE] startup diag submit enter\n");
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "Submitting startup mlx5 diagnostic 60B TX frame"
+                    );
+                    let submitted = submit_mlx5_tx_packet_on_device(
+                        device,
+                        tx_bufs_guard.as_mut_slice(),
+                        diag_pkt,
+                        None,
+                        false,
+                    );
+                    crate::io::log::early_print("[MLX5_BRIDGE] startup diag submit returned\n");
+                    submitted
+                }
+                None => {
+                    crate::io::log::early_print("[MLX5_BRIDGE] startup diag alloc failed\n");
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "Failed to allocate startup mlx5 diagnostic TX frame"
+                    );
+                    false
+                }
+            }
+        })
+        .unwrap_or(false)
+    };
+
+    log::warn!(
+        target: "mlx5::bridge",
+        "Startup mlx5 diagnostic TX submission submitted={}",
+        submitted
+    );
+
+    if !submitted {
+        crate::io::log::early_print("[MLX5_BRIDGE] startup diag submit=false\n");
+        return;
+    }
+
+    let completions = {
+        crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain lock enter\n");
+        let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain lock failed\n");
+                log::warn!(
+                    target: "mlx5::bridge",
+                    "Unable to drain startup mlx5 diagnostic TX CQ: TX buffer tracking lock poisoned"
+                );
+                return;
+            }
+        };
+        crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain lock done\n");
+
+        crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain device lock enter\n");
+        with_mlx5_device(|device| {
+            crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain device lock done\n");
+            let mut total = 0usize;
+            // Surface the first TX CQE immediately so the boot log captures the failure mode
+            // even when higher-layer traffic has not started yet.
+            for _ in 0..64 {
+                total += poll_mlx5_tx_cqs(device, tx_bufs_guard.as_mut_slice());
+                if total > 0 {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+            total
+        })
+        .unwrap_or(0)
+    };
+    crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain returned\n");
+
+    log::warn!(
+        target: "mlx5::bridge",
+        "Startup mlx5 diagnostic TX CQ drain completions={}",
+        completions
+    );
+}
+
+fn submit_mlx5_tx_packet_on_device(
+    device: &mut Mlx5Device,
+    tx_bufs_guard: &mut [Vec<Option<PacketRef>>],
+    pkt: PacketRef,
+    vlan_tag: Option<u16>,
+    track_stats: bool,
+) -> bool {
+    let pkt = match pad_mlx5_tx_packet_if_needed(pkt) {
+        Some(pkt) => pkt,
+        None => {
+            log::warn!(
+                target: "mlx5::bridge",
+                "Failed to provision padded DMA-safe packet for short mlx5 TX frame"
+            );
+            return false;
+        }
+    };
+
+    let data_virt = pkt.as_ptr() as u64;
+    let data_device = pkt.device_address();
+    let data_len = pkt.len() as u32;
+
+    let min_inline_mode = device
+        .port(0)
+        .map(|port| port.min_wqe_inline_mode())
+        .unwrap_or(0);
+    let inline_hdr_len = match min_inline_mode {
+        0 => 0,
+        1 => core::cmp::min(pkt.len(), 18),
+        unsupported => {
+            log::warn!(
+                target: "mlx5::bridge",
+                "Unsupported mlx5 TX min_wqe_inline_mode={} for simple SEND path",
+                unsupported
+            );
+            return false;
+        }
+    };
+    let inline_hdr = &pkt.data()[..inline_hdr_len];
+
+    let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let num_sqs = tx_bufs_guard.len();
+    if num_sqs == 0 {
+        log::trace!(target: "mlx5::bridge", "No active SQs available for TX");
+        return false;
+    }
+    let sq_index = (cpu_id % num_sqs) as usize;
+
+    let mut tx_options = mlx5_driver::wq::TxOptions::default();
+    tx_options.vlan_tag = vlan_tag.unwrap_or(0);
+    tx_options.l3_cs = false;
+    tx_options.l4_cs = false;
+
+    match unsafe {
+        device.transmit(
+            sq_index,
+            data_device,
+            data_virt,
+            data_len,
+            inline_hdr,
+            tx_options,
+        )
+    } {
+        Ok(wqe_idx) => {
+            let bb_idx = (wqe_idx as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize * 4;
+            if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
+                queue_bufs[bb_idx] = Some(pkt);
+            }
+
+            if track_stats {
+                MLX5_TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+                counters::global().record_tx(data_len as usize);
+                trace::push_event(NetLayer::Driver, NetEventKind::Tx, "mlx5 tx");
+            }
+            true
+        }
+        Err(e) => {
+            if track_stats {
+                MLX5_TX_ERRORS.fetch_add(1, Ordering::Relaxed);
+                counters::global().record_error();
+            }
+            log::warn!(
+                target: "mlx5::bridge",
+                "TX submit failed: sq={} len={} inline={} vlan={:?} track_stats={} err={:?}",
+                sq_index,
+                data_len,
+                inline_hdr_len,
+                vlan_tag,
+                track_stats,
+                e
+            );
+            false
+        }
+    }
+}
+
 // ============================================================================
 // Transmit Path
 // ============================================================================
@@ -383,85 +852,44 @@ fn submit_mlx5_tx_packet(pkt: PacketRef, vlan_tag: Option<u16>) -> bool {
         if !device.is_active() {
             return false;
         }
-        let pkt = match pad_mlx5_tx_packet_if_needed(pkt) {
-            Some(pkt) => pkt,
-            None => {
-                log::warn!(
-                    target: "mlx5::bridge",
-                    "Failed to provision padded DMA-safe packet for short mlx5 TX frame"
-                );
-                return false;
+        if MLX5_TX_DIAG_FRAME_BUDGET
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            let mut src = device
+                .port(0)
+                .map(|port| port.mac_address().0)
+                .unwrap_or([0x02, 0x00, 0x5e, 0x00, 0x53, 0x01]);
+            if src == [0; 6] {
+                src = [0x02, 0x00, 0x5e, 0x00, 0x53, 0x01];
             }
-        };
 
-        let data_virt = pkt.as_ptr() as u64;
-        let data_device = pkt.device_address(); // IOMMU-safe
-        let data_len = pkt.len() as u32;
-
-        // Respect the NIC/vport inline policy. CX4-Lx PF on this path reports
-        // min_wqe_inline_mode=L2, which requires the first 18 bytes to be
-        // carried inline even for ordinary SEND WQEs.
-        let min_inline_mode = device
-            .port(0)
-            .map(|port| port.min_wqe_inline_mode())
-            .unwrap_or(0);
-        let inline_hdr_len = match min_inline_mode {
-            0 => 0,
-            1 => core::cmp::min(pkt.len(), 18),
-            unsupported => {
-                log::warn!(
-                    target: "mlx5::bridge",
-                    "Unsupported mlx5 TX min_wqe_inline_mode={} for simple SEND path",
-                    unsupported
-                );
-                return false;
-            }
-        };
-        let inline_hdr = &pkt.data()[..inline_hdr_len];
-
-        // CPU ID に基づいて SQ を選択（マルチコア分散）
-        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
-        let num_sqs = tx_bufs_guard.len();
-        if num_sqs == 0 {
-            log::trace!(target: "mlx5::bridge", "No active SQs available for TX");
-            return false;
-        }
-        let sq_index = (cpu_id % num_sqs) as usize;
-
-        // Safety: デバイスアドレスが正しく取得されていること
-        let mut tx_options = mlx5_driver::wq::TxOptions::default();
-        tx_options.vlan_tag = vlan_tag.unwrap_or(0);
-        tx_options.l3_cs = false;
-        tx_options.l4_cs = false;
-
-        match unsafe {
-            device.transmit(
-                sq_index,
-                data_device,
-                data_virt,
-                data_len,
-                inline_hdr,
-                tx_options,
-            )
-        } {
-            Ok(wqe_idx) => {
-                let bb_idx = (wqe_idx as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize * 4;
-                if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
-                    queue_bufs[bb_idx] = Some(pkt);
+            match build_mlx5_diag_tx_frame(src) {
+                Some(diag_pkt) => {
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "Submitting one-shot mlx5 diagnostic 60B TX frame"
+                    );
+                    let _ = submit_mlx5_tx_packet_on_device(
+                        device,
+                        tx_bufs_guard.as_mut_slice(),
+                        diag_pkt,
+                        None,
+                        false,
+                    );
                 }
-
-                MLX5_TX_PACKETS.fetch_add(1, Ordering::Relaxed);
-                counters::global().record_tx(data_len as usize);
-                trace::push_event(NetLayer::Driver, NetEventKind::Tx, "mlx5 tx");
-                true
-            }
-            Err(e) => {
-                MLX5_TX_ERRORS.fetch_add(1, Ordering::Relaxed);
-                counters::global().record_error();
-                log::trace!(target: "mlx5::bridge", "TX failed: {:?}", e);
-                false
+                None => {
+                    log::warn!(
+                        target: "mlx5::bridge",
+                        "Failed to allocate mlx5 diagnostic TX frame"
+                    );
+                }
             }
         }
+
+        submit_mlx5_tx_packet_on_device(device, tx_bufs_guard.as_mut_slice(), pkt, vlan_tag, true)
     });
 
     result.unwrap_or(false)
@@ -542,9 +970,13 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
 
             match (sq, cq_index, cq) {
                 (Some(sq_state), Some(cq_idx), Some(cq_state)) => {
+                    let wqe_layout = format_mlx5_tx_wqe_layout(
+                        &sq_state.last_wqe_bytes,
+                        sq_state.last_wqe_inline_hdr_sz,
+                    );
                     log::warn!(
                         target: "mlx5::bridge",
-                        "TX debug sq={} sqn={} prod={}/{} db={:#x} bf={:#x} last_wqe:inl={} opmod_idx={:#x} qpn_ds={:#x} bc={} lkey={:#x} data_addr={:#x} addr={:#x} head=[{}] | cq={} cqn={} ci={} arm_sn={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x} arm_db={:#x}",
+                        "TX debug sq={} sqn={} prod={}/{} db={:#x} bf={:#x} last_wqe:inl={} opmod_idx={:#x} qpn_ds={:#x} bc={} lkey={:#x} data_addr={:#x} addr={:#x} head=[{}] layout=\"{}\" | cq={} cqn={} ci={} arm_sn={} idx={} exp_owner={} obs_owner={} op={:?} wqe={} bc={} cq_db={:#x} arm_db={:#x}",
                         sq_index,
                         sq_state.sqn,
                         sq_state.producer_counter,
@@ -559,6 +991,7 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
                         sq_state.last_wqe_device_addr,
                         sq_state.last_wqe_addr,
                         format_head_bytes(&sq_state.last_wqe_bytes, 48),
+                        wqe_layout,
                         cq_idx,
                         cq_state.cqn,
                         cq_state.consumer_counter,
@@ -801,87 +1234,7 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
             }
         }
 
-        // すべての TX CQ をポーリング
-        for sq_index in 0..tx_bufs_guard.len() {
-            let Some(tx_cq_index) = device.tx_cq_index_for_sq(sq_index) else {
-                continue;
-            };
-
-            let tx_cqes = device.poll_cq(tx_cq_index, MLX5_RX_POLL_BATCH);
-            for cqe in &tx_cqes {
-                if MLX5_TX_CQE_LOG_BUDGET
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_sub(1))
-                    .is_ok()
-                {
-                    log::info!(
-                        target: "mlx5::bridge",
-                        "TX CQE: sq={} cq={} op={:?} wqe_counter={} byte_count={} raw_byte_count={} qpn={:#x} syndrome={:?} vendor={:?} src_wqe_op={:?}",
-                        sq_index,
-                        tx_cq_index,
-                        cqe.opcode,
-                        cqe.wqe_counter,
-                        cqe.byte_count,
-                        cqe.raw_byte_count,
-                        cqe.qpn,
-                        cqe.error_syndrome,
-                        cqe.vendor_error_syndrome,
-                        cqe.error_wqe_opcode
-                    );
-                }
-                if matches!(
-                    cqe.opcode,
-                    mlx5_driver::defs::CqeOpcode::ReqErr | mlx5_driver::defs::CqeOpcode::RespErr
-                ) {
-                    if let Some(sq_state) = unsafe { device.debug_tx_queue_state(sq_index) } {
-                        let tracked_idx =
-                            (cqe.wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize
-                                * 4;
-                        let pkt_head = tx_bufs_guard
-                            .get(sq_index)
-                            .and_then(|queue| queue.get(tracked_idx))
-                            .and_then(|slot| slot.as_ref())
-                            .map(|pkt| format_head_bytes(pkt.data(), 48))
-                            .unwrap_or_else(|| String::from("--"));
-                        log::warn!(
-                            target: "mlx5::bridge",
-                            "TX error context: sq={} sqn={:#x} tisn={:#x} wqe_counter={} inl={} opmod_idx={:#x} qpn_ds={:#x} general_id={:#x} bc={} lkey={:#x} data_addr={:#x} wqe=[{}] pkt_head=[{}]",
-                            sq_index,
-                            sq_state.sqn,
-                            sq_state.tisn,
-                            cqe.wqe_counter,
-                            sq_state.last_wqe_inline_hdr_sz,
-                            sq_state.last_wqe_opmod_idx,
-                            sq_state.last_wqe_qpn_ds,
-                            sq_state.last_wqe_general_id,
-                            sq_state.last_wqe_byte_count,
-                            sq_state.last_wqe_lkey,
-                            sq_state.last_wqe_device_addr,
-                            format_head_bytes(&sq_state.last_wqe_bytes, 64),
-                            pkt_head
-                        );
-                    }
-                }
-                let infos = device.process_tx_completions(sq_index, cqe.wqe_counter);
-                for _info in infos {
-                    let idx = (cqe.wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
-                    // Note: In MPWQE, we'd need a more complex mapping if we wanted to
-                    // precisely take the right buf from the bridge's tracking.
-                    // For now, we clear the tracking based on the buf_idx.
-                    if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
-                        // For simple post_send, idx is correct. For MPWQE,
-                        // multiple slots (WQEBBs) were used. complete_tx already
-                        // cleared the hardware-side tracking.
-                        // We need to clear bridge-side tracking for all 4 slots.
-                        for i in 0..4 {
-                            let bb_idx = idx * 4 + i;
-                            if bb_idx < queue_bufs.len() {
-                                let _ = queue_bufs[bb_idx].take();
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        total_processed += poll_mlx5_tx_cqs(device, tx_bufs_guard.as_mut_slice()) as u32;
 
         total_processed
     });

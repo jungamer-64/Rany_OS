@@ -14,7 +14,7 @@ use crate::health::HealthMonitor;
 use crate::pages::PageManager;
 use crate::polling::AdaptivePollingState;
 use crate::port::Mlx5Port;
-use crate::resources::{MkeyInfo, TirInfo, TisInfo};
+use crate::resources::{MkeyInfo, TirInfo, TisInfo, TisOwnership};
 use crate::wq::{ReceiveQueue, SendQueue};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -73,6 +73,7 @@ pub struct Mlx5Device {
     pub(crate) pd: u32,
     pub(crate) td: u32,
     pub(crate) mkey: u32,
+    pub(crate) tx_mkey: u32,
     pub(crate) underlay_qpn: u32,
     pub(crate) mkey_info: Option<MkeyInfo>,
     pub(crate) sw_vhca_id: u16,
@@ -170,6 +171,7 @@ impl Mlx5Device {
             pd: 0,
             td: 0,
             mkey: 0,
+            tx_mkey: 0,
             underlay_qpn: 0,
             mkey_info: None,
             sw_vhca_id: 0,
@@ -318,10 +320,21 @@ impl Mlx5Device {
     }
 
     fn debug_dump_mailbox_words(tag: &str, mbox: &crate::cmd::CmdMailbox, dwords: usize) {
-        let count = dwords.min(32);
+        Self::debug_dump_mailbox_range(tag, mbox, 0, dwords);
+    }
+
+    fn debug_dump_mailbox_range(
+        tag: &str,
+        mbox: &crate::cmd::CmdMailbox,
+        start: usize,
+        dwords: usize,
+    ) {
+        let aligned_start = start & !0x3;
+        let max_bytes = crate::defs::MLX5_CMD_MBOX_SIZE.saturating_sub(aligned_start);
+        let count = dwords.min(max_bytes / 4).min(128);
         for i in 0..count {
-            let off = i * 4;
-            log::debug!(
+            let off = aligned_start + i * 4;
+            log::info!(
                 target: "mlx5",
                 "[mlx5-diag] {} out[{:#04x}]={:#010x}",
                 tag,
@@ -329,6 +342,60 @@ impl Mlx5Device {
                 mbox.read_be32(off)
             );
         }
+    }
+
+    fn object_id_scan_windows(max_scan: u32) -> Vec<(u32, u32)> {
+        const PREFIXES: [u32; 16] = [
+            0x0000_0000,
+            0x0040_0000,
+            0x0080_0000,
+            0x00c0_0000,
+            0x0010_0000,
+            0x0020_0000,
+            0x0030_0000,
+            0x0050_0000,
+            0x0060_0000,
+            0x0070_0000,
+            0x0090_0000,
+            0x00a0_0000,
+            0x00b0_0000,
+            0x00d0_0000,
+            0x00e0_0000,
+            0x00f0_0000,
+        ];
+
+        let window_count = core::cmp::min(max_scan.max(1) as usize, PREFIXES.len());
+        let base_budget = max_scan / window_count as u32;
+        let mut remainder = max_scan % window_count as u32;
+        let mut windows = Vec::with_capacity(window_count);
+
+        for &base in &PREFIXES[..window_count] {
+            let extra = if remainder != 0 {
+                remainder -= 1;
+                1
+            } else {
+                0
+            };
+            windows.push((base, (base_budget + extra).max(1)));
+        }
+
+        windows
+    }
+
+    pub(crate) fn record_tis_info(&mut self, tisn: u32, port: u8, ownership: TisOwnership) {
+        if let Some(existing) = self.tis_list.iter_mut().find(|info| info.tisn == tisn) {
+            existing.port = port;
+            if matches!(ownership, TisOwnership::DriverCreated) {
+                existing.ownership = TisOwnership::DriverCreated;
+            }
+            return;
+        }
+
+        self.tis_list.push(TisInfo {
+            tisn,
+            port,
+            ownership,
+        });
     }
 
     /// Build the list of mailbox UID candidates that should be tried for

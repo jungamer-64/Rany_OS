@@ -135,6 +135,46 @@ pub(crate) fn boot_trace_sq_state(
     }
 }
 
+pub(crate) fn boot_trace_tis_choice(label: &str, tisn: u32) {
+    if let Some(serial) = kernel_api::service::serial::try_instance() {
+        let _ = serial.write(0, b"[MLX5_TIS] ");
+        let _ = serial.write(0, label.as_bytes());
+        let _ = serial.write(0, b" tisn=0x");
+        let mut tis_hex = [0u8; 8];
+        encode_hex_u32(tisn, &mut tis_hex);
+        let _ = serial.write(0, &tis_hex);
+        let _ = serial.write(0, b"\n");
+    }
+}
+
+pub(crate) fn boot_trace_mailbox_range(
+    tag: &str,
+    mbox: &crate::cmd::CmdMailbox,
+    start: usize,
+    dwords: usize,
+) {
+    let aligned_start = start & !0x3;
+    let max_bytes = crate::defs::MLX5_CMD_MBOX_SIZE.saturating_sub(aligned_start);
+    let count = dwords.min(max_bytes / 4).min(128);
+
+    if let Some(serial) = kernel_api::service::serial::try_instance() {
+        for i in 0..count {
+            let off = aligned_start + i * 4;
+            let _ = serial.write(0, b"[MLX5_DUMP] ");
+            let _ = serial.write(0, tag.as_bytes());
+            let _ = serial.write(0, b"[0x");
+            let mut off_hex = [0u8; 4];
+            encode_hex_u16(off as u16, &mut off_hex);
+            let _ = serial.write(0, &off_hex);
+            let _ = serial.write(0, b"]=0x");
+            let mut val_hex = [0u8; 8];
+            encode_hex_u32(mbox.read_be32(off), &mut val_hex);
+            let _ = serial.write(0, &val_hex);
+            let _ = serial.write(0, b"\n");
+        }
+    }
+}
+
 #[inline]
 fn encode_hex_u16(mut value: u16, out: &mut [u8; 4]) {
     for i in (0..4).rev() {

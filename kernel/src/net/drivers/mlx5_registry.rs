@@ -883,13 +883,17 @@ impl Mlx5AsyncDriver {
         }
         crate::io::log::early_print("[MLX5_PROBE] bootstrap done\n");
 
+        crate::io::log::early_print("[MLX5_PROBE] register bridge device enter\n");
         crate::net::runtime::bridge::mlx5_bridge::register_mlx5_device(device);
+        crate::io::log::early_print("[MLX5_PROBE] register bridge device done\n");
         let adapter = crate::net::runtime::bridge::mlx5_bridge::mlx5_net_driver_adapter();
+        crate::io::log::early_print("[MLX5_PROBE] register port enter\n");
         let register_result = crate::net::runtime::device::register_port_with_default_config(
             crate::net::runtime::device::NetDeviceKey::Mlx5(0),
             adapter,
             crate::net::runtime::device::primary_if().is_none(),
         );
+        crate::io::log::early_print("[MLX5_PROBE] register port returned\n");
         if let Err(e) = register_result {
             log::error!(target: "mlx5", "Port runtime registration failed: {}", e);
 

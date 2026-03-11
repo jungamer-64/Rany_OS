@@ -106,7 +106,7 @@ pub fn build_create_underlay_qp_input(
     set_bits_u32(qpc, 19, 2, 0x3); // pm_state = MLX5_QP_PM_MIGRATED
     set_bits_u32(qpc, 88, 2, ts_format as u32); // ts_format = mlx5_get_qp_default_ts()
     set_bits_u32(qpc, 92, 4, 0x2); // enhanced ULP stateless mode
-    set_bits_u32(qpc, 201, 1, 1); // primary_address_path.grh
+    set_bits_u32(qpc, 200, 1, 1); // primary_address_path.grh
     set_bits_u32(qpc, 456, 8, vhca_port as u32); // primary_address_path.vhca_port_num
 }
 
@@ -123,6 +123,16 @@ pub fn build_destroy_qp_input(in_mbox: &mut CmdMailbox, qpn: u32) {
 
 /// CREATE_MKEY コマンド入力の構築
 pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
+    build_create_mkey_input_with_relaxed_ordering(in_mbox, params, false, false);
+}
+
+/// CREATE_MKEY コマンド入力の構築（relaxed ordering 制御付き）
+pub fn build_create_mkey_input_with_relaxed_ordering(
+    in_mbox: &mut CmdMailbox,
+    params: &MkeyParams,
+    relaxed_ordering_write: bool,
+    relaxed_ordering_read: bool,
+) {
     *in_mbox = CmdMailbox::zeroed();
     {
         let mut layout = MkeyContextLayout::new(&mut in_mbox.data[0x10..]);
@@ -136,6 +146,7 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
 
         // Match the Linux netdev direct-memory-key path: PA access mode, local
         // reads always enabled, QPN wildcarded, and length64 for full-space keys.
+        layout.set_relaxed_ordering_write(relaxed_ordering_write);
         layout.set_lr(true);
         layout.set_lw(local_write);
         layout.set_rr(remote_read);
@@ -144,6 +155,7 @@ pub fn build_create_mkey_input(in_mbox: &mut CmdMailbox, params: &MkeyParams) {
         layout.set_qpn(0x00ff_ffff);
         layout.set_pd(params.pd);
         layout.set_log_page_size(params.log_page_size as u32);
+        layout.set_relaxed_ordering_read(relaxed_ordering_read);
         // Linux mlx5e direct mkey path leaves mkey_7_0 at 0.
         layout.set_mkey_7_0(0);
 
@@ -402,7 +414,8 @@ mod tests {
         assert_eq!(get_bits_u32(qpc, 19, 2), 0x3);
         assert_eq!(get_bits_u32(qpc, 88, 2), 0x1);
         assert_eq!(get_bits_u32(qpc, 92, 4), 0x2);
-        assert_eq!(get_bits_u32(qpc, 201, 1), 1);
+        assert_eq!(get_bits_u32(qpc, 200, 1), 1);
+        assert_eq!(get_bits_u32(qpc, 201, 1), 0);
         assert_eq!(get_bits_u32(qpc, 456, 8), 1);
     }
 

@@ -712,7 +712,10 @@ impl DhcpClient {
         current_tick: u64,
     ) -> DhcpLease {
         let t1 = opts.renewal_time.unwrap_or(opts.lease_time / 2);
-        let t2 = opts.rebinding_time.unwrap_or((opts.lease_time * 7) / 8);
+        // Promote to u64 before multiplying so large lease times do not panic in debug builds.
+        let t2 = opts
+            .rebinding_time
+            .unwrap_or(((opts.lease_time as u64 * 7) / 8) as u32);
 
         DhcpLease {
             ip_address: header.yiaddr(),

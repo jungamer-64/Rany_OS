@@ -257,6 +257,20 @@ impl Mlx5Device {
         self.sqs.get(sq_index).map(|sq| sq.debug_state())
     }
 
+    /// 指定した WQE カウンタに対応する TX WQE のデバッグ状態を取得
+    ///
+    /// # Safety
+    /// - SQ メモリとドアベル領域が有効であること
+    pub unsafe fn debug_tx_wqe_state(
+        &self,
+        sq_index: usize,
+        wqe_counter: u16,
+    ) -> Option<crate::wq::TxWqeDebugInfo> {
+        self.sqs
+            .get(sq_index)
+            .and_then(|sq| sq.debug_wqe_state(wqe_counter))
+    }
+
     /// Completion Queue のデバッグ状態を取得
     ///
     /// # Safety
@@ -633,16 +647,30 @@ impl Mlx5Device {
             });
         }
 
+        if self.vnic_env_query_logged {
+            return Err(Mlx5Error::NotSupported);
+        }
+
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_query_vnic_env_input(in_mbox, vport_number, other_vport);
-        cmd.execute(
+        if let Err(err) = cmd.execute(
             CmdOpcode::QueryVnicEnv,
             self.cmd_in_mbox_device,
             0x10,
             self.cmd_out_mbox_device,
             0x40,
-        )?;
+        ) {
+            if !self.vnic_env_query_logged {
+                log::warn!(
+                    target: "mlx5",
+                    "QUERY_VNIC_ENV unavailable on this function; suppressing further warnings: {:?}",
+                    err
+                );
+                self.vnic_env_query_logged = true;
+            }
+            return Err(err);
+        }
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         Ok(parse_query_vnic_env_output(out_mbox))
@@ -652,17 +680,7 @@ impl Mlx5Device {
         let _ = self.query_port_mac(port_index)?;
         let _ = self.query_port_state(port_index)?;
         let _ = self.query_port_mtu(port_index)?;
-        let vnic_env = match self.query_vnic_env(0, false) {
-            Ok(env) => Some(env),
-            Err(err) => {
-                log::warn!(
-                    target: "mlx5",
-                    "QUERY_VNIC_ENV unavailable during port refresh; keeping drop counters unchanged: {:?}",
-                    err
-                );
-                None
-            }
-        };
+        let vnic_env = self.query_vnic_env(0, false).ok();
 
         if let (Some(port), Some(vnic_env)) = (self.ports.get_mut(port_index), vnic_env) {
             let stats = port.stats_mut();
@@ -681,17 +699,7 @@ impl Mlx5Device {
             .ok_or(Mlx5Error::InvalidParameter)?;
 
         let counters = self.query_vport_counters(port_num, false)?;
-        let vnic_env = match self.query_vnic_env(0, false) {
-            Ok(env) => Some(env),
-            Err(err) => {
-                log::warn!(
-                    target: "mlx5",
-                    "QUERY_VNIC_ENV unavailable during stats update; using counter-only stats: {:?}",
-                    err
-                );
-                None
-            }
-        };
+        let vnic_env = self.query_vnic_env(0, false).ok();
 
         if let Some(port) = self.ports.get_mut(port_index) {
             let stats = port.stats_mut();

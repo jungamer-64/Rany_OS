@@ -615,6 +615,46 @@ pub fn test_parse_t1_t2_and_timeout_transitions() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_build_lease_defaults_large_timers_without_overflow() {
+    let header = DhcpHeader {
+        op: DhcpOperation::Reply as u8,
+        htype: 1,
+        hlen: 6,
+        hops: 0,
+        xid: 0u32.to_be_bytes(),
+        secs: 0u16.to_be_bytes(),
+        flags: 0u16.to_be_bytes(),
+        ciaddr: [0; 4],
+        yiaddr: [10, 0, 0, 42],
+        siaddr: [10, 0, 0, 1],
+        giaddr: [0; 4],
+        chaddr: [0; 16],
+        sname: [0; 64],
+        file: [0; 128],
+    };
+    let opts = ParsedOptions {
+        message_type: Some(DhcpMessageType::Ack),
+        subnet_mask: None,
+        router: None,
+        dns_servers: Vec::new(),
+        lease_time: u32::MAX,
+        renewal_time: None,
+        rebinding_time: None,
+        server_id: None,
+        hostname: None,
+        domain_name: None,
+    };
+
+    let lease = DhcpClient::build_lease(&header, opts, 123);
+
+    assert_eq!(lease.lease_time, u32::MAX);
+    assert_eq!(lease.t1, u32::MAX / 2);
+    assert_eq!(lease.t2, ((u32::MAX as u64 * 7) / 8) as u32);
+    assert_eq!(lease.ip_address, Ipv4Address::new([10, 0, 0, 42]));
+    assert_eq!(lease.server_ip, Ipv4Address::new([10, 0, 0, 1]));
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_offer_probe_and_decline_flow() {
     use crate::net::l2::ethernet::MacAddress;
     use crate::net::runtime::stack;

@@ -11,7 +11,7 @@ use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE};
 use crate::device::Mlx5Device;
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::flow::{FlowGroup, FlowTable, FlowTableConfig, FlowTableEntry};
-use crate::resources::{MkeyInfo, MkeyParams, TirInfo, TirParams, TisInfo, TisParams};
+use crate::resources::{MkeyInfo, MkeyParams, TirInfo, TirParams, TisOwnership, TisParams};
 
 impl Mlx5Device {
     /// ローカルTISの存在確認
@@ -49,23 +49,10 @@ impl Mlx5Device {
     ) -> Mlx5Result<u32> {
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
         let mut first_any = None;
-        // mlx5 object IDs can live in prefixed namespaces. Probe the low
-        // range first, then common high-prefix windows used by other queueing
-        // objects (for example RQNs on this PF show up under 0x00c0_0000).
-        let low_budget = max_scan / 2;
-        let high_budget_each = (max_scan.saturating_sub(low_budget)) / 3;
-        let scan_windows = [
-            (0x0000_0000u32, low_budget.max(1)),
-            (0x0040_0000u32, high_budget_each.max(1)),
-            (0x0080_0000u32, high_budget_each.max(1)),
-            (
-                0x00c0_0000u32,
-                max_scan
-                    .saturating_sub(low_budget)
-                    .saturating_sub(high_budget_each.saturating_mul(2))
-                    .max(1),
-            ),
-        ];
+        // mlx5 object IDs can live in prefixed namespaces. Probe the common
+        // low/high windows first, then sweep the remaining 1MB prefixes within
+        // the 24-bit object-ID space.
+        let scan_windows = Self::object_id_scan_windows(max_scan);
 
         for &(base, count) in &scan_windows {
             for offset in 0..count {
@@ -145,14 +132,30 @@ impl Mlx5Device {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        crate::cmd::res::build_create_mkey_input(in_mbox, params);
+        let (relaxed_ordering_write, relaxed_ordering_read) = self
+            .hca_caps()
+            .map(|caps| {
+                (
+                    caps.relaxed_ordering_write,
+                    caps.relaxed_ordering_read || caps.relaxed_ordering_read_pci_enabled,
+                )
+            })
+            .unwrap_or((false, false));
+        crate::cmd::res::build_create_mkey_input_with_relaxed_ordering(
+            in_mbox,
+            params,
+            relaxed_ordering_write,
+            relaxed_ordering_read,
+        );
         log::info!(
             target: "mlx5",
-            "CREATE_MKEY in(pre): pd={} start={:#x} len={:#x} access={:#x}",
+            "CREATE_MKEY in(pre): pd={} start={:#x} len={:#x} access={:#x} ro_write={} ro_read={}",
             params.pd,
             params.start_addr,
             params.length,
-            params.access_flags
+            params.access_flags,
+            relaxed_ordering_write,
+            relaxed_ordering_read
         );
 
         self.execute_uid_sensitive_cmd(
@@ -285,7 +288,16 @@ impl Mlx5Device {
         );
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         crate::cmd::res::build_create_underlay_qp_input(in_mbox, vhca_port, input_qpn, ts_format);
-        self.execute_uid_sensitive_cmd(CmdOpcode::CreateQp, 0x110, 0x10)?;
+        let mut pre_exec = CmdMailbox::zeroed();
+        pre_exec.data[..0x110].copy_from_slice(&in_mbox.data[..0x110]);
+        match self.execute_uid_sensitive_cmd(CmdOpcode::CreateQp, 0x110, 0x10) {
+            Ok(()) => {}
+            Err(err) => {
+                crate::boot_trace_mailbox_range("create_qp_pre", &pre_exec, 0x00, 12);
+                crate::boot_trace_mailbox_range("qpc_pre", &pre_exec, 0x18, 24);
+                return Err(err);
+            }
+        }
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let qpn = crate::cmd::res::parse_create_qp_output(out_mbox);
@@ -534,20 +546,20 @@ impl Mlx5Device {
                 lag_port,
                 strict_lag
             );
+            let mut pre_exec = CmdMailbox::zeroed();
+            pre_exec.data[..0xC0].copy_from_slice(&in_mbox.data[..0xC0]);
 
-            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0xC0, 0x10) {
+            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0x110, 0x10) {
                 Ok(()) => {
+                    crate::boot_trace_mailbox_range("tisc_pre", &pre_exec, 0x20, 16);
                     let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
                     let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
-                    let info = TisInfo {
-                        tisn,
-                        port: params.port,
-                    };
-                    self.tis_list.push(info);
+                    self.record_tis_info(tisn, params.port, TisOwnership::DriverCreated);
                     crate::boot_trace("[MLX5_TIS] create ok\n");
                     return Ok(tisn);
                 }
                 Err(err) => {
+                    crate::boot_trace_mailbox_range("tisc_pre_fail", &pre_exec, 0x20, 16);
                     crate::boot_trace("[MLX5_TIS] create fail\n");
                     log::warn!(
                         target: "mlx5",
@@ -575,20 +587,20 @@ impl Mlx5Device {
                         params.prio,
                         qpn
                     );
-                    match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0xC0, 0x10) {
+                    let mut pre_exec = CmdMailbox::zeroed();
+                    pre_exec.data[..0xC0].copy_from_slice(&in_mbox.data[..0xC0]);
+                    match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0x110, 0x10) {
                         Ok(()) => {
+                            crate::boot_trace_mailbox_range("tisc_pre_underlay", &pre_exec, 0x20, 16);
                             let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
                             let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
-                            let info = TisInfo {
-                                tisn,
-                                port: params.port,
-                            };
                             self.underlay_qpn = qpn;
-                            self.tis_list.push(info);
+                            self.record_tis_info(tisn, params.port, TisOwnership::DriverCreated);
                             crate::boot_trace("[MLX5_TIS] create ok\n");
                             return Ok(tisn);
                         }
                         Err(err) => {
+                            crate::boot_trace_mailbox_range("tisc_pre_underlay_fail", &pre_exec, 0x20, 16);
                             log::warn!(
                                 target: "mlx5",
                                 "CREATE_TIS with real underlay QP {:#x} failed: {:?}",

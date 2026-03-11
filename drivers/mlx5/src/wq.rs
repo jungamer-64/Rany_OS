@@ -16,7 +16,7 @@
 
 use crate::defs::{WQEBB_SIZE, WqeOpcode};
 use crate::regs::wqe;
-use core::sync::atomic::{Ordering, compiler_fence, fence};
+use core::sync::atomic::{Ordering, fence};
 
 const MLX5_WQE_CTRL_CQ_UPDATE: u8 = 2 << 2;
 const MLX5_ETH_WQE_L3_CSUM: u8 = 1 << 6;
@@ -88,6 +88,8 @@ pub struct SendQueue {
     pub cqn: u32,
     /// 送信バッファトラッキング (WQEBB単位で管理、4 WQEBB = 1 WQE)
     tx_buffers: alloc::vec::Vec<Option<TxBufferInfo>>,
+    /// WQE ごとのデバッグスナップショット
+    debug_wqe_ring: alloc::vec::Vec<TxWqeDebugInfo>,
     /// Memory Key (L-Key)
     pub mkey: u32,
     /// チェックサムオフロード対応
@@ -125,6 +127,8 @@ impl SendQueue {
         // WQE 1つあたり 4 WQEBB (64 bytes)
         let mut tx_buffers = alloc::vec::Vec::with_capacity((depth * 4) as usize);
         tx_buffers.resize((depth * 4) as usize, None);
+        let mut debug_wqe_ring = alloc::vec::Vec::with_capacity(depth as usize);
+        debug_wqe_ring.resize(depth as usize, TxWqeDebugInfo::default());
 
         Self {
             sqn,
@@ -138,6 +142,7 @@ impl SendQueue {
             tisn,
             cqn,
             tx_buffers,
+            debug_wqe_ring,
             mkey,
             csum_offload,
             last_bf_offset: 0,
@@ -169,6 +174,31 @@ pub struct TxOptions {
 }
 
 impl SendQueue {
+    unsafe fn record_wqe_debug_snapshot(
+        &mut self,
+        buf_idx: usize,
+        wqe_counter: u16,
+        wqe_ptr: *const u8,
+        inline_hdr_sz: u16,
+        data_seg_ptr: *const u8,
+    ) {
+        let mut wqe_bytes = [0u8; 64];
+        core::ptr::copy_nonoverlapping(wqe_ptr, wqe_bytes.as_mut_ptr(), 64);
+        self.debug_wqe_ring[buf_idx] = TxWqeDebugInfo {
+            valid: true,
+            wqe_counter,
+            wqe_addr: wqe_ptr as u64,
+            inline_hdr_sz,
+            opmod_idx: read_be32_raw(wqe_ptr, wqe::ctrl::OPMOD_IDX_OPCODE),
+            qpn_ds: read_be32_raw(wqe_ptr, wqe::ctrl::QPN_DS),
+            general_id: read_be32_raw(wqe_ptr, wqe::ctrl::GENERAL_ID),
+            byte_count: read_be32_raw(data_seg_ptr, wqe::data::BYTE_COUNT),
+            lkey: read_be32_raw(data_seg_ptr, wqe::data::LKEY),
+            device_addr: read_be64_raw(data_seg_ptr, wqe::data::ADDR),
+            wqe_bytes,
+        };
+    }
+
     /// 送信WQEを構築してSQに投入
     pub unsafe fn post_send(
         &mut self,
@@ -251,6 +281,15 @@ impl SendQueue {
             write_be64_raw(data_seg_ptr, wqe::data::ADDR, seg.device_addr);
         }
 
+        let first_data_seg_ptr = ctrl_ptr.add(data_seg_base);
+        self.record_wqe_debug_snapshot(
+            buf_idx,
+            wqe_idx,
+            wqe_ptr as *const u8,
+            inline_len as u16,
+            first_data_seg_ptr as *const u8,
+        );
+
         // バッファトラッキング
         let bb_idx = buf_idx * 4;
         self.tx_buffers[bb_idx] = Some(TxBufferInfo {
@@ -331,6 +370,15 @@ impl SendQueue {
             });
         }
 
+        let first_data_seg_ptr = ctrl_ptr.add(32);
+        self.record_wqe_debug_snapshot(
+            buf_idx,
+            wqe_idx,
+            wqe_ptr as *const u8,
+            0,
+            first_data_seg_ptr as *const u8,
+        );
+
         // 最初の WQEBB にもマーカーを置く（has_space チェック用）
         let bb0_idx = buf_idx * 4;
         if self.tx_buffers[bb0_idx].is_none() {
@@ -360,12 +408,12 @@ impl SendQueue {
         let fm_ce_se =
             core::ptr::read_volatile(wqe_ptr.add(wqe::ctrl::FM_CE_SE)) | MLX5_WQE_CTRL_CQ_UPDATE;
         write_u8_raw(wqe_ptr as *mut u8, wqe::ctrl::FM_CE_SE, fm_ce_se);
-        fence(Ordering::Release);
+        dma_store_barrier();
 
         // Send queues use the SND_DBR slot (word 1) in the WQ doorbell record.
         let db_ptr = (self.doorbell_virt as *mut u32).add(1);
         core::ptr::write_volatile(db_ptr, (self.producer_counter as u32).to_be());
-        compiler_fence(Ordering::Release);
+        fence(Ordering::SeqCst);
         hal::mmio::sfence();
 
         // Linux rings the SQ via the selected BF register base without
@@ -437,6 +485,20 @@ impl SendQueue {
             last_wqe_bytes,
         }
     }
+
+    /// 指定した WQE カウンタに対応する送信 WQE のデバッグ情報を取得
+    ///
+    /// # Safety
+    /// - SQ メモリが有効であること
+    pub unsafe fn debug_wqe_state(&self, wqe_counter: u16) -> Option<TxWqeDebugInfo> {
+        let idx = (wqe_counter as u32 % self.sq_depth) as usize;
+        let info = *self.debug_wqe_ring.get(idx)?;
+        if info.valid && info.wqe_counter == wqe_counter {
+            Some(info)
+        } else {
+            None
+        }
+    }
 }
 
 /// Send Queue のデバッグスナップショット
@@ -459,6 +521,39 @@ pub struct TxQueueDebugState {
     pub last_wqe_device_addr: u64,
     pub last_bf_offset: u16,
     pub last_wqe_bytes: [u8; 64],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TxWqeDebugInfo {
+    pub valid: bool,
+    pub wqe_counter: u16,
+    pub wqe_addr: u64,
+    pub inline_hdr_sz: u16,
+    pub opmod_idx: u32,
+    pub qpn_ds: u32,
+    pub general_id: u32,
+    pub byte_count: u32,
+    pub lkey: u32,
+    pub device_addr: u64,
+    pub wqe_bytes: [u8; 64],
+}
+
+impl Default for TxWqeDebugInfo {
+    fn default() -> Self {
+        Self {
+            valid: false,
+            wqe_counter: 0,
+            wqe_addr: 0,
+            inline_hdr_sz: 0,
+            opmod_idx: 0,
+            qpn_ds: 0,
+            general_id: 0,
+            byte_count: 0,
+            lkey: 0,
+            device_addr: 0,
+            wqe_bytes: [0u8; 64],
+        }
+    }
 }
 
 // ============================================================================
@@ -741,4 +836,10 @@ unsafe fn read_be64_raw(base: *const u8, offset: usize) -> u64 {
     let b6 = core::ptr::read_volatile(ptr.add(6));
     let b7 = core::ptr::read_volatile(ptr.add(7));
     u64::from_be_bytes([b0, b1, b2, b3, b4, b5, b6, b7])
+}
+
+#[inline(always)]
+fn dma_store_barrier() {
+    fence(Ordering::Release);
+    hal::mmio::sfence();
 }

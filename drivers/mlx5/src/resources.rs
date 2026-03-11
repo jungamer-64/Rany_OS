@@ -100,12 +100,28 @@ impl Default for TisParams {
 }
 
 /// TIS情報（作成後の管理用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TisOwnership {
+    /// Driver created this TIS and should destroy it during teardown.
+    DriverCreated,
+    /// Firmware or an external owner created this TIS; do not destroy it.
+    External,
+}
+
 #[derive(Debug, Clone)]
 pub struct TisInfo {
     /// HWが割り当てたTIS番号
     pub tisn: u32,
     /// ポート番号
     pub port: u8,
+    /// 所有権
+    pub ownership: TisOwnership,
+}
+
+impl TisInfo {
+    pub fn destroy_on_teardown(&self) -> bool {
+        matches!(self.ownership, TisOwnership::DriverCreated)
+    }
 }
 
 // ============================================================================

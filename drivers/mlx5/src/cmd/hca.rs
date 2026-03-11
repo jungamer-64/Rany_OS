@@ -8,8 +8,15 @@ use crate::structs::cmd::*;
 
 pub const MLX5_CAP_GENERAL: u16 = 0;
 pub const MLX5_CAP_ETHERNET_OFFLOADS: u16 = 1;
-pub const MLX5_CAP_FLOW_TABLE: u16 = 2;
+pub const MLX5_CAP_ODP: u16 = 2;
+pub const MLX5_CAP_ATOMIC: u16 = 3;
+pub const MLX5_CAP_ROCE: u16 = 4;
+pub const MLX5_CAP_FLOW_TABLE: u16 = 7;
 pub const MLX5_CAP_GENERAL_2: u16 = 0x20;
+pub const MLX5_CAP_PORT_SELECTION: u16 = 0x25;
+pub const MLX5_REG_HOST_ENDIANNESS: u16 = 0x7004;
+pub const MLX5_ACCESS_REGISTER_OP_MOD_WRITE: u16 = 0;
+pub const MLX5_ACCESS_REGISTER_OP_MOD_READ: u16 = 1;
 pub const QUERY_PAGES_OP_MOD_BOOT_PAGES: u16 = 0x1;
 pub const QUERY_PAGES_OP_MOD_INIT_PAGES: u16 = 0x2;
 pub const QUERY_PAGES_OP_MOD_REGULAR_PAGES: u16 = 0x3;
@@ -54,6 +61,25 @@ pub fn build_set_hca_cap_input(in_mbox: &mut CmdMailbox, cap_type: u16, capabili
     unsafe {
         core::ptr::copy_nonoverlapping(capability_payload.as_ptr(), dst_ptr, copy_len);
     }
+}
+
+/// ACCESS_REGISTER コマンド入力の構築
+pub fn build_access_register_input(
+    in_mbox: &mut CmdMailbox,
+    reg_id: u16,
+    arg: u32,
+    op_mod: u16,
+    register_data: &[u8],
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be16(0x06, op_mod);
+    in_mbox.write_be16(0x0a, reg_id);
+    in_mbox.write_be32(0x0c, arg);
+
+    let copy_len = register_data
+        .len()
+        .min(MLX5_CMD_MBOX_SIZE.saturating_sub(0x10));
+    in_mbox.data[0x10..0x10 + copy_len].copy_from_slice(&register_data[..copy_len]);
 }
 
 /// INIT_HCA コマンド入力の構築
@@ -596,6 +622,23 @@ mod tests {
         assert_eq!(CmdOpcode::QueryVnicEnv as u16, 0x076f);
         assert_eq!(CmdOpcode::QueryVhcaState as u16, 0x0b0d);
         assert_eq!(CmdOpcode::ModifyVhcaState as u16, 0x0b0e);
+    }
+
+    #[test]
+    fn access_register_builder_matches_linux_ifc_offsets() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_access_register_input(
+            &mut in_mbox,
+            MLX5_REG_HOST_ENDIANNESS,
+            0x1234_5678,
+            MLX5_ACCESS_REGISTER_OP_MOD_WRITE,
+            &[0xaa, 0xbb, 0xcc, 0xdd],
+        );
+
+        assert_eq!(in_mbox.read_be16(0x06), MLX5_ACCESS_REGISTER_OP_MOD_WRITE);
+        assert_eq!(in_mbox.read_be16(0x0a), MLX5_REG_HOST_ENDIANNESS);
+        assert_eq!(in_mbox.read_be32(0x0c), 0x1234_5678);
+        assert_eq!(&in_mbox.data[0x10..0x14], &[0xaa, 0xbb, 0xcc, 0xdd]);
     }
 
     #[test]

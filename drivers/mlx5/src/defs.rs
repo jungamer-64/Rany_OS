@@ -542,6 +542,8 @@ pub struct HcaCaps {
     pub vlan_strip: bool,
     /// チェックサムオフロード対応
     pub csum_cap: bool,
+    /// Ethernet offloads capability page の WQE inline mode
+    pub wqe_inline_mode: u8,
     /// CQE圧縮対応
     pub cqe_compression: bool,
     /// CQEバージョン
@@ -562,6 +564,22 @@ pub struct HcaCaps {
     pub sw_vhca_id_valid_cap: bool,
     /// GENERAL で mkey_by_name が現在有効
     pub mkey_by_name: bool,
+    /// RoCE general capability bit が現在有効
+    pub roce: bool,
+    /// GENERAL で RoCE enable bit を書き換え可能
+    pub roce_rw_supported: bool,
+    /// Direct MKEY で relaxed ordering write を有効化可能
+    pub relaxed_ordering_write: bool,
+    /// Direct MKEY で relaxed ordering read を有効化可能
+    pub relaxed_ordering_read: bool,
+    /// PCIe relaxed ordering が有効なら read を有効化可能
+    pub relaxed_ordering_read_pci_enabled: bool,
+    /// ATOMIC capability page をサポート
+    pub atomic_cap: bool,
+    /// ODP capability page をサポート
+    pub pg_cap: bool,
+    /// PORT_SELECTION capability page をサポート
+    pub port_selection_cap: bool,
     /// VHCA ポート数
     pub num_vhca_ports: u16,
     /// VHCA ID (VF identification)
