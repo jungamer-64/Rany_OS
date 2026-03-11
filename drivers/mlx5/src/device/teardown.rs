@@ -83,6 +83,10 @@ impl Mlx5Device {
         if let Some(info) = self.mkey_info.take() {
             let _ = self.destroy_mkey_hw(info.mkey_index);
         }
+        if self.underlay_qpn != 0 {
+            let _ = self.destroy_qp_hw(self.underlay_qpn);
+            self.underlay_qpn = 0;
+        }
         if self.pd != 0 {
             let _ = self.dealloc_pd_hw(self.pd);
             self.pd = 0;
@@ -209,6 +213,20 @@ impl Mlx5Device {
         in_mbox.write_be32(0x04, tisn & 0x00FF_FFFF);
         self.execute_uid_sensitive_cmd(
             CmdOpcode::DestroyTis,
+            MLX5_CMD_MBOX_SIZE as u32,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+        Ok(())
+    }
+
+    pub unsafe fn destroy_qp_hw(&mut self, qpn: u32) -> Mlx5Result<()> {
+        self.cmd
+            .as_ref()
+            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_destroy_qp_input(in_mbox, qpn);
+        self.execute_uid_sensitive_cmd(
+            CmdOpcode::DestroyQp,
             MLX5_CMD_MBOX_SIZE as u32,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;

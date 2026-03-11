@@ -663,7 +663,7 @@ impl CommandTransport for CmdQueueTransport {
         if delivery_status != CmdDeliveryStatus::Ok {
             let syndrome =
                 u32::from_be_bytes([out_inline[4], out_inline[5], out_inline[6], out_inline[7]]);
-            crate::boot_trace_cmd(opcode, "status_err", self.uid);
+            crate::boot_trace_cmd_error(opcode, self.uid, delivery_status_raw, syndrome);
             log::error!(
                 target: "mlx5",
                 "Command delivery failed: opcode={:?} delivery={:?} raw={:#x} syndrome={:#x}",
@@ -679,9 +679,12 @@ impl CommandTransport for CmdQueueTransport {
 
         let fw_status = out_inline[0];
         if fw_status != 0 {
+            if matches!(opcode, CmdOpcode::QueryTis) && fw_status == 0x05 {
+                return Err(Mlx5Error::CommandFailed(fw_status));
+            }
             let syndrome =
                 u32::from_be_bytes([out_inline[4], out_inline[5], out_inline[6], out_inline[7]]);
-            crate::boot_trace_cmd(opcode, "status_err", self.uid);
+            crate::boot_trace_cmd_error(opcode, self.uid, fw_status, syndrome);
             log::error!(
                 target: "mlx5",
                 "Command failed: opcode={:?} fw_status={:#x} syndrome={:#x}",

@@ -15,6 +15,24 @@ use alloc::vec::Vec;
 // unused MkeyParams removed
 
 impl Mlx5Device {
+    const PF_TIS_REUSE_SCAN_LIMIT: u32 = 4096;
+    const PF_SQ_TIS_SCAN_LIMIT: u32 = 64;
+    const PF_TIS_SQ_ORACLE_CANDIDATES: [u32; 13] = [
+        0x0000_0001,
+        0x0000_0002,
+        0x0000_0008,
+        0x0000_0010,
+        0x0040_0000,
+        0x0040_0001,
+        0x0040_0008,
+        0x0080_0000,
+        0x0080_0001,
+        0x0080_0008,
+        0x00c0_0000,
+        0x00c0_0001,
+        0x00c0_0008,
+    ];
+
     /// 起動待機 (ConnectX-4 Lx 等)
     pub unsafe fn wait_firmware(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Waiting for firmware to be ready...");
@@ -823,43 +841,9 @@ impl Mlx5Device {
 
         let _ = self.refresh_port_runtime_state(0);
 
-        // Phase 4: Queues
-        let mut eqns = Vec::new();
-        for (_i, eq_buf) in eq_bufs.iter().enumerate() {
-            // RanyOS DriverContext currently supports a single IRQ, so map all EQs to vector 0
-            let eqn = self.create_eq_hw(
-                eq_buf.0,
-                eq_buf.1,
-                log_eq_size,
-                0,
-                // Linux creates completion EQs with an empty event mask and
-                // treats command/async notifications via dedicated EQ types.
-                0,
-            )?;
-            eqns.push(eqn);
-        }
-        crate::boot_trace("[MLX5_STAGE] eq_done\n");
-
-        let mut tx_cqns = Vec::new();
-        for (i, cq_buf) in tx_cq_bufs.iter().enumerate() {
-            let eqn = eqns[i % eqns.len()];
-            let cqn =
-                self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
-            tx_cqns.push(cqn);
-        }
-        crate::boot_trace("[MLX5_STAGE] tx_cq_done\n");
-
-        let mut rx_cqns = Vec::new();
-        for (i, cq_buf) in rx_cq_bufs.iter().enumerate() {
-            let eqn = eqns[i % eqns.len()];
-            let cqn =
-                self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
-            rx_cqns.push(cqn);
-        }
-        crate::boot_trace("[MLX5_STAGE] rx_cq_done\n");
-
         let mut tx_path_enabled = true;
         let mut tx_using_fallback_tis0 = false;
+        let mut tx_oracle_tisn = None;
         crate::boot_trace("[MLX5_STAGE] create_tis_enter\n");
         let tisn = if self.is_vf() {
             // On several VF firmware variants (including CX4-Lx SR-IOV),
@@ -906,12 +890,15 @@ impl Mlx5Device {
             }) {
                 Ok(tisn) => tisn,
                 Err(err) => {
+                    crate::boot_trace("[MLX5_STAGE] create_tis_scan_existing\n");
                     log::warn!(
                         target: "mlx5",
-                        "CREATE_TIS failed on PF ({:?}); scanning existing TIS objects for reuse",
-                        err
+                        "CREATE_TIS failed on PF ({:?}); scanning up to {} existing TIS objects before implicit TIS=0 fallback",
+                        err,
+                        Self::PF_TIS_REUSE_SCAN_LIMIT
                     );
-                    match self.find_existing_tis_matching(4096, self.td, 0) {
+                    match self.find_existing_tis_matching(Self::PF_TIS_REUSE_SCAN_LIMIT, self.td, 0)
+                    {
                         Ok(tisn) => {
                             log::warn!(
                                 target: "mlx5",
@@ -921,6 +908,24 @@ impl Mlx5Device {
                             tisn
                         }
                         Err(scan_err) => {
+                            match self.find_existing_sq_tis_candidate(Self::PF_SQ_TIS_SCAN_LIMIT) {
+                                Ok(discovered_tisn) => {
+                                    tx_oracle_tisn = Some(discovered_tisn);
+                                    log::warn!(
+                                        target: "mlx5",
+                                        "No reusable TIS via QUERY_TIS, but found PF SQ-derived TIS candidate {:#x}",
+                                        discovered_tisn
+                                    );
+                                }
+                                Err(sq_scan_err) => {
+                                    log::warn!(
+                                        target: "mlx5",
+                                        "No PF SQ-derived TIS candidate found after CREATE_TIS failure: {:?}",
+                                        sq_scan_err
+                                    );
+                                }
+                            }
+                            crate::boot_trace("[MLX5_STAGE] create_tis_use_implicit_tis0\n");
                             log::warn!(
                                 target: "mlx5",
                                 "CREATE_TIS failed on PF ({:?}) and no reusable TIS found ({:?}); trying TX fallback with implicit TIS=0",
@@ -935,6 +940,41 @@ impl Mlx5Device {
             }
         };
         crate::boot_trace("[MLX5_STAGE] create_tis_done\n");
+
+        // Phase 4: Queues
+        let mut eqns = Vec::new();
+        for (_i, eq_buf) in eq_bufs.iter().enumerate() {
+            // RanyOS DriverContext currently supports a single IRQ, so map all EQs to vector 0
+            let eqn = self.create_eq_hw(
+                eq_buf.0,
+                eq_buf.1,
+                log_eq_size,
+                0,
+                // Linux creates completion EQs with an empty event mask and
+                // treats command/async notifications via dedicated EQ types.
+                0,
+            )?;
+            eqns.push(eqn);
+        }
+        crate::boot_trace("[MLX5_STAGE] eq_done\n");
+
+        let mut tx_cqns = Vec::new();
+        for (i, cq_buf) in tx_cq_bufs.iter().enumerate() {
+            let eqn = eqns[i % eqns.len()];
+            let cqn =
+                self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
+            tx_cqns.push(cqn);
+        }
+        crate::boot_trace("[MLX5_STAGE] tx_cq_done\n");
+
+        let mut rx_cqns = Vec::new();
+        for (i, cq_buf) in rx_cq_bufs.iter().enumerate() {
+            let eqn = eqns[i % eqns.len()];
+            let cqn =
+                self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
+            rx_cqns.push(cqn);
+        }
+        crate::boot_trace("[MLX5_STAGE] rx_cq_done\n");
 
         let max_hw_sq = self
             .hca_caps()
@@ -953,15 +993,184 @@ impl Mlx5Device {
         if tx_path_enabled {
             for (i, sq_buf) in sq_bufs.iter().take(sq_queue_count).enumerate() {
                 let cqn = tx_cqns[i % tx_cqns.len()];
-                if let Err(err) = self.create_sq_hw(
-                    sq_buf.0,
-                    sq_buf.1,
-                    sq_buf.2,
-                    sq_buf.3,
-                    log_sq_size,
-                    cqn,
-                    tisn,
-                ) {
+                let sq_result = if self.is_vf() {
+                    self.create_sq_hw(
+                        sq_buf.0,
+                        sq_buf.1,
+                        sq_buf.2,
+                        sq_buf.3,
+                        log_sq_size,
+                        cqn,
+                        tisn,
+                    )
+                } else if let Some(discovered_tisn) = tx_oracle_tisn {
+                    match self.create_sq_hw(
+                        sq_buf.0,
+                        sq_buf.1,
+                        sq_buf.2,
+                        sq_buf.3,
+                        log_sq_size,
+                        cqn,
+                        discovered_tisn,
+                    ) {
+                        Ok(sqn) => Ok(sqn),
+                        Err(err) if tx_using_fallback_tis0 => {
+                            log::warn!(
+                                target: "mlx5",
+                                "PF SQ-derived TIS candidate {:#x} was rejected by CREATE_SQ: {:?}; continuing with fallback probes",
+                                discovered_tisn,
+                                err
+                            );
+                            tx_oracle_tisn = None;
+                            let mut discovered = None;
+                            let mut created_sqn = None;
+                            let mut last_probe_err = Some(err);
+
+                            for &candidate_tisn in &Self::PF_TIS_SQ_ORACLE_CANDIDATES {
+                                log::info!(
+                                    target: "mlx5",
+                                    "Probing PF TX TIS candidate via CREATE_SQ: tisn={:#x}",
+                                    candidate_tisn
+                                );
+                                match self.create_sq_hw(
+                                    sq_buf.0,
+                                    sq_buf.1,
+                                    sq_buf.2,
+                                    sq_buf.3,
+                                    log_sq_size,
+                                    cqn,
+                                    candidate_tisn,
+                                ) {
+                                    Ok(sqn) => {
+                                        discovered = Some(candidate_tisn);
+                                        created_sqn = Some(sqn);
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        log::warn!(
+                                            target: "mlx5",
+                                            "PF TX TIS candidate rejected via CREATE_SQ: tisn={:#x} err={:?}",
+                                            candidate_tisn,
+                                            err
+                                        );
+                                        last_probe_err = Some(err);
+                                    }
+                                }
+                            }
+
+                            if let Some(discovered_tisn) = discovered {
+                                tx_oracle_tisn = Some(discovered_tisn);
+                                tx_using_fallback_tis0 = false;
+                                log::warn!(
+                                    target: "mlx5",
+                                    "Using PF TX TIS discovered via CREATE_SQ oracle: tisn={:#x}",
+                                    discovered_tisn
+                                );
+                                match created_sqn {
+                                    Some(sqn) => Ok(sqn),
+                                    None => Err(Mlx5Error::InvalidResponse),
+                                }
+                            } else {
+                                if let Some(err) = last_probe_err {
+                                    log::warn!(
+                                        target: "mlx5",
+                                        "No explicit PF TX TIS candidate worked via CREATE_SQ oracle; falling back to implicit TIS=0 after last error {:?}",
+                                        err
+                                    );
+                                }
+                                self.create_sq_hw(
+                                    sq_buf.0,
+                                    sq_buf.1,
+                                    sq_buf.2,
+                                    sq_buf.3,
+                                    log_sq_size,
+                                    cqn,
+                                    tisn,
+                                )
+                            }
+                        }
+                        Err(err) => Err(err),
+                    }
+                } else if tx_using_fallback_tis0 {
+                    let mut discovered = None;
+                    let mut created_sqn = None;
+                    let mut last_probe_err = None;
+
+                    for &candidate_tisn in &Self::PF_TIS_SQ_ORACLE_CANDIDATES {
+                        log::info!(
+                            target: "mlx5",
+                            "Probing PF TX TIS candidate via CREATE_SQ: tisn={:#x}",
+                            candidate_tisn
+                        );
+                        match self.create_sq_hw(
+                            sq_buf.0,
+                            sq_buf.1,
+                            sq_buf.2,
+                            sq_buf.3,
+                            log_sq_size,
+                            cqn,
+                            candidate_tisn,
+                        ) {
+                            Ok(sqn) => {
+                                discovered = Some(candidate_tisn);
+                                created_sqn = Some(sqn);
+                                break;
+                            }
+                            Err(err) => {
+                                log::warn!(
+                                    target: "mlx5",
+                                    "PF TX TIS candidate rejected via CREATE_SQ: tisn={:#x} err={:?}",
+                                    candidate_tisn,
+                                    err
+                                );
+                                last_probe_err = Some(err);
+                            }
+                        }
+                    }
+
+                    if let Some(discovered_tisn) = discovered {
+                        tx_oracle_tisn = Some(discovered_tisn);
+                        tx_using_fallback_tis0 = false;
+                        log::warn!(
+                            target: "mlx5",
+                            "Using PF TX TIS discovered via CREATE_SQ oracle: tisn={:#x}",
+                            discovered_tisn
+                        );
+                        match created_sqn {
+                            Some(sqn) => Ok(sqn),
+                            None => Err(Mlx5Error::InvalidResponse),
+                        }
+                    } else {
+                        if let Some(err) = last_probe_err {
+                            log::warn!(
+                                target: "mlx5",
+                                "No explicit PF TX TIS candidate worked via CREATE_SQ oracle; falling back to implicit TIS=0 after last error {:?}",
+                                err
+                            );
+                        }
+                        self.create_sq_hw(
+                            sq_buf.0,
+                            sq_buf.1,
+                            sq_buf.2,
+                            sq_buf.3,
+                            log_sq_size,
+                            cqn,
+                            tisn,
+                        )
+                    }
+                } else {
+                    self.create_sq_hw(
+                        sq_buf.0,
+                        sq_buf.1,
+                        sq_buf.2,
+                        sq_buf.3,
+                        log_sq_size,
+                        cqn,
+                        tisn,
+                    )
+                };
+
+                if let Err(err) = sq_result {
                     if self.is_vf() {
                         log::warn!(
                             target: "mlx5",
@@ -980,6 +1189,12 @@ impl Mlx5Device {
             log::warn!(
                 target: "mlx5",
                 "mlx5 TX fallback active: TX path disabled (no usable TIS/SQ), continuing RX setup"
+            );
+        } else if let Some(discovered_tisn) = tx_oracle_tisn {
+            log::warn!(
+                target: "mlx5",
+                "mlx5 TX fallback resolved: TX path running with PF TIS discovered via CREATE_SQ oracle ({:#x})",
+                discovered_tisn
             );
         } else if tx_using_fallback_tis0 {
             log::warn!(

@@ -1,10 +1,8 @@
 use super::{
-    GLOBAL_HUGE_2M_SKIPPED, SwapEntry, SwapError, SwapHandle, SwapKind,
-    atomic_saturating_decrement, buffer_pool_get_4k, buffer_pool_put_4k, release_frame_and_untrack,
-    try_zswap_store_and_dealloc_any,
+    SwapError, SwapHandle, SwapKind, atomic_saturating_decrement, buffer_pool_get_4k,
+    buffer_pool_put_4k, release_frame_and_untrack, try_zswap_store_and_dealloc_any,
 };
 use crate::mm::types::FrameIndex;
-use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod enqueue;
 pub use enqueue::*;

@@ -76,9 +76,94 @@ pub(crate) fn boot_trace_cmd(opcode: defs::CmdOpcode, stage: &str, uid: u16) {
     }
 }
 
+pub(crate) fn boot_trace_cmd_error(opcode: defs::CmdOpcode, uid: u16, status: u8, syndrome: u32) {
+    if let Some(name) = boot_opcode_name(opcode) {
+        if let Some(serial) = kernel_api::service::serial::try_instance() {
+            let _ = serial.write(0, b"[MLX5_CMD] ");
+            let _ = serial.write(0, name.as_bytes());
+            let _ = serial.write(0, b" status_err uid=0x");
+            let mut uid_hex = [0u8; 4];
+            encode_hex_u16(uid, &mut uid_hex);
+            let _ = serial.write(0, &uid_hex);
+            let _ = serial.write(0, b" status=0x");
+            let mut status_hex = [0u8; 2];
+            encode_hex_u8(status, &mut status_hex);
+            let _ = serial.write(0, &status_hex);
+            let _ = serial.write(0, b" syndrome=0x");
+            let mut syndrome_hex = [0u8; 8];
+            encode_hex_u32(syndrome, &mut syndrome_hex);
+            let _ = serial.write(0, &syndrome_hex);
+            let _ = serial.write(0, b"\n");
+        }
+    }
+}
+
+pub(crate) fn boot_trace_sq_state(
+    sqn: u32,
+    min_inline_mode: u8,
+    tis_lst_sz: u16,
+    tis_num_0: u32,
+    wq_type: u8,
+    effective_tisn: u32,
+) {
+    if let Some(serial) = kernel_api::service::serial::try_instance() {
+        let _ = serial.write(0, b"[MLX5_SQ] sqn=0x");
+        let mut sqn_hex = [0u8; 8];
+        encode_hex_u32(sqn, &mut sqn_hex);
+        let _ = serial.write(0, &sqn_hex);
+        let _ = serial.write(0, b" inl=0x");
+        let mut inl_hex = [0u8; 2];
+        encode_hex_u8(min_inline_mode, &mut inl_hex);
+        let _ = serial.write(0, &inl_hex);
+        let _ = serial.write(0, b" tis_lst=0x");
+        let mut lst_hex = [0u8; 4];
+        encode_hex_u16(tis_lst_sz, &mut lst_hex);
+        let _ = serial.write(0, &lst_hex);
+        let _ = serial.write(0, b" tis0=0x");
+        let mut tis_hex = [0u8; 8];
+        encode_hex_u32(tis_num_0, &mut tis_hex);
+        let _ = serial.write(0, &tis_hex);
+        let _ = serial.write(0, b" wq=0x");
+        let mut wq_hex = [0u8; 2];
+        encode_hex_u8(wq_type, &mut wq_hex);
+        let _ = serial.write(0, &wq_hex);
+        let _ = serial.write(0, b" eff=0x");
+        let mut eff_hex = [0u8; 8];
+        encode_hex_u32(effective_tisn, &mut eff_hex);
+        let _ = serial.write(0, &eff_hex);
+        let _ = serial.write(0, b"\n");
+    }
+}
+
 #[inline]
 fn encode_hex_u16(mut value: u16, out: &mut [u8; 4]) {
     for i in (0..4).rev() {
+        let nibble = (value & 0x0f) as u8;
+        out[i] = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'a' + (nibble - 10)
+        };
+        value >>= 4;
+    }
+}
+
+#[inline]
+fn encode_hex_u8(mut value: u8, out: &mut [u8; 2]) {
+    for i in (0..2).rev() {
+        let nibble = value & 0x0f;
+        out[i] = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'a' + (nibble - 10)
+        };
+        value >>= 4;
+    }
+}
+
+#[inline]
+fn encode_hex_u32(mut value: u32, out: &mut [u8; 8]) {
+    for i in (0..8).rev() {
         let nibble = (value & 0x0f) as u8;
         out[i] = if nibble < 10 {
             b'0' + nibble
@@ -106,6 +191,7 @@ fn boot_opcode_name(opcode: defs::CmdOpcode) -> Option<&'static str> {
         defs::CmdOpcode::QueryMkey => Some("query_mkey"),
         defs::CmdOpcode::CreateEq => Some("create_eq"),
         defs::CmdOpcode::CreateCq => Some("create_cq"),
+        defs::CmdOpcode::CreateQp => Some("create_qp"),
         defs::CmdOpcode::CreateTis => Some("create_tis"),
         defs::CmdOpcode::CreateSq => Some("create_sq"),
         defs::CmdOpcode::ModifySq => Some("modify_sq"),

@@ -419,6 +419,7 @@ impl SendQueue {
 
         TxQueueDebugState {
             sqn: self.sqn,
+            tisn: self.tisn,
             producer_counter: self.producer_counter,
             sq_depth: self.sq_depth,
             doorbell_be,
@@ -428,6 +429,7 @@ impl SendQueue {
             last_wqe_inline_hdr_sz: last_inline_hdr_sz as u16,
             last_wqe_opmod_idx: read_be32_raw(last_wqe_ptr, wqe::ctrl::OPMOD_IDX_OPCODE),
             last_wqe_qpn_ds: read_be32_raw(last_wqe_ptr, wqe::ctrl::QPN_DS),
+            last_wqe_general_id: read_be32_raw(last_wqe_ptr, wqe::ctrl::GENERAL_ID),
             last_wqe_byte_count: read_be32_raw(last_data_seg_ptr, wqe::data::BYTE_COUNT),
             last_wqe_lkey: read_be32_raw(last_data_seg_ptr, wqe::data::LKEY),
             last_wqe_device_addr: read_be64_raw(last_data_seg_ptr, wqe::data::ADDR),
@@ -441,6 +443,7 @@ impl SendQueue {
 #[derive(Debug, Clone, Copy)]
 pub struct TxQueueDebugState {
     pub sqn: u32,
+    pub tisn: u32,
     pub producer_counter: u16,
     pub sq_depth: u32,
     pub doorbell_be: u32,
@@ -450,6 +453,7 @@ pub struct TxQueueDebugState {
     pub last_wqe_inline_hdr_sz: u16,
     pub last_wqe_opmod_idx: u32,
     pub last_wqe_qpn_ds: u32,
+    pub last_wqe_general_id: u32,
     pub last_wqe_byte_count: u32,
     pub last_wqe_lkey: u32,
     pub last_wqe_device_addr: u64,

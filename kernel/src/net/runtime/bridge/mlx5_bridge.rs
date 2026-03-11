@@ -844,12 +844,15 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                             .unwrap_or_else(|| String::from("--"));
                         log::warn!(
                             target: "mlx5::bridge",
-                            "TX error context: sq={} wqe_counter={} inl={} opmod_idx={:#x} qpn_ds={:#x} bc={} lkey={:#x} data_addr={:#x} wqe=[{}] pkt_head=[{}]",
+                            "TX error context: sq={} sqn={:#x} tisn={:#x} wqe_counter={} inl={} opmod_idx={:#x} qpn_ds={:#x} general_id={:#x} bc={} lkey={:#x} data_addr={:#x} wqe=[{}] pkt_head=[{}]",
                             sq_index,
+                            sq_state.sqn,
+                            sq_state.tisn,
                             cqe.wqe_counter,
                             sq_state.last_wqe_inline_hdr_sz,
                             sq_state.last_wqe_opmod_idx,
                             sq_state.last_wqe_qpn_ds,
+                            sq_state.last_wqe_general_id,
                             sq_state.last_wqe_byte_count,
                             sq_state.last_wqe_lkey,
                             sq_state.last_wqe_device_addr,

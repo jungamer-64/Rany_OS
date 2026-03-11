@@ -5,7 +5,7 @@
 use crate::cmd::CmdMailbox;
 use crate::resources::{MkeyParams, TirParams, TirReceiveType, TisParams};
 use crate::structs::cmd::{MkeyContextLayout, TirContextLayout, TisContextLayout};
-use crate::structs::{get_bits_u32, get_bits_u64};
+use crate::structs::{get_bits_u32, get_bits_u64, set_bits_u32};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryMkeyInfo {
@@ -84,6 +84,41 @@ pub fn parse_alloc_td_output(out_mbox: &CmdMailbox) -> u32 {
 pub fn build_dealloc_td_input(in_mbox: &mut CmdMailbox, td: u32) {
     *in_mbox = CmdMailbox::zeroed();
     in_mbox.write_be32(0x04, td & 0x00FF_FFFF);
+}
+
+/// CREATE_QP コマンド入力の構築（IPoIB underlay QP probe と同等の最小形）
+pub fn build_create_underlay_qp_input(
+    in_mbox: &mut CmdMailbox,
+    vhca_port: u8,
+    input_qpn: Option<u32>,
+    ts_format: u8,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    if let Some(input_qpn) = input_qpn {
+        in_mbox.write_be32(0x08, input_qpn & 0x00FF_FFFF);
+    }
+    let qpc = &mut in_mbox.data[0x18..0x18 + 0xE8];
+
+    // Match Linux mlx5i_create_underlay_qp():
+    // st=UD, pm_state=MIGRATED, enhanced stateless offload, primary path
+    // bound to vhca_port=1 with GRH enabled.
+    set_bits_u32(qpc, 8, 8, 0x2); // st = MLX5_QP_ST_UD
+    set_bits_u32(qpc, 19, 2, 0x3); // pm_state = MLX5_QP_PM_MIGRATED
+    set_bits_u32(qpc, 88, 2, ts_format as u32); // ts_format = mlx5_get_qp_default_ts()
+    set_bits_u32(qpc, 92, 4, 0x2); // enhanced ULP stateless mode
+    set_bits_u32(qpc, 201, 1, 1); // primary_address_path.grh
+    set_bits_u32(qpc, 456, 8, vhca_port as u32); // primary_address_path.vhca_port_num
+}
+
+/// CREATE_QP 出力から QP 番号を解析
+pub fn parse_create_qp_output(out_mbox: &CmdMailbox) -> u32 {
+    out_mbox.read_be24(0x09)
+}
+
+/// DESTROY_QP コマンド入力の構築
+pub fn build_destroy_qp_input(in_mbox: &mut CmdMailbox, qpn: u32) {
+    *in_mbox = CmdMailbox::zeroed();
+    in_mbox.write_be32(0x04, qpn & 0x00FF_FFFF);
 }
 
 /// CREATE_MKEY コマンド入力の構築
@@ -354,6 +389,30 @@ mod tests {
             parse_query_special_contexts_resd_lkey(&out_mbox),
             0x1122_3344
         );
+    }
+
+    #[test]
+    fn create_underlay_qp_sets_linux_ipoib_minimal_fields() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_create_underlay_qp_input(&mut in_mbox, 1, Some(0x12_34_56), 0x1);
+
+        let qpc = &in_mbox.data[0x18..];
+        assert_eq!(in_mbox.read_be32(0x08), 0x0012_3456);
+        assert_eq!(get_bits_u32(qpc, 8, 8), 0x2);
+        assert_eq!(get_bits_u32(qpc, 19, 2), 0x3);
+        assert_eq!(get_bits_u32(qpc, 88, 2), 0x1);
+        assert_eq!(get_bits_u32(qpc, 92, 4), 0x2);
+        assert_eq!(get_bits_u32(qpc, 201, 1), 1);
+        assert_eq!(get_bits_u32(qpc, 456, 8), 1);
+    }
+
+    #[test]
+    fn create_qp_output_uses_linux_ifc_object_offset() {
+        let mut out_mbox = CmdMailbox::zeroed();
+        out_mbox.data[0x09] = 0x12;
+        out_mbox.data[0x0A] = 0x34;
+        out_mbox.data[0x0B] = 0x56;
+        assert_eq!(parse_create_qp_output(&out_mbox), 0x0012_3456);
     }
 
     #[test]

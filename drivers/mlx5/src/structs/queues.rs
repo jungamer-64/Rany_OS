@@ -146,6 +146,12 @@ impl<'a> SqContextLayout<'a> {
     pub fn set_min_wqe_inline_mode(&mut self, val: u8) {
         set_bits_u32(self.data, 5, 3, val as u32);
     }
+    pub fn set_allow_swp(&mut self, val: bool) {
+        set_bits_u32(self.data, 13, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_ts_format(&mut self, val: u8) {
+        set_bits_u32(self.data, 26, 2, val as u32);
+    }
     pub fn set_cqn(&mut self, val: u32) {
         set_bits_u32(self.data, 72, 24, val);
     }

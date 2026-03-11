@@ -48,7 +48,7 @@ fn log_hca_cap_page(label: &str, page: &[u8; HCA_CAP_PAGE_LEN]) {
     );
     log::info!(
         target: "mlx5",
-        "[mlx5-diag] {} fields: hca_cap_2={} vhca_id={:#x} num_ports={} log_max_qp_sz={} log_max_cq_sz={} log_max_eq_sz={} log_max_cq={} log_max_eq={} log_max_mkey={} log_max_rq={} log_max_sq={} driver_version={} vhca_state={} num_vhca_ports={} sw_owner_id={}",
+        "[mlx5-diag] {} fields: hca_cap_2={} vhca_id={:#x} num_ports={} log_max_qp_sz={} log_max_cq_sz={} log_max_eq_sz={} log_max_cq={} log_max_eq={} log_max_mkey={} log_max_rq={} log_max_sq={} log_max_tir={} log_max_tis={} log_max_tis_per_sq={} log_max_td={} driver_version={} mkey_by_name={} vhca_state={} num_vhca_ports={} sw_owner_id={}",
         label,
         view.hca_cap_2(),
         view.vhca_id(),
@@ -61,10 +61,22 @@ fn log_hca_cap_page(label: &str, page: &[u8; HCA_CAP_PAGE_LEN]) {
         view.log_max_mkey(),
         view.log_max_rq(),
         view.log_max_sq(),
+        view.log_max_tir(),
+        view.log_max_tis(),
+        view.log_max_tis_per_sq(),
+        view.log_max_transport_domain(),
         view.driver_version(),
+        view.mkey_by_name(),
         view.vhca_state(),
         view.num_vhca_ports(),
         view.sw_owner_id(),
+    );
+    log::info!(
+        target: "mlx5",
+        "[mlx5-diag] {} ts: sq_ts_format={} rq_ts_format={}",
+        label,
+        view.sq_ts_format(),
+        view.rq_ts_format(),
     );
 }
 
@@ -137,12 +149,19 @@ impl Mlx5Device {
         caps.log_max_cq_sz = max_view.log_max_cq_sz() as u8;
         caps.log_max_sq_sz = max_view.log_max_qp_sz() as u8;
         caps.log_max_rq_sz = max_view.log_max_qp_sz() as u8;
+        caps.log_max_tir = max_view.log_max_tir() as u8;
+        caps.log_max_tis = max_view.log_max_tis() as u8;
+        caps.log_max_tis_per_sq = max_view.log_max_tis_per_sq() as u8;
+        caps.log_max_transport_domain = max_view.log_max_transport_domain() as u8;
         caps.log_max_eq_sz = max_view.log_max_eq_sz() as u8;
         caps.driver_version_cap = cap_view.driver_version();
         caps.vhca_state_cap = cap_view.vhca_state();
         caps.vport_group_manager = cap_view.vport_group_manager();
         caps.csum_cap = cap_view.eth_net_offloads();
         caps.cqe_compression = cap_view.cqe_compression();
+        caps.mkey_by_name = cap_view.mkey_by_name();
+        caps.sq_ts_format = cap_view.sq_ts_format() as u8;
+        caps.rq_ts_format = cap_view.rq_ts_format() as u8;
         caps.vhca_id = cap_view.vhca_id() as u16;
         caps.eswitch_manager = cap_view.eswitch_manager();
         caps.num_vhca_ports = cap_view.num_vhca_ports() as u16;
@@ -169,7 +188,7 @@ impl Mlx5Device {
 
         log::info!(
             target: "mlx5",
-            "HCA Caps: ports={}, max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_mkey={}, hw_vhca_id={:#x}, general_2={}, sw_owner_id={}, driver_version={}, sw_vhca_id_valid={}",
+            "HCA Caps: ports={}, max_cq={}, max_sq={}, max_rq={}, max_eq={}, max_mkey={}, hw_vhca_id={:#x}, general_2={}, sw_owner_id={}, driver_version={}, sw_vhca_id_valid={}, mkey_by_name={}, sq_ts_format={}, rq_ts_format={}, log_max_tir={}, log_max_tis={}, log_max_tis_per_sq={}, log_max_td={}",
             caps.num_ports,
             caps.max_cq,
             caps.max_sq,
@@ -181,6 +200,13 @@ impl Mlx5Device {
             caps.sw_owner_id_cap,
             caps.driver_version_cap,
             caps.sw_vhca_id_valid_cap,
+            caps.mkey_by_name,
+            caps.sq_ts_format,
+            caps.rq_ts_format,
+            caps.log_max_tir,
+            caps.log_max_tis,
+            caps.log_max_tis_per_sq,
+            caps.log_max_transport_domain,
         );
 
         // vhca_id が 0 以外であれば VF (または SF) と判定を補正する
@@ -285,6 +311,9 @@ impl Mlx5Device {
             cap_view.set_log_uar_page_sz(0);
             if cap_view.cmdif_checksum() != 0 {
                 cap_view.set_cmdif_checksum(0);
+            }
+            if general_max_view.mkey_by_name() {
+                cap_view.set_mkey_by_name(true);
             }
             if general_max_view.vhca_state() {
                 cap_view.set_vhca_state(true);

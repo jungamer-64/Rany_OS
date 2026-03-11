@@ -73,6 +73,7 @@ pub struct Mlx5Device {
     pub(crate) pd: u32,
     pub(crate) td: u32,
     pub(crate) mkey: u32,
+    pub(crate) underlay_qpn: u32,
     pub(crate) mkey_info: Option<MkeyInfo>,
     pub(crate) sw_vhca_id: u16,
     pub(crate) sw_owner_id: [u32; 4],
@@ -169,6 +170,7 @@ impl Mlx5Device {
             pd: 0,
             td: 0,
             mkey: 0,
+            underlay_qpn: 0,
             mkey_info: None,
             sw_vhca_id: 0,
             sw_owner_id: [0; 4],
@@ -344,9 +346,12 @@ impl Mlx5Device {
         };
 
         push_uid(prev_uid);
-        // VF または 不明なバリアント（初期化中）の場合は候補を追加
-        if is_vf || prev_uid == 0 {
+        if is_vf {
             push_uid(0xFFFF);
+            push_uid(0);
+        } else {
+            // PF mailbox commands should stay in the base namespace (UID 0).
+            // If a stale non-zero UID leaked in, try UID 0 as the only fallback.
             push_uid(0);
         }
 
@@ -608,6 +613,17 @@ mod tests {
             vec![(CmdOpcode::CreateSq, 0x1234), (CmdOpcode::CreateSq, 0xffff),]
         );
         assert_eq!(transport.uid(), 0x1234);
+    }
+
+    #[test]
+    fn uid_candidates_for_pf_do_not_probe_broadcast_uid() {
+        let (uids, len) = Mlx5Device::uid_candidates(0, false);
+
+        assert_eq!(&uids[..len], &[0]);
+
+        let (uids, len) = Mlx5Device::uid_candidates(0x1234, false);
+
+        assert_eq!(&uids[..len], &[0x1234, 0]);
     }
 
     #[test]

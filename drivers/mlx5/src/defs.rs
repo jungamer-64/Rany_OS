@@ -288,6 +288,11 @@ pub enum CmdOpcode {
     /// CQ破棄
     DestroyCq = 0x0401,
 
+    /// QP作成
+    CreateQp = 0x0500,
+    /// QP破棄
+    DestroyQp = 0x0501,
+
     /// SQ作成
     CreateSq = 0x0904,
     /// SQ状態変更
@@ -555,6 +560,8 @@ pub struct HcaCaps {
     pub vhca_state_cap: bool,
     /// GENERAL_2 で sw_vhca_id_valid を有効化できる
     pub sw_vhca_id_valid_cap: bool,
+    /// GENERAL で mkey_by_name が現在有効
+    pub mkey_by_name: bool,
     /// VHCA ポート数
     pub num_vhca_ports: u16,
     /// VHCA ID (VF identification)

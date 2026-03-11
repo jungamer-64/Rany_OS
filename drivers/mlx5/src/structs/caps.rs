@@ -43,6 +43,10 @@ impl<'a> HcaCapLayout<'a> {
         get_bits_u32(self.data, 257, 1) != 0
     }
 
+    pub fn mkey_by_name(&self) -> bool {
+        get_bits_u32(self.data, 266, 1) != 0
+    }
+
     pub fn max_sgl_for_optimized_performance(&self) -> u32 {
         get_bits_u32(self.data, 192, 8)
     }
@@ -57,6 +61,30 @@ impl<'a> HcaCapLayout<'a> {
 
     pub fn log_max_sq(&self) -> u32 {
         get_bits_u32(self.data, 875, 5)
+    }
+
+    pub fn log_max_tir(&self) -> u32 {
+        get_bits_u32(self.data, 883, 5)
+    }
+
+    pub fn log_max_tis(&self) -> u32 {
+        get_bits_u32(self.data, 891, 5)
+    }
+
+    pub fn log_max_tis_per_sq(&self) -> u32 {
+        get_bits_u32(self.data, 923, 5)
+    }
+
+    pub fn log_max_transport_domain(&self) -> u32 {
+        get_bits_u32(self.data, 803, 5)
+    }
+
+    pub fn sq_ts_format(&self) -> u32 {
+        get_bits_u32(self.data, 1088, 2)
+    }
+
+    pub fn rq_ts_format(&self) -> u32 {
+        get_bits_u32(self.data, 1090, 2)
     }
 
     pub fn log_max_eq_sz(&self) -> u32 {
@@ -137,6 +165,10 @@ impl<'a> HcaCapLayoutMut<'a> {
         set_bits_u32(self.data, 528, 2, val);
     }
 
+    pub fn set_mkey_by_name(&mut self, val: bool) {
+        set_bits_u32(self.data, 266, 1, if val { 1 } else { 0 });
+    }
+
     pub fn set_vhca_state(&mut self, val: bool) {
         set_bits_u32(self.data, 1002, 1, if val { 1 } else { 0 });
     }
@@ -211,12 +243,15 @@ mod tests {
         set_bits_u32(&mut data, 234, 6, 0x1b);
         set_bits_u32(&mut data, 252, 4, 0x6);
         set_bits_u32(&mut data, 257, 1, 1);
+        set_bits_u32(&mut data, 266, 1, 1);
         set_bits_u32(&mut data, 416, 1, 1);
         set_bits_u32(&mut data, 423, 1, 1);
         set_bits_u32(&mut data, 440, 8, 2);
         set_bits_u32(&mut data, 540, 1, 1);
         set_bits_u32(&mut data, 867, 5, 0x11);
         set_bits_u32(&mut data, 875, 5, 0x12);
+        set_bits_u32(&mut data, 1088, 2, 0x1);
+        set_bits_u32(&mut data, 1090, 2, 0x2);
         set_bits_u32(&mut data, 1002, 1, 1);
         set_bits_u32(&mut data, 1168, 16, 0x10);
         set_bits_u32(&mut data, 1471, 1, 1);
@@ -233,12 +268,15 @@ mod tests {
         assert_eq!(view.log_max_mkey(), 0x1b);
         assert_eq!(view.log_max_eq(), 0x6);
         assert!(view.driver_version());
+        assert!(view.mkey_by_name());
         assert!(view.vport_group_manager());
         assert!(view.eswitch_manager());
         assert_eq!(view.num_ports(), 2);
         assert!(view.eth_net_offloads());
         assert_eq!(view.log_max_rq(), 0x11);
         assert_eq!(view.log_max_sq(), 0x12);
+        assert_eq!(view.sq_ts_format(), 0x1);
+        assert_eq!(view.rq_ts_format(), 0x2);
         assert!(view.vhca_state());
         assert_eq!(view.log_uar_page_sz(), 0x10);
         assert!(view.cqe_compression());
@@ -253,6 +291,7 @@ mod tests {
             let mut view = HcaCapLayoutMut::new(&mut data);
             view.set_cmdif_checksum(0x2);
             view.set_log_uar_page_sz(0x10);
+            view.set_mkey_by_name(true);
             view.set_vhca_state(true);
             view.set_event_on_vhca_state_teardown_request(true);
             view.set_event_on_vhca_state_in_use(true);
@@ -262,6 +301,7 @@ mod tests {
 
         assert_eq!(get_bits_u32(&data, 528, 2), 0x2);
         assert_eq!(get_bits_u32(&data, 1168, 16), 0x10);
+        assert_eq!(get_bits_u32(&data, 266, 1), 1);
         assert_eq!(get_bits_u32(&data, 1002, 1), 1);
         assert_eq!(get_bits_u32(&data, 35, 1), 1);
         assert_eq!(get_bits_u32(&data, 36, 1), 1);

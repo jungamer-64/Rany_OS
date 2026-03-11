@@ -5,7 +5,6 @@
 extern crate alloc;
 // unused import Vec removed
 use crate::cmd::CmdMailbox;
-use crate::cmd::CommandTransport;
 use crate::cmd::queues::*; // bring in helper builders/parsers
 use crate::cq::CompletionQueue;
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE, WqState};
@@ -244,6 +243,12 @@ impl Mlx5Device {
             .first()
             .map(|port| port.min_wqe_inline_mode())
             .unwrap_or(0);
+        // Linux programs the SQ timestamp format from the SQ cap, preferring
+        // real-time when supported and otherwise leaving free-running (0).
+        let sq_ts_format = self
+            .hca_caps()
+            .map(|caps| if caps.sq_ts_format != 0 { 1 } else { 0 })
+            .unwrap_or(0);
         let fallback_tis0 = tisn == 0 && self.tis_list.iter().all(|t| t.tisn != 0);
         let attempts: &[(&str, bool)] = if fallback_tis0 {
             if self.is_vf() {
@@ -266,6 +271,8 @@ impl Mlx5Device {
                 self.uar_page,
                 tisn,
                 min_inline_mode,
+                false,
+                sq_ts_format,
             );
             if *implicit_tis {
                 let mut layout =
@@ -286,46 +293,6 @@ impl Mlx5Device {
                     break;
                 }
                 Err(err) => {
-                    if !self.is_vf() {
-                        let extra_uid = self.default_sw_vhca_id();
-                        let prev_uid = self.cmd.as_ref().map(|cmd| cmd.uid()).unwrap_or(0);
-                        if extra_uid != 0 && extra_uid != 0xffff && extra_uid != prev_uid {
-                            let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
-                            cmd.set_uid(extra_uid);
-                            match cmd.execute(
-                                CmdOpcode::CreateSq,
-                                self.cmd_in_mbox_device,
-                                sq_in_len,
-                                self.cmd_out_mbox_device,
-                                0x10,
-                            ) {
-                                Ok(()) => {
-                                    cmd.set_uid(prev_uid);
-                                    log::info!(
-                                        target: "mlx5",
-                                        "CREATE_SQ accepted with PF RID-derived UID {:#x} (mode={}, tisn={})",
-                                        extra_uid,
-                                        mode,
-                                        tisn
-                                    );
-                                    break;
-                                }
-                                Err(extra_err) => {
-                                    cmd.set_uid(prev_uid);
-                                    if fallback_tis0 {
-                                        log::warn!(
-                                            target: "mlx5",
-                                            "CREATE_SQ also failed with PF RID-derived UID {:#x} (mode={}, tisn={}): {:?}",
-                                            extra_uid,
-                                            mode,
-                                            tisn,
-                                            extra_err
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
                     if fallback_tis0 {
                         log::warn!(
                             target: "mlx5",
@@ -352,8 +319,20 @@ impl Mlx5Device {
                 return Err(err);
             }
         }
+        let mut effective_tisn = tisn;
         match self.query_sq_hw(sqn) {
             Ok(ctx) => {
+                if ctx.tis_num_0 != 0 {
+                    effective_tisn = ctx.tis_num_0;
+                }
+                crate::boot_trace_sq_state(
+                    sqn,
+                    ctx.min_wqe_inline_mode,
+                    ctx.tis_lst_sz,
+                    ctx.tis_num_0,
+                    ctx.wq_type,
+                    effective_tisn,
+                );
                 log::info!(
                     target: "mlx5",
                     "QUERY_SQ: sqn={:#x} state={} flush={} min_inline={} cqn={:#x} tis_lst_sz={} tis_num_0={:#x} wq_type={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
@@ -385,7 +364,7 @@ impl Mlx5Device {
             db_virt,
             self.uar_base,
             log_sq_size,
-            tisn,
+            effective_tisn,
             cqn,
             self.mkey,
             csum_offload,
@@ -701,6 +680,72 @@ impl Mlx5Device {
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         Ok(parse_query_sq_output(out_mbox))
+    }
+
+    pub(crate) unsafe fn find_existing_sq_tis_candidate(
+        &mut self,
+        max_scan: u32,
+    ) -> Mlx5Result<u32> {
+        let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
+        let mut first_any = None;
+        let low_budget = max_scan / 2;
+        let high_budget_each = (max_scan.saturating_sub(low_budget)) / 3;
+        let scan_windows = [
+            (0x0000_0000u32, low_budget.max(1)),
+            (0x0040_0000u32, high_budget_each.max(1)),
+            (0x0080_0000u32, high_budget_each.max(1)),
+            (
+                0x00c0_0000u32,
+                max_scan
+                    .saturating_sub(low_budget)
+                    .saturating_sub(high_budget_each.saturating_mul(2))
+                    .max(1),
+            ),
+        ];
+
+        for &(base, count) in &scan_windows {
+            for offset in 0..count {
+                let sqn = (base + offset) & 0x00ff_ffff;
+                match self.query_sq_hw(sqn) {
+                    Ok(ctx) => {
+                        let candidate = ctx.tis_lst_sz != 0 && ctx.tis_num_0 != 0;
+                        if candidate && first_any.is_none() {
+                            first_any = Some((sqn, ctx));
+                        }
+                        if candidate && ctx.pd == self.pd && ctx.wq_type == 1 {
+                            log::warn!(
+                                target: "mlx5",
+                                "Found matching PF SQ-derived TIS candidate: sqn={:#x} tisn={:#x} pd={} cqn={:#x} state={} tis_lst_sz={}",
+                                sqn,
+                                ctx.tis_num_0,
+                                ctx.pd,
+                                ctx.cqn,
+                                ctx.state,
+                                ctx.tis_lst_sz
+                            );
+                            return Ok(ctx.tis_num_0);
+                        }
+                    }
+                    Err(err) => last_err = Err(err),
+                }
+            }
+        }
+
+        if let Some((sqn, ctx)) = first_any {
+            log::warn!(
+                target: "mlx5",
+                "Falling back to first PF SQ-derived TIS candidate: sqn={:#x} tisn={:#x} pd={} cqn={:#x} state={} tis_lst_sz={}",
+                sqn,
+                ctx.tis_num_0,
+                ctx.pd,
+                ctx.cqn,
+                ctx.state,
+                ctx.tis_lst_sz
+            );
+            return Ok(ctx.tis_num_0);
+        }
+
+        last_err
     }
 
     unsafe fn query_rq_hw(&mut self, rqn: u32) -> Mlx5Result<QueryRqInfo> {

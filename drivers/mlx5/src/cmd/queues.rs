@@ -172,6 +172,8 @@ pub fn build_create_sq_input(
     uar_page: u32,
     tisn: u32,
     min_inline_mode: u8,
+    allow_swp: bool,
+    ts_format: u8,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = SqContextLayout::new(&mut in_mbox.data[0x20..]);
@@ -179,6 +181,8 @@ pub fn build_create_sq_input(
     layout.set_state(crate::defs::WqState::Reset as u8);
     layout.set_flush_in_error_en(true);
     layout.set_min_wqe_inline_mode(min_inline_mode & 0x7);
+    layout.set_allow_swp(allow_swp);
+    layout.set_ts_format(ts_format & 0x3);
     layout.set_cqn(cqn);
     layout.set_tis_lst_sz(1);
     layout.set_tis_num_0(tisn);
@@ -611,10 +615,14 @@ mod tests {
             0x789,
             0xabc,
             1,
+            true,
+            1,
         );
 
         assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 268, 4), 6);
         assert_eq!(get_bits_u32(&in_mbox.data[0x20..], 5, 3), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[0x20..], 13, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[0x20..], 26, 2), 1);
     }
 
     #[test]

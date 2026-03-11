@@ -49,43 +49,64 @@ impl Mlx5Device {
     ) -> Mlx5Result<u32> {
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
         let mut first_any = None;
-        for tisn in 0..max_scan {
-            match self.query_tis(tisn) {
-                Ok(info) => {
-                    let matched = !info.tls_en
-                        && info.transport_domain == preferred_td
-                        && info.prio == preferred_prio
-                        && info.underlay_qpn == 0;
-                    if first_any.is_none() {
-                        first_any = Some((tisn, info));
-                    }
-                    if matched {
+        // mlx5 object IDs can live in prefixed namespaces. Probe the low
+        // range first, then common high-prefix windows used by other queueing
+        // objects (for example RQNs on this PF show up under 0x00c0_0000).
+        let low_budget = max_scan / 2;
+        let high_budget_each = (max_scan.saturating_sub(low_budget)) / 3;
+        let scan_windows = [
+            (0x0000_0000u32, low_budget.max(1)),
+            (0x0040_0000u32, high_budget_each.max(1)),
+            (0x0080_0000u32, high_budget_each.max(1)),
+            (
+                0x00c0_0000u32,
+                max_scan
+                    .saturating_sub(low_budget)
+                    .saturating_sub(high_budget_each.saturating_mul(2))
+                    .max(1),
+            ),
+        ];
+
+        for &(base, count) in &scan_windows {
+            for offset in 0..count {
+                let tisn = (base + offset) & 0x00ff_ffff;
+                match self.query_tis(tisn) {
+                    Ok(info) => {
+                        let matched = !info.tls_en
+                            && info.transport_domain == preferred_td
+                            && info.prio == preferred_prio
+                            && info.underlay_qpn == 0;
+                        if first_any.is_none() {
+                            first_any = Some((tisn, info));
+                        }
+                        if matched {
+                            log::info!(
+                                target: "mlx5",
+                                "Found matching existing TIS via QUERY_TIS: tisn={:#x} td={} prio={} pd={} lag_port={} strict_lag={}",
+                                tisn,
+                                info.transport_domain,
+                                info.prio,
+                                info.pd,
+                                info.lag_tx_port_affinity,
+                                info.strict_lag_tx_port_affinity
+                            );
+                            return Ok(tisn);
+                        }
                         log::info!(
                             target: "mlx5",
-                            "Found matching existing TIS via QUERY_TIS: tisn={:#x} td={} prio={} pd={} lag_port={} strict_lag={}",
+                            "Found reusable existing TIS candidate via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={} lag_port={} strict_lag={}",
                             tisn,
                             info.transport_domain,
                             info.prio,
                             info.pd,
+                            info.underlay_qpn,
+                            info.tls_en,
                             info.lag_tx_port_affinity,
                             info.strict_lag_tx_port_affinity
                         );
-                        return Ok(tisn);
                     }
-                    log::info!(
-                        target: "mlx5",
-                        "Found reusable existing TIS candidate via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={} lag_port={} strict_lag={}",
-                        tisn,
-                        info.transport_domain,
-                        info.prio,
-                        info.pd,
-                        info.underlay_qpn,
-                        info.tls_en,
-                        info.lag_tx_port_affinity,
-                        info.strict_lag_tx_port_affinity
-                    );
+                    Err(err) => last_err = Err(err),
                 }
-                Err(err) => last_err = Err(err),
             }
         }
         if let Some((tisn, info)) = first_any {
@@ -209,6 +230,74 @@ impl Mlx5Device {
         Ok(parse_query_mkey_output(out_mbox))
     }
 
+    /// CREATE_QP で Linux IPoIB 相当の最小 underlay QP を作成
+    pub unsafe fn create_underlay_qp(&mut self, vhca_port: u8) -> Mlx5Result<u32> {
+        self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+
+        let mkey_by_name = self
+            .hca_caps()
+            .map(|caps| caps.mkey_by_name)
+            .unwrap_or(false);
+        let ts_format = self
+            .hca_caps()
+            .map(|caps| if caps.sq_ts_format != 0 { 1 } else { 0 })
+            .unwrap_or(0);
+        let port_index = usize::from(vhca_port.saturating_sub(1));
+        let mut input_qpn = None;
+
+        if mkey_by_name {
+            let mut mac = self
+                .port(port_index)
+                .map(|port| port.mac_bytes())
+                .unwrap_or([0; 6]);
+            if mac == [0; 6] {
+                match self.query_port_mac(port_index) {
+                    Ok(queried_mac) => mac = queried_mac.0,
+                    Err(err) => {
+                        log::warn!(
+                            target: "mlx5",
+                            "mkey_by_name is enabled but MAC query failed for underlay QP probe on port {}: {:?}",
+                            port_index + 1,
+                            err
+                        );
+                    }
+                }
+            }
+
+            if mac != [0; 6] {
+                input_qpn = Some(((mac[1] as u32) << 16) | ((mac[2] as u32) << 8) | mac[3] as u32);
+            } else {
+                log::warn!(
+                    target: "mlx5",
+                    "mkey_by_name is enabled but no valid MAC is available for underlay QP probe on port {}",
+                    port_index + 1
+                );
+            }
+        }
+
+        log::info!(
+            target: "mlx5",
+            "CREATE_QP underlay probe: vhca_port={} mkey_by_name={} ts_format={} input_qpn={:?}",
+            vhca_port,
+            mkey_by_name,
+            ts_format,
+            input_qpn
+        );
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        crate::cmd::res::build_create_underlay_qp_input(in_mbox, vhca_port, input_qpn, ts_format);
+        self.execute_uid_sensitive_cmd(CmdOpcode::CreateQp, 0x110, 0x10)?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let qpn = crate::cmd::res::parse_create_qp_output(out_mbox);
+        log::warn!(
+            target: "mlx5",
+            "CREATE_QP underlay probe succeeded: qpn={:#x} vhca_port={}",
+            qpn,
+            vhca_port
+        );
+        Ok(qpn)
+    }
+
     /// TIS (Transport Interface Send) を作成
     pub unsafe fn create_tis(&mut self, params: &TisParams) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
@@ -219,10 +308,20 @@ impl Mlx5Device {
         // retry set that mirrors Linux-like defaults first, then conservative
         // compatibility variants.
         let attempts = [
-            ("td-only", params.td, false, 0u32, 0u16, 0u8, false),
+            (
+                "td-only",
+                params.td,
+                params.prio,
+                false,
+                0u32,
+                0u16,
+                0u8,
+                false,
+            ),
             (
                 "td-only+lag-port",
                 params.td,
+                params.prio,
                 false,
                 0u32,
                 0u16,
@@ -232,16 +331,37 @@ impl Mlx5Device {
             (
                 "td-only+lag-port-strict",
                 params.td,
+                params.prio,
                 false,
                 0u32,
                 0u16,
                 params.port & 0x0f,
                 true,
             ),
-            ("td+pd", params.td, true, 0u32, 0u16, 0u8, false),
+            (
+                "td-only+strict-lag",
+                params.td,
+                params.prio,
+                false,
+                0u32,
+                0u16,
+                0u8,
+                true,
+            ),
+            (
+                "td+pd",
+                params.td,
+                params.prio,
+                true,
+                0u32,
+                0u16,
+                0u8,
+                false,
+            ),
             (
                 "td+pd+lag-port",
                 params.td,
+                params.prio,
                 true,
                 0u32,
                 0u16,
@@ -251,6 +371,7 @@ impl Mlx5Device {
             (
                 "td-only+underlay-1",
                 params.td,
+                params.prio,
                 false,
                 0x1u32,
                 0u16,
@@ -260,6 +381,7 @@ impl Mlx5Device {
             (
                 "td+pd+underlay-1",
                 params.td,
+                params.prio,
                 true,
                 0x1u32,
                 0u16,
@@ -269,6 +391,7 @@ impl Mlx5Device {
             (
                 "td-only+underlay-ffff",
                 params.td,
+                params.prio,
                 false,
                 0x00ff_ffffu32,
                 0u16,
@@ -278,18 +401,100 @@ impl Mlx5Device {
             (
                 "td+pd+underlay-ffff",
                 params.td,
+                params.prio,
                 true,
                 0x00ff_ffffu32,
                 0u16,
                 0u8,
                 false,
             ),
-            ("td+opmod1", params.td, false, 0u32, 1u16, 0u8, false),
-            ("td0", 0u32, false, 0u32, 0u16, 0u8, false),
+            (
+                "td+opmod1",
+                params.td,
+                params.prio,
+                false,
+                0u32,
+                1u16,
+                0u8,
+                false,
+            ),
+            ("td0", 0u32, params.prio, false, 0u32, 0u16, 0u8, false),
+            (
+                "td-only+prio2",
+                params.td,
+                2u8,
+                false,
+                0u32,
+                0u16,
+                0u8,
+                false,
+            ),
+            (
+                "td-only+prio4",
+                params.td,
+                4u8,
+                false,
+                0u32,
+                0u16,
+                0u8,
+                false,
+            ),
+            (
+                "td-only+prio6",
+                params.td,
+                6u8,
+                false,
+                0u32,
+                0u16,
+                0u8,
+                false,
+            ),
+            (
+                "td-only+prio8",
+                params.td,
+                8u8,
+                false,
+                0u32,
+                0u16,
+                0u8,
+                false,
+            ),
+            (
+                "td-only+prio10",
+                params.td,
+                10u8,
+                false,
+                0u32,
+                0u16,
+                0u8,
+                false,
+            ),
+            (
+                "td-only+prio12",
+                params.td,
+                12u8,
+                false,
+                0u32,
+                0u16,
+                0u8,
+                false,
+            ),
+            (
+                "td-only+prio14",
+                params.td,
+                14u8,
+                false,
+                0u32,
+                0u16,
+                0u8,
+                false,
+            ),
         ];
         let mut last_err = Err(Mlx5Error::NotSupported);
 
-        for (attempt_name, td, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in attempts {
+        for (attempt_name, td, prio, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in
+            attempts
+        {
             crate::cmd::res::build_create_tis_input_with_options(
                 in_mbox,
                 params,
@@ -303,6 +508,11 @@ impl Mlx5Device {
                 let mut layout =
                     crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
                 layout.set_transport_domain(td);
+            }
+            if prio != params.prio {
+                let mut layout =
+                    crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
+                layout.set_prio(prio);
             }
             if lag_port != 0 || strict_lag {
                 let mut layout =
@@ -318,7 +528,7 @@ impl Mlx5Device {
                 params.pd,
                 include_pd,
                 params.port,
-                params.prio,
+                prio,
                 underlay_qpn,
                 op_mod,
                 lag_port,
@@ -338,55 +548,62 @@ impl Mlx5Device {
                     return Ok(tisn);
                 }
                 Err(err) => {
-                    if !self.is_vf() {
-                        let extra_uid = self.default_sw_vhca_id();
-                        let prev_uid = self.cmd.as_ref().map(|cmd| cmd.uid()).unwrap_or(0);
-                        if extra_uid != 0 && extra_uid != 0xffff && extra_uid != prev_uid {
-                            let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
-                            cmd.set_uid(extra_uid);
-                            match cmd.execute(
-                                CmdOpcode::CreateTis,
-                                self.cmd_in_mbox_device,
-                                0xC0,
-                                self.cmd_out_mbox_device,
-                                0x10,
-                            ) {
-                                Ok(()) => {
-                                    cmd.set_uid(prev_uid);
-                                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-                                    let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
-                                    let info = TisInfo {
-                                        tisn,
-                                        port: params.port,
-                                    };
-                                    self.tis_list.push(info);
-                                    log::info!(
-                                        target: "mlx5",
-                                        "CREATE_TIS accepted with PF RID-derived UID {:#x} on attempt {}",
-                                        extra_uid,
-                                        attempt_name
-                                    );
-                                    crate::boot_trace("[MLX5_TIS] create ok\n");
-                                    return Ok(tisn);
-                                }
-                                Err(extra_err) => {
-                                    cmd.set_uid(prev_uid);
-                                    log::warn!(
-                                        target: "mlx5",
-                                        "CREATE_TIS attempt {} also failed with PF RID-derived UID {:#x}: {:?}",
-                                        attempt_name,
-                                        extra_uid,
-                                        extra_err
-                                    );
-                                }
-                            }
-                        }
-                    }
                     crate::boot_trace("[MLX5_TIS] create fail\n");
                     log::warn!(
                         target: "mlx5",
                         "CREATE_TIS attempt {} failed: {:?}",
                         attempt_name,
+                        err
+                    );
+                    last_err = Err(err);
+                }
+            }
+        }
+
+        if !self.is_vf() {
+            match self.create_underlay_qp(params.port.max(1)) {
+                Ok(qpn) => {
+                    crate::cmd::res::build_create_tis_input_with_options(
+                        in_mbox, params, false, qpn,
+                    );
+                    log::warn!(
+                        target: "mlx5",
+                        "CREATE_TIS final probe with real underlay QP: td={} pd={} port={} prio={} underlay_qpn={:#x}",
+                        params.td,
+                        params.pd,
+                        params.port,
+                        params.prio,
+                        qpn
+                    );
+                    match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0xC0, 0x10) {
+                        Ok(()) => {
+                            let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                            let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
+                            let info = TisInfo {
+                                tisn,
+                                port: params.port,
+                            };
+                            self.underlay_qpn = qpn;
+                            self.tis_list.push(info);
+                            crate::boot_trace("[MLX5_TIS] create ok\n");
+                            return Ok(tisn);
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                target: "mlx5",
+                                "CREATE_TIS with real underlay QP {:#x} failed: {:?}",
+                                qpn,
+                                err
+                            );
+                            let _ = self.destroy_qp_hw(qpn);
+                            last_err = Err(err);
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "CREATE_QP underlay probe failed before final CREATE_TIS attempt: {:?}",
                         err
                     );
                     last_err = Err(err);
