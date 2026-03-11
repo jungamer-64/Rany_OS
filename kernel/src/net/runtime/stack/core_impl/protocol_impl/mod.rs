@@ -93,6 +93,11 @@ impl NetworkStack {
 
     /// Apply DHCPv4 lease to live stack configuration and synchronize manager state.
     pub fn apply_dhcp_v4_lease(&mut self, lease: &crate::net::services::dhcp::DhcpLease) {
+        if let Some(primary_if) = crate::net::runtime::device::primary_if() {
+            self.apply_dhcp_v4_lease_for_interface(lease, primary_if, true);
+            return;
+        }
+
         let mut config = self.config();
         config.ipv4.address = lease.ip_address;
         config.ipv4.subnet_mask = lease.subnet_mask;
@@ -102,10 +107,39 @@ impl NetworkStack {
         config.ipv4.dns = lease.dns_servers.first().copied();
 
         self.set_config(config);
+    }
 
-        if let Some(if_id) = crate::net::runtime::manager::lookup_if_by_virtio_index(0) {
-            let _ = crate::net::runtime::manager::set_interface_config(if_id, config);
+    pub fn apply_dhcp_v4_lease_for_interface(
+        &mut self,
+        lease: &crate::net::services::dhcp::DhcpLease,
+        if_id: crate::net::runtime::manager::NetIfId,
+        update_primary_runtime: bool,
+    ) {
+        let base_config = crate::net::runtime::manager::get_interface(if_id)
+            .ok()
+            .flatten()
+            .and_then(|iface| iface.config)
+            .unwrap_or_else(|| self.config());
+
+        let mut iface_config = base_config;
+        iface_config.ipv4.address = lease.ip_address;
+        iface_config.ipv4.subnet_mask = lease.subnet_mask;
+        iface_config.ipv4.gateway = if update_primary_runtime {
+            lease.gateway.unwrap_or(crate::net::l3::ipv4::Ipv4Address::ANY)
+        } else {
+            crate::net::l3::ipv4::Ipv4Address::ANY
+        };
+        iface_config.ipv4.dns = if update_primary_runtime {
+            lease.dns_servers.first().copied()
+        } else {
+            None
+        };
+
+        if update_primary_runtime {
+            self.set_config(iface_config);
         }
+
+        let _ = crate::net::runtime::manager::set_interface_config(if_id, iface_config);
     }
 
     /// Process UDP data (for reassembled packets)

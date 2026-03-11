@@ -1049,6 +1049,7 @@ impl NetworkEventHandler {
             NetworkEvent::RawUdpSendOn {
                 if_id,
                 src_port,
+                src_ip,
                 dst_ip,
                 dst_port,
                 data,
@@ -1056,7 +1057,9 @@ impl NetworkEventHandler {
             } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let src_ip = stack.config().ipv4.address;
+                let src_ip = src_ip
+                    .map(crate::net::l3::ipv4::Ipv4Address::new)
+                    .unwrap_or_else(|| stack.config().ipv4.address);
                 if stack.send_udp_raw_on_with_src_ttl(
                     net_if, src_ip, src_port, dst, dst_port, &data, ttl,
                 ) {
@@ -1204,6 +1207,7 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::AsyncDhcpApplyLease {
+                if_id,
                 ip,
                 subnet,
                 gateway,
@@ -1227,7 +1231,23 @@ impl NetworkEventHandler {
                     domain_name: None,
                     obtained_at: crate::task::timer::current_tick(),
                 };
-                stack.apply_dhcp_v4_lease(&lease);
+                let target_if = if_id.map(crate::net::runtime::manager::NetIfId);
+                let selected_primary = target_if
+                    .map(crate::net::runtime::device::claim_bound_primary_interface)
+                    .unwrap_or(false);
+                if let Some(if_id) = target_if {
+                    if selected_primary {
+                        crate::net::services::dhcp::mark_primary_interface(if_id);
+                        log::info!(
+                            "[NET] DHCP primary elected: if{} ip={}",
+                            if_id.0,
+                            lease.ip_address
+                        );
+                    }
+                    stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, selected_primary);
+                } else {
+                    stack.apply_dhcp_v4_lease(&lease);
+                }
                 EventHandleResult::Success
             }
             NetworkEvent::AsyncGetLinkLocal { result_slot, waker } => {
@@ -1328,7 +1348,22 @@ impl NetworkEventHandler {
                     v6_valid_remaining: None,
                 };
 
-                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                if let Some(client) = dhcp::primary_v4_client() {
+                    out.v4_state = alloc::string::String::from(
+                        crate::net::api::dhcp::dhcp_v4_state_name(client.state()),
+                    );
+                    if let Some(lease) = client.lease() {
+                        out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
+                        out.v4_lease_remaining = Some(crate::net::api::dhcp::lease_remaining_secs(
+                            lease.lease_time,
+                            lease.obtained_at,
+                            now,
+                            tick_rate,
+                        ));
+                    }
+                    out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
+                    out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
+                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
                     if let Some(ref client) = *guard {
                         out.v4_state = alloc::string::String::from(
                             crate::net::api::dhcp::dhcp_v4_state_name(client.state()),
@@ -1386,17 +1421,22 @@ impl NetworkEventHandler {
                 let mut touched = false;
                 let mut err_msg: Option<alloc::string::String> = None;
 
-                match dhcp::DHCP_CLIENT.lock() {
-                    Ok(guard) => {
-                        if let Some(ref client) = *guard {
-                            client.force_renew_or_restart(now);
-                            touched = true;
+                if let Some(client) = dhcp::primary_v4_client() {
+                    client.force_renew_or_restart(now);
+                    touched = true;
+                } else {
+                    match dhcp::DHCP_CLIENT.lock() {
+                        Ok(guard) => {
+                            if let Some(ref client) = *guard {
+                                client.force_renew_or_restart(now);
+                                touched = true;
+                            }
                         }
-                    }
-                    Err(_) => {
-                        err_msg = Some(alloc::string::String::from(
-                            "DHCPv4 global client lock poisoned",
-                        ))
+                        Err(_) => {
+                            err_msg = Some(alloc::string::String::from(
+                                "DHCPv4 global client lock poisoned",
+                            ))
+                        }
                     }
                 }
 
@@ -1440,7 +1480,10 @@ impl NetworkEventHandler {
 
                 let mut released = false;
                 // DHCPv4 Release
-                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                if let Some(client) = dhcp::primary_v4_client() {
+                    client.release();
+                    released = true;
+                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
                     if let Some(ref client) = *guard {
                         client.release();
                         released = true;
@@ -1466,7 +1509,15 @@ impl NetworkEventHandler {
                 let now = tcb_table().get_current_tick();
                 let mut offer = None;
 
-                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                if let Some(client) = dhcp::primary_v4_client() {
+                    let _ = client.drive(now, 1000);
+                    if let Some(o) = client.offered_lease() {
+                        offer = Some(crate::net::api::dhcp::DhcpOfferInfo {
+                            server_ip: *o.server_ip.as_bytes(),
+                            offered_ip: *o.ip_address.as_bytes(),
+                        });
+                    }
+                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
                     if let Some(ref client) = *guard {
                         let _ = client.drive(now, 1000);
                         if let Some(o) = client.offered_lease() {
@@ -1488,7 +1539,9 @@ impl NetworkEventHandler {
                 use crate::net::services::dhcp;
 
                 let mut ip = None;
-                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                if let Some(client) = dhcp::primary_v4_client() {
+                    ip = client.last_declined_ip().map(|a| *a.as_bytes());
+                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
                     if let Some(ref client) = *guard {
                         ip = client.last_declined_ip().map(|a| *a.as_bytes());
                     }
@@ -1504,7 +1557,9 @@ impl NetworkEventHandler {
                 use crate::net::services::dhcp;
 
                 let mut ip = None;
-                if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                if let Some(client) = dhcp::primary_v4_client() {
+                    ip = client.last_released_ip().map(|a| *a.as_bytes());
+                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
                     if let Some(ref client) = *guard {
                         ip = client.last_released_ip().map(|a| *a.as_bytes());
                     }

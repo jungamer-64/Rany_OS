@@ -185,6 +185,7 @@ pub enum NetworkEvent {
     RawUdpSendOn {
         if_id: u16,
         src_port: u16,
+        src_ip: Option<[u8; 4]>,
         dst_ip: [u8; 4],
         dst_port: u16,
         data: Vec<u8>,
@@ -307,6 +308,7 @@ pub enum NetworkEvent {
     },
     /// 非同期DHCPリース適用
     AsyncDhcpApplyLease {
+        if_id: Option<u16>,
         ip: [u8; 4],
         subnet: [u8; 4],
         gateway: [u8; 4],

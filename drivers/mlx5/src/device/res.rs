@@ -13,7 +13,64 @@ use crate::error::{Mlx5Error, Mlx5Result};
 use crate::flow::{FlowGroup, FlowTable, FlowTableConfig, FlowTableEntry};
 use crate::resources::{MkeyInfo, MkeyParams, TirInfo, TirParams, TisOwnership, TisParams};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CreateTisAttempt {
+    name: &'static str,
+    td: u32,
+    prio: u8,
+    include_pd: bool,
+    underlay_qpn: u32,
+    op_mod: u16,
+    lag_port: u8,
+    strict_lag: bool,
+}
+
 impl Mlx5Device {
+    fn is_default_profile_tis(info: &crate::cmd::res::QueryTisInfo) -> bool {
+        !info.tls_en
+            && info.transport_domain == 0
+            && info.pd == 0
+            && info.prio == 0
+            && info.underlay_qpn == 0
+            && info.lag_tx_port_affinity == 0
+            && !info.strict_lag_tx_port_affinity
+    }
+
+    unsafe fn last_cmd_status_and_syndrome(&self) -> (u8, u32) {
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        (out_mbox.data[0], out_mbox.read_be32(0x04))
+    }
+
+    fn prepare_create_tis_attempt(
+        in_mbox: &mut CmdMailbox,
+        params: &TisParams,
+        attempt: CreateTisAttempt,
+    ) -> CmdMailbox {
+        crate::cmd::res::build_create_tis_input_with_options(
+            in_mbox,
+            params,
+            attempt.include_pd,
+            attempt.underlay_qpn,
+        );
+        if attempt.op_mod != 0 {
+            in_mbox.write_be16(0x06, attempt.op_mod);
+        }
+
+        let mut layout = crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
+        if attempt.td != params.td {
+            layout.set_transport_domain(attempt.td);
+        }
+        if attempt.prio != params.prio {
+            layout.set_prio(attempt.prio);
+        }
+        layout.set_lag_tx_port_affinity(attempt.lag_port);
+        layout.set_strict_lag_tx_port_affinity(attempt.strict_lag);
+
+        let mut pre_exec = CmdMailbox::zeroed();
+        pre_exec.data[..0x110].copy_from_slice(&in_mbox.data[..0x110]);
+        pre_exec
+    }
+
     /// ローカルTISの存在確認
     pub unsafe fn query_tis_exists(&mut self, tisn: u32) -> Mlx5Result<()> {
         self.query_tis(tisn).map(|_| ())
@@ -21,6 +78,13 @@ impl Mlx5Device {
 
     /// ローカル TIS コンテキストを取得
     pub unsafe fn query_tis(&mut self, tisn: u32) -> Mlx5Result<crate::cmd::res::QueryTisInfo> {
+        self.query_tis_with_snapshot(tisn).map(|(info, _)| info)
+    }
+
+    pub(crate) unsafe fn query_tis_with_snapshot(
+        &mut self,
+        tisn: u32,
+    ) -> Mlx5Result<(crate::cmd::res::QueryTisInfo, CmdMailbox)> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_query_tis_input(in_mbox, tisn, 0, false);
@@ -32,12 +96,77 @@ impl Mlx5Device {
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        Ok(parse_query_tis_output(out_mbox))
+        let mut snapshot = CmdMailbox::zeroed();
+        snapshot.data.copy_from_slice(&out_mbox.data);
+        Ok((parse_query_tis_output(out_mbox), snapshot))
     }
 
     /// PF passthrough 向けの既存TISを探索
     pub unsafe fn find_existing_tis(&mut self, max_scan: u32) -> Mlx5Result<u32> {
         self.find_existing_tis_matching(max_scan, self.td, 0)
+    }
+
+    /// default-only PF profile 向けに、all-zero send object を優先して探索
+    pub unsafe fn find_existing_tis_default_profile(&mut self, max_scan: u32) -> Mlx5Result<u32> {
+        let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
+        let mut first_any = None;
+        let scan_windows = Self::object_id_scan_windows(max_scan);
+
+        for &(base, count) in &scan_windows {
+            for offset in 0..count {
+                let tisn = (base + offset) & 0x00ff_ffff;
+                match self.query_tis(tisn) {
+                    Ok(info) => {
+                        if first_any.is_none() {
+                            first_any = Some((tisn, info));
+                        }
+                        if Self::is_default_profile_tis(&info) {
+                            log::info!(
+                                target: "mlx5",
+                                "Found default-profile existing TIS via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} lag_port={} strict_lag={}",
+                                tisn,
+                                info.transport_domain,
+                                info.prio,
+                                info.pd,
+                                info.underlay_qpn,
+                                info.lag_tx_port_affinity,
+                                info.strict_lag_tx_port_affinity
+                            );
+                            return Ok(tisn);
+                        }
+                        log::info!(
+                            target: "mlx5",
+                            "Found reusable existing TIS candidate via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={} lag_port={} strict_lag={}",
+                            tisn,
+                            info.transport_domain,
+                            info.prio,
+                            info.pd,
+                            info.underlay_qpn,
+                            info.tls_en,
+                            info.lag_tx_port_affinity,
+                            info.strict_lag_tx_port_affinity
+                        );
+                    }
+                    Err(err) => last_err = Err(err),
+                }
+            }
+        }
+
+        if let Some((tisn, info)) = first_any {
+            log::warn!(
+                target: "mlx5",
+                "Default-profile TIS scan fell back to first existing candidate: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={}",
+                tisn,
+                info.transport_domain,
+                info.prio,
+                info.pd,
+                info.underlay_qpn,
+                info.tls_en
+            );
+            return Ok(tisn);
+        }
+
+        last_err
     }
 
     /// PF passthrough 向けの既存 TIS を優先条件付きで探索
@@ -110,6 +239,39 @@ impl Mlx5Device {
             return Ok(tisn);
         }
         last_err
+    }
+
+    pub unsafe fn trace_tis_prefix_namespace(&mut self, tisn: u32, probe_count: u32) {
+        let prefix_base = tisn & 0x00f0_0000;
+        let mut hits = 0u32;
+        for offset in 0..probe_count {
+            let candidate = (prefix_base + offset) & 0x00ff_ffff;
+            if let Ok(info) = self.query_tis(candidate) {
+                hits += 1;
+                log::info!(
+                    target: "mlx5",
+                    "TIS namespace probe: base={:#x} candidate={:#x} td={} pd={} prio={} underlay_qpn={:#x} lag_port={} strict_lag={} tls={} selected={}",
+                    prefix_base,
+                    candidate,
+                    info.transport_domain,
+                    info.pd,
+                    info.prio,
+                    info.underlay_qpn,
+                    info.lag_tx_port_affinity,
+                    info.strict_lag_tx_port_affinity,
+                    info.tls_en,
+                    candidate == tisn
+                );
+            }
+        }
+
+        if hits == 0 {
+            log::warn!(
+                target: "mlx5",
+                "TIS namespace probe found no queryable objects near prefix base {:#x}",
+                prefix_base
+            );
+        }
     }
 
     /// QUERY_SPECIAL_CONTEXTS から reserved lkey を取得
@@ -320,234 +482,230 @@ impl Mlx5Device {
         // retry set that mirrors Linux-like defaults first, then conservative
         // compatibility variants.
         let attempts = [
-            (
-                "td-only",
-                params.td,
-                params.prio,
-                false,
-                0u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td-only+lag-port",
-                params.td,
-                params.prio,
-                false,
-                0u32,
-                0u16,
-                params.port & 0x0f,
-                false,
-            ),
-            (
-                "td-only+lag-port-strict",
-                params.td,
-                params.prio,
-                false,
-                0u32,
-                0u16,
-                params.port & 0x0f,
-                true,
-            ),
-            (
-                "td-only+strict-lag",
-                params.td,
-                params.prio,
-                false,
-                0u32,
-                0u16,
-                0u8,
-                true,
-            ),
-            (
-                "td+pd",
-                params.td,
-                params.prio,
-                true,
-                0u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td+pd+lag-port",
-                params.td,
-                params.prio,
-                true,
-                0u32,
-                0u16,
-                params.port & 0x0f,
-                false,
-            ),
-            (
-                "td-only+underlay-1",
-                params.td,
-                params.prio,
-                false,
-                0x1u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td+pd+underlay-1",
-                params.td,
-                params.prio,
-                true,
-                0x1u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td-only+underlay-ffff",
-                params.td,
-                params.prio,
-                false,
-                0x00ff_ffffu32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td+pd+underlay-ffff",
-                params.td,
-                params.prio,
-                true,
-                0x00ff_ffffu32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td+opmod1",
-                params.td,
-                params.prio,
-                false,
-                0u32,
-                1u16,
-                0u8,
-                false,
-            ),
-            ("td0", 0u32, params.prio, false, 0u32, 0u16, 0u8, false),
-            (
-                "td-only+prio2",
-                params.td,
-                2u8,
-                false,
-                0u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td-only+prio4",
-                params.td,
-                4u8,
-                false,
-                0u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td-only+prio6",
-                params.td,
-                6u8,
-                false,
-                0u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td-only+prio8",
-                params.td,
-                8u8,
-                false,
-                0u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td-only+prio10",
-                params.td,
-                10u8,
-                false,
-                0u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td-only+prio12",
-                params.td,
-                12u8,
-                false,
-                0u32,
-                0u16,
-                0u8,
-                false,
-            ),
-            (
-                "td-only+prio14",
-                params.td,
-                14u8,
-                false,
-                0u32,
-                0u16,
-                0u8,
-                false,
-            ),
+            CreateTisAttempt {
+                name: "td-only",
+                td: params.td,
+                prio: params.prio,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td+pd",
+                td: params.td,
+                prio: params.prio,
+                include_pd: true,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+lag-port",
+                td: params.td,
+                prio: params.prio,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: params.port & 0x0f,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+strict-lag",
+                td: params.td,
+                prio: params.prio,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: true,
+            },
+            CreateTisAttempt {
+                name: "td-only+underlay-1",
+                td: params.td,
+                prio: params.prio,
+                include_pd: false,
+                underlay_qpn: 0x1,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td+pd+underlay-1",
+                td: params.td,
+                prio: params.prio,
+                include_pd: true,
+                underlay_qpn: 0x1,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+underlay-ffff",
+                td: params.td,
+                prio: params.prio,
+                include_pd: false,
+                underlay_qpn: 0x00ff_ffff,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td+pd+underlay-ffff",
+                td: params.td,
+                prio: params.prio,
+                include_pd: true,
+                underlay_qpn: 0x00ff_ffff,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+lag-port-strict",
+                td: params.td,
+                prio: params.prio,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: params.port & 0x0f,
+                strict_lag: true,
+            },
+            CreateTisAttempt {
+                name: "td+pd+lag-port",
+                td: params.td,
+                prio: params.prio,
+                include_pd: true,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: params.port & 0x0f,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td+opmod1",
+                td: params.td,
+                prio: params.prio,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 1,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td0",
+                td: 0,
+                prio: params.prio,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+prio2",
+                td: params.td,
+                prio: 2,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+prio4",
+                td: params.td,
+                prio: 4,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+prio6",
+                td: params.td,
+                prio: 6,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+prio8",
+                td: params.td,
+                prio: 8,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+prio10",
+                td: params.td,
+                prio: 10,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+prio12",
+                td: params.td,
+                prio: 12,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
+            CreateTisAttempt {
+                name: "td-only+prio14",
+                td: params.td,
+                prio: 14,
+                include_pd: false,
+                underlay_qpn: 0,
+                op_mod: 0,
+                lag_port: 0,
+                strict_lag: false,
+            },
         ];
         let mut last_err = Err(Mlx5Error::NotSupported);
 
-        for (attempt_name, td, prio, include_pd, underlay_qpn, op_mod, lag_port, strict_lag) in
-            attempts
-        {
-            crate::cmd::res::build_create_tis_input_with_options(
-                in_mbox,
-                params,
-                include_pd,
-                underlay_qpn,
-            );
-            if op_mod != 0 {
-                in_mbox.write_be16(0x06, op_mod);
-            }
-            if td != params.td {
-                let mut layout =
-                    crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
-                layout.set_transport_domain(td);
-            }
-            if prio != params.prio {
-                let mut layout =
-                    crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
-                layout.set_prio(prio);
-            }
-            if lag_port != 0 || strict_lag {
-                let mut layout =
-                    crate::structs::cmd::TisContextLayout::new(&mut in_mbox.data[0x20..]);
-                layout.set_lag_tx_port_affinity(lag_port);
-                layout.set_strict_lag_tx_port_affinity(strict_lag);
-            }
+        for attempt in attempts {
+            let pre_exec = Self::prepare_create_tis_attempt(in_mbox, params, attempt);
             log::info!(
                 target: "mlx5",
                 "CREATE_TIS try {}: td={} pd={} include_pd={} port={} prio={} underlay_qpn={:#x} op_mod={} lag_port={} strict_lag={}",
-                attempt_name,
-                td,
+                attempt.name,
+                attempt.td,
                 params.pd,
-                include_pd,
+                attempt.include_pd,
                 params.port,
-                prio,
-                underlay_qpn,
-                op_mod,
-                lag_port,
-                strict_lag
+                attempt.prio,
+                attempt.underlay_qpn,
+                attempt.op_mod,
+                attempt.lag_port,
+                attempt.strict_lag
             );
-            let mut pre_exec = CmdMailbox::zeroed();
-            pre_exec.data[..0xC0].copy_from_slice(&in_mbox.data[..0xC0]);
+            crate::boot_trace_tis_attempt(
+                "try",
+                attempt.name,
+                attempt.td,
+                params.pd,
+                attempt.include_pd,
+                params.port,
+                attempt.prio,
+                attempt.underlay_qpn,
+                attempt.op_mod,
+                attempt.lag_port,
+                attempt.strict_lag,
+            );
+            crate::boot_trace_mailbox_range("tisc_try_hdr", &pre_exec, 0x00, 8);
+            crate::boot_trace_mailbox_range("tisc_try_ctx", &pre_exec, 0x20, 16);
 
             match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0x110, 0x10) {
                 Ok(()) => {
@@ -559,14 +717,18 @@ impl Mlx5Device {
                     return Ok(tisn);
                 }
                 Err(err) => {
+                    let (fw_status, syndrome) = self.last_cmd_status_and_syndrome();
                     crate::boot_trace_mailbox_range("tisc_pre_fail", &pre_exec, 0x20, 16);
-                    crate::boot_trace("[MLX5_TIS] create fail\n");
+                    crate::boot_trace_tis_attempt_result("fail", attempt.name, fw_status, syndrome);
                     log::warn!(
                         target: "mlx5",
-                        "CREATE_TIS attempt {} failed: {:?}",
-                        attempt_name,
-                        err
+                        "CREATE_TIS attempt {} failed: err={:?} fw_status={:#x} syndrome={:#x}",
+                        attempt.name,
+                        err,
+                        fw_status,
+                        syndrome
                     );
+                    crate::boot_trace("[MLX5_TIS] create fail\n");
                     last_err = Err(err);
                 }
             }
@@ -575,9 +737,18 @@ impl Mlx5Device {
         if !self.is_vf() {
             match self.create_underlay_qp(params.port.max(1)) {
                 Ok(qpn) => {
-                    crate::cmd::res::build_create_tis_input_with_options(
-                        in_mbox, params, false, qpn,
-                    );
+                    let underlay_attempt = CreateTisAttempt {
+                        name: "real-underlay-qp",
+                        td: params.td,
+                        prio: params.prio,
+                        include_pd: false,
+                        underlay_qpn: qpn,
+                        op_mod: 0,
+                        lag_port: 0,
+                        strict_lag: false,
+                    };
+                    let pre_exec =
+                        Self::prepare_create_tis_attempt(in_mbox, params, underlay_attempt);
                     log::warn!(
                         target: "mlx5",
                         "CREATE_TIS final probe with real underlay QP: td={} pd={} port={} prio={} underlay_qpn={:#x}",
@@ -587,11 +758,29 @@ impl Mlx5Device {
                         params.prio,
                         qpn
                     );
-                    let mut pre_exec = CmdMailbox::zeroed();
-                    pre_exec.data[..0xC0].copy_from_slice(&in_mbox.data[..0xC0]);
+                    crate::boot_trace_tis_attempt(
+                        "try",
+                        underlay_attempt.name,
+                        underlay_attempt.td,
+                        params.pd,
+                        underlay_attempt.include_pd,
+                        params.port,
+                        underlay_attempt.prio,
+                        underlay_attempt.underlay_qpn,
+                        underlay_attempt.op_mod,
+                        underlay_attempt.lag_port,
+                        underlay_attempt.strict_lag,
+                    );
+                    crate::boot_trace_mailbox_range("tisc_try_hdr", &pre_exec, 0x00, 8);
+                    crate::boot_trace_mailbox_range("tisc_try_ctx", &pre_exec, 0x20, 16);
                     match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0x110, 0x10) {
                         Ok(()) => {
-                            crate::boot_trace_mailbox_range("tisc_pre_underlay", &pre_exec, 0x20, 16);
+                            crate::boot_trace_mailbox_range(
+                                "tisc_pre_underlay",
+                                &pre_exec,
+                                0x20,
+                                16,
+                            );
                             let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
                             let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
                             self.underlay_qpn = qpn;
@@ -600,12 +789,26 @@ impl Mlx5Device {
                             return Ok(tisn);
                         }
                         Err(err) => {
-                            crate::boot_trace_mailbox_range("tisc_pre_underlay_fail", &pre_exec, 0x20, 16);
+                            let (fw_status, syndrome) = self.last_cmd_status_and_syndrome();
+                            crate::boot_trace_mailbox_range(
+                                "tisc_pre_underlay_fail",
+                                &pre_exec,
+                                0x20,
+                                16,
+                            );
+                            crate::boot_trace_tis_attempt_result(
+                                "fail",
+                                underlay_attempt.name,
+                                fw_status,
+                                syndrome,
+                            );
                             log::warn!(
                                 target: "mlx5",
-                                "CREATE_TIS with real underlay QP {:#x} failed: {:?}",
+                                "CREATE_TIS with real underlay QP {:#x} failed: err={:?} fw_status={:#x} syndrome={:#x}",
                                 qpn,
-                                err
+                                err,
+                                fw_status,
+                                syndrome
                             );
                             let _ = self.destroy_qp_hw(qpn);
                             last_err = Err(err);

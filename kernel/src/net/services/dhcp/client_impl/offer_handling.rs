@@ -1,4 +1,24 @@
 use super::*;
+use crate::net::runtime::manager::NetIfId;
+
+fn send_dhcpv4_packet_on(
+    if_id: Option<NetIfId>,
+    src_ip: Ipv4Address,
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    payload: &[u8],
+    ttl: u8,
+) -> bool {
+    match if_id {
+        Some(if_id) => crate::net::runtime::stack::send_udp_on_async_with_src(
+            if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
+        ),
+        None => crate::net::runtime::stack::send_udp_async_with_src(
+            src_ip, src_port, dst_ip, dst_port, payload, ttl,
+        ),
+    }
+}
 
 impl DhcpClient {
     /// OFFER 受信時の副作用を適用する
@@ -157,6 +177,15 @@ impl DhcpClient {
     ///
     /// RFC 2131: DHCPDECLINE は src_ip = 0.0.0.0 で送信する。
     pub fn send_decline(&self, declined_ip: Ipv4Address, server_ip: Option<Ipv4Address>) -> bool {
+        self.send_decline_on(None, declined_ip, server_ip)
+    }
+
+    pub fn send_decline_on(
+        &self,
+        if_id: Option<NetIfId>,
+        declined_ip: Ipv4Address,
+        server_ip: Option<Ipv4Address>,
+    ) -> bool {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         match self.build_decline(&mut buf, declined_ip, server_ip, 0) {
             Ok(len) => {
@@ -165,7 +194,8 @@ impl DhcpClient {
                     .store(declined_ip.to_u32(), Ordering::SeqCst);
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
-                crate::net::runtime::stack::send_udp_async_with_src(
+                send_dhcpv4_packet_on(
+                    if_id,
                     Ipv4Address::new([0, 0, 0, 0]),
                     DHCP_CLIENT_PORT,
                     dst,
@@ -241,6 +271,10 @@ impl DhcpClient {
 
     /// Send DHCPRELEASE (best-effort)
     pub fn send_release(&self) -> bool {
+        self.send_release_on(None)
+    }
+
+    pub fn send_release_on(&self, if_id: Option<NetIfId>) -> bool {
         // Acquire lease to get server
         let lease = match self.lease.lock() {
             Ok(g) => g.clone(),
@@ -259,7 +293,8 @@ impl DhcpClient {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         match self.build_release(&mut buf, 0) {
             // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
-            Ok(len) => crate::net::runtime::stack::send_udp_async_with_src(
+            Ok(len) => send_dhcpv4_packet_on(
+                if_id,
                 lease.ip_address,
                 DHCP_CLIENT_PORT,
                 lease.server_ip,
@@ -296,9 +331,18 @@ impl DhcpClient {
     ///
     /// RFC 2131: DHCPDISCOVER は src_ip = 0.0.0.0 で送信する。
     async fn send_discover_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
+        self.send_discover_packet_on(None, current_tick).await
+    }
+
+    async fn send_discover_packet_on(
+        &self,
+        if_id: Option<NetIfId>,
+        current_tick: u64,
+    ) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
-        Ok(crate::net::runtime::stack::send_udp_async_with_src(
+        Ok(send_dhcpv4_packet_on(
+            if_id,
             Ipv4Address::new([0, 0, 0, 0]),
             DHCP_CLIENT_PORT,
             Ipv4Address::new([255, 255, 255, 255]),
@@ -328,6 +372,14 @@ impl DhcpClient {
     /// RFC 2131: Renewing 時は取得済みIPをソースIPとして使用し、
     /// それ以外 (Requesting/Rebinding) は src_ip = 0.0.0.0 で送信する。
     async fn send_request_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
+        self.send_request_packet_on(None, current_tick).await
+    }
+
+    async fn send_request_packet_on(
+        &self,
+        if_id: Option<NetIfId>,
+        current_tick: u64,
+    ) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_request(&mut buf, current_tick)?;
         let state = self.state();
@@ -345,7 +397,8 @@ impl DhcpClient {
             // Requesting/Rebinding: src_ip = 0.0.0.0
             Ipv4Address::new([0, 0, 0, 0])
         };
-        Ok(crate::net::runtime::stack::send_udp_async_with_src(
+        Ok(send_dhcpv4_packet_on(
+            if_id,
             src_ip,
             DHCP_CLIENT_PORT,
             dst,
@@ -358,11 +411,29 @@ impl DhcpClient {
     /// Drive DHCP state machine and emit outbound packets when state changes
     /// or retransmission timers fire.
     pub async fn drive(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
+        self.drive_on(current_tick, tick_rate, None).await
+    }
+
+    pub async fn drive_on_interface(
+        &self,
+        if_id: NetIfId,
+        current_tick: u64,
+        tick_rate: u64,
+    ) -> Result<(), &'static str> {
+        self.drive_on(current_tick, tick_rate, Some(if_id)).await
+    }
+
+    async fn drive_on(
+        &self,
+        current_tick: u64,
+        tick_rate: u64,
+        if_id: Option<NetIfId>,
+    ) -> Result<(), &'static str> {
         let state_before = self.state();
 
         // Initial kick: INIT immediately sends DISCOVER.
         if state_before == DhcpState::Init {
-            let _ = self.send_discover_packet(current_tick).await?;
+            let _ = self.send_discover_packet_on(if_id, current_tick).await?;
             return Ok(());
         }
 
@@ -375,7 +446,7 @@ impl DhcpClient {
                 "[NET] DHCP drive: Selecting->Requesting, sending REQUEST (tick={})",
                 current_tick
             );
-            match self.send_request_packet(current_tick).await {
+            match self.send_request_packet_on(if_id, current_tick).await {
                 Ok(sent) => log::info!("[NET] DHCP REQUEST queued (sent={})", sent),
                 Err(e) => {
                     log::error!("[NET] DHCP REQUEST failed: {}", e);
@@ -394,16 +465,16 @@ impl DhcpClient {
             match state_after {
                 // Selecting retransmit / conflict recovery.
                 DhcpState::Selecting => {
-                    let _ = self.send_discover_packet(current_tick).await?;
+                    let _ = self.send_discover_packet_on(if_id, current_tick).await?;
                 }
                 // Requesting, Renewing, Rebinding retransmits.
                 DhcpState::Requesting | DhcpState::Renewing | DhcpState::Rebinding => {
-                    let _ = self.send_request_packet(current_tick).await?;
+                    let _ = self.send_request_packet_on(if_id, current_tick).await?;
                 }
                 // Retry budget exhausted and reset to INIT -> restart discovery.
                 DhcpState::Init => {
                     log::warn!("[NET] DHCP retries exhausted, restarting discovery");
-                    let _ = self.send_discover_packet(current_tick).await?;
+                    let _ = self.send_discover_packet_on(if_id, current_tick).await?;
                 }
                 _ => {}
             }

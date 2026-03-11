@@ -41,6 +41,81 @@ impl Mlx5Device {
         crate::boot_trace_tis_choice(label, tisn);
     }
 
+    fn pf_prefers_existing_tis_profile(&self) -> bool {
+        if self.is_vf() {
+            return false;
+        }
+
+        self.hca_caps()
+            .map(|caps| {
+                caps.log_max_tis == 0
+                    && caps.log_max_tis_per_sq == 0
+                    && caps.log_max_transport_domain == 0
+                    && caps.max_sq <= 1
+            })
+            .unwrap_or(false)
+    }
+
+    unsafe fn adopt_external_tis(
+        &mut self,
+        tisn: u32,
+        requested: &crate::resources::TisParams,
+    ) -> u32 {
+        self.remember_external_tis(tisn, "reuse_active");
+        self.trace_adopted_external_tis("reuse_active_ctx", tisn, requested, false);
+        self.trace_tis_prefix_namespace(tisn, 8);
+        tisn
+    }
+
+    unsafe fn trace_adopted_external_tis(
+        &mut self,
+        label: &str,
+        tisn: u32,
+        requested: &crate::resources::TisParams,
+        include_pd: bool,
+    ) {
+        match self.query_tis_with_snapshot(tisn) {
+            Ok((info, snapshot)) => {
+                crate::boot_trace_tis_query(label, tisn, &info);
+                crate::boot_trace_mailbox_range("query_tis_out_hdr", &snapshot, 0x00, 4);
+                crate::boot_trace_mailbox_range("query_tis_out_ctx", &snapshot, 0x10, 16);
+                crate::boot_trace_tis_compare(
+                    "reuse_vs_create",
+                    requested,
+                    include_pd,
+                    tisn,
+                    &info,
+                );
+                log::info!(
+                    target: "mlx5",
+                    "Adopted external TIS after CREATE_TIS failure: tisn={:#x} requested(td={} pd={} prio={} port={} include_pd={}) adopted(td={} pd={} prio={} underlay_qpn={:#x} lag_port={} strict_lag={} tls={})",
+                    tisn,
+                    requested.td,
+                    requested.pd,
+                    requested.prio,
+                    requested.port,
+                    include_pd,
+                    info.transport_domain,
+                    info.pd,
+                    info.prio,
+                    info.underlay_qpn,
+                    info.lag_tx_port_affinity,
+                    info.strict_lag_tx_port_affinity,
+                    info.tls_en
+                );
+            }
+            Err(query_err) => {
+                log::warn!(
+                    target: "mlx5",
+                    "Failed to query adopted external TIS {:#x} for {} diagnostics: {:?}",
+                    tisn,
+                    label,
+                    query_err
+                );
+            }
+        }
+    }
+
     unsafe fn create_sq_with_pf_tis_oracle(
         &mut self,
         sq_buf_virt: u64,
@@ -989,14 +1064,17 @@ impl Mlx5Device {
                     );
                 }
             }
-            match self.create_tis(&crate::resources::TisParams {
+            let tis_params = crate::resources::TisParams {
                 pd: self.pd,
                 td: self.td,
                 port: 1,
                 prio: 0,
-            }) {
-                Ok(tisn) => tisn,
-                Err(err) => {
+            };
+            let handle_create_tis_failure =
+                |this: &mut Self,
+                 err: crate::error::Mlx5Error,
+                 tx_oracle_tisn: &mut Option<u32>,
+                 tx_using_fallback_tis0: &mut bool| {
                     crate::boot_trace("[MLX5_STAGE] create_tis_scan_existing\n");
                     log::warn!(
                         target: "mlx5",
@@ -1004,21 +1082,23 @@ impl Mlx5Device {
                         err,
                         Self::PF_TIS_REUSE_SCAN_LIMIT
                     );
-                    match self.find_existing_tis_matching(Self::PF_TIS_REUSE_SCAN_LIMIT, self.td, 0)
-                    {
+                    match unsafe {
+                        this.find_existing_tis_matching(Self::PF_TIS_REUSE_SCAN_LIMIT, this.td, 0)
+                    } {
                         Ok(tisn) => {
                             log::warn!(
                                 target: "mlx5",
                                 "Reusing existing PF TIS {:#x} after CREATE_TIS failure",
                                 tisn
                             );
-                            self.remember_external_tis(tisn, "reuse_active");
-                            tisn
+                            unsafe { this.adopt_external_tis(tisn, &tis_params) }
                         }
                         Err(scan_err) => {
-                            match self.find_existing_sq_tis_candidate(Self::PF_SQ_TIS_SCAN_LIMIT) {
+                            match unsafe {
+                                this.find_existing_sq_tis_candidate(Self::PF_SQ_TIS_SCAN_LIMIT)
+                            } {
                                 Ok(discovered_tisn) => {
-                                    tx_oracle_tisn = Some(discovered_tisn);
+                                    *tx_oracle_tisn = Some(discovered_tisn);
                                     log::warn!(
                                         target: "mlx5",
                                         "No reusable TIS via QUERY_TIS, but found PF SQ-derived TIS candidate {:#x}",
@@ -1040,10 +1120,52 @@ impl Mlx5Device {
                                 err,
                                 scan_err
                             );
-                            tx_using_fallback_tis0 = true;
+                            *tx_using_fallback_tis0 = true;
                             0
                         }
                     }
+                };
+
+            if self.pf_prefers_existing_tis_profile() {
+                crate::boot_trace("[MLX5_STAGE] create_tis_prefers_reuse_profile\n");
+                if let Some(caps) = self.hca_caps() {
+                    log::warn!(
+                        target: "mlx5",
+                        "PF caps indicate a default-only TIS profile; preferring external TIS reuse before CREATE_TIS (log_max_tis={} log_max_tis_per_sq={} log_max_td={} max_sq={})",
+                        caps.log_max_tis,
+                        caps.log_max_tis_per_sq,
+                        caps.log_max_transport_domain,
+                        caps.max_sq
+                    );
+                }
+                match self.find_existing_tis_default_profile(Self::PF_TIS_REUSE_SCAN_LIMIT) {
+                    Ok(tisn) => self.adopt_external_tis(tisn, &tis_params),
+                    Err(scan_err) => {
+                        log::warn!(
+                            target: "mlx5",
+                            "No reusable PF TIS found in default-only profile pre-scan ({:?}); falling back to CREATE_TIS probes",
+                            scan_err
+                        );
+                        match self.create_tis(&tis_params) {
+                            Ok(tisn) => tisn,
+                            Err(err) => handle_create_tis_failure(
+                                self,
+                                err,
+                                &mut tx_oracle_tisn,
+                                &mut tx_using_fallback_tis0,
+                            ),
+                        }
+                    }
+                }
+            } else {
+                match self.create_tis(&tis_params) {
+                    Ok(tisn) => tisn,
+                    Err(err) => handle_create_tis_failure(
+                        self,
+                        err,
+                        &mut tx_oracle_tisn,
+                        &mut tx_using_fallback_tis0,
+                    ),
                 }
             }
         };

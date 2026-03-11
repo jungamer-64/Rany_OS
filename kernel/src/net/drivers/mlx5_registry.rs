@@ -92,7 +92,9 @@ fn lock_mlx5_sriov_state(context: &str) -> Mlx5SriovStateGuard {
 }
 
 fn current_port_runtime_initialized() -> bool {
-    crate::net::runtime::device::port_info(crate::net::runtime::device::NetDeviceKey::Mlx5(0))
+    crate::net::runtime::device::list_port_keys(Some(kernel_api::service::netdev::NetPortKind::Mlx5))
+        .into_iter()
+        .next()
         .is_some()
 }
 
@@ -492,14 +494,19 @@ impl Drop for Mlx5DmaResources {
 pub struct Mlx5AsyncDriver {
     /// 初期化済みかどうか
     initialized: bool,
-    /// プローブしたデバイス種別（ログ表示用）
+    /// ログ表示用の代表デバイス種別
     variant: Option<ConnectXVariant>,
-    /// ドライバが所有する PCI ロケータ
-    pci_locator: Option<PackedPciLocation>,
-    /// デバイス起動中に保持する DMA リソース
-    dma_resources: Option<Mlx5DmaResources>,
+    /// 起動済み mlx5 PF 群
+    devices: Vec<Mlx5RegisteredDevice>,
     /// サポートデバイスリスト（動的構築）
     supported_devices: Vec<DeviceId>,
+}
+
+struct Mlx5RegisteredDevice {
+    index: u8,
+    variant: ConnectXVariant,
+    pci_locator: PackedPciLocation,
+    dma_resources: Mlx5DmaResources,
 }
 
 struct Mlx5MsixGuard {
@@ -538,10 +545,27 @@ impl Mlx5AsyncDriver {
         Self {
             initialized: false,
             variant: None,
-            pci_locator: None,
-            dma_resources: None,
+            devices: Vec::new(),
             supported_devices: build_supported_devices(),
         }
+    }
+
+    fn discover_pci_devices() -> Vec<(ConnectXVariant, crate::io::pci::PciDeviceInfo)> {
+        let mut devices =
+            alloc::collections::BTreeMap::<(u16, u8, u8, u8), (ConnectXVariant, crate::io::pci::PciDeviceInfo)>::new();
+        for &(_vendor_id, device_id) in SUPPORTED_DEVICE_IDS {
+            let variant = ConnectXVariant::from_device_id(device_id);
+            for pci_device in crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, device_id) {
+                let key = (
+                    pci_device.segment,
+                    pci_device.bdf.bus(),
+                    pci_device.bdf.device(),
+                    pci_device.bdf.function(),
+                );
+                devices.entry(key).or_insert((variant, pci_device));
+            }
+        }
+        devices.into_values().collect()
     }
 
     fn pack_iommu_device_id(device: crate::io::iommu::types::DeviceId) -> PackedPciLocation {
@@ -687,7 +711,7 @@ impl Mlx5AsyncDriver {
     }
 
     /// PCI デバイスの完全な初期化を行う
-    fn probe_device(&mut self, pci_dev: &crate::io::pci::PciDeviceInfo) -> KapiResult<()> {
+    fn probe_device(&mut self, index: u8, pci_dev: &crate::io::pci::PciDeviceInfo) -> KapiResult<()> {
         crate::io::log::early_print("[MLX5_PROBE] probe_device enter\n");
         let variant = ConnectXVariant::from_device_id(pci_dev.device_id.0);
         log::info!(
@@ -884,12 +908,12 @@ impl Mlx5AsyncDriver {
         crate::io::log::early_print("[MLX5_PROBE] bootstrap done\n");
 
         crate::io::log::early_print("[MLX5_PROBE] register bridge device enter\n");
-        crate::net::runtime::bridge::mlx5_bridge::register_mlx5_device(device);
+        crate::net::runtime::bridge::mlx5_bridge::register_mlx5_device(index, device);
         crate::io::log::early_print("[MLX5_PROBE] register bridge device done\n");
-        let adapter = crate::net::runtime::bridge::mlx5_bridge::mlx5_net_driver_adapter();
+        let adapter = crate::net::runtime::bridge::mlx5_bridge::mlx5_net_driver_adapter(index);
         crate::io::log::early_print("[MLX5_PROBE] register port enter\n");
         let register_result = crate::net::runtime::device::register_port_with_default_config(
-            crate::net::runtime::device::NetDeviceKey::Mlx5(0),
+            crate::net::runtime::device::NetDeviceKey::Mlx5(index),
             adapter,
             crate::net::runtime::device::primary_if().is_none(),
         );
@@ -897,7 +921,7 @@ impl Mlx5AsyncDriver {
         if let Err(e) = register_result {
             log::error!(target: "mlx5", "Port runtime registration failed: {}", e);
 
-            if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device() {
+            if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device(index) {
                 unsafe {
                     if let Err(teardown_err) = dev.teardown() {
                         log::warn!(target: "mlx5", "Teardown after registration failure failed: {:?}", teardown_err);
@@ -911,9 +935,15 @@ impl Mlx5AsyncDriver {
             crate::net::runtime::bridge::register_stack_glue_interface(if_id, None);
         }
 
-        self.variant = Some(variant);
-        self.pci_locator = Some(pci_locator);
-        self.dma_resources = Some(dma_resources);
+        if self.variant.is_none() {
+            self.variant = Some(variant);
+        }
+        self.devices.push(Mlx5RegisteredDevice {
+            index,
+            variant,
+            pci_locator,
+            dma_resources,
+        });
         self.initialized = true;
         msix_guard.disarm();
         set_mlx5_sriov_state(Some(detect_sriov_runtime_state(
@@ -928,8 +958,9 @@ impl Mlx5AsyncDriver {
 
         log::info!(
             target: "mlx5",
-            "{} device initialized and port runtime activated",
-            variant.name()
+            "{} device initialized and port runtime activated (index={})",
+            variant.name(),
+            index
         );
         Ok(())
     }
@@ -959,24 +990,54 @@ impl AsyncDriver for Mlx5AsyncDriver {
             crate::io::log::early_print("[MLX5_ASYNC] probe future enter\n");
             log::info!(target: "mlx5", "Probing for ConnectX family devices...");
             clear_mlx5_sriov_state();
+            self.devices.clear();
+            self.variant = None;
+            self.initialized = false;
 
-            for &(_vendor_id, device_id) in SUPPORTED_DEVICE_IDS {
-                let pci_devices = crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, device_id);
-                if let Some(first) = pci_devices.first() {
-                    let variant = ConnectXVariant::from_device_id(device_id);
-                    log::info!(
-                        target: "mlx5",
-                        "Found {} (device_id={:#06x})",
-                        variant.name(),
-                        device_id,
-                    );
-                    crate::io::log::early_print("[MLX5_ASYNC] device found\n");
-                    return self.probe_device(first);
+            let discovered = Self::discover_pci_devices();
+            if discovered.is_empty() {
+                log::info!(target: "mlx5", "No ConnectX family devices found on PCI bus");
+                return Err(KapiError::NotFound);
+            }
+
+            let mut first_err = None;
+            let mut probe_count = 0usize;
+            for (slot, (variant, pci_device)) in discovered.into_iter().enumerate() {
+                let index = slot as u8;
+                log::info!(
+                    target: "mlx5",
+                    "Found {} at {:02x}:{:02x}.{} -> mlx5 index {}",
+                    variant.name(),
+                    pci_device.bdf.bus(),
+                    pci_device.bdf.device(),
+                    pci_device.bdf.function(),
+                    index,
+                );
+                crate::io::log::early_print("[MLX5_ASYNC] device found\n");
+                match self.probe_device(index, &pci_device) {
+                    Ok(()) => probe_count += 1,
+                    Err(err) => {
+                        log::warn!(
+                            target: "mlx5",
+                            "mlx5 probe failed for {:02x}:{:02x}.{} index {}: {:?}",
+                            pci_device.bdf.bus(),
+                            pci_device.bdf.device(),
+                            pci_device.bdf.function(),
+                            index,
+                            err
+                        );
+                        if first_err.is_none() {
+                            first_err = Some(err);
+                        }
+                    }
                 }
             }
 
-            log::info!(target: "mlx5", "No ConnectX family devices found on PCI bus");
-            Err(KapiError::NotFound)
+            if probe_count == 0 {
+                Err(first_err.unwrap_or(KapiError::IoError))
+            } else {
+                Ok(())
+            }
         })
     }
 
@@ -987,7 +1048,12 @@ impl AsyncDriver for Mlx5AsyncDriver {
             }
 
             let variant_name = self.variant.map(|v| v.name()).unwrap_or("ConnectX");
-            log::info!(target: "mlx5", "{} driver started", variant_name);
+            log::info!(
+                target: "mlx5",
+                "{} driver started with {} device(s)",
+                variant_name,
+                self.devices.len()
+            );
             Ok(())
         })
     }
@@ -997,12 +1063,6 @@ impl AsyncDriver for Mlx5AsyncDriver {
             let variant_name = self.variant.map(|v| v.name()).unwrap_or("ConnectX");
             log::info!(target: "mlx5", "{} driver stopping...", variant_name);
 
-            if let Some(locator) = self.pci_locator.take() {
-                if let Err(err) = kernel().disable_msix(locator) {
-                    log::warn!(target: "mlx5", "Failed to disable MSI-X during stop: {:?}", err);
-                }
-            }
-
             if mlx5_sriov_status().active_vfs != 0 {
                 if let Err(err) = mlx5_disable_vfs() {
                     log::warn!(target: "mlx5", "Failed to disable active VFs during stop: {:?}", err);
@@ -1010,23 +1070,32 @@ impl AsyncDriver for Mlx5AsyncDriver {
             }
             clear_mlx5_sriov_state();
 
-            if let Some(if_id) = crate::net::runtime::device::lookup_if_by_key(
-                crate::net::runtime::device::NetDeviceKey::Mlx5(0),
-            ) {
-                let _ = crate::net::runtime::device::unregister_port(if_id);
-            } else {
-                crate::net::runtime::bridge::mlx5_bridge::reset_mlx5_port_runtime();
+            for device in &self.devices {
+                if let Some(if_id) = crate::net::runtime::device::lookup_if_by_key(
+                    crate::net::runtime::device::NetDeviceKey::Mlx5(device.index),
+                ) {
+                    let _ = crate::net::runtime::device::unregister_port(if_id);
+                } else {
+                    crate::net::runtime::bridge::mlx5_bridge::reset_mlx5_port_runtime(device.index);
+                }
             }
 
-            if let Some(mut dev) = crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device() {
-                unsafe {
-                    if let Err(e) = dev.teardown() {
-                        log::warn!(target: "mlx5", "Teardown error: {:?}", e);
+            while let Some(device) = self.devices.pop() {
+                if let Err(err) = kernel().disable_msix(device.pci_locator) {
+                    log::warn!(target: "mlx5", "Failed to disable MSI-X during stop: {:?}", err);
+                }
+
+                if let Some(mut dev) =
+                    crate::net::runtime::bridge::mlx5_bridge::take_mlx5_device(device.index)
+                {
+                    unsafe {
+                        if let Err(e) = dev.teardown() {
+                            log::warn!(target: "mlx5", "Teardown error: {:?}", e);
+                        }
                     }
                 }
             }
 
-            self.dma_resources = None;
             self.variant = None;
             self.initialized = false;
             log::info!(target: "mlx5", "{} driver stopped", variant_name);

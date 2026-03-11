@@ -184,3 +184,25 @@ pub struct TirInfo {
 // ============================================================================
 
 // These have been moved to crate::cmd::res
+
+#[cfg(test)]
+mod tests {
+    use super::{TisInfo, TisOwnership};
+
+    #[test]
+    fn external_tis_is_not_destroyed_on_teardown() {
+        let external = TisInfo {
+            tisn: 0x0060_0000,
+            port: 1,
+            ownership: TisOwnership::External,
+        };
+        let driver_created = TisInfo {
+            tisn: 0x0000_0010,
+            port: 1,
+            ownership: TisOwnership::DriverCreated,
+        };
+
+        assert!(!external.destroy_on_teardown());
+        assert!(driver_created.destroy_on_teardown());
+    }
+}

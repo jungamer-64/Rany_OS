@@ -57,6 +57,7 @@ impl DhcpClient {
                             let hostname_bytes = lease.hostname.clone().unwrap_or_default();
                             crate::net::l4::endpoint::event::send_event_ignore(
                                 crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpApplyLease {
+                                    if_id: None,
                                     ip: *lease.ip_address.as_bytes(),
                                     subnet: *lease.subnet_mask.as_bytes(),
                                     gateway: lease.gateway.map(|a| *a.as_bytes()).unwrap_or([0, 0, 0, 0]),
@@ -211,6 +212,28 @@ impl DhcpClient {
         } else {
             Some(Ipv4Address::from_u32(v))
         }
+    }
+
+    pub fn matches_response(&self, data: &[u8]) -> bool {
+        if data.len() < DhcpHeader::SIZE + 4 {
+            return false;
+        }
+        let Some(header) = crate::util::get_ref::<DhcpHeader>(data, 0) else {
+            return false;
+        };
+        if header.op != DhcpOperation::Reply as u8 {
+            return false;
+        }
+        if header.xid() != self.xid.load(Ordering::SeqCst) {
+            return false;
+        }
+        if header.hlen < 6 {
+            return false;
+        }
+        if header.chaddr[0..6] != *self.mac_address.as_bytes() {
+            return false;
+        }
+        data[DhcpHeader::SIZE..DhcpHeader::SIZE + 4] == DHCP_MAGIC_COOKIE
     }
 
     /// DHCPDISCOVER メッセージを構築

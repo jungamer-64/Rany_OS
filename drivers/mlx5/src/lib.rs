@@ -147,6 +147,193 @@ pub(crate) fn boot_trace_tis_choice(label: &str, tisn: u32) {
     }
 }
 
+pub(crate) fn boot_trace_tis_attempt(
+    label: &str,
+    attempt_name: &str,
+    td: u32,
+    pd: u32,
+    include_pd: bool,
+    port: u8,
+    prio: u8,
+    underlay_qpn: u32,
+    op_mod: u16,
+    lag_port: u8,
+    strict_lag: bool,
+) {
+    if let Some(serial) = kernel_api::service::serial::try_instance() {
+        let _ = serial.write(0, b"[MLX5_TIS] ");
+        let _ = serial.write(0, label.as_bytes());
+        let _ = serial.write(0, b" ");
+        let _ = serial.write(0, attempt_name.as_bytes());
+        let _ = serial.write(0, b" td=0x");
+        let mut td_hex = [0u8; 8];
+        encode_hex_u32(td, &mut td_hex);
+        let _ = serial.write(0, &td_hex);
+        let _ = serial.write(0, b" pd=0x");
+        let mut pd_hex = [0u8; 8];
+        encode_hex_u32(pd, &mut pd_hex);
+        let _ = serial.write(0, &pd_hex);
+        let _ = serial.write(0, b" use_pd=");
+        let _ = serial.write(0, if include_pd { b"1" } else { b"0" });
+        let _ = serial.write(0, b" port=0x");
+        let mut port_hex = [0u8; 2];
+        encode_hex_u8(port, &mut port_hex);
+        let _ = serial.write(0, &port_hex);
+        let _ = serial.write(0, b" prio=0x");
+        let mut prio_hex = [0u8; 2];
+        encode_hex_u8(prio, &mut prio_hex);
+        let _ = serial.write(0, &prio_hex);
+        let _ = serial.write(0, b" underlay=0x");
+        let mut underlay_hex = [0u8; 8];
+        encode_hex_u32(underlay_qpn, &mut underlay_hex);
+        let _ = serial.write(0, &underlay_hex);
+        let _ = serial.write(0, b" opmod=0x");
+        let mut op_mod_hex = [0u8; 4];
+        encode_hex_u16(op_mod, &mut op_mod_hex);
+        let _ = serial.write(0, &op_mod_hex);
+        let _ = serial.write(0, b" lag=0x");
+        let mut lag_hex = [0u8; 2];
+        encode_hex_u8(lag_port, &mut lag_hex);
+        let _ = serial.write(0, &lag_hex);
+        let _ = serial.write(0, b" strict=");
+        let _ = serial.write(0, if strict_lag { b"1" } else { b"0" });
+        let _ = serial.write(0, b"\n");
+    }
+}
+
+pub(crate) fn boot_trace_tis_attempt_result(
+    label: &str,
+    attempt_name: &str,
+    status: u8,
+    syndrome: u32,
+) {
+    if let Some(serial) = kernel_api::service::serial::try_instance() {
+        let _ = serial.write(0, b"[MLX5_TIS] ");
+        let _ = serial.write(0, label.as_bytes());
+        let _ = serial.write(0, b" ");
+        let _ = serial.write(0, attempt_name.as_bytes());
+        let _ = serial.write(0, b" status=0x");
+        let mut status_hex = [0u8; 2];
+        encode_hex_u8(status, &mut status_hex);
+        let _ = serial.write(0, &status_hex);
+        let _ = serial.write(0, b" syndrome=0x");
+        let mut syndrome_hex = [0u8; 8];
+        encode_hex_u32(syndrome, &mut syndrome_hex);
+        let _ = serial.write(0, &syndrome_hex);
+        let _ = serial.write(0, b"\n");
+    }
+}
+
+pub(crate) fn boot_trace_tis_query(label: &str, tisn: u32, info: &crate::cmd::res::QueryTisInfo) {
+    if let Some(serial) = kernel_api::service::serial::try_instance() {
+        let _ = serial.write(0, b"[MLX5_TIS] ");
+        let _ = serial.write(0, label.as_bytes());
+        let _ = serial.write(0, b" tisn=0x");
+        let mut tis_hex = [0u8; 8];
+        encode_hex_u32(tisn, &mut tis_hex);
+        let _ = serial.write(0, &tis_hex);
+        let _ = serial.write(0, b" td=0x");
+        let mut td_hex = [0u8; 8];
+        encode_hex_u32(info.transport_domain, &mut td_hex);
+        let _ = serial.write(0, &td_hex);
+        let _ = serial.write(0, b" pd=0x");
+        let mut pd_hex = [0u8; 8];
+        encode_hex_u32(info.pd, &mut pd_hex);
+        let _ = serial.write(0, &pd_hex);
+        let _ = serial.write(0, b" prio=0x");
+        let mut prio_hex = [0u8; 2];
+        encode_hex_u8(info.prio, &mut prio_hex);
+        let _ = serial.write(0, &prio_hex);
+        let _ = serial.write(0, b" underlay=0x");
+        let mut underlay_hex = [0u8; 8];
+        encode_hex_u32(info.underlay_qpn, &mut underlay_hex);
+        let _ = serial.write(0, &underlay_hex);
+        let _ = serial.write(0, b" lag=0x");
+        let mut lag_hex = [0u8; 2];
+        encode_hex_u8(info.lag_tx_port_affinity, &mut lag_hex);
+        let _ = serial.write(0, &lag_hex);
+        let _ = serial.write(0, b" strict=");
+        let _ = serial.write(
+            0,
+            if info.strict_lag_tx_port_affinity {
+                b"1"
+            } else {
+                b"0"
+            },
+        );
+        let _ = serial.write(0, b" tls=");
+        let _ = serial.write(0, if info.tls_en { b"1" } else { b"0" });
+        let _ = serial.write(0, b"\n");
+    }
+}
+
+pub(crate) fn boot_trace_tis_compare(
+    label: &str,
+    requested: &crate::resources::TisParams,
+    include_pd: bool,
+    adopted_tisn: u32,
+    adopted: &crate::cmd::res::QueryTisInfo,
+) {
+    if let Some(serial) = kernel_api::service::serial::try_instance() {
+        let _ = serial.write(0, b"[MLX5_TIS] ");
+        let _ = serial.write(0, label.as_bytes());
+        let _ = serial.write(0, b" req_td=0x");
+        let mut req_td_hex = [0u8; 8];
+        encode_hex_u32(requested.td, &mut req_td_hex);
+        let _ = serial.write(0, &req_td_hex);
+        let _ = serial.write(0, b" req_pd=0x");
+        let mut req_pd_hex = [0u8; 8];
+        encode_hex_u32(requested.pd, &mut req_pd_hex);
+        let _ = serial.write(0, &req_pd_hex);
+        let _ = serial.write(0, b" req_use_pd=");
+        let _ = serial.write(0, if include_pd { b"1" } else { b"0" });
+        let _ = serial.write(0, b" req_port=0x");
+        let mut req_port_hex = [0u8; 2];
+        encode_hex_u8(requested.port, &mut req_port_hex);
+        let _ = serial.write(0, &req_port_hex);
+        let _ = serial.write(0, b" req_prio=0x");
+        let mut req_prio_hex = [0u8; 2];
+        encode_hex_u8(requested.prio, &mut req_prio_hex);
+        let _ = serial.write(0, &req_prio_hex);
+        let _ = serial.write(0, b" adopted=0x");
+        let mut tis_hex = [0u8; 8];
+        encode_hex_u32(adopted_tisn, &mut tis_hex);
+        let _ = serial.write(0, &tis_hex);
+        let _ = serial.write(0, b" td=0x");
+        let mut td_hex = [0u8; 8];
+        encode_hex_u32(adopted.transport_domain, &mut td_hex);
+        let _ = serial.write(0, &td_hex);
+        let _ = serial.write(0, b" pd=0x");
+        let mut pd_hex = [0u8; 8];
+        encode_hex_u32(adopted.pd, &mut pd_hex);
+        let _ = serial.write(0, &pd_hex);
+        let _ = serial.write(0, b" prio=0x");
+        let mut prio_hex = [0u8; 2];
+        encode_hex_u8(adopted.prio, &mut prio_hex);
+        let _ = serial.write(0, &prio_hex);
+        let _ = serial.write(0, b" underlay=0x");
+        let mut underlay_hex = [0u8; 8];
+        encode_hex_u32(adopted.underlay_qpn, &mut underlay_hex);
+        let _ = serial.write(0, &underlay_hex);
+        let _ = serial.write(0, b" lag=0x");
+        let mut lag_hex = [0u8; 2];
+        encode_hex_u8(adopted.lag_tx_port_affinity, &mut lag_hex);
+        let _ = serial.write(0, &lag_hex);
+        let _ = serial.write(0, b" strict=");
+        let _ = serial.write(
+            0,
+            if adopted.strict_lag_tx_port_affinity {
+                b"1"
+            } else {
+                b"0"
+            },
+        );
+        let _ = serial.write(0, b" tls=");
+        let _ = serial.write(0, if adopted.tls_en { b"1" } else { b"0" });
+        let _ = serial.write(0, b"\n");
+    }
+}
+
 pub(crate) fn boot_trace_mailbox_range(
     tag: &str,
     mbox: &crate::cmd::CmdMailbox,

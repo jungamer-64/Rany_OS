@@ -451,6 +451,7 @@ impl NetDeviceManager {
 
 static DEVICE_MANAGER: PoisonRwLock<NetDeviceManager> = PoisonRwLock::new(NetDeviceManager::new());
 static STACK_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static DHCP_BOUND_PRIMARY_SELECTED: AtomicBool = AtomicBool::new(false);
 
 fn apply_runtime_network_config(config: &NetworkConfig) {
     if let Ok(mut guard) = stack::stack().lock() {
@@ -607,6 +608,15 @@ pub fn register_port(
         apply_runtime_network_config(&config);
     }
 
+    if let Err(err) = crate::net::services::dhcp::ensure_interface_runtime(if_id, config) {
+        log::warn!(
+            target: "net::device",
+            "DHCP interface runtime init failed for if{}: {}",
+            if_id.0,
+            err
+        );
+    }
+
     Ok(if_id)
 }
 
@@ -665,11 +675,15 @@ pub fn unregister_port(if_id: NetIfId) -> bool {
             if guard.primary == Some(if_id) {
                 guard.primary = guard.handles.keys().next().copied();
             }
+            if guard.handles.is_empty() {
+                DHCP_BOUND_PRIMARY_SELECTED.store(false, Ordering::Release);
+            }
         }
         handle
     };
 
     if let Some(handle) = handle {
+        crate::net::services::dhcp::unregister_interface_runtime(if_id);
         handle.stop();
         true
     } else {
@@ -748,6 +762,18 @@ pub fn set_primary_interface(if_id: NetIfId) {
         .unwrap_or_else(|e| e.into_inner())
         .primary = Some(if_id);
     sync_runtime_config_for_interface(if_id);
+}
+
+pub fn claim_bound_primary_interface(if_id: NetIfId) -> bool {
+    if DHCP_BOUND_PRIMARY_SELECTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        set_primary_interface(if_id);
+        true
+    } else {
+        false
+    }
 }
 
 pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMeta) -> bool {

@@ -289,7 +289,8 @@ impl Mlx5Device {
                 layout.set_tis_num_0(0);
             }
             let mut pre_exec = CmdMailbox::zeroed();
-            pre_exec.data[..sq_in_len as usize].copy_from_slice(&in_mbox.data[..sq_in_len as usize]);
+            pre_exec.data[..sq_in_len as usize]
+                .copy_from_slice(&in_mbox.data[..sq_in_len as usize]);
             match self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10) {
                 Ok(()) => {
                     log::info!(

@@ -17,6 +17,7 @@
 //! - Async-First: ポーリングタスクは Future ベース
 
 extern crate alloc;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -46,59 +47,64 @@ use mlx5_driver::Mlx5Device;
 // Bridge State
 // ============================================================================
 
-/// mlx5 port runtime 初期化状態
-static MLX5_PORT_RUNTIME_INITIALIZED: AtomicBool = AtomicBool::new(false);
+struct Mlx5BridgeState {
+    index: u8,
+    port_runtime_initialized: AtomicBool,
+    poll_task_started: AtomicBool,
+    device: PoisonLock<Option<Mlx5Device>>,
+    if_id: PoisonLock<Option<NetIfId>>,
+    port_runtime: PoisonLock<Option<Arc<dyn NetPortRuntime>>>,
+    rx_bufs: PoisonLock<Vec<Vec<Option<PacketRef>>>>,
+    tx_bufs: PoisonLock<Vec<Vec<Option<PacketRef>>>>,
+    tx_packets: AtomicU64,
+    rx_packets: AtomicU64,
+    tx_errors: AtomicU64,
+    rx_errors: AtomicU64,
+    wake_counts: AtomicU64,
+    wake_timeouts: AtomicU64,
+    dma_errors: AtomicU64,
+    rx_idle_polls: AtomicU64,
+    rx_cqe_log_budget: AtomicU64,
+    tx_cqe_log_budget: AtomicU64,
+    tx_pad_log_budget: AtomicU64,
+    tx_diag_frame_budget: AtomicU64,
+    startup_tx_diag_frame_budget: AtomicU64,
+    rx_debug_snapshot_budget: AtomicU64,
+    rx_frame_log_budget: AtomicU64,
+}
 
-/// mlx5 デバイスインスタンス（PoisonLock で保護）
-static MLX5_DEVICE: PoisonLock<Option<Mlx5Device>> = PoisonLock::new(None);
+impl Mlx5BridgeState {
+    fn new(index: u8) -> Self {
+        Self {
+            index,
+            port_runtime_initialized: AtomicBool::new(false),
+            poll_task_started: AtomicBool::new(false),
+            device: PoisonLock::new(None),
+            if_id: PoisonLock::new(None),
+            port_runtime: PoisonLock::new(None),
+            rx_bufs: PoisonLock::new(Vec::new()),
+            tx_bufs: PoisonLock::new(Vec::new()),
+            tx_packets: AtomicU64::new(0),
+            rx_packets: AtomicU64::new(0),
+            tx_errors: AtomicU64::new(0),
+            rx_errors: AtomicU64::new(0),
+            wake_counts: AtomicU64::new(0),
+            wake_timeouts: AtomicU64::new(0),
+            dma_errors: AtomicU64::new(0),
+            rx_idle_polls: AtomicU64::new(0),
+            rx_cqe_log_budget: AtomicU64::new(32),
+            tx_cqe_log_budget: AtomicU64::new(32),
+            tx_pad_log_budget: AtomicU64::new(16),
+            tx_diag_frame_budget: AtomicU64::new(1),
+            startup_tx_diag_frame_budget: AtomicU64::new(1),
+            rx_debug_snapshot_budget: AtomicU64::new(16),
+            rx_frame_log_budget: AtomicU64::new(8),
+        }
+    }
+}
 
-/// mlx5 port runtime の論理インターフェースID
-static MLX5_IF_ID: PoisonLock<Option<NetIfId>> = PoisonLock::new(None);
-static MLX5_PORT_RUNTIME: PoisonLock<Option<Arc<dyn NetPortRuntime>>> = PoisonLock::new(None);
-
-/// RX バッファトラッキング（ゼロコピー用、キューごと）
-static MLX5_RX_BUFS: PoisonLock<Vec<Vec<Option<PacketRef>>>> = PoisonLock::new(Vec::new());
-
-/// TX バッファトラッキング（安全な非同期送信用、キューごと）
-static MLX5_TX_BUFS: PoisonLock<Vec<Vec<Option<PacketRef>>>> = PoisonLock::new(Vec::new());
-
-/// 送信パケットカウンタ
-static MLX5_TX_PACKETS: AtomicU64 = AtomicU64::new(0);
-
-/// 受信パケットカウンタ
-static MLX5_RX_PACKETS: AtomicU64 = AtomicU64::new(0);
-
-/// 送信エラーカウンタ
-static MLX5_TX_ERRORS: AtomicU64 = AtomicU64::new(0);
-
-/// 受信エラーカウンタ
-static MLX5_RX_ERRORS: AtomicU64 = AtomicU64::new(0);
-
-/// 割り込み起床カウンタ
-static MLX5_WAKE_COUNTS: AtomicU64 = AtomicU64::new(0);
-/// 割り込み待ちタイムアウト回数（RX 診断用）
-static MLX5_WAKE_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
-
-/// DMAマッピングエラー
-static MLX5_DMA_ERRORS: AtomicU64 = AtomicU64::new(0);
-
-/// RX 連続アイドルポーリング回数
-static MLX5_RX_IDLE_POLLS: AtomicU64 = AtomicU64::new(0);
-
-/// RX CQE の詳細ログ出力予算（起動直後の切り分け用）
-static MLX5_RX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
-/// TX CQE の詳細ログ出力予算（送信経路切り分け用）
-static MLX5_TX_CQE_LOG_BUDGET: AtomicU64 = AtomicU64::new(32);
-/// 短い Ethernet frame を TX 前にパディングした回数のログ予算
-static MLX5_TX_PAD_LOG_BUDGET: AtomicU64 = AtomicU64::new(16);
-/// 固定 60B の診断 TX frame を流す回数
-static MLX5_TX_DIAG_FRAME_BUDGET: AtomicU64 = AtomicU64::new(1);
-/// runtime 初期化直後に固定 60B の診断 TX frame を流す回数
-static MLX5_STARTUP_TX_DIAG_FRAME_BUDGET: AtomicU64 = AtomicU64::new(1);
-/// RX アイドル時スナップショット出力回数の上限
-static MLX5_RX_DEBUG_SNAPSHOT_BUDGET: AtomicU64 = AtomicU64::new(16);
-/// 受信フレーム先頭のプレビュー出力回数
-static MLX5_RX_FRAME_LOG_BUDGET: AtomicU64 = AtomicU64::new(8);
+static MLX5_STATES: PoisonLock<BTreeMap<u8, Arc<Mlx5BridgeState>>> =
+    PoisonLock::new(BTreeMap::new());
 
 /// RX CQ ポーリングバッチサイズ
 const MLX5_RX_POLL_BATCH: u32 = 64;
@@ -110,27 +116,51 @@ const MLX5_FORCE_POLL_ONLY: bool = false;
 const MLX5_INTERRUPT_WAIT_TIMEOUT_MS: u64 = 5;
 
 #[derive(Debug, Clone, Copy)]
-struct Mlx5NetDriverAdapter;
-
-pub fn mlx5_net_driver_adapter() -> Arc<dyn NetDevicePort> {
-    Arc::new(Mlx5NetDriverAdapter)
+struct Mlx5NetDriverAdapter {
+    index: u8,
 }
 
-static MLX5_POLL_TASK_STARTED: AtomicBool = AtomicBool::new(false);
+fn mlx5_state(index: u8) -> Arc<Mlx5BridgeState> {
+    let mut guard = MLX5_STATES.lock().unwrap_or_else(|e| e.into_inner());
+    Arc::clone(
+        guard
+            .entry(index)
+            .or_insert_with(|| Arc::new(Mlx5BridgeState::new(index))),
+    )
+}
 
-fn initialize_mlx5_runtime() -> Result<(), &'static str> {
+fn with_mlx5_device<R>(
+    state: &Mlx5BridgeState,
+    f: impl FnOnce(&mut Mlx5Device) -> R,
+) -> Option<R> {
+    state
+        .device
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.as_mut().map(f))
+}
+
+pub fn mlx5_net_driver_adapter(index: u8) -> Arc<dyn NetDevicePort> {
+    let _ = mlx5_state(index);
+    Arc::new(Mlx5NetDriverAdapter { index })
+}
+
+fn initialize_mlx5_runtime(state: &Arc<Mlx5BridgeState>) -> Result<(), &'static str> {
     crate::io::log::early_print("[MLX5_BRIDGE] initialize runtime enter\n");
-    if MLX5_PORT_RUNTIME_INITIALIZED.swap(true, Ordering::AcqRel) {
+    if state
+        .port_runtime_initialized
+        .swap(true, Ordering::AcqRel)
+    {
         crate::io::log::early_print("[MLX5_BRIDGE] initialize runtime already initialized\n");
         return Ok(());
     }
 
-    if let Some(device_id) = with_mlx5_device(|dev| dev.dma_device_id()) {
+    if let Some(device_id) = with_mlx5_device(state.as_ref(), |dev| dev.dma_device_id()) {
         crate::net::datapath::mempool::set_packet_dma_device(Some(device_id));
     }
 
-    let num_rqs = with_mlx5_device(|dev| dev.num_rqs()).unwrap_or(1);
-    if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
+    let num_rqs = with_mlx5_device(state.as_ref(), |dev| dev.num_rqs()).unwrap_or(1);
+    if let Ok(mut bufs) = state.rx_bufs.lock() {
         if bufs.is_empty() {
             bufs.resize_with(num_rqs, || {
                 let mut v = Vec::with_capacity(mlx5_driver::defs::MLX5_WQ_DEPTH as usize);
@@ -140,8 +170,8 @@ fn initialize_mlx5_runtime() -> Result<(), &'static str> {
         }
     }
 
-    let num_sqs = with_mlx5_device(|dev| dev.num_sqs()).unwrap_or(0);
-    if let Ok(mut bufs) = MLX5_TX_BUFS.lock() {
+    let num_sqs = with_mlx5_device(state.as_ref(), |dev| dev.num_sqs()).unwrap_or(0);
+    if let Ok(mut bufs) = state.tx_bufs.lock() {
         if bufs.is_empty() && num_sqs > 0 {
             bufs.resize_with(num_sqs, || {
                 let mut v = Vec::with_capacity((mlx5_driver::defs::MLX5_WQ_DEPTH * 4) as usize);
@@ -151,26 +181,26 @@ fn initialize_mlx5_runtime() -> Result<(), &'static str> {
         }
     }
 
-    MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
-    MLX5_RX_CQE_LOG_BUDGET.store(32, Ordering::Release);
-    MLX5_TX_CQE_LOG_BUDGET.store(32, Ordering::Release);
-    MLX5_TX_PAD_LOG_BUDGET.store(16, Ordering::Release);
-    MLX5_TX_DIAG_FRAME_BUDGET.store(1, Ordering::Release);
-    MLX5_STARTUP_TX_DIAG_FRAME_BUDGET.store(1, Ordering::Release);
-    MLX5_RX_FRAME_LOG_BUDGET.store(8, Ordering::Release);
-    MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(16, Ordering::Release);
-    MLX5_WAKE_COUNTS.store(0, Ordering::Release);
-    MLX5_WAKE_TIMEOUTS.store(0, Ordering::Release);
+    state.rx_idle_polls.store(0, Ordering::Release);
+    state.rx_cqe_log_budget.store(32, Ordering::Release);
+    state.tx_cqe_log_budget.store(32, Ordering::Release);
+    state.tx_pad_log_budget.store(16, Ordering::Release);
+    state.tx_diag_frame_budget.store(1, Ordering::Release);
+    state.startup_tx_diag_frame_budget.store(1, Ordering::Release);
+    state.rx_frame_log_budget.store(8, Ordering::Release);
+    state.rx_debug_snapshot_budget.store(16, Ordering::Release);
+    state.wake_counts.store(0, Ordering::Release);
+    state.wake_timeouts.store(0, Ordering::Release);
     crate::io::log::early_print("[MLX5_BRIDGE] prefill rx enter\n");
-    prefill_rx_buffers();
+    prefill_rx_buffers(state);
     crate::io::log::early_print("[MLX5_BRIDGE] prefill rx done\n");
     crate::io::log::early_print("[MLX5_BRIDGE] startup diag enter\n");
-    submit_startup_mlx5_diag_frame();
+    submit_startup_mlx5_diag_frame(state);
     crate::io::log::early_print("[MLX5_BRIDGE] startup diag done\n");
 
-    if !MLX5_POLL_TASK_STARTED.swap(true, Ordering::AcqRel) {
+    if !state.poll_task_started.swap(true, Ordering::AcqRel) {
         crate::io::log::early_print("[MLX5_BRIDGE] spawn poll task\n");
-        crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_poll_task()));
+        crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_poll_task(state.index)));
     }
 
     crate::io::log::early_print("[MLX5_BRIDGE] initialize runtime done\n");
@@ -184,28 +214,29 @@ fn initialize_mlx5_runtime() -> Result<(), &'static str> {
 /// mlx5 デバイスをブリッジに登録する
 ///
 /// `mlx5_registry.rs` の `probe_device` から呼び出される。
-pub fn register_mlx5_device(device: Mlx5Device) {
-    if let Ok(mut guard) = MLX5_DEVICE.lock() {
+pub fn register_mlx5_device(index: u8, device: Mlx5Device) {
+    let state = mlx5_state(index);
+    if let Ok(mut guard) = state.device.lock() {
         *guard = Some(device);
-        log::info!(target: "mlx5::bridge", "mlx5 device registered with port runtime");
+        log::info!(
+            target: "mlx5::bridge",
+            "mlx5 device registered with port runtime: index={}",
+            index
+        );
     }
 }
 
 /// mlx5 デバイスをブリッジから取り出す（所有権移動）
-pub fn take_mlx5_device() -> Option<Mlx5Device> {
-    MLX5_DEVICE.lock().ok().and_then(|mut guard| guard.take())
-}
-
-/// デバイスロックを取得してクロージャを実行
-fn with_mlx5_device<R>(f: impl FnOnce(&mut Mlx5Device) -> R) -> Option<R> {
-    MLX5_DEVICE
+pub fn take_mlx5_device(index: u8) -> Option<Mlx5Device> {
+    mlx5_state(index)
+        .device
         .lock()
         .ok()
-        .and_then(|mut guard| guard.as_mut().map(|dev| f(dev)))
+        .and_then(|mut guard| guard.take())
 }
 
-fn mlx5_mac_address() -> crate::net::l2::ethernet::MacAddress {
-    let mut mac = with_mlx5_device(|dev| {
+fn mlx5_mac_address(state: &Mlx5BridgeState) -> crate::net::l2::ethernet::MacAddress {
+    let mut mac = with_mlx5_device(state, |dev| {
         dev.port(0).map(|port| {
             let mac = port.mac_address();
             crate::net::l2::ethernet::MacAddress::from_octets(
@@ -226,21 +257,23 @@ fn mlx5_mac_address() -> crate::net::l2::ethernet::MacAddress {
 
 impl NetDevicePort for Mlx5NetDriverAdapter {
     fn info(&self) -> NetDeviceInfo {
+        let state = mlx5_state(self.index);
         NetDeviceInfo {
-            port_id: NetDeviceKey::Mlx5(0).port_id(),
-            if_id: MLX5_IF_ID
+            port_id: NetDeviceKey::Mlx5(self.index).port_id(),
+            if_id: state
+                .if_id
                 .lock()
                 .ok()
                 .and_then(|guard| guard.map(|if_id| if_id.0)),
             kind: NetPortKind::Mlx5,
             driver_name: "mlx5",
-            queue_pairs: with_mlx5_device(|device| {
+            queue_pairs: with_mlx5_device(state.as_ref(), |device| {
                 core::cmp::max(device.num_rqs(), device.num_sqs())
             })
             .unwrap_or(1) as u16,
             mtu: crate::net::runtime::stack::MTU as u32,
-            mac: MacAddress(*mlx5_mac_address().as_bytes()),
-            flags: if mlx5_health_check() {
+            mac: MacAddress(*mlx5_mac_address(state.as_ref()).as_bytes()),
+            flags: if mlx5_health_check(self.index) {
                 NETDEV_FLAG_HEALTHY | NETDEV_FLAG_LINK_UP
             } else {
                 0
@@ -249,14 +282,16 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
     }
 
     fn start(&self, runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
-        if let Ok(mut guard) = MLX5_PORT_RUNTIME.lock() {
+        let state = mlx5_state(self.index);
+        if let Ok(mut guard) = state.port_runtime.lock() {
             *guard = Some(runtime);
         }
-        initialize_mlx5_runtime()
+        initialize_mlx5_runtime(&state)
     }
 
     fn bind(&self, if_id: u16) -> Result<(), &'static str> {
-        if let Ok(mut guard) = MLX5_IF_ID.lock() {
+        let state = mlx5_state(self.index);
+        if let Ok(mut guard) = state.if_id.lock() {
             *guard = Some(NetIfId(if_id));
             Ok(())
         } else {
@@ -265,7 +300,8 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
     }
 
     fn submit_tx(&self, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str> {
-        if submit_mlx5_tx_packet(packet, meta.vlan_tag) {
+        let state = mlx5_state(self.index);
+        if submit_mlx5_tx_packet(&state, packet, meta.vlan_tag) {
             Ok(())
         } else {
             Err("mlx5 TX submission failed")
@@ -285,29 +321,30 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
     }
 
     fn stats(&self) -> NetPortStats {
-        current_mlx5_port_stats()
+        current_mlx5_port_stats(mlx5_state(self.index).as_ref())
     }
 
     fn stop(&self) {
-        if let Ok(mut guard) = MLX5_PORT_RUNTIME.lock() {
+        let state = mlx5_state(self.index);
+        if let Ok(mut guard) = state.port_runtime.lock() {
             *guard = None;
         }
-        reset_mlx5_port_runtime();
+        reset_mlx5_port_runtime(self.index);
     }
 }
 
 pub fn activate_mlx5_vfs(num_vfs: u16) -> Result<(), mlx5_driver::Mlx5Error> {
-    with_mlx5_device(|device| unsafe { device.activate_vfs(num_vfs) })
+    with_mlx5_device(mlx5_state(0).as_ref(), |device| unsafe { device.activate_vfs(num_vfs) })
         .unwrap_or(Err(mlx5_driver::Mlx5Error::DeviceNotFound))
 }
 
 pub fn deactivate_mlx5_vfs(num_vfs: u16) -> Result<(), mlx5_driver::Mlx5Error> {
-    with_mlx5_device(|device| unsafe { device.deactivate_vfs(num_vfs) })
+    with_mlx5_device(mlx5_state(0).as_ref(), |device| unsafe { device.deactivate_vfs(num_vfs) })
         .unwrap_or(Err(mlx5_driver::Mlx5Error::DeviceNotFound))
 }
 
-fn dispatch_mlx5_rx_packet(packet: PacketRef, payload_len: usize) {
-    if let Ok(guard) = MLX5_PORT_RUNTIME.lock() {
+fn dispatch_mlx5_rx_packet(state: &Arc<Mlx5BridgeState>, packet: PacketRef, payload_len: usize) {
+    if let Ok(guard) = state.port_runtime.lock() {
         if let Some(runtime) = guard.as_ref() {
             let _ = runtime.submit_rx(
                 packet,
@@ -322,7 +359,7 @@ fn dispatch_mlx5_rx_packet(packet: PacketRef, payload_len: usize) {
         }
     }
 
-    let if_id = MLX5_IF_ID.lock().ok().and_then(|guard| *guard);
+    let if_id = state.if_id.lock().ok().and_then(|guard| *guard);
     if let Some(if_id) = if_id {
         super::process_received_packet_zero_copy_for_interface(if_id, packet, 0, payload_len);
     } else {
@@ -443,7 +480,10 @@ inline[{}]",
     layout
 }
 
-fn pad_mlx5_tx_packet_if_needed(mut pkt: PacketRef) -> Option<PacketRef> {
+fn pad_mlx5_tx_packet_if_needed(
+    state: &Mlx5BridgeState,
+    mut pkt: PacketRef,
+) -> Option<PacketRef> {
     const MIN_ETH_FRAME_LEN: usize = 60;
 
     if pkt.len() >= MIN_ETH_FRAME_LEN {
@@ -454,7 +494,7 @@ fn pad_mlx5_tx_packet_if_needed(mut pkt: PacketRef) -> Option<PacketRef> {
     if pkt.capacity() >= MIN_ETH_FRAME_LEN {
         pkt.set_len(MIN_ETH_FRAME_LEN);
         pkt.data_mut()[original_len..MIN_ETH_FRAME_LEN].fill(0);
-        if MLX5_TX_PAD_LOG_BUDGET.fetch_sub(1, Ordering::Relaxed) > 0 {
+        if state.tx_pad_log_budget.fetch_sub(1, Ordering::Relaxed) > 0 {
             log::info!(
                 target: "mlx5::bridge",
                 "Padding short TX frame in-place from {} to {} bytes",
@@ -475,7 +515,7 @@ fn pad_mlx5_tx_packet_if_needed(mut pkt: PacketRef) -> Option<PacketRef> {
     padded.data_mut()[..original_len].copy_from_slice(pkt.data());
     padded.data_mut()[original_len..MIN_ETH_FRAME_LEN].fill(0);
     padded.set_meta(meta);
-    if MLX5_TX_PAD_LOG_BUDGET.fetch_sub(1, Ordering::Relaxed) > 0 {
+    if state.tx_pad_log_budget.fetch_sub(1, Ordering::Relaxed) > 0 {
         log::info!(
             target: "mlx5::bridge",
             "Padding short TX frame via DMA bounce buffer from {} to {} bytes",
@@ -487,6 +527,7 @@ fn pad_mlx5_tx_packet_if_needed(mut pkt: PacketRef) -> Option<PacketRef> {
 }
 
 fn poll_mlx5_tx_cqs(
+    state: &Mlx5BridgeState,
     device: &mut Mlx5Device,
     tx_bufs_guard: &mut [Vec<Option<PacketRef>>],
 ) -> usize {
@@ -501,7 +542,8 @@ fn poll_mlx5_tx_cqs(
         total_processed += tx_cqes.len();
 
         for cqe in &tx_cqes {
-            if MLX5_TX_CQE_LOG_BUDGET
+            if state
+                .tx_cqe_log_budget
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_sub(1))
                 .is_ok()
             {
@@ -614,9 +656,10 @@ fn build_mlx5_diag_tx_frame(src: [u8; 6]) -> Option<PacketRef> {
     Some(pkt)
 }
 
-fn submit_startup_mlx5_diag_frame() {
+fn submit_startup_mlx5_diag_frame(state: &Arc<Mlx5BridgeState>) {
     crate::io::log::early_print("[MLX5_BRIDGE] startup diag budget check\n");
-    if MLX5_STARTUP_TX_DIAG_FRAME_BUDGET
+    if state
+        .startup_tx_diag_frame_budget
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
             remaining.checked_sub(1)
         })
@@ -628,7 +671,7 @@ fn submit_startup_mlx5_diag_frame() {
 
     let submitted = {
         crate::io::log::early_print("[MLX5_BRIDGE] startup diag txbuf lock enter\n");
-        let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
+        let mut tx_bufs_guard = match state.tx_bufs.lock() {
             Ok(guard) => guard,
             Err(_) => {
                 crate::io::log::early_print("[MLX5_BRIDGE] startup diag txbuf lock failed\n");
@@ -642,7 +685,7 @@ fn submit_startup_mlx5_diag_frame() {
         crate::io::log::early_print("[MLX5_BRIDGE] startup diag txbuf lock done\n");
 
         crate::io::log::early_print("[MLX5_BRIDGE] startup diag device lock enter\n");
-        with_mlx5_device(|device| {
+        with_mlx5_device(state.as_ref(), |device| {
             crate::io::log::early_print("[MLX5_BRIDGE] startup diag device lock done\n");
             if !device.is_active() {
                 log::warn!(
@@ -668,6 +711,7 @@ fn submit_startup_mlx5_diag_frame() {
                         "Submitting startup mlx5 diagnostic 60B TX frame"
                     );
                     let submitted = submit_mlx5_tx_packet_on_device(
+                        state.as_ref(),
                         device,
                         tx_bufs_guard.as_mut_slice(),
                         diag_pkt,
@@ -703,7 +747,7 @@ fn submit_startup_mlx5_diag_frame() {
 
     let completions = {
         crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain lock enter\n");
-        let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
+        let mut tx_bufs_guard = match state.tx_bufs.lock() {
             Ok(guard) => guard,
             Err(_) => {
                 crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain lock failed\n");
@@ -717,13 +761,13 @@ fn submit_startup_mlx5_diag_frame() {
         crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain lock done\n");
 
         crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain device lock enter\n");
-        with_mlx5_device(|device| {
+        with_mlx5_device(state.as_ref(), |device| {
             crate::io::log::early_print("[MLX5_BRIDGE] startup diag drain device lock done\n");
             let mut total = 0usize;
             // Surface the first TX CQE immediately so the boot log captures the failure mode
             // even when higher-layer traffic has not started yet.
             for _ in 0..64 {
-                total += poll_mlx5_tx_cqs(device, tx_bufs_guard.as_mut_slice());
+                total += poll_mlx5_tx_cqs(state.as_ref(), device, tx_bufs_guard.as_mut_slice());
                 if total > 0 {
                     break;
                 }
@@ -743,13 +787,14 @@ fn submit_startup_mlx5_diag_frame() {
 }
 
 fn submit_mlx5_tx_packet_on_device(
+    state: &Mlx5BridgeState,
     device: &mut Mlx5Device,
     tx_bufs_guard: &mut [Vec<Option<PacketRef>>],
     pkt: PacketRef,
     vlan_tag: Option<u16>,
     track_stats: bool,
 ) -> bool {
-    let pkt = match pad_mlx5_tx_packet_if_needed(pkt) {
+    let pkt = match pad_mlx5_tx_packet_if_needed(state, pkt) {
         Some(pkt) => pkt,
         None => {
             log::warn!(
@@ -812,15 +857,15 @@ fn submit_mlx5_tx_packet_on_device(
             }
 
             if track_stats {
-                MLX5_TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+                state.tx_packets.fetch_add(1, Ordering::Relaxed);
                 counters::global().record_tx(data_len as usize);
                 trace::push_event(NetLayer::Driver, NetEventKind::Tx, "mlx5 tx");
             }
             true
-        }
+            }
         Err(e) => {
             if track_stats {
-                MLX5_TX_ERRORS.fetch_add(1, Ordering::Relaxed);
+                state.tx_errors.fetch_add(1, Ordering::Relaxed);
                 counters::global().record_error();
             }
             log::warn!(
@@ -842,17 +887,22 @@ fn submit_mlx5_tx_packet_on_device(
 // Transmit Path
 // ============================================================================
 
-fn submit_mlx5_tx_packet(pkt: PacketRef, vlan_tag: Option<u16>) -> bool {
-    let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
+fn submit_mlx5_tx_packet(
+    state: &Arc<Mlx5BridgeState>,
+    pkt: PacketRef,
+    vlan_tag: Option<u16>,
+) -> bool {
+    let mut tx_bufs_guard = match state.tx_bufs.lock() {
         Ok(guard) => guard,
         Err(_) => return false,
     };
 
-    let result = with_mlx5_device(|device| {
+    let result = with_mlx5_device(state.as_ref(), |device| {
         if !device.is_active() {
             return false;
         }
-        if MLX5_TX_DIAG_FRAME_BUDGET
+        if state
+            .tx_diag_frame_budget
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(1)
             })
@@ -873,6 +923,7 @@ fn submit_mlx5_tx_packet(pkt: PacketRef, vlan_tag: Option<u16>) -> bool {
                         "Submitting one-shot mlx5 diagnostic 60B TX frame"
                     );
                     let _ = submit_mlx5_tx_packet_on_device(
+                        state.as_ref(),
                         device,
                         tx_bufs_guard.as_mut_slice(),
                         diag_pkt,
@@ -889,7 +940,14 @@ fn submit_mlx5_tx_packet(pkt: PacketRef, vlan_tag: Option<u16>) -> bool {
             }
         }
 
-        submit_mlx5_tx_packet_on_device(device, tx_bufs_guard.as_mut_slice(), pkt, vlan_tag, true)
+        submit_mlx5_tx_packet_on_device(
+            state.as_ref(),
+            device,
+            tx_bufs_guard.as_mut_slice(),
+            pkt,
+            vlan_tag,
+            true,
+        )
     });
 
     result.unwrap_or(false)
@@ -904,18 +962,18 @@ pub fn mlx5_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
 // Receive Path
 // ============================================================================
 
-unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
-    let _ = with_mlx5_device(|device| {
+unsafe fn log_mlx5_rx_debug_snapshot(state: &Arc<Mlx5BridgeState>, idle_polls: u64) {
+    let _ = with_mlx5_device(state.as_ref(), |device| {
         log::warn!(
             target: "mlx5::bridge",
             "RX debug snapshot: idle_polls={} wakeups={} wake_timeouts={} rx_pkts={} tx_pkts={} rx_err={} tx_err={} rqs={} sqs={}",
             idle_polls,
-            MLX5_WAKE_COUNTS.load(Ordering::Relaxed),
-            MLX5_WAKE_TIMEOUTS.load(Ordering::Relaxed),
-            MLX5_RX_PACKETS.load(Ordering::Relaxed),
-            MLX5_TX_PACKETS.load(Ordering::Relaxed),
-            MLX5_RX_ERRORS.load(Ordering::Relaxed),
-            MLX5_TX_ERRORS.load(Ordering::Relaxed),
+            state.wake_counts.load(Ordering::Relaxed),
+            state.wake_timeouts.load(Ordering::Relaxed),
+            state.rx_packets.load(Ordering::Relaxed),
+            state.tx_packets.load(Ordering::Relaxed),
+            state.rx_errors.load(Ordering::Relaxed),
+            state.tx_errors.load(Ordering::Relaxed),
             device.num_rqs(),
             device.num_sqs(),
         );
@@ -1046,18 +1104,18 @@ unsafe fn log_mlx5_rx_debug_snapshot(idle_polls: u64) {
 ///
 /// # Safety
 /// - CQ/RQ バッファが有効であること
-pub unsafe fn mlx5_poll_rx() -> u32 {
-    let mut rx_bufs_guard = match MLX5_RX_BUFS.lock() {
+pub unsafe fn mlx5_poll_rx(state: &Arc<Mlx5BridgeState>) -> u32 {
+    let mut rx_bufs_guard = match state.rx_bufs.lock() {
         Ok(guard) => guard,
         Err(_) => return 0,
     };
 
-    let mut tx_bufs_guard = match MLX5_TX_BUFS.lock() {
+    let mut tx_bufs_guard = match state.tx_bufs.lock() {
         Ok(guard) => guard,
         Err(_) => return 0,
     };
 
-    let result = with_mlx5_device(|device| {
+    let result = with_mlx5_device(state.as_ref(), |device| {
         let mut total_processed = 0;
 
         // すべての RX CQ をポーリング
@@ -1069,7 +1127,7 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
             let cqes = device.poll_cq(rx_cq_index, MLX5_RX_POLL_BATCH);
             total_processed += cqes.len() as u32;
 
-            let remaining_budget = MLX5_RX_CQE_LOG_BUDGET.load(Ordering::Relaxed);
+            let remaining_budget = state.rx_cqe_log_budget.load(Ordering::Relaxed);
             if !cqes.is_empty() && remaining_budget > 0 {
                 let to_log = core::cmp::min(cqes.len() as u64, remaining_budget) as usize;
                 log::info!(
@@ -1116,7 +1174,7 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                         }
                     }
                 }
-                MLX5_RX_CQE_LOG_BUDGET.fetch_sub(to_log as u64, Ordering::Relaxed);
+                state.rx_cqe_log_budget.fetch_sub(to_log as u64, Ordering::Relaxed);
             }
 
             for cqe in &cqes {
@@ -1128,7 +1186,7 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                     cqe.opcode,
                     mlx5_driver::defs::CqeOpcode::ReqErr | mlx5_driver::defs::CqeOpcode::RespErr
                 ) {
-                    MLX5_RX_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    state.rx_errors.fetch_add(1, Ordering::Relaxed);
                     if let Some(rx_info) =
                         device.process_rx_completion(rq_index, wqe_counter, false, false)
                     {
@@ -1153,13 +1211,13 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                 if let Some(rx_info) =
                     device.process_rx_completion(rq_index, wqe_counter, cqe.l3_ok, cqe.l4_ok)
                 {
-                    MLX5_RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+                    state.rx_packets.fetch_add(1, Ordering::Relaxed);
                     counters::global().record_rx(byte_count);
                     trace::push_event(NetLayer::Driver, NetEventKind::Rx, "mlx5 rx");
 
                     if let Some(mut pkt) = rx_bufs_guard[rq_index][idx].take() {
                         pkt.set_len(byte_count);
-                        if MLX5_RX_FRAME_LOG_BUDGET.load(Ordering::Relaxed) > 0 {
+                        if state.rx_frame_log_budget.load(Ordering::Relaxed) > 0 {
                             let frame = pkt.data();
                             let dst = if frame.len() >= 6 {
                                 format!(
@@ -1196,7 +1254,7 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                                 src,
                                 head
                             );
-                            MLX5_RX_FRAME_LOG_BUDGET.fetch_sub(1, Ordering::Relaxed);
+                            state.rx_frame_log_budget.fetch_sub(1, Ordering::Relaxed);
                         }
                         let meta = pkt.meta_mut();
                         if cqe.l3_ok {
@@ -1208,7 +1266,7 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                         meta.vlan_tag = cqe.vlan_tag;
                         meta.timestamp = cqe.timestamp;
 
-                        dispatch_mlx5_rx_packet(pkt, byte_count);
+                        dispatch_mlx5_rx_packet(state, pkt, byte_count);
 
                         // Replenish
                         if let Some(new_pkt) = crate::net::datapath::mempool::alloc_packet() {
@@ -1219,7 +1277,7 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
                             rx_bufs_guard[rq_index][idx] = Some(new_pkt);
                             let _ = device.post_receive(rq_index, new_device, new_virt, buf_size);
                         } else {
-                            MLX5_RX_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            state.rx_errors.fetch_add(1, Ordering::Relaxed);
                         }
                     } else {
                         // Fallback
@@ -1234,7 +1292,8 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
             }
         }
 
-        total_processed += poll_mlx5_tx_cqs(device, tx_bufs_guard.as_mut_slice()) as u32;
+        total_processed += poll_mlx5_tx_cqs(state.as_ref(), device, tx_bufs_guard.as_mut_slice())
+            as u32;
 
         total_processed
     });
@@ -1247,7 +1306,8 @@ pub unsafe fn mlx5_poll_rx() -> u32 {
 /// エグゼキュータに登録され、定期的に CQ をポーリングする。
 /// 適応的ポーリングにより、高負荷時はビジーポーリング、
 /// 低負荷時は割り込み駆動（yield）に切り替える。
-pub async fn mlx5_poll_task() {
+pub async fn mlx5_poll_task(index: u8) {
+    let state = mlx5_state(index);
     log::info!(target: "mlx5::bridge", "mlx5 poll task started");
     if MLX5_FORCE_POLL_ONLY {
         log::warn!(
@@ -1260,28 +1320,29 @@ pub async fn mlx5_poll_task() {
 
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
-        if !MLX5_PORT_RUNTIME_INITIALIZED.load(Ordering::Acquire) {
+        if !state.port_runtime_initialized.load(Ordering::Acquire) {
             crate::task::yield_now().await;
             continue;
         }
 
         // MSI-Xベクタを遅延取得
         if msix_vector.is_none() {
-            msix_vector = with_mlx5_device(|dev| dev.eqn_msix_vector(0)).flatten();
+            msix_vector =
+                with_mlx5_device(state.as_ref(), |dev| dev.eqn_msix_vector(0)).flatten();
         }
 
         // Safety: デバイスが初期化済みであること
-        let processed = unsafe { mlx5_poll_rx() };
+        let processed = unsafe { mlx5_poll_rx(&state) };
 
         // 適応的ポーリング: 処理があった場合は即座に再ポーリング、
         // 無い場合は割り込み待ち
         if processed == 0 {
-            let idle_polls = MLX5_RX_IDLE_POLLS.fetch_add(1, Ordering::Relaxed) + 1;
+            let idle_polls = state.rx_idle_polls.fetch_add(1, Ordering::Relaxed) + 1;
             if idle_polls % MLX5_RX_DEBUG_IDLE_INTERVAL == 0 {
-                let snapshot_budget = MLX5_RX_DEBUG_SNAPSHOT_BUDGET.load(Ordering::Relaxed);
+                let snapshot_budget = state.rx_debug_snapshot_budget.load(Ordering::Relaxed);
                 if snapshot_budget > 0 {
-                    MLX5_RX_DEBUG_SNAPSHOT_BUDGET.fetch_sub(1, Ordering::Relaxed);
-                    unsafe { log_mlx5_rx_debug_snapshot(idle_polls) };
+                    state.rx_debug_snapshot_budget.fetch_sub(1, Ordering::Relaxed);
+                    unsafe { log_mlx5_rx_debug_snapshot(&state, idle_polls) };
                 }
             }
 
@@ -1299,10 +1360,10 @@ pub async fn mlx5_poll_task() {
                     .await
                     {
                         TimeoutResult::Completed(_) => {
-                            MLX5_WAKE_COUNTS.fetch_add(1, Ordering::Relaxed);
+                            state.wake_counts.fetch_add(1, Ordering::Relaxed);
                         }
                         TimeoutResult::TimedOut => {
-                            MLX5_WAKE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+                            state.wake_timeouts.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                 } else {
@@ -1311,7 +1372,7 @@ pub async fn mlx5_poll_task() {
                 }
             }
         } else {
-            MLX5_RX_IDLE_POLLS.store(0, Ordering::Relaxed);
+            state.rx_idle_polls.store(0, Ordering::Relaxed);
         }
         // processed > 0 → 即座に次のポーリングサイクルへ（ビジーポーリング）
     }
@@ -1320,13 +1381,13 @@ pub async fn mlx5_poll_task() {
 /// RX バッファをプリフィルする
 ///
 /// すべての受信キューにバッファを事前投入して受信準備を整える。
-fn prefill_rx_buffers() {
-    let mut bufs_guard = match MLX5_RX_BUFS.lock() {
+fn prefill_rx_buffers(state: &Arc<Mlx5BridgeState>) {
+    let mut bufs_guard = match state.rx_bufs.lock() {
         Ok(guard) => guard,
         Err(_) => return,
     };
 
-    with_mlx5_device(|device| {
+    let _ = with_mlx5_device(state.as_ref(), |device| {
         let num_rqs = bufs_guard.len();
         let mut total_filled = 0u32;
 
@@ -1381,19 +1442,20 @@ fn prefill_rx_buffers() {
     });
 }
 
-fn current_mlx5_port_stats() -> NetPortStats {
+fn current_mlx5_port_stats(state: &Mlx5BridgeState) -> NetPortStats {
     NetPortStats {
-        tx_packets: MLX5_TX_PACKETS.load(Ordering::Relaxed),
-        rx_packets: MLX5_RX_PACKETS.load(Ordering::Relaxed),
-        tx_errors: MLX5_TX_ERRORS.load(Ordering::Relaxed),
-        rx_errors: MLX5_RX_ERRORS.load(Ordering::Relaxed),
-        initialized: MLX5_PORT_RUNTIME_INITIALIZED.load(Ordering::Acquire),
+        tx_packets: state.tx_packets.load(Ordering::Relaxed),
+        rx_packets: state.rx_packets.load(Ordering::Relaxed),
+        tx_errors: state.tx_errors.load(Ordering::Relaxed),
+        rx_errors: state.rx_errors.load(Ordering::Relaxed),
+        initialized: state.port_runtime_initialized.load(Ordering::Acquire),
     }
 }
 
 /// ポート統計を取得する
-pub fn get_mlx5_port_stats(port_index: usize) -> Option<mlx5_driver::port::PortStats> {
-    with_mlx5_device(|device| {
+pub fn get_mlx5_port_stats(index: u8, port_index: usize) -> Option<mlx5_driver::port::PortStats> {
+    let state = mlx5_state(index);
+    with_mlx5_device(state.as_ref(), |device| {
         // ハードウェアカウンタを同期（Safe Rust の wrapper 経由で unsafe 呼び出し）
         unsafe {
             let _ = device.update_port_stats(port_index);
@@ -1403,17 +1465,22 @@ pub fn get_mlx5_port_stats(port_index: usize) -> Option<mlx5_driver::port::PortS
     .flatten()
 }
 
-pub(crate) fn reset_mlx5_port_runtime() {
-    MLX5_PORT_RUNTIME_INITIALIZED.store(false, Ordering::Release);
+pub(crate) fn reset_mlx5_port_runtime(index: u8) {
+    let state = mlx5_state(index);
+    state
+        .port_runtime_initialized
+        .store(false, Ordering::Release);
     crate::net::datapath::mempool::set_packet_dma_device(None);
-    MLX5_RX_IDLE_POLLS.store(0, Ordering::Release);
-    MLX5_RX_CQE_LOG_BUDGET.store(0, Ordering::Release);
-    MLX5_RX_DEBUG_SNAPSHOT_BUDGET.store(0, Ordering::Release);
-    MLX5_WAKE_COUNTS.store(0, Ordering::Release);
-    MLX5_WAKE_TIMEOUTS.store(0, Ordering::Release);
+    state.rx_idle_polls.store(0, Ordering::Release);
+    state.rx_cqe_log_budget.store(0, Ordering::Release);
+    state
+        .rx_debug_snapshot_budget
+        .store(0, Ordering::Release);
+    state.wake_counts.store(0, Ordering::Release);
+    state.wake_timeouts.store(0, Ordering::Release);
 
     // RX バッファの解放
-    if let Ok(mut bufs) = MLX5_RX_BUFS.lock() {
+    if let Ok(mut bufs) = state.rx_bufs.lock() {
         for queue_bufs in bufs.iter_mut() {
             for buf in queue_bufs.iter_mut() {
                 let _ = buf.take(); // PacketRef がドロップされる
@@ -1424,7 +1491,7 @@ pub(crate) fn reset_mlx5_port_runtime() {
     }
 
     // TX バッファの解放
-    if let Ok(mut bufs) = MLX5_TX_BUFS.lock() {
+    if let Ok(mut bufs) = state.tx_bufs.lock() {
         for queue_bufs in bufs.iter_mut() {
             for buf in queue_bufs.iter_mut() {
                 let _ = buf.take();
@@ -1434,9 +1501,13 @@ pub(crate) fn reset_mlx5_port_runtime() {
         bufs.clear();
     }
 
-    if let Ok(mut if_id) = MLX5_IF_ID.lock() {
+    if let Ok(mut if_id) = state.if_id.lock() {
         *if_id = None;
     }
+    if let Ok(mut runtime) = state.port_runtime.lock() {
+        *runtime = None;
+    }
+    state.poll_task_started.store(false, Ordering::Release);
 
     log::info!(target: "mlx5::bridge", "mlx5 port runtime reset");
 }
@@ -1450,8 +1521,9 @@ pub(crate) fn reset_mlx5_port_runtime() {
 /// # Returns
 /// - `true`: デバイスは健全
 /// - `false`: FW エラーが検出された
-pub fn mlx5_health_check() -> bool {
-    with_mlx5_device(|device| {
+pub fn mlx5_health_check(index: u8) -> bool {
+    let state = mlx5_state(index);
+    with_mlx5_device(state.as_ref(), |device| {
         // Safety: bar0_base が有効であること
         unsafe { device.health_check() }
     })

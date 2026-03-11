@@ -1325,10 +1325,34 @@ pub fn send_udp_on_async(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSendOn {
             if_id: if_id.0,
             src_port,
+            src_ip: None,
             dst_ip: *dst_ip.as_bytes(),
             dst_port,
             data: Vec::from(data),
             ttl: 64,
+        },
+    );
+    true
+}
+
+pub fn send_udp_on_async_with_src(
+    if_id: super::NetIfId,
+    src_ip: Ipv4Address,
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    data: &[u8],
+    ttl: u8,
+) -> bool {
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::RawUdpSendOn {
+            if_id: if_id.0,
+            src_port,
+            src_ip: Some(*src_ip.as_bytes()),
+            dst_ip: *dst_ip.as_bytes(),
+            dst_port,
+            data: Vec::from(data),
+            ttl,
         },
     );
     true

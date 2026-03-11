@@ -133,29 +133,10 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         }
     }
 
-    // Spawn DHCPv4 client task
-    //
-    // DHCP_CLIENT は PoisonLock（スピンロック）で保護されている。
-    // ロックを .await を跨いで保持するとデッドロックするため、
-    // 初期化済みクライアントへの 'static 参照を取得してからロックを解放する。
-    crate::task::Executor::spawn_global(crate::task::Task::new(async move {
-        let client_ref: Option<&'static dhcp::DhcpClient> = {
-            let guard = match dhcp::DHCP_CLIENT.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            guard.as_ref().map(|c| {
-                // SAFETY: DHCP_CLIENT はカーネル静的変数で init() 後は
-                // Some のまま変更されず、カーネル寿命と同等に存続する。
-                unsafe { &*(c as *const dhcp::DhcpClient) }
-            })
-        }; // guard ドロップ → ロック解放
-        if let Some(client) = client_ref {
-            if let Err(e) = client.run().await {
-                log::error!("[NET] DHCPv4 client task failed: {}", e);
-            }
-        }
-    }));
+    // DHCPv4 itself is now driven by the per-interface runtime registry.
+    // Keep the legacy singleton initialized as a compatibility view, but do not
+    // spawn its dedicated socket task here because the shared dispatcher owns
+    // UDP port 68.
 
     if ipv6_enabled {
         // Spawn DHCPv6 client task only when IPv6 is configured for the active stack.
@@ -238,24 +219,39 @@ pub fn dhcp_state() -> DhcpRuntimeState {
         v6_valid_remaining: None,
     };
 
-    match dhcp::DHCP_CLIENT.lock() {
-        Ok(guard) => {
-            if let Some(ref client) = *guard {
-                out.v4_state = String::from(dhcp_v4_state_name(client.state()));
-                if let Some(lease) = client.lease() {
-                    out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
-                    out.v4_lease_remaining = Some(lease_remaining_secs(
-                        lease.lease_time,
-                        lease.obtained_at,
-                        now,
-                        tick_rate,
-                    ));
-                }
-                out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
-                out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
-            }
+    if let Some(client) = dhcp::primary_v4_client() {
+        out.v4_state = String::from(dhcp_v4_state_name(client.state()));
+        if let Some(lease) = client.lease() {
+            out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
+            out.v4_lease_remaining = Some(lease_remaining_secs(
+                lease.lease_time,
+                lease.obtained_at,
+                now,
+                tick_rate,
+            ));
         }
-        Err(_) => out.v4_state = String::from("Poisoned"),
+        out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
+        out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
+    } else {
+        match dhcp::DHCP_CLIENT.lock() {
+            Ok(guard) => {
+                if let Some(ref client) = *guard {
+                    out.v4_state = String::from(dhcp_v4_state_name(client.state()));
+                    if let Some(lease) = client.lease() {
+                        out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
+                        out.v4_lease_remaining = Some(lease_remaining_secs(
+                            lease.lease_time,
+                            lease.obtained_at,
+                            now,
+                            tick_rate,
+                        ));
+                    }
+                    out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
+                    out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
+                }
+            }
+            Err(_) => out.v4_state = String::from("Poisoned"),
+        }
     }
 
     match dhcp::DHCPV6_CLIENT.lock() {

@@ -35,6 +35,7 @@ BRIDGE          ?= br0
 NIC             ?=
 NET_STATE_DIR   ?= target/net_state
 VFIO_NET_BDF    ?=
+VFIO_NET_BDFS   ?=
 VFIO_ACK        ?= 0
 VFIO_NO_MMAP    ?= auto
 RUN_SMART       ?= 0
@@ -317,17 +318,20 @@ define RUN_PREFLIGHT_VFIO_RUN
 			else \
 				pf_fail "IOMMU=1 is required for NETWORK=pcie|vfio"; \
 			fi; \
-			_vfio_bdf="$(VFIO_NET_BDF)"; \
-			_vfio_bdf_valid=0; \
-			if [ -z "$$_vfio_bdf" ]; then \
-				pf_fail "VFIO_NET_BDF is required"; \
-			elif printf '%s' "$$_vfio_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
-				_vfio_bdf_valid=1; \
-				pf_pass "VFIO_NET_BDF format valid: $$_vfio_bdf"; \
-			else \
-				pf_fail "invalid VFIO_NET_BDF format: $$_vfio_bdf (expected 0000:01:00.0)"; \
+			_vfio_bdfs="$(VFIO_NET_BDFS)"; \
+			if [ -z "$$_vfio_bdfs" ] && [ -n "$(VFIO_NET_BDF)" ]; then \
+				_vfio_bdfs="$(VFIO_NET_BDF)"; \
 			fi; \
-			if [ "$$_vfio_bdf_valid" = "1" ]; then \
+			if [ -z "$$_vfio_bdfs" ]; then \
+				pf_fail "VFIO_NET_BDF or VFIO_NET_BDFS is required"; \
+			fi; \
+			for _vfio_bdf in $$(printf '%s' "$$_vfio_bdfs" | tr ',' ' '); do \
+				[ -n "$$_vfio_bdf" ] || continue; \
+				if ! printf '%s' "$$_vfio_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
+					pf_fail "invalid VFIO BDF format: $$_vfio_bdf (expected 0000:01:00.0)"; \
+					continue; \
+				fi; \
+				pf_pass "VFIO BDF format valid: $$_vfio_bdf"; \
 				_vfio_dev="/sys/bus/pci/devices/$$_vfio_bdf"; \
 				if [ -d "$$_vfio_dev" ]; then \
 					pf_pass "PCI device exists: $$_vfio_bdf"; \
@@ -348,9 +352,9 @@ define RUN_PREFLIGHT_VFIO_RUN
 				fi; \
 				_vfio_driver=$$(basename "$$(readlink "$$_vfio_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
 				if [ "$$_vfio_driver" = "vfio-pci" ]; then \
-					pf_pass "driver is vfio-pci"; \
+					pf_pass "driver is vfio-pci for $$_vfio_bdf"; \
 				else \
-					pf_fail "driver is $${_vfio_driver:-none}. Fix: make vfio-prepare VFIO_NET_BDF=$$_vfio_bdf VFIO_ACK=1"; \
+					pf_fail "driver is $${_vfio_driver:-none} for $$_vfio_bdf. Fix: make vfio-prepare VFIO_NET_BDF=$$_vfio_bdf VFIO_ACK=1"; \
 				fi; \
 				if [ -e "$$_vfio_dev/iommu_group" ]; then \
 					_vfio_group=$$(basename "$$(readlink "$$_vfio_dev/iommu_group")"); \
@@ -370,11 +374,11 @@ define RUN_PREFLIGHT_VFIO_RUN
 				_vfio_pci_cmd=$$(sudo setpci -s "$$_vfio_bdf" COMMAND | tail -n 1 || echo "0000"); \
 				_vfio_bus_master=$$(( 0x$$_vfio_pci_cmd & 0x04 )); \
 				if [ "$$_vfio_bus_master" != "0" ]; then \
-					pf_pass "PCI bus mastering enabled (0x$$_vfio_pci_cmd)"; \
+					pf_pass "PCI bus mastering enabled for $$_vfio_bdf (0x$$_vfio_pci_cmd)"; \
 				else \
-					pf_fail "PCI bus mastering disabled (0x$$_vfio_pci_cmd). Action: sudo setpci -s $$_vfio_bdf COMMAND=0x7"; \
+					pf_fail "PCI bus mastering disabled for $$_vfio_bdf (0x$$_vfio_pci_cmd). Action: sudo setpci -s $$_vfio_bdf COMMAND=0x7"; \
 				fi; \
-			fi; \
+			done; \
 			_memlock_kb=$$(ulimit -l 2>/dev/null || echo 0); \
 			_required_kb=$$(( $(MEMORY) * 1024 )); \
 			if [ "$$_memlock_kb" = "unlimited" ]; then \
@@ -710,19 +714,25 @@ case "$$_net_mode" in \
 				_attach_virtio_net=1; \
 				;; \
 				pcie) \
-					_vfio_bdf="$(VFIO_NET_BDF)"; \
-					if [ -z "$$_vfio_bdf" ]; then \
-						printf '   -> \033[31m[NET][VFIO] VFIO_NET_BDF is required for NETWORK=%s\033[0m\n' "$$_net_mode"; \
-						printf '      Example: make run NETWORK=pcie VFIO_NET_BDF=0000:01:00.0\n'; \
+					_vfio_bdfs="$(VFIO_NET_BDFS)"; \
+					if [ -z "$$_vfio_bdfs" ] && [ -n "$(VFIO_NET_BDF)" ]; then \
+						_vfio_bdfs="$(VFIO_NET_BDF)"; \
+					fi; \
+					if [ -z "$$_vfio_bdfs" ]; then \
+						printf '   -> \033[31m[NET][VFIO] VFIO_NET_BDF or VFIO_NET_BDFS is required for NETWORK=%s\033[0m\n' "$$_net_mode"; \
+						printf '      Example: make run NETWORK=pcie VFIO_NET_BDFS=0000:01:00.0,0000:01:00.1\n'; \
 						exit 1; \
 					fi; \
-					if ! printf '%s' "$$_vfio_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
-						printf '   -> \033[31m[NET][VFIO] Invalid VFIO_NET_BDF format: %s\033[0m\n' "$$_vfio_bdf"; \
-						printf '      Expected format: 0000:01:00.0\n'; \
-						exit 1; \
-					fi; \
-					qemu_args="$$qemu_args -device vfio-pci,host=$$_vfio_bdf"; \
-					printf '   -> \033[32m[NET][VFIO] PCIe passthrough enabled (host=%s)\033[0m\n' "$$_vfio_bdf"; \
+					for _vfio_bdf in $$(printf '%s' "$$_vfio_bdfs" | tr ',' ' '); do \
+						[ -n "$$_vfio_bdf" ] || continue; \
+						if ! printf '%s' "$$_vfio_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
+							printf '   -> \033[31m[NET][VFIO] Invalid VFIO BDF format: %s\033[0m\n' "$$_vfio_bdf"; \
+							printf '      Expected format: 0000:01:00.0\n'; \
+							exit 1; \
+						fi; \
+						qemu_args="$$qemu_args -device vfio-pci,host=$$_vfio_bdf"; \
+						printf '   -> \033[32m[NET][VFIO] PCIe passthrough enabled (host=%s)\033[0m\n' "$$_vfio_bdf"; \
+					done; \
 					_vfio_no_mmap="$(VFIO_NO_MMAP)"; \
 					if [ -z "$$_vfio_no_mmap" ]; then _vfio_no_mmap="auto"; fi; \
 					if [ "$$_vfio_no_mmap" != "auto" ] && [ "$$_vfio_no_mmap" != "0" ] && [ "$$_vfio_no_mmap" != "1" ]; then \
@@ -1137,74 +1147,99 @@ vfio-prepare:
 	fi
 	@sudo modprobe vfio-pci
 	@$(call VFIO_PREPARE_PREFLIGHT)
-	@printf '\033[36mPreparing VFIO passthrough for %s...\033[0m\n' "$(VFIO_NET_BDF)"
-	@_bdf="$(VFIO_NET_BDF)"; \
-	_dev="/sys/bus/pci/devices/$$_bdf"; \
-	_group_link="$$_dev/iommu_group"; \
-	if [ ! -e "$$_group_link" ]; then \
-		printf '   -> \033[31m[ERROR] No IOMMU group for %s. Host IOMMU may be disabled.\033[0m\n' "$$_bdf"; \
+	@_bdfs="$(VFIO_NET_BDFS)"; \
+	if [ -z "$$_bdfs" ] && [ -n "$(VFIO_NET_BDF)" ]; then \
+		_bdfs="$(VFIO_NET_BDF)"; \
+	fi; \
+	if [ -z "$$_bdfs" ]; then \
+		printf '\033[31m[ERROR] VFIO_NET_BDF or VFIO_NET_BDFS is required.\033[0m\n'; \
+		printf '        Example: make vfio-prepare VFIO_NET_BDFS=0000:01:00.0,0000:01:00.1 VFIO_ACK=1\n'; \
 		exit 1; \
 	fi; \
-	_group_id=$$(basename "$$(readlink "$$_group_link")"); \
+	printf '\033[36mPreparing VFIO passthrough for %s...\033[0m\n' "$$_bdfs"; \
 	_state_dir="$(NET_STATE_DIR)"; \
 	mkdir -p "$$_state_dir"; \
-	_bdf_norm=$$(printf '%s' "$$_bdf" | tr ':.' '_'); \
-	_state_file="$$_state_dir/vfio-$$_bdf_norm.state"; \
-	_current_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
-	if [ "$$_current_driver" = "vfio-pci" ]; then \
-		if [ -f "$$_state_file" ]; then \
-			printf '   -> \033[33m[SKIP] %s is already prepared (state: %s)\033[0m\n' "$$_bdf" "$$_state_file"; \
-			exit 0; \
-		fi; \
-		printf '   -> \033[31m[ERROR] %s is already bound to vfio-pci but state file is missing.\033[0m\n' "$$_bdf"; \
-		printf '      Refusing to overwrite unknown original driver state.\n'; \
-		exit 1; \
-	fi; \
-	_orig_driver="$${_current_driver:-none}"; \
-	if [ "$$_orig_driver" != "none" ]; then \
-		printf '   -> \033[32mUnbinding from host driver: %s\033[0m\n' "$$_orig_driver"; \
-		printf '%s' "$$_bdf" | sudo tee "$$_dev/driver/unbind" >/dev/null; \
-	fi; \
-	printf '%s' vfio-pci | sudo tee "$$_dev/driver_override" >/dev/null; \
-	if ! printf '%s' "$$_bdf" | sudo tee /sys/bus/pci/drivers/vfio-pci/bind >/dev/null; then \
-		printf '%s' '' | sudo tee "$$_dev/driver_override" >/dev/null 2>&1 || true; \
-		printf '   -> \033[31m[ERROR] Failed to bind %s to vfio-pci.\033[0m\n' "$$_bdf"; \
-		exit 1; \
-	fi; \
-	_bound_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
-	if [ "$$_bound_driver" != "vfio-pci" ]; then \
-		printf '   -> \033[31m[ERROR] Binding verification failed (current driver: %s).\033[0m\n' "$${_bound_driver:-none}"; \
-		exit 1; \
-	fi; \
-	_group_dev="/dev/vfio/$$_group_id"; \
-	if [ -e "$$_group_dev" ] && ( [ ! -r "$$_group_dev" ] || [ ! -w "$$_group_dev" ] ); then \
-		if command -v setfacl >/dev/null 2>&1; then \
-			_vfio_user=$$(id -un); \
-			if sudo setfacl -m u:$$_vfio_user:rw "$$_group_dev" >/dev/null 2>&1; then \
-				printf '   -> \033[32m[OK] Granted rw ACL for %s on %s\033[0m\n' "$$_vfio_user" "$$_group_dev"; \
-			else \
-				printf '   -> \033[33m[WARN] Failed to set ACL on %s; run may fail with permission denied\033[0m\n' "$$_group_dev"; \
+	_prepared=""; \
+	rollback_prepared() { \
+		for _rbdf in $$_prepared; do \
+			_rdev="/sys/bus/pci/devices/$$_rbdf"; \
+			_rnorm=$$(printf '%s' "$$_rbdf" | tr ':.' '_'); \
+			_rstate_file="$$_state_dir/vfio-$$_rnorm.state"; \
+			_rorig=$$(awk '/^ORIG_DRIVER /{print $$2; exit}' "$$_rstate_file" 2>/dev/null); \
+			[ -z "$$_rorig" ] && _rorig="none"; \
+			_rcurrent=$$(basename "$$(readlink "$$_rdev/driver" 2>/dev/null)" 2>/dev/null || true); \
+			if [ "$$_rcurrent" = "vfio-pci" ]; then \
+				printf '%s' "$$_rbdf" | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind >/dev/null || true; \
 			fi; \
-		else \
-			printf '   -> \033[33m[WARN] setfacl not found; run may fail with permission denied on %s\033[0m\n' "$$_group_dev"; \
+			printf '%s' '' | sudo tee "$$_rdev/driver_override" >/dev/null 2>&1 || true; \
+			if [ "$$_rorig" != "none" ] && [ -d "/sys/bus/pci/drivers/$$_rorig" ]; then \
+				printf '%s' "$$_rbdf" | sudo tee "/sys/bus/pci/drivers/$$_rorig/bind" >/dev/null || true; \
+			fi; \
+			rm -f "$$_rstate_file"; \
+		done; \
+	}; \
+	for _bdf in $$(printf '%s' "$$_bdfs" | tr ',' ' '); do \
+		[ -n "$$_bdf" ] || continue; \
+		_dev="/sys/bus/pci/devices/$$_bdf"; \
+		_group_link="$$_dev/iommu_group"; \
+		if [ ! -e "$$_group_link" ]; then \
+			printf '   -> \033[31m[ERROR] No IOMMU group for %s. Host IOMMU may be disabled.\033[0m\n' "$$_bdf"; \
+			rollback_prepared; \
+			exit 1; \
 		fi; \
-	fi; \
-	printf 'BDF %s\nORIG_DRIVER %s\nIOMMU_GROUP %s\nPREPARED_AT %s\n' \
-		"$$_bdf" "$$_orig_driver" "$$_group_id" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$$_state_file"; \
-	printf '   -> \033[32m[OK] Prepared %s for vfio-pci (state: %s)\033[0m\n' "$$_bdf" "$$_state_file"
+		_group_id=$$(basename "$$(readlink "$$_group_link")"); \
+		_bdf_norm=$$(printf '%s' "$$_bdf" | tr ':.' '_'); \
+		_state_file="$$_state_dir/vfio-$$_bdf_norm.state"; \
+		_current_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
+		if [ "$$_current_driver" = "vfio-pci" ]; then \
+			if [ -f "$$_state_file" ]; then \
+				printf '   -> \033[33m[SKIP] %s is already prepared (state: %s)\033[0m\n' "$$_bdf" "$$_state_file"; \
+				continue; \
+			fi; \
+			printf '   -> \033[31m[ERROR] %s is already bound to vfio-pci but state file is missing.\033[0m\n' "$$_bdf"; \
+			printf '      Refusing to overwrite unknown original driver state.\n'; \
+			rollback_prepared; \
+			exit 1; \
+		fi; \
+		_orig_driver="$${_current_driver:-none}"; \
+		if [ "$$_orig_driver" != "none" ]; then \
+			printf '   -> \033[32mUnbinding %s from host driver: %s\033[0m\n' "$$_bdf" "$$_orig_driver"; \
+			printf '%s' "$$_bdf" | sudo tee "$$_dev/driver/unbind" >/dev/null; \
+		fi; \
+		printf '%s' vfio-pci | sudo tee "$$_dev/driver_override" >/dev/null; \
+		if ! printf '%s' "$$_bdf" | sudo tee /sys/bus/pci/drivers/vfio-pci/bind >/dev/null; then \
+			printf '%s' '' | sudo tee "$$_dev/driver_override" >/dev/null 2>&1 || true; \
+			printf '   -> \033[31m[ERROR] Failed to bind %s to vfio-pci.\033[0m\n' "$$_bdf"; \
+			rollback_prepared; \
+			exit 1; \
+		fi; \
+		_bound_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
+		if [ "$$_bound_driver" != "vfio-pci" ]; then \
+			printf '   -> \033[31m[ERROR] Binding verification failed for %s (current driver: %s).\033[0m\n' "$$_bdf" "$${_bound_driver:-none}"; \
+			rollback_prepared; \
+			exit 1; \
+		fi; \
+		_group_dev="/dev/vfio/$$_group_id"; \
+		if [ -e "$$_group_dev" ] && ( [ ! -r "$$_group_dev" ] || [ ! -w "$$_group_dev" ] ); then \
+			if command -v setfacl >/dev/null 2>&1; then \
+				_vfio_user=$$(id -un); \
+				if sudo setfacl -m u:$$_vfio_user:rw "$$_group_dev" >/dev/null 2>&1; then \
+					printf '   -> \033[32m[OK] Granted rw ACL for %s on %s\033[0m\n' "$$_vfio_user" "$$_group_dev"; \
+				else \
+					printf '   -> \033[33m[WARN] Failed to set ACL on %s; run may fail with permission denied\033[0m\n' "$$_group_dev"; \
+				fi; \
+			else \
+				printf '   -> \033[33m[WARN] setfacl not found; run may fail with permission denied on %s\033[0m\n' "$$_group_dev"; \
+			fi; \
+		fi; \
+		printf 'BDF %s\nORIG_DRIVER %s\nIOMMU_GROUP %s\nPREPARED_AT %s\n' \
+			"$$_bdf" "$$_orig_driver" "$$_group_id" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$$_state_file"; \
+		_prepared="$$_prepared $$_bdf"; \
+		printf '   -> \033[32m[OK] Prepared %s for vfio-pci (state: %s)\033[0m\n' "$$_bdf" "$$_state_file"; \
+	done
 
 # VFIO PCIe パススルー復旧 (vfio-pci -> 元ドライバ)
 vfio-restore:
-	@if [ -z "$(VFIO_NET_BDF)" ]; then \
-		printf '\033[31m[ERROR] VFIO_NET_BDF is required.\033[0m\n'; \
-		printf '        Example: make vfio-restore VFIO_NET_BDF=0000:01:00.0\n'; \
-		exit 1; \
-	fi
-	@if ! printf '%s' "$(VFIO_NET_BDF)" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
-		printf '\033[31m[ERROR] Invalid VFIO_NET_BDF format: %s\033[0m\n' "$(VFIO_NET_BDF)"; \
-		printf '        Expected format: 0000:01:00.0\n'; \
-		exit 1; \
-	fi
 	@if [ "$$(uname -s)" != "Linux" ]; then \
 		printf '\033[31m[ERROR] vfio-restore is supported only on Linux.\033[0m\n'; \
 		exit 1; \
@@ -1213,63 +1248,79 @@ vfio-restore:
 		printf '\033[31m[ERROR] sudo command is required for vfio-restore.\033[0m\n'; \
 		exit 1; \
 	fi
-	@_bdf="$(VFIO_NET_BDF)"; \
-	_dev="/sys/bus/pci/devices/$$_bdf"; \
-	if [ ! -d "$$_dev" ]; then \
-		printf '   -> \033[31m[ERROR] PCI device not found: %s\033[0m\n' "$$_bdf"; \
+	@_bdfs="$(VFIO_NET_BDFS)"; \
+	if [ -z "$$_bdfs" ] && [ -n "$(VFIO_NET_BDF)" ]; then \
+		_bdfs="$(VFIO_NET_BDF)"; \
+	fi; \
+	if [ -z "$$_bdfs" ]; then \
+		printf '\033[31m[ERROR] VFIO_NET_BDF or VFIO_NET_BDFS is required.\033[0m\n'; \
+		printf '        Example: make vfio-restore VFIO_NET_BDFS=0000:01:00.0,0000:01:00.1\n'; \
 		exit 1; \
 	fi; \
-	_bdf_norm=$$(printf '%s' "$$_bdf" | tr ':.' '_'); \
-	_state_file="$(NET_STATE_DIR)/vfio-$$_bdf_norm.state"; \
-	if [ ! -f "$$_state_file" ]; then \
-		printf '   -> \033[31m[ERROR] State file not found: %s\033[0m\n' "$$_state_file"; \
-		printf '      This target restores only prepared devices.\n'; \
-		exit 1; \
-	fi; \
-	_state_bdf=$$(awk '/^BDF /{print $$2; exit}' "$$_state_file"); \
-	if [ "$$_state_bdf" != "$$_bdf" ]; then \
-		printf '   -> \033[31m[ERROR] State mismatch: file BDF=%s, requested BDF=%s\033[0m\n' "$$_state_bdf" "$$_bdf"; \
-		exit 1; \
-	fi; \
-	_orig_driver=$$(awk '/^ORIG_DRIVER /{print $$2; exit}' "$$_state_file"); \
-	[ -z "$$_orig_driver" ] && _orig_driver="none"; \
-	_current_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
-	printf '\033[36mRestoring VFIO device %s...\033[0m\n' "$$_bdf"; \
-	if [ "$$_current_driver" = "vfio-pci" ]; then \
-		printf '%s' "$$_bdf" | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind >/dev/null || true; \
-	fi; \
-	printf '%s' '' | sudo tee "$$_dev/driver_override" >/dev/null 2>&1 || true; \
-	if [ "$$_orig_driver" != "none" ]; then \
-		sudo modprobe "$$_orig_driver" >/dev/null 2>&1 || true; \
-		if [ ! -d "/sys/bus/pci/drivers/$$_orig_driver" ]; then \
-			printf '   -> \033[31m[ERROR] Original driver directory not found: %s\033[0m\n' "$$_orig_driver"; \
+	for _bdf in $$(printf '%s' "$$_bdfs" | tr ',' ' '); do \
+		[ -n "$$_bdf" ] || continue; \
+		if ! printf '%s' "$$_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
+			printf '\033[31m[ERROR] Invalid VFIO BDF format: %s\033[0m\n' "$$_bdf"; \
+			printf '        Expected format: 0000:01:00.0\n'; \
 			exit 1; \
 		fi; \
-		if ! printf '%s' "$$_bdf" | sudo tee "/sys/bus/pci/drivers/$$_orig_driver/bind" >/dev/null; then \
-			printf '   -> \033[31m[ERROR] Failed to bind %s back to %s\033[0m\n' "$$_bdf" "$$_orig_driver"; \
+		_dev="/sys/bus/pci/devices/$$_bdf"; \
+		if [ ! -d "$$_dev" ]; then \
+			printf '   -> \033[31m[ERROR] PCI device not found: %s\033[0m\n' "$$_bdf"; \
 			exit 1; \
 		fi; \
-		_restored_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
-		if [ "$$_restored_driver" != "$$_orig_driver" ]; then \
-			printf '   -> \033[31m[ERROR] Restore verification failed (current: %s expected: %s)\033[0m\n' "$${_restored_driver:-none}" "$$_orig_driver"; \
+		_bdf_norm=$$(printf '%s' "$$_bdf" | tr ':.' '_'); \
+		_state_file="$(NET_STATE_DIR)/vfio-$$_bdf_norm.state"; \
+		if [ ! -f "$$_state_file" ]; then \
+			printf '   -> \033[31m[ERROR] State file not found: %s\033[0m\n' "$$_state_file"; \
+			printf '      This target restores only prepared devices.\n'; \
 			exit 1; \
 		fi; \
-		printf '   -> \033[32m[OK] Restored %s to driver %s\033[0m\n' "$$_bdf" "$$_orig_driver"; \
-	else \
-		printf '   -> \033[33m[WARN] No original driver recorded; device remains unbound.\033[0m\n'; \
-	fi; \
-	rm -f "$$_state_file"; \
-	printf '   -> \033[32m[OK] State file removed: %s\033[0m\n' "$$_state_file"
+		_state_bdf=$$(awk '/^BDF /{print $$2; exit}' "$$_state_file"); \
+		if [ "$$_state_bdf" != "$$_bdf" ]; then \
+			printf '   -> \033[31m[ERROR] State mismatch: file BDF=%s, requested BDF=%s\033[0m\n' "$$_state_bdf" "$$_bdf"; \
+			exit 1; \
+		fi; \
+		_orig_driver=$$(awk '/^ORIG_DRIVER /{print $$2; exit}' "$$_state_file"); \
+		[ -z "$$_orig_driver" ] && _orig_driver="none"; \
+		_current_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
+		printf '\033[36mRestoring VFIO device %s...\033[0m\n' "$$_bdf"; \
+		if [ "$$_current_driver" = "vfio-pci" ]; then \
+			printf '%s' "$$_bdf" | sudo tee /sys/bus/pci/drivers/vfio-pci/unbind >/dev/null || true; \
+		fi; \
+		printf '%s' '' | sudo tee "$$_dev/driver_override" >/dev/null 2>&1 || true; \
+		if [ "$$_orig_driver" != "none" ]; then \
+			sudo modprobe "$$_orig_driver" >/dev/null 2>&1 || true; \
+			if [ ! -d "/sys/bus/pci/drivers/$$_orig_driver" ]; then \
+				printf '   -> \033[31m[ERROR] Original driver directory not found: %s\033[0m\n' "$$_orig_driver"; \
+				exit 1; \
+			fi; \
+			if ! printf '%s' "$$_bdf" | sudo tee "/sys/bus/pci/drivers/$$_orig_driver/bind" >/dev/null; then \
+				printf '   -> \033[31m[ERROR] Failed to bind %s back to %s\033[0m\n' "$$_bdf" "$$_orig_driver"; \
+				exit 1; \
+			fi; \
+			_restored_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
+			if [ "$$_restored_driver" != "$$_orig_driver" ]; then \
+				printf '   -> \033[31m[ERROR] Restore verification failed (current: %s expected: %s)\033[0m\n' "$${_restored_driver:-none}" "$$_orig_driver"; \
+				exit 1; \
+			fi; \
+			printf '   -> \033[32m[OK] Restored %s to driver %s\033[0m\n' "$$_bdf" "$$_orig_driver"; \
+		else \
+			printf '   -> \033[33m[WARN] No original driver recorded for %s; device remains unbound.\033[0m\n' "$$_bdf"; \
+		fi; \
+		rm -f "$$_state_file"; \
+		printf '   -> \033[32m[OK] State file removed: %s\033[0m\n' "$$_state_file"; \
+	done
 
 # VFIO 準備状態の確認
 vfio-status:
-	@if [ -n "$(VFIO_NET_BDF)" ] && ! printf '%s' "$(VFIO_NET_BDF)" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
-		printf '\033[31m[ERROR] Invalid VFIO_NET_BDF format: %s\033[0m\n' "$(VFIO_NET_BDF)"; \
-		exit 1; \
-	fi
 	@_state_dir="$(NET_STATE_DIR)"; \
 	printf '\033[36mVFIO Status\033[0m\n'; \
-	if [ -z "$(VFIO_NET_BDF)" ]; then \
+	_bdfs="$(VFIO_NET_BDFS)"; \
+	if [ -z "$$_bdfs" ] && [ -n "$(VFIO_NET_BDF)" ]; then \
+		_bdfs="$(VFIO_NET_BDF)"; \
+	fi; \
+	if [ -z "$$_bdfs" ]; then \
 		printf '   Prepared state files in %s:\n' "$$_state_dir"; \
 		_found=0; \
 		for _f in "$$_state_dir"/vfio-*.state; do \
@@ -1280,48 +1331,54 @@ vfio-status:
 			printf '     - %s (orig=%s)\n' "$${_bdf:-unknown}" "$${_orig:-unknown}"; \
 		done; \
 		if [ "$$_found" = "0" ]; then printf '     (none)\n'; fi; \
-		printf '   Tip: make vfio-status VFIO_NET_BDF=0000:01:00.0\n'; \
+		printf '   Tip: make vfio-status VFIO_NET_BDFS=0000:01:00.0,0000:01:00.1\n'; \
 		exit 0; \
 	fi; \
-	_bdf="$(VFIO_NET_BDF)"; \
-	_dev="/sys/bus/pci/devices/$$_bdf"; \
-	_bdf_norm=$$(printf '%s' "$$_bdf" | tr ':.' '_'); \
-	_state_file="$$_state_dir/vfio-$$_bdf_norm.state"; \
-	printf '   BDF         : %s\n' "$$_bdf"; \
-	printf '   Sysfs path  : %s\n' "$$_dev"; \
-	printf '   State file  : %s\n' "$$_state_file"; \
-	_memlock_kb=$$(ulimit -l 2>/dev/null || echo 0); \
-	_required_kb=$$(( $(MEMORY) * 1024 )); \
-	printf '   Memlock     : %s KiB (required >= %s KiB for MEMORY=%sM)\n' "$$_memlock_kb" "$$_required_kb" "$(MEMORY)"; \
-	if [ -d "$$_dev" ]; then \
-		_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
-		printf '   Driver      : %s\n' "$${_driver:-none}"; \
-		if [ -e "$$_dev/iommu_group" ]; then \
-			_group_id=$$(basename "$$(readlink "$$_dev/iommu_group")"); \
-			printf '   IOMMU group : %s\n' "$$_group_id"; \
-			_group_dev="/dev/vfio/$$_group_id"; \
-			printf '   Group dev   : %s\n' "$$_group_dev"; \
-			if [ -e "$$_group_dev" ]; then \
-				if [ -r "$$_group_dev" ] && [ -w "$$_group_dev" ]; then \
-					printf '   Access      : rw (current user)\n'; \
-				else \
-					printf '   Access      : no rw (current user)\n'; \
-					ls -l "$$_group_dev" 2>/dev/null || true; \
-				fi; \
-			else \
-				printf '   Access      : group device not found\n'; \
-			fi; \
+	for _bdf in $$(printf '%s' "$$_bdfs" | tr ',' ' '); do \
+		[ -n "$$_bdf" ] || continue; \
+		if ! printf '%s' "$$_bdf" | grep -Eq '^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$$'; then \
+			printf '\033[31m[ERROR] Invalid VFIO BDF format: %s\033[0m\n' "$$_bdf"; \
+			exit 1; \
 		fi; \
-	else \
-		printf '   Driver      : (device not found)\n'; \
-	fi; \
-	if [ -f "$$_state_file" ]; then \
-		_orig=$$(awk '/^ORIG_DRIVER /{print $$2; exit}' "$$_state_file"); \
-		_prepared_at=$$(awk '/^PREPARED_AT /{print $$2; exit}' "$$_state_file"); \
-		printf '   Prepared    : yes (orig=%s, at=%s)\n' "$${_orig:-unknown}" "$${_prepared_at:-unknown}"; \
-	else \
-		printf '   Prepared    : no\n'; \
-	fi
+		_dev="/sys/bus/pci/devices/$$_bdf"; \
+		_bdf_norm=$$(printf '%s' "$$_bdf" | tr ':.' '_'); \
+		_state_file="$$_state_dir/vfio-$$_bdf_norm.state"; \
+		printf '   BDF         : %s\n' "$$_bdf"; \
+		printf '   Sysfs path  : %s\n' "$$_dev"; \
+		printf '   State file  : %s\n' "$$_state_file"; \
+		_memlock_kb=$$(ulimit -l 2>/dev/null || echo 0); \
+		_required_kb=$$(( $(MEMORY) * 1024 )); \
+		printf '   Memlock     : %s KiB (required >= %s KiB for MEMORY=%sM)\n' "$$_memlock_kb" "$$_required_kb" "$(MEMORY)"; \
+		if [ -d "$$_dev" ]; then \
+			_driver=$$(basename "$$(readlink "$$_dev/driver" 2>/dev/null)" 2>/dev/null || true); \
+			printf '   Driver      : %s\n' "$${_driver:-none}"; \
+			if [ -e "$$_dev/iommu_group" ]; then \
+				_group_id=$$(basename "$$(readlink "$$_dev/iommu_group")"); \
+				printf '   IOMMU group : %s\n' "$$_group_id"; \
+				_group_dev="/dev/vfio/$$_group_id"; \
+				printf '   Group dev   : %s\n' "$$_group_dev"; \
+				if [ -e "$$_group_dev" ]; then \
+					if [ -r "$$_group_dev" ] && [ -w "$$_group_dev" ]; then \
+						printf '   Access      : rw (current user)\n'; \
+					else \
+						printf '   Access      : no rw (current user)\n'; \
+						ls -l "$$_group_dev" 2>/dev/null || true; \
+					fi; \
+				else \
+					printf '   Access      : group device not found\n'; \
+				fi; \
+			fi; \
+		else \
+			printf '   Driver      : (device missing)\n'; \
+		fi; \
+		if [ -f "$$_state_file" ]; then \
+			_orig=$$(awk '/^ORIG_DRIVER /{print $$2; exit}' "$$_state_file"); \
+			_prepared_at=$$(awk '/^PREPARED_AT /{print $$2; exit}' "$$_state_file"); \
+			printf '   Prepared    : yes (orig=%s, at=%s)\n' "$${_orig:-unknown}" "$${_prepared_at:-unknown}"; \
+		else \
+			printf '   Prepared    : no\n'; \
+		fi; \
+	done
 
 # ==============================================================================
 # CI/CD
@@ -1380,7 +1437,8 @@ help:
 	@echo "                                     none/0  = disabled"
 	@echo "  BRIDGE=NAME            Bridge device name (default: br0)"
 	@echo "  NIC=IFACE              Host NIC to add to bridge (auto-setup)"
-	@echo "  VFIO_NET_BDF=BDF       PCI BDF for passthrough (e.g. 0000:01:00.0)"
+	@echo "  VFIO_NET_BDF=BDF       PCI BDF for passthrough (legacy single-device alias)"
+	@echo "  VFIO_NET_BDFS=LIST     Comma-separated PCI BDF list for passthrough"
 	@echo "  VFIO_ACK=0|1           Safety ack required by vfio-prepare (set 1)"
 	@echo "  VFIO_NO_MMAP=auto|0|1  VFIO safe mode for low aw-bits (default: auto)"
 	@echo "  RUN_SMART=0|1          Smart image rebuild for run/debug (default: 1)"
@@ -1410,10 +1468,10 @@ help:
 	@echo "  make net-setup NIC=eth0  - Create bridge + attach NIC (sudo)"
 	@echo "  make net-teardown NIC=eth0 - Remove bridge + restore NIC"
 	@echo "  make net-status    - Show bridge/tap status"
-	@echo "  make vfio-prepare VFIO_NET_BDF=0000:01:00.0 VFIO_ACK=1 - Bind NIC to vfio-pci"
-	@echo "  make vfio-restore VFIO_NET_BDF=0000:01:00.0 - Restore NIC to original driver"
-	@echo "  make vfio-status [VFIO_NET_BDF=0000:01:00.0] - Show VFIO preparation status"
-	@echo "  VFIO flow: vfio-prepare -> run NETWORK=pcie VFIO_NET_BDF=... -> vfio-restore"
+	@echo "  make vfio-prepare VFIO_NET_BDFS=0000:01:00.0,0000:01:00.1 VFIO_ACK=1 - Bind NIC(s) to vfio-pci"
+	@echo "  make vfio-restore VFIO_NET_BDFS=0000:01:00.0,0000:01:00.1 - Restore NIC(s) to original driver"
+	@echo "  make vfio-status [VFIO_NET_BDFS=0000:01:00.0,0000:01:00.1] - Show VFIO preparation status"
+	@echo "  VFIO flow: vfio-prepare -> run NETWORK=pcie VFIO_NET_BDFS=... -> vfio-restore"
 	@echo "  make clean         - Clean build artifacts"
 	@echo "  make doc           - Generate documentation"
 	@echo "  make size          - Show kernel binary size"
