@@ -1084,15 +1084,34 @@ pub fn set_primary_interface(if_id: NetIfId) {
     }
 }
 
-pub fn claim_bound_primary_interface(if_id: NetIfId) -> bool {
+fn claim_bound_primary_slot(if_id: NetIfId) -> bool {
     if DHCP_BOUND_PRIMARY_SELECTED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        DEVICE_MANAGER
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .primary = Some(if_id);
+        set_primary_slot(Some(if_id));
+        true
+    } else {
+        false
+    }
+}
+
+pub(crate) fn claim_bound_primary_interface_with_stack_state(
+    if_id: NetIfId,
+    stack: &mut stack::NetworkStack,
+) -> bool {
+    // DHCP lease binding runs under NETWORK_STACK; reuse that guard to avoid
+    // self-deadlocking on the global stack lock during primary selection.
+    if claim_bound_primary_slot(if_id) {
+        stack.set_primary_interface_state(Some(if_id));
+        true
+    } else {
+        false
+    }
+}
+
+pub fn claim_bound_primary_interface(if_id: NetIfId) -> bool {
+    if claim_bound_primary_slot(if_id) {
         if let Ok(mut guard) = stack::stack().lock() {
             if let Some(stack) = guard.as_mut() {
                 stack.set_primary_interface_state(Some(if_id));
@@ -1509,6 +1528,33 @@ mod tests {
         assert!(manager::set_interface_up(if_a).is_ok());
         assert!(!claim_bound_primary_interface(if_a));
         assert_eq!(primary_if(), Some(if_b));
+
+        assert!(unregister_port(if_b));
+        assert!(unregister_port(if_a));
+    }
+
+    #[test_case]
+    fn claim_bound_primary_interface_with_stack_state_updates_primary_without_global_lock() {
+        DHCP_BOUND_PRIMARY_SELECTED.store(false, Ordering::Release);
+
+        let driver_a = Arc::new(FakeDriver::new());
+        let driver_b = Arc::new(FakeDriver::new());
+
+        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(98), driver_a, false)
+            .expect("register first port");
+        let if_b = register_port_with_default_config(NetDeviceKey::Virtio(99), driver_b, false)
+            .expect("register second port");
+
+        let mut test_stack = stack::NetworkStack::new(NetworkConfig::default());
+        test_stack.register_interface_state(if_a, NetworkConfig::default());
+        test_stack.register_interface_state(if_b, NetworkConfig::default());
+
+        assert!(claim_bound_primary_interface_with_stack_state(
+            if_b,
+            &mut test_stack
+        ));
+        assert_eq!(primary_if(), Some(if_b));
+        assert_eq!(test_stack.resolve_ingress_if(None), if_b);
 
         assert!(unregister_port(if_b));
         assert!(unregister_port(if_a));

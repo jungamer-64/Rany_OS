@@ -1725,7 +1725,11 @@ impl NetworkEventHandler {
                 };
                 let target_if = if_id.map(crate::net::runtime::manager::NetIfId);
                 let selected_primary = target_if
-                    .map(crate::net::runtime::device::claim_bound_primary_interface)
+                    .map(|if_id| {
+                        crate::net::runtime::device::claim_bound_primary_interface_with_stack_state(
+                            if_id, stack,
+                        )
+                    })
                     .unwrap_or(false);
                 if let Some(if_id) = target_if {
                     let is_primary = selected_primary
