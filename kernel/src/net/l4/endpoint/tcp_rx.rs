@@ -29,6 +29,7 @@ use super::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
 };
 use super::window_scale::TcpOptionParser;
+use crate::net::runtime::manager::NetIfId;
 
 // ============================================================================
 // TCP Fast Path Statistics
@@ -61,6 +62,19 @@ const DELAYED_ACK_SEGMENTS: u8 = 2;
 pub(crate) fn generate_tcp_timestamp() -> u32 {
     let ms = tcb_table().get_current_tick();
     (ms / 10) as u32
+}
+
+fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
+    if let Some(if_id) = if_id {
+        return if_id;
+    }
+    crate::net::runtime::device::primary_if()
+        .or_else(|| {
+            crate::net::runtime::manager::list_interfaces()
+                .ok()
+                .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+        })
+        .unwrap_or_default()
 }
 
 // seq_before は types モジュールの統一実装を使用
@@ -301,6 +315,15 @@ pub fn process_tcp_segment_v6(
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     segment: &[u8],
 ) {
+    process_tcp_segment_v6_on(None, src_ip, dst_ip, segment);
+}
+
+pub fn process_tcp_segment_v6_on(
+    if_id: Option<NetIfId>,
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    segment: &[u8],
+) {
     if segment.len() < 20 {
         return; // 最小ヘッダサイズ未満
     }
@@ -337,6 +360,10 @@ pub fn process_tcp_segment_v6(
 
     let remote = EndpointAddr::new_v6(src_ip.octets(), src_port);
     let local = EndpointAddr::new_v6(dst_ip.octets(), dst_port);
+    let ingress_if_id = resolve_ingress_if_id(if_id);
+    let _ = tcb_table().update(local, remote, |entry| {
+        entry.ingress_if_id = Some(ingress_if_id)
+    });
 
     // TCBを検索
     if let Some(tcb) = tcb_table().get(local, remote) {
@@ -415,6 +442,7 @@ pub fn process_tcp_segment_v6(
             process_tcp_new_connection(
                 local,
                 remote,
+                ingress_if_id,
                 flags,
                 seq_num,
                 ack_num,
@@ -433,9 +461,10 @@ pub fn process_tcp_segment_v6(
                 );
 
                 // 対応する LISTEN ソケットを探す
-                if let Some(socket) =
-                    crate::net::l4::endpoint::manager::find_listening_socket(local)
-                {
+                if let Some(socket) = crate::net::l4::endpoint::manager::find_listening_socket(
+                    local,
+                    Some(ingress_if_id),
+                ) {
                     let mss = match mss_idx {
                         2 => 1460,
                         1 => 536,
@@ -459,8 +488,8 @@ pub fn process_tcp_segment_v6(
                     }
 
                     // 接続完了イベントを通知
-                    if let Some(accepted) = create_accepted_socket(&tcb) {
-                        let _ = push_to_accept_queue(local.port(), accepted);
+                    if let Some(accepted) = create_accepted_socket(&tcb, ingress_if_id) {
+                        let _ = push_to_accept_queue(local.port(), Some(ingress_if_id), accepted);
                     }
 
                     // ACK 後のデータが含まれている場合は処理を継続
@@ -489,6 +518,15 @@ pub fn process_tcp_segment_v6(
 /// TCPセグメント受信処理
 /// プロトコルスタック（ipv4.rs）から呼ばれる
 pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
+    process_tcp_segment_on(None, src_ip, dst_ip, segment);
+}
+
+pub fn process_tcp_segment_on(
+    if_id: Option<NetIfId>,
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    segment: &[u8],
+) {
     if segment.len() < 20 {
         return; // 最小ヘッダサイズ未満
     }
@@ -527,6 +565,10 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
 
     let remote = EndpointAddr::new(src_ip, src_port);
     let local = EndpointAddr::new(dst_ip, dst_port);
+    let ingress_if_id = resolve_ingress_if_id(if_id);
+    let _ = tcb_table().update(local, remote, |entry| {
+        entry.ingress_if_id = Some(ingress_if_id)
+    });
 
     // TCBを検索
     if let Some(tcb) = tcb_table().get(local, remote) {
@@ -617,6 +659,7 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
             process_tcp_new_connection(
                 local,
                 remote,
+                ingress_if_id,
                 flags,
                 seq_num,
                 ack_num,
@@ -635,9 +678,10 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
                 );
 
                 // 対応する LISTEN ソケットを探す
-                if let Some(socket) =
-                    crate::net::l4::endpoint::manager::find_listening_socket(local)
-                {
+                if let Some(socket) = crate::net::l4::endpoint::manager::find_listening_socket(
+                    local,
+                    Some(ingress_if_id),
+                ) {
                     let mss = match mss_idx {
                         2 => 1460,
                         1 => 536,
@@ -661,8 +705,8 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
                     }
 
                     // 接続完了イベントを通知
-                    if let Some(accepted) = create_accepted_socket(&tcb) {
-                        let _ = push_to_accept_queue(local.port(), accepted);
+                    if let Some(accepted) = create_accepted_socket(&tcb, ingress_if_id) {
+                        let _ = push_to_accept_queue(local.port(), Some(ingress_if_id), accepted);
                     }
 
                     // ACK 後のデータが含まれている場合は処理を継続
@@ -1566,6 +1610,7 @@ fn notify_socket_connected(fd: EndpointFd) {
 fn process_tcp_new_connection(
     local: EndpointAddr,
     remote: EndpointAddr,
+    ingress_if_id: NetIfId,
     flags: u8,
     seq_num: u32,
     ack_num: u32,
@@ -1591,7 +1636,12 @@ fn process_tcp_new_connection(
         return;
     };
 
-    let socket = mgr.find_by_port(EndpointType::Tcp, local.port());
+    let socket = mgr.find_by_port(
+        EndpointType::Tcp,
+        crate::net::l4::endpoint::manager::EndpointFamily::from_addr(local),
+        local.port(),
+        Some(ingress_if_id),
+    );
 
     // リッスン中のソケットがない場合、または SYN 以外を受信した場合
     if socket.is_none() || !is_syn {
@@ -1892,6 +1942,7 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
     if ack_num != tcb.snd_nxt {
         return;
     }
+    let ingress_if_id = tcb.ingress_if_id.unwrap_or_default();
 
     // TCBを更新してEstablished状態に
     tcb_table().update(tcb.local, tcb.remote, |entry| {
@@ -1906,7 +1957,7 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
     );
 
     // 新しい接続用ソケットを作成
-    let new_socket = match create_accepted_socket(&tcb) {
+    let new_socket = match create_accepted_socket(&tcb, ingress_if_id) {
         Some(s) => s,
         None => {
             log::info!("TCP: Failed to create accepted socket");
@@ -1915,7 +1966,7 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
     };
 
     // Listeningソケットを探してAcceptキューに追加
-    if !push_to_accept_queue(tcb.local.port(), new_socket) {
+    if !push_to_accept_queue(tcb.local.port(), Some(ingress_if_id), new_socket) {
         log::info!(
             "TCP: No listening socket found for port {}",
             tcb.local.port()
@@ -1924,7 +1975,10 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
 }
 
 /// Accept用の新規ソケットを作成
-fn create_accepted_socket(tcb: &TcpControlBlockEntry) -> Option<AcceptedConnection> {
+fn create_accepted_socket(
+    tcb: &TcpControlBlockEntry,
+    ingress_if_id: NetIfId,
+) -> Option<AcceptedConnection> {
     let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
     let mgr = manager.as_ref()?;
 
@@ -1946,12 +2000,17 @@ fn create_accepted_socket(tcb: &TcpControlBlockEntry) -> Option<AcceptedConnecti
         new_fd,
         tcb.local,
         tcb.remote,
+        ingress_if_id,
         updated_tcb,
     ))
 }
 
 /// Listeningソケットを探してAcceptキューに追加
-fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
+fn push_to_accept_queue(
+    local_port: u16,
+    ingress_if_id: Option<NetIfId>,
+    conn: AcceptedConnection,
+) -> bool {
     let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
     let Some(ref mgr) = *manager else {
         return false;
@@ -1959,7 +2018,12 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
 
     // ローカルポートでリッスン中のソケットを検索
     // find_by_portを使用
-    if let Some(socket) = mgr.find_by_port(EndpointType::Tcp, local_port) {
+    if let Some(socket) = mgr.find_by_port(
+        EndpointType::Tcp,
+        crate::net::l4::endpoint::manager::EndpointFamily::from_addr(conn.local_addr),
+        local_port,
+        ingress_if_id,
+    ) {
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         // Listening状態でなければスキップ

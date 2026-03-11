@@ -255,7 +255,7 @@ async fn dhcp_v4_dispatcher_task() {
 
     loop {
         match socket.recv().await {
-            Some((_src, _ttl, packet)) => {
+            Some((_if_id, _src, _ttl, packet)) => {
                 let now = crate::task::timer::current_tick();
                 let data = packet.data();
                 let Some(runtime) = find_runtime_for_v4_packet(data) else {

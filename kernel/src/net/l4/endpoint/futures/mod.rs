@@ -15,6 +15,7 @@ use super::types::{EndpointAddr, EndpointError, EndpointResult, EndpointState, E
 
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::tcp::TcpStream;
+use crate::net::runtime::manager::NetIfId;
 
 /// 非同期受信Future
 pub struct RecvFuture {
@@ -208,11 +209,13 @@ impl AcceptFuture {
 }
 
 impl Future for AcceptFuture {
-    type Output = EndpointResult<(OwnedEndpoint, EndpointAddr)>;
+    type Output = EndpointResult<(OwnedEndpoint, EndpointAddr, NetIfId)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.endpoint.next_incoming() {
-            Ok((ep, addr)) => Poll::Ready(Ok((OwnedEndpoint::from_endpoint(ep), addr))),
+            Ok((ep, addr, if_id)) => {
+                Poll::Ready(Ok((OwnedEndpoint::from_endpoint(ep), addr, if_id)))
+            }
 
             Err(EndpointError::Timeout) => {
                 // Wakerを登録してPending
@@ -241,7 +244,7 @@ impl RecvFromFuture {
 }
 
 impl Future for RecvFromFuture {
-    type Output = EndpointResult<(Vec<u8>, EndpointAddr)>;
+    type Output = EndpointResult<(Vec<u8>, EndpointAddr, NetIfId)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
@@ -251,10 +254,10 @@ impl Future for RecvFromFuture {
         let mut temp_buf = alloc::vec![0u8; buf_len];
 
         match this.endpoint.recv_from(&mut temp_buf) {
-            Ok((len, addr)) => {
+            Ok((len, addr, if_id)) => {
                 this.buffer.truncate(len);
                 this.buffer[..len].copy_from_slice(&temp_buf[..len]);
-                Poll::Ready(Ok((core::mem::take(&mut this.buffer), addr)))
+                Poll::Ready(Ok((core::mem::take(&mut this.buffer), addr, if_id)))
             }
             Err(EndpointError::Timeout) => {
                 // Wakerを登録してPending

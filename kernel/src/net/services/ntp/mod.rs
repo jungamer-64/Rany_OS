@@ -155,7 +155,7 @@ impl NtpClient {
         const NTP_TIMEOUT_MS: u64 = 5_000;
 
         match with_timeout(socket.recv(), NTP_TIMEOUT_MS).await {
-            TimeoutResult::Completed(Some((_src, _ttl, packet))) => {
+            TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
                 let data = packet.data();
                 let resp = NtpHeader::from_bytes(data).ok_or(EndpointError::Internal)?;
 

@@ -12,6 +12,7 @@ pub mod tests {
     use super::super::types::{
         AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
     };
+    use crate::net::runtime::manager::NetIfId;
     use alloc::vec::Vec;
 
     #[cfg_attr(test, test_case)]
@@ -21,7 +22,7 @@ pub mod tests {
         let remote = EndpointAddr::new([192, 168, 1, 2], 54321);
         let tcb = TcpControlBlockEntry::new(fd, local, remote);
 
-        let conn = AcceptedConnection::new(fd, local, remote, tcb);
+        let conn = AcceptedConnection::new(fd, local, remote, NetIfId(0), tcb);
 
         assert_eq!(conn.fd, fd);
         assert_eq!(conn.local_addr, local);
@@ -84,7 +85,7 @@ pub mod tests {
         let local = EndpointAddr::new([192, 168, 1, 1], 8080);
         let remote = EndpointAddr::new([10, 0, 0, 2], 54000);
         let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
-        let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
+        let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(0), tcb);
 
         {
             let mut inner = listen_endpoint
@@ -99,9 +100,10 @@ pub mod tests {
         // 接続情報は正しく返される
         let result = endpoint_accept_internal(&listen_endpoint);
         assert!(result.is_some());
-        let (new_endpoint, addr) = result.unwrap();
+        let (new_endpoint, addr, if_id) = result.unwrap();
         assert_eq!(addr, remote);
         assert_eq!(new_endpoint.fd(), accepted_fd);
+        assert_eq!(if_id, NetIfId(0));
     }
 
     pub fn test_socket_accept_with_connection() {
@@ -133,7 +135,7 @@ pub mod tests {
         let remote =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 54001);
         let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
-        let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
+        let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(1), tcb);
 
         {
             let mut inner = listen_endpoint
@@ -146,13 +148,14 @@ pub mod tests {
         // accept成功 (IPv6)
         let result = endpoint_accept_internal(&listen_endpoint);
         assert!(result.is_some());
-        let (new_endpoint, addr) = result.unwrap();
+        let (new_endpoint, addr, if_id) = result.unwrap();
         assert_eq!(addr, remote);
         assert_eq!(new_endpoint.fd(), accepted_fd);
+        assert_eq!(if_id, NetIfId(1));
     }
 
     /// 内部テスト用: EndpointManager登録をスキップしてaccept
-    fn endpoint_accept_internal(endpoint: &Endpoint) -> Option<(Endpoint, EndpointAddr)> {
+    fn endpoint_accept_internal(endpoint: &Endpoint) -> Option<(Endpoint, EndpointAddr, NetIfId)> {
         let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         if inner.state != EndpointState::Listening {
@@ -171,7 +174,7 @@ pub mod tests {
                 new_inner.ensure_tcp().nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を引き継ぐ
                 let _ = new_inner.transition_to(EndpointState::Connected);
             }
-            return Some((new_endpoint, conn.remote_addr));
+            return Some((new_endpoint, conn.remote_addr, conn.if_id));
         }
 
         None
@@ -198,7 +201,7 @@ pub mod tests {
         let local = EndpointAddr::new([192, 168, 1, 1], 8080);
         let remote = EndpointAddr::new([10, 0, 0, 1], 50000);
         let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
-        let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
+        let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(2), tcb);
 
         {
             let mut inner = listen_endpoint
@@ -209,7 +212,7 @@ pub mod tests {
         }
 
         // Accept
-        let (new_endpoint, _) = endpoint_accept_internal(&listen_endpoint).unwrap();
+        let (new_endpoint, _, _) = endpoint_accept_internal(&listen_endpoint).unwrap();
 
         // 設定が引き継がれているか確認
         let inner = new_endpoint
@@ -278,7 +281,7 @@ pub mod tests {
             let remote = EndpointAddr::new([10, 0, 0, i as u8], 50000 + i as u16);
             let fd = EndpointFd::from_raw(300 + i);
             let tcb = TcpControlBlockEntry::new(fd, local, remote);
-            let conn = AcceptedConnection::new(fd, local, remote, tcb);
+            let conn = AcceptedConnection::new(fd, local, remote, NetIfId(3), tcb);
 
             let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
             if inner

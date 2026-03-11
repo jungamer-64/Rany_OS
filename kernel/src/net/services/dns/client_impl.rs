@@ -187,7 +187,7 @@ impl DnsClient {
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while attempt < DNS_MAX_RETRIES {
             match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
-                TimeoutResult::Completed(Some((src, _ttl, packet))) => {
+                TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
                     // Security: Verify source (RFC 5452)
                     if src.ip_v4() == Some(server) && src.port() == DNS_PORT {
                         udp_response = Some(packet.data().to_vec());

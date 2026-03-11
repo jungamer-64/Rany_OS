@@ -47,7 +47,7 @@ impl DhcpClient {
 
             // パケット受信を待機。再送タイマーを考慮して1秒でタイムアウト。
             match task::with_timeout(socket.recv(), 1000).await {
-                TimeoutResult::Completed(Some((_src, _ttl, packet))) => {
+                TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
                     let now = crate::task::timer::current_tick();
                     // 応答パケットを処理
                     match self.process_response(packet.data(), now) {

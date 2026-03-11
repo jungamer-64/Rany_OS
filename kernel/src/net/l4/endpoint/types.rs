@@ -8,6 +8,7 @@
 use core::sync::atomic::AtomicU32;
 
 use super::tcb::TcpControlBlockEntry;
+use crate::net::runtime::manager::NetIfId;
 
 /// エンドポイントファイルディスクリプタ
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -350,6 +351,8 @@ pub struct AcceptedConnection {
     pub local_addr: EndpointAddr,
     /// リモートアドレス
     pub remote_addr: EndpointAddr,
+    /// 着信インターフェース
+    pub if_id: NetIfId,
     /// TCB情報（シーケンス番号など）
     pub tcb: TcpControlBlockEntry,
 }
@@ -360,12 +363,14 @@ impl AcceptedConnection {
         fd: EndpointFd,
         local_addr: EndpointAddr,
         remote_addr: EndpointAddr,
+        if_id: NetIfId,
         tcb: TcpControlBlockEntry,
     ) -> Self {
         Self {
             fd,
             local_addr,
             remote_addr,
+            if_id,
             tcb,
         }
     }

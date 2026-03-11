@@ -30,6 +30,11 @@ pub fn is_initialized() -> bool {
 
 /// Process a received packet
 pub fn receive(data: &[u8]) {
+    receive_on(None, data);
+}
+
+/// Process a received packet and preserve the ingress interface when known.
+pub fn receive_on(if_id: Option<super::NetIfId>, data: &[u8]) {
     use crate::net::datapath::mempool::alloc_packet;
 
     // Allocate PacketRef to bridge legacy driver to Zero-Copy stack
@@ -41,7 +46,7 @@ pub fn receive(data: &[u8]) {
 
         // 非同期経路へオフロードして即時戻す（割り込み/ポーリングコンテキストでのロック取得を回避）
         crate::net::l4::endpoint::event::send_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet },
+            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { if_id, packet },
         );
     } else {
         // Drop packet due to OOM
@@ -51,11 +56,16 @@ pub fn receive(data: &[u8]) {
 
 /// Process a batch of received packets
 pub fn receive_batch(batch: PacketBatch) {
+    receive_batch_on(None, batch);
+}
+
+/// Process a batch of received packets and preserve the ingress interface when known.
+pub fn receive_batch_on(if_id: Option<super::NetIfId>, batch: PacketBatch) {
     // Offload each packet in the batch to the async event queue to avoid
     // taking the global stack lock in interrupt/polling contexts.
     for pkt in batch.into_iter() {
         crate::net::l4::endpoint::event::send_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet: pkt },
+            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { if_id, packet: pkt },
         );
     }
 }
@@ -83,6 +93,36 @@ pub fn send_udp_async(
     data: &[u8],
     ttl: u8,
 ) -> bool {
+    send_udp_scoped_async(
+        crate::net::types::InterfaceScope::Any,
+        src_port,
+        dst_ip,
+        dst_port,
+        data,
+        ttl,
+    )
+}
+
+/// Send a UDP datagram via the async event queue with an explicit interface scope.
+pub fn send_udp_scoped_async(
+    scope: crate::net::types::InterfaceScope,
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    data: &[u8],
+    ttl: u8,
+) -> bool {
+    if let Some(if_id) = scope.as_if_id() {
+        return send_udp_on_async_with_src(
+            if_id,
+            Ipv4Address::ANY,
+            src_port,
+            dst_ip,
+            dst_port,
+            data,
+            ttl,
+        );
+    }
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
             src_port,
@@ -108,6 +148,30 @@ pub fn send_udp_async_with_src(
     data: &[u8],
     ttl: u8,
 ) -> bool {
+    send_udp_scoped_async_with_src(
+        crate::net::types::InterfaceScope::Any,
+        src_ip,
+        src_port,
+        dst_ip,
+        dst_port,
+        data,
+        ttl,
+    )
+}
+
+/// Send a UDP datagram with explicit source IP and interface scope.
+pub fn send_udp_scoped_async_with_src(
+    scope: crate::net::types::InterfaceScope,
+    src_ip: Ipv4Address,
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    data: &[u8],
+    ttl: u8,
+) -> bool {
+    if let Some(if_id) = scope.as_if_id() {
+        return send_udp_on_async_with_src(if_id, src_ip, src_port, dst_ip, dst_port, data, ttl);
+    }
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
             src_port,
@@ -130,6 +194,30 @@ pub fn send_udp_v6_async(
     data: &[u8],
     ttl: u8,
 ) -> bool {
+    send_udp_v6_scoped_async(
+        crate::net::types::InterfaceScope::Any,
+        src_port,
+        src_ip,
+        dst_ip,
+        dst_port,
+        data,
+        ttl,
+    )
+}
+
+/// Send a UDP datagram over IPv6 via the async event queue with an explicit scope.
+pub fn send_udp_v6_scoped_async(
+    scope: crate::net::types::InterfaceScope,
+    src_port: u16,
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_port: u16,
+    data: &[u8],
+    ttl: u8,
+) -> bool {
+    if let Some(if_id) = scope.as_if_id() {
+        return send_udp_v6_on_async(if_id, src_port, src_ip, dst_ip, dst_port, data, ttl);
+    }
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpV6Send {
             src_port,
@@ -183,13 +271,19 @@ pub fn send_tcp_v6_async(
 /// イベントキュー経由でbindを実行する。NETWORK_STACKロックを取得しない。
 /// スタック初期化前は失敗を返す。
 pub fn bind_udp(port: u16) -> Option<UdpEndpoint> {
+    bind_udp_scoped(crate::net::types::InterfaceScope::Any, port)
+}
+
+/// Bind a UDP socket to an explicit interface scope.
+pub fn bind_udp_scoped(scope: crate::net::types::InterfaceScope, port: u16) -> Option<UdpEndpoint> {
     // イベントキュー経由の非同期bind
     // 同期コンテキストからは直接Futureをawaitできないため、
     // スタックが初期化済みならエンドポイントを作成してイベントキュー経由でbindする
-    let endpoint = UdpEndpoint::new(port);
+    let endpoint = UdpEndpoint::new_with_scope(port, scope);
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
             port,
+            scope,
             result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
             waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         },
@@ -233,10 +327,20 @@ pub async fn async_timeout_task() {
 
 /// Bind a UDP socket with an optional capability token (async, event-queue based)
 pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
-    let endpoint = UdpEndpoint::new_with_token(port, token);
+    bind_udp_with_token_scoped(crate::net::types::InterfaceScope::Any, port, token)
+}
+
+/// Bind a UDP socket with a token and explicit interface scope.
+pub fn bind_udp_with_token_scoped(
+    scope: crate::net::types::InterfaceScope,
+    port: u16,
+    token: Option<u64>,
+) -> Option<UdpEndpoint> {
+    let endpoint = UdpEndpoint::new_with_token_and_scope(port, token, scope);
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
             port,
+            scope,
             result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
             waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         },
@@ -257,9 +361,15 @@ pub fn apply_ipv6_global_address(addr: crate::net::l3::ipv6::Ipv6Address) {
 
 /// Unbind a UDP socket (async, event-queue based)
 pub fn unbind_udp(port: u16) {
+    unbind_udp_scoped(crate::net::types::InterfaceScope::Any, port);
+}
+
+/// Unbind a UDP socket from an explicit interface scope.
+pub fn unbind_udp_scoped(scope: crate::net::types::InterfaceScope, port: u16) {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindUdp {
             port,
+            scope,
             result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
             waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         },
@@ -435,6 +545,7 @@ pub struct UdpBindFuture {
     waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     sent: bool,
     port: u16,
+    scope: crate::net::types::InterfaceScope,
 }
 
 impl core::future::Future for UdpBindFuture {
@@ -448,6 +559,7 @@ impl core::future::Future for UdpBindFuture {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
                 port: self.port,
+                scope: self.scope,
                 result_slot: self.result_slot.clone(),
                 waker: self.waker.clone(),
             };
@@ -474,11 +586,20 @@ impl core::future::Future for UdpBindFuture {
 /// 取得しないため、ネットワークイベントタスクと同時に動作するasyncタスクから
 /// 安全に呼び出せる。
 pub fn bind_udp_async(port: u16) -> UdpBindFuture {
+    bind_udp_scoped_async(crate::net::types::InterfaceScope::Any, port)
+}
+
+/// 非同期UDP bind: 明示的な interface scope 付き
+pub fn bind_udp_scoped_async(
+    scope: crate::net::types::InterfaceScope,
+    port: u16,
+) -> UdpBindFuture {
     UdpBindFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         sent: false,
         port,
+        scope,
     }
 }
 
@@ -732,6 +853,7 @@ pub struct UdpBindEndpointFuture {
     waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     sent: bool,
     port: u16,
+    scope: crate::net::types::InterfaceScope,
 }
 
 impl core::future::Future for UdpBindEndpointFuture {
@@ -745,6 +867,7 @@ impl core::future::Future for UdpBindEndpointFuture {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindEndpoint {
                 port: self.port,
+                scope: self.scope,
                 result_slot: self.result_slot.clone(),
                 waker: self.waker.clone(),
             };
@@ -770,11 +893,20 @@ impl core::future::Future for UdpBindEndpointFuture {
 /// イベントキュー経由でbindリクエストを送信し、UdpEndpointを返す。
 /// asyncコンテキストからの同期ロック取得を完全に回避する。
 pub fn bind_udp_endpoint_async(port: u16) -> UdpBindEndpointFuture {
+    bind_udp_endpoint_scoped_async(crate::net::types::InterfaceScope::Any, port)
+}
+
+/// 非同期UDP bind（UdpEndpointを返す完全非同期版、scope 指定）
+pub fn bind_udp_endpoint_scoped_async(
+    scope: crate::net::types::InterfaceScope,
+    port: u16,
+) -> UdpBindEndpointFuture {
     UdpBindEndpointFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         sent: false,
         port,
+        scope,
     }
 }
 
@@ -785,6 +917,7 @@ pub struct UdpBindEndpointWithTokenFuture {
     sent: bool,
     port: u16,
     token: Option<u64>,
+    scope: crate::net::types::InterfaceScope,
 }
 
 impl core::future::Future for UdpBindEndpointWithTokenFuture {
@@ -799,6 +932,7 @@ impl core::future::Future for UdpBindEndpointWithTokenFuture {
             let event =
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindEndpointWithToken {
                     port: self.port,
+                    scope: self.scope,
                     token: self.token,
                     result_slot: self.result_slot.clone(),
                     waker: self.waker.clone(),
@@ -825,12 +959,26 @@ pub fn bind_udp_endpoint_with_token_async(
     port: u16,
     token: Option<u64>,
 ) -> UdpBindEndpointWithTokenFuture {
+    bind_udp_endpoint_with_token_scoped_async(
+        crate::net::types::InterfaceScope::Any,
+        port,
+        token,
+    )
+}
+
+/// 非同期UDP bind with token（UdpEndpointを返す完全非同期版、scope 指定）
+pub fn bind_udp_endpoint_with_token_scoped_async(
+    scope: crate::net::types::InterfaceScope,
+    port: u16,
+    token: Option<u64>,
+) -> UdpBindEndpointWithTokenFuture {
     UdpBindEndpointWithTokenFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         sent: false,
         port,
         token,
+        scope,
     }
 }
 
@@ -989,6 +1137,7 @@ pub struct UnbindUdpFuture {
     waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     sent: bool,
     port: u16,
+    scope: crate::net::types::InterfaceScope,
 }
 
 impl core::future::Future for UnbindUdpFuture {
@@ -1002,6 +1151,7 @@ impl core::future::Future for UnbindUdpFuture {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindUdp {
                 port: self.port,
+                scope: self.scope,
                 result_slot: self.result_slot.clone(),
                 waker: self.waker.clone(),
             };
@@ -1027,11 +1177,20 @@ impl core::future::Future for UnbindUdpFuture {
 /// 同期版`unbind_udp()`と異なり、呼び出し元でNETWORK_STACKのロックを
 /// 取得しないため、asyncタスクから安全に呼び出せる。
 pub fn unbind_udp_async(port: u16) -> UnbindUdpFuture {
+    unbind_udp_scoped_async(crate::net::types::InterfaceScope::Any, port)
+}
+
+/// 非同期UDP unbind: 明示的な interface scope 付き
+pub fn unbind_udp_scoped_async(
+    scope: crate::net::types::InterfaceScope,
+    port: u16,
+) -> UnbindUdpFuture {
     UnbindUdpFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         sent: false,
         port,
+        scope,
     }
 }
 
@@ -1206,6 +1365,7 @@ pub struct UdpBindWithTokenFuture {
     sent: bool,
     port: u16,
     token: Option<u64>,
+    scope: crate::net::types::InterfaceScope,
 }
 
 impl core::future::Future for UdpBindWithTokenFuture {
@@ -1219,6 +1379,7 @@ impl core::future::Future for UdpBindWithTokenFuture {
             self.waker.register(cx.waker());
             let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindWithToken {
                 port: self.port,
+                scope: self.scope,
                 token: self.token,
                 result_slot: self.result_slot.clone(),
                 waker: self.waker.clone(),
@@ -1242,12 +1403,22 @@ impl core::future::Future for UdpBindWithTokenFuture {
 
 /// 非同期UDP bind with token: イベントキュー経由でbindリクエストを送信
 pub fn bind_udp_with_token_async(port: u16, token: Option<u64>) -> UdpBindWithTokenFuture {
+    bind_udp_with_token_scoped_async(crate::net::types::InterfaceScope::Any, port, token)
+}
+
+/// 非同期UDP bind with token: 明示的な interface scope 付き
+pub fn bind_udp_with_token_scoped_async(
+    scope: crate::net::types::InterfaceScope,
+    port: u16,
+    token: Option<u64>,
+) -> UdpBindWithTokenFuture {
     UdpBindWithTokenFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         sent: false,
         port,
         token,
+        scope,
     }
 }
 
@@ -1321,6 +1492,18 @@ pub fn send_udp_on_async(
     dst_port: u16,
     data: &[u8],
 ) -> bool {
+    send_udp_on_async_with_src(if_id, Ipv4Address::ANY, src_port, dst_ip, dst_port, data, 64)
+}
+
+/// インターフェース指定UDP送信（非同期版・イベントキュー経由、明示 TTL）
+pub fn send_udp_on_async_with_ttl(
+    if_id: super::NetIfId,
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    data: &[u8],
+    ttl: u8,
+) -> bool {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSendOn {
             if_id: if_id.0,
@@ -1329,7 +1512,7 @@ pub fn send_udp_on_async(
             dst_ip: *dst_ip.as_bytes(),
             dst_port,
             data: Vec::from(data),
-            ttl: 64,
+            ttl,
         },
     );
     true
@@ -1384,6 +1567,7 @@ pub fn send_udp_v6_on_async(
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_port: u16,
     data: &[u8],
+    ttl: u8,
 ) -> bool {
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpV6SendOn {
@@ -1393,7 +1577,25 @@ pub fn send_udp_v6_on_async(
             dst_ip: dst_ip.octets(),
             dst_port,
             data: Vec::from(data),
-            ttl: 64,
+            ttl,
+        },
+    );
+    true
+}
+
+/// インターフェース指定IPv6 TCP送信（非同期版・イベントキュー経由）
+pub fn send_tcp_v6_on_async(
+    if_id: super::NetIfId,
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    tcp_segment: &[u8],
+) -> bool {
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::RawTcpV6SendOn {
+            if_id: if_id.0,
+            src_ip: src_ip.octets(),
+            dst_ip: dst_ip.octets(),
+            segment: Vec::from(tcp_segment),
         },
     );
     true

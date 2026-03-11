@@ -3,6 +3,15 @@ use super::*;
 use crate::net::l4::tcp::TcpControlBlock;
 
 impl NetworkStack {
+    /// Bind a UDP socket to a specific interface scope.
+    pub fn bind_udp_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        port: u16,
+    ) -> Option<UdpEndpoint> {
+        self.udp.bind_with_token(scope, port, None).ok()
+    }
+
     /// Bind a TCP listener
     pub fn bind_tcp(&mut self, addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
         // Default: no token
@@ -321,17 +330,36 @@ impl NetworkStack {
 
     /// Bind a UDP socket (uses token-based API)
     pub fn bind_udp(&mut self, port: u16) -> Option<UdpEndpoint> {
-        self.udp.bind_with_token(port, None).ok()
+        self.bind_udp_scoped(crate::net::types::InterfaceScope::Any, port)
     }
 
     /// Bind a UDP socket and associate it with an optional capability token
     pub fn bind_udp_with_token(&mut self, port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
-        self.udp.bind_with_token(port, token).ok()
+        self.bind_udp_with_token_scoped(crate::net::types::InterfaceScope::Any, port, token)
+    }
+
+    /// Bind a UDP socket with an optional capability token and explicit scope.
+    pub fn bind_udp_with_token_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        port: u16,
+        token: Option<u64>,
+    ) -> Option<UdpEndpoint> {
+        self.udp.bind_with_token(scope, port, token).ok()
     }
 
     /// Unbind a UDP socket (removes binding and decrements any associated token)
     pub fn unbind_udp(&mut self, port: u16) {
-        self.udp.unbind(port);
+        self.unbind_udp_scoped(crate::net::types::InterfaceScope::Any, port);
+    }
+
+    /// Unbind a UDP socket from an explicit scope.
+    pub fn unbind_udp_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        port: u16,
+    ) {
+        self.udp.unbind(scope, port);
     }
 
     /// TCP接続を解除

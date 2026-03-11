@@ -194,7 +194,7 @@ impl MdnsService {
 
         loop {
             // パケット受信を待機
-            if let Some((src, ttl, packet)) = socket.recv().await {
+            if let Some((_if_id, src, ttl, packet)) = socket.recv().await {
                 let now = crate::task::timer::current_tick() / 1000;
 
                 // Security: RFC 6762 Section 11 - Multicast DNS implementations MUST silently

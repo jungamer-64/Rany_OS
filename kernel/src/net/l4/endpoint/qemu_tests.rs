@@ -200,7 +200,9 @@ pub fn futures_tcp_packet_stream_multiple_packets_smoke() -> bool {
 
 pub fn futures_udp_packet_stream_delivered_smoke() -> bool {
     let processor = crate::net::l4::udp::UdpProcessor::new();
-    processor.bind_with_token(40123, None).is_ok()
+    processor
+        .bind_with_token(crate::net::types::InterfaceScope::Any, 40123, None)
+        .is_ok()
 }
 
 pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {

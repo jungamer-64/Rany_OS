@@ -1,5 +1,7 @@
 use super::*;
 use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
+use crate::net::runtime::manager::NetIfId;
+use crate::net::types::InterfaceScope;
 use crate::security::capability::{CAP_NET_BIND, CapabilitySet, manager};
 use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
 use alloc::boxed::Box;
@@ -243,7 +245,11 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
     set_panicking(false);
 
     // Bind should fail (token-aware API returns Err on failure)
-    assert!(processor.bind_with_token(10000, None).is_err());
+    assert!(
+        processor
+            .bind_with_token(InterfaceScope::Any, 10000, None)
+            .is_err()
+    );
 
     // Build a packet and process - should be NoEndpoint and stats increment rx_dropped
     let src_ip = Ipv4Address::from_octets(1, 2, 3, 4);
@@ -307,12 +313,13 @@ pub fn test_udp_endpoint_multiple_waiters_woken_on_deliver() {
     packet.data_mut().copy_from_slice(b"abc");
 
     let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
-    endpoint.deliver(src, 255, packet);
+    endpoint.deliver(NetIfId(7), src, 255, packet);
 
     assert_eq!(wake_count.load(Ordering::SeqCst), 2);
 
     match Pin::new(&mut fut1).poll(&mut cx) {
-        Poll::Ready(Some((addr, _ttl, packet))) => {
+        Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
+            assert_eq!(if_id, NetIfId(7));
             assert_eq!(addr, src);
             assert_eq!(packet.data(), b"abc");
         }
@@ -347,7 +354,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
 
     let processor = UdpProcessor::new();
     let endpoint = processor
-        .bind_with_token(10000, None)
+        .bind_with_token(InterfaceScope::Any, 10000, None)
         .expect("bind udp endpoint for zero-copy enqueue test");
 
     let src_ip = Ipv4Address::from_octets(10, 0, 0, 1);
@@ -405,10 +412,33 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
     let waker = noop_waker();
     let mut cx = Context::from_waker(&waker);
     match Pin::new(&mut fut).poll(&mut cx) {
-        Poll::Ready(Some((addr, _ttl, packet))) => {
+        Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
+            assert_eq!(if_id, NetIfId::default());
             assert_eq!(addr, UdpAddr::new(src_ip, 1234));
             assert_eq!(packet.data(), payload);
         }
         _ => panic!("expected delivered packet"),
     }
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_udp_scope_conflicts_any_vs_pinned() {
+    let table = UdpEndpointTable::new();
+    assert!(table
+        .bind_dual_stack_with_token(InterfaceScope::Any, 42000, None)
+        .is_some());
+    assert!(table
+        .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(1)), 42000, None)
+        .is_none());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_udp_scope_allows_same_port_on_distinct_interfaces() {
+    let table = UdpEndpointTable::new();
+    assert!(table
+        .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(1)), 42001, None)
+        .is_some());
+    assert!(table
+        .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(2)), 42001, None)
+        .is_some());
 }

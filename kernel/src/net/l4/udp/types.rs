@@ -1,5 +1,18 @@
 use super::*;
 
+fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
+    if let Some(if_id) = if_id {
+        return if_id;
+    }
+    crate::net::runtime::device::primary_if()
+        .or_else(|| {
+            crate::net::runtime::manager::list_interfaces()
+                .ok()
+                .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+        })
+        .unwrap_or_default()
+}
+
 /// UDP socket snapshot for monitoring
 #[derive(Debug, Clone)]
 pub struct UdpEndpointSnapshot {
@@ -44,12 +57,38 @@ impl UdpProcessor {
 
     /// Check if a socket exists on the given port
     pub fn has_endpoint(&self, port: u16) -> bool {
-        self.endpoints.find(port).is_some()
+        let if_id = resolve_ingress_if_id(None);
+        self.endpoints
+            .find(UdpAddressFamily::Ipv4, port, if_id)
+            .is_some()
     }
 
     /// Process an incoming UDP packet (IPv4)
+    pub fn process_on(
+        &self,
+        if_id: Option<NetIfId>,
+        data: &[u8],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        ttl: u8,
+    ) -> UdpResult {
+        let resolved_if_id = resolve_ingress_if_id(if_id);
+        self.process_impl(resolved_if_id, data, src_ip, dst_ip, ttl)
+    }
+
     pub fn process(
         &self,
+        data: &[u8],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        ttl: u8,
+    ) -> UdpResult {
+        self.process_on(None, data, src_ip, dst_ip, ttl)
+    }
+
+    fn process_impl(
+        &self,
+        if_id: NetIfId,
         data: &[u8],
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
@@ -87,7 +126,7 @@ impl UdpProcessor {
             let src = UdpAddr::new(src_ip, packet.src_port());
             let dst_port = packet.dst_port();
 
-            if self.endpoints.deliver(src, dst_port, ttl, pkt_ref) {
+            if self.endpoints.deliver(if_id, src, dst_port, ttl, pkt_ref) {
                 UdpResult::Delivered
             } else {
                 UdpResult::NoEndpoint
@@ -99,8 +138,31 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet (IPv6, mandatory checksum)
+    pub fn process_v6_on(
+        &self,
+        if_id: Option<NetIfId>,
+        data: &[u8],
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        ttl: u8,
+    ) -> UdpResult {
+        let resolved_if_id = resolve_ingress_if_id(if_id);
+        self.process_v6_impl(resolved_if_id, data, src_ip, dst_ip, ttl)
+    }
+
     pub fn process_v6(
         &self,
+        data: &[u8],
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        ttl: u8,
+    ) -> UdpResult {
+        self.process_v6_on(None, data, src_ip, dst_ip, ttl)
+    }
+
+    fn process_v6_impl(
+        &self,
+        if_id: NetIfId,
         data: &[u8],
         src_ip: Ipv6Address,
         dst_ip: Ipv6Address,
@@ -135,7 +197,7 @@ impl UdpProcessor {
             let src = UdpAddr::new_v6(src_ip, packet.src_port());
             let dst_port = packet.dst_port();
 
-            if self.endpoints.deliver(src, dst_port, ttl, pkt_ref) {
+            if self.endpoints.deliver(if_id, src, dst_port, ttl, pkt_ref) {
                 UdpResult::Delivered
             } else {
                 UdpResult::NoEndpoint
@@ -146,8 +208,33 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet with an existing PacketRef (zero-copy, IPv4)
+    pub fn process_with_packet_on(
+        &self,
+        if_id: Option<NetIfId>,
+        data: &[u8],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        packet: PacketRef,
+        ttl: u8,
+    ) -> UdpResult {
+        let resolved_if_id = resolve_ingress_if_id(if_id);
+        self.process_with_packet_impl(resolved_if_id, data, src_ip, dst_ip, packet, ttl)
+    }
+
     pub fn process_with_packet(
         &self,
+        data: &[u8],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        mut packet: PacketRef,
+        ttl: u8,
+    ) -> UdpResult {
+        self.process_with_packet_on(None, data, src_ip, dst_ip, packet, ttl)
+    }
+
+    fn process_with_packet_impl(
+        &self,
+        if_id: NetIfId,
         data: &[u8],
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
@@ -181,7 +268,7 @@ impl UdpProcessor {
         let src = UdpAddr::new(src_ip, packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
-        if self.endpoints.deliver(src, dst_port, ttl, packet) {
+        if self.endpoints.deliver(if_id, src, dst_port, ttl, packet) {
             UdpResult::Delivered
         } else {
             UdpResult::NoEndpoint
@@ -189,8 +276,33 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet with an existing PacketRef (zero-copy, IPv6)
+    pub fn process_with_packet_v6_on(
+        &self,
+        if_id: Option<NetIfId>,
+        data: &[u8],
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        packet: PacketRef,
+        ttl: u8,
+    ) -> UdpResult {
+        let resolved_if_id = resolve_ingress_if_id(if_id);
+        self.process_with_packet_v6_impl(resolved_if_id, data, src_ip, dst_ip, packet, ttl)
+    }
+
     pub fn process_with_packet_v6(
         &self,
+        data: &[u8],
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        mut packet: PacketRef,
+        ttl: u8,
+    ) -> UdpResult {
+        self.process_with_packet_v6_on(None, data, src_ip, dst_ip, packet, ttl)
+    }
+
+    fn process_with_packet_v6_impl(
+        &self,
+        if_id: NetIfId,
         data: &[u8],
         src_ip: Ipv6Address,
         dst_ip: Ipv6Address,
@@ -224,7 +336,7 @@ impl UdpProcessor {
         let src = UdpAddr::new_v6(src_ip, packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
-        if self.endpoints.deliver(src, dst_port, ttl, packet) {
+        if self.endpoints.deliver(if_id, src, dst_port, ttl, packet) {
             UdpResult::Delivered
         } else {
             UdpResult::NoEndpoint
@@ -236,6 +348,7 @@ impl UdpProcessor {
     /// Bind to a port with a capability token
     pub fn bind_with_token(
         &self,
+        scope: InterfaceScope,
         port: u16,
         token: Option<u64>,
     ) -> Result<UdpEndpoint, NetworkError> {
@@ -251,13 +364,13 @@ impl UdpProcessor {
             }
         }
         self.endpoints
-            .bind_with_token(port, token)
+            .bind_dual_stack_with_token(scope, port, token)
             .ok_or(NetworkError::PortInUse)
     }
 
     /// Unbind a socket
-    pub fn unbind(&self, port: u16) {
-        self.endpoints.unbind(port)
+    pub fn unbind(&self, scope: InterfaceScope, port: u16) {
+        self.endpoints.unbind(scope, port)
     }
 
     /// Build a UDP packet for transmission

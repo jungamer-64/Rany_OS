@@ -10,13 +10,14 @@
 use alloc::vec::Vec;
 
 use super::event::NetworkEvent;
-use super::manager::ENDPOINT_MANAGER;
+use super::manager::{ENDPOINT_MANAGER, EndpointFamily};
 use super::segment::TcpSegmentBuilder;
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
 use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::runtime::manager::NetIfId;
 
 /// イベント処理の結果
 #[derive(Debug)]
@@ -24,7 +25,10 @@ pub enum EventHandleResult {
     /// 処理成功
     Success,
     /// 着信パケット - プロトコルスタックへのオフロード
-    IngressPacket { packet: PacketRef },
+    IngressPacket {
+        if_id: Option<NetIfId>,
+        packet: PacketRef,
+    },
     /// ソケットが見つからない
     SocketNotFound(EndpointFd),
     /// プロトコルエラー
@@ -41,6 +45,20 @@ fn endpoint_ipv4_pair(local: EndpointAddr, remote: EndpointAddr) -> Option<([u8;
 #[inline]
 fn endpoint_is_native_v6_pair(local: EndpointAddr, remote: EndpointAddr) -> bool {
     local.is_ipv6() && remote.is_ipv6() && local.as_ipv4().is_none() && remote.as_ipv4().is_none()
+}
+
+#[inline]
+fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
+    if let Some(if_id) = if_id {
+        return if_id;
+    }
+    crate::net::runtime::device::primary_if()
+        .or_else(|| {
+            crate::net::runtime::manager::list_interfaces()
+                .ok()
+                .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+        })
+        .unwrap_or_default()
 }
 
 fn apply_tcp_checksum_for_addrs(
@@ -434,14 +452,20 @@ impl NetworkEventHandler {
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         match event {
-            NetworkEvent::IngressPacket { packet } => {
+            NetworkEvent::IngressPacket { if_id, packet } => {
                 let pkt_len = packet.len();
                 let data = packet.data();
                 let current_time = stack.current_time();
 
                 match stack.ethernet.process(data) {
                     crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
-                        self.handle_ipv4_ingress_with_stack(payload, src_mac, current_time, stack);
+                        self.handle_ipv4_ingress_with_stack(
+                            if_id,
+                            payload,
+                            src_mac,
+                            current_time,
+                            stack,
+                        );
                         stack.stats.record_rx(pkt_len);
                         EventHandleResult::Success
                     }
@@ -544,14 +568,14 @@ impl NetworkEventHandler {
                     _ => EventHandleResult::Success,
                 }
             }
-            NetworkEvent::IngressBatch { packets } => {
+            NetworkEvent::IngressBatch { if_id, packets } => {
                 // バッチ着信: スタックロック保持中に全パケットを連続処理
                 for packet in packets {
-                    self.handle_event_with_stack(NetworkEvent::IngressPacket { packet }, stack);
+                    self.handle_event_with_stack(NetworkEvent::IngressPacket { if_id, packet }, stack);
                 }
                 EventHandleResult::Success
             }
-            NetworkEvent::ReassembledPacket { data } => {
+            NetworkEvent::ReassembledPacket { if_id, data } => {
                 let current_time = stack.current_time();
 
                 // Determine if it's IPv4 or IPv6
@@ -601,7 +625,8 @@ impl NetworkEventHandler {
 
                         match protocol {
                             crate::net::l3::ipv4::IpProtocol::Tcp => {
-                                super::tcp_rx::process_tcp_segment(
+                                super::tcp_rx::process_tcp_segment_on(
+                                    if_id,
                                     src_ip.octets(),
                                     dst_ip.octets(),
                                     payload,
@@ -609,6 +634,7 @@ impl NetworkEventHandler {
                             }
                             crate::net::l3::ipv4::IpProtocol::Udp => {
                                 self.handle_udp_ingress_with_stack(
+                                    if_id,
                                     src_ip.octets(),
                                     dst_ip.octets(),
                                     payload,
@@ -676,7 +702,7 @@ impl NetworkEventHandler {
 
                         match protocol {
                             crate::net::l3::ipv4::IpProtocol::Tcp => {
-                                super::tcp_rx::process_tcp_segment_v6(src, dst, payload);
+                                super::tcp_rx::process_tcp_segment_v6_on(if_id, src, dst, payload);
                             }
                             crate::net::l3::ipv4::IpProtocol::Udp => {
                                 stack.process_udp_data_v6(
@@ -815,11 +841,12 @@ impl NetworkEventHandler {
             }
             NetworkEvent::AsyncUdpBind {
                 port,
+                scope,
                 result_slot,
                 waker,
             } => {
                 // スタックロック保持版: 二重ロックを回避
-                let success = stack.bind_udp(port).is_some();
+                let success = stack.bind_udp_scoped(scope, port).is_some();
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(success);
                 }
@@ -902,10 +929,11 @@ impl NetworkEventHandler {
             }
             NetworkEvent::AsyncUnbindUdp {
                 port,
+                scope,
                 result_slot,
                 waker,
             } => {
-                stack.unbind_udp(port);
+                stack.unbind_udp_scoped(scope, port);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(true);
                 }
@@ -982,11 +1010,12 @@ impl NetworkEventHandler {
             }
             NetworkEvent::AsyncUdpBindWithToken {
                 port,
+                scope,
                 token,
                 result_slot,
                 waker,
             } => {
-                let success = stack.bind_udp_with_token(port, token).is_some();
+                let success = stack.bind_udp_with_token_scoped(scope, port, token).is_some();
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(success);
                 }
@@ -995,10 +1024,11 @@ impl NetworkEventHandler {
             }
             NetworkEvent::AsyncUdpBindEndpoint {
                 port,
+                scope,
                 result_slot,
                 waker,
             } => {
-                let endpoint = stack.bind_udp(port);
+                let endpoint = stack.bind_udp_scoped(scope, port);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(endpoint);
                 }
@@ -1007,11 +1037,12 @@ impl NetworkEventHandler {
             }
             NetworkEvent::AsyncUdpBindEndpointWithToken {
                 port,
+                scope,
                 token,
                 result_slot,
                 waker,
             } => {
-                let endpoint = stack.bind_udp_with_token(port, token);
+                let endpoint = stack.bind_udp_with_token_scoped(scope, port, token);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(endpoint);
                 }
@@ -1099,6 +1130,20 @@ impl NetworkEventHandler {
                 if stack
                     .send_udp_v6_raw_on_with_ttl(net_if, src_port, src, dst, dst_port, &data, ttl)
                 {
+                    EventHandleResult::Success
+                } else {
+                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                }
+            }
+            NetworkEvent::RawTcpV6SendOn {
+                if_id: _if_id,
+                src_ip,
+                dst_ip,
+                segment,
+            } => {
+                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
+                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                if stack.send_tcp_v6_raw(src, dst, &segment) {
                     EventHandleResult::Success
                 } else {
                     EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
@@ -1619,17 +1664,21 @@ impl NetworkEventHandler {
     /// 既にスタックロックが保持されている。
     /// `handle_event()` → `handle_event_stackless()` のパスで呼ばれた場合は
     /// イベントを再エンキューして非同期パスに委譲する。
-    fn handle_ingress_packet(&self, packet: PacketRef) -> EventHandleResult {
+    fn handle_ingress_packet(&self, if_id: Option<NetIfId>, packet: PacketRef) -> EventHandleResult {
         // スタックロックなしのコンテキストから呼ばれた場合:
         // イベントキュー経由で再エンキューし、network_event_taskが
         // スタックロック保持下で処理する（二重ロック取得を回避）
-        crate::net::l4::endpoint::event::send_event_ignore(NetworkEvent::IngressPacket { packet });
+        crate::net::l4::endpoint::event::send_event_ignore(NetworkEvent::IngressPacket {
+            if_id,
+            packet,
+        });
         EventHandleResult::Success
     }
 
     /// IPv4パケットの処理
     fn handle_ipv4_ingress_with_stack(
         &self,
+        if_id: Option<NetIfId>,
         data: &[u8],
         src_mac: MacAddress,
         current_time: u64,
@@ -1700,6 +1749,7 @@ impl NetworkEventHandler {
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip, orig) => {
                 self.handle_udp_ingress_with_stack(
+                    if_id,
                     src_ip.octets(),
                     dst_ip.octets(),
                     payload,
@@ -1709,11 +1759,18 @@ impl NetworkEventHandler {
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip, _orig) => {
-                super::tcp_rx::process_tcp_segment(src_ip.octets(), dst_ip.octets(), payload);
+                super::tcp_rx::process_tcp_segment_on(if_id, src_ip.octets(), dst_ip.octets(), payload);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Reassembled(reassembled_data) => {
                 // 再組立てパケットを再帰的に処理
-                stack.process_reassembled_packet(&reassembled_data, current_time, src_mac);
+                let _ = src_mac;
+                self.handle_event_with_stack(
+                    NetworkEvent::ReassembledPacket {
+                        if_id,
+                        data: reassembled_data,
+                    },
+                    stack,
+                );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::FragmentPending => {}
             crate::net::l3::ipv4::Ipv4ProcessResult::ReassemblyTimeout(src, header_data) => {
@@ -1764,6 +1821,7 @@ impl NetworkEventHandler {
     /// UDPパケットの処理
     fn handle_udp_ingress_with_stack(
         &self,
+        if_id: Option<NetIfId>,
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
         payload: &[u8],
@@ -1780,11 +1838,17 @@ impl NetworkEventHandler {
         let data = &payload[8..];
 
         let remote = EndpointAddr::new(src_ip, src_port);
+        let ingress_if_id = resolve_ingress_if_id(if_id);
 
         let mut found = false;
         if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
-            if let Some(socket) = mgr.find_by_port(EndpointType::Udp, dst_port) {
-                socket.push_packet(remote, data.to_vec());
+            if let Some(socket) = mgr.find_by_port(
+                EndpointType::Udp,
+                EndpointFamily::Ipv4,
+                dst_port,
+                Some(ingress_if_id),
+            ) {
+                socket.push_packet(ingress_if_id, remote, data.to_vec());
                 found = true;
             }
         }

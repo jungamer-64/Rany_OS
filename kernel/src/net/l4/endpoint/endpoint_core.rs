@@ -9,6 +9,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
+use crate::net::runtime::manager::NetIfId;
 use crate::sync::poison_lock::PoisonLock;
 
 use crate::net::l4::tcp::TcpStream;
@@ -185,7 +186,7 @@ impl Endpoint {
     ///
     /// Acceptキューから接続を取得する。NETWORK_STACKロックは使用しない。
     /// 空の場合はTimeoutを返す。`AcceptFuture` が内部で使用する。
-    pub fn next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr)> {
+    pub fn next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr, NetIfId)> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
         }
@@ -204,6 +205,7 @@ impl Endpoint {
                 let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
+                new_inner.last_ingress_if_id = Some(conn.if_id);
                 new_inner.ensure_tcp().nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を引き継ぐ
                 new_inner.priority = inner.priority; // 優先度を引き継ぐ
                 let _ = new_inner.transition_to(EndpointState::Connected);
@@ -216,7 +218,7 @@ impl Endpoint {
 
             log::info!("TCP: Accepted connection from {}", conn.remote_addr);
 
-            return Ok((new_socket, conn.remote_addr));
+            return Ok((new_socket, conn.remote_addr, conn.if_id));
         }
 
         // キューが空の場合はPending（Timeout）を返す
@@ -342,17 +344,20 @@ impl Endpoint {
     /// UDP受信（同期バッファ読み取り）
     ///
     /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
-    pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr)> {
+    pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
         if self.endpoint_type != EndpointType::Udp {
             return Err(EndpointError::InvalidArgument);
         }
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
-        if let Some((addr, data)) = inner.udp_mut().and_then(|u| u.pending_packets.pop_front()) {
+        if let Some((if_id, addr, data)) =
+            inner.udp_mut().and_then(|u| u.pending_packets.pop_front())
+        {
+            inner.last_ingress_if_id = Some(if_id);
             let len = buf.len().min(data.len());
             buf[..len].copy_from_slice(&data[..len]);
-            Ok((len, addr))
+            Ok((len, addr, if_id))
         } else {
             Err(EndpointError::Timeout)
         }
@@ -379,10 +384,14 @@ impl Endpoint {
 
     /// UDPパケット追加（内部用）
     /// プロトコルスタックから呼ばれる
-    pub fn push_packet(&self, addr: EndpointAddr, data: Vec<u8>) {
+    pub fn push_packet(&self, if_id: NetIfId, addr: EndpointAddr, data: Vec<u8>) {
         let waker = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.ensure_udp().pending_packets.push_back((addr, data));
+            inner.last_ingress_if_id = Some(if_id);
+            inner
+                .ensure_udp()
+                .pending_packets
+                .push_back((if_id, addr, data));
             // 待機中のタスクを起こす準備
             inner.recv_waker.take()
         };
@@ -694,13 +703,13 @@ impl OwnedEndpoint {
     ///
     /// NETWORK_STACKロックは使用しない。`AcceptFuture` が内部で使用する。
     /// asyncコンテキストでは `accept_async()` を推奨。
-    pub fn next_incoming(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr)> {
-        let (ep, addr) = self
+    pub fn next_incoming(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr, NetIfId)> {
+        let (ep, addr, if_id) = self
             .endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
             .next_incoming()?;
-        Ok((OwnedEndpoint::from_endpoint(ep), addr))
+        Ok((OwnedEndpoint::from_endpoint(ep), addr, if_id))
     }
 
     /// 送信（同期）
@@ -728,7 +737,7 @@ impl OwnedEndpoint {
     }
 
     /// UDP受信（同期）
-    pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr)> {
+    pub fn recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
         self.endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?

@@ -12,10 +12,15 @@ impl NetworkStack {
     /// Process an incoming packet (main entry point)
     /// Receive a packet from the network
     pub fn receive(&mut self, packet: PacketRef) {
+        self.receive_on(None, packet);
+    }
+
+    /// Process an incoming packet received on a specific interface.
+    pub fn receive_on(&mut self, if_id: Option<super::NetIfId>, packet: PacketRef) {
         // Offload ALL packet processing to the asynchronous endpoint stack.
         // This minimizes time spent in the interrupt/polling context.
         crate::net::l4::endpoint::event::send_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet },
+            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { if_id, packet },
         );
     }
 
@@ -24,11 +29,16 @@ impl NetworkStack {
     /// バッチイベントとして一括送信し、イベントキューのロック取得を
     /// 1回に削減することでハイスループット時のオーバーヘッドを低減する。
     pub fn receive_batch(&mut self, batch: PacketBatch) {
+        self.receive_batch_on(None, batch);
+    }
+
+    /// Process a batch of incoming packets from the same ingress interface.
+    pub fn receive_batch_on(&mut self, if_id: Option<super::NetIfId>, batch: PacketBatch) {
         let packets: Vec<PacketRef> = batch.into_iter().collect();
         if packets.is_empty() {
             return;
         }
-        crate::net::l4::endpoint::event::send_batch_event(packets);
+        crate::net::l4::endpoint::event::send_batch_event_on(if_id, packets);
     }
 
     /// Process IPv4 packet
@@ -73,6 +83,7 @@ impl NetworkStack {
                 // Offload to asynchronous endpoint stack
                 crate::net::l4::endpoint::event::send_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+                        if_id: None,
                         packet: packet.clone(),
                     },
                 );
@@ -91,6 +102,7 @@ impl NetworkStack {
                 // Offload to asynchronous endpoint stack
                 crate::net::l4::endpoint::event::send_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+                        if_id: None,
                         packet: packet.clone(),
                     },
                 );
@@ -116,6 +128,7 @@ impl NetworkStack {
 
                 crate::net::l4::endpoint::event::send_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
+                        if_id: None,
                         data: reassembled_data,
                     },
                 );
@@ -372,6 +385,7 @@ impl NetworkStack {
                 // Security Fix: Offload reassembled IPv6 packets to the asynchronous endpoint stack
                 crate::net::l4::endpoint::event::send_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
+                        if_id: None,
                         data: reassembled_data,
                     },
                 );

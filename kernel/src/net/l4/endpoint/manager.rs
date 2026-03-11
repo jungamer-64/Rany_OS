@@ -11,14 +11,56 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::endpoint_core::Endpoint;
 use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
+use crate::net::runtime::manager::NetIfId;
+use crate::net::types::InterfaceScope;
 
 const EPHEMERAL_PORT_START: u16 = 49152;
 const EPHEMERAL_PORT_END: u16 = 65535;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EndpointFamily {
+    Ipv4,
+    Ipv6,
+}
+
+impl EndpointFamily {
+    pub(crate) fn from_addr(addr: EndpointAddr) -> Self {
+        if addr.is_ipv6() {
+            Self::Ipv6
+        } else {
+            Self::Ipv4
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct PortBindingKey {
+    family: EndpointFamily,
+    port: u16,
+    scope: InterfaceScope,
+}
+
+impl PortBindingKey {
+    fn new(family: EndpointFamily, port: u16, scope: InterfaceScope) -> Self {
+        Self {
+            family,
+            port,
+            scope,
+        }
+    }
+}
+
+fn scopes_conflict(lhs: InterfaceScope, rhs: InterfaceScope) -> bool {
+    match (lhs, rhs) {
+        (InterfaceScope::Any, _) | (_, InterfaceScope::Any) => true,
+        (InterfaceScope::Pinned(a), InterfaceScope::Pinned(b)) => a == b,
+    }
+}
+
 pub struct EndpointManager {
     endpoints: PoisonRwLock<BTreeMap<EndpointFd, Endpoint>>,
-    tcp_ports: PoisonRwLock<BTreeMap<u16, EndpointFd>>,
-    udp_ports: PoisonRwLock<BTreeMap<u16, EndpointFd>>,
+    tcp_ports: PoisonRwLock<BTreeMap<PortBindingKey, EndpointFd>>,
+    udp_ports: PoisonRwLock<BTreeMap<PortBindingKey, EndpointFd>>,
     next_ephemeral_port: AtomicU32,
 }
 
@@ -53,7 +95,10 @@ impl EndpointManager {
                     .wrapping_sub(EPHEMERAL_PORT_START)
                     .wrapping_add(i))
                     % range_size);
-            if !ports_guard.contains_key(&port) {
+            let conflict = ports_guard
+                .keys()
+                .any(|key| key.port == port && matches!(key.scope, InterfaceScope::Any));
+            if !conflict {
                 // Update the counter for the next sequential-ish attempt (if we still want it)
                 // but since we randomized the start above, the counter is less critical.
                 self.next_ephemeral_port
@@ -79,18 +124,20 @@ impl EndpointManager {
             .remove(&fd);
         if let Some(ref s) = removed {
             if let Some(addr) = s.local_addr() {
+                let family = EndpointFamily::from_addr(addr);
+                let scope = s.inner().lock().unwrap_or_else(|e| e.into_inner()).scope;
                 match s.socket_type() {
                     EndpointType::Tcp => {
                         self.tcp_ports
                             .write()
                             .unwrap_or_else(|e| e.into_inner())
-                            .remove(&addr.port());
+                            .remove(&PortBindingKey::new(family, addr.port(), scope));
                     }
                     EndpointType::Udp => {
                         self.udp_ports
                             .write()
                             .unwrap_or_else(|e| e.into_inner())
-                            .remove(&addr.port());
+                            .remove(&PortBindingKey::new(family, addr.port(), scope));
                     }
                     _ => {}
                 }
@@ -110,7 +157,9 @@ impl EndpointManager {
     pub fn bind_port(
         &self,
         endpoint_type: EndpointType,
+        family: EndpointFamily,
         port: u16,
+        scope: InterfaceScope,
         fd: EndpointFd,
     ) -> EndpointResult<()> {
         let ports = match endpoint_type {
@@ -120,22 +169,45 @@ impl EndpointManager {
         };
 
         let mut guard = ports.write().unwrap_or_else(|e| e.into_inner());
-        if guard.contains_key(&port) {
+        if guard.keys().any(|key| {
+            key.family == family && key.port == port && scopes_conflict(key.scope, scope)
+        }) {
             return Err(EndpointError::PortInUse);
         }
-        guard.insert(port, fd);
+        guard.insert(PortBindingKey::new(family, port, scope), fd);
         Ok(())
     }
 
-    pub fn find_by_port(&self, endpoint_type: EndpointType, port: u16) -> Option<Endpoint> {
-        let ports = match endpoint_type {
-            EndpointType::Tcp => &self.tcp_ports,
-            EndpointType::Udp => &self.udp_ports,
-            _ => return None,
-        };
+    pub fn find_by_port(
+        &self,
+        endpoint_type: EndpointType,
+        family: EndpointFamily,
+        port: u16,
+        ingress_if_id: Option<NetIfId>,
+    ) -> Option<Endpoint> {
+        let endpoints = self.endpoints.read().unwrap_or_else(|e| e.into_inner());
+        let mut wildcard = None;
+        for endpoint in endpoints.values() {
+            if endpoint.socket_type() != endpoint_type {
+                continue;
+            }
+            let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let Some(local_addr) = inner.local_addr else {
+                continue;
+            };
+            if EndpointFamily::from_addr(local_addr) != family || local_addr.port() != port {
+                continue;
+            }
 
-        let fd = *ports.read().unwrap_or_else(|e| e.into_inner()).get(&port)?;
-        self.get(fd)
+            match (inner.scope, ingress_if_id) {
+                (InterfaceScope::Pinned(bound_if), Some(ingress_if)) if bound_if == ingress_if => {
+                    return Some(endpoint.clone());
+                }
+                (InterfaceScope::Any, _) => wildcard = Some(endpoint.clone()),
+                _ => {}
+            }
+        }
+        wildcard
     }
 
     pub fn endpoint_count(&self) -> usize {
@@ -184,10 +256,18 @@ pub fn endpoint_manager() -> Option<&'static PoisonRwLock<Option<EndpointManager
     Some(&ENDPOINT_MANAGER)
 }
 
-pub fn find_listening_socket(local: EndpointAddr) -> Option<Endpoint> {
+pub fn find_listening_socket(
+    local: EndpointAddr,
+    ingress_if_id: Option<NetIfId>,
+) -> Option<Endpoint> {
     let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
     let mgr = manager.as_ref()?;
-    let socket = mgr.find_by_port(EndpointType::Tcp, local.port())?;
+    let socket = mgr.find_by_port(
+        EndpointType::Tcp,
+        EndpointFamily::from_addr(local),
+        local.port(),
+        ingress_if_id,
+    )?;
     let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
     if inner.state == super::types::EndpointState::Listening {
         Some(socket.clone())

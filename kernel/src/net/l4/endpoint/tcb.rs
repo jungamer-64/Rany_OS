@@ -15,6 +15,8 @@ use super::flow_control::FlowController;
 use super::retransmit::check_retransmit_timeouts;
 use super::types::{EndpointAddr, EndpointError, EndpointFd, conn_key_hash, seq_after};
 use super::window_scale::WindowScaleOption;
+use crate::net::runtime::manager::NetIfId;
+use crate::net::types::InterfaceScope;
 
 /// TCPフラグ
 pub mod tcp_flags {
@@ -36,6 +38,8 @@ pub struct TcpControlBlockEntry {
     pub fd: EndpointFd,
     pub local: EndpointAddr,
     pub remote: EndpointAddr,
+    pub scope: InterfaceScope,
+    pub ingress_if_id: Option<NetIfId>,
     pub state: TcpConnectionState,
     pub snd_nxt: u32,
     pub snd_una: u32,
@@ -79,6 +83,8 @@ impl TcpControlBlockEntry {
             fd,
             local,
             remote,
+            scope: InterfaceScope::Any,
+            ingress_if_id: None,
             state: TcpConnectionState::Closed,
             snd_nxt: 0,
             snd_una: 0,

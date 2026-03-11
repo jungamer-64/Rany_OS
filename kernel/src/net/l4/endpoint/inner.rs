@@ -15,6 +15,8 @@ use alloc::vec::Vec;
 
 use crate::net::l4::tcp::{TcpListener as TcpListenerImpl, TcpStream};
 use crate::net::l4::udp::UdpEndpoint as RawUdpSocket;
+use crate::net::runtime::manager::NetIfId;
+use crate::net::types::InterfaceScope;
 
 use super::congestion::CongestionAlgorithm;
 use super::types::{
@@ -72,7 +74,7 @@ pub struct UdpProtocolState {
     /// UDPソケット
     pub socket: Option<RawUdpSocket>,
     /// 保留中のパケット
-    pub pending_packets: VecDeque<(EndpointAddr, Vec<u8>)>,
+    pub pending_packets: VecDeque<(NetIfId, EndpointAddr, Vec<u8>)>,
 }
 
 impl UdpProtocolState {
@@ -122,6 +124,10 @@ pub struct EndpointInner {
     pub local_addr: Option<EndpointAddr>,
     /// リモートアドレス
     pub remote_addr: Option<EndpointAddr>,
+    /// このソケットに適用されたインターフェース選択ポリシー
+    pub scope: InterfaceScope,
+    /// 直近の ingress/accept インターフェース
+    pub last_ingress_if_id: Option<NetIfId>,
     /// 受信バッファ（VecDeque: O(1) FIFO）
     pub recv_buffer: VecDeque<u8>,
     /// 送信バッファ（VecDeque: O(1) FIFO）
@@ -160,6 +166,8 @@ impl EndpointInner {
             state: EndpointState::Created,
             local_addr: None,
             remote_addr: None,
+            scope: InterfaceScope::Any,
+            last_ingress_if_id: None,
             recv_buffer: VecDeque::with_capacity(Self::DEFAULT_BUFFER_SIZE),
             send_buffer: VecDeque::with_capacity(Self::DEFAULT_BUFFER_SIZE),
             recv_buffer_limit: Self::MAX_BUFFER_SIZE,

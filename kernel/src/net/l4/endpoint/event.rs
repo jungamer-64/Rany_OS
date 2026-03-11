@@ -16,17 +16,28 @@ use core::task::{Context, Poll};
 
 use super::types::{EndpointAddr, EndpointFd, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::runtime::manager::NetIfId;
+use crate::net::types::InterfaceScope;
 
 /// ネットワークイベント種別
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
     /// 着信パケット - プロトコルスタックへのオフロード
-    IngressPacket { packet: PacketRef },
+    IngressPacket {
+        if_id: Option<NetIfId>,
+        packet: PacketRef,
+    },
     /// バッチ着信パケット - 複数パケットの一括通知
     /// ロック取得を1回に削減し、イベントキュー競合を低減する
-    IngressBatch { packets: Vec<PacketRef> },
+    IngressBatch {
+        if_id: Option<NetIfId>,
+        packets: Vec<PacketRef>,
+    },
     /// 再組立てパケット - プロトコルスタックへのオフロード
-    ReassembledPacket { data: Vec<u8> },
+    ReassembledPacket {
+        if_id: Option<NetIfId>,
+        data: Vec<u8>,
+    },
     /// 送信データ準備完了 - プロトコルスタックに送信を要求
     DataReady {
         fd: EndpointFd,
@@ -110,6 +121,7 @@ pub enum NetworkEvent {
     /// 非同期UDP bind（ロック競合回避）
     AsyncUdpBind {
         port: u16,
+        scope: InterfaceScope,
         /// 結果通知用の共有スロット
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
@@ -143,6 +155,7 @@ pub enum NetworkEvent {
     /// 非同期UDP unbind（イベントキュー経由・ロック競合回避）
     AsyncUnbindUdp {
         port: u16,
+        scope: InterfaceScope,
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
@@ -169,6 +182,7 @@ pub enum NetworkEvent {
     /// 非同期UDP bind with token（イベントキュー経由・ロック競合回避）
     AsyncUdpBindWithToken {
         port: u16,
+        scope: InterfaceScope,
         token: Option<u64>,
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
@@ -208,6 +222,13 @@ pub enum NetworkEvent {
         data: Vec<u8>,
         ttl: u8,
     },
+    /// インターフェース指定IPv6 TCP送信（非同期版）
+    RawTcpV6SendOn {
+        if_id: u16,
+        src_ip: [u8; 16],
+        dst_ip: [u8; 16],
+        segment: Vec<u8>,
+    },
     /// 非同期TCP connect（TcpStreamを返す完全非同期版）
     AsyncTcpConnectStream {
         local: EndpointAddr,
@@ -243,12 +264,14 @@ pub enum NetworkEvent {
     /// 非同期UDP bind（UdpEndpointを返す完全非同期版）
     AsyncUdpBindEndpoint {
         port: u16,
+        scope: InterfaceScope,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::l4::udp::UdpEndpoint>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期UDP bind with token（UdpEndpointを返す完全非同期版）
     AsyncUdpBindEndpointWithToken {
         port: u16,
+        scope: InterfaceScope,
         token: Option<u64>,
         result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::l4::udp::UdpEndpoint>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
@@ -659,7 +682,7 @@ pub fn send_event_ignore(event: NetworkEvent) {
 /// ロック取得を1回に削減し、高スループット受信パス向けの最適化。
 /// 各パケットを個別に `send_event_ignore` するより効率的。
 #[inline]
-pub fn send_batch_event(packets: Vec<PacketRef>) {
+pub fn send_batch_event_on(if_id: Option<NetIfId>, packets: Vec<PacketRef>) {
     if packets.is_empty() {
         return;
     }
@@ -667,9 +690,14 @@ pub fn send_batch_event(packets: Vec<PacketRef>) {
         // 1パケットなら通常パスを使用（Vec のオーバーヘッド回避）
         let mut packets = packets;
         if let Some(p) = packets.pop() {
-            let _ = NETWORK_EVENT_QUEUE.send(NetworkEvent::IngressPacket { packet: p });
+            let _ = NETWORK_EVENT_QUEUE.send(NetworkEvent::IngressPacket { if_id, packet: p });
         }
         return;
     }
-    let _ = NETWORK_EVENT_QUEUE.send(NetworkEvent::IngressBatch { packets });
+    let _ = NETWORK_EVENT_QUEUE.send(NetworkEvent::IngressBatch { if_id, packets });
+}
+
+#[inline]
+pub fn send_batch_event(packets: Vec<PacketRef>) {
+    send_batch_event_on(None, packets);
 }

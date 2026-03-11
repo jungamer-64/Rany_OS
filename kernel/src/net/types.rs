@@ -11,6 +11,8 @@
 //!
 //! 両者間の変換は `From`/`Into` トレイトで提供される。
 
+use crate::net::runtime::manager::NetIfId;
+
 /// Common Network Errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkError {
@@ -27,8 +29,49 @@ pub enum NetworkError {
     ArpResolutionPending,
     /// Buffer too small for operation
     BufferTooSmall,
+    /// No usable route or interface was found for the requested operation
+    NetworkUnreachable,
     /// Transmit operation failed
     TransmitFailed,
+}
+
+/// Interface selection policy for socket and raw network operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum InterfaceScope {
+    /// Allow the stack to select the egress interface using socket affinity,
+    /// source address matching, and the routing table.
+    Any,
+    /// Restrict the operation to a specific interface id.
+    Pinned(NetIfId),
+}
+
+impl Default for InterfaceScope {
+    fn default() -> Self {
+        Self::Any
+    }
+}
+
+impl InterfaceScope {
+    #[inline]
+    pub const fn pinned(if_id: NetIfId) -> Self {
+        Self::Pinned(if_id)
+    }
+
+    #[inline]
+    pub const fn as_if_id(self) -> Option<NetIfId> {
+        match self {
+            Self::Any => None,
+            Self::Pinned(if_id) => Some(if_id),
+        }
+    }
+
+    #[inline]
+    pub fn matches_if(self, if_id: NetIfId) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Pinned(pinned) => pinned == if_id,
+        }
+    }
 }
 
 // ============================================================================

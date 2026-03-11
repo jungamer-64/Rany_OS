@@ -275,7 +275,7 @@ pub fn process_received_packet_zero_copy(
     compute_and_set_flow_hash(&mut packet);
 
     if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
-        stack::receive_batch(batch);
+        stack::receive_batch_on(None, batch);
     }
 }
 
@@ -319,10 +319,12 @@ pub fn process_received_packet_zero_copy_for_interface(
     }
 
     compute_and_set_flow_hash(&mut packet);
-
-    if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
-        stack::receive_batch(batch);
-    }
+    crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+            if_id: Some(if_id),
+            packet,
+        },
+    );
 }
 
 fn compute_and_set_flow_hash(_packet: &mut crate::net::datapath::mempool::PacketRef) {

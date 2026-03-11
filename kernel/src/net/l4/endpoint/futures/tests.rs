@@ -550,7 +550,9 @@ pub fn test_udp_packet_stream_delivered() {
     // Use a UdpProcessor instance and bind a endpoint to a port
     let processor = crate::net::l4::udp::UdpProcessor::new();
     let port = 40000u16;
-    let u = processor.bind_with_token(port, None).expect("bind failed");
+    let u = processor
+        .bind_with_token(crate::net::types::InterfaceScope::Any, port, None)
+        .expect("bind failed");
 
     // Create an OwnedEndpoint and attach the UdpEndpoint instance to its inner state
     let sock = create_udp_endpoint();
