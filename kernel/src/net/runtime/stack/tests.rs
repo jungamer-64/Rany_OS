@@ -66,24 +66,42 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
 
     // Runtime APIs should fail conservatively when the global lock is poisoned
     // NOTE: These intentionally test the deprecated sync APIs for graceful failure.
+    let run_with_event_task = |future| {
+        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let mut executor = crate::task::Executor::new();
+
+        let result_slot_clone = result_slot.clone();
+        let completed_clone = completed.clone();
+        executor.spawn(crate::task::Task::new(async move {
+            let output = future.await;
+            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+            *slot = Some(output);
+            completed_clone.store(true, core::sync::atomic::Ordering::Release);
+        }));
+        executor.spawn(crate::task::Task::new(async {
+            crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+        }));
+
+        let mut output = None;
+        for _ in 0..100_000 {
+            executor.drive_once_for_test();
+            if completed.load(core::sync::atomic::Ordering::Acquire) {
+                output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                break;
+            }
+        }
+
+        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        output.expect("network stack test future timed out")
+    };
+    assert!(run_with_event_task(send_udp(1234, Ipv4Address::LOOPBACK, 80, &[0x1, 0x2],)).is_err());
     assert!(
-        crate::net::tests::run_with_network_event_task(send_udp(
-            1234,
-            Ipv4Address::LOOPBACK,
-            80,
-            &[0x1, 0x2],
-        ))
-        .is_err()
+        run_with_event_task(send_tcp(Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, &[],)).is_err()
     );
-    assert!(
-        crate::net::tests::run_with_network_event_task(send_tcp(
-            Ipv4Address::LOOPBACK,
-            Ipv4Address::LOOPBACK,
-            &[],
-        ))
-        .is_err()
-    );
-    assert!(crate::net::tests::run_with_network_event_task(bind_udp(1234)).is_none());
+    assert!(run_with_event_task(bind_udp(1234)).is_none());
 }
 
 #[cfg_attr(test, test_case)]
@@ -104,9 +122,38 @@ pub fn test_send_udp_event_task_zero_copy() {
     }
 
     let dst = Ipv4Address::new([255, 255, 255, 255]); // Broadcast -> immediate MAC
-    assert!(
-        crate::net::tests::run_with_network_event_task(send_udp(1234, dst, 80, &[1, 2, 3])).is_ok()
-    );
+    let sent = {
+        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let mut executor = crate::task::Executor::new();
+
+        let result_slot_clone = result_slot.clone();
+        let completed_clone = completed.clone();
+        executor.spawn(crate::task::Task::new(async move {
+            let output = send_udp(1234, dst, 80, &[1, 2, 3]).await;
+            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+            *slot = Some(output);
+            completed_clone.store(true, core::sync::atomic::Ordering::Release);
+        }));
+        executor.spawn(crate::task::Task::new(async {
+            crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+        }));
+
+        let mut output = None;
+        for _ in 0..100_000 {
+            executor.drive_once_for_test();
+            if completed.load(core::sync::atomic::Ordering::Acquire) {
+                output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                break;
+            }
+        }
+
+        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        output.expect("send_udp test future timed out")
+    };
+    assert!(sent.is_ok());
 }
 
 #[cfg_attr(test, test_case)]
@@ -133,10 +180,34 @@ pub fn test_send_icmp_event_dispatch_smoke() {
         }
     }
 
-    crate::net::tests::run_with_network_event_task(async {
+    crate::net::l4::endpoint::event::reset_event_system_for_tests();
+
+    let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+    let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let mut executor = crate::task::Executor::new();
+
+    let result_slot_clone = result_slot.clone();
+    let completed_clone = completed.clone();
+    executor.spawn(crate::task::Task::new(async move {
         assert!(crate::net::api::icmp::enqueue_icmp_echo([8, 8, 8, 8], 1));
         crate::task::yield_now().await;
-    });
+        let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = Some(());
+        completed_clone.store(true, core::sync::atomic::Ordering::Release);
+    }));
+    executor.spawn(crate::task::Task::new(async {
+        crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+    }));
+
+    for _ in 0..100_000 {
+        executor.drive_once_for_test();
+        if completed.load(core::sync::atomic::Ordering::Acquire) {
+            break;
+        }
+    }
+
+    crate::net::l4::endpoint::event::reset_event_system_for_tests();
+    assert!(completed.load(core::sync::atomic::Ordering::Acquire));
 }
 
 #[cfg_attr(test, test_case)]
@@ -260,7 +331,37 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
 
     assert!(crate::net::api::dhcp::init_dhcp_runtime().is_ok());
 
-    let st = crate::net::tests::run_with_network_event_task(crate::net::api::dhcp::dhcp_state());
+    let st = {
+        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let mut executor = crate::task::Executor::new();
+
+        let result_slot_clone = result_slot.clone();
+        let completed_clone = completed.clone();
+        executor.spawn(crate::task::Task::new(async move {
+            let output = crate::net::api::dhcp::dhcp_state().await;
+            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+            *slot = Some(output);
+            completed_clone.store(true, core::sync::atomic::Ordering::Release);
+        }));
+        executor.spawn(crate::task::Task::new(async {
+            crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+        }));
+
+        let mut output = None;
+        for _ in 0..100_000 {
+            executor.drive_once_for_test();
+            if completed.load(core::sync::atomic::Ordering::Acquire) {
+                output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                break;
+            }
+        }
+
+        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        output.expect("dhcp_state test future timed out")
+    };
     assert!(!st.v4_state.is_empty());
     assert!(!st.v6_state.is_empty());
 
@@ -282,7 +383,37 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     }
 
     // verify dhcp_state snapshot reflects the decline
-    let snap = crate::net::tests::run_with_network_event_task(crate::net::api::dhcp::dhcp_state());
+    let snap = {
+        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let mut executor = crate::task::Executor::new();
+
+        let result_slot_clone = result_slot.clone();
+        let completed_clone = completed.clone();
+        executor.spawn(crate::task::Task::new(async move {
+            let output = crate::net::api::dhcp::dhcp_state().await;
+            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+            *slot = Some(output);
+            completed_clone.store(true, core::sync::atomic::Ordering::Release);
+        }));
+        executor.spawn(crate::task::Task::new(async {
+            crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+        }));
+
+        let mut output = None;
+        for _ in 0..100_000 {
+            executor.drive_once_for_test();
+            if completed.load(core::sync::atomic::Ordering::Acquire) {
+                output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                break;
+            }
+        }
+
+        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        output.expect("dhcp_state snapshot future timed out")
+    };
     assert_eq!(snap.v4_last_declined, Some(test_ip));
 }
 

@@ -296,7 +296,7 @@ impl VirtioNetDevice {
             );
 
             // Notify network stack that TX resources became available
-            crate::net::l4::endpoint::event::send_event_ignore(
+            crate::net::l4::endpoint::event::enqueue_event_ignore(
                 crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
             );
         }

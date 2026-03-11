@@ -286,7 +286,7 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
 
     fn transmit_complete(&self, _queue_index: u16, _packet: PacketRef) {
         // Notify network stack that TX resources became available
-        crate::net::l4::endpoint::event::send_event_ignore(
+        crate::net::l4::endpoint::event::enqueue_event_ignore(
             crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
         );
     }

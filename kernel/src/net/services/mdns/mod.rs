@@ -222,7 +222,7 @@ impl MdnsService {
                         let mut buffer = [0u8; 512];
                         if let Some(len) = Self::build_response(&mut buffer, &name, ip, ttl) {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                            let _ = socket.send_to(&buffer[..len], dst);
+                            let _ = socket.send_to_sync(&buffer[..len], dst);
                         }
                     }
                     _ => {}
@@ -238,13 +238,13 @@ impl MdnsService {
                                 Self::build_response(&mut buffer, &report.name, ip, report.ttl)
                             {
                                 let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                                let _ = socket.send_to(&buffer[..len], dst);
+                                let _ = socket.send_to_sync(&buffer[..len], dst);
                             }
                         }
                     } else {
                         if let Some(len) = Self::build_query(&mut buffer, &report.name) {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                            let _ = socket.send_to(&buffer[..len], dst);
+                            let _ = socket.send_to_sync(&buffer[..len], dst);
                         }
                     }
                 }

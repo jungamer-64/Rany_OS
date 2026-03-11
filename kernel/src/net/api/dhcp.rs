@@ -351,92 +351,9 @@ pub(crate) fn dhcp_state_sync() -> DhcpRuntimeState {
 
 // 旧同期 dhcp_renew は削除済み（dhcp_renew を使用すること）
 
-// ============================================================================
-// 非同期API（推奨）
-// ============================================================================
-
-pub struct GetDhcpStateFuture {
-    ready: Option<DhcpRuntimeState>,
-}
-
-impl GetDhcpStateFuture {
-    fn new(if_id: NetIfId) -> Self {
-        Self {
-            ready: Some(get_dhcp_state_sync(if_id)),
-        }
-    }
-}
-
-impl Future for GetDhcpStateFuture {
-    type Output = DhcpRuntimeState;
-
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        Poll::Ready(
-            this.ready
-                .take()
-                .expect("get_dhcp_state future polled after completion"),
-        )
-    }
-}
-
-pub struct ListDhcpStatesFuture {
-    ready: Option<alloc::vec::Vec<InterfaceDhcpState>>,
-}
-
-impl ListDhcpStatesFuture {
-    fn new() -> Self {
-        Self {
-            ready: Some(list_dhcp_states_sync()),
-        }
-    }
-}
-
-impl Future for ListDhcpStatesFuture {
-    type Output = alloc::vec::Vec<InterfaceDhcpState>;
-
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        Poll::Ready(
-            this.ready
-                .take()
-                .expect("list_dhcp_states future polled after completion"),
-        )
-    }
-}
-
-/// 非同期DHCP状態取得Future
-pub struct DhcpStateFuture {
-    ready: Option<DhcpRuntimeState>,
-}
-
-impl DhcpStateFuture {
-    fn new() -> Self {
-        Self {
-            ready: Some(dhcp_state_sync()),
-        }
-    }
-}
-
-impl Future for DhcpStateFuture {
-    type Output = DhcpRuntimeState;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let _ = cx;
-        let this = self.get_mut();
-        let state = this.ready.take().unwrap_or_else(dhcp_state_sync);
-        Poll::Ready(state)
-    }
-}
-
 /// 非同期DHCP状態取得（推奨API）
 ///
 /// イベントキュー経由でDHCPクライアントにアクセスし、同期ロックを回避する。
-///
-/// # 使用例
-/// ```ignore
-/// let state = dhcp_state_async().await;
-/// ```
 pub async fn get_dhcp_state(if_id: NetIfId) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();

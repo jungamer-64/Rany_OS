@@ -742,10 +742,10 @@ impl ExoShell {
                     ExoValue::Error(String::from("Usage: rm <path>"))
                 }
             }
-            "ifconfig" => NetNamespace::interfaces_async().await,
-            "arp" => NetNamespace::arp_cache_async().await,
+            "ifconfig" => NetNamespace::interfaces().await,
+            "arp" => NetNamespace::arp_cache().await,
             "ping" => self.eval_ping(&parts).await,
-            "netstat" => NetNamespace::netstat_async().await,
+            "netstat" => NetNamespace::netstat().await,
             "route" => {
                 if parts.len() > 1 {
                     Self::dispatch_namespace_command(
@@ -754,7 +754,7 @@ impl ExoShell {
                     )
                     .await
                 } else {
-                    NetNamespace::routes_async().await
+                    NetNamespace::routes().await
                 }
             }
             "uname" => SysNamespace::info(),

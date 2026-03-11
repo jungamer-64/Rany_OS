@@ -118,7 +118,7 @@ impl DhcpV6Client {
     }
 
     /// 非同期イベントキュー経由でUDPv6パケットを送信（ロック競合回避）
-    fn send_v6_async(&self, src: Ipv6Address, dst: Ipv6Address, data: &[u8]) -> bool {
+    fn enqueue_v6_send(&self, src: Ipv6Address, dst: Ipv6Address, data: &[u8]) -> bool {
         crate::net::runtime::stack::enqueue_udp_v6_send(
             DHCPV6_CLIENT_PORT,
             src,
@@ -615,7 +615,7 @@ impl DhcpV6Client {
                             Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
                             Err(_) => all_dhcp_servers,
                         };
-                        self.send_v6_async(src, dst, &buf[..len]);
+                        self.enqueue_v6_send(src, dst, &buf[..len]);
                         log::info!("[NET] DHCPv6: RELEASE sent for {}", lease.addr);
                     }
                 }
@@ -934,7 +934,7 @@ impl DhcpV6Client {
                     let mut buf = [0u8; 256];
                     if let Ok(len) = self.build_request_from_advertise(&mut buf) {
                         if let Some(src_ip) = self.get_link_local() {
-                            self.send_v6_async(src_ip, src, &buf[..len]);
+                            self.enqueue_v6_send(src_ip, src, &buf[..len]);
                         }
                     }
                     return true;
@@ -985,7 +985,7 @@ impl DhcpV6Client {
     /// tick_rate: how many milliseconds represent 1 second in current_time
     ///
     /// 非同期イベントキュー経由で送信（ロック競合回避）:
-    /// `get_link_local()` で短時間ロックのみ取得し、送信は `send_v6_async()` を使用する。
+    /// `get_link_local()` で短時間ロックのみ取得し、送信は `enqueue_v6_send()` を使用する。
     pub fn check_timeout(&self, current_tick: u64, _tick_rate: u64) -> Result<(), &'static str> {
         let all_dhcp_servers = Self::all_dhcp_servers_multicast();
 
@@ -1001,7 +1001,7 @@ impl DhcpV6Client {
 
                     // Use link-local as source for SOLICIT (async event queue)
                     if let Some(src) = self.get_link_local() {
-                        if self.send_v6_async(src, all_dhcp_servers, &buf[..len]) {
+                        if self.enqueue_v6_send(src, all_dhcp_servers, &buf[..len]) {
                             *s = DhcpV6State::SolicitSent;
                             self.state_time.store(current_tick, Ordering::SeqCst);
                             self.retry_count.store(0, Ordering::SeqCst);
@@ -1034,7 +1034,7 @@ impl DhcpV6Client {
                             let mut buf = [0u8; 256];
                             let len = self.build_solicit(&mut buf)?;
                             if let Some(src) = self.get_link_local() {
-                                self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
+                                self.enqueue_v6_send(src, all_dhcp_servers, &buf[..len]);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -1068,7 +1068,7 @@ impl DhcpV6Client {
                                     Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
                                     Err(_) => all_dhcp_servers,
                                 };
-                                self.send_v6_async(src, dst, &buf[..len]);
+                                self.enqueue_v6_send(src, dst, &buf[..len]);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -1096,7 +1096,7 @@ impl DhcpV6Client {
                                         }
                                         Err(_) => all_dhcp_servers,
                                     };
-                                    self.send_v6_async(src, dst, &buf[..len]);
+                                    self.enqueue_v6_send(src, dst, &buf[..len]);
                                 }
                             }
                         }
@@ -1126,7 +1126,7 @@ impl DhcpV6Client {
                             let mut buf = [0u8; 512];
                             if let Ok(len) = self.build_rebind(&mut buf, &lease) {
                                 if let Some(src) = self.get_link_local() {
-                                    self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
+                                    self.enqueue_v6_send(src, all_dhcp_servers, &buf[..len]);
                                 }
                             }
                             return Ok(());
@@ -1144,7 +1144,7 @@ impl DhcpV6Client {
                                     Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
                                     Err(_) => all_dhcp_servers,
                                 };
-                                self.send_v6_async(src, dst, &buf[..len]);
+                                self.enqueue_v6_send(src, dst, &buf[..len]);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -1184,7 +1184,7 @@ impl DhcpV6Client {
                             let mut buf = [0u8; 512];
                             let len = self.build_rebind(&mut buf, &lease)?;
                             if let Some(src) = self.get_link_local() {
-                                self.send_v6_async(src, all_dhcp_servers, &buf[..len]);
+                                self.enqueue_v6_send(src, all_dhcp_servers, &buf[..len]);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }

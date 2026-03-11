@@ -917,12 +917,12 @@ pub fn net_core_stack_network_stack_poisoned_runtime_apis_fail_smoke() -> bool {
     crate::net::qemu_tests::stack_network_stack_poisoned_runtime_apis_fail_smoke()
 }
 
-pub fn net_core_stack_send_udp_fallback_zero_copy_smoke() -> bool {
-    crate::net::qemu_tests::stack_send_udp_fallback_zero_copy_smoke()
+pub fn net_core_stack_send_udp_event_task_zero_copy_smoke() -> bool {
+    crate::net::qemu_tests::stack_send_udp_event_task_zero_copy_smoke()
 }
 
-pub fn net_core_stack_send_icmp_fallback_zero_copy_smoke() -> bool {
-    crate::net::qemu_tests::stack_send_icmp_fallback_zero_copy_smoke()
+pub fn net_core_stack_send_icmp_event_dispatch_smoke() -> bool {
+    crate::net::qemu_tests::stack_send_icmp_event_dispatch_smoke()
 }
 
 pub fn net_core_stack_redirect_cache_basic_smoke() -> bool {

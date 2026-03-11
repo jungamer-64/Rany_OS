@@ -627,7 +627,7 @@ impl UdpEndpoint {
     /// deadlocks when called from async contexts (e.g., within DHCP, mDNS, DNS tasks).
     ///
     /// Returns the number of bytes sent, or an error.
-    pub fn send_to(&self, data: &[u8], dst: UdpAddr) -> Result<usize, NetworkError> {
+    pub fn send_to_sync(&self, data: &[u8], dst: UdpAddr) -> Result<usize, NetworkError> {
         let (local_port, ttl) = match self.inner.lock() {
             Ok(g) => {
                 if g.closed {
@@ -670,14 +670,14 @@ impl UdpEndpoint {
 
     /// 【設計書 6.2準拠】非同期UDP送信 (async/await対応)
     ///
-    /// `send_to` のFutureラッパー。async/await構文で利用できる。
+    /// `send_to_sync` のFutureラッパー。async/await構文で利用できる。
     /// イベントキューが満杯の場合は自動的にリトライする。
     ///
     /// # 使用例
     /// ```ignore
-    /// let sent = socket.send_async(data, dst).await?;
+    /// let sent = socket.send(data, dst).await?;
     /// ```
-    pub fn send_async<'a>(&'a self, data: &'a [u8], dst: UdpAddr) -> UdpSendFuture<'a> {
+    pub fn send<'a>(&'a self, data: &'a [u8], dst: UdpAddr) -> UdpSendFuture<'a> {
         UdpSendFuture {
             endpoint: self,
             data,

@@ -302,11 +302,11 @@ pub fn stack_network_stack_poisoned_runtime_apis_fail_smoke() -> bool {
     }
 }
 
-pub fn stack_send_udp_fallback_zero_copy_smoke() -> bool {
+pub fn stack_send_udp_event_task_zero_copy_smoke() -> bool {
     run_case!(stack::tests::test_send_udp_event_task_zero_copy)
 }
 
-pub fn stack_send_icmp_fallback_zero_copy_smoke() -> bool {
+pub fn stack_send_icmp_event_dispatch_smoke() -> bool {
     run_case!(stack::tests::test_send_icmp_event_dispatch_smoke)
 }
 

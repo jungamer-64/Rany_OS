@@ -177,7 +177,7 @@ impl DnsClient {
         let query_len = self.build_query(&mut buffer, name, qtype)?;
 
         let dest = UdpAddr::new(server, DNS_PORT);
-        if socket.send_to(&buffer[..query_len], dest).is_err() {
+        if socket.send_to_sync(&buffer[..query_len], dest).is_err() {
             return Err("UDP send failed");
         }
 
@@ -197,7 +197,7 @@ impl DnsClient {
                 _ => {
                     attempt += 1;
                     if attempt < DNS_MAX_RETRIES {
-                        let _ = socket.send_to(&buffer[..query_len], dest);
+                        let _ = socket.send_to_sync(&buffer[..query_len], dest);
                     }
                 }
             }

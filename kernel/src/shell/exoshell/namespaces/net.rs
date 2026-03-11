@@ -31,7 +31,7 @@ impl NetNamespace {
     }
 
     /// ネットワーク設定を取得（非同期版）
-    pub async fn config_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn config(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let if_id = match Self::parse_if_id_arg(args, "config") {
             Ok(if_id) => if_id,
             Err(err) => return err,
@@ -76,7 +76,7 @@ impl NetNamespace {
     }
 
     /// ネットワーク統計（非同期版）
-    pub async fn stats_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn stats(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let if_id = match Self::parse_if_id_arg(args, "stats") {
             Ok(if_id) => if_id,
             Err(err) => return err,
@@ -120,7 +120,7 @@ impl NetNamespace {
     }
 
     /// ARPキャッシュ（非同期版）
-    pub async fn arp_cache_async() -> ExoValue<'static> {
+    pub async fn arp_cache() -> ExoValue<'static> {
         let entries = crate::net::api::connections::get_arp_cache().await;
         let values: Vec<ExoValue> = entries
             .into_iter()
@@ -150,7 +150,7 @@ impl NetNamespace {
     /// ARPキャッシュ挿入（非同期版）
     ///
     /// イベントキュー経由でARP挿入を行い、NETWORK_STACKロックを回避する。
-    pub async fn arp_insert_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn arp_insert(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         if args.len() != 2 {
             return ExoValue::Error(String::from("usage: net.arp_insert(ip, mac)"));
         }
@@ -201,7 +201,7 @@ impl NetNamespace {
     }
 
     /// DHCP state snapshot — 非同期版（推奨）
-    pub async fn dhcp_state_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn dhcp_state(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let if_id = match Self::parse_if_id_arg(args, "dhcp_state") {
             Ok(if_id) => if_id,
             Err(err) => return err,
@@ -393,7 +393,7 @@ impl NetNamespace {
     // ================================================================
 
     /// TCP接続一覧 (非同期版)
-    pub async fn tcp_connections_async() -> ExoValue<'static> {
+    pub async fn tcp_connections() -> ExoValue<'static> {
         let connections = crate::net::api::connections::get_tcp_connections().await;
         let values: Vec<ExoValue> = connections
             .into_iter()
@@ -415,7 +415,7 @@ impl NetNamespace {
     }
 
     /// UDP エンドポイント一覧 (非同期版)
-    pub async fn udp_endpoints_async() -> ExoValue<'static> {
+    pub async fn udp_endpoints() -> ExoValue<'static> {
         let endpoints = crate::net::api::connections::get_udp_endpoints().await;
         let values: Vec<ExoValue> = endpoints
             .into_iter()
@@ -436,7 +436,7 @@ impl NetNamespace {
     }
 
     /// netstat相当 — TCP接続 + UDPエンドポイント統合表示
-    pub async fn netstat_async() -> ExoValue<'static> {
+    pub async fn netstat() -> ExoValue<'static> {
         let tcp_connections = crate::net::api::connections::get_tcp_connections().await;
         let udp_endpoints = crate::net::api::connections::get_udp_endpoints().await;
 
@@ -492,7 +492,7 @@ impl NetNamespace {
     // ================================================================
 
     /// ネットワークインターフェース一覧
-    pub async fn interfaces_async() -> ExoValue<'static> {
+    pub async fn interfaces() -> ExoValue<'static> {
         let values: Vec<ExoValue> = crate::net::api::config::list_interfaces()
             .await
             .into_iter()
@@ -537,7 +537,7 @@ impl NetNamespace {
     }
 
     /// インターフェースを有効化（管理権限必要）
-    pub async fn if_up_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn if_up(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -556,7 +556,7 @@ impl NetNamespace {
     }
 
     /// インターフェースを無効化（管理権限必要）
-    pub async fn if_down_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn if_down(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -579,7 +579,7 @@ impl NetNamespace {
     // ================================================================
 
     /// IPv4/IPv6 ルーティングテーブル表示
-    pub async fn routes_async() -> ExoValue<'static> {
+    pub async fn routes() -> ExoValue<'static> {
         let mut entries = Vec::new();
 
         // IPv4 routes
@@ -673,7 +673,7 @@ impl NetNamespace {
     ///
     /// usage: net.route_add("192.168.1.0", 24, "10.0.2.1", 0, 100)
     ///        net.route_add(dest, prefix_len, gateway, if_id, metric)
-    pub async fn route_add_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn route_add(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -734,7 +734,7 @@ impl NetNamespace {
     ///
     /// usage: net.route_del("192.168.1.0", 24, 0)
     ///        net.route_del(dest, prefix_len, if_id)
-    pub async fn route_del_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn route_del(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -782,13 +782,13 @@ impl NetNamespace {
     // ================================================================
 
     /// ファイアウォール状態表示
-    pub async fn firewall_status_async() -> ExoValue<'static> {
+    pub async fn firewall_status() -> ExoValue<'static> {
         let status = crate::net::api::firewall::firewall_status().await;
         ExoValue::String(Cow::Owned(status))
     }
 
     /// ファイアウォール有効化 (管理権限必要)
-    pub async fn firewall_enable_async() -> ExoValue<'static> {
+    pub async fn firewall_enable() -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -803,7 +803,7 @@ impl NetNamespace {
     }
 
     /// ファイアウォール無効化 (管理権限必要)
-    pub async fn firewall_disable_async() -> ExoValue<'static> {
+    pub async fn firewall_disable() -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -818,13 +818,13 @@ impl NetNamespace {
     }
 
     /// ファイアウォールルール一覧表示
-    pub async fn firewall_rules_async() -> ExoValue<'static> {
+    pub async fn firewall_rules() -> ExoValue<'static> {
         let rules = crate::net::api::firewall::firewall_list_rules().await;
         ExoValue::String(Cow::Owned(rules))
     }
 
     /// ファイアウォール統計情報
-    pub async fn firewall_stats_async() -> ExoValue<'static> {
+    pub async fn firewall_stats() -> ExoValue<'static> {
         let stats = crate::net::api::firewall::firewall_stats().await;
         ExoValue::String(Cow::Owned(stats))
     }
@@ -832,7 +832,7 @@ impl NetNamespace {
     /// ファイアウォールルール追加 (管理権限必要)
     ///
     /// usage: net.firewall_add("deny", "in", "10.0.0.0/8", "*", "tcp", "*", "22", 50, "block-ssh")
-    pub async fn firewall_add_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn firewall_add(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -909,7 +909,7 @@ impl NetNamespace {
     }
 
     /// ファイアウォールルール削除 (管理権限必要)
-    pub async fn firewall_remove_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn firewall_remove(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -928,7 +928,7 @@ impl NetNamespace {
     }
 
     /// ファイアウォールルール全削除 (管理権限必要)
-    pub async fn firewall_clear_async() -> ExoValue<'static> {
+    pub async fn firewall_clear() -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -945,7 +945,7 @@ impl NetNamespace {
     /// ファイアウォールデフォルトポリシー設定 (管理権限必要)
     ///
     /// usage: net.firewall_policy("in", "deny")
-    pub async fn firewall_policy_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn firewall_policy(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let domain_id = kernel_api::service::kernel::instance()
             .shell()
             .map(|s| s.current_domain())
@@ -980,7 +980,7 @@ impl NetNamespace {
     /// DNS名前解決 (非同期)
     ///
     /// usage: net.dns("example.com")
-    pub async fn dns_resolve_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn dns_resolve(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let hostname = match args.first() {
             Some(ExoValue::String(s)) => s.as_ref(),
             _ => {
@@ -1000,7 +1000,7 @@ impl NetNamespace {
     // ================================================================
 
     /// ネットワーク全体のスナップショット (カウンタ + インターフェース + イベント)
-    pub async fn snapshot_async() -> ExoValue<'static> {
+    pub async fn snapshot() -> ExoValue<'static> {
         let snap = crate::net::api::diagnostics::network_snapshot().await;
         let mut map = BTreeMap::new();
         map.insert(
@@ -1054,7 +1054,7 @@ impl NetNamespace {
     /// 最近のネットワークイベント一覧
     ///
     /// usage: net.events(limit)  — デフォルト20件
-    pub async fn events_async(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub async fn events(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let limit = args
             .first()
             .and_then(|v| match v {
@@ -1111,7 +1111,7 @@ impl NetNamespace {
     }
 
     /// 非同期版 handle_open: イベントキュー経由で UDP bind を実行
-    async fn handle_open_async(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    async fn handle_open(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let port = match _args.get(0) {
             Some(ExoValue::Int(n)) => *n as u16,
             Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
@@ -1170,44 +1170,44 @@ impl ShellNamespace for NetNamespace {
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
-                "config" => Self::config_async(_args).await,
-                "stats" => Self::stats_async(_args).await,
-                "arp" => Self::arp_cache_async().await,
-                "arp_insert" => Self::arp_insert_async(_args).await,
-                "dhcp_state" => Self::dhcp_state_async(_args).await,
+                "config" => Self::config(_args).await,
+                "stats" => Self::stats(_args).await,
+                "arp" => Self::arp_cache().await,
+                "arp_insert" => Self::arp_insert(_args).await,
+                "dhcp_state" => Self::dhcp_state(_args).await,
                 "dhcp_renew" => Self::dhcp_renew().await,
                 "dhcp_discover" => Self::dhcp_discover().await,
                 "dhcp_release" => Self::dhcp_release().await,
                 "dhcp_last_declined" => Self::dhcp_last_declined().await,
                 "dhcp_last_released" => Self::dhcp_last_released().await,
-                "open" => Self::handle_open_async(_args).await,
+                "open" => Self::handle_open(_args).await,
                 // TCP/UDP接続管理
-                "connections" | "netstat" => Self::netstat_async().await,
-                "tcp" => Self::tcp_connections_async().await,
-                "udp" => Self::udp_endpoints_async().await,
+                "connections" | "netstat" => Self::netstat().await,
+                "tcp" => Self::tcp_connections().await,
+                "udp" => Self::udp_endpoints().await,
                 // インターフェース管理
-                "interfaces" | "ifaces" => Self::interfaces_async().await,
-                "if_up" => Self::if_up_async(_args).await,
-                "if_down" => Self::if_down_async(_args).await,
+                "interfaces" | "ifaces" => Self::interfaces().await,
+                "if_up" => Self::if_up(_args).await,
+                "if_down" => Self::if_down(_args).await,
                 // ルーティング
-                "routes" => Self::routes_async().await,
-                "route_add" => Self::route_add_async(_args).await,
-                "route_del" => Self::route_del_async(_args).await,
+                "routes" => Self::routes().await,
+                "route_add" => Self::route_add(_args).await,
+                "route_del" => Self::route_del(_args).await,
                 // ファイアウォール
-                "firewall" => Self::firewall_status_async().await,
-                "firewall_enable" => Self::firewall_enable_async().await,
-                "firewall_disable" => Self::firewall_disable_async().await,
-                "firewall_rules" => Self::firewall_rules_async().await,
-                "firewall_stats" => Self::firewall_stats_async().await,
-                "firewall_add" => Self::firewall_add_async(_args).await,
-                "firewall_remove" => Self::firewall_remove_async(_args).await,
-                "firewall_clear" => Self::firewall_clear_async().await,
-                "firewall_policy" => Self::firewall_policy_async(_args).await,
+                "firewall" => Self::firewall_status().await,
+                "firewall_enable" => Self::firewall_enable().await,
+                "firewall_disable" => Self::firewall_disable().await,
+                "firewall_rules" => Self::firewall_rules().await,
+                "firewall_stats" => Self::firewall_stats().await,
+                "firewall_add" => Self::firewall_add(_args).await,
+                "firewall_remove" => Self::firewall_remove(_args).await,
+                "firewall_clear" => Self::firewall_clear().await,
+                "firewall_policy" => Self::firewall_policy(_args).await,
                 // DNS
-                "dns" | "resolve" => Self::dns_resolve_async(_args).await,
+                "dns" | "resolve" => Self::dns_resolve(_args).await,
                 // 診断
-                "snapshot" => Self::snapshot_async().await,
-                "events" => Self::events_async(_args).await,
+                "snapshot" => Self::snapshot().await,
+                "events" => Self::events(_args).await,
                 _ => ExoValue::Error(format!(
                     "Unknown method 'net.{}'\nValid methods:\n  \
                      config, stats, arp, arp_insert, ping, open,\n  \
