@@ -130,25 +130,15 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        let Ok((if_id, config, src_ip)) = self.resolve_ipv4_egress(
-            crate::net::types::InterfaceScope::Any,
-            None,
-            None,
-            dst_ip,
-        ) else {
+        let Ok((if_id, config, src_ip)) =
+            self.resolve_ipv4_egress(crate::net::types::InterfaceScope::Any, None, None, dst_ip)
+        else {
             self.stats.record_dropped();
             return false;
         };
 
         self.send_udp_raw_with_config_and_if_ttl(
-            if_id,
-            &config,
-            src_ip,
-            src_port,
-            dst_ip,
-            dst_port,
-            data,
-            ttl,
+            if_id, &config, src_ip, src_port, dst_ip, dst_port, data, ttl,
         )
     }
 
@@ -324,22 +314,15 @@ impl NetworkStack {
 
                 // Try zero-copy first
                 if if_id.is_none() {
-                    if let Some(result) = self
-                        .try_send_udp_zero_copy(&config, src_ip, s_port, d_ip, dst_mac, d_port, data)
-                    {
+                    if let Some(result) = self.try_send_udp_zero_copy(
+                        &config, src_ip, s_port, d_ip, dst_mac, d_port, data,
+                    ) {
                         return result;
                     }
                 }
 
                 if self.send_udp_raw_with_config_and_if_ttl(
-                    if_id,
-                    &config,
-                    src_ip,
-                    s_port,
-                    d_ip,
-                    d_port,
-                    data,
-                    64,
+                    if_id, &config, src_ip, s_port, d_ip, d_port, data, 64,
                 ) {
                     Ok(())
                 } else {

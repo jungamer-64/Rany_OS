@@ -65,7 +65,9 @@ pub struct InterfaceSnapshot {
     pub mac: Option<[u8; 6]>,
 }
 
-pub(crate) fn interface_config_snapshot(iface: NetworkInterfaceInfo) -> Option<InterfaceConfigSnapshot> {
+pub(crate) fn interface_config_snapshot(
+    iface: NetworkInterfaceInfo,
+) -> Option<InterfaceConfigSnapshot> {
     let config = iface.config?;
     Some(InterfaceConfigSnapshot {
         if_id: iface.if_id.0,
@@ -156,8 +158,7 @@ pub(crate) fn interface_stats_snapshot_with_stack(
                 stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
             stack_snapshot.rx_bytes = stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
             stack_snapshot.tx_bytes = stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
-            stack_snapshot.rx_errors =
-                stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.rx_errors = stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
             stack_snapshot.rx_dropped =
                 stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
         }
@@ -307,10 +308,7 @@ pub async fn primary_interface_config_snapshot() -> Option<NetworkConfigSnapshot
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return primary_interface_config_snapshot_sync();
-    }
-    stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
@@ -321,10 +319,7 @@ pub async fn aggregate_network_stats_snapshot() -> Option<NetworkStatsSnapshot> 
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return aggregate_network_stats_snapshot_sync();
-    }
-    stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
@@ -336,10 +331,7 @@ pub async fn get_interface_config(if_id: NetIfId) -> Option<InterfaceConfigSnaps
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return get_interface_config_sync(if_id);
-    }
-    stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
@@ -350,10 +342,7 @@ pub async fn list_interface_configs() -> alloc::vec::Vec<InterfaceConfigSnapshot
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return list_interface_configs_sync();
-    }
-    stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
@@ -365,10 +354,7 @@ pub async fn get_interface_stats(if_id: NetIfId) -> Option<InterfaceStatsSnapsho
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return get_interface_stats_sync(if_id);
-    }
-    stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
@@ -379,23 +365,24 @@ pub async fn list_interface_stats() -> alloc::vec::Vec<InterfaceStatsSnapshot> {
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return list_interface_stats_sync();
-    }
-    stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
 pub async fn list_interfaces() -> alloc::vec::Vec<InterfaceSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<alloc::vec::Vec<InterfaceSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncListInterfaces {
-        result_slot,
-        waker,
-    };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return list_interfaces_sync();
-    }
-    stack::pump_network_events_if_needed();
+    let event =
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncListInterfaces { result_slot, waker };
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn async_list_interfaces_completes_with_event_task() {
+        let interfaces = crate::net::tests::run_with_network_event_task(super::list_interfaces());
+        assert!(interfaces.is_empty());
+    }
 }

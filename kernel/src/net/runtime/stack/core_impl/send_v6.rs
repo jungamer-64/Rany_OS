@@ -339,7 +339,9 @@ impl NetworkStack {
         dst: &Ipv6Address,
         icmpv6_data: &[u8],
     ) {
-        let config = self.interface_config_or_runtime(if_id).unwrap_or_else(|| self.config());
+        let config = self
+            .interface_config_or_runtime(if_id)
+            .unwrap_or_else(|| self.config());
         let dst_mac = MacAddress::new(dst.multicast_mac());
         let mut buffer = [0u8; MAX_PACKET_SIZE];
 
@@ -766,7 +768,12 @@ impl NetworkStack {
         dst: Ipv6Address,
         tcp_segment: &[u8],
     ) -> bool {
-        self.send_tcp_v6_raw_scoped(crate::net::types::InterfaceScope::Any, src_ip, dst, tcp_segment)
+        self.send_tcp_v6_raw_scoped(
+            crate::net::types::InterfaceScope::Any,
+            src_ip,
+            dst,
+            tcp_segment,
+        )
     }
 
     pub fn send_tcp_v6_raw_on(

@@ -385,14 +385,19 @@ impl NetworkStack {
 
         match result {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
-                self.process_icmpv6_data(if_id, payload, src, dst, src_mac, hop_limit, current_time);
+                self.process_icmpv6_data(
+                    if_id,
+                    payload,
+                    src,
+                    dst,
+                    src_mac,
+                    hop_limit,
+                    current_time,
+                );
             }
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
                 crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6_on(
-                    if_id,
-                    src,
-                    dst,
-                    payload,
+                    if_id, src, dst, payload,
                 );
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
@@ -541,7 +546,9 @@ impl NetworkStack {
                 // use that as source for the reply.
                 let mut reply_src = None;
                 if let Some(if_id) = if_id {
-                    if let Some(config) = self.interface_config_or_runtime(if_id).and_then(|cfg| cfg.ipv6)
+                    if let Some(config) = self
+                        .interface_config_or_runtime(if_id)
+                        .and_then(|cfg| cfg.ipv6)
                     {
                         if let Some(global) = config.global {
                             if dst == global {
@@ -570,12 +577,7 @@ impl NetworkStack {
                 if let Some(src_addr) = reply_src {
                     if let Some(if_id) = if_id {
                         self.send_icmpv6_echo_reply_with_src_on(
-                            if_id,
-                            src_addr,
-                            reply_dst,
-                            identifier,
-                            sequence,
-                            &echo_data,
+                            if_id, src_addr, reply_dst, identifier, sequence, &echo_data,
                         );
                     } else {
                         self.send_icmpv6_echo_reply_with_src(
@@ -624,7 +626,9 @@ impl NetworkStack {
                 // a packet that we actually sent and corresponds to an active connection.
                 let mut is_our_packet = false;
                 if let Some(if_id) = if_id {
-                    if let Some(config) = self.interface_config_or_runtime(if_id).and_then(|cfg| cfg.ipv6)
+                    if let Some(config) = self
+                        .interface_config_or_runtime(if_id)
+                        .and_then(|cfg| cfg.ipv6)
                     {
                         if quoted_src == config.link_local || config.global == Some(quoted_src) {
                             is_our_packet = true;
@@ -968,10 +972,7 @@ impl NetworkStack {
                                                 } = ndp_proc.initiate_dad(&global_addr)
                                                 {
                                                     let ns_msg = NdpProcessor::build_ns(
-                                                        &src,
-                                                        &dst,
-                                                        &target,
-                                                        &mac_bytes,
+                                                        &src, &dst, &target, &mac_bytes,
                                                     );
                                                     dad_messages.push((src, dst, ns_msg, target));
                                                 }
@@ -1064,10 +1065,7 @@ impl NetworkStack {
                                                 );
                                                 if let Some(if_id) = if_id {
                                                     self.send_ipv6_icmpv6_on(
-                                                        if_id,
-                                                        &src,
-                                                        &dst,
-                                                        &ns_msg,
+                                                        if_id, &src, &dst, &ns_msg,
                                                     );
                                                 } else {
                                                     self.send_ipv6_icmpv6(&src, &dst, &ns_msg);

@@ -66,16 +66,28 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
 
     // Runtime APIs should fail conservatively when the global lock is poisoned
     // NOTE: These intentionally test the deprecated sync APIs for graceful failure.
-    assert!(crate::task::block_on(send_udp(1234, Ipv4Address::LOOPBACK, 80, &[0x1, 0x2])).is_err());
     assert!(
-        crate::task::block_on(send_tcp(Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, &[]))
-            .is_err()
+        crate::net::tests::run_with_network_event_task(send_udp(
+            1234,
+            Ipv4Address::LOOPBACK,
+            80,
+            &[0x1, 0x2],
+        ))
+        .is_err()
     );
-    assert!(crate::task::block_on(bind_udp(1234)).is_none());
+    assert!(
+        crate::net::tests::run_with_network_event_task(send_tcp(
+            Ipv4Address::LOOPBACK,
+            Ipv4Address::LOOPBACK,
+            &[],
+        ))
+        .is_err()
+    );
+    assert!(crate::net::tests::run_with_network_event_task(bind_udp(1234)).is_none());
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_send_udp_fallback_zero_copy() {
+pub fn test_send_udp_event_task_zero_copy() {
     // Initialize stack and set transmit function to always succeed
     init_default();
     if let Ok(mut guard) = stack().lock() {
@@ -84,19 +96,22 @@ pub fn test_send_udp_fallback_zero_copy() {
                 |_if_id: Option<super::NetIfId>,
                  _data: &[u8],
                  _meta: kernel_api::service::netdev::NetTxMeta| {
-                assert!(_if_id.is_none());
-                true
-            },
+                    assert!(_if_id.is_none());
+                    true
+                },
             );
         }
     }
 
     let dst = Ipv4Address::new([255, 255, 255, 255]); // Broadcast -> immediate MAC
-    assert!(crate::task::block_on(send_udp(1234, dst, 80, &[1, 2, 3])).is_ok());
+    assert!(
+        crate::net::tests::run_with_network_event_task(send_udp(1234, dst, 80, &[1, 2, 3]))
+            .is_ok()
+    );
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_send_icmp_fallback_zero_copy() {
+pub fn test_send_icmp_event_dispatch_smoke() {
     // Initialize stack and set transmit function
     init_default();
     if let Ok(mut guard) = stack().lock() {
@@ -105,9 +120,9 @@ pub fn test_send_icmp_fallback_zero_copy() {
                 |_if_id: Option<super::NetIfId>,
                  _data: &[u8],
                  _meta: kernel_api::service::netdev::NetTxMeta| {
-                assert!(_if_id.is_none());
-                true
-            },
+                    assert!(_if_id.is_none());
+                    true
+                },
             );
             // Pre-populate ARP cache so ping will proceed
             let target = Ipv4Address::new([8, 8, 8, 8]);
@@ -119,7 +134,10 @@ pub fn test_send_icmp_fallback_zero_copy() {
         }
     }
 
-    assert!(crate::net::api::icmp::send_icmp_echo_async([8, 8, 8, 8], 1));
+    crate::net::tests::run_with_network_event_task(async {
+        assert!(crate::net::api::icmp::send_icmp_echo_async([8, 8, 8, 8], 1));
+        crate::task::yield_now().await;
+    });
 }
 
 #[cfg_attr(test, test_case)]
@@ -243,7 +261,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
 
     assert!(crate::net::api::dhcp::init_dhcp_runtime().is_ok());
 
-    let st = crate::task::block_on(crate::net::api::dhcp::dhcp_state());
+    let st = crate::net::tests::run_with_network_event_task(crate::net::api::dhcp::dhcp_state());
     assert!(!st.v4_state.is_empty());
     assert!(!st.v6_state.is_empty());
 
@@ -265,7 +283,8 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     }
 
     // verify dhcp_state snapshot reflects the decline
-    let snap = crate::task::block_on(crate::net::api::dhcp::dhcp_state());
+    let snap =
+        crate::net::tests::run_with_network_event_task(crate::net::api::dhcp::dhcp_state());
     assert_eq!(snap.v4_last_declined, Some(test_ip));
 }
 

@@ -120,6 +120,7 @@ impl Endpoint {
     ///
     /// **ブートストラップ/テスト専用**: NETWORK_STACKロックは取得しないが、
     /// asyncコンテキストでは [`open_connection_async()`] を推奨。
+    #[cfg(any(test, feature = "qemu-test-export"))]
     pub fn open_connection(&self, addr: EndpointAddr) -> EndpointResult<()> {
         let local_addr;
         {
@@ -155,6 +156,7 @@ impl Endpoint {
     /// **ブートストラップ/テスト専用**: `bind_tcp()` 経由でNETWORK_STACKロックを取得するため、
     /// エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
     /// asyncコンテキストでは [`start_listening_async()`] を使用すること。
+    #[cfg(any(test, feature = "qemu-test-export"))]
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
@@ -697,6 +699,7 @@ impl OwnedEndpoint {
     ///
     /// **ブートストラップ/テスト専用**: `bind_tcp()` 経由でNETWORK_STACKロックを取得する。
     /// asyncコンテキストでは [`start_listening_async()`] を使用すること。
+    #[cfg(any(test, feature = "qemu-test-export"))]
     pub fn start_listening(&self, backlog: u32) -> EndpointResult<()> {
         self.endpoint
             .as_ref()

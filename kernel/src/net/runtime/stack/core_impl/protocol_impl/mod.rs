@@ -701,7 +701,11 @@ impl NetworkStack {
         } else if tcp_is_native_v6_pair(local_addr, remote_addr) {
             let explicit_src = {
                 let src = Ipv6Address::new(local_addr.as_ipv6());
-                if src.is_unspecified() { None } else { Some(src) }
+                if src.is_unspecified() {
+                    None
+                } else {
+                    Some(src)
+                }
             };
             let (_, _, resolved_src) = self
                 .resolve_ipv6_egress(

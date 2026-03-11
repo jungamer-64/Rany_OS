@@ -90,7 +90,8 @@ impl NetworkStack {
         preferred_if: Option<NetIfId>,
         explicit_src: Option<Ipv4Address>,
         dst_ip: Ipv4Address,
-    ) -> Result<(Option<NetIfId>, NetworkConfig, Ipv4Address), crate::net::types::NetworkError> {
+    ) -> Result<(Option<NetIfId>, NetworkConfig, Ipv4Address), crate::net::types::NetworkError>
+    {
         let resolved = scope
             .as_if_id()
             .or(preferred_if)
@@ -122,7 +123,8 @@ impl NetworkStack {
         preferred_if: Option<NetIfId>,
         explicit_src: Option<Ipv6Address>,
         dst_ip: Ipv6Address,
-    ) -> Result<(Option<NetIfId>, NetworkConfig, Ipv6Address), crate::net::types::NetworkError> {
+    ) -> Result<(Option<NetIfId>, NetworkConfig, Ipv6Address), crate::net::types::NetworkError>
+    {
         let resolved = scope
             .as_if_id()
             .or(preferred_if)
@@ -245,7 +247,8 @@ impl NetworkStack {
         match self.interfaces.get_mut(&if_id) {
             Some(state) => state.set_config(config),
             None => {
-                self.interfaces.insert(if_id, InterfaceStackState::new(config));
+                self.interfaces
+                    .insert(if_id, InterfaceStackState::new(config));
             }
         }
         if self.primary_interface.is_none() {
@@ -301,10 +304,8 @@ impl NetworkStack {
                         == kernel_api::service::netdev::NetTxCompletionPolicy::DeviceCompletion
                 {
                     if let Some(completion_id) = meta.completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request(
-                            completion_id,
-                            Ok(()),
-                        );
+                        let _ =
+                            crate::net::runtime::device::complete_tx_request(completion_id, Ok(()));
                     }
                 }
                 self.stats.record_tx(data.len());

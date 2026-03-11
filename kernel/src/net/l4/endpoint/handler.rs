@@ -136,7 +136,7 @@ impl NetworkEventHandler {
     /// 直接 `handle_event_with_stack()` を呼び出すため、この関数は呼ばれない。
     /// この関数は以下のケースでのみ使用される：
     /// - `network_event_task()` のフォールバックパス（スタック初期化前）
-    /// - `sync_process_network_events()` がロック取得に失敗した場合の再エンキュー後
+    /// - テスト/異常系でイベント処理を直接呼び出した場合
     ///
     /// asyncコンテキストから直接呼び出す場合、スタックロックの二重取得に注意すること。
     pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
@@ -396,11 +396,9 @@ impl NetworkEventHandler {
                 waker,
                 crate::net::api::config::list_interfaces_from_runtime(),
             ),
-            NetworkEvent::AsyncGetNetworkSnapshot { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::obs::snapshot(),
-            ),
+            NetworkEvent::AsyncGetNetworkSnapshot { result_slot, waker } => {
+                finish_command(result_slot, waker, crate::net::obs::snapshot())
+            }
             NetworkEvent::AsyncGetNetworkRecentEvents {
                 limit,
                 result_slot,
@@ -461,8 +459,7 @@ impl NetworkEventHandler {
             NetworkEvent::AsyncFirewallClearRules { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::security::firewall::clear_rules()
-                    .map_err(alloc::string::String::from),
+                crate::net::security::firewall::clear_rules().map_err(alloc::string::String::from),
             ),
             NetworkEvent::AsyncFirewallSetDefaultPolicy {
                 direction,
@@ -759,7 +756,10 @@ impl NetworkEventHandler {
             NetworkEvent::IngressBatch { if_id, packets } => {
                 // バッチ着信: スタックロック保持中に全パケットを連続処理
                 for packet in packets {
-                    self.handle_event_with_stack(NetworkEvent::IngressPacket { if_id, packet }, stack);
+                    self.handle_event_with_stack(
+                        NetworkEvent::IngressPacket { if_id, packet },
+                        stack,
+                    );
                 }
                 EventHandleResult::Success
             }
@@ -1056,7 +1056,9 @@ impl NetworkEventHandler {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
                         stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl)
                     }),
-                    None => stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl),
+                    None => {
+                        stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl)
+                    }
                 };
                 let result = if sent {
                     Ok(())
@@ -1094,9 +1096,9 @@ impl NetworkEventHandler {
                     ..NetTxMeta::default()
                 });
                 let sent = match tx_meta {
-                    Some(meta) => {
-                        stack.with_pending_tx_meta(meta, |stack| stack.send_tcp_v6_raw(src, dst, &segment))
-                    }
+                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
+                        stack.send_tcp_v6_raw(src, dst, &segment)
+                    }),
                     None => stack.send_tcp_v6_raw(src, dst, &segment),
                 };
                 let result = if sent {
@@ -1327,7 +1329,9 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
             } => {
-                let success = stack.bind_udp_with_token_scoped(scope, port, token).is_some();
+                let success = stack
+                    .bind_udp_with_token_scoped(scope, port, token)
+                    .is_some();
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(success);
                 }
@@ -1419,14 +1423,8 @@ impl NetworkEventHandler {
                             &data,
                             ttl,
                         ),
-                        None => stack.send_udp_raw_on_auto_ttl(
-                            net_if,
-                            src_port,
-                            dst,
-                            dst_port,
-                            &data,
-                            ttl,
-                        ),
+                        None => stack
+                            .send_udp_raw_on_auto_ttl(net_if, src_port, dst, dst_port, &data, ttl),
                     }),
                     None => match src_ip {
                         Some(src_ip) => stack.send_udp_raw_on_with_src_ttl(
@@ -1438,14 +1436,8 @@ impl NetworkEventHandler {
                             &data,
                             ttl,
                         ),
-                        None => stack.send_udp_raw_on_auto_ttl(
-                            net_if,
-                            src_port,
-                            dst,
-                            dst_port,
-                            &data,
-                            ttl,
-                        ),
+                        None => stack
+                            .send_udp_raw_on_auto_ttl(net_if, src_port, dst, dst_port, &data, ttl),
                     },
                 };
                 let result = if sent {
@@ -1486,9 +1478,9 @@ impl NetworkEventHandler {
                     ..NetTxMeta::default()
                 });
                 let sent = match tx_meta {
-                    Some(meta) => {
-                        stack.with_pending_tx_meta(meta, |stack| stack.send_tcp_on(net_if, src, dst, &segment))
-                    }
+                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
+                        stack.send_tcp_on(net_if, src, dst, &segment)
+                    }),
                     None => stack.send_tcp_on(net_if, src, dst, &segment),
                 };
                 let result = if sent {
@@ -1533,9 +1525,13 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_udp_v6_raw_on_with_ttl(net_if, src_port, src, dst, dst_port, &data, ttl)
+                        stack.send_udp_v6_raw_on_with_ttl(
+                            net_if, src_port, src, dst, dst_port, &data, ttl,
+                        )
                     }),
-                    None => stack.send_udp_v6_raw_on_with_ttl(net_if, src_port, src, dst, dst_port, &data, ttl),
+                    None => stack.send_udp_v6_raw_on_with_ttl(
+                        net_if, src_port, src, dst, dst_port, &data, ttl,
+                    ),
                 };
                 let result = if sent {
                     Ok(())
@@ -1755,7 +1751,9 @@ impl NetworkEventHandler {
             }
             NetworkEvent::AsyncGetPrimaryInterfaceConfig { result_slot, waker } => {
                 let result = crate::net::api::config::primary_interface_id()
-                    .and_then(|if_id| crate::net::api::config::get_interface_config_from_runtime(if_id))
+                    .and_then(|if_id| {
+                        crate::net::api::config::get_interface_config_from_runtime(if_id)
+                    })
                     .map(|cfg| crate::net::api::config::NetworkConfigSnapshot {
                         ip: cfg.ip,
                         netmask: cfg.netmask,
@@ -1808,11 +1806,9 @@ impl NetworkEventHandler {
                 waker,
                 crate::net::api::config::list_interfaces_from_runtime(),
             ),
-            NetworkEvent::AsyncGetNetworkSnapshot { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::obs::snapshot(),
-            ),
+            NetworkEvent::AsyncGetNetworkSnapshot { result_slot, waker } => {
+                finish_command(result_slot, waker, crate::net::obs::snapshot())
+            }
             NetworkEvent::AsyncGetNetworkRecentEvents {
                 limit,
                 result_slot,
@@ -1873,8 +1869,7 @@ impl NetworkEventHandler {
             NetworkEvent::AsyncFirewallClearRules { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::security::firewall::clear_rules()
-                    .map_err(alloc::string::String::from),
+                crate::net::security::firewall::clear_rules().map_err(alloc::string::String::from),
             ),
             NetworkEvent::AsyncFirewallSetDefaultPolicy {
                 direction,
@@ -2145,7 +2140,11 @@ impl NetworkEventHandler {
     /// 既にスタックロックが保持されている。
     /// `handle_event()` → `handle_event_stackless()` のパスで呼ばれた場合は
     /// イベントを再エンキューして非同期パスに委譲する。
-    fn handle_ingress_packet(&self, if_id: Option<NetIfId>, packet: PacketRef) -> EventHandleResult {
+    fn handle_ingress_packet(
+        &self,
+        if_id: Option<NetIfId>,
+        packet: PacketRef,
+    ) -> EventHandleResult {
         // スタックロックなしのコンテキストから呼ばれた場合:
         // イベントキュー経由で再エンキューし、network_event_taskが
         // スタックロック保持下で処理する（二重ロック取得を回避）
@@ -2240,7 +2239,12 @@ impl NetworkEventHandler {
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip, _orig) => {
-                super::tcp_rx::process_tcp_segment_on(if_id, src_ip.octets(), dst_ip.octets(), payload);
+                super::tcp_rx::process_tcp_segment_on(
+                    if_id,
+                    src_ip.octets(),
+                    dst_ip.octets(),
+                    payload,
+                );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Reassembled(reassembled_data) => {
                 // 再組立てパケットを再帰的に処理
@@ -2567,9 +2571,14 @@ impl NetworkEventHandler {
                     &data,
                     64,
                 ),
-                Ok((None, _, _)) => {
-                    stack.send_udp_v6_raw_with_ttl(local_port, src_v6, dst_v6, remote.port(), &data, 64)
-                }
+                Ok((None, _, _)) => stack.send_udp_v6_raw_with_ttl(
+                    local_port,
+                    src_v6,
+                    dst_v6,
+                    remote.port(),
+                    &data,
+                    64,
+                ),
                 Err(error) => {
                     return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
                 }
@@ -2832,43 +2841,48 @@ impl NetworkEventHandler {
             )
         };
 
-        let (local_addr, resolved_if) =
-            if let (Some(local_v4), Some(remote_v4)) = (unresolved_local.as_ipv4(), remote.as_ipv4())
-            {
-                let explicit_src = {
-                    let src = Ipv4Address::new(local_v4);
-                    if src.is_any() { None } else { Some(src) }
-                };
-                match stack.resolve_ipv4_egress(
-                    scope,
-                    preferred_if,
-                    explicit_src,
-                    Ipv4Address::new(remote_v4),
-                ) {
-                    Ok((resolved_if, _, src_ip)) => {
-                        (EndpointAddr::new(src_ip.octets(), local_port), resolved_if)
-                    }
-                    Err(error) => {
-                        return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
-                    }
-                }
-            } else if unresolved_local.is_ipv6() && remote.is_ipv6() {
-                let explicit_src = {
-                    let src = crate::net::l3::ipv6::Ipv6Address::new(unresolved_local.as_ipv6());
-                    if src.is_unspecified() { None } else { Some(src) }
-                };
-                let remote_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-                match stack.resolve_ipv6_egress(scope, preferred_if, explicit_src, remote_v6) {
-                    Ok((resolved_if, _, src_ip)) => {
-                        (EndpointAddr::new_v6(src_ip.octets(), local_port), resolved_if)
-                    }
-                    Err(error) => {
-                        return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
-                    }
-                }
-            } else {
-                return EventHandleResult::ProtocolError(EndpointError::InvalidArgument);
+        let (local_addr, resolved_if) = if let (Some(local_v4), Some(remote_v4)) =
+            (unresolved_local.as_ipv4(), remote.as_ipv4())
+        {
+            let explicit_src = {
+                let src = Ipv4Address::new(local_v4);
+                if src.is_any() { None } else { Some(src) }
             };
+            match stack.resolve_ipv4_egress(
+                scope,
+                preferred_if,
+                explicit_src,
+                Ipv4Address::new(remote_v4),
+            ) {
+                Ok((resolved_if, _, src_ip)) => {
+                    (EndpointAddr::new(src_ip.octets(), local_port), resolved_if)
+                }
+                Err(error) => {
+                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
+                }
+            }
+        } else if unresolved_local.is_ipv6() && remote.is_ipv6() {
+            let explicit_src = {
+                let src = crate::net::l3::ipv6::Ipv6Address::new(unresolved_local.as_ipv6());
+                if src.is_unspecified() {
+                    None
+                } else {
+                    Some(src)
+                }
+            };
+            let remote_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
+            match stack.resolve_ipv6_egress(scope, preferred_if, explicit_src, remote_v6) {
+                Ok((resolved_if, _, src_ip)) => (
+                    EndpointAddr::new_v6(src_ip.octets(), local_port),
+                    resolved_if,
+                ),
+                Err(error) => {
+                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
+                }
+            }
+        } else {
+            return EventHandleResult::ProtocolError(EndpointError::InvalidArgument);
+        };
 
         {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());

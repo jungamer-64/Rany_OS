@@ -414,11 +414,7 @@ impl NetworkStack {
     }
 
     /// Unbind a UDP socket from an explicit scope.
-    pub fn unbind_udp_scoped(
-        &mut self,
-        scope: crate::net::types::InterfaceScope,
-        port: u16,
-    ) {
+    pub fn unbind_udp_scoped(&mut self, scope: crate::net::types::InterfaceScope, port: u16) {
         self.udp.unbind(scope, port);
     }
 

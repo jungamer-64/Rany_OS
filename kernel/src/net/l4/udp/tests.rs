@@ -427,21 +427,29 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
 #[cfg_attr(test, test_case)]
 pub fn test_udp_scope_conflicts_any_vs_pinned() {
     let table = UdpEndpointTable::new();
-    assert!(table
-        .bind_dual_stack_with_token(InterfaceScope::Any, 42000, None)
-        .is_some());
-    assert!(table
-        .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(1)), 42000, None)
-        .is_none());
+    assert!(
+        table
+            .bind_dual_stack_with_token(InterfaceScope::Any, 42000, None)
+            .is_some()
+    );
+    assert!(
+        table
+            .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(1)), 42000, None)
+            .is_none()
+    );
 }
 
 #[cfg_attr(test, test_case)]
 pub fn test_udp_scope_allows_same_port_on_distinct_interfaces() {
     let table = UdpEndpointTable::new();
-    assert!(table
-        .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(1)), 42001, None)
-        .is_some());
-    assert!(table
-        .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(2)), 42001, None)
-        .is_some());
+    assert!(
+        table
+            .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(1)), 42001, None)
+            .is_some()
+    );
+    assert!(
+        table
+            .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(2)), 42001, None)
+            .is_some()
+    );
 }

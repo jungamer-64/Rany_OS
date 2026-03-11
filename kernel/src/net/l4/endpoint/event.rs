@@ -5,7 +5,7 @@
 //!
 //! NetworkEvent, NetworkEventQueue, EventWaitFuture
 
-use crate::sync::PoisonLock;
+use crate::sync::{PoisonLock, WakerQueue};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::future::Future;
@@ -82,9 +82,7 @@ pub enum NetworkEvent {
         data: Vec<u8>,
         ttl: u8,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
-        >,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// Raw TCP送信（ソケット非経由・スタック直接）
@@ -93,9 +91,7 @@ pub enum NetworkEvent {
         dst_ip: [u8; 4],
         segment: Vec<u8>,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
-        >,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// Raw UDP IPv6送信
@@ -107,9 +103,7 @@ pub enum NetworkEvent {
         data: Vec<u8>,
         ttl: u8,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
-        >,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// Raw TCP IPv6送信
@@ -118,9 +112,7 @@ pub enum NetworkEvent {
         dst_ip: [u8; 16],
         segment: Vec<u8>,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
-        >,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// ICMP Echo Request（非同期ping）
@@ -225,9 +217,7 @@ pub enum NetworkEvent {
         data: Vec<u8>,
         ttl: u8,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
-        >,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// インターフェース指定TCP送信（非同期版）
@@ -237,9 +227,7 @@ pub enum NetworkEvent {
         dst_ip: [u8; 4],
         segment: Vec<u8>,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
-        >,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// インターフェース指定IPv6 UDP送信（非同期版）
@@ -252,9 +240,7 @@ pub enum NetworkEvent {
         data: Vec<u8>,
         ttl: u8,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
-        >,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// インターフェース指定IPv6 TCP送信（非同期版）
@@ -264,9 +250,7 @@ pub enum NetworkEvent {
         dst_ip: [u8; 16],
         segment: Vec<u8>,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
-        >,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP connect（TcpStreamを返す完全非同期版）
@@ -433,9 +417,8 @@ pub enum NetworkEvent {
     },
     /// 非同期インターフェース一覧取得
     AsyncListInterfaces {
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Vec<crate::net::api::config::InterfaceSnapshot>>>,
-        >,
+        result_slot:
+            alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::config::InterfaceSnapshot>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ネットワーク診断スナップショット取得
@@ -476,9 +459,8 @@ pub enum NetworkEvent {
     },
     /// 非同期DHCP状態一覧取得
     AsyncListDhcpStates {
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Vec<crate::net::api::dhcp::InterfaceDhcpState>>>,
-        >,
+        result_slot:
+            alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::dhcp::InterfaceDhcpState>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCPリニュー
@@ -542,29 +524,25 @@ pub enum NetworkEvent {
     /// 非同期ファイアウォールルール追加
     AsyncFirewallAddRule {
         rule: crate::net::security::firewall::FirewallRule,
-        result_slot:
-            alloc::sync::Arc<PoisonLock<Option<Result<u64, alloc::string::String>>>>,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<u64, alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォールルール削除
     AsyncFirewallRemoveRule {
         id: u64,
-        result_slot:
-            alloc::sync::Arc<PoisonLock<Option<Result<bool, alloc::string::String>>>>,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<bool, alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォールルール全削除
     AsyncFirewallClearRules {
-        result_slot:
-            alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ファイアウォールデフォルトポリシー設定
     AsyncFirewallSetDefaultPolicy {
         direction: crate::net::security::firewall::FirewallDirection,
         action: crate::net::security::firewall::FirewallAction,
-        result_slot:
-            alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
 }
@@ -635,6 +613,8 @@ pub struct NetworkEventQueue {
     read_pos: AtomicUsize,
     /// ISR-safe Waker（ロックフリー状態機械ベース）
     waker: crate::sync::atomic_waker::AtomicWaker,
+    /// タスクコンテキストのプロデューサー向け空き待ち通知
+    space_waiters: WakerQueue,
 }
 
 // SAFETY: NetworkEventQueue の各フィールドは Send+Sync
@@ -655,14 +635,12 @@ impl NetworkEventQueue {
             write_pos: AtomicUsize::new(0),
             read_pos: AtomicUsize::new(0),
             waker: crate::sync::atomic_waker::AtomicWaker::new(),
+            space_waiters: WakerQueue::new(),
         }
     }
 
-    /// イベント送信（プロデューサー側 — ISR コンテキストから安全に呼び出し可能）
-    ///
-    /// CAS ベースでスロットを確保し、ロック取得なしでイベントを書き込む。
-    /// キュー満杯時は `false` を返す（バックプレッシャー）。
-    pub fn send(&self, event: NetworkEvent) -> bool {
+    /// イベント送信（所有権を保持したまま失敗を返す版）
+    fn send_owned(&self, event: NetworkEvent) -> Result<(), NetworkEvent> {
         // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
             let write = self.write_pos.load(Ordering::Relaxed);
@@ -670,7 +648,7 @@ impl NetworkEventQueue {
 
             // キュー満杯チェック
             if write.wrapping_sub(read) >= Self::CAPACITY {
-                return false; // バックプレッシャー
+                return Err(event);
             }
 
             // 書き込み位置を CAS で確保
@@ -684,29 +662,29 @@ impl NetworkEventQueue {
                 )
                 .is_ok()
             {
-                let idx = write & (Self::CAPACITY - 1); // ビットマスクで高速インデックス
+                let idx = write & (Self::CAPACITY - 1);
                 let slot = &self.slots[idx];
 
-                // データ書き込み
                 // SAFETY: CAS で排他的書き込み権を獲得済み。
-                // 他のプロデューサーは異なるスロットに書き込む。
                 unsafe {
                     (*slot.data.get()).write(event);
                 }
 
-                // スロットを FULL にマーク
-                // Release: データ書き込みが先に完了することを保証
                 slot.state.store(SLOT_FULL, Ordering::Release);
-
-                // コンシューマータスクを起床（AtomicWaker — ロックフリー）
                 self.waker.wake();
-
-                return true;
+                return Ok(());
             }
 
-            // CAS 失敗 — 他のプロデューサーが先にスロットを確保。リトライ
             core::hint::spin_loop();
         }
+    }
+
+    /// イベント送信（プロデューサー側 — ISR コンテキストから安全に呼び出し可能）
+    ///
+    /// CAS ベースでスロットを確保し、ロック取得なしでイベントを書き込む。
+    /// キュー満杯時は `false` を返す（バックプレッシャー）。
+    pub fn send(&self, event: NetworkEvent) -> bool {
+        self.send_owned(event).is_ok()
     }
 
     /// イベント受信（コンシューマー側 — network_event_task 専用）
@@ -734,6 +712,7 @@ impl NetworkEventQueue {
 
         // 読み出し位置を進める
         self.read_pos.store(read.wrapping_add(1), Ordering::Release);
+        self.space_waiters.wake_all();
 
         Some(event)
     }
@@ -751,6 +730,11 @@ impl NetworkEventQueue {
     /// イベント待ち（非同期）
     pub fn wait_for_events(&self) -> EventWaitFuture<'_> {
         EventWaitFuture { queue: self }
+    }
+
+    /// キューに空きができるまで待機する。
+    pub fn wait_for_space(&self) -> QueueSpaceFuture<'_> {
+        QueueSpaceFuture { queue: self }
     }
 
     /// イベントがあるか（高速チェック）
@@ -771,6 +755,13 @@ impl NetworkEventQueue {
     /// キューが空か
     pub fn is_empty(&self) -> bool {
         !self.has_events()
+    }
+
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub fn reset_for_tests(&self) {
+        while self.recv().is_some() {}
+        self.waker.clear();
+        self.space_waiters.clear();
     }
 }
 
@@ -800,9 +791,32 @@ impl<'a> Future for EventWaitFuture<'a> {
     }
 }
 
+/// キュー空き待ちFuture
+pub struct QueueSpaceFuture<'a> {
+    queue: &'a NetworkEventQueue,
+}
+
+impl<'a> Future for QueueSpaceFuture<'a> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.queue.len() < NetworkEventQueue::CAPACITY {
+            return Poll::Ready(());
+        }
+
+        self.queue.space_waiters.register(cx.waker());
+        if self.queue.len() < NetworkEventQueue::CAPACITY {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
 /// グローバルイベントキュー
 static NETWORK_EVENT_QUEUE: NetworkEventQueue = NetworkEventQueue::new();
 static NETWORK_EVENT_TASK_RUNNING: AtomicBool = AtomicBool::new(false);
+static NETWORK_EVENT_TASK_READY_WAITERS: WakerQueue = WakerQueue::new();
 
 /// イベントキューへの参照取得
 pub fn event_queue() -> &'static NetworkEventQueue {
@@ -810,11 +824,45 @@ pub fn event_queue() -> &'static NetworkEventQueue {
 }
 
 pub fn mark_event_task_running() {
-    NETWORK_EVENT_TASK_RUNNING.store(true, Ordering::Release);
+    let was_running = NETWORK_EVENT_TASK_RUNNING.swap(true, Ordering::AcqRel);
+    if !was_running {
+        NETWORK_EVENT_TASK_READY_WAITERS.wake_all();
+    }
+}
+
+pub fn mark_event_task_stopped() {
+    NETWORK_EVENT_TASK_RUNNING.store(false, Ordering::Release);
 }
 
 pub fn event_task_running() -> bool {
     NETWORK_EVENT_TASK_RUNNING.load(Ordering::Acquire)
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub fn reset_event_system_for_tests() {
+    NETWORK_EVENT_TASK_RUNNING.store(false, Ordering::Release);
+    NETWORK_EVENT_TASK_READY_WAITERS.clear();
+    NETWORK_EVENT_QUEUE.reset_for_tests();
+}
+
+/// イベントタスク起動待ちFuture
+pub struct EventTaskReadyFuture;
+
+impl Future for EventTaskReadyFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if event_task_running() {
+            return Poll::Ready(());
+        }
+
+        NETWORK_EVENT_TASK_READY_WAITERS.register(cx.waker());
+        if event_task_running() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
 }
 
 /// イベント送信ヘルパー（バックプレッシャー対応）
@@ -833,6 +881,102 @@ pub fn send_event(event: NetworkEvent) -> Result<(), EndpointError> {
 #[inline]
 pub fn send_event_ignore(event: NetworkEvent) {
     let _ = NETWORK_EVENT_QUEUE.send(event);
+}
+
+pub fn wait_for_event_task() -> EventTaskReadyFuture {
+    EventTaskReadyFuture
+}
+
+/// タスクコンテキスト向け非同期イベント送信Future
+pub struct SendEventFuture {
+    event: Option<NetworkEvent>,
+}
+
+impl SendEventFuture {
+    pub fn new(event: NetworkEvent) -> Self {
+        Self { event: Some(event) }
+    }
+}
+
+impl Future for SendEventFuture {
+    type Output = Result<(), EndpointError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+
+        if !event_task_running() {
+            NETWORK_EVENT_TASK_READY_WAITERS.register(cx.waker());
+            if !event_task_running() {
+                return Poll::Pending;
+            }
+        }
+
+        let event = this
+            .event
+            .take()
+            .expect("send event future polled after completion");
+        match NETWORK_EVENT_QUEUE.send_owned(event) {
+            Ok(()) => Poll::Ready(Ok(())),
+            Err(event) => {
+                this.event = Some(event);
+                NETWORK_EVENT_QUEUE.space_waiters.register(cx.waker());
+
+                let retry = this
+                    .event
+                    .take()
+                    .expect("send event future lost pending event");
+                match NETWORK_EVENT_QUEUE.send_owned(retry) {
+                    Ok(()) => Poll::Ready(Ok(())),
+                    Err(event) => {
+                        this.event = Some(event);
+                        Poll::Pending
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn send_event_async(event: NetworkEvent) -> SendEventFuture {
+    SendEventFuture::new(event)
+}
+
+/// カスタムFuture向けの遅延ディスパッチ状態
+pub struct AsyncEventDispatch {
+    enqueue: Option<SendEventFuture>,
+}
+
+impl AsyncEventDispatch {
+    pub const fn new() -> Self {
+        Self { enqueue: None }
+    }
+
+    pub fn poll<F>(&mut self, cx: &mut Context<'_>, event_fn: F) -> Poll<Result<(), EndpointError>>
+    where
+        F: FnOnce() -> NetworkEvent,
+    {
+        if self.enqueue.is_none() {
+            self.enqueue = Some(send_event_async(event_fn()));
+        }
+
+        let enqueue = self
+            .enqueue
+            .as_mut()
+            .expect("async event dispatch missing enqueue future");
+        match Pin::new(enqueue).poll(cx) {
+            Poll::Ready(result) => {
+                self.enqueue = None;
+                Poll::Ready(result)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Default for AsyncEventDispatch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// バッチイベント送信（複数パケットを1回のロック取得で送信）
@@ -858,4 +1002,67 @@ pub fn send_batch_event_on(if_id: Option<NetIfId>, packets: Vec<PacketRef>) {
 #[inline]
 pub fn send_batch_event(packets: Vec<PacketRef>) {
     send_batch_event_on(None, packets);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    fn noop_waker() -> Waker {
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            RawWaker::new(core::ptr::null(), &VTABLE)
+        }
+        unsafe fn wake(_: *const ()) {}
+        unsafe fn wake_by_ref(_: *const ()) {}
+        unsafe fn drop(_: *const ()) {}
+
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+
+        let raw = RawWaker::new(core::ptr::null(), &VTABLE);
+        unsafe { Waker::from_raw(raw) }
+    }
+
+    #[test]
+    fn send_event_async_waits_for_event_task_readiness() {
+        reset_event_system_for_tests();
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut future = send_event_async(NetworkEvent::TxAvailable);
+
+        assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
+
+        mark_event_task_running();
+        assert!(matches!(
+            Pin::new(&mut future).poll(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(event_queue().recv(), Some(NetworkEvent::TxAvailable)));
+
+        reset_event_system_for_tests();
+    }
+
+    #[test]
+    fn send_event_async_waits_for_queue_space() {
+        reset_event_system_for_tests();
+        mark_event_task_running();
+
+        for _ in 0..NetworkEventQueue::CAPACITY {
+            assert!(send_event(NetworkEvent::TxAvailable).is_ok());
+        }
+
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut future = send_event_async(NetworkEvent::TxAvailable);
+
+        assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
+        assert!(matches!(event_queue().recv(), Some(NetworkEvent::TxAvailable)));
+        assert!(matches!(
+            Pin::new(&mut future).poll(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+
+        reset_event_system_for_tests();
+    }
 }

@@ -121,7 +121,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     let _ = crate::net::api::dhcp::init_dhcp_runtime();
 
     // initially None
-    let st = crate::task::block_on(crate::net::api::dhcp::dhcp_state());
+    let st = crate::net::tests::run_with_network_event_task(crate::net::api::dhcp::dhcp_state());
     if st.v4_last_declined.is_some() || st.v4_last_released.is_some() {
         return false;
     }
@@ -149,7 +149,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
         }
     }
 
-    let st2 = crate::task::block_on(crate::net::api::dhcp::dhcp_state());
+    let st2 = crate::net::tests::run_with_network_event_task(crate::net::api::dhcp::dhcp_state());
     if st2.v4_last_released != Some([1, 2, 3, 4]) {
         return false;
     }
@@ -160,7 +160,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
             let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5, 6, 7, 8]), None);
         }
     }
-    let st3 = crate::task::block_on(crate::net::api::dhcp::dhcp_state());
+    let st3 = crate::net::tests::run_with_network_event_task(crate::net::api::dhcp::dhcp_state());
     if st3.v4_last_declined != Some([5, 6, 7, 8]) {
         return false;
     }

@@ -445,24 +445,16 @@ pub async fn get_dhcp_state(if_id: NetIfId) -> DhcpRuntimeState {
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return get_dhcp_state_sync(if_id);
-    }
-    crate::net::runtime::stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
 pub async fn list_dhcp_states() -> alloc::vec::Vec<InterfaceDhcpState> {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<alloc::vec::Vec<InterfaceDhcpState>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncListDhcpStates {
-        result_slot,
-        waker,
-    };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return list_dhcp_states_sync();
-    }
-    crate::net::runtime::stack::pump_network_events_if_needed();
+    let event =
+        crate::net::l4::endpoint::event::NetworkEvent::AsyncListDhcpStates { result_slot, waker };
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
@@ -474,10 +466,7 @@ pub async fn dhcp_state() -> DhcpRuntimeState {
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return dhcp_state_sync();
-    }
-    crate::net::runtime::stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
@@ -505,25 +494,22 @@ impl Future for DhcpRenewFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRenew {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
             );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(result) = slot.as_ref() {
-                return Poll::Ready(result.clone());
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                Poll::Ready(Ok(())) => this.sent = true,
+                Poll::Ready(Err(_)) => {
+                    return Poll::Ready(Err(String::from("network event dispatch failed")));
+                }
+                Poll::Pending => return Poll::Pending,
             }
         }
 
-        this.waker.register(cx.waker());
-        Poll::Pending
+        stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -561,25 +547,20 @@ impl Future for DhcpReleaseFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpRelease {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
             );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(result) = slot.as_ref() {
-                return Poll::Ready(*result);
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                Poll::Ready(Ok(())) => this.sent = true,
+                Poll::Ready(Err(_)) => return Poll::Ready(false),
+                Poll::Pending => return Poll::Pending,
             }
         }
 
-        this.waker.register(cx.waker());
-        Poll::Pending
+        stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -617,25 +598,20 @@ impl Future for DhcpDiscoverFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpDiscover {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
             );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(result) = slot.as_ref() {
-                return Poll::Ready(result.clone());
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                Poll::Ready(Ok(())) => this.sent = true,
+                Poll::Ready(Err(_)) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
             }
         }
 
-        this.waker.register(cx.waker());
-        Poll::Pending
+        stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -673,25 +649,20 @@ impl Future for DhcpLastDeclinedFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpLastDeclined {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
             );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(result) = slot.as_ref() {
-                return Poll::Ready(*result);
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                Poll::Ready(Ok(())) => this.sent = true,
+                Poll::Ready(Err(_)) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
             }
         }
 
-        this.waker.register(cx.waker());
-        Poll::Pending
+        stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -724,25 +695,20 @@ impl Future for DhcpLastReleasedFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncDhcpLastReleased {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
             );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(result) = slot.as_ref() {
-                return Poll::Ready(*result);
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                Poll::Ready(Ok(())) => this.sent = true,
+                Poll::Ready(Err(_)) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
             }
         }
 
-        this.waker.register(cx.waker());
-        Poll::Pending
+        stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -754,8 +720,8 @@ pub fn dhcp_last_released_async() -> DhcpLastReleasedFuture {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn async_dhcp_state_completes_without_event_task() {
-        let state = crate::task::block_on(super::dhcp_state());
+    fn async_dhcp_state_completes_with_event_task() {
+        let state = crate::net::tests::run_with_network_event_task(super::dhcp_state());
         assert!(!state.v4_state.is_empty());
     }
 }

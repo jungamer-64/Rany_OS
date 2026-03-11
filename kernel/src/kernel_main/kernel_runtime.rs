@@ -196,7 +196,10 @@ async fn network_bootstrap_task() {
 
         let states = crate::net::api::dhcp::list_dhcp_states().await;
         if states.iter().any(|state| state.state.v4_state == "Bound") {
-            for state in states.into_iter().filter(|state| state.state.v4_state == "Bound") {
+            for state in states
+                .into_iter()
+                .filter(|state| state.state.v4_state == "Bound")
+            {
                 info!(
                     target: "net_boot",
                     "DHCP lease acquired: if{} ip={:?}",

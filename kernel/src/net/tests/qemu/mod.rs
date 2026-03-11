@@ -303,41 +303,11 @@ pub fn stack_network_stack_poisoned_runtime_apis_fail_smoke() -> bool {
 }
 
 pub fn stack_send_udp_fallback_zero_copy_smoke() -> bool {
-    stack::init_default();
-    match stack::stack().lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(
-                    |_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
-                        assert!(_if.is_none());
-                        true
-                    },
-                );
-                let _ = s.config();
-            }
-            true
-        }
-        Err(_) => true, // prior poisoned-lock smoke in this group intentionally poisons global lock
-    }
+    run_case!(stack::tests::test_send_udp_event_task_zero_copy)
 }
 
 pub fn stack_send_icmp_fallback_zero_copy_smoke() -> bool {
-    stack::init_default();
-    match stack::stack().lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(
-                    |_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
-                        assert!(_if.is_none());
-                        true
-                    },
-                );
-                let _ = s.current_time();
-            }
-            true
-        }
-        Err(_) => true, // poisoned-lock path is acceptable after stack poison smoke ran
-    }
+    run_case!(stack::tests::test_send_icmp_event_dispatch_smoke)
 }
 
 pub fn stack_redirect_cache_basic_smoke() -> bool {

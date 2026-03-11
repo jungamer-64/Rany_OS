@@ -223,7 +223,7 @@ impl NetworkStack {
             self.send_arp_request(target_ip);
             return;
         }
-        
+
         // We'll build the entire packet into a local buffer and remember its
         // length; the buffer itself lives for the duration of the function so we
         // can safely transmit it after dropping the mutable borrow of `state`.

@@ -18,9 +18,14 @@ use alloc::boxed::Box;
 pub struct NetNamespace;
 
 impl NetNamespace {
-    fn parse_if_id_arg(args: &[ExoValue<'static>], method: &str) -> Result<crate::net::runtime::manager::NetIfId, ExoValue<'static>> {
+    fn parse_if_id_arg(
+        args: &[ExoValue<'static>],
+        method: &str,
+    ) -> Result<crate::net::runtime::manager::NetIfId, ExoValue<'static>> {
         match args.first() {
-            Some(ExoValue::Int(n)) if *n >= 0 => Ok(crate::net::runtime::manager::NetIfId(*n as u16)),
+            Some(ExoValue::Int(n)) if *n >= 0 => {
+                Ok(crate::net::runtime::manager::NetIfId(*n as u16))
+            }
             _ => Err(ExoValue::Error(format!("usage: net.{method}(if_id)"))),
         }
     }

@@ -27,10 +27,7 @@ pub async fn network_snapshot() -> NetSnapshot {
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return network_snapshot_sync();
-    }
-    crate::net::runtime::stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
@@ -42,18 +39,15 @@ pub async fn network_recent_events(limit: usize) -> Vec<NetTraceEvent> {
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
-        return network_recent_events_sync(limit);
-    }
-    crate::net::runtime::stack::pump_network_events_if_needed();
+    let _ = crate::net::l4::endpoint::event::send_event_async(event).await;
     command_future.await
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn async_recent_events_completes_without_event_task() {
-        let events = crate::task::block_on(super::network_recent_events(1));
+    fn async_recent_events_complete_with_event_task() {
+        let events = crate::net::tests::run_with_network_event_task(super::network_recent_events(1));
         assert!(events.len() <= 1);
     }
 }

@@ -1,6 +1,6 @@
 use super::*;
-use alloc::collections::BTreeSet;
 use alloc::collections::BTreeMap;
+use alloc::collections::BTreeSet;
 use core::sync::atomic::Ordering;
 
 fn family_from_addr(addr: UdpAddr) -> UdpAddressFamily {
@@ -226,10 +226,9 @@ impl UdpEndpointTable {
                                 ) {
                                     permitted = true;
                                 }
-                            } else if crate::security::capability::manager().has_capability(
-                                caller,
-                                crate::security::capability::CAP_NET_BIND,
-                            ) {
+                            } else if crate::security::capability::manager()
+                                .has_capability(caller, crate::security::capability::CAP_NET_BIND)
+                            {
                                 permitted = true;
                             }
                         }
@@ -241,7 +240,8 @@ impl UdpEndpointTable {
                     }
 
                     let conflict = sockets.keys().any(|key| {
-                        (key.family == UdpAddressFamily::Ipv4 || key.family == UdpAddressFamily::Ipv6)
+                        (key.family == UdpAddressFamily::Ipv4
+                            || key.family == UdpAddressFamily::Ipv6)
                             && key.port == port
                             && scopes_conflict(key.scope, scope)
                     });

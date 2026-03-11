@@ -107,25 +107,20 @@ impl Future for GetArpCacheFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncGetArpCache {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
             );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(entries) = slot.as_ref() {
-                return Poll::Ready(entries.clone());
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                Poll::Ready(Ok(())) => this.sent = true,
+                Poll::Ready(Err(_)) => return Poll::Ready(Vec::new()),
+                Poll::Pending => return Poll::Pending,
             }
         }
 
-        this.waker.register(cx.waker());
-        Poll::Pending
+        crate::net::runtime::stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -178,25 +173,20 @@ impl Future for GetUdpEndpointsFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncGetUdpEndpoints {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
             );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(endpoints) = slot.as_ref() {
-                return Poll::Ready(endpoints.clone());
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                Poll::Ready(Ok(())) => this.sent = true,
+                Poll::Ready(Err(_)) => return Poll::Ready(Vec::new()),
+                Poll::Pending => return Poll::Pending,
             }
         }
 
-        this.waker.register(cx.waker());
-        Poll::Pending
+        crate::net::runtime::stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -229,25 +219,20 @@ impl Future for GetTcpConnectionsFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            crate::net::l4::endpoint::event::send_event_ignore(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncGetTcpConnections {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
                 },
             );
-            this.waker.register(cx.waker());
-            this.sent = true;
-            return Poll::Pending;
-        }
-
-        if let Ok(slot) = this.result_slot.lock() {
-            if let Some(connections) = slot.as_ref() {
-                return Poll::Ready(connections.clone());
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                Poll::Ready(Ok(())) => this.sent = true,
+                Poll::Ready(Err(_)) => return Poll::Ready(Vec::new()),
+                Poll::Pending => return Poll::Pending,
             }
         }
 
-        this.waker.register(cx.waker());
-        Poll::Pending
+        crate::net::runtime::stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -259,4 +244,18 @@ impl Future for GetTcpConnectionsFuture {
 /// ```
 pub fn get_tcp_connections_async() -> GetTcpConnectionsFuture {
     GetTcpConnectionsFuture::new()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn async_connection_queries_complete_with_event_task() {
+        let tcp = crate::net::tests::run_with_network_event_task(super::get_tcp_connections_async());
+        let udp = crate::net::tests::run_with_network_event_task(super::get_udp_endpoints_async());
+        let arp = crate::net::tests::run_with_network_event_task(super::get_arp_cache_async());
+
+        assert!(tcp.is_empty());
+        assert!(udp.is_empty());
+        assert!(arp.is_empty());
+    }
 }

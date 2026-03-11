@@ -16,19 +16,27 @@ impl<T> core::future::Future for CommandFuture<T> {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         let this = self.get_mut();
-        if let Ok(mut slot) = this.result_slot.lock() {
-            if let Some(result) = slot.take() {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        this.waker.register(cx.waker());
-        if let Ok(mut slot) = this.result_slot.lock() {
-            if let Some(result) = slot.take() {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&this.result_slot, &this.waker, cx)
     }
+}
+
+pub(crate) fn poll_command_result<T>(
+    result_slot: &alloc::sync::Arc<PoisonLock<Option<T>>>,
+    waker: &alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    cx: &mut core::task::Context<'_>,
+) -> core::task::Poll<T> {
+    if let Ok(mut slot) = result_slot.lock() {
+        if let Some(result) = slot.take() {
+            return core::task::Poll::Ready(result);
+        }
+    }
+    waker.register(cx.waker());
+    if let Ok(mut slot) = result_slot.lock() {
+        if let Some(result) = slot.take() {
+            return core::task::Poll::Ready(result);
+        }
+    }
+    core::task::Poll::Pending
 }
 
 pub(crate) fn new_command_channel<T>() -> (
@@ -51,17 +59,6 @@ pub(crate) fn new_detached_command_channel<T>() -> (
 ) {
     let (result_slot, waker, _future) = new_command_channel();
     (result_slot, waker)
-}
-
-pub(crate) fn pump_network_events_if_needed() {
-    if crate::net::l4::endpoint::event::event_task_running() {
-        return;
-    }
-
-    let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
-    while let Some(event) = crate::net::l4::endpoint::event::event_queue().recv() {
-        let _ = handler.handle_event(event);
-    }
 }
 
 /// Initialize the global network stack
@@ -154,7 +151,10 @@ pub async fn send_udp(
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+    if crate::net::l4::endpoint::event::send_event_async(event)
+        .await
+        .is_err()
+    {
         let _ = crate::net::runtime::device::complete_tx_request(
             completion_id,
             Err("network event queue full"),
@@ -162,7 +162,6 @@ pub async fn send_udp(
         return Err(crate::net::l4::endpoint::types::EndpointError::ResourceExhausted);
     }
 
-    pump_network_events_if_needed();
     command_future.await?;
     completion_future
         .await
@@ -344,7 +343,10 @@ pub async fn send_tcp(
         result_slot,
         waker,
     };
-    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+    if crate::net::l4::endpoint::event::send_event_async(event)
+        .await
+        .is_err()
+    {
         let _ = crate::net::runtime::device::complete_tx_request(
             completion_id,
             Err("network event queue full"),
@@ -352,7 +354,6 @@ pub async fn send_tcp(
         return Err(crate::net::l4::endpoint::types::EndpointError::ResourceExhausted);
     }
 
-    pump_network_events_if_needed();
     command_future.await?;
     completion_future
         .await
@@ -512,12 +513,10 @@ pub fn unbind_tcp_listener(local: TcpEndpointAddr) {
 /// 以前はNETWORK_STACKのロックを直接取得していたが、イベントキュー経由の
 /// 非同期パスに統一し、ロック競合を排除。ブートストラップ時のみIRQ無効化 +
 /// 同期ドレインで処理する。
+#[cfg(any(test, feature = "qemu-test-export"))]
 pub fn bind_tcp(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
     match NETWORK_STACK.lock() {
-        Ok(mut guard) => guard
-            .as_mut()
-            .ok_or(TcpError::InvalidState)?
-            .bind_tcp(addr),
+        Ok(mut guard) => guard.as_mut().ok_or(TcpError::InvalidState)?.bind_tcp(addr),
         Err(_) => Err(TcpError::InvalidState),
     }
 }
@@ -579,31 +578,28 @@ impl core::future::Future for TcpBindFuture {
         mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
-        // 初回ポーリング時にイベントを送信
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBind {
-                local: self.addr,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(Err(
-                    crate::net::l4::endpoint::types::EndpointError::ResourceExhausted,
-                ));
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBind {
+                    local: self.addr,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => {
+                    return core::task::Poll::Ready(Err(
+                        crate::net::l4::endpoint::types::EndpointError::ResourceExhausted,
+                    ));
+                }
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        // 結果を確認
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(ref result) = *slot {
-                return core::task::Poll::Ready(result.clone());
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -638,33 +634,24 @@ impl core::future::Future for UdpBindFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
-                port: self.port,
-                scope: self.scope,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(false);
-            }
-            self.sent = true;
-            pump_network_events_if_needed();
-            if let Ok(slot) = self.result_slot.lock() {
-                if let Some(result) = *slot {
-                    return core::task::Poll::Ready(result);
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
+                    port: self.port,
+                    scope: self.scope,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
                 }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(result) = *slot {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -678,10 +665,7 @@ pub fn bind_udp_async(port: u16) -> UdpBindFuture {
 }
 
 /// 非同期UDP bind: 明示的な interface scope 付き
-pub fn bind_udp_scoped_async(
-    scope: crate::net::types::InterfaceScope,
-    port: u16,
-) -> UdpBindFuture {
+pub fn bind_udp_scoped_async(scope: crate::net::types::InterfaceScope, port: u16) -> UdpBindFuture {
     UdpBindFuture {
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
@@ -717,29 +701,28 @@ impl core::future::Future for TcpConnectFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpConnect {
-                local: self.local,
-                remote: self.remote,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(Err(
-                    crate::net::l4::endpoint::types::EndpointError::ResourceExhausted,
-                ));
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpConnect {
+                    local: self.local,
+                    remote: self.remote,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => {
+                    return core::task::Poll::Ready(Err(
+                        crate::net::l4::endpoint::types::EndpointError::ResourceExhausted,
+                    ));
+                }
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(ref result) = *slot {
-                return core::task::Poll::Ready(result.clone());
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -781,27 +764,26 @@ impl core::future::Future for TcpConnectStreamFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpConnectStream {
-                local: self.local,
-                remote: self.remote,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(Err(TcpError::InvalidState));
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpConnectStream {
+                    local: self.local,
+                    remote: self.remote,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => {
+                    return core::task::Poll::Ready(Err(TcpError::InvalidState));
+                }
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(mut slot) = self.result_slot.lock() {
-            if let Some(result) = slot.take() {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -842,26 +824,25 @@ impl core::future::Future for TcpBindListenerFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindListener {
-                local: self.addr,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(Err(TcpError::InvalidState));
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindListener {
+                    local: self.addr,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => {
+                    return core::task::Poll::Ready(Err(TcpError::InvalidState));
+                }
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(mut slot) = self.result_slot.lock() {
-            if let Some(result) = slot.take() {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -892,28 +873,26 @@ impl core::future::Future for TcpBindListenerWithTokenFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event =
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindListenerWithToken {
                     local: self.addr,
                     token: self.token,
                     result_slot: self.result_slot.clone(),
                     waker: self.waker.clone(),
-                };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(Err(TcpError::InvalidState));
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => {
+                    return core::task::Poll::Ready(Err(TcpError::InvalidState));
+                }
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(mut slot) = self.result_slot.lock() {
-            if let Some(result) = slot.take() {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -952,33 +931,24 @@ impl core::future::Future for UdpBindEndpointFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindEndpoint {
-                port: self.port,
-                scope: self.scope,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(None);
-            }
-            self.sent = true;
-            pump_network_events_if_needed();
-            if let Ok(mut slot) = self.result_slot.lock() {
-                if let Some(result) = slot.take() {
-                    return core::task::Poll::Ready(result);
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindEndpoint {
+                    port: self.port,
+                    scope: self.scope,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
                 }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(None),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(mut slot) = self.result_slot.lock() {
-            if let Some(result) = slot.take() {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -1022,35 +992,25 @@ impl core::future::Future for UdpBindEndpointWithTokenFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event =
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
                 crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindEndpointWithToken {
                     port: self.port,
                     scope: self.scope,
                     token: self.token,
                     result_slot: self.result_slot.clone(),
                     waker: self.waker.clone(),
-                };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(None);
-            }
-            self.sent = true;
-            pump_network_events_if_needed();
-            if let Ok(mut slot) = self.result_slot.lock() {
-                if let Some(result) = slot.take() {
-                    return core::task::Poll::Ready(result);
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
                 }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(None),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(mut slot) = self.result_slot.lock() {
-            if let Some(result) = slot.take() {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -1059,11 +1019,7 @@ pub fn bind_udp_endpoint_with_token_async(
     port: u16,
     token: Option<u64>,
 ) -> UdpBindEndpointWithTokenFuture {
-    bind_udp_endpoint_with_token_scoped_async(
-        crate::net::types::InterfaceScope::Any,
-        port,
-        token,
-    )
+    bind_udp_endpoint_with_token_scoped_async(crate::net::types::InterfaceScope::Any, port, token)
 }
 
 /// 非同期UDP bind with token（UdpEndpointを返す完全非同期版、scope 指定）
@@ -1102,32 +1058,23 @@ impl core::future::Future for MulticastJoinFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastJoin {
-                group: *self.group.as_bytes(),
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(false);
-            }
-            self.sent = true;
-            pump_network_events_if_needed();
-            if let Ok(slot) = self.result_slot.lock() {
-                if let Some(result) = *slot {
-                    return core::task::Poll::Ready(result);
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastJoin {
+                    group: *self.group.as_bytes(),
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
                 }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(result) = *slot {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -1147,26 +1094,23 @@ impl core::future::Future for MulticastLeaveFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastLeave {
-                group: *self.group.as_bytes(),
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(false);
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncMulticastLeave {
+                    group: *self.group.as_bytes(),
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(result) = *slot {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -1198,45 +1142,6 @@ pub fn leave_multicast_async(group: Ipv4Address) -> MulticastLeaveFuture {
 // 非同期 unbind API（イベントキュー経由・ロック競合回避）
 // ============================================================================
 
-/// 汎用の非同期 bool 結果 Future（unbind等の fire-and-forget 操作用）
-struct AsyncBoolFuture<F: FnOnce() -> crate::net::l4::endpoint::event::NetworkEvent> {
-    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    event_fn: Option<F>,
-}
-
-impl<F: FnOnce() -> crate::net::l4::endpoint::event::NetworkEvent + Unpin> core::future::Future
-    for AsyncBoolFuture<F>
-{
-    type Output = bool;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            self.waker.register(cx.waker());
-            if let Some(f) = self.event_fn.take() {
-                let event = f();
-                if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                    return core::task::Poll::Ready(false);
-                }
-            }
-            self.sent = true;
-            return core::task::Poll::Pending;
-        }
-
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(result) = *slot {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
-    }
-}
-
 /// 非同期UDP unbind Future
 pub struct UnbindUdpFuture {
     result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
@@ -1254,27 +1159,24 @@ impl core::future::Future for UnbindUdpFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindUdp {
-                port: self.port,
-                scope: self.scope,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(false);
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindUdp {
+                    port: self.port,
+                    scope: self.scope,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(result) = *slot {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -1317,27 +1219,24 @@ impl core::future::Future for UnbindTcpFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcp {
-                local: self.local,
-                remote: self.remote,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(false);
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcp {
+                    local: self.local,
+                    remote: self.remote,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(result) = *slot {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -1368,26 +1267,23 @@ impl core::future::Future for UnbindTcpListenerFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcpListener {
-                local: self.local,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(false);
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindTcpListener {
+                    local: self.local,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(result) = *slot {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -1424,29 +1320,28 @@ impl core::future::Future for TcpBindWithTokenFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindWithToken {
-                local: self.addr,
-                token: self.token,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(Err(
-                    crate::net::l4::endpoint::types::EndpointError::ResourceExhausted,
-                ));
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncTcpBindWithToken {
+                    local: self.addr,
+                    token: self.token,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => {
+                    return core::task::Poll::Ready(Err(
+                        crate::net::l4::endpoint::types::EndpointError::ResourceExhausted,
+                    ));
+                }
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(ref result) = *slot {
-                return core::task::Poll::Ready(result.clone());
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -1482,28 +1377,25 @@ impl core::future::Future for UdpBindWithTokenFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindWithToken {
-                port: self.port,
-                scope: self.scope,
-                token: self.token,
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(false);
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBindWithToken {
+                    port: self.port,
+                    scope: self.scope,
+                    token: self.token,
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(result) = *slot {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 
@@ -1548,26 +1440,23 @@ impl core::future::Future for ApplyIpv6AddressFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            self.waker.register(cx.waker());
-            let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncApplyIpv6Address {
-                addr: self.addr.octets(),
-                result_slot: self.result_slot.clone(),
-                waker: self.waker.clone(),
-            };
-            if crate::net::l4::endpoint::event::send_event(event).is_err() {
-                return core::task::Poll::Ready(false);
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_async(
+                crate::net::l4::endpoint::event::NetworkEvent::AsyncApplyIpv6Address {
+                    addr: self.addr.octets(),
+                    result_slot: self.result_slot.clone(),
+                    waker: self.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                core::task::Poll::Ready(Ok(())) => {
+                    self.sent = true;
+                }
+                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
+                core::task::Poll::Pending => return core::task::Poll::Pending,
             }
-            self.sent = true;
-            return core::task::Poll::Pending;
         }
 
-        self.waker.register(cx.waker());
-        if let Ok(slot) = self.result_slot.lock() {
-            if let Some(result) = *slot {
-                return core::task::Poll::Ready(result);
-            }
-        }
-        core::task::Poll::Pending
+        poll_command_result(&self.result_slot, &self.waker, cx)
     }
 }
 

@@ -363,26 +363,6 @@ pub fn flush_batch() {
     }
 }
 
-pub fn sync_process_network_events() {
-    use crate::net::l4::endpoint::event::event_queue;
-    use crate::net::l4::endpoint::handler::NetworkEventHandler;
-
-    let events = event_queue().drain_all();
-    if events.is_empty() {
-        return;
-    }
-
-    let handler = NetworkEventHandler::new();
-
-    if let Ok(mut stack_guard) = stack::NETWORK_STACK.lock() {
-        if let Some(ref mut stack) = *stack_guard {
-            for event in events {
-                handler.handle_event_with_stack(event, stack);
-            }
-        }
-    }
-}
-
 pub fn get_stack_glue_stats_for_interface(if_id: NetIfId) -> Option<StackGlueInterfaceStats> {
     STACK_GLUE_IF_STATS
         .read()
