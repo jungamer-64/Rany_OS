@@ -363,13 +363,25 @@ impl NetworkStack {
         src_mac: MacAddress,
         _reassembled: bool,
     ) {
-        let ipv6 = match self.ipv6 {
-            Some(ref mut ipv6) => ipv6,
-            None => return,
+        let result = if let Some(if_id) = if_id {
+            if let Some(state) = self.interfaces.get_mut(&if_id) {
+                if let Some(ref mut ipv6) = state.ipv6 {
+                    ipv6.process(data, current_time)
+                } else if let Some(ref mut ipv6) = self.ipv6 {
+                    ipv6.process(data, current_time)
+                } else {
+                    return;
+                }
+            } else if let Some(ref mut ipv6) = self.ipv6 {
+                ipv6.process(data, current_time)
+            } else {
+                return;
+            }
+        } else if let Some(ref mut ipv6) = self.ipv6 {
+            ipv6.process(data, current_time)
+        } else {
+            return;
         };
-
-        // All fragmentation/extension header handling is now encapsulated in Ipv6Processor::process
-        let result = ipv6.process(data, current_time);
 
         match result {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
@@ -493,12 +505,25 @@ impl NetworkStack {
         hop_limit: u8,
         current_time: u64,
     ) {
-        let icmpv6 = match self.icmpv6 {
-            Some(ref icmpv6) => icmpv6,
-            None => return,
+        let result = if let Some(if_id) = if_id {
+            if let Some(state) = self.interfaces.get(&if_id) {
+                if let Some(ref icmpv6) = state.icmpv6 {
+                    icmpv6.process(data, src, dst, src_mac, hop_limit, current_time)
+                } else if let Some(ref icmpv6) = self.icmpv6 {
+                    icmpv6.process(data, src, dst, src_mac, hop_limit, current_time)
+                } else {
+                    return;
+                }
+            } else if let Some(ref icmpv6) = self.icmpv6 {
+                icmpv6.process(data, src, dst, src_mac, hop_limit, current_time)
+            } else {
+                return;
+            }
+        } else if let Some(ref icmpv6) = self.icmpv6 {
+            icmpv6.process(data, src, dst, src_mac, hop_limit, current_time)
+        } else {
+            return;
         };
-
-        let result = icmpv6.process(data, src, dst, src_mac, hop_limit, current_time);
 
         match result {
             Icmpv6Result::SendEchoReply {
@@ -598,13 +623,23 @@ impl NetworkStack {
                 // Security check (RFC 8201 / RFC 5927): Verify that the ICMPv6 message quotes
                 // a packet that we actually sent and corresponds to an active connection.
                 let mut is_our_packet = false;
-                if let Some(ref ipv6) = self.ipv6 {
-                    let config = ipv6.config();
-                    if quoted_src == config.link_local {
-                        is_our_packet = true;
-                    } else if let Some(global) = config.global {
-                        if quoted_src == global {
+                if let Some(if_id) = if_id {
+                    if let Some(config) = self.interface_config_or_runtime(if_id).and_then(|cfg| cfg.ipv6)
+                    {
+                        if quoted_src == config.link_local || config.global == Some(quoted_src) {
                             is_our_packet = true;
+                        }
+                    }
+                }
+                if !is_our_packet {
+                    if let Some(ref ipv6) = self.ipv6 {
+                        let config = ipv6.config();
+                        if quoted_src == config.link_local {
+                            is_our_packet = true;
+                        } else if let Some(global) = config.global {
+                            if quoted_src == global {
+                                is_our_packet = true;
+                            }
                         }
                     }
                 }
@@ -677,6 +712,11 @@ impl NetworkStack {
                     log::info!("ICMPv6: Packet Too Big for {}, MTU={}", dst, mtu);
                     // Update IPv6 Path MTU cache (RFC 8201)
                     let current_time = self.current_time();
+                    if let Some(if_id) = if_id {
+                        if let Some(state) = self.interfaces.get_mut(&if_id) {
+                            state.ipv6_pmtu_cache.update(dst, mtu, current_time);
+                        }
+                    }
                     self.ipv6_pmtu_cache.update(dst, mtu, current_time);
                 } else {
                     log::warn!(
@@ -772,12 +812,25 @@ impl NetworkStack {
             return;
         }
 
-        let ndp = match self.ndp {
-            Some(ref mut ndp) => ndp,
-            None => return,
+        let result = if let Some(if_id) = if_id {
+            if let Some(state) = self.interfaces.get_mut(&if_id) {
+                if let Some(ref mut ndp) = state.ndp {
+                    ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time)
+                } else if let Some(ref mut ndp) = self.ndp {
+                    ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time)
+                } else {
+                    return;
+                }
+            } else if let Some(ref mut ndp) = self.ndp {
+                ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time)
+            } else {
+                return;
+            }
+        } else if let Some(ref mut ndp) = self.ndp {
+            ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time)
+        } else {
+            return;
         };
-
-        let result = ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time);
 
         match result {
             NdpResult::SendNeighborAdvertisement {
@@ -787,8 +840,14 @@ impl NetworkStack {
                 solicited,
             } => {
                 // Get our link-local address
-                if let Some(ref ipv6) = self.ipv6 {
-                    let our_addr = ipv6.config().link_local;
+                let our_addr = if let Some(if_id) = if_id {
+                    self.interface_config_or_runtime(if_id)
+                        .and_then(|cfg| cfg.ipv6)
+                        .map(|cfg| cfg.link_local)
+                } else {
+                    self.ipv6.as_ref().map(|ipv6| ipv6.config().link_local)
+                };
+                if let Some(our_addr) = our_addr {
                     let na_msg =
                         NdpProcessor::build_na(&our_addr, &na_dst, &target, &our_mac, solicited);
                     if let Some(if_id) = if_id {
@@ -801,8 +860,14 @@ impl NetworkStack {
             }
             NdpResult::SendNeighborAdvertisementMulticast { target, our_mac } => {
                 // Get our link-local address
-                if let Some(ref ipv6) = self.ipv6 {
-                    let our_addr = ipv6.config().link_local;
+                let our_addr = if let Some(if_id) = if_id {
+                    self.interface_config_or_runtime(if_id)
+                        .and_then(|cfg| cfg.ipv6)
+                        .map(|cfg| cfg.link_local)
+                } else {
+                    self.ipv6.as_ref().map(|ipv6| ipv6.config().link_local)
+                };
+                if let Some(our_addr) = our_addr {
                     let mcast_dst = Ipv6Address::ALL_NODES_LINK_LOCAL;
                     let na_msg = NdpProcessor::build_na(
                         &our_addr, &mcast_dst, &target, &our_mac,
@@ -847,7 +912,11 @@ impl NetworkStack {
                     mac[5]
                 );
                 // Drain any pending packets for this now-resolved neighbor
-                self.drain_ndp_pending(&ip);
+                if let Some(if_id) = if_id {
+                    self.drain_ndp_pending_on(if_id, &ip);
+                } else {
+                    self.drain_ndp_pending(&ip);
+                }
             }
             NdpResult::RouterAdvertisement {
                 router,
@@ -859,6 +928,100 @@ impl NetworkStack {
                     router,
                     prefixes.len()
                 );
+                if let Some(if_id) = if_id {
+                    let mut dad_messages = Vec::new();
+                    if let Some(state) = self.interfaces.get_mut(&if_id) {
+                        let mac_bytes = *state.config.mac.as_bytes();
+
+                        for prefix_opt in &prefixes {
+                            if let crate::net::l3::ndp::NdpOption::PrefixInfo {
+                                prefix_len,
+                                on_link: _,
+                                autonomous,
+                                valid_lifetime,
+                                preferred_lifetime: _,
+                                prefix,
+                            } = prefix_opt
+                            {
+                                if *autonomous && *prefix_len == 64 && *valid_lifetime > 0 {
+                                    let global_addr =
+                                        Ipv6Address::from_prefix_eui64(prefix, &mac_bytes);
+
+                                    if let Some(ref mut ipv6) = state.ipv6 {
+                                        if ipv6.config().global != Some(global_addr) {
+                                            ipv6.set_global_address(global_addr);
+                                            if let Some(ref mut cfg) = state.config.ipv6 {
+                                                cfg.global = Some(global_addr);
+                                            }
+                                            log::info!(
+                                                "SLAAC: Configured interface {} global address {} from prefix {}",
+                                                if_id.0,
+                                                global_addr,
+                                                prefix
+                                            );
+
+                                            if let Some(ref mut ndp_proc) = state.ndp {
+                                                if let NdpResult::SendNeighborSolicitation {
+                                                    src,
+                                                    dst,
+                                                    target,
+                                                } = ndp_proc.initiate_dad(&global_addr)
+                                                {
+                                                    let ns_msg = NdpProcessor::build_ns(
+                                                        &src,
+                                                        &dst,
+                                                        &target,
+                                                        &mac_bytes,
+                                                    );
+                                                    dad_messages.push((src, dst, ns_msg, target));
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(ref mut ndp) = state.ndp {
+                                        ndp.add_global_address(global_addr);
+                                    }
+                                }
+                            } else if let crate::net::l3::ndp::NdpOption::RecursiveDnsServer {
+                                lifetime,
+                                servers,
+                            } = prefix_opt
+                            {
+                                if *lifetime > 0 {
+                                    for server in servers {
+                                        crate::net::services::dns::add_ipv6_server(*server);
+                                        log::info!(
+                                            "NDP: Added DNS server {} from RDNSS option",
+                                            server
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some(ref mut ipv6) = state.ipv6 {
+                            if ipv6.config().gateway.is_none() {
+                                ipv6.config_mut().gateway = Some(router);
+                                if let Some(ref mut cfg) = state.config.ipv6 {
+                                    cfg.gateway = Some(router);
+                                }
+                                log::info!(
+                                    "SLAAC: Set interface {} default gateway to {}",
+                                    if_id.0,
+                                    router
+                                );
+                            }
+                        }
+                    }
+
+                    for (src, dst, ns_msg, target) in dad_messages {
+                        self.send_ipv6_icmpv6_on(if_id, &src, &dst, &ns_msg);
+                        log::info!("NDP: Sent DAD NS for target {}", target);
+                    }
+                    return;
+                }
+
                 // SLAAC (RFC 4862): Apply prefix information
                 for prefix_opt in &prefixes {
                     if let crate::net::l3::ndp::NdpOption::PrefixInfo {

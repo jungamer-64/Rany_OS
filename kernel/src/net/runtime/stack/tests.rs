@@ -490,9 +490,48 @@ pub fn test_ndp_pending_queue_drain_for_preserves_order() {
 
     let drained = queue.drain_for(&target);
     assert_eq!(drained.len(), 2);
-    assert_eq!(drained[0].icmpv6_data.as_ref(), [1]);
-    assert_eq!(drained[1].icmpv6_data.as_ref(), [2]);
+    match &drained[0].payload {
+        PendingIpv6Payload::Icmpv6(data) => assert_eq!(data.as_ref(), [1]),
+        _ => panic!("expected icmpv6 payload"),
+    }
+    match &drained[1].payload {
+        PendingIpv6Payload::Icmpv6(data) => assert_eq!(data.as_ref(), [2]),
+        _ => panic!("expected icmpv6 payload"),
+    }
 
     assert_eq!(queue.packets.len(), 1);
     assert_eq!(queue.packets[0].dst, other);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ndp_pending_queue_retains_udp_and_tcp_variants() {
+    let mut queue = NdpPendingQueue::new();
+    let src = Ipv6Address::LOOPBACK;
+    let dst = Ipv6Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]);
+
+    queue.enqueue_udp(src, dst, 1111, 2222, 32, b"udp", 1);
+    queue.enqueue_tcp(src, dst, b"tcp", 2);
+
+    let drained = queue.drain_for(&dst);
+    assert_eq!(drained.len(), 2);
+
+    match &drained[0].payload {
+        PendingIpv6Payload::Udp {
+            src_port,
+            dst_port,
+            hop_limit,
+            data,
+        } => {
+            assert_eq!(*src_port, 1111);
+            assert_eq!(*dst_port, 2222);
+            assert_eq!(*hop_limit, 32);
+            assert_eq!(data.as_ref(), b"udp");
+        }
+        _ => panic!("expected udp payload"),
+    }
+
+    match &drained[1].payload {
+        PendingIpv6Payload::Tcp { segment } => assert_eq!(segment.as_ref(), b"tcp"),
+        _ => panic!("expected tcp payload"),
+    }
 }

@@ -240,20 +240,19 @@ impl NetworkStack {
         let dst_mac = if dst.is_multicast() {
             MacAddress::new(dst.multicast_mac())
         } else {
-            match self.ndp {
-                Some(ref mut ndp) => match ndp.resolve(dst) {
-                    Some(mac) => MacAddress::new(mac),
-                    None => {
-                        self.ndp_pending_queue
-                            .enqueue(resolved_src, *dst, icmpv6_data, current_time);
-
-                        let ns_msg = ndp.start_resolution(dst, current_time);
-                        let sn_mcast = dst.solicited_node();
-                        let our_ll = ndp.our_link_local;
-                        self.send_ipv6_icmpv6_raw_on(if_id, &our_ll, &sn_mcast, &ns_msg);
-                        return;
+            match self.resolve_ndp_for_send(resolved_if, dst, current_time, |pending| {
+                pending.enqueue(resolved_src, *dst, icmpv6_data, current_time);
+            }) {
+                Some(Ok(mac)) => MacAddress::new(mac),
+                Some(Err((ns_if_id, our_ll, ns_msg))) => {
+                    let sn_mcast = dst.solicited_node();
+                    if let Some(ns_if_id) = ns_if_id {
+                        self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, &ns_msg);
+                    } else {
+                        self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
                     }
-                },
+                    return;
+                }
                 None => return,
             }
         };
@@ -373,6 +372,48 @@ impl NetworkStack {
         }
     }
 
+    fn resolve_ndp_for_send<F>(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        dst: &Ipv6Address,
+        current_time: u64,
+        queue_pending: F,
+    ) -> Option<Result<[u8; 6], (Option<super::NetIfId>, Ipv6Address, Vec<u8>)>>
+    where
+        F: FnOnce(&mut NdpPendingQueue),
+    {
+        if let Some(if_id) = if_id {
+            if self
+                .interfaces
+                .get(&if_id)
+                .and_then(|state| state.ndp.as_ref())
+                .is_some()
+            {
+                let resolution = {
+                    let state = self.interfaces.get_mut(&if_id).unwrap();
+                    if let Some(mac) = state.ndp.as_ref().and_then(|ndp| ndp.resolve(dst)) {
+                        Ok(mac)
+                    } else {
+                        queue_pending(&mut state.ndp_pending_queue);
+                        let ndp = state.ndp.as_mut().unwrap();
+                        let ns_msg = ndp.start_resolution(dst, current_time);
+                        Err((Some(if_id), ndp.our_link_local, ns_msg))
+                    }
+                };
+                return Some(resolution);
+            }
+        }
+
+        if let Some(mac) = self.ndp.as_ref().and_then(|ndp| ndp.resolve(dst)) {
+            return Some(Ok(mac));
+        }
+
+        queue_pending(&mut self.ndp_pending_queue);
+        let ndp = self.ndp.as_mut()?;
+        let ns_msg = ndp.start_resolution(dst, current_time);
+        Some(Err((None, ndp.our_link_local, ns_msg)))
+    }
+
     fn send_udp_v6_raw_scoped_with_ttl(
         &mut self,
         scope: crate::net::types::InterfaceScope,
@@ -406,23 +447,27 @@ impl NetworkStack {
         let dst_mac = if dst.is_multicast() {
             MacAddress::new(dst.multicast_mac())
         } else {
-            match self.ndp {
-                Some(ref mut ndp) => match ndp.resolve(&dst) {
-                    Some(mac) => MacAddress::new(mac),
-                    None => {
-                        self.ndp_pending_queue.enqueue(resolved_src, dst, data, current_time);
-
-                        let ns_msg = ndp.start_resolution(&dst, current_time);
-                        let sn_mcast = dst.solicited_node();
-                        let our_ll = ndp.our_link_local;
-                        if let Some(if_id) = if_id {
-                            self.send_ipv6_icmpv6_raw_on(if_id, &our_ll, &sn_mcast, &ns_msg);
-                        } else {
-                            self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
-                        }
-                        return false;
+            match self.resolve_ndp_for_send(if_id, &dst, current_time, |pending| {
+                pending.enqueue_udp(
+                    resolved_src,
+                    dst,
+                    src_port,
+                    dst_port,
+                    ttl,
+                    data,
+                    current_time,
+                );
+            }) {
+                Some(Ok(mac)) => MacAddress::new(mac),
+                Some(Err((ns_if_id, our_ll, ns_msg))) => {
+                    let sn_mcast = dst.solicited_node();
+                    if let Some(ns_if_id) = ns_if_id {
+                        self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, &ns_msg);
+                    } else {
+                        self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
                     }
-                },
+                    return false;
+                }
                 None => return false,
             }
         };
@@ -664,25 +709,19 @@ impl NetworkStack {
         let dst_mac = if dst.is_multicast() {
             MacAddress::new(dst.multicast_mac())
         } else {
-            match self.ndp {
-                Some(ref mut ndp) => match ndp.resolve(&dst) {
-                    Some(mac) => MacAddress::new(mac),
-                    None => {
-                        // Queue packet for later and trigger NDP resolution
-                        self.ndp_pending_queue
-                            .enqueue(resolved_src, dst, tcp_segment, current_time);
-
-                        let ns_msg = ndp.start_resolution(&dst, current_time);
-                        let sn_mcast = dst.solicited_node();
-                        let our_ll = ndp.our_link_local;
-                        if let Some(if_id) = if_id {
-                            self.send_ipv6_icmpv6_raw_on(if_id, &our_ll, &sn_mcast, &ns_msg);
-                        } else {
-                            self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
-                        }
-                        return false;
+            match self.resolve_ndp_for_send(if_id, &dst, current_time, |pending| {
+                pending.enqueue_tcp(resolved_src, dst, tcp_segment, current_time);
+            }) {
+                Some(Ok(mac)) => MacAddress::new(mac),
+                Some(Err((ns_if_id, our_ll, ns_msg))) => {
+                    let sn_mcast = dst.solicited_node();
+                    if let Some(ns_if_id) = ns_if_id {
+                        self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, &ns_msg);
+                    } else {
+                        self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
                     }
-                },
+                    return false;
+                }
                 None => return false,
             }
         };
@@ -749,21 +788,81 @@ impl NetworkStack {
     ///
     /// NDP Neighbor Advertisementを受信してキャッシュが更新された際に呼び出す。
     /// 指定アドレス宛の保留パケットを全て送信する。
-    pub(crate) fn drain_ndp_pending(&mut self, resolved_ip: &Ipv6Address) {
-        let pending = self.ndp_pending_queue.drain_for(resolved_ip);
+    fn drain_ndp_pending_queue(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        resolved_ip: &Ipv6Address,
+        pending: Vec<PendingIpv6Packet>,
+    ) {
         if pending.is_empty() {
             return;
         }
 
         log::debug!(
-            "NDP: Draining {} pending packets for {}",
+            "NDP: Draining {} pending packets for {} on {:?}",
             pending.len(),
-            resolved_ip
+            resolved_ip,
+            if_id
         );
 
         for pkt in pending {
-            self.send_ipv6_icmpv6(&pkt.src, &pkt.dst, &pkt.icmpv6_data);
+            match pkt.payload {
+                PendingIpv6Payload::Icmpv6(data) => {
+                    if let Some(if_id) = if_id {
+                        self.send_ipv6_icmpv6_on(if_id, &pkt.src, &pkt.dst, &data);
+                    } else {
+                        self.send_ipv6_icmpv6(&pkt.src, &pkt.dst, &data);
+                    }
+                }
+                PendingIpv6Payload::Udp {
+                    src_port,
+                    dst_port,
+                    hop_limit,
+                    data,
+                } => {
+                    if let Some(if_id) = if_id {
+                        let _ = self.send_udp_v6_raw_on_with_ttl(
+                            if_id, src_port, pkt.src, pkt.dst, dst_port, &data, hop_limit,
+                        );
+                    } else {
+                        let _ = self.send_udp_v6_raw_with_ttl(
+                            src_port, pkt.src, pkt.dst, dst_port, &data, hop_limit,
+                        );
+                    }
+                }
+                PendingIpv6Payload::Tcp { segment } => {
+                    if let Some(if_id) = if_id {
+                        let _ = self.send_tcp_v6_raw_on(if_id, pkt.src, pkt.dst, &segment);
+                    } else {
+                        let _ = self.send_tcp_v6_raw(pkt.src, pkt.dst, &segment);
+                    }
+                }
+            }
         }
+    }
+
+    pub(crate) fn drain_ndp_pending(&mut self, resolved_ip: &Ipv6Address) {
+        let pending = self.ndp_pending_queue.drain_for(resolved_ip);
+        self.drain_ndp_pending_queue(None, resolved_ip, pending);
+    }
+
+    pub(crate) fn drain_ndp_pending_on(
+        &mut self,
+        if_id: super::NetIfId,
+        resolved_ip: &Ipv6Address,
+    ) {
+        let pending = if let Some(state) = self.interfaces.get_mut(&if_id) {
+            state.ndp_pending_queue.drain_for(resolved_ip)
+        } else {
+            Vec::new()
+        };
+
+        if pending.is_empty() {
+            self.drain_ndp_pending(resolved_ip);
+            return;
+        }
+
+        self.drain_ndp_pending_queue(Some(if_id), resolved_ip, pending);
     }
 
     /// Send pending IGMP reports

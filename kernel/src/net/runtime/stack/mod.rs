@@ -381,13 +381,28 @@ const NDP_PENDING_TIMEOUT_MS: u64 = 3000; // 3秒タイムアウト
 
 /// NDP解決待ちパケット
 #[derive(Clone)]
+pub(crate) enum PendingIpv6Payload {
+    Icmpv6(Box<[u8]>),
+    Udp {
+        src_port: u16,
+        dst_port: u16,
+        hop_limit: u8,
+        data: Box<[u8]>,
+    },
+    Tcp {
+        segment: Box<[u8]>,
+    },
+}
+
+/// NDP解決待ちパケット
+#[derive(Clone)]
 pub(crate) struct PendingIpv6Packet {
     /// 送信先IPv6アドレス
     dst: Ipv6Address,
     /// 送信元IPv6アドレス
     src: Ipv6Address,
-    /// ICMPv6ペイロード
-    icmpv6_data: Box<[u8]>,
+    /// 保留中の上位レイヤーペイロード
+    payload: PendingIpv6Payload,
     /// キューイング時刻
     queued_at: u64,
 }
@@ -419,7 +434,53 @@ impl NdpPendingQueue {
         self.packets.push_back(PendingIpv6Packet {
             dst,
             src,
-            icmpv6_data: Box::from(icmpv6_data),
+            payload: PendingIpv6Payload::Icmpv6(Box::from(icmpv6_data)),
+            queued_at: current_time,
+        });
+    }
+
+    fn enqueue_udp(
+        &mut self,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        src_port: u16,
+        dst_port: u16,
+        hop_limit: u8,
+        data: &[u8],
+        current_time: u64,
+    ) {
+        if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
+            self.packets.pop_front();
+        }
+        self.packets.push_back(PendingIpv6Packet {
+            dst,
+            src,
+            payload: PendingIpv6Payload::Udp {
+                src_port,
+                dst_port,
+                hop_limit,
+                data: Box::from(data),
+            },
+            queued_at: current_time,
+        });
+    }
+
+    fn enqueue_tcp(
+        &mut self,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        segment: &[u8],
+        current_time: u64,
+    ) {
+        if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
+            self.packets.pop_front();
+        }
+        self.packets.push_back(PendingIpv6Packet {
+            dst,
+            src,
+            payload: PendingIpv6Payload::Tcp {
+                segment: Box::from(segment),
+            },
             queued_at: current_time,
         });
     }
